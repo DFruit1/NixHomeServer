@@ -128,8 +128,10 @@ case "$local_nix_gc_mode" in
     exit 1
     ;;
 esac
-local_nix_store_max_gib="$(nix_flake_var 'toString vars.nixStoreMaxSizeGiB')"
 local_nix_gc_retention_days="$(nix_flake_var 'toString vars.nixGcRetentionDays')"
+local_disk_cleanup_trigger_percent="$(nix_flake_var 'toString vars.localDiskCleanup.triggerPercent')"
+local_disk_cleanup_monitor_paths="$(nix_flake_var 'builtins.concatStringsSep " " vars.localDiskCleanup.monitorPaths')"
+local_disk_cleanup_journal_vacuum_time="$(nix_flake_var 'vars.localDiskCleanup.journalVacuumTime')"
 
 configured_build_mode="$(nix_flake_var 'vars.buildMode')"
 if [[ -n "$build_mode_override" ]]; then
@@ -242,7 +244,7 @@ if [[ "${DEPLOY_DRY_RUN:-}" == "1" ]]; then
   echo "debug=${debug}"
   case "$local_nix_gc_mode" in
     capacity)
-      echo "local_gc=would run the capacity-triggered workstation store check before staging"
+      echo "local_gc=would run conservative workstation disk cleanup (nix gc + log/tmpfile) at ${local_disk_cleanup_trigger_percent}% on ${local_disk_cleanup_monitor_paths} before staging"
       ;;
     always)
       echo "local_gc=would run unconditional nix-store --gc on the workstation before staging"
@@ -267,12 +269,21 @@ fi
 
 case "$local_nix_gc_mode" in
   capacity)
-    echo "checking workstation Nix store capacity"
+    echo "checking workstation main SSD capacity"
     local_gc_runtime_dir="${XDG_RUNTIME_DIR:-/tmp}/nixhomeserver-${UID}"
-    NIX_STORE_MAX_GIB="$local_nix_store_max_gib" \
-      NIX_GC_RETENTION_DAYS="$local_nix_gc_retention_days" \
-      NIX_GC_LOCK_PATH="$local_gc_runtime_dir/maintenance.lock" \
-      bash "$script_dir/helpers/nix-store-capacity-gc.sh"
+    # Conservative cleanup: Nix store collection plus journal/tmpfile pruning,
+    # gated on the main SSD reaching the configured percentage. Action-level
+    # failures (for example journald/tmpfiles needing root) must never block a
+    # deploy; the Nix collection still runs first.
+    if ! DISK_CLEANUP_TRIGGER_PERCENT="$local_disk_cleanup_trigger_percent" \
+        DISK_CLEANUP_MONITOR_PATHS="$local_disk_cleanup_monitor_paths" \
+        DISK_CLEANUP_JOURNAL_VACUUM_TIME="$local_disk_cleanup_journal_vacuum_time" \
+        DISK_CLEANUP_NIX_GC_RETENTION_DAYS="$local_nix_gc_retention_days" \
+        DISK_CLEANUP_LOCK_PATH="$local_gc_runtime_dir/maintenance.lock" \
+        DISK_CLEANUP_FAILURE_MARKER="$local_gc_runtime_dir/disk-cleanup-failed" \
+        bash "$script_dir/helpers/disk-space-cleanup.sh"; then
+      echo "warning: workstation disk cleanup did not fully succeed; continuing deploy" >&2
+    fi
     ;;
   always)
     echo "collecting all unreferenced local Nix store paths"

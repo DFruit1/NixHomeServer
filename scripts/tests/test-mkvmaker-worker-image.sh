@@ -102,50 +102,25 @@ server_surface="$(nix eval --json '.#nixosConfigurations.server.config' --apply 
   distributed = cfg.repo.mkvmaker.distributedWorkers;
   paths = cfg.repo.mkvmaker.paths;
   nfs = cfg.services.nfs.server;
-  nfsSettings = cfg.services.nfs.settings;
   lanFirewall = cfg.networking.firewall.interfaces.enp34s0.allowedTCPPorts;
   guarded = cfg.repo.storage.dataPool.guardedServices;
   storageLayout = cfg.systemd.services.mkvmaker-storage-layout-v1.script;
-  configWriter = cfg.systemd.services.mkvmaker-worker-config.script;
-  publisher = cfg.systemd.services.mkvmaker-worker-image-publish.script;
-  publisherService = cfg.systemd.services.mkvmaker-worker-image-publish.serviceConfig;
+  configWriterPresent = builtins.hasAttr "mkvmaker-worker-config" cfg.systemd.services;
+  publisherPresent = builtins.hasAttr "mkvmaker-worker-image-publish" cfg.systemd.services;
 }')"
 
 jq -e '
-  (.distributed.enable == true)
-  and (.distributed.leaseSeconds == 120)
-  and (.distributed.nfsClientCidr == "192.168.8.0/24")
+  (.distributed.enable == false)
   and (.paths.workerImageOutput == "/mnt/data/users/admindsaw/_ISO/_SystemOSes")
-  and (.nfs.enable == true)
-  and (.nfs.hostName == "192.168.8.12")
-  and (.nfsSettings.nfsd.vers3 == false)
-  and (.nfsSettings.nfsd.vers4 == true)
-  and (.nfs.exports | contains("/mnt/data/shared/_ISO/_DVDs 192.168.8.0/24"))
-  and (.nfs.exports | contains("/mnt/data/shared/_Videos/_Movies 192.168.8.0/24"))
-  and (.nfs.exports | contains("/mnt/data/shared/_Videos/_Shows 192.168.8.0/24"))
-  and (.nfs.exports | contains("/mnt/data/shared/.mkvmaker-staging 192.168.8.0/24"))
-  and (.nfs.exports | contains("/var/lib/mkvmaker 192.168.8.0/24"))
-  and (.nfs.exports | contains("/var/lib/mkvmaker-worker-config 192.168.8.0/24(ro,"))
-  and (.nfs.exports | contains("/mnt/data/shared 192.168.8.0/24") | not)
-  and (.lanFirewall | index(2049) != null)
-  and (.guarded | index("mkvmaker-worker-config") != null)
-  and (.guarded | index("mkvmaker-worker-image-publish") != null)
+  and (.nfs.enable == false)
+  and (.lanFirewall | index(2049) == null)
+  and (.guarded | index("mkvmaker-worker-config") == null)
+  and (.guarded | index("mkvmaker-worker-image-publish") == null)
+  and (.configWriterPresent == false)
+  and (.publisherPresent == false)
   and (.storageLayout | contains("u:nobody:r-X"))
-  and (.configWriter | contains("worker-config.json"))
-  and (.configWriter | contains("/var/lib/mkvmaker-worker-config"))
-  and (.configWriter | contains("rm -f /var/lib/mkvmaker/worker-config.json"))
-  and (.configWriter | contains("d:g:mkvmaker:rwx"))
-  and (.configWriter | contains("install -d -m 2770"))
-  and (.publisher | contains("/mnt/data/users/admindsaw/_ISO/_SystemOSes"))
-  and (.publisher | contains(".sha256"))
-  and (.publisher | contains(".mkvmaker-worker-releases"))
-  and (.publisher | contains("MKVMaker-Worker"))
-  and (.publisher | contains("mv -Tf --"))
-  and (.publisher | contains("sha256sum --check"))
-  and (.publisherService.Type == "oneshot")
-  and (.publisherService.RemainAfterExit == true)
 ' <<<"$server_surface" >/dev/null || {
-  echo "❌ Server-side Mkvmaker worker export or ISO publication is invalid." >&2
+  echo "❌ Mkvmaker distributed workers must be disabled by default on the server while the core layout stays intact." >&2
   jq . <<<"$server_surface" >&2
   exit 1
 }
@@ -162,4 +137,4 @@ if rg -n '(age\.secrets|netbirdSetupKey|privateKey|passwordFile)' flake/mkvmaker
   exit 1
 fi
 
-echo "✅ Mkvmaker exposes a stateless, USB-bootable NixOS worker image."
+echo "✅ Mkvmaker worker image is retained and evaluates; server-side ISO/NFS publication is disabled by default."

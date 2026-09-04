@@ -215,6 +215,59 @@ impl TmdbClient {
         decode_json::<TmdbTvShowDetails>(response, "TV show details").await
     }
 
+    pub async fn get_tv_season_details(
+        &self,
+        series_id: u32,
+        season_number: u32,
+    ) -> Result<TmdbSeasonDetails, ProviderError> {
+        self.throttle().await;
+        let url = self
+            .tmdb_api_base
+            .join(&format!("tv/{series_id}/season/{season_number}"))
+            .map_err(|error| ProviderError::new(format!("build TV season URL: {error}")))?;
+        let response = self
+            .provider_request(self.client.get(url))
+            .query(&[
+                ("append_to_response", "external_ids"),
+                ("language", "en-US"),
+            ])
+            .send()
+            .await
+            .map_err(|error| {
+                ProviderError::new(format!("TV season details request failed: {error}"))
+            })?;
+        let response = require_success(response, "TMDB TV season details").await?;
+        decode_json::<TmdbSeasonDetails>(response, "TV season details").await
+    }
+
+    pub async fn get_tv_episode_details(
+        &self,
+        series_id: u32,
+        season_number: u32,
+        episode_number: u32,
+    ) -> Result<TmdbEpisodeDetails, ProviderError> {
+        self.throttle().await;
+        let url = self
+            .tmdb_api_base
+            .join(&format!(
+                "tv/{series_id}/season/{season_number}/episode/{episode_number}"
+            ))
+            .map_err(|error| ProviderError::new(format!("build TV episode URL: {error}")))?;
+        let response = self
+            .provider_request(self.client.get(url))
+            .query(&[
+                ("append_to_response", "external_ids"),
+                ("language", "en-US"),
+            ])
+            .send()
+            .await
+            .map_err(|error| {
+                ProviderError::new(format!("TV episode details request failed: {error}"))
+            })?;
+        let response = require_success(response, "TMDB TV episode details").await?;
+        decode_json::<TmdbEpisodeDetails>(response, "TV episode details").await
+    }
+
     async fn throttle(&self) {
         let gap = self.request_gap;
         if gap.is_zero() {
@@ -402,6 +455,66 @@ pub struct TmdbTvShowDetails {
     pub show_type: Option<String>,
     #[serde(rename = "in_production")]
     pub in_production: bool,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct TmdbSeasonDetails {
+    pub id: u32,
+    pub name: String,
+    pub overview: String,
+    #[serde(rename = "air_date")]
+    pub air_date: Option<String>,
+    #[serde(rename = "poster_path")]
+    pub poster_path: Option<String>,
+    #[serde(rename = "season_number")]
+    pub season_number: u32,
+    #[serde(rename = "vote_average")]
+    pub vote_average: f32,
+    pub episodes: Vec<TmdbSeasonEpisode>,
+    #[serde(rename = "external_ids")]
+    pub external_ids: Option<TmdbExternalIds>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct TmdbSeasonEpisode {
+    pub id: u32,
+    pub name: String,
+    #[serde(rename = "air_date")]
+    pub air_date: Option<String>,
+    #[serde(rename = "episode_number")]
+    pub episode_number: u32,
+    #[serde(rename = "season_number")]
+    pub season_number: u32,
+    #[serde(rename = "still_path")]
+    pub still_path: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct TmdbEpisodeDetails {
+    pub id: u32,
+    pub name: String,
+    pub overview: String,
+    #[serde(rename = "air_date")]
+    pub air_date: Option<String>,
+    #[serde(rename = "episode_number")]
+    pub episode_number: u32,
+    #[serde(rename = "season_number")]
+    pub season_number: u32,
+    pub runtime: Option<u32>,
+    #[serde(rename = "vote_average")]
+    pub vote_average: f32,
+    #[serde(rename = "vote_count")]
+    pub vote_count: u32,
+    #[serde(rename = "still_path")]
+    pub still_path: Option<String>,
+    pub crew: Vec<TmdbCrewMember>,
+    #[serde(rename = "guest_stars")]
+    pub guest_stars: Vec<TmdbCastMember>,
+    #[serde(rename = "external_ids")]
+    pub external_ids: Option<TmdbExternalIds>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

@@ -51,8 +51,14 @@ let
     freshrss = {
       disable = { repo.freshrss.enable = lib.mkForce false; };
       registryName = "freshrss";
-      services = [ "freshrss-config" "freshrss-updater" "phpfpm-freshrss" ];
-      timers = [ "freshrss-updater" ];
+      services = [
+        "freshrss-account-reconcile"
+        "freshrss-config"
+        "freshrss-egress-policy"
+        "freshrss-updater"
+        "phpfpm-freshrss"
+      ];
+      timers = [ "freshrss-account-reconcile" "freshrss-updater" ];
       hosts = [ "rss" ];
       gatewayApps = [ "freshrss" ];
       oauthClients = [ ];

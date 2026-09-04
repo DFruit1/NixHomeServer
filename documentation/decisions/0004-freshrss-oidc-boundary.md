@@ -59,9 +59,14 @@ snapshot.
 - Native RSS clients use the Google Reader API with a separate per-user API
   password and require LAN or NetBird reachability.
 - Kanidm group removal cannot revoke a password stored locally by FreshRSS, so
-  offboarding must also delete the FreshRSS account or rotate its API password.
-- Feed fetching is server-side and can reach private addresses, so
-  `freshrss-users` must remain limited to trusted users.
+  a timer retires the local account (moving `users/<username>` to
+  `.retired-users/<username>`) once the owner leaves `freshrss-users`, stopping
+  browser login and API authentication while retaining the data for restore.
+- Feed fetching is server-side, so an nftables egress policy blocks the
+  `freshrss` user from private, local, and link-local destinations while DNS
+  still resolves through the local resolver; `freshrss-users` must remain
+  limited to trusted users because feed URLs can still redirect fetches to
+  arbitrary public destinations.
 
 ## Rejected alternatives
 

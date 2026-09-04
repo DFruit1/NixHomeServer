@@ -1,4 +1,4 @@
-{ lib, pkgs, rustLib, workspaceSrc ? null, sharedCargoArtifacts ? null, cargoLock ? null, ... }:
+{ lib, pkgs, rustLib, workspaceVersion, workspaceSrc ? null, sharedCargoArtifacts ? null, cargoLock ? null, ... }:
 
 let
   frontendSourcePath = toString ./frontend;
@@ -32,6 +32,7 @@ let
   };
   app = rustLib.mkRustApp {
     name = "browsertrix-downloader";
+    version = workspaceVersion;
     binaryName = "browsertrix-downloader";
     srcDir = ./.;
     inherit workspaceSrc sharedCargoArtifacts cargoLock;

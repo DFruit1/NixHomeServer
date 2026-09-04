@@ -4,6 +4,7 @@ import { createDOM } from "@builder.io/qwik/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import Root, {
   initialRouteFromSearch,
+  itemFromSearch,
   metadataFieldChanges,
   metadataSourceChoices,
   parseTvEpisodeFilename,
@@ -18,15 +19,22 @@ describe("Media Manager navigation", () => {
   it("maps native navigation URLs to dashboard sections", () => {
     expect(viewFromSearch("?view=library")).toBe("library");
     expect(viewFromSearch("?view=conversions")).toBe("conversions");
+    expect(viewFromSearch("?view=health")).toBe("health");
     expect(viewFromSearch("?view=accounts")).toBe("accounts");
     expect(viewFromSearch("?view=overview")).toBe("library");
     expect(viewFromSearch("?view=unknown")).toBe("library");
     expect(rootFromSearch("?view=library&root=shared-videos")).toBe(
       "shared-videos",
     );
-    expect(initialRouteFromSearch("?view=library&root=shared-videos")).toEqual({
+    expect(itemFromSearch("?view=library&root=shared-videos&item=item-1")).toBe(
+      "item-1",
+    );
+    expect(
+      initialRouteFromSearch("?view=library&root=shared-videos&item=item-1"),
+    ).toEqual({
       initialView: "library",
       initialRootId: "shared-videos",
+      initialItemId: "item-1",
     });
   });
 
@@ -61,6 +69,7 @@ describe("Media Manager navigation", () => {
 
     const expectedLinks = new Map([
       ["Libraries", "?view=library"],
+      ["Library health", "?view=health"],
       ["Conversions", "?view=conversions"],
       ["Subtitles", "?view=subtitles"],
       ["Metadata sources", "?view=accounts"],
@@ -75,6 +84,73 @@ describe("Media Manager navigation", () => {
       expect(link?.getAttribute("href")).toBe(href);
     }
     expect(screen.textContent).not.toContain("Overview");
+  });
+
+  it("shows actionable metadata issues with a direct editor link", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const path = String(input);
+        const payload = path.endsWith("/status")
+          ? { mutationMode: "enabled", integrations: [] }
+          : path.endsWith("/session")
+            ? { username: "dsaw", groups: ["users"], canEdit: false }
+            : path.endsWith("/roots")
+              ? [
+                  {
+                    id: "shared-videos",
+                    label: "Shared videos",
+                    category: "videos",
+                    scope: "shared",
+                    available: true,
+                  },
+                ]
+              : path.includes(
+                    "/metadata/issues?rootId=shared-videos&pageSize=20",
+                  )
+                ? {
+                    rootId: "shared-videos",
+                    inspectedItems: 1,
+                    issueCount: 1,
+                    severityCounts: { error: 0, warning: 1, info: 0 },
+                    nextCursor: null,
+                    results: [
+                      {
+                        itemId: "arrival",
+                        rootId: "shared-videos",
+                        relativePath:
+                          "Movies/Arrival (2016)/Arrival (2016).mkv",
+                        mediaKind: "video",
+                        health: [
+                          {
+                            code: "conflicting-title",
+                            severity: "warning",
+                            field: "title",
+                            title: "Conflicting title",
+                            message:
+                              "Metadata sources disagree about the title.",
+                            sources: ["filename", "sidecar"],
+                          },
+                        ],
+                      },
+                    ],
+                  }
+                : { available: false, progress: {} };
+        return new Response(JSON.stringify(payload));
+      }),
+    );
+
+    const { render, screen } = await createDOM();
+    await render(<Root initialView="health" initialRootId="shared-videos" />);
+
+    await vi.waitFor(() =>
+      expect(screen.textContent).toContain("Conflicting title"),
+    );
+    expect(screen.textContent).toContain("Arrival (2016).mkv");
+    expect(screen.textContent).toContain("1 issue across 1 inspected item");
+    expect(
+      screen.querySelector("a.health-review-link")?.getAttribute("href"),
+    ).toBe("?view=library&root=shared-videos&item=arrival");
   });
 
   it("renders a section selected by the current URL without server or mode banners", async () => {
@@ -847,6 +923,40 @@ describe("Media Manager library browser", () => {
       return new Response(JSON.stringify(payload));
     });
   }
+
+  it("opens a metadata item selected by a durable library URL", async () => {
+    const item = {
+      id: "arrival",
+      rootId: "shared-videos",
+      relativePath: "Movies/Arrival (2016)/Arrival (2016).mkv",
+      mediaKind: "video",
+      sizeBytes: 1024,
+    };
+    const libraryFetch = libraryFetchMock([]);
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith("/items/arrival")) {
+        return new Response(JSON.stringify(item));
+      }
+      return libraryFetch(input);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { render } = await createDOM();
+    await render(
+      <Root
+        initialView="library"
+        initialRootId="shared-videos"
+        initialItemId="arrival"
+      />,
+    );
+
+    await vi.waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/v1/items/arrival/metadata",
+        expect.objectContaining({ credentials: "same-origin" }),
+      ),
+    );
+  });
 
   it("splits library content into Personal and Shared panes", async () => {
     vi.stubGlobal("fetch", libraryFetchMock([]));
@@ -2208,7 +2318,7 @@ describe("Media Manager library browser", () => {
     expect(screen.textContent).toContain("Newer draft edits remain unsaved");
   });
 
-  it("looks up a music release on MusicBrainz and fills the form from it", async () => {
+  it("compares a MusicBrainz release and adds only selected fields to the draft", async () => {
     const items = [
       {
         id: "music-1",
@@ -2309,10 +2419,25 @@ describe("Media Manager library browser", () => {
     expect(screen.textContent).toContain("13 tracks");
     expect(screen.textContent).toContain("matched by search");
 
-    const fillButton = Array.from(screen.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "Fill form",
+    const compareButton = Array.from(screen.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Compare fields",
     );
-    await userEvent(fillButton ?? null, "click");
+    await userEvent(compareButton ?? null, "click");
+
+    await vi.waitFor(() =>
+      expect(screen.querySelector(".metadata-match-workspace")).toBeDefined(),
+    );
+    expect(screen.textContent).toContain("Review MusicBrainz match");
+    expect(screen.textContent).toContain("Current metadata");
+    const genresToggle = screen.querySelector(
+      'input[aria-label="Use Genres from MusicBrainz"]',
+    ) as HTMLInputElement | null;
+    expect(genresToggle?.checked).toBe(true);
+    await userEvent(genresToggle, "click");
+    const applyButton = Array.from(screen.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Add selected to draft",
+    );
+    await userEvent(applyButton ?? null, "click");
 
     await vi.waitFor(() =>
       expect(
@@ -2335,7 +2460,7 @@ describe("Media Manager library browser", () => {
         (element) => element.textContent?.trim() === label,
       ) ?? null;
     expect(fieldValue("Year")).toBe("1991");
-    expect(fieldValue("Genres")).toBe("grunge, alternative rock");
+    expect(fieldValue("Genres")).toBe("");
     await userEvent(sectionTab("People"), "click");
     await vi.waitFor(() =>
       expect(
@@ -2359,7 +2484,7 @@ describe("Media Manager library browser", () => {
     ).toBe(true);
   });
 
-  it("looks up a movie with the signed-in user's TMDB account and fills a reviewable draft", async () => {
+  it("compares a movie from the signed-in user's TMDB account before filling a reviewable draft", async () => {
     const items = [
       {
         id: "movie-1",
@@ -2405,6 +2530,7 @@ describe("Media Manager library browser", () => {
               title: "Arrival",
               language: "en",
               sources: ["filename"],
+              providerIds: { tvdb: "1234" },
             }),
           );
         if (
@@ -2420,6 +2546,7 @@ describe("Media Manager library browser", () => {
                   tmdbId: 329865,
                   title: "Arrival",
                   year: 2016,
+                  posterPath: "/arrival.jpg",
                   overview: "A linguist works with the military.",
                   voteAverage: 7.6,
                   voteCount: 18000,
@@ -2473,14 +2600,23 @@ describe("Media Manager library browser", () => {
     await vi.waitFor(() =>
       expect(screen.textContent).toContain("18,000 votes"),
     );
-    const fillButton = Array.from(
+    const compareButton = Array.from(
       screen.querySelectorAll(".tmdb-panel button"),
-    ).find((button) => button.textContent?.trim() === "Fill draft");
-    await userEvent(fillButton ?? null, "click");
+    ).find((button) => button.textContent?.trim() === "Compare fields");
+    await userEvent(compareButton ?? null, "click");
 
     await vi.waitFor(() =>
+      expect(screen.querySelector(".metadata-match-workspace")).toBeDefined(),
+    );
+    expect(screen.textContent).toContain("Review TMDB match");
+    expect(screen.textContent).toContain("A linguist works with the military.");
+    const applyButton = Array.from(screen.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Add selected to draft",
+    );
+    await userEvent(applyButton ?? null, "click");
+    await vi.waitFor(() =>
       expect(screen.textContent).toContain(
-        "Filled the draft from TMDB. Review every field",
+        "Added 7 TMDB fields to the draft. Review them before previewing",
       ),
     );
     await vi.waitFor(() =>
@@ -2488,9 +2624,279 @@ describe("Media Manager library browser", () => {
         "TMDB ID",
       ),
     );
+    expect(screen.querySelector(".editor-facts")?.textContent).toContain(
+      "TVDB ID",
+    );
     expect(fetchMock).toHaveBeenCalledWith(
       expect.stringContaining("/provider-lookups/tmdb/details"),
       expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("searches Open Library and adds selected book fields to the draft", async () => {
+    const items = [
+      {
+        id: "book-1",
+        rootId: "shared-books",
+        relativePath: "Dune.epub",
+        mediaKind: "book",
+        sizeBytes: 4096,
+      },
+    ];
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = String(input);
+        if (path.endsWith("/status"))
+          return new Response(
+            JSON.stringify({ mutationMode: "enabled", integrations: [] }),
+          );
+        if (path.endsWith("/session"))
+          return new Response(
+            JSON.stringify({
+              username: "dsaw",
+              groups: ["users"],
+              canEdit: true,
+            }),
+          );
+        if (path.endsWith("/roots"))
+          return new Response(
+            JSON.stringify([
+              {
+                id: "shared-books",
+                label: "Shared books",
+                category: "books",
+                scope: "shared",
+                available: true,
+              },
+            ]),
+          );
+        if (path.includes("/items?rootId=shared-books"))
+          return new Response(JSON.stringify({ items }));
+        if (path.endsWith("/items/book-1/metadata"))
+          return new Response(
+            JSON.stringify({
+              mediaType: "book",
+              title: "Dune",
+              authors: ["Frank Herbert"],
+              language: "en",
+              sources: ["epub"],
+            }),
+          );
+        if (
+          path.endsWith("/provider-lookups/open-library/search") &&
+          init?.method === "POST"
+        )
+          return new Response(
+            JSON.stringify({
+              provider: "open-library",
+              results: [
+                {
+                  workId: "OL893415W",
+                  editionId: "OL75313M",
+                  title: "Dune",
+                  authors: ["Frank Herbert"],
+                  firstPublishYear: 1965,
+                  publishYear: 1990,
+                  editionCount: 312,
+                  publishDate: "September 1990",
+                  publishers: ["Ace Books"],
+                  isbn10: "0441172717",
+                  isbn13: "9780441172719",
+                  languages: ["eng"],
+                  subjects: ["Science fiction", "Dune (Imaginary place)"],
+                  numberOfPages: 535,
+                },
+              ],
+            }),
+          );
+        return new Response(JSON.stringify({ available: false, progress: {} }));
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { render, screen, userEvent } = await createDOM();
+    await render(<Root initialView="library" initialRootId="shared-books" />);
+    await vi.waitFor(() =>
+      expect(screen.querySelector(".tree-row.file")).toBeDefined(),
+    );
+    await userEvent(screen.querySelector(".tree-row.file"), "click");
+    await vi.waitFor(() =>
+      expect(screen.querySelector(".open-library-panel")).toBeDefined(),
+    );
+    expect(screen.textContent).toContain("Open Library lookup");
+    expect(screen.textContent).toContain("No account required");
+
+    await userEvent(
+      screen.querySelector(".open-library-panel .primary-button"),
+      "click",
+    );
+    await vi.waitFor(() =>
+      expect(screen.textContent).toContain("312 editions"),
+    );
+    expect(screen.textContent).toContain("Frank Herbert");
+    expect(screen.textContent).toContain("Ace Books");
+
+    const compareButton = Array.from(
+      screen.querySelectorAll(".open-library-panel button"),
+    ).find((button) => button.textContent?.trim() === "Compare fields");
+    await userEvent(compareButton ?? null, "click");
+    await vi.waitFor(() =>
+      expect(screen.querySelector(".metadata-match-workspace")).toBeDefined(),
+    );
+    expect(screen.textContent).toContain("Review Open Library match");
+    expect(screen.textContent).toContain("Science fiction");
+
+    const applyButton = Array.from(screen.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Add selected to draft",
+    );
+    await userEvent(applyButton ?? null, "click");
+    await vi.waitFor(() =>
+      expect(screen.textContent).toContain("Open Library fields to the draft"),
+    );
+    expect(screen.querySelector(".editor-facts")?.textContent).toContain(
+      "OPENLIBRARY ID",
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/provider-lookups/open-library/search"),
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ query: "Dune Frank Herbert" }),
+      }),
+    );
+  });
+
+  it("discards TMDB details that resolve after another item is selected", async () => {
+    let resolveDetails!: (response: Response) => void;
+    const pendingDetails = new Promise<Response>((resolve) => {
+      resolveDetails = resolve;
+    });
+    const items = [
+      {
+        id: "movie-1",
+        rootId: "shared-videos",
+        relativePath: "_Movies/Arrival.mkv",
+        mediaKind: "video",
+        sizeBytes: 4096,
+      },
+      {
+        id: "movie-2",
+        rootId: "shared-videos",
+        relativePath: "_Movies/Blade Runner.mkv",
+        mediaKind: "video",
+        sizeBytes: 4096,
+      },
+    ];
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = String(input);
+        if (path.endsWith("/status"))
+          return new Response(
+            JSON.stringify({ mutationMode: "enabled", integrations: [] }),
+          );
+        if (path.endsWith("/session"))
+          return new Response(
+            JSON.stringify({ username: "dsaw", groups: [], canEdit: true }),
+          );
+        if (path.endsWith("/roots"))
+          return new Response(
+            JSON.stringify([
+              {
+                id: "shared-videos",
+                label: "Shared videos",
+                category: "videos",
+                scope: "shared",
+                available: true,
+              },
+            ]),
+          );
+        if (path.includes("/items?rootId=shared-videos"))
+          return new Response(JSON.stringify({ items }));
+        if (path.endsWith("/items/movie-1/metadata"))
+          return new Response(
+            JSON.stringify({ mediaType: "movie", title: "Arrival" }),
+          );
+        if (path.endsWith("/items/movie-2/metadata"))
+          return new Response(
+            JSON.stringify({ mediaType: "movie", title: "Blade Runner" }),
+          );
+        if (path.endsWith("/provider-lookups/tmdb/search"))
+          return new Response(
+            JSON.stringify({
+              provider: "tmdb",
+              results: [
+                {
+                  mediaType: "movie",
+                  tmdbId: 329865,
+                  title: "Arrival",
+                  year: 2016,
+                },
+              ],
+            }),
+          );
+        if (
+          path.endsWith("/provider-lookups/tmdb/details") &&
+          init?.method === "POST"
+        )
+          return pendingDetails;
+        return new Response(JSON.stringify({ available: false, progress: {} }));
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { render, screen, userEvent } = await createDOM();
+    await render(<Root initialView="library" initialRootId="shared-videos" />);
+    const files = screen.querySelectorAll(".tree-row.file");
+    await userEvent(files[0], "click");
+    await vi.waitFor(() =>
+      expect(screen.querySelector(".tmdb-panel")).toBeDefined(),
+    );
+    await userEvent(
+      screen.querySelector(".tmdb-panel .primary-button"),
+      "click",
+    );
+    await vi.waitFor(() =>
+      expect(screen.textContent).toContain("Arrival (2016)"),
+    );
+    const compareButton = Array.from(
+      screen.querySelectorAll(".tmdb-panel button"),
+    ).find((button) => button.textContent?.trim() === "Compare fields");
+    const compareClick = userEvent(compareButton ?? null, "click");
+    await vi.waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([callInput]) =>
+          String(callInput).endsWith("/provider-lookups/tmdb/details"),
+        ),
+      ).toBe(true),
+    );
+
+    await userEvent(files[1], "click");
+    await vi.waitFor(() =>
+      expect(
+        screen
+          .querySelector(".editor-metadata-form .title-input input")
+          ?.getAttribute("value"),
+      ).toBe("Blade Runner"),
+    );
+    resolveDetails(
+      new Response(
+        JSON.stringify({
+          provider: "tmdb",
+          details: {
+            mediaType: "movie",
+            tmdbId: 329865,
+            title: "Arrival",
+            overview: "Stale details from the previous item.",
+            year: 2016,
+          },
+        }),
+      ),
+    );
+    await compareClick;
+
+    expect(screen.querySelector(".metadata-match-workspace")).toBeUndefined();
+    expect(screen.querySelector(".remote-artwork-preview")).toBeUndefined();
+    expect(screen.textContent).not.toContain(
+      "Stale details from the previous item.",
     );
   });
 });

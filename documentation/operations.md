@@ -265,6 +265,8 @@ command arguments, or shell history.
 - List/retrieve one-time Jellyfin credentials: `sudo jellyfin-initial-credential [USERNAME]`
 - Reconcile Jellyfin OIDC and Quick Connect: `sudo systemctl start jellyfin-oidc-bootstrap-v1.service`
 - SMART sweep: `sudo systemctl start storage-smart-short.service`
+- Capacity disk cleanup: `sudo systemctl start nixhomeserver-disk-cleanup.service`
+- Workstation disk cleanup: `sudo /path/to/repo/scripts/admin/local-disk-cleanup.sh`
 - Local encrypted backup repository: `/mnt/data/backups/kopia`
 - External USB media auto-mount root: `/mnt/external-usb/` (drives mount on insertion; shared `_USB` view at `/mnt/usb-access-view` is gated to `usb-access`)
 
@@ -303,20 +305,102 @@ sudo systemctl start nixhomeserver-nix-gc.service
 The capacity collector above only covers the deployed server; the workstation
 that evaluates and builds deploys has no equivalent timer. Set
 `system.localNixGCMode` in `vars.nix` to `"never"`, `"capacity"`, or `"always"`.
-Capacity mode runs the existing threshold helper against the local
-`/nix/store`, using `system.nixStoreMaxSizeGiB`,
-`system.nixGcRetentionDays`, and a user-writable maintenance lock. It skips
-collection while both the store and its filesystem remain below their
-configured pressure thresholds. Always mode preserves the former unconditional
-`nix-store --gc` behavior; never mode performs no deploy-time local collection.
+Always mode runs an unconditional `nix-store --gc`; never mode performs no
+deploy-time local collection.
+
+### Workstation Disk Space Cleanup
+
+Capacity mode runs a conservative cleanup before staging a deploy: when the
+main SSD (`system.localDiskCleanup.monitorPaths`, default `[ "/nix" ]`) reaches
+`system.localDiskCleanup.triggerPercent` (default 85), it vacuums the journal
+down to `system.localDiskCleanup.journalVacuumTime` (default `7d`), runs
+`systemd-tmpfiles --clean`, and collects the Nix store with
+`nix-collect-garbage --delete-older-than <nixGcRetentionDays>d`. The Nix
+collection always runs first, so even when journal/tmpfile actions need root
+and fail for an unprivileged user, the store is still reclaimed. Action
+failures never block a deploy.
 
 For compatibility, `system.localNixGC = true` maps to `"always"` and `false`
 maps to `"never"` when `localNixGCMode` is absent. An explicit mode takes
-precedence. Generation-based cleanup on the workstation remains the
-responsibility of the workstation's own Nix configuration.
+precedence.
+
+Run the same cleanup on a schedule with the standalone wrapper (install as a
+root systemd timer so journal/tmpfile actions have the needed permissions):
+
+```bash
+sudo /path/to/repo/scripts/admin/local-disk-cleanup.sh
+```
+
+```ini
+# /etc/systemd/system/nixhomeserver-local-disk-cleanup.service
+[Unit]
+Description=NixHomeServer conservative workstation disk cleanup
+
+[Service]
+Type=oneshot
+ExecStart=/path/to/repo/scripts/admin/local-disk-cleanup.sh
+```
+
+```ini
+# /etc/systemd/system/nixhomeserver-local-disk-cleanup.timer
+[Unit]
+Description=Run conservative workstation disk cleanup when the main SSD is full
+
+[Timer]
+OnCalendar=*:0/30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+```bash
+sudo systemctl enable --now nixhomeserver-local-disk-cleanup.timer
+```
 
 ```bash
 nix-store --gc
+```
+
+## Disk Space Cleanup
+
+`nixhomeserver-disk-cleanup.timer` checks the monitored filesystems every 30
+minutes and starts conservative cleanup when one of them reaches
+`system.diskCleanup.triggerPercent` (default 85). By default only the root
+filesystem (`/`) is monitored, which is where `/nix/store`, the journal, and
+`/tmp` live; user-data pools are deliberately excluded. Set
+`system.diskCleanup.monitorPaths` to watch additional filesystems, and
+`system.diskCleanup.enable = false` to disable the routine entirely.
+
+When triggered, the service runs these actions in order while holding the same
+shared maintenance lock as Nix store GC, optimisation, backups, and Kopia
+maintenance:
+
+- `journalctl --vacuum-time=<journalVacuumTime>` trims the journal to a shorter
+  retention window (default `7d`) only while under pressure. Normal journald
+  retention (`SystemMaxUse=512M`, `MaxRetentionSec=30day`) resumes once
+  pressure passes.
+- `systemd-tmpfiles --clean` removes only files whose tmpfiles rules set an age
+  (for example Kopia's 14-day log retention); rules without an age are never
+  touched.
+- `nix-collect-garbage --delete-older-than <nixGcRetentionDays>d` applies the
+  same conservative generation-based collection as the 90% capacity GC, giving
+  the root filesystem store relief before it reaches the higher trigger. It
+  runs only when the store's filesystem is among the monitored paths.
+
+The routine never deletes user data. A run below the trigger emits only
+`disk_cleanup_check`; a cleanup run emits `disk_cleanup_recheck`,
+`disk_cleanup_started`, and `disk_cleanup_completed`, which records per-action
+statuses and freed bytes. Deferral because another maintenance job holds the
+lock emits `disk_cleanup_deferred` and exits 75. An individual action failure
+emits `disk_cleanup_action_failed` (with the final 8 KiB of its output as
+base64) and a final `disk_cleanup_failed`, which uses the normal systemd
+failure alert path.
+
+```bash
+systemctl status nixhomeserver-disk-cleanup.timer
+journalctl -u nixhomeserver-disk-cleanup.service --output=cat
+sudo systemctl start nixhomeserver-disk-cleanup.service
 ```
 
 `/mnt/data` is the configured data root for both storage profiles. On
@@ -673,6 +757,11 @@ or `videoPreset` declaratively if the defaults need adjustment.
 
 #### Stateless conversion worker USB
 
+> **Note:** The distributed-worker feature is disabled by default via
+> `vars.mkvmaker.distributedWorkers.enable = false`. The implementation is
+> retained; set that toggle back to `true` to republish the ISO and re-export
+> the LAN worker NFS shares.
+
 When MKVMaker is enabled, the host configuration also builds a minimal NixOS
 live image from the repository-pinned package closure. The
 `mkvmaker-worker-image-publish.service` publishes the ISO and its SHA-256
@@ -847,6 +936,34 @@ falls back to search. Register an application API key at
 https://acoustid.org/settings, then enter it under **Accounts → AcoustID**.
 AcoustID validation happens during a real fingerprint lookup because a useful
 test request requires a valid local fingerprint.
+
+Open Library lookup is available for cataloged books and audiobooks without an
+account. Search by title and author or by ISBN, expand a work into its specific
+editions, and compare an edition's title, authors, publication year, publisher,
+ISBN, language, subjects, and stable work/edition identifiers. A cover can be
+previewed from either the work result or a chosen edition, then staged through
+the normal mutation preview and explicit confirmation flow. Existing local
+cover art is archived in `superseded`; if no same-folder cover exists, the
+broker installs a new `cover.*` file without overwriting any file. The adapter
+requests only an explicit bounded field list from the
+[Open Library Search API](https://openlibrary.org/dev/docs/api/search), limits
+search responses to 12 candidates and JSON responses to 2 MiB. Edition pages
+are limited to 20 records, while selected cover responses are restricted to
+supported raster types and 16 MiB. All Open Library requests share a
+one-request-per-second gate across users in line with Open Library's public
+[API usage guidance](https://openlibrary.org/developers/api). It never performs
+bulk harvesting.
+
+TMDB movie and television results, MusicBrainz release results, and Open
+Library book results use the same field-comparison workspace. Choosing
+**Compare fields** does not create or modify a draft: it shows current and
+provider values side by side, initially selecting only non-empty values that
+differ. Uncheck anything that should stay local, then choose **Add selected to
+draft**. Provider identifiers are merged by key so a new match cannot remove an
+existing TVDB or other identifier. The normal sidecar preview and confirmation
+remain mandatory before any file is changed. Switching to another item
+discards late search/detail responses from the previous item instead of
+attaching them to the new selection.
 
 The Accounts page inventories public sources that need no setup, active
 adapters, and practical sources planned for later adapters. Accounts are owned

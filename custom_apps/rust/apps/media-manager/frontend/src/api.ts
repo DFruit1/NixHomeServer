@@ -47,3 +47,20 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
   return payload;
 }
+
+export async function apiBlob(path: string): Promise<Blob> {
+  const response = await fetch(`/api/v1${path}`, {
+    credentials: "same-origin",
+    headers: { accept: "image/jpeg,image/png,image/gif,image/webp" },
+  });
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => ({}))) as ServerError;
+    throw new ApiError(
+      response.status,
+      payload.error?.code ?? "request_failed",
+      payload.error?.message ?? "The image could not be downloaded.",
+      payload.error?.requestId ?? "unknown",
+    );
+  }
+  return response.blob();
+}

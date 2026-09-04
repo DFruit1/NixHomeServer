@@ -59,6 +59,42 @@ let
       message = "system.localNixGCMode must be never, capacity, or always";
     }
     {
+      valid = builtins.isBool (settings.diskCleanup.enable or true);
+      message = "system.diskCleanup.enable must be a boolean";
+    }
+    {
+      valid = builtins.isInt (settings.diskCleanup.triggerPercent or 85)
+        && (settings.diskCleanup.triggerPercent or 85) >= 1
+        && (settings.diskCleanup.triggerPercent or 85) <= 100;
+      message = "system.diskCleanup.triggerPercent must be an integer from 1 through 100";
+    }
+    {
+      valid = isStringList (settings.diskCleanup.monitorPaths or [ "/" ])
+        && (settings.diskCleanup.monitorPaths or [ "/" ]) != [ ];
+      message = "system.diskCleanup.monitorPaths must be a non-empty list of absolute paths";
+    }
+    {
+      valid = builtins.isString (settings.diskCleanup.journalVacuumTime or "7d")
+        && builtins.match "^[0-9]+[smhdw]$" (settings.diskCleanup.journalVacuumTime or "7d") != null;
+      message = "system.diskCleanup.journalVacuumTime must look like 30s, 30m, 24h, or 7d";
+    }
+    {
+      valid = builtins.isInt (settings.localDiskCleanup.triggerPercent or 85)
+        && (settings.localDiskCleanup.triggerPercent or 85) >= 1
+        && (settings.localDiskCleanup.triggerPercent or 85) <= 100;
+      message = "system.localDiskCleanup.triggerPercent must be an integer from 1 through 100";
+    }
+    {
+      valid = isStringList (settings.localDiskCleanup.monitorPaths or [ "/nix" ])
+        && (settings.localDiskCleanup.monitorPaths or [ "/nix" ]) != [ ];
+      message = "system.localDiskCleanup.monitorPaths must be a non-empty list of absolute paths";
+    }
+    {
+      valid = builtins.isString (settings.localDiskCleanup.journalVacuumTime or "7d")
+        && builtins.match "^[0-9]+[smhdw]$" (settings.localDiskCleanup.journalVacuumTime or "7d") != null;
+      message = "system.localDiskCleanup.journalVacuumTime must look like 30s, 30m, 24h, or 7d";
+    }
+    {
       valid = builtins.elem settings.storageProfile [ "zfs-mirror" "single-disk-ext4" ];
       message = "storage.profile must be zfs-mirror or single-disk-ext4";
     }

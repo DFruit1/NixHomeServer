@@ -6,6 +6,7 @@ pub mod http;
 pub mod metadata;
 pub mod musicbrainz;
 pub mod naming;
+mod open_library;
 pub mod provider_account_http;
 pub mod provider_accounts;
 pub mod scanner;

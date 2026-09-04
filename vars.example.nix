@@ -52,6 +52,17 @@ let
       nixStoreMaxSizeGiB = 80; # Soft Nix store cap in GiB; collection starts at 90% of this size or 90% usage on the filesystem containing /nix/store.
       nixGcRetentionDays = 45; # Delete profile generations older than this many days, sacrificing older rollback points.
       localNixGCMode = "capacity"; # "never", capacity-triggered collection, or unconditional "always" before deploy.
+      localDiskCleanup = {
+        triggerPercent = 85; # Workstation main SSD used percent that triggers conservative nix gc + log/tmpfile cleanup before deploy.
+        monitorPaths = [ "/nix" ]; # Main workstation SSD mountpoint(s) to watch for capacity; the Nix store lives here.
+        journalVacuumTime = "7d"; # Journal retention kept while under pressure on the workstation.
+      };
+      diskCleanup = {
+        enable = true; # Routine conservative cleanup when a monitored filesystem reaches the trigger.
+        triggerPercent = 85; # Reclaim logs, aged tmpfiles, and Nix store generations at 85% used; user data is never touched.
+        monitorPaths = [ "/" ]; # Filesystems watched for capacity; user-data pools are intentionally excluded.
+        journalVacuumTime = "7d"; # Journal retention kept while under pressure; normal journald retention is 30 days.
+      };
     };
 
     dnsSettings = {
@@ -80,6 +91,15 @@ let
 
     offlineMedia = {
       enable = true; # Whether to provision Syncthing-backed offline media folders and enrollment tools.
+    };
+
+    mkvmaker = {
+      distributedWorkers = {
+        # Publish the USB-bootable NixOS worker ISO and LAN NFS exports for
+        # distributed DVD-ripping workers. Disabled until that feature is
+        # redeveloped; the implementation is retained as-is.
+        enable = false;
+      };
     };
 
     offsiteBackup = {

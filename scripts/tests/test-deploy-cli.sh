@@ -111,8 +111,8 @@ if ! rg -Fq "target_host=${expected_target}" <<<"$default_output"; then
 fi
 case "$expected_local_gc_mode" in
   capacity)
-    if ! rg -Fq 'local_gc=would run the capacity-triggered workstation store check before staging' <<<"$default_output"; then
-      echo "❌ Capacity GC mode must report the planned workstation capacity check."
+    if ! rg -Fq 'local_gc=would run conservative workstation disk cleanup' <<<"$default_output"; then
+      echo "❌ Capacity GC mode must report the planned conservative workstation disk cleanup."
       echo "$default_output"
       exit 1
     fi
@@ -258,10 +258,10 @@ require_fixed scripts/deploy.sh 'ensure_local_attic_tunnel' \
   "Real deploys must recover the workstation Attic tunnel before evaluating or building."
 require_fixed scripts/deploy.sh 'nix-store --gc' \
   "Always-mode workstation GC must run a real Nix garbage collection before staging the deploy."
-require_fixed scripts/deploy.sh 'nix-store-capacity-gc.sh' \
-  "Capacity-mode workstation GC must use the tested capacity helper."
-require_fixed scripts/deploy.sh 'local_gc=would run the capacity-triggered workstation store check before staging' \
-  "Deploy dry-runs must report the planned capacity check without running it."
+require_fixed scripts/deploy.sh 'disk-space-cleanup.sh' \
+  "Capacity-mode workstation cleanup must use the conservative disk-space cleanup helper."
+require_fixed scripts/deploy.sh 'local_gc=would run conservative workstation disk cleanup' \
+  "Deploy dry-runs must report the planned conservative cleanup without running it."
 require_fixed scripts/helpers/deploy-executor.sh 'nixpkgs#nodejs' \
   "Remote debug validation must provide its Node runtime from pinned nixpkgs."
 require_fixed scripts/helpers/deploy-executor.sh 'date +%s%N' \

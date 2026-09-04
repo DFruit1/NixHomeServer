@@ -96,6 +96,7 @@ test_scripts=(
   scripts/tests/test-module-disable-evaluation.sh
   scripts/tests/test-netbird-login-convergence.sh
   scripts/tests/test-nix-store-capacity-gc.sh
+  scripts/tests/test-disk-space-cleanup.sh
   scripts/tests/test-offline-media-reliability.sh
   scripts/tests/test-deploy-cli.sh
   scripts/tests/test-deploy-transaction-runtime.sh
@@ -125,6 +126,7 @@ test_scripts=(
   scripts/tests/test-failure-alert-delivery.sh
   scripts/tests/test-freshrss-module.sh
   scripts/tests/test-freshness-marker.sh
+  scripts/tests/test-rust-workspace-dependencies.sh
   scripts/tests/test-homepage-guidance.sh
   scripts/tests/test-portal-landing.sh
   scripts/tests/test-identity-reconcile-fail-closed.sh

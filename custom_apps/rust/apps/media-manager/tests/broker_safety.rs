@@ -5,8 +5,8 @@ use media_manager::{
         apply_broker_action, apply_install_metadata_sidecar, apply_install_subtitle, apply_move,
         apply_replace_artwork, apply_replace_metadata_sidecar, discard_staged_broker_action,
         file_fingerprint, move_destination_matches, open_regular_file_beneath,
-        recover_broker_action, BrokerAction, InstallMetadataSidecarAction, InstallSubtitleAction,
-        MoveAction, ReplaceArtworkAction, ReplaceEmbeddedMetadataAction,
+        recover_broker_action, BrokerAction, InstallArtworkAction, InstallMetadataSidecarAction,
+        InstallSubtitleAction, MoveAction, ReplaceArtworkAction, ReplaceEmbeddedMetadataAction,
         ReplaceMetadataSidecarAction,
     },
     config::AppConfig,
@@ -128,6 +128,64 @@ fn broker_installs_metadata_sidecars_without_replacing_existing_metadata() {
     };
     assert!(apply_install_metadata_sidecar(&config, "editor", &collision).is_err());
     assert!(state.join("provider-staging/metadata-2.opf").exists());
+}
+
+#[test]
+fn broker_installs_artwork_beside_media_without_replacing_an_existing_file() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let shared = temp.path().join("shared");
+    let users = temp.path().join("users");
+    let state = temp.path().join("state");
+    fs::create_dir_all(shared.join("_Books/Author/Book")).expect("book directory");
+    fs::create_dir_all(state.join("provider-staging")).expect("staging root");
+    let staged = state.join("provider-staging/artwork-1.png");
+    fs::write(&staged, b"\x89PNG\r\n\x1a\ncover").expect("staged artwork");
+    let mut config = AppConfig::for_test(
+        shared.to_str().expect("shared path"),
+        users.to_str().expect("users path"),
+    );
+    config.state_dir = state.clone();
+    let action = InstallArtworkAction {
+        staging_filename: "artwork-1.png".to_string(),
+        destination_root_id: "shared-books".to_string(),
+        destination_relative_path: "Author/Book/cover.png".to_string(),
+        expected: file_fingerprint(&staged).expect("staged fingerprint"),
+    };
+
+    apply_broker_action(
+        &config,
+        "editor",
+        &BrokerAction::InstallArtwork(action.clone()),
+    )
+    .expect("install artwork");
+    assert_eq!(
+        fs::read(shared.join("_Books/Author/Book/cover.png")).expect("installed artwork"),
+        b"\x89PNG\r\n\x1a\ncover"
+    );
+    assert!(recover_broker_action(
+        &config,
+        "editor",
+        &BrokerAction::InstallArtwork(action.clone())
+    )
+    .expect("completed install recovery"));
+
+    fs::write(shared.join("_Books/Author/Book/cover.jpg"), b"existing").expect("existing cover");
+    let collision_stage = state.join("provider-staging/artwork-2.jpg");
+    fs::write(&collision_stage, b"replacement").expect("collision stage");
+    let collision = InstallArtworkAction {
+        staging_filename: "artwork-2.jpg".to_string(),
+        destination_relative_path: "Author/Book/cover.jpg".to_string(),
+        expected: file_fingerprint(&collision_stage).expect("collision fingerprint"),
+        ..action
+    };
+    assert!(
+        apply_broker_action(&config, "editor", &BrokerAction::InstallArtwork(collision)).is_err()
+    );
+    assert_eq!(
+        fs::read(shared.join("_Books/Author/Book/cover.jpg")).expect("existing cover retained"),
+        b"existing"
+    );
+    assert!(collision_stage.exists());
 }
 
 #[test]

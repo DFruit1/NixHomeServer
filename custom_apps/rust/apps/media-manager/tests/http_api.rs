@@ -1196,6 +1196,144 @@ async fn metadata_details_expose_existing_sidecar_values_and_field_provenance() 
 }
 
 #[tokio::test]
+async fn metadata_health_inbox_groups_actionable_issues_and_pages_by_catalog_position() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let movie_dir = temp.path().join("shared/_Videos");
+    std::fs::create_dir_all(&movie_dir).expect("movie directory");
+    for name in ["A", "B"] {
+        std::fs::write(movie_dir.join(format!("{name}.mkv")), b"movie").expect("movie");
+        std::fs::write(
+            movie_dir.join(format!("{name}.nfo")),
+            format!("<movie><title>Different {name}</title></movie>"),
+        )
+        .expect("NFO sidecar");
+    }
+    let app = test_app(&temp);
+
+    let response = app
+        .clone()
+        .oneshot(viewer_get_request(
+            "/api/v1/metadata/issues?rootId=shared-videos&pageSize=1",
+        ))
+        .await
+        .expect("metadata issues response");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["cache-control"], "private, no-store");
+    let body = to_bytes(response.into_body(), 128 * 1024)
+        .await
+        .expect("metadata issues body");
+    let payload: Value = serde_json::from_slice(&body).expect("metadata issues JSON");
+
+    assert_eq!(payload["rootId"], "shared-videos");
+    assert_eq!(payload["inspectedItems"], 1);
+    assert_eq!(payload["issueCount"], 1);
+    assert_eq!(payload["results"][0]["relativePath"], "A.mkv");
+    assert_eq!(payload["results"][0]["mediaKind"], "video");
+    assert_eq!(
+        payload["results"][0]["health"][0]["code"],
+        "conflicting-title"
+    );
+    assert_eq!(payload["results"][0]["health"][0]["severity"], "warning");
+    assert_eq!(payload["nextCursor"], "A.mkv");
+
+    let response = app
+        .oneshot(viewer_get_request(
+            "/api/v1/metadata/issues?rootId=shared-videos&pageSize=1&cursor=A.mkv",
+        ))
+        .await
+        .expect("second metadata issues response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 128 * 1024)
+        .await
+        .expect("second metadata issues body");
+    let payload: Value = serde_json::from_slice(&body).expect("second metadata issues JSON");
+    assert_eq!(payload["results"][0]["relativePath"], "B.mkv");
+    assert!(payload["nextCursor"].is_null());
+}
+
+#[tokio::test]
+async fn metadata_health_inbox_rejects_unbounded_page_sizes() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let response = test_app(&temp)
+        .oneshot(viewer_get_request(
+            "/api/v1/metadata/issues?rootId=shared-videos&pageSize=51",
+        ))
+        .await
+        .expect("metadata issues response");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("metadata issues body");
+    let payload: Value = serde_json::from_slice(&body).expect("metadata issues JSON");
+    assert_eq!(payload["error"]["code"], "invalid_page_size");
+}
+
+#[tokio::test]
+async fn item_details_return_one_visible_catalog_record_for_durable_links() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let movie = temp.path().join("shared/_Videos/Exact Item.mkv");
+    std::fs::create_dir_all(movie.parent().expect("movie parent")).expect("movie directory");
+    std::fs::write(&movie, b"movie").expect("movie");
+    let app = test_app(&temp);
+    let item_id = first_item_id(&app, "shared-videos").await;
+
+    let response = app
+        .oneshot(viewer_get_request(&format!("/api/v1/items/{item_id}")))
+        .await
+        .expect("item details response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("item details body");
+    let payload: Value = serde_json::from_slice(&body).expect("item details JSON");
+    assert_eq!(payload["id"], item_id);
+    assert_eq!(payload["rootId"], "shared-videos");
+    assert_eq!(payload["relativePath"], "Exact Item.mkv");
+}
+
+#[tokio::test]
+async fn item_details_fail_closed_for_unknown_and_other_users_personal_records() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let private_item = temp.path().join("users/other/_Videos/Private.mkv");
+    std::fs::create_dir_all(private_item.parent().expect("private item parent"))
+        .expect("private directory");
+    std::fs::write(&private_item, b"movie").expect("private item");
+    let app = test_app(&temp);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/items?rootId=personal-videos")
+                .header("x-forwarded-user", "other")
+                .header("x-forwarded-groups", "users")
+                .body(Body::empty())
+                .expect("other user request"),
+        )
+        .await
+        .expect("other user items response");
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("other user items body");
+    let payload: Value = serde_json::from_slice(&body).expect("other user items JSON");
+    let item_id = payload["items"][0]["id"].as_str().expect("private item ID");
+
+    let response = app
+        .clone()
+        .oneshot(viewer_get_request(&format!("/api/v1/items/{item_id}")))
+        .await
+        .expect("hidden item response");
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    let response = app
+        .oneshot(viewer_get_request("/api/v1/items/item-does-not-exist"))
+        .await
+        .expect("missing item response");
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+}
+
+#[tokio::test]
 async fn editing_existing_metadata_previews_a_recoverable_xml_preserving_replacement() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let movie_dir = temp.path().join("shared/_Videos/Movies/Arrival (2016)");
@@ -2085,6 +2223,39 @@ async fn artwork_replacement_previews_one_recoverable_broker_action() {
 }
 
 #[tokio::test]
+async fn media_item_artwork_upload_previews_a_no_overwrite_cover_install() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let (app, _) = test_app_with_mode(&temp, MutationMode::Enabled);
+    let book = temp.path().join("shared/_Books/Author/Dune");
+    std::fs::create_dir_all(&book).expect("book directory");
+    std::fs::write(book.join("Dune.epub"), b"book").expect("book");
+    editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-books"}"#).await;
+    let book_id = item_id_by_kind(&app, "shared-books", "book").await;
+
+    let response = app
+        .oneshot(editor_post_request(
+            &format!("/api/v1/items/{book_id}/image/replacement?format=png"),
+            Body::from(one_pixel_png()),
+        ))
+        .await
+        .expect("artwork install preview");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("preview body");
+    let preview: Value = serde_json::from_slice(&body).expect("preview JSON");
+    assert_eq!(preview["actions"][0]["kind"], "install_artwork");
+    assert_eq!(
+        preview["actions"][0]["destinationRelativePath"],
+        "Author/Dune/cover.png"
+    );
+    assert!(preview["warnings"][0]
+        .as_str()
+        .expect("warning")
+        .contains("new cover"));
+}
+
+#[tokio::test]
 async fn unauthenticated_artwork_upload_is_rejected_before_reading_a_large_body() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let body = vec![0_u8; 32 * 1024 * 1024 + 2048];
@@ -2509,7 +2680,18 @@ fn release_group_payload(mbid: &str) -> String {
             "genres": [{{ "name": "grunge" }}, {{ "name": "alternative rock" }}],
             "releases": [
                 {{
-                    "label-info": [{{ "label": {{ "name": "DGC" }} }}],
+                    "id": "2d4b4f36-bbf7-37d2-8c59-8f84a8f1b5a7",
+                    "title": "Nevermind",
+                    "status": "Official",
+                    "date": "1991-09-24",
+                    "country": "US",
+                    "barcode": "720642442524",
+                    "packaging": "Jewel Case",
+                    "disambiguation": "US original release",
+                    "label-info": [{{
+                        "catalog-number": "DGCD-24425",
+                        "label": {{ "name": "DGC" }}
+                    }}],
                     "media": [{{ "track-count": 13 }}]
                 }}
             ]
@@ -2547,10 +2729,17 @@ fn musicbrainz_mock() -> axum::Router {
         }))
     }
     async fn lookup() -> Json<Value> {
-        Json(
-            serde_json::from_str::<Value>(&release_group_payload(NIRVANA_MBID))
-                .expect("release group payload"),
-        )
+        let mut group = serde_json::from_str::<Value>(&release_group_payload(NIRVANA_MBID))
+            .expect("release group payload");
+        group["releases"] = serde_json::json!([{
+            "id": "2d4b4f36-bbf7-37d2-8c59-8f84a8f1b5a7"
+        }]);
+        Json(group)
+    }
+    async fn exact_release() -> Json<Value> {
+        let group = serde_json::from_str::<Value>(&release_group_payload(NIRVANA_MBID))
+            .expect("release group payload");
+        Json(group["releases"][0].clone())
     }
     async fn acoustid_lookup() -> Json<Value> {
         Json(serde_json::json!({
@@ -2565,6 +2754,7 @@ fn musicbrainz_mock() -> axum::Router {
     axum::Router::new()
         .route("/release-group/", get(search))
         .route("/release-group/{id}", get(lookup))
+        .route("/release/{id}", get(exact_release))
         .route("/lookup", get(acoustid_lookup))
 }
 
@@ -2617,6 +2807,10 @@ async fn musicbrainz_search_lookup_returns_release_group_candidates() {
     assert!(value["requestId"].as_str().is_some());
     let candidate = &value["candidates"][0];
     assert_eq!(candidate["releaseGroupId"], NIRVANA_MBID);
+    assert_eq!(
+        candidate["releaseId"],
+        "2d4b4f36-bbf7-37d2-8c59-8f84a8f1b5a7"
+    );
     assert_eq!(candidate["artist"], "Nirvana");
     assert_eq!(candidate["title"], "Nevermind");
     assert_eq!(candidate["releaseType"], "Album");
@@ -2630,6 +2824,10 @@ async fn musicbrainz_search_lookup_returns_release_group_candidates() {
     assert!(genres.contains(&"grunge"));
     assert!(genres.contains(&"alternative rock"));
     assert_eq!(candidate["label"], "DGC");
+    assert_eq!(candidate["catalogNumber"], "DGCD-24425");
+    assert_eq!(candidate["barcode"], "720642442524");
+    assert_eq!(candidate["country"], "US");
+    assert_eq!(candidate["releaseDate"], "1991-09-24");
     assert_eq!(candidate["trackCount"], 13);
     assert_eq!(candidate["matchMethod"], "search");
 }

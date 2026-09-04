@@ -183,13 +183,28 @@ let
     ];
   };
   configuredOffsiteBackup = settings.offsiteBackup or { };
+  configuredDiskCleanup = settings.system.diskCleanup or { };
+  diskCleanup = {
+    enable = configuredDiskCleanup.enable or true;
+    triggerPercent = configuredDiskCleanup.triggerPercent or 85;
+    monitorPaths = configuredDiskCleanup.monitorPaths or [ "/" ];
+    journalVacuumTime = configuredDiskCleanup.journalVacuumTime or "7d";
+  };
+  configuredLocalDiskCleanup = settings.system.localDiskCleanup or { };
+  localDiskCleanup = {
+    triggerPercent = configuredLocalDiskCleanup.triggerPercent or 85;
+    monitorPaths = configuredLocalDiskCleanup.monitorPaths or [ "/nix" ];
+    journalVacuumTime = configuredLocalDiskCleanup.journalVacuumTime or "7d";
+  };
 in
 rec {
   inherit
     backupAccess
+    diskCleanup
     dnsSettings
     fileAccess
     identity
+    localDiskCleanup
     monitoringAccess
     offlineMedia
     seerrAccess

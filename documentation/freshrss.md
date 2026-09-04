@@ -19,10 +19,15 @@ kanidm group get freshrss-users
 
 Removing a user from `freshrss-users` immediately blocks browser OIDC access,
 but it does not erase an API password already stored in that user's FreshRSS
-account. As part of offboarding, also delete that account under **Administration
-→ Manage users** (after confirming its feeds are backed up), or rotate its API
-password to an unknown random value. Account deletion is destructive; the
-central backup remains the recovery path.
+account. The `freshrss-account-reconcile` timer therefore retires the local
+account automatically (within the hour) by moving its `users/<username>`
+directory to `/var/lib/freshrss/.retired-users/<username>`. The account stops
+authenticating for login and the Google Reader API, while its data is retained
+in the persisted state directory and the central Kopia snapshot. To restore a
+retired account after re-adding the user to the group, move the directory back
+to `users/<username>`; the reconcile run then leaves it alone because the user
+is in the allowed set again. Manual deletion is destructive; prefer this
+retention model unless you have confirmed the feeds are no longer needed.
 
 Open `https://rss.<domain>`. The shared gateway redirects an unauthenticated
 browser to Kanidm, then supplies Kanidm's validated `preferred_username` to
@@ -66,17 +71,19 @@ behind OIDC. The API remains private-DNS-only and is not published through
 Cloudflare.
 
 Only grant access to trusted users. FreshRSS fetches subscriptions from the
-server and therefore permits a user to request URLs reachable from the server,
-including private-network endpoints. The private route and dedicated access
-group reduce exposure but do not turn untrusted feed URLs into a safe
-multi-tenant boundary. See FreshRSS's official
+server, but an nftables egress policy (`freshrss-egress-policy.service`) blocks
+the `freshrss` user from reaching private, local, and link-local destinations
+while still resolving DNS through the local resolver. This closes the
+server-side fetch gap for private-network endpoints, yet a feed URL can still
+redirect FreshRSS to arbitrary public links, so `freshrss-users` must remain a
+trusted set. See FreshRSS's official
 [access-control guidance](https://freshrss.github.io/FreshRSS/en/admins/09_AccessControl.html).
 
 ## Service checks
 
 ```bash
-systemctl status freshrss-config.service freshrss-updater.timer caddy.service phpfpm-freshrss.service
-journalctl -u freshrss-config.service -u freshrss-updater.service -u phpfpm-freshrss.service -n 100 --no-pager
+systemctl status freshrss-config.service freshrss-updater.timer freshrss-egress-policy.service freshrss-account-reconcile.timer caddy.service phpfpm-freshrss.service
+journalctl -u freshrss-config.service -u freshrss-updater.service -u phpfpm-freshrss.service -u freshrss-account-reconcile.service -n 100 --no-pager
 curl -kI --resolve rss.sydneybasiniot.org:443:<server-lan-ip> https://rss.sydneybasiniot.org/
 ```
 

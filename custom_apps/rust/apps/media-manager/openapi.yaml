@@ -148,11 +148,180 @@ paths:
               required: [tmdbId, mediaType]
               properties:
                 tmdbId: { type: integer, minimum: 1 }
-                mediaType: { type: string, enum: [movie, tv] }
+                mediaType: { type: string, enum: [movie, tv, season, episode] }
+                seasonNumber:
+                  type: integer
+                  minimum: 0
+                  description: Required for season and episode details.
+                episodeNumber:
+                  type: integer
+                  minimum: 1
+                  description: Required for episode details.
       responses:
         "200": { description: Normalized details with provider and external IDs. }
         "401": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
         "428": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+  /provider-lookups/tmdb/images/{size}/{fileName}:
+    get:
+      operationId: getTmdbImage
+      description: Proxies one validated TMDB image path through a 32 MiB, content-sniffed boundary.
+      parameters:
+        - in: path
+          name: size
+          required: true
+          schema: { type: string, enum: [w342, w500, w780, original] }
+        - in: path
+          name: fileName
+          required: true
+          schema: { type: string, pattern: "^[A-Za-z0-9_-]+\\.(jpg|jpeg|png|webp)$" }
+      responses:
+        "200": { description: Bounded raster artwork bytes. }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "428": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+  /provider-lookups/cover-art-archive/releases/{releaseId}/front:
+    get:
+      operationId: getCoverArtArchiveFront
+      description: Proxies a release-specific front cover and follows only allowlisted archive redirects.
+      parameters:
+        - in: path
+          name: releaseId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200": { description: Bounded, content-sniffed front artwork bytes. }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+  /provider-lookups/google-books/search:
+    post:
+      operationId: searchGoogleBooks
+      description: Searches Google Books with the caller's runtime key and returns normalized volumes without exposing image URLs.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [query]
+              properties:
+                query: { type: string, minLength: 1, maxLength: 500 }
+      responses:
+        "200":
+          description: Bounded normalized volume candidates.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GoogleBooksSearchResponse" }
+        "401": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "428": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+  /provider-lookups/google-books/volumes/{volumeId}/cover:
+    get:
+      operationId: getGoogleBooksCover
+      description: Resolves a validated volume ID and proxies only an allowlisted Google-hosted cover.
+      parameters:
+        - in: path
+          name: volumeId
+          required: true
+          schema: { type: string, pattern: "^[A-Za-z0-9_-]{1,128}$" }
+      responses:
+        "200": { description: Bounded, content-sniffed cover bytes. }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "428": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+  /provider-lookups/open-library/search:
+    post:
+      operationId: searchOpenLibrary
+      description: >-
+        Searches public Open Library work and edition records and returns a
+        bounded normalized candidate set for review; this endpoint never writes
+        metadata and does not require a provider account.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [query]
+              properties:
+                query:
+                  type: string
+                  minLength: 1
+                  maxLength: 500
+                  description: A title, author, ISBN-10, or ISBN-13.
+      responses:
+        "200":
+          description: Relevance-ordered, normalized book candidates.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OpenLibrarySearchResponse"
+        "401": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+  /provider-lookups/open-library/works/{workId}/editions:
+    get:
+      operationId: listOpenLibraryEditions
+      description: >-
+        Lists one bounded page of normalized editions for a validated Open
+        Library work ID. Requests are authenticated, human-triggered, and
+        share the adapter's rate gate.
+      parameters:
+        - in: path
+          name: workId
+          required: true
+          schema: { type: string, pattern: "^OL[0-9]{1,16}W$" }
+        - in: query
+          name: offset
+          schema: { type: integer, minimum: 0, maximum: 10000, default: 0 }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 20, default: 12 }
+      responses:
+        "200":
+          description: A bounded page of normalized edition candidates.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OpenLibraryEditionsResponse" }
+        "401": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+  /provider-lookups/open-library/covers/{coverId}:
+    get:
+      operationId: getOpenLibraryCover
+      description: >-
+        Proxies one Open Library cover selected by its positive numeric cover
+        ID. The response is limited to supported raster types and 16 MiB,
+        marked nosniff, and is never used as an arbitrary URL fetcher.
+      parameters:
+        - in: path
+          name: coverId
+          required: true
+          schema: { type: integer, minimum: 1, maximum: 9223372036854775807 }
+      responses:
+        "200":
+          description: Bounded cover image bytes.
+          headers:
+            X-Content-Type-Options:
+              schema: { type: string, const: nosniff }
+          content:
+            image/jpeg: {}
+            image/png: {}
+            image/gif: {}
+            image/webp: {}
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
         "502": { $ref: "#/components/responses/Error" }
   /provider-lookups/opensubtitles/search:
     post:
@@ -249,6 +418,29 @@ paths:
           description: Catalog items scoped to one visible root.
         "403":
           $ref: "#/components/responses/Error"
+  /items/{itemId}:
+    get:
+      operationId: getCatalogItem
+      description: >-
+        Returns one catalog record visible to the caller. This resource lets a
+        durable item URL restore records beyond the bounded library list.
+      parameters:
+        - in: path
+          name: itemId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: One visible catalog record.
+          headers:
+            Cache-Control:
+              schema: { type: string, const: "private, no-store" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CatalogItem" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
   /conversions:
     get:
       operationId: listConversions
@@ -321,11 +513,12 @@ paths:
       operationId: previewArtworkReplacement
       description: >-
         Authenticates the caller before reading the body, fully decodes the
-        bounded image, and privately stages replacement cover artwork for a
-        visible artwork item. Confirmation executes one recoverable broker
-        operation that archives the current file in a superseded subfolder and
-        installs the replacement without overwriting either destination.
-        Requires an editor.
+        bounded image, and privately stages cover artwork for a visible media
+        or artwork item. When a same-folder cover exists, confirmation archives
+        it in a superseded subfolder and installs the replacement. Otherwise it
+        installs a new cover beside the media. Both operations are
+        fingerprint-bound and refuse to overwrite a destination. Requires an
+        editor.
       parameters:
         - in: path
           name: itemId
@@ -348,7 +541,7 @@ paths:
             schema: { type: string, format: binary, maxLength: 33554432 }
       responses:
         "201":
-          description: Digest-bound archive-and-replace mutation preview.
+          description: Digest-bound no-overwrite install or archive-and-replace mutation preview.
         "400":
           $ref: "#/components/responses/Error"
         "401":
@@ -509,6 +702,38 @@ paths:
               schema: { $ref: "#/components/schemas/ItemMetadata" }
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
+  /metadata/issues:
+    get:
+      operationId: listMetadataIssues
+      description: >-
+        Reconciles the selected visible root on the first page, inspects a
+        bounded page of catalog records, and returns only records with
+        actionable metadata health issues. Pass nextCursor unchanged to inspect
+        the next catalog page without repeating the reconciliation scan.
+      parameters:
+        - in: query
+          name: rootId
+          required: true
+          schema: { type: string }
+        - in: query
+          name: cursor
+          schema: { type: string, maxLength: 4096 }
+        - in: query
+          name: pageSize
+          schema: { type: integer, minimum: 1, maximum: 50, default: 20 }
+      responses:
+        "200":
+          description: One bounded page of grouped metadata health results.
+          headers:
+            Cache-Control:
+              schema: { type: string, const: "private, no-store" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MetadataIssuesPage" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
   /folders/metadata:
     get:
       operationId: getFolderMetadata
@@ -696,8 +921,8 @@ paths:
         In fingerprint mode the audio is fingerprinted with fpcalc and resolved
         through AcoustID; in search mode the artist and title query MusicBrainz
         directly; in auto mode fingerprint is tried first and search is the
-        fallback. Returns release-group candidates the editor can fill into the
-        sidecar form.
+        fallback. Returns exact release candidates when MusicBrainz exposes a
+        release ID, with release-group fallback candidates otherwise.
       parameters:
         - in: path
           name: itemId
@@ -719,7 +944,7 @@ paths:
                 title: { type: string, maxLength: 500 }
       responses:
         "200":
-          description: Release-group candidates and a request identifier for tracing.
+          description: Exact-release or release-group fallback candidates and a request identifier for tracing.
           content:
             application/json:
               schema:
@@ -1001,6 +1226,92 @@ components:
           enum: [ready, rejected, rateLimited, unavailable]
         message: { type: string }
         requestId: { type: string }
+    OpenLibrarySearchResponse:
+      type: object
+      additionalProperties: false
+      required: [provider, query, results, requestId]
+      properties:
+        provider: { type: string, const: open-library }
+        query: { type: string }
+        results:
+          type: array
+          maxItems: 12
+          items: { $ref: "#/components/schemas/OpenLibraryCandidate" }
+        requestId: { type: string }
+    OpenLibraryCandidate:
+      type: object
+      additionalProperties: false
+      required:
+        [workId, title, authors, publishers, languages, subjects]
+      properties:
+        workId: { type: string, pattern: "^OL[0-9]{1,16}W$" }
+        editionId: { type: string, pattern: "^OL[0-9]{1,16}M$" }
+        title: { type: string, maxLength: 500 }
+        editionTitle: { type: string, maxLength: 500 }
+        authors:
+          type: array
+          maxItems: 12
+          items: { type: string, maxLength: 250 }
+        firstPublishYear: { type: integer, minimum: 1000, maximum: 2100 }
+        editionCount: { type: integer, minimum: 1 }
+        publishDate: { type: string, maxLength: 100 }
+        publishYear: { type: integer, minimum: 1000, maximum: 2100 }
+        publishers:
+          type: array
+          maxItems: 8
+          items: { type: string, maxLength: 250 }
+        isbn10: { type: string, pattern: "^[0-9]{9}[0-9X]$" }
+        isbn13: { type: string, pattern: "^[0-9]{13}$" }
+        languages:
+          type: array
+          maxItems: 12
+          items: { type: string, pattern: "^[A-Za-z-]{1,16}$" }
+        subjects:
+          type: array
+          maxItems: 16
+          items: { type: string, maxLength: 250 }
+        numberOfPages: { type: integer, minimum: 1, maximum: 100000 }
+        coverId: { type: integer, minimum: 1, maximum: 9223372036854775807 }
+        coverUrl: { type: string, format: uri }
+    OpenLibraryEditionsResponse:
+      type: object
+      additionalProperties: false
+      required:
+        [provider, workId, offset, limit, total, hasMore, results, requestId]
+      properties:
+        provider: { type: string, const: open-library }
+        workId: { type: string, pattern: "^OL[0-9]{1,16}W$" }
+        offset: { type: integer, minimum: 0, maximum: 10000 }
+        limit: { type: integer, minimum: 1, maximum: 20 }
+        total: { type: integer, minimum: 0 }
+        hasMore: { type: boolean }
+        results:
+          type: array
+          maxItems: 20
+          items: { $ref: "#/components/schemas/OpenLibraryEdition" }
+        requestId: { type: string }
+    OpenLibraryEdition:
+      type: object
+      additionalProperties: false
+      required: [editionId, title, publishers, languages]
+      properties:
+        editionId: { type: string, pattern: "^OL[0-9]{1,16}M$" }
+        title: { type: string, maxLength: 500 }
+        publishDate: { type: string, maxLength: 100 }
+        publishYear: { type: integer, minimum: 1000, maximum: 2100 }
+        publishers:
+          type: array
+          maxItems: 8
+          items: { type: string, maxLength: 250 }
+        isbn10: { type: string, pattern: "^[0-9]{9}[0-9X]$" }
+        isbn13: { type: string, pattern: "^[0-9]{13}$" }
+        languages:
+          type: array
+          maxItems: 12
+          items: { type: string, pattern: "^[A-Za-z-]{1,16}$" }
+        numberOfPages: { type: integer, minimum: 1, maximum: 100000 }
+        coverId: { type: integer, minimum: 1, maximum: 9223372036854775807 }
+        coverUrl: { type: string, format: uri }
     Root:
       type: object
       required: [id, label, category, scope]
@@ -1009,6 +1320,19 @@ components:
         label: { type: string }
         category: { type: string }
         scope: { type: string, enum: [shared, personal] }
+    CatalogItem:
+      type: object
+      required:
+        [id, rootId, relativePath, mediaKind, sizeBytes, modifiedNs, fingerprint]
+      properties:
+        id: { type: string }
+        rootId: { type: string }
+        ownerUsername: { type: string, nullable: true }
+        relativePath: { type: string }
+        mediaKind: { type: string }
+        sizeBytes: { type: integer, minimum: 0 }
+        modifiedNs: { type: integer, minimum: 0 }
+        fingerprint: { type: string }
     InboxIso:
       type: object
       required: [name, sizeBytes, modifiedNs]
@@ -1179,6 +1503,39 @@ components:
         title: { type: string }
         message: { type: string }
         sources: { type: array, items: { type: string } }
+    MetadataHealthResult:
+      type: object
+      required: [itemId, rootId, relativePath, mediaKind, health]
+      properties:
+        itemId: { type: string }
+        rootId: { type: string }
+        relativePath: { type: string }
+        mediaKind: { type: string, enum: [video, music, audiobook, podcast, book] }
+        health:
+          type: array
+          minItems: 1
+          items: { $ref: "#/components/schemas/MetadataHealthIssue" }
+    MetadataIssueSeverityCounts:
+      type: object
+      required: [error, warning, info]
+      properties:
+        error: { type: integer, minimum: 0 }
+        warning: { type: integer, minimum: 0 }
+        info: { type: integer, minimum: 0 }
+    MetadataIssuesPage:
+      type: object
+      required:
+        [rootId, results, inspectedItems, issueCount, severityCounts, nextCursor]
+      properties:
+        rootId: { type: string }
+        results:
+          type: array
+          items: { $ref: "#/components/schemas/MetadataHealthResult" }
+        inspectedItems: { type: integer, minimum: 0, maximum: 50 }
+        issueCount: { type: integer, minimum: 0 }
+        severityCounts:
+          { $ref: "#/components/schemas/MetadataIssueSeverityCounts" }
+        nextCursor: { type: string, nullable: true, maxLength: 4096 }
     MetadataModificationTarget:
       type: object
       required: [id, label, kind, available, recommended, requiresRefresh, message]
@@ -1196,6 +1553,7 @@ components:
       additionalProperties: false
       properties:
         releaseGroupId: { type: string, format: uuid }
+        releaseId: { type: string, format: uuid, nullable: true }
         artist: { type: string }
         title: { type: string }
         releaseType:
@@ -1203,6 +1561,13 @@ components:
           nullable: true
           description: MusicBrainz primary release type such as album or single.
         year: { type: integer, nullable: true }
+        releaseDate: { type: string, nullable: true }
+        releaseStatus: { type: string, nullable: true }
+        country: { type: string, nullable: true }
+        barcode: { type: string, nullable: true }
+        catalogNumber: { type: string, nullable: true }
+        packaging: { type: string, nullable: true }
+        disambiguation: { type: string, nullable: true }
         genres:
           type: array
           items: { type: string }
@@ -1212,6 +1577,38 @@ components:
           description: How the candidate was resolved.
           type: string
           enum: [fingerprint, search]
+    GoogleBooksSearchResponse:
+      type: object
+      required: [provider, query, totalItems, results, requestId]
+      properties:
+        provider: { type: string, const: google-books }
+        query: { type: string }
+        totalItems: { type: integer, minimum: 0 }
+        results:
+          type: array
+          maxItems: 12
+          items: { $ref: "#/components/schemas/GoogleBooksCandidate" }
+        requestId: { type: string }
+    GoogleBooksCandidate:
+      type: object
+      required: [volumeId, title, authors, industryIdentifiers, categories, coverAvailable]
+      properties:
+        volumeId: { type: string, pattern: "^[A-Za-z0-9_-]{1,128}$" }
+        title: { type: string }
+        subtitle: { type: string, nullable: true }
+        authors: { type: array, items: { type: string } }
+        publisher: { type: string, nullable: true }
+        publishedDate: { type: string, nullable: true }
+        year: { type: integer, nullable: true }
+        description: { type: string, nullable: true }
+        isbn: { type: string, nullable: true }
+        industryIdentifiers: { type: array, items: { type: object } }
+        pageCount: { type: integer, nullable: true }
+        categories: { type: array, items: { type: string } }
+        language: { type: string, nullable: true }
+        averageRating: { type: number, nullable: true }
+        ratingsCount: { type: integer, nullable: true }
+        coverAvailable: { type: boolean }
     PlanRequest:
       type: object
       required: [operation, itemIds]

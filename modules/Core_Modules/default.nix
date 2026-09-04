@@ -9,6 +9,7 @@
     ./caddy
     ./cloudflared
     ./data-disks
+    ./disk-cleanup
     ./impermanence
     ./kanidm
     ./kopia

@@ -10,8 +10,8 @@ use crate::{
     },
     broker::{
         file_fingerprint, open_directory_beneath, open_regular_file_beneath,
-        opened_file_fingerprint, BrokerAction, InstallMetadataSidecarAction, InstallSubtitleAction,
-        MoveAction, ReplaceArtworkAction, ReplaceEmbeddedMetadataAction,
+        opened_file_fingerprint, BrokerAction, InstallArtworkAction, InstallMetadataSidecarAction,
+        InstallSubtitleAction, MoveAction, ReplaceArtworkAction, ReplaceEmbeddedMetadataAction,
         ReplaceMetadataSidecarAction,
     },
     catalog::{Catalog, CatalogHandle, CatalogItem, ConfirmPlanOutcome, MutationPlanDraft},
@@ -141,6 +141,14 @@ struct ItemsQuery {
     root_id: String,
     #[serde(default)]
     include_video_probes: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MetadataIssuesQuery {
+    root_id: String,
+    cursor: Option<String>,
+    page_size: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -275,6 +283,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/session", get(session))
         .route("/api/v1/roots", get(roots))
         .route("/api/v1/items", get(items))
+        .route("/api/v1/items/{item_id}", get(item_details))
         .route("/api/v1/items/{item_id}/image", get(item_image))
         .route(
             "/api/v1/items/{item_id}/image/replacement",
@@ -286,6 +295,7 @@ pub fn router(state: AppState) -> Router {
             get(get_playback_position).put(put_playback_position),
         )
         .route("/api/v1/items/{item_id}/metadata", get(item_metadata))
+        .route("/api/v1/metadata/issues", get(metadata_issues))
         .route("/api/v1/folders/metadata", get(folder_metadata))
         .route("/api/v1/conversions", get(conversions))
         .route("/api/v1/conversions/inbox", get(conversions_inbox))
@@ -1930,7 +1940,22 @@ async fn item_metadata(
         Err(error) => return error.with_request_id(request_id).into_response(),
     };
 
-    let mut response = filename_metadata(&item);
+    let response = item_metadata_value(&state, &identity, &item, None).await;
+    let mut result = Json(response).into_response();
+    result.headers_mut().insert(
+        CACHE_CONTROL,
+        "private, no-store".parse().expect("cache header"),
+    );
+    result
+}
+
+async fn item_metadata_value(
+    state: &AppState,
+    identity: &Identity,
+    item: &CatalogItem,
+    application_caches: Option<&ApplicationMetadataCaches>,
+) -> Value {
+    let mut response = filename_metadata(item);
     let mut observations = vec![filename_observation(&response)];
     let mut field_sources = initial_field_sources(&response, "filename");
     let mut inspection_warnings = Vec::new();
@@ -1958,14 +1983,28 @@ async fn item_metadata(
         }
     }
     if let Some(cache_file) = &state.config.jellyfin_metadata_cache_file {
-        if let Some(entry) = cached_application_metadata(cache_file, &item, false).await {
+        let entry = match application_caches {
+            Some(caches) => caches
+                .jellyfin
+                .as_ref()
+                .and_then(|cache| cached_application_metadata_entry(cache, item, false)),
+            None => cached_application_metadata(cache_file, item, false).await,
+        };
+        if let Some(entry) = entry {
             observations.push(application_observation("jellyfin", "Jellyfin", &entry));
             merge_metadata(&mut response, &entry, "jellyfin", &mut field_sources);
         }
     }
     if matches!(item.media_kind.as_str(), "audiobook" | "podcast") {
         if let Some(cache_file) = &state.config.audiobookshelf_metadata_cache_file {
-            if let Some(entry) = cached_application_metadata(cache_file, &item, true).await {
+            let entry = match application_caches {
+                Some(caches) => caches
+                    .audiobookshelf
+                    .as_ref()
+                    .and_then(|cache| cached_application_metadata_entry(cache, item, true)),
+                None => cached_application_metadata(cache_file, item, true).await,
+            };
+            if let Some(entry) = entry {
                 observations.push(application_observation(
                     "audiobookshelf",
                     "Audiobookshelf",
@@ -1977,7 +2016,14 @@ async fn item_metadata(
     }
     if item.media_kind == "book" {
         if let Some(cache_file) = &state.config.kavita_metadata_cache_file {
-            if let Some(entry) = cached_application_metadata(cache_file, &item, true).await {
+            let entry = match application_caches {
+                Some(caches) => caches
+                    .kavita
+                    .as_ref()
+                    .and_then(|cache| cached_application_metadata_entry(cache, item, true)),
+                None => cached_application_metadata(cache_file, item, true).await,
+            };
+            if let Some(entry) = entry {
                 observations.push(application_observation("kavita", "Kavita", &entry));
                 merge_metadata(&mut response, &entry, "kavita", &mut field_sources);
             }
@@ -2051,7 +2097,168 @@ async fn item_metadata(
         application_available
     ));
     response["inspectionWarnings"] = json!(inspection_warnings);
-    let mut result = Json(response).into_response();
+    response
+}
+
+async fn metadata_issues(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<MetadataIssuesQuery>,
+) -> Response {
+    const DEFAULT_PAGE_SIZE: usize = 20;
+    const MAX_PAGE_SIZE: usize = 50;
+    const MAX_CURSOR_BYTES: usize = 4096;
+
+    let request_id = request_id();
+    let identity = match identity_from_headers(&headers, &request_id) {
+        Ok(identity) => identity,
+        Err(error) => return error.into_response(),
+    };
+    let root = match state
+        .config
+        .resolve_visible_root(&identity, query.root_id.as_str())
+    {
+        Some(root) => root,
+        None => {
+            return ApiError::new(
+                StatusCode::FORBIDDEN,
+                "root_not_visible",
+                "The requested root is not visible to this identity.",
+                request_id,
+            )
+            .into_response()
+        }
+    };
+    let page_size = query.page_size.unwrap_or(DEFAULT_PAGE_SIZE);
+    if page_size == 0 || page_size > MAX_PAGE_SIZE {
+        return ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_page_size",
+            format!("pageSize must be between 1 and {MAX_PAGE_SIZE}."),
+            request_id,
+        )
+        .into_response();
+    }
+    if query
+        .cursor
+        .as_ref()
+        .is_some_and(|cursor| cursor.len() > MAX_CURSOR_BYTES)
+    {
+        return ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_cursor",
+            "The metadata issues cursor is too long.",
+            request_id,
+        )
+        .into_response();
+    }
+
+    let owner = (root.scope == RootScope::Personal).then_some(identity.username.as_str());
+    if query.cursor.is_none() {
+        let scan_root_spec = ScanRoot {
+            id: root.id.clone(),
+            owner_username: owner.map(str::to_string),
+            path: root.resolved_path.clone().into(),
+            category: root.category.clone(),
+        };
+        let catalog_handle = state.catalog.clone();
+        match tokio::task::spawn_blocking(move || rescan_root(&catalog_handle, &scan_root_spec))
+            .await
+        {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => {
+                log_event(
+                    "metadata_health_scan_failed",
+                    &request_id,
+                    json!({ "rootId": root.id, "error": error }),
+                );
+                return ApiError::new(
+                    StatusCode::BAD_GATEWAY,
+                    "scan_failed",
+                    "The selected media root could not be cataloged.",
+                    request_id,
+                )
+                .into_response();
+            }
+            Err(error) => {
+                log_event(
+                    "metadata_health_scan_task_failed",
+                    &request_id,
+                    json!({ "rootId": root.id, "error": error.to_string() }),
+                );
+                return ApiError::internal(request_id).into_response();
+            }
+        }
+    }
+
+    let catalog = match state.catalog.open() {
+        Ok(catalog) => catalog,
+        Err(_) => return ApiError::internal(request_id).into_response(),
+    };
+    let mut page = match catalog.list_items_after(
+        &root.id,
+        owner,
+        query.cursor.as_deref(),
+        page_size.saturating_add(1),
+    ) {
+        Ok(items) => items,
+        Err(_) => return ApiError::internal(request_id).into_response(),
+    };
+    let has_more = page.len() > page_size;
+    page.truncate(page_size);
+    let next_cursor = has_more
+        .then(|| page.last().map(|item| item.relative_path.clone()))
+        .flatten();
+
+    let application_caches = ApplicationMetadataCaches::load(&state.config, &page).await;
+    let mut results = Vec::new();
+    let mut inspected_items = 0usize;
+    let mut issue_count = 0usize;
+    let mut severity_counts =
+        HashMap::from([("error", 0usize), ("warning", 0usize), ("info", 0usize)]);
+    for item in page {
+        if !["video", "music", "audiobook", "podcast", "book"].contains(&item.media_kind.as_str()) {
+            continue;
+        }
+        inspected_items += 1;
+        let metadata =
+            item_metadata_value(&state, &identity, &item, Some(&application_caches)).await;
+        let health = metadata
+            .get("health")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        if health.is_empty() {
+            continue;
+        }
+        issue_count += health.len();
+        for issue in &health {
+            if let Some(count) = issue
+                .get("severity")
+                .and_then(Value::as_str)
+                .and_then(|severity| severity_counts.get_mut(severity))
+            {
+                *count += 1;
+            }
+        }
+        results.push(json!({
+            "itemId": item.id,
+            "rootId": item.root_id,
+            "relativePath": item.relative_path,
+            "mediaKind": item.media_kind,
+            "health": health,
+        }));
+    }
+
+    let mut result = Json(json!({
+        "rootId": root.id,
+        "results": results,
+        "inspectedItems": inspected_items,
+        "issueCount": issue_count,
+        "severityCounts": severity_counts,
+        "nextCursor": next_cursor,
+    }))
+    .into_response();
     result.headers_mut().insert(
         CACHE_CONTROL,
         "private, no-store".parse().expect("cache header"),
@@ -2906,6 +3113,59 @@ async fn cached_application_metadata(
     item: &CatalogItem,
     allow_folder_prefix: bool,
 ) -> Option<Value> {
+    let cache = load_application_metadata_cache(cache_file).await?;
+    cached_application_metadata_entry(&cache, item, allow_folder_prefix)
+}
+
+struct ApplicationMetadataCaches {
+    jellyfin: Option<Value>,
+    audiobookshelf: Option<Value>,
+    kavita: Option<Value>,
+}
+
+impl ApplicationMetadataCaches {
+    async fn load(config: &AppConfig, items: &[CatalogItem]) -> Self {
+        let uses_jellyfin = items.iter().any(|item| {
+            ["video", "music", "audiobook", "podcast", "book"].contains(&item.media_kind.as_str())
+        });
+        let uses_audiobookshelf = items
+            .iter()
+            .any(|item| matches!(item.media_kind.as_str(), "audiobook" | "podcast"));
+        let uses_kavita = items.iter().any(|item| item.media_kind == "book");
+        let jellyfin = async {
+            match (
+                uses_jellyfin,
+                config.jellyfin_metadata_cache_file.as_deref(),
+            ) {
+                (true, Some(path)) => load_application_metadata_cache(path).await,
+                _ => None,
+            }
+        };
+        let audiobookshelf = async {
+            match (
+                uses_audiobookshelf,
+                config.audiobookshelf_metadata_cache_file.as_deref(),
+            ) {
+                (true, Some(path)) => load_application_metadata_cache(path).await,
+                _ => None,
+            }
+        };
+        let kavita = async {
+            match (uses_kavita, config.kavita_metadata_cache_file.as_deref()) {
+                (true, Some(path)) => load_application_metadata_cache(path).await,
+                _ => None,
+            }
+        };
+        let (jellyfin, audiobookshelf, kavita) = tokio::join!(jellyfin, audiobookshelf, kavita);
+        Self {
+            jellyfin,
+            audiobookshelf,
+            kavita,
+        }
+    }
+}
+
+async fn load_application_metadata_cache(cache_file: &FilePath) -> Option<Value> {
     const MAX_CACHE_BYTES: u64 = 16 * 1024 * 1024;
     const MAX_CACHE_AGE_SECONDS: u64 = 2 * 60 * 60;
     let metadata = tokio::fs::symlink_metadata(cache_file).await.ok()?;
@@ -2926,6 +3186,15 @@ async fn cached_application_metadata(
     if cache.get("schemaVersion")?.as_u64()? != 1 {
         return None;
     }
+    cache.get("entries")?.as_array()?;
+    Some(cache)
+}
+
+fn cached_application_metadata_entry(
+    cache: &Value,
+    item: &CatalogItem,
+    allow_folder_prefix: bool,
+) -> Option<Value> {
     cache
         .get("entries")?
         .as_array()?
@@ -3386,6 +3655,32 @@ async fn items(
         return items_with_video_probes(&state, &root, live_items, &request_id).await;
     }
     Json(json!({ "items": live_items, "nextCursor": null })).into_response()
+}
+
+async fn item_details(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(item_id): Path<String>,
+) -> Response {
+    let request_id = request_id();
+    let identity = match identity_from_headers(&headers, &request_id) {
+        Ok(identity) => identity,
+        Err(error) => return error.into_response(),
+    };
+    let catalog = match state.catalog.open() {
+        Ok(catalog) => catalog,
+        Err(_) => return ApiError::internal(request_id).into_response(),
+    };
+    let item = match visible_catalog_item(&state.config, &identity, &catalog, &item_id) {
+        Ok(item) => item,
+        Err(error) => return error.with_request_id(request_id).into_response(),
+    };
+    let mut response = Json(item).into_response();
+    response.headers_mut().insert(
+        CACHE_CONTROL,
+        "private, no-store".parse().expect("cache header"),
+    );
+    response
 }
 
 async fn items_with_video_probes(
@@ -4118,17 +4413,49 @@ async fn preview_artwork_replacement(
         Err(_) => return ApiError::internal(request_id).into_response(),
     };
     let item = match visible_catalog_item(&state.config, &identity, &catalog, &item_id) {
-        Ok(item) if item.media_kind == "artwork" => item,
+        Ok(item)
+            if matches!(
+                item.media_kind.as_str(),
+                "artwork" | "video" | "music" | "audiobook" | "podcast" | "book"
+            ) =>
+        {
+            item
+        }
         Ok(_) => {
             return ApiError::new(
                 StatusCode::CONFLICT,
                 "artwork_item_required",
-                "Cover replacement requires a cataloged image file.",
+                "Cover artwork can only be changed for a media item or cataloged image file.",
                 request_id,
             )
             .into_response()
         }
         Err(error) => return error.with_request_id(request_id).into_response(),
+    };
+    let existing_artwork = if item.media_kind == "artwork" {
+        Some(item.clone())
+    } else {
+        let parent = item
+            .relative_path
+            .rsplit_once('/')
+            .map(|(parent, _)| parent)
+            .unwrap_or("");
+        let same_directory =
+            match catalog.list_artwork(&item.root_id, item.owner_username.as_deref()) {
+                Ok(items) => items
+                    .into_iter()
+                    .filter(|candidate| {
+                        candidate
+                            .relative_path
+                            .rsplit_once('/')
+                            .map(|(candidate_parent, _)| candidate_parent)
+                            .unwrap_or("")
+                            == parent
+                    })
+                    .collect::<Vec<_>>(),
+                Err(_) => return ApiError::internal(request_id).into_response(),
+            };
+        preferred_artwork(&same_directory, &item.relative_path)
     };
     drop(catalog);
     let body = match to_bytes(request.into_body(), MAX_ARTWORK_UPLOAD_BYTES).await {
@@ -4161,28 +4488,51 @@ async fn preview_artwork_replacement(
             return ApiError::internal(request_id).into_response();
         }
     };
-    let (parent, filename) = item
-        .relative_path
-        .rsplit_once('/')
-        .unwrap_or(("", &item.relative_path));
-    let (stem, original_extension) = filename.rsplit_once('.').unwrap_or((filename, "jpg"));
-    let destination_relative_path = join_relative(parent, &format!("{stem}.{extension}"));
-    let archived_relative_path = join_relative(
-        parent,
-        &format!("superseded/{stem}-{request_id}.{original_extension}"),
-    );
     let staged = match stage_sidecar(&state.config, extension, &body, &request_id).await {
         Ok(staged) => staged,
         Err(error) => return error.into_response(),
     };
-    let action = ReplaceArtworkAction {
-        staging_filename: staged.filename,
-        root_id: item.root_id.clone(),
-        source_relative_path: item.relative_path.clone(),
-        archived_relative_path: archived_relative_path.clone(),
-        replacement_relative_path: destination_relative_path.clone(),
-        expected_source: item.fingerprint.clone(),
-        expected_replacement: staged.expected,
+    let artwork_plan = if let Some(artwork) = existing_artwork {
+        let (parent, filename) = artwork
+            .relative_path
+            .rsplit_once('/')
+            .unwrap_or(("", &artwork.relative_path));
+        let (stem, original_extension) = filename.rsplit_once('.').unwrap_or((filename, "jpg"));
+        let destination_relative_path = join_relative(parent, &format!("{stem}.{extension}"));
+        let archived_relative_path = join_relative(
+            parent,
+            &format!("superseded/{stem}-{request_id}.{original_extension}"),
+        );
+        ArtworkPlanAction {
+            broker_action: BrokerAction::ReplaceArtwork(ReplaceArtworkAction {
+                staging_filename: staged.filename,
+                root_id: artwork.root_id,
+                source_relative_path: artwork.relative_path,
+                archived_relative_path: archived_relative_path.clone(),
+                replacement_relative_path: destination_relative_path.clone(),
+                expected_source: artwork.fingerprint,
+                expected_replacement: staged.expected,
+            }),
+            archived_relative_path: Some(archived_relative_path),
+            destination_relative_path,
+        }
+    } else {
+        let parent = item
+            .relative_path
+            .rsplit_once('/')
+            .map(|(parent, _)| parent)
+            .unwrap_or("");
+        let destination_relative_path = join_relative(parent, &format!("cover.{extension}"));
+        ArtworkPlanAction {
+            broker_action: BrokerAction::InstallArtwork(InstallArtworkAction {
+                staging_filename: staged.filename,
+                destination_root_id: item.root_id.clone(),
+                destination_relative_path: destination_relative_path.clone(),
+                expected: staged.expected,
+            }),
+            archived_relative_path: None,
+            destination_relative_path,
+        }
     };
     let mut catalog = match state.catalog.open() {
         Ok(catalog) => catalog,
@@ -4191,12 +4541,12 @@ async fn preview_artwork_replacement(
             return ApiError::internal(request_id).into_response();
         }
     };
-    match create_artwork_replacement_plan(
+    match create_artwork_plan(
         &state,
         &identity,
         &mut catalog,
         &item,
-        action,
+        artwork_plan,
         request_id.clone(),
     ) {
         Ok(response) => response,
@@ -5701,17 +6051,24 @@ struct StagedSidecar {
     path: std::path::PathBuf,
 }
 
-fn create_artwork_replacement_plan(
+struct ArtworkPlanAction {
+    broker_action: BrokerAction,
+    archived_relative_path: Option<String>,
+    destination_relative_path: String,
+}
+
+fn create_artwork_plan(
     state: &AppState,
     identity: &Identity,
     catalog: &mut Catalog,
     item: &CatalogItem,
-    action: ReplaceArtworkAction,
+    artwork_plan: ArtworkPlanAction,
     request_id: String,
 ) -> Result<Response, ApiError> {
-    let archived_relative_path = action.archived_relative_path.clone();
-    let destination_relative_path = action.replacement_relative_path.clone();
-    let actions = vec![BrokerAction::ReplaceArtwork(action)];
+    let replacing = matches!(artwork_plan.broker_action, BrokerAction::ReplaceArtwork(_));
+    let archived_relative_path = artwork_plan.archived_relative_path;
+    let destination_relative_path = artwork_plan.destination_relative_path;
+    let actions = vec![artwork_plan.broker_action];
     let expires_at = unix_timestamp().saturating_add(30 * 60);
     let canonical = serde_json::to_vec(&json!({
         "actor": identity.username,
@@ -5728,7 +6085,7 @@ fn create_artwork_replacement_plan(
             owner_username: identity.username.clone(),
             digest: digest.clone(),
             request_json: json!({
-                "kind": "replace_artwork",
+                "kind": if replacing { "replace_artwork" } else { "install_artwork" },
                 "itemId": item.id,
                 "archivedRelativePath": archived_relative_path,
                 "destinationRelativePath": destination_relative_path,
@@ -5749,7 +6106,11 @@ fn create_artwork_replacement_plan(
         .insert_audit_event(
             &request_id,
             &identity.username,
-            "artwork_replacement_previewed",
+            if replacing {
+                "artwork_replacement_previewed"
+            } else {
+                "artwork_install_previewed"
+            },
             Some(&plan_id),
             &json!({
                 "digest": digest,
@@ -5767,10 +6128,17 @@ fn create_artwork_replacement_plan(
             );
             ApiError::internal(request_id.clone())
         })?;
-    let mut warnings = vec![
-        "The current image will be moved into its superseded subfolder before the replacement is installed.",
-        "The staged replacement is fingerprint-bound and will never overwrite another destination.",
-    ];
+    let mut warnings = if replacing {
+        vec![
+            "The current image will be moved into its superseded subfolder before the replacement is installed.",
+            "The staged replacement is fingerprint-bound and will never overwrite another destination.",
+        ]
+    } else {
+        vec![
+            "A new cover image will be installed beside the selected media file.",
+            "The staged cover is fingerprint-bound and will never overwrite an existing destination.",
+        ]
+    };
     if state.config.mutation_mode == MutationMode::ReadOnly {
         warnings.push("The service is in read-only mode; this plan cannot be confirmed.");
     }

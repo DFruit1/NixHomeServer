@@ -1,11 +1,12 @@
 use crate::{
+    artwork::sniff_image_content_type,
     config::Identity,
+    open_library,
     provider_accounts::{ProviderAccountError, ProviderAccountStore, ProviderAccountSummary},
     subtitles::{MovieHash, OpenSubtitlesClient, OpenSubtitlesCredentials},
-    tmdb::{TmdbClient, TmdbClientConfig},
 };
 use axum::{
-    extract::{rejection::JsonRejection, DefaultBodyLimit, Path, State},
+    extract::{rejection::JsonRejection, DefaultBodyLimit, Path, Query, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -24,6 +25,10 @@ use std::{
 };
 use zeroize::Zeroize;
 
+mod artwork_lookups;
+mod google_books;
+mod tmdb_lookups;
+
 static REQUEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 const MAX_CREDENTIAL_FIELDS: usize = 8;
 const MAX_CREDENTIAL_VALUE_BYTES: usize = 8192;
@@ -33,6 +38,7 @@ pub struct ProviderBrokerState {
     pub store: Arc<ProviderAccountStore>,
     client: reqwest::Client,
     endpoints: ProviderTestEndpoints,
+    open_library_gate: open_library::RequestGate,
 }
 
 #[derive(Clone, Debug)]
@@ -40,6 +46,11 @@ pub struct ProviderTestEndpoints {
     pub tmdb_api_base: String,
     pub opensubtitles_api_base: String,
     pub acoustid_api_base: String,
+    pub open_library_api_base: String,
+    pub open_library_covers_base: String,
+    pub tmdb_images_base: String,
+    pub cover_art_archive_base: String,
+    pub google_books_api_base: String,
 }
 
 impl Default for ProviderTestEndpoints {
@@ -48,6 +59,11 @@ impl Default for ProviderTestEndpoints {
             tmdb_api_base: "https://api.themoviedb.org/3/".to_string(),
             opensubtitles_api_base: "https://api.opensubtitles.com/api/v1/".to_string(),
             acoustid_api_base: "https://api.acoustid.org/v2/".to_string(),
+            open_library_api_base: "https://openlibrary.org/".to_string(),
+            open_library_covers_base: "https://covers.openlibrary.org/".to_string(),
+            tmdb_images_base: "https://image.tmdb.org/t/p/".to_string(),
+            cover_art_archive_base: "https://coverartarchive.org/".to_string(),
+            google_books_api_base: "https://www.googleapis.com/books/v1/".to_string(),
         }
     }
 }
@@ -65,6 +81,17 @@ impl ProviderBrokerState {
             ("TMDB", endpoints.tmdb_api_base.as_str()),
             ("OpenSubtitles", endpoints.opensubtitles_api_base.as_str()),
             ("AcoustID", endpoints.acoustid_api_base.as_str()),
+            ("Open Library", endpoints.open_library_api_base.as_str()),
+            (
+                "Open Library Covers",
+                endpoints.open_library_covers_base.as_str(),
+            ),
+            ("TMDB Images", endpoints.tmdb_images_base.as_str()),
+            (
+                "Cover Art Archive",
+                endpoints.cover_art_archive_base.as_str(),
+            ),
+            ("Google Books", endpoints.google_books_api_base.as_str()),
         ] {
             trusted_provider_base(endpoint)
                 .map_err(|error| format!("invalid {label} test endpoint: {error}"))?;
@@ -80,6 +107,7 @@ impl ProviderBrokerState {
             store,
             client,
             endpoints,
+            open_library_gate: open_library::RequestGate::default(),
         })
     }
 }
@@ -230,7 +258,15 @@ const PROVIDERS: &[ProviderDefinition] = &[
         setup_kind: SetupKind::ApiKey,
         implementation_status: ImplementationStatus::Active,
         connection_test: Some(ConnectionTestAdapter::Tmdb),
-        capabilities: &["search", "details", "people", "images", "external-ids"],
+        capabilities: &[
+            "search",
+            "details",
+            "seasons",
+            "episodes",
+            "people",
+            "images",
+            "external-ids",
+        ],
         credential_fields: &TMDB_TOKEN_FIELD,
         setup_url: "https://www.themoviedb.org/settings/api",
         documentation_url: "https://developer.themoviedb.org/docs/getting-started",
@@ -269,7 +305,13 @@ const PROVIDERS: &[ProviderDefinition] = &[
         setup_kind: SetupKind::Public,
         implementation_status: ImplementationStatus::Active,
         connection_test: None,
-        capabilities: &["search", "release-groups", "recordings", "stable-ids"],
+        capabilities: &[
+            "search",
+            "releases",
+            "release-groups",
+            "recordings",
+            "stable-ids",
+        ],
         credential_fields: &[],
         setup_url: "https://musicbrainz.org/",
         documentation_url: "https://musicbrainz.org/doc/MusicBrainz_API",
@@ -280,7 +322,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
         name: "Cover Art Archive",
         media_domains: &["music"],
         setup_kind: SetupKind::Public,
-        implementation_status: ImplementationStatus::Planned,
+        implementation_status: ImplementationStatus::Active,
         connection_test: None,
         capabilities: &["cover-art"],
         credential_fields: &[],
@@ -293,13 +335,13 @@ const PROVIDERS: &[ProviderDefinition] = &[
         name: "Open Library",
         media_domains: &["books", "audiobooks"],
         setup_kind: SetupKind::Public,
-        implementation_status: ImplementationStatus::Planned,
+        implementation_status: ImplementationStatus::Active,
         connection_test: None,
-        capabilities: &["search", "isbn", "editions", "covers"],
+        capabilities: &["search", "isbn", "editions", "covers", "bibliographic-metadata"],
         credential_fields: &[],
         setup_url: "https://openlibrary.org/",
         documentation_url: "https://openlibrary.org/developers/api",
-        notes: "Public bibliographic records, editions and cover images.",
+        notes: "Public, human-triggered bibliographic search with normalized editions, identifiers, and cover links.",
     },
     ProviderDefinition {
         id: "wikidata",
@@ -397,7 +439,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
         name: "Google Books",
         media_domains: &["books"],
         setup_kind: SetupKind::ApiKey,
-        implementation_status: ImplementationStatus::Planned,
+        implementation_status: ImplementationStatus::Active,
         connection_test: None,
         capabilities: &["search", "isbn", "descriptions", "covers"],
         credential_fields: &API_KEY_FIELD,
@@ -467,21 +509,6 @@ struct SaveProviderAccountRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct TmdbSearchRequest {
-    query: String,
-    year: Option<u16>,
-    media_type: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct TmdbDetailsRequest {
-    tmdb_id: u32,
-    media_type: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct OpenSubtitlesSearchRequest {
     movie_hash: Option<String>,
     movie_byte_size: Option<u64>,
@@ -539,11 +566,27 @@ pub fn provider_account_router(state: ProviderBrokerState) -> Router {
         )
         .route(
             "/api/v1/provider-lookups/tmdb/search",
-            axum::routing::post(search_tmdb),
+            axum::routing::post(tmdb_lookups::search),
         )
         .route(
             "/api/v1/provider-lookups/tmdb/details",
-            axum::routing::post(tmdb_details),
+            axum::routing::post(tmdb_lookups::details),
+        )
+        .route(
+            "/api/v1/provider-lookups/tmdb/images/{size}/{file_name}",
+            get(artwork_lookups::tmdb_image),
+        )
+        .route(
+            "/api/v1/provider-lookups/cover-art-archive/releases/{release_id}/front",
+            get(artwork_lookups::cover_art_archive_front),
+        )
+        .route(
+            "/api/v1/provider-lookups/google-books/search",
+            axum::routing::post(google_books::search),
+        )
+        .route(
+            "/api/v1/provider-lookups/google-books/volumes/{volume_id}/cover",
+            get(google_books::cover),
         )
         .route(
             "/api/v1/provider-lookups/opensubtitles/search",
@@ -557,9 +600,279 @@ pub fn provider_account_router(state: ProviderBrokerState) -> Router {
             "/api/v1/provider-lookups/acoustid/lookup",
             axum::routing::post(lookup_acoustid),
         )
+        .route(
+            "/api/v1/provider-lookups/open-library/search",
+            axum::routing::post(search_open_library),
+        )
+        .route(
+            "/api/v1/provider-lookups/open-library/works/{work_id}/editions",
+            get(open_library_editions),
+        )
+        .route(
+            "/api/v1/provider-lookups/open-library/covers/{cover_id}",
+            get(open_library_cover),
+        )
         .layer(DefaultBodyLimit::max(64 * 1024))
         .layer(middleware::from_fn(no_store_responses))
         .with_state(state)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct OpenLibrarySearchRequest {
+    query: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct OpenLibraryEditionsQuery {
+    #[serde(default)]
+    offset: u32,
+    #[serde(default = "default_open_library_edition_limit")]
+    limit: u8,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenLibraryEditionsResponse {
+    provider: &'static str,
+    work_id: String,
+    request_id: String,
+    #[serde(flatten)]
+    page: open_library::NormalizedEditions,
+}
+
+fn default_open_library_edition_limit() -> u8 {
+    12
+}
+
+async fn search_open_library(
+    State(state): State<ProviderBrokerState>,
+    headers: HeaderMap,
+    payload: Result<Json<OpenLibrarySearchRequest>, JsonRejection>,
+) -> Response {
+    let request_id = request_id();
+    if let Err(error) = authenticated_identity(&headers, &request_id) {
+        return error.into_response();
+    }
+    let request = match payload {
+        Ok(Json(request)) => request,
+        Err(_) => return invalid_json(&request_id).into_response(),
+    };
+    let query = request.query.trim();
+    if query.is_empty()
+        || query.chars().count() > 500
+        || query
+            .chars()
+            .any(|character| character.is_control() && !character.is_whitespace())
+    {
+        return ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "open_library_query_invalid",
+            "Open Library search requires a query between 1 and 500 characters.",
+            request_id,
+        )
+        .into_response();
+    }
+    let url = match provider_test_url(&state.endpoints.open_library_api_base, "search.json") {
+        Ok(url) => url,
+        Err(_) => {
+            return ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "provider_adapter_unavailable",
+                "The Open Library adapter could not be initialized.",
+                request_id,
+            )
+            .into_response()
+        }
+    };
+    let provider_query = open_library::normalized_query(query);
+    state.open_library_gate.wait().await;
+    let response = state
+        .client
+        .get(url)
+        .query(&[
+            ("q", provider_query.as_str()),
+            ("fields", open_library::SEARCH_FIELDS),
+            ("limit", "12"),
+        ])
+        .send()
+        .await;
+    let response = match response {
+        Ok(response) if response.status().is_success() => response,
+        _ => return provider_lookup_failed("Open Library search", request_id),
+    };
+    let payload = match bounded_provider_json::<open_library::SearchResponse>(response).await {
+        Ok(payload) => payload,
+        Err(_) => return provider_lookup_failed("Open Library search", request_id),
+    };
+    Json(json!({
+        "provider": "open-library",
+        "query": query,
+        "results": open_library::normalize_response(payload),
+        "requestId": request_id,
+    }))
+    .into_response()
+}
+
+async fn open_library_editions(
+    State(state): State<ProviderBrokerState>,
+    Path(work_id): Path<String>,
+    Query(query): Query<OpenLibraryEditionsQuery>,
+    headers: HeaderMap,
+) -> Response {
+    let request_id = request_id();
+    if let Err(error) = authenticated_identity(&headers, &request_id) {
+        return error.into_response();
+    }
+    let Some(work_id) = open_library::normalized_work_id(&work_id) else {
+        return ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "open_library_work_id_invalid",
+            "Supply a valid Open Library work ID.",
+            request_id,
+        )
+        .into_response();
+    };
+    if query.limit == 0 || query.limit > 20 || query.offset > 10_000 {
+        return ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "open_library_editions_page_invalid",
+            "Edition pages require a limit from 1 to 20 and an offset no greater than 10000.",
+            request_id,
+        )
+        .into_response();
+    }
+    let path = format!("works/{work_id}/editions.json");
+    let url = match provider_test_url(&state.endpoints.open_library_api_base, &path) {
+        Ok(url) => url,
+        Err(_) => {
+            return ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "provider_adapter_unavailable",
+                "The Open Library adapter could not be initialized.",
+                request_id,
+            )
+            .into_response()
+        }
+    };
+    state.open_library_gate.wait().await;
+    let response = state
+        .client
+        .get(url)
+        .query(&[
+            ("offset", query.offset.to_string()),
+            ("limit", query.limit.to_string()),
+        ])
+        .send()
+        .await;
+    let response = match response {
+        Ok(response) if response.status().is_success() => response,
+        _ => return provider_lookup_failed("Open Library edition lookup", request_id),
+    };
+    let payload = match bounded_provider_json::<open_library::EditionsResponse>(response).await {
+        Ok(payload) => payload,
+        Err(_) => return provider_lookup_failed("Open Library edition lookup", request_id),
+    };
+    Json(OpenLibraryEditionsResponse {
+        provider: "open-library",
+        work_id,
+        request_id,
+        page: open_library::normalize_editions(payload, query.offset, query.limit),
+    })
+    .into_response()
+}
+
+async fn open_library_cover(
+    State(state): State<ProviderBrokerState>,
+    Path(cover_id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let request_id = request_id();
+    if let Err(error) = authenticated_identity(&headers, &request_id) {
+        return error.into_response();
+    }
+    let cover_id = match cover_id.parse::<u64>() {
+        Ok(cover_id) if cover_id > 0 && cover_id <= i64::MAX as u64 => cover_id,
+        _ => {
+            return ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "open_library_cover_id_invalid",
+                "Supply a positive Open Library cover ID.",
+                request_id,
+            )
+            .into_response()
+        }
+    };
+    let path = format!("b/id/{cover_id}-L.jpg");
+    let url = match provider_test_url(&state.endpoints.open_library_covers_base, &path) {
+        Ok(url) => url,
+        Err(_) => {
+            return ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "provider_adapter_unavailable",
+                "The Open Library cover adapter could not be initialized.",
+                request_id,
+            )
+            .into_response()
+        }
+    };
+    state.open_library_gate.wait().await;
+    let response = state
+        .client
+        .get(url)
+        .query(&[("default", "false")])
+        .send()
+        .await;
+    let response = match response {
+        Ok(response) if response.status() == reqwest::StatusCode::NOT_FOUND => {
+            return ApiError::new(
+                StatusCode::NOT_FOUND,
+                "open_library_cover_not_found",
+                "Open Library does not have that cover image.",
+                request_id,
+            )
+            .into_response()
+        }
+        Ok(response) if response.status().is_success() => response,
+        _ => return provider_lookup_failed("Open Library cover lookup", request_id),
+    };
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    if !matches!(
+        content_type.as_str(),
+        "image/jpeg" | "image/png" | "image/gif" | "image/webp"
+    ) {
+        return provider_lookup_failed("Open Library cover lookup", request_id);
+    }
+    let bytes = match bounded_provider_bytes(response, 16 * 1024 * 1024).await {
+        Ok(bytes) if !bytes.is_empty() => bytes,
+        _ => return provider_lookup_failed("Open Library cover lookup", request_id),
+    };
+    let Some(sniffed_content_type) = sniff_image_content_type(&bytes) else {
+        return provider_lookup_failed("Open Library cover lookup", request_id);
+    };
+    if sniffed_content_type != content_type {
+        return provider_lookup_failed("Open Library cover lookup", request_id);
+    }
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, sniffed_content_type.to_string()),
+            (
+                header::HeaderName::from_static("x-content-type-options"),
+                "nosniff".to_string(),
+            ),
+        ],
+        bytes,
+    )
+        .into_response()
 }
 
 async fn lookup_acoustid(
@@ -691,6 +1004,30 @@ async fn bounded_provider_json<T: DeserializeOwned>(
         bytes.extend_from_slice(&chunk);
     }
     serde_json::from_slice(&bytes).map_err(|_| "provider returned invalid JSON".to_string())
+}
+
+async fn bounded_provider_bytes(
+    mut response: reqwest::Response,
+    maximum_bytes: usize,
+) -> Result<Vec<u8>, String> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > maximum_bytes as u64)
+    {
+        return Err("provider response exceeded the size limit".to_string());
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_| "provider response could not be read safely".to_string())?
+    {
+        if bytes.len().saturating_add(chunk.len()) > maximum_bytes {
+            return Err("provider response exceeded the size limit".to_string());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
 }
 
 fn valid_mbid(value: &str) -> bool {
@@ -907,250 +1244,6 @@ fn normalized_languages(value: &str) -> Option<String> {
     languages.sort();
     languages.dedup();
     Some(languages.join(","))
-}
-
-async fn search_tmdb(
-    State(state): State<ProviderBrokerState>,
-    headers: HeaderMap,
-    payload: Result<Json<TmdbSearchRequest>, JsonRejection>,
-) -> Response {
-    let request_id = request_id();
-    let identity = match authenticated_identity(&headers, &request_id) {
-        Ok(identity) => identity,
-        Err(error) => return error.into_response(),
-    };
-    let request = match payload {
-        Ok(Json(request)) => request,
-        Err(_) => return invalid_json(&request_id).into_response(),
-    };
-    let query = request.query.trim();
-    if query.is_empty() || query.len() > 500 || query.contains('\0') {
-        return ApiError::new(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "tmdb_query_invalid",
-            "TMDB search requires a query between 1 and 500 characters.",
-            request_id,
-        )
-        .into_response();
-    }
-    let media_type = request.media_type.as_deref().unwrap_or("auto");
-    if !matches!(media_type, "movie" | "tv" | "auto") {
-        return ApiError::new(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "tmdb_media_type_invalid",
-            "mediaType must be movie, tv, or auto.",
-            request_id,
-        )
-        .into_response();
-    }
-    let year = request.year.filter(|year| (1801..=2100).contains(year));
-    let client = match tmdb_client_for(&state, &identity, &request_id) {
-        Ok(client) => client,
-        Err(error) => return error.into_response(),
-    };
-    let mut results = Vec::new();
-    if matches!(media_type, "movie" | "auto") {
-        match client.search_movies(query, year).await {
-            Ok(movies) => results.extend(movies.into_iter().map(|movie| {
-                let release_year = movie
-                    .release_date
-                    .as_deref()
-                    .and_then(|date| date.get(0..4))
-                    .and_then(|value| value.parse::<u16>().ok());
-                json!({
-                    "mediaType": "movie",
-                    "title": movie.title,
-                    "year": release_year,
-                    "overview": movie.overview,
-                    "posterPath": movie.poster_path,
-                    "backdropPath": movie.backdrop_path,
-                    "voteAverage": movie.vote_average,
-                    "voteCount": movie.vote_count,
-                    "genres": movie.genre_ids,
-                    "tmdbId": movie.id,
-                })
-            })),
-            Err(_) => return provider_lookup_failed("TMDB movie search", request_id),
-        }
-    }
-    if matches!(media_type, "tv" | "auto") {
-        match client.search_tv_shows(query, year).await {
-            Ok(shows) => results.extend(shows.into_iter().map(|show| {
-                let first_air_year = show
-                    .first_air_date
-                    .as_deref()
-                    .and_then(|date| date.get(0..4))
-                    .and_then(|value| value.parse::<u16>().ok());
-                json!({
-                    "mediaType": "tv",
-                    "title": show.name,
-                    "year": first_air_year,
-                    "overview": show.overview,
-                    "posterPath": show.poster_path,
-                    "backdropPath": show.backdrop_path,
-                    "voteAverage": show.vote_average,
-                    "voteCount": show.vote_count,
-                    "genres": show.genre_ids,
-                    "originCountry": show.origin_country,
-                    "tmdbId": show.id,
-                })
-            })),
-            Err(_) => return provider_lookup_failed("TMDB television search", request_id),
-        }
-    }
-    results.sort_by(|left, right| {
-        let left_votes = left.get("voteCount").and_then(Value::as_u64).unwrap_or(0);
-        let right_votes = right.get("voteCount").and_then(Value::as_u64).unwrap_or(0);
-        right_votes.cmp(&left_votes)
-    });
-    Json(json!({
-        "provider": "tmdb",
-        "results": results,
-        "query": query,
-        "year": year,
-        "mediaType": media_type,
-        "requestId": request_id,
-    }))
-    .into_response()
-}
-
-async fn tmdb_details(
-    State(state): State<ProviderBrokerState>,
-    headers: HeaderMap,
-    payload: Result<Json<TmdbDetailsRequest>, JsonRejection>,
-) -> Response {
-    let request_id = request_id();
-    let identity = match authenticated_identity(&headers, &request_id) {
-        Ok(identity) => identity,
-        Err(error) => return error.into_response(),
-    };
-    let request = match payload {
-        Ok(Json(request)) => request,
-        Err(_) => return invalid_json(&request_id).into_response(),
-    };
-    if request.tmdb_id == 0 || !matches!(request.media_type.as_str(), "movie" | "tv") {
-        return ApiError::new(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "tmdb_details_invalid",
-            "Supply a positive tmdbId and a mediaType of movie or tv.",
-            request_id,
-        )
-        .into_response();
-    }
-    let client = match tmdb_client_for(&state, &identity, &request_id) {
-        Ok(client) => client,
-        Err(error) => return error.into_response(),
-    };
-    let details = match request.media_type.as_str() {
-        "movie" => match client.get_movie_details(request.tmdb_id).await {
-            Ok(details) => json!({
-                "mediaType": "movie",
-                "tmdbId": details.id,
-                "title": details.title,
-                "originalTitle": details.original_title,
-                "overview": details.overview,
-                "releaseDate": details.release_date,
-                "year": details.release_date.as_deref().and_then(|date| date.get(0..4)).and_then(|value| value.parse::<u16>().ok()),
-                "runtimeMinutes": details.runtime,
-                "voteAverage": details.vote_average,
-                "voteCount": details.vote_count,
-                "posterPath": details.poster_path,
-                "backdropPath": details.backdrop_path,
-                "genres": details.genres.iter().map(|genre| genre.name.clone()).collect::<Vec<_>>(),
-                "productionCompanies": details.production_companies.iter().map(|company| company.name.clone()).collect::<Vec<_>>(),
-                "productionCountries": details.production_countries.iter().map(|country| country.name.clone()).collect::<Vec<_>>(),
-                "spokenLanguages": details.spoken_languages.iter().map(|language| language.english_name.clone()).collect::<Vec<_>>(),
-                "status": details.status,
-                "tagline": details.tagline,
-                "cast": details.credits.as_ref().map(|credits| credits.cast.iter().map(|member| json!({ "id": member.id, "name": member.name, "character": member.character })).collect::<Vec<_>>()).unwrap_or_default(),
-                "crew": details.credits.as_ref().map(|credits| credits.crew.iter().map(|member| json!({ "id": member.id, "name": member.name, "job": member.job, "department": member.department })).collect::<Vec<_>>()).unwrap_or_default(),
-                "keywords": details.keywords.as_ref().map(|keywords| keywords.keywords.iter().map(|keyword| keyword.name.clone()).collect::<Vec<_>>()).unwrap_or_default(),
-                "externalIds": details.external_ids.as_ref().map(|ids| json!({ "imdbId": ids.imdb_id, "wikidataId": ids.wikidata_id })).unwrap_or_default(),
-            }),
-            Err(_) => return provider_lookup_failed("TMDB movie details", request_id),
-        },
-        "tv" => match client.get_tv_show_details(request.tmdb_id).await {
-            Ok(details) => json!({
-                "mediaType": "tv",
-                "tmdbId": details.id,
-                "title": details.name,
-                "originalTitle": details.original_name,
-                "overview": details.overview,
-                "firstAirDate": details.first_air_date,
-                "lastAirDate": details.last_air_date,
-                "year": details.first_air_date.as_deref().and_then(|date| date.get(0..4)).and_then(|value| value.parse::<u16>().ok()),
-                "numberOfSeasons": details.number_of_seasons,
-                "numberOfEpisodes": details.number_of_episodes,
-                "voteAverage": details.vote_average,
-                "voteCount": details.vote_count,
-                "posterPath": details.poster_path,
-                "backdropPath": details.backdrop_path,
-                "genres": details.genres.iter().map(|genre| genre.name.clone()).collect::<Vec<_>>(),
-                "productionCompanies": details.production_companies.iter().map(|company| company.name.clone()).collect::<Vec<_>>(),
-                "productionCountries": details.production_countries.iter().map(|country| country.name.clone()).collect::<Vec<_>>(),
-                "spokenLanguages": details.spoken_languages.iter().map(|language| language.english_name.clone()).collect::<Vec<_>>(),
-                "status": details.status,
-                "type": details.show_type,
-                "inProduction": details.in_production,
-                "episodeRunTime": details.episode_run_time,
-                "cast": details.credits.as_ref().map(|credits| credits.cast.iter().map(|member| json!({ "id": member.id, "name": member.name, "character": member.character })).collect::<Vec<_>>()).unwrap_or_default(),
-                "crew": details.credits.as_ref().map(|credits| credits.crew.iter().map(|member| json!({ "id": member.id, "name": member.name, "job": member.job, "department": member.department })).collect::<Vec<_>>()).unwrap_or_default(),
-                "keywords": details.keywords.as_ref().map(|keywords| keywords.keywords.iter().map(|keyword| keyword.name.clone()).collect::<Vec<_>>()).unwrap_or_default(),
-                "externalIds": details.external_ids.as_ref().map(|ids| json!({ "imdbId": ids.imdb_id, "wikidataId": ids.wikidata_id })).unwrap_or_default(),
-            }),
-            Err(_) => return provider_lookup_failed("TMDB television details", request_id),
-        },
-        _ => unreachable!(),
-    };
-    Json(json!({
-        "provider": "tmdb",
-        "details": details,
-        "requestId": request_id,
-    }))
-    .into_response()
-}
-
-fn tmdb_client_for(
-    state: &ProviderBrokerState,
-    identity: &Identity,
-    request_id: &str,
-) -> Result<TmdbClient, ApiError> {
-    let mut credentials = state
-        .store
-        .load_credentials(identity, "tmdb")
-        .map_err(|error| storage_failure(error, request_id))?
-        .ok_or_else(|| {
-            ApiError::new(
-                StatusCode::PRECONDITION_REQUIRED,
-                "provider_account_required",
-                "Configure your TMDB account before using this lookup.",
-                request_id.to_string(),
-            )
-        })?;
-    let api_key = credentials.get("apiKey").cloned().ok_or_else(|| {
-        ApiError::new(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "provider_account_invalid",
-            "Replace the saved TMDB account before using this lookup.",
-            request_id.to_string(),
-        )
-    })?;
-    let client = TmdbClient::new(TmdbClientConfig {
-        api_key: Some(api_key),
-        tmdb_api_base: state.endpoints.tmdb_api_base.clone(),
-        request_gap: std::time::Duration::from_millis(250),
-        user_agent: "NixHomeServer Media Manager/0.1.0".to_string(),
-    })
-    .map_err(|_| {
-        ApiError::new(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "provider_adapter_unavailable",
-            "The TMDB adapter could not be initialized.",
-            request_id.to_string(),
-        )
-    });
-    zeroize_credentials(&mut credentials);
-    client
 }
 
 fn provider_lookup_failed(operation: &str, request_id: String) -> Response {

@@ -43,6 +43,15 @@ pub struct InstallMetadataSidecarAction {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct InstallArtworkAction {
+    pub staging_filename: String,
+    pub destination_root_id: String,
+    pub destination_relative_path: String,
+    pub expected: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ReplaceArtworkAction {
     pub staging_filename: String,
     pub root_id: String,
@@ -62,6 +71,7 @@ pub enum BrokerAction {
     Move(MoveAction),
     InstallSubtitle(InstallSubtitleAction),
     InstallMetadataSidecar(InstallMetadataSidecarAction),
+    InstallArtwork(InstallArtworkAction),
     ReplaceMetadataSidecar(ReplaceMetadataSidecarAction),
     ReplaceEmbeddedMetadata(ReplaceEmbeddedMetadataAction),
     ReplaceArtwork(ReplaceArtworkAction),
@@ -82,6 +92,12 @@ impl From<InstallSubtitleAction> for BrokerAction {
 impl From<InstallMetadataSidecarAction> for BrokerAction {
     fn from(action: InstallMetadataSidecarAction) -> Self {
         Self::InstallMetadataSidecar(action)
+    }
+}
+
+impl From<InstallArtworkAction> for BrokerAction {
+    fn from(action: InstallArtworkAction) -> Self {
+        Self::InstallArtwork(action)
     }
 }
 
@@ -180,6 +196,7 @@ pub fn apply_broker_action(
         BrokerAction::InstallMetadataSidecar(action) => {
             apply_install_metadata_sidecar(config, username, action)
         }
+        BrokerAction::InstallArtwork(action) => apply_install_artwork(config, username, action),
         BrokerAction::ReplaceMetadataSidecar(action) => {
             apply_replace_metadata_sidecar(config, username, action)
         }
@@ -205,6 +222,7 @@ pub fn recover_broker_action(
         BrokerAction::InstallMetadataSidecar(action) => {
             recover_installed_metadata_sidecar(config, username, action)
         }
+        BrokerAction::InstallArtwork(action) => recover_installed_artwork(config, username, action),
         BrokerAction::ReplaceMetadataSidecar(action) => {
             recover_replaced_metadata_sidecar(config, username, action)
         }
@@ -227,6 +245,9 @@ pub fn discard_staged_broker_action(
             discard_staged_file(config, &action.staging_filename, &action.expected)
         }
         BrokerAction::InstallMetadataSidecar(action) => {
+            discard_staged_file(config, &action.staging_filename, &action.expected)
+        }
+        BrokerAction::InstallArtwork(action) => {
             discard_staged_file(config, &action.staging_filename, &action.expected)
         }
         BrokerAction::ReplaceMetadataSidecar(action) => discard_staged_file(
@@ -508,6 +529,78 @@ fn validate_metadata_sidecar_action(
     {
         return Err(BrokerError::new(
             "metadata destination must use .nfo or .opf",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+pub fn apply_install_artwork(
+    config: &AppConfig,
+    username: &str,
+    action: &InstallArtworkAction,
+) -> Result<(), BrokerError> {
+    validate_install_artwork_action(config, username, action)?;
+    apply_staged_no_replace(
+        config,
+        username,
+        &action.staging_filename,
+        &action.destination_root_id,
+        &action.destination_relative_path,
+        &action.expected,
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn recover_installed_artwork(
+    config: &AppConfig,
+    username: &str,
+    action: &InstallArtworkAction,
+) -> Result<bool, BrokerError> {
+    validate_install_artwork_action(config, username, action)?;
+    recover_staged_no_replace(
+        config,
+        username,
+        &action.staging_filename,
+        &action.destination_root_id,
+        &action.destination_relative_path,
+        &action.expected,
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn validate_install_artwork_action(
+    config: &AppConfig,
+    username: &str,
+    action: &InstallArtworkAction,
+) -> Result<(), BrokerError> {
+    if !safe_component(&action.staging_filename) {
+        return Err(BrokerError::new("staging filename is not a safe component"));
+    }
+    let identity = Identity::try_new(username, ["users"])
+        .map_err(|_| BrokerError::new("plan owner is not a safe identity component"))?;
+    let destination_root = config
+        .resolve_visible_root(&identity, &action.destination_root_id)
+        .ok_or_else(|| BrokerError::new("artwork root ID is not registered"))?;
+    if !["videos", "music", "audiobooks", "podcasts", "books"]
+        .contains(&destination_root.category.as_str())
+    {
+        return Err(BrokerError::new(
+            "artwork may only be installed in a media root",
+        ));
+    }
+    let (_, destination_leaf) = safe_parent_and_leaf(&action.destination_relative_path)?;
+    let (stem, extension) = destination_leaf
+        .rsplit_once('.')
+        .ok_or_else(|| BrokerError::new("artwork destination must have a file extension"))?;
+    if !stem.eq_ignore_ascii_case("cover")
+        || !matches!(
+            extension.to_ascii_lowercase().as_str(),
+            "jpg" | "jpeg" | "png" | "gif" | "webp"
+        )
+    {
+        return Err(BrokerError::new(
+            "new artwork must use a supported cover image filename",
         ));
     }
     Ok(())

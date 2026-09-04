@@ -1,4 +1,4 @@
-{ pkgs, rustLib, sharedFrontendDeps, workspaceSrc ? null, sharedCargoArtifacts ? null, cargoLock ? null, ... }:
+{ pkgs, rustLib, sharedFrontendDeps, workspaceVersion, workspaceSrc ? null, sharedCargoArtifacts ? null, cargoLock ? null, ... }:
 
 let
   frontendDist = rustLib.mkPnpmFrontend {
@@ -14,6 +14,7 @@ let
 
   app = rustLib.mkRustApp {
     name = "media-manager";
+    version = workspaceVersion;
     binaryName = "media-manager";
     srcDir = ./.;
     modulePath = ../../../../modules/Core_Modules/media-manager;

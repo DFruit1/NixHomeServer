@@ -1,10 +1,10 @@
 use reqwest::{header, Client, StatusCode, Url};
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
     collections::{BTreeSet, HashSet},
     fmt,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::OnceLock,
     time::{Duration, Instant},
 };
 use tokio::{
@@ -16,9 +16,11 @@ use tokio::{
 pub const MUSICBRAINZ_API_BASE: &str = "https://musicbrainz.org/ws/2/";
 pub const ACOUSTID_API_BASE: &str = "https://api.acoustid.org/v2/";
 const MAX_CANDIDATES: usize = 6;
+const MAX_RELEASES_PER_GROUP: usize = 3;
 const FPCALC_TIMEOUT: Duration = Duration::from_secs(60);
 
 const MAX_FP_LENGTH: usize = 4096;
+static PROVIDER_REQUEST_GATE: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LookupMode {
@@ -80,7 +82,6 @@ pub struct MusicBrainzClient {
     acoustid_api_base: Url,
     request_gap: Duration,
     user_agent: String,
-    last_request: Arc<Mutex<Instant>>,
 }
 
 impl MusicBrainzClient {
@@ -113,7 +114,6 @@ impl MusicBrainzClient {
             acoustid_api_base,
             request_gap: config.request_gap,
             user_agent: config.user_agent,
-            last_request: Arc::new(Mutex::new(Instant::now() - config.request_gap)),
         })
     }
 
@@ -132,9 +132,13 @@ impl MusicBrainzClient {
         let mut candidates = Vec::new();
         for id in ids.iter().filter(|id| valid_mbid(id)).take(MAX_CANDIDATES) {
             match self.release_group_lookup(id).await {
-                Ok(group) => candidates.push(normalize_release_group(group, "fingerprint")),
+                Ok(group) => match self.hydrate_release_group(group, "fingerprint").await {
+                    Ok(releases) => candidates.extend(releases),
+                    Err(_) => continue,
+                },
                 Err(_) => continue,
             }
+            candidates.truncate(MAX_CANDIDATES);
         }
         Ok(candidates)
     }
@@ -171,9 +175,13 @@ impl MusicBrainzClient {
         let mut candidates = Vec::new();
         for id in release_group_ids.into_iter().take(MAX_CANDIDATES) {
             match self.release_group_lookup(&id).await {
-                Ok(group) => candidates.push(normalize_release_group(group, "fingerprint")),
+                Ok(group) => match self.hydrate_release_group(group, "fingerprint").await {
+                    Ok(releases) => candidates.extend(releases),
+                    Err(_) => continue,
+                },
                 Err(_) => continue,
             }
+            candidates.truncate(MAX_CANDIDATES);
         }
         Ok(candidates)
     }
@@ -200,18 +208,23 @@ impl MusicBrainzClient {
             .await
             .map_err(|error| ProviderError::new(format!("search request failed: {error}")))?;
         let response = require_success(response, "MusicBrainz search").await?;
-        let payload = response
-            .json::<SearchResponse>()
-            .await
-            .map_err(|error| ProviderError::new(format!("decode search response: {error}")))?;
+        let payload =
+            bounded_provider_json::<SearchResponse>(response, "MusicBrainz search").await?;
         let mut candidates = Vec::new();
         for entry in payload.release_groups.into_iter().take(MAX_CANDIDATES) {
             if !valid_mbid(&entry.id) {
                 continue;
             }
             match self.release_group_lookup(&entry.id).await {
-                Ok(group) => candidates.push(normalize_release_group(group, "search")),
+                Ok(group) => match self.hydrate_release_group(group, "search").await {
+                    Ok(releases) => candidates.extend(releases),
+                    Err(_) => continue,
+                },
                 Err(_) => continue,
+            }
+            candidates.truncate(MAX_CANDIDATES);
+            if candidates.len() == MAX_CANDIDATES {
+                break;
             }
         }
         Ok(candidates)
@@ -230,10 +243,55 @@ impl MusicBrainzClient {
             .await
             .map_err(|error| ProviderError::new(format!("release request failed: {error}")))?;
         let response = require_success(response, "MusicBrainz release lookup").await?;
-        response
-            .json::<ReleaseGroup>()
+        bounded_provider_json::<ReleaseGroup>(response, "MusicBrainz release-group lookup").await
+    }
+
+    async fn hydrate_release_group(
+        &self,
+        mut group: ReleaseGroup,
+        method: &str,
+    ) -> Result<Vec<MusicRelease>, ProviderError> {
+        let release_ids = group
+            .releases
+            .iter()
+            .map(|release| release.id.clone())
+            .filter(|id| valid_mbid(id))
+            .take(MAX_RELEASES_PER_GROUP)
+            .collect::<Vec<_>>();
+        let exact_release_ids_exposed = !release_ids.is_empty();
+        let mut releases = Vec::new();
+        for release_id in release_ids {
+            if let Ok(release) = self.release_lookup(&release_id).await {
+                if release.id == release_id {
+                    releases.push(release);
+                }
+            }
+        }
+        if exact_release_ids_exposed && releases.is_empty() {
+            return Err(ProviderError::new(
+                "MusicBrainz exposed exact releases but none could be loaded",
+            ));
+        }
+        group.releases = releases;
+        Ok(normalize_release_group(group, method))
+    }
+
+    async fn release_lookup(&self, id: &str) -> Result<ReleaseRef, ProviderError> {
+        self.throttle().await;
+        let url = self
+            .musicbrainz_api_base
+            .join(&format!("release/{id}"))
+            .map_err(|error| ProviderError::new(format!("build exact release URL: {error}")))?;
+        let response = self
+            .provider_request(self.client.get(url))
+            .query(&[("inc", "artist-credits+labels+recordings"), ("fmt", "json")])
+            .send()
             .await
-            .map_err(|error| ProviderError::new(format!("decode release response: {error}")))
+            .map_err(|error| {
+                ProviderError::new(format!("exact release request failed: {error}"))
+            })?;
+        let response = require_success(response, "MusicBrainz exact release lookup").await?;
+        bounded_provider_json::<ReleaseRef>(response, "MusicBrainz exact release lookup").await
     }
 
     async fn acoustid_lookup(
@@ -262,10 +320,8 @@ impl MusicBrainzClient {
             .await
             .map_err(|error| ProviderError::new(format!("lookup request failed: {error}")))?;
         let response = require_success(response, "AcoustID lookup").await?;
-        let payload = response
-            .json::<AcoustidLookupResponse>()
-            .await
-            .map_err(|error| ProviderError::new(format!("decode lookup response: {error}")))?;
+        let payload =
+            bounded_provider_json::<AcoustidLookupResponse>(response, "AcoustID lookup").await?;
         if payload.status != "ok" {
             return Err(ProviderError::new("AcoustID rejected the lookup request"));
         }
@@ -312,12 +368,13 @@ impl MusicBrainzClient {
         if gap.is_zero() {
             return;
         }
-        let mut last = self.last_request.lock().await;
-        let elapsed = last.elapsed();
+        let gate = PROVIDER_REQUEST_GATE.get_or_init(|| Mutex::new(None));
+        let mut last = gate.lock().await;
+        let elapsed = last.as_ref().map(Instant::elapsed).unwrap_or(gap);
         if elapsed < gap {
             sleep(gap - elapsed).await;
         }
-        *last = Instant::now();
+        *last = Some(Instant::now());
     }
 
     fn provider_request(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
@@ -329,10 +386,18 @@ impl MusicBrainzClient {
 #[serde(rename_all = "camelCase")]
 pub struct MusicRelease {
     pub release_group_id: String,
+    pub release_id: Option<String>,
     pub artist: String,
     pub title: String,
     pub release_type: Option<String>,
     pub year: Option<u16>,
+    pub release_date: Option<String>,
+    pub release_status: Option<String>,
+    pub country: Option<String>,
+    pub barcode: Option<String>,
+    pub catalog_number: Option<String>,
+    pub packaging: Option<String>,
+    pub disambiguation: Option<String>,
     pub genres: Vec<String>,
     pub label: Option<String>,
     pub track_count: Option<u32>,
@@ -382,6 +447,14 @@ struct NamedEntity {
 
 #[derive(Debug, Deserialize)]
 struct ReleaseRef {
+    id: String,
+    title: Option<String>,
+    status: Option<String>,
+    date: Option<String>,
+    country: Option<String>,
+    barcode: Option<String>,
+    packaging: Option<String>,
+    disambiguation: Option<String>,
     #[serde(default, rename = "label-info")]
     label_info: Vec<LabelInfo>,
     #[serde(default)]
@@ -390,6 +463,8 @@ struct ReleaseRef {
 
 #[derive(Debug, Deserialize)]
 struct LabelInfo {
+    #[serde(rename = "catalog-number")]
+    catalog_number: Option<String>,
     label: Option<Label>,
 }
 
@@ -431,9 +506,9 @@ struct AcoustidReleaseGroup {
     id: String,
 }
 
-fn normalize_release_group(group: ReleaseGroup, method: &str) -> MusicRelease {
+fn normalize_release_group(group: ReleaseGroup, method: &str) -> Vec<MusicRelease> {
     let artist = join_artist_credit(&group.artist_credit);
-    let year = group
+    let group_year = group
         .first_release_date
         .as_deref()
         .and_then(|date| date.split('-').next())
@@ -448,17 +523,67 @@ fn normalize_release_group(group: ReleaseGroup, method: &str) -> MusicRelease {
         .into_iter()
         .take(12)
         .collect::<Vec<_>>();
-    let (label, track_count) = release_label_and_tracks(&group.releases);
-    MusicRelease {
-        release_group_id: group.id,
-        artist,
-        title: group.title,
-        release_type: group.primary_type,
-        year,
-        genres,
-        label,
-        track_count,
-        match_method: method.to_string(),
+    let group_id = group.id;
+    let group_title =
+        bounded_text(Some(&group.title), 500).unwrap_or_else(|| "Unknown release".to_string());
+    let release_type = bounded_text(group.primary_type.as_deref(), 100);
+    let releases = group
+        .releases
+        .iter()
+        .filter(|release| valid_mbid(&release.id))
+        .take(MAX_RELEASES_PER_GROUP)
+        .map(|release| {
+            let (label, catalog_number, track_count) = release_label_and_tracks(release);
+            let release_date = bounded_text(release.date.as_deref(), 32);
+            MusicRelease {
+                release_group_id: group_id.clone(),
+                release_id: Some(release.id.clone()),
+                artist: artist.clone(),
+                title: bounded_text(release.title.as_deref(), 500)
+                    .unwrap_or_else(|| group_title.clone()),
+                release_type: release_type.clone(),
+                year: release_date
+                    .as_deref()
+                    .and_then(|date| date.split('-').next())
+                    .and_then(|value| value.parse::<u16>().ok())
+                    .filter(|year| (1..=2100).contains(year))
+                    .or(group_year),
+                release_date,
+                release_status: bounded_text(release.status.as_deref(), 50),
+                country: bounded_text(release.country.as_deref(), 16),
+                barcode: bounded_text(release.barcode.as_deref(), 64),
+                catalog_number,
+                packaging: bounded_text(release.packaging.as_deref(), 100),
+                disambiguation: bounded_text(release.disambiguation.as_deref(), 500),
+                genres: genres.clone(),
+                label,
+                track_count,
+                match_method: method.to_string(),
+            }
+        })
+        .collect::<Vec<_>>();
+    if releases.is_empty() {
+        vec![MusicRelease {
+            release_group_id: group_id,
+            release_id: None,
+            artist,
+            title: group_title,
+            release_type,
+            year: group_year,
+            release_date: None,
+            release_status: None,
+            country: None,
+            barcode: None,
+            catalog_number: None,
+            packaging: None,
+            disambiguation: None,
+            genres,
+            label: None,
+            track_count: None,
+            match_method: method.to_string(),
+        }]
+    } else {
+        releases
     }
 }
 
@@ -478,33 +603,33 @@ fn join_artist_credit(credit: &[ArtistCredit]) -> String {
     }
 }
 
-fn release_label_and_tracks(releases: &[ReleaseRef]) -> (Option<String>, Option<u32>) {
-    let mut label = None;
-    let mut track_count = None;
-    for release in releases {
-        if label.is_none() {
-            label = release
-                .label_info
-                .iter()
-                .filter_map(|info| info.label.as_ref())
-                .map(|entry| entry.name.trim().to_string())
-                .find(|name| !name.is_empty() && name.len() <= 500);
-        }
-        if track_count.is_none() {
-            let total = release
-                .media
-                .iter()
-                .filter_map(|media| media.track_count)
-                .sum::<u32>();
-            if total > 0 {
-                track_count = Some(total);
-            }
-        }
-        if label.is_some() && track_count.is_some() {
-            break;
-        }
-    }
-    (label, track_count)
+fn release_label_and_tracks(release: &ReleaseRef) -> (Option<String>, Option<String>, Option<u32>) {
+    let label_info = release.label_info.iter().find(|info| {
+        info.label.is_some()
+            || info
+                .catalog_number
+                .as_deref()
+                .is_some_and(|value| !value.is_empty())
+    });
+    let label = label_info
+        .and_then(|info| info.label.as_ref())
+        .and_then(|entry| bounded_text(Some(&entry.name), 500));
+    let catalog_number =
+        label_info.and_then(|info| bounded_text(info.catalog_number.as_deref(), 100));
+    let total = release
+        .media
+        .iter()
+        .filter_map(|media| media.track_count)
+        .sum::<u32>();
+    (label, catalog_number, (total > 0).then_some(total))
+}
+
+fn bounded_text(value: Option<&str>, maximum: usize) -> Option<String> {
+    let value = value?.trim();
+    (!value.is_empty()
+        && value.chars().count() <= maximum
+        && !value.chars().any(|character| character.is_control()))
+    .then(|| value.to_string())
 }
 
 fn build_release_group_query(
@@ -628,6 +753,36 @@ async fn require_success(
     )))
 }
 
+async fn bounded_provider_json<T: DeserializeOwned>(
+    mut response: reqwest::Response,
+    operation: &str,
+) -> Result<T, ProviderError> {
+    const MAX_PROVIDER_JSON_BYTES: usize = 2 * 1024 * 1024;
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_PROVIDER_JSON_BYTES as u64)
+    {
+        return Err(ProviderError::new(format!(
+            "{operation}: provider response exceeded the size limit"
+        )));
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_| ProviderError::new(format!("{operation}: response could not be read")))?
+    {
+        if bytes.len().saturating_add(chunk.len()) > MAX_PROVIDER_JSON_BYTES {
+            return Err(ProviderError::new(format!(
+                "{operation}: provider response exceeded the size limit"
+            )));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&bytes)
+        .map_err(|_| ProviderError::new(format!("{operation}: provider returned invalid JSON")))
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProviderError(String);
 
@@ -725,7 +880,16 @@ mod tests {
                 },
             ],
             releases: vec![ReleaseRef {
+                id: "2d4b4f36-bbf7-37d2-8c59-8f84a8f1b5a7".to_string(),
+                title: Some("Nevermind".to_string()),
+                status: Some("Official".to_string()),
+                date: Some("1991-09-24".to_string()),
+                country: Some("US".to_string()),
+                barcode: Some("720642442524".to_string()),
+                packaging: Some("Jewel Case".to_string()),
+                disambiguation: None,
                 label_info: vec![super::LabelInfo {
+                    catalog_number: Some("DGCD-24425".to_string()),
                     label: Some(super::Label {
                         name: "DGC".to_string(),
                     }),
@@ -735,7 +899,12 @@ mod tests {
                 }],
             }],
         };
-        let release = normalize_release_group(group, "search");
+        let releases = normalize_release_group(group, "search");
+        let release = &releases[0];
+        assert_eq!(
+            release.release_id.as_deref(),
+            Some("2d4b4f36-bbf7-37d2-8c59-8f84a8f1b5a7")
+        );
         assert_eq!(release.artist, "Nirvana");
         assert_eq!(release.title, "Nevermind");
         assert_eq!(release.year, Some(1991));
@@ -743,6 +912,24 @@ mod tests {
         assert_eq!(release.label.as_deref(), Some("DGC"));
         assert_eq!(release.track_count, Some(12));
         assert_eq!(release.match_method, "search");
+    }
+
+    #[test]
+    fn release_group_fallback_bounds_untrusted_titles_and_types() {
+        let releases = normalize_release_group(
+            ReleaseGroup {
+                id: "1b022e01-4da6-387b-8658-8678046e4cef".to_string(),
+                title: "x".repeat(501),
+                primary_type: Some("y".repeat(101)),
+                first_release_date: None,
+                artist_credit: Vec::new(),
+                genres: Vec::new(),
+                releases: Vec::new(),
+            },
+            "search",
+        );
+        assert_eq!(releases[0].title, "Unknown release");
+        assert_eq!(releases[0].release_type, None);
     }
 
     #[test]

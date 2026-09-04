@@ -10,10 +10,42 @@ import {
   useOnWindow,
 } from "@builder.io/qwik";
 import { api, ApiError } from "./api";
-import tmdbLogo from "./tmdb-logo.svg";
+import { MetadataHealthView } from "./metadata-health-view";
+import {
+  activeMetadataMatchSelection,
+  defaultMetadataMatchSelection,
+  MATCHABLE_METADATA_FIELDS as EDITABLE_METADATA_FIELDS,
+  mergeMetadataProviderIds,
+  metadataMatchRows,
+  MetadataMatchWorkspace,
+  selectedMetadataMatchPatch,
+  type MetadataMatchCandidate,
+  type MetadataMatchField,
+  type MetadataMatchSelection,
+} from "./metadata-match-workspace";
+import {
+  OpenLibraryPanel,
+  type OpenLibraryCandidate,
+} from "./open-library-panel";
+import { GoogleBooksPanel } from "./google-books-panel";
+import { MusicBrainzPanel } from "./musicbrainz-panel";
+import { TmdbPanel } from "./tmdb-panel";
+import {
+  googleBooksMetadataMatchCandidate,
+  metadataSourceEditorValue,
+  musicMetadataMatchCandidate as providerMusicMatch,
+  openLibraryMetadataMatchCandidate as providerOpenLibraryMatch,
+  tmdbMetadataMatchCandidate as providerTmdbMatch,
+  type GoogleBooksCandidate,
+  type MusicCandidate,
+  type MusicLookupMode,
+  type TmdbCandidate,
+  type TmdbDetails,
+} from "./metadata-provider-candidates";
 
 export type View =
   | "library"
+  | "health"
   | "conversions"
   | "subtitles"
   | "accounts"
@@ -22,6 +54,7 @@ export type View =
 
 const VIEWS = new Set<View>([
   "library",
+  "health",
   "conversions",
   "subtitles",
   "accounts",
@@ -38,10 +71,16 @@ export function rootFromSearch(search: string): string {
   return new URLSearchParams(search).get("root") ?? "";
 }
 
+export function itemFromSearch(search: string): string {
+  return new URLSearchParams(search).get("item") ?? "";
+}
+
 export function initialRouteFromSearch(search: string): RootProps {
+  const itemId = itemFromSearch(search);
   return {
     initialView: viewFromSearch(search),
     initialRootId: rootFromSearch(search),
+    ...(itemId ? { initialItemId: itemId } : {}),
   };
 }
 
@@ -299,6 +338,7 @@ interface DashboardState {
 export interface RootProps {
   initialView?: View;
   initialRootId?: string;
+  initialItemId?: string;
 }
 
 type NamingProfile =
@@ -380,6 +420,7 @@ interface MetadataSidecarInspection {
 
 const NAV_ITEMS: Array<{ id: View; label: string; icon: IconName }> = [
   { id: "library", label: "Libraries", icon: "library" },
+  { id: "health", label: "Library health", icon: "tag" },
   { id: "conversions", label: "Conversions", icon: "disc" },
   { id: "subtitles", label: "Subtitles", icon: "captions" },
   { id: "player", label: "Player", icon: "play" },
@@ -416,6 +457,36 @@ type IconName =
   | "repeat-one"
   | "timer"
   | "album";
+
+function beginItemEdit(
+  state: DashboardState,
+  roots: MediaRoot[],
+  item: CatalogItem,
+) {
+  state.selectedItemId = item.id;
+  const category = roots.find((root) => root.id === item.rootId)?.category;
+  const filename = item.relativePath.split("/").at(-1) ?? item.relativePath;
+  const tvEpisode =
+    category === "videos" ? parseTvEpisodeFilename(filename) : undefined;
+  state.editProfile = tvEpisode ? "tv" : profileForCategory(category);
+  state.editTitle =
+    tvEpisode?.title ??
+    filename.replace(/\.[A-Za-z0-9]+$/, "").replace(/ \([0-9]{4}\)$/, "");
+  state.editYear =
+    tvEpisode?.year ??
+    filename.match(/ \(([0-9]{4})\)(?:\.[^.]+)?$/)?.[1] ??
+    "";
+  state.editCreator = "";
+  state.editCollection = "";
+  state.editSeason = tvEpisode?.season ?? "";
+  state.editEpisode = tvEpisode?.episode ?? "";
+  state.editEpisodeTitle = tvEpisode?.episodeTitle ?? "";
+  state.editTrack =
+    filename.match(/^(?:[0-9]+-)?([0-9]{1,3})\s+-\s+/)?.[1] ?? "";
+  state.editDisc = filename.match(/^([0-9]+)-[0-9]{1,3}\s+-\s+/)?.[1] ?? "";
+  state.preview = undefined;
+  state.notice = "";
+}
 
 const Icon = component$<{ name: IconName; size?: number }>((props) => {
   const paths: Record<IconName, string[]> = {
@@ -629,6 +700,21 @@ export default component$((props: RootProps) => {
       state.selectedCategory = selectedRoot?.category ?? "";
       if (view.value === "library" && selectedRoot) {
         await loadCategoryItems(selectedRoot.category);
+        let requestedItem = state.items.find(
+          (item) =>
+            item.id === props.initialItemId && item.rootId === selectedRoot.id,
+        );
+        if (!requestedItem && props.initialItemId) {
+          const exactItem = await api<CatalogItem>(
+            `/items/${encodeURIComponent(props.initialItemId)}`,
+          );
+          if (exactItem.rootId !== selectedRoot.id) {
+            throw new Error("The linked item is not in the selected library.");
+          }
+          state.items = [...state.items, exactItem];
+          requestedItem = exactItem;
+        }
+        if (requestedItem) beginItemEdit(state, roots, requestedItem);
       }
     } catch (error) {
       state.error = readableError(error);
@@ -642,31 +728,7 @@ export default component$((props: RootProps) => {
     if (changingItem && !allowMetadataDraftDiscard(state.metadataDraftDirty))
       return;
     if (changingItem) state.metadataDraftDirty = false;
-    state.selectedItemId = item.id;
-    const category = state.roots.find(
-      (root) => root.id === item.rootId,
-    )?.category;
-    const filename = item.relativePath.split("/").at(-1) ?? item.relativePath;
-    const tvEpisode =
-      category === "videos" ? parseTvEpisodeFilename(filename) : undefined;
-    state.editProfile = tvEpisode ? "tv" : profileForCategory(category);
-    state.editTitle =
-      tvEpisode?.title ??
-      filename.replace(/\.[A-Za-z0-9]+$/, "").replace(/ \([0-9]{4}\)$/, "");
-    state.editYear =
-      tvEpisode?.year ??
-      filename.match(/ \(([0-9]{4})\)(?:\.[^.]+)?$/)?.[1] ??
-      "";
-    state.editCreator = "";
-    state.editCollection = "";
-    state.editSeason = tvEpisode?.season ?? "";
-    state.editEpisode = tvEpisode?.episode ?? "";
-    state.editEpisodeTitle = tvEpisode?.episodeTitle ?? "";
-    state.editTrack =
-      filename.match(/^(?:[0-9]+-)?([0-9]{1,3})\s+-\s+/)?.[1] ?? "";
-    state.editDisc = filename.match(/^([0-9]+)-[0-9]{1,3}\s+-\s+/)?.[1] ?? "";
-    state.preview = undefined;
-    state.notice = "";
+    beginItemEdit(state, state.roots, item);
   });
 
   const previewRename = $(async () => {
@@ -862,6 +924,13 @@ export default component$((props: RootProps) => {
             previewRename$={previewRename}
             confirmRename$={confirmRename}
             loadCategoryItems$={loadCategoryItems}
+          />
+        ) : view.value === "health" ? (
+          <MetadataHealthView
+            roots={state.roots.filter(
+              (root) => root.category !== "iso" && root.available,
+            )}
+            initialRootId={props.initialRootId}
           />
         ) : view.value === "conversions" ? (
           <ConversionsView initial={state.conversions} />
@@ -2094,8 +2163,11 @@ const LibraryView = component$<{
     folderFilter: "",
     selectedFolder: "",
   });
+  const previousCategory = useSignal(props.state.selectedCategory);
   useTask$(({ track }) => {
-    track(() => props.state.selectedCategory);
+    const category = track(() => props.state.selectedCategory);
+    if (category === previousCategory.value) return;
+    previousCategory.value = category;
     personal.selectedFolder = "";
     shared.selectedFolder = "";
     props.state.selectedItemId = "";
@@ -2886,40 +2958,6 @@ interface SubtitleContent {
   cues: SubtitleCue[];
   truncated: boolean;
   requestId: string;
-}
-
-type MusicLookupMode = "auto" | "fingerprint" | "search";
-
-interface MusicCandidate {
-  releaseGroupId: string;
-  artist: string;
-  title: string;
-  releaseType?: string;
-  year?: number;
-  genres: string[];
-  label?: string;
-  trackCount?: number;
-  matchMethod: "fingerprint" | "search";
-}
-
-interface TmdbCandidate {
-  mediaType: "movie" | "tv";
-  tmdbId: number;
-  title: string;
-  year?: number;
-  overview?: string;
-  voteAverage?: number;
-  voteCount?: number;
-  posterPath?: string;
-}
-
-interface TmdbDetails extends TmdbCandidate {
-  runtimeMinutes?: number;
-  genres?: string[];
-  releaseDate?: string;
-  firstAirDate?: string;
-  crew?: Array<{ name: string; job: string; department?: string }>;
-  externalIds?: { imdbId?: string; wikidataId?: string };
 }
 
 interface BatchSubtitleResult {
@@ -4068,29 +4106,6 @@ const INSPECTED_METADATA_FIELDS = [
   "description",
 ] as const;
 
-const EDITABLE_METADATA_FIELDS = [
-  ["mediaType", "Media type"],
-  ["title", "Title"],
-  ["year", "Year"],
-  ["season", "Season"],
-  ["episode", "Episode"],
-  ["episodeTitle", "Episode title"],
-  ["language", "Language code"],
-  ["genres", "Genres"],
-  ["authors", "Authors / artists"],
-  ["narrators", "Narrators"],
-  ["writers", "Writers"],
-  ["series", "Series"],
-  ["volumeNumber", "Volume"],
-  ["publisher", "Publisher / studio"],
-  ["premiereDate", "Premiere date"],
-  ["runtimeMinutes", "Runtime"],
-  ["officialRating", "Official rating"],
-  ["communityRating", "Community rating"],
-  ["isbn", "ISBN"],
-  ["description", "Description"],
-] as const;
-
 const REVIEWED_METADATA_FIELDS = [
   ...EDITABLE_METADATA_FIELDS,
   ["providerIds", "Provider IDs"],
@@ -4099,21 +4114,6 @@ const REVIEWED_METADATA_FIELDS = [
 const SOURCE_SELECTABLE_METADATA_FIELDS = EDITABLE_METADATA_FIELDS.filter(
   ([field]) => field !== "mediaType",
 );
-
-const LIST_METADATA_FIELDS = new Set([
-  "authors",
-  "narrators",
-  "genres",
-  "writers",
-]);
-
-const NUMERIC_METADATA_FIELDS = new Set([
-  "year",
-  "season",
-  "episode",
-  "runtimeMinutes",
-  "communityRating",
-]);
 
 export interface MetadataFieldChange {
   field: string;
@@ -4126,116 +4126,6 @@ export interface MetadataSourceChoice {
   field: EditableMetadataField;
   label: string;
   options: Array<{ source: string; label: string; value: string }>;
-}
-
-function metadataSourceEditorValue(
-  field: EditableMetadataField,
-  value: unknown,
-): string | undefined {
-  let normalized: string;
-  if (LIST_METADATA_FIELDS.has(field)) {
-    const maximumEntries = ["authors", "narrators"].includes(field) ? 32 : 64;
-    if (
-      Array.isArray(value) &&
-      value.some((entry) => typeof entry !== "string")
-    )
-      return undefined;
-    if (!Array.isArray(value) && typeof value !== "string") return undefined;
-    const entries = (Array.isArray(value) ? value : commaSeparated(value))
-      .map((entry) => entry.trim())
-      .filter(Boolean);
-    if (
-      entries.length > maximumEntries ||
-      entries.some(
-        (entry) =>
-          entry.length > 500 ||
-          [...entry].some(
-            (character) =>
-              character < " " && !["\n", "\r", "\t"].includes(character),
-          ),
-      )
-    )
-      return undefined;
-    normalized = entries.join(", ");
-  } else if (typeof value === "string") {
-    normalized = value.trim();
-  } else if (typeof value === "number" && NUMERIC_METADATA_FIELDS.has(field)) {
-    normalized = Number.isFinite(value) ? String(value) : "";
-  } else {
-    return undefined;
-  }
-  if (NUMERIC_METADATA_FIELDS.has(field)) {
-    const numeric = Number(normalized);
-    const valid =
-      Number.isFinite(numeric) &&
-      (field === "communityRating"
-        ? numeric >= 0 && numeric <= 10
-        : Number.isInteger(numeric) &&
-          (field === "year"
-            ? numeric >= 1 && numeric <= 2100
-            : field === "season"
-              ? numeric >= 0 && numeric <= 10_000
-              : numeric >= 1 && numeric <= 100_000));
-    if (!valid) return undefined;
-    normalized = String(numeric);
-  }
-  if (field === "language") {
-    normalized = normalized.toLowerCase();
-    if (!/^[a-z]{2,3}(?:-[a-z0-9]{2,8})?$/.test(normalized)) return undefined;
-  }
-  if (field === "premiereDate") {
-    const date = normalized.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-    if (!date) return undefined;
-    const year = Number(date[1]);
-    const month = Number(date[2]);
-    const day = Number(date[3]);
-    const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
-    const daysInMonth = [
-      31,
-      leapYear ? 29 : 28,
-      31,
-      30,
-      31,
-      30,
-      31,
-      31,
-      30,
-      31,
-      30,
-      31,
-    ];
-    if (
-      year < 1 ||
-      month < 1 ||
-      month > 12 ||
-      day < 1 ||
-      day > daysInMonth[month - 1]
-    )
-      return undefined;
-  }
-  const maximum =
-    field === "description"
-      ? 20_000
-      : LIST_METADATA_FIELDS.has(field)
-        ? 32_000
-        : field === "volumeNumber"
-          ? 32
-          : ["isbn", "officialRating"].includes(field)
-            ? 64
-            : field === "language"
-              ? 15
-              : field === "premiereDate"
-                ? 10
-                : 500;
-  if (
-    !normalized ||
-    normalized.length > maximum ||
-    [...normalized].some(
-      (character) => character < " " && !["\n", "\r", "\t"].includes(character),
-    )
-  )
-    return undefined;
-  return normalized;
 }
 
 export function metadataSourceChoices(
@@ -4404,6 +4294,15 @@ function wait(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+function metadataSelectionKey(
+  selectedItemId: string,
+  folder?: { rootId: string; relativePath: string },
+): string {
+  return folder
+    ? `folder:${folder.rootId}:${folder.relativePath}`
+    : selectedItemId;
+}
+
 interface MetadataEditorState {
   itemId: string;
   mediaType: string;
@@ -4449,11 +4348,20 @@ interface MetadataEditorState {
   candidates: MusicCandidate[];
   lookupLoading: boolean;
   lookupError: string;
+  lookupRevision: number;
   tmdbQuery: string;
   tmdbMediaType: "movie" | "tv" | "auto";
   tmdbCandidates: TmdbCandidate[];
   tmdbLoading: boolean;
   tmdbError: string;
+  tmdbRevision: number;
+  openLibraryQuery: string;
+  openLibraryCandidates: OpenLibraryCandidate[];
+  openLibraryLoading: boolean;
+  openLibraryError: string;
+  openLibraryRevision: number;
+  matchCandidate?: MetadataMatchCandidate;
+  matchSelection: MetadataMatchSelection[];
   loadingDetails: boolean;
   planning: boolean;
   confirming: boolean;
@@ -4466,7 +4374,7 @@ interface MetadataEditorState {
   draftSessionRevision: number;
 }
 
-type EditableMetadataField = (typeof EDITABLE_METADATA_FIELDS)[number][0];
+type EditableMetadataField = MetadataMatchField;
 
 function editableMetadataValues(
   metadata: MetadataEditorState,
@@ -4612,11 +4520,19 @@ const ItemEditor = component$<{
     candidates: [],
     lookupLoading: false,
     lookupError: "",
+    lookupRevision: 0,
     tmdbQuery: "",
     tmdbMediaType: "auto",
     tmdbCandidates: [],
     tmdbLoading: false,
     tmdbError: "",
+    tmdbRevision: 0,
+    openLibraryQuery: "",
+    openLibraryCandidates: [],
+    openLibraryLoading: false,
+    openLibraryError: "",
+    openLibraryRevision: 0,
+    matchSelection: [],
     loadingDetails: false,
     planning: false,
     confirming: false,
@@ -4786,11 +4702,20 @@ const ItemEditor = component$<{
     metadata.candidates = [];
     metadata.lookupLoading = false;
     metadata.lookupError = "";
+    metadata.lookupRevision += 1;
     metadata.tmdbQuery = metadata.title;
     metadata.tmdbMediaType = metadata.mediaType === "movie" ? "movie" : "auto";
     metadata.tmdbCandidates = [];
     metadata.tmdbLoading = false;
     metadata.tmdbError = "";
+    metadata.tmdbRevision += 1;
+    metadata.openLibraryQuery = "";
+    metadata.openLibraryCandidates = [];
+    metadata.openLibraryLoading = false;
+    metadata.openLibraryError = "";
+    metadata.openLibraryRevision += 1;
+    metadata.matchCandidate = undefined;
+    metadata.matchSelection = [];
     metadata.baseline = normalizedMetadataValues(metadata);
     props.state.error = "";
     try {
@@ -5142,10 +5067,32 @@ const ItemEditor = component$<{
     }
   });
 
+  const setMusicLookupMode = $((value: MusicLookupMode) => {
+    metadata.lookupMode = value;
+  });
+  const setMusicArtist = $((value: string) => {
+    metadata.lookupArtist = value;
+  });
+  const setMusicTitle = $((value: string) => {
+    metadata.lookupTitle = value;
+  });
+
   const lookupMusic = $(async () => {
-    if (!metadata.itemId || metadata.lookupLoading) return;
+    if (
+      !props.state.session?.canEdit ||
+      !metadata.itemId ||
+      metadata.itemId !==
+        metadataSelectionKey(props.state.selectedItemId, props.folder) ||
+      metadata.lookupLoading
+    )
+      return;
+    const selectionKey = metadata.itemId;
+    const requestRevision = metadata.lookupRevision + 1;
+    metadata.lookupRevision = requestRevision;
     metadata.lookupLoading = true;
     metadata.lookupError = "";
+    metadata.matchCandidate = undefined;
+    metadata.matchSelection = [];
     props.state.error = "";
     props.state.notice = "";
     const body: Record<string, unknown> = { mode: metadata.lookupMode };
@@ -5160,36 +5107,86 @@ const ItemEditor = component$<{
         method: "POST",
         body: JSON.stringify(body),
       });
+      if (
+        metadata.itemId !== selectionKey ||
+        metadataSelectionKey(props.state.selectedItemId, props.folder) !==
+          selectionKey ||
+        metadata.lookupRevision !== requestRevision
+      )
+        return;
       metadata.candidates = result.candidates;
       if (result.candidates.length === 0) {
         props.state.notice =
           "MusicBrainz found no matching releases. Try a fingerprint lookup or refine the artist and title.";
       }
     } catch (error) {
-      metadata.lookupError = readableError(error);
+      if (
+        metadata.itemId === selectionKey &&
+        metadataSelectionKey(props.state.selectedItemId, props.folder) ===
+          selectionKey &&
+        metadata.lookupRevision === requestRevision
+      )
+        metadata.lookupError = readableError(error);
     } finally {
-      metadata.lookupLoading = false;
+      if (
+        metadata.itemId === selectionKey &&
+        metadataSelectionKey(props.state.selectedItemId, props.folder) ===
+          selectionKey &&
+        metadata.lookupRevision === requestRevision
+      )
+        metadata.lookupLoading = false;
     }
   });
 
-  const fillMusicCandidate = $((candidate: MusicCandidate) => {
-    metadata.isDraft = true;
-    metadata.title = candidate.title;
-    metadata.authors = candidate.artist;
-    if (candidate.year) metadata.year = String(candidate.year);
-    if (candidate.genres.length > 0)
-      metadata.genres = candidate.genres.join(", ");
-    if (candidate.label) metadata.publisher = candidate.label;
-    markMetadataDraftDirty(metadata, props.state);
+  const compareMusicCandidate = $((candidate: MusicCandidate) => {
+    if (
+      !props.state.session?.canEdit ||
+      !metadata.itemId ||
+      metadata.itemId !==
+        metadataSelectionKey(props.state.selectedItemId, props.folder)
+    )
+      return;
+    const match = providerMusicMatch(metadata.itemId, candidate);
+    if (!match) {
+      metadata.lookupError =
+        "MusicBrainz returned a candidate that could not be safely compared.";
+      return;
+    }
+    const rows = metadataMatchRows(
+      match,
+      normalizedMetadataValues(metadata),
+      metadata.providerIds,
+    );
+    metadata.matchCandidate = match;
+    metadata.matchSelection = defaultMetadataMatchSelection(rows);
     props.state.error = "";
-    props.state.notice = `Filled the form from “${candidate.title}”. Review the fields before previewing the metadata sidecar.`;
+    props.state.notice = "";
+  });
+
+  const setTmdbQuery = $((value: string) => {
+    metadata.tmdbQuery = value;
+  });
+  const setTmdbKind = $((value: "movie" | "tv" | "auto") => {
+    metadata.tmdbMediaType = value;
   });
 
   const lookupTmdb = $(async () => {
     const query = metadata.tmdbQuery.trim() || metadata.title.trim();
-    if (!query || metadata.tmdbLoading) return;
+    if (
+      !props.state.session?.canEdit ||
+      !query ||
+      metadata.itemId !==
+        metadataSelectionKey(props.state.selectedItemId, props.folder) ||
+      metadata.tmdbLoading
+    )
+      return;
+    const selectionKey = metadata.itemId;
+    const requestRevision = metadata.tmdbRevision + 1;
+    metadata.tmdbRevision = requestRevision;
     metadata.tmdbLoading = true;
     metadata.tmdbError = "";
+    metadata.matchCandidate = undefined;
+    metadata.matchSelection = [];
     props.state.error = "";
     props.state.notice = "";
     try {
@@ -5200,23 +5197,71 @@ const ItemEditor = component$<{
         method: "POST",
         body: JSON.stringify({
           query,
-          mediaType: metadata.tmdbMediaType,
+          mediaType: ["season", "episode"].includes(metadata.mediaType)
+            ? "tv"
+            : metadata.tmdbMediaType,
           year: metadata.year ? Number.parseInt(metadata.year, 10) : undefined,
         }),
       });
+      if (
+        metadata.itemId !== selectionKey ||
+        metadataSelectionKey(props.state.selectedItemId, props.folder) !==
+          selectionKey ||
+        metadata.tmdbRevision !== requestRevision
+      )
+        return;
       metadata.tmdbCandidates = result.results;
       if (result.results.length === 0)
         props.state.notice =
           "TMDB found no candidates. Try removing the year or simplifying the title.";
     } catch (error) {
-      metadata.tmdbError = readableError(error);
+      if (
+        metadata.itemId === selectionKey &&
+        metadataSelectionKey(props.state.selectedItemId, props.folder) ===
+          selectionKey &&
+        metadata.tmdbRevision === requestRevision
+      )
+        metadata.tmdbError = readableError(error);
     } finally {
-      metadata.tmdbLoading = false;
+      if (
+        metadata.itemId === selectionKey &&
+        metadataSelectionKey(props.state.selectedItemId, props.folder) ===
+          selectionKey &&
+        metadata.tmdbRevision === requestRevision
+      )
+        metadata.tmdbLoading = false;
     }
   });
 
-  const fillTmdbCandidate = $(async (candidate: TmdbCandidate) => {
-    if (metadata.tmdbLoading) return;
+  const compareTmdbCandidate = $(async (candidate: TmdbCandidate) => {
+    if (
+      !props.state.session?.canEdit ||
+      metadata.itemId !==
+        metadataSelectionKey(props.state.selectedItemId, props.folder) ||
+      metadata.tmdbLoading
+    )
+      return;
+    if (
+      ["season", "episode"].includes(metadata.mediaType) &&
+      candidate.mediaType !== "tv"
+    ) {
+      metadata.tmdbError =
+        "Choose a television series before comparing season or episode metadata.";
+      return;
+    }
+    const selectionKey = metadata.itemId;
+    const requestRevision = metadata.tmdbRevision + 1;
+    const draftRevision = metadata.draftRevision;
+    const requestedMediaType = metadata.mediaType;
+    const requestedSeasonNumber =
+      requestedMediaType === "episode" || requestedMediaType === "season"
+        ? Number.parseInt(metadata.season, 10)
+        : undefined;
+    const requestedEpisodeNumber =
+      requestedMediaType === "episode"
+        ? Number.parseInt(metadata.episode, 10)
+        : undefined;
+    metadata.tmdbRevision = requestRevision;
     metadata.tmdbLoading = true;
     metadata.tmdbError = "";
     props.state.error = "";
@@ -5227,50 +5272,238 @@ const ItemEditor = component$<{
           method: "POST",
           body: JSON.stringify({
             tmdbId: candidate.tmdbId,
-            mediaType: candidate.mediaType,
+            mediaType:
+              requestedMediaType === "episode"
+                ? "episode"
+                : requestedMediaType === "season"
+                  ? "season"
+                  : candidate.mediaType,
+            seasonNumber: requestedSeasonNumber,
+            episodeNumber: requestedEpisodeNumber,
           }),
         },
       );
+      if (
+        metadata.itemId !== selectionKey ||
+        metadataSelectionKey(props.state.selectedItemId, props.folder) !==
+          selectionKey ||
+        metadata.tmdbRevision !== requestRevision ||
+        metadata.draftRevision !== draftRevision
+      )
+        return;
       const details = response.details;
-      metadata.isDraft = true;
-      metadata.mediaType = details.mediaType === "tv" ? "series" : "movie";
-      metadata.title = details.title;
-      if (details.year) metadata.year = String(details.year);
-      if (details.overview) metadata.description = details.overview;
-      if (details.runtimeMinutes)
-        metadata.runtimeMinutes = String(details.runtimeMinutes);
-      if (details.voteAverage != null)
-        metadata.communityRating = String(details.voteAverage);
-      if (details.genres?.length) metadata.genres = details.genres.join(", ");
-      const writers = (details.crew ?? [])
-        .filter((member) =>
-          ["Writer", "Screenplay", "Teleplay", "Story"].includes(member.job),
-        )
-        .map((member) => member.name)
-        .filter((name, index, names) => names.indexOf(name) === index);
-      if (writers.length > 0) metadata.writers = writers.join(", ");
-      metadata.premiereDate =
-        details.releaseDate?.slice(0, 10) ??
-        details.firstAirDate?.slice(0, 10) ??
-        metadata.premiereDate;
-      metadata.providerIds = {
-        ...metadata.providerIds,
-        tmdb: String(details.tmdbId),
-        ...(details.externalIds?.imdbId
-          ? { imdb: details.externalIds.imdbId }
-          : {}),
-        ...(details.externalIds?.wikidataId
-          ? { wikidata: details.externalIds.wikidataId }
-          : {}),
-      };
-      markMetadataDraftDirty(metadata, props.state);
-      props.state.notice =
-        "Filled the draft from TMDB. Review every field and preview the portable metadata change before applying it.";
+      if (["season", "episode"].includes(details.mediaType)) {
+        details.seriesTitle = candidate.title;
+      }
+      const match = providerTmdbMatch(selectionKey, details);
+      if (!match) {
+        metadata.tmdbError =
+          "TMDB returned details that could not be safely compared.";
+        return;
+      }
+      const rows = metadataMatchRows(
+        match,
+        normalizedMetadataValues(metadata),
+        metadata.providerIds,
+      );
+      metadata.matchCandidate = match;
+      metadata.matchSelection = defaultMetadataMatchSelection(rows);
+      return details;
     } catch (error) {
-      metadata.tmdbError = readableError(error);
+      if (
+        metadata.itemId === selectionKey &&
+        metadataSelectionKey(props.state.selectedItemId, props.folder) ===
+          selectionKey &&
+        metadata.tmdbRevision === requestRevision
+      )
+        metadata.tmdbError = readableError(error);
     } finally {
-      metadata.tmdbLoading = false;
+      if (
+        metadata.itemId === selectionKey &&
+        metadataSelectionKey(props.state.selectedItemId, props.folder) ===
+          selectionKey &&
+        metadata.tmdbRevision === requestRevision
+      )
+        metadata.tmdbLoading = false;
     }
+  });
+
+  const setOpenLibraryQuery = $((value: string) => {
+    metadata.openLibraryQuery = value;
+  });
+
+  const lookupOpenLibrary = $(async () => {
+    const fallbackQuery =
+      metadata.isbn.trim() ||
+      [metadata.title.trim(), metadata.authors.trim()]
+        .filter(Boolean)
+        .join(" ");
+    const query = metadata.openLibraryQuery.trim() || fallbackQuery;
+    if (
+      !props.state.session?.canEdit ||
+      !query ||
+      metadata.itemId !==
+        metadataSelectionKey(props.state.selectedItemId, props.folder) ||
+      metadata.openLibraryLoading
+    )
+      return;
+    const selectionKey = metadata.itemId;
+    const requestRevision = metadata.openLibraryRevision + 1;
+    metadata.openLibraryRevision = requestRevision;
+    metadata.openLibraryLoading = true;
+    metadata.openLibraryError = "";
+    metadata.matchCandidate = undefined;
+    metadata.matchSelection = [];
+    props.state.error = "";
+    props.state.notice = "";
+    try {
+      const result = await api<{
+        provider: "open-library";
+        results: OpenLibraryCandidate[];
+      }>("/provider-lookups/open-library/search", {
+        method: "POST",
+        body: JSON.stringify({ query }),
+      });
+      if (
+        metadata.itemId !== selectionKey ||
+        metadataSelectionKey(props.state.selectedItemId, props.folder) !==
+          selectionKey ||
+        metadata.openLibraryRevision !== requestRevision
+      )
+        return;
+      metadata.openLibraryCandidates = result.results;
+      if (result.results.length === 0)
+        props.state.notice =
+          "Open Library found no candidates. Try an ISBN or simplify the title and author.";
+    } catch (error) {
+      if (
+        metadata.itemId === selectionKey &&
+        metadataSelectionKey(props.state.selectedItemId, props.folder) ===
+          selectionKey &&
+        metadata.openLibraryRevision === requestRevision
+      )
+        metadata.openLibraryError = readableError(error);
+    } finally {
+      if (
+        metadata.itemId === selectionKey &&
+        metadataSelectionKey(props.state.selectedItemId, props.folder) ===
+          selectionKey &&
+        metadata.openLibraryRevision === requestRevision
+      )
+        metadata.openLibraryLoading = false;
+    }
+  });
+
+  const compareOpenLibraryCandidate = $((candidate: OpenLibraryCandidate) => {
+    if (
+      !props.state.session?.canEdit ||
+      metadata.itemId !==
+        metadataSelectionKey(props.state.selectedItemId, props.folder)
+    )
+      return;
+    const match = providerOpenLibraryMatch(metadata.itemId, candidate);
+    if (!match) {
+      metadata.openLibraryError =
+        "Open Library returned a candidate that could not be safely compared.";
+      return;
+    }
+    const rows = metadataMatchRows(
+      match,
+      normalizedMetadataValues(metadata),
+      metadata.providerIds,
+    );
+    metadata.matchCandidate = match;
+    metadata.matchSelection = defaultMetadataMatchSelection(rows);
+    props.state.error = "";
+    props.state.notice = "";
+  });
+
+  const compareGoogleBooksCandidate = $((candidate: GoogleBooksCandidate) => {
+    if (
+      !props.state.session?.canEdit ||
+      metadata.itemId !==
+        metadataSelectionKey(props.state.selectedItemId, props.folder)
+    )
+      return;
+    const match = googleBooksMetadataMatchCandidate(metadata.itemId, candidate);
+    if (!match) {
+      props.state.error =
+        "Google Books returned a candidate that could not be safely compared.";
+      return;
+    }
+    const rows = metadataMatchRows(
+      match,
+      normalizedMetadataValues(metadata),
+      metadata.providerIds,
+    );
+    metadata.matchCandidate = match;
+    metadata.matchSelection = defaultMetadataMatchSelection(rows);
+    props.state.error = "";
+    props.state.notice = "";
+  });
+
+  const toggleMetadataMatchField = $((field: MetadataMatchSelection) => {
+    const candidate = metadata.matchCandidate;
+    if (
+      !props.state.session?.canEdit ||
+      !candidate ||
+      candidate.itemKey !== metadata.itemId ||
+      candidate.itemKey !==
+        metadataSelectionKey(props.state.selectedItemId, props.folder)
+    )
+      return;
+    const row = metadataMatchRows(
+      candidate,
+      normalizedMetadataValues(metadata),
+      metadata.providerIds,
+    ).find((item) => item.field === field);
+    if (!row?.hasChange) return;
+    metadata.matchSelection = metadata.matchSelection.includes(field)
+      ? metadata.matchSelection.filter((item) => item !== field)
+      : [...metadata.matchSelection, field];
+  });
+
+  const cancelMetadataMatch = $(() => {
+    metadata.matchCandidate = undefined;
+    metadata.matchSelection = [];
+  });
+
+  const applyMetadataMatch = $(() => {
+    const candidate = metadata.matchCandidate;
+    if (
+      !props.state.session?.canEdit ||
+      !candidate ||
+      candidate.itemKey !== metadata.itemId ||
+      candidate.itemKey !==
+        metadataSelectionKey(props.state.selectedItemId, props.folder)
+    )
+      return;
+    const rows = metadataMatchRows(
+      candidate,
+      normalizedMetadataValues(metadata),
+      metadata.providerIds,
+    );
+    const patch = selectedMetadataMatchPatch(
+      candidate,
+      activeMetadataMatchSelection(rows, metadata.matchSelection),
+    );
+    const fieldEntries = Object.entries(patch.fields) as Array<
+      [MetadataMatchField, string]
+    >;
+    const selectionCount =
+      fieldEntries.length + (Object.keys(patch.providerIds).length > 0 ? 1 : 0);
+    if (selectionCount === 0) return;
+    metadata.isDraft = true;
+    for (const [field, value] of fieldEntries) metadata[field] = value;
+    metadata.providerIds = mergeMetadataProviderIds(
+      metadata.providerIds,
+      patch.providerIds,
+    );
+    markMetadataDraftDirty(metadata, props.state);
+    metadata.matchCandidate = undefined;
+    metadata.matchSelection = [];
+    props.state.error = "";
+    props.state.notice = `Added ${selectionCount} ${candidate.providerLabel} field${selectionCount === 1 ? "" : "s"} to the draft. Review them before previewing the portable metadata change.`;
   });
 
   const portableWriteAvailable =
@@ -5280,6 +5513,19 @@ const ItemEditor = component$<{
           (target) => target.kind === "portable-file" && target.available,
         );
   const normalizedDraftValues = normalizedMetadataValues(metadata);
+  const openLibraryFallbackQuery =
+    metadata.isbn.trim() ||
+    [metadata.title.trim(), metadata.authors.trim()].filter(Boolean).join(" ");
+  const matchRows =
+    metadata.matchCandidate?.itemKey === metadata.itemId &&
+    metadata.matchCandidate.itemKey ===
+      metadataSelectionKey(props.state.selectedItemId, props.folder)
+      ? metadataMatchRows(
+          metadata.matchCandidate,
+          normalizedDraftValues,
+          metadata.providerIds,
+        )
+      : [];
   const sourceChoices = metadata.isDraft
     ? metadataSourceChoices(metadata.observations, normalizedDraftValues)
     : [];
@@ -5610,255 +5856,92 @@ const ItemEditor = component$<{
               </p>
             )}
           </details>
-          {["movie", "series", "episode"].includes(metadata.mediaType) && (
-            <section class="panel musicbrainz-panel tmdb-panel">
-              <div class="panel-heading">
-                <div>
-                  <h3>TMDB lookup</h3>
-                </div>
-                <span class="status-badge live">Per-user account</span>
-              </div>
-              <p class="quiet-copy">
-                Search with your runtime TMDB account, inspect likely matches,
-                then fill a draft. Lookup results never write metadata by
-                themselves. Configure or replace it in{" "}
-                <a class="metadata-source-setup-link" href="?view=accounts">
-                  Metadata sources
-                </a>
-                .
-              </p>
-              <div class="metadata-form">
-                <label class="tmdb-query-input">
-                  <span>Title</span>
-                  <input
-                    value={metadata.tmdbQuery || metadata.title}
-                    maxLength={500}
-                    placeholder="e.g. Arrival"
-                    onInput$={(_, input) => (metadata.tmdbQuery = input.value)}
-                  />
-                </label>
-                <label>
-                  <span>Kind</span>
-                  <select
-                    value={metadata.tmdbMediaType}
-                    onChange$={(_, select) =>
-                      (metadata.tmdbMediaType = select.value as
-                        | "movie"
-                        | "tv"
-                        | "auto")
-                    }
-                  >
-                    <option value="auto">Movies and television</option>
-                    <option value="movie">Movies</option>
-                    <option value="tv">Television</option>
-                  </select>
-                </label>
-                <div class="metadata-actions">
-                  <button
-                    class="primary-button"
-                    type="button"
-                    disabled={
-                      !props.state.session?.canEdit ||
-                      metadata.tmdbLoading ||
-                      !(metadata.tmdbQuery.trim() || metadata.title.trim())
-                    }
-                    onClick$={lookupTmdb}
-                  >
-                    <Icon name="scan" size={18} />
-                    {metadata.tmdbLoading ? "Looking up…" : "Find matches"}
-                  </button>
-                </div>
-              </div>
-              {metadata.tmdbError && (
-                <p class="error-copy">{metadata.tmdbError}</p>
-              )}
-              <div class="subtitle-results">
-                {metadata.tmdbCandidates.map((candidate) => (
-                  <article
-                    class="subtitle-result"
-                    key={`${candidate.mediaType}-${candidate.tmdbId}`}
-                  >
-                    <div>
-                      <strong>
-                        {candidate.title}
-                        {candidate.year ? ` (${candidate.year})` : ""}
-                      </strong>
-                      <span>
-                        {candidate.mediaType === "tv" ? "Television" : "Movie"}
-                        {candidate.voteCount != null
-                          ? ` · ${candidate.voteCount.toLocaleString()} votes`
-                          : ""}
-                        {candidate.voteAverage != null
-                          ? ` · ${candidate.voteAverage.toFixed(1)}/10`
-                          : ""}
-                      </span>
-                      {candidate.overview && <p>{candidate.overview}</p>}
-                    </div>
-                    <button
-                      class="secondary-button"
-                      type="button"
-                      disabled={metadata.tmdbLoading}
-                      onClick$={() => fillTmdbCandidate(candidate)}
-                    >
-                      Fill draft
-                    </button>
-                  </article>
-                ))}
-                {metadata.tmdbCandidates.length === 0 && (
-                  <p class="quiet-copy">
-                    Candidate titles will appear here with year, popularity, and
-                    summary so you can disambiguate before filling fields.
-                  </p>
-                )}
-              </div>
-              <div class="tmdb-attribution metadata-compatibility-note">
-                <a
-                  href="https://www.themoviedb.org"
-                  target="_blank"
-                  rel="noreferrer"
-                  aria-label="Visit The Movie Database"
-                >
-                  <img src={tmdbLogo} alt="TMDB" />
-                </a>
-                <p>
-                  This product uses the TMDB API but is not endorsed or
-                  certified by TMDB.
-                </p>
-              </div>
-            </section>
+          {["movie", "series", "season", "episode"].includes(
+            metadata.mediaType,
+          ) && (
+            <TmdbPanel
+              itemId={props.folder ? "" : metadata.itemId}
+              itemMediaType={metadata.mediaType}
+              season={
+                metadata.season === ""
+                  ? undefined
+                  : Number.parseInt(metadata.season, 10)
+              }
+              episode={
+                metadata.episode === ""
+                  ? undefined
+                  : Number.parseInt(metadata.episode, 10)
+              }
+              query={metadata.tmdbQuery}
+              fallbackQuery={metadata.title}
+              searchKind={metadata.tmdbMediaType}
+              candidates={metadata.tmdbCandidates}
+              loading={metadata.tmdbLoading}
+              error={metadata.tmdbError}
+              canEdit={props.state.session?.canEdit ?? false}
+              mutationMode={props.state.status?.mutationMode ?? "read-only"}
+              onQuery$={setTmdbQuery}
+              onKind$={setTmdbKind}
+              onSearch$={lookupTmdb}
+              onCompare$={compareTmdbCandidate}
+            />
           )}
+          {["book", "audiobook"].includes(metadata.mediaType) &&
+            !props.folder && (
+              <OpenLibraryPanel
+                itemId={metadata.itemId}
+                mutationMode={props.state.status?.mutationMode ?? "read-only"}
+                query={metadata.openLibraryQuery}
+                fallbackQuery={openLibraryFallbackQuery}
+                candidates={metadata.openLibraryCandidates}
+                loading={metadata.openLibraryLoading}
+                error={metadata.openLibraryError}
+                canEdit={props.state.session?.canEdit ?? false}
+                onQueryInput$={setOpenLibraryQuery}
+                onSearch$={lookupOpenLibrary}
+                onCompare$={compareOpenLibraryCandidate}
+              />
+            )}
+          {["book", "audiobook"].includes(metadata.mediaType) &&
+            !props.folder && (
+              <GoogleBooksPanel
+                itemId={metadata.itemId}
+                fallbackQuery={openLibraryFallbackQuery}
+                canEdit={props.state.session?.canEdit ?? false}
+                mutationMode={props.state.status?.mutationMode ?? "read-only"}
+                onCompare$={compareGoogleBooksCandidate}
+              />
+            )}
           {metadata.mediaType === "music" && !props.folder && (
-            <section class="panel musicbrainz-panel">
-              <div class="panel-heading">
-                <div>
-                  <h3>MusicBrainz lookup</h3>
-                </div>
-                <span
-                  class={{ "status-badge": true, live: musicbrainzAvailable }}
-                >
-                  {musicbrainzAvailable
-                    ? fingerprintAvailable
-                      ? "Fingerprint ready"
-                      : "Search only"
-                    : "Unavailable"}
-                </span>
-              </div>
-              <p class="quiet-copy">
-                Match the album release on MusicBrainz and fill this form from
-                it before previewing the sidecar. Fingerprint lookup matches the
-                audio itself but needs an AcoustID API key in{" "}
-                <a class="metadata-source-setup-link" href="?view=accounts">
-                  Metadata sources
-                </a>
-                .
-              </p>
-              <div class="metadata-form">
-                <label>
-                  <span>Lookup mode</span>
-                  <select
-                    value={metadata.lookupMode}
-                    onChange$={(_, select) =>
-                      (metadata.lookupMode = select.value as MusicLookupMode)
-                    }
-                  >
-                    <option value="auto">
-                      Auto — fingerprint, then search
-                    </option>
-                    <option
-                      value="fingerprint"
-                      disabled={!fingerprintAvailable}
-                    >
-                      Fingerprint — match the audio
-                    </option>
-                    <option value="search">Search — artist and title</option>
-                  </select>
-                </label>
-                <label>
-                  <span>Artist</span>
-                  <input
-                    value={metadata.lookupArtist}
-                    maxLength={500}
-                    placeholder="e.g. Nirvana"
-                    onInput$={(_, input) =>
-                      (metadata.lookupArtist = input.value)
-                    }
-                  />
-                </label>
-                <label class="title-input">
-                  <span>Title</span>
-                  <input
-                    value={metadata.lookupTitle}
-                    maxLength={500}
-                    placeholder="e.g. Nevermind"
-                    onInput$={(_, input) =>
-                      (metadata.lookupTitle = input.value)
-                    }
-                  />
-                </label>
-                <div class="metadata-actions">
-                  <button
-                    class="primary-button"
-                    type="button"
-                    disabled={
-                      !musicbrainzAvailable ||
-                      !props.state.session?.canEdit ||
-                      !metadata.itemId ||
-                      metadata.lookupLoading ||
-                      (metadata.lookupMode === "fingerprint" &&
-                        !fingerprintAvailable)
-                    }
-                    onClick$={lookupMusic}
-                  >
-                    <Icon name="disc" size={18} />
-                    {metadata.lookupLoading ? "Looking up…" : "Look up release"}
-                  </button>
-                </div>
-              </div>
-              {metadata.lookupError && (
-                <p class="error-copy">{metadata.lookupError}</p>
-              )}
-              <div class="subtitle-results">
-                {metadata.candidates.map((candidate) => (
-                  <article
-                    class="subtitle-result"
-                    key={candidate.releaseGroupId}
-                  >
-                    <div>
-                      <strong>
-                        {candidate.artist} — {candidate.title}
-                      </strong>
-                      <span>
-                        {candidate.releaseType ?? "Release"} ·{" "}
-                        {candidate.year ?? "unknown year"}
-                        {candidate.label ? ` · ${candidate.label}` : ""}
-                        {candidate.trackCount
-                          ? ` · ${candidate.trackCount} tracks`
-                          : ""}
-                        {candidate.genres.length > 0
-                          ? ` · ${candidate.genres.join(", ")}`
-                          : ""}
-                        {candidate.matchMethod === "fingerprint"
-                          ? " · matched by fingerprint"
-                          : " · matched by search"}
-                      </span>
-                    </div>
-                    <button
-                      class="secondary-button"
-                      type="button"
-                      onClick$={() => fillMusicCandidate(candidate)}
-                    >
-                      Fill form
-                    </button>
-                  </article>
-                ))}
-                {metadata.candidates.length === 0 && (
-                  <p class="quiet-copy">
-                    Matched releases will appear here. Fill the form from a
-                    release, then preview the metadata sidecar as usual.
-                  </p>
-                )}
-              </div>
-            </section>
+            <MusicBrainzPanel
+              itemId={metadata.itemId}
+              available={musicbrainzAvailable}
+              fingerprintAvailable={fingerprintAvailable}
+              canEdit={props.state.session?.canEdit ?? false}
+              mutationMode={props.state.status?.mutationMode ?? "read-only"}
+              mode={metadata.lookupMode}
+              artist={metadata.lookupArtist}
+              title={metadata.lookupTitle}
+              candidates={metadata.candidates}
+              loading={metadata.lookupLoading}
+              error={metadata.lookupError}
+              onMode$={setMusicLookupMode}
+              onArtist$={setMusicArtist}
+              onTitle$={setMusicTitle}
+              onSearch$={lookupMusic}
+              onCompare$={compareMusicCandidate}
+            />
+          )}
+          {metadata.matchCandidate && matchRows.length > 0 && (
+            <MetadataMatchWorkspace
+              candidate={metadata.matchCandidate}
+              rows={matchRows}
+              selectedFields={metadata.matchSelection}
+              canEdit={props.state.session?.canEdit ?? false}
+              onToggle$={toggleMetadataMatchField}
+              onApply$={applyMetadataMatch}
+              onCancel$={cancelMetadataMatch}
+            />
           )}
           {metadata.isDraft && sourceChoices.length > 0 && (
             <section

@@ -1,4 +1,4 @@
-{ pkgs, rustLib, sharedFrontendDeps, workspaceSrc ? null, sharedCargoArtifacts ? null, cargoLock ? null, ... }:
+{ pkgs, rustLib, sharedFrontendDeps, workspaceVersion, workspaceSrc ? null, sharedCargoArtifacts ? null, cargoLock ? null, ... }:
 
 let
   frontendDist = rustLib.mkPnpmFrontend {
@@ -13,6 +13,7 @@ let
 
   app = rustLib.mkRustApp {
     name = "mail-archive-ui";
+    version = workspaceVersion;
     binaryName = "mail-archive-ui";
     srcDir = ./.;
     inherit workspaceSrc sharedCargoArtifacts cargoLock;

@@ -26,8 +26,22 @@ require_fixed modules/Core_Modules/auth-gateway/default.nix '"X_WebAuth_User"' \
   "The gateway must strip the underscore alias that FastCGI can map to HTTP_X_WEBAUTH_USER."
 require_fixed modules/freshrss/services.nix 'env REMOTE_USER {http.request.header.X-Auth-Request-Preferred-Username}' \
   "Caddy must pass only its post-OIDC username to FreshRSS over FastCGI."
+require_fixed modules/freshrss/services.nix 'table inet freshrss_egress' \
+  "FreshRSS feed fetching must be denied access to private and local network ranges."
+require_fixed modules/freshrss/services.nix 'freshrss-egress-policy' \
+  "FreshRSS feed fetching must install its egress restriction before the updater and PHP-FPM pool start."
+require_fixed modules/freshrss/services.nix 'freshrss-account-reconcile' \
+  "Removing a Kanidm user from freshrss-users must retire the local FreshRSS account so its API password stops working."
+require_fixed modules/freshrss/services.nix 'reconcile-accounts.sh' \
+  "FreshRSS account retirement must use the dedicated reconcile script."
+require_fixed modules/freshrss/services.nix 'FRESHRSS_ALLOWED_USERS_FILE' \
+  "FreshRSS account retirement must be scoped to the configured Kanidm app users."
 if [[ ! -f modules/freshrss/reconcile-http-auth.php ]]; then
   echo "❌ FreshRSS must reconcile first-login registration in persisted config.php."
+  exit 1
+fi
+if [[ ! -f modules/freshrss/reconcile-accounts.sh ]]; then
+  echo "❌ FreshRSS must ship the account-retirement reconcile script."
   exit 1
 fi
 forbid_match modules/freshrss/services.nix 'authType = "none"|services[.]nginx|127[.]0[.]0[.]1|ports[.]freshrss' \
@@ -105,7 +119,8 @@ freshrss_json="$(NIXHOMESERVER_TEST_HOST="$host" flake_eval_json '
     modules = [{ repo.freshrss.enable = lib.mkForce false; }];
   }).config;
   rssHost = "rss.${vars.domain}";
-  serviceNames = [ "freshrss-config" "freshrss-updater" "phpfpm-freshrss" ];
+  serviceNames = [ "freshrss-config" "freshrss-updater" "phpfpm-freshrss" "freshrss-egress-policy" "freshrss-account-reconcile" ];
+  timerNames = [ "freshrss-updater" "freshrss-account-reconcile" ];
 in {
   registered = cfg.nixhomeserver.modules.freshrss or false;
   enabled = cfg.services.freshrss.enable;
@@ -120,12 +135,24 @@ in {
   dataDir = cfg.services.freshrss.dataDir;
   webserver = cfg.services.freshrss.webserver;
   virtualHost = cfg.services.freshrss.virtualHost;
+  extensionsEnabled = cfg.services.freshrss.extensions;
   nginxEnabled = cfg.services.nginx.enable;
   freshrssPortPresent = builtins.hasAttr "freshrss" vars.networking.ports;
   phpPoolSettings = cfg.services.phpfpm.pools.freshrss.settings;
   phpPoolSocket = cfg.services.phpfpm.pools.freshrss.socket;
   configServiceScript = cfg.systemd.services.freshrss-config.script;
   configServiceUser = cfg.systemd.services.freshrss-config.serviceConfig.User;
+  egressExecStart = cfg.systemd.services.freshrss-egress-policy.serviceConfig.ExecStart;
+  egressBefore = cfg.systemd.services.freshrss-egress-policy.before;
+  egressAfter = cfg.systemd.services.freshrss-egress-policy.after;
+  egressRestrictAddressFamilies = cfg.systemd.services.freshrss-egress-policy.serviceConfig.RestrictAddressFamilies;
+  accountReconcileUser = cfg.systemd.services.freshrss-account-reconcile.serviceConfig.User;
+  accountReconcileGroup = cfg.systemd.services.freshrss-account-reconcile.serviceConfig.Group;
+  accountReconcileScript = cfg.systemd.services.freshrss-account-reconcile.script;
+  accountReconcileDataPath = cfg.systemd.services.freshrss-account-reconcile.environment.FRESHRSS_DATA_PATH;
+  accountReconcileAllowedFile = cfg.systemd.services.freshrss-account-reconcile.environment.FRESHRSS_ALLOWED_USERS_FILE;
+  accountReconcilePattern = cfg.systemd.services.freshrss-account-reconcile.environment.FRESHRSS_USERNAME_PATTERN;
+  accountTimerConfig = cfg.systemd.timers.freshrss-account-reconcile.timerConfig;
   caddyConfig = cfg.services.caddy.virtualHosts.${rssHost}.extraConfig;
   protectedApp = cfg.repo.authGateway.protectedApps.freshrss;
   privateDnsTarget = cfg.services.unbound.privateHosts.${rssHost}.target or null;
@@ -145,6 +172,7 @@ in {
   disabled = {
     enabled = disabled.services.freshrss.enable;
     services = builtins.filter (name: builtins.hasAttr name disabled.systemd.services) serviceNames;
+    timers = builtins.filter (name: builtins.hasAttr name disabled.systemd.timers) timerNames;
     nginxHostPresent = builtins.hasAttr rssHost disabled.services.nginx.virtualHosts;
     gatewayPresent = builtins.hasAttr "freshrss" disabled.repo.authGateway.protectedApps;
     privateDnsPresent = builtins.hasAttr rssHost disabled.services.unbound.privateHosts;
@@ -171,12 +199,27 @@ jq -e '
   and (.dataDir == "/var/lib/freshrss")
   and (.webserver == "caddy")
   and (.virtualHost == .expectedHost)
+  and (.extensionsEnabled == [])
   and (.nginxEnabled == false)
   and (.freshrssPortPresent == false)
   and (.phpPoolSocket == "/run/phpfpm/freshrss.sock")
   and (.configServiceUser == "freshrss")
   and (.configServiceScript | contains("reconcile-http-auth.php"))
   and ((.configServiceScript | index("cli/reconfigure.php")) < (.configServiceScript | index("reconcile-http-auth.php")))
+  and (.egressExecStart | startswith("/nix/store/"))
+  and (.egressExecStart | endswith("-freshrss-egress-policy"))
+  and (.egressBefore == ["freshrss-updater.service", "phpfpm-freshrss.service"])
+  and (.egressAfter | index("systemd-sysusers.service") != null)
+  and (.egressRestrictAddressFamilies == ["AF_NETLINK"])
+  and (.accountReconcileUser == "freshrss")
+  and (.accountReconcileGroup == "freshrss")
+  and (.accountReconcileDataPath == "/var/lib/freshrss")
+  and (.accountReconcileAllowedFile | startswith("/nix/store/"))
+  and (.accountReconcilePattern == "^([0-9A-Za-z]|[0-9A-Za-z_][0-9A-Za-z_.@-]{1,38})$")
+  and (.accountReconcileScript | contains("reconcile-accounts.sh"))
+  and (.accountTimerConfig.OnBootSec == "2m")
+  and (.accountTimerConfig.OnUnitActiveSec == "1h")
+  and (.accountTimerConfig.Persistent == true)
   and (.phpPoolSettings."listen.owner" == "caddy")
   and (.phpPoolSettings."listen.group" == "caddy")
   and (.phpPoolSettings."listen.mode" == "0600")
@@ -225,6 +268,7 @@ jq -e '
   and (.disabled == {
     enabled: false,
     services: [],
+    timers: [],
     nginxHostPresent: false,
     gatewayPresent: false,
     privateDnsPresent: false,
@@ -356,6 +400,29 @@ printf '%s\n' "$backup_fragment" > "$fragment_file"
   ) >/dev/null
 ) || {
   echo "❌ FreshRSS's dynamic backup fragment failed to publish and verify a valid one-character user's SQLite backup."
+  exit 1
+}
+
+reconcile_state="$test_tmp/reconcile-accounts"
+mkdir -p "$reconcile_state/users/alice" "$reconcile_state/users/admin" "$reconcile_state/users/bob"
+mkdir -p "$reconcile_state/users/.hidden"
+printf '%s\n' data > "$reconcile_state/users/alice/db.sqlite"
+printf '%s\n' data > "$reconcile_state/users/admin/db.sqlite"
+printf '%s\n' data > "$reconcile_state/users/bob/db.sqlite"
+printf '%s\n' 'not a directory' > "$reconcile_state/users/not-a-user.txt"
+printf '%s\n' 'alice' 'admin' > "$test_tmp/freshrss-allowed-users"
+FRESHRSS_DATA_PATH="$reconcile_state" \
+  FRESHRSS_USERNAME_PATTERN="$(jq -r .accountReconcilePattern <<<"$freshrss_json")" \
+  FRESHRSS_ALLOWED_USERS_FILE="$test_tmp/freshrss-allowed-users" \
+  bash modules/freshrss/reconcile-accounts.sh
+[[ -d "$reconcile_state/users/alice" ]] \
+  && [[ -d "$reconcile_state/users/admin" ]] \
+  && [[ -d "$reconcile_state/.retired-users/bob" ]] \
+  && [[ ! -d "$reconcile_state/users/bob" ]] \
+  && [[ -d "$reconcile_state/users/.hidden" ]] \
+  && [[ -f "$reconcile_state/users/not-a-user.txt" ]] || {
+  echo "❌ FreshRSS account retirement must keep allowed users, retire removed users, and never touch non-account entries."
+  ls -la "$reconcile_state/users" "$reconcile_state/.retired-users" 2>/dev/null
   exit 1
 }
 

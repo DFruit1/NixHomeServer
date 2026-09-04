@@ -75,6 +75,19 @@ pub struct Catalog {
     connection: Connection,
 }
 
+fn catalog_item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CatalogItem> {
+    Ok(CatalogItem {
+        id: row.get(0)?,
+        root_id: row.get(1)?,
+        owner_username: row.get(2)?,
+        relative_path: row.get(3)?,
+        media_kind: row.get(4)?,
+        size_bytes: row.get(5)?,
+        modified_ns: row.get(6)?,
+        fingerprint: row.get(7)?,
+    })
+}
+
 impl Catalog {
     pub fn open(path: &Path) -> rusqlite::Result<Self> {
         if let Some(parent) = path.parent() {
@@ -167,30 +180,49 @@ impl Catalog {
         owner_username: Option<&str>,
         limit: usize,
     ) -> rusqlite::Result<Vec<CatalogItem>> {
+        self.list_items_after(root_id, owner_username, None, limit)
+    }
+
+    pub fn list_items_after(
+        &self,
+        root_id: &str,
+        owner_username: Option<&str>,
+        after_relative_path: Option<&str>,
+        limit: usize,
+    ) -> rusqlite::Result<Vec<CatalogItem>> {
+        let limit = limit.min(500) as i64;
+        if let Some(after_relative_path) = after_relative_path {
+            let mut statement = self.connection.prepare(
+                "SELECT id, root_id, owner_username, relative_path, media_kind,
+                        size_bytes, modified_ns, fingerprint
+                   FROM catalog_items
+                  WHERE root_id = ?1
+                    AND owner_username IS ?2
+                    AND relative_path > ?3
+                  ORDER BY relative_path
+                  LIMIT ?4",
+            )?;
+            let rows = statement
+                .query_map(
+                    rusqlite::params![root_id, owner_username, after_relative_path, limit],
+                    catalog_item_from_row,
+                )?
+                .collect();
+            return rows;
+        }
         let mut statement = self.connection.prepare(
             "SELECT id, root_id, owner_username, relative_path, media_kind,
                     size_bytes, modified_ns, fingerprint
                FROM catalog_items
               WHERE root_id = ?1
-                AND (owner_username IS ?2 OR owner_username = ?2)
+                AND owner_username IS ?2
               ORDER BY relative_path
               LIMIT ?3",
         )?;
         let rows = statement
             .query_map(
-                rusqlite::params![root_id, owner_username, limit.min(500) as i64],
-                |row| {
-                    Ok(CatalogItem {
-                        id: row.get(0)?,
-                        root_id: row.get(1)?,
-                        owner_username: row.get(2)?,
-                        relative_path: row.get(3)?,
-                        media_kind: row.get(4)?,
-                        size_bytes: row.get(5)?,
-                        modified_ns: row.get(6)?,
-                        fingerprint: row.get(7)?,
-                    })
-                },
+                rusqlite::params![root_id, owner_username, limit],
+                catalog_item_from_row,
             )?
             .collect();
         rows
