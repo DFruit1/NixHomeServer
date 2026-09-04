@@ -24,6 +24,19 @@ in
 
     systemd.tmpfiles.rules = [
       "d ${managedDir} 0750 root filestash -"
+      "d /var/log/filestash 0750 filestash filestash 14d"
     ];
+
+    # Filestash's persisted log directory grows without app-managed limits,
+    # so bound it here: daily rotation with a per-file size trigger, four
+    # compressed rotations, and tmpfiles aging for anything else left behind.
+    services.logrotate.settings.filestash-logs = {
+      files = [ "/var/log/filestash/*.log" ];
+      frequency = "daily";
+      maxsize = "20M";
+      rotate = 4;
+      compress = true;
+      copytruncate = true;
+    };
   };
 }

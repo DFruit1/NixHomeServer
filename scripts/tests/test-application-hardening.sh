@@ -7,21 +7,6 @@ cd "$TESTS_REPO_ROOT"
 
 ensure_tools rg
 
-require_match modules/seerr/bootstrap.nix \
-  'config\.assertions = lib\.mkIf config\.repo\.seerr\.enable' \
-  "disabled Seerr must not require Seerr-only secrets"
-require_fixed modules/seerr/bootstrap.nix '"kanidmAdminPass"' \
-  "Seerr must assert the Kanidm administrator credential it consumes"
-require_fixed modules/seerr/permissions.nix \
-  '"idm-admin-password:${config.age.secrets.kanidmAdminPass.path}"' \
-  "Seerr reconciliation must receive the root-owned Kanidm credential through systemd"
-require_fixed modules/seerr/permissions.nix \
-  '$CREDENTIALS_DIRECTORY/idm-admin-password' \
-  "Seerr reconciliation must read its private systemd credential"
-forbid_match modules/seerr/permissions.nix \
-  'KANIDM_PASSWORD=.*config\.age\.secrets\.kanidmAdminPass\.path' \
-  "the unprivileged Seerr service must not read the root-owned agenix path directly"
-
 for identity_file in \
   modules/immich/identity.nix \
   modules/youtube-downloader/identity.nix \

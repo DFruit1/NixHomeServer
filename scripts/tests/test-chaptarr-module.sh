@@ -162,7 +162,7 @@ for source_file in modules/chaptarr/services.nix modules/chaptarr/filepaths.nix 
   fi
 done
 
-if ! rg -Fq '[wire_media_automation_stack]="chaptarr seerr sonarr radarr prowlarr qbittorrent jellyfin"' scripts/tests/test-integration-dependencies.sh; then
+if ! rg -Fq '[wire_media_automation_stack]="chaptarr sonarr radarr prowlarr qbittorrent jellyfin"' scripts/tests/test-integration-dependencies.sh; then
   echo "❌ Conditional media-automation participants are not represented in dependency metadata."
   exit 1
 fi

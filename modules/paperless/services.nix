@@ -68,6 +68,22 @@ in
   config = {
     services.paperless.environmentFile = "/run/paperless-oidc.env";
 
+    # Paperless's persisted log directory grows without app-managed limits,
+    # so bound it here: daily rotation with a per-file size trigger, four
+    # compressed rotations, and tmpfiles aging for anything else left behind.
+    systemd.tmpfiles.rules = [
+      "d ${dataDir}/log 0750 paperless paperless 14d"
+    ];
+
+    services.logrotate.settings.paperless-logs = {
+      files = [ "${dataDir}/log/*.log" ];
+      frequency = "daily";
+      maxsize = "20M";
+      rotate = 4;
+      compress = true;
+      copytruncate = true;
+    };
+
     services.paperless = {
       enable = true;
       configureTika = config.repo.paperless.officeConversion.enable;
@@ -87,6 +103,8 @@ in
         PAPERLESS_SOCIAL_AUTO_SIGNUP = "true";
         PAPERLESS_SOCIAL_ACCOUNT_SYNC_GROUPS = "true";
         PAPERLESS_SOCIAL_ACCOUNT_SYNC_GROUPS_CLAIM = "groups";
+        PAPERLESS_SOCIAL_ACCOUNT_SYNC_SUPERUSER_GROUP = "app-admin";
+        PAPERLESS_SOCIAL_ACCOUNT_SYNC_STAFF_GROUP = "app-admin";
         PAPERLESS_APPS = "allauth.socialaccount.providers.openid_connect";
         PAPERLESS_URL = "https://${paperlessHost}";
         PAPERLESS_LOGOUT_REDIRECT_URL = "https://${config.repo.authGateway.domain}/oauth2/sign_out";

@@ -54,7 +54,15 @@ let
     }
   ];
   coreSnapshotRoots = [ "/persist" ];
-  coreSqliteDumps = [ ];
+  # Identity is the hardest state to rebuild, so prepare a consistent,
+  # integrity-checked copy of the live Kanidm database in addition to
+  # Kanidm's own JSON online backups in /var/lib/kanidm/backups.
+  coreSqliteDumps = [
+    {
+      source = "/var/lib/kanidm/kanidm.db";
+      outputName = "kanidm.sqlite";
+    }
+  ];
   sqliteDumpScript = dump: ''
     source=${lib.escapeShellArg dump.source}
     output_name=${lib.escapeShellArg dump.outputName}

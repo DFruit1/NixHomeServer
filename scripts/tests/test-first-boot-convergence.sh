@@ -11,9 +11,6 @@ services_json="$(NIXHOMESERVER_TEST_HOST="$host" flake_eval_json '
   host = builtins.getEnv "NIXHOMESERVER_TEST_HOST";
   base = builtins.getAttr host f.nixosConfigurations;
   cfg = base.config;
-  cfgWithSeerr = (base.extendModules {
-    modules = [{ repo.seerr.enable = f.inputs.nixpkgs.lib.mkForce true; }];
-  }).config;
   names = [
     "audiobookshelf-library-watch-config-v1"
     "audiobookshelf-oidc-bootstrap-v1"
@@ -36,7 +33,6 @@ services_json="$(NIXHOMESERVER_TEST_HOST="$host" flake_eval_json '
     "media-automation-bootstrap-radarr"
     "media-automation-bootstrap-chaptarr"
     "media-automation-bootstrap-prowlarr"
-    "media-automation-bootstrap-seerr"
     "paperless-permissions-bootstrap"
   ];
   explicitFailureNames = [
@@ -56,13 +52,11 @@ services_json="$(NIXHOMESERVER_TEST_HOST="$host" flake_eval_json '
     "media-automation-bootstrap-radarr"
     "media-automation-bootstrap-chaptarr"
     "media-automation-bootstrap-prowlarr"
-    "media-automation-bootstrap-seerr"
     "paperless-permissions-bootstrap"
   ];
   serviceData = name:
     let
-      serviceCfg = if name == "media-automation-bootstrap-seerr" then cfgWithSeerr else cfg;
-      service = builtins.getAttr name serviceCfg.systemd.services;
+      service = builtins.getAttr name cfg.systemd.services;
     in {
       restart = service.serviceConfig.Restart or null;
       restartSec = service.serviceConfig.RestartSec or null;
@@ -74,7 +68,7 @@ in
 ')"
 
 jq -e '
-  length == 23
+  length == 22
   and all(
     to_entries[];
     .value.restart == "on-failure"

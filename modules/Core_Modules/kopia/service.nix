@@ -19,6 +19,7 @@ let
   repositoryOwnershipMarker = "${backupRoot}/.nixhomeserver-kopia-repository.json";
   snapshotSuccessMarker = "${backupRoot}/.kopia-last-snapshot-success.json";
   snapshotHealthMaxAgeSeconds = config.repo.backups.kopiaSnapshotHealthMaxAgeSeconds;
+  verifyFilesPercent = config.repo.backups.kopiaVerifyFilesPercent;
   freshnessMarkerCheck = pkgs.writeShellScript "check-freshness-marker"
     (builtins.readFile ../../../scripts/helpers/check-freshness-marker.sh);
   maintenanceLock = config.repo.backups.maintenanceLock;
@@ -71,7 +72,6 @@ let
       --add-ignore='var/lib/kavita/config/logs' \
       --add-ignore='var/lib/metube' \
       --add-ignore='var/lib/paperless/log' \
-      --add-ignore='var/lib/seerr/logs' \
       --add-ignore='var/log'${rebuildableSnapshotIgnoreFlags}
   '';
   snapshotCommands = lib.concatMapStringsSep "\n"
@@ -158,6 +158,15 @@ in
     type = lib.types.ints.positive;
     default = 36 * 60 * 60;
     description = "Maximum age of the last successful encrypted Kopia snapshot before health checks fail.";
+  };
+
+  options.repo.backups.kopiaVerifyFilesPercent = lib.mkOption {
+    type = lib.types.ints.between 0 100;
+    default = 5;
+    description = ''
+      Percentage of snapshot files randomly downloaded and compared during the
+      weekly Kopia deep-verification job. Zero verifies snapshot metadata only.
+    '';
   };
 
   config = lib.mkMerge [
@@ -520,6 +529,73 @@ in
           Persistent = true;
           RandomizedDelaySec = "1h";
           Unit = "kopia-full-maintenance.service";
+        };
+      };
+
+      systemd.services.kopia-snapshot-verify = {
+        description = "Deep-verify sampled snapshot files in the encrypted Kopia repository";
+        requires = [
+          "kopia-repository-bootstrap.service"
+        ];
+        after = [
+          "kopia-repository-bootstrap.service"
+          "kopia-full-maintenance.service"
+        ];
+        unitConfig = {
+          StartLimitIntervalSec = "4h";
+          StartLimitBurst = 3;
+          OnFailure = [ config.repo.monitoring.failureAlerts.targetUnit ];
+          OnFailureJobMode = "replace-irreversibly";
+        };
+        path = commonPath;
+        serviceConfig = {
+          Type = "oneshot";
+          SuccessExitStatus = [ 75 ];
+          LoadCredential = [ "${credentials.serverPassword}:${config.age.secrets.kopiaServerPassword.path}" ];
+          MemoryHigh = "1G";
+          MemoryMax = "2G";
+          Nice = 15;
+          CPUWeight = 10;
+          IOWeight = 10;
+          IOSchedulingClass = "best-effort";
+          IOSchedulingPriority = 7;
+          TimeoutStartSec = "12h";
+          Restart = "on-failure";
+          RestartSec = "30min";
+        };
+        script = ''
+          set -euo pipefail
+          ${requireDataRoot}
+          export KOPIA_CHECK_FOR_UPDATES=false
+          export KOPIA_PASSWORD="$(tr -d '\r\n' < "$CREDENTIALS_DIRECTORY/${credentials.serverPassword}")"
+          export KOPIA_CONFIG_PATH=${lib.escapeShellArg configFile}
+          export KOPIA_CACHE_DIRECTORY=${lib.escapeShellArg cacheDir}
+          exec 9>${lib.escapeShellArg maintenanceLock}
+          flock -n 9 || { echo "Another maintenance job is active" >&2; exit 75; }
+          kopia snapshot verify \
+            --no-progress \
+            --verify-files-percent=${toString verifyFilesPercent}
+          verify_marker_tmp="$(mktemp ${lib.escapeShellArg stateDir}/.last-verify-success.XXXXXX)"
+          trap 'rm -f "$verify_marker_tmp"' EXIT
+          jq -n \
+            --arg completedAt "$(date --utc --iso-8601=seconds)" \
+            --argjson verifyFilesPercent ${toString verifyFilesPercent} \
+            '{schemaVersion:1,completedAt:$completedAt,verifyFilesPercent:$verifyFilesPercent}' \
+            > "$verify_marker_tmp"
+          chmod 0600 "$verify_marker_tmp"
+          mv -f "$verify_marker_tmp" ${lib.escapeShellArg "${stateDir}/last-verify-success.json"}
+          trap - EXIT
+        '';
+      };
+
+      systemd.timers.kopia-snapshot-verify = {
+        description = "Weekly deep verification of sampled Kopia snapshot files";
+        wantedBy = [ "timers.target" ];
+        timerConfig = {
+          OnCalendar = "Sun *-*-* 05:00:00";
+          Persistent = true;
+          RandomizedDelaySec = "1h";
+          Unit = "kopia-snapshot-verify.service";
         };
       };
 

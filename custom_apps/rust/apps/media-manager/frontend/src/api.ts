@@ -25,6 +25,15 @@ export class ApiError extends Error {
   }
 }
 
+export function readableError(error: unknown): string {
+  if (error instanceof ApiError) {
+    return `${error.message} (${error.code}, ${error.requestId})`;
+  }
+  return error instanceof Error
+    ? error.message
+    : "The request could not be completed.";
+}
+
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   if (init.body && !headers.has("content-type")) {

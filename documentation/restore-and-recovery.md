@@ -344,6 +344,12 @@ overwriting the live repository first.
 
 Useful restored dump files:
 
+- `/persist/appdata/backup-metadata/current/dumps/kanidm.sqlite`: consistent
+  SQLite copy of the live Kanidm database with a recorded SHA-256 and an
+  `integrity_check` performed at backup time. Kanidm also publishes its own
+  JSON online backups under `/var/lib/kanidm/backups`; restore the identity
+  server from whichever source validates cleanly, and verify with
+  `sqlite3 -readonly ... "PRAGMA integrity_check;"` after installation.
 - `/persist/appdata/backup-metadata/current/dumps/immich.pgdump`: custom-format Immich PostgreSQL dump; inspect
   with `pg_restore --list` and restore with `pg_restore`.
 - `/persist/appdata/backup-metadata/current/dumps/*.sqlite`: integrity-checked SQLite backups for configured

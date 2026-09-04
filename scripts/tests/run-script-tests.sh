@@ -57,7 +57,6 @@ all_app_only_test() {
     test-module-structure.sh | \
     test-application-hardening.sh | \
     test-authorization-group-validation.sh | \
-    test-beszel-module.sh | \
     test-chaptarr-module.sh | \
     test-kiwix-disable-evaluation.sh | \
     test-module-removal-evaluation.sh | \
@@ -108,7 +107,6 @@ test_scripts=(
   scripts/tests/test-archive-view-safety.sh
   scripts/tests/test-auth-gateway-logout.sh
   scripts/tests/test-authorization-group-validation.sh
-  scripts/tests/test-beszel-module.sh
   scripts/tests/test-chaptarr-module.sh
   scripts/tests/test-backup-access-separation.sh
   scripts/tests/test-role-only-sftp-access.sh
@@ -148,6 +146,7 @@ test_scripts=(
   scripts/tests/test-rclone-safety.sh
   scripts/tests/test-rclone-mega-capacity-check.sh
   scripts/tests/test-rclone-mega-preflight.sh
+  scripts/tests/test-storage-capacity-check.sh
   scripts/tests/test-script-test-runner.sh
   scripts/tests/test-smart-sweep-runtime.sh
   scripts/tests/test-storage-path-validation.sh

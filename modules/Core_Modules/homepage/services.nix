@@ -20,13 +20,11 @@ let
   emailsHost = "emails.${vars.domain}";
   downloadsHost = "ytdownload.${vars.domain}";
   chaptarrHost = "chaptarr.${vars.domain}";
-  requestsHost = "requests.${vars.domain}";
   sonarrHost = "sonarr.${vars.domain}";
   radarrHost = "radarr.${vars.domain}";
   prowlarrHost = "prowlarr.${vars.domain}";
   torrentsHost = "torrents.${vars.domain}";
   backupsHost = vars.kopiaDomain;
-  monitorHost = vars.monitorDomain;
   mediaManagerHost = "media.${vars.domain}";
   syncthingHost = "syncthing.${vars.domain}";
   offlineMediaCfg = vars.offlineMedia;
@@ -129,14 +127,12 @@ let
   mailArchiveEnabled = hostEnabled emailsHost;
   youtubeDownloaderEnabled = hostEnabled downloadsHost;
   chaptarrEnabled = hostEnabled chaptarrHost;
-  seerrEnabled = hostEnabled requestsHost;
   sonarrEnabled = hostEnabled sonarrHost;
   radarrEnabled = hostEnabled radarrHost;
   prowlarrEnabled = hostEnabled prowlarrHost;
   qbittorrentEnabled = hostEnabled torrentsHost;
   mediaManagerEnabled = hostEnabled mediaManagerHost;
   kopiaEnabled = hostEnabled backupsHost;
-  monitorEnabled = hostEnabled monitorHost;
   personalPath = relativePath: "/${relativePath}";
   sharedPath = relativePath: "/${vars.fileAccess.sharedMountName}/${relativePath}";
   sftpAuthorizedKeysDir = "/persist/appdata/files-sftp-authorized-keys";
@@ -932,20 +928,6 @@ let
       requiredAnyGroups = [ "media-automation-users" ];
     }
     {
-      id = "requests";
-      name = "Requests";
-      url = "https://${requestsHost}";
-      enabled = seerrEnabled;
-      category = "media";
-      description = "Jellyfin-oriented movie and show request manager.";
-      loginNotes = "Requires media-automation-users through Kanidm.";
-      projectUrl = "https://github.com/Fallenbagel/jellyseerr";
-      logoUrl = "/logos/seerr.svg";
-      appName = "seerr";
-      uploadNotes = "Approved requests are handed to Sonarr and Radarr.";
-      requiredAnyGroups = [ "media-automation-users" ];
-    }
-    {
       id = "sonarr";
       name = "TV Show Downloads";
       url = "https://${sonarrHost}";
@@ -1113,8 +1095,8 @@ let
       uploadNotes = "Store Kanidm credentials, recovery codes, and app-local passwords here.";
     }
     {
-      id = "backups";
-      name = "Local Backups";
+      id = "kopia";
+      name = "Kopia";
       url = "https://${backupsHost}";
       enabled = kopiaEnabled;
       category = "operations";
@@ -1125,20 +1107,6 @@ let
       appName = "kopia";
       uploadNotes = "Backup repository files are managed by Kopia.";
       requiredAnyGroups = [ vars.backupAdminGroup ];
-    }
-    {
-      id = "monitor";
-      name = "Monitor";
-      url = "https://${monitorHost}";
-      enabled = monitorEnabled;
-      category = "operations";
-      description = "Beszel monitoring dashboard for host resources, app units, storage, and disk health.";
-      loginNotes = "Requires ${vars.monitoringAccessGroup} through Kanidm, then the native Beszel login.";
-      projectUrl = "https://beszel.dev";
-      logoUrl = "/logos/beszel.svg";
-      appName = "beszel";
-      uploadNotes = "Monitoring state is managed by Beszel.";
-      requiredAnyGroups = [ vars.monitoringAccessGroup ];
     }
   ];
 

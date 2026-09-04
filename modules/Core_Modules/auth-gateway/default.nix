@@ -20,7 +20,6 @@ let
   sidecarServices = [
     "kopia-oauth2-proxy"
   ]
-  ++ lib.optionals (hasModule "beszel") [ "monitor-oauth2-proxy" ]
   ++ lib.optionals (hasModule "files") [ "filestash-oauth2-proxy" ]
   ++ lib.optionals homepageEnabled [ "homepage-oauth2-proxy" ]
   ++ lib.optionals (moduleEnabled "kiwix") [ "kiwix-oauth2-proxy" ]
@@ -30,8 +29,7 @@ let
   ++ lib.optionals (moduleEnabled "radarr") [ "radarr-oauth2-proxy" ]
   ++ lib.optionals (moduleEnabled "sonarr") [ "sonarr-oauth2-proxy" ]
   ++ lib.optionals (hasModule "youtube-downloader") [ "youtube-downloader-oauth2-proxy" ]
-  ++ lib.optionals (moduleEnabled "browsertrix-downloader") [ "browsertrix-downloader-oauth2-proxy" ]
-  ++ lib.optionals (moduleEnabled "seerr") [ "seerr-oauth2-proxy" ];
+  ++ lib.optionals (moduleEnabled "browsertrix-downloader") [ "browsertrix-downloader-oauth2-proxy" ];
   sidecarUnits = map (name: "${name}.service") sidecarServices;
   mkApp = host: upstream: allowedGroups: {
     inherit host upstream allowedGroups;
@@ -80,9 +78,6 @@ let
   }
   // lib.optionalAttrs (moduleEnabled "qbittorrent") {
     qbittorrent = mkApp "torrents.${vars.domain}" "http://${loopback}:${toString vars.networking.ports.qbittorrentWeb}" [ "media-automation-users" ];
-  }
-  // lib.optionalAttrs (moduleEnabled "seerr") {
-    seerr = mkApp "requests.${vars.domain}" "http://${loopback}:${toString vars.networking.ports.seerr}" [ "media-automation-users" ];
   };
   upstreamTransport = app: lib.optionalString (app.upstream != null && app.upstreamTimeout != null) ''
     transport http {

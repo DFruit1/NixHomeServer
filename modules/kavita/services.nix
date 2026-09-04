@@ -65,6 +65,22 @@ in
         '${dataDir}/config/appsettings.json'
     '';
 
+    # Kavita's persisted log directory grows without app-managed limits, so
+    # bound it here: daily rotation with a per-file size trigger, four
+    # compressed rotations, and tmpfiles aging for anything else left behind.
+    systemd.tmpfiles.rules = [
+      "d ${dataDir}/config/logs 0750 kavita kavita 14d"
+    ];
+
+    services.logrotate.settings.kavita-logs = {
+      files = [ "${dataDir}/config/logs/*.log" ];
+      frequency = "daily";
+      maxsize = "20M";
+      rotate = 4;
+      compress = true;
+      copytruncate = true;
+    };
+
     systemd.timers.kavita-stale-reference-cleanup = {
       description = "Regularly run Kavita stale reference maintenance";
       wantedBy = [ "timers.target" ];

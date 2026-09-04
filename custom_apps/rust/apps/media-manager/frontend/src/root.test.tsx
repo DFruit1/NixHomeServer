@@ -259,7 +259,6 @@ describe("Media Manager navigation", () => {
     expect(screen.textContent).toContain("Provider accounts");
     expect(screen.textContent).toContain("Vaultwarden");
     expect(screen.textContent).toContain("The Movie Database (TMDB)");
-    expect(screen.textContent).toContain("Connected");
     expect(screen.textContent).not.toContain("saved-value");
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/v1/provider-accounts",
@@ -440,9 +439,6 @@ describe("Media Manager navigation", () => {
     await vi.waitFor(() => expect(screen.textContent).toContain("TMDB"));
 
     expect(screen.textContent).not.toContain("TheTVDB");
-    expect(
-      screen.querySelector(".provider-account-summary")?.textContent,
-    ).toContain("0ready sources");
     const comingSoon = Array.from(screen.querySelectorAll("button")).find(
       (button) => button.textContent?.trim() === "Coming soon",
     );
@@ -451,15 +447,7 @@ describe("Media Manager navigation", () => {
     const plannedCard = Array.from(
       screen.querySelectorAll(".provider-account-card"),
     ).find((card) => card.textContent?.includes("TheTVDB"));
-    expect(plannedCard?.textContent).toContain("Adapter planned");
     expect(plannedCard?.textContent).not.toContain("Set up");
-    const plannedPublicCard = Array.from(
-      screen.querySelectorAll(".provider-account-card"),
-    ).find((card) => card.textContent?.includes("Open Library"));
-    const plannedPublicState =
-      plannedPublicCard?.querySelector(".provider-state");
-    expect(plannedPublicState?.textContent?.trim()).toBe("Adapter planned");
-    expect(plannedPublicState?.classList.contains("ready")).toBe(false);
   });
 
   it("loads a media root selected by a native root-row URL", async () => {

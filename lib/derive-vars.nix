@@ -61,9 +61,6 @@ let
       identity.canaryUser
     ];
   };
-  seerrAccess = {
-    requestManagerGroup = "seerr-request-managers";
-  };
   configuredOfflineMedia = settings.offlineMedia or { };
   offlineMedia = {
     enable = configuredOfflineMedia.enable or true;
@@ -144,10 +141,6 @@ let
     jellyfin = 8096;
     jellyfinDiscovery = 7359;
   }
-  // lib.optionalAttrs (enabled "seerr") {
-    seerr = 5055;
-    oauth2ProxySeerr = 4189;
-  }
   // lib.optionalAttrs (enabled "sonarr") {
     sonarr = 8989;
     oauth2ProxySonarr = 4190;
@@ -196,6 +189,7 @@ let
     monitorPaths = configuredLocalDiskCleanup.monitorPaths or [ "/nix" ];
     journalVacuumTime = configuredLocalDiskCleanup.journalVacuumTime or "7d";
   };
+  configuredStorageCapacityAlerts = settings.system.storageCapacityAlerts or { };
 in
 rec {
   inherit
@@ -207,7 +201,6 @@ rec {
     localDiskCleanup
     monitoringAccess
     offlineMedia
-    seerrAccess
     storage
     ;
   hostname = network.hostname;
@@ -249,11 +242,10 @@ rec {
   kanidmAdminUser = identity.adminUser;
   kanidmCanaryUser = identity.canaryUser;
   authorizationGroupModel = (import ./authorization-groups.nix { inherit lib; }) {
-    inherit monitoringAccess seerrAccess;
+    inherit monitoringAccess;
   };
   configuredMonitoringAccessGroup = authorizationGroupModel.configuredMonitoringGroup;
   monitoringAccessGroup = authorizationGroupModel.monitoringGroup;
-  configuredSeerrRequestManagerGroup = authorizationGroupModel.configuredSeerrRequestManagerGroup;
   identityAccessModel = (import ./identity-access.nix { inherit lib; }) {
     inherit identity monitoringAccess;
   };
@@ -278,7 +270,6 @@ rec {
   };
   kanidmAdminMailAddresses = identityAccessModel.adminMailAddresses;
   kanidmAdminEmail = identity.adminEmail;
-  seerrRequestManagerGroup = authorizationGroupModel.seerrRequestManagerGroup;
   serverSSHPubKey = identity.sshPublicKey;
   localAdminUser = identity.localAdminUser;
 
@@ -328,6 +319,14 @@ rec {
   storageProfile = storage.profile or "zfs-mirror";
   enableRootRollback = storage.enableRootRollback or false;
   enableZfsDataPool = storageProfile == "zfs-mirror";
+  storageCapacityAlerts = {
+    enable = configuredStorageCapacityAlerts.enable or true;
+    warnPercent = configuredStorageCapacityAlerts.warnPercent or 80;
+    criticalPercent = configuredStorageCapacityAlerts.criticalPercent or 90;
+    # The data pool is deliberately excluded from cleanup monitoring
+    # (see vars diskCleanup) but it must still be watched for capacity alerts.
+    monitorPaths = [ "/" ] ++ lib.optionals enableZfsDataPool [ zfsDataPool.mountPoint ];
+  };
   dataRootIsMountPoint = enableZfsDataPool;
   mainDisk = storage.systemDisk;
   zfsDataPool = storage.dataPool or {

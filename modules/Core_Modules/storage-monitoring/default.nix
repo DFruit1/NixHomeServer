@@ -36,6 +36,52 @@ let
     ])
     ++ lib.optional vars.enableZfsDataPool config.boot.zfs.package;
   snapshotMaxAgeSeconds = config.repo.storage.snapshotHealth.maxAgeSeconds;
+  capacityCfg = vars.storageCapacityAlerts;
+  storageCapacityCheck = pkgs.writeShellScript "storage-capacity-check-helper"
+    (builtins.readFile ../../../scripts/helpers/storage-capacity-check.sh);
+  capacityStatusFile = "/persist/appdata/backup-metadata/metadata/storage-capacity-state.json";
+  capacityAlertStateFile = "/persist/appdata/backup-metadata/metadata/storage-capacity-alert.timestamp";
+  capacityCheck = pkgs.writeShellScript "nixhomeserver-storage-capacity-check" ''
+    set -euo pipefail
+    event_json=""
+    helper_exit=0
+    set +e
+    event_json="$(
+      DF_BIN=${lib.escapeShellArg "${pkgs.coreutils}/bin/df"} \
+      JQ_BIN=${lib.escapeShellArg "${pkgs.jq}/bin/jq"} \
+      DATE_BIN=${lib.escapeShellArg "${pkgs.coreutils}/bin/date"} \
+      MKTEMP_BIN=${lib.escapeShellArg "${pkgs.coreutils}/bin/mktemp"} \
+      MV_BIN=${lib.escapeShellArg "${pkgs.coreutils}/bin/mv"} \
+      CHMOD_BIN=${lib.escapeShellArg "${pkgs.coreutils}/bin/chmod"} \
+      RM_BIN=${lib.escapeShellArg "${pkgs.coreutils}/bin/rm"} \
+        ${storageCapacityCheck} \
+          --status-file ${lib.escapeShellArg capacityStatusFile} \
+          --alert-state-file ${lib.escapeShellArg capacityAlertStateFile} \
+          ${lib.concatMapStringsSep "\n          " (path: "--monitor-path ${lib.escapeShellArg path}") capacityCfg.monitorPaths} \
+          --warn-percent ${toString capacityCfg.warnPercent} \
+          --critical-percent ${toString capacityCfg.criticalPercent} \
+          --cooldown-seconds 86400
+    )"
+    helper_exit=$?
+    set -e
+
+    state="$(${pkgs.jq}/bin/jq -r '.state // "failed"' <<<"$event_json" 2>/dev/null || printf failed)"
+    case "$state" in
+      ok) priority=info ;;
+      warning) priority=warning ;;
+      critical|failed) priority=err ;;
+      *) priority=err ;;
+    esac
+    if [[ -n "$event_json" ]]; then
+      printf '%s\n' "$event_json" \
+        | ${pkgs.systemd}/bin/systemd-cat --identifier=storage-capacity --priority="$priority"
+      printf '%s\n' "$event_json"
+    else
+      ${pkgs.systemd}/bin/systemd-cat --identifier=storage-capacity --priority=err \
+        <<<"Storage capacity checker stopped without a structured result."
+    fi
+    exit "$helper_exit"
+  '';
 in
 {
   options.repo.storage.snapshotHealth.maxAgeSeconds = lib.mkOption {
@@ -156,6 +202,27 @@ in
         '';
       };
 
+      storage-capacity-check = lib.mkIf capacityCfg.enable {
+        description = "Alert on watched filesystem capacity thresholds";
+        unitConfig = {
+          OnFailure = [ config.repo.monitoring.failureAlerts.targetUnit ];
+          OnFailureJobMode = "replace-irreversibly";
+        };
+        requires = lib.optional vars.enableZfsDataPool "data-pool-layout.service";
+        after = [ "local-fs.target" ] ++ lib.optional vars.enableZfsDataPool "data-pool-layout.service";
+        path = [ pkgs.coreutils pkgs.jq pkgs.systemd pkgs.util-linux ];
+        serviceConfig = {
+          Type = "oneshot";
+          UMask = "0077";
+          Nice = 10;
+          CPUWeight = 20;
+          IOWeight = 20;
+        };
+        script = ''
+          exec ${capacityCheck}
+        '';
+      };
+
       orphan-state-report = {
         description = "Report preserved but potentially orphaned server state";
         path = [ pkgs.coreutils pkgs.gawk pkgs.jq ] ++ lib.optional vars.enableZfsDataPool config.boot.zfs.package;
@@ -212,6 +279,16 @@ in
         timerConfig = {
           OnBootSec = "15m";
           OnUnitActiveSec = "1h";
+          Persistent = true;
+        };
+      };
+
+      storage-capacity-check = lib.mkIf capacityCfg.enable {
+        wantedBy = [ "timers.target" ];
+        timerConfig = {
+          OnBootSec = "15m";
+          OnUnitActiveSec = "1h";
+          RandomizedDelaySec = "10m";
           Persistent = true;
         };
       };

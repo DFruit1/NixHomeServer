@@ -87,7 +87,7 @@ describe('queue alerts', () => {
     const stubbornProbe = path.join(tempDir, 'stubborn-probe.mjs');
     await writeFile(
       stubbornProbe,
-      `#!${process.execPath}\nimport { writeFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(marker)}, String(process.pid));\nprocess.on('SIGTERM', () => writeFileSync(${JSON.stringify(termMarker)}, 'term'));\nsetInterval(() => {}, 1000);\n`,
+      `#!${process.execPath}\nimport { writeFileSync } from 'node:fs';\nprocess.on('SIGTERM', () => writeFileSync(${JSON.stringify(termMarker)}, 'term'));\nwriteFileSync(${JSON.stringify(marker)}, String(process.pid));\nsetInterval(() => {}, 1000);\n`,
     );
     await chmod(stubbornProbe, 0o755);
 
@@ -149,7 +149,7 @@ describe('queue alerts', () => {
     const stubbornProbe = path.join(tempDir, 'stubborn-direct-probe.mjs');
     await writeFile(
       stubbornProbe,
-      `#!${process.execPath}\nimport { writeFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(marker)}, String(process.pid));\nprocess.on('SIGTERM', () => writeFileSync(${JSON.stringify(termMarker)}, 'term'));\nsetInterval(() => {}, 1000);\n`,
+      `#!${process.execPath}\nimport { writeFileSync } from 'node:fs';\nprocess.on('SIGTERM', () => writeFileSync(${JSON.stringify(termMarker)}, 'term'));\nwriteFileSync(${JSON.stringify(marker)}, String(process.pid));\nsetInterval(() => {}, 1000);\n`,
     );
     await chmod(stubbornProbe, 0o755);
 

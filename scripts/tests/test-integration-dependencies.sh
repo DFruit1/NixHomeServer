@@ -23,11 +23,11 @@ declare -A integration_apps=(
   [wire_media_automation_stack]=""
 )
 declare -A integration_optional_participants=(
-  [wire_media_automation_stack]="chaptarr seerr sonarr radarr prowlarr qbittorrent jellyfin"
+  [wire_media_automation_stack]="chaptarr sonarr radarr prowlarr qbittorrent jellyfin"
 )
 
 # Report any integration whose required apps are not all enabled.
-# Host-specific: if kiwix, beszel, bonsai, or groundwater-logger are not enabled
+# Host-specific: if kiwix, bonsai, or groundwater-logger are not enabled
 # in this host, users should clean up the relevant integrations. The test warns
 # but does not fail unless the operator has opted into strict mode.
 strict_integration_deps="${NIXHOMESERVER_STRICT_INTEGRATION_DEPS:-0}"

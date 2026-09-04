@@ -15,7 +15,6 @@ runtime_json="$(NIXHOMESERVER_TEST_HOST="$host" flake_eval_json '
     then cfg.systemd.services.kopia-policy-reconcile
     else null;
   settings = builtins.getAttr host f.lib.nixhomeserverSettings;
-  seerrHost = "requests.${settings.domain}";
 in {
   snapshotRoots = cfg.repo.backups.snapshotRoots;
   rebuildableSnapshotPaths = cfg.repo.backups.rebuildableSnapshotPaths;
@@ -34,7 +33,6 @@ in {
   zfsEnabled = settings.enableZfsDataPool;
   sqliteDumpOutputs = map (dump: dump.outputName) cfg.repo.backups.sqliteDumps;
   postgresqlDumpOutputs = map (dump: dump.outputName) cfg.repo.backups.postgresqlDumps;
-  seerrEnabled = cfg.repo.seerr.enable;
   zfsSnapshots = {
     inherit (cfg.services.zfs.autoSnapshot) enable frequent hourly daily weekly monthly;
   };
@@ -43,7 +41,6 @@ in {
     protectedCount = builtins.length (builtins.attrNames cfg.repo.authGateway.protectedApps);
     gatewayWantedBy = cfg.systemd.services.auth-gateway-oauth2-proxy.wantedBy;
     gatewayExecStart = toString cfg.systemd.services.auth-gateway-oauth2-proxy.serviceConfig.ExecStart;
-    disabledSeerrPublished = builtins.hasAttr seerrHost cfg.services.caddy.virtualHosts;
   };
   nixInlineOptimise = cfg.nix.settings.auto-optimise-store;
   nixGcAutomatic = cfg.nix.gc.automatic;
@@ -118,18 +115,12 @@ jq -e '
   and (.repositoryPath as $repo | .snapshotRoots | all(. as $root | ($repo != $root and ($repo | startswith($root + "/") | not))))
   and (.sqliteDumpOutputs | index("beszel.sqlite") == null)
   and (.postgresqlDumpOutputs | index("immich.pgdump") != null)
-  and (if .seerrEnabled then
-    (.sqliteDumpOutputs | index("seerr.sqlite") != null)
-  else
-    (.sqliteDumpOutputs | index("seerr.sqlite") == null)
-  end)
   and (if .zfsEnabled then .zfsSnapshots == {enable:true,frequent:0,hourly:24,daily:7,weekly:4,monthly:0} else .zfsSnapshots.enable == false end)
   and (.auth.enable == true)
   and (.auth.mode == "gateway")
   and (.auth.protectedCount >= 9)
   and (.auth.gatewayWantedBy | index("multi-user.target") != null)
   and (.auth.gatewayExecStart | contains("--upstream=static://202"))
-  and (.auth.disabledSeerrPublished == false)
   and (.nixInlineOptimise == false)
   and (.nixGcAutomatic == false)
   and (.smartdPath | all(contains("-nix-") | not))

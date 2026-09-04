@@ -286,8 +286,7 @@ let
   ];
   reservedIdentityAndApplicationGroupNames =
     staticIdentityAndApplicationGroupNames
-    ++ [ vars.monitoringAccessGroup ]
-    ++ lib.optionals seerrEnabled [ vars.seerrRequestManagerGroup ];
+    ++ [ vars.monitoringAccessGroup ];
   reservedFileAccessGroupNames = reservedIdentityAndApplicationGroupNames ++ [
     localSftpAccessGroupRaw
   ];
@@ -503,11 +502,7 @@ let
     && (offlineMediaCfg.enable or false);
   offlineMediaStateDir = offlineMediaCfg.stateDir or "/persist/appdata/offline-media";
   offlineMediaTmpfilesRule = "d ${offlineMediaStateDir} 0750 root root -";
-  seerrEnabled =
-    (config.nixhomeserver.modules.seerr or false)
-    && (config.repo.seerr.enable or false);
   monitoringAccessGroupRaw = vars.monitoringAccess.group or null;
-  seerrRequestManagerGroupRaw = vars.seerrAccess.requestManagerGroup or null;
   offlineMediaAccessGroupRaw = offlineMediaCfg.accessGroup or "users";
   activeOfflineMediaAccessGroups = lib.optional
     (
@@ -530,10 +525,6 @@ let
   monitoringAccessGroupCollision =
     nameValidation.validKanidmGroup monitoringAccessGroupRaw
     && builtins.elem vars.monitoringAccessGroup authorizationReservedGroupNames;
-  seerrRequestManagerGroupCollision =
-    seerrEnabled
-    && nameValidation.validKanidmGroup seerrRequestManagerGroupRaw
-    && builtins.elem vars.seerrRequestManagerGroup authorizationReservedGroupNames;
   supportedHostPlatforms = [ "x86_64-linux" "aarch64-linux" ];
   supportedHardwareProfiles = [ "generated" "existing-server" "generic-uefi" ];
   supportedStorageProfiles = [ "zfs-mirror" "single-disk-ext4" ];
@@ -722,20 +713,8 @@ in
       message = "nixhomeserver: monitoringAccess.group must be a valid Kanidm group name.";
     }
     {
-      assertion = nameValidation.validKanidmGroup seerrRequestManagerGroupRaw;
-      message = "nixhomeserver: seerrAccess.requestManagerGroup must be a valid Kanidm group name.";
-    }
-    {
-      assertion = !seerrEnabled || vars.monitoringAccessGroup != vars.seerrRequestManagerGroup;
-      message = "nixhomeserver: monitoringAccess.group and seerrAccess.requestManagerGroup must be distinct when Seerr is enabled.";
-    }
-    {
       assertion = !monitoringAccessGroupCollision;
       message = "nixhomeserver: monitoringAccess.group must be a dedicated authorization group and must not reuse a core, delegated, application, file-access, backup, active offline-media, local bridge, or maintenance group: ${builtins.toJSON monitoringAccessGroupRaw}";
-    }
-    {
-      assertion = !seerrRequestManagerGroupCollision;
-      message = "nixhomeserver: seerrAccess.requestManagerGroup must be a dedicated authorization group when Seerr is enabled and must not reuse a core, delegated, application, file-access, backup, active offline-media, local bridge, or maintenance group: ${builtins.toJSON seerrRequestManagerGroupRaw}";
     }
     {
       assertion = canaryIdentityCollisionSources == [ ] && canaryProtectedMemberships == [ ];

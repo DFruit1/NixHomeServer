@@ -5321,7 +5321,7 @@ a:focus-visible {
 .provider-account-card {
   min-width: 0;
   display: grid;
-  align-content: start;
+  grid-template-rows: auto 1fr auto;
   gap: 13px;
   padding: 19px;
   border: 1px solid var(--line);
@@ -5344,6 +5344,12 @@ a:focus-visible {
   font-size: 10px;
   text-transform: capitalize;
 }
+.provider-logo {
+  width: 64px;
+  height: 64px;
+  object-fit: contain;
+  flex-shrink: 0;
+}
 .provider-state {
   flex: 0 0 auto;
   padding: 4px 7px;
@@ -5362,6 +5368,11 @@ a:focus-visible {
 }
 .provider-state.planned {
   border-style: dashed;
+}
+.provider-state.public-action {
+  color: var(--accent);
+  background: var(--accent-wash);
+  border-color: var(--accent-line);
 }
 .provider-capabilities {
   display: flex;
@@ -5393,11 +5404,15 @@ a:focus-visible {
 }
 .provider-account-actions {
   margin-top: auto;
+  justify-content: space-between;
 }
 .provider-account-actions a,
 .provider-credential-footer a {
   color: var(--accent);
   font-size: 10px;
+}
+.provider-doc-link {
+  margin-left: auto;
 }
 .text-button.danger {
   margin-left: auto;

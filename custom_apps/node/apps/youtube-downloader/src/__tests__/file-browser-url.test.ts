@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildFileBrowserUrl } from '../root.js';
+import { buildFileBrowserUrl } from '../client/file-browser-url.js';
 import type { CurrentUser } from '../shared/types.js';
 
 const currentUser: CurrentUser = {

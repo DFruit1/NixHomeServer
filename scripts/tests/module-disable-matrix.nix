@@ -125,7 +125,6 @@ let
         repo.prowlarr.enable = lib.mkForce false;
         repo.qbittorrent.enable = lib.mkForce false;
         repo.radarr.enable = lib.mkForce false;
-        repo.seerr.enable = lib.mkForce false;
         repo.sonarr.enable = lib.mkForce false;
       };
       registryName = "prowlarr";
@@ -145,20 +144,17 @@ let
         "qbittorrent-oauth2-proxy"
         "radarr"
         "radarr-oauth2-proxy"
-        "seerr"
-        "seerr-oauth2-proxy"
-        "seerr-permissions-reconcile"
         "sonarr"
         "sonarr-oauth2-proxy"
       ];
       containers = [ "chaptarr" ];
-      timers = [ "seerr-permissions-reconcile" ];
-      hosts = [ "chaptarr" "prowlarr" "requests" "sonarr" "radarr" "torrents" ];
-      gatewayApps = [ "chaptarr" "prowlarr" "qbittorrent" "radarr" "seerr" "sonarr" ];
-      oauthClients = [ "prowlarr-web" "qbittorrent-web" "radarr-web" "seerr-web" "sonarr-web" ];
-      kanidmGroups = [ "media-automation-users" vars.seerrRequestManagerGroup ];
-      users = [ "chaptarr" "prowlarr" "qbittorrent" "radarr" "seerr" "sonarr" ];
-      groups = [ "chaptarr" "media-automation" "prowlarr" "qbittorrent" "radarr" "seerr" "sonarr" ];
+      timers = [ ];
+      hosts = [ "chaptarr" "prowlarr" "sonarr" "radarr" "torrents" ];
+      gatewayApps = [ "chaptarr" "prowlarr" "qbittorrent" "radarr" "sonarr" ];
+      oauthClients = [ "prowlarr-web" "qbittorrent-web" "radarr-web" "sonarr-web" ];
+      kanidmGroups = [ "media-automation-users" ];
+      users = [ "chaptarr" "prowlarr" "qbittorrent" "radarr" "sonarr" ];
+      groups = [ "chaptarr" "media-automation" "prowlarr" "qbittorrent" "radarr" "sonarr" ];
       secrets = [
         "prowlarrOauth2ProxyClientSecret"
         "prowlarrOauth2ProxyCookieSecret"
@@ -166,12 +162,10 @@ let
         "qbittorrentOauth2ProxyCookieSecret"
         "radarrOauth2ProxyClientSecret"
         "radarrOauth2ProxyCookieSecret"
-        "seerrOauth2ProxyClientSecret"
-        "seerrOauth2ProxyCookieSecret"
         "sonarrOauth2ProxyClientSecret"
         "sonarrOauth2ProxyCookieSecret"
       ];
-      backupApps = [ "chaptarr" "prowlarr" "qbittorrent" "radarr" "seerr" "sonarr" ];
+      backupApps = [ "chaptarr" "prowlarr" "qbittorrent" "radarr" "sonarr" ];
       guardedServices = [
         "chaptarr"
         "chaptarr-storage-layout-v1"
@@ -186,7 +180,7 @@ let
         "radarr"
         "sonarr"
       ];
-      persistencePaths = [ "/var/lib/chaptarr" "/var/lib/prowlarr" "/var/lib/radarr" "/var/lib/seerr" "/var/lib/sonarr" ];
+      persistencePaths = [ "/var/lib/chaptarr" "/var/lib/prowlarr" "/var/lib/radarr" "/var/lib/sonarr" ];
     };
     prowlarr = {
       disable = { repo.prowlarr.enable = lib.mkForce false; };
@@ -235,22 +229,6 @@ let
       backupApps = [ "radarr" ];
       guardedServices = [ "radarr" "media-automation-bootstrap-radarr" ];
       persistencePaths = [ "/var/lib/radarr" ];
-    };
-    seerr = {
-      disable = { repo.seerr.enable = lib.mkForce false; };
-      registryName = "seerr";
-      services = [ "seerr" "seerr-oauth2-proxy" "seerr-permissions-reconcile" ];
-      timers = [ "seerr-permissions-reconcile" ];
-      hosts = [ "requests" ];
-      gatewayApps = [ "seerr" ];
-      oauthClients = [ "seerr-web" ];
-      kanidmGroups = [ vars.seerrRequestManagerGroup ];
-      users = [ "seerr" ];
-      groups = [ "seerr" ];
-      secrets = [ "seerrOauth2ProxyClientSecret" "seerrOauth2ProxyCookieSecret" ];
-      backupApps = [ "seerr" ];
-      guardedServices = [ ];
-      persistencePaths = [ "/var/lib/seerr" ];
     };
     sonarr = {
       disable = { repo.sonarr.enable = lib.mkForce false; };

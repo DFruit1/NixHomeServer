@@ -63,6 +63,11 @@ let
         monitorPaths = [ "/" ]; # Filesystems watched for capacity; user-data pools are intentionally excluded.
         journalVacuumTime = "7d"; # Journal retention kept while under pressure; normal journald retention is 30 days.
       };
+      storageCapacityAlerts = {
+        enable = true; # Alert when watched filesystems cross capacity thresholds; this never deletes anything.
+        warnPercent = 80; # Used percent that marks a filesystem as filling up.
+        criticalPercent = 90; # Used percent that requires operator action.
+      };
     };
 
     dnsSettings = {

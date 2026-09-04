@@ -10,11 +10,6 @@ in
       "absBootstrapPass"
       "absClientSecret"
     ] [ ];
-    beszel = app ./beszel "Beszel Monitor" "operations" [
-      "beszelHubEnv"
-      "monitorOauth2ProxyClientSecret"
-      "monitorOauth2ProxyCookieSecret"
-    ] [ ];
     bonsai = app ./bonsai "Bonsai AI" "automation" [ ] [ ];
     browsertrix-downloader = app ./browsertrix-downloader "Web Archives" "knowledge" [
       "browsertrixDownloaderOauth2ProxyClientSecret"
@@ -106,10 +101,6 @@ in
       "radarr"
       "media-automation-bootstrap-radarr"
     ];
-    seerr = app ./seerr "Seerr" "media-automation" [
-      "seerrOauth2ProxyClientSecret"
-      "seerrOauth2ProxyCookieSecret"
-    ] [ ];
     sonarr = app ./sonarr "Sonarr" "media-automation" [
       "sonarrOauth2ProxyClientSecret"
       "sonarrOauth2ProxyCookieSecret"

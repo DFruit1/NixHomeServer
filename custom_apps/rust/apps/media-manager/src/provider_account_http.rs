@@ -25,6 +25,7 @@ use std::{
 };
 use zeroize::Zeroize;
 
+mod accounts;
 mod artwork_lookups;
 mod google_books;
 mod tmdb_lookups;
@@ -147,6 +148,7 @@ struct CredentialFieldDefinition {
 struct ProviderDefinition {
     id: &'static str,
     name: &'static str,
+    logo_url: Option<&'static str>,
     media_domains: &'static [&'static str],
     setup_kind: SetupKind,
     implementation_status: ImplementationStatus,
@@ -254,6 +256,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
     ProviderDefinition {
         id: "tmdb",
         name: "The Movie Database (TMDB)",
+        logo_url: Some("https://www.themoviedb.org/assets/2/v4/logos/v2/blue_short-8e7b30f73a4020692ccca9c88bafe5dcb6f8a62a4c6bc55cd9ba82bb2cd95f6c.svg"),
         media_domains: &["movies", "television"],
         setup_kind: SetupKind::ApiKey,
         implementation_status: ImplementationStatus::Active,
@@ -275,6 +278,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
     ProviderDefinition {
         id: "opensubtitles",
         name: "OpenSubtitles",
+        logo_url: Some("https://www.opensubtitles.com/images/logos/osdb logo.svg"),
         media_domains: &["subtitles"],
         setup_kind: SetupKind::Account,
         implementation_status: ImplementationStatus::Active,
@@ -288,6 +292,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
     ProviderDefinition {
         id: "acoustid",
         name: "AcoustID",
+        logo_url: Some("https://acoustid.org/images/logo-acoustid.svg"),
         media_domains: &["music"],
         setup_kind: SetupKind::ApiKey,
         implementation_status: ImplementationStatus::Active,
@@ -301,6 +306,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
     ProviderDefinition {
         id: "musicbrainz",
         name: "MusicBrainz",
+        logo_url: Some("https://musicbrainz.org/static/images/layout/logo.svg"),
         media_domains: &["music"],
         setup_kind: SetupKind::Public,
         implementation_status: ImplementationStatus::Active,
@@ -320,6 +326,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
     ProviderDefinition {
         id: "cover-art-archive",
         name: "Cover Art Archive",
+        logo_url: Some("https://coverartarchive.org/img/logo.svg"),
         media_domains: &["music"],
         setup_kind: SetupKind::Public,
         implementation_status: ImplementationStatus::Active,
@@ -333,6 +340,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
     ProviderDefinition {
         id: "open-library",
         name: "Open Library",
+        logo_url: Some("https://openlibrary.org/static/images/openlibrary-logo-tighter.svg"),
         media_domains: &["books", "audiobooks"],
         setup_kind: SetupKind::Public,
         implementation_status: ImplementationStatus::Active,
@@ -346,6 +354,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
     ProviderDefinition {
         id: "wikidata",
         name: "Wikidata",
+        logo_url: Some("https://www.wikidata.org/static/images/icons logo.svg"),
         media_domains: &["movies", "television", "music", "books", "people"],
         setup_kind: SetupKind::Public,
         implementation_status: ImplementationStatus::Planned,
@@ -359,6 +368,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
     ProviderDefinition {
         id: "audnexus",
         name: "Audnexus",
+        logo_url: None,
         media_domains: &["audiobooks"],
         setup_kind: SetupKind::Public,
         implementation_status: ImplementationStatus::Planned,
@@ -372,6 +382,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
     ProviderDefinition {
         id: "tvdb",
         name: "TheTVDB",
+        logo_url: Some("https://thetvdb.com/images/logo.png"),
         media_domains: &["television", "movies"],
         setup_kind: SetupKind::Account,
         implementation_status: ImplementationStatus::Planned,
@@ -385,6 +396,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
     ProviderDefinition {
         id: "omdb",
         name: "OMDb API",
+        logo_url: Some("https://www.omdbapi.com/img/OMDb-title.png"),
         media_domains: &["movies", "television"],
         setup_kind: SetupKind::ApiKey,
         implementation_status: ImplementationStatus::Planned,
@@ -398,6 +410,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
     ProviderDefinition {
         id: "fanart",
         name: "Fanart.tv",
+        logo_url: Some("https://fanart.tv/assets/images/logo.png"),
         media_domains: &["movies", "television", "music"],
         setup_kind: SetupKind::ApiKey,
         implementation_status: ImplementationStatus::Planned,
@@ -411,6 +424,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
     ProviderDefinition {
         id: "discogs",
         name: "Discogs",
+        logo_url: Some("https://www.discogs.com/images/logo-discogs-2022.svg"),
         media_domains: &["music"],
         setup_kind: SetupKind::ApiKey,
         implementation_status: ImplementationStatus::Planned,
@@ -424,6 +438,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
     ProviderDefinition {
         id: "theaudiodb",
         name: "TheAudioDB",
+        logo_url: Some("https://www.theaudiodb.com/images/logo.png"),
         media_domains: &["music"],
         setup_kind: SetupKind::ApiKey,
         implementation_status: ImplementationStatus::Planned,
@@ -437,6 +452,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
     ProviderDefinition {
         id: "google-books",
         name: "Google Books",
+        logo_url: Some("https://developers.google.com/static/books/images/google_books_logo_2020.svg"),
         media_domains: &["books"],
         setup_kind: SetupKind::ApiKey,
         implementation_status: ImplementationStatus::Active,
@@ -450,6 +466,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
     ProviderDefinition {
         id: "comic-vine",
         name: "Comic Vine",
+        logo_url: Some("https://comicvine.gamespot.com/a/bundles/comicvinesite/images/logo.png"),
         media_domains: &["comics", "manga"],
         setup_kind: SetupKind::ApiKey,
         implementation_status: ImplementationStatus::Planned,
@@ -463,6 +480,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
     ProviderDefinition {
         id: "isbndb",
         name: "ISBNdb",
+        logo_url: Some("https://isbndb.com/images/logo.png"),
         media_domains: &["books", "audiobooks"],
         setup_kind: SetupKind::ApiKey,
         implementation_status: ImplementationStatus::Planned,
@@ -476,6 +494,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
     ProviderDefinition {
         id: "podcast-index",
         name: "Podcast Index",
+        logo_url: Some("https://podcastindex.org/assets/images/logo.svg"),
         media_domains: &["podcasts"],
         setup_kind: SetupKind::Account,
         implementation_status: ImplementationStatus::Planned,
@@ -489,6 +508,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
     ProviderDefinition {
         id: "subdl",
         name: "SubDL",
+        logo_url: Some("https://subdl.com/assets/images/logo.png"),
         media_domains: &["subtitles"],
         setup_kind: SetupKind::ApiKey,
         implementation_status: ImplementationStatus::Planned,
@@ -500,12 +520,6 @@ const PROVIDERS: &[ProviderDefinition] = &[
         notes: "Optional subtitle fallback; results still require review and staged installation.",
     },
 ];
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct SaveProviderAccountRequest {
-    credentials: BTreeMap<String, String>,
-}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -555,14 +569,18 @@ struct AcoustidReleaseGroup {
 
 pub fn provider_account_router(state: ProviderBrokerState) -> Router {
     Router::new()
-        .route("/api/v1/provider-accounts", get(list_provider_accounts))
+        .route(
+            "/api/v1/provider-accounts",
+            get(accounts::list_provider_accounts),
+        )
         .route(
             "/api/v1/provider-accounts/{provider_id}",
-            axum::routing::put(save_provider_account).delete(delete_provider_account),
+            axum::routing::put(accounts::save_provider_account)
+                .delete(accounts::delete_provider_account),
         )
         .route(
             "/api/v1/provider-accounts/{provider_id}/test",
-            axum::routing::post(test_provider_account),
+            axum::routing::post(accounts::test_provider_account),
         )
         .route(
             "/api/v1/provider-lookups/tmdb/search",
@@ -1265,290 +1283,6 @@ fn invalid_json(request_id: &str) -> ApiError {
     )
 }
 
-async fn list_provider_accounts(
-    State(state): State<ProviderBrokerState>,
-    headers: HeaderMap,
-) -> Response {
-    let request_id = request_id();
-    let identity = match authenticated_identity(&headers, &request_id) {
-        Ok(identity) => identity,
-        Err(error) => return error.into_response(),
-    };
-    let summaries = match state.store.list(&identity) {
-        Ok(summaries) => summaries,
-        Err(error) => return storage_failure(error, &request_id).into_response(),
-    };
-    Json(json!({
-        "schemaVersion": 1,
-        "providers": provider_views(&summaries),
-        "recoveryAdvice": "Saved credentials cannot be viewed again. Keep the recovery copy in Vaultwarden, KeePassXC, or another password manager.",
-        "requestId": request_id,
-    }))
-    .into_response()
-}
-
-async fn save_provider_account(
-    State(state): State<ProviderBrokerState>,
-    headers: HeaderMap,
-    Path(provider_id): Path<String>,
-    payload: Result<Json<SaveProviderAccountRequest>, JsonRejection>,
-) -> Response {
-    let request_id = request_id();
-    let identity = match authenticated_identity(&headers, &request_id) {
-        Ok(identity) => identity,
-        Err(error) => return error.into_response(),
-    };
-    let mut request = match payload {
-        Ok(Json(request)) => request,
-        Err(_) => {
-            return ApiError::new(
-                StatusCode::BAD_REQUEST,
-                "invalid_json",
-                "Supply a valid provider credential document.",
-                request_id,
-            )
-            .into_response()
-        }
-    };
-    let Some(definition) = provider_definition(&provider_id) else {
-        zeroize_credentials(&mut request.credentials);
-        return ApiError::new(
-            StatusCode::NOT_FOUND,
-            "provider_not_found",
-            "The requested metadata provider is not in the provider catalog.",
-            request_id,
-        )
-        .into_response();
-    };
-    if definition.implementation_status != ImplementationStatus::Active {
-        zeroize_credentials(&mut request.credentials);
-        return ApiError::new(
-            StatusCode::CONFLICT,
-            "provider_adapter_unavailable",
-            "Credentials cannot be saved until this provider's lookup adapter is available.",
-            request_id,
-        )
-        .into_response();
-    }
-    if definition.credential_fields.is_empty() {
-        zeroize_credentials(&mut request.credentials);
-        return ApiError::new(
-            StatusCode::CONFLICT,
-            "provider_account_not_required",
-            "This provider does not require a saved account.",
-            request_id,
-        )
-        .into_response();
-    }
-    if let Err(message) = validate_credentials(definition, &request.credentials) {
-        zeroize_credentials(&mut request.credentials);
-        return ApiError::new(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "credential_validation_failed",
-            message,
-            request_id,
-        )
-        .into_response();
-    }
-    let result = state.store.save(
-        &identity,
-        definition.id,
-        &request.credentials,
-        unix_timestamp(),
-    );
-    zeroize_credentials(&mut request.credentials);
-    if let Err(error) = result {
-        return storage_failure(error, &request_id).into_response();
-    }
-    let summary = match state.store.list(&identity) {
-        Ok(summaries) => summaries
-            .into_iter()
-            .find(|summary| summary.provider_id == definition.id),
-        Err(error) => return storage_failure(error, &request_id).into_response(),
-    };
-    Json(json!({
-        "provider": provider_view(definition, summary.as_ref()),
-        "requestId": request_id,
-    }))
-    .into_response()
-}
-
-async fn delete_provider_account(
-    State(state): State<ProviderBrokerState>,
-    headers: HeaderMap,
-    Path(provider_id): Path<String>,
-) -> Response {
-    let request_id = request_id();
-    let identity = match authenticated_identity(&headers, &request_id) {
-        Ok(identity) => identity,
-        Err(error) => return error.into_response(),
-    };
-    if provider_definition(&provider_id).is_none() {
-        return ApiError::new(
-            StatusCode::NOT_FOUND,
-            "provider_not_found",
-            "The requested metadata provider is not in the provider catalog.",
-            request_id,
-        )
-        .into_response();
-    }
-    match state.store.delete(&identity, &provider_id) {
-        Ok(_) => StatusCode::NO_CONTENT.into_response(),
-        Err(error) => storage_failure(error, &request_id).into_response(),
-    }
-}
-
-async fn test_provider_account(
-    State(state): State<ProviderBrokerState>,
-    headers: HeaderMap,
-    Path(provider_id): Path<String>,
-) -> Response {
-    let request_id = request_id();
-    let identity = match authenticated_identity(&headers, &request_id) {
-        Ok(identity) => identity,
-        Err(error) => return error.into_response(),
-    };
-    let Some(definition) = provider_definition(&provider_id) else {
-        return ApiError::new(
-            StatusCode::NOT_FOUND,
-            "provider_not_found",
-            "The requested metadata provider is not in the provider catalog.",
-            request_id,
-        )
-        .into_response();
-    };
-    if definition.credential_fields.is_empty() {
-        return ApiError::new(
-            StatusCode::CONFLICT,
-            "provider_test_not_required",
-            "This public provider does not have a saved account to test.",
-            request_id,
-        )
-        .into_response();
-    }
-    let Some(connection_test) = definition.connection_test.filter(|_| definition.can_test()) else {
-        return ApiError::new(
-            StatusCode::CONFLICT,
-            "provider_test_unavailable",
-            "A live connection test will be enabled with this provider's lookup adapter.",
-            request_id,
-        )
-        .into_response();
-    };
-    let mut credentials = match state.store.load_credentials(&identity, definition.id) {
-        Ok(Some(credentials)) => credentials,
-        Ok(None) => {
-            return ApiError::new(
-                StatusCode::NOT_FOUND,
-                "provider_account_not_found",
-                "No configured provider account exists for this identity.",
-                request_id,
-            )
-            .into_response()
-        }
-        Err(error) => return storage_failure(error, &request_id).into_response(),
-    };
-    let outcome = test_live_provider(&state, connection_test, &credentials).await;
-    zeroize_credentials(&mut credentials);
-    if let Err(error) = state.store.record_test_result(
-        &identity,
-        definition.id,
-        outcome.status,
-        outcome.message,
-        unix_timestamp(),
-    ) {
-        return storage_failure(error, &request_id).into_response();
-    }
-    Json(json!({
-        "providerId": definition.id,
-        "status": outcome.status,
-        "message": outcome.message,
-        "requestId": request_id,
-    }))
-    .into_response()
-}
-
-struct ProviderTestOutcome {
-    status: &'static str,
-    message: &'static str,
-}
-
-async fn test_live_provider(
-    state: &ProviderBrokerState,
-    adapter: ConnectionTestAdapter,
-    credentials: &BTreeMap<String, String>,
-) -> ProviderTestOutcome {
-    let response = match adapter {
-        ConnectionTestAdapter::Tmdb => {
-            let url = provider_test_url(&state.endpoints.tmdb_api_base, "authentication");
-            match (url, credentials.get("apiKey")) {
-                (Ok(url), Some(api_key)) => state.client.get(url).bearer_auth(api_key).send().await,
-                _ => return invalid_saved_credentials(),
-            }
-        }
-        ConnectionTestAdapter::OpenSubtitles => {
-            let url = provider_test_url(&state.endpoints.opensubtitles_api_base, "login");
-            match (
-                url,
-                credentials.get("apiKey"),
-                credentials.get("username"),
-                credentials.get("password"),
-            ) {
-                (Ok(url), Some(api_key), Some(username), Some(password)) => {
-                    let user_agent = credentials
-                        .get("userAgent")
-                        .map(String::as_str)
-                        .filter(|value| !value.trim().is_empty())
-                        .unwrap_or("NixHomeServer Media Manager");
-                    state
-                        .client
-                        .post(url)
-                        .header("api-key", api_key)
-                        .header(reqwest::header::USER_AGENT, user_agent)
-                        .json(&json!({ "username": username, "password": password }))
-                        .send()
-                        .await
-                }
-                _ => return invalid_saved_credentials(),
-            }
-        }
-    };
-    match response {
-        Ok(response) if response.status().is_success() => ProviderTestOutcome {
-            status: "ready",
-            message: "The provider accepted this account.",
-        },
-        Ok(response)
-            if matches!(
-                response.status(),
-                reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
-            ) =>
-        {
-            ProviderTestOutcome {
-                status: "rejected",
-                message: "The provider rejected the saved account.",
-            }
-        }
-        Ok(response) if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS => {
-            ProviderTestOutcome {
-                status: "rateLimited",
-                message: "The provider rate limit was reached; try again later.",
-            }
-        }
-        Ok(_) | Err(_) => ProviderTestOutcome {
-            status: "unavailable",
-            message: "The provider could not be reached or did not accept the test request.",
-        },
-    }
-}
-
-fn invalid_saved_credentials() -> ProviderTestOutcome {
-    ProviderTestOutcome {
-        status: "rejected",
-        message: "The saved credential document is incomplete.",
-    }
-}
-
 fn provider_test_url(base: &str, path: &str) -> Result<reqwest::Url, String> {
     trusted_provider_base(base)?
         .join(path)
@@ -1601,6 +1335,7 @@ fn provider_view(
     json!({
         "id": definition.id,
         "name": definition.name,
+        "logoUrl": definition.logo_url,
         "mediaDomains": definition.media_domains,
         "setupKind": definition.setup_kind,
         "implementationStatus": definition.implementation_status,

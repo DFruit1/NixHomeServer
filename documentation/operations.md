@@ -156,12 +156,11 @@ repo.kiwix.enable = false;
 repo.prowlarr.enable = false;
 repo.qbittorrent.enable = false;
 repo.radarr.enable = false;
-repo.seerr.enable = false;
 repo.sonarr.enable = false;
 services.mail-archive-ui.enable = false;
 ```
 
-Seerr already defaults to disabled. Offline Media uses
+Offline Media uses
 `offlineMedia.enable = false` in `vars.nix`; its cleanup unit revokes generated
 Syncthing runtime configuration without deleting persisted application data.
 Do not remove application paths from the central impermanence inventory merely
@@ -402,6 +401,49 @@ systemctl status nixhomeserver-disk-cleanup.timer
 journalctl -u nixhomeserver-disk-cleanup.service --output=cat
 sudo systemctl start nixhomeserver-disk-cleanup.service
 ```
+
+## Storage Capacity Alerts
+
+`storage-capacity-check.timer` measures every watched filesystem each hour
+(15 minutes after boot, ±10 minutes) and journals a structured
+`storage_capacity` event under the `storage-capacity` identifier. Unlike disk
+cleanup it deletes nothing; it exists so filesystems without automated
+cleanup — most importantly the ZFS data pool — page the operator before they
+fill up.
+
+Watched paths are the root filesystem (which also covers `/persist` and
+`/nix/store`; duplicate mountpoints on the same device are measured once)
+plus the data pool mount when the `zfs-mirror` profile is enabled. Thresholds
+come from `system.storageCapacityAlerts` (`warnPercent` default 80,
+`criticalPercent` default 90). Critical or unmeasurable filesystems raise the
+standard failure alert at most once per 24 hours; recovery below the warning
+threshold rearms the alert immediately. The current state is persisted at
+`/persist/appdata/backup-metadata/metadata/storage-capacity-state.json`.
+
+```bash
+sudo systemctl status storage-capacity-check.service --no-pager
+sudo journalctl -t storage-capacity -n 50 --output=cat --no-pager
+sudo jq . /persist/appdata/backup-metadata/metadata/storage-capacity-state.json
+```
+
+## Application Log Hygiene
+
+Persisted application log directories are bounded so a chatty service cannot
+grow the system SSD without limit. Each enabled module owns its own rules, so
+removing a module removes its rules with it:
+
+- Jellyfin: `/var/lib/jellyfin/log`
+- Kavita: `/var/lib/kavita/config/logs`
+- Paperless: `/var/lib/paperless/log`
+- Filestash: `/var/log/filestash`
+
+Each directory is rotated by `services.logrotate` (daily, `maxsize 20M`, four
+compressed rotations, `copytruncate`) and its tmpfiles rule ages out leftover
+files after 14 days. The NixOS daily `logrotate.timer` and the default daily
+`systemd-tmpfiles-clean.timer` run both. Kopia's own file logs (14 days) and
+Caddy's rolled access logs are managed separately, and all stdout/stderr
+logging is bounded by journald. These directories are also excluded from
+Kopia snapshots, so rotations never enter backups.
 
 `/mnt/data` is the configured data root for both storage profiles. On
 `zfs-mirror` it is a ZFS pool mountpoint; on `single-disk-ext4` it is a normal
@@ -1508,7 +1550,10 @@ Nix or read the repository checkout:
 Kopia uses a managed encrypted filesystem repository at
 `/mnt/data/backups/kopia`. The `kopia-persist-snapshot.timer` creates daily
 snapshots of `/persist` and `/mnt/data/paperless` after consistent logical
-database preparation.
+database preparation. Every logical generation also includes a consistent,
+integrity-checked `kanidm.sqlite` dump of the live Kanidm database, in
+addition to Kanidm's own JSON online backups under `/var/lib/kanidm/backups`
+(identity is the hardest state to rebuild, so both representations are kept).
 
 Rclone is a scheduled, short-lived synchronizer for offsite copies of that
 encrypted repository. The MEGA remote is rendered from `vars.rcloneMega` and the
@@ -1619,10 +1664,28 @@ sudo systemctl start rclone-mega-kopia-sync.service
 sudo journalctl -u kopia-full-maintenance.service -u rclone-mega-kopia-sync.service -n 200 --no-pager
 ```
 
+`kopia-snapshot-verify.timer` deep-verifies the repository weekly (Sunday
+05:00, ±1 hour) by downloading and byte-comparing a random sample of snapshot
+files (`repo.backups.kopiaVerifyFilesPercent`, default 5%) while holding the
+shared maintenance lock. Snapshot metadata is always verified; a sampled-file
+corruption fails the job and follows the standard failure-alert path. Waiting
+behind another maintenance job exits 75 and counts as success, and the last
+successful run is recorded in `/persist/appdata/kopia/last-verify-success.json`.
+Freshness alone is never proof of integrity, so a failed verify means restore
+from the offsite mirror rather than trusting the local repository:
+
+```bash
+sudo systemctl status kopia-snapshot-verify.service --no-pager
+sudo jq . /persist/appdata/kopia/last-verify-success.json
+```
+
 Kopia deletion safety is not overridden. UI-deleted snapshots may remain until
-a later full-maintenance cycle. Routine journal retention is 14 days/256 MiB;
-Kopia file logs are removed after 14 days. Caddy keeps five 25 MiB rolled access
-logs for at most 30 days.
+a later full-maintenance cycle. Routine journal retention is 512 MiB/30 days
+(`RuntimeMaxUse` is 128 MiB and pressure vacuums to 7 days). Kopia file logs
+are removed after 14 days. Caddy keeps five 25 MiB rolled access logs for at
+most 30 days. Persisted application log directories are rotated by logrotate
+(daily, four compressed rotations, 20 MiB per-file trigger) and aged out after
+14 days; see "Application log hygiene" in this document.
 
 ## Local ZFS Snapshots
 

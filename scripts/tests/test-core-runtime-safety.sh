@@ -111,7 +111,6 @@ jq -e '
   and (.syncthing.host | startswith("syncthing."))
   and (.syncthing.upstream == "http://127.0.0.1:8384")
   and (.syncthing.allowedGroups == ["app-admin"])
-  and (.backups.sqliteSources | index("/var/lib/seerr/db/db.sqlite3") == null)
   and (.backups.sqliteSources | index("/var/lib/audiobookshelf/config/absdatabase.sqlite") != null)
   and (.backups.sqliteSources | index("/var/lib/jellyfin/data/jellyfin.db") != null)
   and (.backups.postgresqlDatabases | index("immich") != null)
@@ -170,8 +169,6 @@ for service_template in files-shared-delete-bindfs@ files-shared-bindfs@ files-s
     "systemctl start --no-block \"\$(service_instance $service_template.service \"\$username\")\"" \
     "Fileshare reconciliation must not synchronously wait for $service_template units ordered after it."
 done
-forbid_match modules/Core_Modules/backups/default.nix '/var/lib/seerr/db/db[.]sqlite3' \
-  "Disabled Seerr state must not be mandatory in the core backup module."
 require_fixed modules/Core_Modules/backups/default.nix 'sha256sum -- "dumps/$output_name"' \
   "Published backup checksums must use generation-relative dump paths."
 require_fixed modules/Core_Modules/backups/default.nix 'sha256sum --check metadata/SHA256SUMS' \
@@ -182,8 +179,6 @@ forbid_match modules/Core_Modules/backups/default.nix 'successfulCurrentPath[}]?
   "Backup publication must not be wedged by a crash-persistent current.new path."
 forbid_match modules/Core_Modules/backups/default.nix 'sha256sum .*[$]work/dumps' \
   "Backup checksum manifests must not retain transient staging paths."
-require_fixed modules/seerr/backups.nix 'config = lib.mkIf config.repo.seerr.enable' \
-  "Seerr backup declarations must remain conditional on the service being enabled."
 require_fixed modules/Core_Modules/syncthing/default.nix 'repo.authGateway.protectedApps.syncthing' \
   "The Syncthing administrative GUI must remain behind the shared SSO gateway."
 forbid_match modules/Core_Modules/syncthing/default.nix 'reverse_proxy http://127[.]0[.]0[.]1:8384' \

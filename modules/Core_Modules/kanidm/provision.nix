@@ -8,13 +8,10 @@ let
   mailArchiveEnabled =
     hasModule "mail-archive-ui"
     && config.services.mail-archive-ui.enable;
-  seerrEnabled = moduleEnabled "seerr";
-  beszelEnabled = hasModule "beszel";
-  mediaAutomationEnabled = lib.any moduleEnabled [ "chaptarr" "sonarr" "radarr" "prowlarr" "qbittorrent" "seerr" ];
+  mediaAutomationEnabled = lib.any moduleEnabled [ "chaptarr" "sonarr" "radarr" "prowlarr" "qbittorrent" ];
   appPersonNames = lib.unique (
     vars.kanidmAppUsers
     ++ vars.kanidmAppAdminUsers
-    ++ lib.optionals beszelEnabled (vars.monitoringAccessUsers or [ ])
     ++ (vars.filesSftpUsers or [ ])
   );
   adminMailAddresses =
@@ -82,11 +79,7 @@ let
     "${vars.backupStorageGroup}" = "Grants read access to encrypted backup repository files.";
   };
   appKanidmGroupDescriptions =
-    lib.optionalAttrs beszelEnabled
-      {
-        "${vars.monitoringAccessGroup}" = "Grants access to the monitoring dashboard without application-admin privileges.";
-      }
-    // lib.optionalAttrs (hasModule "audiobookshelf")
+    lib.optionalAttrs (hasModule "audiobookshelf")
       {
         "audiobookshelf-users" = "Grants Audiobookshelf sign-in.";
       }
@@ -113,9 +106,6 @@ let
     }
     // lib.optionalAttrs (hasModule "paperless") {
       "paperless-users" = "Grants Paperless document archive access.";
-    }
-    // lib.optionalAttrs seerrEnabled {
-      "${vars.seerrRequestManagerGroup}" = "Grants Seerr request approval and rejection permissions.";
     };
   kanidmGroupDescriptions = coreKanidmGroupDescriptions // appKanidmGroupDescriptions;
   authGatewayScopeGroups = lib.unique (
@@ -129,7 +119,6 @@ let
       vars.backupAdminGroup
       vars.backupStorageGroup
     ]
-    ++ lib.optionals beszelEnabled [ vars.monitoringAccessGroup ]
     ++ lib.optionals (hasModule "youtube-downloader") [ "downloads-users" ]
     ++ lib.optionals (moduleEnabled "kiwix") [ "kiwix-users" ]
     ++ lib.optionals mailArchiveEnabled [ "mail-archive-users" ]
@@ -215,11 +204,7 @@ in
       } // lib.genAttrs delegatedOperatorGroups (_: mkManualGroup [ vars.kanidmAdminUser ]) // {
         "app-admin" = mkManualGroup vars.kanidmAppAdminUsers;
         users = mkManualGroup vars.kanidmAppUsers;
-      } // lib.optionalAttrs beszelEnabled {
-        ${vars.monitoringAccessGroup} = mkManualGroup (vars.monitoringAccessUsers or [ ]);
-      } // fileAccessGroups // backupAccessGroups // lib.optionalAttrs seerrEnabled {
-        ${vars.seerrRequestManagerGroup} = mkManualGroup [ ];
-      };
+      } // fileAccessGroups // backupAccessGroups;
 
       systems.oauth2.auth-gateway-web = {
         displayName = "NixHomeServer";

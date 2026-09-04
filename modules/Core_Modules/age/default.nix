@@ -12,14 +12,12 @@ let
   prowlarrEnabled = moduleEnabled "prowlarr" && config.repo.prowlarr.enable;
   qbittorrentEnabled = moduleEnabled "qbittorrent" && config.repo.qbittorrent.enable;
   radarrEnabled = moduleEnabled "radarr" && config.repo.radarr.enable;
-  seerrEnabled = moduleEnabled "seerr" && config.repo.seerr.enable;
   sonarrEnabled = moduleEnabled "sonarr" && config.repo.sonarr.enable;
   groundwaterEnabled =
     moduleEnabled "groundwater-logger"
     && config.repo.groundwaterLogger.enable;
   browsertrixEnabled = moduleEnabled "browsertrix-downloader";
   atticEnabled = moduleEnabled "attic";
-  beszelEnabled = moduleEnabled "beszel";
   failureAlertWebhookFile = secretFile "failureAlertWebhookUrl";
   openSubtitlesCredentialsFile = secretFile "openSubtitlesCredentials";
   acoustidApiKeyFile = secretFile "acoustidApiKey";
@@ -53,11 +51,6 @@ in
   }
   // lib.optionalAttrs atticEnabled {
     atticServerEnv = { file = secretFile "atticServerEnv"; owner = "root"; mode = "0400"; };
-  }
-  // lib.optionalAttrs beszelEnabled {
-    monitorOauth2ProxyClientSecret = { file = secretFile "monitorOauth2ProxyClientSecret"; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };
-    monitorOauth2ProxyCookieSecret = { file = secretFile "monitorOauth2ProxyCookieSecret"; owner = "oauth2-proxy"; mode = "0400"; };
-    beszelHubEnv = { file = secretFile "beszelHubEnv"; owner = "root"; mode = "0400"; };
   }
   // lib.optionalAttrs megaEnabled {
     rcloneMegaPassword = { file = secretFile "rcloneMegaPassword"; owner = "root"; mode = "0400"; };
@@ -99,10 +92,6 @@ in
     homepageOauth2ProxyClientSecret = { file = secretFile "homepageOauth2ProxyClientSecret"; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };
     homepageOauth2ProxyCookieSecret = { file = secretFile "homepageOauth2ProxyCookieSecret"; owner = "oauth2-proxy"; mode = "0400"; };
     canaryUserPassword = { file = secretFile "canaryUserPassword"; owner = "homepage-canary"; group = "homepage-canary"; mode = "0400"; };
-  }
-  // lib.optionalAttrs seerrEnabled {
-    seerrOauth2ProxyClientSecret = { file = secretFile "seerrOauth2ProxyClientSecret"; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };
-    seerrOauth2ProxyCookieSecret = { file = secretFile "seerrOauth2ProxyCookieSecret"; owner = "oauth2-proxy"; mode = "0400"; };
   }
   // lib.optionalAttrs sonarrEnabled {
     sonarrOauth2ProxyClientSecret = { file = secretFile "sonarrOauth2ProxyClientSecret"; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };

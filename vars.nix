@@ -30,9 +30,8 @@ let
         "offline-music"
         "paperless"
         "prowlarr"
-        "qbittorrent"
+"qbittorrent"
         "radarr"
-        "seerr"
         "sonarr"
         "vaultwarden"
         "youtube-downloader"
@@ -82,6 +81,11 @@ let
         triggerPercent = 85; # Reclaim logs, aged tmpfiles, and Nix store generations at 85% used; user data is never touched.
         monitorPaths = [ "/" ]; # Filesystems watched for capacity; user-data pools are intentionally excluded.
         journalVacuumTime = "7d"; # Journal retention kept while under pressure; normal journald retention is 30 days.
+      };
+      storageCapacityAlerts = {
+        enable = true; # Alert when watched filesystems cross capacity thresholds; this never deletes anything.
+        warnPercent = 80; # Used percent that marks a filesystem as filling up.
+        criticalPercent = 90; # Used percent that requires operator action.
       };
     };
 

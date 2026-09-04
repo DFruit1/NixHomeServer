@@ -10,7 +10,7 @@ defaults_json="$(flake_eval_json '
   actual = import ./vars.nix { inherit lib; };
   example = import ./vars.example.nix { inherit lib; };
   opinionated = vars: {
-    inherit (vars) backupAccess fileAccess monitoringAccess offlineMedia seerrAccess;
+    inherit (vars) backupAccess fileAccess monitoringAccess offlineMedia;
     canaryUser = vars.identity.canaryUser;
     adminMailAddresses = vars.identity.adminMailAddresses;
     adminEmail = vars.identity.adminEmail;
@@ -45,7 +45,6 @@ if ! jq -e '
     and .backupAccess.storageGid == 2005
     and .backupAccess.storageMountName == "_Backups"
     and .monitoringAccess.group == "monitoring-users"
-    and .seerrAccess.requestManagerGroup == "seerr-request-managers"
     and .offlineMedia.musicFolderName == "_Music"
     and .offlineMedia.stateDir == "/persist/appdata/offline-media"
     and .offlineMedia.musicFolderIdPrefix == "nixhomeserver-music"

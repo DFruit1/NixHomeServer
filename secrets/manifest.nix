@@ -112,14 +112,6 @@
       description = "Cookie secret for the Kopia OAuth2 Proxy.";
       bytes = 32;
     };
-    seerrOauth2ProxyClientSecret = {
-      description = "OIDC client secret for the Seerr OAuth2 Proxy.";
-      bytes = 32;
-    };
-    seerrOauth2ProxyCookieSecret = {
-      description = "Cookie secret for the Seerr OAuth2 Proxy.";
-      bytes = 32;
-    };
     sonarrOauth2ProxyClientSecret = {
       description = "OIDC client secret for the Sonarr OAuth2 Proxy.";
       bytes = 32;

@@ -92,8 +92,20 @@ in
     repo.storage.sharedRoots.videoSubdirs = userVideoSubdirs;
 
     systemd.tmpfiles.rules = [
-      "d ${logDir} 0750 jellyfin jellyfin -"
+      "d ${logDir} 0750 jellyfin jellyfin 14d"
     ];
+
+    # Jellyfin's persisted log directory grows without app-managed limits, so
+    # bound it here: daily rotation with a per-file size trigger, four
+    # compressed rotations, and tmpfiles aging for anything else left behind.
+    services.logrotate.settings.jellyfin-logs = {
+      files = [ "${logDir}/*.log" ];
+      frequency = "daily";
+      maxsize = "20M";
+      rotate = 4;
+      compress = true;
+      copytruncate = true;
+    };
 
     systemd.services.media-folder-layout-v2 = {
       description = "Migrate media video folder layout to Movies, Shows, YouTube, and Other";
