@@ -371,6 +371,7 @@ export default component$((props: RootProps) => {
               key={item.id}
               href={`?view=${item.id}`}
               class={{ "nav-item": true, active: view.value === item.id }}
+              aria-label={item.label}
               aria-current={view.value === item.id ? "page" : undefined}
               title={item.label}
             >
@@ -664,18 +665,24 @@ const ProviderAccountsView = component$(() => {
           .includes(query),
       )
     : accounts.providers;
-  const providers = matchingProviders.filter((provider) => {
-    switch (accounts.filter) {
-      case "configured":
-        return provider.account.state === "configured";
-      case "planned":
-        return provider.implementationStatus === "planned";
-      case "all":
-        return true;
-      default:
-        return provider.implementationStatus === "active";
-    }
-  });
+  const providers = matchingProviders
+    .filter((provider) => {
+      switch (accounts.filter) {
+        case "configured":
+          return provider.account.state === "configured";
+        case "planned":
+          return provider.implementationStatus === "planned";
+        case "all":
+          return true;
+        default:
+          return provider.implementationStatus === "active";
+      }
+    })
+    .sort(
+      (left, right) =>
+        Number(right.account.state !== "notRequired") -
+        Number(left.account.state !== "notRequired"),
+    );
 
   return (
     <section class="provider-accounts-page">
@@ -695,10 +702,6 @@ const ProviderAccountsView = component$(() => {
         <div>
           <strong>Keep the recovery copy in a password manager</strong>
           <p>{accounts.recoveryAdvice}</p>
-          <p>
-            Vaultwarden and KeePassXC are good choices. Media Manager stores an
-            encrypted runtime copy, but never connects to or unlocks your vault.
-          </p>
         </div>
       </aside>
 
@@ -769,11 +772,6 @@ const ProviderAccountsView = component$(() => {
                   )}
                 </div>
                 <p>{provider.notes}</p>
-                <ul class="provider-capabilities">
-                  {provider.capabilities.slice(0, 5).map((capability) => (
-                    <li key={capability}>{capability.replaceAll("-", " ")}</li>
-                  ))}
-                </ul>
                 {provider.account.lastTestMessage && (
                   <p class="provider-last-test">
                     <strong>Last test:</strong>{" "}

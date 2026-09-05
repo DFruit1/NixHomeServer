@@ -3823,6 +3823,13 @@ a:focus-visible {
     padding: 0;
     border-radius: 8px;
   }
+  .nav-item > span {
+    display: none;
+  }
+  .nav-item .icon {
+    width: 22px;
+    height: 22px;
+  }
   .nav-item.active {
     box-shadow: none;
   }
@@ -5370,24 +5377,12 @@ a:focus-visible {
   border-style: dashed;
 }
 .provider-state.public-action {
+  padding: 6px 11px;
   color: var(--accent);
   background: var(--accent-wash);
   border-color: var(--accent-line);
-}
-.provider-capabilities {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-.provider-capabilities li {
-  padding: 3px 7px;
-  border-radius: 2px;
-  color: var(--ink-soft);
-  background: var(--paper-recess);
-  font-size: 9px;
+  font-size: 10px;
+  letter-spacing: 0.05em;
 }
 .provider-last-test {
   color: var(--ink-soft);
@@ -5405,6 +5400,11 @@ a:focus-visible {
 .provider-account-actions {
   margin-top: auto;
   justify-content: space-between;
+}
+.provider-account-actions .primary-button {
+  min-height: 32px;
+  padding: 0 12px;
+  font-size: 11px;
 }
 .provider-account-actions a,
 .provider-credential-footer a {
@@ -5526,5 +5526,18 @@ a:focus-visible {
   }
   .provider-setup-steps {
     grid-template-columns: 1fr;
+  }
+  .provider-account-actions a,
+  .provider-credential-footer a {
+    align-self: center;
+    padding: 12px 8px;
+  }
+}
+
+@media (max-width: 640px) {
+  input,
+  select,
+  textarea {
+    font-size: 16px;
   }
 }

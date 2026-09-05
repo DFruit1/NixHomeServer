@@ -14,6 +14,20 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
     proxy: {
+      "/api/v1/provider-accounts": {
+        target: "http://127.0.0.1:8088",
+        headers: {
+          "x-forwarded-user": "development-editor",
+          "x-forwarded-groups": "users,media-manager-editors",
+        },
+      },
+      "/api/v1/provider-lookups": {
+        target: "http://127.0.0.1:8088",
+        headers: {
+          "x-forwarded-user": "development-editor",
+          "x-forwarded-groups": "users,media-manager-editors",
+        },
+      },
       "/api": {
         target: "http://127.0.0.1:8087",
         headers: {
