@@ -57,7 +57,7 @@ let
         ${storageCapacityCheck} \
           --status-file ${lib.escapeShellArg capacityStatusFile} \
           --alert-state-file ${lib.escapeShellArg capacityAlertStateFile} \
-          ${lib.concatMapStringsSep "\n          " (path: "--monitor-path ${lib.escapeShellArg path}") capacityCfg.monitorPaths} \
+          ${lib.concatStringsSep " " (map (path: "--monitor-path ${lib.escapeShellArg path}") capacityCfg.monitorPaths)} \
           --warn-percent ${toString capacityCfg.warnPercent} \
           --critical-percent ${toString capacityCfg.criticalPercent} \
           --cooldown-seconds 86400
