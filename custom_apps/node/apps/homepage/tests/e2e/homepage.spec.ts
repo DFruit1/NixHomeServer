@@ -24,6 +24,7 @@ test('all locally mapped service icons are packaged and renderable', async ({ pa
     'audiobookshelf',
     'jellyfin',
     'kavita',
+    'chaptarr',
     'vaultwarden',
     'mail-archive-ui',
     'sonarr',
@@ -116,6 +117,7 @@ test('homepage navigation and SFTP upload flow stay client-side', async ({ page 
     'Services',
     'Getting Started',
     'Detailed Guide',
+    'Keys & Secrets',
     'For Admins',
   ]);
   await expect(page.getByRole('region', { name: 'Services' })).toBeVisible();

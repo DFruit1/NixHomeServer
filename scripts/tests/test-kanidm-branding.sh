@@ -13,7 +13,7 @@ kanidm_logo_dir="modules/Core_Modules/kanidm/assets/apps"
 
 mapfile -t homepage_logos < <(find "$homepage_logo_dir" -maxdepth 1 -type f -name '*.svg' -printf '%f\n' | sort)
 
-if [[ "${#homepage_logos[@]}" -ne 18 ]]; then
+if [[ "${#homepage_logos[@]}" -ne 19 ]]; then
   echo "❌ Expected the Homepage service catalog to contain 18 SVG logos; found ${#homepage_logos[@]}." >&2
   exit 1
 fi

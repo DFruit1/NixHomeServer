@@ -141,6 +141,96 @@ export type SftpKeyResponse = {
   details?: string;
 };
 
+export type VaultFeatureId = 'sshKeys' | 'syncthingApiKey' | 'freshrssApiPassword' | 'kavitaApiKeys';
+
+export type VaultFeatureGate = {
+  enabled: boolean;
+  adminOnly?: boolean;
+  requiredAllGroups?: string[];
+  requiredAnyGroups?: string[];
+};
+
+export type VaultConfig = {
+  enabled: boolean;
+  kanidmBaseUrl: string;
+  sessionTtlSeconds: number;
+  idleTtlSeconds: number;
+  freshrssWebUrl?: string;
+  kavitaWebUrl?: string;
+  features: {
+    sshKeys?: VaultFeatureGate;
+    syncthingApiKey?: VaultFeatureGate;
+    freshrssApiPassword?: VaultFeatureGate;
+    kavitaApiKeys?: VaultFeatureGate;
+  };
+};
+
+export type VaultFeature = {
+  id: VaultFeatureId;
+  name: string;
+  description: string;
+  allowed: boolean;
+  adminOnly?: boolean;
+  webUrl?: string;
+};
+
+export type VaultStatus = {
+  unlocked: boolean;
+  features: VaultFeature[];
+  expiresAt?: string;
+  idleExpiresAt?: string;
+  sessionTtlSeconds?: number;
+  idleTtlSeconds?: number;
+  error?: string;
+};
+
+export type VaultUnlockResponse = {
+  ok: boolean;
+  totpRequired?: boolean;
+  pendingId?: string;
+  expiresAt?: string;
+  error?: string;
+  retryAfterSeconds?: number;
+};
+
+export type VaultSshKeyList = {
+  ok: boolean;
+  keys: string[];
+  error?: string;
+};
+
+export type VaultSyncthingKey = {
+  ok: boolean;
+  apiKey?: string;
+  error?: string;
+};
+
+export type VaultFreshrssPassword = {
+  ok: boolean;
+  username: string;
+  password: string;
+  greaderUrl: string;
+  serverUrl: string;
+  error?: string;
+};
+
+export type KavitaAuthKey = {
+  id: number;
+  name: string;
+  key: string;
+  createdAtUtc?: string;
+  expiresAtUtc?: string | null;
+  lastAccessedAtUtc?: string | null;
+};
+
+export type VaultKavitaKeys = {
+  ok: boolean;
+  keys: KavitaAuthKey[];
+  opdsUrl?: string;
+  webUrl?: string;
+  error?: string;
+};
+
 export type CanaryCoverageMode = 'gateway' | 'native-oidc' | 'local-boundary' | 'gateway-boundary' | 'internal';
 export type CanaryRunState = 'never-run' | 'running' | 'setup-required' | 'passed' | 'failed';
 export type CanaryFailureCode =

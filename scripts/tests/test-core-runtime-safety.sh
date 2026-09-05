@@ -217,9 +217,9 @@ forbid_match scripts/test-homepage-ui.sh 'pnpm run build' \
   "Homepage browser tests must not rely on a pre-existing pnpm installation or node_modules tree."
 forbid_match scripts/test-homepage-ui.sh 'rm -rf tests/e2e/node_modules' \
   "Homepage browser tests must not destructively remove a pre-existing node_modules tree."
-require_fixed custom_apps/node/apps/homepage/tests/e2e/playwright.config.mjs 'HOMEPAGE_E2E_SERVER_COMMAND' \
+require_fixed custom_apps/node/apps/homepage/tests/e2e/bin/start-e2e-stack.mjs 'HOMEPAGE_E2E_SERVER_COMMAND' \
   "Homepage browser tests must support the packaged server command supplied by the hermetic harness."
-require_fixed custom_apps/node/apps/homepage/tests/e2e/playwright.config.mjs 'HOMEPAGE_E2E_STATIC_DIR' \
+require_fixed custom_apps/node/apps/homepage/tests/e2e/bin/start-e2e-stack.mjs 'HOMEPAGE_E2E_STATIC_DIR' \
   "Homepage browser tests must support packaged static assets supplied by the hermetic harness."
 require_fixed scripts/validate-repo.sh '"$repo_root/scripts/test-homepage-ui.sh"' \
   "The full validation gate must include the Homepage Playwright suite."

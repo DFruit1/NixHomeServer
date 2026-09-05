@@ -4,6 +4,32 @@
   "serverLanHost": "server.home.arpa",
   "adminUsers": ["dsaw"],
   "adminGroups": [],
+  "vault": {
+    "enabled": true,
+    "kanidmBaseUrl": "https://id.example.test",
+    "sessionTtlSeconds": 900,
+    "idleTtlSeconds": 300,
+    "freshrssWebUrl": "https://rss.example.test",
+    "kavitaWebUrl": "https://books.example.test",
+    "features": {
+      "sshKeys": {
+        "enabled": true,
+        "requiredAnyGroups": ["files-sftp-users", "files-shared-users", "usb-access", "backup-storage-users"]
+      },
+      "syncthingApiKey": {
+        "enabled": true,
+        "adminOnly": true
+      },
+      "freshrssApiPassword": {
+        "enabled": true,
+        "requiredAnyGroups": ["freshrss-users"]
+      },
+      "kavitaApiKeys": {
+        "enabled": true,
+        "requiredAnyGroups": ["kavita-users"]
+      }
+    }
+  },
   "sftp": {
     "enabled": true,
     "host": "server.home.arpa",

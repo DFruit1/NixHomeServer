@@ -94,6 +94,7 @@ const pageNameForPath = (pathname: string): string | undefined => {
   if (pathname === '/getting-started') return 'Getting Started';
   if (pathname === '/uploads') return 'Detailed Guide';
   if (pathname === '/admins') return 'For Admins';
+  if (pathname === '/keys') return 'Keys & Secrets';
   if (pathname.startsWith('/services/')) return 'Service';
   return 'Page Not Found';
 };

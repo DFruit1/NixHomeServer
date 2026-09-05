@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Chaptarr">
+  <rect x="16" y="16" width="480" height="480" rx="104" fill="#245b9f"/>
+  <path d="M256 118c-40-24-92-30-132-16v276c40-14 92-8 132 16 40-24 92-30 132-16V102c-40-14-92-8-132 16z" fill="#f5f7fa"/>
+  <path d="M256 118v276" stroke="#245b9f" stroke-width="16" stroke-linecap="round"/>
+  <g fill="#245b9f">
+    <rect x="150" y="176" width="64" height="12" rx="6"/>
+    <rect x="150" y="212" width="64" height="12" rx="6"/>
+    <rect x="298" y="176" width="64" height="12" rx="6"/>
+    <rect x="298" y="212" width="64" height="12" rx="6"/>
+  </g>
+  <path d="M256 300v76m0 0-38-38m38 38 38-38" stroke="#b66a16" stroke-width="24" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+</svg>

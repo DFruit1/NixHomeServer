@@ -135,6 +135,23 @@ let
                 (toString services.homepage.environment.HOMEPAGE_CONFIG_FILE)))
           else
             null;
+        homepageVaultSurface = {
+          freshrssCommandPresent =
+            builtins.hasAttr "HOMEPAGE_VAULT_FRESHRSS_PASSWORD_COMMAND"
+              (services.homepage.environment or { });
+          kavitaCommandPresent =
+            builtins.hasAttr "HOMEPAGE_VAULT_KAVITA_KEYS_COMMAND"
+              (services.homepage.environment or { });
+          sftpListCommandPresent =
+            builtins.hasAttr "HOMEPAGE_SFTP_KEY_LIST_COMMAND"
+              (services.homepage.environment or { });
+          syncthingCommandPresent =
+            builtins.hasAttr "HOMEPAGE_VAULT_SYNCTHING_KEY_COMMAND"
+              (services.homepage.environment or { });
+          kanidmUrlPresent =
+            builtins.hasAttr "HOMEPAGE_VAULT_KANIDM_URL"
+              (services.homepage.environment or { });
+        };
         removedOwnedSecretsAbsent = lib.all
           (secret: !(builtins.elem secret ageSecretNames))
           (moduleSecrets.${removed} or [ ]);
@@ -191,6 +208,7 @@ let
           selectedApps
           ageSecretNames
           homepageConfigDrv
+          homepageVaultSurface
           offlineMediaSurface
           mediaAutomationSurface
           removedOwnedSecretsAbsent

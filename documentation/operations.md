@@ -2,6 +2,55 @@
 
 Use this as the maintained day-2 operations guide for validation, guarded deploys, rollback, service health, SMART monitoring, and first-response troubleshooting.
 
+## Keys & Secrets Vault
+
+The Homepage "Keys & Secrets" page (`/keys`) is the single self-service place
+where users register or regenerate app credentials: SSH device public keys for
+SFTP/SSHFS, the Syncthing server REST API key (administrators only), the
+per-user FreshRSS API password for Google Reader feed apps, and per-user Kavita
+API keys for OPDS and third-party reader clients. The existing SSHFS setup
+flows on the Getting Started and Detailed Guide pages continue to work; the
+vault adds a central, gated view on top.
+
+Every vault card sits behind a second login. Unlocking re-verifies the
+user's Kanidm password (and TOTP when the account uses it) directly against
+Kanidm and mints a short-lived step-up session:
+
+- The session cookie is a browser-session cookie (`HttpOnly`, `Secure`,
+  `SameSite=Strict`, scoped to `/api/vault`), so closing the browser ends it.
+- The server expires the session after 15 minutes absolute or 5 minutes of
+  inactivity, whichever comes first. The page shows a live countdown and a
+  "Lock now" button.
+- Five consecutive failed unlocks lock the account out of the vault for five
+  minutes on top of Kanidm's own soft-lock behaviour.
+- Sessions live only in the homepage service's memory; a service restart
+  locks every vault immediately.
+
+Operational notes:
+
+- Regenerating the Syncthing API key stops `syncthing.service`, rotates
+  `<apikey>` in `/var/lib/syncthing/.config/syncthing/config.xml`, restarts the
+  service, and verifies the REST endpoint accepts the new key. Offline-media
+  helpers and media-manager read the key at call time, so they keep working;
+  anything that cached the old key externally must be updated.
+- The FreshRSS API password cannot be displayed after the fact (only a hash is
+  stored); the vault shows a freshly generated value once and it is the
+  operator's job to copy it into the reader app. It is set with FreshRSS's own
+  `cli/update-user.php --api-password`, so the user must have signed in to
+  FreshRSS once (account auto-provisioning) before the vault can set a
+  password.
+- Kavita keys are managed through Kavita's own per-user auth-key REST API using
+  a short-lived self-signed admin JWT (same mechanism as media-manager).
+  Rotating or deleting a key invalidates the previous value immediately. The
+  OPDS catalogue URL is `https://books.<domain>/api/opds/<opds key>`.
+- Vault operations run through narrowly-scoped sudo-wrapped helper scripts
+  (`homepage-syncthing-api-key`, `homepage-freshrss-api-password`,
+  `homepage-kavita-keys`, `homepage-sftp-key-list`) pinned in sudoers for the
+  `homepage` user, matching the existing SFTP and offline-media helper
+  pattern. Disabling the FreshRSS, Kavita, or Files modules removes the
+  corresponding helper, environment variable, sudo rule, and vault feature
+  without affecting the rest of the vault.
+
 ## Service Access Canary
 
 `canary-user` is a non-privileged Kanidm person used by the Homepage admin

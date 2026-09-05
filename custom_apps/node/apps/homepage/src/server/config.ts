@@ -1,5 +1,3 @@
-import { readFileSync } from 'node:fs';
-import { fallbackBrandName } from '../shared/branding.js';
 import type {
   AdminStep,
   FolderGuide,
@@ -7,7 +5,11 @@ import type {
   OfflineMediaConnectionAddress,
   OfflineMediaSetup,
   ServiceCard,
+  VaultConfig,
+  VaultFeatureGate,
 } from '../shared/types.js';
+import { readFileSync } from 'node:fs';
+import { fallbackBrandName } from '../shared/branding.js';
 
 export type HomepageConfig = {
   brandName: string;
@@ -35,6 +37,7 @@ export type HomepageConfig = {
   };
   offlineMedia?: OfflineMediaSetup;
   canaryAdminUser?: string;
+  vault?: VaultConfig;
 };
 
 export type AppConfig = {
@@ -43,10 +46,15 @@ export type AppConfig = {
   staticDir: string;
   devUser?: string;
   sftpKeyInstallCommand?: string;
+  sftpKeyListCommand?: string;
   syncthingDeviceIdCommand?: string;
   offlineMediaStatusCommand?: string;
   offlineMediaEnrollCommand?: string;
   offlineMediaRemoveCommand?: string;
+  vaultKanidmUrl?: string;
+  vaultSyncthingKeyCommand?: string;
+  vaultFreshrssPasswordCommand?: string;
+  vaultKavitaKeysCommand?: string;
   sudoPath: string;
   canaryAdminUser?: string;
   canaryStateDir?: string;
@@ -142,6 +150,102 @@ export const loadHomepageConfig = (path: string | undefined): HomepageConfig => 
     brandName,
     domain,
     offlineMedia,
+    vault: normaliseVaultConfig(parsed.vault),
+  };
+};
+
+const clampPositiveInteger = (value: unknown, fallback: number, minimum: number, maximum: number): number => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return fallback;
+  }
+  const rounded = Math.floor(value);
+  if (rounded < minimum) {
+    return minimum;
+  }
+  if (rounded > maximum) {
+    return maximum;
+  }
+  return rounded;
+};
+
+const normaliseGroupList = (value: unknown): string[] | undefined => {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const groups = value.filter((group): group is string => typeof group === 'string' && group.trim().length > 0);
+  return groups.length > 0 ? [...new Set(groups)] : undefined;
+};
+
+const loopbackHosts = new Set(['127.0.0.1', 'localhost', '[::1]', '::1']);
+
+const normaliseKanidmUrl = (value: string | undefined): string | undefined => {
+  if (!value) {
+    return undefined;
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(value.trim());
+  } catch {
+    return undefined;
+  }
+  const isLoopback = loopbackHosts.has(parsed.hostname) || loopbackHosts.has(parsed.hostname.toLowerCase());
+  if (parsed.protocol === 'https:' || (parsed.protocol === 'http:' && isLoopback)) {
+    if (!parsed.host || (parsed.pathname !== '/' && parsed.pathname !== '') || parsed.search || parsed.username || parsed.password) {
+      return undefined;
+    }
+    return parsed.origin === `${parsed.protocol}//${parsed.host}` ? value.trim().replace(/\/$/, '') : parsed.origin;
+  }
+  return undefined;
+};
+
+const normaliseVaultFeatureGate = (value: unknown): VaultFeatureGate | undefined => {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return undefined;
+  }
+  const gate = value as Record<string, unknown>;
+  return {
+    enabled: gate.enabled === true,
+    requiredAllGroups: normaliseGroupList(gate.requiredAllGroups),
+    requiredAnyGroups: normaliseGroupList(gate.requiredAnyGroups),
+  };
+};
+
+export const normaliseVaultConfig = (value: unknown): VaultConfig | undefined => {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return undefined;
+  }
+  const vault = value as Record<string, unknown>;
+  const kanidmBaseUrl = singleLineString(vault.kanidmBaseUrl, 256);
+  if (!vault.enabled || !kanidmBaseUrl || !/^https:\/\//.test(kanidmBaseUrl)) {
+    return undefined;
+  }
+  const featuresRaw = typeof vault.features === 'object' && vault.features !== null && !Array.isArray(vault.features)
+    ? (vault.features as Record<string, unknown>)
+    : {};
+  const syncthingRaw = typeof featuresRaw.syncthingApiKey === 'object' && featuresRaw.syncthingApiKey !== null && !Array.isArray(featuresRaw.syncthingApiKey)
+    ? (featuresRaw.syncthingApiKey as Record<string, unknown>)
+    : undefined;
+  const syncthingGate = normaliseVaultFeatureGate(featuresRaw.syncthingApiKey);
+  const freshrssGate = normaliseVaultFeatureGate(featuresRaw.freshrssApiPassword);
+  const kavitaGate = normaliseVaultFeatureGate(featuresRaw.kavitaApiKeys);
+  const sshGate = normaliseVaultFeatureGate(featuresRaw.sshKeys);
+  const sessionTtlSeconds = clampPositiveInteger(vault.sessionTtlSeconds, 900, 120, 3600);
+  const idleTtlSeconds = clampPositiveInteger(vault.idleTtlSeconds, 300, 60, Math.min(1800, sessionTtlSeconds));
+  return {
+    enabled: true,
+    kanidmBaseUrl,
+    sessionTtlSeconds,
+    idleTtlSeconds,
+    freshrssWebUrl: singleLineString(vault.freshrssWebUrl, 256),
+    kavitaWebUrl: singleLineString(vault.kavitaWebUrl, 256),
+    features: {
+      sshKeys: sshGate,
+      syncthingApiKey: syncthingGate
+        ? { ...syncthingGate, adminOnly: syncthingRaw?.adminOnly !== false }
+        : undefined,
+      freshrssApiPassword: freshrssGate,
+      kavitaApiKeys: kavitaGate,
+    },
   };
 };
 
@@ -151,10 +255,15 @@ export const loadConfig = (): AppConfig => ({
   staticDir: process.env.HOMEPAGE_STATIC_DIR ?? new URL('../../client', import.meta.url).pathname,
   devUser: process.env.HOMEPAGE_DEV_USER,
   sftpKeyInstallCommand: process.env.HOMEPAGE_SFTP_KEY_INSTALL_COMMAND,
+  sftpKeyListCommand: process.env.HOMEPAGE_SFTP_KEY_LIST_COMMAND,
   syncthingDeviceIdCommand: process.env.HOMEPAGE_SYNCTHING_DEVICE_ID_COMMAND,
   offlineMediaStatusCommand: process.env.HOMEPAGE_OFFLINE_MEDIA_STATUS_COMMAND ?? process.env.HOMEPAGE_OFFLINE_MUSIC_STATUS_COMMAND,
   offlineMediaEnrollCommand: process.env.HOMEPAGE_OFFLINE_MEDIA_ENROLL_COMMAND ?? process.env.HOMEPAGE_OFFLINE_MUSIC_ENROLL_COMMAND,
   offlineMediaRemoveCommand: process.env.HOMEPAGE_OFFLINE_MEDIA_REMOVE_COMMAND,
+  vaultKanidmUrl: normaliseKanidmUrl(process.env.HOMEPAGE_VAULT_KANIDM_URL),
+  vaultSyncthingKeyCommand: process.env.HOMEPAGE_VAULT_SYNCTHING_KEY_COMMAND,
+  vaultFreshrssPasswordCommand: process.env.HOMEPAGE_VAULT_FRESHRSS_PASSWORD_COMMAND,
+  vaultKavitaKeysCommand: process.env.HOMEPAGE_VAULT_KAVITA_KEYS_COMMAND,
   sudoPath: process.env.HOMEPAGE_SUDO ?? 'sudo',
   canaryAdminUser: process.env.HOMEPAGE_CANARY_ADMIN_USER,
   canaryStateDir: process.env.HOMEPAGE_CANARY_STATE_DIR,

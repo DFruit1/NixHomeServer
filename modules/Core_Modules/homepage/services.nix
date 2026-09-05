@@ -136,6 +136,8 @@ let
   personalPath = relativePath: "/${relativePath}";
   sharedPath = relativePath: "/${vars.fileAccess.sharedMountName}/${relativePath}";
   sftpAuthorizedKeysDir = "/persist/appdata/files-sftp-authorized-keys";
+  vaultRuntimeDir = "/run/homepage-vault";
+  kanidmVaultUrl = "https://${vars.kanidmDomain}:${toString vars.networking.ports.kanidm}";
   installSftpKey = pkgs.writeShellScript "homepage-install-sftp-key" ''
     set -euo pipefail
 
@@ -223,6 +225,258 @@ let
       --config=${lib.escapeShellArg syncthingConfigDir} \
       --data=${lib.escapeShellArg syncthingDataDir} \
       device-id
+  '';
+  vaultSyncthingKeyHelper = pkgs.writeShellScript "homepage-syncthing-api-key" ''
+    set -euo pipefail
+
+    action="''${1:-}"
+    config_file=${lib.escapeShellArg "${syncthingConfigDir}/config.xml"}
+    case "$action" in
+      show|regenerate)
+        ;;
+      *)
+        echo "action must be show or regenerate" >&2
+        exit 1
+        ;;
+    esac
+
+    if [[ ! -f "$config_file" || -L "$config_file" ]]; then
+      echo "syncthing config file is missing" >&2
+      exit 1
+    fi
+
+    owner_group="$(${pkgs.coreutils}/bin/stat -c '%U:%G' "$config_file")"
+    if [[ "$owner_group" != "syncthing:syncthing" ]]; then
+      echo "syncthing config file has unexpected ownership: $owner_group" >&2
+      exit 1
+    fi
+
+    key_count="$(${pkgs.gnugrep}/bin/grep -c '<apikey>' "$config_file" || true)"
+    if [[ "$key_count" != "1" ]]; then
+      echo "expected exactly one apikey element in the syncthing config, found $key_count" >&2
+      exit 1
+    fi
+
+    gui_address="$(${pkgs.libxml2}/bin/xmllint --xpath 'string(configuration/gui/address)' "$config_file")"
+    rest_port="''${gui_address##*:}"
+    rest_url="http://127.0.0.1:$rest_port"
+
+    if [[ "$action" == "show" ]]; then
+      key="$(${pkgs.libxml2}/bin/xmllint --xpath 'string(configuration/gui/apikey)' "$config_file")"
+      if [[ -z "$key" ]]; then
+        echo "syncthing api key is empty" >&2
+        exit 1
+      fi
+      ${pkgs.coreutils}/bin/printf '%s' "$key"
+      exit 0
+    fi
+
+    new_key="$(${pkgs.openssl}/bin/openssl rand -hex 32)"
+    ${pkgs.coreutils}/bin/install -d -m 0755 /run/homepage-vault
+    exec 8>/run/homepage-vault/syncthing-api-key.lock
+    ${pkgs.util-linux}/bin/flock -x 8
+
+    was_active="$(${pkgs.systemd}/bin/systemctl is-active syncthing.service || true)"
+
+    if [[ "$was_active" == "active" ]]; then
+      ${pkgs.systemd}/bin/systemctl stop syncthing.service
+    fi
+
+    if ! ${pkgs.python3}/bin/python3 - "$config_file" "$new_key" <<'PY'
+import re
+import sys
+
+path, new_key = sys.argv[1:3]
+with open(path, "r", encoding="utf-8") as handle:
+    text = handle.read()
+pattern = re.compile(r"(<apikey>)[^<]*(</apikey>)")
+if not pattern.search(text):
+    raise SystemExit("apikey element not found in the syncthing config")
+replacement = pattern.sub(lambda match: match.group(1) + new_key + match.group(2), text, count=1)
+with open(path + ".homepage-vault-new", "w", encoding="utf-8") as handle:
+    handle.write(replacement)
+PY
+    then
+      if [[ "$was_active" == "active" ]]; then
+        ${pkgs.systemd}/bin/systemctl start syncthing.service
+      fi
+      echo "syncthing api key update failed" >&2
+      exit 1
+    fi
+
+    ${pkgs.coreutils}/bin/mv "$config_file.homepage-vault-new" "$config_file"
+    ${pkgs.coreutils}/bin/chown syncthing:syncthing "$config_file"
+    ${pkgs.coreutils}/bin/chmod 600 "$config_file"
+    if ! ${pkgs.libxml2}/bin/xmllint --noout "$config_file" >/dev/null 2>&1; then
+      echo "updated syncthing config failed xml validation" >&2
+      exit 1
+    fi
+
+    if [[ "$was_active" == "active" ]]; then
+      ${pkgs.systemd}/bin/systemctl start syncthing.service
+      attempt=0
+      until ${pkgs.curl}/bin/curl --fail --silent --max-time 5 -H "X-API-Key: $new_key" "$rest_url/rest/system/ping" >/dev/null 2>&1; do
+        attempt=$((attempt + 1))
+        if (( attempt > 30 )); then
+          echo "syncthing did not accept the regenerated api key" >&2
+          exit 1
+        fi
+        sleep 2
+      done
+    fi
+
+    ${pkgs.coreutils}/bin/printf '%s' "$new_key"
+  '';
+  sftpKeyListHelper = pkgs.writeShellScript "homepage-sftp-key-list" ''
+    set -euo pipefail
+
+    username="''${1:-}"
+    if ! ${pkgs.gnugrep}/bin/grep -Eq '^[a-z][a-z0-9._-]{0,63}$' <<<"$username"; then
+      echo "invalid username" >&2
+      exit 1
+    fi
+
+    target=${lib.escapeShellArg sftpAuthorizedKeysDir}/"$username"
+    if [[ -L "$target" || ! -f "$target" ]]; then
+      exit 0
+    fi
+    owner_group="$(${pkgs.coreutils}/bin/stat -c '%U:%G' "$target")"
+    mode="$(${pkgs.coreutils}/bin/stat -c '%a' "$target")"
+    if [[ "$owner_group" != "root:root" || "$mode" != "644" ]]; then
+      echo "authorized-keys file has unsafe ownership or mode" >&2
+      exit 1
+    fi
+    if ! ${pkgs.openssh}/bin/ssh-keygen -lf "$target" >/dev/null 2>&1; then
+      echo "authorized-keys file failed structural validation" >&2
+      exit 1
+    fi
+    exec ${pkgs.openssh}/bin/ssh-keygen -lf "$target"
+  '';
+  freshrssApiPasswordHelper = pkgs.writeShellScript "homepage-freshrss-api-password" ''
+    set -euo pipefail
+
+    username="''${1:-}"
+    if ! ${pkgs.gnugrep}/bin/grep -Eq '^[a-z][a-z0-9._-]{0,63}$' <<<"$username"; then
+      echo "invalid username" >&2
+      exit 1
+    fi
+
+    password="$(${pkgs.coreutils}/bin/cat | ${pkgs.coreutils}/bin/tr -d '\r\n')"
+    if [[ -z "$password" ]] || ! ${pkgs.gnugrep}/bin/grep -Eq '^[A-Za-z0-9]{16,128}$' <<<"$password"; then
+      echo "invalid freshrss api password payload" >&2
+      exit 1
+    fi
+
+    data_dir=${lib.escapeShellArg config.repo.freshrss.stateDir}
+    output="$(
+      ${pkgs.util-linux}/bin/setpriv --reuid freshrss --regid freshrss --init-groups \
+        env FRESHRSS_DATA_PATH="$data_dir" HOME="$data_dir" \
+        ${config.services.freshrss.package}/cli/update-user.php \
+        --user "$username" --api-password "$password" 2>&1
+    )" || {
+      printf '%s\n' "$output" >&2
+      echo "freshrss api password could not be set; sign in to the Feeds app once, then try again" >&2
+      exit 1
+    }
+    echo "freshrss api password updated for $username"
+  '';
+  kavitaApiKeysHelper = pkgs.writeShellScript "homepage-kavita-keys" ''
+    set -euo pipefail
+
+    username="''${1:-}"
+    if ! ${pkgs.gnugrep}/bin/grep -Eq '^[a-z][a-z0-9._-]{0,63}$' <<<"$username"; then
+      echo "invalid username" >&2
+      exit 1
+    fi
+
+    payload="$(${pkgs.coreutils}/bin/cat)"
+
+    exec ${pkgs.python3}/bin/python3 - \
+      ${lib.escapeShellArg "/var/lib/kavita/config/kavita.db"} \
+      ${lib.escapeShellArg config.age.secrets.kavitaTokenKey.path} \
+      ${lib.escapeShellArg "http://${vars.networking.loopbackIPv4}:${toString vars.networking.ports.kavita}"} \
+      "$username" <<'PY'
+import base64
+import hashlib
+import hmac
+import json
+import sqlite3
+import sys
+import time
+import urllib.error
+import urllib.request
+
+database_path, token_key_path, base_url, username = sys.argv[1:5]
+try:
+    payload = json.loads(sys.stdin.read() or "{}")
+except ValueError:
+    raise SystemExit("invalid request payload")
+action = payload.get("action")
+if action not in ("list", "create", "rotate", "delete"):
+    raise SystemExit("action must be list, create, rotate, or delete")
+
+with sqlite3.connect(f"file:{database_path}?mode=ro", uri=True, timeout=5) as database:
+    row = database.execute(
+        "select Id, UserName from AspNetUsers where UserName = ? limit 1",
+        (username,),
+    ).fetchone()
+if row is None:
+    raise SystemExit("Kavita account not found; sign in to the Books app once, then try again")
+user_id = str(row[0])
+user_name = row[1]
+
+token_key = open(token_key_path, "rb").read().strip()
+if len(token_key) < 32:
+    raise SystemExit("Kavita token key is malformed")
+
+def encode(value):
+    return base64.urlsafe_b64encode(value).rstrip(b"=")
+
+now = int(time.time())
+header = encode(json.dumps({"alg": "HS512", "typ": "JWT"}, separators=(",", ":")).encode())
+claims = {"name": user_name, "nameid": user_id, "role": ["Login"], "nbf": now, "iat": now, "exp": now + 300}
+unsigned = header + b"." + encode(json.dumps(claims, separators=(",", ":")).encode())
+token = (unsigned + b"." + encode(hmac.new(token_key, unsigned, hashlib.sha512).digest())).decode()
+
+def request(method, path, body=None):
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(
+        base_url + path,
+        data=data,
+        method=method,
+        headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=30) as response:
+        body_text = response.read().decode()
+    return json.loads(body_text) if body_text else None
+
+try:
+    if action == "list":
+        keys = request("GET", "/api/Users/auth-keys")
+        if not isinstance(keys, list):
+            raise SystemExit("Kavita returned an unexpected auth key list")
+        print(json.dumps({"keys": keys}))
+    elif action == "create":
+        key = request("POST", "/api/Users/create-auth-key", {"name": payload.get("name"), "keyLength": 32})
+        print(json.dumps({"key": key}))
+    elif action == "rotate":
+        keys = request("GET", "/api/Users/auth-keys")
+        name = next((entry.get("name") for entry in keys if entry.get("id") == int(payload["authKeyId"])), None)
+        if name is None:
+            raise SystemExit("API key not found for this account")
+        key = request(
+            "POST",
+            f"/api/Users/rotate-auth-key?authKeyId={int(payload['authKeyId'])}",
+            {"name": name, "keyLength": 32},
+        )
+        print(json.dumps({"key": key}))
+    elif action == "delete":
+        request("DELETE", f"/api/Users/auth-key?authKeyId={int(payload['authKeyId'])}")
+        print(json.dumps({"deleted": int(payload["authKeyId"])}))
+except urllib.error.HTTPError as error:
+    detail = error.read().decode(errors="replace")[:400]
+    raise SystemExit(f"Kavita request failed ({error.code}): {detail}")
+PY
   '';
   offlineMediaStatus = pkgs.writeShellScript "homepage-offline-media-status" ''
     set -euo pipefail
@@ -923,6 +1177,7 @@ let
       description = "Audiobook and ebook monitoring, metadata, and legal download automation.";
       loginNotes = "Requires media-automation-users through Kanidm.";
       projectUrl = "https://github.com/Chaptarr/chaptarr";
+      logoUrl = "/logos/chaptarr.svg";
       appName = "chaptarr";
       uploadNotes = "Imported audiobooks land in Audiobookshelf; ebooks land in Kavita.";
       requiredAnyGroups = [ "media-automation-users" ];
@@ -1494,6 +1749,32 @@ let
       devices = [ ];
     };
     inherit folderGuides adminGuide;
+    vault = {
+      enabled = true;
+      kanidmBaseUrl = "https://${vars.kanidmDomain}";
+      sessionTtlSeconds = 900;
+      idleTtlSeconds = 300;
+      freshrssWebUrl = if freshrssEnabled then "https://${rssHost}" else "";
+      kavitaWebUrl = if kavitaEnabled then "https://${booksHost}" else "";
+      features = {
+        sshKeys = {
+          enabled = filesSftpEnabled;
+          requiredAnyGroups = sftpAccessGroups;
+        };
+        syncthingApiKey = {
+          enabled = true;
+          adminOnly = true;
+        };
+        freshrssApiPassword = {
+          enabled = freshrssEnabled;
+          requiredAnyGroups = [ "freshrss-users" ];
+        };
+        kavitaApiKeys = {
+          enabled = kavitaEnabled;
+          requiredAnyGroups = [ "kavita-users" ];
+        };
+      };
+    };
   });
 in
 {
@@ -1524,6 +1805,14 @@ in
           HOMEPAGE_STATIC_DIR = "${appPackages.homepage}/share/homepage/client";
           HOMEPAGE_SFTP_KEY_INSTALL_COMMAND = installSftpKey;
           HOMEPAGE_SUDO = "/run/wrappers/bin/sudo";
+          HOMEPAGE_VAULT_KANIDM_URL = kanidmVaultUrl;
+          HOMEPAGE_VAULT_SYNCTHING_KEY_COMMAND = vaultSyncthingKeyHelper;
+        } // lib.optionalAttrs filesSftpEnabled {
+          HOMEPAGE_SFTP_KEY_LIST_COMMAND = sftpKeyListHelper;
+        } // lib.optionalAttrs freshrssEnabled {
+          HOMEPAGE_VAULT_FRESHRSS_PASSWORD_COMMAND = freshrssApiPasswordHelper;
+        } // lib.optionalAttrs kavitaEnabled {
+          HOMEPAGE_VAULT_KAVITA_KEYS_COMMAND = kavitaApiKeysHelper;
         } // lib.optionalAttrs offlineMediaEnabledForHomepage {
           HOMEPAGE_SYNCTHING_DEVICE_ID_COMMAND = showSyncthingDeviceId;
           HOMEPAGE_OFFLINE_MEDIA_STATUS_COMMAND = offlineMediaStatus;
@@ -1558,7 +1847,7 @@ in
           # NoNewPrivileges/RestrictSUIDSGID cannot be enabled here: the
           # narrowly-scoped offline-media and SFTP helpers intentionally use
           # the sudo rules declared below.
-          ReadWritePaths = [ sftpAuthorizedKeysDir ]
+          ReadWritePaths = [ sftpAuthorizedKeysDir vaultRuntimeDir ]
             ++ lib.optional offlineMediaEnabledForHomepage offlineMediaStateDir
             # The sudo helpers inherit homepage.service's mount namespace, so
             # offline-media enrollment needs this writable despite running as root.
@@ -1571,6 +1860,7 @@ in
 
       systemd.tmpfiles.rules = [
         "d ${sftpAuthorizedKeysDir} 0755 root root -"
+        "d ${vaultRuntimeDir} 0755 root root -"
       ];
 
       security.sudo.extraRules = [
@@ -1579,6 +1869,25 @@ in
           commands = [
             {
               command = "${installSftpKey}";
+              options = [ "NOPASSWD" ];
+            }
+            {
+              command = "${vaultSyncthingKeyHelper}";
+              options = [ "NOPASSWD" ];
+            }
+          ] ++ lib.optionals filesSftpEnabled [
+            {
+              command = "${sftpKeyListHelper}";
+              options = [ "NOPASSWD" ];
+            }
+          ] ++ lib.optionals freshrssEnabled [
+            {
+              command = "${freshrssApiPasswordHelper}";
+              options = [ "NOPASSWD" ];
+            }
+          ] ++ lib.optionals kavitaEnabled [
+            {
+              command = "${kavitaApiKeysHelper}";
               options = [ "NOPASSWD" ];
             }
           ] ++ lib.optionals offlineMediaEnabledForHomepage [

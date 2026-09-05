@@ -126,6 +126,7 @@ test_scripts=(
   scripts/tests/test-freshness-marker.sh
   scripts/tests/test-rust-workspace-dependencies.sh
   scripts/tests/test-homepage-guidance.sh
+  scripts/tests/test-homepage-vault.sh
   scripts/tests/test-portal-landing.sh
   scripts/tests/test-identity-reconcile-fail-closed.sh
   scripts/tests/test-integration-dependencies.sh
@@ -134,6 +135,7 @@ test_scripts=(
   scripts/tests/test-kanidm-branding.sh
   scripts/tests/test-kanidm-provision-validation.sh
   scripts/tests/test-kiwix-disable-evaluation.sh
+  scripts/tests/test-kiwix-web-archives-integration.sh
   scripts/tests/test-kopia-cli-wrapper.sh
   scripts/tests/test-mail-archive-paperless-reliability.sh
   scripts/tests/test-media-manager-core.sh

@@ -9,6 +9,21 @@ import { installSftpPublicKey, normalisePublicKey } from './sftpKey.js';
 import { assertFeatureAccess, buildHomepageData } from './homepageData.js';
 import { getCanaryFailure, getCanaryStatus, triggerCanary } from './canary.js';
 import { getMkvProgress } from './mkvmaker.js';
+import {
+  VaultHttpError,
+  buildVaultStatus,
+  vaultFreshrssPassword,
+  vaultKavitaKeysGet,
+  vaultKavitaKeysMutate,
+  vaultLock,
+  vaultSshKeyAdd,
+  vaultSshKeys,
+  vaultSyncthingKeyGet,
+  vaultSyncthingKeyRotate,
+  vaultUnlock,
+  type VaultHttpResponse,
+} from './vault.js';
+import { clearVaultSessionCookie, setVaultSessionCookie } from './vaultSession.js';
 
 const CONTENT_TYPES: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
@@ -38,6 +53,10 @@ export const handleRequest = async (config: AppConfig, request: IncomingMessage,
 export const handleApiRequest = async (config: AppConfig, request: IncomingMessage, response: ServerResponse): Promise<boolean> => {
   const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
   try {
+    if (await handleVaultApiRequest(config, request, response, url.pathname)) {
+      return true;
+    }
+
     if (request.method === 'GET' && url.pathname === '/healthz') {
       sendJson(response, 200, { ok: true });
       return true;
@@ -123,7 +142,7 @@ export const handleApiRequest = async (config: AppConfig, request: IncomingMessa
     return false;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    const status = message.includes('authenticated user') ? 401
+    const status = vaultHttpErrorStatus(error) ?? (message.includes('authenticated user') ? 401
       : message.includes('not authorised') ? 403
         : message.includes('content type') ? 415
           : message.includes('too large') ? 413
@@ -133,7 +152,7 @@ export const handleApiRequest = async (config: AppConfig, request: IncomingMessa
                 || message === 'invalid or corrupted OpenSSH public key' ? 400
                 : message.includes('already active') ? 409
                   : message.includes('not found') || message.includes('not enabled') ? 404
-                    : 500;
+                    : 500);
     if (!response.destroyed && !response.writableEnded) {
       if (response.headersSent) {
         response.destroy(error instanceof Error ? error : undefined);
@@ -142,6 +161,105 @@ export const handleApiRequest = async (config: AppConfig, request: IncomingMessa
       }
     }
     return true;
+  }
+};
+
+const sendVaultResponse = (response: ServerResponse, result: VaultHttpResponse): void => {
+  if (result.sessionToken) {
+    setVaultSessionCookie(response, result.sessionToken);
+  }
+  if (result.clearSessionCookie) {
+    clearVaultSessionCookie(response);
+  }
+  sendJson(response, result.status, result.body);
+};
+
+const vaultHttpErrorStatus = (error: unknown): number | undefined =>
+  error instanceof VaultHttpError ? error.status : undefined;
+
+export const handleVaultApiRequest = async (
+  config: AppConfig,
+  request: IncomingMessage,
+  response: ServerResponse,
+  pathname: string,
+): Promise<boolean> => {
+  if (!pathname.startsWith('/api/vault')) {
+    return false;
+  }
+  try {
+    if (request.method === 'GET' && pathname === '/api/vault') {
+      sendJson(response, 200, buildVaultStatus(config, request.headers));
+      return true;
+    }
+
+    if (pathname === '/api/vault/session') {
+      if (request.method === 'POST') {
+        const body = await readMutationJson<{ password?: unknown; totp?: unknown; pendingId?: unknown }>(request);
+        sendVaultResponse(response, await vaultUnlock(config, request.headers, body));
+        return true;
+      }
+      if (request.method === 'DELETE') {
+        await readMutationJson<Record<string, never>>(request);
+        sendVaultResponse(response, vaultLock(config, request.headers));
+        return true;
+      }
+    }
+
+    if (request.method === 'GET' && pathname === '/api/vault/ssh-keys') {
+      sendVaultResponse(response, await vaultSshKeys(config, request.headers));
+      return true;
+    }
+
+    if (request.method === 'POST' && pathname === '/api/vault/ssh-keys') {
+      const body = await readMutationJson<{ publicKey?: unknown }>(request);
+      sendVaultResponse(response, await vaultSshKeyAdd(config, request.headers, body));
+      return true;
+    }
+
+    if (request.method === 'GET' && pathname === '/api/vault/syncthing') {
+      sendVaultResponse(response, await vaultSyncthingKeyGet(config, request.headers));
+      return true;
+    }
+
+    if (request.method === 'POST' && pathname === '/api/vault/syncthing') {
+      await readMutationJson<Record<string, never>>(request);
+      sendVaultResponse(response, await vaultSyncthingKeyRotate(config, request.headers));
+      return true;
+    }
+
+    if (request.method === 'POST' && pathname === '/api/vault/freshrss') {
+      await readMutationJson<Record<string, never>>(request);
+      sendVaultResponse(response, await vaultFreshrssPassword(config, request.headers));
+      return true;
+    }
+
+    if (request.method === 'GET' && pathname === '/api/vault/kavita') {
+      sendVaultResponse(response, await vaultKavitaKeysGet(config, request.headers));
+      return true;
+    }
+
+    if (request.method === 'POST' && pathname === '/api/vault/kavita') {
+      const body = await readMutationJson<{ action?: unknown; name?: unknown; authKeyId?: unknown }>(request);
+      sendVaultResponse(response, await vaultKavitaKeysMutate(config, request.headers, body));
+      return true;
+    }
+
+    if (pathname.startsWith('/api/vault/')) {
+      sendJson(response, 404, { error: 'api route not found' });
+      return true;
+    }
+
+    return false;
+  } catch (error) {
+    if (!response.destroyed && !response.writableEnded && !response.headersSent) {
+      const status = vaultHttpErrorStatus(error) ?? 500;
+      if (status !== 500) {
+        const message = error instanceof Error ? error.message : String(error);
+        sendJson(response, status, { error: message });
+        return true;
+      }
+    }
+    throw error;
   }
 };
 
