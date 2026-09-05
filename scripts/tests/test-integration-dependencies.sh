@@ -12,6 +12,7 @@ ensure_tools find rg sort jq
 # with independently optional participants use the separate participant map.
 declare -A integration_apps=(
   [expose_mail_archive_emails_in_files]="mail-archive-ui files"
+  [grant_archives_access_to_kiwix_library]="browsertrix-downloader kiwix"
   [grant_files_access_to_audiobookshelf_media]="files audiobookshelf"
   [grant_files_access_to_jellyfin_media]="files jellyfin"
   [grant_files_access_to_kavita_media]="files kavita"

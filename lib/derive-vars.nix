@@ -102,6 +102,7 @@ let
   // lib.optionalAttrs (enabled "kiwix") {
     oauth2ProxyKiwix = 4182;
     kiwix = 8081;
+    kiwixArchives = 8082;
   }
   // lib.optionalAttrs (enabled "youtube-downloader") {
     oauth2ProxyDownloads = 4183;

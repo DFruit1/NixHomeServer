@@ -13,17 +13,20 @@ let
   flake = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
   inherit (flake.inputs.nixpkgs) lib;
   hostName = builtins.getEnv "NIXHOMESERVER_TEST_HOST";
-  host = (builtins.getAttr hostName flake.nixosConfigurations).extendModules {
-    modules = [
-      ./modules/kiwix
-      { repo.kiwix.enable = lib.mkForce false; }
-    ];
+  # Import the module explicitly only when the host does not already include
+  # it, so the disable evaluation works with or without Kiwix enabled.
+  baseHost = builtins.getAttr hostName flake.nixosConfigurations;
+  host = baseHost.extendModules {
+    modules =
+      lib.optional (!(baseHost.config.nixhomeserver.modules ? kiwix)) ./modules/kiwix
+      ++ [ { repo.kiwix.enable = lib.mkForce false; } ];
   };
   cfg = host.config;
   vars = builtins.getAttr hostName flake.lib.nixhomeserverSettings;
   wikiHost = "wiki.${vars.domain}";
   kiwixServiceNames = [
     "kiwix-serve"
+    "kiwix-serve-archives"
     "kiwix-library-sync"
     "kiwix-library-watch"
     "kiwix-library-root-layout-v1"
@@ -73,6 +76,11 @@ in {
   backupCriticalPathRegistered = builtins.elem
     cfg.repo.kiwix.paths.libraryRoot
     cfg.repo.backups.criticalPaths;
+  archivesZimRootEnv = cfg.systemd.services.browsertrix-downloader.environment.BROWSERTRIX_DOWNLOADER_ZIM_ROOT or null;
+  archivesReaderEnv = cfg.systemd.services.browsertrix-downloader.environment.BROWSERTRIX_DOWNLOADER_ZIM_READER_URL or null;
+  archivesSupplementaryGroups = cfg.systemd.services.browsertrix-downloader.serviceConfig.SupplementaryGroups or [ ];
+  archivesReadOnlyPaths = cfg.systemd.services.browsertrix-downloader.serviceConfig.ReadOnlyPaths or [ ];
+  archivesReaderRoutes = cfg.repo.authGateway.protectedApps.browsertrix.authenticatedRoutes or [ ];
   backupInventoryLabels = map (entry: entry.label) cfg.repo.backups.pathInventories;
   backupRowLabels = map (entry: entry.label) cfg.repo.backups.pathRows.app-content-roots;
   filestashGroups = cfg.users.users.filestash.extraGroups;
@@ -109,6 +117,11 @@ jq -e '
   and (.backupRowLabels | index("kiwix-library") == null)
   and (.filestashGroups | index("kiwix") == null)
   and (.filestashReadWritePaths | index($libraryRoot) == null)
+  and (.archivesZimRootEnv == null)
+  and (.archivesReaderEnv == null)
+  and (.archivesSupplementaryGroups | index("kiwix") == null)
+  and (.archivesReadOnlyPaths | index($libraryRoot) == null)
+  and (.archivesReaderRoutes == [])
   and (.statePersistenceRetained == true)
 ' <<<"$disabled_json" >/dev/null || {
   echo "❌ Disabling Kiwix left a runtime, route, identity, secret, backup, or integration surface enabled."

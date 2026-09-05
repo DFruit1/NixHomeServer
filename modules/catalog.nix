@@ -54,6 +54,7 @@ in
       "kiwix-library-sync"
       "kiwix-library-watch"
       "kiwix-serve"
+      "kiwix-serve-archives"
     ];
     mail-archive-ui = app ./mail-archive-ui "Mail Archive" "productivity" [
       "mailArchiveOauth2ProxyClientSecret"
@@ -117,6 +118,7 @@ in
 
   integrations = [
     ./Integrations/expose_mail_archive_emails_in_files.nix
+    ./Integrations/grant_archives_access_to_kiwix_library.nix
     ./Integrations/grant_files_access_to_audiobookshelf_media.nix
     ./Integrations/grant_files_access_to_jellyfin_media.nix
     ./Integrations/grant_files_access_to_kavita_media.nix
