@@ -6,36 +6,18 @@ pub(super) struct SearchRequest {
     query: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 struct VolumesResponse {
     total_items: u64,
     items: Vec<Volume>,
 }
 
-impl Default for VolumesResponse {
-    fn default() -> Self {
-        Self {
-            total_items: 0,
-            items: Vec::new(),
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 struct Volume {
     id: String,
     volume_info: VolumeInfo,
-}
-
-impl Default for Volume {
-    fn default() -> Self {
-        Self {
-            id: String::new(),
-            volume_info: VolumeInfo::default(),
-        }
-    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -341,7 +323,7 @@ fn google_books_credentials(
         })?;
     if credentials
         .get("apiKey")
-        .map_or(true, |value| value.trim().is_empty())
+        .is_none_or(|value| value.trim().is_empty())
     {
         return Err(ApiError::new(
             StatusCode::UNPROCESSABLE_ENTITY,

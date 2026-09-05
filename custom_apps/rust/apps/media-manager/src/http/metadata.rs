@@ -1050,7 +1050,7 @@ async fn item_metadata_value(
     let mut observations = vec![filename_observation(&response)];
     let mut field_sources = initial_field_sources(&response, "filename");
     let mut inspection_warnings = Vec::new();
-    if let Some(root) = state.config.resolve_visible_root(&identity, &item.root_id) {
+    if let Some(root) = state.config.resolve_visible_root(identity, &item.root_id) {
         let root_path = root.resolved_path;
         let inspected_item = item.clone();
         match tokio::task::spawn_blocking(move || {
@@ -1124,9 +1124,9 @@ async fn item_metadata_value(
         .get("mediaType")
         .and_then(Value::as_str)
         .unwrap_or("movie");
-    let (sidecar_path, sidecar_format) = item_sidecar_path(&item, media_type);
+    let (sidecar_path, sidecar_format) = item_sidecar_path(item, media_type);
     let consumer_effective = !matches!(item.media_kind.as_str(), "book" | "podcast");
-    let root = state.config.resolve_visible_root(&identity, &item.root_id);
+    let root = state.config.resolve_visible_root(identity, &item.root_id);
     let (sidecar, sidecar_observation) = root
         .as_ref()
         .map(|root| {

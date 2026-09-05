@@ -139,16 +139,15 @@ assert_rejected monitoring-local-bridge \
 assert_rejected monitoring-offline-active \
   'monitoringAccess.group must be a dedicated authorization group'
 
-# Inactive optional roles must not reserve names or create authorization
+# The offline-monitoring role must not reserve names or create authorization
 # surfaces. This case would collide if its optional feature were active, and is
 # intentionally allowed while that feature is off.
-for inactive_case in monitoring-offline-inactive; do
-  if ! jq -e --arg testCase "$inactive_case" \
-      '.[$testCase].failures == []' <<<"$assertion_matrix_json" >/dev/null; then
-    echo "❌ Inactive optional authorization case '$inactive_case' failed a central assertion." >&2
-    jq --arg testCase "$inactive_case" '.[$testCase]' <<<"$assertion_matrix_json" >&2
-    exit 1
-  fi
-done
+inactive_case=monitoring-offline-inactive
+if ! jq -e --arg testCase "$inactive_case" \
+    '.[$testCase].failures == []' <<<"$assertion_matrix_json" >/dev/null; then
+  echo "❌ Inactive optional authorization case '$inactive_case' failed a central assertion." >&2
+  jq --arg testCase "$inactive_case" '.[$testCase]' <<<"$assertion_matrix_json" >&2
+  exit 1
+fi
 
 echo "✅ Monitoring authorization-group validation tests passed."

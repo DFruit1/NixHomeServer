@@ -782,7 +782,9 @@ const ProviderAccountsView = component$(() => {
                 )}
                 <div class="provider-account-actions">
                   {publicSource ? (
-                    <span class="provider-state public-action">Public, no setup</span>
+                    <span class="provider-state public-action">
+                      Public, no setup
+                    </span>
                   ) : provider.canConfigure &&
                     provider.credentialFields.length > 0 ? (
                     <button
