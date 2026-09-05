@@ -10,6 +10,8 @@ pub struct AppConfig {
     pub frontend_dir: PathBuf,
     pub replay_dir: PathBuf,
     pub archive_root: PathBuf,
+    pub zim_root: Option<PathBuf>,
+    pub zim_reader_url: Option<String>,
     pub podman_bin: PathBuf,
     pub crawler_image: String,
     pub archive_uid: u32,
@@ -24,6 +26,13 @@ impl AppConfig {
             "BROWSERTRIX_DOWNLOADER_STATE_DIR",
             "/var/lib/browsertrix-downloader/state",
         );
+        let zim_root = optional_path_env("BROWSERTRIX_DOWNLOADER_ZIM_ROOT");
+        let zim_reader_url = zim_root.as_ref().map(|_| {
+            std::env::var("BROWSERTRIX_DOWNLOADER_ZIM_READER_URL")
+                .ok()
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "/zim/".to_owned())
+        });
         Ok(Self {
             address: value_env("BROWSERTRIX_DOWNLOADER_HOST", "127.0.0.1")?,
             port: positive_env("BROWSERTRIX_DOWNLOADER_PORT", 8_088),
@@ -41,6 +50,8 @@ impl AppConfig {
                 "BROWSERTRIX_DOWNLOADER_ARCHIVE_ROOT",
                 "/mnt/data/shared/_WebArchives",
             ),
+            zim_root,
+            zim_reader_url,
             podman_bin: path_env("BROWSERTRIX_DOWNLOADER_PODMAN_BIN", "podman"),
             crawler_image: std::env::var("BROWSERTRIX_DOWNLOADER_CRAWLER_IMAGE")
                 .unwrap_or_else(|_| "docker.io/webrecorder/browsertrix-crawler:1.14.3".to_owned()),
@@ -67,6 +78,8 @@ impl AppConfig {
             frontend_dir: root.join("frontend"),
             replay_dir: root.join("replay"),
             archive_root: root.join("archives"),
+            zim_root: None,
+            zim_reader_url: None,
             podman_bin: PathBuf::from("podman"),
             crawler_image: "test-image".to_owned(),
             archive_uid: 0,
@@ -89,6 +102,12 @@ fn path_env(name: &str, fallback: &str) -> PathBuf {
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(fallback))
+}
+
+fn optional_path_env(name: &str) -> Option<PathBuf> {
+    std::env::var_os(name)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
 }
 
 fn value_env<T>(name: &str, fallback: &str) -> Result<T, String>

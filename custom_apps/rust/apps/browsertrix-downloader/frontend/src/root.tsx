@@ -1,5 +1,5 @@
 import { component$, $, useSignal, useVisibleTask$ } from '@builder.io/qwik';
-import type { CreateJobRequest, CrawlScope, CurrentUser, Job } from './shared/types.js';
+import type { CreateJobRequest, CrawlScope, CurrentUser, Job, ZimListing } from './shared/types.js';
 import { MAX_PAGE_LIMIT, MAX_TIME_LIMIT_MINUTES, parseCrawlUrl } from './shared/url.js';
 import './client/styles.css';
 
@@ -30,6 +30,7 @@ const formatStamp = (value: string): string => value.replace('T', ' ').replace('
 export default component$(() => {
   const me = useSignal<CurrentUser | undefined>();
   const jobs = useSignal<Job[]>([]);
+  const zims = useSignal<ZimListing | undefined>();
   const error = useSignal('');
   const url = useSignal('');
   const scope = useSignal<CrawlScope>('page');
@@ -38,12 +39,17 @@ export default component$(() => {
   const submitting = useSignal(false);
 
   const refresh = $(async () => {
-    const [meResponse, jobsResponse] = await Promise.all([fetch('/api/me'), fetch('/api/jobs')]);
+    const [meResponse, jobsResponse, zimsResponse] = await Promise.all([
+      fetch('/api/me'),
+      fetch('/api/jobs'),
+      fetch('/api/zims'),
+    ]);
     if (!meResponse.ok) {
       throw new Error('Authentication is required');
     }
     me.value = await meResponse.json();
     jobs.value = await jobsResponse.json();
+    zims.value = zimsResponse.ok ? await zimsResponse.json() : undefined;
   });
 
   useVisibleTask$(({ cleanup }) => {
@@ -193,6 +199,46 @@ export default component$(() => {
           </button>
         </div>
       </section>
+
+      {zims.value && (zims.value.readerUrl || zims.value.zims.length > 0) && (
+        <section class="jobs">
+          <div class="library-head">
+            <h2>Kiwix archives</h2>
+            {zims.value.readerUrl && (
+              <a
+                class="library-link"
+                href={zims.value.readerUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                Open Kiwix reader
+              </a>
+            )}
+          </div>
+          {zims.value.zims.length === 0 ? (
+            <p class="empty">No ZIM archives uploaded yet</p>
+          ) : (
+            <div class="job-stack">
+              {zims.value.zims.map((zim) => (
+                <article key={zim.name} class="job">
+                  <div class="job-head">
+                    <strong>{zim.name}</strong>
+                  </div>
+                  <p class="job-meta">{zim.bytes ? formatBytes(zim.bytes) : ''}</p>
+                  <div class="job-actions">
+                    <a
+                      class="action-link"
+                      href={`/api/zims/${encodeURIComponent(zim.name)}?download=1`}
+                    >
+                      Download
+                    </a>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
 
       <section class="jobs">
         <h2>Active</h2>

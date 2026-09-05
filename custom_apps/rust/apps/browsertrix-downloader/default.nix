@@ -48,12 +48,14 @@ let
       export BROWSERTRIX_DOWNLOADER_STATE_DIR="$PWD/.local/browsertrix-downloader/state"
       export BROWSERTRIX_DOWNLOADER_CRAWLS_DIR="$PWD/.local/browsertrix-downloader/crawls"
       export BROWSERTRIX_DOWNLOADER_ARCHIVE_ROOT="$PWD/.local/browsertrix-downloader/archives"
+      export BROWSERTRIX_DOWNLOADER_ZIM_ROOT="$PWD/.local/browsertrix-downloader/zims"
       export BROWSERTRIX_DOWNLOADER_FRONTEND_DIR="$PWD/frontend/dist/client"
       export BROWSERTRIX_DOWNLOADER_REPLAY_DIR="$PWD/frontend/dist/replay"
       mkdir -p \
         "$BROWSERTRIX_DOWNLOADER_STATE_DIR" \
         "$BROWSERTRIX_DOWNLOADER_CRAWLS_DIR" \
-        "$BROWSERTRIX_DOWNLOADER_ARCHIVE_ROOT"
+        "$BROWSERTRIX_DOWNLOADER_ARCHIVE_ROOT" \
+        "$BROWSERTRIX_DOWNLOADER_ZIM_ROOT"
     '';
     meta = {
       description = "Authenticated Browsertrix crawl queue and WACZ archive service.";

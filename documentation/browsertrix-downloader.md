@@ -38,12 +38,33 @@ WACZ payload roots. A worker restart marks only `starting`, `running`, or
 `cancelling` jobs as failed; queued jobs remain available for the restarted
 worker.
 
+## Kiwix archives (optional integration)
+
+When the Kiwix module is enabled alongside Browsertrix Downloader, the
+`grant_archives_access_to_kiwix_library` integration exposes uploaded ZIM
+files on the Web Archives page:
+
+- The API lists ZIM files from the read-only Kiwix library root
+  (`repo.kiwix.paths.libraryRoot`) at `GET /api/zims` and streams individual
+  files, with byte ranges, from `GET /api/zims/{name}`. Downloads use the
+  same `?download=1` convention as WACZ archives.
+- A dedicated `kiwix-serve-archives.service` instance serves the same Kiwix
+  library under `archives.<domain>/zim/` with `--urlRootLocation=/zim`, so
+  the Kiwix reader runs in the same authenticated origin. The auth gateway
+  routes that path prefix after the same OIDC and group checks as the rest
+  of the application.
+- The integration is gated on both modules: removing either module drops the
+  reader instance, environment wiring, route, and read access without
+  touching the other application. The `wiki.<domain>` Kiwix host keeps
+  working independently with its own `kiwix-users` gate.
+
 ## Useful checks
 
 ```bash
 systemctl status browsertrix-downloader browsertrix-downloader-worker
 journalctl -u browsertrix-downloader -u browsertrix-downloader-worker --since today
 scripts/tests/test-browsertrix-downloader-module.sh
+scripts/tests/test-kiwix-web-archives-integration.sh
 cargo test --manifest-path custom_apps/Cargo.toml -p browsertrix-downloader
 ```
 

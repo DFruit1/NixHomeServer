@@ -14,7 +14,13 @@ use std::net::{IpAddr, Ipv4Addr};
 use tower::ServiceExt;
 
 fn test_app(temp: &tempfile::TempDir) -> axum::Router {
-    let config = AppConfig::for_test(temp.path());
+    test_app_with_config(AppConfig::for_test(temp.path()))
+}
+
+fn test_app_with_config(config: AppConfig) -> axum::Router {
+    if let Some(zim_root) = config.zim_root.clone() {
+        std::fs::create_dir_all(&zim_root).expect("zim directory");
+    }
     std::fs::create_dir_all(&config.frontend_dir).expect("frontend directory");
     std::fs::create_dir_all(&config.replay_dir).expect("replay directory");
     std::fs::create_dir_all(&config.archive_root).expect("archive directory");
@@ -144,6 +150,101 @@ fn byte_ranges_are_computed_defensively() {
     assert_eq!(compute_range(Some("bytes=100-"), 100), None);
     assert_eq!(compute_range(Some("bytes=5-2"), 100), None);
     assert_eq!(compute_range(Some("nonsense"), 100), None);
+}
+
+#[tokio::test]
+async fn zims_are_listed_sorted_and_served_with_ranges_when_configured() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let mut config = AppConfig::for_test(temp.path());
+    config.zim_root = Some(temp.path().join("zims"));
+    config.zim_reader_url = Some("/zim/".to_owned());
+    let app = test_app_with_config(config);
+    let zim_root = temp.path().join("zims");
+    std::fs::write(zim_root.join("wikipedia_en_all.zim"), vec![3_u8; 512]).expect("zim fixture");
+    std::fs::write(zim_root.join("wikipedia_fr_all.zim"), vec![4_u8; 256]).expect("zim fixture");
+    std::fs::write(zim_root.join("notes.txt"), "not a zim").expect("decoy");
+    std::os::unix::fs::symlink(
+        zim_root.join("wikipedia_en_all.zim"),
+        zim_root.join("linked.zim"),
+    )
+    .expect("symlink fixture");
+
+    let listed = app
+        .clone()
+        .oneshot(request("GET", "/api/zims", Body::empty()))
+        .await
+        .expect("list response");
+    let listing = json_body(listed).await;
+    assert_eq!(listing["readerUrl"], "/zim/");
+    let names: Vec<&str> = listing["zims"]
+        .as_array()
+        .expect("zims")
+        .iter()
+        .map(|entry| entry["name"].as_str().expect("name"))
+        .collect();
+    assert_eq!(names, vec!["wikipedia_en_all.zim", "wikipedia_fr_all.zim"]);
+    assert_eq!(listing["zims"][0]["bytes"], 512);
+
+    let full = app
+        .clone()
+        .oneshot(request(
+            "GET",
+            "/api/zims/wikipedia_fr_all.zim",
+            Body::empty(),
+        ))
+        .await
+        .expect("zim response");
+    assert_eq!(full.status(), StatusCode::OK);
+    assert_eq!(full.headers()["accept-ranges"], "bytes");
+    assert_eq!(
+        to_bytes(full.into_body(), 512).await.expect("body").len(),
+        256
+    );
+
+    let download = app
+        .clone()
+        .oneshot(request(
+            "GET",
+            "/api/zims/wikipedia_fr_all.zim?download=1",
+            Body::empty(),
+        ))
+        .await
+        .expect("download response");
+    assert_eq!(
+        download.headers()["content-disposition"],
+        "attachment; filename=\"wikipedia_fr_all.zim\""
+    );
+
+    let missing = app
+        .oneshot(request("GET", "/api/zims/absent.zim", Body::empty()))
+        .await
+        .expect("missing response");
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn zims_without_a_configured_root_stay_hidden_and_escape_attempts_fail() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let app = test_app(&temp);
+
+    let listed = app
+        .clone()
+        .oneshot(request("GET", "/api/zims", Body::empty()))
+        .await
+        .expect("list response");
+    let listing = json_body(listed).await;
+    assert!(listing["readerUrl"].is_null());
+    assert_eq!(listing["zims"].as_array().expect("zims").len(), 0);
+
+    let escaped = app
+        .oneshot(request(
+            "GET",
+            "/api/zims/..%2Fbrowsertrix-downloader.sqlite",
+            Body::empty(),
+        ))
+        .await
+        .expect("escape response");
+    assert_eq!(escaped.status(), StatusCode::NOT_FOUND);
 }
 
 fn request(method: &str, uri: &str, body: Body) -> Request<Body> {

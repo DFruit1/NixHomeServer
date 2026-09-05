@@ -40,3 +40,14 @@ export type CurrentUser = {
   email?: string;
   groups: string[];
 };
+
+export type ZimFile = {
+  name: string;
+  bytes: number;
+  modifiedAt?: string;
+};
+
+export type ZimListing = {
+  readerUrl?: string | null;
+  zims: ZimFile[];
+};

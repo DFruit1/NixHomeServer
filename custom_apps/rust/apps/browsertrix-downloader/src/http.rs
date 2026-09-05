@@ -41,6 +41,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/jobs/{job_id}/cancel", post(cancel_job))
         .route("/api/jobs/{job_id}/retry", post(retry_job))
         .route("/api/jobs/{job_id}/wacz", get(serve_archive))
+        .route("/api/zims", get(list_zims))
+        .route("/api/zims/{name}", get(serve_zim))
         .fallback(serve_static)
         .layer(axum::extract::DefaultBodyLimit::max(MAX_JSON_BODY_BYTES))
         .with_state(state)
@@ -60,8 +62,117 @@ async fn serve_archive(
         .filter(|job| job.archive_file.is_some())
         .ok_or_else(|| ApiError::not_found("archive not found"))?;
     let archive_file = job.archive_file.expect("filtered archive file");
-    let (mut file, size) = open_archive(&state.config.archive_root, &archive_file).await?;
-    let range_header = header(&headers, "range");
+    file_response(
+        &state.config.archive_root,
+        &archive_file,
+        query.as_deref(),
+        &headers,
+    )
+    .await
+}
+
+async fn serve_zim(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    RawQuery(query): RawQuery,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    authenticated_user(&headers)?;
+    let zim_root = state
+        .config
+        .zim_root
+        .as_deref()
+        .ok_or_else(|| ApiError::not_found("zim library is not configured"))?;
+    file_response(zim_root, &name, query.as_deref(), &headers).await
+}
+
+async fn list_zims(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    authenticated_user(&headers)?;
+    let reader_url = state
+        .config
+        .zim_reader_url
+        .as_deref()
+        .filter(|_| state.config.zim_root.is_some());
+    let zims = match state.config.zim_root.as_deref() {
+        Some(root) => scan_zims(root).await?,
+        None => Vec::new(),
+    };
+    Ok(Json(json!({
+        "readerUrl": reader_url,
+        "zims": zims,
+    })))
+}
+
+async fn scan_zims(root: &FilePath) -> Result<Vec<Value>, ApiError> {
+    let root_metadata = tokio::fs::symlink_metadata(root)
+        .await
+        .map_err(|_| ApiError::not_found("zim library is not available"))?;
+    if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
+        return Err(ApiError::not_found("zim library is not available"));
+    }
+    let canonical_root = std::fs::canonicalize(root)
+        .map_err(|_| ApiError::not_found("zim library is not available"))?;
+    let mut reader = tokio::fs::read_dir(root)
+        .await
+        .map_err(ApiError::internal)?;
+    let mut zims = Vec::new();
+    while let Some(entry) = reader.next_entry().await.map_err(ApiError::internal)? {
+        let path = entry.path();
+        let name = match path.file_name().and_then(|name| name.to_str()) {
+            Some(name) => name.to_owned(),
+            None => continue,
+        };
+        if FilePath::new(&name)
+            .extension()
+            .and_then(|value| value.to_str())
+            != Some("zim")
+        {
+            continue;
+        }
+        let metadata = match tokio::fs::symlink_metadata(&path).await {
+            Ok(metadata) => metadata,
+            Err(_) => continue,
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            continue;
+        }
+        let canonical = match std::fs::canonicalize(&path) {
+            Ok(canonical) => canonical,
+            Err(_) => continue,
+        };
+        if canonical.parent() != Some(canonical_root.as_path()) {
+            continue;
+        }
+        let modified_at = metadata
+            .modified()
+            .ok()
+            .and_then(|stamp| stamp.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_secs().to_string());
+        zims.push(json!({
+            "name": name,
+            "bytes": metadata.len(),
+            "modifiedAt": modified_at,
+        }));
+    }
+    zims.sort_by(|left, right| {
+        let left = left["name"].as_str().unwrap_or_default();
+        let right = right["name"].as_str().unwrap_or_default();
+        left.cmp(right)
+    });
+    Ok(zims)
+}
+
+async fn file_response(
+    root: &FilePath,
+    name: &str,
+    query: Option<&str>,
+    headers: &HeaderMap,
+) -> Result<Response, ApiError> {
+    let (mut file, size) = open_archive(root, name).await?;
+    let range_header = header(headers, "range");
     let range = compute_range(range_header, size);
     if range_header.is_some() && range.is_none() {
         return Response::builder()
@@ -88,11 +199,11 @@ async fn serve_archive(
     if status == StatusCode::PARTIAL_CONTENT {
         builder = builder.header(header::CONTENT_RANGE, format!("bytes {start}-{end}/{size}"));
     }
-    if query.as_deref().is_some_and(|query| {
+    if query.is_some_and(|query| {
         url::form_urlencoded::parse(query.as_bytes())
             .any(|(key, value)| key == "download" && value == "1")
     }) {
-        let safe_name = archive_file.replace(['"', '\r', '\n'], "");
+        let safe_name = name.replace(['"', '\r', '\n'], "");
         builder = builder.header(
             header::CONTENT_DISPOSITION,
             format!("attachment; filename=\"{safe_name}\""),
