@@ -36,6 +36,16 @@ require_fixed modules/freshrss/services.nix 'reconcile-accounts.sh' \
   "FreshRSS account retirement must use the dedicated reconcile script."
 require_fixed modules/freshrss/services.nix 'FRESHRSS_ALLOWED_USERS_FILE' \
   "FreshRSS account retirement must be scoped to the configured Kanidm app users."
+require_fixed modules/freshrss/package.nix 'FreshRssExtUniqueId = "Af_Readability";' \
+  "FreshRSS must package the Af_Readability full-text extraction extension declaratively."
+require_fixed modules/freshrss/package.nix 'repo.freshrss.extensions = [ afReadability ];' \
+  "The Af_Readability extension must be provisioned through the module's declared extensions."
+require_fixed modules/freshrss/services.nix 'reconcileExtensionsConfig' \
+  "FreshRSS per-user extension state must be reconciled declaratively on deploy and on the periodic timer."
+if [[ ! -f modules/freshrss/reconcile-extensions.php ]]; then
+  echo "❌ FreshRSS must ship the per-user extension reconcile script."
+  exit 1
+fi
 if [[ ! -f modules/freshrss/reconcile-http-auth.php ]]; then
   echo "❌ FreshRSS must reconcile first-login registration in persisted config.php."
   exit 1
@@ -136,6 +146,7 @@ in {
   webserver = cfg.services.freshrss.webserver;
   virtualHost = cfg.services.freshrss.virtualHost;
   extensionsEnabled = cfg.services.freshrss.extensions;
+  thirdPartyExtensionsPath = cfg.services.phpfpm.pools.freshrss.phpEnv.THIRDPARTY_EXTENSIONS_PATH or null;
   nginxEnabled = cfg.services.nginx.enable;
   freshrssPortPresent = builtins.hasAttr "freshrss" vars.networking.ports;
   phpPoolSettings = cfg.services.phpfpm.pools.freshrss.settings;
@@ -199,7 +210,9 @@ jq -e '
   and (.dataDir == "/var/lib/freshrss")
   and (.webserver == "caddy")
   and (.virtualHost == .expectedHost)
-  and (.extensionsEnabled == [])
+  and ((.extensionsEnabled | length) == 1)
+  and (.extensionsEnabled[0] | test("freshrss-extension-af-readability"))
+  and (.thirdPartyExtensionsPath | test("freshrss-extensions/share/freshrss$"))
   and (.nginxEnabled == false)
   and (.freshrssPortPresent == false)
   and (.phpPoolSocket == "/run/phpfpm/freshrss.sock")
@@ -217,6 +230,10 @@ jq -e '
   and (.accountReconcileAllowedFile | startswith("/nix/store/"))
   and (.accountReconcilePattern == "^([0-9A-Za-z]|[0-9A-Za-z_][0-9A-Za-z_.@-]{1,38})$")
   and (.accountReconcileScript | contains("reconcile-accounts.sh"))
+  and (.accountReconcileScript | contains("reconcile-extensions.php"))
+  and ((.accountReconcileScript | index("reconcile-accounts.sh")) < (.accountReconcileScript | index("reconcile-extensions.php")))
+  and (.configServiceScript | contains("reconcile-extensions.php"))
+  and ((.configServiceScript | index("reconcile-http-auth.php")) < (.configServiceScript | index("reconcile-extensions.php")))
   and (.accountTimerConfig.OnBootSec == "2m")
   and (.accountTimerConfig.OnUnitActiveSec == "1h")
   and (.accountTimerConfig.Persistent == true)
@@ -336,6 +353,46 @@ FRESHRSS_DATA_PATH="$reconcile_state" \
   echo "❌ FreshRSS persisted config reconciliation must preserve unrelated values and enforce username-only first login."
   exit 1
 }
+
+extensions_state="$test_tmp/extensions-state"
+mkdir -p "$extensions_state/users/alice" "$extensions_state/users/bob" "$extensions_state/users/_" "$extensions_state/users/.hidden" "$extensions_state/users/not-a-user" "$extensions_state/users/broken"
+printf '%s\n' '<?php return [' \
+  "  'salt' => 'preserve-me'," \
+  "  'extensions_enabled' => ['Other' => true]," \
+  '];' >"$extensions_state/users/alice/config.php"
+printf '%s\n' '<?php return ['"'"'marker'"'"' => '"'"'shared'"'"'];' >"$extensions_state/users/_/config.php"
+printf '%s\n' '<?php return ['"'"'marker'"'"' => '"'"'not-a-user'"'"'];' >"$extensions_state/users/not-a-user/config.php"
+printf '%s\n' '<?php return []; }' >"$extensions_state/users/broken/config.php"
+FRESHRSS_DATA_PATH="$extensions_state" \
+  FRESHRSS_USERNAME_PATTERN="$(jq -r .accountReconcilePattern <<<"$freshrss_json")" \
+  "$php_package/bin/php" modules/freshrss/reconcile-extensions.php
+"$php_package/bin/php" -r '
+  $alice = require $argv[1];
+  $shared = require $argv[2];
+  $outsider = require $argv[3];
+  if (($alice["salt"] ?? null) !== "preserve-me"
+      || ($alice["extensions_enabled"]["Af_Readability"] ?? null) !== true
+      || ($alice["extensions_enabled"]["Other"] ?? null) !== true) {
+    exit(1);
+  }
+  if (($shared["marker"] ?? null) !== "shared"
+      || ($outsider["marker"] ?? null) !== "not-a-user") {
+    exit(1);
+  }
+' \
+  "$extensions_state/users/alice/config.php" \
+  "$extensions_state/users/_/config.php" \
+  "$extensions_state/users/not-a-user/config.php" || {
+  echo "❌ FreshRSS per-user extension reconciliation must enable the declared extension for real accounts only, preserving unrelated values."
+  exit 1
+}
+extensions_log="$(FRESHRSS_DATA_PATH="$extensions_state" \
+  FRESHRSS_USERNAME_PATTERN="$(jq -r .accountReconcilePattern <<<"$freshrss_json")" \
+  "$php_package/bin/php" modules/freshrss/reconcile-extensions.php 2>&1)"
+if [[ "$extensions_log" != *"Reconciled FreshRSS extension state for 0 user(s)"* ]]; then
+  echo "❌ FreshRSS per-user extension reconciliation must be idempotent."
+  exit 1
+fi
 
 caddy_bin="$caddy_package/bin/caddy"
 {

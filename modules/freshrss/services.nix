@@ -7,6 +7,8 @@ let
   invalidFreshRSSUsers = builtins.filter (value: !username.valid value) vars.kanidmAppUsers;
   reconcileHttpAuthConfig = pkgs.writeText "freshrss-reconcile-http-auth.php"
     (builtins.readFile ./reconcile-http-auth.php);
+  reconcileExtensionsConfig = pkgs.writeText "freshrss-reconcile-extensions.php"
+    (builtins.readFile ./reconcile-extensions.php);
   allowedUsersFile = pkgs.writeText "freshrss-allowed-users"
     (builtins.concatStringsSep "\n" (lib.unique (vars.kanidmAppUsers ++ [ vars.kanidmAdminUser ])));
   egressPolicy = pkgs.writeShellScript "freshrss-egress-policy" ''
@@ -105,9 +107,12 @@ in
     systemd.services.freshrss-config = {
       wants = [ "local-fs.target" ];
       after = [ "local-fs.target" ];
+      environment.FRESHRSS_USERNAME_PATTERN = username.shellPattern;
       script = lib.mkAfter ''
         FRESHRSS_DATA_PATH=${lib.escapeShellArg cfg.stateDir} \
           ${config.services.phpfpm.phpPackage}/bin/php ${reconcileHttpAuthConfig}
+        FRESHRSS_DATA_PATH=${lib.escapeShellArg cfg.stateDir} \
+          ${config.services.phpfpm.phpPackage}/bin/php ${reconcileExtensionsConfig}
       '';
     };
 
@@ -139,9 +144,11 @@ in
     # GReader API password, so the local account must be retired once the
     # gateway no longer authorizes its owner. Accounts are moved out of
     # users/ (stopping login and API access) into a retained state so a
-    # mistake or later re-addition never destroys feed history.
+    # mistake or later re-addition never destroys feed history. The same
+    # reconciliation pass converges each remaining account's per-user
+    # extension state with the deployment's declared extensions.
     systemd.services.freshrss-account-reconcile = {
-      description = "Retire FreshRSS accounts for users removed from freshrss-users";
+      description = "Retire removed FreshRSS accounts and reconcile per-user extension state";
       wants = [ "local-fs.target" ];
       after = [ "local-fs.target" "freshrss-config.service" ];
       path = with pkgs; [ bash coreutils findutils ];
@@ -157,11 +164,12 @@ in
       };
       script = ''
         bash ${./reconcile-accounts.sh}
+        ${config.services.phpfpm.phpPackage}/bin/php ${reconcileExtensionsConfig}
       '';
     };
 
     systemd.timers.freshrss-account-reconcile = {
-      description = "Periodically retire FreshRSS accounts for removed users";
+      description = "Periodically retire removed FreshRSS accounts and reconcile per-user extension state";
       wantedBy = [ "timers.target" ];
       timerConfig = {
         OnBootSec = "2m";

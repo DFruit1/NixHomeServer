@@ -79,6 +79,35 @@ redirect FreshRSS to arbitrary public links, so `freshrss-users` must remain a
 trusted set. See FreshRSS's official
 [access-control guidance](https://freshrss.github.io/FreshRSS/en/admins/09_AccessControl.html).
 
+## Per-feed full article text
+
+The declaratively packaged **Af_Readability** extension (Article Full Text) can
+replace a feed's summary with the complete article text. It is active for every
+account through the per-user extension reconciliation (deploy and the
+`freshrss-account-reconcile` timer), but it changes nothing until a user opts in
+feed by feed:
+
+1. Open **Settings → Extensions**, find **Af_Readability**, and open its gear
+   icon (⚙).
+2. Tick the checkbox beside each feed — or a whole category — whose articles
+   should show the full text, then **Submit**. Each user chooses their own
+   feeds; nothing changes for feeds left unticked.
+3. The extension fetches and inlines the full text server-side while new
+   articles arrive. Existing articles are not rewritten; delete and refetch a
+   feed's articles (feed settings → **Manage → Refetch**, or delete the
+   entries) to backfill them.
+
+Extraction happens inside FreshRSS with its bundled Readability library, so no
+separate full-text service runs. Fetches follow the `freshrss` user's nftables
+egress policy described above: public article URLs work, private and local
+addresses are refused.
+
+The extension only applies to feeds, not to the native alternative: FreshRSS
+can also scrape a full article per feed with a CSS path (**feed settings →
+Content → Location of the article content**). Prefer the CSS path when a site
+has a stable, known article container; prefer Af_Readability when the selector
+is unknown or changes often. Avoid enabling both for the same feed.
+
 ## Service checks
 
 ```bash
