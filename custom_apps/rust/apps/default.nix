@@ -44,12 +44,18 @@ let
       # those subtrees entirely; they never contain cargo inputs.
       generatedDir = lib.elem baseName [ "target" "node_modules" "dist" "coverage" ];
       topLevelNode = rel == "node" || lib.hasPrefix "node/" rel;
+      # Embedded UI assets live next to the Rust sources but are not cargo
+      # inputs, so crane's filter would drop them from the shared source tree.
+      embeddedUiAsset = type == "regular"
+        && lib.hasSuffix ".html" rel
+        && lib.hasPrefix "rust/apps/" rel
+        && lib.hasInfix "/src/" rel;
     in
     (! lib.hasPrefix mkvmakerPrefix pathStr)
     && (! lib.hasSuffix "Cargo.lock" pathStr)
     && (! generatedDir)
     && (! topLevelNode)
-    && craneLib.filterCargoSources path type;
+    && (embeddedUiAsset || craneLib.filterCargoSources path type);
   workspaceSrc = lib.cleanSourceWith {
     src = workspaceSrcRoot;
     name = "nixhomeserver-rust-workspace-src";
@@ -95,6 +101,10 @@ assert comparableManifest mailManifest == comparableManifest mediaManifest;
   };
   media-manager = import ./media-manager/default.nix {
     inherit lib pkgs rustLib sharedFrontendDeps;
+    inherit workspaceSrc workspaceVersion sharedCargoArtifacts cargoLock;
+  };
+  search = import ./search/default.nix {
+    inherit pkgs rustLib;
     inherit workspaceSrc workspaceVersion sharedCargoArtifacts cargoLock;
   };
   mkvmaker = import ../../mkvmaker/default.nix {

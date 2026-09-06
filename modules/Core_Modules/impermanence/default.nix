@@ -54,6 +54,7 @@ let
     "/var/lib/redis-immich"
     "/var/lib/redis-paperless"
     "/var/lib/sonarr"
+    "/var/lib/solr"
     "/var/lib/vaultwarden"
     "/var/lib/youtube-downloader"
     "/var/log/filestash"

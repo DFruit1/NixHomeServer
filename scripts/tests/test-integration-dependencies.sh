@@ -11,7 +11,12 @@ ensure_tools find rg sort jq
 # Each integration file maps to app names that must all be enabled. Integrations
 # with independently optional participants use the separate participant map.
 declare -A integration_apps=(
+  [expose_browsertrix_crawls_to_search]="search browsertrix-downloader"
+  [expose_freshrss_entries_to_search]="search freshrss"
+  [expose_kiwix_archives_to_search]="search kiwix"
+  [expose_mail_archive_emails_to_search]="search mail-archive-ui"
   [expose_mail_archive_emails_in_files]="mail-archive-ui files"
+  [expose_paperless_documents_to_search]="search paperless"
   [grant_archives_access_to_kiwix_library]="browsertrix-downloader kiwix"
   [grant_files_access_to_audiobookshelf_media]="files audiobookshelf"
   [grant_files_access_to_jellyfin_media]="files jellyfin"

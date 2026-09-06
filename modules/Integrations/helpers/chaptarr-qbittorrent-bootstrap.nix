@@ -37,6 +37,9 @@
     PrivateTmp = true;
     ProtectHome = true;
     ProtectSystem = "strict";
+    # The development-config test call probes the external Chaptarr metadata
+    # service, which has slow windows during activation churn.
+    TimeoutStartSec = 600;
   };
   script = ''
     set -euo pipefail
@@ -66,8 +69,20 @@
     install -m 0600 /dev/null "$api_header"
     printf 'X-Api-Key: %s\n' "$api_key" > "$api_header"
 
+    # Activation restarts qBittorrent concurrently with this unit, so
+    # Chaptarr's proxied qBittorrent calls can transiently fail (HTTP 400)
+    # while the web UI is still coming up. Retry briefly instead of failing
+    # the whole activation.
     api() {
-      curl --silent --show-error --fail -H "@$api_header" "$@"
+      local attempt
+      for attempt in $(seq 1 40); do
+        if curl --silent --show-error --fail -H "@$api_header" "$@"; then
+          return 0
+        fi
+        echo "Chaptarr API call failed (attempt $attempt of 40): $*; retrying." >&2
+        sleep 3
+      done
+      return 1
     }
 
     for _ in $(seq 1 60); do
@@ -95,9 +110,23 @@
     printf '%s' "$development_payload" \
       | api -X PUT -H 'Content-Type: application/json' --data-binary @- \
         "$base_url/api/v1/config/development/$development_id" >/dev/null
-    printf '%s' "$development_payload" \
-      | api -X POST -H 'Content-Type: application/json' --data-binary @- \
-        "$base_url/api/v1/config/development/test" >/dev/null
+    # The external metadata service has slow windows; retry the test call
+    # generously instead of failing every deploy that overlaps one.
+    metadata_test_ok=0
+    for attempt in $(seq 1 60); do
+      if printf '%s' "$development_payload" \
+        | api -X POST -H 'Content-Type: application/json' --data-binary @- \
+          "$base_url/api/v1/config/development/test" >/dev/null; then
+        metadata_test_ok=1
+        break
+      fi
+      echo "Chaptarr metadata service test failed (attempt $attempt of 60); retrying." >&2
+      sleep 5
+    done
+    [[ "$metadata_test_ok" == 1 ]] || {
+      echo "Chaptarr's external metadata service stayed unreachable; retrying media bootstrap." >&2
+      exit 1
+    }
 
     reconcile_root_folder() {
       local name="$1"

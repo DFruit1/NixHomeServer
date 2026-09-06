@@ -13,6 +13,7 @@ member_manifests=(
   custom_apps/rust/apps/kanidm-canary-bootstrap/Cargo.toml
   custom_apps/rust/apps/mail-archive-ui/Cargo.toml
   custom_apps/rust/apps/media-manager/Cargo.toml
+  custom_apps/rust/apps/search/Cargo.toml
 )
 
 require_fixed "$workspace_manifest" \
@@ -56,7 +57,7 @@ metadata="$(cargo metadata \
   --format-version 1)"
 
 jq -e '
-  (.packages | length == 4)
+  (.packages | length == 5)
   and ([.packages[].version] | unique | length == 1)
   and ([.packages[].edition] | unique == ["2021"])
   and (

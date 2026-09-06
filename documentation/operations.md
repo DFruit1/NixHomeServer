@@ -1141,6 +1141,45 @@ The service boundary, storage paths, crawler isolation policy, image update
 procedure, and recovery behavior are documented in
 [`browsertrix-downloader.md`](browsertrix-downloader.md).
 
+## Search Operations
+
+The unified Search app (https://search.<domain>) queries one Solr core whose
+content is derived from the authoritative Postgres `search` database. Source
+integrations (paperless export, Kiwix ZIMs, Browsertrix WACZ archives, mail
+archive `.eml` files, FreshRSS entries) register themselves in
+`repo.search.sources` and the long-running `search-index.service` daemon syncs each one every hour.
+A result is only visible to a user signed in with that source's access group
+(for example `paperless-users`); sources without a group are visible to all
+signed-in users.
+
+Normal checks and manual actions:
+
+```bash
+systemctl status search-solr search-ui search-index.service search-reconcile.timer
+sudo systemctl restart search-index.service        # re-index every source now (daemon restarts its loop)
+sudo systemctl start search-reconcile.service      # purge sources removed from the config
+```
+
+Notes:
+
+* Solr is packaged first-party in `modules/search/solr-package.nix` because
+  nixpkgs no longer ships Solr. Pin upgrades belong there, with a new tarball
+  hash.
+* The Solr core is derived state. If it is lost or corrupt, rerun
+  `search-solr-core-bootstrap.service` and then `search-index.service`; both
+  rebuild it from the search database and the source apps.
+* ZIM indexing levels. By default every ZIM is indexed at archive level
+  only (one document per archive — instant passes). ZIMs listed in
+  `repo.search.metadataZims` (file-name substrings) additionally contribute
+  per-article titles and paths; ZIMs listed in `repo.search.fulltextZims`
+  additionally get full article-text extraction (which implies the metadata
+  level). Only opt in for ZIMs without their own embedded search index, and
+  keep the fulltext list small: it reads every article and dominates the
+  indexing pass. Enabling more entries increases index size and first-sync
+  time.
+* Backups cover the search database only (`dumps/search.pgdump`); Solr data
+  is intentionally not backed up because it is fully rebuildable.
+
 ## Mail Archive Operations
 
 The mail archive UI stays private. `mail-archive-users` grants browser access to

@@ -102,6 +102,13 @@ in
       "radarr"
       "media-automation-bootstrap-radarr"
     ];
+    search = app ./search "Search" "knowledge" [ "searchClientSecret" ] [
+      "search-solr"
+      "search-solr-core-bootstrap"
+      "search-ui"
+      "search-index"
+      "search-reconcile"
+    ];
     sonarr = app ./sonarr "Sonarr" "media-automation" [
       "sonarrOauth2ProxyClientSecret"
       "sonarrOauth2ProxyCookieSecret"
@@ -117,6 +124,11 @@ in
   };
 
   integrations = [
+    ./Integrations/expose_browsertrix_crawls_to_search.nix
+    ./Integrations/expose_freshrss_entries_to_search.nix
+    ./Integrations/expose_kiwix_archives_to_search.nix
+    ./Integrations/expose_mail_archive_emails_to_search.nix
+    ./Integrations/expose_paperless_documents_to_search.nix
     ./Integrations/expose_mail_archive_emails_in_files.nix
     ./Integrations/grant_archives_access_to_kiwix_library.nix
     ./Integrations/grant_files_access_to_audiobookshelf_media.nix

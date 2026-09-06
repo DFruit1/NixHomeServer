@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Search</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, sans-serif; margin: 0 auto; max-width: 56rem; padding: 1.5rem 1rem; }
+  header { display: flex; align-items: center; gap: 1rem; margin-bottom: 1.5rem; }
+  header h1 { font-size: 1.25rem; margin: 0; flex: 1; }
+  #query { flex: 1; font-size: 1.1rem; padding: 0.5rem 0.75rem; }
+  select, button { padding: 0.5rem 0.75rem; }
+  .result { margin: 1.25rem 0; }
+  .result a.title { font-size: 1.1rem; }
+  .result .snippet { margin: 0.25rem 0; color: inherit; opacity: 0.85; }
+  .result .meta { font-size: 0.8rem; opacity: 0.65; word-break: break-all; }
+  .badge { display: inline-block; border: 1px solid currentColor; border-radius: 4px; font-size: 0.7rem; padding: 0 0.35rem; margin-right: 0.4rem; text-transform: uppercase; }
+  .facets { font-size: 0.85rem; opacity: 0.8; margin: 0.75rem 0; }
+  .facets button { margin-right: 0.4rem; }
+  #status { opacity: 0.7; margin: 1rem 0; }
+  mark { background: #ffe45e; color: inherit; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Search</h1>
+  <button type="button" onclick="logout()">Sign out</button>
+</header>
+<form id="searchForm">
+  <input id="query" type="search" placeholder="Search everything…" autocomplete="off" autofocus>
+  <select id="source"><option value="">All sources</option></select>
+  <button type="submit">Search</button>
+</form>
+<div class="facets" id="sourceFacets"></div>
+<div class="facets" id="typeFacets"></div>
+<div id="status">Loading sources…</div>
+<div id="results"></div>
+<script>
+const resultsEl = document.getElementById('results');
+const statusEl = document.getElementById('status');
+const queryEl = document.getElementById('query');
+const sourceEl = document.getElementById('source');
+
+function esc(value) {
+  const div = document.createElement('div');
+  div.textContent = value == null ? '' : String(value);
+  return div.innerHTML;
+}
+
+function highlight(snippet) {
+  if (!snippet) return '';
+  return esc(snippet).replace(/&lt;em&gt;/g, '<mark>').replace(/&lt;\/em&gt;/g, '</mark>');
+}
+
+function fmtDate(epoch) {
+  if (!epoch) return '';
+  return new Date(epoch * 1000).toLocaleDateString();
+}
+
+async function loadSources() {
+  try {
+    const response = await fetch('/api/sources');
+    if (response.status === 401) { location.href = '/login'; return; }
+    const data = await response.json();
+    for (const source of data.sources || []) {
+      const option = document.createElement('option');
+      option.value = source.id;
+      option.textContent = source.displayName;
+      sourceEl.appendChild(option);
+    }
+    statusEl.textContent = '';
+  } catch (err) {
+    statusEl.textContent = 'Failed to load sources: ' + err;
+  }
+}
+
+async function runSearch(event) {
+  if (event) event.preventDefault();
+  const query = queryEl.value.trim();
+  if (!query) return;
+  const params = new URLSearchParams({ q: query });
+  if (sourceEl.value) params.set('source', sourceEl.value);
+  statusEl.textContent = 'Searching…';
+  resultsEl.innerHTML = '';
+  try {
+    const response = await fetch('/api/search?' + params.toString());
+    if (response.status === 401) { location.href = '/login'; return; }
+    const data = await response.json();
+    if (!response.ok) { statusEl.textContent = data; return; }
+    render(data);
+  } catch (err) {
+    statusEl.textContent = 'Search failed: ' + err;
+  }
+}
+
+function render(data) {
+  const hits = data.hits || [];
+  statusEl.textContent = hits.length
+    ? `${data.total} result${data.total === 1 ? '' : 's'}`
+    : 'No results';
+  document.getElementById('sourceFacets').innerHTML = (data.sourceFacets || [])
+    .map((facet) => `<button type="button" onclick="facetSource('${esc(facet.name)}')">${esc(facet.name)} (${facet.count})</button>`)
+    .join('');
+  document.getElementById('typeFacets').innerHTML = (data.contentTypeFacets || [])
+    .map((facet) => `<button type="button" onclick="facetType('${esc(facet.name)}')">${esc(facet.name)} (${facet.count})</button>`)
+    .join('');
+  for (const hit of hits) {
+    const container = document.createElement('div');
+    container.className = 'result';
+    const link = hit.appUrl || hit.originUrl || '#';
+    container.innerHTML =
+      `<div><span class="badge">${esc(hit.source)}</span><a class="title" href="${esc(link)}">${esc(hit.title)}</a></div>` +
+      (hit.snippet ? `<div class="snippet">${highlight(hit.snippet)}</div>` : '') +
+      `<div class="meta">${esc(hit.contentType)}${hit.created ? ' · ' + fmtDate(hit.created) : ''}${hit.appUrl ? '' : (hit.originUrl ? ' · ' + esc(hit.originUrl) : '')}</div>`;
+    resultsEl.appendChild(container);
+  }
+}
+
+window.facetSource = function facetSource(name) { sourceEl.value = name; runSearch(); };
+window.facetType = function facetType(name) {
+  const query = queryEl.value.trim();
+  const params = new URLSearchParams({ q: query + ' content_type:"' + name + '"' });
+  if (sourceEl.value) params.set('source', sourceEl.value);
+  statusEl.textContent = 'Searching…';
+  fetch('/api/search?' + params.toString())
+    .then((r) => r.json())
+    .then(render)
+    .catch((err) => { statusEl.textContent = 'Search failed: ' + err; });
+};
+
+function logout() {
+  fetch('/logout', { method: 'POST', redirect: 'manual' }).finally(() => { location.href = '/'; });
+}
+
+document.getElementById('searchForm').addEventListener('submit', runSearch);
+queryEl.focus();
+loadSources();
+</script>
+</body>
+</html>

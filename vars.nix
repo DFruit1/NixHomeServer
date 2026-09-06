@@ -33,6 +33,7 @@ let
         "prowlarr"
         "qbittorrent"
         "radarr"
+        "search"
         "sonarr"
         "vaultwarden"
         "youtube-downloader"

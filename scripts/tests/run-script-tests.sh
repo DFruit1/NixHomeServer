@@ -61,6 +61,7 @@ all_app_only_test() {
     test-kiwix-disable-evaluation.sh | \
     test-module-removal-evaluation.sh | \
     test-paperless-v3-readiness.sh | \
+    test-search-module.sh | \
     test-secret-structure.sh | \
     test-secret-generation.sh)
       return 0
@@ -114,6 +115,7 @@ test_scripts=(
   scripts/tests/test-bootstrap-secret-preflight.sh
   scripts/tests/test-bootstrap-safety.sh
   scripts/tests/test-browsertrix-downloader-module.sh
+  scripts/tests/test-search-module.sh
   scripts/tests/test-core-runtime-safety.sh
   scripts/tests/test-config-input-validation.sh
   scripts/tests/test-opinionated-vars.sh

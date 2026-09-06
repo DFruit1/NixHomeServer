@@ -112,6 +112,9 @@ in
   // lib.optionalAttrs (moduleEnabled "vaultwarden") {
     vaultwardenAdminToken = { file = secretFile "vaultwardenAdminToken"; owner = "vaultwarden"; mode = "0400"; };
   }
+  // lib.optionalAttrs (moduleEnabled "search") {
+    searchClientSecret = { file = secretFile "searchClientSecret"; owner = "kanidm"; group = "search"; mode = "0440"; };
+  }
   // lib.optionalAttrs groundwaterEnabled {
     groundwaterAppMqttPassword = { file = secretFile "groundwaterAppMqttPassword"; owner = "groundwater-logger"; group = "groundwater-logger"; mode = "0400"; };
     groundwaterLoggerMqttPassword = { file = secretFile "groundwaterLoggerMqttPassword"; owner = "root"; mode = "0400"; };

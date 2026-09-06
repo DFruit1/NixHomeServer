@@ -158,6 +158,10 @@ let
     qbittorrentWeb = 8085;
     qbittorrentTorrent = 51413;
     oauth2ProxyQbittorrent = 4193;
+  }
+  // lib.optionalAttrs (enabled "search") {
+    search = 8092;
+    searchSolr = 8983;
   };
   advanced = {
     loopbackIPv4 = "127.0.0.1";

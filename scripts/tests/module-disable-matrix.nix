@@ -246,6 +246,34 @@ let
       guardedServices = [ "sonarr" "media-automation-bootstrap-sonarr" ];
       persistencePaths = [ "/var/lib/sonarr" ];
     };
+    search = {
+      disable = { repo.search.enable = lib.mkForce false; };
+      registryName = "search";
+      services = [
+        "search-solr"
+        "search-solr-core-bootstrap"
+        "search-ui"
+        "search-index"
+        "search-reconcile"
+      ];
+      timers = [ "search-reconcile" ];
+      hosts = [ "search" ];
+      gatewayApps = [ ];
+      oauthClients = [ "search-web" ];
+      kanidmGroups = [ "search-users" ];
+      users = [ "search" "solr" ];
+      groups = [ "search" "solr" ];
+      secrets = [ "searchClientSecret" ];
+      backupApps = [ "search" ];
+      guardedServices = [
+        "search-solr"
+        "search-solr-core-bootstrap"
+        "search-ui"
+        "search-index"
+        "search-reconcile"
+      ];
+      persistencePaths = [ "/var/lib/solr" ];
+    };
   };
 
   requestedCaseNames = lib.splitString "," (builtins.getEnv "NIXHOMESERVER_DISABLE_CASES");

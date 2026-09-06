@@ -38,7 +38,7 @@ evaluate_host() {
         appPackages = packageData.appPackages;
       };
       cfg = system.nixosConfigurations.${hostName}.config;
-      readerExecStart = (cfg.systemd.services.kiwix-serve-archives or {
+      readerServiceConfig = (cfg.systemd.services.kiwix-serve-archives or {
         serviceConfig = { };
         wantedBy = [ ];
         requires = [ ];
@@ -55,11 +55,19 @@ evaluate_host() {
       supplementaryGroups = (cfg.systemd.services.browsertrix-downloader.serviceConfig or { }).SupplementaryGroups or [ ];
       readOnlyPaths = (cfg.systemd.services.browsertrix-downloader.serviceConfig or { }).ReadOnlyPaths or [ ];
       readerServicePresent = builtins.hasAttr "kiwix-serve-archives" cfg.systemd.services;
-      readerUser = readerExecStart.User or null;
-      readerGroup = readerExecStart.Group or null;
-      readerExecStart = readerExecStart.ExecStart or null;
-      readerNoNewPrivileges = readerExecStart.NoNewPrivileges or null;
-      readerReadOnlyPaths = readerExecStart.ReadOnlyPaths or [ ];
+      readerUser = readerServiceConfig.User or null;
+      readerGroup = readerServiceConfig.Group or null;
+      # ExecStart may be a single string or an argv list (space-separated
+      # form); normalize to a string for substring assertions.
+      readerExecStart =
+        let
+          readerExec = readerServiceConfig.ExecStart or null;
+        in
+        if builtins.isList readerExec
+        then builtins.concatStringsSep " " readerExec
+        else readerExec;
+      readerNoNewPrivileges = readerServiceConfig.NoNewPrivileges or null;
+      readerReadOnlyPaths = readerServiceConfig.ReadOnlyPaths or [ ];
       readerRequires = (cfg.systemd.services.kiwix-serve-archives or { requires = [ ]; }).requires or [ ];
       readerAfter = (cfg.systemd.services.kiwix-serve-archives or { after = [ ]; }).after or [ ];
       readerWantedBy = (cfg.systemd.services.kiwix-serve-archives or { wantedBy = [ ]; }).wantedBy or [ ];
@@ -94,10 +102,10 @@ combined_ok="$(jq -e '
   and (.readerUser == "kiwix")
   and (.readerGroup == "kiwix")
   and (.readerNoNewPrivileges == true)
-  and (.readerExecStart | contains("--urlRootLocation=/zim"))
+  and (.readerExecStart | contains("--urlRootLocation /zim"))
   and (.readerExecStart | contains("--monitorLibrary"))
-  and (.readerExecStart | contains("--library=/var/lib/kiwix/library.xml"))
-  and (.readerExecStart | contains("--port=\($port)"))
+  and (.readerExecStart | contains("--library /var/lib/kiwix/library.xml"))
+  and (.readerExecStart | contains("--port \($port)"))
   and (.readerReadOnlyPaths | index($libraryRoot) != null)
   and (.readerRequiresMountsFor | index($libraryRoot) != null)
   and (.readerRequires | index("data-pool-layout.service") != null)

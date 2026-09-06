@@ -40,6 +40,7 @@ let
     mail-archive-ui = "mail-archive-ui";
     media-manager = null;
     mkvmaker = "mkvmaker";
+    search = "search";
   };
   selectedRustApps = lib.filterAttrs
     (name: _: rustAppOwners.${name} == null || hasApp rustAppOwners.${name})

@@ -44,10 +44,16 @@ in
           Group = "kiwix";
           ExecStart = lib.concatStringsSep " " (map lib.escapeShellArg [
             "${config.repo.kiwix.package}/bin/kiwix-serve"
-            "--library=${config.services.kiwix-serve.libraryPath}"
-            "--address=${loopback}"
-            "--port=${toString kiwixArchivesPort}"
-            "--urlRootLocation=${zimReaderUrlPath}"
+            # kiwix-tools 3.8 dropped support for the --library=<path> form;
+            # every option and its value must be separate arguments.
+            "--library"
+            "${config.services.kiwix-serve.libraryPath}"
+            "--address"
+            "${loopback}"
+            "--port"
+            "${toString kiwixArchivesPort}"
+            "--urlRootLocation"
+            "${zimReaderUrlPath}"
             "--monitorLibrary"
           ]);
           Restart = "on-failure";
@@ -66,7 +72,14 @@ in
           LockPersonality = true;
           RestrictSUIDSGID = true;
           RestrictNamespaces = true;
-          RestrictAddressFamilies = [ "AF_INET" "AF_INET6" "AF_UNIX" ];
+          RestrictAddressFamilies = [
+            "AF_INET"
+            "AF_INET6"
+            "AF_UNIX"
+            # kiwix-serve validates --address through getifaddrs, which needs
+            # netlink.
+            "AF_NETLINK"
+          ];
           SystemCallArchitectures = "native";
           ReadOnlyPaths = [
             config.repo.kiwix.paths.libraryRoot

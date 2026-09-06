@@ -11,7 +11,7 @@ host="$(test_default_host)"
 # Lightweight check: verify a representative subset of apps cleanly disable.
 # Deep removal/disable validation is covered by test-module-removal-evaluation.sh.
 # This test just ensures the enable=false mechanism doesn't regress for common apps.
-cases=(chaptarr freshrss prowlarr sonarr)
+cases=(chaptarr freshrss prowlarr search sonarr)
 
 # Evaluate all at once (small subset, memory-safe)
 cases_csv="$(IFS=,; echo "${cases[*]}")"

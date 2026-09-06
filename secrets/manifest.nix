@@ -164,6 +164,10 @@
       description = "MQTT password for the groundwater data logger device and test clients.";
       bytes = 32;
     };
+    searchClientSecret = {
+      description = "OIDC client secret for the Search web app.";
+      bytes = 32;
+    };
   };
 
   externalSecrets = {
