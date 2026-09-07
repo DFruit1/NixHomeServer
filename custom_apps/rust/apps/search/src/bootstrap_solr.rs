@@ -1,32 +1,12 @@
 use std::time::Duration;
 
-use serde_json::{json, Value};
-
 use crate::solr::SolrClient;
 
-/// Field definitions applied to the search core on first boot. The core is
-/// derived state; if it is ever lost the bootstrap recreates it.
-fn field_definitions() -> Vec<Value> {
-    vec![
-        json!({ "name": "source", "type": "string", "stored": true, "indexed": true }),
-        json!({ "name": "title", "type": "text_general", "stored": true, "indexed": true }),
-        // The body is the system-of-record text kept in the search database;
-        // Solr only needs it indexed for full-text query and highlighting. It
-        // is deliberately not stored so the Solr index does not duplicate the
-        // (potentially large) extracted bodies.
-        json!({ "name": "body", "type": "text_general", "stored": false, "indexed": true }),
-        json!({ "name": "content_type", "type": "string", "stored": true, "indexed": true }),
-        json!({ "name": "origin_url", "type": "string", "stored": true, "indexed": true }),
-        json!({ "name": "app_url", "type": "string", "stored": true, "indexed": true }),
-        json!({ "name": "file_path", "type": "string", "stored": true, "indexed": false }),
-        json!({ "name": "size_bytes", "type": "plong", "stored": true, "indexed": false }),
-        json!({ "name": "content_created", "type": "pdate", "stored": true, "indexed": true }),
-        json!({ "name": "content_modified", "type": "pdate", "stored": true, "indexed": false }),
-        json!({ "name": "acl_groups", "type": "string", "stored": true, "indexed": true, "multiValued": true }),
-        json!({ "name": "metadata_kv", "type": "string", "stored": true, "indexed": false, "multiValued": true }),
-    ]
-}
-
+/// Seeds the search core. The schema itself is the exclusive responsibility of
+/// the configset baked by `modules/search/services.nix` at pre-start (Solr
+/// 9.10 has no REST schema API, so no runtime path can apply fields); this
+/// bootstrap only waits for Solr and creates the core from that configset.
+/// The core is derived state; if it is ever lost, this recreates it.
 pub async fn run() -> Result<(), String> {
     // The bootstrap never touches the database, so it reads only the Solr
     // environment instead of the full indexer settings.
@@ -53,9 +33,6 @@ pub async fn run() -> Result<(), String> {
         }
     }
 
-    solr.ensure_fields(&field_definitions())
-        .await
-        .map_err(|err| format!("failed to apply the search schema: {err}"))?;
     eprintln!("search bootstrap: core '{}' ready", solr_core);
     Ok(())
 }
@@ -73,34 +50,5 @@ async fn ensure_core(solr: &SolrClient) -> Result<(), String> {
             // to re-verify instead of trusting the response.
             Err("core create accepted; re-verifying core registration".to_string())
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn field_definitions_are_well_formed() {
-        for definition in field_definitions() {
-            let name = definition
-                .get("name")
-                .and_then(Value::as_str)
-                .expect("name");
-            let field_type = definition
-                .get("type")
-                .and_then(Value::as_str)
-                .expect("type");
-            assert!(!name.is_empty());
-            assert!(!field_type.is_empty());
-        }
-        let definitions = field_definitions();
-        let names: Vec<&str> = definitions
-            .iter()
-            .filter_map(|definition| definition.get("name").and_then(Value::as_str))
-            .collect();
-        assert_eq!(names.first(), Some(&"source"));
-        assert!(names.contains(&"acl_groups"));
-        assert!(names.contains(&"body"));
     }
 }

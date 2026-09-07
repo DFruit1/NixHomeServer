@@ -308,23 +308,19 @@ mod tests {
             ))
             .expect("sources"),
             zimdump: None,
+            kiwix_search: None,
             pdftotext: None,
         };
 
         let mut docs = Vec::new();
-        extract::run(
-            &settings.sources[0],
-            &settings,
-            &mut |doc| {
-                docs.push(doc);
-            },
-        )
+        extract::run(&settings.sources[0], &settings, &mut |doc| {
+            docs.push(doc);
+        })
         .expect("extract");
 
         assert_eq!(docs.len(), 1, "expected exactly one paperless document");
         let record = docs.into_iter().next().expect("doc").into_record();
-        let solr_doc =
-            SolrDocument::from_record("paperless", &record, Some("paperless-users"));
+        let solr_doc = SolrDocument::from_record("paperless", &record, Some("paperless-users"));
         let payload = solr_doc.to_solr_json();
 
         assert_eq!(payload["id"], json!("paperless:42"));

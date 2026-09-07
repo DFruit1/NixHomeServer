@@ -90,6 +90,8 @@ in {
   uiPort = cfg.repo.search.port;
   uiSecret = cfg.systemd.services.search-ui.environment.SEARCH_OIDC_CLIENT_SECRET_FILE;
   fulltextZims = cfg.repo.search.fulltextZims;
+  kiwixSearchBin = cfg.systemd.services.search-ui.environment.SEARCH_KIWIXSEARCH;
+  zimdumpBin = cfg.systemd.services.search-ui.environment.SEARCH_ZIMDUMP;
 }')"
 
 if ! jq -e '
@@ -112,6 +114,8 @@ if ! jq -e '
   and (.uiPort == 8092)
   and (.uiSecret | contains("searchClientSecret"))
   and (.fulltextZims | type == "array")
+  and (.kiwixSearchBin | contains("kiwix-search"))
+  and (.zimdumpBin | contains("zimdump"))
 ' <<<"$result" >/dev/null; then
   echo "❌ Search module invariants were not satisfied." >&2
   jq . <<<"$result" >&2

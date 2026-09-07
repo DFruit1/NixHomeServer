@@ -199,83 +199,6 @@ impl SolrClient {
         Ok(())
     }
 
-    pub async fn existing_fields(&self) -> Result<std::collections::HashSet<String>, String> {
-        let url = format!("{}/{}/schema/fields?wt=json", self.base_url, self.core);
-        let response: Value = self
-            .http
-            .get(&url)
-            .send()
-            .await
-            .map_err(|err| format!("solr schema request failed: {err}"))?
-            .json()
-            .await
-            .map_err(|err| format!("solr schema response parse failed: {err}"))?;
-        let fields = response
-            .get("fields")
-            .and_then(Value::as_array)
-            .ok_or_else(|| format!("unexpected solr schema response: {response}"))?;
-        Ok(fields
-            .iter()
-            .filter_map(|field| field.get("name").and_then(Value::as_str))
-            .map(str::to_string)
-            .collect())
-    }
-
-    pub async fn ensure_fields(&self, definitions: &[Value]) -> Result<(), String> {
-        // Solr 9.10 removed the REST schema API, so field availability is
-        // best-effort: the fields are normally baked into the seeded
-        // configset at provisioning time. A missing API only warns; genuinely
-        // missing fields surface on the first document add.
-        let existing = match self.existing_fields().await {
-            Ok(existing) => existing,
-            Err(err) => {
-                eprintln!(
-                    "search bootstrap: schema API unavailable ({err}); relying on the baked configset schema"
-                );
-                return Ok(());
-            }
-        };
-        let missing: Vec<Value> = definitions
-            .iter()
-            .filter(|definition| {
-                !existing.contains(definition.get("name").and_then(Value::as_str).unwrap_or(""))
-            })
-            .cloned()
-            .collect();
-        if missing.is_empty() {
-            return Ok(());
-        }
-        let url = format!("{}/{}/schema/fields?commit=true", self.base_url, self.core);
-        let response = self
-            .http
-            .post(&url)
-            .json(&json!({ "add-field": missing }))
-            .send()
-            .await;
-        match response {
-            Ok(value) => {
-                if let Ok(body) = value.json::<Value>().await {
-                    if body.get("error").is_some() {
-                        eprintln!(
-                            "search bootstrap: schema API refused field creation, relying on the baked configset schema: {body}"
-                        );
-                    }
-                } else {
-                    eprintln!(
-                        "search bootstrap: schema API unavailable, relying on the baked configset schema"
-                    );
-                }
-                Ok(())
-            }
-            Err(err) => {
-                eprintln!(
-                    "search bootstrap: schema API request failed ({err}), relying on the baked configset schema"
-                );
-                Ok(())
-            }
-        }
-    }
-
     pub async fn add_documents(&self, docs: &[SolrDocument]) -> Result<(), String> {
         if docs.is_empty() {
             return Ok(());
@@ -347,6 +270,11 @@ impl SolrClient {
     ) -> Result<SearchResponse, String> {
         let mut params: Vec<(&str, String)> = vec![
             ("q", query.to_string()),
+            // Stored fields only: never leak the stored body into responses.
+            (
+                "fl",
+                "id source title origin_url app_url content_type content_created score".to_string(),
+            ),
             ("defType", "edismax".to_string()),
             ("qf", "title^4 body".to_string()),
             ("rows", rows.to_string()),

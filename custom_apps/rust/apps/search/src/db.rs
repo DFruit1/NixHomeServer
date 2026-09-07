@@ -282,7 +282,7 @@ pub struct UiSource {
     pub acl_group: Option<String>,
 }
 
-pub async fn list_sources(client: &mut Client) -> Result<Vec<UiSource>, String> {
+pub async fn list_sources(client: &Client) -> Result<Vec<UiSource>, String> {
     let rows = client
         .query(
             "SELECT id, display_name, acl_group FROM sources ORDER BY display_name",

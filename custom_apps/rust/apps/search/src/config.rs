@@ -28,6 +28,7 @@ pub struct Settings {
     pub solr_core: String,
     pub sources: Vec<SourceConfig>,
     pub zimdump: Option<PathBuf>,
+    pub kiwix_search: Option<PathBuf>,
     pub pdftotext: Option<PathBuf>,
 }
 
@@ -37,6 +38,7 @@ impl Settings {
         let solr_url = env_string("SEARCH_SOLR_URL")?;
         let solr_core = env_string("SEARCH_SOLR_CORE")?;
         let zimdump = std::env::var("SEARCH_ZIMDUMP").ok().map(PathBuf::from);
+        let kiwix_search = std::env::var("SEARCH_KIWIXSEARCH").ok().map(PathBuf::from);
         let pdftotext = std::env::var("SEARCH_PDFTOTEXT").ok().map(PathBuf::from);
 
         let mut sources = Vec::new();
@@ -53,6 +55,7 @@ impl Settings {
             solr_core,
             sources,
             zimdump,
+            kiwix_search,
             pdftotext,
         })
     }

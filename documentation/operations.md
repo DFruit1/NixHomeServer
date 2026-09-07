@@ -1168,6 +1168,14 @@ Notes:
 * The Solr core is derived state. If it is lost or corrupt, rerun
   `search-solr-core-bootstrap.service` and then `search-index.service`; both
   rebuild it from the search database and the source apps.
+* Schema changes only take effect when the seeded `_default` configset is
+  rebuilt: `search-solr.service` pre-start re-seeds it with the baked field
+  definitions only while the directory is missing. After changing a field
+  definition in `modules/search/services.nix` on an already-deployed server,
+  stop `search-solr.service`, move the seeded
+  `/var/lib/solr/home/configsets/_default` aside, and start the service again;
+  the core bootstrap then recreates the core and `search-index.service`
+  reindexes from scratch.
 * ZIM indexing levels. By default every ZIM is indexed at archive level
   only (one document per archive — instant passes). ZIMs listed in
   `repo.search.metadataZims` (file-name substrings) additionally contribute
@@ -1177,6 +1185,11 @@ Notes:
   keep the fulltext list small: it reads every article and dominates the
   indexing pass. Enabling more entries increases index size and first-sync
   time.
+* Disabling the Search app keeps every piece of state: `/var/lib/solr` stays
+  on disk (persisted centrally), the Postgres `search` database stays in the
+  cluster, and the last `dumps/search.pgdump` backup remains in Kopia
+  history. Re-enabling resumes where things left off — the indexer re-syncs
+  sources into the existing database and only re-pushes changed documents.
 * Backups cover the search database only (`dumps/search.pgdump`); Solr data
   is intentionally not backed up because it is fully rebuildable.
 

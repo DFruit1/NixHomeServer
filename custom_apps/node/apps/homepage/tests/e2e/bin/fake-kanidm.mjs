@@ -1,9 +1,14 @@
 #!/usr/bin/env node
 import { createServer } from 'node:http';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import process from 'node:process';
 
 const port = Number.parseInt(process.env.FAKE_KANIDM_PORT ?? '18190', 10);
+
+// Kanidm 1.11 issues the auth session id as a signed JWS: mixed-case
+// base64url. Clients must forward it byte-for-byte.
+const makeSessionToken = () =>
+  `eyJhbGciOiJFUzI1NiJ9.${Buffer.from(JSON.stringify({ id: randomUUID() })).toString('base64url')}.${randomBytes(24).toString('base64url')}`;
 
 const accounts = new Map([
   ['dsaw', { password: 'vault-pass', totp: null }],
@@ -58,7 +63,14 @@ const server = createServer(async (request, response) => {
         return [part.slice(0, separator), part.slice(separator + 1)];
       }),
   );
-  const flowId = cookies['auth-session-id'];
+  // Mirror the real server's session resolution: the signed header wins and
+  // must be a known session; the cookie is only consulted without a header.
+  const headerSession = request.headers['x-kanidm-auth-session-id'];
+  if (headerSession !== undefined && !flows.has(headerSession)) {
+    sendJson(response, 400, { error: 'invalid auth session' });
+    return;
+  }
+  const flowId = headerSession ?? cookies['auth-session-id'];
   const flow = flowId ? flows.get(flowId) : undefined;
   const respond = (state, extraHeaders = []) => {
     for (const header of extraHeaders) {
@@ -75,8 +87,9 @@ const server = createServer(async (request, response) => {
       respond({ denied: 'Unknown username' });
       return;
     }
-    const id = randomUUID();
+    const id = makeSessionToken();
     flows.set(id, { username, passwordOk: false });
+    response.setHeader('x-kanidm-auth-session-id', id);
     respond({ choose: account.totp ? ['passwordmfa', 'passkey'] : ['password'] }, [
       `auth-session-id=${id}; Path=/; HttpOnly`,
     ]);

@@ -7,6 +7,7 @@ mod server;
 mod solr;
 mod text;
 mod timeutil;
+mod zim_search;
 
 use std::process::ExitCode;
 

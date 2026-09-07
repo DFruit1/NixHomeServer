@@ -40,6 +40,12 @@ type RecordedRequest = { url: string; method: string; headers: Record<string, st
 
 type StubResponse = { status: number; state: unknown; cookies?: string[]; sessionHeader?: string };
 
+// Kanidm 1.11 signs the auth session id as a JWS: mixed-case base64url. The
+// value must be forwarded byte-for-byte — Kanidm resolves the auth session
+// from this header first and never falls back to the cookie when a (corrupt)
+// header is present.
+const KANIDM_SESSION_JWS = 'eyJhbGciOiJFUzI1NiJ9.AbC12-_dEfGh3Ij4Kl5Mn6Op7Qr.StUv-_Wx8Yz9A';
+
 const kanidmFetchStub = (responses: StubResponse[]) => {
   const requests: RecordedRequest[] = [];
   let index = 0;
@@ -70,8 +76,8 @@ const kanidmFetchStub = (responses: StubResponse[]) => {
 
 const passwordOnlyServer = (): FetchLike =>
   kanidmFetchStub([
-    { status: 200, state: { choose: ['password'] }, cookies: ['auth-session-id=abc123; Path=/; HttpOnly'] },
-    { status: 200, state: { continue: ['password'] } },
+    { status: 200, state: { choose: ['password'] }, cookies: ['auth-session-id=abc123; Path=/; HttpOnly'], sessionHeader: KANIDM_SESSION_JWS },
+    { status: 200, state: { continue: ['password'] }, sessionHeader: KANIDM_SESSION_JWS },
     { status: 200, state: { success: 'bearer-token-1' } },
   ]).fetchImpl;
 
@@ -89,8 +95,8 @@ const fakeResponse = (capture: (value: string) => void): ServerResponse =>
 describe('vault unlock via Kanidm', () => {
   it('completes a password-only unlock and revokes the Kanidm session', async () => {
     const stub = kanidmFetchStub([
-      { status: 200, state: { choose: ['password'] }, cookies: ['auth-session-id=abc123; Path=/; HttpOnly'] },
-      { status: 200, state: { continue: ['password'] } },
+      { status: 200, state: { choose: ['password'] }, cookies: ['auth-session-id=abc123; Path=/; HttpOnly'], sessionHeader: KANIDM_SESSION_JWS },
+      { status: 200, state: { continue: ['password'] }, sessionHeader: KANIDM_SESSION_JWS },
       { status: 200, state: { success: 'bearer-token-1' } },
     ]);
     const outcome = await attemptVaultUnlock(baseConfig(), headersFor('alice'), user('alice'), { password: 'correct horse' }, stub.fetchImpl);
@@ -105,15 +111,19 @@ describe('vault unlock via Kanidm', () => {
     expect(requests[0].body).toEqual({ step: { init2: { username: 'alice', issue: 'token', privileged: false } } });
     expect(requests[1].body).toEqual({ step: { begin: 'password' } });
     expect(requests[1].headers.cookie).toBe('auth-session-id=abc123');
+    // The signed session id is forwarded byte-for-byte; case mangling breaks
+    // every subsequent step against the real Kanidm.
+    expect(requests[1].headers['x-kanidm-auth-session-id']).toBe(KANIDM_SESSION_JWS);
     expect(requests[2].body).toEqual({ step: { cred: { password: 'correct horse' } } });
+    expect(requests[2].headers['x-kanidm-auth-session-id']).toBe(KANIDM_SESSION_JWS);
     expect(requests[3].headers.authorization).toBe('Bearer bearer-token-1');
   });
 
   it('uses the passwordmfa mechanism and asks for a TOTP when the account requires it', async () => {
     const stub = kanidmFetchStub([
-      { status: 200, state: { choose: ['passwordmfa', 'passkey'] }, cookies: ['auth-session-id=totp1'] },
-      { status: 200, state: { continue: ['password', 'totp'] } },
-      { status: 200, state: { continue: ['totp'] } },
+      { status: 200, state: { choose: ['passwordmfa', 'passkey'] }, cookies: ['auth-session-id=totp1'], sessionHeader: KANIDM_SESSION_JWS },
+      { status: 200, state: { continue: ['password', 'totp'] }, sessionHeader: KANIDM_SESSION_JWS },
+      { status: 200, state: { continue: ['totp'] }, sessionHeader: KANIDM_SESSION_JWS },
     ]);
     const outcome = await attemptVaultUnlock(baseConfig(), headersFor('alice'), user('alice'), { password: 'correct horse' }, stub.fetchImpl);
     expect(outcome.kind).toBe('totp-required');
@@ -131,6 +141,7 @@ describe('vault unlock via Kanidm', () => {
     const rightRequests = rightStub.requests();
     expect(rightRequests[0].body).toEqual({ step: { cred: { totp: 654321 } } });
     expect(rightRequests[0].headers.cookie).toBe('auth-session-id=totp1');
+    expect(rightRequests[0].headers['x-kanidm-auth-session-id']).toBe(KANIDM_SESSION_JWS);
     expect(rightRequests[1].headers.authorization).toBe('Bearer bearer-token-2');
 
     const reused = await submitKanidmTotp(baseConfig(), pendingId, 'alice', '654321', kanidmFetchStub([
@@ -187,6 +198,27 @@ describe('vault unlock via Kanidm', () => {
     const locked = await attemptVaultUnlock(config, headersFor('frank'), user('frank'), { password: 'wrong' }, fetchImpl);
     expect(locked.kind).toBe('locked-out');
     expect((locked as { retryAfterSeconds?: number }).retryAfterSeconds).toBeGreaterThan(0);
+  });
+
+  it('locks the account even when source addresses rotate', async () => {
+    const fetchImpl = kanidmFetchStub([
+      { status: 200, state: { choose: ['password'] }, cookies: ['auth-session-id=abc123'] },
+      { status: 200, state: { continue: ['password'] } },
+      { status: 200, state: { denied: 'no' } },
+    ]).fetchImpl;
+    const config = baseConfig();
+    const headersForIp = (ip: string): IncomingHttpHeaders => ({
+      'x-forwarded-preferred-username': 'pru',
+      'x-forwarded-for': ip,
+    });
+    // Four failures per address stay below the per-address lockout, so only
+    // the account-level budget can stop the rotation.
+    for (let index = 0; index < 20; index += 1) {
+      const outcome = await attemptVaultUnlock(config, headersForIp(`10.0.0.${Math.floor(index / 4)}`), user('pru'), { password: 'wrong' }, fetchImpl);
+      expect(outcome.kind).toBe(index === 19 ? 'locked-out' : 'denied');
+    }
+    const locked = await attemptVaultUnlock(config, headersForIp('10.0.0.99'), user('pru'), { password: 'wrong' }, fetchImpl);
+    expect(locked.kind).toBe('locked-out');
   });
 
   it('rejects an unlock body without a password', async () => {

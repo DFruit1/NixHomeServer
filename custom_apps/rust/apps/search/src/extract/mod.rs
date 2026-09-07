@@ -28,6 +28,14 @@ pub struct ExtractedDocument {
 impl ExtractedDocument {
     pub fn checksum(&self) -> String {
         let metadata = self.metadata.to_string();
+        let created = self
+            .content_created_at
+            .map(|value| value.to_string())
+            .unwrap_or_default();
+        let modified = self
+            .content_modified_at
+            .map(|value| value.to_string())
+            .unwrap_or_default();
         crate::timeutil::sha256_hex(&[
             &self.kind,
             &self.title,
@@ -37,6 +45,8 @@ impl ExtractedDocument {
             &self.app_url,
             &self.file_path,
             &metadata,
+            &created,
+            &modified,
         ])
     }
 

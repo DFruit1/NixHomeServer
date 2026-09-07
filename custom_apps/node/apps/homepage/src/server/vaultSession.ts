@@ -13,6 +13,7 @@ const MAX_PENDING_FLOWS = 20;
 const MAX_SESSIONS_PER_USER = 5;
 const MAX_SESSIONS_TOTAL = 200;
 const MAX_FAILED_ATTEMPTS = 5;
+const MAX_FAILED_ATTEMPTS_PER_USER = 20;
 const LOCKOUT_DURATION_MS = 5 * 60 * 1000;
 const LOCKOUT_STATE_TTL_MS = 15 * 60 * 1000;
 
@@ -73,11 +74,18 @@ export class VaultHttpError extends Error {
 
 const sessions = new Map<string, VaultSession>();
 const pendingTotps = new Map<string, PendingTotp>();
-const loginAttempts = new Map<string, LoginAttemptState>();
+const remoteAttempts = new Map<string, LoginAttemptState>();
+const userAttempts = new Map<string, LoginAttemptState>();
 
 let sweeperStarted = false;
+let sweeperIdleTtlMs = 5 * 60 * 1000;
 
-const startSweeper = (): void => {
+const startSweeper = (config?: AppConfig): void => {
+  if (config) {
+    // Keep the sweeper aligned with the configured idle window; the default
+    // would otherwise reap sessions early on deployments that raised it.
+    sweeperIdleTtlMs = configuredIdleTtlMs(config);
+  }
   if (sweeperStarted) {
     return;
   }
@@ -85,7 +93,7 @@ const startSweeper = (): void => {
   const timer = setInterval(() => {
     const now = Date.now();
     for (const [token, session] of sessions) {
-      if (now >= session.expiresAt || now - session.lastSeenAt > idleTtlMs()) {
+      if (now >= session.expiresAt || now - session.lastSeenAt > sweeperIdleTtlMs) {
         sessions.delete(token);
       }
     }
@@ -94,9 +102,11 @@ const startSweeper = (): void => {
         pendingTotps.delete(id);
       }
     }
-    for (const [key, state] of loginAttempts) {
-      if (now - state.updatedAt > LOCKOUT_STATE_TTL_MS && now >= state.lockedUntil) {
-        loginAttempts.delete(key);
+    for (const attempts of [remoteAttempts, userAttempts]) {
+      for (const [key, state] of attempts) {
+        if (now - state.updatedAt > LOCKOUT_STATE_TTL_MS && now >= state.lockedUntil) {
+          attempts.delete(key);
+        }
       }
     }
   }, 60_000);
@@ -129,9 +139,11 @@ export const pruneVaultState = (config: AppConfig, now = Date.now()): void => {
       pendingTotps.delete(id);
     }
   }
-  for (const [key, state] of loginAttempts) {
-    if (now - state.updatedAt > LOCKOUT_STATE_TTL_MS && now >= state.lockedUntil) {
-      loginAttempts.delete(key);
+  for (const attempts of [remoteAttempts, userAttempts]) {
+    for (const [key, state] of attempts) {
+      if (now - state.updatedAt > LOCKOUT_STATE_TTL_MS && now >= state.lockedUntil) {
+        attempts.delete(key);
+      }
     }
   }
 };
@@ -165,7 +177,7 @@ export const getVaultSessionToken = (headers: IncomingHttpHeaders): string | und
 };
 
 export const lookupVaultSession = (config: AppConfig, headers: IncomingHttpHeaders): VaultSession | undefined => {
-  startSweeper();
+  startSweeper(config);
   const token = getVaultSessionToken(headers);
   if (!token || !/^[A-Za-z0-9_-]{32,128}$/.test(token)) {
     return undefined;
@@ -223,7 +235,7 @@ const mintSession = (config: AppConfig, username: string): VaultSession => {
   return session;
 };
 
-const loginAttemptKey = (username: string, remoteAddress: string): string => `${username}|${remoteAddress}`;
+const remoteAttemptKey = (username: string, remoteAddress: string): string => `${username}|${remoteAddress}`;
 
 const remoteAddressOf = (headers: IncomingHttpHeaders): string => {
   const forwarded = headers['x-forwarded-for'];
@@ -232,8 +244,8 @@ const remoteAddressOf = (headers: IncomingHttpHeaders): string => {
   return candidate || 'unknown';
 };
 
-const loginLockedRemainingMs = (key: string, now: number): number => {
-  const state = loginAttempts.get(key);
+const remainingLockMs = (attempts: Map<string, LoginAttemptState>, key: string, now: number): number => {
+  const state = attempts.get(key);
   if (!state) {
     return 0;
   }
@@ -241,20 +253,38 @@ const loginLockedRemainingMs = (key: string, now: number): number => {
     return state.lockedUntil - now;
   }
   if (now - state.updatedAt > LOCKOUT_STATE_TTL_MS) {
-    loginAttempts.delete(key);
+    attempts.delete(key);
   }
   return 0;
 };
 
-const recordFailedLogin = (key: string, now: number): void => {
-  const state = loginAttempts.get(key) ?? { failures: 0, lockedUntil: 0, updatedAt: now };
-  state.failures += 1;
-  state.updatedAt = now;
-  if (state.failures >= MAX_FAILED_ATTEMPTS) {
-    state.lockedUntil = now + LOCKOUT_DURATION_MS;
-    state.failures = 0;
-  }
-  loginAttempts.set(key, state);
+// Per (user, source address) the threshold is tight; a second, looser
+// per-username counter means rotating source addresses cannot mint an
+// unlimited number of attempts against one account.
+const loginLockedRemainingMs = (username: string, remoteKey: string, now: number): number =>
+  Math.max(
+    remainingLockMs(remoteAttempts, remoteKey, now),
+    remainingLockMs(userAttempts, username, now),
+  );
+
+const recordFailedLogin = (username: string, remoteKey: string, now: number): void => {
+  const bump = (attempts: Map<string, LoginAttemptState>, key: string, threshold: number): void => {
+    const state = attempts.get(key) ?? { failures: 0, lockedUntil: 0, updatedAt: now };
+    state.failures += 1;
+    state.updatedAt = now;
+    if (state.failures >= threshold) {
+      state.lockedUntil = now + LOCKOUT_DURATION_MS;
+      state.failures = 0;
+    }
+    attempts.set(key, state);
+  };
+  bump(remoteAttempts, remoteKey, MAX_FAILED_ATTEMPTS);
+  bump(userAttempts, username, MAX_FAILED_ATTEMPTS_PER_USER);
+};
+
+const clearFailedLogins = (username: string, remoteKey: string): void => {
+  remoteAttempts.delete(remoteKey);
+  userAttempts.delete(username);
 };
 
 export const getVaultSessionFromRequest = (config: AppConfig, headers: IncomingHttpHeaders): VaultSession | undefined =>
@@ -373,7 +403,11 @@ const postKanidmAuth = async (
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   const cookies = collectKanidmCookies(response.headers);
-  const nextSessionHeader = response.headers.get(KANIDM_SESSION_HEADER)?.toLowerCase() ?? undefined;
+  // The value is a signed JWS (mixed-case base64url). Never normalise its
+  // case: Kanidm prefers this header over the cookie when resolving the auth
+  // session, and a corrupted value makes every following step fail while the
+  // intact cookie never gets a chance to rescue the flow.
+  const nextSessionHeader = response.headers.get(KANIDM_SESSION_HEADER) ?? undefined;
   let bodyJson: unknown;
   try {
     bodyJson = await response.json();
@@ -444,6 +478,9 @@ export const startKanidmPasswordAuth = async (
   }
   const mech = mechs.includes('passwordmfa') ? 'passwordmfa' : 'password';
   cookie = mergeCookies(cookie, init.cookies);
+  // Kanidm issues the signed session id on every auth response; carry the
+  // init one forward so later steps resolve the session through the header.
+  sessionHeader = init.sessionHeader ?? sessionHeader;
 
   const begin = await postKanidmAuth(fetchImpl, kanidmUrl, { step: { begin: mech } }, cookie, sessionHeader);
   if (begin.state?.kind === 'denied' || begin.status !== 200 || begin.state?.kind !== 'continue') {
@@ -557,14 +594,14 @@ export const attemptVaultUnlock = async (
   body: { password?: unknown; totp?: unknown; pendingId?: unknown },
   fetchImpl?: FetchLike,
 ): Promise<VaultUnlockOutcome> => {
-  startSweeper();
+  startSweeper(config);
   const vault = vaultConfigOrUndefined(config);
   if (!vault) {
     return { kind: 'error', message: 'vault is not enabled' };
   }
-  const key = loginAttemptKey(user.username, remoteAddressOf(headers));
+  const remoteKey = remoteAttemptKey(user.username, remoteAddressOf(headers));
   const now = Date.now();
-  const remainingMs = loginLockedRemainingMs(key, now);
+  const remainingMs = loginLockedRemainingMs(user.username, remoteKey, now);
   if (remainingMs > 0) {
     return { kind: 'locked-out', retryAfterSeconds: Math.ceil(remainingMs / 1000) };
   }
@@ -584,16 +621,16 @@ export const attemptVaultUnlock = async (
       if (outcome.kind === 'totp-required') {
         return outcome;
       }
-      recordFailedLogin(key, Date.now());
-      const state = loginAttempts.get(key);
-      if (state && state.lockedUntil > Date.now()) {
-        return { kind: 'locked-out', retryAfterSeconds: Math.ceil((state.lockedUntil - Date.now()) / 1000) };
+      recordFailedLogin(user.username, remoteKey, Date.now());
+      const state = loginLockedRemainingMs(user.username, remoteKey, Date.now());
+      if (state > 0) {
+        return { kind: 'locked-out', retryAfterSeconds: Math.ceil(state / 1000) };
       }
       return outcome.kind === 'denied'
         ? { kind: 'denied', message: 'That password or code was not accepted.' }
         : { kind: 'error', message: 'vault identity verification failed' };
     }
-    loginAttempts.delete(key);
+    clearFailedLogins(user.username, remoteKey);
     const session = mintSession(config, user.username);
     return { kind: 'unlocked', token: session.token, expiresAt: session.expiresAt };
   } catch (caught) {

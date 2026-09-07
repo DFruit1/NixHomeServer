@@ -94,17 +94,27 @@ async function runSearch(event) {
   }
 }
 
+function facetButton(name, count, handler) {
+  // Built via DOM APIs rather than inline onclick strings: facet values come
+  // from indexed content, so they must never be interpolated into markup.
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.textContent = `${name} (${count})`;
+  button.addEventListener('click', handler);
+  return button;
+}
+
 function render(data) {
   const hits = data.hits || [];
   statusEl.textContent = hits.length
     ? `${data.total} result${data.total === 1 ? '' : 's'}`
     : 'No results';
-  document.getElementById('sourceFacets').innerHTML = (data.sourceFacets || [])
-    .map((facet) => `<button type="button" onclick="facetSource('${esc(facet.name)}')">${esc(facet.name)} (${facet.count})</button>`)
-    .join('');
-  document.getElementById('typeFacets').innerHTML = (data.contentTypeFacets || [])
-    .map((facet) => `<button type="button" onclick="facetType('${esc(facet.name)}')">${esc(facet.name)} (${facet.count})</button>`)
-    .join('');
+  const sourceFacets = document.getElementById('sourceFacets');
+  sourceFacets.replaceChildren(...(data.sourceFacets || []).map((facet) =>
+    facetButton(facet.name, facet.count, () => { sourceEl.value = facet.name; runSearch(); })));
+  const typeFacets = document.getElementById('typeFacets');
+  typeFacets.replaceChildren(...(data.contentTypeFacets || []).map((facet) =>
+    facetButton(facet.name, facet.count, () => facetType(facet.name))));
   for (const hit of hits) {
     const container = document.createElement('div');
     container.className = 'result';
@@ -117,7 +127,6 @@ function render(data) {
   }
 }
 
-window.facetSource = function facetSource(name) { sourceEl.value = name; runSearch(); };
 window.facetType = function facetType(name) {
   const query = queryEl.value.trim();
   const params = new URLSearchParams({ q: query + ' content_type:"' + name + '"' });

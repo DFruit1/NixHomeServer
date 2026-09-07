@@ -97,7 +97,7 @@ fn is_text_entry(path: &str) -> bool {
     !IMAGE_EXTENSIONS.contains(&extension)
 }
 
-fn clean_title_from_path(path: &str) -> String {
+pub(crate) fn clean_title_from_path(path: &str) -> String {
     let segment = path.rsplit('/').next().unwrap_or(path);
     let without_extension = segment.strip_suffix(".html").unwrap_or(segment);
     let cleaned = without_extension
@@ -125,7 +125,7 @@ fn matches_any(file_name: &str, patterns: &[String]) -> bool {
 /// whole archive, which can run to millions of articles). Any failure — a
 /// missing zimdump, an unreadable ZIM, a name-space that does not exist — is
 /// treated as "no index", which lets the caller fall back to extraction.
-fn has_xapian_fulltext(zimdump: &Path, zim: &Path) -> bool {
+pub(crate) fn has_xapian_fulltext(zimdump: &Path, zim: &Path) -> bool {
     let output = Command::new(zimdump)
         .arg("list")
         .arg("--ns=X")
@@ -145,7 +145,7 @@ fn contains_fulltext_index(listing: &str) -> bool {
     listing.contains("fulltext/xapian") || listing.contains("fulltextIndex/xapian")
 }
 
-fn entry_origin(app_base: &str, zim_stem: &str, entry_path: &str) -> String {
+pub(crate) fn entry_origin(app_base: &str, zim_stem: &str, entry_path: &str) -> String {
     format!(
         "{}/content/{}/{}",
         app_base.trim_end_matches('/'),

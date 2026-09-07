@@ -13,10 +13,14 @@ use serde_json::json;
 use crate::config::Settings;
 use crate::db::{self, UiSource};
 use crate::solr::SolrClient;
+use crate::timeutil::now_epoch;
+use crate::zim_search::{self, ZimHit, ZimIndexEntry, ZimSearchConfig};
 
 const SESSION_COOKIE: &str = "search_session";
 const SESSION_TTL_SECONDS: i64 = 7 * 24 * 60 * 60;
 const MAX_RESULTS: usize = 50;
+/// How long the discovered ZIM library listing is cached between queries.
+const ZIM_CACHE_TTL_SECONDS: i64 = 300;
 
 #[derive(Clone)]
 struct AppState {
@@ -30,6 +34,17 @@ struct Inner {
     sessions: Mutex<HashMap<String, Session>>,
     pending_states: Mutex<HashMap<String, i64>>,
     discovery: Mutex<Option<Discovery>>,
+    zim_cache: Mutex<ZimCache>,
+    /// One shared Postgres connection for the small source-listing queries,
+    /// connected lazily and evicted on failure so the next request reconnects.
+    db: tokio::sync::Mutex<Option<std::sync::Arc<tokio_postgres::Client>>>,
+}
+
+/// Cached ZIM library inventories, keyed by the library root each was built
+/// from, so multiple kiwix sources never evict each other's inventories.
+#[derive(Default)]
+struct ZimCache {
+    entries: HashMap<String, (Vec<ZimIndexEntry>, i64)>,
 }
 
 #[derive(Clone)]
@@ -76,6 +91,8 @@ pub async fn run() -> Result<(), String> {
             sessions: Mutex::new(HashMap::new()),
             pending_states: Mutex::new(HashMap::new()),
             discovery: Mutex::new(None),
+            zim_cache: Mutex::new(ZimCache::default()),
+            db: tokio::sync::Mutex::new(None),
         }),
     };
 
@@ -396,6 +413,21 @@ async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
         .into_response()
 }
 
+/// Returns the shared, lazily-connected source-listing client. A failed
+/// query evicts it so the next request reconnects instead of retrying a dead
+/// connection forever.
+async fn shared_db_client(
+    state: &AppState,
+) -> Result<std::sync::Arc<tokio_postgres::Client>, String> {
+    let mut guard = state.inner.db.lock().await;
+    if let Some(client) = guard.as_ref() {
+        return Ok(client.clone());
+    }
+    let client = std::sync::Arc::new(db::connect(&state.inner.settings.database_url).await?);
+    *guard = Some(client.clone());
+    Ok(client)
+}
+
 /// Resolves the sources the current user may search.
 async fn allowed_sources(
     state: &AppState,
@@ -406,7 +438,7 @@ async fn allowed_sources(
             (StatusCode::UNAUTHORIZED, "not signed in").into_response(),
         ));
     };
-    let mut client = match db::connect(&state.inner.settings.database_url).await {
+    let client = match shared_db_client(state).await {
         Ok(client) => client,
         Err(err) => {
             return Err(Box::new(
@@ -414,12 +446,13 @@ async fn allowed_sources(
             ))
         }
     };
-    let sources = match db::list_sources(&mut client).await {
+    let sources = match db::list_sources(&client).await {
         Ok(sources) => sources,
         Err(err) => {
+            *state.inner.db.lock().await = None;
             return Err(Box::new(
                 (StatusCode::INTERNAL_SERVER_ERROR, err).into_response(),
-            ))
+            ));
         }
     };
     let allowed: Vec<UiSource> = sources
@@ -483,31 +516,122 @@ async fn api_search(
         "search: user '{}' queried {:?} across {:?}",
         session.username, query, selected
     );
+
+    // Federate article hits from the ZIM archives' native Xapian indexes when
+    // the kiwix source participates in this search. Index-less ZIMs are
+    // already covered by Solr (the fallback extractor), so only Xapian-bearing
+    // archives are queried here, avoiding duplicate results. ZIM hits are
+    // pinned to the first page: they have no pagination of their own, and
+    // re-prepending them on every page would repeat them and displace the
+    // next Solr window.
+    let include_zim_hits = page == 0;
+    let zim_hits = if include_zim_hits {
+        federate_zims(&state, &selected, &query).await
+    } else {
+        Vec::new()
+    };
+
     match state
         .inner
         .solr
         .search(&query, &selected, rows, offset)
         .await
     {
-        Ok(response) => Json(json!({
-            "hits": response.hits.iter().map(|hit| json!({
-                "id": hit.id,
-                "source": hit.source,
-                "title": hit.title,
-                "snippet": hit.snippet,
-                "originUrl": hit.origin_url,
-                "appUrl": hit.app_url,
-                "contentType": hit.content_type,
-                "score": hit.score,
-                "created": hit.created,
-            })).collect::<Vec<_>>(),
-            "total": response.total,
-            "sourceFacets": response.source_facets.iter().map(|(name, count)| json!({ "name": name, "count": count })).collect::<Vec<_>>(),
-            "contentTypeFacets": response.content_type_facets.iter().map(|(name, count)| json!({ "name": name, "count": count })).collect::<Vec<_>>(),
-        }))
-        .into_response(),
+        Ok(response) => {
+            let mut hits: Vec<serde_json::Value> = zim_hits
+                .iter()
+                .map(|hit| {
+                    json!({
+                        "id": format!("kiwix:{}", crate::timeutil::sha256_hex(&[&hit.origin_url])),
+                        "source": "kiwix",
+                        "title": hit.title,
+                        "snippet": hit.snippet,
+                        "originUrl": hit.origin_url,
+                        "appUrl": hit.app_url,
+                        "contentType": "text/html",
+                        "score": 0,
+                        "created": null,
+                    })
+                })
+                .collect();
+            for hit in response.hits.iter() {
+                hits.push(json!({
+                    "id": hit.id,
+                    "source": hit.source,
+                    "title": hit.title,
+                    "snippet": hit.snippet,
+                    "originUrl": hit.origin_url,
+                    "appUrl": hit.app_url,
+                    "contentType": hit.content_type,
+                    "score": hit.score,
+                    "created": hit.created,
+                }));
+            }
+            // No truncate: Solr already returns at most `rows`, so truncating
+            // the merged list would silently drop the tail of the Solr window.
+            Json(json!({
+                "hits": hits,
+                "total": response.total + if include_zim_hits { zim_hits.len() as u64 } else { 0 },
+                "sourceFacets": response.source_facets.iter().map(|(name, count)| json!({ "name": name, "count": count })).collect::<Vec<_>>(),
+                "contentTypeFacets": response.content_type_facets.iter().map(|(name, count)| json!({ "name": name, "count": count })).collect::<Vec<_>>(),
+            }))
+            .into_response()
+        }
         Err(err) => (StatusCode::BAD_GATEWAY, err).into_response(),
     }
+}
+
+/// Queries the ZIM archives' native Xapian indexes for any kiwix source that is
+/// part of the current search, returning merged article hits. Never fails the
+/// whole request: unavailable archives or tools are skipped inside `zim_search`.
+async fn federate_zims(state: &AppState, selected: &[&str], query: &str) -> Vec<ZimHit> {
+    let mut hits: Vec<ZimHit> = Vec::new();
+    for source in &state.inner.settings.sources {
+        if source.source_type != "kiwix" || !selected.contains(&source.id.as_str()) {
+            continue;
+        }
+        let Some(library_root) = source.setting_str("libraryRoot") else {
+            continue;
+        };
+        let config = ZimSearchConfig {
+            kiwix_search: state.inner.settings.kiwix_search.clone(),
+            zimdump: state.inner.settings.zimdump.clone(),
+            library_root: std::path::PathBuf::from(library_root),
+            app_base: source.app_base.clone(),
+        };
+        if !config.enabled() {
+            continue;
+        }
+        let entries = zim_entries(state, &config).await;
+        hits.extend(zim_search::search(&config, &entries, query).await);
+    }
+    hits
+}
+
+/// Returns the cached ZIM library inventory for a kiwix source, refreshing it
+/// when stale.
+async fn zim_entries(state: &AppState, config: &ZimSearchConfig) -> Vec<ZimIndexEntry> {
+    let root = config.library_root.to_string_lossy().to_string();
+    let now = now_epoch();
+    {
+        let cache = state.inner.zim_cache.lock().unwrap();
+        if let Some((entries, fetched_at)) = cache.entries.get(&root) {
+            if now - *fetched_at < ZIM_CACHE_TTL_SECONDS {
+                return entries.clone();
+            }
+        }
+    }
+    let zimdump = config.zimdump.clone();
+    let library_root = config.library_root.clone();
+    let entries = tokio::task::spawn_blocking(move || match zimdump {
+        Some(zimdump) => zim_search::discover_zims(&zimdump, &library_root),
+        None => Vec::new(),
+    })
+    .await
+    .unwrap_or_default();
+    let mut cache = state.inner.zim_cache.lock().unwrap();
+    cache.entries.insert(root, (entries.clone(), now));
+    entries
 }
 
 fn hex(bytes: &[u8]) -> String {
