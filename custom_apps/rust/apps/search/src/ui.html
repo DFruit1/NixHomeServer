@@ -139,7 +139,11 @@ window.facetType = function facetType(name) {
 };
 
 function logout() {
-  fetch('/logout', { method: 'POST', redirect: 'manual' }).finally(() => { location.href = '/'; });
+  const form = document.createElement('form');
+  form.method = 'POST';
+  form.action = '/logout';
+  document.body.appendChild(form);
+  form.submit();
 }
 
 document.getElementById('searchForm').addEventListener('submit', runSearch);

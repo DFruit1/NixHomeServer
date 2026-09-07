@@ -1,0 +1,13 @@
+# Instance-owned files never take upstream content during a merge. Their
+# current contents are this installation's operator settings, generated
+# hardware module, and ciphertext encrypted to this installation's age key.
+# Upstream changes to these paths must be ported manually; the guarded
+# scripts/admin/sync-upstream.sh helper enforces the same policy and restores
+# these files from the pre-merge revision even when these attributes are
+# absent from an older checkout. The merge.ours driver must be configured
+# locally (git config merge.ours.driver true) for the merge attribute to take
+# effect; the sync helper configures it automatically.
+vars.nix                    merge=ours -diff
+hardware-configuration.nix  merge=ours -diff
+secrets/*.age               merge=ours -diff
+secrets/pubkeys/age.pub     merge=ours -diff

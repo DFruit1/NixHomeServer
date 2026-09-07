@@ -3,7 +3,7 @@ use axum::{
     extract::{Form, Path, Query, State},
     http::{
         header::{ACCEPT, CONTENT_DISPOSITION, CONTENT_TYPE, HOST},
-        HeaderMap, HeaderValue, StatusCode, Uri,
+        HeaderMap, HeaderValue, StatusCode,
     },
     response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
@@ -81,6 +81,7 @@ const DEFAULT_STORE_ROOT: &str = ".";
 const DEFAULT_RUNTIME_DIR: &str = "/tmp";
 const DEFAULT_LOCK_DIR: &str = ".";
 const ATTACHMENTS_PER_PAGE: usize = 100;
+const MAIL_PER_PAGE: usize = 100;
 const MAX_ZIP_ATTACHMENTS: usize = 500;
 const MAX_PAPERLESS_TASK_ATTACHMENTS: usize = 2_000;
 const DEFAULT_PAPERLESS_TASK_MAX_ATTACHMENTS: usize = 500;
@@ -157,22 +158,18 @@ struct AccountRecord {
     last_sync_detail: Option<String>,
 }
 
-#[derive(Clone, Debug, Default)]
-struct SearchPreferenceRecord {
-    last_query: Option<String>,
-    default_account_id: Option<i64>,
-}
-
 #[derive(Clone, Debug)]
 struct SearchResult {
+    account_id: i64,
     account_name: String,
+    message_key: String,
     message_relpath: String,
     timestamp: i64,
     date_label: String,
     from: String,
     subject: String,
-    tags: Vec<String>,
     sender_priority: SenderPriorityView,
+    dismissed_at: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -218,6 +215,7 @@ struct AttachmentListItem {
     account_name: String,
     sender_priority: SenderPriorityView,
     paperless_sent_at: Option<String>,
+    dismissed_at: Option<String>,
     message_preview: Option<String>,
     message_preview_truncated: bool,
     message_cc: Option<String>,
@@ -459,6 +457,7 @@ struct SearchParams {
     date_from: Option<String>,
     date_to: Option<String>,
     has_attachments: Option<String>,
+    page: Option<String>,
     flash: Option<String>,
     error: Option<String>,
 }
@@ -534,6 +533,29 @@ struct AttachmentDownloadForm {
 struct AttachmentPaperlessForm {
     #[serde(default)]
     attachment_keys: Vec<String>,
+    return_to: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct AttachmentDismissForm {
+    #[serde(default)]
+    attachment_keys: Vec<String>,
+    return_to: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MessageDismissForm {
+    #[serde(default, deserialize_with = "deserialize_optional_query_i64")]
+    account_id: Option<i64>,
+    message_key: String,
+    return_to: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MessageRestoreForm {
+    #[serde(default, deserialize_with = "deserialize_optional_query_i64")]
+    account_id: Option<i64>,
+    message_key: String,
     return_to: Option<String>,
 }
 
@@ -868,6 +890,9 @@ struct SearchViewState {
     result_count: usize,
     empty_message: Option<String>,
     priority_filter: SenderPriorityFilter,
+    page: usize,
+    has_previous_page: bool,
+    has_next_page: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1221,6 +1246,8 @@ fn router(state: AppState) -> Router {
         .route("/sender-priorities", post(upsert_sender_priority))
         .route("/sender-priorities/clear", post(clear_sender_priority))
         .route("/attachments", get(attachments_page))
+        .route("/attachments/dismiss", post(dismiss_attachments))
+        .route("/attachments/restore", post(restore_attachments))
         .route("/attachments/presets", post(save_attachment_filter_preset))
         .route(
             "/attachments/presets/delete",
@@ -1252,6 +1279,8 @@ fn router(state: AppState) -> Router {
             "/attachments/send-paperless",
             post(send_attachments_paperless),
         )
+        .route("/messages/dismiss", post(dismiss_messages))
+        .route("/messages/restore", post(restore_messages))
         .route("/healthz", get(healthz))
         .route("/static/frontend/{*asset_path}", get(frontend_asset))
         .with_state(state)
@@ -1584,7 +1613,6 @@ async fn reindex_account(
 async fn search_page(
     State(state): State<AppState>,
     headers: HeaderMap,
-    uri: Uri,
     Query(params): Query<SearchParams>,
 ) -> Response {
     let identity = match identity_from_headers(&headers) {
@@ -1599,56 +1627,16 @@ async fn search_page(
         }
     };
 
-    let has_params = uri.query().is_some();
-    let has_explicit_query = uri.query().is_some_and(has_explicit_query_param);
-    let has_explicit_search = uri.query().is_some_and(has_explicit_search_param);
-    let preferences = if has_params {
-        SearchPreferenceRecord::default()
-    } else {
-        match load_search_preferences(&state.config, &identity.username) {
-            Ok(preferences) => preferences,
-            Err(error) => {
-                return server_error_page(
-                    "Failed to load saved search preferences",
-                    &error,
-                    Some(&identity),
-                )
-            }
-        }
-    };
+    // Visits without search parameters browse all saved mail; explicit filter
+    // parameters turn the page into a search that also surfaces dismissed mail.
+    let filters = message_filters_from_search_params(&params, String::new());
+    let priority_filter = SenderPriorityFilter::from_query(params.priority.as_deref());
+    let selected_account_id = normalize_selected_account_id(&accounts, params.account_id);
+    let is_searching = message_filters_have_terms(&filters)
+        || priority_filter != SenderPriorityFilter::All
+        || selected_account_id.is_some();
 
-    let saved_query = if has_params {
-        String::new()
-    } else {
-        preferences.last_query.unwrap_or_default()
-    };
-    let filters = message_filters_from_search_params(&params, saved_query);
-    let priority_filter = if has_params {
-        SenderPriorityFilter::from_query(params.priority.as_deref())
-    } else {
-        SenderPriorityFilter::All
-    };
-    let mut selected_account_id = if has_params {
-        params.account_id
-    } else {
-        preferences.default_account_id
-    };
-    selected_account_id = normalize_selected_account_id(&accounts, selected_account_id);
-
-    if has_explicit_query {
-        if let Err(error) = save_search_preferences(
-            &state.config,
-            &identity.username,
-            filters.q.trim(),
-            selected_account_id,
-        ) {
-            return server_error_page("Failed to save search preferences", &error, Some(&identity));
-        }
-    }
-
-    let should_execute_search = has_params
-        && (message_filters_have_terms(&filters) || priority_filter != SenderPriorityFilter::All);
-    let results = if should_execute_search {
+    let results = {
         let config = state.config.clone();
         let username = identity.username.clone();
         let filters_clone = filters.clone();
@@ -1659,6 +1647,7 @@ async fn search_page(
                 selected_account_id,
                 filters_clone,
                 priority_filter,
+                is_searching,
             )?;
             results.sort_by(|left, right| {
                 left.sender_priority
@@ -1684,6 +1673,9 @@ async fn search_page(
                         result_count: 0,
                         empty_message: Some(error),
                         priority_filter,
+                        page: 1,
+                        has_previous_page: false,
+                        has_next_page: false,
                     },
                     params.flash.as_deref(),
                     params.error.as_deref(),
@@ -1701,14 +1693,15 @@ async fn search_page(
                         result_count: 0,
                         empty_message: Some("Search task failed".to_string()),
                         priority_filter,
+                        page: 1,
+                        has_previous_page: false,
+                        has_next_page: false,
                     },
                     params.flash.as_deref(),
                     params.error.as_deref(),
                 ))
             }
         }
-    } else {
-        Vec::new()
     };
 
     let selected_accounts = accounts
@@ -1724,23 +1717,7 @@ async fn search_page(
         })
         .count();
 
-    let empty_message = if !has_explicit_search {
-        if has_params && priority_filter != SenderPriorityFilter::All {
-            if results.is_empty() {
-                Some("No messages matched the selected sender priority.".to_string())
-            } else {
-                None
-            }
-        } else {
-            Some(
-                "Saved search defaults are filled in below. Submit a search when ready."
-                    .to_string(),
-            )
-        }
-    } else if !message_filters_have_terms(&filters) && priority_filter == SenderPriorityFilter::All
-    {
-        Some("Enter a word, name, or email address to search saved mail.".to_string())
-    } else if selected_accounts.is_empty() {
+    let empty_message = if selected_accounts.is_empty() {
         Some("No mailbox is available for this search filter.".to_string())
     } else if indexed_selected_accounts == 0 {
         Some(
@@ -1748,16 +1725,33 @@ async fn search_page(
                 .to_string(),
         )
     } else if results.is_empty() {
-        Some("No saved messages matched the current filters.".to_string())
+        Some(if is_searching {
+            "No saved messages matched the current filters.".to_string()
+        } else {
+            "No saved messages yet. Sync a mailbox from the dashboard to fill the archive."
+                .to_string()
+        })
     } else {
         None
     };
 
+    let page = parse_page_number(params.page.as_deref());
+    let total_count = results.len();
+    let start = (page - 1).saturating_mul(MAIL_PER_PAGE);
+    let end = usize::min(start + MAIL_PER_PAGE, total_count);
+    let page_results = if start >= total_count {
+        Vec::new()
+    } else {
+        results[start..end].to_vec()
+    };
     let view_state = SearchViewState {
-        submitted: has_params,
-        result_count: results.len(),
+        submitted: true,
+        result_count: total_count,
         empty_message,
         priority_filter,
+        page,
+        has_previous_page: page > 1 && start < total_count,
+        has_next_page: end < total_count,
     };
 
     html_response(render_search(
@@ -1765,7 +1759,7 @@ async fn search_page(
         &accounts,
         &filters,
         selected_account_id,
-        &results,
+        &page_results,
         &view_state,
         params.flash.as_deref(),
         params.error.as_deref(),
@@ -2543,6 +2537,236 @@ fn paperless_handoff_json_response(
             return_to,
         },
     )
+}
+
+async fn dismiss_attachments(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let form = parse_attachment_dismiss_form_body(&body);
+    handle_attachment_dismissal_change(state, headers, form.attachment_keys, form.return_to, true)
+        .await
+}
+
+async fn restore_attachments(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let form = parse_attachment_dismiss_form_body(&body);
+    handle_attachment_dismissal_change(state, headers, form.attachment_keys, form.return_to, false)
+        .await
+}
+
+async fn handle_attachment_dismissal_change(
+    state: AppState,
+    headers: HeaderMap,
+    attachment_keys: Vec<String>,
+    return_to: Option<String>,
+    dismissed: bool,
+) -> Response {
+    let wants_json = request_accepts_json(&headers);
+    let identity = match identity_from_headers(&headers) {
+        Ok(identity) => identity,
+        Err((status, message)) if wants_json => {
+            return action_json_response(status, false, &message, None)
+        }
+        Err((status, message)) => return auth_error(status, &message),
+    };
+
+    if let Err((status, message)) = verify_same_origin_request(&headers) {
+        if wants_json {
+            return action_json_response(status, false, &message, None);
+        }
+        return auth_error(status, &message);
+    }
+
+    let config = state.config.clone();
+    let username = identity.username.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        set_attachment_dismissals(&config, &username, &attachment_keys, dismissed)
+    })
+    .await;
+
+    let flash = match &result {
+        Ok(Ok(changed)) if changed.len() == 1 => {
+            if dismissed {
+                "Attachment dismissed".to_string()
+            } else {
+                "Attachment restored".to_string()
+            }
+        }
+        Ok(Ok(changed)) => format!(
+            "{} attachments {}",
+            changed.len(),
+            if dismissed { "dismissed" } else { "restored" }
+        ),
+        Ok(Err(error)) => error.clone(),
+        Err(_) => "Attachment dismissal task failed".to_string(),
+    };
+    let ok = matches!(&result, Ok(Ok(_)));
+
+    if wants_json {
+        action_json_response(
+            if ok {
+                StatusCode::OK
+            } else {
+                StatusCode::BAD_REQUEST
+            },
+            ok,
+            &flash,
+            None,
+        )
+    } else if ok {
+        redirect_response(&attachments_redirect_location(
+            return_to.as_deref(),
+            Some(&flash),
+            None,
+        ))
+    } else {
+        redirect_response(&attachments_redirect_location(
+            return_to.as_deref(),
+            None,
+            Some(&flash),
+        ))
+    }
+}
+
+async fn dismiss_messages(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(form): Form<MessageDismissForm>,
+) -> Response {
+    handle_message_dismissal_change(
+        state,
+        headers,
+        form.account_id,
+        &form.message_key,
+        form.return_to,
+        true,
+    )
+    .await
+}
+
+async fn restore_messages(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(form): Form<MessageRestoreForm>,
+) -> Response {
+    handle_message_dismissal_change(
+        state,
+        headers,
+        form.account_id,
+        &form.message_key,
+        form.return_to,
+        false,
+    )
+    .await
+}
+
+async fn handle_message_dismissal_change(
+    state: AppState,
+    headers: HeaderMap,
+    account_id: Option<i64>,
+    message_key: &str,
+    return_to: Option<String>,
+    dismissed: bool,
+) -> Response {
+    let wants_json = request_accepts_json(&headers);
+    let identity = match identity_from_headers(&headers) {
+        Ok(identity) => identity,
+        Err((status, message)) if wants_json => {
+            return action_json_response(status, false, &message, None)
+        }
+        Err((status, message)) => return auth_error(status, &message),
+    };
+
+    if let Err((status, message)) = verify_same_origin_request(&headers) {
+        if wants_json {
+            return action_json_response(status, false, &message, None);
+        }
+        return auth_error(status, &message);
+    }
+
+    let message_key = message_key.trim().to_string();
+    let config = state.config.clone();
+    let username = identity.username.clone();
+    let accounts = match list_accounts_for_user(&config, &username) {
+        Ok(accounts) => accounts,
+        Err(error) => {
+            if wants_json {
+                return action_json_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    false,
+                    &error,
+                    None,
+                );
+            }
+            return server_error_page("Failed to load mailboxes", &error, Some(&identity));
+        }
+    };
+    let Some(account_id) = normalize_selected_account_id(&accounts, account_id) else {
+        let message = "Unknown mailbox for this message.";
+        if wants_json {
+            return action_json_response(StatusCode::BAD_REQUEST, false, message, None);
+        }
+        return redirect_response(&message_redirect_location(
+            return_to.as_deref(),
+            None,
+            Some(message),
+        ));
+    };
+
+    let result = tokio::task::spawn_blocking(move || {
+        set_message_dismissals(
+            &config,
+            &username,
+            account_id,
+            std::slice::from_ref(&message_key),
+            dismissed,
+        )
+    })
+    .await;
+
+    let flash = match &result {
+        Ok(Ok(changed)) if !changed.is_empty() => {
+            if dismissed {
+                "Message dismissed".to_string()
+            } else {
+                "Message restored".to_string()
+            }
+        }
+        Ok(Ok(_)) => "Message was already up to date".to_string(),
+        Ok(Err(error)) => error.clone(),
+        Err(_) => "Message dismissal task failed".to_string(),
+    };
+    let ok = matches!(&result, Ok(Ok(changed)) if !changed.is_empty());
+
+    if wants_json {
+        action_json_response(
+            if ok {
+                StatusCode::OK
+            } else {
+                StatusCode::BAD_REQUEST
+            },
+            ok,
+            &flash,
+            Some(account_id),
+        )
+    } else if ok {
+        redirect_response(&message_redirect_location(
+            return_to.as_deref(),
+            Some(&flash),
+            None,
+        ))
+    } else {
+        redirect_response(&message_redirect_location(
+            return_to.as_deref(),
+            None,
+            Some(&flash),
+        ))
+    }
 }
 
 async fn healthz(State(state): State<AppState>) -> Response {

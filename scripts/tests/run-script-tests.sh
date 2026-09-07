@@ -107,6 +107,7 @@ test_scripts=(
   scripts/tests/test-application-hardening.sh
   scripts/tests/test-archive-view-safety.sh
   scripts/tests/test-auth-gateway-logout.sh
+  scripts/tests/test-auth-gateway-session.sh
   scripts/tests/test-authorization-group-validation.sh
   scripts/tests/test-chaptarr-module.sh
   scripts/tests/test-backup-access-separation.sh
@@ -133,6 +134,8 @@ test_scripts=(
   scripts/tests/test-identity-reconcile-fail-closed.sh
   scripts/tests/test-integration-dependencies.sh
   scripts/tests/test-install-repository-seeding.sh
+  scripts/tests/test-bootstrap-host.sh
+  scripts/tests/test-sync-upstream.sh
   scripts/tests/test-jellyfin-oidc.sh
   scripts/tests/test-kanidm-branding.sh
   scripts/tests/test-kanidm-provision-validation.sh

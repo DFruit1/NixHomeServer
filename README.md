@@ -30,16 +30,19 @@ The [Quickstart](documentation/quickstart.md) is the authoritative bootstrap
 procedure. It intentionally contains the exact destructive commands and safety
 checks in one place; do not assemble an install procedure from README snippets.
 
-For a new host, begin with:
+For a new host, begin with the guided bootstrap phases:
 
 ```bash
-cp vars.example.nix vars.nix
-$EDITOR vars.nix
+nix run .#bootstrap-host -- check
+nix run .#bootstrap-host -- init
+$EDITOR vars.nix   # replace every remaining template value
 nix run .#show-config-summary
 ```
 
-Then follow the Quickstart from “Discover Target Hardware.” Never run Disko
-until its readiness gate is clean and every selected disk has been independently
+Every phase is idempotent and reports the exact `next:` command; see the
+[Quickstart](documentation/quickstart.md) for what each phase does. Then follow
+the Quickstart from "Discover Target Hardware." Never run Disko until its
+readiness gate is clean and every selected disk has been independently
 verified from `/dev/disk/by-id`.
 
 ## Hosted Applications
@@ -111,6 +114,17 @@ nix run .#deploy
 It evaluates and builds before switching, checks critical routes and units, and
 restores the previous live and boot generations when health verification fails.
 Direct `nixos-rebuild switch` is reserved for documented console recovery.
+
+Installations that track a shared upstream repository update with the guarded
+sync helper, which merges upstream while preserving instance-owned files
+(`vars.nix`, `hardware-configuration.nix`, `secrets/*`):
+
+```bash
+scripts/admin/sync-upstream.sh --upstream <maintainer-repository-url>
+```
+
+See [Upstream Sync](documentation/operations.md#upstream-sync) for the policy
+and required post-merge steps.
 
 Routine validation is:
 

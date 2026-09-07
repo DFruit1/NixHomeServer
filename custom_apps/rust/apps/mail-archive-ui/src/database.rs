@@ -34,12 +34,6 @@ pub(super) fn initialize_db(config: &AppConfig) -> Result<(), String> {
 
             CREATE INDEX IF NOT EXISTS idx_accounts_username ON accounts (username);
 
-            CREATE TABLE IF NOT EXISTS search_preferences (
-                username TEXT PRIMARY KEY,
-                last_query TEXT,
-                default_account_id INTEGER
-            );
-
             CREATE TABLE IF NOT EXISTS attachment_messages (
                 account_id INTEGER NOT NULL,
                 message_key TEXT NOT NULL,
@@ -214,6 +208,21 @@ pub(super) fn initialize_db(config: &AppConfig) -> Result<(), String> {
                 sent_at TEXT NOT NULL,
                 PRIMARY KEY (username, attachment_key)
             );
+
+            CREATE TABLE IF NOT EXISTS attachment_dismissals (
+                username TEXT NOT NULL,
+                attachment_key TEXT NOT NULL,
+                dismissed_at TEXT NOT NULL,
+                PRIMARY KEY (username, attachment_key)
+            );
+
+            CREATE TABLE IF NOT EXISTS message_dismissals (
+                username TEXT NOT NULL,
+                account_id INTEGER NOT NULL,
+                message_key TEXT NOT NULL,
+                dismissed_at TEXT NOT NULL,
+                PRIMARY KEY (username, account_id, message_key)
+            );
             "#,
         )
         .map_err(|error| format!("failed to initialize sqlite schema: {error}"))?;
@@ -245,6 +254,7 @@ pub(super) fn initialize_db(config: &AppConfig) -> Result<(), String> {
             DROP TABLE IF EXISTS paperless_attachment_exports;
             DROP TABLE IF EXISTS deleted_message_attachments;
             DROP TABLE IF EXISTS deleted_messages;
+            DROP TABLE IF EXISTS search_preferences;
             "#,
         )
         .map_err(|error| format!("failed to drop legacy app-local state: {error}"))?;

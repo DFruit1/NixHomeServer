@@ -567,55 +567,6 @@ pub(super) fn load_account_for_user(
         .ok_or_else(|| "Mailbox not found".to_string())
 }
 
-pub(super) fn load_search_preferences(
-    config: &AppConfig,
-    username: &str,
-) -> Result<SearchPreferenceRecord, String> {
-    let connection = open_db(config)?;
-    connection
-        .query_row(
-            r#"
-            SELECT last_query, default_account_id
-            FROM search_preferences
-            WHERE username = ?1
-            "#,
-            params![username],
-            |row| {
-                Ok(SearchPreferenceRecord {
-                    last_query: row.get(0)?,
-                    default_account_id: row.get(1)?,
-                })
-            },
-        )
-        .optional()
-        .map_err(|error| format!("failed to load search preferences: {error}"))?
-        .map_or(Ok(SearchPreferenceRecord::default()), Ok)
-}
-
-pub(super) fn save_search_preferences(
-    config: &AppConfig,
-    username: &str,
-    last_query: &str,
-    default_account_id: Option<i64>,
-) -> Result<(), String> {
-    let connection = open_db(config)?;
-    connection
-        .execute(
-            r#"
-            INSERT INTO search_preferences (username, last_query, default_account_id)
-            VALUES (?1, ?2, ?3)
-            ON CONFLICT(username) DO UPDATE
-            SET
-                last_query = excluded.last_query,
-                default_account_id = excluded.default_account_id
-            "#,
-            params![username, last_query, default_account_id],
-        )
-        .map_err(|error| format!("failed to save search preferences: {error}"))?;
-
-    Ok(())
-}
-
 pub(super) fn load_sender_priority_rules(
     config: &AppConfig,
     username: &str,

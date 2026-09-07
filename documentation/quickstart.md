@@ -12,6 +12,19 @@ This is the bootstrap exception path:
 - install NixOS
 - run the first guarded deploy
 
+Every routine phase has a guided, idempotent helper:
+
+```bash
+nix run .#bootstrap-host -- check
+```
+
+`check` reports each phase without changing anything and prints the exact
+`next:` command for the first incomplete phase. Each phase below is paired
+with its helper command; rerunning any helper after fixing a problem is safe
+because completed work reports "already converged" and is never repeated. The
+sections that follow remain the authoritative explanation of what each phase
+does and why.
+
 After the first guarded deploy succeeds, use [Operations](./operations.md) and
 the homepage "For Admins" page for normal app configuration, user onboarding,
 runtime checks, and rebuilds.
@@ -52,7 +65,17 @@ Prepare these before touching disks:
 
 ## Prepare `vars.nix`
 
-For a new one-host install, start from [`vars.example.nix`](../vars.example.nix):
+The guided helper seeds `vars.nix` from [`vars.example.nix`](../vars.example.nix),
+generates the `hostId` for `zfs-mirror` hosts, and sets the repository-local
+Git author identity from the evaluated settings. It never overwrites a value
+that is already set, so rerunning it is always safe:
+
+```bash
+nix run .#bootstrap-host -- init
+$EDITOR vars.nix   # replace every remaining template value it lists
+```
+
+The manual equivalent for the same phase:
 
 ```bash
 cp vars.example.nix vars.nix
@@ -116,32 +139,36 @@ checkpoint below.
 
 ## Create And Stage Agenix Identity
 
+The guided helper creates a new key pair (writing the private key where
+`--create` points and the recipient into the repository), or adopts an
+existing key, and converges either way:
+
+```bash
+nix run .#bootstrap-host -- identity --create /tmp/nixhomeserver-age/age.key
+# or, to adopt an existing private key:
+nix run .#bootstrap-host -- identity --identity /path/to/age.key
+```
+
 The deployed system decrypts agenix secrets directly from
 `/persist/etc/agenix/age.key`. `/etc/agenix` is an impermanence-backed view of
-the same directory after boot.
-Create or copy that private key before generating secrets.
-
-For a new identity:
-
-```bash
-install -d -m 0700 /tmp/nixhomeserver-age
-age-keygen -o /tmp/nixhomeserver-age/age.key
-install -d -m 0755 secrets/pubkeys
-age-keygen -y /tmp/nixhomeserver-age/age.key > secrets/pubkeys/age.pub
-```
-
-If you already have an age identity, derive the public recipient from that key:
-
-```bash
-install -d -m 0755 secrets/pubkeys
-age-keygen -y /path/to/age.key > secrets/pubkeys/age.pub
-```
-
-Track `secrets/pubkeys/age.pub`. Do not commit the private `age.key`.
+the same directory after boot. The helper above configures
+`secrets/pubkeys/age.pub`; the private key itself is installed to the target
+during the install phase.
 
 ## Stage And Encrypt Secrets
 
-Create the plaintext staging directory:
+The guided helper chooses the correct generation mode from the current
+ciphertext state (verify mode when everything already decrypts, fresh mode
+when a clone still contains ciphertext for somebody else's key), prompts for
+each missing required external value, validates it, encrypts it, and removes
+the plaintext it staged. On a non-interactive terminal it refuses and prints
+the exact staging paths to fill in by hand:
+
+```bash
+nix run .#bootstrap-host -- secrets --identity /tmp/nixhomeserver-age/age.key
+```
+
+Manual staging, for reference. Create the plaintext staging directory:
 
 ```bash
 install -d -m 0700 secrets/unencrypted
@@ -272,6 +299,14 @@ media or transfer it through another secure channel:
 
 ```bash
 git bundle create /path/to/secure-media/nixhomeserver.bundle HEAD
+```
+
+If this installation will track a shared upstream repository for future
+updates, also configure that remote now; routine updates then use the guarded
+sync helper (see [Upstream Sync](./operations.md#upstream-sync)):
+
+```bash
+git remote add upstream <maintainer-repository-url>
 ```
 
 Keep the private age key separate, never copy `secrets/unencrypted/`, and record
@@ -454,6 +489,14 @@ test -d /mnt/nix
 
 ### Pin The New ZFS Pool Before Installation
 
+The guided helper verifies the new pool against every configured member,
+rewrites `storage.dataPool.expectedGuid` from `null` to the verified value,
+proves the evaluated result, and commits. Rerunning converges:
+
+```bash
+sudo nix run .#bootstrap-host -- pin-guid
+```
+
 For `zfs-mirror`, do not install the still-unpinned bootstrap revision. Disko
 has now created the pool GUID that the installed host must trust. Return
 temporarily to the installer user so the source checkout and commit do not
@@ -510,6 +553,18 @@ cd /tmp/nixhomeserver
 ```
 
 ## Install NixOS
+
+The guided helper performs the whole installer phase idempotently: it proves
+the Disko layout, seeds the persisted checkout, bind-mounts it at
+`/mnt/etc/nixos`, installs and verifies the private age key, runs the full
+readiness gate against the seeded checkout, and runs `nixos-install`. Steps
+that are already done are skipped:
+
+```bash
+sudo nix run .#bootstrap-host -- install --identity /path/to/age.key
+```
+
+If you prefer each step by hand, follow the subsections below.
 
 Keep the source clone somewhere that is not hidden by `/mnt`, such as
 `/tmp/nixhomeserver`; never place it under `/mnt` before provisioning. Use the
@@ -577,6 +632,19 @@ reboot
 ```
 
 ## First Boot Verification
+
+The guided helper converges the first-boot state: it reports failed units,
+adopts the assigned NetBird peer address into `vars.nix` and commits it when
+the verifier disagrees, hands the persisted checkout to the configured local
+administrator, and prints the remaining operator steps:
+
+```bash
+cd /persist/etc/nixos
+sudo scripts/admin/bootstrap-host.sh first-boot
+```
+
+The NetBird adoption ends by printing the guarded deploy commands; run them
+after the adoption commit, then rerun `first-boot` for the remaining steps.
 
 After reboot, SSH in as `vars.localAdminUser`:
 

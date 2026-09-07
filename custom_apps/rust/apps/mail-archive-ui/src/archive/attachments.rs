@@ -31,8 +31,19 @@ pub(crate) fn load_attachment_page_data(
     let page = parse_page_number(params.page.as_deref());
     let connection = open_db(config)?;
     let paperless_handoffs = load_attachment_paperless_handoffs(&connection, username)?;
+    let dismissals = load_attachment_dismissals(&connection, username)?;
     let priority_rules = load_sender_priority_rules(config, username)?;
+    let has_search_terms = message_filters_have_terms(&filters.raw.message)
+        || priority_filter != SenderPriorityFilter::All
+        || selected_account_id.is_some()
+        || !filters.raw.extension.is_empty()
+        || !filters.raw.attachment_name.is_empty()
+        || !filters.raw.min_size.is_empty()
+        || !filters.raw.max_size.is_empty()
+        || include_inline
+        || include_inline_images;
     let mut items = Vec::new();
+    let mut hidden_unfiled = 0_usize;
     let mut query_relpaths_by_account = HashMap::<i64, HashSet<String>>::new();
     let mut general_query_relpaths_by_account = HashMap::<i64, HashSet<String>>::new();
 
@@ -106,6 +117,7 @@ pub(crate) fn load_attachment_page_data(
                 message,
                 sender_priority,
                 paperless_sent_at: None,
+                dismissed_at: None,
                 message_preview: None,
                 message_preview_truncated: false,
                 message_cc: None,
@@ -141,6 +153,13 @@ pub(crate) fn load_attachment_page_data(
             item.paperless_sent_at = paperless_handoffs
                 .get(&item.attachment.attachment_key)
                 .cloned();
+            item.dismissed_at = dismissals.get(&item.attachment.attachment_key).cloned();
+            if !has_search_terms
+                && (item.paperless_sent_at.is_some() || item.dismissed_at.is_some())
+            {
+                hidden_unfiled += 1;
+                continue;
+            }
             items.push(item);
         }
     }
@@ -193,14 +212,23 @@ pub(crate) fn load_attachment_page_data(
         show_mime_details,
         download_subfolder: &download_subfolder,
     });
-    let empty_message =
-        if selected_account_id.is_some() && page_items.is_empty() && total_count == 0 {
-            Some("No attachments matched this mailbox filter.".to_string())
-        } else if page_items.is_empty() && total_count == 0 {
-            Some("No catalogued attachments matched the current filters.".to_string())
+    let empty_message = if selected_account_id.is_some()
+        && page_items.is_empty()
+        && total_count == 0
+    {
+        Some("No attachments matched this mailbox filter.".to_string())
+    } else if page_items.is_empty() && total_count == 0 {
+        if !has_search_terms && hidden_unfiled > 0 {
+            Some(
+                    "Every matching attachment is already sent to Paperless or dismissed. Search to see them again."
+                        .to_string(),
+                )
         } else {
-            None
-        };
+            Some("No catalogued attachments matched the current filters.".to_string())
+        }
+    } else {
+        None
+    };
 
     Ok(AttachmentPageData {
         accounts,
@@ -323,6 +351,7 @@ pub(crate) fn attachment_keys_for_params(
         for item in data.items {
             if seen.insert(item.attachment.attachment_key.clone())
                 && item.paperless_sent_at.is_none()
+                && item.dismissed_at.is_none()
             {
                 keys.push(item.attachment.attachment_key);
             }
@@ -397,6 +426,21 @@ pub(crate) fn parse_attachment_download_form_body(body: &[u8]) -> AttachmentDown
 
 pub(crate) fn parse_attachment_paperless_form_body(body: &[u8]) -> AttachmentPaperlessForm {
     let mut form = AttachmentPaperlessForm::default();
+
+    for (key, value) in form_urlencoded::parse(body) {
+        let value = value.into_owned();
+        match key.as_ref() {
+            "attachment_keys" | "attachment_keys[]" => form.attachment_keys.push(value),
+            "return_to" => form.return_to = Some(value),
+            _ => {}
+        }
+    }
+
+    form
+}
+
+pub(crate) fn parse_attachment_dismiss_form_body(body: &[u8]) -> AttachmentDismissForm {
+    let mut form = AttachmentDismissForm::default();
 
     for (key, value) in form_urlencoded::parse(body) {
         let value = value.into_owned();

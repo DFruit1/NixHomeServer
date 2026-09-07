@@ -35,6 +35,9 @@ struct Inner {
     pending_states: Mutex<HashMap<String, i64>>,
     discovery: Mutex<Option<Discovery>>,
     zim_cache: Mutex<ZimCache>,
+    /// URL sign-out redirects to after the local session is cleared, so the
+    /// browser continues through the shared SSO logout chain.
+    logout_redirect: String,
     /// One shared Postgres connection for the small source-listing queries,
     /// connected lazily and evicted on failure so the next request reconnects.
     db: tokio::sync::Mutex<Option<std::sync::Arc<tokio_postgres::Client>>>,
@@ -76,6 +79,7 @@ pub async fn run() -> Result<(), String> {
     if client_secret.trim().is_empty() {
         return Err("SEARCH_OIDC_CLIENT_SECRET_FILE must not be empty".to_string());
     }
+    let logout_redirect = env_or("SEARCH_LOGOUT_REDIRECT_URL", "");
 
     let state = AppState {
         inner: std::sync::Arc::new(Inner {
@@ -92,6 +96,7 @@ pub async fn run() -> Result<(), String> {
             pending_states: Mutex::new(HashMap::new()),
             discovery: Mutex::new(None),
             zim_cache: Mutex::new(ZimCache::default()),
+            logout_redirect,
             db: tokio::sync::Mutex::new(None),
         }),
     };
@@ -403,12 +408,14 @@ async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
         state.inner.sessions.lock().unwrap().remove(&cookie);
     }
     let cleared = format!("{SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0");
+    let target = if state.inner.logout_redirect.is_empty() {
+        "/".to_string()
+    } else {
+        state.inner.logout_redirect.clone()
+    };
     (
         StatusCode::FOUND,
-        [
-            (header::SET_COOKIE, cleared),
-            (header::LOCATION, "/".to_string()),
-        ],
+        [(header::SET_COOKIE, cleared), (header::LOCATION, target)],
     )
         .into_response()
 }

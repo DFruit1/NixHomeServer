@@ -40,11 +40,13 @@ pub(crate) fn search_mail(
     selected_account_id: Option<i64>,
     filters: MessageSearchFilters,
     priority_filter: SenderPriorityFilter,
+    include_dismissed: bool,
 ) -> Result<Vec<SearchResult>, String> {
     let filters = parse_message_search_filters(filters)?;
     let query = notmuch_query_for_filters(&filters);
     let connection = open_db(config)?;
     let priority_rules = load_sender_priority_rules(config, username)?;
+    let dismissals = load_message_dismissals(&connection, username)?;
     let mut results = Vec::new();
     for account in list_accounts_for_user(config, username)?
         .into_iter()
@@ -60,19 +62,27 @@ pub(crate) fn search_mail(
             if !message_matches_filters(&item, &filters, Some(has_attachments)) {
                 continue;
             }
+            let dismissed_at = dismissals
+                .get(&(account.id, item.message_key.clone()))
+                .cloned();
+            if dismissed_at.is_some() && !include_dismissed {
+                continue;
+            }
             let sender_priority = priority_rules.view_for_sender(&item.from);
             if !priority_filter.matches(sender_priority.priority) {
                 continue;
             }
             results.push(SearchResult {
+                account_id: account.id,
                 account_name: account.display_name.clone(),
+                message_key: item.message_key.clone(),
                 message_relpath: item.message_relpaths.first().cloned().unwrap_or_default(),
                 timestamp: item.timestamp,
                 date_label: format_timestamp_date_label(item.timestamp),
                 from: item.from.clone(),
                 subject: item.subject.clone(),
-                tags: Vec::new(),
                 sender_priority,
+                dismissed_at,
             });
         }
     }

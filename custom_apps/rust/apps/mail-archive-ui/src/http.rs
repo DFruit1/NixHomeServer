@@ -256,31 +256,6 @@ pub(super) fn normalize_selected_account_id(
     selected_account_id.filter(|selected| accounts.iter().any(|account| account.id == *selected))
 }
 
-pub(super) fn has_explicit_query_param(raw_query: &str) -> bool {
-    raw_query
-        .split('&')
-        .any(|part| part == "q" || part.starts_with("q="))
-}
-
-pub(super) fn has_explicit_search_param(raw_query: &str) -> bool {
-    const SEARCH_KEYS: &[&str] = &[
-        "q",
-        "sender_address",
-        "sender_name",
-        "sender_domain",
-        "subject",
-        "body_text",
-        "date_from",
-        "date_to",
-        "has_attachments",
-        "priority",
-    ];
-    raw_query.split('&').any(|part| {
-        let key = part.split_once('=').map(|(key, _)| key).unwrap_or(part);
-        SEARCH_KEYS.contains(&key)
-    })
-}
-
 pub(super) fn url_encode_component(value: &str) -> String {
     value
         .bytes()

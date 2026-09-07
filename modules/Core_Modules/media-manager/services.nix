@@ -27,13 +27,18 @@ let
   audiobookshelfMetadataAvailable = cfg.integrations.audiobookshelf.available or false;
   kavitaMetadataAvailable = cfg.integrations.kavita.available or false;
   jellyfinMetadataCache = "/var/cache/media-manager-jellyfin/metadata.json";
+  # Jellyfin owns its library-sync key inside its 0700 data directory, so the
+  # unprivileged Media Manager service can never read it directly. The
+  # root-run metadata export mirrors the key here (root:media-manager 0640)
+  # and the web service reads the mirror instead.
+  jellyfinApiKeyMirror = "/var/cache/media-manager-jellyfin/api-key";
   audiobookshelfMetadataCache = "/var/cache/media-manager-audiobookshelf/metadata.json";
   kavitaMetadataCache = "/var/cache/media-manager-kavita/metadata.json";
   webEnvironment = commonEnvironment
   // lib.optionalAttrs jellyfinMetadataAvailable {
     MEDIA_MANAGER_JELLYFIN_METADATA_CACHE_FILE = jellyfinMetadataCache;
     MEDIA_MANAGER_JELLYFIN_BASE_URL = "http://${vars.networking.loopbackIPv4}:${toString vars.networking.ports.jellyfin}";
-    MEDIA_MANAGER_JELLYFIN_API_KEY_FILE = "/var/lib/jellyfin/data/library-sync.api-key";
+    MEDIA_MANAGER_JELLYFIN_API_KEY_FILE = jellyfinApiKeyMirror;
     MEDIA_MANAGER_JELLYFIN_PUBLIC_URL = "https://videos.${vars.domain}";
   }
   // lib.optionalAttrs audiobookshelfMetadataAvailable {
@@ -249,6 +254,20 @@ let
       base_url="http://${vars.networking.loopbackIPv4}:${toString vars.networking.ports.jellyfin}"
       api_key_file=/var/lib/jellyfin/data/library-sync.api-key
       output=${lib.escapeShellArg jellyfinMetadataCache}
+      api_key_mirror=${lib.escapeShellArg jellyfinApiKeyMirror}
+      # Mirror the Jellyfin-owned key into the Media Manager cache directory
+      # before anything else so the unprivileged web service can read it even
+      # while Jellyfin itself is still starting. The export runs as
+      # root:media-manager, so the mirrored copy is group-readable by design.
+      [[ -f "$api_key_file" && ! -L "$api_key_file" ]] || exit 1
+      api_key="$(tr -d '\r\n' <"$api_key_file")"
+      [[ "$api_key" =~ ^[A-Za-z0-9._~-]+$ ]] || exit 1
+      key_tmp="$(mktemp "$(dirname "$api_key_mirror")/.api-key.XXXXXX")"
+      trap 'rm -f -- "$key_tmp"' EXIT
+      printf '%s\n' "$api_key" >"$key_tmp"
+      chmod 0640 "$key_tmp"
+      mv -f -- "$key_tmp" "$api_key_mirror"
+      trap - EXIT
       service_ready=0
       for _ in $(seq 1 30); do
         if curl --fail --silent --show-error --max-time 5 \
@@ -262,9 +281,6 @@ let
         echo "Jellyfin did not become ready before metadata export" >&2
         exit 1
       }
-      [[ -f "$api_key_file" && ! -L "$api_key_file" ]] || exit 1
-      api_key="$(tr -d '\r\n' <"$api_key_file")"
-      [[ "$api_key" =~ ^[A-Za-z0-9._~-]+$ ]] || exit 1
       tmp="$(mktemp "$(dirname "$output")/.metadata.XXXXXX")"
       trap 'rm -f -- "$tmp"' EXIT
       printf 'header = "X-Emby-Token: %s"\n' "$api_key" \
@@ -772,7 +788,7 @@ in
       CapabilityBoundingSet = [ ];
       AmbientCapabilities = [ ];
       ReadOnlyPaths = [ "-${vars.sharedRoot}" "-${vars.usersRoot}" "-/run/mkvmaker" ]
-        ++ lib.optionals jellyfinMetadataAvailable [ "-/var/cache/media-manager-jellyfin" "-/var/lib/jellyfin/data/library-sync.api-key" ]
+        ++ lib.optionals jellyfinMetadataAvailable [ "-/var/cache/media-manager-jellyfin" ]
         ++ lib.optionals audiobookshelfMetadataAvailable [ "-/var/cache/media-manager-audiobookshelf" ]
         ++ lib.optionals kavitaMetadataAvailable [ "-/var/cache/media-manager-kavita" ];
       ReadWritePaths = [ cfg.stateDir ];

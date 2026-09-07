@@ -3,7 +3,6 @@ import { setupAttachmentSelection, submitPaperlessForm } from "../shared/dom";
 
 const setup = () => {
   document.body.innerHTML = `
-    <span data-selected-count data-total-results="2"></span>
     <form id="attachment-download-form"><button data-bulk-action type="submit">Download</button></form>
     <form id="attachment-paperless-form" action="/attachments/send-paperless" data-paperless-form><button data-bulk-action type="submit">Send selected</button></form>
     <article data-attachment-row data-attachment-key="first" tabindex="0">
@@ -59,9 +58,7 @@ describe("attachment selection island helpers", () => {
         ),
       ).map((input) => input.value),
     ).toEqual(["first"]);
-    expect(document.querySelector("[data-selected-count]")?.textContent).toBe(
-      "1/2 results selected",
-    );
+    expect(document.querySelector("[data-selected-count]")).toBeNull();
     cleanup();
   });
 
@@ -78,9 +75,6 @@ describe("attachment selection island helpers", () => {
         ),
       ).map((input) => input.value),
     ).toEqual(["first", "second"]);
-    expect(document.querySelector("[data-selected-count]")?.textContent).toBe(
-      "2/2 results selected",
-    );
 
     document.dispatchEvent(
       new KeyboardEvent("keydown", { key: "a", ctrlKey: true, bubbles: true }),
@@ -90,9 +84,6 @@ describe("attachment selection island helpers", () => {
         '#attachment-download-form input[name="attachment_keys"]',
       ),
     ).toHaveLength(0);
-    expect(document.querySelector("[data-selected-count]")?.textContent).toBe(
-      "0/2 results selected",
-    );
     cleanup();
   });
 

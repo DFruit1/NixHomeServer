@@ -2,6 +2,7 @@
 mod attachments;
 mod automation;
 mod catalog;
+mod dismissals;
 mod exports;
 mod files;
 mod filters;
@@ -12,6 +13,7 @@ mod mime;
 pub(super) use attachments::*;
 pub(super) use automation::*;
 pub(super) use catalog::*;
+pub(super) use dismissals::*;
 pub(super) use exports::*;
 pub(super) use files::*;
 pub(super) use filters::*;

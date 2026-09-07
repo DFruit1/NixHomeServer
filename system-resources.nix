@@ -5,11 +5,23 @@ let
     enable = true;
     cpuGovernor = "powersave";
     nightlySuspend = {
-      # Keep disabled unless RTC wake has been verified on the target hardware.
-      # While suspended, Cloudflare Tunnel, DNS, and all hosted services are offline.
-      enable = false;
-      calendar = "*-*-* 04:30:00"; # Suspend after normal overnight maintenance timers have started.
-      wakeTime = "06:00";
+      # Suspends to RAM (S3): while suspended, Cloudflare Tunnel, DNS, and all
+      # hosted services are offline until the RTC wake. From 22:00 the host is
+      # re-checked every 15 minutes and suspended only while idle (low CPU,
+      # disk, network, and memory usage); from midnight the suspend is forced
+      # regardless of load, and the host wakes at wakeTime. Overnight
+      # Persistent=true maintenance timers catch up after the wake.
+      enable = true;
+      idleCheckCalendar = "*-*-* 22,23:00/15:00"; # Usage-gated checks at 22:00, 22:15, ... 23:45.
+      forcedCalendar = "*-*-* 00..09:00:00"; # Guaranteed midnight cutoff plus hourly retries if a suspend was inhibited.
+      wakeTime = "10:30";
+      idleWindowStartHour = 22; # First hour of usage-gated checks.
+      forcedWindowEndHour = 10; # Hours before this (00:00-09:59) force the suspend.
+      sampleSeconds = 10; # Usage sampling window for each evening check.
+      cpuBusyPercent = 25; # CPU busy percentage at or above which the host counts as active.
+      diskBusyKiBps = 512; # Disk throughput at or above which the host counts as active.
+      netBusyKiBps = 512; # Network throughput at or above which the host counts as active.
+      memAvailablePercent = 10; # Available-memory floor below which the host counts as active.
     };
     skipIfSshSessions = true;
     skipIfOtherUserSessions = true;
@@ -228,16 +240,16 @@ lib.mkMerge [
   })
 
   (lib.mkIf (power.enable && nightlySuspend.enable) {
-    systemd.sleep.extraConfig = ''
-      AllowSuspend=yes
-      AllowHibernation=no
-      AllowHybridSleep=no
-      AllowSuspendThenHibernate=no
-      SuspendState=mem
-    '';
+    systemd.sleep.settings.Sleep = {
+      AllowSuspend = "yes";
+      AllowHibernation = "no";
+      AllowHybridSleep = "no";
+      AllowSuspendThenHibernate = "no";
+      SuspendState = "mem";
+    };
 
     systemd.services.power-management-nightly-suspend = {
-      description = "Nightly suspend with RTC wake scheduling";
+      description = "Nightly suspend: usage-gated evening checks with a guaranteed midnight cutoff";
       path = nightlySuspendPath;
       serviceConfig = {
         Type = "oneshot";
@@ -245,6 +257,34 @@ lib.mkMerge [
       script = ''
         set -euo pipefail
 
+        hour="$(date +%-H)"
+        now_epoch="$(date +%s)"
+
+        if [[ "$hour" -ge ${toString nightlySuspend.forcedWindowEndHour} && "$hour" -lt ${toString nightlySuspend.idleWindowStartHour} ]]; then
+          echo "Daytime hours; suspend is not considered before ${toString nightlySuspend.idleWindowStartHour}:00."
+          exit 0
+        fi
+
+        today="$(date +%F)"
+        wake_epoch="$(date --date="$today ${wakeTime}" +%s)"
+        if [[ "$wake_epoch" -le "$now_epoch" ]]; then
+          wake_epoch="$(date --date="tomorrow ${wakeTime}" +%s)"
+        fi
+
+        suspend_now() {
+          echo "Scheduling RTC wake at ${wakeTime} and suspending."
+          rtcwake -m no -t "$wake_epoch"
+          systemctl suspend
+        }
+
+        if [[ "$hour" -lt ${toString nightlySuspend.forcedWindowEndHour} ]]; then
+          # Guaranteed overnight cutoff: suspend regardless of load, sessions,
+          # or blocker units. The hourly timer retries if this was inhibited.
+          suspend_now
+          exit 0
+        fi
+
+        # Evening usage-gated window: suspend only while the host is idle.
         for unit in ${blockerUnits}; do
           load_state="$(systemctl show --property LoadState --value "$unit" 2>/dev/null || true)"
           if [[ -z "$load_state" || "$load_state" == "not-found" ]]; then
@@ -252,43 +292,106 @@ lib.mkMerge [
           fi
 
           if systemctl is-active --quiet "$unit"; then
-            echo "Skipping nightly suspend because blocker unit is active: $unit"
+            echo "Deferring suspend because blocker unit is active: $unit"
             exit 0
           fi
         done
 
         if ${lib.boolToString power.skipIfSshSessions}; then
           if who | grep -qE '\([[:alnum:]:._-]+\)$'; then
-            echo "Skipping nightly suspend because an SSH session is active."
+            echo "Deferring suspend because an SSH session is active."
             exit 0
           fi
         fi
 
         if ${lib.boolToString power.skipIfOtherUserSessions}; then
           if who | awk '$1 != "root" { found = 1 } END { exit(found ? 0 : 1) }'; then
-            echo "Skipping nightly suspend because a non-root interactive session is active."
+            echo "Deferring suspend because a non-root interactive session is active."
             exit 0
           fi
         fi
 
-        now_epoch="$(date +%s)"
-        today="$(date +%F)"
-        wake_epoch="$(date --date="$today ${wakeTime}" +%s)"
+        read_cpu() { awk 'NR==1 { print $2+$3+$4+$7+$8+$9, $5+$6 }' /proc/stat; }
+        read_disk_sectors() { awk '$1 ~ /^(sd|vd|hd)[a-z]+$/ || $1 ~ /^nvme[0-9]+n[0-9]+$/ { sectors += $6 + $10 } END { print sectors + 0 }' /proc/diskstats; }
+        read_swap_pages() { awk '$1 == "pswpin" || $1 == "pswpout" { pages += $2 } END { print pages + 0 }' /proc/vmstat; }
+        read_net_bytes() {
+          awk '
+            NR > 2 {
+              pos = index($0, ":")
+              if (pos > 1) {
+                name = substr($0, 1, pos - 1)
+                gsub(/ /, "", name)
+                if (name != "lo") {
+                  rest = substr($0, pos + 1)
+                  sub(/^ +/, "", rest)
+                  split(rest, f, / +/)
+                  total += f[1] + f[9]
+                }
+              }
+            }
+            END { print total + 0 }
+          ' /proc/net/dev
+        }
 
-        if [[ "$wake_epoch" -le "$now_epoch" ]]; then
-          wake_epoch="$(date --date="tomorrow ${wakeTime}" +%s)"
+        read -r cpu_busy_a cpu_idle_a <<< "$(read_cpu)"
+        disk_a="$(read_disk_sectors)"
+        swap_a="$(read_swap_pages)"
+        net_a="$(read_net_bytes)"
+        sleep "${toString nightlySuspend.sampleSeconds}"
+        read -r cpu_busy_b cpu_idle_b <<< "$(read_cpu)"
+        disk_b="$(read_disk_sectors)"
+        swap_b="$(read_swap_pages)"
+        net_b="$(read_net_bytes)"
+
+        cpu_total=$(( (cpu_busy_b + cpu_idle_b) - (cpu_busy_a + cpu_idle_a) ))
+        cpu_pct=0
+        if (( cpu_total > 0 )); then
+          cpu_pct=$(( 100 * (cpu_busy_b - cpu_busy_a) / cpu_total ))
+        fi
+        disk_kbps=$(( (disk_b - disk_a) * 512 / 1024 / ${toString nightlySuspend.sampleSeconds} ))
+        net_kbps=$(( (net_b - net_a) / 1024 / ${toString nightlySuspend.sampleSeconds} ))
+        swap_delta=$(( swap_b - swap_a ))
+        mem_avail_pct="$(awk '/^MemTotal:/{t=$2} /^MemAvailable:/{a=$2} END { if (t > 0) printf "%d", 100*a/t; else print 0 }' /proc/meminfo)"
+
+        echo "usage sample: cpu=''${cpu_pct}%, disk=''${disk_kbps} KiB/s, net=''${net_kbps} KiB/s, mem_available=''${mem_avail_pct}%, swap_delta=''${swap_delta} pages"
+
+        if (( cpu_pct >= ${toString nightlySuspend.cpuBusyPercent} )); then
+          echo "Deferring suspend: CPU usage ''${cpu_pct}% >= ${toString nightlySuspend.cpuBusyPercent}% threshold."
+          exit 0
         fi
 
-        rtcwake -m no -t "$wake_epoch"
-        systemctl suspend
+        if (( disk_kbps >= ${toString nightlySuspend.diskBusyKiBps} )); then
+          echo "Deferring suspend: disk throughput ''${disk_kbps} KiB/s >= ${toString nightlySuspend.diskBusyKiBps} KiB/s threshold."
+          exit 0
+        fi
+
+        if (( net_kbps >= ${toString nightlySuspend.netBusyKiBps} )); then
+          echo "Deferring suspend: network throughput ''${net_kbps} KiB/s >= ${toString nightlySuspend.netBusyKiBps} KiB/s threshold."
+          exit 0
+        fi
+
+        if (( mem_avail_pct < ${toString nightlySuspend.memAvailablePercent} )); then
+          echo "Deferring suspend: available memory ''${mem_avail_pct}% < ${toString nightlySuspend.memAvailablePercent}% threshold."
+          exit 0
+        fi
+
+        if (( swap_delta > 0 )); then
+          echo "Deferring suspend: swap activity detected (''${swap_delta} pages)."
+          exit 0
+        fi
+
+        suspend_now
       '';
     };
 
     systemd.timers.power-management-nightly-suspend = {
-      description = "Suspend the server each night outside the declared maintenance window";
+      description = "Nightly suspend: usage-gated checks from ${toString nightlySuspend.idleWindowStartHour}:00, guaranteed cutoff at midnight";
       wantedBy = [ "timers.target" ];
       timerConfig = {
-        OnCalendar = nightlySuspend.calendar;
+        OnCalendar = [
+          nightlySuspend.idleCheckCalendar
+          nightlySuspend.forcedCalendar
+        ];
         Persistent = false;
       };
     };

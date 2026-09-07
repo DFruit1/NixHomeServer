@@ -250,12 +250,24 @@ a {
   padding: 0.95rem 1.05rem;
 }
 
-.mail-list,
-.attachment-list,
 .mailbox-list {
   display: grid;
   gap: 0.9rem;
   margin-top: 1rem;
+}
+
+/* Mail and attachment lists use block layout with sibling margins so a
+ * dismissed row can collapse to zero height and let the rows below slide
+ * up smoothly. */
+.mail-list,
+.attachment-list {
+  display: block;
+  margin-top: 1rem;
+}
+
+.mail-list > * + *,
+.attachment-list > * + * {
+  margin-top: 0.9rem;
 }
 
 .mail-list-header,
@@ -301,13 +313,13 @@ a {
 .mail-row {
   grid-template-columns:
     minmax(6.8rem, 0.68fr) minmax(14rem, 1.55fr) minmax(17rem, 2.45fr)
-    minmax(10rem, 1.1fr) minmax(8.5rem, 0.7fr);
+    minmax(3.4rem, auto) minmax(8.5rem, 0.7fr);
 }
 
 .attachment-row {
   grid-template-columns:
     minmax(8.6rem, 0.72fr) minmax(24rem, 3fr) minmax(5rem, 0.46fr)
-    minmax(5.2rem, auto) minmax(8.5rem, 0.7fr);
+    minmax(7.4rem, auto) minmax(8.5rem, 0.7fr);
   border-width: 2px;
   cursor: pointer;
 }
@@ -315,7 +327,7 @@ a {
 .mail-list-header {
   grid-template-columns:
     minmax(6.8rem, 0.68fr) minmax(14rem, 1.55fr) minmax(17rem, 2.45fr)
-    minmax(10rem, 1.1fr) minmax(8.5rem, 0.7fr);
+    minmax(3.4rem, auto) minmax(8.5rem, 0.7fr);
 }
 
 .attachment-list-header {
@@ -515,6 +527,80 @@ button.row-action-button.secondary:hover {
   color: var(--accent-strong);
 }
 
+.badge-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
+.row-menu-anchor {
+  position: relative;
+  display: inline-flex;
+}
+
+.row-menu {
+  position: absolute;
+  top: calc(100% + 0.4rem);
+  right: 0;
+  z-index: 40;
+  display: grid;
+  min-width: 11rem;
+  padding: 0.3rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-strong);
+  box-shadow: var(--shadow-overlay);
+}
+
+.row-menu[hidden] {
+  display: none;
+}
+
+.row-menu form {
+  margin: 0;
+}
+
+.row-menu button {
+  width: 100%;
+  justify-content: flex-start;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font-weight: 650;
+}
+
+.row-menu button:hover {
+  background: var(--accent-ghost);
+  color: var(--accent-strong);
+}
+
+.badge-dismissed {
+  background: #efe7cc;
+  color: #715d11;
+}
+
+/* Dimmed treatment for rows surfaced by search after being dismissed. */
+.mail-row-dismissed,
+.attachment-row-dismissed {
+  opacity: 0.6;
+  background: #f3f5f1;
+}
+
+/* Dismissed rows fade out gradually while the rows below slide up to close
+ * the gap: the collapse starts fast and eases out gradually. */
+.row-dismissing {
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 300ms ease-out,
+    height 480ms cubic-bezier(0.16, 1, 0.3, 1),
+    padding 480ms cubic-bezier(0.16, 1, 0.3, 1),
+    border-width 480ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
 .attachment-toolbar {
   position: sticky;
   top: 0;
@@ -579,12 +665,6 @@ button.bulk-action.secondary,
   display: inline-flex;
   align-items: center;
   gap: 0.45rem;
-}
-
-.selection-count {
-  color: var(--muted);
-  font-size: 0.92rem;
-  font-weight: 700;
 }
 
 .attachment-selector-placeholder {
@@ -1075,28 +1155,11 @@ form {
   gap: 0.65rem;
 }
 
-.primary-search-field {
-  font-size: 1rem;
-}
-
 .primary-search-input {
   min-height: 2.65rem;
   border-radius: 999px;
   padding-inline: 1.15rem;
   font-size: 1.08rem;
-}
-
-.preset-dialog-button {
-  white-space: nowrap;
-}
-
-.current-preset-label {
-  color: rgba(29, 31, 28, 0.66);
-  font-size: 0.86rem;
-}
-
-.attachment-filter-layout {
-  display: none;
 }
 
 .attachment-control-column {
@@ -1895,10 +1958,10 @@ a.button-link:focus-visible,
   .mail-row {
     grid-template-columns:
       minmax(6rem, 0.6fr) minmax(0, 1.6fr) minmax(0, 1.4fr)
-      minmax(7rem, 0.6fr);
+      auto minmax(7rem, 0.6fr);
     grid-template-areas:
-      "date sender subject priority"
-      "date tags   tags     priority";
+      "date sender subject actions priority"
+      "date sender subject actions priority";
     grid-auto-columns: minmax(0, 1fr);
   }
 
@@ -1912,8 +1975,9 @@ a.button-link:focus-visible,
     grid-area: subject;
     align-self: end;
   }
-  .mail-row > .tag-list {
-    grid-area: tags;
+  .mail-row > .row-actions {
+    grid-area: actions;
+    justify-content: flex-end;
   }
   .mail-row > .priority-cell {
     grid-area: priority;
@@ -1922,7 +1986,7 @@ a.button-link:focus-visible,
   .attachment-row {
     grid-template-columns:
       minmax(7.5rem, 0.6fr) minmax(0, 2.4fr) minmax(4.4rem, 0.4fr)
-      minmax(5.2rem, auto);
+      minmax(7.4rem, auto);
     grid-template-areas:
       "date main badge actions"
       "date main priority priority";
@@ -1934,8 +1998,9 @@ a.button-link:focus-visible,
   .attachment-row > .attachment-main {
     grid-area: main;
   }
-  .attachment-row > .badge {
+  .attachment-row > .badge-cell {
     grid-area: badge;
+    justify-content: flex-end;
   }
   .attachment-row > .row-actions {
     grid-area: actions;
@@ -1948,10 +2013,6 @@ a.button-link:focus-visible,
   .attachment-list-header {
     display: none;
   }
-
-  .attachment-list-header {
-    display: none;
-  }
 }
 
 @media (max-width: 720px) {
@@ -1960,19 +2021,18 @@ a.button-link:focus-visible,
     padding-top: 1rem;
   }
 
+  /* Keep the Mail/Attachments tabs on the header row, aligned top right. */
   .app-header {
-    align-items: flex-start;
-    display: grid;
+    gap: 0.6rem;
   }
 
   .top-nav {
-    justify-content: flex-start;
+    justify-content: flex-end;
   }
 
   .top-nav a {
-    flex: 1 1 auto;
-    justify-content: center;
-    text-align: center;
+    padding: 0.42rem 0.62rem;
+    font-size: 0.9rem;
   }
 
   /* Dashboard hero collapses to a stacked column with full-width actions */
@@ -2170,9 +2230,9 @@ a.button-link:focus-visible,
     font-size: 1rem;
   }
 
-  .mail-row .tag-list {
-    gap: 0.35rem;
-    flex-wrap: wrap;
+  .mail-row .row-actions {
+    display: flex;
+    justify-content: flex-end;
   }
 
   .mail-row .priority-cell,
@@ -2226,11 +2286,11 @@ a.button-link:focus-visible,
     margin-top: 0.4rem;
   }
 
-  .attachment-row > .badge {
+  .attachment-row > .badge-cell {
     grid-area: badge;
     align-self: start;
     justify-self: end;
-    max-width: 7rem;
+    max-width: 8rem;
   }
 
   .attachment-row .row-actions {

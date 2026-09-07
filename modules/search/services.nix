@@ -354,6 +354,7 @@ in
           SEARCH_OIDC_ISSUER = vars.kanidmIssuer "search-web";
           SEARCH_OIDC_CLIENT_ID = "search-web";
           SEARCH_OIDC_CLIENT_SECRET_FILE = config.age.secrets.searchClientSecret.path;
+          SEARCH_LOGOUT_REDIRECT_URL = "https://${config.repo.authGateway.domain}/oauth2/sign_out";
         };
       serviceConfig =
         hardenedService

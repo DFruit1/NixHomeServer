@@ -169,6 +169,24 @@ let
       script = "scripts/generate-all-secrets.sh";
     };
 
+    bootstrap-host = {
+      description = "Guided idempotent bootstrap phases for a new host";
+      runtimeInputs = with pkgs; [
+        age
+        bash
+        coreutils
+        findutils
+        gitMinimal
+        gnugrep
+        gnused
+        jq
+        nix
+        openssh
+        python3
+      ];
+      script = "scripts/admin/bootstrap-host.sh";
+    };
+
     validate-config-readiness = {
       description = "Validate evaluated settings, required secrets, and bootstrap/deploy preconditions";
       runtimeInputs = with pkgs; [

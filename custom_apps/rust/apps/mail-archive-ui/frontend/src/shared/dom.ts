@@ -2,7 +2,8 @@ import type { AccountStatus, AccountStatusPayload } from "./types";
 
 type Cleanup = () => void;
 
-const interactiveSelector = "a, button, input, select, textarea, form, label";
+const interactiveSelector =
+  "a, button, input, select, textarea, form, label, [data-row-menu-anchor]";
 export {
   priorityFailureMessage,
   setPriorityClass,
@@ -305,9 +306,6 @@ export const setupAttachmentSelection = (doc: Document): Cleanup => {
     doc.querySelector<HTMLFormElement>("#attachment-download-form"),
     doc.querySelector<HTMLFormElement>("#attachment-paperless-form"),
   ].filter((form): form is HTMLFormElement => Boolean(form));
-  const selectedCountElement = doc.querySelector<HTMLElement>(
-    "[data-selected-count]",
-  );
   const selectedKeys = new Set<string>();
   let selectionAnchor: number | null = null;
 
@@ -331,18 +329,10 @@ export const setupAttachmentSelection = (doc: Document): Cleanup => {
   };
 
   const syncSelectedInputs = (): void => {
-    const selectedCount = selectedKeys.size;
-    const totalResults =
-      selectedCountElement?.dataset.totalResults ||
-      String(selectableKeys().length);
-    setText(
-      selectedCountElement,
-      `${selectedCount}/${totalResults} results selected`,
-    );
     doc
       .querySelectorAll<HTMLButtonElement>("[data-bulk-action]")
       .forEach((button) => {
-        button.disabled = selectedCount === 0;
+        button.disabled = selectedKeys.size === 0;
       });
 
     attachmentRows.forEach((row) => {
@@ -478,6 +468,19 @@ export const setupAttachmentSelection = (doc: Document): Cleanup => {
   cleanups.push(() => doc.removeEventListener("keydown", onSelectAllShortcut));
 
   setupAttachmentDialogs(doc, cleanups);
+  cleanups.push(
+    setupRowMenus(doc, {
+      onRowRemoved: (row) => {
+        const key = row.dataset.attachmentKey;
+        if (!key) {
+          return;
+        }
+        if (selectedKeys.delete(key)) {
+          syncSelectedInputs();
+        }
+      },
+    }),
+  );
 
   const paperlessForms = Array.from(
     doc.querySelectorAll<HTMLFormElement>("form[data-paperless-form]"),
@@ -841,3 +844,146 @@ const cssEscape = (value: string): string => {
   }
   return value.replace(/["\\]/g, "\\$&");
 };
+
+type RowMenuDeps = {
+  onRowRemoved?: (row: HTMLElement) => void;
+};
+
+const closeAllRowMenus = (doc: Document): void => {
+  doc.querySelectorAll<HTMLElement>("[data-row-menu]").forEach((menu) => {
+    if (menu.hidden) {
+      return;
+    }
+    menu.hidden = true;
+    const button = menu.parentElement?.querySelector<HTMLButtonElement>(
+      "[data-row-menu-button]",
+    );
+    button?.setAttribute("aria-expanded", "false");
+  });
+};
+
+export const DISMISS_ROW_ANIMATION_MS = 520;
+
+export const animateRowDismissal = (row: HTMLElement): void => {
+  const initialHeight = `${row.offsetHeight}px`;
+  row.style.height = initialHeight;
+  row.style.overflow = "hidden";
+  void row.getBoundingClientRect().width;
+  row.classList.add("row-dismissing");
+  row.style.height = "0px";
+  row.style.paddingTop = "0px";
+  row.style.paddingBottom = "0px";
+  row.style.borderTopWidth = "0px";
+  row.style.borderBottomWidth = "0px";
+  window.setTimeout(() => row.remove(), DISMISS_ROW_ANIMATION_MS);
+};
+
+export const applyRowRestore = (row: HTMLElement): void => {
+  row.classList.remove("attachment-row-dismissed", "mail-row-dismissed");
+  row.querySelector("[data-dismissed-badge]")?.remove();
+  row
+    .querySelectorAll<HTMLFormElement>("form[data-row-action-form]")
+    .forEach((form) => {
+      const dismissedForm = form.dataset.rowAction === "dismiss";
+      form.classList.toggle("hidden", !dismissedForm);
+    });
+};
+
+export const setupRowMenus = (
+  doc: Document,
+  deps: RowMenuDeps = {},
+): Cleanup => {
+  const cleanups: Cleanup[] = [];
+
+  doc
+    .querySelectorAll<HTMLElement>("[data-row-menu-anchor]")
+    .forEach((anchor) => {
+      const button = anchor.querySelector<HTMLButtonElement>(
+        "[data-row-menu-button]",
+      );
+      const menu = anchor.querySelector<HTMLElement>("[data-row-menu]");
+      if (!button || !menu) {
+        return;
+      }
+
+      const close = (): void => {
+        menu.hidden = true;
+        button.setAttribute("aria-expanded", "false");
+      };
+      const onButtonClick = (event: MouseEvent): void => {
+        event.preventDefault();
+        const willOpen = menu.hidden;
+        closeAllRowMenus(doc);
+        menu.hidden = !willOpen;
+        button.setAttribute("aria-expanded", willOpen ? "true" : "false");
+      };
+      button.addEventListener("click", onButtonClick);
+      cleanups.push(() => button.removeEventListener("click", onButtonClick));
+    });
+
+  const onDocumentClick = (event: MouseEvent): void => {
+    if ((event.target as Element).closest("[data-row-menu-anchor]")) {
+      return;
+    }
+    closeAllRowMenus(doc);
+  };
+  const onDocumentKeydown = (event: KeyboardEvent): void => {
+    if (event.key !== "Escape") {
+      return;
+    }
+    closeAllRowMenus(doc);
+  };
+  doc.addEventListener("click", onDocumentClick);
+  doc.addEventListener("keydown", onDocumentKeydown);
+  cleanups.push(() => {
+    doc.removeEventListener("click", onDocumentClick);
+    doc.removeEventListener("keydown", onDocumentKeydown);
+  });
+
+  doc
+    .querySelectorAll<HTMLFormElement>("form[data-row-action-form]")
+    .forEach((form) => {
+      const onSubmit = (event: SubmitEvent): void => {
+        event.preventDefault();
+        const action = form.dataset.rowAction;
+        const row = form.closest<HTMLElement>(
+          "[data-attachment-row], [data-mail-row]",
+        );
+        if (!row) {
+          return;
+        }
+        const menu = form.closest<HTMLElement>("[data-row-menu]");
+        if (menu) {
+          menu.hidden = true;
+        }
+        const anchor = menu?.closest<HTMLElement>("[data-row-menu-anchor]");
+        anchor
+          ?.querySelector<HTMLButtonElement>("[data-row-menu-button]")
+          ?.setAttribute("aria-expanded", "false");
+
+        submitJsonAction(form, {
+          fetch: window.fetch.bind(window),
+          doc,
+        }).then((result) => {
+          if (!result.ok) {
+            showToast(doc, result.message, "error");
+            return;
+          }
+          showToast(doc, result.message, "success");
+          if (action === "dismiss") {
+            deps.onRowRemoved?.(row);
+            animateRowDismissal(row);
+          }
+          if (action === "restore") {
+            applyRowRestore(row);
+          }
+        });
+      };
+      form.addEventListener("submit", onSubmit);
+      cleanups.push(() => form.removeEventListener("submit", onSubmit));
+    });
+
+  return () => cleanups.forEach((cleanup) => cleanup());
+};
+
+export const setupMailList = (doc: Document): Cleanup => setupRowMenus(doc);

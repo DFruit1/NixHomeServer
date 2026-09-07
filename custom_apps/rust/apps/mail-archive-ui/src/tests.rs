@@ -960,19 +960,6 @@ fn reindex_runs_notmuch_without_mbsync() {
 }
 
 #[test]
-fn search_preferences_round_trip() {
-    let tempdir = TempDir::new().expect("tempdir");
-    let config = test_config(&tempdir);
-    prepare_test_layout(&config);
-
-    save_search_preferences(&config, "alice", "from:billing", Some(9)).expect("save prefs");
-    let preferences = load_search_preferences(&config, "alice").expect("load prefs");
-
-    assert_eq!(preferences.last_query.as_deref(), Some("from:billing"));
-    assert_eq!(preferences.default_account_id, Some(9));
-}
-
-#[test]
 fn account_index_state_tracks_config_and_database() {
     let tempdir = TempDir::new().expect("tempdir");
     let config = test_config(&tempdir);
@@ -1056,6 +1043,7 @@ fn search_mail_uses_stubbed_notmuch_and_returns_results() {
             Some(account_id),
             test_message_filters("subject:invoice"),
             SenderPriorityFilter::All,
+            true,
         )
         .expect("search");
         assert_eq!(results.len(), 1);
@@ -1183,6 +1171,7 @@ fn search_mail_sorts_and_filters_by_sender_priority_without_query_changes() {
             Some(account_id),
             test_message_filters(""),
             SenderPriorityFilter::All,
+            true,
         )
         .expect("search all");
         assert_eq!(
@@ -1199,6 +1188,7 @@ fn search_mail_sorts_and_filters_by_sender_priority_without_query_changes() {
             Some(account_id),
             test_message_filters(""),
             SenderPriorityFilter::Low,
+            true,
         )
         .expect("search low");
         assert_eq!(low.len(), 1);
@@ -1248,6 +1238,7 @@ fn search_mail_applies_structured_sender_subject_date_and_attachment_filters() {
                 ..Default::default()
             },
             SenderPriorityFilter::All,
+            true,
         )
         .expect("search");
 
@@ -1258,25 +1249,28 @@ fn search_mail_applies_structured_sender_subject_date_and_attachment_filters() {
 }
 
 #[test]
-fn search_empty_state_distinguishes_prefill_from_submitted_no_results() {
+fn search_empty_state_distinguishes_browse_from_searched_no_results() {
     let identity = Identity {
         username: "alice".to_string(),
         email: Some("alice@example.com".to_string()),
     };
-    let html_prefill = render_search(
+    let html_browse = render_search(
         &identity,
         &[],
         &test_message_filters(""),
         None,
         &[],
         &SearchViewState {
-            submitted: false,
+            submitted: true,
             result_count: 0,
             empty_message: Some(
-                "Saved search defaults are prefilled below. Submit a query to search indexed mail."
+                "No saved messages yet. Sync a mailbox from the dashboard to fill the archive."
                     .to_string(),
             ),
             priority_filter: SenderPriorityFilter::All,
+            page: 1,
+            has_previous_page: false,
+            has_next_page: false,
         },
         None,
         None,
@@ -1292,12 +1286,15 @@ fn search_empty_state_distinguishes_prefill_from_submitted_no_results() {
             result_count: 0,
             empty_message: Some("No indexed messages matched this query.".to_string()),
             priority_filter: SenderPriorityFilter::All,
+            page: 1,
+            has_previous_page: false,
+            has_next_page: false,
         },
         None,
         None,
     );
 
-    assert!(html_prefill.contains("Saved search defaults"));
+    assert!(html_browse.contains("No saved messages yet"));
     assert!(html_submitted.contains("0 results"));
     assert!(html_submitted.contains("No indexed messages matched this query."));
 }
@@ -1306,14 +1303,16 @@ fn search_empty_state_distinguishes_prefill_from_submitted_no_results() {
 fn search_page_uses_compact_heading_and_sticky_result_header() {
     let priority_rules = SenderPriorityRules::default();
     let result = SearchResult {
+        account_id: 4,
         account_name: "Personal Gmail".to_string(),
+        message_key: "message-id:render@example.com".to_string(),
         message_relpath: "Inbox/message.eml".to_string(),
         timestamp: 0,
         date_label: "2024-04-18 14:32 UTC".to_string(),
         from: "Billing <billing@example.com>".to_string(),
         subject: "Invoice ready".to_string(),
-        tags: vec!["inbox".to_string()],
         sender_priority: priority_rules.view_for_sender("Billing <billing@example.com>"),
+        dismissed_at: None,
     };
     let html = render_search(
         &sample_identity(),
@@ -1326,20 +1325,29 @@ fn search_page_uses_compact_heading_and_sticky_result_header() {
             result_count: 1,
             empty_message: None,
             priority_filter: SenderPriorityFilter::All,
+            page: 1,
+            has_previous_page: false,
+            has_next_page: false,
         },
         None,
         None,
     );
 
     assert!(html.contains("page-heading"));
-    assert!(html.contains("Search mail"));
+    assert!(html.contains("placeholder=\"Search mail\""));
     assert!(html.contains("mail-list-header"));
+    assert!(html.contains("<span>Actions</span>"));
     assert!(html.contains("Sender importance"));
+    assert!(!html.contains("<span>Tags</span>"));
+    assert!(!html.contains("No tags"));
+    assert!(html.contains("data-mail-row"));
+    assert!(html.contains("data-row-menu-button"));
+    assert!(html.contains("Dismiss message"));
     assert!(!html.contains("Query your downloaded mail with notmuch."));
 }
 
 #[test]
-fn search_reset_link_clears_saved_query() {
+fn search_reset_link_clears_query_param() {
     let html = render_search(
         &sample_identity(),
         &[],
@@ -1347,10 +1355,13 @@ fn search_reset_link_clears_saved_query() {
         None,
         &[],
         &SearchViewState {
-            submitted: false,
+            submitted: true,
             result_count: 0,
             empty_message: None,
             priority_filter: SenderPriorityFilter::All,
+            page: 1,
+            has_previous_page: false,
+            has_next_page: false,
         },
         None,
         None,
@@ -1369,10 +1380,13 @@ fn redirect_feedback_renders_as_toasts_not_page_banners() {
         None,
         &[],
         &SearchViewState {
-            submitted: false,
+            submitted: true,
             result_count: 0,
             empty_message: None,
             priority_filter: SenderPriorityFilter::All,
+            page: 1,
+            has_previous_page: false,
+            has_next_page: false,
         },
         Some("Sender+importance+cleared"),
         Some("Sender+importance+task+failed"),
@@ -1436,12 +1450,6 @@ fn mbsync_rendering_rejects_legacy_unsafe_account_values() {
     let secret = write_temp_secret(&config, account.id, "sekret").expect("secret");
 
     assert!(write_temp_mbsyncrc(&config, &account, &paths, &secret.path).is_err());
-}
-
-#[test]
-fn saved_query_detection_only_runs_on_explicit_q_param() {
-    assert!(has_explicit_query_param("q=from%3Abilling"));
-    assert!(!has_explicit_query_param("account_id=4"));
 }
 
 #[test]
@@ -1513,6 +1521,7 @@ fn attachment_general_query_matches_attachment_and_message_fields() {
             address_rule: None,
         },
         paperless_sent_at: None,
+        dismissed_at: None,
         message_preview: None,
         message_preview_truncated: false,
         message_cc: None,
@@ -1541,14 +1550,16 @@ fn malformed_headers_fall_back_without_panicking() {
 fn compact_search_result_markup_truncates_long_values() {
     let priority_rules = SenderPriorityRules::default();
     let result = SearchResult {
+        account_id: 7,
         account_name: "Personal Gmail".to_string(),
+        message_key: "message-id:long@example.com".to_string(),
         message_relpath: "Inbox/very/long/path/that/should/not/overflow/message.eml".to_string(),
         timestamp: 0,
         date_label: format_timestamp_date_label(0),
         from: "Billing ✅ <billing@example.com>".to_string(),
         subject: "Invoice ✅ with a very long subject that should truncate".to_string(),
-        tags: vec!["inbox".to_string()],
         sender_priority: priority_rules.view_for_sender("Billing ✅ <billing@example.com>"),
+        dismissed_at: None,
     };
 
     let html = render_search_result(&result, "/search?q=invoice");
@@ -2358,6 +2369,12 @@ fn attachments_page_renders_bulk_download_controls_without_action_state() {
         assert!(html.contains("data-attachment-key"));
         assert!(html.contains("priority-select-normal"));
         assert!(!html.contains("Find files in saved mail."));
+        assert!(!html.contains("class=\"eyebrow\""));
+        assert!(html.contains("placeholder=\"Search attachments\""));
+        assert!(!html.contains("results selected"));
+        assert!(html.contains("data-row-menu-button"));
+        assert!(html.contains("/attachments/dismiss"));
+        assert!(html.contains("Dismiss attachment"));
         assert!(html.contains("attachment-list-header"));
         assert!(html.contains("<span>Date</span>"));
         assert!(!html.contains("<span>Select</span>"));
@@ -2371,7 +2388,7 @@ fn attachments_page_renders_bulk_download_controls_without_action_state() {
         assert!(html.contains("Reset filters"));
         assert!(!html.contains("Select page"));
         assert!(!html.contains("Refresh attachment list"));
-        assert!(html.contains("results selected"));
+        assert!(!html.contains("results selected"));
         assert!(!html.contains("attachments matching the current view"));
         assert!(html.contains("class=\"attachment-context\" hidden"));
         assert!(!html.contains(">Email context<"));
@@ -2827,6 +2844,249 @@ fn consumed_paperless_handoff_records_remain_marked_sent() {
         assert_eq!(repeated.already_uploaded, 1);
         assert!(repeated.failures.is_empty());
     });
+}
+
+#[test]
+fn attachment_triage_hides_sent_and_dismissed_unless_searching() {
+    with_stubbed_path(&mail_export_stub_commands(), |_| {
+        let tempdir = TempDir::new().expect("tempdir");
+        let mut config = test_config(&tempdir);
+        configure_test_paperless_handoff(&mut config, &tempdir);
+        prepare_test_layout(&config);
+        let account_id = seed_account_with_flags(&config, "alice", "secret", true);
+        let account = read_account(&config, "alice", account_id);
+        let account_paths = ensure_account_paths(&config, &account).expect("paths");
+        write_maildir_message(
+                &account_paths,
+                "Inbox/cur/msg-1",
+                "Message-ID: <triage-1@example.com>\nFrom: Docs <docs@example.com>\nSubject: Triage first\nDate: Thu, 18 Apr 2024 14:32:00 +0000\n\nATTACH:pdf\n",
+            );
+        write_maildir_message(
+                &account_paths,
+                "Inbox/cur/msg-2",
+                "Message-ID: <triage-2@example.com>\nFrom: Docs <docs@example.com>\nSubject: Triage second\nDate: Fri, 19 Apr 2024 14:32:00 +0000\n\nATTACH:pdf\n",
+            );
+        run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
+            .expect("sync");
+
+        let browse = load_attachment_page_data(&config, "alice", &AttachmentListParams::default())
+            .expect("browse");
+        assert_eq!(browse.items.len(), 2);
+        let first_key = browse.items[0].attachment.attachment_key.clone();
+        let second_key = browse.items[1].attachment.attachment_key.clone();
+
+        set_attachment_dismissals(&config, "alice", std::slice::from_ref(&first_key), true)
+            .expect("dismiss");
+        let browse = load_attachment_page_data(&config, "alice", &AttachmentListParams::default())
+            .expect("browse after dismiss");
+        assert_eq!(browse.items.len(), 1);
+        assert_eq!(browse.items[0].attachment.attachment_key, second_key);
+
+        let searched = load_attachment_page_data(
+            &config,
+            "alice",
+            &AttachmentListParams {
+                subject: Some("Triage".to_string()),
+                ..Default::default()
+            },
+        )
+        .expect("search after dismiss");
+        assert_eq!(searched.items.len(), 2);
+        let dismissed_item = searched
+            .items
+            .iter()
+            .find(|item| item.attachment.attachment_key == first_key)
+            .expect("dismissed item");
+        assert!(dismissed_item.dismissed_at.is_some());
+        let html = render_attachment_item(dismissed_item, "/attachments", false);
+        assert!(html.contains("attachment-row-dismissed"));
+        assert!(html.contains("/attachments/restore"));
+        assert!(html.contains("Restore attachment"));
+        assert!(html.contains("badge-dismissed"));
+
+        set_attachment_dismissals(&config, "alice", std::slice::from_ref(&first_key), false)
+            .expect("restore");
+        let browse = load_attachment_page_data(&config, "alice", &AttachmentListParams::default())
+            .expect("browse after restore");
+        assert_eq!(browse.items.len(), 2);
+
+        set_attachment_dismissals(&config, "alice", std::slice::from_ref(&second_key), true)
+            .expect("dismiss second");
+        let sent =
+            send_attachments_to_paperless(&config, "alice", std::slice::from_ref(&first_key))
+                .expect("send first");
+        assert_eq!(sent.sent, 1);
+
+        let browse = load_attachment_page_data(&config, "alice", &AttachmentListParams::default())
+            .expect("fully filed browse");
+        assert!(browse.items.is_empty());
+        assert!(browse
+            .state
+            .empty_message
+            .as_deref()
+            .is_some_and(|message| message.contains("Search")));
+
+        let searched = load_attachment_page_data(
+            &config,
+            "alice",
+            &AttachmentListParams {
+                subject: Some("Triage".to_string()),
+                ..Default::default()
+            },
+        )
+        .expect("search after filing");
+        assert_eq!(searched.items.len(), 2);
+        let sent_item = searched
+            .items
+            .iter()
+            .find(|item| item.attachment.attachment_key == first_key)
+            .expect("sent item");
+        assert!(sent_item.paperless_sent_at.is_some());
+        assert!(render_attachment_item(sent_item, "/attachments", false)
+            .contains("paperless-sent-button"));
+    });
+}
+
+#[test]
+fn message_triage_hides_dismissed_mail_unless_searching() {
+    with_stubbed_path(&mail_export_stub_commands(), |_| {
+        let tempdir = TempDir::new().expect("tempdir");
+        let config = test_config(&tempdir);
+        prepare_test_layout(&config);
+        let account_id = seed_account_with_flags(&config, "alice", "secret", true);
+        let account = read_account(&config, "alice", account_id);
+        let account_paths = ensure_account_paths(&config, &account).expect("paths");
+        write_maildir_message(
+                &account_paths,
+                "Inbox/cur/keep",
+                "Message-ID: <keep@example.com>\nFrom: Keep <keep@example.com>\nSubject: Keep me\nDate: Thu, 18 Apr 2024 14:32:00 +0000\n\nbody\n",
+            );
+        write_maildir_message(
+                &account_paths,
+                "Inbox/cur/noise",
+                "Message-ID: <noise@example.com>\nFrom: Noise <noise@example.com>\nSubject: Noise mail\nDate: Fri, 19 Apr 2024 14:32:00 +0000\n\nbody\n",
+            );
+        run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
+            .expect("sync");
+
+        let browse = search_mail(
+            &config,
+            "alice",
+            Some(account_id),
+            test_message_filters(""),
+            SenderPriorityFilter::All,
+            false,
+        )
+        .expect("browse all mail");
+        assert_eq!(browse.len(), 2);
+        let noise = browse
+            .iter()
+            .find(|result| result.subject == "Noise mail")
+            .cloned()
+            .expect("noise result");
+
+        set_message_dismissals(
+            &config,
+            "alice",
+            account_id,
+            std::slice::from_ref(&noise.message_key),
+            true,
+        )
+        .expect("dismiss message");
+
+        let browse = search_mail(
+            &config,
+            "alice",
+            Some(account_id),
+            test_message_filters(""),
+            SenderPriorityFilter::All,
+            false,
+        )
+        .expect("browse after dismiss");
+        assert_eq!(browse.len(), 1);
+        assert_eq!(browse[0].subject, "Keep me");
+
+        let searched = search_mail(
+            &config,
+            "alice",
+            Some(account_id),
+            test_message_filters(""),
+            SenderPriorityFilter::All,
+            true,
+        )
+        .expect("search including dismissed");
+        assert_eq!(searched.len(), 2);
+        let dismissed = searched
+            .iter()
+            .find(|result| result.subject == "Noise mail")
+            .expect("dismissed result");
+        assert!(dismissed.dismissed_at.is_some());
+        let html = render_search_result(dismissed, "/search");
+        assert!(html.contains("mail-row-dismissed"));
+        assert!(html.contains("/messages/restore"));
+        assert!(html.contains("Restore message"));
+        assert!(html.contains("badge-dismissed"));
+
+        let subject_search = search_mail(
+            &config,
+            "alice",
+            Some(account_id),
+            MessageSearchFilters {
+                subject: "Noise".to_string(),
+                ..Default::default()
+            },
+            SenderPriorityFilter::All,
+            true,
+        )
+        .expect("subject search");
+        assert_eq!(subject_search.len(), 1);
+        assert_eq!(subject_search[0].subject, "Noise mail");
+
+        set_message_dismissals(
+            &config,
+            "alice",
+            account_id,
+            std::slice::from_ref(&noise.message_key),
+            false,
+        )
+        .expect("restore message");
+        let browse = search_mail(
+            &config,
+            "alice",
+            Some(account_id),
+            test_message_filters(""),
+            SenderPriorityFilter::All,
+            false,
+        )
+        .expect("browse after restore");
+        assert_eq!(browse.len(), 2);
+    });
+}
+
+#[test]
+fn search_pagination_renders_page_links() {
+    let html = render_search(
+        &sample_identity(),
+        &[],
+        &test_message_filters(""),
+        None,
+        &[],
+        &SearchViewState {
+            submitted: true,
+            result_count: 205,
+            empty_message: None,
+            priority_filter: SenderPriorityFilter::All,
+            page: 2,
+            has_previous_page: true,
+            has_next_page: true,
+        },
+        None,
+        None,
+    );
+
+    assert!(html.contains("Page 2"));
+    assert!(html.contains("href=\"/search\">Previous page</a>"));
+    assert!(html.contains("href=\"/search?page=3\""));
 }
 
 #[test]

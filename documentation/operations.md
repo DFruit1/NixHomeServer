@@ -1483,6 +1483,112 @@ DEPLOY_DRY_RUN=1 ./scripts/deploy.sh --action test
 Use `--build-mode <value>` for a one-shot override. The older
 `--build-locally` flag remains an alias for `--build-mode local`.
 
+## Upstream Sync
+
+Installations that track a shared upstream repository (a friend's server
+following the maintainer's GitHub branch) update with the guarded sync helper.
+It merges upstream while guaranteeing that instance-owned files keep their
+local contents: `vars.nix`, `hardware-configuration.nix`, `secrets/*.age`, and
+`secrets/pubkeys/age.pub`. Upstream changes to those paths are reported for
+manual porting, never applied automatically. `flake.lock` follows upstream.
+
+One-time setup, from the installation's checkout. `origin` must point at this
+installation's own private fork (never at the upstream repository itself):
+
+```bash
+git remote add upstream <maintainer-repository-url>
+```
+
+Routine update:
+
+```bash
+git add -A
+git commit -m "Record local changes"   # the worktree must be committed and clean
+scripts/admin/sync-upstream.sh --upstream upstream --push
+```
+
+`--push` publishes the merged branch to the private fork after the sync so the
+fork stays an authoritative backup; a failed push is reported but does not fail
+the sync.
+
+The helper refuses to run with a dirty or untracked worktree, merges with
+`--no-ff` (it never rebases), and resolves conflicts itself: protected paths
+stay local, `flake.lock` takes upstream, and an unexpected conflict in
+repository code refuses the merge so the change can be ported deliberately.
+It also refuses upstream additions of `vars*`, `hardware-configuration*`, or
+`secrets/pubkeys/*` paths, new root-level `.nix` files, and `flake.lock`
+deletions: those shapes are instance-file renames or structural changes that
+must be ported manually, because a rename would otherwise leave this
+installation importing upstream settings under a new path while its own file
+survived unnoticed. It configures the `merge=ours` merge driver locally (the
+committed `.gitattributes` also protects these paths during plain `git
+merge`), and a post-merge enforcement step restores any protected file the
+merge changed or deleted regardless of attributes.
+
+When the merge touches `secrets/*.age` or `secrets/pubkeys/age.pub`, the helper
+requires this installation's private age identity (`--identity <age-key>`,
+`NIXHOMESERVER_AGE_IDENTITY_FILE`, or the installed
+`/persist/etc/agenix/age.key` through passwordless sudo). Ciphertext this
+installation cannot decrypt is then handled safely before the merge commit:
+
+- a newly added generated secret is removed and regenerated with this
+  installation's age key, so no ciphertext encrypted to someone else's key
+  reaches a deployment;
+- a newly added required external secret blocks the merge until its plaintext
+  is staged at `secrets/unencrypted/<name>` and the sync is rerun (see
+  [Quickstart](./quickstart.md) for the staging workflow); a staged value is
+  encrypted and the plaintext is removed;
+- upstream deletions of instance files are restored and reported.
+
+After a successful merge the helper runs the configuration preview gate. If it
+fails, the merge is already committed with every instance file preserved; port
+the failing setting manually (typically a new key from `vars.example.nix` into
+`vars.nix`), commit, and rerun the helper. Never rebase; if a sync is
+interrupted, rerun it after confirming `git status` is clean.
+
+Deploy the result only through the guarded path:
+
+```bash
+./scripts/deploy.sh --action test
+./scripts/deploy.sh --action switch
+```
+
+### Assumptions And Upstream Responsibilities
+
+The sync policy is only as safe as the contract between the two repositories.
+These assumptions are deliberate requirements:
+
+- **Instance filenames are immutable upstream.** `vars.nix`,
+  `hardware-configuration.nix`, `secrets/pubkeys/age.pub`, and the
+  `secrets/*.age` set are never renamed or restructured in the upstream
+  repository. The helper mechanically refuses the realistic rename shapes
+  (`vars*`, `hardware-configuration*`, `secrets/pubkeys/*`, and new
+  root-level `.nix` files), but a rename to an unrelated nested path cannot
+  be detected automatically; that class of change is a manual migration for
+  every installation and must be announced.
+- **The shared upstream branch is never force-pushed or rewritten.** Syncs are
+  merge-only; a rewritten upstream branch invalidates every checkout's merge
+  bases and requires manual reconciliation.
+- **New operator settings ship with compatibility defaults where practical**
+  (the `lib/derive-vars.nix` compatibility layer), so an unmodified
+  `vars.nix` keeps evaluating. When a setting genuinely requires an operator
+  value, the post-merge preview gate names it and the installation ports the
+  key from `vars.example.nix` manually.
+- **`hosts.nix` stays single-host upstream,** or host-entry changes are
+  announced as manual migrations for forks.
+- **One authoritative checkout per installation.** A server-side sync with
+  `--push` keeps the private fork current; any workstation clone must `git
+  pull --ff-only` from the fork before its next deploy. Never deploy from a
+  second clone while revisions disagree.
+- **The private age key is reachable where the sync runs** (`--identity`, the
+  environment variable, or the installed key through passwordless sudo).
+  Secrets-touching syncs fail closed without it.
+- **`flake.lock` always follows upstream.** Local input bumps are not
+  preserved across a sync; pin changes belong upstream.
+
+For broad or suspicious merges, run the full validation gate before deploying:
+`./scripts/deploy.sh --action test --debug`.
+
 ## Fast Remote Deploy
 
 With `system.buildMode = "remote"`, run:
@@ -1813,11 +1919,25 @@ revokes the parent identity session. This explicit chain is necessary because
 OAuth2 Proxy only clears its own cookie and Kanidm does not advertise an OIDC
 end-session, front-channel logout, or back-channel logout endpoint.
 
+### Single sign-in pass-through and session lifetime
+
+A single Kanidm sign-in covers every application. The shared gateway cookie
+expires just before the Kanidm auth session it was minted from (the
+`authSessionExpirySeconds` setting in `vars.nix`, currently 14 days). While the
+Kanidm session is alive, a lapsed gateway cookie or an expired
+application-local session re-authenticates through a silent redirect, so no
+login prompt appears. When the Kanidm session ends, every application prompts
+again on next use. Cookie refresh is deliberately not configured: Caddy
+forward_auth discards `Set-Cookie` from the auth subrequest, so a refreshed
+cookie could never reach the browser, and Kanidm destroys OAuth2 sessions on
+refresh-token reuse.
+
 Application-local logout behavior is:
 
-- Immich, Paperless, and Audiobookshelf clear their own application session and
-  then continue through the shared logout chain. Their supported end-session or
-  post-logout redirect settings are managed declaratively.
+- Immich, Paperless, Audiobookshelf, and Search clear their own application
+  session and then continue through the shared logout chain. Their supported
+  end-session or post-logout redirect settings are managed declaratively
+  (`SEARCH_LOGOUT_REDIRECT_URL` for Search).
 - Kavita and Jellyfin clear their local sessions, but their pinned OIDC clients
   have no supported post-local-logout fallback when discovery omits
   `end_session_endpoint`. Use the shared logout from Homepage before switching
@@ -1833,6 +1953,15 @@ Application-local logout behavior is:
 After shared logout the browser lands on the Kanidm login page. Seeing that
 login page, rather than being silently returned to the previous account, is the
 expected account-switching check.
+
+Known limits of shared logout: applications that keep their own browser
+sessions (Photos, Videos, Books, Paperless, Audiobooks, Search) may still show
+an already-signed-in view until each application next validates its session
+against Kanidm or its local session expires, and Vaultwarden's independent
+session is intentionally separate. Sign out inside those applications when a
+shared logout alone is not sufficient. Gateway-protected applications, by
+contrast, are locked out immediately because every request re-checks the
+shared cookie.
 
 The implemented contracts are documented by
 [OAuth2 Proxy's sign-out endpoint](https://oauth2-proxy.github.io/oauth2-proxy/features/endpoints/),

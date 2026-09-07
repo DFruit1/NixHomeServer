@@ -20,6 +20,7 @@ in {
   filestashLogoutUrl = cfg.services.filestash.settings.general.logout;
   immichEndSessionEndpoint = cfg.services.immich.settings.oauth.endSessionEndpoint or null;
   paperlessLogoutRedirectUrl = cfg.services.paperless.settings.PAPERLESS_LOGOUT_REDIRECT_URL or null;
+  searchLogoutRedirectUrl = cfg.systemd.services.search-ui.environment.SEARCH_LOGOUT_REDIRECT_URL or null;
   homepageCaddyConfig = cfg.services.caddy.virtualHosts.${homepageHost}.extraConfig;
   authCaddyConfig = cfg.services.caddy.virtualHosts.${authHost}.extraConfig;
   protectedCaddyConfigs = builtins.mapAttrs
@@ -48,6 +49,7 @@ if ! jq -e '
   and (.filestashLogoutUrl == "/oauth2/sign_out")
   and (.immichEndSessionEndpoint == $globalLogoutUrl)
   and (.paperlessLogoutRedirectUrl == $globalLogoutUrl)
+  and (.searchLogoutRedirectUrl == $globalLogoutUrl)
 ' <<<"$logout_json" >/dev/null; then
   echo "❌ Shared and application-local logout routing is not fully chained." >&2
   jq . <<<"$logout_json" >&2
@@ -66,5 +68,12 @@ require_fixed custom_apps/node/apps/homepage/src/components/ProfileMenu.tsx \
 require_fixed custom_apps/node/apps/youtube-downloader/src/client/profile-menu.tsx \
   'href="/oauth2/sign_out"' \
   "YouTube Downloader sign-out must use the canonical shared logout endpoint"
+
+require_fixed custom_apps/rust/apps/search/src/server.rs \
+  'SEARCH_LOGOUT_REDIRECT_URL' \
+  "Search sign-out must redirect through the canonical shared logout endpoint"
+require_fixed custom_apps/rust/apps/search/src/ui.html \
+  "form.method = 'POST'" \
+  "Search sign-out must navigate the browser so shared logout redirects are followed"
 
 echo "✅ Shared authentication logout routing tests passed."

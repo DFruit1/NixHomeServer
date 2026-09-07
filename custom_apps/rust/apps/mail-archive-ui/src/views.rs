@@ -474,7 +474,6 @@ pub(super) fn render_attachments_page(
         &mut body,
         "<section class=\"page-heading\">
            <div>
-             <p class=\"eyebrow\">Attachments</p>
              <h1>Search saved attachments</h1>
            </div>
          </section>",
@@ -485,9 +484,7 @@ pub(super) fn render_attachments_page(
         "<section class=\"panel search-panel\">
            <form id=\"attachment-search-form\" method=\"get\" action=\"/attachments\" class=\"search-form\">
              <div class=\"primary-search-row\">
-               <label class=\"primary-search-field\">Search attachments
-                 <input class=\"primary-search-input\" name=\"q\" value=\"{}\">
-               </label>
+               <input class=\"primary-search-input\" name=\"q\" value=\"{}\" placeholder=\"Search attachments\" aria-label=\"Search attachments\">
                <button class=\"search-submit\" type=\"submit\">Search</button>
              </div>
              <details class=\"filter-accordion\">
@@ -513,7 +510,6 @@ pub(super) fn render_attachments_page(
          <section class=\"attachment-toolbar\" aria-label=\"Bulk attachment actions\">
            <div class=\"toolbar-selection\">
              <div id=\"attachment-selection-island\" data-mail-archive-island=\"attachment-selection\"></div>
-             <span class=\"selection-count\" data-selected-count data-total-results=\"{}\">0/{} results selected</span>
            </div>
            <div class=\"toolbar-actions\">
              <form id=\"attachment-download-form\" method=\"post\" action=\"/attachments/download\" class=\"icon-form\">
@@ -554,8 +550,6 @@ pub(super) fn render_attachments_page(
         filter_hiddens,
         advanced_dialog,
         preset_dialog,
-        data.state.result_count,
-        data.state.result_count,
         if show_download_all {
             "<button class=\"secondary bulk-action\" type=\"submit\" name=\"selection_scope\" value=\"all_matching\" title=\"Download all matching attachments\" aria-label=\"Download all matching attachments\">Download all</button>"
         } else {
@@ -1263,9 +1257,15 @@ pub(super) fn render_attachment_item(
         )
     };
     let sender_importance = render_sender_importance_select(&item.sender_priority, return_to);
+    let dismissed = item.dismissed_at.is_some();
+    let dismissed_badge = if dismissed {
+        "<span class=\"badge badge-dismissed\" data-dismissed-badge title=\"Dismissed from the browse list\">Dismissed</span>"
+    } else {
+        ""
+    };
 
     format!(
-        "<article class=\"attachment-row\" data-attachment-row data-attachment-key=\"{}\" tabindex=\"0\" aria-selected=\"false\">
+        "<article class=\"attachment-row{}\" data-attachment-row data-attachment-key=\"{}\" tabindex=\"0\" aria-selected=\"false\">
           <span class=\"meta truncate\" title=\"{}\">{}</span>
           <div class=\"attachment-main\">
             <strong class=\"truncate\" title=\"{}\">{}</strong>
@@ -1277,10 +1277,11 @@ pub(super) fn render_attachment_item(
               <p class=\"attachment-context-preview\">{}{}</p>
             </div>
           </div>
-          <span class=\"badge truncate\" title=\"{}\">{}</span>
-          <div class=\"row-actions\">{}{}</div>
+          <span class=\"badge-cell\"><span class=\"badge truncate\" title=\"{}\">{}</span>{}</span>
+          <div class=\"row-actions\">{}{}{}</div>
           <div class=\"priority-cell\">{}</div>
         </article>",
+        if dismissed { " attachment-row-dismissed" } else { "" },
         escape_html(&item.attachment.attachment_key),
         escape_html(&date_tooltip),
         escape_html(&date_label),
@@ -1303,9 +1304,78 @@ pub(super) fn render_attachment_item(
         more_link,
         escape_html(&type_label),
         escape_html(&type_label),
+        dismissed_badge,
         download_action,
         paperless_action,
+        render_attachment_row_menu(item, return_to),
         sender_importance,
+    )
+}
+
+pub(super) fn render_row_menu_button() -> &'static str {
+    "<button class=\"row-action-button secondary row-menu-button\" type=\"button\" data-row-menu-button aria-haspopup=\"true\" aria-expanded=\"false\" title=\"More actions\" aria-label=\"More actions\">&#8230;</button>"
+}
+
+pub(super) fn render_attachment_row_menu(item: &AttachmentListItem, return_to: &str) -> String {
+    let key = escape_html(&item.attachment.attachment_key);
+    let return_to = escape_html(return_to);
+    format!(
+        "<span class=\"row-menu-anchor\" data-row-menu-anchor>
+           {}
+           <span class=\"row-menu\" data-row-menu hidden>
+             <form method=\"post\" action=\"/attachments/dismiss\" data-row-action-form data-row-action=\"dismiss\"{}>
+               <input type=\"hidden\" name=\"attachment_keys\" value=\"{}\">
+               <input type=\"hidden\" name=\"return_to\" value=\"{}\">
+               <button type=\"submit\">Dismiss attachment</button>
+             </form>
+             <form method=\"post\" action=\"/attachments/restore\" data-row-action-form data-row-action=\"restore\"{}>
+               <input type=\"hidden\" name=\"attachment_keys\" value=\"{}\">
+               <input type=\"hidden\" name=\"return_to\" value=\"{}\">
+               <button type=\"submit\">Restore attachment</button>
+             </form>
+           </span>
+         </span>",
+        render_row_menu_button(),
+        hidden_class(item.dismissed_at.is_none()),
+        key,
+        return_to,
+        hidden_class(item.dismissed_at.is_some()),
+        key,
+        return_to,
+    )
+}
+
+pub(super) fn render_message_row_menu(result: &SearchResult, return_to: &str) -> String {
+    let key = escape_html(&result.message_key);
+    let account_id = result.account_id;
+    let return_to = escape_html(return_to);
+    format!(
+        "<span class=\"row-menu-anchor\" data-row-menu-anchor>
+           {}
+           <span class=\"row-menu\" data-row-menu hidden>
+             <form method=\"post\" action=\"/messages/dismiss\" data-row-action-form data-row-action=\"dismiss\"{}>
+               <input type=\"hidden\" name=\"account_id\" value=\"{}\">
+               <input type=\"hidden\" name=\"message_key\" value=\"{}\">
+               <input type=\"hidden\" name=\"return_to\" value=\"{}\">
+               <button type=\"submit\">Dismiss message</button>
+             </form>
+             <form method=\"post\" action=\"/messages/restore\" data-row-action-form data-row-action=\"restore\"{}>
+               <input type=\"hidden\" name=\"account_id\" value=\"{}\">
+               <input type=\"hidden\" name=\"message_key\" value=\"{}\">
+               <input type=\"hidden\" name=\"return_to\" value=\"{}\">
+               <button type=\"submit\">Restore message</button>
+             </form>
+           </span>
+         </span>",
+        render_row_menu_button(),
+        hidden_class(result.dismissed_at.is_none()),
+        account_id,
+        key,
+        return_to,
+        hidden_class(result.dismissed_at.is_some()),
+        account_id,
+        key,
+        return_to,
     )
 }
 
@@ -1397,7 +1467,6 @@ pub(super) fn render_search(
     body.push_str(
         "<section class=\"page-heading\">
            <div>
-             <p class=\"eyebrow\">Mail</p>
              <h1>Search saved messages</h1>
            </div>
          </section>",
@@ -1408,10 +1477,8 @@ pub(super) fn render_search(
         "<section class=\"panel search-panel\">
           <form method=\"get\" action=\"/search\" class=\"search-form\">
             <div class=\"primary-search-row\">
-              <label class=\"primary-search-field\">Search mail
-                <input class=\"primary-search-input\" name=\"q\" value=\"{}\">
-              </label>
-              <button class=\"icon-button search-submit\" type=\"submit\" title=\"Search mail\" aria-label=\"Search mail\">⌕</button>
+              <input class=\"primary-search-input\" name=\"q\" value=\"{}\" placeholder=\"Search mail\" aria-label=\"Search mail\">
+              <button class=\"search-submit\" type=\"submit\">Search</button>
             </div>
             <details class=\"filter-accordion\">
               <summary>Filters</summary>
@@ -1488,8 +1555,13 @@ pub(super) fn render_search(
         .ok();
     }
 
+    let return_to = search_page_href(
+        filters,
+        selected_account_id,
+        state.priority_filter,
+        state.page,
+    );
     if !results.is_empty() {
-        let return_to = search_page_href(filters, selected_account_id, state.priority_filter);
         writeln!(
             &mut body,
             "<section class=\"mail-list\">
@@ -1504,6 +1576,10 @@ pub(super) fn render_search(
                 .join("")
         )
         .ok();
+    }
+
+    if state.has_previous_page || state.has_next_page {
+        body.push_str(&render_mail_pagination(state, filters, selected_account_id));
     }
 
     layout("Search Mail", Some(identity), "search", &body)
@@ -1590,6 +1666,7 @@ pub(super) fn search_page_href(
     filters: &MessageSearchFilters,
     selected_account_id: Option<i64>,
     priority_filter: SenderPriorityFilter,
+    page: usize,
 ) -> String {
     let mut pairs = Vec::new();
     append_message_filter_query_pairs(&mut pairs, filters);
@@ -1598,6 +1675,9 @@ pub(super) fn search_page_href(
     }
     if priority_filter != SenderPriorityFilter::All {
         pairs.push(("priority", priority_filter.as_query_value().to_string()));
+    }
+    if page > 1 {
+        pairs.push(("page", page.to_string()));
     }
     if pairs.is_empty() {
         "/search".to_string()
@@ -1701,34 +1781,38 @@ pub(super) fn render_sender_cell(raw_sender: &str) -> String {
 pub(super) fn render_search_result(result: &SearchResult, return_to: &str) -> String {
     let sender_importance = render_sender_importance_select(&result.sender_priority, return_to);
     let source = format!("{} · {}", result.account_name, result.message_relpath);
-
-    let tags = if result.tags.is_empty() {
-        vec!["<span class=\"meta\">No tags</span>".to_string()]
+    let dismissed = result.dismissed_at.is_some();
+    let dismissed_badge = if dismissed {
+        "<span class=\"badge badge-dismissed\" data-dismissed-badge title=\"Dismissed from the browse list\">Dismissed</span>"
     } else {
-        result
-            .tags
-            .iter()
-            .map(|tag| format!("<span class=\"tag\">{}</span>", escape_html(tag)))
-            .collect::<Vec<_>>()
+        ""
     };
+    let actions = format!(
+        "{}{}",
+        dismissed_badge,
+        render_message_row_menu(result, return_to)
+    );
 
     format!(
-        "<article class=\"mail-row\">
+        "<article class=\"mail-row{}\" data-mail-row data-account-id=\"{}\" data-message-key=\"{}\">
           <span class=\"meta truncate\" title=\"{}\">{}</span>
           {}
           <div class=\"mail-subject\" title=\"{}\">
             <strong class=\"truncate\" title=\"{}\">{}</strong>
           </div>
-          <div class=\"tag-list compact\">{}</div>
+          <div class=\"row-actions\">{}</div>
           <div class=\"priority-cell\">{}</div>
         </article>",
+        if dismissed { " mail-row-dismissed" } else { "" },
+        result.account_id,
+        escape_html(&result.message_key),
         escape_html(&format_timestamp_tooltip_label(result.timestamp)),
         escape_html(&result.date_label),
         render_sender_cell(&result.from),
         escape_html(&source),
         escape_html(&result.subject),
         escape_html(&result.subject),
-        tags.join(""),
+        actions,
         sender_importance,
     )
 }
@@ -1738,8 +1822,45 @@ pub(super) fn render_mail_list_header() -> String {
       <span>Date</span>
       <span>Sender</span>
       <span>Message</span>
-      <span>Tags</span>
+      <span>Actions</span>
       <span>Sender importance</span>
     </div>"
         .to_string()
+}
+
+pub(super) fn render_mail_pagination(
+    state: &SearchViewState,
+    filters: &MessageSearchFilters,
+    selected_account_id: Option<i64>,
+) -> String {
+    let previous_page = state.page.saturating_sub(1);
+    let next_page = state.page + 1;
+    let previous_href = search_page_href(
+        filters,
+        selected_account_id,
+        state.priority_filter,
+        previous_page,
+    );
+    let next_href = search_page_href(
+        filters,
+        selected_account_id,
+        state.priority_filter,
+        next_page,
+    );
+    format!(
+        "<section class=\"panel pagination-row\">
+          <a class=\"button-link secondary {}\" href=\"{}\">Previous page</a>
+          <span class=\"meta\">Page {}</span>
+          <a class=\"button-link secondary {}\" href=\"{}\">Next page</a>
+        </section>",
+        if state.has_previous_page {
+            ""
+        } else {
+            "disabled"
+        },
+        escape_html(&previous_href),
+        state.page,
+        if state.has_next_page { "" } else { "disabled" },
+        escape_html(&next_href),
+    )
 }

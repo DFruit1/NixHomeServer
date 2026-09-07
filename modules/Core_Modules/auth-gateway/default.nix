@@ -4,6 +4,20 @@ let
   cfg = config.repo.authGateway;
   loopback = vars.networking.loopbackIPv4;
   kopiaPort = vars.networking.ports.kopia;
+  # The shared SSO cookie must expire just before the Kanidm auth session it
+  # was minted from.  While the Kanidm session is still alive, an expired
+  # gateway cookie re-authenticates silently, so users only ever see a login
+  # prompt when the identity session itself is gone.  Cookie refresh is
+  # deliberately not used: Caddy forward_auth discards Set-Cookie from the
+  # auth subrequest, so a refreshed cookie would never reach the browser and
+  # Kanidm destroys OAuth2 sessions on refresh-token reuse.
+  # Invalid user input is rejected by Core_Modules/validation.  Avoid doing
+  # arithmetic on it first, which would hide that diagnostic behind a Nix
+  # type error.
+  ssoCookieExpireHours =
+    if builtins.isInt vars.kanidmAuthSessionExpirySeconds
+    then lib.max 1 ((vars.kanidmAuthSessionExpirySeconds - 7200) / 3600)
+    else -1;
   # Invalid user input is rejected by Core_Modules/validation.  Avoid doing
   # arithmetic on it first, which would hide that diagnostic behind a Nix
   # type error.
@@ -462,6 +476,7 @@ in
               "--client-secret-file=/run/auth-gateway/client-secret"
               "--cookie-secret-file=/run/auth-gateway/cookie-secret"
               "--cookie-name=__Secure-nixhomeserver_sso"
+              "--cookie-expire=${toString ssoCookieExpireHours}h"
               "--cookie-domain=.${vars.domain}"
               "--cookie-secure=true"
               "--cookie-httponly=true"

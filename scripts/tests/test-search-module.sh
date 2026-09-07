@@ -89,6 +89,7 @@ in {
   uiSandbox = cfg.systemd.services.search-ui.serviceConfig;
   uiPort = cfg.repo.search.port;
   uiSecret = cfg.systemd.services.search-ui.environment.SEARCH_OIDC_CLIENT_SECRET_FILE;
+  uiLogoutRedirect = cfg.systemd.services.search-ui.environment.SEARCH_LOGOUT_REDIRECT_URL or null;
   fulltextZims = cfg.repo.search.fulltextZims;
   kiwixSearchBin = cfg.systemd.services.search-ui.environment.SEARCH_KIWIXSEARCH;
   zimdumpBin = cfg.systemd.services.search-ui.environment.SEARCH_ZIMDUMP;
@@ -113,6 +114,8 @@ if ! jq -e '
   and (.uiSandbox.ProtectSystem == "strict")
   and (.uiPort == 8092)
   and (.uiSecret | contains("searchClientSecret"))
+  and (.uiLogoutRedirect != null)
+  and (.uiLogoutRedirect | contains("/oauth2/sign_out"))
   and (.fulltextZims | type == "array")
   and (.kiwixSearchBin | contains("kiwix-search"))
   and (.zimdumpBin | contains("zimdump"))
