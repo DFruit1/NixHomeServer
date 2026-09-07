@@ -4,6 +4,25 @@ import type { IconName } from "./root-types";
 export const Icon = component$<{ name: IconName; size?: number }>((props) => {
   const paths: Record<IconName, string[]> = {
     library: ["M4 5h5l2 2h9v12H4z", "M4 9h16"],
+    video: [
+      "M4 6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z",
+      "m10 9 5 3-5 3Z",
+    ],
+    "music-note": [
+      "M9 18V5l12-2v13",
+      "M3 18a3 3 0 1 0 6 0a3 3 0 1 0-6 0",
+      "M15 16a3 3 0 1 0 6 0a3 3 0 1 0-6 0",
+    ],
+    headphones: [
+      "M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a9 9 0 0 1 18 0v7a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3",
+    ],
+    mic: [
+      "M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z",
+      "M19 10v2a7 7 0 0 1-14 0v-2",
+      "M12 19v3",
+    ],
+    book: ["M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"],
+    search: ["M4 11a7 7 0 1 0 14 0a7 7 0 1 0-14 0", "m20 20-3.5-3.5"],
     disc: [
       "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Z",
       "M12 14a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z",

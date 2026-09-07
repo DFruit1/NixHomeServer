@@ -3177,3 +3177,42 @@ async fn music_stream_rejects_non_audio_items() {
     let value: Value = serde_json::from_slice(&body).expect("stream JSON");
     assert_eq!(value["error"]["code"], "audio_item_required");
 }
+
+#[tokio::test]
+async fn playback_targets_expose_the_connected_media_app_for_the_item_kind() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let (app, _) = test_app_with_mode(&temp, MutationMode::Enabled);
+    std::fs::create_dir_all(temp.path().join("shared/_Videos/Movies")).expect("movie folder");
+    std::fs::write(
+        temp.path().join("shared/_Videos/Movies/Arrival (2016).mkv"),
+        b"movie",
+    )
+    .expect("movie file");
+    editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-videos"}"#).await;
+    let item_id = item_id_by_kind(&app, "shared-videos", "video").await;
+
+    let response = app
+        .clone()
+        .oneshot(viewer_get_request(&format!(
+            "/api/v1/items/{item_id}/playback-targets"
+        )))
+        .await
+        .expect("playback targets response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("playback targets body");
+    let value: Value = serde_json::from_slice(&body).expect("playback targets JSON");
+    assert_eq!(value["targets"][0]["id"], "jellyfin");
+    assert_eq!(value["targets"][0]["label"], "Jellyfin");
+    assert_eq!(value["targets"][0]["available"], false);
+    assert!(value["targets"][0]["url"].is_null());
+
+    let response = app
+        .oneshot(viewer_get_request(
+            "/api/v1/items/item-does-not-exist/playback-targets",
+        ))
+        .await
+        .expect("missing item playback targets response");
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+}

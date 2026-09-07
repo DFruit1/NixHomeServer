@@ -10,7 +10,7 @@ import type {
 
 type EditableMetadataField = MetadataMatchField;
 
-export type EditorTab = "metadata" | "rename" | "subtitles";
+export type EditorTab = "explore" | "metadata" | "rename" | "subtitles";
 
 export type MetadataSection = "basics" | "people" | "advanced";
 

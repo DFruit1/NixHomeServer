@@ -18,7 +18,9 @@ import {
   ItemEditor,
   profileForCategory,
   renameReady,
+  type EditorCommandAction,
 } from "./item-editor";
+import { LibraryMiniPlayer } from "./mini-player";
 import { PlayerView } from "./player-view";
 import { RefreshView } from "./refresh-view";
 import { SubtitleView } from "./subtitle-view";
@@ -70,6 +72,7 @@ import {
   type MetadataSidecarInspection,
   type MutationPreview,
   type NamingProfile,
+  type PlaybackTarget,
   type ProviderAccountState,
   type ProviderCatalogResponse,
   type ProviderCredentialField,
@@ -155,6 +158,10 @@ export default component$((props: RootProps) => {
     previewSelectionKey: "",
     metadataDraftDirty: false,
     metadataDraftRevision: 0,
+    miniPlayerItemId: "",
+    miniPlayerTitle: "",
+    miniPlayerArtist: "",
+    miniPlayerPauseToken: 0,
   });
 
   // eslint-disable-next-line qwik/no-use-visible-task -- sidebar preference is client-only
@@ -162,6 +169,13 @@ export default component$((props: RootProps) => {
     if (typeof localStorage !== "undefined") {
       const saved = localStorage.getItem("mm-sidebar-side");
       if (saved === "right" || saved === "left") sidebarSide.value = saved;
+    }
+  });
+
+  useTask$(({ track }) => {
+    const currentView = track(() => view.value);
+    if (currentView === "player" && state.miniPlayerItemId) {
+      state.miniPlayerPauseToken += 1;
     }
   });
 
@@ -488,6 +502,7 @@ export default component$((props: RootProps) => {
           <RefreshView integrations={state.status?.integrations ?? []} />
         )}
       </main>
+      {state.miniPlayerItemId && <LibraryMiniPlayer state={state} />}
     </div>
   );
 });
@@ -1097,9 +1112,13 @@ const MediaImage = component$<{
   },
 );
 
-const ArtworkFileCard = component$<{
+const CoverArtCard = component$<{
   item: CatalogItem;
   state: DashboardState;
+  heading: string;
+  note: string;
+  close$: QRL<() => void>;
+  closeLabel: string;
 }>((props) => {
   const uploadInput = useSignal<HTMLInputElement>();
   const replacement = useStore<{
@@ -1157,22 +1176,19 @@ const ArtworkFileCard = component$<{
       <div class="editor-heading">
         <div class="non-media-heading">
           <Icon name="image" size={18} />
-          <h3>Image File (Cover Art)</h3>
+          <h3>{props.heading}</h3>
         </div>
         <button
           class="close-button"
           type="button"
-          aria-label="Close image details"
-          onClick$={() => (props.state.selectedItemId = "")}
+          aria-label={props.closeLabel}
+          onClick$={props.close$}
         >
           ×
         </button>
       </div>
       <div class="non-media-body">
-        <p>
-          This image is used as nearby cover art. It does not have editable
-          media metadata of its own.
-        </p>
+        <p>{props.note}</p>
         <code>{props.item.relativePath}</code>
         <input
           ref={uploadInput}
@@ -1255,12 +1271,151 @@ const ArtworkFileCard = component$<{
   );
 });
 
+function trackDisplay(item: CatalogItem): { title: string; artist: string } {
+  const stem = (item.relativePath.split("/").at(-1) ?? "").replace(
+    /\.[^.]+$/,
+    "",
+  );
+  const parts = stem.split(" - ");
+  if (parts.length >= 2) {
+    return {
+      title: parts[parts.length - 1],
+      artist: parts.slice(0, -1).join(" - "),
+    };
+  }
+  return { title: stem, artist: "" };
+}
+
+const MEDIA_QUICK_ACTION_KINDS = [
+  "video",
+  "music",
+  "audiobook",
+  "podcast",
+  "book",
+];
+
+const ItemQuickActions = component$<{
+  item: CatalogItem;
+  state: DashboardState;
+  editorCommand: { action: EditorCommandAction; revision: number };
+  coverOpen: boolean;
+  onToggleCover$: QRL<() => void>;
+}>((props) => {
+  const playback = useStore<{
+    itemId: string;
+    target?: PlaybackTarget;
+    unavailableLabel: string;
+  }>({ itemId: "", unavailableLabel: "" });
+  useTask$(async ({ track }) => {
+    const itemId = track(() => props.item.id);
+    playback.itemId = itemId;
+    playback.target = undefined;
+    playback.unavailableLabel = "";
+    if (!itemId) return;
+    try {
+      const result = await api<{ targets: PlaybackTarget[] }>(
+        `/items/${encodeURIComponent(itemId)}/playback-targets`,
+      );
+      if (playback.itemId !== itemId) return;
+      playback.target = (result.targets ?? []).find(
+        (target) => target.available && target.url,
+      );
+      if (!playback.target) {
+        playback.unavailableLabel = result.targets?.[0]?.label ?? "";
+      }
+    } catch {
+      if (playback.itemId === itemId) playback.target = undefined;
+    }
+  });
+  const canEdit = props.state.session?.canEdit ?? false;
+  const isMusic = props.item.mediaKind === "music";
+  const playTarget = playback.target;
+  const startInPagePlayer = $(() => {
+    const { title, artist } = trackDisplay(props.item);
+    props.state.miniPlayerItemId = props.item.id;
+    props.state.miniPlayerTitle = title;
+    props.state.miniPlayerArtist = artist;
+  });
+  const sendEditorCommand = $((action: EditorCommandAction) => {
+    props.editorCommand.action = action;
+    props.editorCommand.revision += 1;
+  });
+  return (
+    <div
+      class="item-quick-actions"
+      role="group"
+      aria-label="Selected media actions"
+    >
+      {isMusic ? (
+        <button
+          class="quick-action-button play"
+          type="button"
+          onClick$={startInPagePlayer}
+        >
+          <Icon name="play" size={17} />
+          Play here
+        </button>
+      ) : playTarget?.url ? (
+        <a
+          class="quick-action-button play"
+          href={playTarget.url}
+          target="_blank"
+          rel="noreferrer"
+        >
+          <Icon name="play" size={17} />
+          Play in {playTarget.label}
+        </a>
+      ) : (
+        <button
+          class="quick-action-button play"
+          type="button"
+          disabled
+          title={
+            playback.unavailableLabel
+              ? `${playback.unavailableLabel} is not connected`
+              : "No connected playback app for this file"
+          }
+        >
+          <Icon name="play" size={17} />
+          Play
+        </button>
+      )}
+      <button
+        class="quick-action-button"
+        type="button"
+        onClick$={() => sendEditorCommand("explore")}
+      >
+        <Icon name="search" size={17} />
+        Explore metadata
+      </button>
+      <button
+        class="quick-action-button"
+        type="button"
+        disabled={!canEdit}
+        onClick$={props.onToggleCover$}
+      >
+        <Icon name="image" size={17} />
+        {props.coverOpen ? "Close image editor" : "Edit image"}
+      </button>
+      <button
+        class="quick-action-button"
+        type="button"
+        disabled={!canEdit}
+        onClick$={() => sendEditorCommand("title")}
+      >
+        <Icon name="tag" size={17} />
+        Edit title
+      </button>
+    </div>
+  );
+});
+
 const CATEGORY_TABS: Array<{ id: string; label: string; icon: IconName }> = [
-  { id: "videos", label: "Videos", icon: "image" },
-  { id: "music", label: "Music", icon: "disc" },
-  { id: "audiobooks", label: "Audiobooks", icon: "captions" },
-  { id: "podcasts", label: "Podcasts", icon: "audiobookshelf" },
-  { id: "books", label: "Books", icon: "library" },
+  { id: "videos", label: "Videos", icon: "video" },
+  { id: "music", label: "Music", icon: "music-note" },
+  { id: "audiobooks", label: "Audiobooks", icon: "headphones" },
+  { id: "podcasts", label: "Podcasts", icon: "mic" },
+  { id: "books", label: "Books", icon: "book" },
 ];
 
 const LibraryPane = component$<{
@@ -1374,52 +1529,98 @@ const LibraryDetailPane = component$<{
   previewRename$: QRL<() => Promise<void>>;
   confirmRename$: QRL<() => Promise<void>>;
   closeFolderEditor$: QRL<() => void>;
-}>((props) => (
-  <div
-    class={{
-      "library-detail-pane": true,
-      "detail-personal": props.placement === "personal",
-      "detail-shared": props.placement === "shared",
-    }}
-    aria-label={`Selected ${props.placement === "personal" ? "shared" : "personal"} library details`}
-  >
-    <div class="root-picker-image">
-      <MediaImage
-        imageId={artworkCandidateId(
-          props.state.items,
-          props.state.selectedItemId,
-          props.activeFolder,
-        )}
-        title={props.imageTitle}
-      />
-    </div>
-    {props.selectedItem &&
-      ["video", "music", "audiobook", "podcast", "book"].includes(
-        props.selectedItem.mediaKind,
-      ) && (
-        <ItemEditor
+}>((props) => {
+  const editorCommand = useStore<{
+    action: EditorCommandAction;
+    revision: number;
+  }>({ action: "", revision: 0 });
+  const coverEditing = useSignal(false);
+  useTask$(({ track }) => {
+    track(() => props.state.selectedItemId);
+    track(() => props.activeFolder);
+    coverEditing.value = false;
+  });
+  const selectedMediaItem =
+    props.selectedItem &&
+    MEDIA_QUICK_ACTION_KINDS.includes(props.selectedItem.mediaKind)
+      ? props.selectedItem
+      : undefined;
+  return (
+    <div
+      class={{
+        "library-detail-pane": true,
+        "detail-personal": props.placement === "personal",
+        "detail-shared": props.placement === "shared",
+      }}
+      aria-label={`Selected ${props.placement === "personal" ? "shared" : "personal"} library details`}
+    >
+      <div class="root-picker-image">
+        <MediaImage
+          imageId={artworkCandidateId(
+            props.state.items,
+            props.state.selectedItemId,
+            props.activeFolder,
+          )}
+          title={props.imageTitle}
+        />
+      </div>
+      {selectedMediaItem && (
+        <ItemQuickActions
+          item={selectedMediaItem}
           state={props.state}
-          previewRename$={props.previewRename$}
-          confirmRename$={props.confirmRename$}
+          editorCommand={editorCommand}
+          coverOpen={coverEditing.value}
+          onToggleCover$={() => (coverEditing.value = !coverEditing.value)}
         />
       )}
-    {props.selectedItem?.mediaKind === "artwork" && (
-      <ArtworkFileCard item={props.selectedItem} state={props.state} />
-    )}
-    {!props.selectedItem && props.activeFolder && props.activeFolderRootId && (
-      <ItemEditor
-        state={props.state}
-        previewRename$={props.previewRename$}
-        confirmRename$={props.confirmRename$}
-        folder={{
-          rootId: props.activeFolderRootId,
-          relativePath: props.activeFolder,
-        }}
-        close$={props.closeFolderEditor$}
-      />
-    )}
-  </div>
-));
+      {selectedMediaItem && coverEditing.value && (
+        <CoverArtCard
+          item={selectedMediaItem}
+          state={props.state}
+          heading="Edit cover image"
+          note="Replace the artwork file that sits beside this media. Remote artwork can also be staged from the Explore tab."
+          close$={() => (coverEditing.value = false)}
+          closeLabel="Close cover image editor"
+        />
+      )}
+      {props.selectedItem &&
+        ["video", "music", "audiobook", "podcast", "book"].includes(
+          props.selectedItem.mediaKind,
+        ) && (
+          <ItemEditor
+            state={props.state}
+            previewRename$={props.previewRename$}
+            confirmRename$={props.confirmRename$}
+            command={editorCommand}
+          />
+        )}
+      {props.selectedItem?.mediaKind === "artwork" && (
+        <CoverArtCard
+          item={props.selectedItem}
+          state={props.state}
+          heading="Image File (Cover Art)"
+          note="This image is used as nearby cover art. It does not have editable media metadata of its own."
+          close$={() => (props.state.selectedItemId = "")}
+          closeLabel="Close image details"
+        />
+      )}
+      {!props.selectedItem &&
+        props.activeFolder &&
+        props.activeFolderRootId && (
+          <ItemEditor
+            state={props.state}
+            previewRename$={props.previewRename$}
+            confirmRename$={props.confirmRename$}
+            folder={{
+              rootId: props.activeFolderRootId,
+              relativePath: props.activeFolder,
+            }}
+            close$={props.closeFolderEditor$}
+          />
+        )}
+    </div>
+  );
+});
 
 const LibraryView = component$<{
   state: DashboardState;
@@ -1565,6 +1766,9 @@ const LibraryView = component$<{
   return (
     <section class="library-layout">
       <div class="library-tabs" role="tablist" aria-label="Media categories">
+        <span class="library-tabs-active-label" aria-hidden="true">
+          {CATEGORY_TABS.find((tab) => tab.id === activeCategory)?.label ?? ""}
+        </span>
         {CATEGORY_TABS.map((tab) => {
           const hasRoots = libraryRoots.some(
             (root) => root.category === tab.id,
@@ -1574,6 +1778,7 @@ const LibraryView = component$<{
               key={tab.id}
               type="button"
               role="tab"
+              aria-label={tab.label}
               aria-selected={activeCategory === tab.id}
               class={{
                 "library-tab": true,
@@ -1584,7 +1789,7 @@ const LibraryView = component$<{
               onClick$={() => props.loadCategoryItems$(tab.id)}
             >
               <Icon name={tab.icon} size={17} />
-              {tab.label}
+              <span class="library-tab-label">{tab.label}</span>
             </button>
           );
         })}

@@ -912,6 +912,14 @@ describe("Media Manager library browser", () => {
     });
   }
 
+  function editorTab(screen: HTMLElement, label: string) {
+    return (
+      Array.from(
+        screen.querySelectorAll<HTMLButtonElement>(".editor-tab"),
+      ).find((button) => button.textContent?.trim() === label) ?? null
+    );
+  }
+
   it("opens a metadata item selected by a durable library URL", async () => {
     const item = {
       id: "arrival",
@@ -1710,6 +1718,13 @@ describe("Media Manager library browser", () => {
 
     await vi.waitFor(() =>
       expect(
+        screen.querySelector(".editor-tab.active")?.textContent?.trim(),
+      ).toBe("Explore"),
+    );
+    expect(screen.textContent).toContain("TMDB lookup");
+    await userEvent(editorTab(screen, "Metadata"), "click");
+    await vi.waitFor(() =>
+      expect(
         screen
           .querySelector(".metadata-form .title-input input")
           ?.getAttribute("value"),
@@ -1844,6 +1859,12 @@ describe("Media Manager library browser", () => {
         screen.querySelectorAll<HTMLButtonElement>(".tree-row.file"),
       ).find((button) => button.textContent?.includes(name));
     await userEvent(fileButton("Arrival.mkv") ?? null, "click");
+    await vi.waitFor(() =>
+      expect(
+        screen.querySelector(".editor-tab.active")?.textContent?.trim(),
+      ).toBe("Explore"),
+    );
+    await userEvent(editorTab(screen, "Metadata"), "click");
     await vi.waitFor(() =>
       expect(
         screen
@@ -1986,6 +2007,12 @@ describe("Media Manager library browser", () => {
     const { render, screen, userEvent } = await createDOM();
     await render(<Root initialView="library" initialRootId="shared-videos" />);
     await userEvent(screen.querySelector(".tree-row.file"), "click");
+    await vi.waitFor(() =>
+      expect(
+        screen.querySelector(".editor-tab.active")?.textContent?.trim(),
+      ).toBe("Explore"),
+    );
+    await userEvent(editorTab(screen, "Metadata"), "click");
     await vi.waitFor(() =>
       expect(screen.textContent).toContain("Create draft"),
     );
@@ -2259,6 +2286,7 @@ describe("Media Manager library browser", () => {
     await vi.waitFor(() =>
       expect(screen.querySelector(".editor-tab")).toBeDefined(),
     );
+    await userEvent(editorTab(screen, "Metadata"), "click");
     await new Promise((resolve) => setTimeout(resolve, 0));
     const draftButton = Array.from(screen.querySelectorAll("button")).find(
       (button) => button.textContent?.trim() === "Create draft",
@@ -2416,7 +2444,6 @@ describe("Media Manager library browser", () => {
       expect(screen.querySelector(".metadata-match-workspace")).toBeDefined(),
     );
     expect(screen.textContent).toContain("Review MusicBrainz match");
-    expect(screen.textContent).toContain("Current metadata");
     const genresToggle = screen.querySelector(
       'input[aria-label="Use Genres from MusicBrainz"]',
     ) as HTMLInputElement | null;
@@ -2427,6 +2454,7 @@ describe("Media Manager library browser", () => {
     );
     await userEvent(applyButton ?? null, "click");
 
+    await userEvent(editorTab(screen, "Metadata"), "click");
     await vi.waitFor(() =>
       expect(
         screen
@@ -2434,6 +2462,7 @@ describe("Media Manager library browser", () => {
           ?.getAttribute("value"),
       ).toBe("Nevermind"),
     );
+    expect(screen.textContent).toContain("Current metadata");
     const mainForm = screen.querySelector(".editor-metadata-form");
     expect(mainForm).toBeDefined();
     const fieldValue = (labelText: string): string | null => {
@@ -2607,6 +2636,7 @@ describe("Media Manager library browser", () => {
         "Added 7 TMDB fields to the draft. Review them before previewing",
       ),
     );
+    await userEvent(editorTab(screen, "Metadata"), "click");
     await vi.waitFor(() =>
       expect(screen.querySelector(".editor-facts")?.textContent).toContain(
         "TMDB ID",
@@ -2741,8 +2771,11 @@ describe("Media Manager library browser", () => {
     await vi.waitFor(() =>
       expect(screen.textContent).toContain("Open Library fields to the draft"),
     );
-    expect(screen.querySelector(".editor-facts")?.textContent).toContain(
-      "OPENLIBRARY ID",
+    await userEvent(editorTab(screen, "Metadata"), "click");
+    await vi.waitFor(() =>
+      expect(screen.querySelector(".editor-facts")?.textContent).toContain(
+        "OPENLIBRARY ID",
+      ),
     );
     expect(fetchMock).toHaveBeenCalledWith(
       expect.stringContaining("/provider-lookups/open-library/search"),
@@ -2858,6 +2891,7 @@ describe("Media Manager library browser", () => {
     );
 
     await userEvent(files[1], "click");
+    await userEvent(editorTab(screen, "Metadata"), "click");
     await vi.waitFor(() =>
       expect(
         screen
@@ -2886,6 +2920,182 @@ describe("Media Manager library browser", () => {
     expect(screen.textContent).not.toContain(
       "Stale details from the previous item.",
     );
+  });
+
+  it("offers play, explore, image, and title actions under the selected item", async () => {
+    const items = [
+      {
+        id: "movie-1",
+        rootId: "shared-videos",
+        relativePath: "_Movies/Arrival.mkv",
+        mediaKind: "video",
+        sizeBytes: 4096,
+      },
+    ];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.endsWith("/items/movie-1/playback-targets")) {
+        return new Response(
+          JSON.stringify({
+            targets: [
+              {
+                id: "jellyfin",
+                label: "Jellyfin",
+                available: true,
+                url: "https://jellyfin.example",
+              },
+            ],
+          }),
+        );
+      }
+      if (path.endsWith("/items/movie-1/metadata")) {
+        return new Response(
+          JSON.stringify({
+            mediaType: "movie",
+            title: "Arrival",
+            sources: ["filename"],
+          }),
+        );
+      }
+      return libraryFetchMock(items, true)(input);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { render, screen, userEvent } = await createDOM();
+    await render(<Root initialView="library" initialRootId="shared-videos" />);
+    await userEvent(screen.querySelector(".tree-row.file"), "click");
+
+    await vi.waitFor(() =>
+      expect(screen.querySelector(".item-quick-actions")).toBeDefined(),
+    );
+    const playLink = screen.querySelector<HTMLAnchorElement>(
+      ".item-quick-actions a.quick-action-button.play",
+    );
+    expect(playLink?.getAttribute("href")).toBe("https://jellyfin.example");
+    expect(playLink?.getAttribute("target")).toBe("_blank");
+    expect(playLink?.textContent).toContain("Play in Jellyfin");
+
+    await userEvent(
+      Array.from(screen.querySelectorAll("button")).find(
+        (button) => button.textContent?.trim() === "Explore metadata",
+      ) ?? null,
+      "click",
+    );
+    expect(
+      screen.querySelector(".editor-tab.active")?.textContent?.trim(),
+    ).toBe("Explore");
+
+    await userEvent(
+      Array.from(screen.querySelectorAll("button")).find(
+        (button) => button.textContent?.trim() === "Edit image",
+      ) ?? null,
+      "click",
+    );
+    expect(screen.textContent).toContain("Edit cover image");
+    expect(screen.textContent).toContain("Replace cover art");
+    await userEvent(
+      screen.querySelector('[aria-label="Close cover image editor"]'),
+      "click",
+    );
+    expect(screen.textContent).not.toContain("Edit cover image");
+
+    await userEvent(
+      Array.from(screen.querySelectorAll("button")).find(
+        (button) => button.textContent?.trim() === "Edit title",
+      ) ?? null,
+      "click",
+    );
+    await vi.waitFor(() =>
+      expect(
+        screen.querySelector(".editor-tab.active")?.textContent?.trim(),
+      ).toBe("Metadata"),
+    );
+    await vi.waitFor(() =>
+      expect(
+        screen.querySelector<HTMLInputElement>(
+          ".editor-metadata-form .title-input input",
+        )?.value,
+      ).toBe("Arrival"),
+    );
+    expect(
+      screen.querySelector(".editor-metadata-form")?.hasAttribute("disabled"),
+    ).toBe(false);
+  });
+
+  it("plays a music selection in a page mini player", async () => {
+    const items = [
+      {
+        id: "track-1",
+        rootId: "shared-music",
+        relativePath: "_Music/Nirvana - Lithium.flac",
+        mediaKind: "music",
+        sizeBytes: 4096,
+      },
+    ];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.endsWith("/items/track-1/playback-targets")) {
+        return new Response(
+          JSON.stringify({
+            targets: [
+              {
+                id: "jellyfin",
+                label: "Jellyfin",
+                available: true,
+                url: "https://jellyfin.example",
+              },
+            ],
+          }),
+        );
+      }
+      if (path.endsWith("/items/track-1/metadata")) {
+        return new Response(
+          JSON.stringify({
+            mediaType: "music",
+            title: "Lithium",
+            sources: ["filename"],
+          }),
+        );
+      }
+      return libraryFetchMock(items, true)(input);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { render, screen, userEvent } = await createDOM();
+    await render(<Root initialView="library" initialRootId="shared-music" />);
+    await userEvent(screen.querySelector(".tree-row.file"), "click");
+
+    await vi.waitFor(() =>
+      expect(
+        Array.from(screen.querySelectorAll("button")).find(
+          (button) => button.textContent?.trim() === "Play here",
+        ),
+      ).toBeDefined(),
+    );
+    await userEvent(
+      Array.from(screen.querySelectorAll("button")).find(
+        (button) => button.textContent?.trim() === "Play here",
+      ) ?? null,
+      "click",
+    );
+    await vi.waitFor(() =>
+      expect(screen.querySelector(".mini-player")).toBeDefined(),
+    );
+    expect(screen.querySelector(".mini-player-info strong")?.textContent).toBe(
+      "Lithium",
+    );
+    expect(screen.querySelector(".mini-player-info span")?.textContent).toBe(
+      "Nirvana",
+    );
+    expect(
+      screen.querySelector(".mini-player audio")?.getAttribute("src"),
+    ).toBe("/api/v1/items/track-1/stream");
+
+    await userEvent(
+      screen.querySelector('[aria-label="Close music player"]'),
+      "click",
+    );
+    expect(screen.querySelector(".mini-player")).toBeUndefined();
   });
 });
 

@@ -230,6 +230,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/v1/items/{item_id}/stream", get(playback::item_stream))
         .route(
+            "/api/v1/items/{item_id}/playback-targets",
+            get(playback::item_playback_targets),
+        )
+        .route(
             "/api/v1/items/{item_id}/playback",
             get(playback::get_playback_position).put(playback::put_playback_position),
         )

@@ -6,6 +6,54 @@ struct PlaybackPositionBody {
     position: f64,
 }
 
+pub(super) async fn item_playback_targets(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(item_id): Path<String>,
+) -> Response {
+    let request_id = request_id();
+    let identity = match identity_from_headers(&headers, &request_id) {
+        Ok(identity) => identity,
+        Err(error) => return error.into_response(),
+    };
+    if !valid_object_id(&item_id) {
+        return ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_item_id",
+            "The selected catalog item ID is invalid.",
+            request_id,
+        )
+        .into_response();
+    }
+    let catalog = match state.catalog.open() {
+        Ok(catalog) => catalog,
+        Err(error) => {
+            log_event(
+                "catalog_open_failed",
+                &request_id,
+                json!({ "error": error.to_string() }),
+            );
+            return ApiError::internal(request_id).into_response();
+        }
+    };
+    let item = match visible_catalog_item(&state.config, &identity, &catalog, &item_id) {
+        Ok(item) => item,
+        Err(error) => return error.with_request_id(request_id.clone()).into_response(),
+    };
+    let targets: Vec<serde_json::Value> = consumer_effects(&state.config, &item.media_kind)
+        .into_iter()
+        .map(|effect| {
+            json!({
+                "id": effect.id,
+                "label": effect.label,
+                "available": effect.available,
+                "url": effect.native_url,
+            })
+        })
+        .collect();
+    Json(json!({ "targets": targets })).into_response()
+}
+
 pub(super) async fn get_playback_position(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,

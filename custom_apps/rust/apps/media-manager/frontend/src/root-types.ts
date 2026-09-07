@@ -189,6 +189,17 @@ export interface DashboardState {
   preview?: MutationPreview;
   metadataDraftDirty: boolean;
   metadataDraftRevision: number;
+  miniPlayerItemId: string;
+  miniPlayerTitle: string;
+  miniPlayerArtist: string;
+  miniPlayerPauseToken: number;
+}
+
+export interface PlaybackTarget {
+  id: string;
+  label: string;
+  available: boolean;
+  url?: string | null;
 }
 
 export interface MutationPreview {
@@ -282,6 +293,12 @@ export type IconName =
   | "library"
   | "disc"
   | "captions"
+  | "video"
+  | "music-note"
+  | "headphones"
+  | "mic"
+  | "book"
+  | "search"
   | "tag"
   | "refresh"
   | "shield"

@@ -5,6 +5,7 @@ import {
   useSignal,
   useStore,
   useTask$,
+  useVisibleTask$,
 } from "@builder.io/qwik";
 import { api, readableError } from "./api";
 import { Icon } from "./icon";
@@ -251,6 +252,8 @@ function updateMetadataDraftField(
   markMetadataDraftDirty(metadata, dashboard);
 }
 
+export type EditorCommandAction = "" | "explore" | "title";
+
 export const ItemEditor = component$<{
   state: DashboardState;
   previewRename$: QRL<() => Promise<void>>;
@@ -260,9 +263,11 @@ export const ItemEditor = component$<{
     relativePath: string;
   };
   close$?: QRL<() => void>;
+  command?: { action: EditorCommandAction; revision: number };
 }>((props) => {
   const tab = useSignal<EditorTab>("metadata");
   const section = useSignal<MetadataSection>("basics");
+  const cardRef = useSignal<HTMLElement>();
   const selectedItem = props.state.items.find(
     (item) => item.id === props.state.selectedItemId,
   );
@@ -431,8 +436,10 @@ export const ItemEditor = component$<{
     metadata.draftSessionRevision += 1;
     props.state.metadataDraftRevision += 1;
     const loadRevision = metadata.draftRevision;
-    tab.value = "metadata";
-    section.value = "basics";
+    if (selectionChanged) {
+      tab.value = props.folder ? "metadata" : "explore";
+      section.value = "basics";
+    }
     const item = props.folder
       ? undefined
       : props.state.items.find(
@@ -617,6 +624,36 @@ export const ItemEditor = component$<{
       )
         metadata.loadingDetails = false;
     }
+  });
+
+  // eslint-disable-next-line qwik/no-use-visible-task -- focusing a freshly rendered input needs the DOM
+  useVisibleTask$(({ track }) => {
+    const revision = track(() => props.command?.revision ?? 0);
+    const action = props.command?.action;
+    if (!revision || !action) return;
+    if (action === "explore" && !props.folder) {
+      tab.value = "explore";
+      return;
+    }
+    if (action !== "title") return;
+    tab.value = "metadata";
+    section.value = "basics";
+    if (!metadata.isDraft) {
+      metadata.isDraft = true;
+      metadata.draftSessionRevision += 1;
+      props.state.metadataDraftRevision += 1;
+    }
+    void (async () => {
+      for (let attempt = 0; attempt < 20; attempt++) {
+        await wait(50);
+        if (metadata.loadingDetails) continue;
+        const input =
+          cardRef.value?.querySelector<HTMLInputElement>(".title-input input");
+        if (!input) continue;
+        input.focus();
+        if (input.ownerDocument.activeElement === input) return;
+      }
+    })();
   });
 
   const toggleMetadataDraft = $(() => {
@@ -1329,11 +1366,123 @@ export const ItemEditor = component$<{
   const sourceChoices = metadata.isDraft
     ? metadataSourceChoices(metadata.observations, normalizedDraftValues)
     : [];
+  const exploreHasSources =
+    !props.folder &&
+    [
+      "movie",
+      "series",
+      "season",
+      "episode",
+      "book",
+      "audiobook",
+      "music",
+    ].includes(metadata.mediaType);
+  const exploreSources = (
+    <>
+      {["movie", "series", "season", "episode"].includes(
+        metadata.mediaType,
+      ) && (
+        <TmdbPanel
+          itemId={props.folder ? "" : metadata.itemId}
+          itemMediaType={metadata.mediaType}
+          season={
+            metadata.season === ""
+              ? undefined
+              : Number.parseInt(metadata.season, 10)
+          }
+          episode={
+            metadata.episode === ""
+              ? undefined
+              : Number.parseInt(metadata.episode, 10)
+          }
+          query={metadata.tmdbQuery}
+          fallbackQuery={metadata.title}
+          searchKind={metadata.tmdbMediaType}
+          candidates={metadata.tmdbCandidates}
+          loading={metadata.tmdbLoading}
+          error={metadata.tmdbError}
+          canEdit={props.state.session?.canEdit ?? false}
+          mutationMode={props.state.status?.mutationMode ?? "read-only"}
+          onQuery$={setTmdbQuery}
+          onKind$={setTmdbKind}
+          onSearch$={lookupTmdb}
+          onCompare$={compareTmdbCandidate}
+        />
+      )}
+      {["book", "audiobook"].includes(metadata.mediaType) && !props.folder && (
+        <OpenLibraryPanel
+          itemId={metadata.itemId}
+          mutationMode={props.state.status?.mutationMode ?? "read-only"}
+          query={metadata.openLibraryQuery}
+          fallbackQuery={openLibraryFallbackQuery}
+          candidates={metadata.openLibraryCandidates}
+          loading={metadata.openLibraryLoading}
+          error={metadata.openLibraryError}
+          canEdit={props.state.session?.canEdit ?? false}
+          onQueryInput$={setOpenLibraryQuery}
+          onSearch$={lookupOpenLibrary}
+          onCompare$={compareOpenLibraryCandidate}
+        />
+      )}
+      {["book", "audiobook"].includes(metadata.mediaType) && !props.folder && (
+        <GoogleBooksPanel
+          itemId={metadata.itemId}
+          fallbackQuery={openLibraryFallbackQuery}
+          canEdit={props.state.session?.canEdit ?? false}
+          mutationMode={props.state.status?.mutationMode ?? "read-only"}
+          onCompare$={compareGoogleBooksCandidate}
+        />
+      )}
+      {metadata.mediaType === "music" && !props.folder && (
+        <MusicBrainzPanel
+          itemId={metadata.itemId}
+          available={musicbrainzAvailable}
+          fingerprintAvailable={fingerprintAvailable}
+          canEdit={props.state.session?.canEdit ?? false}
+          mutationMode={props.state.status?.mutationMode ?? "read-only"}
+          mode={metadata.lookupMode}
+          artist={metadata.lookupArtist}
+          title={metadata.lookupTitle}
+          candidates={metadata.candidates}
+          loading={metadata.lookupLoading}
+          error={metadata.lookupError}
+          onMode$={setMusicLookupMode}
+          onArtist$={setMusicArtist}
+          onTitle$={setMusicTitle}
+          onSearch$={lookupMusic}
+          onCompare$={compareMusicCandidate}
+        />
+      )}
+      {metadata.matchCandidate && matchRows.length > 0 && (
+        <MetadataMatchWorkspace
+          candidate={metadata.matchCandidate}
+          rows={matchRows}
+          selectedFields={metadata.matchSelection}
+          canEdit={props.state.session?.canEdit ?? false}
+          onToggle$={toggleMetadataMatchField}
+          onApply$={applyMetadataMatch}
+          onCancel$={cancelMetadataMatch}
+        />
+      )}
+    </>
+  );
 
   return (
-    <section class="panel editor-card">
+    <section class="panel editor-card" ref={cardRef}>
       <div class="editor-heading">
         <div class="editor-tabs" role="tablist" aria-label="Edit selected item">
+          {!props.folder && (
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab.value === "explore"}
+              class={{ "editor-tab": true, active: tab.value === "explore" }}
+              onClick$={() => (tab.value = "explore")}
+            >
+              <Icon name="search" size={16} />
+              Explore
+            </button>
+          )}
           <button
             type="button"
             role="tab"
@@ -1406,7 +1555,17 @@ export const ItemEditor = component$<{
         </div>
       </div>
 
-      {tab.value === "metadata" ? (
+      {tab.value === "explore" ? (
+        <>
+          {exploreSources}
+          {!exploreHasSources && (
+            <p class="explore-empty-note">
+              No automatic metadata sources for this media type. Use the
+              Metadata tab for manual entry.
+            </p>
+          )}
+        </>
+      ) : tab.value === "metadata" ? (
         <>
           <details class="metadata-inspector">
             <summary class="metadata-inspector-heading">
@@ -1656,93 +1815,6 @@ export const ItemEditor = component$<{
               </p>
             )}
           </details>
-          {["movie", "series", "season", "episode"].includes(
-            metadata.mediaType,
-          ) && (
-            <TmdbPanel
-              itemId={props.folder ? "" : metadata.itemId}
-              itemMediaType={metadata.mediaType}
-              season={
-                metadata.season === ""
-                  ? undefined
-                  : Number.parseInt(metadata.season, 10)
-              }
-              episode={
-                metadata.episode === ""
-                  ? undefined
-                  : Number.parseInt(metadata.episode, 10)
-              }
-              query={metadata.tmdbQuery}
-              fallbackQuery={metadata.title}
-              searchKind={metadata.tmdbMediaType}
-              candidates={metadata.tmdbCandidates}
-              loading={metadata.tmdbLoading}
-              error={metadata.tmdbError}
-              canEdit={props.state.session?.canEdit ?? false}
-              mutationMode={props.state.status?.mutationMode ?? "read-only"}
-              onQuery$={setTmdbQuery}
-              onKind$={setTmdbKind}
-              onSearch$={lookupTmdb}
-              onCompare$={compareTmdbCandidate}
-            />
-          )}
-          {["book", "audiobook"].includes(metadata.mediaType) &&
-            !props.folder && (
-              <OpenLibraryPanel
-                itemId={metadata.itemId}
-                mutationMode={props.state.status?.mutationMode ?? "read-only"}
-                query={metadata.openLibraryQuery}
-                fallbackQuery={openLibraryFallbackQuery}
-                candidates={metadata.openLibraryCandidates}
-                loading={metadata.openLibraryLoading}
-                error={metadata.openLibraryError}
-                canEdit={props.state.session?.canEdit ?? false}
-                onQueryInput$={setOpenLibraryQuery}
-                onSearch$={lookupOpenLibrary}
-                onCompare$={compareOpenLibraryCandidate}
-              />
-            )}
-          {["book", "audiobook"].includes(metadata.mediaType) &&
-            !props.folder && (
-              <GoogleBooksPanel
-                itemId={metadata.itemId}
-                fallbackQuery={openLibraryFallbackQuery}
-                canEdit={props.state.session?.canEdit ?? false}
-                mutationMode={props.state.status?.mutationMode ?? "read-only"}
-                onCompare$={compareGoogleBooksCandidate}
-              />
-            )}
-          {metadata.mediaType === "music" && !props.folder && (
-            <MusicBrainzPanel
-              itemId={metadata.itemId}
-              available={musicbrainzAvailable}
-              fingerprintAvailable={fingerprintAvailable}
-              canEdit={props.state.session?.canEdit ?? false}
-              mutationMode={props.state.status?.mutationMode ?? "read-only"}
-              mode={metadata.lookupMode}
-              artist={metadata.lookupArtist}
-              title={metadata.lookupTitle}
-              candidates={metadata.candidates}
-              loading={metadata.lookupLoading}
-              error={metadata.lookupError}
-              onMode$={setMusicLookupMode}
-              onArtist$={setMusicArtist}
-              onTitle$={setMusicTitle}
-              onSearch$={lookupMusic}
-              onCompare$={compareMusicCandidate}
-            />
-          )}
-          {metadata.matchCandidate && matchRows.length > 0 && (
-            <MetadataMatchWorkspace
-              candidate={metadata.matchCandidate}
-              rows={matchRows}
-              selectedFields={metadata.matchSelection}
-              canEdit={props.state.session?.canEdit ?? false}
-              onToggle$={toggleMetadataMatchField}
-              onApply$={applyMetadataMatch}
-              onCancel$={cancelMetadataMatch}
-            />
-          )}
           {metadata.isDraft && sourceChoices.length > 0 && (
             <section
               class="metadata-source-choices"

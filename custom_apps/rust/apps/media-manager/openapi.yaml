@@ -508,6 +508,44 @@ paths:
             image/jxl: {}
         "404":
           $ref: "#/components/responses/Error"
+  /items/{itemId}/playback-targets:
+    get:
+      operationId: getItemPlaybackTargets
+      description: >-
+        Lists the connected media app that owns this item's media kind (for
+        example Jellyfin for video, Audiobookshelf for audiobooks and podcasts,
+        and Kavita for books) with its public URL so the library browser can
+        offer playback in the native app.
+      parameters:
+        - in: path
+          name: itemId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Playback targets derived from the item's media kind.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [targets]
+                properties:
+                  targets:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, label, available]
+                      properties:
+                        id: { type: string }
+                        label: { type: string }
+                        available: { type: boolean }
+                        url:
+                          type: [string, "null"]
+                          description: Public base URL of the media app when configured.
+        "401":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
   /items/{itemId}/image/replacement:
     post:
       operationId: previewArtworkReplacement
