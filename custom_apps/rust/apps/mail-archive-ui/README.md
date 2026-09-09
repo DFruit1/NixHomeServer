@@ -30,7 +30,7 @@ curl -fsS http://127.0.0.1:9011/healthz | jq .
 Canary mailbox:
 
 - `mail-archive-canary-seed.service` seeds a synthetic "Canary mailbox" account
-  owned by `services.mail-archive-ui.canaryUsername` (default `canary`) with a
+  owned by `services.mail-archive-ui.canaryUsername` (default: the Kanidm service-access canary user) with a
   few `.eml` messages, including PDF, text, and image attachments.
 - The account is created with sync disabled, so the sync timer never contacts a
   real IMAP server for it; the payload is generated locally and indexed in

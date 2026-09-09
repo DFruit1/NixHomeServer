@@ -115,7 +115,7 @@ in
 
     canaryUsername = lib.mkOption {
       type = lib.types.str;
-      default = "canary";
+      default = vars.identity.canaryUser;
       description = "Owner username for the synthetic canary mailbox seeded for Mail Archive UI testing.";
     };
 
