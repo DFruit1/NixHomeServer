@@ -302,5 +302,3 @@ export const MetadataHealthView = component$<{
     </section>
   );
 });
-
-

@@ -44,8 +44,7 @@ export const GoogleBooksPanel = component$<{
       );
       if (state.revision === revision) state.candidates = result.results;
     } catch (error) {
-      if (state.revision === revision)
-        state.error = readableError(error);
+      if (state.revision === revision) state.error = readableError(error);
     } finally {
       if (state.revision === revision) state.loading = false;
     }

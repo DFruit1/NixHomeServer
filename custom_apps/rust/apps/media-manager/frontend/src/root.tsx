@@ -1783,7 +1783,11 @@ const LibraryView = component$<{
               role="tab"
               aria-label={tab.label}
               aria-selected={activeCategory === tab.id}
-              title={hasRoots ? undefined : `No ${tab.label.toLowerCase()} library is configured`}
+              title={
+                hasRoots
+                  ? undefined
+                  : `No ${tab.label.toLowerCase()} library is configured`
+              }
               class={{
                 "library-tab": true,
                 active: activeCategory === tab.id,

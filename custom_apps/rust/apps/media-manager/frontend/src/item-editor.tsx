@@ -616,7 +616,7 @@ export const ItemEditor = component$<{
         visibleSelectionKey === selectionKey
       )
         props.state.error = readableError(error);
-        props.state.errorDetail = errorDetail(error);
+      props.state.errorDetail = errorDetail(error);
     } finally {
       const visibleSelectionKey = props.folder
         ? `folder:${props.folder.rootId}:${props.folder.relativePath}`
@@ -766,7 +766,7 @@ export const ItemEditor = component$<{
         visibleSelectionKey === selectionKey
       )
         props.state.error = readableError(error);
-        props.state.errorDetail = errorDetail(error);
+      props.state.errorDetail = errorDetail(error);
     } finally {
       const visibleSelectionKey = props.folder
         ? `folder:${props.folder.rootId}:${props.folder.relativePath}`
@@ -836,7 +836,7 @@ export const ItemEditor = component$<{
         metadata.draftSessionRevision === draftSessionRevision
       )
         props.state.error = readableError(error);
-        props.state.errorDetail = errorDetail(error);
+      props.state.errorDetail = errorDetail(error);
     } finally {
       const visibleSelectionKey = props.folder
         ? `folder:${props.folder.rootId}:${props.folder.relativePath}`

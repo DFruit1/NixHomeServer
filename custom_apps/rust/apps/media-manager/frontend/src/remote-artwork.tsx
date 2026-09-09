@@ -95,8 +95,7 @@ export const RemoteArtwork = component$<{
       state.plan = undefined;
       state.notice = "The artwork change was added to the mutation queue.";
     } catch (error) {
-      if (props.itemId === itemId)
-        state.error = readableError(error);
+      if (props.itemId === itemId) state.error = readableError(error);
     } finally {
       if (props.itemId === itemId) state.confirming = false;
     }
