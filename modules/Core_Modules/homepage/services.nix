@@ -137,6 +137,57 @@ let
   sharedPath = relativePath: "/${vars.fileAccess.sharedMountName}/${relativePath}";
   sftpAuthorizedKeysDir = "/persist/appdata/files-sftp-authorized-keys";
   vaultRuntimeDir = "/run/homepage-vault";
+  deploySettingsDir = "/var/lib/deploy-settings";
+  buildModeStateFile = "${deploySettingsDir}/build-mode.json";
+  nixBuildModeApply = pkgs.writeShellScript "homepage-nix-build-mode-apply" ''
+    set -euo pipefail
+
+    state_file=${lib.escapeShellArg buildModeStateFile}
+    new_file="$state_file.new"
+
+    cleanup() { rm -f "$new_file"; }
+    trap cleanup EXIT
+
+    ${pkgs.coreutils}/bin/cat > "$new_file"
+    mode="$(${pkgs.jq}/bin/jq -er '.buildMode // empty' "$new_file")" || {
+      echo "invalid build mode payload" >&2
+      exit 1
+    }
+    case "$mode" in
+      local|remote|balanced|maximum-effort) ;;
+      *)
+        echo "build mode must be local, remote, balanced, or maximum-effort" >&2
+        exit 1
+        ;;
+    esac
+    ${pkgs.jq}/bin/jq -c '{schemaVersion: 1, buildMode: $mode, updatedAt: (now | todateiso8601)}' \
+      --arg mode "$mode" "$new_file" > "$new_file.canonical"
+    ${pkgs.coreutils}/bin/mv -f "$new_file.canonical" "$new_file"
+    ${pkgs.coreutils}/bin/chmod 0644 "$new_file"
+    ${pkgs.coreutils}/bin/mv -f "$new_file" "$state_file"
+    ${pkgs.coreutils}/bin/cat "$state_file"
+  '';
+  powerScheduleCfg = config.nixhomeserver.powerSchedule;
+  powerScheduleApply = pkgs.writeShellScript "homepage-power-schedule-apply" ''
+    set -euo pipefail
+
+    state_file=${lib.escapeShellArg powerScheduleCfg.stateFile}
+    validator=${powerScheduleCfg.validator}
+    new_file="$state_file.new"
+
+    cleanup() { rm -f "$new_file"; }
+    trap cleanup EXIT
+
+    ${pkgs.coreutils}/bin/cat > "$new_file"
+    canonical="$(${pkgs.jq}/bin/jq -cerf "$validator" "$new_file")" || {
+      echo "invalid power schedule payload" >&2
+      exit 1
+    }
+    ${pkgs.jq}/bin/jq -c '. + {schemaVersion: 1, updatedAt: (now | todateiso8601)}' <<<"$canonical" > "$new_file"
+    ${pkgs.coreutils}/bin/chmod 0644 "$new_file"
+    ${pkgs.coreutils}/bin/mv -f "$new_file" "$state_file"
+    ${pkgs.coreutils}/bin/cat "$state_file"
+  '';
   kanidmVaultUrl = "https://${vars.kanidmDomain}:${toString vars.networking.ports.kanidm}";
   installSftpKey = pkgs.writeShellScript "homepage-install-sftp-key" ''
     set -euo pipefail
@@ -1820,6 +1871,14 @@ in
           HOMEPAGE_OFFLINE_MEDIA_REMOVE_COMMAND = offlineMediaRemove;
         } // lib.optionalAttrs mkvmakerEnabled {
           HOMEPAGE_MKVMAKER_PROGRESS_FILE = "/run/mkvmaker/progress.json";
+        } // lib.optionalAttrs powerScheduleCfg.available {
+          HOMEPAGE_POWER_SCHEDULE_FILE = powerScheduleCfg.stateFile;
+          HOMEPAGE_POWER_SCHEDULE_APPLY_COMMAND = powerScheduleApply;
+          HOMEPAGE_POWER_SCHEDULE_DEFAULTS = powerScheduleCfg.defaultsJson;
+        } // {
+          HOMEPAGE_BUILD_MODE_FILE = buildModeStateFile;
+          HOMEPAGE_BUILD_MODE_APPLY_COMMAND = nixBuildModeApply;
+          HOMEPAGE_BUILD_MODE_DEFAULT = vars.buildMode;
         };
         serviceConfig = {
           Type = "simple";
@@ -1851,7 +1910,9 @@ in
             ++ lib.optional offlineMediaEnabledForHomepage offlineMediaStateDir
             # The sudo helpers inherit homepage.service's mount namespace, so
             # offline-media enrollment needs this writable despite running as root.
-            ++ lib.optional offlineMediaEnabledForHomepage vars.usersRoot;
+            ++ lib.optional offlineMediaEnabledForHomepage vars.usersRoot
+            ++ lib.optional powerScheduleCfg.available powerScheduleCfg.stateDir
+            ++ [ deploySettingsDir ];
           ReadOnlyPaths = [
             homepageConfig
           ];
@@ -1861,6 +1922,7 @@ in
       systemd.tmpfiles.rules = [
         "d ${sftpAuthorizedKeysDir} 0755 root root -"
         "d ${vaultRuntimeDir} 0755 root root -"
+        "d ${deploySettingsDir} 0755 root root -"
       ];
 
       security.sudo.extraRules = [
@@ -1905,6 +1967,16 @@ in
             }
             {
               command = "${offlineMediaRemove}";
+              options = [ "NOPASSWD" ];
+            }
+          ] ++ lib.optionals powerScheduleCfg.available [
+            {
+              command = "${powerScheduleApply}";
+              options = [ "NOPASSWD" ];
+            }
+          ] ++ [
+            {
+              command = "${nixBuildModeApply}";
               options = [ "NOPASSWD" ];
             }
           ];

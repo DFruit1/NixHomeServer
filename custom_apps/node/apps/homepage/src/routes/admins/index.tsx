@@ -1,7 +1,9 @@
 import { $, Slot, component$, useContext, useSignal } from '@builder.io/qwik';
 import { HomepageContext } from '../../shared/homepage-context.js';
 import type { AdminStep } from '../../shared/types.js';
+import { BuildModeCard } from '../../components/BuildModeCard.js';
 import { CanaryPanel } from '../../components/CanaryPanel.js';
+import { PowerScheduleCard } from '../../components/PowerScheduleCard.js';
 
 const adminStepMetadata: Record<string, { category: 'network'; executionContext: string }> = {
   'Allow Jellyfin discovery replies with nftables': { category: 'network', executionContext: 'Linux client' },
@@ -112,6 +114,8 @@ export default component$(() => {
   return (
     <>
       {homepage.data?.user?.username === homepage.data?.canaryAdminUser && <CanaryPanel />}
+      {homepage.data?.powerScheduleAvailable && <PowerScheduleCard />}
+      {homepage.data?.buildModeAvailable && <BuildModeCard />}
       <section class="section admin-page">
         <header class="admin-page-header">
           <span class="eyebrow">Server administration</span>

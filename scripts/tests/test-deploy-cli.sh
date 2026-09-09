@@ -409,4 +409,46 @@ if [[ ! -e "$attic_started_marker" || ! -e "$attic_ready_marker" ]]; then
   exit 1
 fi
 
+build_mode_dir="$archive_test_dir/build-mode"
+mkdir -p "$build_mode_dir"
+source scripts/helpers/dashboard-build-mode.sh
+
+mock_ssh() {
+  local behaviour="$1"
+  mkdir -p "$build_mode_dir/bin-$behaviour"
+  cat >"$build_mode_dir/bin-$behaviour/ssh" <<EOF
+#!/usr/bin/env bash
+case "$behaviour" in
+  dashboard-mode) printf '{"schemaVersion":1,"buildMode":"balanced","updatedAt":"2026-09-08T20:00:00Z"}\n' ;;
+  dashboard-invalid) printf '{"schemaVersion":1,"buildMode":"turbo"}\n' ;;
+  dashboard-garbage) printf 'not json at all\n' ;;
+  *) exit 255 ;;
+esac
+EOF
+  make_test_executable "$build_mode_dir/bin-$behaviour/ssh"
+  printf '%s' "$build_mode_dir/bin-$behaviour"
+}
+
+if [[ "$(PATH="$(mock_ssh dashboard-mode):$PATH" read_dashboard_build_mode admin@target.test)" != "balanced" ]]; then
+  echo "❌ Deploy did not adopt a valid dashboard-selected build mode."
+  exit 1
+fi
+for behaviour in dashboard-unreachable dashboard-invalid dashboard-garbage; do
+  if PATH="$(mock_ssh "$behaviour"):$PATH" read_dashboard_build_mode admin@target.test >/dev/null 2>&1; then
+    echo "❌ Dashboard build mode fallback failed for $behaviour."
+    exit 1
+  fi
+done
+
+require_fixed scripts/deploy.sh 'dashboard_build_mode="$(read_dashboard_build_mode "$target_host")"' \
+  "Real deploys must adopt the dashboard-selected build mode from the resolved target host."
+require_fixed scripts/deploy.sh 'source "$script_dir/helpers/dashboard-build-mode.sh"' \
+  "Real deploys must consult the dashboard-selected build mode."
+require_fixed scripts/helpers/dashboard-build-mode.sh 'local|remote|balanced|maximum-effort' \
+  "Dashboard build mode reads must only accept the four known allocation modes."
+require_fixed scripts/helpers/dashboard-build-mode.sh '/var/lib/deploy-settings/build-mode.json' \
+  "Dashboard build mode reads must target the persisted deploy-settings state file."
+require_fixed modules/Core_Modules/homepage/services.nix 'homepage-nix-build-mode-apply' \
+  "The dashboard build mode must be written through a narrowly-scoped root helper."
+
 echo "✅ Deploy CLI tests passed."

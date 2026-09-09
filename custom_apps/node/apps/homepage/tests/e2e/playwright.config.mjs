@@ -9,6 +9,9 @@ const shellQuote = (value) => `'${String(value).replaceAll("'", `'"'"'`)}'`;
 
 export default {
   testDir: '.',
+  // Projects share one fake server, user sessions, and mutable API-key files.
+  // Run them sequentially so one browser cannot invalidate another's state.
+  workers: 1,
   timeout: 30_000,
   expect: {
     timeout: 5_000,

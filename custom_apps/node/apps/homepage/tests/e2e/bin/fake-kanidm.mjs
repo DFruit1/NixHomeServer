@@ -88,7 +88,7 @@ const server = createServer(async (request, response) => {
       return;
     }
     const id = makeSessionToken();
-    flows.set(id, { username, passwordOk: false });
+    flows.set(id, { username, totpOk: false });
     response.setHeader('x-kanidm-auth-session-id', id);
     respond({ choose: account.totp ? ['passwordmfa', 'passkey'] : ['password'] }, [
       `auth-session-id=${id}; Path=/; HttpOnly`,
@@ -105,33 +105,30 @@ const server = createServer(async (request, response) => {
       respond({ denied: 'Unsupported mechanism' });
       return;
     }
-    respond({ continue: mech === 'passwordmfa' ? ['password', 'totp'] : ['password'] });
+    // Kanidm verifies MFA before accepting the password.
+    respond({ continue: mech === 'passwordmfa' ? ['totp'] : ['password'] });
     return;
   }
   if (step.cred?.password !== undefined) {
     const account = accounts.get(flow.username);
-    if (!account || step.cred.password !== account.password) {
+    if (!account || (account.totp && !flow.totpOk) || step.cred.password !== account.password) {
       flows.delete(flowId);
       respond({ denied: 'Incorrect password' });
       return;
     }
-    if (account.totp) {
-      flow.passwordOk = true;
-      respond({ continue: ['totp'] });
-      return;
-    }
+    flows.delete(flowId);
     respond({ success: `bearer-${flow.username}` });
     return;
   }
   if (step.cred?.totp !== undefined) {
     const account = accounts.get(flow.username);
-    if (!flow.passwordOk || !account || String(step.cred.totp) !== account.totp) {
+    if (flow.totpOk || !account || String(step.cred.totp) !== account.totp) {
       flows.delete(flowId);
       respond({ denied: 'Incorrect code' });
       return;
     }
-    flows.delete(flowId);
-    respond({ success: `bearer-${flow.username}` });
+    flow.totpOk = true;
+    respond({ continue: ['password'] });
     return;
   }
   sendJson(response, 400, { error: 'unsupported step' });

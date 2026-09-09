@@ -65,19 +65,23 @@ test('the vault stays locked until a correct second sign-in', async ({ page, bas
   expect(secrets.status()).toBe(401);
 });
 
-test('accounts with TOTP get a second-step prompt', async ({ page, baseURL }) => {
-  void baseURL;
+test('accounts with TOTP get a second-step prompt', async ({ page }) => {
   await page.setExtraHTTPHeaders(identityHeaders('mfa', 'freshrss-users'));
   await page.goto('/keys');
 
-  const startUnlock = async () => {
-    await page.getByLabel('Kanidm password for your account').fill(vaultPassword);
+  const startUnlock = async (password = vaultPassword) => {
+    await page.getByLabel('Kanidm password for your account').fill(password);
     await page.getByRole('button', { name: 'Unlock' }).click();
     await expect(page.getByText('Enter the six-digit code from your authenticator app.')).toBeVisible();
   };
 
   await startUnlock();
   await page.getByLabel('Six-digit sign-in code').fill('000000');
+  await page.getByRole('button', { name: 'Finish unlock' }).click();
+  await expect(page.getByText('That password or code was not accepted.')).toBeVisible();
+
+  await startUnlock('wrong-password');
+  await page.getByLabel('Six-digit sign-in code').fill(totpCode);
   await page.getByRole('button', { name: 'Finish unlock' }).click();
   await expect(page.getByText('That password or code was not accepted.')).toBeVisible();
 

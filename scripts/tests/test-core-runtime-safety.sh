@@ -91,6 +91,22 @@ in {
     script = cfg.systemd.services.fileshare-acl-migrate.script;
     policyVersion = cfg.repo.storage.userRoots.aclPolicyVersion;
   };
+  power = {
+    available = cfg.nixhomeserver.powerSchedule.available;
+    stateFile = cfg.nixhomeserver.powerSchedule.stateFile;
+    defaults = cfg.nixhomeserver.powerSchedule.defaults;
+    defaultsJson = cfg.nixhomeserver.powerSchedule.defaultsJson;
+    timerOnCalendar = cfg.systemd.timers.power-management-nightly-suspend.timerConfig.OnCalendar;
+    suspendScript = cfg.systemd.services.power-management-nightly-suspend.script;
+    tmpfiles = cfg.systemd.tmpfiles.rules;
+    homepageEnv = cfg.systemd.services.homepage.environment;
+    homepageReadWritePaths = cfg.systemd.services.homepage.serviceConfig.ReadWritePaths;
+    homepageSudoCommands = builtins.concatMap
+      (rule: map (command: command.command) rule.commands)
+      (lib.filter (rule: builtins.elem "homepage" rule.users) cfg.security.sudo.extraRules);
+    persistedDirectories = cfg.repo.impermanence.inventory.persistenceDirectories;
+    buildModeEnv = cfg.systemd.services.homepage.environment;
+  };
 }')"
 
 jq -e '
@@ -141,6 +157,29 @@ jq -e '
   and (.fileshareAclMigration.after | index("fileshare-user-root-sync.service") != null)
   and (.fileshareAclMigration as $acl | ($acl.script | contains("fileshare-acl-policy-v" + ($acl.policyVersion | tostring))))
   and (.fileshareAclMigration.script | contains("install -D -m 0600 /dev/null \"$marker\""))
+  and (.power.available == true)
+  and (.power.stateFile == "/var/lib/power-schedule/schedule.json")
+  and (.power.defaults == { enabled: false, wakeTime: "10:30", idleWindowStartHour: 22, forcedWindowEndHour: 10 })
+  and ((.power.defaultsJson | fromjson) == .power.defaults)
+  and (.power.timerOnCalendar == ["*-*-* *:00/15:00"])
+  and (.power.suspendScript | contains("/var/lib/power-schedule/schedule.json"))
+  and (.power.suspendScript | contains("jq -cerf"))
+  and (.power.suspendScript | contains("dashboard power schedule"))
+  and (.power.suspendScript | contains("falling back to Nix defaults"))
+  and (.power.tmpfiles | index("d /var/lib/power-schedule 0755 root root -") != null)
+  and (.power.persistedDirectories | index("/var/lib/power-schedule") != null)
+  and (.power.homepageEnv.HOMEPAGE_POWER_SCHEDULE_FILE == .power.stateFile)
+  and (.power.homepageEnv.HOMEPAGE_POWER_SCHEDULE_APPLY_COMMAND | type == "string" and length > 0)
+  and ((.power.homepageEnv.HOMEPAGE_POWER_SCHEDULE_DEFAULTS | fromjson).wakeTime == "10:30")
+  and (.power.homepageReadWritePaths | index("/var/lib/power-schedule") != null)
+  and (.power as $power | ($power.homepageSudoCommands | index($power.homepageEnv.HOMEPAGE_POWER_SCHEDULE_APPLY_COMMAND)) != null)
+  and (.power.buildModeEnv.HOMEPAGE_BUILD_MODE_FILE == "/var/lib/deploy-settings/build-mode.json")
+  and (.power.buildModeEnv.HOMEPAGE_BUILD_MODE_DEFAULT == "maximum-effort")
+  and (.power.buildModeEnv.HOMEPAGE_BUILD_MODE_APPLY_COMMAND | type == "string" and length > 0)
+  and (.power.homepageReadWritePaths | index("/var/lib/deploy-settings") != null)
+  and (.power as $power | ($power.homepageSudoCommands | index($power.buildModeEnv.HOMEPAGE_BUILD_MODE_APPLY_COMMAND)) != null)
+  and (.power.tmpfiles | index("d /var/lib/deploy-settings 0755 root root -") != null)
+  and (.power.persistedDirectories | index("/var/lib/deploy-settings") != null)
   and (.persistence.directories | index("/etc/nixos") != null)
   and (.persistence.directories | index("/var/lib/postgresql") != null)
   and (.persistence.directories | index("/var/log/caddy") != null)
@@ -199,6 +238,14 @@ require_fixed documentation/quickstart.md 'mount --bind /mnt/persist/etc/nixos /
   "Fresh installs must seed the on-host repository into persisted storage before first rollback."
 require_fixed modules/Core_Modules/impermanence/default.nix 'system.activationScripts.seedCorePersistence' \
   "Existing hosts must migrate newly centralized core persistence before bind mounts hide live state."
+require_fixed modules/Core_Modules/impermanence/default.nix '"/var/lib/power-schedule"' \
+  "The dashboard-editable power schedule must survive root rollback and live impermanence activation."
+require_fixed system-resources.nix 'wakeTime must not fall before the end of the forced-suspend window' \
+  "The shared power-schedule validator must reject wake times inside the forced-suspend window."
+require_fixed system-resources.nix 'forcedWindowEndHour must not be later than idleWindowStartHour' \
+  "The shared power-schedule validator must keep the suspend windows ordered."
+require_fixed system-resources.nix 'Power schedule file is invalid; falling back to Nix defaults' \
+  "The suspend service must fail safe to Nix defaults when the runtime schedule is unreadable."
 require_fixed modules/Core_Modules/impermanence/default.nix '"/var/lib/nixhomeserver-deploy"' \
   "Guarded deployment state must survive root rollback and live impermanence activation."
 require_fixed modules/Core_Modules/impermanence/default.nix 'seed_directory /var/lib/nixhomeserver-deploy' \

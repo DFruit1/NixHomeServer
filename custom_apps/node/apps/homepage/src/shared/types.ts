@@ -4,6 +4,36 @@ export type CurrentUser = {
   groups: string[];
 };
 
+export type PowerScheduleValues = {
+  enabled: boolean;
+  wakeTime: string;
+  idleWindowStartHour: number;
+  forcedWindowEndHour: number;
+};
+
+export type PowerSchedule = PowerScheduleValues & {
+  schemaVersion: 1;
+  skipDate?: string | null;
+  updatedAt?: string;
+};
+
+export type PowerScheduleResponse = {
+  available: boolean;
+  current: PowerSchedule;
+  defaults: PowerScheduleValues;
+  warning?: string;
+};
+
+export type BuildMode = 'local' | 'remote' | 'balanced' | 'maximum-effort';
+
+export type BuildModeResponse = {
+  available: boolean;
+  current: { buildMode: BuildMode; updatedAt?: string };
+  defaultMode: BuildMode;
+  modes: Array<{ value: BuildMode; label: string; description: string }>;
+  warning?: string;
+};
+
 export type ServiceCategory = 'media' | 'files' | 'knowledge' | 'identity' | 'operations';
 
 export type ServiceCard = {
@@ -112,6 +142,8 @@ export type HomepageData = {
   offlineMedia?: OfflineMediaSetup;
   sftp?: SftpAccess;
   canaryAdminUser?: string;
+  powerScheduleAvailable: boolean;
+  buildModeAvailable: boolean;
 };
 
 export type MkvConversionProgress = {

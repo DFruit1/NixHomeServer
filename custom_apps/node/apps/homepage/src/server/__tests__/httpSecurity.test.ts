@@ -48,6 +48,8 @@ describe('homepage mutation request security', () => {
     ['POST', '/api/sftp-key'],
     ['POST', '/api/offline-media/devices'],
     ['POST', '/api/offline-music/device'],
+    ['POST', '/api/power-schedule'],
+    ['POST', '/api/build-mode'],
     ['DELETE', '/api/offline-media/devices/AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH'],
   ])('rejects a sibling-origin %s request to %s', async (method, url) => {
     const response = await request(method, url, '{}', {

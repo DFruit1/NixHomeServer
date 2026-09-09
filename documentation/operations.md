@@ -26,6 +26,24 @@ Kanidm and mints a short-lived step-up session:
 - Sessions live only in the homepage service's memory; a service restart
   locks every vault immediately.
 
+Kanidm validates TOTP **before** the password for password-plus-MFA accounts.
+The page collects the password first, then asks for the authenticator code;
+the backend follows Kanidm's advertised challenge order. While waiting for
+the code, the password stays only in the bounded, in-memory pending flow
+(three-minute expiry), never in cookies, API responses, files, or logs. A code
+submission consumes that flow once; failures require starting the unlock again.
+
+If a correct password produces “That password or code was not accepted”
+before the code prompt, look for `Continue (TOTP)` followed by
+`invalid cred type for handler` / `invalid authentication method in this context`
+in Kanidm's journal. This identifies an old homepage client submitting the
+password too early, rather than a bad password. The September 2026 fix follows
+the requested order and tests against a TOTP-first server. The earlier signed
+session-header fix alone did not fix this sequence. See Kanidm's
+[credential documentation](https://kanidm.github.io/kanidm/stable/accounts/authentication_and_credentials.html#password--totp).
+Upstream service errors and unsupported sign-in methods now produce separate
+errors instead of counting as incorrect passwords.
+
 Operational notes:
 
 - Regenerating the Syncthing API key stops `syncthing.service`, rotates
@@ -1449,6 +1467,14 @@ build:
 | `"remote"` | 0 | all available (`auto`) | all available (`0`) |
 | `"balanced"` | 2 | 2 | 1 |
 | `"maximum-effort"` | all available (`auto`) | all available | all available (`0`) |
+
+The Homepage dashboard (Admin tools → "Nix build mode") can override the
+`vars.nix` default at runtime: it stores the choice in
+`/var/lib/deploy-settings/build-mode.json` on the server, and real deploys read
+it from the resolved target before building. Precedence is
+`--build-mode` / `--build-locally` / `--build-host` (one invocation) →
+dashboard (persisted) → `vars.system.buildMode`. Dry-runs stay hermetic and
+always report the `vars.nix` allocation.
 
 The deployed server limit is written through the native
 `nix.settings.max-jobs` NixOS option. In `local` mode the server daemon remains

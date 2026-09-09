@@ -5,6 +5,7 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$script_dir/helpers/repo-common.sh"
 source "$script_dir/helpers/deploy-command.sh"
+source "$script_dir/helpers/dashboard-build-mode.sh"
 init_repo_root
 cd_repo_root
 ensure_default_nix_config
@@ -19,10 +20,12 @@ Run this helper from a Git checkout. Copied directories and source ZIPs are
 rejected because they do not provide a safe tracked-file deployment manifest.
 
 By default, the target is vars.localAdminUser@vars.serverLanIP and the build
-allocation comes from vars.system.buildMode. Local and remote use all available
+allocation comes from vars.system.buildMode, overridden by the build mode saved
+in the Homepage dashboard when one is set. Local and remote use all available
 slots on one machine, balanced uses two slots on each, and maximum-effort uses
-all available slots on both. --build-mode overrides the configured mode for one invocation.
---build-locally remains an alias for --build-mode local.
+all available slots on both. --build-mode overrides both for one invocation.
+--build-locally remains an alias for --build-mode local. Dry-runs report the
+configured vars.nix allocation and do not consult the dashboard.
 
 Fast mode performs high-value checks: host evaluation, build and target
 free-space checks, a live test activation, failed-unit and route checks, and the
@@ -110,6 +113,7 @@ if [[ "$build_locally" == "true" && -n "$build_mode_override" ]]; then
 fi
 
 need nix
+need jq
 
 local_attic_cache="http://127.0.0.1:8080/nixhomeserver"
 if [[ "${DEPLOY_DRY_RUN:-}" != "1" ]] && nix_uses_substituter "$local_attic_cache"; then
@@ -134,6 +138,24 @@ local_disk_cleanup_monitor_paths="$(nix_flake_var 'builtins.concatStringsSep " "
 local_disk_cleanup_journal_vacuum_time="$(nix_flake_var 'vars.localDiskCleanup.journalVacuumTime')"
 
 configured_build_mode="$(nix_flake_var 'vars.buildMode')"
+
+# Resolve the deployment hostname and target before build-mode selection: the
+# dashboard-selected build mode is stored on the target server and is read as
+# the default allocation for real deploys.
+if [[ -z "$hostname" ]]; then
+  hostname="$(nix_flake_var 'vars.hostname')"
+fi
+if [[ ! "$hostname" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ ]]; then
+  echo "blocked: --hostname must be one DNS hostname label" >&2
+  exit 1
+fi
+
+if [[ -z "$target_host" ]]; then
+  local_admin_user="$(nix_flake_var 'if vars ? localAdminUser then vars.localAdminUser else vars.identity.localAdminUser')"
+  target_address="$(nix_flake_var 'vars.serverLanIP')"
+  target_host="${local_admin_user}@${target_address}"
+fi
+
 if [[ -n "$build_mode_override" ]]; then
   build_mode="$build_mode_override"
 elif [[ "$build_locally" == "true" ]]; then
@@ -142,6 +164,12 @@ elif [[ -n "$build_host" ]]; then
   build_mode="remote"
 else
   build_mode="$configured_build_mode"
+  if [[ "${DEPLOY_DRY_RUN:-}" != "1" ]]; then
+    if dashboard_build_mode="$(read_dashboard_build_mode "$target_host")"; then
+      echo "build mode: using dashboard-selected '${dashboard_build_mode}' (vars.nix default '${configured_build_mode}')"
+      build_mode="$dashboard_build_mode"
+    fi
+  fi
 fi
 
 case "$build_mode" in
@@ -203,20 +231,6 @@ case "$build_mode" in
     remote_build_cores="0"
     ;;
 esac
-
-if [[ -z "$hostname" ]]; then
-  hostname="$(nix_flake_var 'vars.hostname')"
-fi
-if [[ ! "$hostname" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ ]]; then
-  echo "blocked: --hostname must be one DNS hostname label" >&2
-  exit 1
-fi
-
-if [[ -z "$target_host" ]]; then
-  local_admin_user="$(nix_flake_var 'if vars ? localAdminUser then vars.localAdminUser else vars.identity.localAdminUser')"
-  target_address="$(nix_flake_var 'vars.serverLanIP')"
-  target_host="${local_admin_user}@${target_address}"
-fi
 
 if [[ "$build_locally" != "true" && -z "$build_host" ]]; then
   build_host="$target_host"

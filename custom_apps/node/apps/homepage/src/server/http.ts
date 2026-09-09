@@ -5,6 +5,8 @@ import path from 'node:path';
 import { currentUserFromHeaders } from './auth.js';
 import type { AppConfig } from './config.js';
 import { enrollOfflineMediaDevice, getOfflineMediaSetup, OfflineMediaInputError, removeOfflineMediaDevice } from './offlineMedia.js';
+import { applyBuildMode, getBuildMode, BuildModeInputError } from './buildMode.js';
+import { applyPowerSchedule, getPowerSchedule, PowerScheduleInputError } from './power.js';
 import { installSftpPublicKey, normalisePublicKey } from './sftpKey.js';
 import { assertFeatureAccess, buildHomepageData } from './homepageData.js';
 import { getCanaryFailure, getCanaryStatus, triggerCanary } from './canary.js';
@@ -134,6 +136,28 @@ export const handleApiRequest = async (config: AppConfig, request: IncomingMessa
       return true;
     }
 
+    if (request.method === 'GET' && url.pathname === '/api/power-schedule') {
+      sendJson(response, 200, await getPowerSchedule(config, request.headers));
+      return true;
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/power-schedule') {
+      const body = await readMutationJson<unknown>(request);
+      sendJson(response, 200, await applyPowerSchedule(config, request.headers, body));
+      return true;
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/build-mode') {
+      sendJson(response, 200, await getBuildMode(config, request.headers));
+      return true;
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/build-mode') {
+      const body = await readMutationJson<unknown>(request);
+      sendJson(response, 200, await applyBuildMode(config, request.headers, body));
+      return true;
+    }
+
     if (url.pathname.startsWith('/api/')) {
       sendJson(response, 404, { error: 'api route not found' });
       return true;
@@ -144,9 +168,9 @@ export const handleApiRequest = async (config: AppConfig, request: IncomingMessa
     const message = error instanceof Error ? error.message : String(error);
     const status = vaultHttpErrorStatus(error) ?? (message.includes('authenticated user') ? 401
       : message.includes('not authorised') ? 403
-        : message.includes('content type') ? 415
-          : message.includes('too large') ? 413
-            : error instanceof SyntaxError || error instanceof URIError || error instanceof OfflineMediaInputError ? 400
+          : message.includes('content type') ? 415
+            : message.includes('too large') ? 413
+              : error instanceof SyntaxError || error instanceof URIError || error instanceof OfflineMediaInputError || error instanceof PowerScheduleInputError || error instanceof BuildModeInputError ? 400
               : message.startsWith('public key ') || message.startsWith('publicKey ')
                 || message === 'invalid OpenSSH public key'
                 || message === 'invalid or corrupted OpenSSH public key' ? 400

@@ -4,6 +4,7 @@ import type {
   KanidmGroupManagementSource,
   OfflineMediaConnectionAddress,
   OfflineMediaSetup,
+  PowerScheduleValues,
   ServiceCard,
   VaultConfig,
   VaultFeatureGate,
@@ -60,6 +61,18 @@ export type AppConfig = {
   canaryStateDir?: string;
   canaryTriggerCommand?: string;
   mkvmakerProgressFile?: string;
+  powerSchedule?: {
+    available: true;
+    stateFile: string;
+    applyCommand?: string;
+    defaults: PowerScheduleValues;
+  };
+  buildMode?: {
+    available: true;
+    stateFile: string;
+    applyCommand?: string;
+    defaultMode: string;
+  };
   homepage: HomepageConfig;
 };
 
@@ -249,6 +262,73 @@ export const normaliseVaultConfig = (value: unknown): VaultConfig | undefined =>
   };
 };
 
+const normalisePowerScheduleDefaults = (value: unknown): PowerScheduleValues | undefined => {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return undefined;
+  }
+  const raw = value as Record<string, unknown>;
+  const hour = (candidate: unknown): candidate is number =>
+    typeof candidate === 'number' && Number.isInteger(candidate) && candidate >= 0 && candidate <= 23;
+  if (typeof raw.enabled !== 'boolean') {
+    return undefined;
+  }
+  if (typeof raw.wakeTime !== 'string' || !/^([01][0-9]|2[0-3]):[0-5][0-9]$/.test(raw.wakeTime)) {
+    return undefined;
+  }
+  if (!hour(raw.idleWindowStartHour) || !hour(raw.forcedWindowEndHour) || raw.forcedWindowEndHour > raw.idleWindowStartHour) {
+    return undefined;
+  }
+  return {
+    enabled: raw.enabled,
+    wakeTime: raw.wakeTime,
+    idleWindowStartHour: raw.idleWindowStartHour,
+    forcedWindowEndHour: raw.forcedWindowEndHour,
+  };
+};
+
+const normalisePowerScheduleConfig = (): AppConfig['powerSchedule'] | undefined => {
+  const stateFile = process.env.HOMEPAGE_POWER_SCHEDULE_FILE;
+  const defaults = safeJsonParse(process.env.HOMEPAGE_POWER_SCHEDULE_DEFAULTS);
+  if (!stateFile || !defaults) {
+    return undefined;
+  }
+  const normalisedDefaults = normalisePowerScheduleDefaults(defaults);
+  if (!normalisedDefaults) {
+    return undefined;
+  }
+  return {
+    available: true,
+    stateFile,
+    applyCommand: process.env.HOMEPAGE_POWER_SCHEDULE_APPLY_COMMAND,
+    defaults: normalisedDefaults,
+  };
+};
+
+const safeJsonParse = (raw: string | undefined): unknown => {
+  if (!raw) {
+    return undefined;
+  }
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return undefined;
+  }
+};
+
+const normaliseBuildModeConfig = (): AppConfig['buildMode'] | undefined => {
+  const stateFile = process.env.HOMEPAGE_BUILD_MODE_FILE;
+  const defaultMode = process.env.HOMEPAGE_BUILD_MODE_DEFAULT;
+  if (!stateFile || !defaultMode || !['local', 'remote', 'balanced', 'maximum-effort'].includes(defaultMode)) {
+    return undefined;
+  }
+  return {
+    available: true,
+    stateFile,
+    applyCommand: process.env.HOMEPAGE_BUILD_MODE_APPLY_COMMAND,
+    defaultMode,
+  };
+};
+
 export const loadConfig = (): AppConfig => ({
   host: process.env.HOMEPAGE_HOST ?? '127.0.0.1',
   port: numberFromEnv('HOMEPAGE_PORT', 8084),
@@ -269,5 +349,7 @@ export const loadConfig = (): AppConfig => ({
   canaryStateDir: process.env.HOMEPAGE_CANARY_STATE_DIR,
   canaryTriggerCommand: process.env.HOMEPAGE_CANARY_TRIGGER_COMMAND,
   mkvmakerProgressFile: process.env.HOMEPAGE_MKVMAKER_PROGRESS_FILE,
+  powerSchedule: normalisePowerScheduleConfig(),
+  buildMode: normaliseBuildModeConfig(),
   homepage: loadHomepageConfig(process.env.HOMEPAGE_CONFIG_FILE),
 });

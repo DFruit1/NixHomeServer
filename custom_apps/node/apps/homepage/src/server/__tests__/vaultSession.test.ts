@@ -119,10 +119,10 @@ describe('vault unlock via Kanidm', () => {
     expect(requests[3].headers.authorization).toBe('Bearer bearer-token-1');
   });
 
-  it('uses the passwordmfa mechanism and asks for a TOTP when the account requires it', async () => {
+  it('also follows a server that explicitly requests password before TOTP', async () => {
     const stub = kanidmFetchStub([
       { status: 200, state: { choose: ['passwordmfa', 'passkey'] }, cookies: ['auth-session-id=totp1'], sessionHeader: KANIDM_SESSION_JWS },
-      { status: 200, state: { continue: ['password', 'totp'] }, sessionHeader: KANIDM_SESSION_JWS },
+      { status: 200, state: { continue: ['password'] }, sessionHeader: KANIDM_SESSION_JWS },
       { status: 200, state: { continue: ['totp'] }, sessionHeader: KANIDM_SESSION_JWS },
     ]);
     const outcome = await attemptVaultUnlock(baseConfig(), headersFor('alice'), user('alice'), { password: 'correct horse' }, stub.fetchImpl);
@@ -150,6 +150,170 @@ describe('vault unlock via Kanidm', () => {
     expect(reused.kind).toBe('denied');
   });
 
+  it('unlocks with real Kanidm TOTP-first MFA and follows rotated session credentials', async () => {
+    const username = 'totp-first-success';
+    const stub = kanidmFetchStub([
+      { status: 200, state: { choose: ['passwordmfa', 'passkey'] }, cookies: ['auth-session-id=init'], sessionHeader: KANIDM_SESSION_JWS },
+      { status: 200, state: { continue: ['totp'] }, cookies: ['auth-session-id=begin'], sessionHeader: 'Signed.Begin-JWS' },
+      { status: 200, state: { continue: ['password'] }, cookies: ['auth-session-id=after-totp'], sessionHeader: 'Signed.Totp-JWS' },
+      { status: 200, state: { success: 'mfa-token' }, cookies: ['auth-session-id=complete'] },
+    ]);
+    const pending = await attemptVaultUnlock(baseConfig(), headersFor(username), user(username), { password: 'correct horse' }, stub.fetchImpl);
+    expect(pending.kind).toBe('totp-required');
+    // Kanidm rejects a password here: only the authenticator code is allowed.
+    expect(stub.requests()).toHaveLength(2);
+    expect(JSON.stringify(pending)).not.toContain('correct horse');
+    if (pending.kind !== 'totp-required') throw new Error('Expected a TOTP challenge');
+
+    const unlocked = await attemptVaultUnlock(baseConfig(), headersFor(username), user(username), {
+      pendingId: pending.pendingId, totp: '012345',
+    }, stub.fetchImpl);
+    expect(unlocked.kind).toBe('unlocked');
+    const requests = stub.requests();
+    expect(requests[2].body).toEqual({ step: { cred: { totp: 12345 } } });
+    expect(requests[2].headers.cookie).toBe('auth-session-id=begin');
+    expect(requests[2].headers['x-kanidm-auth-session-id']).toBe('Signed.Begin-JWS');
+    expect(requests[3].body).toEqual({ step: { cred: { password: 'correct horse' } } });
+    expect(requests[3].headers.cookie).toBe('auth-session-id=after-totp');
+    expect(requests[3].headers['x-kanidm-auth-session-id']).toBe('Signed.Totp-JWS');
+    expect(requests[4].url).toBe('https://id.example.test:8443/v1/logout');
+    expect(requests[4].headers.authorization).toBe('Bearer mfa-token');
+    expect(requests[4].headers.cookie).toBe('auth-session-id=complete');
+    if (unlocked.kind !== 'unlocked') throw new Error('Expected an unlocked session');
+    expect(activeVaultSessionForUser(baseConfig(), headersFor(username, `${VAULT_COOKIE_NAME}=${unlocked.token}`), user(username))).toBe(true);
+  });
+
+  it('does not send the retained password after a wrong TOTP', async () => {
+    const username = 'totp-first-bad-code';
+    const stub = kanidmFetchStub([
+      { status: 200, state: { choose: ['passwordmfa'] } },
+      { status: 200, state: { continue: ['totp'] } },
+      { status: 200, state: { denied: 'incorrect totp' } },
+    ]);
+    const pending = await attemptVaultUnlock(baseConfig(), headersFor(username), user(username), { password: 'correct horse' }, stub.fetchImpl);
+    expect(pending.kind).toBe('totp-required');
+    if (pending.kind !== 'totp-required') throw new Error('Expected a TOTP challenge');
+    const denied = await attemptVaultUnlock(baseConfig(), headersFor(username), user(username), {
+      pendingId: pending.pendingId, totp: '654321',
+    }, stub.fetchImpl);
+    expect(denied.kind).toBe('denied');
+    expect(stub.requests().map((request) => request.body)).toEqual([
+      { step: { init2: { username, issue: 'token', privileged: false } } },
+      { step: { begin: 'passwordmfa' } },
+      { step: { cred: { totp: 654321 } } },
+    ]);
+    const replay = await submitKanidmTotp(baseConfig(), pending.pendingId, username, '654321', stub.fetchImpl);
+    expect(replay.kind).toBe('denied');
+    expect(stub.requests()).toHaveLength(3);
+  });
+
+  it('does not unlock when a valid TOTP is followed by an incorrect password', async () => {
+    const username = 'totp-first-bad-password';
+    const stub = kanidmFetchStub([
+      { status: 200, state: { choose: ['passwordmfa'] } },
+      { status: 200, state: { continue: ['totp'] } },
+      { status: 200, state: { continue: ['password'] } },
+      { status: 200, state: { denied: 'incorrect password' } },
+    ]);
+    const pending = await attemptVaultUnlock(baseConfig(), headersFor(username), user(username), { password: 'wrong' }, stub.fetchImpl);
+    expect(pending.kind).toBe('totp-required');
+    if (pending.kind !== 'totp-required') throw new Error('Expected a TOTP challenge');
+    const denied = await attemptVaultUnlock(baseConfig(), headersFor(username), user(username), {
+      pendingId: pending.pendingId, totp: '654321',
+    }, stub.fetchImpl);
+    expect(denied.kind).toBe('denied');
+    expect(stub.requests()).toHaveLength(4);
+    expect(stub.requests()[3].body).toEqual({ step: { cred: { password: 'wrong' } } });
+    expect(denied).not.toHaveProperty('token');
+  });
+
+  it('recognizes TOTP offered alongside a structured security-key challenge', async () => {
+    const username = 'totp-with-securitykey';
+    const stub = kanidmFetchStub([
+      { status: 200, state: { choose: ['passwordmfa'] } },
+      { status: 200, state: { continue: ['totp', { securitykey: { publicKey: { challenge: 'test-challenge' } } }] } },
+    ]);
+    const outcome = await attemptVaultUnlock(baseConfig(), headersFor(username), user(username), { password: 'pw' }, stub.fetchImpl);
+    expect(outcome.kind).toBe('totp-required');
+    expect(stub.requests()).toHaveLength(2);
+  });
+
+  it('enforces the pending TOTP expiry during submission before the sweeper runs', async () => {
+    const username = 'expired-totp';
+    // Use password-first compatibility to isolate expiry from factor ordering.
+    const start = kanidmFetchStub([
+      { status: 200, state: { choose: ['passwordmfa'] } },
+      { status: 200, state: { continue: ['password'] } },
+      { status: 200, state: { continue: ['totp'] } },
+    ]);
+    const now = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+    try {
+      const pending = await attemptVaultUnlock(baseConfig(), headersFor(username), user(username), { password: 'pw' }, start.fetchImpl);
+      expect(pending.kind).toBe('totp-required');
+      if (pending.kind !== 'totp-required') throw new Error('Expected a TOTP challenge');
+      clock.mockReturnValue(now + 3 * 60 * 1000 + 1);
+      const finish = kanidmFetchStub([{ status: 200, state: { success: 'expired-token' } }]);
+      const outcome = await submitKanidmTotp(baseConfig(), pending.pendingId, username, '654321', finish.fetchImpl);
+      expect(outcome.kind).toBe('denied');
+      expect(finish.requests()).toHaveLength(0);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('allows only one upstream submission when a pending TOTP is submitted concurrently', async () => {
+    const username = 'concurrent-totp';
+    const start = kanidmFetchStub([
+      { status: 200, state: { choose: ['passwordmfa'] } },
+      { status: 200, state: { continue: ['password'] } },
+      { status: 200, state: { continue: ['totp'] } },
+    ]);
+    const pending = await attemptVaultUnlock(baseConfig(), headersFor(username), user(username), { password: 'pw' }, start.fetchImpl);
+    expect(pending.kind).toBe('totp-required');
+    if (pending.kind !== 'totp-required') throw new Error('Expected a TOTP challenge');
+    const finish = kanidmFetchStub([{ status: 200, state: { success: 'concurrent-token' } }]);
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const delayedFetch: FetchLike = async (url, init) => {
+      await gate;
+      return finish.fetchImpl(url, init);
+    };
+    const first = submitKanidmTotp(baseConfig(), pending.pendingId, username, '654321', delayedFetch);
+    const replay = submitKanidmTotp(baseConfig(), pending.pendingId, username, '654321', delayedFetch);
+    release();
+    const outcomes = await Promise.all([first, replay]);
+    expect(outcomes.map((outcome) => outcome.kind).sort()).toEqual(['denied', 'success']);
+    expect(finish.requests().filter((request) => request.url.endsWith('/v1/auth'))).toHaveLength(1);
+  });
+
+  it('reports a Kanidm begin outage as an error rather than invalid credentials', async () => {
+    const username = 'begin-outage';
+    const stub = kanidmFetchStub([
+      { status: 200, state: { choose: ['passwordmfa'] } },
+      { status: 503, state: undefined },
+    ]);
+    const outcome = await attemptVaultUnlock(baseConfig(), headersFor(username), user(username), { password: 'pw' }, stub.fetchImpl);
+    expect(outcome.kind).toBe('error');
+  });
+
+  it('reports a Kanidm TOTP outage as an error rather than invalid credentials', async () => {
+    const username = 'totp-outage';
+    const stub = kanidmFetchStub([
+      { status: 200, state: { choose: ['passwordmfa'] } },
+      { status: 200, state: { continue: ['password'] } },
+      { status: 200, state: { continue: ['totp'] } },
+      { status: 503, state: undefined },
+    ]);
+    const pending = await attemptVaultUnlock(baseConfig(), headersFor(username), user(username), { password: 'pw' }, stub.fetchImpl);
+    expect(pending.kind).toBe('totp-required');
+    if (pending.kind !== 'totp-required') throw new Error('Expected a TOTP challenge');
+    const outcome = await attemptVaultUnlock(baseConfig(), headersFor(username), user(username), {
+      pendingId: pending.pendingId, totp: '654321',
+    }, stub.fetchImpl);
+    expect(outcome.kind).toBe('error');
+  });
+
   it('reports denial when the password is wrong', async () => {
     const stub = kanidmFetchStub([
       { status: 200, state: { choose: ['password'] }, cookies: ['auth-session-id=abc123'] },
@@ -160,12 +324,12 @@ describe('vault unlock via Kanidm', () => {
     expect(outcome.kind).toBe('denied');
   });
 
-  it('reports denial for accounts without password authentication', async () => {
+  it('explains when the account does not offer password authentication', async () => {
     const stub = kanidmFetchStub([
       { status: 200, state: { choose: ['passkey'] } },
     ]);
     const outcome = await attemptVaultUnlock(baseConfig(), headersFor('alice'), user('alice'), { password: 'whatever' }, stub.fetchImpl);
-    expect(outcome.kind).toBe('denied');
+    expect(outcome).toEqual({ kind: 'error', message: 'This account does not offer password sign-in for the vault.' });
   });
 
   it('reports an error when Kanidm is unreachable', async () => {

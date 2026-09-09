@@ -6,17 +6,16 @@ let
     cpuGovernor = "powersave";
     nightlySuspend = {
       # Suspends to RAM (S3): while suspended, Cloudflare Tunnel, DNS, and all
-      # hosted services are offline until the RTC wake. From 22:00 the host is
-      # re-checked every 15 minutes and suspended only while idle (low CPU,
-      # disk, network, and memory usage); from midnight the suspend is forced
-      # regardless of load, and the host wakes at wakeTime. Overnight
-      # Persistent=true maintenance timers catch up after the wake.
-      enable = true;
-      idleCheckCalendar = "*-*-* 22,23:00/15:00"; # Usage-gated checks at 22:00, 22:15, ... 23:45.
-      forcedCalendar = "*-*-* 00..09:00:00"; # Guaranteed midnight cutoff plus hourly retries if a suspend was inhibited.
+      # hosted services are offline until the RTC wake. The host is re-checked
+      # every 15 minutes and suspended only while idle (low CPU, disk, network,
+      # and memory usage) from idleWindowStartHour; earlier hours force the
+      # suspend regardless of load, and the host wakes at wakeTime. These
+      # values are only the defaults: the dashboard power schedule at
+      # /var/lib/power-schedule/schedule.json overrides them at runtime.
+      enable = false;
       wakeTime = "10:30";
-      idleWindowStartHour = 22; # First hour of usage-gated checks.
-      forcedWindowEndHour = 10; # Hours before this (00:00-09:59) force the suspend.
+      idleWindowStartHour = 22; # Default first hour of usage-gated checks.
+      forcedWindowEndHour = 10; # Default end of the forced window (00:00-09:59).
       sampleSeconds = 10; # Usage sampling window for each evening check.
       cpuBusyPercent = 25; # CPU busy percentage at or above which the host counts as active.
       diskBusyKiBps = 512; # Disk throughput at or above which the host counts as active.
@@ -58,6 +57,62 @@ let
   moduleEnabled = name: hasModule name && (config.repo.${name}.enable or true);
   nightlySuspend = power.nightlySuspend;
 
+  powerScheduleStateDir = "/var/lib/power-schedule";
+  powerScheduleStateFile = "${powerScheduleStateDir}/schedule.json";
+  powerScheduleHoldFile = "${powerScheduleStateDir}/resume-hold.json";
+  powerScheduleDefaults = {
+    enabled = nightlySuspend.enable;
+    wakeTime = nightlySuspend.wakeTime;
+    idleWindowStartHour = nightlySuspend.idleWindowStartHour;
+    forcedWindowEndHour = nightlySuspend.forcedWindowEndHour;
+  };
+  # Canonical validator for the dashboard-maintained schedule file. Both the
+  # suspend service (reading) and the Homepage sudo helper (writing) run the
+  # same program so the root-owned state can never drift between the two.
+  powerScheduleValidator = pkgs.writeText "power-schedule-validate.jq" ''
+    def schedule_keys: (keys_unsorted | sort);
+    def wake_minutes:
+      if test("^(?:[01][0-9]|2[0-3]):[0-5][0-9]$") then
+        split(":") | map(tonumber) | .[0] * 60 + .[1]
+      else null end;
+    def expected_keys:
+      ["enabled", "forcedWindowEndHour", "idleWindowStartHour", "schemaVersion", "wakeTime"];
+    def key_set_ok:
+      (schedule_keys) as $keys
+      | ($keys == expected_keys
+         or $keys == ((expected_keys + ["skipDate"]) | sort)
+         or $keys == ((expected_keys + ["updatedAt"]) | sort)
+         or $keys == (expected_keys - ["schemaVersion"])
+         or $keys == (((expected_keys - ["schemaVersion"]) + ["updatedAt"]) | sort)
+         or $keys == (((expected_keys - ["schemaVersion"]) + ["skipDate"]) | sort)
+         or $keys == (((expected_keys - ["schemaVersion"]) + ["skipDate", "updatedAt"]) | sort));
+    if (key_set_ok | not)
+    then error("power schedule must contain exactly schemaVersion, enabled, wakeTime, idleWindowStartHour, forcedWindowEndHour, and an optional updatedAt")
+    elif (has("schemaVersion") and ((.schemaVersion | type) != "number" or .schemaVersion != 1))
+    then error("schemaVersion must be 1")
+    elif ((.enabled | type) != "boolean") then error("enabled must be a boolean")
+    elif ((.wakeTime | type) != "string") then error("wakeTime must be an HH:MM string")
+    elif (((.wakeTime | wake_minutes)) == null) then error("wakeTime must be an HH:MM time between 00:00 and 23:59")
+    elif ((.idleWindowStartHour | type) != "number"
+          or ((.idleWindowStartHour | floor) != .idleWindowStartHour)
+          or .idleWindowStartHour < 0 or .idleWindowStartHour > 23)
+    then error("idleWindowStartHour must be a whole hour between 0 and 23")
+    elif ((.forcedWindowEndHour | type) != "number"
+          or ((.forcedWindowEndHour | floor) != .forcedWindowEndHour)
+          or .forcedWindowEndHour < 0 or .forcedWindowEndHour > 23)
+    then error("forcedWindowEndHour must be a whole hour between 0 and 23")
+    elif (has("skipDate") and .skipDate != null and ((.skipDate | type) != "string" or (.skipDate | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$") | not)))
+    then error("skipDate must be an ISO calendar date")
+    elif (.forcedWindowEndHour > .idleWindowStartHour)
+    then error("forcedWindowEndHour must not be later than idleWindowStartHour")
+    elif (((.wakeTime | wake_minutes)) < (.forcedWindowEndHour * 60))
+    then error("wakeTime must not fall before the end of the forced-suspend window")
+    elif (has("updatedAt")
+          and (((.updatedAt | type) != "string") or ((.updatedAt | length) > 40)))
+    then error("updatedAt must be a timestamp string of at most 40 characters")
+    else . end
+  '';
+
   usbDenyRule = device:
     let
       deviceName =
@@ -90,6 +145,7 @@ let
     coreutils
     gawk
     gnugrep
+    jq
     procps
     systemd
     util-linux
@@ -106,8 +162,49 @@ let
     ]
     ++ lib.optional isX86 kernelPackages.turbostat;
 in
-lib.mkMerge [
-  {
+{
+  options.nixhomeserver.powerSchedule = lib.mkOption {
+    type = lib.types.submodule {
+      options = {
+        available = lib.mkOption {
+          type = lib.types.bool;
+          description = "Whether the nightly suspend schedule can be edited from the dashboard.";
+        };
+        stateDir = lib.mkOption {
+          type = lib.types.str;
+          description = "Directory holding the runtime-edited power schedule.";
+        };
+        stateFile = lib.mkOption {
+          type = lib.types.str;
+          description = "Runtime-edited power schedule consumed by the suspend service.";
+        };
+        validator = lib.mkOption {
+          type = lib.types.path;
+          description = "Shared jq program validating both stored schedules and dashboard submissions.";
+        };
+        defaults = lib.mkOption {
+          type = lib.types.submodule {
+            options = {
+              enabled = lib.mkOption { type = lib.types.bool; };
+              wakeTime = lib.mkOption { type = lib.types.str; };
+              idleWindowStartHour = lib.mkOption { type = lib.types.ints.between 0 23; };
+              forcedWindowEndHour = lib.mkOption { type = lib.types.ints.between 0 23; };
+            };
+          };
+          description = "Nix defaults used when the runtime schedule file is absent or invalid.";
+        };
+        defaultsJson = lib.mkOption {
+          type = lib.types.str;
+          description = "The Nix defaults as a JSON payload for the Homepage environment.";
+        };
+      };
+    };
+    readOnly = true;
+    description = "Runtime-editable nightly suspend schedule shared by the suspend service and the Homepage dashboard.";
+  };
+
+  config = lib.mkMerge [
+    {
     zramSwap = {
       enable = true;
       memoryPercent = 25;
@@ -237,9 +334,23 @@ lib.mkMerge [
     services.fstrim.enable = true;
     services.fstrim.interval = power.fstrimCalendar;
     services.udev.extraRules = lib.mkIf usbCfg.enable usbAutoSuspendRules;
+
+    # Homepage consumes this capability metadata even when the nightly
+    # suspend service is disabled. Keep the shape defined so the disabled
+    # state evaluates cleanly while keeping the admin control available.
+    nixhomeserver.powerSchedule = {
+      # Keep the admin control available even when the Nix default disables
+      # sleep; the dashboard may enable or disable the runtime schedule.
+      available = power.enable;
+      stateDir = powerScheduleStateDir;
+      stateFile = powerScheduleStateFile;
+      validator = powerScheduleValidator;
+      defaults = powerScheduleDefaults;
+      defaultsJson = builtins.toJSON powerScheduleDefaults;
+    };
   })
 
-  (lib.mkIf (power.enable && nightlySuspend.enable) {
+  (lib.mkIf power.enable {
     systemd.sleep.settings.Sleep = {
       AllowSuspend = "yes";
       AllowHibernation = "no";
@@ -249,7 +360,7 @@ lib.mkMerge [
     };
 
     systemd.services.power-management-nightly-suspend = {
-      description = "Nightly suspend: usage-gated evening checks with a guaranteed midnight cutoff";
+      description = "Nightly suspend: evaluates the dashboard-editable power schedule every 15 minutes";
       path = nightlySuspendPath;
       serviceConfig = {
         Type = "oneshot";
@@ -260,26 +371,73 @@ lib.mkMerge [
         hour="$(date +%-H)"
         now_epoch="$(date +%s)"
 
-        if [[ "$hour" -ge ${toString nightlySuspend.forcedWindowEndHour} && "$hour" -lt ${toString nightlySuspend.idleWindowStartHour} ]]; then
-          echo "Daytime hours; suspend is not considered before ${toString nightlySuspend.idleWindowStartHour}:00."
+        # Effective schedule: the dashboard-maintained runtime file overrides
+        # the Nix defaults whenever it exists and passes the shared validator.
+        schedule_enabled="${lib.boolToString nightlySuspend.enable}"
+        schedule_wake=${wakeTime}
+        schedule_idle_start=${toString nightlySuspend.idleWindowStartHour}
+        schedule_forced_end=${toString nightlySuspend.forcedWindowEndHour}
+        schedule_skip_date=""
+        schedule_source="Nix defaults"
+
+        if [[ -r ${lib.escapeShellArg powerScheduleStateFile} ]]; then
+          if canonical="$(jq -cerf ${lib.escapeShellArg powerScheduleValidator} ${lib.escapeShellArg powerScheduleStateFile} 2>/dev/null)"; then
+            schedule_enabled="$(jq -er '.enabled | tostring' <<<"$canonical")"
+            schedule_wake="$(jq -er '.wakeTime' <<<"$canonical")"
+            schedule_idle_start="$(jq -er '.idleWindowStartHour' <<<"$canonical")"
+            schedule_forced_end="$(jq -er '.forcedWindowEndHour' <<<"$canonical")"
+            schedule_skip_date="$(jq -r '.skipDate // ""' <<<"$canonical")"
+            schedule_source="dashboard power schedule"
+          else
+            echo "Power schedule file is invalid; falling back to Nix defaults." >&2
+          fi
+        fi
+
+        if [[ "$schedule_enabled" != "true" ]]; then
+          echo "Nightly suspend is disabled by the dashboard power schedule."
           exit 0
         fi
 
         today="$(date +%F)"
-        wake_epoch="$(date --date="$today ${wakeTime}" +%s)"
+        if [[ "$schedule_skip_date" == "$today" ]]; then
+          echo "Nightly suspend is postponed for today by the dashboard power schedule."
+          exit 0
+        fi
+
+        if [[ -r ${lib.escapeShellArg powerScheduleHoldFile} ]]; then
+          hold_until="$(jq -er '.holdUntil | numbers' ${lib.escapeShellArg powerScheduleHoldFile} 2>/dev/null || true)"
+          if [[ "$hold_until" =~ ^[0-9]+$ ]] && (( now_epoch < hold_until )); then
+            echo "Deferring suspend until the next evening window after an early wake-up."
+            exit 0
+          fi
+          rm -f ${lib.escapeShellArg powerScheduleHoldFile}
+        fi
+
+        if [[ "$hour" -ge "$schedule_forced_end" && "$hour" -lt "$schedule_idle_start" ]]; then
+          echo "Daytime hours; suspend is not considered before $schedule_idle_start:00."
+          exit 0
+        fi
+
+        wake_epoch="$(date --date="$today $schedule_wake" +%s)"
         if [[ "$wake_epoch" -le "$now_epoch" ]]; then
-          wake_epoch="$(date --date="tomorrow ${wakeTime}" +%s)"
+          wake_epoch="$(date --date="tomorrow $schedule_wake" +%s)"
         fi
 
         suspend_now() {
-          echo "Scheduling RTC wake at ${wakeTime} and suspending."
+          echo "Scheduling RTC wake at $schedule_wake and suspending."
+          hold_until="$(date --date="today $schedule_idle_start:00" +%s)"
+          if (( hold_until <= now_epoch )); then
+            hold_until="$(date --date="tomorrow $schedule_idle_start:00" +%s)"
+          fi
+          printf '{"holdUntil":%s}\n' "$hold_until" > ${lib.escapeShellArg powerScheduleHoldFile}.new
+          mv -f ${lib.escapeShellArg powerScheduleHoldFile}.new ${lib.escapeShellArg powerScheduleHoldFile}
           rtcwake -m no -t "$wake_epoch"
           systemctl suspend
         }
 
-        if [[ "$hour" -lt ${toString nightlySuspend.forcedWindowEndHour} ]]; then
+        if [[ "$hour" -lt "$schedule_forced_end" ]]; then
           # Guaranteed overnight cutoff: suspend regardless of load, sessions,
-          # or blocker units. The hourly timer retries if this was inhibited.
+          # or blocker units. The 15-minute timer retries if this was inhibited.
           suspend_now
           exit 0
         fi
@@ -385,15 +543,21 @@ lib.mkMerge [
     };
 
     systemd.timers.power-management-nightly-suspend = {
-      description = "Nightly suspend: usage-gated checks from ${toString nightlySuspend.idleWindowStartHour}:00, guaranteed cutoff at midnight";
+      description = "Nightly suspend: evaluates the dashboard-editable power schedule every 15 minutes";
       wantedBy = [ "timers.target" ];
       timerConfig = {
-        OnCalendar = [
-          nightlySuspend.idleCheckCalendar
-          nightlySuspend.forcedCalendar
-        ];
+        # The schedule windows (and even the enable switch) are runtime data,
+        # so the timer fires all day and the script applies the configured
+        # windows itself. Daytime runs exit immediately.
+        OnCalendar = [ "*-*-* *:00/15:00" ];
         Persistent = false;
       };
     };
+
+    systemd.tmpfiles.rules = [
+      "d ${powerScheduleStateDir} 0755 root root -"
+    ];
+
   })
-]
+  ];
+}

@@ -68,6 +68,8 @@ export const buildHomepageData = async (config: AppConfig, headers: IncomingHttp
     kanidmGroupDescriptions: isAdmin ? fillGroupDescriptions(kanidmGroups, config.homepage.kanidmGroupDescriptions) : undefined,
     kanidmGroupManagement: isAdmin ? config.homepage.kanidmGroupManagement : undefined,
     canaryAdminUser: isAdmin ? config.homepage.canaryAdminUser : undefined,
+    powerScheduleAvailable: config.powerSchedule?.available ?? false,
+    buildModeAvailable: config.buildMode?.available ?? false,
     user,
     isAdmin,
     sftp: sftp ? {

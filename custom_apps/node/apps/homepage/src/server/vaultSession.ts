@@ -48,6 +48,8 @@ type PendingTotp = {
   cookie: string;
   sessionHeader?: string;
   createdAt: number;
+  // Retained only until the TOTP challenge completes or this short-lived flow expires.
+  password?: string;
 };
 
 type LoginAttemptState = {
@@ -365,10 +367,13 @@ const parseKanidmState = (body: unknown): KanidmAuthState | undefined => {
     return undefined;
   }
   const [kind, value] = entries[0];
-  if ((kind === 'choose' || kind === 'continue') && Array.isArray(value) && value.every((item) => typeof item === 'string')) {
-    return kind === 'choose'
-      ? { kind: 'choose', mechs: value as string[] }
-      : { kind: 'continue', allowed: value as string[] };
+  if (kind === 'choose' && Array.isArray(value) && value.every((item) => typeof item === 'string')) {
+    return { kind: 'choose', mechs: value };
+  }
+  if (kind === 'continue' && Array.isArray(value)) {
+    // AuthAllowed also includes structured security-key challenges. Keep the
+    // supported string methods even when such an alternative is present.
+    return { kind: 'continue', allowed: value.filter((item): item is string => typeof item === 'string') };
   }
   if (kind === 'success' && typeof value === 'string') {
     return { kind: 'success', token: value };
@@ -402,6 +407,11 @@ const postKanidmAuth = async (
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
+  // Transport/protocol failures are not incorrect credentials and must not
+  // consume the user's failed-password budget.
+  if (response.status !== 200 && response.status !== 401) {
+    throw new Error('vault identity verification is unavailable');
+  }
   const cookies = collectKanidmCookies(response.headers);
   // The value is a signed JWS (mixed-case base64url). Never normalise its
   // case: Kanidm prefers this header over the cookie when resolving the auth
@@ -416,7 +426,7 @@ const postKanidmAuth = async (
   }
   return {
     status: response.status,
-    state: parseKanidmState(bodyJson),
+    state: response.status === 401 ? { kind: 'denied', message: '' } : parseKanidmState(bodyJson),
     cookies,
     sessionHeader: nextSessionHeader,
   };
@@ -474,7 +484,7 @@ export const startKanidmPasswordAuth = async (
   }
   const mechs = init.state.mechs;
   if (!mechs.includes('password') && !mechs.includes('passwordmfa')) {
-    return { kind: 'denied' };
+    throw new Error('This account does not offer password sign-in for the vault.');
   }
   const mech = mechs.includes('passwordmfa') ? 'passwordmfa' : 'password';
   cookie = mergeCookies(cookie, init.cookies);
@@ -483,11 +493,23 @@ export const startKanidmPasswordAuth = async (
   sessionHeader = init.sessionHeader ?? sessionHeader;
 
   const begin = await postKanidmAuth(fetchImpl, kanidmUrl, { step: { begin: mech } }, cookie, sessionHeader);
-  if (begin.state?.kind === 'denied' || begin.status !== 200 || begin.state?.kind !== 'continue') {
+  if (begin.state?.kind === 'denied') {
     return { kind: 'denied' };
+  }
+  if (begin.state?.kind !== 'continue') {
+    throw new Error('vault identity verification is unavailable');
   }
   cookie = mergeCookies(cookie, [...init.cookies, ...begin.cookies]);
   sessionHeader = begin.sessionHeader ?? sessionHeader;
+
+  // Kanidm passwordmfa requests TOTP BEFORE the password. Never submit a
+  // credential the current challenge does not allow.
+  if (begin.state.allowed.includes('totp')) {
+    return registerPendingTotp(username, cookie, sessionHeader, password);
+  }
+  if (!begin.state.allowed.includes('password')) {
+    throw new Error('This account requires a sign-in method the vault does not support.');
+  }
 
   const cred = await postKanidmAuth(
     fetchImpl,
@@ -530,29 +552,41 @@ export const submitKanidmTotp = async (
   if (!pending || pending.username !== username) {
     return { kind: 'denied' };
   }
+  // Consume before awaiting I/O: concurrent requests must not reuse a flow.
+  pendingTotps.delete(pendingId);
+  if (Date.now() - pending.createdAt >= PENDING_TOTP_TTL_MS) {
+    return { kind: 'denied' };
+  }
   const code = totp.trim();
   if (!/^\d{6}$/.test(code)) {
     return { kind: 'denied' };
   }
-  const cred = await postKanidmAuth(
+  let cred = await postKanidmAuth(
     fetchImpl,
     kanidmUrl,
     { step: { cred: { totp: Number.parseInt(code, 10) } } },
     pending.cookie,
     pending.sessionHeader,
   );
-  pendingTotps.delete(pendingId);
+  let cookie = mergeCookies(pending.cookie, cred.cookies);
+  const sessionHeader = cred.sessionHeader ?? pending.sessionHeader;
+  if (cred.state?.kind === 'continue' && cred.state.allowed.includes('password') && pending.password !== undefined) {
+    cred = await postKanidmAuth(
+      fetchImpl, kanidmUrl, { step: { cred: { password: pending.password } } }, cookie, sessionHeader,
+    );
+    cookie = mergeCookies(cookie, cred.cookies);
+  }
   if (cred.state?.kind === 'denied') {
     return { kind: 'denied' };
   }
-  if (cred.status !== 200 || cred.state?.kind !== 'success') {
-    return { kind: 'denied' };
+  if (cred.state?.kind !== 'success') {
+    throw new Error('vault identity verification is unavailable');
   }
-  await revokeKanidmSession(fetchImpl, kanidmUrl, cred.state.token, pending.cookie);
+  await revokeKanidmSession(fetchImpl, kanidmUrl, cred.state.token, cookie);
   return { kind: 'success' };
 };
 
-const registerPendingTotp = (username: string, cookie: string, sessionHeader?: string): KanidmAuthOutcome => {
+const registerPendingTotp = (username: string, cookie: string, sessionHeader?: string, password?: string): KanidmAuthOutcome => {
   const now = Date.now();
   for (const [id, pending] of pendingTotps) {
     if (now - pending.createdAt > PENDING_TOTP_TTL_MS || pending.username === username) {
@@ -578,6 +612,7 @@ const registerPendingTotp = (username: string, cookie: string, sessionHeader?: s
     username,
     cookie,
     sessionHeader,
+    password,
     createdAt: now,
   };
   pendingTotps.set(pending.id, pending);

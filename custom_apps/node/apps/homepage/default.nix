@@ -5,6 +5,7 @@
 , fetchPnpmDeps
 , pnpmConfigHook
 , makeWrapper
+, jq
 ,
 }:
 
@@ -47,6 +48,7 @@ stdenvNoCC.mkDerivation (finalAttrs: {
     pnpm
     pnpmConfigHook
     makeWrapper
+    jq
   ];
 
   CI = "true";
