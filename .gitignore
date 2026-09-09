@@ -46,3 +46,7 @@
 # Vendored impeccable skill: platform engine binaries are downloaded artifacts,
 # never tracked. The launcher re-fetches them on first run if missing.
 .agents/skills/impeccable/scripts/bin/
+
+# Shared Node server plumbing is copied into each app's tree by postPatch /
+# the sync-shared script; the source of truth lives in custom_apps/node/shared.
+custom_apps/node/apps/*/src/shared/node-common/

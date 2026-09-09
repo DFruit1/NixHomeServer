@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { numberFromEnv } from '../shared/node-common/env.js';
 
 export type AppConfig = {
   host: string;
@@ -13,15 +14,6 @@ export type AppConfig = {
   mqttDefaultQos: 0 | 1 | 2;
   retentionDays: number;
   maximumMessages: number;
-};
-
-const numberFromEnv = (name: string, fallback: number): number => {
-  const raw = process.env[name];
-  if (!raw) {
-    return fallback;
-  }
-  const value = Number.parseInt(raw, 10);
-  return Number.isFinite(value) && value > 0 ? value : fallback;
 };
 
 const qosFromEnv = (name: string, fallback: 0 | 1 | 2): 0 | 1 | 2 => {

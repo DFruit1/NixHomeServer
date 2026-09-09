@@ -26,15 +26,12 @@ import {
   type VaultHttpResponse,
 } from './vault.js';
 import { clearVaultSessionCookie, setVaultSessionCookie } from './vaultSession.js';
-
-const CONTENT_TYPES: Record<string, string> = {
-  '.css': 'text/css; charset=utf-8',
-  '.html': 'text/html; charset=utf-8',
-  '.js': 'text/javascript; charset=utf-8',
-  '.json': 'application/json; charset=utf-8',
-  '.svg': 'image/svg+xml',
-};
-const MAX_JSON_BODY_BYTES = 64 * 1024;
+import {
+  readMutationJson,
+  sendJson,
+  serveStaticWithSpaFallback,
+  tryServeStaticAsset as tryServeStaticFile,
+} from '../shared/node-common/http-protocol.js';
 
 export const handleRequest = async (config: AppConfig, request: IncomingMessage, response: ServerResponse): Promise<void> => {
   if (await handleApiRequest(config, request, response)) {
@@ -287,131 +284,11 @@ export const handleVaultApiRequest = async (
   }
 };
 
-const assertSameOrigin = (request: IncomingMessage): void => {
-  const fetchSite = headerValue(request.headers['sec-fetch-site']);
-  if (fetchSite && fetchSite !== 'same-origin') {
-    throw new Error('not authorised: request is not same-origin');
-  }
-  const origin = headerValue(request.headers.origin, false);
-  const host = headerValue(request.headers.host, false);
-  if (!origin || !host) {
-    throw new Error('not authorised: origin and host headers are required');
-  }
-  let parsedOrigin: URL;
-  try {
-    parsedOrigin = new URL(origin);
-  } catch {
-    throw new Error('not authorised: invalid origin');
-  }
-  if (parsedOrigin.origin !== origin || !['http:', 'https:'].includes(parsedOrigin.protocol) || parsedOrigin.host.toLowerCase() !== host.toLowerCase()) {
-    throw new Error('not authorised: origin mismatch');
-  }
-};
+export const tryServeStaticAsset = (
+  config: AppConfig,
+  response: ServerResponse,
+  rawPath: string,
+): Promise<boolean> => tryServeStaticFile(config.staticDir, response, rawPath);
 
-const readMutationJson = async <T>(request: IncomingMessage): Promise<T> => {
-  assertSameOrigin(request);
-  const contentType = headerValue(request.headers['content-type'], false)?.split(';', 1)[0]?.trim().toLowerCase();
-  if (contentType !== 'application/json') {
-    throw new Error('JSON content type is required');
-  }
-  const text = await readBoundedBody(request);
-  const parsed = text ? (JSON.parse(text) as unknown) : {};
-  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new SyntaxError('JSON request body must be an object');
-  }
-  return parsed as T;
-};
-
-const readBoundedBody = async (request: IncomingMessage): Promise<string> => {
-  const declaredLength = headerValue(request.headers['content-length'], false);
-  if (declaredLength && Number(declaredLength) > MAX_JSON_BODY_BYTES) {
-    request.resume();
-    throw new Error('request body is too large');
-  }
-  return new Promise<string>((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    let size = 0;
-    const cleanup = () => {
-      request.off('data', onData);
-      request.off('end', onEnd);
-      request.off('aborted', onAborted);
-      request.off('error', onError);
-    };
-    const fail = (error: Error) => {
-      cleanup();
-      request.resume();
-      reject(error);
-    };
-    const onData = (chunk: Buffer | string) => {
-      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      size += buffer.length;
-      if (size > MAX_JSON_BODY_BYTES) {
-        fail(new Error('request body is too large'));
-        return;
-      }
-      chunks.push(buffer);
-    };
-    const onEnd = () => {
-      cleanup();
-      resolve(Buffer.concat(chunks).toString('utf8'));
-    };
-    const onAborted = () => fail(new Error('request body was aborted'));
-    const onError = (error: Error) => fail(error);
-    request.on('data', onData);
-    request.on('end', onEnd);
-    request.on('aborted', onAborted);
-    request.on('error', onError);
-  });
-};
-
-const headerValue = (value: string | string[] | undefined, firstListValue = true): string | undefined => {
-  if (Array.isArray(value)) {
-    return value.length === 1 ? value[0]?.trim() : undefined;
-  }
-  if (!value) {
-    return undefined;
-  }
-  return (firstListValue ? value.split(',', 1)[0] : value).trim();
-};
-
-const sendJson = (response: ServerResponse, status: number, value: unknown): void => {
-  response.statusCode = status;
-  response.setHeader('content-type', 'application/json; charset=utf-8');
-  response.end(JSON.stringify(value));
-};
-
-export const tryServeStaticAsset = async (config: AppConfig, response: ServerResponse, rawPath: string): Promise<boolean> => {
-  const requested = rawPath === '/' ? '/index.html' : rawPath;
-  const candidate = path.resolve(config.staticDir, `.${decodeURIComponent(requested)}`);
-  const root = path.resolve(config.staticDir);
-  if (candidate !== root && !candidate.startsWith(`${root}${path.sep}`)) {
-    return false;
-  }
-  try {
-    const file = await stat(candidate);
-    if (!file.isFile()) {
-      return false;
-    }
-    response.statusCode = 200;
-    response.setHeader('content-type', CONTENT_TYPES[path.extname(candidate)] ?? 'application/octet-stream');
-    createReadStream(candidate).pipe(response);
-    return true;
-  } catch {
-    return false;
-  }
-};
-
-const serveStatic = async (config: AppConfig, response: ServerResponse, rawPath: string): Promise<void> => {
-  if (await tryServeStaticAsset(config, response, rawPath)) {
-    return;
-  }
-
-  try {
-    const index = await readFile(path.join(config.staticDir, 'index.html'));
-    response.statusCode = 200;
-    response.setHeader('content-type', 'text/html; charset=utf-8');
-    response.end(index);
-  } catch {
-    throw new Error('static path not found');
-  }
-};
+const serveStatic = async (config: AppConfig, response: ServerResponse, rawPath: string): Promise<void> =>
+  serveStaticWithSpaFallback(config.staticDir, response, rawPath);

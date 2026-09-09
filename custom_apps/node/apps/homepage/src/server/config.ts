@@ -10,6 +10,7 @@ import type {
   VaultFeatureGate,
 } from '../shared/types.js';
 import { readFileSync } from 'node:fs';
+import { numberFromEnv } from '../shared/node-common/env.js';
 import { fallbackBrandName } from '../shared/branding.js';
 
 export type HomepageConfig = {
@@ -74,15 +75,6 @@ export type AppConfig = {
     defaultMode: string;
   };
   homepage: HomepageConfig;
-};
-
-const numberFromEnv = (name: string, fallback: number): number => {
-  const raw = process.env[name];
-  if (!raw) {
-    return fallback;
-  }
-  const value = Number.parseInt(raw, 10);
-  return Number.isFinite(value) && value > 0 ? value : fallback;
 };
 
 const fallbackHomepage: HomepageConfig = {

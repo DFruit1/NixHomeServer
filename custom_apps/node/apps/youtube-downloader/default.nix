@@ -12,6 +12,7 @@ let
   sourcePath = toString ./.;
   src = lib.cleanSourceWith {
     src = ./.;
+
     name = "youtube-downloader-production-src";
     filter = path: type:
       let
@@ -27,6 +28,11 @@ in
 stdenvNoCC.mkDerivation (finalAttrs: {
   pname = "youtube-downloader";
   version = "0.1.0";
+
+  postPatch = ''
+    mkdir -p src/shared/node-common
+    cp -r ${../../shared}/. src/shared/node-common/
+  '';
 
   inherit src;
 

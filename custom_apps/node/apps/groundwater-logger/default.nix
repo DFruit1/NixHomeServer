@@ -15,6 +15,11 @@ stdenvNoCC.mkDerivation (finalAttrs: {
 
   src = ./.;
 
+  postPatch = ''
+    mkdir -p src/shared/node-common
+    cp -r ${../../shared}/. src/shared/node-common/
+  '';
+
   pnpmDeps = fetchPnpmDeps {
     inherit (finalAttrs) pname version src;
     fetcherVersion = 3;
