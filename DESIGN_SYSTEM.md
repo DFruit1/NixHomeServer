@@ -41,4 +41,5 @@ assumptions.
 
 | Decision | Applies to | Rationale | Detector exception |
 |---|---|---|---|
-| — | — | — | — |
+| Homepage tokens are app-local `:root` custom properties, not a shared cross-app token file | homepage (`src/client/styles.css`) | The repeated inline hex values were replaced with named tokens while preserving each distinct value (near-duplicate greys keep distinct `-muted`/`-soft`/`-cool` suffixed names) so rendered colors are pixel-identical. The no-shared-token-file rule above stands. | — |
+| Shared Node server plumbing lives in `custom_apps/node/shared/` and is copied into each app as `src/shared/node-common/` | homepage, groundwater-logger, youtube-downloader | Deduplicates identical request-boundary code (same-origin, bounded body reads, JSON replies, static file serving). Plumbing only — no design tokens or visual CSS are shared. | — |

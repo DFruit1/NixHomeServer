@@ -25,20 +25,20 @@ require_fixed modules/Core_Modules/homepage/services.nix 'lib.optionals kavitaEn
 require_fixed modules/Core_Modules/homepage/services.nix 'lib.optionals filesSftpEnabled [' \
   "Vault SSH wiring must follow module removal."
 
-require_fixed custom_apps/node/apps/homepage/src/server/vaultSession.ts 'Path=${VAULT_COOKIE_PATH}; HttpOnly; Secure; SameSite=Strict' \
+require_fixed custom_apps/node/apps/homepage/src/server/vault/session-store.ts 'Path=${VAULT_COOKIE_PATH}; HttpOnly; Secure; SameSite=Strict' \
   "Vault sessions must use a hardened cookie scoped to the vault API path."
 if rg -n 'Max-Age|Expires=' custom_apps/node/apps/homepage/src/server/vaultSession.ts | grep -v 'Max-Age=0' | grep -v 'clearVaultSessionCookie' >/dev/null; then
   echo "Vault session cookies must stay browser-session scoped (no persistent Max-Age/Expires)." >&2
   rg -n 'Max-Age|Expires=' custom_apps/node/apps/homepage/src/server/vaultSession.ts >&2
   exit 1
 fi
-require_fixed custom_apps/node/apps/homepage/src/server/vaultSession.ts 'MAX_FAILED_ATTEMPTS = 5' \
+require_fixed custom_apps/node/apps/homepage/src/server/vault/lockout.ts 'MAX_FAILED_ATTEMPTS = 5' \
   "Vault unlock must rate-limit repeated failures."
-require_fixed custom_apps/node/apps/homepage/src/server/vaultSession.ts 'LOCKOUT_DURATION_MS = 5 * 60 * 1000' \
+require_fixed custom_apps/node/apps/homepage/src/server/vault/lockout.ts 'LOCKOUT_DURATION_MS = 5 * 60 * 1000' \
   "Vault unlock must impose a lockout duration after repeated failures."
-require_fixed custom_apps/node/apps/homepage/src/server/vaultSession.ts "issue: 'token'" \
+require_fixed custom_apps/node/apps/homepage/src/server/vault/kanidm-auth.ts "issue: 'token'" \
   "Vault unlock must verify passwords through the Kanidm auth API."
-require_fixed custom_apps/node/apps/homepage/src/server/vaultSession.ts '/v1/logout' \
+require_fixed custom_apps/node/apps/homepage/src/server/vault/kanidm-auth.ts '/v1/logout' \
   "Vault unlock must revoke the single-use Kanidm verification session."
 require_fixed custom_apps/node/apps/homepage/src/server/vault.ts 'assertVaultUnlocked' \
   "Vault feature endpoints must require the short-lived unlock session."
@@ -52,7 +52,7 @@ if [[ -z "$feature_gate_line" || -z "$unlock_line" || "$unlock_line" -le "$featu
   exit 1
 fi
 
-if rg -n 'console\.' custom_apps/node/apps/homepage/src/server/vault.ts custom_apps/node/apps/homepage/src/server/vaultSession.ts >/dev/null; then
+if rg -n 'console\.' custom_apps/node/apps/homepage/src/server/vault.ts custom_apps/node/apps/homepage/src/server/vaultSession.ts custom_apps/node/apps/homepage/src/server/vault/ >/dev/null; then
   echo "Vault server modules must not log (passwords and keys flow through them)." >&2
   rg -n 'console\.' custom_apps/node/apps/homepage/src/server/vault.ts custom_apps/node/apps/homepage/src/server/vaultSession.ts >&2
   exit 1

@@ -203,29 +203,29 @@ require_fixed documentation/operations.md 'System Settings → Privacy & Securit
   "Jellyfin discovery guidance must cover Apple local-network privacy permission."
 require_fixed custom_apps/node/apps/homepage/src/components/SftpSetup.tsx 'SFTP/SSHFS and browser Files access use separate permissions.' \
   "SFTP guidance must not promise browser uploads to accounts without the separate Files permission."
-require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.tsx 'Never send an admin your password' \
+require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/steps.tsx 'Never send an admin your password' \
   "New-user guidance must clearly identify credentials that support requests must never include."
-require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.tsx 'Use a trusted network path' \
+require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/steps.tsx 'Use a trusted network path' \
   "New-user guidance must explain the private LAN or NetBird access requirement."
-require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.tsx 'Install a password manager' \
+require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/steps.tsx 'Install a password manager' \
   "New-user guidance must start with an actionable password-manager setup step."
-require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.tsx 'https://bitwarden.com/download/' \
+require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/steps.tsx 'https://bitwarden.com/download/' \
   "New-user guidance must link directly to the Bitwarden download page."
-require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.tsx 'https://keepassxc.org/download/' \
+require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/steps.tsx 'https://keepassxc.org/download/' \
   "New-user guidance must link directly to the KeePassXC download page."
-require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.tsx 'https://docs.netbird.io/get-started/install' \
+require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/steps.tsx 'https://docs.netbird.io/get-started/install' \
   "New-user guidance must link directly to NetBird installation instructions."
-require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.tsx 'Immich, Jellyfin, Inkita, Lissen, and Audiobookshelf' \
+require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/steps.tsx 'Immich, Jellyfin, Inkita, Lissen, and Audiobookshelf' \
   "New-user guidance must recommend the supported Android clients in one place."
 require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.tsx 'progress is saved only in this browser profile' \
   "New-user guidance must not imply that checklist progress is stored server-side."
-require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.tsx 'Browser Files and SFTP/SSHFS are separate permissions.' \
+require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/steps.tsx 'Browser Files and SFTP/SSHFS are separate permissions.' \
   "New-user guidance must explain the separate browser and direct-file-transfer permissions."
-require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.tsx 'Local Backups has two sign-in gates.' \
+require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/steps.tsx 'Local Backups has two sign-in gates.' \
   "New-user guidance must distinguish Kanidm gateway access from the native Kopia login."
-require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.tsx 'Some app accounts are created on first sign-in.' \
+require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/steps.tsx 'Some app accounts are created on first sign-in.' \
   "New-user guidance must explain first-login provisioning for apps that keep local accounts."
-require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.tsx 'Do not use a public photo-share link or the public share hostname' \
+require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/steps.tsx 'Do not use a public photo-share link or the public share hostname' \
   "Mobile Photos guidance must distinguish the private app URL from public share links."
 require_fixed custom_apps/node/apps/homepage/src/components/OfflineMediaSetup.tsx 'Syncthing-Fork is the supported app.' \
   "Offline Media guidance must name the single supported mobile app."
@@ -237,7 +237,7 @@ if rg -Fq 'Möbius Sync' custom_apps/node/apps/homepage/src/components/OfflineMe
   echo "Offline Media must not advertise an unsupported iOS client." >&2
   exit 1
 fi
-require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.tsx 'No enabled apps are currently assigned to this account' \
+require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/steps.tsx 'No enabled apps are currently assigned to this account' \
   "New-user guidance must make an empty app assignment a skippable state."
 require_fixed modules/Core_Modules/homepage/services.nix '"manual"' \
   "Homepage group metadata must identify Kanidm-managed membership."
