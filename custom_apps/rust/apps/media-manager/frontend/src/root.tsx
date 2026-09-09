@@ -9,7 +9,7 @@ import {
   useVisibleTask$,
   useOnWindow,
 } from "@builder.io/qwik";
-import { api, readableError } from "./api";
+import { api, errorDetail, readableError } from "./api";
 import { ConversionsView } from "./conversions-view";
 import { Icon } from "./icon";
 import {
@@ -141,6 +141,7 @@ export default component$((props: RootProps) => {
     selectedCategory: "",
     loading: true,
     error: "",
+    errorDetail: "",
     notice: "",
     selectedItemId: "",
     editProfile: "movie",
@@ -230,6 +231,7 @@ export default component$((props: RootProps) => {
       state.items = results.flatMap((result) => result.items);
     } catch (error) {
       state.error = readableError(error);
+      state.errorDetail = errorDetail(error);
     }
   });
 
@@ -271,6 +273,7 @@ export default component$((props: RootProps) => {
       }
     } catch (error) {
       state.error = readableError(error);
+      state.errorDetail = errorDetail(error);
     } finally {
       state.loading = false;
     }
@@ -322,6 +325,7 @@ export default component$((props: RootProps) => {
       });
     } catch (error) {
       state.error = readableError(error);
+      state.errorDetail = errorDetail(error);
     } finally {
       state.planning = false;
     }
@@ -353,6 +357,7 @@ export default component$((props: RootProps) => {
       state.selectedItemId = "";
     } catch (error) {
       state.error = readableError(error);
+      state.errorDetail = errorDetail(error);
     } finally {
       state.confirming = false;
     }
@@ -452,7 +457,7 @@ export default component$((props: RootProps) => {
         {state.error && (
           <div class="message error" role="alert">
             <Icon name="alert" size={18} />
-            <span>{state.error}</span>
+            <span title={state.errorDetail || undefined}>{state.error}</span>
             <button
               type="button"
               aria-label="Dismiss error"
@@ -1421,6 +1426,7 @@ const CATEGORY_TABS: Array<{ id: string; label: string; icon: IconName }> = [
 const LibraryPane = component$<{
   title: string;
   subtitle: string;
+  emptyDetail: string;
   browser: {
     expanded: Record<string, boolean>;
     activeByParent: Record<string, string>;
@@ -1459,10 +1465,7 @@ const LibraryPane = component$<{
       </div>
       <div class="catalog-scroll-region">
         {props.items.length === 0 ? (
-          <EmptyState
-            title={props.subtitle}
-            detail="This directory has been cataloged but does not currently contain supported media files."
-          />
+          <EmptyState title={props.subtitle} detail={props.emptyDetail} />
         ) : (
           <>
             {!props.focusPath && folders.length > 1 && (
@@ -1780,6 +1783,7 @@ const LibraryView = component$<{
               role="tab"
               aria-label={tab.label}
               aria-selected={activeCategory === tab.id}
+              title={hasRoots ? undefined : `No ${tab.label.toLowerCase()} library is configured`}
               class={{
                 "library-tab": true,
                 active: activeCategory === tab.id,
@@ -1810,6 +1814,7 @@ const LibraryView = component$<{
         <LibraryPane
           title="Personal"
           subtitle="No personal media files found"
+          emptyDetail="Add supported media files to your personal media folder to see them here."
           browser={personal}
           items={personalItems}
           focusPath={activeScope === "personal" ? activeFocusPath : ""}
@@ -1834,6 +1839,7 @@ const LibraryView = component$<{
         <LibraryPane
           title="Shared"
           subtitle="No shared media files found"
+          emptyDetail="Add supported media files to the shared media folder to see them here."
           browser={shared}
           items={sharedItems}
           focusPath={activeScope === "shared" ? activeFocusPath : ""}

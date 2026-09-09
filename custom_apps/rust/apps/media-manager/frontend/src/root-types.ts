@@ -171,6 +171,7 @@ export interface DashboardState {
   selectedCategory: string;
   loading: boolean;
   error: string;
+  errorDetail: string;
   notice: string;
   selectedItemId: string;
   editProfile: NamingProfile;

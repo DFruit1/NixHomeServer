@@ -93,8 +93,8 @@ describe("dashboard status island helpers", () => {
     );
     expect(
       (document.querySelector("[data-progress-bar]") as HTMLElement).style
-        .width,
-    ).toBe("80%");
+        .transform,
+    ).toBe("scaleX(0.8)");
     expect(document.querySelector("[data-last-activity]")?.textContent).toBe(
       "Synced 37 minutes ago",
     );

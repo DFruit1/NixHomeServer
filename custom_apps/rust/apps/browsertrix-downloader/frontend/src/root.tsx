@@ -254,7 +254,7 @@ export default component$(() => {
                 </div>
                 <div class={{ progress: true, indeterminate: job.status === 'queued' || job.status === 'starting' }}>
                   <div style={{
-                    width: `${progressPercent(job)}%`,
+                    transform: `scaleX(${progressPercent(job) / 100})`,
                   }} />
                 </div>
                 <p class="progress-label">{progressLabel(job)}</p>

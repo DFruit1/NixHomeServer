@@ -223,7 +223,7 @@ export const applyAccountStatus = (
 
   const progressBar = card.querySelector<HTMLElement>("[data-progress-bar]");
   if (progressBar) {
-    progressBar.style.width = `${account.index_coverage_percent}%`;
+    progressBar.style.transform = `scaleX(${account.index_coverage_percent / 100})`;
   }
 
   const syncNotice = card.querySelector("[data-sync-diagnostic]");

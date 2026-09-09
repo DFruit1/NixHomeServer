@@ -7,7 +7,7 @@ import {
   useTask$,
   useVisibleTask$,
 } from "@builder.io/qwik";
-import { api, readableError } from "./api";
+import { api, errorDetail, readableError } from "./api";
 import { Icon } from "./icon";
 import {
   allowMetadataDraftDiscard,
@@ -371,6 +371,7 @@ export const ItemEditor = component$<{
       });
     } catch (error) {
       props.state.error = readableError(error);
+      props.state.errorDetail = errorDetail(error);
     } finally {
       removeAction.planning = false;
     }
@@ -406,6 +407,7 @@ export const ItemEditor = component$<{
       props.state.selectedItemId = "";
     } catch (error) {
       props.state.error = readableError(error);
+      props.state.errorDetail = errorDetail(error);
     } finally {
       removeAction.confirming = false;
     }
@@ -614,6 +616,7 @@ export const ItemEditor = component$<{
         visibleSelectionKey === selectionKey
       )
         props.state.error = readableError(error);
+        props.state.errorDetail = errorDetail(error);
     } finally {
       const visibleSelectionKey = props.folder
         ? `folder:${props.folder.rootId}:${props.folder.relativePath}`
@@ -763,6 +766,7 @@ export const ItemEditor = component$<{
         visibleSelectionKey === selectionKey
       )
         props.state.error = readableError(error);
+        props.state.errorDetail = errorDetail(error);
     } finally {
       const visibleSelectionKey = props.folder
         ? `folder:${props.folder.rootId}:${props.folder.relativePath}`
@@ -832,6 +836,7 @@ export const ItemEditor = component$<{
         metadata.draftSessionRevision === draftSessionRevision
       )
         props.state.error = readableError(error);
+        props.state.errorDetail = errorDetail(error);
     } finally {
       const visibleSelectionKey = props.folder
         ? `folder:${props.folder.rootId}:${props.folder.relativePath}`
@@ -899,6 +904,7 @@ export const ItemEditor = component$<{
         "Refresh completed. Current application metadata has been queried again for comparison.";
     } catch (error) {
       props.state.error = readableError(error);
+      props.state.errorDetail = errorDetail(error);
     } finally {
       metadata.propagating = false;
     }

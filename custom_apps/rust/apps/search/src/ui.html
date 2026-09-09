@@ -71,7 +71,8 @@ async function loadSources() {
     }
     statusEl.textContent = '';
   } catch (err) {
-    statusEl.textContent = 'Failed to load sources: ' + err;
+    statusEl.textContent = 'Could not load the list of sources. Try refreshing the page.';
+    statusEl.title = String(err);
   }
 }
 
@@ -90,7 +91,8 @@ async function runSearch(event) {
     if (!response.ok) { statusEl.textContent = data; return; }
     render(data);
   } catch (err) {
-    statusEl.textContent = 'Search failed: ' + err;
+    statusEl.textContent = 'The search could not be completed. Try again.';
+    statusEl.title = String(err);
   }
 }
 
@@ -135,7 +137,10 @@ window.facetType = function facetType(name) {
   fetch('/api/search?' + params.toString())
     .then((r) => r.json())
     .then(render)
-    .catch((err) => { statusEl.textContent = 'Search failed: ' + err; });
+    .catch((err) => {
+      statusEl.textContent = 'The search could not be completed. Try again.';
+      statusEl.title = String(err);
+    });
 };
 
 function logout() {

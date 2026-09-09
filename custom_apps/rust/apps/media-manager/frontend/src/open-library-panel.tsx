@@ -1,5 +1,5 @@
 import { $, component$, type QRL, useStore, useTask$ } from "@builder.io/qwik";
-import { api } from "./api";
+import { api, readableError } from "./api";
 import { RemoteArtwork } from "./remote-artwork";
 
 export interface OpenLibraryCandidate {
@@ -153,10 +153,7 @@ export const OpenLibraryPanel = component$<{
         state.editionNextOffsets[candidate.workId] = page.offset + page.limit;
       } catch (error) {
         if (state.editionRevision === revision) {
-          state.editionError =
-            error instanceof Error
-              ? error.message
-              : "Editions could not be loaded.";
+          state.editionError = readableError(error);
         }
       } finally {
         if (state.editionRevision === revision) state.editionLoading = false;

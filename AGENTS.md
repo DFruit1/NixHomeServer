@@ -73,6 +73,9 @@ a workaround without first confirming the DNS and LAN path.
 * `lib/` — validation and derived-value helpers (`derive-vars.nix`, `identity-access.nix`, `*validation.nix`).
 * `flake/` — system/package/check/app assembly. `checks.nix` wires the test gates.
 * `custom_apps/` — first-party apps: `rust/apps/*` (media-manager, mail-archive-ui, kanidm-canary-bootstrap), `node/apps/*` (homepage, groundwater-logger, youtube-downloader), `mkvmaker`.
+* `.agents/skills/` + `.agents/vendor/` — agent skills and vendored toolkits. `skills/frontend-design/` owns all frontend work; `skills/impeccable/` is the review/QA layer; `vendor/ux-ui-kit/` is the vendored UI/UX Kit knowledge base.
+* `DESIGN_SYSTEM.md` — living record of frontend surfaces and deliberate design decisions; the precedent Impeccable detectors must respect.
+* `.impeccable/config.json` — shared Impeccable config; narrowly scoped detector exceptions live here.
 * `scripts/` — deploy, admin, helpers, and `tests/` (shell regression suite). `tests/test-common.sh` holds shared helpers; `validate-repo.sh` is the gate.
 * `secrets/` — agenix-managed encrypted `.age` files only. Never read or print plaintext `secrets/unencrypted/`.
 * `documentation/` — operator runbooks. `operations.md` is the most commonly relevant.
@@ -88,6 +91,27 @@ These are large, generated, or low-signal. Target reads instead:
 * `openapi.yaml`/generated schemas unless the API boundary is the task.
 
 If a broad search is needed, prefer `rg`/`glob` (they skip gitignored files) over full-directory reads.
+
+---
+
+## Frontend Design Workflow
+
+* One skill owns all frontend work: `.agents/skills/frontend-design/SKILL.md`. Its
+  project-level anti-slop rules take priority over both vendored packages below.
+* UI/UX Kit (`.agents/vendor/ux-ui-kit/`, vendored from `plugin87/ux-ui-agent-skills`,
+  MIT) is the primary design/build discipline: design tokens, components,
+  accessibility, frameworks (Qwik adapter included), taste/anti-slop doctrine.
+* Impeccable (`.agents/skills/impeccable/`, vendored from `pbakaus/impeccable`,
+  Apache-2.0) is the post-implementation critic/QA layer: `critique` and
+  `audit`/detector run after the main implementation is rendered; `layout` and
+  `distill` run conditionally; stylistic enhancement commands (bolder, delight,
+  animate, overdrive, ...) only on explicit user request.
+* Deliberate project design decisions live in `DESIGN_SYSTEM.md` and win over
+  generic kit/detector preferences; narrowly scoped detector exceptions go in
+  `.impeccable/config.json`.
+* The default target is consistently competent frontend quality — verify at one
+  desktop and one mobile viewport, fix objective defects, then stop. Do not
+  enter open-ended visual refinement loops.
 
 ---
 

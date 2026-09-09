@@ -1,5 +1,5 @@
 import { $, component$, type QRL, useStore, useTask$ } from "@builder.io/qwik";
-import { api } from "./api";
+import { api, readableError } from "./api";
 import type { GoogleBooksCandidate } from "./metadata-provider-candidates";
 import { RemoteArtwork } from "./remote-artwork";
 
@@ -45,10 +45,7 @@ export const GoogleBooksPanel = component$<{
       if (state.revision === revision) state.candidates = result.results;
     } catch (error) {
       if (state.revision === revision)
-        state.error =
-          error instanceof Error
-            ? error.message
-            : "Google Books could not be searched.";
+        state.error = readableError(error);
     } finally {
       if (state.revision === revision) state.loading = false;
     }

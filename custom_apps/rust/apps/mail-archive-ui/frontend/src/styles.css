@@ -370,7 +370,8 @@ a {
   gap: 0.16rem;
   margin-top: 0.45rem;
   padding: 0.45rem 0.6rem;
-  border-left: 3px solid rgba(15, 107, 92, 0.26);
+  border: 1px solid rgba(15, 107, 92, 0.14);
+  border-radius: 6px;
   background: #f6fbf7;
 }
 
@@ -614,8 +615,7 @@ button.row-action-button.secondary:hover {
   max-width: none;
   padding: 0.6rem 0.8rem;
   margin: -0.25rem 0 0.8rem;
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--accent);
+  border: 1px solid var(--accent);
   border-radius: var(--radius);
   background: var(--panel-strong);
   box-shadow: 0 8px 18px rgba(30, 25, 15, 0.06);
@@ -1113,7 +1113,8 @@ button {
   height: 100%;
   border-radius: inherit;
   background: linear-gradient(90deg, var(--accent), #57aa8f);
-  transition: width 180ms ease;
+  transform-origin: left center;
+  transition: transform 180ms ease;
 }
 
 form {
@@ -1515,14 +1516,12 @@ form {
   gap: 0.45rem;
   padding: 0.85rem 1rem;
   border: 1px solid rgba(12, 92, 80, 0.14);
-  border-left: 3px solid rgba(15, 107, 92, 0.28);
   border-radius: 6px;
   background: #fff;
 }
 
 .preset-card-current {
-  border-color: rgba(12, 92, 80, 0.42);
-  border-left-color: var(--accent);
+  border-color: var(--accent);
 }
 
 .preset-card-main {

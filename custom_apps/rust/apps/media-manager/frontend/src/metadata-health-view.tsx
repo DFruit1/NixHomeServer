@@ -1,5 +1,5 @@
 import { $, component$, useSignal, useStore, useTask$ } from "@builder.io/qwik";
-import { api, ApiError } from "./api";
+import { api, errorDetail, readableError } from "./api";
 
 interface HealthRoot {
   id: string;
@@ -91,6 +91,7 @@ export const MetadataHealthView = component$<{
     loading: true,
     loadingMore: false,
     error: "",
+    errorDetail: "",
   });
   const requestRevision = useSignal(0);
 
@@ -124,7 +125,8 @@ export const MetadataHealthView = component$<{
       inbox.nextCursor = page.nextCursor ?? "";
     } catch (error) {
       if (revision !== requestRevision.value) return;
-      inbox.error = readableHealthError(error);
+      inbox.error = readableError(error);
+      inbox.errorDetail = errorDetail(error);
     } finally {
       if (revision === requestRevision.value) inbox.loading = false;
     }
@@ -155,7 +157,8 @@ export const MetadataHealthView = component$<{
       inbox.nextCursor = page.nextCursor ?? "";
     } catch (error) {
       if (revision !== requestRevision.value || rootId !== inbox.rootId) return;
-      inbox.error = readableHealthError(error);
+      inbox.error = readableError(error);
+      inbox.errorDetail = errorDetail(error);
     } finally {
       if (revision === requestRevision.value && rootId === inbox.rootId) {
         inbox.loadingMore = false;
@@ -211,7 +214,7 @@ export const MetadataHealthView = component$<{
             <HealthIcon name="alert" />
           </div>
           <h4>Library health could not be loaded</h4>
-          <p>{inbox.error}</p>
+          <p title={inbox.errorDetail || undefined}>{inbox.error}</p>
           <button
             type="button"
             class="secondary-button health-retry"
@@ -300,11 +303,4 @@ export const MetadataHealthView = component$<{
   );
 });
 
-function readableHealthError(error: unknown): string {
-  if (error instanceof ApiError) {
-    return `${error.message} (${error.code}, ${error.requestId})`;
-  }
-  return error instanceof Error
-    ? error.message
-    : "The request could not be completed.";
-}
+

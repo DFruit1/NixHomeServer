@@ -31,44 +31,55 @@ pub fn html_to_text(html: &str) -> String {
 
 fn strip_tags(html: &str) -> String {
     let mut out = String::with_capacity(html.len());
+    let mut rest = html;
     let mut in_tag = false;
     let mut in_comment = false;
-    let bytes = html.as_bytes();
-    let mut index = 0;
-    while index < bytes.len() {
+    // Slicing only at offsets returned by `find` keeps every slice on a UTF-8
+    // char boundary. The previous byte-indexing version panicked on any
+    // non-ASCII byte inside a tag or comment, which the indexer surfaced as a
+    // failed extraction for the whole source.
+    while !rest.is_empty() {
         if in_comment {
-            if html[index..].starts_with("-->") {
-                in_comment = false;
-                index += 3;
-            } else {
-                index += 1;
+            match rest.find("-->") {
+                Some(end) => {
+                    rest = &rest[end + 3..];
+                    in_comment = false;
+                }
+                None => break,
             }
             continue;
         }
         if in_tag {
-            if html[index..].starts_with("<!--") {
+            if rest.starts_with("<!--") {
                 in_comment = true;
-                index += 4;
+                rest = &rest[4..];
                 continue;
             }
-            if bytes[index] == b'>' {
-                in_tag = false;
+            match rest.find('>') {
+                Some(end) => {
+                    rest = &rest[end + 1..];
+                    in_tag = false;
+                }
+                None => break,
             }
-            index += 1;
             continue;
         }
-        if bytes[index] == b'<' {
-            if html[index..].starts_with("<!--") {
-                in_comment = true;
-                index += 4;
-                continue;
+        match rest.find('<') {
+            Some(start) => {
+                out.push_str(&rest[..start]);
+                if rest[start..].starts_with("<!--") {
+                    in_comment = true;
+                    rest = &rest[start + 4..];
+                } else {
+                    in_tag = true;
+                    rest = &rest[start + 1..];
+                }
             }
-            in_tag = true;
-            index += 1;
-            continue;
+            None => {
+                out.push_str(rest);
+                break;
+            }
         }
-        out.push(bytes[index] as char);
-        index += 1;
     }
     out
 }
@@ -132,6 +143,44 @@ mod tests {
         assert!(!text.contains("comment"));
         assert!(!text.contains("ignored"));
         assert!(!text.contains("x{}"));
+    }
+
+    #[test]
+    fn strip_tags_keeps_non_ascii_text() {
+        // The byte-indexing implementation also mangled non-ASCII text into
+        // per-byte Latin-1 chars; whole-slice handling must preserve it.
+        assert_eq!(strip_tags("<p>El niño está aquí</p>"), "El niño está aquí");
+    }
+
+    #[test]
+    fn strip_tags_survives_non_ascii_inside_tags_and_comments() {
+        // Regression: every one of these panicked before the fix (mid-UTF-8
+        // byte slices), which wedged the whole source extraction.
+        assert_eq!(strip_tags(r#"<p title="日本語テキスト">x</p>"#), "x");
+        assert_eq!(strip_tags("<!-- überspringen --><img src=\"a.png\">"), "");
+        assert_eq!(
+            strip_tags(
+                r#"<html><head><meta content="café"></head><body><img src="a.png"></body></html>"#
+            ),
+            ""
+        );
+    }
+
+    #[test]
+    fn strip_tags_handles_unterminated_markup() {
+        assert_eq!(strip_tags("<p>kept"), "kept");
+        assert_eq!(strip_tags("<p unterminated-attr=\"x"), "");
+        assert_eq!(strip_tags("<!-- unterminated"), "");
+        assert_eq!(strip_tags("trailing <"), "trailing ");
+    }
+
+    #[test]
+    fn html_to_text_fallback_survives_non_ascii_attributes() {
+        // Image-only page: whether html2text renders or the strip_tags fallback
+        // runs, neither path may panic or leak per-byte Latin-1 mojibake.
+        let text =
+            html_to_text(r#"<html><body><img src="a.png" alt="café über 这个"></body></html>"#);
+        assert!(!text.contains("Ã©"), "mojibake leaked: {text}");
     }
 
     #[test]

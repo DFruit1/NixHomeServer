@@ -156,23 +156,29 @@ export default component$(() => {
       </section>
 
       <section class="metrics">
-        <div>
-          <span>Subscribed</span>
+        <span>
           <strong>{status.value?.mqtt.subscribedTopics.length ?? 0}</strong>
-        </div>
-        <div>
-          <span>Stored</span>
+          subscribed
+        </span>
+        <span>
           <strong>{status.value?.database.messageCount ?? 0}</strong>
-        </div>
-        <div>
-          <span>Latest</span>
-          <strong>{status.value?.database.latestMessageAt ?? 'None'}</strong>
-        </div>
+          stored
+        </span>
+        <span>
+          latest
+          <strong>{status.value?.database.latestMessageAt ?? 'none'}</strong>
+        </span>
       </section>
 
       {(error.value || info.value || status.value?.mqtt.lastError) && (
-        <section class={{ notice: true, error: Boolean(error.value || status.value?.mqtt.lastError) }}>
-          {error.value || status.value?.mqtt.lastError || info.value}
+        <section
+          class={{ notice: true, error: Boolean(error.value || status.value?.mqtt.lastError) }}
+          title={error.value ? undefined : status.value?.mqtt.lastError || undefined}
+        >
+          {error.value ||
+            (status.value?.mqtt.lastError
+              ? mqttErrorCopy(status.value.mqtt.lastError, status.value?.mqtt.broker)
+              : info.value)}
         </section>
       )}
 
@@ -263,14 +269,30 @@ export default component$(() => {
             </div>
           </div>
 
-          <div class="filters">
+          <form
+            class="filters"
+            preventdefault:submit
+            onSubmit$={() => {
+              void refresh().catch((caught) => {
+                error.value = caught instanceof Error ? caught.message : String(caught);
+              });
+            }}
+          >
             <label>
               <span>Topic</span>
               <input value={filters.topic} onInput$={(_, target) => (filters.topic = target.value)} />
             </label>
             <label>
               <span>Direction</span>
-              <select value={filters.direction} onChange$={(_, target) => (filters.direction = target.value as '' | Direction)}>
+              <select
+                value={filters.direction}
+                onChange$={(_, target) => {
+                  filters.direction = target.value as '' | Direction;
+                  void refresh().catch((caught) => {
+                    error.value = caught instanceof Error ? caught.message : String(caught);
+                  });
+                }}
+              >
                 <option value="">All</option>
                 <option value="inbound">Inbound</option>
                 <option value="outbound">Outbound</option>
@@ -280,15 +302,7 @@ export default component$(() => {
               <span>Search</span>
               <input value={filters.search} onInput$={(_, target) => (filters.search = target.value)} />
             </label>
-            <button
-              type="button"
-              onClick$={() => {
-                void refresh();
-              }}
-            >
-              Apply
-            </button>
-          </div>
+          </form>
 
           <div class="table">
             <div class="table-head">
@@ -297,6 +311,13 @@ export default component$(() => {
               <span>Topic</span>
               <span>Payload</span>
             </div>
+            {messages.value.length === 0 && (
+              <div class="empty-row">
+                {filters.topic || filters.direction || filters.search
+                  ? 'No messages match the current filters.'
+                  : 'No messages recorded yet.'}
+              </div>
+            )}
             {messages.value.map((message) => (
               <button
                 key={message.id}
@@ -322,6 +343,19 @@ export default component$(() => {
     </main>
   );
 });
+
+const mqttErrorCopy = (lastError: string, broker?: string): string => {
+  if (/ECONNREFUSED/i.test(lastError)) {
+    return `Can't reach the MQTT broker${broker ? ` at ${broker}` : ''}. Check that the broker is running and reachable.`;
+  }
+  if (/ENOTFOUND|getaddrinfo/i.test(lastError)) {
+    return `Can't resolve the MQTT broker address${broker ? ` (${broker})` : ''}. Check the configured broker host.`;
+  }
+  if (/ETIMEDOUT/i.test(lastError)) {
+    return `The MQTT broker${broker ? ` at ${broker}` : ''} did not respond in time.`;
+  }
+  return lastError;
+};
 
 const filtersToQuery = (filters: { topic: string; direction: string; search: string; limit: number }, format: 'csv' | 'jsonl'): string => {
   const params = new URLSearchParams();

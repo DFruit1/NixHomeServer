@@ -49,7 +49,7 @@ const ConversionList = component$<{
                 : "— Encoding a Jellyfin-compatible MKV"}
             </p>
             <div class="progress-track" aria-label={`${percent}% complete`}>
-              <span style={{ width: `${percent}%` }} />
+              <span style={{ transform: `scaleX(${percent / 100})` }} />
             </div>
             <div class="progress-meta">
               <span>Converting</span>

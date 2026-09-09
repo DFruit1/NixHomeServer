@@ -1,5 +1,5 @@
 import { $, component$, useStore, useTask$ } from "@builder.io/qwik";
-import { api, apiBlob } from "./api";
+import { api, apiBlob, readableError } from "./api";
 
 interface ArtworkPlan {
   id: string;
@@ -73,10 +73,7 @@ export const RemoteArtwork = component$<{
         state.plan = plan;
     } catch (error) {
       if (props.itemId === itemId && props.sourceUrl === sourceUrl)
-        state.error =
-          error instanceof Error
-            ? error.message
-            : "The artwork could not be prepared.";
+        state.error = readableError(error);
     } finally {
       if (props.itemId === itemId && props.sourceUrl === sourceUrl)
         state.staging = false;
@@ -99,10 +96,7 @@ export const RemoteArtwork = component$<{
       state.notice = "The artwork change was added to the mutation queue.";
     } catch (error) {
       if (props.itemId === itemId)
-        state.error =
-          error instanceof Error
-            ? error.message
-            : "The artwork could not be confirmed.";
+        state.error = readableError(error);
     } finally {
       if (props.itemId === itemId) state.confirming = false;
     }

@@ -25,13 +25,32 @@ export class ApiError extends Error {
   }
 }
 
+const codeMessages: Record<string, string> = {
+  request_failed: "The request could not be completed.",
+  unauthorized: "You need to sign in again.",
+  forbidden: "Your account does not have access to do that.",
+  not_found: "That item is no longer available.",
+  timeout: "The server took too long to respond. Try again.",
+};
+
 export function readableError(error: unknown): string {
   if (error instanceof ApiError) {
-    return `${error.message} (${error.code}, ${error.requestId})`;
+    return (
+      error.message ||
+      codeMessages[error.code] ||
+      "The request could not be completed."
+    );
   }
   return error instanceof Error
     ? error.message
     : "The request could not be completed.";
+}
+
+export function errorDetail(error: unknown): string {
+  if (!(error instanceof ApiError)) return "";
+  return [error.code, error.requestId]
+    .filter((part) => part && part !== "unknown")
+    .join(" · ");
 }
 
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
