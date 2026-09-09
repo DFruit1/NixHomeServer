@@ -215,7 +215,7 @@ async fn login(State(state): State<AppState>) -> Response {
     }
     let mut state_bytes = [0u8; 16];
     rand::thread_rng().fill_bytes(&mut state_bytes);
-    let state_value = hex(&state_bytes);
+    let state_value = homelab_common::sha256_hex(&state_bytes);
     let created = crate::timeutil::now_epoch();
     state
         .inner
@@ -350,7 +350,7 @@ async fn login_callback(
 
     let mut session_bytes = [0u8; 24];
     rand::thread_rng().fill_bytes(&mut session_bytes);
-    let session_id = hex(&session_bytes);
+    let session_id = homelab_common::sha256_hex(&session_bytes);
     let expires_at = crate::timeutil::now_epoch() + SESSION_TTL_SECONDS;
     state.inner.sessions.lock().unwrap().insert(
         session_id.clone(),
@@ -630,10 +630,6 @@ async fn zim_entries(state: &AppState, config: &ZimSearchConfig) -> Vec<ZimIndex
     let mut cache = state.inner.zim_cache.lock().unwrap();
     cache.entries.insert(root, (entries.clone(), now));
     entries
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 #[cfg(test)]

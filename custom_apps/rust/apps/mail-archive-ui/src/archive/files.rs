@@ -34,10 +34,6 @@ pub(crate) fn md5_file(path: &FsPath) -> Result<String, String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
-}
-
 pub(crate) fn detect_attachment_mime_type(path: &FsPath) -> Result<String, String> {
     let output = execute_command(
         "file",

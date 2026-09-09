@@ -105,6 +105,8 @@ async fn batch_subtitle_route_is_registered_and_validates_an_empty_selection() {
         .oneshot(
             Request::builder()
                 .method("POST")
+                .header("host", "media-manager.test")
+                .header("origin", "https://media-manager.test")
                 .uri("/api/v1/subtitles/batch-search")
                 .header("content-type", "application/json")
                 .header("x-forwarded-user", "editor-subject")
@@ -225,6 +227,8 @@ async fn preferred_username_owns_personal_roots_and_audit_events() {
         .oneshot(
             Request::builder()
                 .method("POST")
+                .header("host", "media-manager.test")
+                .header("origin", "https://media-manager.test")
                 .uri("/api/v1/scans")
                 .header("content-type", "application/json")
                 .header("x-forwarded-user", "4689a2b2-62ba-4131-bc32-4cca2ca7859c")
@@ -246,6 +250,31 @@ async fn preferred_username_owns_personal_roots_and_audit_events() {
         )
         .expect("scan audit actor");
     assert_eq!(actor, "dsaw");
+}
+
+#[tokio::test]
+async fn mutations_without_same_origin_are_rejected() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let response = test_app(&temp)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/plans")
+                .header("content-type", "application/json")
+                .header("x-forwarded-user", "editor")
+                .header("x-forwarded-groups", "media-manager-editors")
+                .body(Body::from("{}"))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("body");
+    let value: Value = serde_json::from_slice(&body).expect("json");
+    assert_eq!(value["error"]["code"], "same_origin_required");
 }
 
 #[tokio::test]
@@ -314,6 +343,8 @@ async fn viewer_can_read_roots_but_cannot_start_a_scan() {
         .oneshot(
             Request::builder()
                 .method("POST")
+                .header("host", "media-manager.test")
+                .header("origin", "https://media-manager.test")
                 .uri("/api/v1/scans")
                 .header("content-type", "application/json")
                 .header("x-forwarded-user", "viewer")
@@ -400,6 +431,8 @@ async fn editor_scan_populates_the_catalog() {
         .oneshot(
             Request::builder()
                 .method("POST")
+                .header("host", "media-manager.test")
+                .header("origin", "https://media-manager.test")
                 .uri("/api/v1/scans")
                 .header("content-type", "application/json")
                 .header("x-forwarded-user", "editor")
@@ -518,6 +551,8 @@ async fn canonical_name_plan_is_catalog_backed_and_read_only_confirmation_fails_
         .oneshot(
             Request::builder()
                 .method("POST")
+                .header("host", "media-manager.test")
+                .header("origin", "https://media-manager.test")
                 .uri(format!("/api/v1/plans/{plan_id}/confirm"))
                 .header("x-forwarded-user", "editor")
                 .header("x-forwarded-groups", "users,media-manager-editors")
@@ -729,6 +764,8 @@ async fn enabled_confirmation_queues_exactly_the_previewed_plan() {
         .oneshot(
             Request::builder()
                 .method("POST")
+                .header("host", "media-manager.test")
+                .header("origin", "https://media-manager.test")
                 .uri(format!("/api/v1/plans/{plan_id}/confirm"))
                 .header("x-forwarded-user", "editor")
                 .header("x-forwarded-groups", "users,media-manager-editors")
@@ -772,6 +809,8 @@ async fn subtitle_upload_creates_an_editor_bound_no_overwrite_preview() {
         .oneshot(
             Request::builder()
                 .method("POST")
+                .header("host", "media-manager.test")
+                .header("origin", "https://media-manager.test")
                 .uri(format!(
                     "/api/v1/items/{item_id}/subtitles/upload?language=en"
                 ))
@@ -2263,6 +2302,8 @@ async fn unauthenticated_artwork_upload_is_rejected_before_reading_a_large_body(
         .oneshot(
             Request::builder()
                 .method("POST")
+                .header("host", "media-manager.test")
+                .header("origin", "https://media-manager.test")
                 .uri("/api/v1/items/not-visible/image/replacement?format=png")
                 .body(Body::from(body))
                 .expect("request"),
@@ -2590,6 +2631,8 @@ fn viewer_get_request(uri: &str) -> Request<Body> {
 fn viewer_post_request(uri: &str, body: Body) -> Request<Body> {
     Request::builder()
         .method("POST")
+        .header("host", "media-manager.test")
+        .header("origin", "https://media-manager.test")
         .uri(uri)
         .header("content-type", "application/json")
         .header("x-forwarded-user", "viewer")
@@ -2610,6 +2653,8 @@ fn editor_get_request(uri: &str) -> Request<Body> {
 fn editor_post_request(uri: &str, body: Body) -> Request<Body> {
     Request::builder()
         .method("POST")
+        .header("host", "media-manager.test")
+        .header("origin", "https://media-manager.test")
         .uri(uri)
         .header("content-type", "application/json")
         .header("x-forwarded-user", "editor")

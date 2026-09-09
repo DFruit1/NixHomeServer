@@ -14,7 +14,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use homelab_common::{content_type_for_path, decode_relative_path, read_static_file};
+use homelab_common::{content_type_for_path, decode_relative_path, parse_range, read_static_file};
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use std::path::{Component, Path as FilePath};
@@ -174,7 +174,7 @@ async fn file_response(
 ) -> Result<Response, ApiError> {
     let (mut file, size) = open_archive(root, name).await?;
     let range_header = header(headers, "range");
-    let range = compute_range(range_header, size);
+    let range = parse_range(range_header, size);
     if range_header.is_some() && range.is_none() {
         return Response::builder()
             .status(StatusCode::RANGE_NOT_SATISFIABLE)
@@ -213,34 +213,6 @@ async fn file_response(
     builder
         .body(Body::from_stream(stream))
         .map_err(ApiError::internal)
-}
-
-pub fn compute_range(header: Option<&str>, size: u64) -> Option<(u64, u64)> {
-    let value = header?.trim().strip_prefix("bytes=")?;
-    if value.contains(',') {
-        return None;
-    }
-    let (raw_start, raw_end) = value.split_once('-')?;
-    if raw_start.is_empty() && raw_end.is_empty() || size == 0 {
-        return None;
-    }
-    if raw_start.is_empty() {
-        let suffix = raw_end.parse::<u64>().ok()?;
-        if suffix == 0 {
-            return None;
-        }
-        return Some((size.saturating_sub(suffix), size - 1));
-    }
-    let start = raw_start.parse::<u64>().ok()?;
-    if start >= size {
-        return None;
-    }
-    let end = if raw_end.is_empty() {
-        size - 1
-    } else {
-        raw_end.parse::<u64>().ok()?.min(size - 1)
-    };
-    (end >= start).then_some((start, end))
 }
 
 async fn open_archive(

@@ -15,6 +15,7 @@ use chacha20poly1305::{
     ChaCha20Poly1305, Key, Nonce,
 };
 use chrono::{DateTime, Duration, Local, NaiveDate, NaiveTime, Timelike, Utc};
+use homelab_common::{random_hex, sha256_hex};
 #[cfg(target_os = "linux")]
 use landlock::{
     path_beneath_rules, Access, AccessFs, RestrictionStatus, Ruleset, RulesetAttr,

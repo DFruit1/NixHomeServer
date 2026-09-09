@@ -5,6 +5,8 @@ edition.workspace = true
 
 [dependencies]
 axum.workspace = true
+rand.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 tokio = { workspace = true, features = ["fs", "signal"] }
 url.workspace = true

@@ -220,15 +220,6 @@ pub(super) fn format_timestamp_tooltip_label(timestamp: i64) -> String {
         .unwrap_or_else(|| "Unknown date".to_string())
 }
 
-pub(super) fn random_hex(bytes: usize) -> String {
-    let mut buffer = vec![0_u8; bytes];
-    OsRng.fill_bytes(&mut buffer);
-    buffer
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>()
-}
-
 pub(super) fn parse_optional_query_i64(raw: Option<&str>) -> Result<Option<i64>, String> {
     match raw.map(str::trim).filter(|value| !value.is_empty()) {
         Some(value) => value

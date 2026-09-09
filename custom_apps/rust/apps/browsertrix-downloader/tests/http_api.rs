@@ -5,10 +5,11 @@ use axum::{
 use browsertrix_downloader::{
     config::AppConfig,
     database::Database,
-    http::{compute_range, router, AppState},
+    http::{router, AppState},
     model::{CrawlScope, CreateJobRequest, JobStatus},
     queue::{JobQueue, Resolver},
 };
+use homelab_common::parse_range as compute_range;
 use serde_json::{json, Value};
 use std::net::{IpAddr, Ipv4Addr};
 use tower::ServiceExt;

@@ -31,9 +31,8 @@ pub fn assert_same_origin(headers: &HeaderMap) -> Result<(), SameOriginError> {
     if expected_hosts.is_empty() {
         return Err(SameOriginError::MissingExpectedOrigin);
     }
-    let forwarded_proto = header_value(headers, "x-forwarded-proto")
-        .map(|value| first_list_value(&value))
-        .flatten();
+    let forwarded_proto =
+        header_value(headers, "x-forwarded-proto").and_then(|value| first_list_value(&value));
     let candidate = header_value(headers, "origin")
         .map(|value| (value, true))
         .or_else(|| header_value(headers, "referer").map(|value| (value, false)))

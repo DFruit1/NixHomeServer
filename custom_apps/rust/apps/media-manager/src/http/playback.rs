@@ -241,58 +241,21 @@ pub(super) async fn item_stream(
     let range_header = request
         .headers()
         .get("range")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("bytes="));
+        .and_then(|value| value.to_str().ok());
 
-    if let Some(range) = range_header {
-        let mut parts = range.split('-');
-        let first = parts.next().unwrap_or("");
-        let second = parts.next().unwrap_or("");
-        let (start, end) = if first.is_empty() {
-            match second.parse::<u64>().ok() {
-                Some(suffix) if suffix > 0 && file_size > 0 => {
-                    let start = file_size.saturating_sub(suffix);
-                    (start, file_size - 1)
-                }
-                _ => {
-                    return (
-                        StatusCode::RANGE_NOT_SATISFIABLE,
-                        [(CONTENT_TYPE, content_type)],
-                        [("Content-Range", format!("bytes */{file_size}"))],
-                        Vec::<u8>::new(),
-                    )
-                        .into_response();
-                }
+    if range_header.is_some() {
+        let (start, end) = match homelab_common::parse_range(range_header, file_size) {
+            Some((start, end)) => (start, end),
+            None => {
+                return (
+                    StatusCode::RANGE_NOT_SATISFIABLE,
+                    [(CONTENT_TYPE, content_type)],
+                    [("Content-Range", format!("bytes */{file_size}"))],
+                    Vec::<u8>::new(),
+                )
+                    .into_response();
             }
-        } else {
-            let start = match first.parse::<u64>().ok() {
-                Some(start) => start,
-                None => {
-                    return (
-                        StatusCode::RANGE_NOT_SATISFIABLE,
-                        [(CONTENT_TYPE, content_type)],
-                        [("Content-Range", format!("bytes */{file_size}"))],
-                        Vec::<u8>::new(),
-                    )
-                        .into_response();
-                }
-            };
-            let end = if second.is_empty() {
-                file_size.saturating_sub(1)
-            } else {
-                second.parse::<u64>().ok().unwrap_or(start)
-            };
-            (start, end.min(file_size.saturating_sub(1)))
         };
-        if start > end || start >= file_size {
-            return (
-                StatusCode::RANGE_NOT_SATISFIABLE,
-                [(CONTENT_TYPE, content_type)],
-                [("Content-Range", format!("bytes */{file_size}"))],
-                Vec::<u8>::new(),
-            )
-                .into_response();
-        }
         let length = end - start + 1;
 
         let body = match tokio::task::spawn_blocking({

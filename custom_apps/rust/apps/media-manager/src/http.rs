@@ -49,11 +49,12 @@ use axum::{
         header::{CACHE_CONTROL, CONTENT_TYPE},
         HeaderMap, HeaderName, StatusCode,
     },
+    middleware::Next,
     response::{Html, IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
-use homelab_common::request_id;
+use homelab_common::{request_id, sha256_hex};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
@@ -318,6 +319,7 @@ pub fn router(state: AppState) -> Router {
         .layer(axum::extract::DefaultBodyLimit::max(
             MAX_SUBTITLE_BYTES + 1024,
         ))
+        .layer(axum::middleware::from_fn(enforce_same_origin))
         .fallback(not_found)
         .with_state(Arc::new(state))
 }
@@ -796,6 +798,20 @@ async fn items_with_video_probes(
         "probePending": probe_pending,
     }))
     .into_response()
+}
+
+async fn enforce_same_origin(request: Request, next: Next) -> Response {
+    if request.method() == axum::http::Method::POST {
+        if let Err(error) = homelab_common::assert_same_origin(request.headers()) {
+            return ApiError::without_request_id(
+                StatusCode::FORBIDDEN,
+                "same_origin_required",
+                error.to_string(),
+            )
+            .into_response();
+        }
+    }
+    next.run(request).await
 }
 
 async fn not_found() -> Response {
@@ -1446,12 +1462,6 @@ fn create_subtitle_plan(
         })),
     )
         .into_response())
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    use sha2::{Digest, Sha256};
-    let digest = Sha256::digest(bytes);
-    digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn log_event(event: &str, request_id: &str, detail: Value) {
