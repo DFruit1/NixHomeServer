@@ -63,14 +63,13 @@ in
       "mail-archive-ui-storage-layout-v1"
       "mail-archive-ui"
       "mail-archive-sync"
+      "mail-archive-canary-seed"
       "mail-archive-paperless-tasks"
     ];
     mkvmaker = app ./mkvmaker "DVD ISO Converter" "media" [ ] [
       "mkvmaker-storage-layout-v1"
       "mkvmaker-import"
       "mkvmaker-import-worker"
-      "mkvmaker-worker-config"
-      "mkvmaker-worker-image-publish"
     ];
     offline-music = app ./offline-music "Offline Music" "media" [ ] [
       "offline-media-reconcile"

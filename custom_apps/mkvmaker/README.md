@@ -12,10 +12,10 @@ From the directory containing the ISO files:
 ./disc-to-jellyfin
 ```
 
-That launcher uses the committed `app/flake.lock`, provides known-compatible
-HandBrake and FFprobe binaries, and builds the small Rust frontend automatically
-on its first run. You do not need Cargo, a development environment, or a manual
-`nix shell`. Subsequent runs reuse the Nix result.
+That launcher runs the package from the repository flake (`packages.<system>.mkvmaker`),
+which provides known-compatible HandBrake and FFprobe binaries. Run it from a
+checkout of the NixHomeServer repository. You do not need Cargo, a development
+environment, or a manual `nix shell`. Subsequent runs reuse the Nix result.
 
 Check the complete runtime at any time:
 
@@ -26,7 +26,7 @@ Check the complete runtime at any time:
 Optional permanent installation:
 
 ```sh
-nix profile install ./app
+nix profile install /path/to/NixHomeServer#mkvmaker
 disc-to-jellyfin
 ```
 
@@ -133,12 +133,13 @@ Run `./disc-to-jellyfin --help` for every option.
 ## Developer verification
 
 ```sh
-cd app
 cargo fmt --check
 cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked
-nix flake check -L
-nix build -L
 ```
+
+The Nix packaging lives in `default.nix` and is built by the repository flake
+(via `custom_apps/rust/lib/mk-rust-app.nix`); the repository validation gate
+covers it.
 
 Normal users do not need to run these commands.

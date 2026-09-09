@@ -146,8 +146,6 @@ test_scripts=(
   scripts/tests/test-media-manager-core.sh
   scripts/tests/test-paperless-v3-readiness.sh
   scripts/tests/test-mkvmaker-automation.sh
-  scripts/tests/test-mkvmaker-distributed-queue.sh
-  scripts/tests/test-mkvmaker-worker-image.sh
   scripts/tests/test-platform-storage-profiles.sh
   scripts/tests/test-runtime-reliability.sh
   scripts/tests/test-rclone-safety.sh

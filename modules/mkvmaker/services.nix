@@ -39,7 +39,7 @@ let
     "--worker-id"
     vars.hostname
     "--lease-seconds"
-    (toString cfg.distributedWorkers.leaseSeconds)
+    (toString cfg.leaseSeconds)
   ];
   dispatchCommand = "/run/current-system/sw/bin/systemctl start --no-block mkvmaker-import-worker.service";
 in
@@ -84,6 +84,11 @@ in
       type = lib.types.enum [ "balanced" "compact" "maximum" "fast" ];
       default = "balanced";
       description = "disc-to-jellyfin x264 quality preset.";
+    };
+    leaseSeconds = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 120;
+      description = "Seconds the importer owns an ISO before renewing its queue lease.";
     };
   };
 

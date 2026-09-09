@@ -864,90 +864,14 @@ The queue and detailed HandBrake job logs live under `/var/lib/mkvmaker`.
 Change `repo.mkvmaker.dominantTitleRatio`, `minimumTitleSeconds`, `audioProfile`,
 or `videoPreset` declaratively if the defaults need adjustment.
 
-#### Stateless conversion worker USB
+#### Distributed conversion workers (retired)
 
-> **Note:** The distributed-worker feature is disabled by default via
-> `vars.mkvmaker.distributedWorkers.enable = false`. The implementation is
-> retained; set that toggle back to `true` to republish the ISO and re-export
-> the LAN worker NFS shares.
-
-When MKVMaker is enabled, the host configuration also builds a minimal NixOS
-live image from the repository-pinned package closure. The
-`mkvmaker-worker-image-publish.service` publishes the ISO and its SHA-256
-sidecar as one immutable release, then atomically moves the `MKVMaker-Worker`
-symlink to that verified release. Find the current pair at:
-
-```text
-_ISO/_SystemOSes/MKVMaker-Worker/nixhomeserver-mkvmaker-worker-x86_64-linux.iso
-_ISO/_SystemOSes/MKVMaker-Worker/nixhomeserver-mkvmaker-worker-x86_64-linux.iso.sha256
-```
-
-The default server path is derived from `identity.adminUser`; it is currently
-`/mnt/data/users/admindsaw/_ISO/_SystemOSes`. The service resolves that Kanidm
-person's POSIX identity at runtime and fails closed rather than publishing to a
-numeric or fallback owner. Rebuild the package directly with:
-
-```bash
-nix build .#mkvmaker-worker-iso
-```
-
-NixOS implements live images through `system.build.isoImage`; the worker image
-extends the official minimal installation image and retains its USB/EFI hybrid
-boot support. See the [NixOS image-building manual](https://nixos.org/manual/nixos/stable/#sec-building-image).
-
-Write the ISO to an entire USB device with a raw-image writer, not into a
-filesystem on the stick. Selecting the wrong destination destroys that
-device's existing contents, so verify it independently before writing. Booting
-the image does not install NixOS and does not automatically mount or modify any
-internal disk.
-
-Directly writing the image is the simplest and most reliable boot method, but
-it dedicates that USB stick to the worker image. Ventoy is also supported when
-keeping several ISOs on one stick is more useful: disable Secure Boot for this
-unsigned custom image, select **GRUB2 mode**, and then select the first NixOS
-installer entry. The worker initrd restores Ventoy's renamed `vtinit=` kernel
-argument before NixOS closure discovery, so no emergency-shell commands are
-required. Ventoy Normal mode can fail earlier on some firmware with
-`shim_lock protocol not found`.
-
-After boot:
-
-1. Connect Ethernet, or run `nmtui` to configure Wi-Fi.
-2. Confirm the server is reachable at its configured LAN address.
-3. Follow the automatically started worker with
-   `journalctl -fu mkvmaker-worker.service`.
-4. Inspect its timer with `systemctl status mkvmaker-worker.timer`.
-
-The live worker mounts only the DVD inbox, movie and show outputs, staging
-directory, queue state, and a separate read-only configuration directory over
-NFSv4. It does not receive a writable export of the broader shared tree. The
-server permits those scoped exports only from
-`repo.mkvmaker.distributedWorkers.nfsClientCidr`, which defaults to the
-canonical configured LAN subnet. NFS maps every client identity to `nobody`;
-ACLs grant that identity access only to the DVD inbox, conversion outputs,
-staging, and MKVMaker queue state. No reusable server credential is embedded in
-the ISO. This is a trusted-LAN design: do not extend the NFS CIDR to an
-untrusted network or expose TCP 2049 through the router.
-
-Each importer holds an NFSv4 kernel lock for one ISO across duplicate checking,
-encoding, and archival, and releases the short-lived queue metadata lock before
-expensive hashing or HandBrake starts. Other machines can therefore claim
-different ISOs concurrently. Renewable JSON leases report worker identity and
-progress, but exclusivity does not depend on synchronized laptop clocks. If a
-laptop powers off, the kernel releases its lock and a different worker can
-retry immediately. The importer also revalidates the source file identity
-before archiving it; per-output locks and atomic no-clobber publication remain
-the final protection against duplicate writers.
-
-Useful server checks are:
-
-```bash
-systemctl status nfs-server.service mkvmaker-worker-config.service \
-  mkvmaker-worker-image-publish.service
-journalctl -u mkvmaker-worker-config.service \
-  -u mkvmaker-worker-image-publish.service -n 100 --no-pager
-sudo systemctl restart mkvmaker-worker-image-publish.service
-```
+The stateless-LAN-worker feature (USB-bootable worker ISO, LAN NFS exports,
+and `mkvmaker-worker-*` services) has been removed. DVD conversion now runs
+only on the server through `mkvmaker-import.timer` and
+`mkvmaker-import-worker.service`. If distributed ripping is ever revisited,
+rebuild it against the converter's existing `--worker-id`/`--lease-seconds`
+queue protocol rather than restoring this removed wiring.
 
 ### Media Manager
 
@@ -1225,6 +1149,21 @@ systemctl status mail-archive-ui mail-archive-oauth2-proxy mail-archive-sync.tim
 sudo systemctl start mail-archive-sync.service
 curl -fsS http://127.0.0.1:9011/healthz | jq .
 ```
+
+Synthetic canary mailbox for UI testing:
+
+```bash
+sudo systemctl start mail-archive-canary-seed.service
+journalctl -u mail-archive-canary-seed.service -n 20
+```
+
+The seed creates a `Canary mailbox` account owned by
+`services.mail-archive-ui.canaryUsername` (default `canary`) containing a fixed
+set of synthetic messages with PDF, text, and image attachments. Sync stays
+disabled for the account, so no IMAP server is contacted. Re-running the
+service is idempotent. Log in as the canary owner (or set `canaryUsername` to
+your own username before switching) to browse the seeded data at
+`https://emails.<domain>`.
 
 Use the dashboard `Sync now` and `Reindex` actions when you need to repair or
 refresh one mailbox without waiting for the timer. Use the mail archive

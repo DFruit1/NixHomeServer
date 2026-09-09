@@ -98,15 +98,6 @@ let
       enable = true; # Whether to provision Syncthing-backed offline media folders and enrollment tools.
     };
 
-    mkvmaker = {
-      distributedWorkers = {
-        # Publish the USB-bootable NixOS worker ISO and LAN NFS exports for
-        # distributed DVD-ripping workers. Disabled until that feature is
-        # redeveloped; the implementation is retained as-is.
-        enable = false;
-      };
-    };
-
     offsiteBackup = {
       enable = false; # Whether to mirror the encrypted Kopia repository to the opinionated MEGA destination.
       email = "REPLACE_WITH_MEGA_EMAIL"; # MEGA account email; required only when offsite backup is enabled.

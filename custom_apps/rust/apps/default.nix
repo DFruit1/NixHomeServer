@@ -19,7 +19,7 @@ let
   # The rust/apps members share a single source tree and prebuilt
   # dependency artifacts, so common crates (tokio/axum/serde/rusqlite/…)
   # compile only once instead of once per crate. mkvmaker keeps its own
-  # standalone build (it has a separate flake and edition 2024).
+  # standalone build (it is outside this workspace: edition 2024, own lock).
   workspaceSrcRoot = ../..;
   mkvmakerPrefix = toString (workspaceSrcRoot + "/mkvmaker");
   workspaceFilter = path: type:

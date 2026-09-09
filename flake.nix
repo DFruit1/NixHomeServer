@@ -30,25 +30,9 @@
           inherit lib pkgs pkgsUnstable crane;
         };
       # Compute package data once per system and reuse it everywhere it is
-      # needed (hosts, checks, dev shells, worker ISO) instead of re-importing
+      # needed (hosts, checks, dev shells) instead of re-importing
       # the full rust/node app graph on every call site.
       packageDataBySystem = forAllSystems mkPackageData;
-      mkWorkerIso = system: packageData: hostVars:
-        let
-          sharedRoot = hostVars.sharedRoot;
-        in
-        import ./flake/mkvmaker-worker-iso.nix {
-          inherit lib system;
-          vars = hostVars;
-          paths = {
-            stateRoot = "/var/lib/mkvmaker";
-            dvdInbox = "${sharedRoot}/_ISO/_DVDs";
-            moviesOutput = "${sharedRoot}/_Videos/_Movies";
-            showsOutput = "${sharedRoot}/_Videos/_Shows";
-            stagingRoot = "${sharedRoot}/.mkvmaker-staging";
-          };
-          mkvmakerPackage = packageData.appPackages.mkvmaker;
-        };
       rawHostSettings = import ./hosts.nix { inherit lib; };
       nixhomeserverSettings = lib.mapAttrs
         (hostName: settings: import ./lib/validate-host-settings.nix {
@@ -62,9 +46,6 @@
       supportedSystems = lib.unique
         (lib.attrValues (lib.mapAttrs (_: v: v.hostPlatform) nixhomeserverSettings));
       forAllSystems = lib.genAttrs supportedSystems;
-      workerIsoConfigurations = lib.mapAttrs
-        (_: hostVars: mkWorkerIso "x86_64-linux" packageDataBySystem."x86_64-linux" hostVars)
-        nixhomeserverSettings;
       hosts = lib.mapAttrs
         (_: hostVars:
           let
@@ -130,12 +111,10 @@
       lib.nixhomeserverSerializableSettings = lib.mapAttrs
         (_: settings: removeAttrs settings [ "kanidmIssuer" "kanidmDiscoveryUrl" ])
         nixhomeserverSettings;
-      lib.mkvmakerWorkerConfigurations = lib.mapAttrs (_: worker: worker.config) workerIsoConfigurations;
       formatter = forAllSystems (system: nixpkgs.legacyPackages.${system}.nixpkgs-fmt);
-      packages = forAllSystems (system:
-        lib.optionalAttrs (system == "x86_64-linux") {
-          mkvmaker-worker-iso = (mkWorkerIso system packageDataBySystem.${system} vars).config.system.build.isoImage;
-        });
+      packages = forAllSystems (system: {
+        mkvmaker = packageDataBySystem.${system}.appPackages.mkvmaker;
+      });
       checks = forAllSystems
         (system: mkChecks system packageDataBySystem.${system} vars.enabledApps false);
       legacyPackages = forAllSystems (system: {

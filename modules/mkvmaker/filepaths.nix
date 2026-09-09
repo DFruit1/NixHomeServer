@@ -45,12 +45,6 @@ in
         atomic rename.
       '';
     };
-
-    workerImageOutput = lib.mkOption {
-      type = lib.types.str;
-      default = "${vars.usersRoot}/${vars.kanidmAdminUser}/_ISO/_SystemOSes";
-      description = "Personal server-administrator directory receiving the generated stateless worker ISO.";
-    };
   };
 
   config = {
