@@ -21,6 +21,12 @@ let
   mkPnpmFrontend = import ./mk-pnpm-frontend.nix {
     inherit lib pkgs;
   };
+  mkPnpmDeps = import ./mk-pnpm-deps.nix {
+    inherit lib pkgs;
+  };
+  mkFrontendRuntime = import ./mk-frontend-runtime.nix {
+    inherit lib pkgs;
+  };
 in
 {
   inherit
@@ -31,5 +37,7 @@ in
     mkRustChecks
     assembleRuntimePackage
     mkPnpmFrontend
+    mkPnpmDeps
+    mkFrontendRuntime
     ;
 }

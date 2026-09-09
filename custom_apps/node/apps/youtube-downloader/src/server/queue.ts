@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { access, cp, mkdir, readdir, rm } from 'node:fs/promises';
+import { mkdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { AppConfig } from './config.js';
@@ -16,6 +16,8 @@ import {
   validateRequest,
   ytDlpPathFor,
 } from './request-validation.js';
+import { childHasExited, delay, killChildGroup, waitForChildExit } from './process-utils.js';
+import { copyDirectoryContents } from './output-move.js';
 
 export {
   chapterGateFor,
@@ -537,73 +539,3 @@ const folderCollisionAlert = (folder: string, alternativeFolder: string): JobAle
   kind: 'folder-collision',
   message: `Files for this download already exist at ${folder}. Download another copy to ${alternativeFolder}?`,
 });
-
-const killChildGroup = (child: ChildProcess, signal: NodeJS.Signals): void => {
-  try {
-    if (child.pid) {
-      process.kill(-child.pid, signal);
-      return;
-    }
-  } catch (error) {
-    const code = typeof error === 'object' && error != null && 'code' in error ? String(error.code) : '';
-    if (code !== 'ESRCH') {
-      throw error;
-    }
-  }
-  try {
-    child.kill(signal);
-  } catch (error) {
-    const code = typeof error === 'object' && error != null && 'code' in error ? String(error.code) : '';
-    if (code !== 'ESRCH') {
-      throw error;
-    }
-  }
-};
-
-const childHasExited = (child: ChildProcess): boolean => child.exitCode !== null || child.signalCode !== null;
-
-const waitForChildExit = (child: ChildProcess): Promise<void> => {
-  if (childHasExited(child)) {
-    return Promise.resolve();
-  }
-  return new Promise((resolve) => {
-    const done = () => {
-      child.off('close', done);
-      child.off('error', done);
-      resolve();
-    };
-    child.once('close', done);
-    child.once('error', done);
-  });
-};
-
-const delay = (milliseconds: number): Promise<void> => new Promise((resolve) => {
-  const timer = setTimeout(resolve, milliseconds);
-  timer.unref();
-});
-
-const copyDirectoryContents = async (sourceDir: string, destinationDir: string): Promise<void> => {
-  const entries = await readdir(sourceDir, { withFileTypes: true });
-  for (const entry of entries) {
-    const destination = await allocateUniqueDestination(destinationDir, entry.name);
-    await cp(path.join(sourceDir, entry.name), destination, {
-      recursive: true,
-      force: false,
-      errorOnExist: true,
-    });
-  }
-};
-
-const allocateUniqueDestination = async (directory: string, name: string): Promise<string> => {
-  const extension = path.extname(name);
-  const base = extension ? name.slice(0, -extension.length) : name;
-  for (let index = 0; index < 1000; index += 1) {
-    const candidate = index === 0 ? name : `${base} (${index})${extension}`;
-    try {
-      await access(path.join(directory, candidate));
-    } catch {
-      return path.join(directory, candidate);
-    }
-  }
-  throw new Error(`could not allocate a unique output name for ${name} under ${directory}`);
-};

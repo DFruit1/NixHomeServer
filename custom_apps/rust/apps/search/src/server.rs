@@ -7,6 +7,7 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use homelab_common::{env_or, log_server_started, read_secret_file, shutdown_signal};
 use rand::RngCore;
 use serde_json::json;
 
@@ -71,14 +72,10 @@ pub async fn run() -> Result<(), String> {
         .parse()
         .map_err(|_| "SEARCH_UI_PORT must be a port number".to_string())?;
     let issuer = env_or("SEARCH_OIDC_ISSUER", "");
-    let client_secret = match std::env::var("SEARCH_OIDC_CLIENT_SECRET_FILE") {
-        Ok(path) => std::fs::read_to_string(&path)
-            .map_err(|err| format!("failed to read OIDC client secret {path}: {err}"))?,
+    match std::env::var("SEARCH_OIDC_CLIENT_SECRET_FILE") {
+        Ok(path) => read_secret_file(std::path::Path::new(&path)).map(|_| ())?,
         Err(_) => return Err("SEARCH_OIDC_CLIENT_SECRET_FILE must be set".to_string()),
     };
-    if client_secret.trim().is_empty() {
-        return Err("SEARCH_OIDC_CLIENT_SECRET_FILE must not be empty".to_string());
-    }
     let logout_redirect = env_or("SEARCH_LOGOUT_REDIRECT_URL", "");
 
     let state = AppState {
@@ -122,18 +119,12 @@ pub async fn run() -> Result<(), String> {
     let listener = tokio::net::TcpListener::bind((address.as_str(), port))
         .await
         .map_err(|err| format!("failed to bind {address}:{port}: {err}"))?;
-    eprintln!("search: listening on {address}:{port}");
+    log_server_started("search", &format!("{address}:{port}"));
     axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
         .await
         .map_err(|err| format!("server error: {err}"))?;
     Ok(())
-}
-
-fn env_or(name: &str, default: &str) -> String {
-    std::env::var(name)
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| default.to_string())
 }
 
 async fn health() -> &'static str {
@@ -271,7 +262,7 @@ async fn login_callback(
     let app_base = env_or("SEARCH_APP_BASE", "");
     let redirect_uri = format!("{}/login/callback", app_base.trim_end_matches('/'));
     let client_secret = std::env::var("SEARCH_OIDC_CLIENT_SECRET_FILE")
-        .map(|path| std::fs::read_to_string(&path).unwrap_or_default())
+        .map(|path| read_secret_file(std::path::Path::new(&path)).unwrap_or_default())
         .unwrap_or_default();
 
     let token_response: serde_json::Value = match state

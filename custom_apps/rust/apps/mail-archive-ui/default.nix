@@ -43,18 +43,10 @@ let
     };
   };
 in
-app // {
-  backendPackage = app.package;
-  package = rustLib.assembleRuntimePackage {
-    name = "mail-archive-ui";
-    backendPackage = app.package;
-    extraInstallCommands = ''
-      mkdir -p "$out/share/mail-archive-ui"
-      cp -R ${frontendDist} "$out/share/mail-archive-ui/frontend"
-      chmod -R u+w "$out/share/mail-archive-ui/frontend"
-    '';
-  };
-  checks = app.checks // {
-    frontend = frontendDist;
-  };
+rustLib.mkFrontendRuntime {
+  name = "mail-archive-ui";
+  inherit app frontendDist;
+  copies = [
+    { from = "."; to = "frontend"; }
+  ];
 }

@@ -1,21 +1,9 @@
 { lib, pkgs, rustLib, workspaceVersion, workspaceSrc ? null, sharedCargoArtifacts ? null, cargoLock ? null, ... }:
 
 let
-  frontendSourcePath = toString ./frontend;
-  frontendDependencySource = lib.cleanSourceWith {
-    src = ./frontend;
-    name = "browsertrix-downloader-frontend-dependency-src";
-    filter = path: _type:
-      let
-        relative = lib.removePrefix "${frontendSourcePath}/" (toString path);
-      in
-      relative == "" || builtins.elem relative [ "package.json" "pnpm-lock.yaml" ];
-  };
-  frontendDependencies = pkgs.fetchPnpmDeps {
-    pname = "browsertrix-downloader-frontend";
-    version = "0.1.0";
-    src = frontendDependencySource;
-    fetcherVersion = 3;
+  frontendDependencies = rustLib.mkPnpmDeps {
+    name = "browsertrix-downloader-frontend";
+    srcDir = ./frontend;
     hash = "sha256-QCOHupMr2SiZhFAeByWpAfKWxi8IcjcrHC5He5UAsIg=";
   };
   frontend = rustLib.mkPnpmFrontend {
@@ -62,18 +50,12 @@ let
     };
   };
 in
-app // {
-  backendPackage = app.package;
-  package = rustLib.assembleRuntimePackage {
-    name = "browsertrix-downloader";
-    backendPackage = app.package;
-    extraInstallCommands = ''
-      mkdir -p "$out/share/browsertrix-downloader"
-      cp -R --no-preserve=mode ${frontend}/client "$out/share/browsertrix-downloader/client"
-      cp -R --no-preserve=mode ${frontend}/replay "$out/share/browsertrix-downloader/replay"
-    '';
-  };
-  checks = app.checks // {
-    inherit frontend;
-  };
+rustLib.mkFrontendRuntime {
+  name = "browsertrix-downloader";
+  inherit app;
+  frontendDist = frontend;
+  copies = [
+    { from = "client"; to = "client"; }
+    { from = "replay"; to = "replay"; }
+  ];
 }

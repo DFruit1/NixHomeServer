@@ -1,6 +1,7 @@
 use crate::{
     artwork::sniff_image_content_type,
     config::Identity,
+    http::{identity_from_headers, unix_timestamp, ApiError},
     open_library,
     provider_accounts::{ProviderAccountError, ProviderAccountStore, ProviderAccountSummary},
     subtitles::{MovieHash, OpenSubtitlesClient, OpenSubtitlesCredentials},
@@ -13,15 +14,12 @@ use axum::{
     routing::get,
     Json, Router,
 };
+use homelab_common::request_id;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc,
-    },
-    time::{SystemTime, UNIX_EPOCH},
+    sync::Arc,
 };
 use zeroize::Zeroize;
 
@@ -30,7 +28,6 @@ mod artwork_lookups;
 mod google_books;
 mod tmdb_lookups;
 
-static REQUEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 const MAX_CREDENTIAL_FIELDS: usize = 8;
 const MAX_CREDENTIAL_VALUE_BYTES: usize = 8192;
 
@@ -670,7 +667,7 @@ async fn search_open_library(
     payload: Result<Json<OpenLibrarySearchRequest>, JsonRejection>,
 ) -> Response {
     let request_id = request_id();
-    if let Err(error) = authenticated_identity(&headers, &request_id) {
+    if let Err(error) = identity_from_headers(&headers, &request_id) {
         return error.into_response();
     }
     let request = match payload {
@@ -740,7 +737,7 @@ async fn open_library_editions(
     headers: HeaderMap,
 ) -> Response {
     let request_id = request_id();
-    if let Err(error) = authenticated_identity(&headers, &request_id) {
+    if let Err(error) = identity_from_headers(&headers, &request_id) {
         return error.into_response();
     }
     let Some(work_id) = open_library::normalized_work_id(&work_id) else {
@@ -807,7 +804,7 @@ async fn open_library_cover(
     headers: HeaderMap,
 ) -> Response {
     let request_id = request_id();
-    if let Err(error) = authenticated_identity(&headers, &request_id) {
+    if let Err(error) = identity_from_headers(&headers, &request_id) {
         return error.into_response();
     }
     let cover_id = match cover_id.parse::<u64>() {
@@ -899,7 +896,7 @@ async fn lookup_acoustid(
     payload: Result<Json<AcoustidLookupRequest>, JsonRejection>,
 ) -> Response {
     let request_id = request_id();
-    let identity = match authenticated_identity(&headers, &request_id) {
+    let identity = match identity_from_headers(&headers, &request_id) {
         Ok(identity) => identity,
         Err(error) => return error.into_response(),
     };
@@ -1065,7 +1062,7 @@ async fn search_opensubtitles(
     payload: Result<Json<OpenSubtitlesSearchRequest>, JsonRejection>,
 ) -> Response {
     let request_id = request_id();
-    let identity = match authenticated_identity(&headers, &request_id) {
+    let identity = match identity_from_headers(&headers, &request_id) {
         Ok(identity) => identity,
         Err(error) => return error.into_response(),
     };
@@ -1156,7 +1153,7 @@ async fn download_opensubtitles(
     payload: Result<Json<OpenSubtitlesDownloadRequest>, JsonRejection>,
 ) -> Response {
     let request_id = request_id();
-    let identity = match authenticated_identity(&headers, &request_id) {
+    let identity = match identity_from_headers(&headers, &request_id) {
         Ok(identity) => identity,
         Err(error) => return error.into_response(),
     };
@@ -1398,17 +1395,6 @@ fn zeroize_credentials(credentials: &mut BTreeMap<String, String>) {
     }
 }
 
-fn authenticated_identity(headers: &HeaderMap, request_id: &str) -> Result<Identity, ApiError> {
-    Identity::try_from_forwarded_headers(headers).map_err(|_| {
-        ApiError::new(
-            StatusCode::UNAUTHORIZED,
-            "identity_required",
-            "A valid authenticated identity is required.",
-            request_id.to_string(),
-        )
-    })
-}
-
 async fn no_store_responses(request: axum::extract::Request, next: Next) -> Response {
     let mut response = next.run(request).await;
     response.headers_mut().insert(
@@ -1442,60 +1428,4 @@ fn storage_failure(error: ProviderAccountError, request_id: &str) -> ApiError {
         "The provider account request could not be completed.",
         request_id.to_string(),
     )
-}
-
-fn request_id() -> String {
-    let micros = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_micros();
-    let sequence = REQUEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    format!("pa{micros:x}-{sequence:x}")
-}
-
-fn unix_timestamp() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-        .min(i64::MAX as u64) as i64
-}
-
-struct ApiError {
-    status: StatusCode,
-    code: &'static str,
-    message: String,
-    request_id: String,
-}
-
-impl ApiError {
-    fn new(
-        status: StatusCode,
-        code: &'static str,
-        message: impl Into<String>,
-        request_id: String,
-    ) -> Self {
-        Self {
-            status,
-            code,
-            message: message.into(),
-            request_id,
-        }
-    }
-}
-
-impl IntoResponse for ApiError {
-    fn into_response(self) -> Response {
-        (
-            self.status,
-            Json(json!({
-                "error": {
-                    "code": self.code,
-                    "message": self.message,
-                    "requestId": self.request_id,
-                }
-            })),
-        )
-            .into_response()
-    }
 }

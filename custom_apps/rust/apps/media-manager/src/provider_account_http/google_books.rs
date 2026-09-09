@@ -65,7 +65,7 @@ pub(super) async fn search(
     payload: Result<Json<SearchRequest>, JsonRejection>,
 ) -> Response {
     let request_id = request_id();
-    let identity = match authenticated_identity(&headers, &request_id) {
+    let identity = match identity_from_headers(&headers, &request_id) {
         Ok(identity) => identity,
         Err(error) => return error.into_response(),
     };
@@ -139,7 +139,7 @@ pub(super) async fn cover(
     headers: HeaderMap,
 ) -> Response {
     let request_id = request_id();
-    let identity = match authenticated_identity(&headers, &request_id) {
+    let identity = match identity_from_headers(&headers, &request_id) {
         Ok(identity) => identity,
         Err(error) => return error.into_response(),
     };

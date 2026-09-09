@@ -24,7 +24,7 @@ pub(super) async fn search(
     payload: Result<Json<TmdbSearchRequest>, JsonRejection>,
 ) -> Response {
     let request_id = request_id();
-    let identity = match authenticated_identity(&headers, &request_id) {
+    let identity = match identity_from_headers(&headers, &request_id) {
         Ok(identity) => identity,
         Err(error) => return error.into_response(),
     };
@@ -129,7 +129,7 @@ pub(super) async fn details(
     payload: Result<Json<TmdbDetailsRequest>, JsonRejection>,
 ) -> Response {
     let request_id = request_id();
-    let identity = match authenticated_identity(&headers, &request_id) {
+    let identity = match identity_from_headers(&headers, &request_id) {
         Ok(identity) => identity,
         Err(error) => return error.into_response(),
     };

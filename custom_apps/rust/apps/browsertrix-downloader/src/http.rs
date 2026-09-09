@@ -14,9 +14,10 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use homelab_common::{content_type_for_path, decode_relative_path, read_static_file};
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
-use std::path::{Component, Path as FilePath, PathBuf};
+use std::path::{Component, Path as FilePath};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::io::ReaderStream;
 
@@ -324,30 +325,18 @@ async fn static_file(
 ) -> Result<Option<Response>, ApiError> {
     let relative = decode_relative_path(encoded_relative)
         .ok_or_else(|| ApiError::not_found("static path not found"))?;
+    let bytes = match read_static_file(root, &relative).await {
+        Ok(bytes) => bytes,
+        Err(homelab_common::StaticFileError::EscapesRoot) => {
+            return Err(ApiError::not_found("static path not found"))
+        }
+        Err(homelab_common::StaticFileError::NotFound) => return Ok(None),
+        Err(homelab_common::StaticFileError::Io(error)) => return Err(ApiError::internal(error)),
+    };
     let candidate = root.join(&relative);
-    let canonical_root = match tokio::fs::canonicalize(root).await {
-        Ok(path) => path,
-        Err(_) => return Ok(None),
-    };
-    let canonical_candidate = match tokio::fs::canonicalize(&candidate).await {
-        Ok(path) => path,
-        Err(_) => return Ok(None),
-    };
-    if !canonical_candidate.starts_with(&canonical_root) {
-        return Err(ApiError::not_found("static path not found"));
-    }
-    let metadata = tokio::fs::metadata(&canonical_candidate)
-        .await
-        .map_err(ApiError::internal)?;
-    if !metadata.is_file() {
-        return Ok(None);
-    }
-    let bytes = tokio::fs::read(&canonical_candidate)
-        .await
-        .map_err(ApiError::internal)?;
     let mut builder = Response::builder()
         .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, content_type(&candidate));
+        .header(header::CONTENT_TYPE, content_type_for_path(&candidate));
     if replay && relative == FilePath::new("sw.js") {
         builder = builder
             .header("service-worker-allowed", "/replay/")
@@ -357,65 +346,6 @@ async fn static_file(
         .body(Body::from(bytes))
         .map(Some)
         .map_err(ApiError::internal)
-}
-
-fn decode_relative_path(value: &str) -> Option<PathBuf> {
-    let mut path = PathBuf::new();
-    for segment in value.split('/') {
-        if segment.is_empty() {
-            continue;
-        }
-        let decoded = percent_decode(segment)?;
-        if matches!(decoded.as_str(), "." | "..") || decoded.contains(['/', '\\', '\0']) {
-            return None;
-        }
-        path.push(decoded);
-    }
-    Some(path)
-}
-
-fn percent_decode(value: &str) -> Option<String> {
-    let bytes = value.as_bytes();
-    let mut decoded = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'%' {
-            let high = *bytes.get(index + 1)?;
-            let low = *bytes.get(index + 2)?;
-            decoded.push((hex(high)? << 4) | hex(low)?);
-            index += 3;
-        } else {
-            decoded.push(bytes[index]);
-            index += 1;
-        }
-    }
-    String::from_utf8(decoded).ok()
-}
-
-fn hex(value: u8) -> Option<u8> {
-    match value {
-        b'0'..=b'9' => Some(value - b'0'),
-        b'a'..=b'f' => Some(value - b'a' + 10),
-        b'A'..=b'F' => Some(value - b'A' + 10),
-        _ => None,
-    }
-}
-
-fn content_type(path: &FilePath) -> &'static str {
-    match path.extension().and_then(|extension| extension.to_str()) {
-        Some("css") => "text/css; charset=utf-8",
-        Some("gif") => "image/gif",
-        Some("gz") => "application/gzip",
-        Some("html") => "text/html; charset=utf-8",
-        Some("jpg" | "jpeg") => "image/jpeg",
-        Some("js") => "text/javascript; charset=utf-8",
-        Some("json") => "application/json; charset=utf-8",
-        Some("png") => "image/png",
-        Some("svg") => "image/svg+xml",
-        Some("wasm") => "application/wasm",
-        Some("webp") => "image/webp",
-        _ => "application/octet-stream",
-    }
 }
 
 async fn health() -> Json<Value> {
@@ -546,25 +476,8 @@ fn mutation_json<T: DeserializeOwned>(headers: &HeaderMap, body: &[u8]) -> Resul
 }
 
 fn assert_same_origin(headers: &HeaderMap) -> Result<(), ApiError> {
-    if let Some(fetch_site) = header(headers, "sec-fetch-site") {
-        if fetch_site != "same-origin" {
-            return Err(ApiError::forbidden("request is not same-origin"));
-        }
-    }
-    let origin = header(headers, "origin")
-        .ok_or_else(|| ApiError::forbidden("origin and host headers are required"))?;
-    let host = header(headers, "host")
-        .ok_or_else(|| ApiError::forbidden("origin and host headers are required"))?;
-    let parsed = url::Url::parse(origin).map_err(|_| ApiError::forbidden("invalid origin"))?;
-    let serialized = parsed.origin().ascii_serialization();
-    let authority = &parsed[url::Position::BeforeHost..url::Position::AfterPort];
-    if !matches!(parsed.scheme(), "http" | "https")
-        || serialized != origin
-        || !authority.eq_ignore_ascii_case(host)
-    {
-        return Err(ApiError::forbidden("origin mismatch"));
-    }
-    Ok(())
+    homelab_common::assert_same_origin(headers)
+        .map_err(|error| ApiError::forbidden(error.to_string()))
 }
 
 fn header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {

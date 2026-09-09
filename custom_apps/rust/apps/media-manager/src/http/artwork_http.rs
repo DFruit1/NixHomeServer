@@ -358,7 +358,8 @@ async fn try_jellyfin_image_fallback(
         );
         return None;
     };
-    let Some(entry) = metadata::cached_application_metadata(cache_file, item, false).await else {
+    let Some(entry) = metadata_handlers::cached_application_metadata(cache_file, item, false).await
+    else {
         log_event(
             "jellyfin_fallback_cache_miss",
             request_id,

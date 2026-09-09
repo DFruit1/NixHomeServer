@@ -4,20 +4,13 @@ use browsertrix_downloader::{
     http::{router, AppState},
     queue::{JobQueue, Resolver},
 };
+use homelab_common::{log_server_started, log_startup_failed, shutdown_signal};
 use serde_json::json;
 
 #[tokio::main]
 async fn main() {
     if let Err(error) = run().await {
-        eprintln!(
-            "{}",
-            json!({
-                "level": "error",
-                "service": "browsertrix-downloader",
-                "event": "startup_failed",
-                "error": error,
-            })
-        );
+        log_startup_failed("browsertrix-downloader", &error);
         std::process::exit(1);
     }
 }
@@ -42,15 +35,7 @@ async fn run() -> Result<(), String> {
     let listener = tokio::net::TcpListener::bind(address)
         .await
         .map_err(|error| format!("bind {address}: {error}"))?;
-    eprintln!(
-        "{}",
-        json!({
-            "level": "info",
-            "service": "browsertrix-downloader",
-            "event": "server_started",
-            "address": address.to_string(),
-        })
-    );
+    log_server_started("browsertrix-downloader", &address.to_string());
 
     let prune_database = database;
     let retention_days = config.event_retention_days;
@@ -60,14 +45,11 @@ async fn run() -> Result<(), String> {
         loop {
             interval.tick().await;
             if let Err(error) = prune_database.prune_events(retention_days) {
-                eprintln!(
-                    "{}",
-                    json!({
-                        "level": "error",
-                        "service": "browsertrix-downloader",
-                        "event": "event_retention_failed",
-                        "error": error.to_string(),
-                    })
+                homelab_common::log_event(
+                    "error",
+                    "browsertrix-downloader",
+                    "event_retention_failed",
+                    json!({ "error": error.to_string() }),
                 );
             }
         }
@@ -78,24 +60,4 @@ async fn run() -> Result<(), String> {
         .map_err(|error| format!("serve requests: {error}"));
     prune_task.abort();
     result
-}
-
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        let _ = tokio::signal::ctrl_c().await;
-    };
-    #[cfg(unix)]
-    let terminate = async {
-        if let Ok(mut signal) =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        {
-            signal.recv().await;
-        }
-    };
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-    tokio::select! {
-        () = ctrl_c => {},
-        () = terminate => {},
-    }
 }

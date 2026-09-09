@@ -107,31 +107,9 @@ pub struct Identity {
 
 impl Identity {
     pub fn try_from_forwarded_headers(headers: &axum::http::HeaderMap) -> Result<Self, String> {
-        let subject = headers
-            .get("x-forwarded-user")
-            .and_then(|value| value.to_str().ok())
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or_default();
-        let preferred_username = match headers.get("x-forwarded-preferred-username") {
-            Some(value) => Some(
-                value
-                    .to_str()
-                    .map_err(|_| "forwarded preferred username is not valid text")?,
-            ),
-            None => None,
-        };
-        let username = preferred_username
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .or_else(|| (!subject.is_empty()).then_some(subject))
-            .unwrap_or_default();
-        let groups = headers
-            .get("x-forwarded-groups")
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or_default()
-            .split(',');
-        Self::try_new_with_subject(subject, username, groups)
+        let forwarded = homelab_common::from_forwarded_headers(headers)
+            .map_err(|_| "missing authenticated user header".to_string())?;
+        Self::try_new_with_subject(&forwarded.subject, &forwarded.username, forwarded.groups)
     }
 
     pub fn try_new<I, S>(username: &str, groups: I) -> Result<Self, String>

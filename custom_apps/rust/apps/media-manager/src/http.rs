@@ -35,7 +35,7 @@ use crate::{
 mod artwork_http;
 pub use artwork_http::JellyfinImageCache;
 mod conversions;
-mod metadata;
+mod metadata_handlers;
 mod metadata_lookups;
 mod plans;
 mod playback;
@@ -53,6 +53,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use homelab_common::request_id;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
@@ -61,15 +62,11 @@ use std::{
     os::fd::AsRawFd,
     os::unix::fs::OpenOptionsExt,
     path::Path as FilePath,
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc, Mutex,
-    },
+    sync::{Arc, Mutex},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
-static REQUEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 const MAX_SUBTITLE_BYTES: usize = 10 * 1024 * 1024;
 const MAX_ARTWORK_UPLOAD_BYTES: usize = 32 * 1024 * 1024;
 const MAX_INBOX_ENTRIES: usize = 200;
@@ -239,10 +236,16 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/v1/items/{item_id}/metadata",
-            get(metadata::item_metadata),
+            get(metadata_handlers::item_metadata),
         )
-        .route("/api/v1/metadata/issues", get(metadata::metadata_issues))
-        .route("/api/v1/folders/metadata", get(metadata::folder_metadata))
+        .route(
+            "/api/v1/metadata/issues",
+            get(metadata_handlers::metadata_issues),
+        )
+        .route(
+            "/api/v1/folders/metadata",
+            get(metadata_handlers::folder_metadata),
+        )
         .route("/api/v1/conversions", get(conversions::conversions))
         .route(
             "/api/v1/conversions/inbox",
@@ -287,11 +290,11 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/v1/items/{item_id}/metadata/sidecar",
-            post(metadata::preview_metadata_sidecar),
+            post(metadata_handlers::preview_metadata_sidecar),
         )
         .route(
             "/api/v1/folders/metadata/sidecar",
-            post(metadata::preview_folder_metadata_sidecar),
+            post(metadata_handlers::preview_folder_metadata_sidecar),
         )
         .route(
             "/api/v1/items/{item_id}/metadata/lookup",
@@ -805,7 +808,10 @@ async fn not_found() -> Response {
     .into_response()
 }
 
-fn identity_from_headers(headers: &HeaderMap, request_id: &str) -> Result<Identity, ApiError> {
+pub(crate) fn identity_from_headers(
+    headers: &HeaderMap,
+    request_id: &str,
+) -> Result<Identity, ApiError> {
     Identity::try_from_forwarded_headers(headers).map_err(|_| {
         ApiError::new(
             StatusCode::UNAUTHORIZED,
@@ -855,16 +861,7 @@ fn valid_asset_path(value: &str) -> bool {
 }
 
 fn frontend_content_type(path: &str) -> &'static str {
-    match path.rsplit_once('.').map(|(_, extension)| extension) {
-        Some("css") => "text/css; charset=utf-8",
-        Some("js") => "text/javascript; charset=utf-8",
-        Some("json") => "application/json; charset=utf-8",
-        Some("svg") => "image/svg+xml",
-        Some("png") => "image/png",
-        Some("webp") => "image/webp",
-        Some("woff2") => "font/woff2",
-        _ => "application/octet-stream",
-    }
+    homelab_common::content_type_for_path(FilePath::new(path))
 }
 
 fn visible_catalog_item(
@@ -1457,16 +1454,16 @@ fn sha256_hex(bytes: &[u8]) -> String {
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-fn request_id() -> String {
-    let micros = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_micros();
-    let sequence = REQUEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    format!("r{micros:x}-{sequence:x}")
+fn log_event(event: &str, request_id: &str, detail: Value) {
+    homelab_common::log_event(
+        "warn",
+        "media-manager",
+        event,
+        json!({ "requestId": request_id, "detail": detail }),
+    );
 }
 
-fn unix_timestamp() -> i64 {
+pub(crate) fn unix_timestamp() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -1474,20 +1471,7 @@ fn unix_timestamp() -> i64 {
         .min(i64::MAX as u64) as i64
 }
 
-fn log_event(event: &str, request_id: &str, detail: Value) {
-    eprintln!(
-        "{}",
-        json!({
-            "level": "warn",
-            "service": "media-manager",
-            "event": event,
-            "requestId": request_id,
-            "detail": detail,
-        })
-    );
-}
-
-struct ApiError {
+pub(crate) struct ApiError {
     status: StatusCode,
     code: &'static str,
     message: String,
@@ -1495,7 +1479,7 @@ struct ApiError {
 }
 
 impl ApiError {
-    fn new(
+    pub(crate) fn new(
         status: StatusCode,
         code: &'static str,
         message: impl Into<String>,
@@ -1509,7 +1493,7 @@ impl ApiError {
         }
     }
 
-    fn internal(request_id: String) -> Self {
+    pub(crate) fn internal(request_id: String) -> Self {
         Self::new(
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal_error",
@@ -1518,7 +1502,7 @@ impl ApiError {
         )
     }
 
-    fn without_request_id(
+    pub(crate) fn without_request_id(
         status: StatusCode,
         code: &'static str,
         message: impl Into<String>,
@@ -1526,7 +1510,7 @@ impl ApiError {
         Self::new(status, code, message, String::new())
     }
 
-    fn with_request_id(mut self, request_id: String) -> Self {
+    pub(crate) fn with_request_id(mut self, request_id: String) -> Self {
         if self.request_id.is_empty() {
             self.request_id = request_id;
         }

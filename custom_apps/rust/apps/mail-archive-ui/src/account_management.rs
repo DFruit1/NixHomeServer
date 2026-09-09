@@ -1,110 +1,29 @@
 use super::*;
+use homelab_common::{assert_same_origin, from_forwarded_headers};
 
 pub(super) fn identity_from_headers(headers: &HeaderMap) -> Result<Identity, (StatusCode, String)> {
-    let username = header_value(headers, "x-forwarded-preferred-username")
-        .or_else(|| header_value(headers, "x-forwarded-user"))
-        .ok_or_else(|| {
-            (
-                StatusCode::UNAUTHORIZED,
-                "Missing authenticated username".to_string(),
-            )
-        })?;
+    let forwarded = from_forwarded_headers(headers).map_err(|_| {
+        (
+            StatusCode::UNAUTHORIZED,
+            "Missing authenticated username".to_string(),
+        )
+    })?;
 
-    let email = header_value(headers, "x-forwarded-email");
-    let groups = split_groups(
-        header_value(headers, "x-forwarded-groups")
-            .unwrap_or_default()
-            .as_str(),
-    );
-
-    if !groups.iter().any(|group| group == GROUP_NAME) {
+    if !forwarded.groups.iter().any(|group| group == GROUP_NAME) {
         return Err((
             StatusCode::FORBIDDEN,
             "mail-archive-users membership is required".to_string(),
         ));
     }
 
-    Ok(Identity { username, email })
+    Ok(Identity {
+        username: forwarded.username,
+        email: forwarded.email,
+    })
 }
 
 pub(super) fn verify_same_origin_request(headers: &HeaderMap) -> Result<(), (StatusCode, String)> {
-    let expected_origin = expected_request_origin(headers).ok_or_else(|| {
-        (
-            StatusCode::FORBIDDEN,
-            "Unable to determine the expected request origin".to_string(),
-        )
-    })?;
-
-    if let Some(origin) = header_value(headers, "origin") {
-        if same_origin_value(&origin, &expected_origin) {
-            return Ok(());
-        }
-
-        return Err((
-            StatusCode::FORBIDDEN,
-            "Cross-origin state-changing requests are not allowed".to_string(),
-        ));
-    }
-
-    if let Some(referer) = header_value(headers, "referer") {
-        if same_origin_value(&referer, &expected_origin) {
-            return Ok(());
-        }
-
-        return Err((
-            StatusCode::FORBIDDEN,
-            "Cross-origin state-changing requests are not allowed".to_string(),
-        ));
-    }
-
-    Err((
-        StatusCode::FORBIDDEN,
-        "Origin or Referer is required for state-changing requests".to_string(),
-    ))
-}
-
-pub(super) fn expected_request_origin(headers: &HeaderMap) -> Option<String> {
-    let host = header_value(headers, "x-forwarded-host").or_else(|| {
-        headers
-            .get(HOST)
-            .and_then(|value| value.to_str().ok().map(ToString::to_string))
-    })?;
-    let proto = header_value(headers, "x-forwarded-proto").unwrap_or_else(|| "http".to_string());
-    let host = host
-        .split(',')
-        .next()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())?;
-    Some(format!("{}://{}", proto, host))
-}
-
-pub(super) fn same_origin_value(candidate: &str, expected: &str) -> bool {
-    if !candidate.starts_with(expected) {
-        return false;
-    }
-
-    let remainder = &candidate[expected.len()..];
-    remainder.is_empty()
-        || remainder.starts_with('/')
-        || remainder.starts_with('?')
-        || remainder.starts_with('#')
-}
-
-pub(super) fn header_value(headers: &HeaderMap, name: &str) -> Option<String> {
-    headers
-        .get(name)
-        .and_then(|value| value.to_str().ok())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToString::to_string)
-}
-
-pub(super) fn split_groups(raw: &str) -> Vec<String> {
-    raw.split(|character: char| character == ',' || character == ';' || character.is_whitespace())
-        .map(str::trim)
-        .filter(|group| !group.is_empty())
-        .map(ToString::to_string)
-        .collect()
+    assert_same_origin(headers).map_err(|error| (StatusCode::FORBIDDEN, error.to_string()))
 }
 
 pub(super) fn validate_account_form(

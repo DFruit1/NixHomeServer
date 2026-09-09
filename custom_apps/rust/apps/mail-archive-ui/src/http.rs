@@ -395,18 +395,6 @@ pub(super) fn redirect_response(location: &str) -> Response {
     harden_response(Redirect::to(location).into_response())
 }
 
-pub(super) fn content_type_for_path(path: &FsPath) -> &'static str {
-    match path.extension().and_then(|extension| extension.to_str()) {
-        Some("css") => "text/css; charset=utf-8",
-        Some("html") => "text/html; charset=utf-8",
-        Some("js") => "text/javascript; charset=utf-8",
-        Some("json") => "application/json; charset=utf-8",
-        Some("svg") => "image/svg+xml",
-        Some("wasm") => "application/wasm",
-        _ => "application/octet-stream",
-    }
-}
-
 pub(super) fn vite_ws_origin(origin: &str) -> String {
     if let Some(rest) = origin.strip_prefix("https://") {
         format!("wss://{rest}")

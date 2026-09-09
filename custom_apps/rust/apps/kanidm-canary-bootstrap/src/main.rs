@@ -6,7 +6,7 @@ use sha2::Sha256;
 use std::env;
 use std::error::Error;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -43,14 +43,7 @@ fn required_env(name: &str) -> Result<String> {
 }
 
 fn read_secret(path: &Path) -> Result<String> {
-    let mut file = File::open(path)?;
-    let mut value = String::new();
-    file.read_to_string(&mut value)?;
-    let value = value.trim().to_string();
-    if value.is_empty() {
-        return Err(io::Error::other(format!("{} is empty", path.display())).into());
-    }
-    Ok(value)
+    homelab_common::read_secret_file(path).map_err(Into::into)
 }
 
 fn current_unix_seconds() -> Result<u64> {

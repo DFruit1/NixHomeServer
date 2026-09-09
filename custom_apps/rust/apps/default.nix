@@ -9,20 +9,9 @@ let
   mailManifest = builtins.fromJSON (builtins.readFile (mailFrontend + "/package.json"));
   mediaManifest = builtins.fromJSON (builtins.readFile (mediaFrontend + "/package.json"));
   comparableManifest = manifest: removeAttrs manifest [ "name" ];
-  sharedFrontendDependencySrc = lib.cleanSourceWith {
-    src = mailFrontend;
-    name = "nixhomeserver-qwik-frontend-dependency-src";
-    filter = path: _type:
-      let
-        rel = lib.removePrefix "${toString mailFrontend}/" (toString path);
-      in
-      rel == "" || builtins.elem rel [ "package.json" "pnpm-lock.yaml" ];
-  };
-  sharedFrontendDeps = pkgs.fetchPnpmDeps {
-    pname = "nixhomeserver-qwik-frontends";
-    version = "0.1.0";
-    src = sharedFrontendDependencySrc;
-    fetcherVersion = 3;
+  sharedFrontendDeps = rustLib.mkPnpmDeps {
+    name = "nixhomeserver-qwik-frontends";
+    srcDir = mailFrontend;
     hash = "sha256-GU8O2kA3o+SmAA5BRF/ws7jQqG+Tg7OX41bSw6ownZk=";
   };
 

@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 data-encoding.workspace = true
 hmac.workspace = true
+homelab-common.workspace = true
 kanidm_client.workspace = true
 kanidm_proto.workspace = true
 sha2.workspace = true

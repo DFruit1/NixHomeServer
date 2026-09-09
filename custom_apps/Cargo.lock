@@ -429,6 +429,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "chrono",
+ "homelab-common",
  "libc",
  "rand 0.8.7",
  "rusqlite",
@@ -2151,6 +2152,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "homelab-common"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "serde_json",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "html2text"
 version = "0.14.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2655,6 +2666,7 @@ version = "0.1.0"
 dependencies = [
  "data-encoding",
  "hmac 0.12.1",
+ "homelab-common",
  "kanidm_client",
  "kanidm_proto",
  "sha2 0.10.9",
@@ -2898,6 +2910,7 @@ dependencies = [
  "chacha20poly1305",
  "chrono",
  "form_urlencoded",
+ "homelab-common",
  "landlock",
  "mailparse",
  "md-5",
@@ -2976,6 +2989,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "chacha20poly1305",
+ "homelab-common",
  "image",
  "libc",
  "lofty",
@@ -4379,6 +4393,7 @@ dependencies = [
  "chrono",
  "flate2",
  "form_urlencoded",
+ "homelab-common",
  "html2text",
  "mailparse",
  "rand 0.8.7",

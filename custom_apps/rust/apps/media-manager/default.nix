@@ -38,17 +38,10 @@ let
     };
   };
 in
-app // {
-  backendPackage = app.package;
-  package = rustLib.assembleRuntimePackage {
-    name = "media-manager";
-    backendPackage = app.package;
-    extraInstallCommands = ''
-      mkdir -p "$out/share/media-manager"
-      cp -R --no-preserve=mode ${frontendDist} "$out/share/media-manager/frontend"
-    '';
-  };
-  checks = app.checks // {
-    frontend = frontendDist;
-  };
+rustLib.mkFrontendRuntime {
+  name = "media-manager";
+  inherit app frontendDist;
+  copies = [
+    { from = "."; to = "frontend"; }
+  ];
 }

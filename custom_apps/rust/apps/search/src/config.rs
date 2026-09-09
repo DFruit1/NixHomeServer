@@ -3,6 +3,8 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
+use homelab_common::env_required;
+
 const KNOWN_SOURCE_TYPES: [&str; 5] = [
     "paperless",
     "kiwix",
@@ -148,10 +150,7 @@ pub fn parse_sources(raw: &str) -> Result<Vec<SourceConfig>, String> {
 }
 
 fn env_string(name: &str) -> Result<String, String> {
-    std::env::var(name)
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| format!("environment variable {name} must be set"))
+    env_required(name)
 }
 
 #[cfg(test)]

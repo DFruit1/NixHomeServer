@@ -9,7 +9,7 @@ pub(super) async fn tmdb_image(
     headers: HeaderMap,
 ) -> Response {
     let request_id = request_id();
-    let identity = match authenticated_identity(&headers, &request_id) {
+    let identity = match identity_from_headers(&headers, &request_id) {
         Ok(identity) => identity,
         Err(error) => return error.into_response(),
     };
@@ -37,7 +37,7 @@ pub(super) async fn cover_art_archive_front(
     headers: HeaderMap,
 ) -> Response {
     let request_id = request_id();
-    if let Err(error) = authenticated_identity(&headers, &request_id) {
+    if let Err(error) = identity_from_headers(&headers, &request_id) {
         return error.into_response();
     }
     if !valid_mbid(&release_id) {

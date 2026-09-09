@@ -11,7 +11,7 @@ pub(super) async fn list_provider_accounts(
     headers: HeaderMap,
 ) -> Response {
     let request_id = request_id();
-    let identity = match authenticated_identity(&headers, &request_id) {
+    let identity = match identity_from_headers(&headers, &request_id) {
         Ok(identity) => identity,
         Err(error) => return error.into_response(),
     };
@@ -35,7 +35,7 @@ pub(super) async fn save_provider_account(
     payload: Result<Json<SaveProviderAccountRequest>, JsonRejection>,
 ) -> Response {
     let request_id = request_id();
-    let identity = match authenticated_identity(&headers, &request_id) {
+    let identity = match identity_from_headers(&headers, &request_id) {
         Ok(identity) => identity,
         Err(error) => return error.into_response(),
     };
@@ -120,7 +120,7 @@ pub(super) async fn delete_provider_account(
     Path(provider_id): Path<String>,
 ) -> Response {
     let request_id = request_id();
-    let identity = match authenticated_identity(&headers, &request_id) {
+    let identity = match identity_from_headers(&headers, &request_id) {
         Ok(identity) => identity,
         Err(error) => return error.into_response(),
     };
@@ -145,7 +145,7 @@ pub(super) async fn test_provider_account(
     Path(provider_id): Path<String>,
 ) -> Response {
     let request_id = request_id();
-    let identity = match authenticated_identity(&headers, &request_id) {
+    let identity = match identity_from_headers(&headers, &request_id) {
         Ok(identity) => identity,
         Err(error) => return error.into_response(),
     };

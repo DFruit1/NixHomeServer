@@ -14,6 +14,7 @@ member_manifests=(
   custom_apps/rust/apps/mail-archive-ui/Cargo.toml
   custom_apps/rust/apps/media-manager/Cargo.toml
   custom_apps/rust/apps/search/Cargo.toml
+  custom_apps/rust/lib-rs/Cargo.toml
 )
 
 require_fixed "$workspace_manifest" \
@@ -57,7 +58,7 @@ metadata="$(cargo metadata \
   --format-version 1)"
 
 jq -e '
-  (.packages | length == 5)
+  (.packages | length == 6)
   and ([.packages[].version] | unique | length == 1)
   and ([.packages[].edition] | unique == ["2021"])
   and (

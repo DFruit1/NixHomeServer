@@ -1,25 +1,17 @@
+use homelab_common::{log_server_started, log_startup_failed, shutdown_signal};
 use media_manager::{
     catalog::{Catalog, CatalogHandle},
     config::AppConfig,
     http::{router, AppState, JellyfinImageCache},
     tmdb::{TmdbClient, TmdbClientConfig, TmdbCredentials, TMDB_API_BASE},
 };
-use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
 
 #[tokio::main]
 async fn main() {
     if let Err(error) = run().await {
-        eprintln!(
-            "{}",
-            json!({
-                "level": "error",
-                "service": "media-manager",
-                "event": "startup_failed",
-                "error": error,
-            })
-        );
+        log_startup_failed("media-manager", &error);
         std::process::exit(1);
     }
 }
@@ -56,37 +48,9 @@ async fn run() -> Result<(), String> {
     let listener = tokio::net::TcpListener::bind(address)
         .await
         .map_err(|error| format!("bind {address}: {error}"))?;
-    eprintln!(
-        "{}",
-        json!({
-            "level": "info",
-            "service": "media-manager",
-            "event": "server_started",
-            "address": address.to_string(),
-        })
-    );
+    log_server_started("media-manager", &address.to_string());
     axum::serve(listener, router(state).into_make_service())
         .with_graceful_shutdown(shutdown_signal())
         .await
         .map_err(|error| format!("serve requests: {error}"))
-}
-
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        let _ = tokio::signal::ctrl_c().await;
-    };
-    #[cfg(unix)]
-    let terminate = async {
-        if let Ok(mut signal) =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        {
-            signal.recv().await;
-        }
-    };
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-    tokio::select! {
-        () = ctrl_c => {},
-        () = terminate => {},
-    }
 }

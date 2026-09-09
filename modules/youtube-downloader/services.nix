@@ -1,4 +1,4 @@
-{ config, lib, oauth2Proxy, pkgs, vars, ... }:
+{ config, lib, oauth2Proxy, pkgs, vars, appPackages, ... }:
 
 let
   serviceUser = "youtube-downloader";
@@ -6,7 +6,7 @@ let
   listenAddress = vars.networking.loopbackIPv4;
   listenPort = vars.networking.ports.youtubeDownloader;
   paths = config.repo.youtubeDownloader.paths;
-  youtubeDownloader = pkgs.callPackage ../../custom_apps/node/apps/youtube-downloader { };
+  youtubeDownloader = appPackages.youtube-downloader;
   ownershipMigrationMarker = "/persist/appdata/migrations/youtube-downloader-ownership-v1";
   repairStateOwnership = pkgs.writeShellScript "youtube-downloader-repair-state-ownership" ''
     set -euo pipefail

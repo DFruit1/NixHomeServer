@@ -9,6 +9,7 @@ base64.workspace = true
 chrono = { workspace = true, features = ["serde"] }
 flate2.workspace = true
 form_urlencoded.workspace = true
+homelab-common.workspace = true
 html2text.workspace = true
 mailparse.workspace = true
 rand.workspace = true
