@@ -48,6 +48,7 @@ use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
 
 mod account_management;
 mod archive;
+mod canary;
 mod config;
 mod dashboard;
 mod database;
@@ -1193,6 +1194,10 @@ async fn main() {
             if had_errors {
                 std::process::exit(1);
             }
+            return;
+        } else if mode == "seed-canary-mailbox" {
+            canary::seed_canary_mailbox(&config)
+                .expect("mail archive canary mailbox seeding failed");
             return;
         } else if mode == "verify-attachments" {
             let repair = args.iter().any(|arg| arg == "--repair");

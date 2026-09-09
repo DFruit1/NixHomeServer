@@ -3744,3 +3744,30 @@ fn duplicate_zip_entry_names_get_human_numeric_suffixes() {
         "mailbox/2026-05-01 - invoice/report (1).pdf"
     );
 }
+
+#[test]
+fn canary_mailbox_seeds_messages_and_attachments() {
+    with_stubbed_path(&mail_export_stub_commands(), |_bin_dir| {
+        let tempdir = TempDir::new().expect("tempdir");
+        let config = test_config(&tempdir);
+        prepare_test_layout(&config);
+        env::remove_var("MAIL_ARCHIVE_UI_CANARY_USERNAME");
+        canary::seed_canary_mailbox(&config).expect("seed canary mailbox");
+
+        assert_eq!(count_message_catalog_rows(&config), 4);
+        assert!(count_attachment_catalog_rows(&config) >= 3);
+
+        // Re-seeding is idempotent: one canary account, same message count.
+        canary::seed_canary_mailbox(&config).expect("reseed canary mailbox");
+        let connection = open_db(&config).expect("db");
+        let account_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM accounts WHERE display_name = 'Canary mailbox'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("canary account count");
+        assert_eq!(account_count, 1);
+        assert_eq!(count_message_catalog_rows(&config), 4);
+    });
+}

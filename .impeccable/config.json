@@ -4,8 +4,27 @@
     "designSystem": {
       "enabled": true
     },
-    "ignoreRules": {},
+    "ignoreRules": [],
     "ignoreFiles": [],
-    "ignoreValues": {}
+    "ignoreValues": [
+      {
+        "rule": "overused-font",
+        "value": "inter",
+        "files": [
+          "custom_apps/node/apps/homepage/**"
+        ],
+        "createdAt": "2026-09-09T08:49:23.830Z",
+        "reason": "Deliberate homepage font choice"
+      },
+      {
+        "rule": "side-tab",
+        "value": "*",
+        "files": [
+          "custom_apps/node/apps/homepage/**"
+        ],
+        "createdAt": "2026-09-09T08:49:30.465Z",
+        "reason": "Deliberate homepage status-accent treatment"
+      }
+    ]
   }
 }

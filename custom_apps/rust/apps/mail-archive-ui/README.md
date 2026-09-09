@@ -27,6 +27,23 @@ sudo systemctl start mail-archive-sync.service
 curl -fsS http://127.0.0.1:9011/healthz | jq .
 ```
 
+Canary mailbox:
+
+- `mail-archive-canary-seed.service` seeds a synthetic "Canary mailbox" account
+  owned by `services.mail-archive-ui.canaryUsername` (default `canary`) with a
+  few `.eml` messages, including PDF, text, and image attachments.
+- The account is created with sync disabled, so the sync timer never contacts a
+  real IMAP server for it; the payload is generated locally and indexed in
+  place.
+- Re-running the service is idempotent: the same account is reused and the
+  fixed message set is re-indexed.
+- To test the UI as the canary owner, override the owner:
+
+```bash
+sudo systemctl start mail-archive-canary-seed.service
+journalctl -u mail-archive-canary-seed.service -n 20
+```
+
 Functional scope:
 - stores mailbox credentials encrypted at rest
 - generates `mbsync` config on demand

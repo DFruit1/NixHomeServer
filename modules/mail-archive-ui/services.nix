@@ -23,6 +23,7 @@ let
       "MAIL_ARCHIVE_UI_DEFAULT_TAGS=${lib.concatStringsSep ";" defaultTags}"
       "MAIL_ARCHIVE_UI_FRONTEND_MODE=production"
       "MAIL_ARCHIVE_UI_FRONTEND_DIST_DIR=${cfg.package}/share/mail-archive-ui/frontend"
+      "MAIL_ARCHIVE_UI_CANARY_USERNAME=${cfg.canaryUsername}"
       "TMPDIR=${cfg.runtimeDir}"
       "SQLITE_TMPDIR=${cfg.runtimeDir}"
     ];
@@ -110,6 +111,12 @@ in
       type = lib.types.attrsOf lib.types.str;
       default = { };
       description = "Extra environment variables passed to the mail archive UI service.";
+    };
+
+    canaryUsername = lib.mkOption {
+      type = lib.types.str;
+      default = "canary";
+      description = "Owner username for the synthetic canary mailbox seeded for Mail Archive UI testing.";
     };
 
     visibleMirrorReadGroup = lib.mkOption {
@@ -264,6 +271,46 @@ in
         OnCalendar = mailArchiveSyncTimer;
         Persistent = true;
       };
+    };
+
+    systemd.services.mail-archive-canary-seed = {
+      description = "Seed the synthetic Mail Archive canary mailbox for UI testing";
+      wants = [
+        "mail-archive-ui.service"
+        "local-fs.target"
+      ];
+      after = [
+        "mail-archive-ui.service"
+        "local-fs.target"
+      ];
+      serviceConfig = {
+        Type = "oneshot";
+        User = user;
+        Group = group;
+        WorkingDirectory = cfg.dataDir;
+        ExecStart = "${cfg.package}/bin/mail-archive-ui seed-canary-mailbox";
+        Environment = baseEnvironmentEntries;
+        UMask = "0077";
+        NoNewPrivileges = true;
+        PrivateTmp = true;
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        RemainAfterExit = true;
+        TimeoutStartSec = "15min";
+        RestrictAddressFamilies = [
+          "AF_INET"
+          "AF_INET6"
+          "AF_UNIX"
+        ];
+        ReadWritePaths = [
+          cfg.dataDir
+          cfg.storeRoot
+          cfg.accountStateRoot
+          cfg.runtimeDir
+          cfg.lockDir
+        ];
+      };
+      path = mailArchiveUiPath;
     };
 
     systemd.services.mail-archive-paperless-tasks = lib.mkIf (cfg.paperlessConsumeRoot != null) {
