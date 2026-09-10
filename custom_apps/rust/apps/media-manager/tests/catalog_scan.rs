@@ -1,3 +1,4 @@
+use media_manager::media::{LibraryCategory, MediaKind};
 use media_manager::{
     catalog::{Catalog, CatalogHandle, ScannedItem},
     naming::{canonical_movie_directory, canonical_tv_episode},
@@ -12,7 +13,7 @@ fn subtitle_inventory_query_is_scoped_to_the_video_directory() {
         .map(|index| ScannedItem {
             id: format!("unrelated-{index}"),
             relative_path: format!("Other/{index:04}.srt"),
-            media_kind: "subtitle".to_string(),
+            media_kind: MediaKind::Subtitle,
             size_bytes: 1,
             modified_ns: 1,
             fingerprint: "1:1".to_string(),
@@ -22,7 +23,7 @@ fn subtitle_inventory_query_is_scoped_to_the_video_directory() {
         ScannedItem {
             id: "arrival-en".to_string(),
             relative_path: "Movies/Arrival (2016).en.srt".to_string(),
-            media_kind: "subtitle".to_string(),
+            media_kind: MediaKind::Subtitle,
             size_bytes: 1,
             modified_ns: 1,
             fingerprint: "1:1".to_string(),
@@ -30,7 +31,7 @@ fn subtitle_inventory_query_is_scoped_to_the_video_directory() {
         ScannedItem {
             id: "arrival-forced".to_string(),
             relative_path: "Movies/Arrival (2016).en.forced.ass".to_string(),
-            media_kind: "subtitle".to_string(),
+            media_kind: MediaKind::Subtitle,
             size_bytes: 1,
             modified_ns: 1,
             fingerprint: "1:1".to_string(),
@@ -94,7 +95,7 @@ fn scanner_indexes_supported_media_without_following_symlinks() {
             id: "shared-videos".to_string(),
             owner_username: None,
             path: library,
-            category: "videos".to_string(),
+            category: LibraryCategory::Videos,
         },
     )
     .expect("scan");
@@ -133,7 +134,7 @@ fn scanner_skips_entries_with_non_utf8_paths_instead_of_failing() {
             id: "shared-videos".to_string(),
             owner_username: None,
             path: library,
-            category: "videos".to_string(),
+            category: LibraryCategory::Videos,
         },
     )
     .expect("scan");
@@ -164,7 +165,7 @@ fn scanner_skips_the_tombstone_folder() {
             id: "shared-videos".to_string(),
             owner_username: None,
             path: library,
-            category: "videos".to_string(),
+            category: LibraryCategory::Videos,
         },
     )
     .expect("scan");
@@ -203,7 +204,7 @@ fn scanner_indexes_additional_artwork_formats() {
             id: "shared-music-art".to_string(),
             owner_username: None,
             path: library,
-            category: "music".to_string(),
+            category: LibraryCategory::Music,
         },
     )
     .expect("scan");
@@ -214,7 +215,7 @@ fn scanner_indexes_additional_artwork_formats() {
     assert_eq!(items.len(), 8);
     let artwork: Vec<_> = items
         .iter()
-        .filter(|item| item.media_kind == "artwork")
+        .filter(|item| item.media_kind == MediaKind::Artwork)
         .collect();
     assert_eq!(artwork.len(), 7);
     assert!(items
@@ -235,7 +236,7 @@ fn scanner_keeps_podcasts_distinct_from_audiobooks() {
             id: "shared-podcasts".to_string(),
             owner_username: None,
             path: library,
-            category: "podcasts".to_string(),
+            category: LibraryCategory::Podcasts,
         },
     )
     .expect("scan");
@@ -243,7 +244,7 @@ fn scanner_keeps_podcasts_distinct_from_audiobooks() {
         .list_items("shared-podcasts", None, 100)
         .expect("podcast items");
     assert_eq!(items.len(), 1);
-    assert_eq!(items[0].media_kind, "podcast");
+    assert_eq!(items[0].media_kind, MediaKind::Podcast);
 }
 
 #[test]
@@ -258,7 +259,7 @@ fn scanner_removes_catalog_rows_for_files_that_disappeared() {
         id: "shared-books".to_string(),
         owner_username: None,
         path: library,
-        category: "books".to_string(),
+        category: LibraryCategory::Books,
     };
 
     scan_root(&mut catalog, &root).expect("first scan");
@@ -284,7 +285,7 @@ fn concurrent_initial_scans_reconcile_a_root_only_once() {
         id: "shared-books-concurrent".to_string(),
         owner_username: None,
         path: library,
-        category: "books".to_string(),
+        category: LibraryCategory::Books,
     };
 
     let first_handle = handle.clone();
@@ -338,7 +339,7 @@ fn scanner_waits_for_a_concurrent_catalog_writer() {
             id: "shared-books-writer-contention".to_string(),
             owner_username: None,
             path: library,
-            category: "books".to_string(),
+            category: LibraryCategory::Books,
         },
     );
     writer.join().expect("catalog writer thread");

@@ -1046,6 +1046,105 @@ async fn metadata_fields_create_an_opf_sidecar_preview_without_a_default_year() 
 }
 
 #[tokio::test]
+async fn core_info_writes_only_title_and_year_into_the_kind_sidecar() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let (app, _) = test_app_with_mode(&temp, MutationMode::Enabled);
+    std::fs::create_dir_all(temp.path().join("shared/_Videos/Movies")).expect("movie folder");
+    std::fs::write(
+        temp.path()
+            .join("shared/_Videos/Movies/The Movie (2001).mkv"),
+        b"video",
+    )
+    .expect("movie file");
+    editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-videos"}"#).await;
+    let item_id = first_item_id(&app, "shared-videos").await;
+
+    let preview = app
+        .clone()
+        .oneshot(editor_post_request(
+            &format!("/api/v1/items/{item_id}/core-info"),
+            Body::from(
+                serde_json::json!({ "title": "The Movie", "releaseYear": 2001 }).to_string(),
+            ),
+        ))
+        .await
+        .expect("core-info preview");
+    assert_eq!(preview.status(), StatusCode::CREATED);
+    let body = to_bytes(preview.into_body(), 64 * 1024)
+        .await
+        .expect("body");
+    let value: Value = serde_json::from_slice(&body).expect("preview JSON");
+    assert_eq!(value["actions"][0]["kind"], "install_metadata_sidecar");
+    assert_eq!(
+        value["actions"][0]["destinationRelativePath"],
+        "Movies/The Movie (2001).nfo"
+    );
+    let staged = std::fs::read_dir(temp.path().join("state/provider-staging"))
+        .expect("staging")
+        .next()
+        .expect("staged entry")
+        .expect("staged file")
+        .path();
+    let nfo = std::fs::read_to_string(staged).expect("staged NFO");
+    assert!(nfo.contains("<title>The Movie</title>"));
+    assert!(nfo.contains("<year>2001</year>"));
+
+    let metadata = app
+        .oneshot(editor_get_request(&format!(
+            "/api/v1/items/{item_id}/metadata"
+        )))
+        .await
+        .expect("metadata response");
+    let body = to_bytes(metadata.into_body(), 64 * 1024)
+        .await
+        .expect("body");
+    let value: Value = serde_json::from_slice(&body).expect("metadata JSON");
+    assert_eq!(value["coreInfo"]["title"], "The Movie");
+    assert_eq!(value["coreInfo"]["releaseYear"], 2001);
+}
+
+#[tokio::test]
+async fn core_info_rejects_an_out_of_range_year() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let (app, _) = test_app_with_mode(&temp, MutationMode::Enabled);
+    std::fs::create_dir_all(temp.path().join("shared/_Videos")).expect("videos root");
+    std::fs::write(temp.path().join("shared/_Videos/movie.mkv"), b"video").expect("movie");
+    editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-videos"}"#).await;
+    let item_id = first_item_id(&app, "shared-videos").await;
+
+    let preview = app
+        .oneshot(editor_post_request(
+            &format!("/api/v1/items/{item_id}/core-info"),
+            Body::from(serde_json::json!({ "title": "Movie", "releaseYear": 0 }).to_string()),
+        ))
+        .await
+        .expect("core-info preview");
+    assert_eq!(preview.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn core_info_rejects_tv_episodes_without_series_context() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let (app, _) = test_app_with_mode(&temp, MutationMode::Enabled);
+    let episode = temp
+        .path()
+        .join("shared/_Videos/_Shows/Show (1976)/Season 00/Show (1976) - S00E01 - Pilot.mkv");
+    std::fs::create_dir_all(episode.parent().expect("episode parent")).expect("show folder");
+    std::fs::write(&episode, b"video").expect("episode file");
+    editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-videos"}"#).await;
+    let item_id = first_item_id(&app, "shared-videos").await;
+
+    let preview = app
+        .oneshot(editor_post_request(
+            &format!("/api/v1/items/{item_id}/core-info"),
+            Body::from(serde_json::json!({ "title": "Pilot", "releaseYear": 1976 }).to_string()),
+        ))
+        .await
+        .expect("core-info preview");
+    assert_eq!(preview.status(), StatusCode::CONFLICT);
+}
+
+#[tokio::test]
 async fn episode_metadata_creates_a_jellyfin_compatible_episode_nfo() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let (app, _) = test_app_with_mode(&temp, MutationMode::Enabled);

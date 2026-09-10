@@ -1141,6 +1141,15 @@ a:focus-visible {
 .tree-row.selected .icon {
   color: var(--accent);
 }
+.tree-row.selected .tree-name {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.tree-row.selected .tabular {
+  flex: 0 0 auto;
+}
 .tree-row.folder .tree-name {
   font-weight: 600;
 }
@@ -3038,6 +3047,17 @@ a:focus-visible {
 .description-input {
   grid-column: 1 / -1;
 }
+.metadata-group-heading {
+  grid-column: 1 / -1;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
 .metadata-actions {
   min-height: 72px;
   padding: 14px 20px;
@@ -3253,20 +3273,22 @@ a:focus-visible {
 
 @media (max-width: 920px) {
   .library-layout {
-    grid-template-columns: 1fr;
-    grid-template-areas:
-      "tabs"
-      "personal"
-      "shared";
-    grid-template-rows: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+  .library-tabs {
+    order: 0;
   }
   .library-detail-pane {
+    order: 1;
     overflow-y: visible;
   }
   .item-tree {
     overscroll-behavior: auto;
   }
   .catalog-panel {
+    order: 2;
     height: 55vh;
     min-height: 0;
   }

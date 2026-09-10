@@ -463,7 +463,7 @@ pub(super) async fn item_image(
         Ok(item) => item,
         Err(error) => return error.with_request_id(request_id).into_response(),
     };
-    let artwork = if item.media_kind == "artwork" {
+    let artwork = if item.media_kind == MediaKind::Artwork {
         Some(item.clone())
     } else {
         let owner = item.owner_username.as_deref();
@@ -487,13 +487,13 @@ pub(super) async fn item_image(
     let root_path = root.resolved_path.clone();
     let artwork_path = artwork.map(|candidate| candidate.relative_path);
     let item_path = item.relative_path.clone();
-    let item_kind = item.media_kind.clone();
+    let item_kind = item.media_kind;
     let item_id_for_logs = item.id.clone();
     let item_dir = item_path
         .rsplit_once('/')
         .map(|(parent, _)| parent)
         .unwrap_or("");
-    let siblings = if artwork_path.is_none() && is_embedded_artwork_capable(&item_kind) {
+    let siblings = if artwork_path.is_none() && is_embedded_artwork_capable(item_kind) {
         match catalog.list_media_in_directory(
             &item.root_id,
             item.owner_username.as_deref(),
@@ -502,7 +502,7 @@ pub(super) async fn item_image(
             Ok(items) => items
                 .into_iter()
                 .filter(|sibling| sibling.relative_path != item_path)
-                .filter(|sibling| is_embedded_artwork_capable(&sibling.media_kind))
+                .filter(|sibling| is_embedded_artwork_capable(sibling.media_kind))
                 .map(|sibling| sibling.relative_path)
                 .collect::<Vec<_>>(),
             Err(error) => {
@@ -603,14 +603,7 @@ pub(super) async fn preview_artwork_replacement(
         Err(_) => return ApiError::internal(request_id).into_response(),
     };
     let item = match visible_catalog_item(&state.config, &identity, &catalog, &item_id) {
-        Ok(item)
-            if matches!(
-                item.media_kind.as_str(),
-                "artwork" | "video" | "music" | "audiobook" | "podcast" | "book"
-            ) =>
-        {
-            item
-        }
+        Ok(item) if !matches!(item.media_kind, MediaKind::Subtitle | MediaKind::Iso) => item,
         Ok(_) => {
             return ApiError::new(
                 StatusCode::CONFLICT,
@@ -622,7 +615,7 @@ pub(super) async fn preview_artwork_replacement(
         }
         Err(error) => return error.with_request_id(request_id).into_response(),
     };
-    let existing_artwork = if item.media_kind == "artwork" {
+    let existing_artwork = if item.media_kind == MediaKind::Artwork {
         Some(item.clone())
     } else {
         let parent = item

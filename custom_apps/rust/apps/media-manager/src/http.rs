@@ -16,6 +16,7 @@ use crate::{
     },
     catalog::{Catalog, CatalogHandle, CatalogItem, ConfirmPlanOutcome, MutationPlanDraft},
     config::{AppConfig, Identity, MutationMode, RootScope, VisibleRoot, TOMBSTONE_FOLDER},
+    media::MediaKind,
     metadata::{
         application_observation, consumer_effects, filename_observation, folder_sidecar_path,
         health_issues, initial_field_sources, inspect_embedded_metadata, inspect_sidecar,
@@ -25,7 +26,7 @@ use crate::{
     naming::{
         canonical_movie_directory, canonical_music_track, canonical_tv_episode, clean_component,
     },
-    scanner::{media_kind as scanned_media_kind, rescan_root, ScanRoot},
+    scanner::{rescan_root, ScanRoot},
     subtitle_format::{parse_srt, parse_subtitle, subtitle_validation},
     subtitles::{
         opensubtitles_movie_hash, OpenSubtitlesClient, OpenSubtitlesCredentials, SubtitleMatch,
@@ -196,6 +197,13 @@ pub(super) struct MusicLookupRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct CoreInfoRequest {
+    title: String,
+    release_year: Option<u16>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct TmdbSearchRequest {
     query: String,
     year: Option<u16>,
@@ -292,6 +300,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/items/{item_id}/metadata/sidecar",
             post(metadata_handlers::preview_metadata_sidecar),
+        )
+        .route(
+            "/api/v1/items/{item_id}/core-info",
+            post(metadata_handlers::preview_core_info),
         )
         .route(
             "/api/v1/folders/metadata/sidecar",
@@ -602,7 +614,7 @@ async fn items(
         id: root.id.clone(),
         owner_username: owner.map(str::to_string),
         path: root.resolved_path.clone().into(),
-        category: root.category.clone(),
+        category: root.category,
     };
     let catalog_handle = state.catalog.clone();
     match tokio::task::spawn_blocking(move || rescan_root(&catalog_handle, &scan_root_spec)).await {
@@ -740,7 +752,7 @@ async fn items_with_video_probes(
     let root_path = root.resolved_path.clone();
     let videos = items
         .iter()
-        .filter(|item| item.media_kind == "video")
+        .filter(|item| item.media_kind == MediaKind::Video)
         .map(|item| (item.relative_path.clone(), item.fingerprint.clone()))
         .collect::<Vec<_>>();
     let videos_for_probe = videos.clone();
@@ -783,7 +795,7 @@ async fn items_with_video_probes(
         .map(|item| {
             let mut value =
                 serde_json::to_value(&item).unwrap_or_else(|_| json!({ "id": item.id }));
-            if item.media_kind == "video" {
+            if item.media_kind == MediaKind::Video {
                 value["videoProbe"] = cache
                     .probe_for(&item.relative_path, &item.fingerprint)
                     .and_then(|probe| serde_json::to_value(probe).ok())

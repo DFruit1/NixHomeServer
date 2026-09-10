@@ -1,4 +1,5 @@
 use super::*;
+use crate::media::LibraryCategory;
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -434,7 +435,7 @@ fn build_move_actions(
         let (destination_root_id, destination_relative_path) = match kind {
             Some("canonicalize_names") => (
                 item.root_id.clone(),
-                canonical_destination(&plan.operation, &item.relative_path, &source_root.category)?,
+                canonical_destination(&plan.operation, &item.relative_path, source_root.category)?,
             ),
             Some("semantic_move") => {
                 let destination_root_id = plan
@@ -503,7 +504,7 @@ fn tombstone_destination(relative_path: &str) -> Result<String, ApiError> {
 fn canonical_destination(
     operation: &Value,
     current_relative: &str,
-    root_category: &str,
+    root_category: LibraryCategory,
 ) -> Result<String, ApiError> {
     let title = operation
         .get("title")
@@ -572,14 +573,14 @@ fn canonical_destination(
             ),
             _ => return Err(season_episode_pair_error()),
         },
-        "movie" if root_category == "videos" => {
+        "movie" if root_category == LibraryCategory::Videos => {
             let label = canonical_movie_directory(&title, year);
             (
                 format!("{label}.{extension}"),
                 organize_folders.then_some(label),
             )
         }
-        "tv" if root_category == "videos" => {
+        "tv" if root_category == LibraryCategory::Videos => {
             let (Some(season), Some(episode)) = (season, episode) else {
                 return Err(season_episode_pair_error());
             };
@@ -604,7 +605,7 @@ fn canonical_destination(
                 organize_folders.then(|| format!("{show}/Season {season:02}")),
             )
         }
-        "music" if root_category == "music" => {
+        "music" if root_category == LibraryCategory::Music => {
             let artist = required_clean_field(operation, "artist", "Artist")?;
             let album = required_clean_field(operation, "album", "Album")?;
             let track = required_u16_field(operation, "track", "Track", 1)?;
@@ -615,10 +616,10 @@ fn canonical_destination(
                 organize_folders.then(|| format!("{artist}/{album}")),
             )
         }
-        "audiobook" if root_category == "audiobooks" => {
+        "audiobook" if root_category == LibraryCategory::Audiobooks => {
             creator_collection_destination(operation, &title, year, extension, organize_folders)?
         }
-        "book" if root_category == "books" => {
+        "book" if root_category == LibraryCategory::Books => {
             creator_collection_destination(operation, &title, year, extension, organize_folders)?
         }
         _ => {

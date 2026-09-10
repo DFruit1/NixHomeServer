@@ -1450,6 +1450,7 @@ const LibraryPane = component$<{
     ? findTreeNode(tree, props.focusPath)
     : undefined;
   const displayedTree = focusedNode ? [focusedNode] : tree;
+  const lastWhitespaceTapAt = useSignal(0);
   return (
     <section
       class={{
@@ -1497,6 +1498,33 @@ const LibraryPane = component$<{
               class="item-tree"
               role="tree"
               aria-label={`${props.title} items`}
+              title={
+                props.focusPath
+                  ? "Double-click or double-tap empty space to go up one level"
+                  : undefined
+              }
+              onClick$={(event) => {
+                const target = event.target as HTMLElement | null;
+                if (
+                  !target ||
+                  target.closest("button, a, input, select, textarea")
+                )
+                  return;
+                if (!props.focusPath) return;
+                const parentPath = props.focusPath
+                  .split("/")
+                  .slice(0, -1)
+                  .join("/");
+                const now = Date.now();
+                const isDoubleTap = now - lastWhitespaceTapAt.value < 450;
+                lastWhitespaceTapAt.value = isDoubleTap ? 0 : now;
+                if (!isDoubleTap) return;
+                if (parentPath) {
+                  props.selectFolder$(parentPath);
+                } else if (props.browser.selectedFolder) {
+                  props.selectFolder$("");
+                }
+              }}
             >
               {displayedTree.map((node) => (
                 <TreeBranch
@@ -1625,6 +1653,20 @@ const LibraryDetailPane = component$<{
   );
 });
 
+function scrollLibraryDetailToTop() {
+  if (typeof window === "undefined") return;
+  if (typeof window.matchMedia !== "function") return;
+  if (!window.matchMedia("(max-width: 920px)").matches) return;
+  const behavior: ScrollBehavior = window.matchMedia(
+    "(prefers-reduced-motion: reduce)",
+  ).matches
+    ? "auto"
+    : "smooth";
+  window.requestAnimationFrame(() =>
+    window.scrollTo({ top: 0, left: 0, behavior }),
+  );
+}
+
 const LibraryView = component$<{
   state: DashboardState;
   selectItem$: QRL<(item: CatalogItem) => void>;
@@ -1711,6 +1753,7 @@ const LibraryView = component$<{
     shared.selectedFolder = "";
     props.state.selectedItemId = "";
     props.state.preview = undefined;
+    scrollLibraryDetailToTop();
   });
   const selectSharedFolder$ = $((path: string) => {
     const changingSelection =
@@ -1727,6 +1770,7 @@ const LibraryView = component$<{
     personal.selectedFolder = "";
     props.state.selectedItemId = "";
     props.state.preview = undefined;
+    scrollLibraryDetailToTop();
   });
   const selectPersonalItem$ = $((item: CatalogItem) => {
     const changingSelection =
@@ -1742,6 +1786,7 @@ const LibraryView = component$<{
     personal.selectedFolder = "";
     shared.selectedFolder = "";
     props.selectItem$(item);
+    scrollLibraryDetailToTop();
   });
   const selectSharedItem$ = $((item: CatalogItem) => {
     const changingSelection =
@@ -1757,6 +1802,7 @@ const LibraryView = component$<{
     personal.selectedFolder = "";
     shared.selectedFolder = "";
     props.selectItem$(item);
+    scrollLibraryDetailToTop();
   });
   const closeFolderEditor$ = $(() => {
     if (!allowMetadataDraftDiscard(props.state.metadataDraftDirty)) return;

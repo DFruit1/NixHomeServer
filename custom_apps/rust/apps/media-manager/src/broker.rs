@@ -1,4 +1,5 @@
 use crate::config::{AppConfig, Identity};
+use crate::media::LibraryCategory;
 use serde::{Deserialize, Serialize};
 use std::{
     ffi::CString,
@@ -452,7 +453,7 @@ fn validate_subtitle_action(
     let destination_root = config
         .resolve_visible_root(&identity, &action.destination_root_id)
         .ok_or_else(|| BrokerError::new("destination root ID is not registered"))?;
-    if destination_root.category != "videos" {
+    if destination_root.category != LibraryCategory::Videos {
         return Err(BrokerError::new(
             "subtitle sidecars may only be installed in a video root",
         ));
@@ -517,7 +518,13 @@ fn validate_metadata_sidecar_action(
     let destination_root = config
         .resolve_visible_root(&identity, &action.destination_root_id)
         .ok_or_else(|| BrokerError::new("destination root ID is not registered"))?;
-    if !["videos", "music", "audiobooks", "books"].contains(&destination_root.category.as_str()) {
+    if !matches!(
+        destination_root.category,
+        LibraryCategory::Videos
+            | LibraryCategory::Music
+            | LibraryCategory::Audiobooks
+            | LibraryCategory::Books
+    ) {
         return Err(BrokerError::new(
             "metadata sidecars may only be installed in a media root",
         ));
@@ -582,9 +589,7 @@ fn validate_install_artwork_action(
     let destination_root = config
         .resolve_visible_root(&identity, &action.destination_root_id)
         .ok_or_else(|| BrokerError::new("artwork root ID is not registered"))?;
-    if !["videos", "music", "audiobooks", "podcasts", "books"]
-        .contains(&destination_root.category.as_str())
-    {
+    if !LibraryCategory::ALL.contains(&destination_root.category) {
         return Err(BrokerError::new(
             "artwork may only be installed in a media root",
         ));
@@ -809,7 +814,10 @@ fn validate_replace_metadata_sidecar_action(
     let root = config
         .resolve_visible_root(&identity, &action.root_id)
         .ok_or_else(|| BrokerError::new("metadata root ID is not registered"))?;
-    if !["videos", "music", "audiobooks"].contains(&root.category.as_str()) {
+    if !matches!(
+        root.category,
+        LibraryCategory::Videos | LibraryCategory::Music | LibraryCategory::Audiobooks
+    ) {
         return Err(BrokerError::new(
             "metadata sidecars may only be replaced in a supported media root",
         ));
@@ -864,7 +872,7 @@ fn validate_replace_embedded_metadata_action(
     let root = config
         .resolve_visible_root(&identity, &action.root_id)
         .ok_or_else(|| BrokerError::new("metadata root ID is not registered"))?;
-    if root.category != "books" {
+    if root.category != LibraryCategory::Books {
         return Err(BrokerError::new(
             "embedded book metadata may only be replaced in a books root",
         ));
@@ -919,7 +927,7 @@ fn validate_replace_artwork_action(
     let root = config
         .resolve_visible_root(&identity, &action.root_id)
         .ok_or_else(|| BrokerError::new("artwork root ID is not registered"))?;
-    if !["videos", "music", "audiobooks", "podcasts", "books"].contains(&root.category.as_str()) {
+    if !LibraryCategory::ALL.contains(&root.category) {
         return Err(BrokerError::new(
             "artwork may only be installed in a media root",
         ));

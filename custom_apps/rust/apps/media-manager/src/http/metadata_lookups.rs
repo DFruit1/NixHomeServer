@@ -173,7 +173,7 @@ pub(super) async fn lookup_music_metadata(
         }
     };
     let item = match visible_catalog_item(&state.config, &identity, &catalog, &item_id) {
-        Ok(item) if item.media_kind == "music" => item,
+        Ok(item) if item.media_kind == MediaKind::Music => item,
         Ok(_) => {
             return ApiError::new(
                 StatusCode::CONFLICT,

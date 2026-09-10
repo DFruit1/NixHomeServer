@@ -1,8 +1,5 @@
-use crate::{
-    broker::open_regular_file_beneath,
-    catalog::CatalogItem,
-    config::{AppConfig, IntegrationCapability},
-};
+use crate::media::{MediaKind, MetadataCarrier, SidecarFormat};
+use crate::{broker::open_regular_file_beneath, catalog::CatalogItem, config::AppConfig};
 use lofty::{
     config::ParseOptions,
     file::{FileType, TaggedFileExt},
@@ -106,7 +103,7 @@ pub struct MetadataModificationTarget {
 #[serde(rename_all = "camelCase")]
 pub struct SidecarInspection {
     pub relative_path: String,
-    pub format: String,
+    pub format: SidecarFormat,
     pub exists: bool,
     pub can_replace: bool,
     pub consumer_effective: bool,
@@ -168,53 +165,54 @@ pub fn application_observation(source: &str, label: &str, fields: &Value) -> Met
     }
 }
 
-pub fn item_sidecar_path(item: &CatalogItem, media_type: &str) -> (String, &'static str) {
+pub fn item_sidecar_path(item: &CatalogItem) -> Option<(String, SidecarFormat)> {
     let stem = item
         .relative_path
         .rsplit_once('.')
         .map(|(stem, _)| stem)
         .unwrap_or(&item.relative_path);
-    match item.media_kind.as_str() {
-        "video" => (format!("{stem}.nfo"), "nfo"),
-        "music" => (
+    match item.media_kind {
+        MediaKind::Video => Some((format!("{stem}.nfo"), SidecarFormat::Nfo)),
+        MediaKind::Music => Some((
             item.relative_path
                 .rsplit_once('/')
                 .map(|(parent, _)| format!("{parent}/album.nfo"))
                 .unwrap_or_else(|| "album.nfo".to_string()),
-            "nfo",
-        ),
-        "audiobook" | "podcast" => (
+            SidecarFormat::Nfo,
+        )),
+        MediaKind::Audiobook | MediaKind::Podcast => Some((
             item.relative_path
                 .rsplit_once('/')
                 .map(|(parent, _)| format!("{parent}/metadata.opf"))
                 .unwrap_or_else(|| "metadata.opf".to_string()),
-            "opf",
-        ),
-        "book" => (format!("{stem}.opf"), "opf"),
-        _ if media_type == "music" => (format!("{stem}.nfo"), "nfo"),
-        _ => (format!("{stem}.nfo"), "nfo"),
+            SidecarFormat::Opf,
+        )),
+        MediaKind::Book => Some((format!("{stem}.opf"), SidecarFormat::Opf)),
+        MediaKind::Artwork | MediaKind::Subtitle | MediaKind::Iso => None,
     }
 }
 
-pub fn folder_sidecar_path(relative_path: &str, media_type: &str) -> (String, &'static str) {
+pub fn folder_sidecar_path(relative_path: &str, media_type: &str) -> (String, SidecarFormat) {
     match media_type {
-        "series" => (format!("{relative_path}/tvshow.nfo"), "nfo"),
-        "season" => (format!("{relative_path}/season.nfo"), "nfo"),
-        "music" => (format!("{relative_path}/album.nfo"), "nfo"),
-        "audiobook" | "podcast" | "book" => (format!("{relative_path}/metadata.opf"), "opf"),
-        _ => (format!("{relative_path}/movie.nfo"), "nfo"),
+        "series" => (format!("{relative_path}/tvshow.nfo"), SidecarFormat::Nfo),
+        "season" => (format!("{relative_path}/season.nfo"), SidecarFormat::Nfo),
+        "music" => (format!("{relative_path}/album.nfo"), SidecarFormat::Nfo),
+        "audiobook" | "podcast" | "book" => {
+            (format!("{relative_path}/metadata.opf"), SidecarFormat::Opf)
+        }
+        _ => (format!("{relative_path}/movie.nfo"), SidecarFormat::Nfo),
     }
 }
 
 pub fn inspect_sidecar(
     root: &Path,
     relative_path: String,
-    format: &str,
+    format: SidecarFormat,
     consumer_effective: bool,
 ) -> (SidecarInspection, Option<MetadataObservation>) {
     let mut inspection = SidecarInspection {
         relative_path: relative_path.clone(),
-        format: format.to_string(),
+        format,
         exists: false,
         can_replace: false,
         consumer_effective,
@@ -264,14 +262,14 @@ pub fn inspect_sidecar(
         inspection,
         Some(MetadataObservation {
             source: "sidecar".to_string(),
-            label: format!("{} sidecar", format.to_ascii_uppercase()),
+            label: format!("{} sidecar", format.as_str().to_ascii_uppercase()),
             observed_at,
             relative_path: Some(relative_path),
-            format: Some(format.to_string()),
+            format: Some(format.as_str().to_string()),
             app_item_id: None,
             storage: "sidecar-file".to_string(),
             consumed_by: if consumer_effective {
-                vec![if format == "opf" {
+                vec![if format == SidecarFormat::Opf {
                     "audiobookshelf"
                 } else {
                     "jellyfin"
@@ -298,7 +296,10 @@ pub fn inspect_embedded_metadata(
         .rsplit_once('.')
         .map(|(_, extension)| extension.to_ascii_lowercase())
         .unwrap_or_default();
-    if matches!(item.media_kind.as_str(), "music" | "audiobook" | "podcast") {
+    if matches!(
+        item.media_kind,
+        MediaKind::Music | MediaKind::Audiobook | MediaKind::Podcast
+    ) {
         return inspect_audio_tags(root, item);
     }
     if extension == "pdf" {
@@ -534,7 +535,7 @@ fn inspect_audio_tags(
             .filter(|value| !value.is_empty())
             .map(str::to_string)
     };
-    let is_podcast = item.media_kind == "podcast";
+    let is_podcast = item.media_kind == MediaKind::Podcast;
     let title = if is_podcast {
         tag.title().map(|value| value.into_owned())
     } else {
@@ -603,7 +604,7 @@ fn inspect_audio_tags(
         format: Some(format!("{:?}", tag.tag_type()).to_ascii_lowercase()),
         app_item_id: None,
         storage: "embedded-file".to_string(),
-        consumed_by: vec![if is_podcast || item.media_kind == "audiobook" {
+        consumed_by: vec![if is_podcast || item.media_kind == MediaKind::Audiobook {
             "audiobookshelf"
         } else {
             "jellyfin"
@@ -805,7 +806,7 @@ fn parse_comicinfo_fields(text: &str) -> Result<Value, String> {
 }
 
 pub fn health_issues(
-    media_kind: &str,
+    media_kind: MediaKind,
     effective: &Value,
     observations: &[MetadataObservation],
 ) -> Vec<MetadataHealthIssue> {
@@ -827,7 +828,11 @@ pub fn health_issues(
             Vec::new(),
         ));
     }
-    if matches!(media_kind, "audiobook" | "book" | "podcast") && missing("authors") {
+    if matches!(
+        media_kind,
+        MediaKind::Audiobook | MediaKind::Book | MediaKind::Podcast
+    ) && missing("authors")
+    {
         issues.push(health_issue(
             "missing-authors",
             "warning",
@@ -837,7 +842,7 @@ pub fn health_issues(
             Vec::new(),
         ));
     }
-    if media_kind == "audiobook" && missing("narrators") {
+    if media_kind == MediaKind::Audiobook && missing("narrators") {
         issues.push(health_issue(
             "missing-narrators",
             "warning",
@@ -857,7 +862,7 @@ pub fn health_issues(
             Vec::new(),
         ));
     }
-    if matches!(media_kind, "audiobook" | "podcast") {
+    if matches!(media_kind, MediaKind::Audiobook | MediaKind::Podcast) {
         for observation in observations {
             let audio_files = observation
                 .fields
@@ -1041,93 +1046,58 @@ fn field_label(field: &str) -> String {
 }
 
 pub fn modification_targets(
-    media_kind: &str,
+    media_kind: MediaKind,
     extension: &str,
     application_available: bool,
 ) -> Vec<MetadataModificationTarget> {
-    let application = match media_kind {
-        "video" | "music" => Some(("jellyfin-application", "Jellyfin app metadata")),
-        "audiobook" | "podcast" => {
-            Some(("audiobookshelf-application", "Audiobookshelf app metadata"))
+    let portable = match media_kind.carrier() {
+        Some(MetadataCarrier::Embedded) => {
+            let safe = matches!(extension, "epub" | "cbz");
+            MetadataModificationTarget {
+                id: "portable-embedded".to_string(), label: "Portable embedded metadata".to_string(),
+                kind: "portable-file".to_string(), available: safe, recommended: safe, requires_refresh: true,
+                message: if safe { "Rebuild and validate the EPUB or CBZ while preserving all other entries." } else { "PDF and CBR metadata writes are inspection-only because a safe lossless rewrite is not available." }.to_string(),
+            }
         }
-        "book" => Some(("kavita-application", "Kavita app metadata")),
-        _ => None,
-    };
-    let portable = if media_kind == "book" {
-        let safe = matches!(extension, "epub" | "cbz");
-        MetadataModificationTarget {
-            id: "portable-embedded".to_string(), label: "Portable embedded metadata".to_string(),
-            kind: "portable-file".to_string(), available: safe, recommended: safe, requires_refresh: true,
-            message: if safe { "Rebuild and validate the EPUB or CBZ while preserving all other entries." } else { "PDF and CBR metadata writes are inspection-only because a safe lossless rewrite is not available." }.to_string(),
-        }
-    } else {
-        MetadataModificationTarget {
+        _ => MetadataModificationTarget {
             id: "portable-sidecar".to_string(), label: "Portable file metadata".to_string(),
             kind: "portable-file".to_string(), available: true, recommended: true, requires_refresh: true,
             message: "Write metadata beside or into the media so it remains portable across application databases.".to_string(),
-        }
+        },
     };
     let mut targets = vec![portable];
-    if let Some((id, label)) = application {
-        targets.push(MetadataModificationTarget {
-            id: id.to_string(), label: label.to_string(), kind: "application-local".to_string(),
-            available: application_available, recommended: false, requires_refresh: false,
-            message: "Use the application's native editor for fields that should remain local to that application.".to_string(),
-        });
+    for app in crate::applications::serving(media_kind) {
+        if let Some(target) = app.native_edit_target(media_kind) {
+            targets.push(MetadataModificationTarget {
+                id: target.id.to_string(),
+                label: target.label.to_string(),
+                kind: "application-local".to_string(),
+                available: application_available,
+                recommended: false,
+                requires_refresh: false,
+                message: "Use the application's native editor for fields that should remain local to that application.".to_string(),
+            });
+        }
     }
     targets
 }
 
-pub fn consumer_effects(config: &AppConfig, media_kind: &str) -> Vec<ConsumerEffect> {
-    let (id, label, effect, portable, message, native_url) = match media_kind {
-        "video" | "music" => (
-            "jellyfin",
-            "Jellyfin",
-            "read-after-refresh",
-            true,
-            "Jellyfin reads correctly named local NFO files after a library refresh.",
-            config.jellyfin_public_url.clone(),
-        ),
-        "audiobook" => (
-            "audiobookshelf",
-            "Audiobookshelf",
-            "read-after-refresh",
-            true,
-            "Audiobookshelf reads OPF/NFO files according to the library metadata priority.",
-            config.audiobookshelf_public_url.clone(),
-        ),
-        "podcast" => (
-            "audiobookshelf",
-            "Audiobookshelf",
-            "native-podcast-metadata",
-            false,
-            "Audiobookshelf keeps podcasts as a distinct media type; embedded episode tags remain portable, while feed and episode metadata can be managed in its native editor.",
-            config.audiobookshelf_public_url.clone(),
-        ),
-        "book" => (
-            "kavita",
-            "Kavita",
-            "embedded-metadata-required",
-            false,
-            "Kavita requires OPF inside EPUB, ComicInfo.xml inside comic archives, or PDF XMP metadata; an external OPF is ignored.",
-            config.kavita_public_url.clone(),
-        ),
-        _ => return Vec::new(),
-    };
-    vec![ConsumerEffect {
-        id: id.to_string(),
-        label: label.to_string(),
-        available: integration(config, id).is_some_and(|entry| entry.available),
-        effect: effect.to_string(),
-        can_manage_natively: true,
-        portable_write_supported: portable,
-        message: message.to_string(),
-        native_url,
-    }]
-}
-
-fn integration<'a>(config: &'a AppConfig, id: &str) -> Option<&'a IntegrationCapability> {
-    config.integrations.iter().find(|entry| entry.id == id)
+pub fn consumer_effects(config: &AppConfig, media_kind: MediaKind) -> Vec<ConsumerEffect> {
+    crate::applications::serving(media_kind)
+        .filter_map(|app| {
+            let profile = app.consumer_profile(media_kind)?;
+            Some(ConsumerEffect {
+                id: app.id().to_string(),
+                label: app.label().to_string(),
+                available: crate::applications::integration_available(config, app.id()),
+                effect: profile.effect.to_string(),
+                can_manage_natively: true,
+                portable_write_supported: profile.portable,
+                message: profile.message.to_string(),
+                native_url: app.public_url(config),
+            })
+        })
+        .collect()
 }
 
 pub fn metadata_fields(value: &Value) -> Value {
@@ -1481,6 +1451,7 @@ mod tests {
         parse_sidecar_fields, rewrite_embedded_metadata, MetadataObservation,
     };
     use crate::catalog::CatalogItem;
+    use crate::media::MediaKind;
     use serde_json::json;
     use std::io::Write;
     use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
@@ -1542,7 +1513,7 @@ mod tests {
             root_id: "shared-books".to_string(),
             owner_username: None,
             relative_path: "Novel.epub".to_string(),
-            media_kind: "book".to_string(),
+            media_kind: MediaKind::Book,
             size_bytes: 0,
             modified_ns: 0,
             fingerprint: "fixture".to_string(),
@@ -1585,7 +1556,7 @@ mod tests {
             root_id: "shared-books".to_string(),
             owner_username: None,
             relative_path: "Issue.cbz".to_string(),
-            media_kind: "book".to_string(),
+            media_kind: MediaKind::Book,
             size_bytes: 0,
             modified_ns: 0,
             fingerprint: "fixture".to_string(),
@@ -1644,7 +1615,7 @@ mod tests {
             root_id: "shared-books".to_string(),
             owner_username: None,
             relative_path: "Paper.pdf".to_string(),
-            media_kind: "book".to_string(),
+            media_kind: MediaKind::Book,
             size_bytes: 0,
             modified_ns: 0,
             fingerprint: "fixture".to_string(),
@@ -1666,7 +1637,7 @@ mod tests {
             MetadataObservation::for_test("filename", json!({"title":"One"})),
             MetadataObservation::for_test("audiobookshelf", json!({"title":"Two"})),
         ];
-        let issues = health_issues("audiobook", &json!({"title":"Two"}), &observations);
+        let issues = health_issues(MediaKind::Audiobook, &json!({"title":"Two"}), &observations);
         assert!(issues.iter().any(|issue| issue.code == "conflicting-title"));
         assert!(issues.iter().any(|issue| issue.code == "missing-authors"));
         assert!(issues.iter().any(|issue| issue.code == "missing-narrators"));
@@ -1689,7 +1660,7 @@ mod tests {
             }),
         )];
         let issues = health_issues(
-            "audiobook",
+            MediaKind::Audiobook,
             &json!({"title":"Book","authors":["Author"],"narrators":["Narrator"]}),
             &observations,
         );
@@ -1702,14 +1673,14 @@ mod tests {
 
     #[test]
     fn modification_targets_distinguish_portable_and_application_local_changes() {
-        let targets = modification_targets("book", "epub", true);
+        let targets = modification_targets(MediaKind::Book, "epub", true);
         assert!(targets
             .iter()
             .any(|target| target.id == "portable-embedded" && target.available));
         assert!(targets
             .iter()
             .any(|target| target.id == "kavita-application" && target.kind == "application-local"));
-        let pdf = modification_targets("book", "pdf", true);
+        let pdf = modification_targets(MediaKind::Book, "pdf", true);
         assert!(pdf
             .iter()
             .any(|target| target.id == "portable-embedded" && !target.available));

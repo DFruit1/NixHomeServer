@@ -12,12 +12,11 @@ type EditableMetadataField = MetadataMatchField;
 
 export type EditorTab = "explore" | "metadata" | "rename" | "subtitles";
 
-export type MetadataSection = "basics" | "people" | "advanced";
+export type MetadataSection = "basics" | "advanced";
 
 export const METADATA_SECTIONS: Array<{ id: MetadataSection; label: string }> =
   [
     { id: "basics", label: "Basics" },
-    { id: "people", label: "People" },
     { id: "advanced", label: "Advanced" },
   ];
 

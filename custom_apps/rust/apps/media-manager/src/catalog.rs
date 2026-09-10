@@ -1,4 +1,5 @@
 use crate::broker::BrokerAction;
+use crate::media::MediaKind;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -10,7 +11,7 @@ pub struct CatalogItem {
     pub root_id: String,
     pub owner_username: Option<String>,
     pub relative_path: String,
-    pub media_kind: String,
+    pub media_kind: MediaKind,
     pub size_bytes: i64,
     pub modified_ns: i64,
     pub fingerprint: String,
@@ -20,7 +21,7 @@ pub struct CatalogItem {
 pub struct ScannedItem {
     pub id: String,
     pub relative_path: String,
-    pub media_kind: String,
+    pub media_kind: MediaKind,
     pub size_bytes: i64,
     pub modified_ns: i64,
     pub fingerprint: String,

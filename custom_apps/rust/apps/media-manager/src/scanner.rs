@@ -1,6 +1,7 @@
 use crate::{
     catalog::{Catalog, CatalogHandle, ScannedItem},
     config::TOMBSTONE_FOLDER,
+    media::{classify, LibraryCategory},
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -21,7 +22,7 @@ pub struct ScanRoot {
     pub id: String,
     pub owner_username: Option<String>,
     pub path: PathBuf,
-    pub category: String,
+    pub category: LibraryCategory,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -156,7 +157,7 @@ pub fn scan_root(catalog: &mut Catalog, root: &ScanRoot) -> Result<ScanResult, S
                 .and_then(|value| value.to_str())
                 .unwrap_or_default()
                 .to_ascii_lowercase();
-            let media_kind = match media_kind(&root.category, &extension) {
+            let media_kind = match classify(root.category, &extension) {
                 Some(media_kind) => media_kind,
                 None => continue,
             };
@@ -185,7 +186,7 @@ pub fn scan_root(catalog: &mut Catalog, root: &ScanRoot) -> Result<ScanResult, S
             scanned.push(ScannedItem {
                 id,
                 relative_path,
-                media_kind: media_kind.to_string(),
+                media_kind,
                 size_bytes: metadata.len().min(i64::MAX as u64) as i64,
                 modified_ns,
                 fingerprint,
@@ -206,23 +207,6 @@ fn record_skip(result: &mut ScanResult, path: &Path) {
         result
             .skipped_paths
             .push(path.to_string_lossy().into_owned());
-    }
-}
-
-pub(crate) fn media_kind<'a>(category: &'a str, extension: &str) -> Option<&'a str> {
-    match extension {
-        "jpg" | "jpeg" | "png" | "webp" | "gif" | "bmp" | "tif" | "tiff" | "avif" | "svg"
-        | "heic" | "heif" | "jxl" => Some("artwork"),
-        "srt" | "vtt" | "ass" | "ssa" | "sub" | "idx" => Some("subtitle"),
-        "mkv" | "mp4" | "m4v" | "avi" if category == "videos" => Some("video"),
-        "iso" if category == "iso" => Some("iso"),
-        "mp3" | "flac" | "m4a" | "ogg" | "opus" if category == "music" => Some("music"),
-        "mp3" | "flac" | "m4a" | "m4b" | "ogg" | "opus" if category == "audiobooks" => {
-            Some("audiobook")
-        }
-        "mp3" | "m4a" | "m4b" | "ogg" | "opus" if category == "podcasts" => Some("podcast"),
-        "epub" | "cbz" | "cbr" | "pdf" if category == "books" => Some("book"),
-        _ => None,
     }
 }
 

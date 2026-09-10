@@ -1,9 +1,10 @@
 use super::*;
+use crate::media::{classify, LibraryCategory, MediaKind, SidecarFormat};
 
 struct VisibleMediaFolder {
     root_id: String,
     relative_path: String,
-    category: String,
+    category: LibraryCategory,
     has_direct_media: bool,
     has_season_directory: bool,
 }
@@ -22,9 +23,6 @@ fn visible_media_folder(
     }
     let root = config
         .resolve_visible_root(identity, &query.root_id)
-        .filter(|root| {
-            ["videos", "music", "audiobooks", "podcasts", "books"].contains(&root.category.as_str())
-        })
         .ok_or_else(|| {
             ApiError::without_request_id(
                 StatusCode::FORBIDDEN,
@@ -42,7 +40,7 @@ fn visible_media_folder(
                 )
             },
         )?;
-    let (has_direct_media, has_season_directory) = inspect_media_folder(&directory, &root.category)
+    let (has_direct_media, has_season_directory) = inspect_media_folder(&directory, root.category)
         .map_err(|_| {
             ApiError::without_request_id(
                 StatusCode::CONFLICT,
@@ -61,7 +59,7 @@ fn visible_media_folder(
 
 fn inspect_media_folder(
     directory: &std::fs::File,
-    category: &str,
+    category: LibraryCategory,
 ) -> std::io::Result<(bool, bool)> {
     let mut has_direct_media = false;
     let mut has_season_directory = false;
@@ -91,9 +89,7 @@ fn inspect_media_folder(
             .and_then(|value| value.to_str())
             .unwrap_or_default()
             .to_ascii_lowercase();
-        if scanned_media_kind(category, &extension)
-            .is_some_and(|kind| !matches!(kind, "artwork" | "subtitle"))
-        {
+        if classify(category, &extension).is_some_and(|kind| !kind.is_companion()) {
             has_direct_media = true;
         }
     }
@@ -104,13 +100,13 @@ fn folder_media_type(folder: &VisibleMediaFolder) -> &'static str {
     if season_number_from_folder(&folder.relative_path).is_some() {
         return "season";
     }
-    match folder.category.as_str() {
-        "videos" if folder.has_season_directory => "series",
-        "videos" if folder.has_direct_media => "movie",
-        "music" if folder.has_direct_media => "music",
-        "audiobooks" if folder.has_direct_media => "audiobook",
-        "podcasts" if folder.has_direct_media => "podcast",
-        "books" if folder.has_direct_media => "book",
+    match (folder.category, folder.has_direct_media) {
+        (LibraryCategory::Videos, true) if folder.has_season_directory => "series",
+        (LibraryCategory::Videos, true) => "movie",
+        (LibraryCategory::Music, true) => "music",
+        (LibraryCategory::Audiobooks, true) => "audiobook",
+        (LibraryCategory::Podcasts, true) => "podcast",
+        (LibraryCategory::Books, true) => "book",
         _ => "collection",
     }
 }
@@ -270,14 +266,14 @@ fn xml_element(name: &str, value: Option<&str>) -> String {
 fn metadata_sidecar(
     item: &CatalogItem,
     request: &MetadataSidecarRequest,
-) -> (String, &'static str, String) {
+) -> (String, SidecarFormat, String) {
     let media_type = request
         .media_type
         .as_deref()
-        .unwrap_or(match item.media_kind.as_str() {
-            "music" => "music",
-            "audiobook" => "audiobook",
-            "book" => "book",
+        .unwrap_or(match item.media_kind {
+            MediaKind::Music => "music",
+            MediaKind::Audiobook => "audiobook",
+            MediaKind::Book => "book",
             _ => "movie",
         });
     let stem = item
@@ -285,8 +281,8 @@ fn metadata_sidecar(
         .rsplit_once('.')
         .map(|(stem, _)| stem)
         .unwrap_or(&item.relative_path);
-    if item.media_kind == "video" || item.media_kind == "music" {
-        let root = if item.media_kind == "video" {
+    if matches!(item.media_kind, MediaKind::Video | MediaKind::Music) {
+        let root = if item.media_kind == MediaKind::Video {
             if media_type == "episode" {
                 "episodedetails"
             } else {
@@ -295,7 +291,7 @@ fn metadata_sidecar(
         } else {
             "album"
         };
-        let destination = if item.media_kind == "video" {
+        let destination = if item.media_kind == MediaKind::Video {
             format!("{stem}.nfo")
         } else {
             item.relative_path
@@ -313,7 +309,7 @@ fn metadata_sidecar(
             xml.push_str(&format!("  <year>{year}</year>\n"));
         }
         xml.push_str(&xml_element(
-            if item.media_kind == "video" {
+            if item.media_kind == MediaKind::Video {
                 "plot"
             } else {
                 "review"
@@ -356,10 +352,10 @@ fn metadata_sidecar(
             ));
         }
         xml.push_str(&format!("</{root}>\n"));
-        return (destination, "nfo", xml);
+        return (destination, SidecarFormat::Nfo, xml);
     }
 
-    let destination = if item.media_kind == "audiobook" {
+    let destination = if item.media_kind == MediaKind::Audiobook {
         item.relative_path
             .rsplit_once('/')
             .map(|(parent, _)| format!("{parent}/metadata.opf"))
@@ -409,7 +405,7 @@ fn metadata_sidecar(
         ));
     }
     xml.push_str(" </metadata>\n</package>\n");
-    (destination, "opf", xml)
+    (destination, SidecarFormat::Opf, xml)
 }
 
 fn comicinfo_sidecar(request: &MetadataSidecarRequest) -> String {
@@ -448,7 +444,7 @@ fn comicinfo_sidecar(request: &MetadataSidecarRequest) -> String {
 fn folder_metadata_sidecar(
     folder: &VisibleMediaFolder,
     request: &MetadataSidecarRequest,
-) -> (String, &'static str, String) {
+) -> (String, SidecarFormat, String) {
     let media_type = request
         .media_type
         .as_deref()
@@ -492,21 +488,25 @@ fn folder_metadata_sidecar(
             ));
         }
         xml.push_str(&format!("</{root_tag}>\n"));
-        return (format!("{}/{filename}", folder.relative_path), "nfo", xml);
+        return (
+            format!("{}/{filename}", folder.relative_path),
+            SidecarFormat::Nfo,
+            xml,
+        );
     }
 
-    let (media_kind, placeholder) = match folder.category.as_str() {
-        "music" => ("music", "album-track.mp3"),
-        "audiobooks" => ("audiobook", "book.m4b"),
-        "books" => ("audiobook", "book.epub"),
-        _ => ("video", "movie.mkv"),
+    let (media_kind, placeholder) = match folder.category {
+        LibraryCategory::Music => (MediaKind::Music, "album-track.mp3"),
+        LibraryCategory::Audiobooks => (MediaKind::Audiobook, "book.m4b"),
+        LibraryCategory::Books => (MediaKind::Audiobook, "book.epub"),
+        _ => (MediaKind::Video, "movie.mkv"),
     };
     let pseudo_item = CatalogItem {
         id: String::new(),
         root_id: folder.root_id.clone(),
         owner_username: None,
         relative_path: format!("{}/{placeholder}", folder.relative_path),
-        media_kind: media_kind.to_string(),
+        media_kind,
         size_bytes: 0,
         modified_ns: 0,
         fingerprint: String::new(),
@@ -634,7 +634,7 @@ async fn prepare_metadata_action(
     identity: &Identity,
     root_id: &str,
     destination_relative_path: String,
-    extension: &str,
+    format: SidecarFormat,
     generated: &str,
     request_id: &str,
 ) -> Result<PreparedMetadataAction, ApiError> {
@@ -722,7 +722,7 @@ async fn prepare_metadata_action(
         })?,
         None => generated.to_string(),
     };
-    let staged = stage_sidecar(config, extension, contents.as_bytes(), request_id).await?;
+    let staged = stage_sidecar(config, format.extension(), contents.as_bytes(), request_id).await?;
     let action = if let Some((_, expected_source)) = existing {
         let (parent, filename) = destination_relative_path
             .rsplit_once('/')
@@ -733,7 +733,7 @@ async fn prepare_metadata_action(
             .unwrap_or(filename);
         let archived_relative_path = join_relative(
             parent,
-            &format!("superseded/{stem}-{request_id}.{extension}"),
+            &format!("superseded/{stem}-{request_id}.{}", format.extension()),
         );
         BrokerAction::ReplaceMetadataSidecar(ReplaceMetadataSidecarAction {
             staging_filename: staged.filename,
@@ -836,11 +836,11 @@ fn create_metadata_plan(
         warnings.push("The service is in read-only mode; this plan cannot be confirmed.");
     }
     let consumer_kind = match request.media_type.as_deref() {
-        Some("audiobook") => "audiobook",
-        Some("book") => "book",
-        Some("music") => "music",
-        Some("movie" | "episode" | "series" | "season") => "video",
-        _ => item.media_kind.as_str(),
+        Some("audiobook") => MediaKind::Audiobook,
+        Some("book") => MediaKind::Book,
+        Some("music") => MediaKind::Music,
+        Some("movie" | "episode" | "series" | "season") => MediaKind::Video,
+        _ => item.media_kind,
     };
     let affected_consumers = consumer_effects(&state.config, consumer_kind);
     Ok((
@@ -874,19 +874,93 @@ pub(super) async fn preview_metadata_sidecar(
     if let Err(error) = validate_metadata_request(&request) {
         return error.with_request_id(request_id).into_response();
     }
+    preview_item_metadata_sidecar(&state, &identity, &item_id, &request, &request_id, false).await
+}
+
+pub(super) async fn preview_core_info(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(item_id): Path<String>,
+    Json(request): Json<CoreInfoRequest>,
+) -> Response {
+    let request_id = request_id();
+    let identity = match editor_identity(&state.config, &headers, &request_id) {
+        Ok(identity) => identity,
+        Err(error) => return error.into_response(),
+    };
+    let core = match crate::core::CoreInfo::try_new(request.title, request.release_year) {
+        Ok(core) => core,
+        Err(message) => {
+            return ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "core_info_invalid",
+                message,
+                request_id,
+            )
+            .into_response()
+        }
+    };
+    let sidecar_request = MetadataSidecarRequest {
+        media_type: None,
+        title: core.title,
+        sort_title: None,
+        year: core.release_year.map(crate::core::ReleaseYear::get),
+        description: None,
+        publisher: None,
+        series: None,
+        volume_number: None,
+        isbn: None,
+        language: None,
+        authors: Vec::new(),
+        narrators: Vec::new(),
+        genres: Vec::new(),
+        season: None,
+        episode: None,
+        episode_title: None,
+        premiere_date: None,
+        runtime_minutes: None,
+        official_rating: None,
+        community_rating: None,
+        writers: Vec::new(),
+        provider_ids: std::collections::BTreeMap::new(),
+    };
+    preview_item_metadata_sidecar(
+        &state,
+        &identity,
+        &item_id,
+        &sidecar_request,
+        &request_id,
+        true,
+    )
+    .await
+}
+
+async fn preview_item_metadata_sidecar(
+    state: &AppState,
+    identity: &Identity,
+    item_id: &str,
+    request: &MetadataSidecarRequest,
+    request_id: &str,
+    reject_episodes: bool,
+) -> Response {
     let mut catalog = match state.catalog.open() {
         Ok(catalog) => catalog,
         Err(error) => {
             log_event(
                 "catalog_open_failed",
-                &request_id,
+                request_id,
                 json!({ "error": error.to_string() }),
             );
-            return ApiError::internal(request_id).into_response();
+            return ApiError::internal(request_id.to_string()).into_response();
         }
     };
-    let item = match visible_catalog_item(&state.config, &identity, &catalog, &item_id) {
-        Ok(item) if ["video", "music", "audiobook", "book"].contains(&item.media_kind.as_str()) => {
+    let item = match visible_catalog_item(&state.config, identity, &catalog, item_id) {
+        Ok(item)
+            if matches!(
+                item.media_kind,
+                MediaKind::Video | MediaKind::Music | MediaKind::Audiobook | MediaKind::Book
+            ) =>
+        {
             item
         }
         Ok(_) => {
@@ -894,30 +968,50 @@ pub(super) async fn preview_metadata_sidecar(
                 StatusCode::CONFLICT,
                 "metadata_item_unsupported",
                 "Metadata sidecars require a video, music, audiobook, or book item. Podcast tags are currently inspection-only.",
-                request_id,
+                request_id.to_string(),
             )
             .into_response()
         }
-        Err(error) => return error.with_request_id(request_id).into_response(),
+        Err(error) => return error.with_request_id(request_id.to_string()).into_response(),
     };
-    let type_matches_item = matches!(
-        (item.media_kind.as_str(), request.media_type.as_deref()),
-        (_, None)
-            | ("video", Some("movie" | "episode"))
-            | ("music", Some("music"))
-            | ("audiobook", Some("audiobook"))
-            | ("book", Some("book"))
-    );
+    if reject_episodes && item.media_kind == MediaKind::Video {
+        let filename = item
+            .relative_path
+            .rsplit('/')
+            .next()
+            .unwrap_or(&item.relative_path);
+        let stem = filename
+            .rsplit_once('.')
+            .map(|(stem, _)| stem)
+            .unwrap_or(filename);
+        if split_episode_marker(stem).is_some() {
+            return ApiError::new(
+                StatusCode::CONFLICT,
+                "core_info_episode_unsupported",
+                "TV episodes require season, episode, and series context; edit them through the full metadata editor instead.",
+                request_id.to_string(),
+            )
+            .into_response();
+        }
+    }
+    let type_matches_item = match request.media_type.as_deref() {
+        None => true,
+        Some("movie" | "episode") => item.media_kind == MediaKind::Video,
+        Some("music") => item.media_kind == MediaKind::Music,
+        Some("audiobook") => item.media_kind == MediaKind::Audiobook,
+        Some("book") => item.media_kind == MediaKind::Book,
+        Some(_) => false,
+    };
     if !type_matches_item {
         return ApiError::new(
             StatusCode::CONFLICT,
             "metadata_type_mismatch",
             "The metadata type does not match the catalog item.",
-            request_id,
+            request_id.to_string(),
         )
         .into_response();
     }
-    if item.media_kind == "book" {
+    if item.media_kind == MediaKind::Book {
         let extension = item
             .relative_path
             .rsplit_once('.')
@@ -928,22 +1022,22 @@ pub(super) async fn preview_metadata_sidecar(
                 StatusCode::CONFLICT,
                 "embedded_book_metadata_read_only",
                 "PDF and CBR metadata are inspection-only. Portable in-app edits are limited to EPUB and CBZ containers.",
-                request_id,
+                request_id.to_string(),
             )
             .into_response();
         }
         let generated = if extension == "epub" {
-            metadata_sidecar(&item, &request).2
+            metadata_sidecar(&item, request).2
         } else {
-            comicinfo_sidecar(&request)
+            comicinfo_sidecar(request)
         };
         let prepared = match prepare_embedded_metadata_action(
             &state.config,
-            &identity,
+            identity,
             &item,
             &extension,
             &generated,
-            &request_id,
+            request_id,
         )
         .await
         {
@@ -951,13 +1045,13 @@ pub(super) async fn preview_metadata_sidecar(
             Err(error) => return error.into_response(),
         };
         return match create_metadata_plan(
-            &state,
-            &identity,
+            state,
+            identity,
             &mut catalog,
             &item,
-            &request,
+            request,
             prepared.action,
-            request_id.clone(),
+            request_id.to_string(),
         ) {
             Ok(response) => response,
             Err(error) => {
@@ -966,15 +1060,15 @@ pub(super) async fn preview_metadata_sidecar(
             }
         };
     }
-    let (destination_relative_path, extension, contents) = metadata_sidecar(&item, &request);
+    let (destination_relative_path, format, contents) = metadata_sidecar(&item, request);
     let prepared = match prepare_metadata_action(
         &state.config,
-        &identity,
+        identity,
         &item.root_id,
         destination_relative_path,
-        extension,
+        format,
         &contents,
-        &request_id,
+        request_id,
     )
     .await
     {
@@ -982,13 +1076,13 @@ pub(super) async fn preview_metadata_sidecar(
         Err(error) => return error.into_response(),
     };
     match create_metadata_plan(
-        &state,
-        &identity,
+        state,
+        identity,
         &mut catalog,
         &item,
-        &request,
+        request,
         prepared.action,
-        request_id.clone(),
+        request_id.to_string(),
     ) {
         Ok(response) => response,
         Err(error) => {
@@ -1013,12 +1107,7 @@ pub(super) async fn item_metadata(
         Err(_) => return ApiError::internal(request_id).into_response(),
     };
     let item = match visible_catalog_item(&state.config, &identity, &catalog, &item_id) {
-        Ok(item)
-            if ["video", "music", "audiobook", "podcast", "book"]
-                .contains(&item.media_kind.as_str()) =>
-        {
-            item
-        }
+        Ok(item) if item.media_kind.is_primary() => item,
         Ok(_) => {
             return ApiError::new(
                 StatusCode::CONFLICT,
@@ -1073,59 +1162,33 @@ async fn item_metadata_value(
                 .push("Embedded metadata inspection did not complete.".to_string()),
         }
     }
-    if let Some(cache_file) = &state.config.jellyfin_metadata_cache_file {
+    for source in crate::applications::metadata_sources() {
+        if !source.imports().contains(&item.media_kind) {
+            continue;
+        }
+        let Some(cache_file) = source.cache_file(&state.config) else {
+            continue;
+        };
         let entry = match application_caches {
-            Some(caches) => caches
-                .jellyfin
-                .as_ref()
-                .and_then(|cache| cached_application_metadata_entry(cache, item, false)),
-            None => cached_application_metadata(cache_file, item, false).await,
+            Some(caches) => caches.get(source.app_id()).and_then(|cache| {
+                cached_application_metadata_entry(cache, item, source.allow_folder_prefix())
+            }),
+            None => {
+                cached_application_metadata(cache_file, item, source.allow_folder_prefix()).await
+            }
         };
         if let Some(entry) = entry {
-            observations.push(application_observation("jellyfin", "Jellyfin", &entry));
-            merge_metadata(&mut response, &entry, "jellyfin", &mut field_sources);
+            observations.push(application_observation(
+                source.app_id(),
+                source.app_label(),
+                &entry,
+            ));
+            merge_metadata(&mut response, &entry, source.app_id(), &mut field_sources);
         }
     }
-    if matches!(item.media_kind.as_str(), "audiobook" | "podcast") {
-        if let Some(cache_file) = &state.config.audiobookshelf_metadata_cache_file {
-            let entry = match application_caches {
-                Some(caches) => caches
-                    .audiobookshelf
-                    .as_ref()
-                    .and_then(|cache| cached_application_metadata_entry(cache, item, true)),
-                None => cached_application_metadata(cache_file, item, true).await,
-            };
-            if let Some(entry) = entry {
-                observations.push(application_observation(
-                    "audiobookshelf",
-                    "Audiobookshelf",
-                    &entry,
-                ));
-                merge_metadata(&mut response, &entry, "audiobookshelf", &mut field_sources);
-            }
-        }
-    }
-    if item.media_kind == "book" {
-        if let Some(cache_file) = &state.config.kavita_metadata_cache_file {
-            let entry = match application_caches {
-                Some(caches) => caches
-                    .kavita
-                    .as_ref()
-                    .and_then(|cache| cached_application_metadata_entry(cache, item, true)),
-                None => cached_application_metadata(cache_file, item, true).await,
-            };
-            if let Some(entry) = entry {
-                observations.push(application_observation("kavita", "Kavita", &entry));
-                merge_metadata(&mut response, &entry, "kavita", &mut field_sources);
-            }
-        }
-    }
-    let media_type = response
-        .get("mediaType")
-        .and_then(Value::as_str)
-        .unwrap_or("movie");
-    let (sidecar_path, sidecar_format) = item_sidecar_path(item, media_type);
-    let consumer_effective = !matches!(item.media_kind.as_str(), "book" | "podcast");
+    let (sidecar_path, sidecar_format) =
+        item_sidecar_path(item).expect("primary media items always have a sidecar path");
+    let consumer_effective = !matches!(item.media_kind, MediaKind::Book | MediaKind::Podcast);
     let root = state.config.resolve_visible_root(identity, &item.root_id);
     let (sidecar, sidecar_observation) = root
         .as_ref()
@@ -1169,8 +1232,8 @@ async fn item_metadata_value(
         .rsplit_once('.')
         .map(|(_, extension)| extension.to_ascii_lowercase())
         .unwrap_or_default();
-    let mut consumers = consumer_effects(&state.config, &item.media_kind);
-    if item.media_kind == "book" && matches!(extension.as_str(), "epub" | "cbz") {
+    let mut consumers = consumer_effects(&state.config, item.media_kind);
+    if item.media_kind == MediaKind::Book && matches!(extension.as_str(), "epub" | "cbz") {
         for consumer in &mut consumers {
             consumer.effect = "read-after-refresh".to_string();
             consumer.portable_write_supported = true;
@@ -1181,13 +1244,16 @@ async fn item_metadata_value(
     }
     let application_available = consumers.iter().any(|consumer| consumer.available);
     response["consumers"] = json!(consumers);
-    response["health"] = json!(health_issues(&item.media_kind, &response, &observations));
+    response["health"] = json!(health_issues(item.media_kind, &response, &observations));
     response["modificationTargets"] = json!(modification_targets(
-        &item.media_kind,
+        item.media_kind,
         &extension,
         application_available
     ));
     response["inspectionWarnings"] = json!(inspection_warnings);
+    if let Some(core_info) = crate::core::CoreInfo::from_metadata(&response) {
+        response["coreInfo"] = json!(core_info);
+    }
     response
 }
 
@@ -1250,7 +1316,7 @@ pub(super) async fn metadata_issues(
             id: root.id.clone(),
             owner_username: owner.map(str::to_string),
             path: root.resolved_path.clone().into(),
-            category: root.category.clone(),
+            category: root.category,
         };
         let catalog_handle = state.catalog.clone();
         match tokio::task::spawn_blocking(move || rescan_root(&catalog_handle, &scan_root_spec))
@@ -1308,7 +1374,7 @@ pub(super) async fn metadata_issues(
     let mut severity_counts =
         HashMap::from([("error", 0usize), ("warning", 0usize), ("info", 0usize)]);
     for item in page {
-        if !["video", "music", "audiobook", "podcast", "book"].contains(&item.media_kind.as_str()) {
+        if !item.media_kind.is_primary() {
             continue;
         }
         inspected_items += 1;
@@ -1418,15 +1484,8 @@ pub(super) async fn folder_metadata(
     }];
     let mut field_sources = initial_field_sources(&response, "folder");
     let (sidecar_path, sidecar_format) = folder_sidecar_path(&folder.relative_path, media_type);
-    let consumer_kind = match folder.category.as_str() {
-        "videos" => "video",
-        "music" => "music",
-        "audiobooks" => "audiobook",
-        "podcasts" => "podcast",
-        "books" => "book",
-        _ => "",
-    };
-    let consumer_effective = !matches!(consumer_kind, "book" | "podcast");
+    let consumer_kind = folder.category.primary_kind();
+    let consumer_effective = !matches!(consumer_kind, MediaKind::Book | MediaKind::Podcast);
     let root = state
         .config
         .resolve_visible_root(&identity, &folder.root_id);
@@ -1530,14 +1589,13 @@ pub(super) async fn preview_folder_metadata_sidecar(
         )
         .into_response();
     }
-    let (destination_relative_path, extension, contents) =
-        folder_metadata_sidecar(&folder, &request);
+    let (destination_relative_path, format, contents) = folder_metadata_sidecar(&folder, &request);
     let prepared = match prepare_metadata_action(
         &state.config,
         &identity,
         &folder.root_id,
         destination_relative_path,
-        extension,
+        format,
         &contents,
         &request_id,
     )
@@ -1551,7 +1609,7 @@ pub(super) async fn preview_folder_metadata_sidecar(
         root_id: folder.root_id,
         owner_username: None,
         relative_path: folder.relative_path,
-        media_kind: folder.category,
+        media_kind: folder.category.primary_kind(),
         size_bytes: 0,
         modified_ns: 0,
         fingerprint: String::new(),
@@ -1592,18 +1650,18 @@ fn filename_metadata(item: &CatalogItem) -> Value {
         .unwrap_or(filename);
     let mut title = stem.to_string();
     let mut year = Value::Null;
-    let mut media_type = match item.media_kind.as_str() {
-        "music" => "music",
-        "audiobook" => "audiobook",
-        "podcast" => "podcast",
-        "book" => "book",
+    let mut media_type = match item.media_kind {
+        MediaKind::Music => "music",
+        MediaKind::Audiobook => "audiobook",
+        MediaKind::Podcast => "podcast",
+        MediaKind::Book => "book",
         _ => "movie",
     };
     let mut series = Value::Null;
     let mut season = Value::Null;
     let mut episode = Value::Null;
     let mut episode_title = Value::Null;
-    if item.media_kind == "video" {
+    if item.media_kind == MediaKind::Video {
         if let Some((marker_start, marker_end)) = split_episode_marker(stem) {
             media_type = "episode";
             let marker = &stem[marker_start..marker_end];
@@ -1695,50 +1753,31 @@ pub(super) async fn cached_application_metadata(
 }
 
 struct ApplicationMetadataCaches {
-    jellyfin: Option<Value>,
-    audiobookshelf: Option<Value>,
-    kavita: Option<Value>,
+    caches: HashMap<&'static str, Value>,
 }
 
 impl ApplicationMetadataCaches {
     async fn load(config: &AppConfig, items: &[CatalogItem]) -> Self {
-        let uses_jellyfin = items.iter().any(|item| {
-            ["video", "music", "audiobook", "podcast", "book"].contains(&item.media_kind.as_str())
-        });
-        let uses_audiobookshelf = items
-            .iter()
-            .any(|item| matches!(item.media_kind.as_str(), "audiobook" | "podcast"));
-        let uses_kavita = items.iter().any(|item| item.media_kind == "book");
-        let jellyfin = async {
-            match (
-                uses_jellyfin,
-                config.jellyfin_metadata_cache_file.as_deref(),
-            ) {
-                (true, Some(path)) => load_application_metadata_cache(path).await,
-                _ => None,
+        let mut caches = HashMap::new();
+        for source in crate::applications::metadata_sources() {
+            if !items
+                .iter()
+                .any(|item| source.imports().contains(&item.media_kind))
+            {
+                continue;
             }
-        };
-        let audiobookshelf = async {
-            match (
-                uses_audiobookshelf,
-                config.audiobookshelf_metadata_cache_file.as_deref(),
-            ) {
-                (true, Some(path)) => load_application_metadata_cache(path).await,
-                _ => None,
+            let Some(cache_file) = source.cache_file(config) else {
+                continue;
+            };
+            if let Some(cache) = load_application_metadata_cache(cache_file).await {
+                caches.insert(source.app_id(), cache);
             }
-        };
-        let kavita = async {
-            match (uses_kavita, config.kavita_metadata_cache_file.as_deref()) {
-                (true, Some(path)) => load_application_metadata_cache(path).await,
-                _ => None,
-            }
-        };
-        let (jellyfin, audiobookshelf, kavita) = tokio::join!(jellyfin, audiobookshelf, kavita);
-        Self {
-            jellyfin,
-            audiobookshelf,
-            kavita,
         }
+        Self { caches }
+    }
+
+    fn get(&self, app_id: &str) -> Option<&Value> {
+        self.caches.get(app_id)
     }
 }
 

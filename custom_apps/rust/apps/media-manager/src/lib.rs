@@ -1,8 +1,11 @@
+pub mod applications;
 pub(crate) mod artwork;
 pub mod broker;
 pub mod catalog;
 pub mod config;
+pub mod core;
 pub mod http;
+pub mod media;
 pub mod metadata;
 pub mod musicbrainz;
 pub mod naming;
@@ -13,4 +16,5 @@ pub mod scanner;
 pub mod subtitle_format;
 pub mod subtitles;
 pub mod tmdb;
+pub mod transfer;
 pub mod video_probe;

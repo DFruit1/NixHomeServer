@@ -1,3 +1,4 @@
+use crate::media::MediaKind;
 use crate::{broker::open_regular_file_beneath, catalog::CatalogItem};
 use lofty::{
     config::ParseOptions,
@@ -12,19 +13,8 @@ use std::{
 
 const MAX_ARTWORK_BYTES: u64 = 32 * 1024 * 1024;
 
-const EMBEDDED_ARTWORK_KINDS: &[&str] = &[
-    "music",
-    "audiobook",
-    "podcast",
-    "book",
-    "video",
-    "movie",
-    "tv",
-    "episode",
-];
-
-pub(crate) fn is_embedded_artwork_capable(media_kind: &str) -> bool {
-    EMBEDDED_ARTWORK_KINDS.contains(&media_kind)
+pub(crate) fn is_embedded_artwork_capable(media_kind: MediaKind) -> bool {
+    media_kind.is_primary()
 }
 
 pub(crate) struct ArtworkBody {
@@ -184,7 +174,7 @@ pub(crate) fn preferred_artwork(items: &[CatalogItem], target_path: &str) -> Opt
     items
         .iter()
         .filter_map(|candidate| {
-            if candidate.media_kind != "artwork" {
+            if candidate.media_kind != MediaKind::Artwork {
                 return None;
             }
             let (candidate_parent, candidate_name) = candidate

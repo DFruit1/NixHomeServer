@@ -36,7 +36,7 @@ pub(super) async fn search_subtitles(
         }
     };
     let item = match visible_catalog_item(&state.config, &identity, &catalog, &item_id) {
-        Ok(item) if item.media_kind == "video" => item,
+        Ok(item) if item.media_kind == MediaKind::Video => item,
         Ok(_) => {
             return ApiError::new(
                 StatusCode::CONFLICT,
@@ -205,7 +205,7 @@ pub(super) async fn batch_search_subtitles(
     let mut batch_results = Vec::new();
     for item_id in request.item_ids {
         let item = match visible_catalog_item(&state.config, &identity, &catalog, &item_id) {
-            Ok(item) if item.media_kind == "video" => item,
+            Ok(item) if item.media_kind == MediaKind::Video => item,
             Ok(_) => continue,
             Err(_) => continue,
         };
@@ -453,7 +453,7 @@ pub(super) async fn install_provider_subtitle(
         }
     };
     let item = match visible_catalog_item(&state.config, &identity, &catalog, &item_id) {
-        Ok(item) if item.media_kind == "video" => item,
+        Ok(item) if item.media_kind == MediaKind::Video => item,
         Ok(_) => {
             return ApiError::new(
                 StatusCode::CONFLICT,
@@ -559,7 +559,7 @@ pub(super) async fn subtitle_provider_content(
         }
     };
     let _item = match visible_catalog_item(&state.config, &identity, &catalog, &item_id) {
-        Ok(item) if item.media_kind == "video" => item,
+        Ok(item) if item.media_kind == MediaKind::Video => item,
         Ok(_) => {
             return ApiError::new(
                 StatusCode::CONFLICT,
@@ -680,7 +680,7 @@ pub(super) async fn adjust_subtitle_timing(
         Err(_) => return ApiError::internal(request_id).into_response(),
     };
     let item = match visible_catalog_item(&state.config, &identity, &catalog, &item_id) {
-        Ok(item) if item.media_kind == "video" => item,
+        Ok(item) if item.media_kind == MediaKind::Video => item,
         Ok(_) => {
             return ApiError::new(
                 StatusCode::CONFLICT,
@@ -827,7 +827,7 @@ pub(super) async fn installed_subtitles(
         Err(_) => return ApiError::internal(request_id).into_response(),
     };
     let video = match visible_catalog_item(&state.config, &identity, &catalog, &item_id) {
-        Ok(item) if item.media_kind == "video" => item,
+        Ok(item) if item.media_kind == MediaKind::Video => item,
         Ok(_) => {
             return ApiError::new(
                 StatusCode::CONFLICT,
@@ -852,7 +852,9 @@ pub(super) async fn installed_subtitles(
         };
     let mut subtitles = catalog_items
         .iter()
-        .filter(|item| item.media_kind == "subtitle" && subtitle_belongs_to_video(&video, item))
+        .filter(|item| {
+            item.media_kind == MediaKind::Subtitle && subtitle_belongs_to_video(&video, item)
+        })
         .map(|item| external_subtitle_inventory(&video, item))
         .collect::<Vec<_>>();
     let probe_cache = VideoProbeCache::open(&state.config.state_dir, &video.root_id);
@@ -917,7 +919,7 @@ pub(super) async fn installed_subtitle_content(
         Err(_) => return ApiError::internal(request_id).into_response(),
     };
     let video = match visible_catalog_item(&state.config, &identity, &catalog, &item_id) {
-        Ok(item) if item.media_kind == "video" => item,
+        Ok(item) if item.media_kind == MediaKind::Video => item,
         Ok(_) => {
             return ApiError::new(
                 StatusCode::CONFLICT,
@@ -930,7 +932,10 @@ pub(super) async fn installed_subtitle_content(
         Err(error) => return error.with_request_id(request_id).into_response(),
     };
     let subtitle = match visible_catalog_item(&state.config, &identity, &catalog, &subtitle_id) {
-        Ok(item) if item.media_kind == "subtitle" && subtitle_belongs_to_video(&video, &item) => {
+        Ok(item)
+            if item.media_kind == MediaKind::Subtitle
+                && subtitle_belongs_to_video(&video, &item) =>
+        {
             item
         }
         Ok(_) => {
@@ -1151,7 +1156,7 @@ pub(super) async fn upload_subtitle(
         Ok(item) => item,
         Err(error) => return error.with_request_id(request_id).into_response(),
     };
-    if item.media_kind != "video" {
+    if item.media_kind != MediaKind::Video {
         return ApiError::new(
             StatusCode::CONFLICT,
             "video_item_required",

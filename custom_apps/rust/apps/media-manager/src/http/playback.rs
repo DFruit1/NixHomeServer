@@ -40,7 +40,7 @@ pub(super) async fn item_playback_targets(
         Ok(item) => item,
         Err(error) => return error.with_request_id(request_id.clone()).into_response(),
     };
-    let targets: Vec<serde_json::Value> = consumer_effects(&state.config, &item.media_kind)
+    let targets: Vec<serde_json::Value> = consumer_effects(&state.config, item.media_kind)
         .into_iter()
         .map(|effect| {
             json!({
@@ -197,7 +197,7 @@ pub(super) async fn item_stream(
         Ok(item) => item,
         Err(error) => return error.with_request_id(request_id.clone()).into_response(),
     };
-    if !matches!(item.media_kind.as_str(), "music" | "audiobook") {
+    if !matches!(item.media_kind, MediaKind::Music | MediaKind::Audiobook) {
         return ApiError::new(
             StatusCode::CONFLICT,
             "audio_item_required",

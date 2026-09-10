@@ -154,15 +154,29 @@ pub(super) async fn integration_refresh_status(
 }
 
 fn refresh_adapter_available(config: &AppConfig, integration_id: &str) -> bool {
-    matches!(
-        integration_id,
-        "jellyfin" | "audiobookshelf" | "kavita" | "syncthing"
-    ) && config.integrations.iter().any(|integration| {
+    if let Some(app) = crate::applications::applications()
+        .iter()
+        .find(|app| app.id() == integration_id)
+    {
+        let Some(capability) = app.refresh_capability() else {
+            return false;
+        };
+        return config.integrations.iter().any(|integration| {
+            integration.id == integration_id
+                && integration.available
+                && integration
+                    .capabilities
+                    .iter()
+                    .any(|candidate| candidate.as_str() == capability)
+        });
+    }
+    config.integrations.iter().any(|integration| {
         integration.id == integration_id
             && integration.available
-            && integration.capabilities.iter().any(|capability| {
-                matches!(capability.as_str(), "library-refresh" | "folder-rescan")
-            })
+            && integration
+                .capabilities
+                .iter()
+                .any(|capability| capability.as_str() == "folder-rescan")
     })
 }
 

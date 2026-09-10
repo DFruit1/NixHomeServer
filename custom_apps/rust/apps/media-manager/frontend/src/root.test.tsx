@@ -2478,20 +2478,16 @@ describe("Media Manager library browser", () => {
       ) ?? null;
     expect(fieldValue("Year")).toBe("1991");
     expect(fieldValue("Genres")).toBe("");
-    await userEvent(sectionTab("People"), "click");
-    await vi.waitFor(() =>
-      expect(
-        screen.querySelector(".metadata-section-tab.active")?.textContent,
-      ).toBe("People"),
-    );
-    expect(fieldValue("Authors / artists")).toBe("Nirvana");
     await userEvent(sectionTab("Advanced"), "click");
     await vi.waitFor(() =>
       expect(
         screen.querySelector(".metadata-section-tab.active")?.textContent,
       ).toBe("Advanced"),
     );
+    expect(fieldValue("Authors / artists")).toBe("Nirvana");
     expect(fieldValue("Publisher / studio")).toBe("DGC");
+    expect(screen.textContent).toContain("People");
+    expect(screen.textContent).toContain("Release & ratings");
     expect(
       fetchMock.mock.calls.some(
         ([callInput, callInit]) =>

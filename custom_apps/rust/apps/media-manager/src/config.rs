@@ -1,22 +1,10 @@
+use crate::media::LibraryCategory;
 use serde::{Deserialize, Serialize};
 use std::{env, net::IpAddr, path::PathBuf};
 
 pub const DEFAULT_EDITOR_GROUP: &str = "media-manager-editors";
 
 pub const TOMBSTONE_FOLDER: &str = "_Tombstone";
-
-const MEDIA_CATEGORIES: [(&str, &str, &str, &str); 5] = [
-    ("videos", "_Videos", "Shared videos", "My videos"),
-    ("music", "_Music", "Shared music", "My music"),
-    (
-        "audiobooks",
-        "_Audiobooks",
-        "Shared audiobooks",
-        "My audiobooks",
-    ),
-    ("podcasts", "_Podcasts", "Shared podcasts", "My podcasts"),
-    ("books", "_Books", "Shared books", "My books"),
-];
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -37,7 +25,7 @@ pub enum RootScope {
 pub struct VisibleRoot {
     pub id: String,
     pub label: String,
-    pub category: String,
+    pub category: LibraryCategory,
     pub scope: RootScope,
     #[serde(skip_serializing)]
     pub resolved_path: String,
@@ -47,7 +35,7 @@ pub struct VisibleRoot {
 #[derive(Clone, Debug)]
 pub struct RootScanSpec {
     pub id: String,
-    pub category: String,
+    pub category: LibraryCategory,
     pub scope: RootScope,
     pub path: PathBuf,
     pub owner_username: Option<String>,
@@ -286,24 +274,24 @@ impl AppConfig {
 
     pub fn visible_roots(&self, identity: &Identity) -> Vec<VisibleRoot> {
         let personal_base = self.users_root.join(&identity.username);
-        let mut roots = Vec::with_capacity(10);
-        for (category, folder, shared_label, _) in MEDIA_CATEGORIES {
-            let shared_path = self.shared_root.join(folder);
+        let mut roots = Vec::with_capacity(2 * LibraryCategory::ALL.len());
+        for category in LibraryCategory::ALL {
+            let shared_path = self.shared_root.join(category.folder_name());
             roots.push(VisibleRoot {
                 id: format!("shared-{category}"),
-                label: shared_label.to_string(),
-                category: category.to_string(),
+                label: category.shared_label().to_string(),
+                category,
                 scope: RootScope::Shared,
                 available: shared_path.is_dir(),
                 resolved_path: shared_path.to_string_lossy().into_owned(),
             });
         }
-        for (category, folder, _, personal_label) in MEDIA_CATEGORIES {
-            let personal_path = personal_base.join(folder);
+        for category in LibraryCategory::ALL {
+            let personal_path = personal_base.join(category.folder_name());
             roots.push(VisibleRoot {
                 id: format!("personal-{category}"),
-                label: personal_label.to_string(),
-                category: category.to_string(),
+                label: category.personal_label().to_string(),
+                category,
                 scope: RootScope::Personal,
                 available: personal_path.is_dir(),
                 resolved_path: personal_path.to_string_lossy().into_owned(),
@@ -313,13 +301,13 @@ impl AppConfig {
     }
 
     pub fn shared_scan_specs(&self) -> Vec<RootScanSpec> {
-        MEDIA_CATEGORIES
+        LibraryCategory::ALL
             .iter()
-            .map(|(category, folder, _, _)| RootScanSpec {
+            .map(|category| RootScanSpec {
                 id: format!("shared-{category}"),
-                category: (*category).to_string(),
+                category: *category,
                 scope: RootScope::Shared,
-                path: self.shared_root.join(*folder),
+                path: self.shared_root.join(category.folder_name()),
                 owner_username: None,
             })
             .collect()
@@ -327,13 +315,13 @@ impl AppConfig {
 
     pub fn personal_scan_specs(&self, username: &str) -> Vec<RootScanSpec> {
         let base = self.users_root.join(username);
-        MEDIA_CATEGORIES
+        LibraryCategory::ALL
             .iter()
-            .map(|(category, folder, _, _)| RootScanSpec {
+            .map(|category| RootScanSpec {
                 id: format!("personal-{category}"),
-                category: (*category).to_string(),
+                category: *category,
                 scope: RootScope::Personal,
-                path: base.join(*folder),
+                path: base.join(category.folder_name()),
                 owner_username: Some(username.to_string()),
             })
             .collect()

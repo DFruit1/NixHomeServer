@@ -2059,8 +2059,9 @@ export const ItemEditor = component$<{
                 </label>
               </>
             )}
-            {section.value === "people" && (
+            {section.value === "advanced" && (
               <>
+                <span class="metadata-group-heading">People</span>
                 <label>
                   <span>
                     Authors / artists <small>comma-separated</small>
@@ -2109,6 +2110,7 @@ export const ItemEditor = component$<{
                     }
                   />
                 </label>
+                <span class="metadata-group-heading">Series</span>
                 <label>
                   <span>Series</span>
                   <input
@@ -2137,10 +2139,9 @@ export const ItemEditor = component$<{
                     }
                   />
                 </label>
-              </>
-            )}
-            {section.value === "advanced" && (
-              <>
+                <span class="metadata-group-heading">
+                  Release &amp; ratings
+                </span>
                 <label>
                   <span>Publisher / studio</span>
                   <input
@@ -2219,6 +2220,7 @@ export const ItemEditor = component$<{
                     }
                   />
                 </label>
+                <span class="metadata-group-heading">Publication</span>
                 <label>
                   <span>ISBN</span>
                   <input
@@ -2233,6 +2235,7 @@ export const ItemEditor = component$<{
                     }
                   />
                 </label>
+                <span class="metadata-group-heading">Description</span>
                 <label class="description-input">
                   <span>Description</span>
                   <textarea

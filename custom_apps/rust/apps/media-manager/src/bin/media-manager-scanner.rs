@@ -29,7 +29,7 @@ fn run() -> Result<(), String> {
             id: spec.id.clone(),
             owner_username: spec.owner_username.clone(),
             path: spec.path.clone(),
-            category: spec.category.clone(),
+            category: spec.category,
         };
         match rescan_root(&handle, &root) {
             Ok(result) => {
