@@ -1,4 +1,5 @@
 use super::*;
+use crate::artwork_edit::ArtworkPlanAction;
 
 const JELLYFIN_IMAGE_CACHE_TTL: Duration = Duration::from_secs(3600);
 const JELLYFIN_IMAGE_CACHE_MAX_ENTRIES: usize = 2048;
@@ -97,12 +98,6 @@ fn validate_artwork_upload(format: &str, bytes: &[u8]) -> Result<&'static str, A
         ));
     }
     Ok(extension)
-}
-
-struct ArtworkPlanAction {
-    broker_action: BrokerAction,
-    archived_relative_path: Option<String>,
-    destination_relative_path: String,
 }
 
 fn create_artwork_plan(
@@ -429,6 +424,134 @@ async fn try_jellyfin_image_fallback(
     None
 }
 
+/// Inspect sources independently: a failed display request does not mean every
+/// source is absent. Application exports can report artwork even when fetching
+/// the remote image is unavailable.
+pub(super) async fn image_sources(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(item_id): Path<String>,
+) -> Response {
+    let request_id = request_id();
+    let identity = match identity_from_headers(&headers, &request_id) {
+        Ok(identity) => identity,
+        Err(error) => return error.into_response(),
+    };
+    let catalog = match state.catalog.open() {
+        Ok(catalog) => catalog,
+        Err(_) => return ApiError::internal(request_id).into_response(),
+    };
+    let item = match visible_catalog_item(&state.config, &identity, &catalog, &item_id) {
+        Ok(item) => item,
+        Err(error) => return error.with_request_id(request_id).into_response(),
+    };
+    let root = match state.config.resolve_visible_root(&identity, &item.root_id) {
+        Some(root) => root,
+        None => return ApiError::internal(request_id).into_response(),
+    };
+    let artwork = match catalog.list_artwork(&item.root_id, item.owner_username.as_deref()) {
+        Ok(items) => {
+            if item.media_kind == MediaKind::Artwork {
+                Some(item.clone())
+            } else {
+                preferred_artwork(&items, &item.relative_path)
+            }
+        }
+        Err(_) => return ApiError::internal(request_id).into_response(),
+    };
+    let directory = item
+        .relative_path
+        .rsplit_once('/')
+        .map(|(parent, _)| parent)
+        .unwrap_or("");
+    let siblings = match catalog.list_media_in_directory(
+        &item.root_id,
+        item.owner_username.as_deref(),
+        directory,
+    ) {
+        Ok(items) => items
+            .into_iter()
+            .filter(|sibling| {
+                sibling.id != item.id && is_embedded_artwork_capable(sibling.media_kind)
+            })
+            .collect::<Vec<_>>(),
+        Err(_) => return ApiError::internal(request_id).into_response(),
+    };
+    drop(catalog);
+    let inspected_item = item.clone();
+    let mut sources = match tokio::task::spawn_blocking(move || {
+        let root = FilePath::new(&root.resolved_path);
+        let sidecar = match artwork {
+            Some(artwork) => match read_artwork_file(root, &artwork.relative_path) {
+                Ok(_) => "available",
+                Err(_) => "unavailable",
+            },
+            None => "missing",
+        };
+        let embedded = if is_embedded_artwork_capable(inspected_item.media_kind) {
+            match read_embedded_artwork(root, &inspected_item.relative_path) {
+                Ok(Some(_)) => "available",
+                Ok(None) => "missing",
+                Err(_) => "unavailable",
+            }
+        } else {
+            "unsupported"
+        };
+        let mut sibling_status = "missing";
+        for sibling in siblings {
+            match read_embedded_artwork(root, &sibling.relative_path) {
+                Ok(Some(_)) => {
+                    sibling_status = "available";
+                    break;
+                }
+                Err(_) => sibling_status = "unavailable",
+                _ => {}
+            }
+        }
+        vec![
+            json!({ "id": "sidecar", "label": "Sidecar image", "status": sidecar }),
+            json!({ "id": "embedded", "label": "Embedded image", "status": embedded }),
+            json!({ "id": "sibling", "label": "Other files in folder", "status": sibling_status }),
+        ]
+    })
+    .await
+    {
+        Ok(sources) => sources,
+        Err(_) => return ApiError::internal(request_id).into_response(),
+    };
+    for source in crate::applications::metadata_sources()
+        .iter()
+        .filter(|source| source.imports().contains(&item.media_kind))
+    {
+        let Some(cache_file) = source.cache_file(&state.config) else {
+            continue;
+        };
+        let entry = metadata_handlers::cached_application_metadata(
+            cache_file,
+            &item,
+            source.allow_folder_prefix(),
+        )
+        .await;
+        let status = match entry
+            .as_ref()
+            .and_then(|entry| entry.get("imageTags"))
+            .and_then(Value::as_object)
+        {
+            Some(tags)
+                if tags
+                    .values()
+                    .any(|tag| tag.as_str().is_some_and(|tag| !tag.is_empty())) =>
+            {
+                "available"
+            }
+            Some(_) => "missing",
+            None => "unknown",
+        };
+        sources.push(json!({ "id": source.app_id(), "label": format!("{} export", source.app_label()), "status": status }));
+    }
+    Json(json!({ "sources": sources, "requestId": request_id })).into_response()
+}
+
 pub(super) async fn item_image(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -675,47 +798,27 @@ pub(super) async fn preview_artwork_replacement(
         Ok(staged) => staged,
         Err(error) => return error.into_response(),
     };
-    let artwork_plan = if let Some(artwork) = existing_artwork {
-        let (parent, filename) = artwork
-            .relative_path
-            .rsplit_once('/')
-            .unwrap_or(("", &artwork.relative_path));
-        let (stem, original_extension) = filename.rsplit_once('.').unwrap_or((filename, "jpg"));
-        let destination_relative_path = join_relative(parent, &format!("{stem}.{extension}"));
-        let archived_relative_path = join_relative(
-            parent,
-            &format!("superseded/{stem}-{request_id}.{original_extension}"),
-        );
-        ArtworkPlanAction {
-            broker_action: BrokerAction::ReplaceArtwork(ReplaceArtworkAction {
-                staging_filename: staged.filename,
-                root_id: artwork.root_id,
-                source_relative_path: artwork.relative_path,
-                archived_relative_path: archived_relative_path.clone(),
-                replacement_relative_path: destination_relative_path.clone(),
-                expected_source: artwork.fingerprint,
-                expected_replacement: staged.expected,
-            }),
-            archived_relative_path: Some(archived_relative_path),
-            destination_relative_path,
-        }
+    let edit_request = crate::artwork_edit::ArtworkEditRequest {
+        item: &item,
+        existing_artwork: existing_artwork.as_ref(),
+        extension,
+        staging_filename: &staged.filename,
+        expected: &staged.expected,
+        request_id: &request_id,
+    };
+    let artwork_plan = if item.media_kind == MediaKind::Artwork {
+        crate::artwork_edit::sidecar_artwork_plan(edit_request)
+    } else if let Some(application) = crate::applications::serving(item.media_kind).next() {
+        application.plan_artwork_edit(edit_request)
     } else {
-        let parent = item
-            .relative_path
-            .rsplit_once('/')
-            .map(|(parent, _)| parent)
-            .unwrap_or("");
-        let destination_relative_path = join_relative(parent, &format!("cover.{extension}"));
-        ArtworkPlanAction {
-            broker_action: BrokerAction::InstallArtwork(InstallArtworkAction {
-                staging_filename: staged.filename,
-                destination_root_id: item.root_id.clone(),
-                destination_relative_path: destination_relative_path.clone(),
-                expected: staged.expected,
-            }),
-            archived_relative_path: None,
-            destination_relative_path,
-        }
+        let _ = tokio::fs::remove_file(&staged.path).await;
+        return ApiError::new(
+            StatusCode::CONFLICT,
+            "artwork_edit_unsupported",
+            "No application implements image editing for this media type.",
+            request_id,
+        )
+        .into_response();
     };
     let mut catalog = match state.catalog.open() {
         Ok(catalog) => catalog,

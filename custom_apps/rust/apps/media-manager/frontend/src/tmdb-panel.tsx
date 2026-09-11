@@ -48,7 +48,7 @@ export const TmdbPanel = component$<{
         <div>
           <h3>TMDB lookup</h3>
         </div>
-        <span class="status-badge live">Per-user account</span>
+        <span class="status-badge access-key">Account required</span>
       </div>
       <p class="quiet-copy">
         Search a movie or series, then compare movie, series, season, or exact

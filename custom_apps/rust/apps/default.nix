@@ -2,53 +2,14 @@
 
 let
   craneLib = rustLib.craneLib;
-  mailFrontend = ./mail-archive-ui/frontend;
-  mediaFrontend = ./media-manager/frontend;
   workspaceManifest = builtins.fromTOML (builtins.readFile ../../Cargo.toml);
   workspaceVersion = workspaceManifest.workspace.package.version;
-  mailManifest = builtins.fromJSON (builtins.readFile (mailFrontend + "/package.json"));
-  mediaManifest = builtins.fromJSON (builtins.readFile (mediaFrontend + "/package.json"));
-  comparableManifest = manifest: removeAttrs manifest [ "name" ];
-  sharedFrontendDeps = rustLib.mkPnpmDeps {
-    name = "nixhomeserver-qwik-frontends";
-    srcDir = mailFrontend;
-    hash = "sha256-GU8O2kA3o+SmAA5BRF/ws7jQqG+Tg7OX41bSw6ownZk=";
-  };
 
-  # --- Shared Cargo workspace -------------------------------------------------
-  # The rust/apps members share a single source tree and prebuilt
-  # dependency artifacts, so common crates (tokio/axum/serde/rusqlite/…)
-  # compile only once instead of once per crate. mkvmaker keeps its own
-  # standalone build (it is outside this workspace: edition 2024, own lock).
   workspaceSrcRoot = ../..;
-  mkvmakerPrefix = toString (workspaceSrcRoot + "/mkvmaker");
-  workspaceFilter = path: type:
-    let
-      pathStr = toString path;
-      rel = lib.removePrefix "${toString workspaceSrcRoot}/" pathStr;
-      baseName = builtins.baseNameOf pathStr;
-      # crane's filterCargoSources keeps every directory, so generated build
-      # output (target/, node_modules/, dist/, coverage/) would otherwise be
-      # walked on every evaluation and copied into the store source. Prune
-      # those subtrees entirely; they never contain cargo inputs.
-      generatedDir = lib.elem baseName [ "target" "node_modules" "dist" "coverage" ];
-      topLevelNode = rel == "node" || lib.hasPrefix "node/" rel;
-      # Embedded UI assets live next to the Rust sources but are not cargo
-      # inputs, so crane's filter would drop them from the shared source tree.
-      embeddedUiAsset = type == "regular"
-        && lib.hasSuffix ".html" rel
-        && lib.hasPrefix "rust/apps/" rel
-        && lib.hasInfix "/src/" rel;
-    in
-    (! lib.hasPrefix mkvmakerPrefix pathStr)
-    && (! lib.hasSuffix "Cargo.lock" pathStr)
-    && (! generatedDir)
-    && (! topLevelNode)
-    && (embeddedUiAsset || craneLib.filterCargoSources path type);
-  workspaceSrc = lib.cleanSourceWith {
-    src = workspaceSrcRoot;
-    name = "nixhomeserver-rust-workspace-src";
-    filter = workspaceFilter;
+  mkWorkspaceSource = import ../lib/mk-workspace-source.nix { inherit lib pkgs craneLib; };
+  workspaceSource = name: mkWorkspaceSource {
+    inherit name cargoLock workspaceManifests;
+    workspaceRoot = workspaceSrcRoot;
   };
   # The shared dependency build must depend only on dependency manifests, not
   # on the workspace source. Otherwise any edit to an app .rs file invalidates
@@ -72,29 +33,31 @@ let
     buildInputs = [ pkgs.sqlite ];
   };
 in
-assert builtins.readFile (mailFrontend + "/pnpm-lock.yaml")
-  == builtins.readFile (mediaFrontend + "/pnpm-lock.yaml");
-assert comparableManifest mailManifest == comparableManifest mediaManifest;
 {
   browsertrix-downloader = import ./browsertrix-downloader/default.nix {
     inherit lib pkgs rustLib;
-    inherit workspaceSrc workspaceVersion sharedCargoArtifacts cargoLock;
+    inherit workspaceVersion sharedCargoArtifacts cargoLock;
+    workspaceSrc = workspaceSource "browsertrix-downloader";
   };
   kanidm-canary-bootstrap = import ./kanidm-canary-bootstrap/default.nix {
     inherit rustLib;
-    inherit workspaceSrc workspaceVersion sharedCargoArtifacts cargoLock;
+    inherit workspaceVersion sharedCargoArtifacts cargoLock;
+    workspaceSrc = workspaceSource "kanidm-canary-bootstrap";
   };
   mail-archive-ui = import ./mail-archive-ui/default.nix {
-    inherit lib pkgs rustLib sharedFrontendDeps;
-    inherit workspaceSrc workspaceVersion sharedCargoArtifacts cargoLock;
+    inherit lib pkgs rustLib;
+    inherit workspaceVersion sharedCargoArtifacts cargoLock;
+    workspaceSrc = workspaceSource "mail-archive-ui";
   };
   media-manager = import ./media-manager/default.nix {
-    inherit lib pkgs rustLib sharedFrontendDeps;
-    inherit workspaceSrc workspaceVersion sharedCargoArtifacts cargoLock;
+    inherit lib pkgs rustLib;
+    inherit workspaceVersion sharedCargoArtifacts cargoLock;
+    workspaceSrc = workspaceSource "media-manager";
   };
   search = import ./search/default.nix {
     inherit pkgs rustLib;
-    inherit workspaceSrc workspaceVersion sharedCargoArtifacts cargoLock;
+    inherit workspaceVersion sharedCargoArtifacts cargoLock;
+    workspaceSrc = workspaceSource "search";
   };
   mkvmaker = import ../../mkvmaker/default.nix {
     inherit lib pkgs rustLib;

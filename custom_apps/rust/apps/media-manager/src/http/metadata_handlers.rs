@@ -1403,6 +1403,7 @@ pub(super) async fn metadata_issues(
             "rootId": item.root_id,
             "relativePath": item.relative_path,
             "mediaKind": item.media_kind,
+            "title": metadata.get("title"),
             "health": health,
         }));
     }

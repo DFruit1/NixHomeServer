@@ -117,6 +117,8 @@ hardware_profile="$(jq -r '.hardwareProfile' <<<"$settings_json")"
 storage_profile="$(jq -r '.storageProfile' <<<"$settings_json")"
 cloudflare_tunnel="$(jq -r '.cloudflareTunnelName' <<<"$settings_json")"
 host_id="$(jq -r '.hostId' <<<"$settings_json")"
+cpu_vendor="$(jq -r '.cpuVendor' <<<"$settings_json")"
+lan_mode="$(jq -r '.lanMode' <<<"$settings_json")"
 
 case "$host_platform" in
   x86_64-linux|aarch64-linux)
@@ -165,6 +167,24 @@ case "$storage_profile" in
     ;;
   *)
     block "vars.nix -> storage.profile must be zfs-mirror or single-disk-ext4, got ${storage_profile}"
+    ;;
+esac
+
+case "$lan_mode" in
+  static|dhcp)
+    ready "vars.nix -> network.lanMode is ${lan_mode}"
+    ;;
+  *)
+    block "vars.nix -> network.lanMode must be static or dhcp, got ${lan_mode}"
+    ;;
+esac
+
+case "$cpu_vendor" in
+  auto|intel|amd)
+    ready "vars.nix -> system.cpuVendor is ${cpu_vendor}"
+    ;;
+  *)
+    block "vars.nix -> system.cpuVendor must be auto, intel, or amd, got ${cpu_vendor}"
     ;;
 esac
 
@@ -268,6 +288,37 @@ if ((require_local_hardware == 1 && lan_iface_exists == 1)); then
     fi
   else
     warn "duplicate-address probing for ${lan_ip} was skipped; rerun readiness as root with arping available before destructive bootstrap"
+  fi
+fi
+
+if ((require_local_hardware == 1)) && [[ "$hardware_profile" != "generic-uefi" ]]; then
+  detected_vendor="unknown"
+  case "$(uname -m)" in
+    x86_64)
+      if grep -qiE '^vendor_id[[:space:]]*:[[:space:]]*GenuineIntel' /proc/cpuinfo 2>/dev/null; then
+        detected_vendor="intel"
+      elif grep -qiE '^vendor_id[[:space:]]*:[[:space:]]*AuthenticAMD' /proc/cpuinfo 2>/dev/null; then
+        detected_vendor="amd"
+      fi
+      ;;
+  esac
+  if [[ "$detected_vendor" == "unknown" ]]; then
+    warn "could not detect the target CPU vendor; skipping hardware-module vendor check"
+  elif [[ "$cpu_vendor" != "auto" && "$cpu_vendor" != "$detected_vendor" ]]; then
+    block "vars.nix -> system.cpuVendor is '${cpu_vendor}' but this host reports a ${detected_vendor} CPU"
+  elif [[ "$cpu_vendor" == "auto" ]]; then
+    conflicting_vendor="amd"
+    if [[ "$detected_vendor" == "amd" ]]; then
+      conflicting_vendor="intel"
+    fi
+    if [[ -f hardware-configuration.nix ]] \
+      && rg -q "kvm-${conflicting_vendor}|hardware\.cpu\.${conflicting_vendor}\.updateMicrocode" hardware-configuration.nix; then
+      block "hardware-configuration.nix references ${conflicting_vendor} hardware; this host is ${detected_vendor}. Regenerate it on this machine with 'nixos-generate-config --no-filesystems --show-hardware-config'"
+    else
+      ready "hardware-configuration.nix is consistent with the detected ${detected_vendor} CPU"
+    fi
+  else
+    ready "system.cpuVendor ${cpu_vendor} matches the detected ${detected_vendor} CPU"
   fi
 fi
 

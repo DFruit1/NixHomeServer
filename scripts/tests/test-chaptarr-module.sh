@@ -162,11 +162,6 @@ for source_file in modules/chaptarr/services.nix modules/chaptarr/filepaths.nix 
   fi
 done
 
-if ! rg -Fq '[wire_media_automation_stack]="chaptarr sonarr radarr prowlarr qbittorrent jellyfin"' scripts/tests/test-integration-dependencies.sh; then
-  echo "❌ Conditional media-automation participants are not represented in dependency metadata."
-  exit 1
-fi
-
 enabled_apps_file="$(mktemp)"
 trap 'rm -f "$enabled_apps_file"' EXIT
 printf '%s\n' \
@@ -183,11 +178,11 @@ if ! rg -Fq 'id = "chaptarr"; name = "Book Downloads"' modules/Core_Modules/home
   exit 1
 fi
 
-if ! rg -Fq 'id = "chaptarr";' modules/Core_Modules/homepage/services.nix \
-  || ! rg -Fq 'enabled = chaptarrEnabled;' modules/Core_Modules/homepage/services.nix; then
-  echo "❌ Chaptarr is missing its conditional Homepage service card."
-  exit 1
-fi
+card="$(flake_eval_json '
+  host = builtins.head (builtins.attrNames f.nixosConfigurations);
+  cfg = f.nixosConfigurations.${host}.config;
+in builtins.filter (card: card.id == "chaptarr") cfg.repo.homepage.serviceCards')"
+jq -e 'length == 1 and .[0].enabled and .[0].name == "Book Downloads"' <<<"$card" >/dev/null
 
 tmpdir="$(mktemp -d)"
 cleanup() { rm -rf "$tmpdir"; }

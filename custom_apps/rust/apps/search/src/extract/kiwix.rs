@@ -211,6 +211,7 @@ impl super::Extractor for KiwixExtractor {
                     "xapian": has_xapian.to_string(),
                     "fulltext": fulltext.to_string(),
                     "articles": metadata.to_string(),
+                    "owner": "shared",
                 }),
             });
 
@@ -250,6 +251,7 @@ impl super::Extractor for KiwixExtractor {
                     metadata: serde_json::json!({
                         "archive": zim_stem,
                         "entry_path": entry_path,
+                        "owner": "shared",
                     }),
                 });
             }

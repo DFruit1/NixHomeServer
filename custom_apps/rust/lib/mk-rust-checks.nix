@@ -6,6 +6,7 @@
 , commonArgs
 , cargoArtifacts ? null
 , cargoLock ? null
+, cargoFmtExtraArgs ? ""
 , cargoClippyExtraArgs ? "--all-targets -- --deny warnings"
 , cargoNextestExtraArgs ? ""
 ,
@@ -14,11 +15,13 @@ let
   # When part of a shared Cargo workspace, the dependency artifacts are built
   # once at the workspace level and reused here instead of being rebuilt per
   # crate.
-  cargoArtifactsFinal = if cargoArtifacts != null
+  cargoArtifactsFinal =
+    if cargoArtifacts != null
     then cargoArtifacts
-    else craneLib.buildDepsOnly (commonArgs // {
-      src = packageSrc;
-    });
+    else
+      craneLib.buildDepsOnly (commonArgs // {
+        src = packageSrc;
+      });
 in
 {
   inherit cargoArtifactsFinal;
@@ -26,6 +29,8 @@ in
   fmt = craneLib.cargoFmt {
     src = checkSrc;
     pname = name;
+    inherit (commonArgs) version;
+    cargoExtraArgs = cargoFmtExtraArgs;
   };
 
   clippy = craneLib.cargoClippy (commonArgs // {

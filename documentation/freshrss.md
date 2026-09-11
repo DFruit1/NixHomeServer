@@ -1,6 +1,6 @@
 # FreshRSS Guide
 
-FreshRSS is available at `https://rss.sydneybasiniot.org` on LAN and NetBird paths. It is
+FreshRSS is available at `https://rss.<domain>` (your configured `network.domain`) on LAN and NetBird paths. It is
 private-DNS-only and has no Cloudflare ingress. Browser access uses the shared
 Kanidm OIDC gateway and requires membership in `freshrss-users`.
 
@@ -57,7 +57,7 @@ password**. FreshRSS 1.29.1 accepts any non-empty value here, so generate at
 least 20 random characters; do not reuse the Kanidm password. Configure clients
 with:
 
-- Server: `https://rss.sydneybasiniot.org/api/greader.php`
+- Server: `https://rss.<domain>/api/greader.php`
 - Username: the Kanidm short username used by FreshRSS
 - Password: the per-user FreshRSS API password
 
@@ -113,7 +113,7 @@ is unknown or changes often. Avoid enabling both for the same feed.
 ```bash
 systemctl status freshrss-config.service freshrss-updater.timer freshrss-egress-policy.service freshrss-account-reconcile.timer caddy.service phpfpm-freshrss.service
 journalctl -u freshrss-config.service -u freshrss-updater.service -u phpfpm-freshrss.service -u freshrss-account-reconcile.service -n 100 --no-pager
-curl -kI --resolve rss.sydneybasiniot.org:443:<server-lan-ip> https://rss.sydneybasiniot.org/
+curl -kI --resolve rss.<domain>:443:<server-lan-ip> https://rss.<domain>/
 ```
 
 An unauthenticated request should redirect to the shared OIDC flow. FreshRSS has

@@ -1,12 +1,25 @@
 use super::*;
 
 pub(super) fn initialize_db(config: &AppConfig) -> Result<(), String> {
-    let connection = open_db(config)?;
+    let mut database = open_db(config)?;
+    database
+        .pragma_update(None, "journal_mode", "WAL")
+        .map_err(|error| format!("failed to configure sqlite journal: {error}"))?;
+    let connection = database
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|error| format!("failed to start schema migration: {error}"))?;
+    let version: i64 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .map_err(|error| format!("failed to read schema version: {error}"))?;
+    match version {
+        1 => return Ok(()),
+        0 => {}
+        version => return Err(format!("unsupported Mail Archive schema version {version}")),
+    }
 
     connection
         .execute_batch(
             r#"
-            PRAGMA journal_mode = WAL;
 
             CREATE TABLE IF NOT EXISTS accounts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -345,6 +358,13 @@ pub(super) fn initialize_db(config: &AppConfig) -> Result<(), String> {
             "#,
         )
         .map_err(|error| format!("failed to create Paperless task scheduler index: {error}"))?;
+
+    connection
+        .pragma_update(None, "user_version", 1)
+        .map_err(|error| format!("failed to record schema version: {error}"))?;
+    connection
+        .commit()
+        .map_err(|error| format!("failed to commit schema migration: {error}"))?;
 
     Ok(())
 }

@@ -6,7 +6,14 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test-common.sh"
 cd "$TESTS_REPO_ROOT"
 ensure_tools jq nix rg
 
-surface_json="$(nix eval --json '.#nixosConfigurations.server.config' --apply 'cfg: {
+host="$(test_default_host)"
+surface_json="$(NIXHOMESERVER_TEST_HOST="$host" flake_eval_json '
+  hostName = builtins.getEnv "NIXHOMESERVER_TEST_HOST";
+  vars = f.lib.nixhomeserverSettings.${hostName};
+  cfg = (builtins.getAttr hostName f.nixosConfigurations).config;
+in
+{
+  domain = vars.domain;
   app = cfg.repo.mediaManager;
   gateway = cfg.repo.authGateway.protectedApps.mediaManager;
   privateDns = cfg.services.unbound.privateHosts.${cfg.repo.mediaManager.domain};
@@ -48,7 +55,7 @@ surface_json="$(nix eval --json '.#nixosConfigurations.server.config' --apply 'c
 
 jq -e '
   (.app.enable == true)
-  and (.app.domain == "media.sydneybasiniot.org")
+  and (.app.domain == "media.\(.domain)")
   and (.app.stateDir == "/var/lib/media-manager")
   and (.app.providerStateDir == "/var/lib/media-manager-provider")
   and (.app.providerPort == 8089)
@@ -122,9 +129,9 @@ jq -e '
   and (.serviceEnvironment.MEDIA_MANAGER_JELLYFIN_METADATA_CACHE_FILE == "/var/cache/media-manager-jellyfin/metadata.json")
   and (.serviceEnvironment.MEDIA_MANAGER_AUDIOBOOKSHELF_METADATA_CACHE_FILE == "/var/cache/media-manager-audiobookshelf/metadata.json")
   and (.serviceEnvironment.MEDIA_MANAGER_KAVITA_METADATA_CACHE_FILE == "/var/cache/media-manager-kavita/metadata.json")
-  and (.serviceEnvironment.MEDIA_MANAGER_JELLYFIN_PUBLIC_URL == "https://videos.sydneybasiniot.org")
-  and (.serviceEnvironment.MEDIA_MANAGER_AUDIOBOOKSHELF_PUBLIC_URL == "https://audiobooks.sydneybasiniot.org")
-  and (.serviceEnvironment.MEDIA_MANAGER_KAVITA_PUBLIC_URL == "https://books.sydneybasiniot.org")
+  and (.serviceEnvironment.MEDIA_MANAGER_JELLYFIN_PUBLIC_URL == "https://videos.\(.domain)")
+  and (.serviceEnvironment.MEDIA_MANAGER_AUDIOBOOKSHELF_PUBLIC_URL == "https://audiobooks.\(.domain)")
+  and (.serviceEnvironment.MEDIA_MANAGER_KAVITA_PUBLIC_URL == "https://books.\(.domain)")
   and (.ageSecretNames | index("openSubtitlesCredentials") != null)
   and (.ageSecretNames | index("acoustidApiKey") != null)
   and (.service.ReadOnlyPaths | index("-/var/cache/media-manager-jellyfin") != null)
@@ -278,37 +285,37 @@ require_fixed modules/Core_Modules/media-manager/services.nix \
 require_fixed modules/Core_Modules/media-manager/services.nix \
   'result_dir=' \
   "Refresh dispatch must persist terminal results for browser polling."
-require_fixed modules/Core_Modules/media-manager/services.nix \
+require_fixed custom_apps/shell/media-manager/media-manager-audiobookshelf-metadata-export.sh.in \
   'Audiobookshelf did not become ready before metadata export' \
   "Audiobookshelf metadata export must tolerate service startup latency."
-require_fixed modules/Core_Modules/media-manager/services.nix \
+require_fixed custom_apps/shell/media-manager/media-manager-jellyfin-metadata-export.sh.in \
   'Jellyfin did not become ready before metadata export' \
   "Jellyfin metadata export must tolerate service startup latency."
-require_fixed modules/Core_Modules/media-manager/services.nix \
+require_fixed custom_apps/shell/media-manager/media-manager-kavita-metadata-export.sh.in \
   'Kavita did not become ready before metadata export' \
   "Kavita metadata export must tolerate service startup latency."
-require_fixed modules/Core_Modules/media-manager/services.nix \
+require_fixed custom_apps/shell/media-manager/media-manager-refresh-jellyfin.sh.in \
   'ScheduledTasks/Running/$task_id' \
   "Jellyfin refresh must use the current scheduled-task completion API."
-require_fixed modules/Core_Modules/media-manager/services.nix \
+require_fixed custom_apps/shell/media-manager/media-manager-jellyfin-metadata-export.sh.in \
   'subtitleStreams:((.MediaStreams // [])' \
   "Jellyfin metadata snapshots must retain bounded subtitle stream dispositions."
-require_fixed modules/Core_Modules/media-manager/services.nix \
+require_fixed custom_apps/shell/media-manager/media-manager-refresh-audiobookshelf.sh.in \
   '$base_url/api/tasks' \
   "Audiobookshelf refresh must follow current library-scan task results."
-require_fixed modules/Core_Modules/media-manager/services.nix \
+require_fixed custom_apps/shell/media-manager/media-manager-refresh-kavita.sh.in \
   '$base_url/api/library/scan-all?force=false' \
   "Kavita refresh must use the authenticated scan-all API."
-require_fixed modules/Core_Modules/media-manager/services.nix \
+require_fixed custom_apps/shell/media-manager/media-manager-refresh-kavita.sh.in \
   'Authorization: Bearer' \
   "Kavita refresh must use a short-lived server-local bearer token."
-require_fixed modules/Core_Modules/media-manager/services.nix \
+require_fixed custom_apps/shell/media-manager/media-manager-refresh-kavita.sh.in \
   '"exp": now + 300' \
   "Kavita refresh bearer tokens must remain short-lived."
-require_fixed modules/Core_Modules/media-manager/services.nix \
+require_fixed custom_apps/shell/media-manager/media-manager-refresh-kavita.sh.in \
   'A Kavita library was removed while its scan was running' \
   "Kavita refresh must fail promptly when a baseline library disappears."
-require_fixed modules/Core_Modules/media-manager/services.nix \
+require_fixed custom_apps/shell/media-manager/media-manager-refresh-kavita.sh.in \
   'Kavita admin username is malformed' \
   "Kavita refresh must validate the configured username before using it in SQL."
 require_fixed custom_apps/rust/apps/media-manager/openapi.yaml \

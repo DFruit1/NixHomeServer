@@ -73,7 +73,10 @@ require_fixed custom_apps/rust/apps/search/src/server.rs \
   'SEARCH_LOGOUT_REDIRECT_URL' \
   "Search sign-out must redirect through the canonical shared logout endpoint"
 require_fixed custom_apps/rust/apps/search/src/ui.html \
-  "form.method = 'POST'" \
-  "Search sign-out must navigate the browser so shared logout redirects are followed"
+  'window.SEARCH_LOGOUT_URL' \
+  "Search sign-out must navigate the browser to the shared logout endpoint"
+require_fixed custom_apps/rust/apps/search/src/ui.html \
+  'location.href = target' \
+  "Search sign-out must follow the shared logout redirect"
 
 echo "✅ Shared authentication logout routing tests passed."

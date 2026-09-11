@@ -10,7 +10,7 @@ ensure_default_nix_config
 
 usage() {
   cat <<'EOF'
-Usage: scripts/validate-repo.sh [--full] [--all-apps] [--run-flake-check] [--skip-flake-check] [--run-vm-tests]
+Usage: scripts/validate-repo.sh [--full] [--build-checks] [--all-apps] [--run-flake-check] [--skip-flake-check] [--run-vm-tests]
 
 Run the local repository validation gate.
 
@@ -21,6 +21,12 @@ Default mode (lean):
   - tests only enabled applications for the current host
 
   Use --run-flake-check to include `nix flake check --no-build`.
+
+Build checks (--build-checks):
+  - builds flake check derivations, including Rust tests and frontend checks
+  - excludes repo-policy, which the script suite runs directly
+  - retains lean script selection; full runtime and E2E checks require --full
+  - does not replace the GC roots retained by a passing full validation
 
 Full mode (--full):
   - runs `nix flake check --no-build` unless --skip-flake-check is used
@@ -41,6 +47,7 @@ Application scope:
 Examples:
   scripts/validate-repo.sh
   scripts/validate-repo.sh --run-flake-check
+  scripts/validate-repo.sh --build-checks --all-apps
   scripts/validate-repo.sh --full
   scripts/validate-repo.sh --full --all-apps
   scripts/validate-repo.sh --full --skip-flake-check
@@ -50,6 +57,7 @@ EOF
 }
 
 full_mode=false
+build_checks=false
 all_apps=false
 run_flake_check=false
 skip_flake_check=false
@@ -74,6 +82,10 @@ while (($# > 0)); do
   case "$1" in
     --full)
       full_mode=true
+      shift
+      ;;
+    --build-checks)
+      build_checks=true
       shift
       ;;
     --all-apps)
@@ -153,7 +165,7 @@ build_derivation_attr() {
 
   echo "ℹ️ Running ${#check_targets[@]} derivation checks from ${attr} in one Nix build…"
   new_outputs="$(
-    nix build "${check_targets[@]}" --no-link --print-build-logs --json
+    nix build "${check_targets[@]}" --keep-going --no-link --print-build-logs --json
   )"
   jq -e '
     type == "array"
@@ -181,10 +193,10 @@ run_vm_tests() {
   fi
 }
 
-run_full_derivation_checks() {
+run_derivation_checks() {
   local system check_attr root_state_dir output_path root_path
 
-  if [[ "$full_mode" != true ]]; then
+  if [[ "$full_mode" != true && "$build_checks" != true ]]; then
     return 0
   fi
 
@@ -199,7 +211,7 @@ run_full_derivation_checks() {
   # VM tests are run separately via --run-vm-tests flag
   # build_derivation_attr "$vm_attr" "$system"
 
-  if [[ "$all_apps" == true ]]; then
+  if [[ "$full_mode" != true || "$all_apps" == true ]]; then
     return 0
   fi
 
@@ -287,7 +299,7 @@ if [[ "$skip_flake_check" == false ]]; then
   fi
 fi
 
-run_full_derivation_checks
+run_derivation_checks
 run_shell_tests
 run_vm_tests
 run_full_e2e_checks

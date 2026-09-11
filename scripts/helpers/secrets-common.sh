@@ -140,6 +140,12 @@ manifest_external_specs() {
   '
 }
 
+# Human-readable description of when an optional external secret is consumed,
+# used to warn operators when --fresh discards an enabled optional credential.
+manifest_external_consumed_by() {
+  manifest_json | jq -r --arg name "$1" '.externalSecrets[$name].consumedBy // empty'
+}
+
 manifest_all_secret_names() {
   manifest_json | jq -r '(.generatedSecrets + .externalSecrets) | keys[]'
 }

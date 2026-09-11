@@ -58,7 +58,7 @@ forbid_match modules/freshrss/services.nix 'authType = "none"|services[.]nginx|1
   "FreshRSS must not disable authentication or expose a separately reachable HTTP origin."
 forbid_match modules/freshrss/services.nix 'Content-Security-Policy' \
   "Caddy must preserve FreshRSS's application-owned Content Security Policy."
-require_fixed modules/Core_Modules/homepage/services.nix 'id = "feeds";' \
+require_fixed modules/freshrss/registration.nix 'id = "feeds";' \
   "Homepage must advertise the enabled FreshRSS web application."
 require_fixed modules/Core_Modules/homepage/canary.nix 'id = "feeds"; name = "Feeds";' \
   "The authenticated canary must cover the FreshRSS route."
@@ -100,18 +100,23 @@ jq -e '
 }
 
 host="$(test_default_host)"
+domain="$(NIXHOMESERVER_TEST_HOST="$host" flake_eval '
+  hostName = builtins.getEnv "NIXHOMESERVER_TEST_HOST";
+  vars = f.lib.nixhomeserverSettings.${hostName};
+in vars.domain
+')"
 homepage_config="$(
   nix build --impure --no-link --print-out-paths --expr "
     let f = builtins.getFlake (builtins.getEnv \"NIXHOMESERVER_FLAKE_REF_FOR_EVAL\");
     in f.nixosConfigurations.${host}.config.systemd.services.homepage.environment.HOMEPAGE_CONFIG_FILE
   "
 )"
-jq -e '
+jq -e --arg rssUrl "https://rss.${domain}" '
   .services[]
   | select(.id == "feeds")
   | .name == "Feeds"
     and .enabled
-    and .url == "https://rss.sydneybasiniot.org"
+    and .url == $rssUrl
     and .logoUrl == "/logos/freshrss.svg"
     and .appName == "freshrss"
     and .requiredAnyGroups == ["freshrss-users"]
@@ -132,6 +137,7 @@ freshrss_json="$(NIXHOMESERVER_TEST_HOST="$host" flake_eval_json '
   serviceNames = [ "freshrss-config" "freshrss-updater" "phpfpm-freshrss" "freshrss-egress-policy" "freshrss-account-reconcile" ];
   timerNames = [ "freshrss-updater" "freshrss-account-reconcile" ];
 in {
+  domain = vars.domain;
   registered = cfg.nixhomeserver.modules.freshrss or false;
   enabled = cfg.services.freshrss.enable;
   packageVersion = cfg.services.freshrss.package.version;
@@ -204,8 +210,8 @@ jq -e '
   and (.authType == "http_auth")
   and (.databaseType == "sqlite")
   and (.defaultUser == .expectedDefaultUser)
-  and (.expectedHost == "rss.sydneybasiniot.org")
-  and (.baseUrl == "https://rss.sydneybasiniot.org")
+  and (.expectedHost == ("rss." + .domain))
+  and (.baseUrl == ("https://rss." + .domain))
   and .apiEnabled
   and (.dataDir == "/var/lib/freshrss")
   and (.webserver == "caddy")
@@ -396,7 +402,7 @@ fi
 
 caddy_bin="$caddy_package/bin/caddy"
 {
-  printf '%s\n' 'rss.sydneybasiniot.org {'
+  printf '%s\n' "rss.${domain} {"
   jq -r .caddyConfig <<<"$freshrss_json"
   printf '%s\n' '}'
 } | "$caddy_bin" adapt --adapter caddyfile --config - | jq -e '

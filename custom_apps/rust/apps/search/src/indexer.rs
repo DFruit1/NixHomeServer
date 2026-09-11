@@ -6,6 +6,8 @@ use crate::extract::{self, ExtractedDocument};
 use crate::solr::{SolrClient, SolrDocument};
 
 const SOLR_BATCH_SIZE: usize = 200;
+/// Rows read from Postgres and pushed to Solr per batch during a rebuild.
+const REINDEX_BATCH_SIZE: usize = 500;
 const CHANNEL_DEPTH: usize = 64;
 /// Upper bound for a single source's index run. A healthy pass stays far
 /// below this; a hung source (dead DB connection, stalled subprocess) must
@@ -156,6 +158,24 @@ async fn index_source(
     Ok(())
 }
 
+/// Owner filter sentinel for sources whose content is not user-scoped (Kiwix
+/// archives, web-archive crawls). It surfaces as its own facet value so admins
+/// can include or exclude shared material.
+pub const SHARED_OWNER: &str = "shared";
+
+/// Reads the `owner` metadata the extractors attach per document, falling back
+/// to the shared sentinel for sources with no per-user ownership.
+fn document_owner(record: &DocumentRecord) -> String {
+    record
+        .metadata
+        .get("owner")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|owner| !owner.is_empty())
+        .unwrap_or(SHARED_OWNER)
+        .to_string()
+}
+
 /// Pushes a batch to Solr first and persists it to Postgres afterwards, so a
 /// failed push leaves nothing behind that a later pass would consider
 /// already-indexed (the checksum lives only in Postgres once persisted).
@@ -174,7 +194,7 @@ async fn push_batch(
     let records = std::mem::take(pending);
     let solr_docs: Vec<SolrDocument> = records
         .iter()
-        .map(|record| SolrDocument::from_record(source_id, record, source.acl_group.as_deref()))
+        .map(|record| SolrDocument::from_record(source_id, record, &document_owner(record)))
         .collect();
     flush_solr(solr, solr_docs).await?;
     for record in &records {
@@ -214,6 +234,58 @@ pub async fn run_reconcile() -> Result<(), String> {
         solr.delete_by_source(&orphan).await?;
         db::purge_source(&mut client, &orphan).await?;
     }
+    Ok(())
+}
+
+/// Rebuilds the Solr index from the authoritative Postgres database alone.
+///
+/// Recovery for a lost, recreated, or schema-changed Solr core: the database
+/// already stores every indexed field, so sources are not re-extracted.
+/// Documents are re-added by their unique id, which overwrites any existing
+/// copy, so the command is idempotent and safe to rerun.
+pub async fn run_reindex() -> Result<(), String> {
+    let settings = Settings::from_env()?;
+    let mut client = db::connect(&settings.database_url).await?;
+    db::migrate(&mut client).await?;
+    let solr = SolrClient::new(&settings.solr_url, &settings.solr_core);
+
+    let sources = db::list_sources(&client).await?;
+    let mut total = 0usize;
+    for source in &sources {
+        let mut after: Option<String> = None;
+        let mut source_total = 0usize;
+        loop {
+            let batch = db::documents_batch(
+                &client,
+                &source.id,
+                after.as_deref(),
+                REINDEX_BATCH_SIZE as i64,
+            )
+            .await?;
+            if batch.is_empty() {
+                break;
+            }
+            let docs: Vec<SolrDocument> = batch
+                .iter()
+                .map(|(_, record)| {
+                    SolrDocument::from_record(&source.id, record, &document_owner(record))
+                })
+                .collect();
+            solr.add_documents(&docs).await?;
+            source_total += docs.len();
+            let complete = batch.len() < REINDEX_BATCH_SIZE;
+            after = batch.last().map(|(id, _)| id.clone());
+            if complete {
+                break;
+            }
+        }
+        total += source_total;
+        eprintln!(
+            "search: reindexed source '{}' ({} docs)",
+            source.id, source_total
+        );
+    }
+    eprintln!("search: reindex complete ({total} docs)");
     Ok(())
 }
 
@@ -320,7 +392,7 @@ mod tests {
 
         assert_eq!(docs.len(), 1, "expected exactly one paperless document");
         let record = docs.into_iter().next().expect("doc").into_record();
-        let solr_doc = SolrDocument::from_record("paperless", &record, Some("paperless-users"));
+        let solr_doc = SolrDocument::from_record("paperless", &record, "ACME");
         let payload = solr_doc.to_solr_json();
 
         assert_eq!(payload["id"], json!("paperless:42"));
@@ -329,7 +401,7 @@ mod tests {
         assert_eq!(payload["body"], json!("total due 100"));
         assert_eq!(payload["content_type"], json!("application/pdf"));
         assert!(payload.get("content_created").is_some());
-        assert_eq!(payload["acl_groups"], json!(["paperless-users"]));
+        assert_eq!(payload["owner_s"], json!("ACME"));
         assert_eq!(payload["meta_correspondent_s"], json!("ACME"));
     }
 }

@@ -1,49 +1,12 @@
+export type { OpenLibraryCandidate } from "./api-contract.generated";
+import type {
+  OpenLibraryCandidate,
+  OpenLibraryEdition,
+  OpenLibraryEditionsResponse,
+} from "./api-contract.generated";
 import { $, component$, type QRL, useStore, useTask$ } from "@builder.io/qwik";
 import { api, readableError } from "./api";
 import { RemoteArtwork } from "./remote-artwork";
-
-export interface OpenLibraryCandidate {
-  workId: string;
-  editionId?: string;
-  title: string;
-  editionTitle?: string;
-  authors: string[];
-  firstPublishYear?: number;
-  editionCount?: number;
-  publishDate?: string;
-  publishYear?: number;
-  publishers: string[];
-  isbn10?: string;
-  isbn13?: string;
-  languages: string[];
-  subjects: string[];
-  numberOfPages?: number;
-  coverId?: number;
-  coverUrl?: string;
-}
-
-interface OpenLibraryEdition {
-  editionId: string;
-  title: string;
-  publishDate?: string;
-  publishYear?: number;
-  publishers: string[];
-  isbn10?: string;
-  isbn13?: string;
-  languages: string[];
-  numberOfPages?: number;
-  coverId?: number;
-  coverUrl?: string;
-}
-
-interface OpenLibraryEditionsResponse {
-  workId: string;
-  offset: number;
-  limit: number;
-  total: number;
-  hasMore: boolean;
-  results: OpenLibraryEdition[];
-}
 
 function editionCandidate(
   work: OpenLibraryCandidate,
@@ -171,7 +134,9 @@ export const OpenLibraryPanel = component$<{
         <div>
           <h3>Open Library lookup</h3>
         </div>
-        <span class="status-badge live">No account required</span>
+        <span class="status-badge access-free">
+          Free access · No account required
+        </span>
       </div>
       <p class="quiet-copy">
         Search public book records by title, author, or ISBN, then compare the

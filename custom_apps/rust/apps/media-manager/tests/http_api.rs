@@ -65,7 +65,7 @@ fn test_app_with_mode(
     config.mutation_mode = mutation_mode;
     std::fs::create_dir_all(config.shared_root.join("_Videos")).expect("shared videos");
     let database = config.database_path();
-    Catalog::open(&database).expect("catalog");
+    Catalog::initialize(&database).expect("catalog");
     (
         router(AppState {
             config,
@@ -474,7 +474,7 @@ async fn frontend_assets_are_served_only_from_the_packaged_asset_directory() {
     config.state_dir = temp.path().join("state");
     config.frontend_dir = Some(frontend);
     let database = config.database_path();
-    Catalog::open(&database).expect("catalog");
+    Catalog::initialize(&database).expect("catalog");
     let app = router(AppState {
         config,
         catalog: CatalogHandle::new(database),
@@ -777,7 +777,7 @@ async fn enabled_confirmation_queues_exactly_the_previewed_plan() {
         .expect("confirmation response");
     assert_eq!(confirmation.status(), StatusCode::ACCEPTED);
     assert_eq!(
-        Catalog::open(&database)
+        Catalog::initialize(&database)
             .expect("catalog")
             .mutation_plan_state(plan_id)
             .expect("plan state"),
@@ -834,7 +834,7 @@ async fn subtitle_upload_creates_an_editor_bound_no_overwrite_preview() {
     );
     let plan_id = preview["id"].as_str().expect("plan ID");
     assert_eq!(
-        Catalog::open(&database)
+        Catalog::initialize(&database)
             .expect("catalog")
             .mutation_plan_state(plan_id)
             .expect("plan state"),
@@ -957,7 +957,7 @@ async fn items_report_unprobeable_videos_as_null_probes() {
     std::fs::create_dir_all(config.shared_root.join("_Videos")).expect("movie folder");
     std::fs::write(config.shared_root.join("_Videos/Movie.mkv"), b"movie").expect("movie");
     let database = config.database_path();
-    Catalog::open(&database).expect("catalog");
+    Catalog::initialize(&database).expect("catalog");
     let app = router(AppState {
         config,
         catalog: CatalogHandle::new(database),
@@ -1217,7 +1217,7 @@ async fn metadata_details_merge_filename_fields_with_a_bounded_jellyfin_snapshot
     std::fs::create_dir_all(episode.parent().expect("episode parent")).expect("show folder");
     std::fs::write(&episode, b"video").expect("episode file");
     let database = config.database_path();
-    Catalog::open(&database).expect("catalog");
+    Catalog::initialize(&database).expect("catalog");
     let app = router(AppState {
         config,
         catalog: CatalogHandle::new(database),
@@ -1334,7 +1334,7 @@ async fn metadata_details_expose_existing_sidecar_values_and_field_provenance() 
 }
 
 #[tokio::test]
-async fn metadata_health_inbox_groups_actionable_issues_and_pages_by_catalog_position() {
+async fn metadata_health_inbox_ignores_filename_noise_and_pages_by_catalog_position() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let movie_dir = temp.path().join("shared/_Videos");
     std::fs::create_dir_all(&movie_dir).expect("movie directory");
@@ -1364,14 +1364,8 @@ async fn metadata_health_inbox_groups_actionable_issues_and_pages_by_catalog_pos
 
     assert_eq!(payload["rootId"], "shared-videos");
     assert_eq!(payload["inspectedItems"], 1);
-    assert_eq!(payload["issueCount"], 1);
-    assert_eq!(payload["results"][0]["relativePath"], "A.mkv");
-    assert_eq!(payload["results"][0]["mediaKind"], "video");
-    assert_eq!(
-        payload["results"][0]["health"][0]["code"],
-        "conflicting-title"
-    );
-    assert_eq!(payload["results"][0]["health"][0]["severity"], "warning");
+    assert_eq!(payload["issueCount"], 0);
+    assert_eq!(payload["results"], serde_json::json!([]));
     assert_eq!(payload["nextCursor"], "A.mkv");
 
     let response = app
@@ -1385,8 +1379,56 @@ async fn metadata_health_inbox_groups_actionable_issues_and_pages_by_catalog_pos
         .await
         .expect("second metadata issues body");
     let payload: Value = serde_json::from_slice(&body).expect("second metadata issues JSON");
-    assert_eq!(payload["results"][0]["relativePath"], "B.mkv");
+    assert_eq!(payload["results"], serde_json::json!([]));
+    assert_eq!(payload["inspectedItems"], 1);
     assert!(payload["nextCursor"].is_null());
+}
+
+#[tokio::test]
+async fn metadata_health_exposes_current_title_and_real_source_alternatives() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut config = AppConfig::for_test(
+        temp.path().join("shared").to_str().unwrap(),
+        temp.path().join("users").to_str().unwrap(),
+    );
+    config.state_dir = temp.path().join("state");
+    let cache = temp.path().join("jellyfin-metadata.json");
+    config.jellyfin_metadata_cache_file = Some(cache.clone());
+    let folder = config.shared_root.join("_Videos");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("Movie.2160p.x265.mkv"), b"movie").unwrap();
+    std::fs::write(
+        folder.join("Movie.2160p.x265.nfo"),
+        "<movie><title>Sidecar title</title></movie>",
+    )
+    .unwrap();
+    std::fs::write(cache, serde_json::json!({"schemaVersion":1,"entries":[{
+        "rootId":"shared-videos", "ownerUsername":null,"relativePath":"Movie.2160p.x265.mkv", "mediaType":"movie","title":"Application title"
+    }]}).to_string()).unwrap();
+    let database = config.database_path();
+    Catalog::initialize(&database).unwrap();
+    let app = router(AppState {
+        config,
+        catalog: CatalogHandle::new(database),
+        jellyfin_image_cache: Arc::new(JellyfinImageCache::new()),
+        tmdb_client: None,
+    });
+    let response = app
+        .oneshot(viewer_get_request(
+            "/api/v1/metadata/issues?rootId=shared-videos",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 128 * 1024).await.unwrap();
+    let payload: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(payload["results"][0]["title"], "Sidecar title");
+    let issue = &payload["results"][0]["health"][0];
+    assert_eq!(issue["code"], "conflicting-title");
+    assert_eq!(issue["currentValue"], "Sidecar title");
+    assert_eq!(issue["proposedValues"][0]["value"], "Application title");
+    assert_eq!(issue["proposedValues"].as_array().unwrap().len(), 1);
+    assert!(!issue["currentSources"].as_array().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -1668,7 +1710,7 @@ async fn metadata_inspection_includes_bounded_audiobookshelf_and_kavita_snapshot
     config.audiobookshelf_metadata_cache_file = Some(abs_cache);
     config.kavita_metadata_cache_file = Some(kavita_cache);
     let database = config.database_path();
-    Catalog::open(&database).expect("catalog");
+    Catalog::initialize(&database).expect("catalog");
     let app = router(AppState {
         config,
         catalog: CatalogHandle::new(database),
@@ -1779,7 +1821,7 @@ async fn authenticated_viewer_can_queue_and_follow_a_registered_refresh() {
         capabilities: vec!["library-refresh".to_string()],
     }];
     let database = config.database_path();
-    Catalog::open(&database).expect("catalog");
+    Catalog::initialize(&database).expect("catalog");
     let app = router(AppState {
         config,
         catalog: CatalogHandle::new(database),
@@ -1829,7 +1871,7 @@ async fn authenticated_viewer_can_queue_a_registered_kavita_refresh() {
         capabilities: vec!["library-refresh".to_string()],
     }];
     let database = config.database_path();
-    Catalog::open(&database).expect("catalog");
+    Catalog::initialize(&database).expect("catalog");
     let app = router(AppState {
         config,
         catalog: CatalogHandle::new(database),
@@ -1884,7 +1926,7 @@ async fn refresh_status_returns_the_durable_terminal_result() {
     )
     .expect("refresh result");
     let database = config.database_path();
-    Catalog::open(&database).expect("catalog");
+    Catalog::initialize(&database).expect("catalog");
     let app = router(AppState {
         config,
         catalog: CatalogHandle::new(database),
@@ -2654,6 +2696,40 @@ async fn item_image_serves_gif_cover_artwork() {
 }
 
 #[tokio::test]
+async fn image_sources_reports_sidecar_presence_and_requires_identity() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let app = test_app(&temp);
+    std::fs::write(temp.path().join("shared/_Videos/Movie.mkv"), b"movie").unwrap();
+    std::fs::write(
+        temp.path().join("shared/_Videos/cover.png"),
+        one_pixel_png(),
+    )
+    .unwrap();
+    let movie_id = item_id_by_kind(&app, "shared-videos", "video").await;
+    let path = format!("/api/v1/items/{movie_id}/image/sources");
+    let response = app
+        .clone()
+        .oneshot(viewer_get_request(&path))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+    let value: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(value["sources"][0]["id"], "sidecar");
+    assert_eq!(value["sources"][0]["status"], "available");
+    assert!(value["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|source| source["id"] == "embedded"));
+    let response = app
+        .oneshot(Request::builder().uri(&path).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
 async fn item_image_returns_not_found_without_artwork() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let app = test_app(&temp);
@@ -2920,7 +2996,7 @@ async fn musicbrainz_search_lookup_returns_release_group_candidates() {
     )
     .expect("audio file");
     let database = config.database_path();
-    Catalog::open(&database).expect("catalog");
+    Catalog::initialize(&database).expect("catalog");
     let app = router(AppState {
         config,
         catalog: CatalogHandle::new(database),
@@ -3015,7 +3091,7 @@ async fn musicbrainz_fingerprint_lookup_runs_fpcalc_and_uses_acoustid() {
     )
     .expect("audio file");
     let database = config.database_path();
-    Catalog::open(&database).expect("catalog");
+    Catalog::initialize(&database).expect("catalog");
     let app = router(AppState {
         config,
         catalog: CatalogHandle::new(database),
@@ -3058,7 +3134,7 @@ async fn musicbrainz_auto_mode_falls_back_to_search_without_an_api_key() {
     )
     .expect("audio file");
     let database = config.database_path();
-    Catalog::open(&database).expect("catalog");
+    Catalog::initialize(&database).expect("catalog");
     let app = router(AppState {
         config,
         catalog: CatalogHandle::new(database),
@@ -3095,7 +3171,7 @@ async fn musicbrainz_fingerprint_without_a_key_is_rejected_as_unconfigured() {
     std::fs::write(config.shared_root.join("_Music/Artist/Song.flac"), b"audio")
         .expect("audio file");
     let database = config.database_path();
-    Catalog::open(&database).expect("catalog");
+    Catalog::initialize(&database).expect("catalog");
     let app = router(AppState {
         config,
         catalog: CatalogHandle::new(database),
@@ -3359,4 +3435,88 @@ async fn playback_targets_expose_the_connected_media_app_for_the_item_kind() {
         .await
         .expect("missing item playback targets response");
     assert_eq!(response.status(), StatusCode::CONFLICT);
+}
+
+#[path = "support/api_contract.rs"]
+mod api_contract;
+
+#[tokio::test]
+async fn actual_http_responses_match_the_published_wire_contract() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = test_app(&temp);
+    for (path, schema) in [
+        ("/api/v1/status", "Status"),
+        ("/api/v1/session", "Session"),
+        ("/api/v1/conversions", "ConversionEnvelope"),
+        ("/api/v1/items?rootId=shared-videos", "ItemsResponse"),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .header("x-forwarded-user", "subject-1")
+                    .header("x-forwarded-preferred-username", "editor")
+                    .header("x-forwarded-groups", "users,media-manager-editors")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        api_contract::assert_component(schema, &serde_json::from_slice(&bytes).unwrap());
+    }
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/session")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let bytes = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+    api_contract::assert_component("Error", &serde_json::from_slice(&bytes).unwrap());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn busy_handler_budget_returns_retryable_503_without_stalling_requests() {
+    let started = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let handler_started = started.clone();
+    let handler_release = release.clone();
+    let app = homelab_common::work::isolate_handlers(
+        axum::Router::new().route(
+            "/slow",
+            axum::routing::get(move || {
+                let started = handler_started.clone();
+                let release = handler_release.clone();
+                async move {
+                    started.notify_one();
+                    release.notified().await;
+                    "finished"
+                }
+            }),
+        ),
+        1,
+    );
+    let first = tokio::spawn(
+        app.clone()
+            .oneshot(Request::builder().uri("/slow").body(Body::empty()).unwrap()),
+    );
+    started.notified().await;
+    let response = app
+        .oneshot(Request::builder().uri("/slow").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response.headers()["retry-after"], "1");
+    let bytes = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+    let value: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(value["error"]["code"], "server_busy");
+    api_contract::assert_component("Error", &value);
+    release.notify_one();
+    assert_eq!(first.await.unwrap().unwrap().status(), StatusCode::OK);
 }

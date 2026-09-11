@@ -56,7 +56,7 @@ export const GoogleBooksPanel = component$<{
         <div>
           <h3>Google Books lookup</h3>
         </div>
-        <span class="status-badge live">Per-user API key</span>
+        <span class="status-badge access-key">API key required</span>
       </div>
       <p class="quiet-copy">
         Search Google Books as a second edition source, then choose metadata

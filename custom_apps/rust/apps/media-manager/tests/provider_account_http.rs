@@ -1,3 +1,6 @@
+#[path = "support/api_contract.rs"]
+mod api_contract;
+
 use axum::{
     body::{to_bytes, Body},
     http::{Request, StatusCode},
@@ -71,6 +74,7 @@ async fn provider_catalog_shows_public_configurable_and_planned_sources() {
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(response.headers()["cache-control"], "no-store, max-age=0");
     let value = response_json(response).await;
+    api_contract::assert_component("ProviderCatalogResponse", &value);
     assert_eq!(value["schemaVersion"], 1);
     assert!(value["recoveryAdvice"]
         .as_str()
@@ -231,6 +235,7 @@ async fn open_library_search_is_public_bounded_and_normalized() {
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(response.headers()["cache-control"], "no-store, max-age=0");
     let body = response_json(response).await;
+    api_contract::assert_component("OpenLibrarySearchResponse", &body);
     assert_eq!(body["provider"], "open-library");
     assert_eq!(body["query"], "978-0-441-17271-9");
     assert_eq!(body["results"][0]["workId"], "OL893415W");
@@ -763,6 +768,7 @@ async fn tmdb_lookup_uses_only_the_callers_runtime_account() {
         .expect("lookup response");
     assert_eq!(lookup.status(), StatusCode::OK);
     let lookup = response_json(lookup).await;
+    api_contract::assert_component("TmdbSearchResponse", &lookup);
     assert_eq!(lookup["results"][0]["tmdbId"], 329865);
     assert_eq!(lookup["results"][0]["title"], "Arrival");
     assert_eq!(lookup["provider"], "tmdb");
@@ -856,6 +862,7 @@ async fn tmdb_episode_details_use_the_selected_series_and_episode_numbers() {
         .expect("episode details response");
     assert_eq!(response.status(), StatusCode::OK);
     let response = response_json(response).await;
+    api_contract::assert_component("TmdbDetailsResponse", &response);
     assert_eq!(response["details"]["mediaType"], "episode");
     assert_eq!(response["details"]["episodeTitle"], "The Train Job");
     assert_eq!(response["details"]["season"], 1);
@@ -1047,6 +1054,7 @@ async fn google_books_search_normalizes_volumes_and_proxies_selected_covers() {
         .expect("search response");
     assert_eq!(response.status(), StatusCode::OK);
     let response = response_json(response).await;
+    api_contract::assert_component("GoogleBooksSearchResponse", &response);
     assert_eq!(response["results"][0]["volumeId"], "zyTCAlFPjgYC");
     assert_eq!(response["results"][0]["isbn"], "9780441172719");
     assert_eq!(response["results"][0]["year"], 1965);

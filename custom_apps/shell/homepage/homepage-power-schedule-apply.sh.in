@@ -1,0 +1,18 @@
+set -euo pipefail
+
+state_file=@NIX_POWERSCHEDULECFG_STATEFILE_QUOTED@
+validator=@NIX_POWERSCHEDULECFG_VALIDATOR@
+new_file="$state_file.new"
+
+cleanup() { rm -f "$new_file"; }
+trap cleanup EXIT
+
+@NIX_COREUTILS@/bin/cat > "$new_file"
+canonical="$(@NIX_JQ@/bin/jq -cerf "$validator" "$new_file")" || {
+  echo "invalid power schedule payload" >&2
+  exit 1
+}
+@NIX_JQ@/bin/jq -c '. + {schemaVersion: 1, updatedAt: (now | todateiso8601)}' <<<"$canonical" > "$new_file"
+@NIX_COREUTILS@/bin/chmod 0644 "$new_file"
+@NIX_COREUTILS@/bin/mv -f "$new_file" "$state_file"
+@NIX_COREUTILS@/bin/cat "$state_file"

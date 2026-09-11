@@ -23,6 +23,31 @@ let
       guardedServices = [ ];
       persistencePaths = [ "/var/lib/bonsai" ];
     };
+    qwen-flash-next = {
+      modules = [ ../../modules/qwen-flash-next ];
+      disable = { repo.qwenFlashNext.enable = lib.mkForce false; };
+      registryName = "qwen-flash-next";
+      services = [
+        "qwen-flash-next-storage-layout-v1"
+        "qwen-flash-next-model-prepare"
+        "qwen-flash-next-llama"
+      ];
+      timers = [ ];
+      hosts = [ ];
+      gatewayApps = [ ];
+      oauthClients = [ ];
+      kanidmGroups = [ ];
+      users = [ "qwen-flash-next" ];
+      groups = [ "qwen-flash-next" ];
+      secrets = [ ];
+      backupApps = [ ];
+      guardedServices = [
+        "qwen-flash-next-storage-layout-v1"
+        "qwen-flash-next-model-prepare"
+        "qwen-flash-next-llama"
+      ];
+      persistencePaths = [ ];
+    };
     chaptarr = {
       disable = { repo.chaptarr.enable = lib.mkForce false; };
       registryName = "chaptarr";
@@ -258,12 +283,12 @@ let
       ];
       timers = [ "search-reconcile" ];
       hosts = [ "search" ];
-      gatewayApps = [ ];
-      oauthClients = [ "search-web" ];
-      kanidmGroups = [ "search-users" ];
+      gatewayApps = [ "search" ];
+      oauthClients = [ ];
+      kanidmGroups = [ "search-admins" ];
       users = [ "search" "solr" ];
       groups = [ "search" "solr" ];
-      secrets = [ "searchClientSecret" ];
+      secrets = [ ];
       backupApps = [ "search" ];
       guardedServices = [
         "search-solr"

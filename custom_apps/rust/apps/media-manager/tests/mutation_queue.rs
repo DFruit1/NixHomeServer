@@ -16,7 +16,7 @@ fn action() -> MoveAction {
 #[test]
 fn plan_confirmation_is_owner_and_digest_bound() {
     let temp = tempfile::tempdir().expect("temporary directory");
-    let mut catalog = Catalog::open(&temp.path().join("control.sqlite3")).expect("catalog");
+    let mut catalog = Catalog::initialize(&temp.path().join("control.sqlite3")).expect("catalog");
     catalog
         .create_mutation_plan(&MutationPlanDraft {
             id: "plan-1".to_string(),
@@ -57,7 +57,7 @@ fn plan_confirmation_is_owner_and_digest_bound() {
 #[test]
 fn global_queue_claims_one_plan_and_records_completion() {
     let temp = tempfile::tempdir().expect("temporary directory");
-    let mut catalog = Catalog::open(&temp.path().join("control.sqlite3")).expect("catalog");
+    let mut catalog = Catalog::initialize(&temp.path().join("control.sqlite3")).expect("catalog");
     catalog
         .create_mutation_plan(&MutationPlanDraft {
             id: "plan-1".to_string(),
@@ -97,7 +97,7 @@ fn global_queue_claims_one_plan_and_records_completion() {
 #[test]
 fn expired_previews_are_claimed_for_staging_cleanup_once() {
     let temp = tempfile::tempdir().expect("temporary directory");
-    let mut catalog = Catalog::open(&temp.path().join("control.sqlite3")).expect("catalog");
+    let mut catalog = Catalog::initialize(&temp.path().join("control.sqlite3")).expect("catalog");
     let subtitle = InstallSubtitleAction {
         staging_filename: "subtitle-expired.srt".to_string(),
         destination_root_id: "shared-videos".to_string(),

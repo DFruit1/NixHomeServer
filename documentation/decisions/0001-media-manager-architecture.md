@@ -20,7 +20,7 @@ capabilities, but their absence must not prevent Media Manager from starting.
 
 The Rust service owns the catalog, preferences, job state, audit log, provider
 coordination, and HTTP API. It listens only on loopback and is reachable through
-the shared OAuth2 Proxy gateway at `media.sydneybasiniot.org`. The gateway
+the shared OAuth2 Proxy gateway at `media.<domain>`. The gateway
 removes caller-supplied identity headers and supplies the authenticated Kanidm
 identity. Every authenticated `users` member may view eligible roots. Only a
 member of `media-manager-editors` may create or confirm a mutation plan.

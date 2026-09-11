@@ -90,7 +90,7 @@ fn catalog_item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CatalogIte
 }
 
 impl Catalog {
-    pub fn open(path: &Path) -> rusqlite::Result<Self> {
+    pub fn initialize(path: &Path) -> rusqlite::Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|error| {
                 rusqlite::Error::SqliteFailure(
@@ -99,7 +99,7 @@ impl Catalog {
                 )
             })?;
         }
-        let connection = Connection::open_with_flags(
+        let mut connection = Connection::open_with_flags(
             path,
             OpenFlags::SQLITE_OPEN_READ_WRITE
                 | OpenFlags::SQLITE_OPEN_CREATE
@@ -108,9 +108,13 @@ impl Catalog {
         connection.busy_timeout(std::time::Duration::from_secs(30))?;
         connection.pragma_update(None, "journal_mode", "WAL")?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
-        connection.execute_batch(
-            "BEGIN IMMEDIATE;
-             CREATE TABLE IF NOT EXISTS catalog_items (
+        let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        if !(0..=3).contains(&version) {
+            return Err(unsupported_schema(version));
+        }
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute_batch(
+            "CREATE TABLE IF NOT EXISTS catalog_items (
                id TEXT PRIMARY KEY,
                root_id TEXT NOT NULL,
                owner_username TEXT,
@@ -144,23 +148,34 @@ impl Catalog {
                subtitle_languages_json TEXT NOT NULL DEFAULT '[\"en\"]',
                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
              );
-             COMMIT;",
+             ",
         )?;
-        let schema_version =
-            connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        match schema_version {
-            0 => create_mutation_schema(&connection)?,
-            1 => migrate_mutation_schema_v1(&connection)?,
-            2 => migrate_playback_positions(&connection)?,
-            3 => {}
-            version => {
-                return Err(rusqlite::Error::SqliteFailure(
-                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_SCHEMA),
-                    Some(format!(
-                        "unsupported Media Manager schema version {version}"
-                    )),
-                ))
+        loop {
+            let schema_version: i64 =
+                transaction.pragma_query_value(None, "user_version", |row| row.get(0))?;
+            match schema_version {
+                0 => create_mutation_schema(&transaction)?,
+                1 => migrate_mutation_schema_v1(&transaction)?,
+                2 => migrate_playback_positions(&transaction)?,
+                3 => break,
+                version => return Err(unsupported_schema(version)),
             }
+        }
+        transaction.commit()?;
+        Ok(Self { connection })
+    }
+
+    /// Open an already initialized catalog without acquiring a schema write lock.
+    pub fn open(path: &Path) -> rusqlite::Result<Self> {
+        let connection = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        connection.busy_timeout(std::time::Duration::from_secs(30))?;
+        connection.pragma_update(None, "foreign_keys", "ON")?;
+        let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        if version != 3 {
+            return Err(unsupported_schema(version));
         }
         Ok(Self { connection })
     }
@@ -810,8 +825,7 @@ impl Catalog {
 
 fn create_mutation_schema(connection: &Connection) -> rusqlite::Result<()> {
     connection.execute_batch(
-        "BEGIN IMMEDIATE;
-         CREATE TABLE mutation_plans (
+        "CREATE TABLE mutation_plans (
            id TEXT PRIMARY KEY,
            owner_username TEXT NOT NULL,
            digest TEXT NOT NULL,
@@ -836,15 +850,13 @@ fn create_mutation_schema(connection: &Connection) -> rusqlite::Result<()> {
          );
          CREATE INDEX mutation_plans_queue
            ON mutation_plans(state, confirmed_at, created_at);
-         PRAGMA user_version = 2;
-         COMMIT;",
+         PRAGMA user_version = 2;",
     )
 }
 
 fn migrate_mutation_schema_v1(connection: &Connection) -> rusqlite::Result<()> {
     connection.execute_batch(
-        "BEGIN IMMEDIATE;
-         ALTER TABLE mutation_plans RENAME TO mutation_plans_v1;
+        "ALTER TABLE mutation_plans RENAME TO mutation_plans_v1;
          CREATE TABLE mutation_plans (
            id TEXT PRIMARY KEY,
            owner_username TEXT NOT NULL,
@@ -878,23 +890,20 @@ fn migrate_mutation_schema_v1(connection: &Connection) -> rusqlite::Result<()> {
          );
          CREATE INDEX mutation_plans_queue
            ON mutation_plans(state, confirmed_at, created_at);
-         PRAGMA user_version = 2;
-         COMMIT;",
+         PRAGMA user_version = 2;",
     )
 }
 
 fn migrate_playback_positions(connection: &Connection) -> rusqlite::Result<()> {
     connection.execute_batch(
-        "BEGIN IMMEDIATE;
-         CREATE TABLE IF NOT EXISTS playback_positions (
+        "CREATE TABLE IF NOT EXISTS playback_positions (
            item_id TEXT NOT NULL,
            username TEXT NOT NULL,
            position_seconds REAL NOT NULL,
            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
            PRIMARY KEY(item_id, username)
          ) WITHOUT ROWID;
-         PRAGMA user_version = 3;
-         COMMIT;",
+         PRAGMA user_version = 3;",
     )
 }
 
@@ -919,4 +928,8 @@ impl CatalogHandle {
     pub fn open(&self) -> rusqlite::Result<Catalog> {
         Catalog::open(&self.path)
     }
+}
+
+fn unsupported_schema(version: i64) -> rusqlite::Error {
+    rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_SCHEMA), Some(format!("unsupported Media Manager schema version {version}; initialize the catalog before opening it")))
 }

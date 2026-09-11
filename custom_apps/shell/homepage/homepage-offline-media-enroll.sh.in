@@ -1,0 +1,311 @@
+set -euo pipefail
+
+username="${1:-}"
+if ! @NIX_GNUGREP@/bin/grep -Eq '^[a-z][a-z0-9._-]{0,63}$' <<<"$username"; then
+  echo "invalid username" >&2
+  exit 1
+fi
+
+payload="$(@NIX_COREUTILS@/bin/cat)"
+device_id="$(@NIX_JQ@/bin/jq -er '.deviceId' <<<"$payload")"
+device_name="$(@NIX_JQ@/bin/jq -er --arg fallback "$username-media" '
+  if .deviceName == null then $fallback
+  elif (.deviceName | type) == "string" then .deviceName
+  else error("deviceName must be a string")
+  end
+' <<<"$payload")"
+
+if ! @NIX_GNUGREP@/bin/grep -Eq '^[A-Z2-7]{7}(-[A-Z2-7]{7}){7}$' <<<"$device_id"; then
+  echo "invalid Syncthing device ID" >&2
+  exit 1
+fi
+if ! @NIX_JQ@/bin/jq -en --arg deviceName "$device_name" \
+  '$deviceName | test("^[A-Za-z0-9._ -]{1,64}$")' >/dev/null; then
+  echo "invalid Syncthing device name" >&2
+  exit 1
+fi
+
+server_device_id="$(@NIX_SHOWSYNCTHINGDEVICEID@)"
+if [[ "$device_id" == "$server_device_id" ]]; then
+  echo "paste this device's Syncthing device ID, not the server device ID" >&2
+  exit 1
+fi
+
+state_dir=@NIX_OFFLINEMEDIASTATEDIR_QUOTED@
+state_file=@NIX_OFFLINEMEDIASTATEFILE_QUOTED@
+folder_specs_json=@NIX_OFFLINEMEDIAFOLDERSPECSJSON_QUOTED@
+users_root=@NIX_VARS_USERSROOT_QUOTED@
+
+install -d -m 0750 -o root -g root "$state_dir"
+exec 9>"$state_dir/.devices.lock"
+@NIX_UTIL_LINUX@/bin/flock -x 9
+
+# The browser token can outlive a group change.  Verify current Kanidm
+# membership under the same lock before creating folders, ACLs, peers, or
+# enrollment state.  Offline-media access is always additive to users.
+identity_home="$(@NIX_COREUTILS@/bin/mktemp -d)"
+trap '@NIX_COREUTILS@/bin/rm -rf "$identity_home"' EXIT
+export HOME="$identity_home"
+KANIDM_PASSWORD="$(< @NIX_CONFIG_AGE_SECRETS_KANIDMADMINPASS_PATH@)"
+export KANIDM_PASSWORD
+@NIX_KANIDM_1_11@/bin/kanidm login \
+  -H @NIX_HTTPS_VARS_KANIDMDOMAIN_TOSTRING_VARS_NETWORKING_PORTS_KANIDM_QUOTED@ \
+  -D idm_admin >/dev/null
+
+snapshot_enrollment_group() {
+  local group_name="$1"
+  local group_json
+  if ! group_json="$(@NIX_KANIDM_1_11@/bin/kanidm group get \
+    "$group_name" \
+    -H @NIX_HTTPS_VARS_KANIDMDOMAIN_TOSTRING_VARS_NETWORKING_PORTS_KANIDM_QUOTED@ \
+    -D idm_admin \
+    -o json)"; then
+    echo "unable to verify current offline-media membership; no device was enrolled" >&2
+    return 1
+  fi
+  @NIX_JQ@/bin/jq -cer '
+    def local_username:
+      split("@")[0] as $username
+      | if ($username | test("^[a-z][a-z0-9._-]{0,63}$")) then
+          $username
+        else
+          error("invalid local username in member entry")
+        end;
+    if ((.attrs.member // []) | type) != "array" then
+      error("invalid member attribute")
+    elif any(.attrs.member[]?; type != "string") then
+      error("member array contains a non-string entry")
+    else
+      [ .attrs.member[]? | local_username ] | unique
+    end
+  ' <<<"$group_json"
+}
+
+if ! baseline_members="$(@NIX_JQ@/bin/jq -c . <<<"$(snapshot_enrollment_group users)")"; then
+  exit 1
+fi
+access_group=@NIX_OFFLINEMEDIAACCESSGROUP_QUOTED@
+if [[ "$access_group" == users ]]; then
+  access_members="$baseline_members"
+elif ! access_members="$(@NIX_JQ@/bin/jq -c . <<<"$(snapshot_enrollment_group "$access_group")")"; then
+  exit 1
+fi
+if ! @NIX_JQ@/bin/jq -en \
+  --arg username "$username" \
+  --argjson baseline "$baseline_members" \
+  --argjson access "$access_members" \
+  '($baseline | index($username) != null) and ($access | index($username) != null)' >/dev/null; then
+  echo "current Kanidm membership no longer permits offline-media enrollment" >&2
+  exit 1
+fi
+@NIX_COREUTILS@/bin/rm -rf "$identity_home"
+trap - EXIT
+
+# Validate persistent enrollment state before provisioning folders or
+# changing ACLs.  First-host initialization is an atomic replacement, so
+# interruption cannot leave a truncated devices.json behind.
+if [[ ! -f "$state_file" ]]; then
+  state_init_tmp="$(@NIX_COREUTILS@/bin/mktemp "$state_dir/.devices.XXXXXX")"
+  if ! @NIX_COREUTILS@/bin/printf '{"version":2,"users":{}}\n' > "$state_init_tmp" \
+    || ! @NIX_JQ@/bin/jq -e '@NIX_OFFLINEMEDIASTATEVALIDATIONJQ@' "$state_init_tmp" >/dev/null \
+    || ! @NIX_COREUTILS@/bin/chmod 0640 "$state_init_tmp" \
+    || ! @NIX_COREUTILS@/bin/chown root:root "$state_init_tmp" \
+    || ! @NIX_COREUTILS@/bin/mv "$state_init_tmp" "$state_file"; then
+    @NIX_COREUTILS@/bin/rm -f "$state_init_tmp"
+    echo "unable to initialize offline media enrollment state" >&2
+    exit 1
+  fi
+fi
+if ! @NIX_JQ@/bin/jq -e '@NIX_OFFLINEMEDIASTATEVALIDATIONJQ@' "$state_file" >/dev/null; then
+  echo "offline media enrollment state is invalid; refusing to provision folders or change ACLs" >&2
+  exit 1
+fi
+
+missing_folder=0
+while IFS=$'\t' read -r relative_path; do
+  folder_path="$users_root/$username/$relative_path"
+  [[ -d "$folder_path" ]] || missing_folder=1
+done < <(@NIX_JQ@/bin/jq -r '.[] | [.relativePath] | @tsv' <<<"$folder_specs_json")
+if (( missing_folder == 1 )); then
+  @NIX_SYSTEMD@/bin/systemctl start fileshare-user-root-sync.service
+fi
+while IFS=$'\t' read -r relative_path; do
+  folder_path="$users_root/$username/$relative_path"
+  if [[ ! -d "$folder_path" ]]; then
+    echo "offline media folder is not provisioned for $username: $folder_path" >&2
+    exit 1
+  fi
+done < <(@NIX_JQ@/bin/jq -r '.[] | [.relativePath] | @tsv' <<<"$folder_specs_json")
+
+grant_syncthing_read() {
+  local folder_path="$1"
+  local parent_path="$folder_path"
+
+  while [[ "$parent_path" != "$users_root/$username" && "$parent_path" != "/" ]]; do
+    parent_path="$(@NIX_COREUTILS@/bin/dirname "$parent_path")"
+    @NIX_ACL@/bin/setfacl -m g:syncthing:--x "$parent_path"
+  done
+
+  @NIX_ACL@/bin/setfacl -R -m g:syncthing:r-X "$folder_path"
+  @NIX_FINDUTILS@/bin/find "$folder_path" -type d -exec @NIX_ACL@/bin/setfacl -m d:g:syncthing:r-x '{}' +
+  install -d -m 0755 -o root -g root "$folder_path/.stfolder"
+  @NIX_ACL@/bin/setfacl -m g:syncthing:r-x "$folder_path/.stfolder"
+}
+
+while IFS=$'\t' read -r relative_path; do
+  grant_syncthing_read "$users_root/$username/$relative_path"
+done < <(@NIX_JQ@/bin/jq -r '.[] | [.relativePath] | @tsv' <<<"$folder_specs_json")
+
+api_key_file="$(@NIX_COREUTILS@/bin/mktemp)"
+headers_file="$(@NIX_COREUTILS@/bin/mktemp)"
+trap 'rm -f "$api_key_file" "$headers_file"' EXIT
+@NIX_LIBXML2@/bin/xmllint \
+  --xpath 'string(configuration/gui/apikey)' \
+  @NIX_SYNCTHINGCONFIGDIR_QUOTED@/config.xml \
+  >"$api_key_file"
+{ @NIX_COREUTILS@/bin/printf 'X-API-Key: '; @NIX_COREUTILS@/bin/cat "$api_key_file"; } >"$headers_file"
+
+api() {
+  local path="$1"
+  shift
+  @NIX_CURL@/bin/curl -fsSLk \
+    -H "@$headers_file" \
+    "$@" \
+    "http://127.0.0.1:8384$path"
+}
+
+api_json() {
+  local method="$1"
+  local path="$2"
+  local json="$3"
+
+  @NIX_COREUTILS@/bin/printf '%s' "$json" | @NIX_CURL@/bin/curl -fsSLk \
+    -X "$method" \
+    -H "@$headers_file" \
+    -H 'content-type: application/json' \
+    --data-binary @- \
+    "http://127.0.0.1:8384$path" >/dev/null
+}
+
+api /rest/system/ping >/dev/null
+
+devices_json="$(api /rest/config/devices)"
+default_device_json="$(api /rest/config/defaults/device)"
+device_json="$(
+  @NIX_JQ@/bin/jq -n \
+    --arg deviceId "$device_id" \
+    --arg name "$device_name" \
+    --argjson devices "$devices_json" \
+    --argjson defaultDevice "$default_device_json" \
+    '(
+      ($devices[]? | select(.deviceID == $deviceId)) // $defaultDevice
+    )
+    | .deviceID = $deviceId
+    | .name = $name
+    | .addresses = ((.addresses // []) | if length > 0 then . else ["dynamic"] end)'
+)"
+
+# Commit the validated enrollment intent before the first Syncthing
+# mutation.  If a later API call fails, the reconciler can safely finish
+# converging this durable intent and a user retry remains idempotent.
+state_tmp="$(@NIX_COREUTILS@/bin/mktemp "$state_dir/.devices.XXXXXX")"
+@NIX_JQ@/bin/jq \
+  --arg username "$username" \
+  --arg deviceId "$device_id" \
+  --arg deviceName "$device_name" \
+  --arg updatedAt "$(@NIX_COREUTILS@/bin/date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  '
+  def v2:
+    if .version == 2 then .
+    else {
+      version: 2,
+      users: (
+        to_entries
+        | map(select((.value.deviceId // "") != ""))
+        | map({
+          key: .key,
+          value: {
+            devices: [{
+              deviceId: .value.deviceId,
+              deviceName: (.value.deviceName // (.key + "-media")),
+              createdAt: (.value.updatedAt // $updatedAt),
+              updatedAt: (.value.updatedAt // $updatedAt)
+            }]
+          }
+        })
+        | from_entries
+      )
+    }
+    end;
+  v2
+  | .version = 2
+  | .users[$username].devices = (
+      ((.users[$username].devices // []) | map(select(.deviceId != $deviceId)))
+      + [{
+        deviceId: $deviceId,
+        deviceName: $deviceName,
+        createdAt: (((.users[$username].devices // [])[]? | select(.deviceId == $deviceId) | .createdAt) // $updatedAt),
+        updatedAt: $updatedAt
+      }]
+    )
+  ' \
+  "$state_file" > "$state_tmp"
+if ! @NIX_JQ@/bin/jq -e '@NIX_OFFLINEMEDIASTATEVALIDATIONJQ@' "$state_tmp" >/dev/null; then
+  @NIX_COREUTILS@/bin/rm -f "$state_tmp"
+  echo "refusing to save invalid offline media enrollment state" >&2
+  exit 1
+fi
+chmod 0640 "$state_tmp"
+chown root:root "$state_tmp"
+mv "$state_tmp" "$state_file"
+
+api_json POST /rest/config/devices "$device_json"
+
+while IFS=$'\t' read -r _ label relative_path folder_id_prefix _; do
+  folder_id="$folder_id_prefix-$username"
+  folder_label="NixHomeServer $label - $username"
+  folder_path="$users_root/$username/$relative_path"
+  folders_json="$(api /rest/config/folders)"
+  default_folder_json="$(api /rest/config/defaults/folder)"
+  folder_json="$(
+    @NIX_JQ@/bin/jq -n \
+      --arg folderId "$folder_id" \
+      --arg label "$folder_label" \
+      --arg path "$folder_path" \
+      --arg deviceId "$device_id" \
+      --argjson folders "$folders_json" \
+      --argjson defaultFolder "$default_folder_json" \
+      '(
+        ($folders[]? | select(.id == $folderId)) // $defaultFolder
+      )
+      | .id = $folderId
+      | .label = $label
+      | .path = $path
+      | .type = "sendonly"
+      | .devices = ((((.devices // []) | map(.deviceID)) + [$deviceId]) | unique | map({ deviceID: . }))
+      | .fsWatcherEnabled = true
+      | .rescanIntervalS = 300'
+  )"
+  api_json POST /rest/config/folders "$folder_json"
+done < <(@NIX_JQ@/bin/jq -r '.[] | [.key, .label, .relativePath, .folderIdPrefix, .suggestedDevicePath] | @tsv' <<<"$folder_specs_json")
+
+if api /rest/config/restart-required | @NIX_JQ@/bin/jq -e '.requiresRestart == true' >/dev/null; then
+  @NIX_SYSTEMD@/bin/systemctl restart syncthing.service
+fi
+
+status_json="$(@NIX_OFFLINEMEDIASTATUS@ "$username")"
+@NIX_JQ@/bin/jq -n \
+  --arg username "$username" \
+  --arg serverDeviceId "$server_device_id" \
+  --arg enrolledDeviceId "$device_id" \
+  --arg enrolledDeviceName "$device_name" \
+  --argjson status "$status_json" \
+  '{
+    ok: true,
+    username: $username,
+    serverDeviceId: $serverDeviceId,
+    enrolledDeviceId: $enrolledDeviceId,
+    enrolledDeviceName: $enrolledDeviceName,
+    folders: $status.folders,
+    devices: $status.devices
+  }'

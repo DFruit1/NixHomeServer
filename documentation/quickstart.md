@@ -3,6 +3,11 @@
 Use this guide for the first install on new hardware, before the homepage,
 SSO, or the "For Admins" page exists.
 
+> Handing this repository to a **different owner** at a different house? Read
+> the [New owner checklist](./new-owner-checklist.md) first: it calls out the
+> values and credentials that must not be inherited from the previous owner,
+> then follow this guide for the actual install.
+
 This is the bootstrap exception path:
 - choose machine-specific settings in [`vars.nix`](../vars.nix)
 - discover target disks and network interfaces
@@ -88,6 +93,8 @@ Set the operator-facing block first:
 - `identity.localAdminUser`: the local Unix SSH/sudo account.
 - `identity.sshPublicKey`: the public SSH key for root and the local admin.
 - `network`: hostname, domain, LAN interface, LAN IP, prefix, gateway, and NetBird IP.
+- `network.lanMode`: `"static"` (default) pins the LAN IP; `"dhcp"` leases it, but then `network.lanIp` must be the router's reservation because DNS and firewall scoping still use it.
+- `system.cpuVendor`: `"auto"` (default) trusts the generated hardware module; force `"intel"` or `"amd"` only to override it.
 - `system.timeZone`.
 - `system.buildMode`: where deploy builds run; keep `"remote"` initially or
   choose a mode from [Build Allocation](operations.md#build-allocation).
@@ -236,8 +243,16 @@ keys available for one operation:
 ```bash
 nix run .#generate-secrets -- --rekey \
   --source-identity /path/to/old/age.key \
-  --identity /path/to/new/age.key
+  --identity /path/to/new/age.key \
+  --allow-external-secrets
 ```
+
+Rekeying preserves values, so it also carries external secrets (NetBird,
+Cloudflare, MEGA, and provider accounts) to the new recipient. `--rekey` refuses
+them unless `--allow-external-secrets` is passed. For a **new owner or different
+house**, do not rekey: create a fresh identity and use `--fresh` with the new
+owner's staged `netbirdSetupKey`, `cfHomeCreds`, and `cfAPIToken` so no account is
+shared between the two installations.
 
 All modes fail unless the new private identity matches `secrets/pubkeys/age.pub`
 and can decrypt every resulting manifest secret.

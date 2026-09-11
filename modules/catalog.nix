@@ -1,9 +1,13 @@
 let
   app = module: displayName: category: secrets: guardedServices: {
     inherit module displayName category secrets guardedServices;
+    registration =
+      if builtins.pathExists (module + "/registration.nix") then
+        import (module + "/registration.nix")
+      else { ports = { }; homepage = _: [ ]; };
   };
 in
-{
+rec {
   apps = {
     attic = app ./attic "Attic Build Cache" "operations" [ "atticServerEnv" ] [ ];
     audiobookshelf = app ./audiobookshelf "Audiobookshelf" "media" [
@@ -94,6 +98,11 @@ in
       "qbittorrent"
       "media-automation-bootstrap-qbittorrent"
     ];
+    qwen-flash-next = app ./qwen-flash-next "Qwen Flash Next" "automation" [ ] [
+      "qwen-flash-next-storage-layout-v1"
+      "qwen-flash-next-model-prepare"
+      "qwen-flash-next-llama"
+    ];
     radarr = app ./radarr "Radarr" "media-automation" [
       "radarrOauth2ProxyClientSecret"
       "radarrOauth2ProxyCookieSecret"
@@ -101,11 +110,12 @@ in
       "radarr"
       "media-automation-bootstrap-radarr"
     ];
-    search = app ./search "Search" "knowledge" [ "searchClientSecret" ] [
+    search = app ./search "Search" "knowledge" [ ] [
       "search-solr"
       "search-solr-core-bootstrap"
       "search-ui"
       "search-index"
+      "search-reindex"
       "search-reconcile"
     ];
     sonarr = app ./sonarr "Sonarr" "media-automation" [
@@ -122,22 +132,23 @@ in
     ] [ ];
   };
 
-  integrations = [
-    ./Integrations/expose_browsertrix_crawls_to_search.nix
-    ./Integrations/expose_freshrss_entries_to_search.nix
-    ./Integrations/expose_kiwix_archives_to_search.nix
-    ./Integrations/expose_mail_archive_emails_to_search.nix
-    ./Integrations/expose_paperless_documents_to_search.nix
-    ./Integrations/expose_mail_archive_emails_in_files.nix
-    ./Integrations/grant_archives_access_to_kiwix_library.nix
-    ./Integrations/grant_files_access_to_audiobookshelf_media.nix
-    ./Integrations/grant_files_access_to_jellyfin_media.nix
-    ./Integrations/grant_files_access_to_kavita_media.nix
-    ./Integrations/grant_files_access_to_kiwix_library.nix
-    ./Integrations/grant_mail_archive_access_to_paperless_consume_subdirectory.nix
-    ./Integrations/send_mail_archive_documents_to_paperless.nix
-    ./Integrations/wait_for_audiobookshelf_storage_before_youtube_downloader.nix
-    ./Integrations/wait_for_jellyfin_storage_before_youtube_downloader.nix
-    ./Integrations/wire_media_automation_stack.nix
+  integrationDefinitions = [
+    { module = ./Integrations/expose_browsertrix_crawls_to_search.nix; allApps = [ "search" "browsertrix-downloader" ]; anyApps = [ ]; }
+    { module = ./Integrations/expose_freshrss_entries_to_search.nix; allApps = [ "search" "freshrss" ]; anyApps = [ ]; }
+    { module = ./Integrations/expose_kiwix_archives_to_search.nix; allApps = [ "search" "kiwix" ]; anyApps = [ ]; }
+    { module = ./Integrations/expose_mail_archive_emails_to_search.nix; allApps = [ "search" "mail-archive-ui" ]; anyApps = [ ]; }
+    { module = ./Integrations/expose_paperless_documents_to_search.nix; allApps = [ "search" "paperless" ]; anyApps = [ ]; }
+    { module = ./Integrations/expose_mail_archive_emails_in_files.nix; allApps = [ "mail-archive-ui" "files" ]; anyApps = [ ]; }
+    { module = ./Integrations/grant_archives_access_to_kiwix_library.nix; allApps = [ "browsertrix-downloader" "kiwix" ]; anyApps = [ ]; }
+    { module = ./Integrations/grant_files_access_to_audiobookshelf_media.nix; allApps = [ "files" "audiobookshelf" ]; anyApps = [ ]; }
+    { module = ./Integrations/grant_files_access_to_jellyfin_media.nix; allApps = [ "files" "jellyfin" ]; anyApps = [ ]; }
+    { module = ./Integrations/grant_files_access_to_kavita_media.nix; allApps = [ "files" "kavita" ]; anyApps = [ ]; }
+    { module = ./Integrations/grant_files_access_to_kiwix_library.nix; allApps = [ "files" "kiwix" ]; anyApps = [ ]; }
+    { module = ./Integrations/grant_mail_archive_access_to_paperless_consume_subdirectory.nix; allApps = [ "mail-archive-ui" "paperless" ]; anyApps = [ ]; }
+    { module = ./Integrations/send_mail_archive_documents_to_paperless.nix; allApps = [ "mail-archive-ui" "paperless" ]; anyApps = [ ]; }
+    { module = ./Integrations/wait_for_audiobookshelf_storage_before_youtube_downloader.nix; allApps = [ "audiobookshelf" "youtube-downloader" ]; anyApps = [ ]; }
+    { module = ./Integrations/wait_for_jellyfin_storage_before_youtube_downloader.nix; allApps = [ "jellyfin" "youtube-downloader" ]; anyApps = [ ]; }
+    { module = ./Integrations/wire_media_automation_stack.nix; allApps = [ ]; anyApps = [ "chaptarr" "sonarr" "radarr" "prowlarr" "qbittorrent" ]; }
   ];
+  integrations = map (entry: entry.module) integrationDefinitions;
 }

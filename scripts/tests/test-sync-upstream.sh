@@ -273,8 +273,9 @@ rg -Fq 'preserved instance file: vars.nix kept (upstream changed instance-owned 
 }
 
 # --- Scenario 6: upstream rotates its age key and adds another generated
-# secret. Without an identity the sync refuses before touching anything; with
-# the friend identity it succeeds and restores the recipient key.
+# secret. An explicitly missing identity refuses before touching anything and
+# must not fall back to a host-installed key. With the friend identity the sync
+# succeeds and restores the recipient key.
 age-keygen -o "$tmpdir/rotated.age.key" >/dev/null 2>&1
 age-keygen -y "$tmpdir/rotated.age.key" >"$upstream_repo/secrets/pubkeys/age.pub"
 sed 's/testSecret = {/thirdSecret = {\n      description = "Third fixture generated secret.";\n      bytes = 32;\n    };\n    testSecret = {/' \
@@ -287,11 +288,11 @@ git -C "$upstream_repo" add -A
 git -C "$upstream_repo" commit -qm 'upstream rotates key and adds thirdSecret'
 
 head_before="$(git -C "$friend_repo" rev-parse HEAD)"
-if run_sync "$tmpdir/sync6a.log"; then
+if run_sync "$tmpdir/sync6a.log" --identity "$tmpdir/missing.age.key"; then
   echo "❌ Sync accepted a secrets-touching merge without an age identity."
   exit 1
 fi
-rg -q 'private age identity' "$tmpdir/sync6a.log" || {
+rg -Fq -- '--identity must be a readable regular file' "$tmpdir/sync6a.log" || {
   echo "❌ Missing-identity refusal was not reported."
   cat "$tmpdir/sync6a.log"
   exit 1

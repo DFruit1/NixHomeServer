@@ -1,0 +1,57 @@
+set -euo pipefail
+base_url="http://@NIX_VARS_NETWORKING_LOOPBACKIPV4@:@NIX_VARS_NETWORKING_PORTS_AUDIOBOOKSHELF@"
+password="$(< @NIX_CONFIG_AGE_SECRETS_ABSBOOTSTRAPPASS_PATH@)"
+login="$(@NIX_JQ@/bin/jq -cn \
+  --arg username @NIX_VARS_KANIDMADMINUSER_QUOTED@ \
+  --arg password "$password" \
+  '{username: $username, password: $password}')"
+response="$(printf '%s' "$login" | curl --fail --silent --show-error --max-time 30 \
+  -X POST -H 'Content-Type: application/json' --data-binary @- \
+  "$base_url/login")"
+token="$(jq -r '.user.token // .user.accessToken // .token // .accessToken // empty' <<<"$response")"
+[[ "$token" =~ ^[A-Za-z0-9._~+/-]+$ ]] || {
+  echo "Audiobookshelf returned no safe API token" >&2
+  exit 1
+}
+libraries="$(printf 'header = "Authorization: Bearer %s"\n' "$token" \
+  | curl --config - --fail --silent --show-error --max-time 60 \
+    "$base_url/api/libraries")"
+library_ids="$(jq -c '[((.libraries // .)[]?.id // empty)]' <<<"$libraries")"
+library_count="$(jq 'length' <<<"$library_ids")"
+(( library_count > 0 )) || {
+  echo "Audiobookshelf has no libraries to scan" >&2
+  exit 1
+}
+started_at_ms="$(date +%s%3N)"
+while IFS= read -r library_id; do
+  [[ -n "$library_id" ]] || continue
+  printf 'header = "Authorization: Bearer %s"\n' "$token" \
+    | curl --config - --fail --silent --show-error --max-time 300 -X POST \
+      "$base_url/api/libraries/$library_id/scan" >/dev/null
+done < <(jq -r '.[]' <<<"$library_ids")
+
+for attempt in $(seq 1 3600); do
+  tasks="$(printf 'header = "Authorization: Bearer %s"\n' "$token" \
+    | curl --config - --fail --silent --show-error --max-time 30 \
+      "$base_url/api/tasks")"
+  libraries="$(printf 'header = "Authorization: Bearer %s"\n' "$token" \
+    | curl --config - --fail --silent --show-error --max-time 30 \
+      "$base_url/api/libraries")"
+  completed_count="$(jq \
+    --argjson ids "$library_ids" \
+    --argjson startedAt "$started_at_ms" \
+    '[((.libraries // .)[]?) | select((.id as $id | $ids | index($id)) != null and (.lastScan // 0) >= $startedAt)] | length' \
+    <<<"$libraries")"
+  active_count="$(jq \
+    --argjson ids "$library_ids" \
+    '[.tasks[]? | select(.action == "library-scan" and (.data.libraryId as $id | $ids | index($id)) != null)] | length' \
+    <<<"$tasks")"
+  (( completed_count == library_count )) && exit 0
+  if (( active_count == 0 && completed_count < library_count && attempt > 5 )); then
+    echo "An Audiobookshelf library scan ended without updating lastScan" >&2
+    exit 1
+  fi
+  sleep 2
+done
+echo "Timed out waiting for Audiobookshelf library scans" >&2
+exit 1

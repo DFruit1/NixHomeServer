@@ -565,7 +565,7 @@ struct AcoustidReleaseGroup {
 }
 
 pub fn provider_account_router(state: ProviderBrokerState) -> Router {
-    Router::new()
+    let router = Router::new()
         .route(
             "/api/v1/provider-accounts",
             get(accounts::list_provider_accounts),
@@ -629,7 +629,8 @@ pub fn provider_account_router(state: ProviderBrokerState) -> Router {
         )
         .layer(DefaultBodyLimit::max(64 * 1024))
         .layer(middleware::from_fn(no_store_responses))
-        .with_state(state)
+        .with_state(state);
+    homelab_common::work::isolate_handlers(router, 16)
 }
 
 #[derive(Debug, Deserialize)]

@@ -8,7 +8,7 @@ use media_manager::{
 #[test]
 fn subtitle_inventory_query_is_scoped_to_the_video_directory() {
     let dir = tempfile::tempdir().expect("temporary directory");
-    let mut catalog = Catalog::open(&dir.path().join("control.sqlite3")).expect("catalog");
+    let mut catalog = Catalog::initialize(&dir.path().join("control.sqlite3")).expect("catalog");
     let mut items = (0..600)
         .map(|index| ScannedItem {
             id: format!("unrelated-{index}"),
@@ -88,7 +88,7 @@ fn scanner_indexes_supported_media_without_following_symlinks() {
     symlink(&outside, library.join("escape")).expect("symlink");
 
     let database = dir.path().join("control.sqlite3");
-    let mut catalog = Catalog::open(&database).expect("catalog");
+    let mut catalog = Catalog::initialize(&database).expect("catalog");
     let result = scan_root(
         &mut catalog,
         &ScanRoot {
@@ -127,7 +127,7 @@ fn scanner_skips_entries_with_non_utf8_paths_instead_of_failing() {
     let bad_name = OsStr::from_bytes(b"broken-\xff.mkv");
     std::fs::write(library.join(bad_name), b"video").expect("non-utf8 media");
 
-    let mut catalog = Catalog::open(&dir.path().join("control.sqlite3")).expect("catalog");
+    let mut catalog = Catalog::initialize(&dir.path().join("control.sqlite3")).expect("catalog");
     let result = scan_root(
         &mut catalog,
         &ScanRoot {
@@ -158,7 +158,7 @@ fn scanner_skips_the_tombstone_folder() {
     std::fs::create_dir_all(library.join("_Tombstone")).expect("tombstone");
     std::fs::write(library.join("_Tombstone/Gone.mp4"), b"video").expect("tombstoned media");
 
-    let mut catalog = Catalog::open(&dir.path().join("control.sqlite3")).expect("catalog");
+    let mut catalog = Catalog::initialize(&dir.path().join("control.sqlite3")).expect("catalog");
     let result = scan_root(
         &mut catalog,
         &ScanRoot {
@@ -197,7 +197,7 @@ fn scanner_indexes_additional_artwork_formats() {
         std::fs::write(library.join(name), bytes).expect("artwork");
     }
 
-    let mut catalog = Catalog::open(&dir.path().join("control.sqlite3")).expect("catalog");
+    let mut catalog = Catalog::initialize(&dir.path().join("control.sqlite3")).expect("catalog");
     scan_root(
         &mut catalog,
         &ScanRoot {
@@ -229,7 +229,7 @@ fn scanner_keeps_podcasts_distinct_from_audiobooks() {
     let library = dir.path().join("podcasts");
     std::fs::create_dir_all(&library).expect("podcast library");
     std::fs::write(library.join("Episode 1.mp3"), b"podcast").expect("episode");
-    let mut catalog = Catalog::open(&dir.path().join("control.sqlite3")).expect("catalog");
+    let mut catalog = Catalog::initialize(&dir.path().join("control.sqlite3")).expect("catalog");
     scan_root(
         &mut catalog,
         &ScanRoot {
@@ -254,7 +254,7 @@ fn scanner_removes_catalog_rows_for_files_that_disappeared() {
     std::fs::create_dir_all(&library).expect("library");
     let media = library.join("Book.epub");
     std::fs::write(&media, b"book").expect("book");
-    let mut catalog = Catalog::open(&dir.path().join("control.sqlite3")).expect("catalog");
+    let mut catalog = Catalog::initialize(&dir.path().join("control.sqlite3")).expect("catalog");
     let root = ScanRoot {
         id: "shared-books".to_string(),
         owner_username: None,
@@ -280,7 +280,7 @@ fn concurrent_initial_scans_reconcile_a_root_only_once() {
     std::fs::create_dir_all(&library).expect("library");
     std::fs::write(library.join("Book.epub"), b"book").expect("book");
     let handle = CatalogHandle::new(dir.path().join("control.sqlite3"));
-    handle.open().expect("initialize catalog");
+    Catalog::initialize(&dir.path().join("control.sqlite3")).expect("initialize catalog");
     let root = ScanRoot {
         id: "shared-books-concurrent".to_string(),
         owner_username: None,
@@ -318,7 +318,7 @@ fn scanner_waits_for_a_concurrent_catalog_writer() {
     std::fs::create_dir_all(&library).expect("library");
     std::fs::write(library.join("Book.epub"), b"book").expect("book");
     let database = dir.path().join("control.sqlite3");
-    let mut catalog = Catalog::open(&database).expect("catalog");
+    let mut catalog = Catalog::initialize(&database).expect("catalog");
 
     let (writer_ready_tx, writer_ready_rx) = mpsc::channel();
     let writer_database = database.clone();

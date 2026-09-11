@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) fn router(state: AppState) -> Router {
-    Router::new()
+    let router = Router::new()
         .route("/", get(dashboard))
         .route("/api/accounts/status", get(account_status_api))
         .route("/accounts/new", get(new_account))
@@ -52,7 +52,9 @@ pub(super) fn router(state: AppState) -> Router {
         .route("/messages/restore", post(restore_messages))
         .route("/healthz", get(healthz))
         .route("/static/frontend/{*asset_path}", get(frontend_asset))
-        .with_state(state)
+        .layer(axum::Extension(homelab_common::work::BlockingWork::new(2)))
+        .with_state(state);
+    homelab_common::work::isolate_handlers(router, 16)
 }
 
 async fn dashboard(
@@ -289,6 +291,7 @@ async fn toggle_sync(
 
 async fn sync_account(
     State(state): State<AppState>,
+    axum::Extension(jobs): axum::Extension<homelab_common::work::BlockingWork>,
     headers: HeaderMap,
     Path(account_id): Path<i64>,
 ) -> Response {
@@ -317,9 +320,28 @@ async fn sync_account(
 
     let config = state.config.clone();
     let username = identity.username.clone();
-    tokio::task::spawn_blocking(move || {
-        let _ = run_account_action_for_user(&config, &username, account_id, AccountAction::Sync);
-    });
+    if jobs
+        .try_spawn(move || {
+            if let Err(error) =
+                run_account_action_for_user(&config, &username, account_id, AccountAction::Sync)
+            {
+                eprintln!("mailbox action failed: {error}");
+            }
+        })
+        .is_err()
+    {
+        let message = "Mailbox workers are busy. Try again shortly.";
+        return if wants_json {
+            action_json_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                false,
+                message,
+                Some(account_id),
+            )
+        } else {
+            auth_error(StatusCode::SERVICE_UNAVAILABLE, message)
+        };
+    }
 
     if wants_json {
         action_json_response(
@@ -335,6 +357,7 @@ async fn sync_account(
 
 async fn reindex_account(
     State(state): State<AppState>,
+    axum::Extension(jobs): axum::Extension<homelab_common::work::BlockingWork>,
     headers: HeaderMap,
     Path(account_id): Path<i64>,
 ) -> Response {
@@ -363,9 +386,28 @@ async fn reindex_account(
 
     let config = state.config.clone();
     let username = identity.username.clone();
-    tokio::task::spawn_blocking(move || {
-        let _ = run_account_action_for_user(&config, &username, account_id, AccountAction::Reindex);
-    });
+    if jobs
+        .try_spawn(move || {
+            if let Err(error) =
+                run_account_action_for_user(&config, &username, account_id, AccountAction::Reindex)
+            {
+                eprintln!("mailbox action failed: {error}");
+            }
+        })
+        .is_err()
+    {
+        let message = "Mailbox workers are busy. Try again shortly.";
+        return if wants_json {
+            action_json_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                false,
+                message,
+                Some(account_id),
+            )
+        } else {
+            auth_error(StatusCode::SERVICE_UNAVAILABLE, message)
+        };
+    }
 
     if wants_json {
         action_json_response(

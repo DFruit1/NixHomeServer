@@ -88,18 +88,6 @@
       description = "Password for the non-privileged Kanidm service-access canary.";
       bytes = 32;
     };
-    monitorOauth2ProxyClientSecret = {
-      description = "OIDC client secret for the monitor OAuth2 Proxy.";
-      bytes = 32;
-    };
-    monitorOauth2ProxyCookieSecret = {
-      description = "Cookie secret for the monitor OAuth2 Proxy.";
-      bytes = 32;
-    };
-    beszelHubEnv = {
-      description = "Systemd environment file for Beszel hub local admin bootstrap.";
-      bytes = 32;
-    };
     kopiaServerPassword = {
       description = "Generated native basic-auth password for the Kopia web UI.";
       bytes = 32;
@@ -164,10 +152,6 @@
       description = "MQTT password for the groundwater data logger device and test clients.";
       bytes = 32;
     };
-    searchClientSecret = {
-      description = "OIDC client secret for the Search web app.";
-      bytes = 32;
-    };
   };
 
   externalSecrets = {
@@ -195,6 +179,7 @@
       settingPath = "secrets/unencrypted/rcloneMegaPassword";
       validator = "nonempty";
       required = false;
+      consumedBy = "when offsiteBackup.enable = true";
     };
     failureAlertWebhookUrl = {
       description = "HTTPS webhook or ntfy topic URL used for important systemd failure alerts.";
@@ -202,6 +187,7 @@
       settingPath = "secrets/unencrypted/failureAlertWebhookUrl";
       validator = "https-url";
       required = false;
+      consumedBy = "when monitoring failure alerts are enabled";
     };
     openSubtitlesCredentials = {
       description = "OpenSubtitles.com REST API application key and server account credentials for Media Manager.";
@@ -209,6 +195,7 @@
       settingPath = "secrets/unencrypted/openSubtitlesCredentials";
       validator = "opensubtitles-credentials-json";
       required = false;
+      consumedBy = "when Media Manager provider search is enabled";
     };
     acoustidApiKey = {
       description = "AcoustID (MusicBrainz Picard) API key used for fingerprint lookup in the Media Manager metadata editor.";
@@ -216,6 +203,7 @@
       settingPath = "secrets/unencrypted/acoustidApiKey";
       validator = "acoustid-credentials-json";
       required = false;
+      consumedBy = "when the Media Manager metadata editor is enabled";
     };
   };
 }

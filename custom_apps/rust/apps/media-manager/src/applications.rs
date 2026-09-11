@@ -7,6 +7,7 @@
 //! [`MediaApplication`] and [`MetadataSource`] and registering it in
 //! [`applications`] and [`metadata_sources`].
 
+use crate::artwork_edit::{sidecar_artwork_plan, ArtworkEditRequest, ArtworkPlanAction};
 use crate::config::AppConfig;
 use crate::media::MediaKind;
 use std::path::Path;
@@ -30,6 +31,9 @@ pub struct NativeEditTarget {
 /// uses this to describe which application a kind belongs to and how metadata
 /// edits propagate to it.
 pub trait MediaApplication: Send + Sync {
+    /// Required for every application: produce its concrete, recoverable image
+    /// edit plan. No default implementation may silently choose another app's policy.
+    fn plan_artwork_edit(&self, request: ArtworkEditRequest<'_>) -> ArtworkPlanAction;
     fn id(&self) -> &'static str;
     fn label(&self) -> &'static str;
     /// Kinds this application natively manages.
@@ -61,6 +65,9 @@ pub trait MetadataSource: Send + Sync {
 pub struct Jellyfin;
 
 impl MediaApplication for Jellyfin {
+    fn plan_artwork_edit(&self, request: ArtworkEditRequest<'_>) -> ArtworkPlanAction {
+        sidecar_artwork_plan(request)
+    }
     fn id(&self) -> &'static str {
         "jellyfin"
     }
@@ -112,6 +119,9 @@ impl MetadataSource for Jellyfin {
 pub struct Audiobookshelf;
 
 impl MediaApplication for Audiobookshelf {
+    fn plan_artwork_edit(&self, request: ArtworkEditRequest<'_>) -> ArtworkPlanAction {
+        sidecar_artwork_plan(request)
+    }
     fn id(&self) -> &'static str {
         "audiobookshelf"
     }
@@ -171,6 +181,9 @@ impl MetadataSource for Audiobookshelf {
 pub struct Kavita;
 
 impl MediaApplication for Kavita {
+    fn plan_artwork_edit(&self, request: ArtworkEditRequest<'_>) -> ArtworkPlanAction {
+        sidecar_artwork_plan(request)
+    }
     fn id(&self) -> &'static str {
         "kavita"
     }
@@ -248,6 +261,58 @@ pub fn integration_available(config: &AppConfig, id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_application_plans_recoverable_artwork_edits() {
+        use crate::{broker::BrokerAction, catalog::CatalogItem};
+        for application in applications() {
+            let item = CatalogItem {
+                id: "item".into(),
+                root_id: "library".into(),
+                owner_username: None,
+                relative_path: "Title/media.file".into(),
+                media_kind: application.serves()[0],
+                size_bytes: 10,
+                modified_ns: 0,
+                fingerprint: "media-fingerprint".into(),
+            };
+            let artwork = CatalogItem {
+                relative_path: "Title/poster.jpg".into(),
+                media_kind: MediaKind::Artwork,
+                fingerprint: "old-image".into(),
+                ..item.clone()
+            };
+            for existing in [None, Some(&artwork)] {
+                let plan = application.plan_artwork_edit(ArtworkEditRequest {
+                    item: &item,
+                    existing_artwork: existing,
+                    extension: "png",
+                    staging_filename: "upload.png",
+                    expected: "new-image",
+                    request_id: "request",
+                });
+                match plan.broker_action {
+                    BrokerAction::InstallArtwork(action) => {
+                        assert!(existing.is_none());
+                        assert_eq!(action.destination_relative_path, "Title/cover.png");
+                        assert_eq!(action.expected, "new-image");
+                    }
+                    BrokerAction::ReplaceArtwork(action) => {
+                        assert!(existing.is_some());
+                        assert_eq!(action.source_relative_path, "Title/poster.jpg");
+                        assert_eq!(
+                            action.archived_relative_path,
+                            "Title/superseded/poster-request.jpg"
+                        );
+                        assert_eq!(action.replacement_relative_path, "Title/poster.png");
+                        assert_eq!(action.expected_source, "old-image");
+                        assert_eq!(action.expected_replacement, "new-image");
+                    }
+                    _ => panic!("unexpected artwork action for {}", application.id()),
+                }
+            }
+        }
+    }
 
     #[test]
     fn each_kind_is_served_by_the_expected_application() {

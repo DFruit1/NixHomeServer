@@ -5,42 +5,212 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Search</title>
 <style>
-  :root { color-scheme: light dark; }
-  body { font-family: system-ui, sans-serif; margin: 0 auto; max-width: 56rem; padding: 1.5rem 1rem; }
-  header { display: flex; align-items: center; gap: 1rem; margin-bottom: 1.5rem; }
-  header h1 { font-size: 1.25rem; margin: 0; flex: 1; }
-  #query { flex: 1; font-size: 1.1rem; padding: 0.5rem 0.75rem; }
-  select, button { padding: 0.5rem 0.75rem; }
-  .result { margin: 1.25rem 0; }
-  .result a.title { font-size: 1.1rem; }
-  .result .snippet { margin: 0.25rem 0; color: inherit; opacity: 0.85; }
-  .result .meta { font-size: 0.8rem; opacity: 0.65; word-break: break-all; }
-  .badge { display: inline-block; border: 1px solid currentColor; border-radius: 4px; font-size: 0.7rem; padding: 0 0.35rem; margin-right: 0.4rem; text-transform: uppercase; }
-  .facets { font-size: 0.85rem; opacity: 0.8; margin: 0.75rem 0; }
-  .facets button { margin-right: 0.4rem; }
-  #status { opacity: 0.7; margin: 1rem 0; }
-  mark { background: #ffe45e; color: inherit; }
+  :root {
+    color-scheme: light dark;
+    --bg: #ffffff;
+    --surface: #f6f6f4;
+    --surface-hover: #ecece8;
+    --border: #d8d8d3;
+    --text: #16181d;
+    --text-muted: #5c6068;
+    --accent: #1c5d99;
+    --accent-contrast: #ffffff;
+    --selected: #ddeaf6;
+    --mark: #ffe08a;
+    --focus: #1c5d99;
+    --radius: 8px;
+    --radius-sm: 6px;
+    --space-1: 0.25rem;
+    --space-2: 0.5rem;
+    --space-3: 0.75rem;
+    --space-4: 1rem;
+    --space-5: 1.5rem;
+    --space-6: 2rem;
+    --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16181d;
+      --surface: #1f2228;
+      --surface-hover: #292d35;
+      --border: #3a3f48;
+      --text: #eceef2;
+      --text-muted: #9aa0aa;
+      --accent: #6fb2ef;
+      --accent-contrast: #0b1220;
+      --selected: #23384d;
+      --mark: #7a5c15;
+      --focus: #6fb2ef;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0 auto;
+    max-width: 64rem;
+    padding: var(--space-5) var(--space-4) var(--space-6);
+    font-family: var(--font);
+    line-height: 1.5;
+    color: var(--text);
+    background: var(--bg);
+  }
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-4);
+    margin-bottom: var(--space-5);
+  }
+  h1 { font-size: 1.4rem; margin: 0; letter-spacing: -0.01em; }
+
+  .search { display: flex; flex-direction: column; gap: var(--space-3); }
+  .search__row { display: flex; gap: var(--space-2); }
+  @media (max-width: 300px) {
+    .search__row { flex-direction: column; }
+  }
+  .filters {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+    gap: var(--space-3);
+  }
+  .field { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
+  .field > span { font-size: 0.78rem; color: var(--text-muted); }
+  .field--range { grid-column: span 2; }
+  .range { display: flex; align-items: center; gap: var(--space-2); }
+  .range input { flex: 1 1 0; min-width: 0; }
+  .range span { color: var(--text-muted); font-size: 0.85rem; }
+
+  input, select, button {
+    font: inherit;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: var(--space-2) var(--space-3);
+    min-width: 0;
+  }
+  input:hover, select:hover { border-color: var(--text-muted); }
+  input:focus-visible, select:focus-visible, button:focus-visible,
+  .chip:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 1px;
+  }
+  #query { flex: 1 1 auto; font-size: 1.05rem; }
+  button {
+    cursor: pointer;
+    transition: background-color 120ms ease, border-color 120ms ease;
+  }
+  button:hover:not(:disabled) { background: var(--surface-hover); }
+  button:disabled { opacity: 0.5; cursor: default; }
+  button[type="submit"] {
+    background: var(--accent);
+    color: var(--accent-contrast);
+    border-color: var(--accent);
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  button[type="submit"]:hover:not(:disabled) { background: var(--accent); filter: brightness(1.08); }
+  .ghost { background: transparent; }
+
+  .facets { margin-top: var(--space-4); display: flex; flex-direction: column; gap: var(--space-2); }
+  .facet-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+  .facet-row h2 {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+    margin: 0;
+    flex: 0 0 4.5rem;
+  }
+  .chip {
+    font: inherit;
+    font-size: 0.82rem;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: var(--space-1) var(--space-3);
+    cursor: pointer;
+  }
+  .chip:hover:not(:disabled) { background: var(--surface-hover); }
+  .chip[aria-pressed="true"] {
+    background: var(--selected);
+    border-color: var(--accent);
+    font-weight: 600;
+  }
+
+  #status { color: var(--text-muted); margin: var(--space-4) 0 0; min-height: 1.25rem; }
+  #results { margin-top: var(--space-2); }
+  .result { padding: var(--space-3) 0; border-top: 1px solid var(--border); }
+  .result:first-child { border-top: none; }
+  .result__head { display: flex; align-items: baseline; gap: var(--space-2); flex-wrap: wrap; }
+  .result__title { font-size: 1.05rem; color: var(--text); text-decoration: none; word-break: break-word; }
+  .result__title:hover { text-decoration: underline; }
+  .badge {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 0 var(--space-2);
+    white-space: nowrap;
+  }
+  .result__snippet { margin: var(--space-1) 0; }
+  .result__meta { font-size: 0.8rem; color: var(--text-muted); word-break: break-word; }
+  mark { background: var(--mark); color: inherit; }
+  .empty { color: var(--text-muted); padding: var(--space-4) 0; }
 </style>
 </head>
 <body>
+<!--LOGOUT_URL-->
 <header>
   <h1>Search</h1>
-  <button type="button" onclick="logout()">Sign out</button>
+  <button type="button" class="ghost" onclick="logout()">Sign out</button>
 </header>
-<form id="searchForm">
-  <input id="query" type="search" placeholder="Search everything…" autocomplete="off" autofocus>
-  <select id="source"><option value="">All sources</option></select>
-  <button type="submit">Search</button>
+
+<form class="search" id="searchForm">
+  <div class="search__row">
+    <input id="query" type="search" placeholder="Search everything…" autocomplete="off" autofocus>
+    <button type="submit">Search</button>
+  </div>
+  <div class="filters">
+    <label class="field"><span>User</span>
+      <select id="owner"><option value="">All users</option></select>
+    </label>
+    <label class="field"><span>Source</span>
+      <select id="source"><option value="">All sources</option></select>
+    </label>
+    <label class="field"><span>Content type</span>
+      <select id="type"><option value="">All types</option></select>
+    </label>
+    <label class="field field--range"><span>Date added</span>
+      <span class="range">
+        <input id="after" type="date" aria-label="Added on or after">
+        <span>to</span>
+        <input id="before" type="date" aria-label="Added on or before">
+      </span>
+    </label>
+  </div>
 </form>
-<div class="facets" id="sourceFacets"></div>
-<div class="facets" id="typeFacets"></div>
-<div id="status">Loading sources…</div>
+
+<div class="facets" id="facets" hidden>
+  <div class="facet-row" id="ownerFacets"><h2>Users</h2></div>
+  <div class="facet-row" id="sourceFacets"><h2>Sources</h2></div>
+  <div class="facet-row" id="typeFacets"><h2>Types</h2></div>
+</div>
+
+<p id="status" role="status">Loading sources…</p>
 <div id="results"></div>
+
 <script>
-const resultsEl = document.getElementById('results');
 const statusEl = document.getElementById('status');
+const resultsEl = document.getElementById('results');
+const facetsEl = document.getElementById('facets');
 const queryEl = document.getElementById('query');
+const ownerEl = document.getElementById('owner');
 const sourceEl = document.getElementById('source');
+const typeEl = document.getElementById('type');
+const afterEl = document.getElementById('after');
+const beforeEl = document.getElementById('before');
 
 function esc(value) {
   const div = document.createElement('div');
@@ -58,35 +228,102 @@ function fmtDate(epoch) {
   return new Date(epoch * 1000).toLocaleDateString();
 }
 
-async function loadSources() {
-  try {
-    const response = await fetch('/api/sources');
-    if (response.status === 401) { location.href = '/login'; return; }
-    const data = await response.json();
-    for (const source of data.sources || []) {
-      const option = document.createElement('option');
-      option.value = source.id;
-      option.textContent = source.displayName;
-      sourceEl.appendChild(option);
+function option(value, label) {
+  const el = document.createElement('option');
+  el.value = value;
+  el.textContent = label;
+  return el;
+}
+
+function fillSelect(select, values, allLabel) {
+  const current = select.value;
+  select.replaceChildren(option('', allLabel), ...values.map((v) => option(v, v)));
+  if (values.includes(current)) select.value = current;
+}
+
+function params() {
+  const p = new URLSearchParams({ q: queryEl.value.trim() });
+  if (ownerEl.value) p.set('owner', ownerEl.value);
+  if (sourceEl.value) p.set('source', sourceEl.value);
+  if (typeEl.value) p.set('type', typeEl.value);
+  if (afterEl.value) p.set('after', afterEl.value);
+  if (beforeEl.value) p.set('before', beforeEl.value);
+  return p;
+}
+
+function facetButton(name, count, key) {
+  // Built via DOM APIs rather than inline onclick strings: facet values come
+  // from indexed content, so they must never be interpolated into markup.
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'chip';
+  button.textContent = `${name} (${count})`;
+  const targets = { owner: ownerEl, source: sourceEl, type: typeEl };
+  const target = targets[key];
+  button.setAttribute('aria-pressed', String(target.value === name));
+  button.addEventListener('click', () => {
+    target.value = target.value === name ? '' : name;
+    runSearch();
+  });
+  return button;
+}
+
+function renderFacets(data) {
+  const map = {
+    ownerFacets: ['owner', document.getElementById('ownerFacets')],
+    sourceFacets: ['source', document.getElementById('sourceFacets')],
+    typeFacets: ['type', document.getElementById('typeFacets')],
+  };
+  let any = false;
+  for (const key of Object.keys(map)) {
+    const facets = data[key] || [];
+    const [kind] = map[key];
+    const row = map[key][1];
+    const [heading, ...chips] = row.children;
+    chips.forEach((chip) => chip.remove());
+    for (const facet of facets) {
+      row.appendChild(facetButton(facet.name, facet.count, kind));
+      any = true;
     }
-    statusEl.textContent = '';
-  } catch (err) {
-    statusEl.textContent = 'Could not load the list of sources. Try refreshing the page.';
-    statusEl.title = String(err);
   }
+  facetsEl.hidden = !any;
+}
+
+function render(data) {
+  const hits = data.hits || [];
+  statusEl.textContent = hits.length
+    ? `${data.total} result${data.total === 1 ? '' : 's'}`
+    : 'No results';
+  renderFacets(data);
+  resultsEl.replaceChildren(...hits.map((hit) => {
+    const container = document.createElement('div');
+    container.className = 'result';
+    const link = hit.appUrl || hit.originUrl || '#';
+    const meta = [hit.contentType, hit.owner, hit.created ? fmtDate(hit.created) : '']
+      .filter(Boolean)
+      .join(' · ');
+    container.innerHTML =
+      `<div class="result__head"><span class="badge">${esc(hit.source)}</span>` +
+      `<a class="result__title" href="${esc(link)}">${esc(hit.title)}</a></div>` +
+      (hit.snippet ? `<div class="result__snippet">${highlight(hit.snippet)}</div>` : '') +
+      `<div class="result__meta">${esc(meta)}</div>`;
+    return container;
+  }));
 }
 
 async function runSearch(event) {
   if (event) event.preventDefault();
   const query = queryEl.value.trim();
-  if (!query) return;
-  const params = new URLSearchParams({ q: query });
-  if (sourceEl.value) params.set('source', sourceEl.value);
+  if (!query) {
+    resultsEl.replaceChildren();
+    statusEl.textContent = 'Enter a search term.';
+    return;
+  }
   statusEl.textContent = 'Searching…';
-  resultsEl.innerHTML = '';
+  resultsEl.replaceChildren();
   try {
-    const response = await fetch('/api/search?' + params.toString());
-    if (response.status === 401) { location.href = '/login'; return; }
+    const response = await fetch('/api/search?' + params().toString());
+    if (response.status === 401) { location.href = '/'; return; }
     const data = await response.json();
     if (!response.ok) { statusEl.textContent = data; return; }
     render(data);
@@ -96,62 +333,31 @@ async function runSearch(event) {
   }
 }
 
-function facetButton(name, count, handler) {
-  // Built via DOM APIs rather than inline onclick strings: facet values come
-  // from indexed content, so they must never be interpolated into markup.
-  const button = document.createElement('button');
-  button.type = 'button';
-  button.textContent = `${name} (${count})`;
-  button.addEventListener('click', handler);
-  return button;
-}
-
-function render(data) {
-  const hits = data.hits || [];
-  statusEl.textContent = hits.length
-    ? `${data.total} result${data.total === 1 ? '' : 's'}`
-    : 'No results';
-  const sourceFacets = document.getElementById('sourceFacets');
-  sourceFacets.replaceChildren(...(data.sourceFacets || []).map((facet) =>
-    facetButton(facet.name, facet.count, () => { sourceEl.value = facet.name; runSearch(); })));
-  const typeFacets = document.getElementById('typeFacets');
-  typeFacets.replaceChildren(...(data.contentTypeFacets || []).map((facet) =>
-    facetButton(facet.name, facet.count, () => facetType(facet.name))));
-  for (const hit of hits) {
-    const container = document.createElement('div');
-    container.className = 'result';
-    const link = hit.appUrl || hit.originUrl || '#';
-    container.innerHTML =
-      `<div><span class="badge">${esc(hit.source)}</span><a class="title" href="${esc(link)}">${esc(hit.title)}</a></div>` +
-      (hit.snippet ? `<div class="snippet">${highlight(hit.snippet)}</div>` : '') +
-      `<div class="meta">${esc(hit.contentType)}${hit.created ? ' · ' + fmtDate(hit.created) : ''}${hit.appUrl ? '' : (hit.originUrl ? ' · ' + esc(hit.originUrl) : '')}</div>`;
-    resultsEl.appendChild(container);
+async function loadSources() {
+  try {
+    const response = await fetch('/api/sources');
+    if (response.status === 401) { location.href = '/'; return; }
+    const data = await response.json();
+    const sources = (data.sources || []).map((source) => source.id);
+    fillSelect(sourceEl, sources, 'All sources');
+    statusEl.textContent = '';
+  } catch (err) {
+    statusEl.textContent = 'Could not load the list of sources. Try refreshing the page.';
+    statusEl.title = String(err);
   }
 }
 
-window.facetType = function facetType(name) {
-  const query = queryEl.value.trim();
-  const params = new URLSearchParams({ q: query + ' content_type:"' + name + '"' });
-  if (sourceEl.value) params.set('source', sourceEl.value);
-  statusEl.textContent = 'Searching…';
-  fetch('/api/search?' + params.toString())
-    .then((r) => r.json())
-    .then(render)
-    .catch((err) => {
-      statusEl.textContent = 'The search could not be completed. Try again.';
-      statusEl.title = String(err);
-    });
-};
-
 function logout() {
-  const form = document.createElement('form');
-  form.method = 'POST';
-  form.action = '/logout';
-  document.body.appendChild(form);
-  form.submit();
+  const target = window.SEARCH_LOGOUT_URL || '/';
+  location.href = target;
 }
 
 document.getElementById('searchForm').addEventListener('submit', runSearch);
+ownerEl.addEventListener('change', runSearch);
+sourceEl.addEventListener('change', runSearch);
+typeEl.addEventListener('change', runSearch);
+afterEl.addEventListener('change', runSearch);
+beforeEl.addEventListener('change', runSearch);
 queryEl.focus();
 loadSources();
 </script>

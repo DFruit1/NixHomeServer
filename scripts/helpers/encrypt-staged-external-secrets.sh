@@ -70,6 +70,7 @@ encrypt_staged_secret() {
   local age_file="${secrets_dir}/${name}.age"
   local source_file="$clear_file"
   local temp_file=""
+  local consumed_by=""
   local replace=0
 
   replace_external_secret "$name" && replace=1
@@ -91,7 +92,13 @@ encrypt_staged_secret() {
         echo "✅ Optional external secret $name is not staged; --fresh will remove inherited ciphertext if present"
       else
         rm -f "$age_file"
-        echo "🧹 Removed unstaged optional ciphertext for $name"
+        consumed_by="$(manifest_external_consumed_by "$name")"
+        if [[ -n "$consumed_by" ]]; then
+          echo "🧹 Removed unstaged optional ciphertext for $name ($consumed_by)"
+          echo "   If that feature is enabled for this host, stage $clear_file and rerun before deploying."
+        else
+          echo "🧹 Removed unstaged optional ciphertext for $name"
+        fi
       fi
     elif [[ -s "$age_file" ]]; then
       if ! verify_existing_external_secret "$name" "$validator" "$age_file"; then

@@ -76,6 +76,12 @@ impl MetadataObservation {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub struct MetadataHealthValue {
+    pub value: Value,
+    pub sources: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MetadataHealthIssue {
     pub code: String,
@@ -85,6 +91,12 @@ pub struct MetadataHealthIssue {
     pub title: String,
     pub message: String,
     pub sources: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_value: Option<Value>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub current_sources: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub proposed_values: Vec<MetadataHealthValue>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -963,7 +975,10 @@ pub fn health_issues(
         "language",
     ] {
         let mut values = BTreeMap::<String, Vec<String>>::new();
-        for observation in observations {
+        for observation in observations
+            .iter()
+            .filter(|observation| observation.source != "filename")
+        {
             if let Some(value) = observation
                 .fields
                 .get(field)
@@ -989,6 +1004,42 @@ pub fn health_issues(
             ));
         }
     }
+    for issue in &mut issues {
+        let Some(field) = issue.field.as_deref() else {
+            continue;
+        };
+        let current = effective.get(field).cloned().unwrap_or(Value::Null);
+        let normalized_current = normalized_metadata_value(&current);
+        let mut alternatives = BTreeMap::<String, MetadataHealthValue>::new();
+        for observation in observations {
+            let Some(value) = observation.fields.get(field) else {
+                continue;
+            };
+            let normalized = normalized_metadata_value(value);
+            if normalized.is_empty() {
+                continue;
+            }
+            if normalized == normalized_current {
+                if !issue.current_sources.contains(&observation.label) {
+                    issue.current_sources.push(observation.label.clone());
+                }
+            } else if observation.source != "filename" {
+                let candidate =
+                    alternatives
+                        .entry(normalized)
+                        .or_insert_with(|| MetadataHealthValue {
+                            value: value.clone(),
+                            sources: Vec::new(),
+                        });
+                if !candidate.sources.contains(&observation.label) {
+                    candidate.sources.push(observation.label.clone());
+                }
+            }
+        }
+        issue.current_value = Some(current);
+        issue.proposed_values = alternatives.into_values().collect();
+    }
+
     issues
 }
 
@@ -1013,6 +1064,9 @@ fn health_issue(
         title: title.to_string(),
         message: message.to_string(),
         sources,
+        current_value: None,
+        current_sources: Vec::new(),
+        proposed_values: Vec::new(),
     }
 }
 
@@ -1634,13 +1688,33 @@ mod tests {
     #[test]
     fn metadata_health_reports_conflicts_and_missing_audiobook_people() {
         let observations = vec![
-            MetadataObservation::for_test("filename", json!({"title":"One"})),
+            MetadataObservation::for_test("embedded", json!({"title":"One"})),
             MetadataObservation::for_test("audiobookshelf", json!({"title":"Two"})),
         ];
         let issues = health_issues(MediaKind::Audiobook, &json!({"title":"Two"}), &observations);
-        assert!(issues.iter().any(|issue| issue.code == "conflicting-title"));
+        let conflict = issues
+            .iter()
+            .find(|issue| issue.code == "conflicting-title")
+            .unwrap();
+        assert_eq!(conflict.current_value, Some(json!("Two")));
+        assert_eq!(conflict.current_sources, ["audiobookshelf"]);
+        assert_eq!(conflict.proposed_values[0].value, json!("One"));
+        assert_eq!(conflict.proposed_values[0].sources, ["embedded"]);
         assert!(issues.iter().any(|issue| issue.code == "missing-authors"));
         assert!(issues.iter().any(|issue| issue.code == "missing-narrators"));
+    }
+
+    #[test]
+    fn filename_guesses_do_not_create_metadata_conflicts() {
+        let observations = vec![
+            MetadataObservation::for_test(
+                "filename",
+                json!({"title":"Arrival.2016.2160p.BluRay.x265"}),
+            ),
+            MetadataObservation::for_test("sidecar", json!({"title":"Arrival"})),
+        ];
+        let issues = health_issues(MediaKind::Video, &json!({"title":"Arrival"}), &observations);
+        assert!(!issues.iter().any(|issue| issue.code == "conflicting-title"));
     }
 
     #[test]

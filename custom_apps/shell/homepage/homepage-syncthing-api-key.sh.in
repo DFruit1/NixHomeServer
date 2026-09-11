@@ -1,0 +1,99 @@
+    set -euo pipefail
+
+    action="${1:-}"
+    config_file=@NIX_SYNCTHINGCONFIGDIR_CONFIG_XML_QUOTED@
+    case "$action" in
+      show|regenerate)
+        ;;
+      *)
+        echo "action must be show or regenerate" >&2
+        exit 1
+        ;;
+    esac
+
+    if [[ ! -f "$config_file" || -L "$config_file" ]]; then
+      echo "syncthing config file is missing" >&2
+      exit 1
+    fi
+
+    owner_group="$(@NIX_COREUTILS@/bin/stat -c '%U:%G' "$config_file")"
+    if [[ "$owner_group" != "syncthing:syncthing" ]]; then
+      echo "syncthing config file has unexpected ownership: $owner_group" >&2
+      exit 1
+    fi
+
+    key_count="$(@NIX_GNUGREP@/bin/grep -c '<apikey>' "$config_file" || true)"
+    if [[ "$key_count" != "1" ]]; then
+      echo "expected exactly one apikey element in the syncthing config, found $key_count" >&2
+      exit 1
+    fi
+
+    gui_address="$(@NIX_LIBXML2@/bin/xmllint --xpath 'string(configuration/gui/address)' "$config_file")"
+    rest_port="${gui_address##*:}"
+    rest_url="http://127.0.0.1:$rest_port"
+
+    if [[ "$action" == "show" ]]; then
+      key="$(@NIX_LIBXML2@/bin/xmllint --xpath 'string(configuration/gui/apikey)' "$config_file")"
+      if [[ -z "$key" ]]; then
+        echo "syncthing api key is empty" >&2
+        exit 1
+      fi
+      @NIX_COREUTILS@/bin/printf '%s' "$key"
+      exit 0
+    fi
+
+    new_key="$(@NIX_OPENSSL@/bin/openssl rand -hex 32)"
+    @NIX_COREUTILS@/bin/install -d -m 0755 /run/homepage-vault
+    exec 8>/run/homepage-vault/syncthing-api-key.lock
+    @NIX_UTIL_LINUX@/bin/flock -x 8
+
+    was_active="$(@NIX_SYSTEMD@/bin/systemctl is-active syncthing.service || true)"
+
+    if [[ "$was_active" == "active" ]]; then
+      @NIX_SYSTEMD@/bin/systemctl stop syncthing.service
+    fi
+
+    if ! @NIX_PYTHON3@/bin/python3 - "$config_file" "$new_key" <<'PY'
+import re
+import sys
+
+path, new_key = sys.argv[1:3]
+with open(path, "r", encoding="utf-8") as handle:
+    text = handle.read()
+pattern = re.compile(r"(<apikey>)[^<]*(</apikey>)")
+if not pattern.search(text):
+    raise SystemExit("apikey element not found in the syncthing config")
+replacement = pattern.sub(lambda match: match.group(1) + new_key + match.group(2), text, count=1)
+with open(path + ".homepage-vault-new", "w", encoding="utf-8") as handle:
+    handle.write(replacement)
+PY
+    then
+      if [[ "$was_active" == "active" ]]; then
+        @NIX_SYSTEMD@/bin/systemctl start syncthing.service
+      fi
+      echo "syncthing api key update failed" >&2
+      exit 1
+    fi
+
+    @NIX_COREUTILS@/bin/mv "$config_file.homepage-vault-new" "$config_file"
+    @NIX_COREUTILS@/bin/chown syncthing:syncthing "$config_file"
+    @NIX_COREUTILS@/bin/chmod 600 "$config_file"
+    if ! @NIX_LIBXML2@/bin/xmllint --noout "$config_file" >/dev/null 2>&1; then
+      echo "updated syncthing config failed xml validation" >&2
+      exit 1
+    fi
+
+    if [[ "$was_active" == "active" ]]; then
+      @NIX_SYSTEMD@/bin/systemctl start syncthing.service
+      attempt=0
+      until @NIX_CURL@/bin/curl --fail --silent --max-time 5 -H "X-API-Key: $new_key" "$rest_url/rest/system/ping" >/dev/null 2>&1; do
+        attempt=$((attempt + 1))
+        if (( attempt > 30 )); then
+          echo "syncthing did not accept the regenerated api key" >&2
+          exit 1
+        fi
+        sleep 2
+      done
+    fi
+
+    @NIX_COREUTILS@/bin/printf '%s' "$new_key"

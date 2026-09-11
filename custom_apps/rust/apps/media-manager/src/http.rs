@@ -10,9 +10,8 @@ use crate::{
     },
     broker::{
         file_fingerprint, open_directory_beneath, open_regular_file_beneath,
-        opened_file_fingerprint, BrokerAction, InstallArtworkAction, InstallMetadataSidecarAction,
-        InstallSubtitleAction, MoveAction, ReplaceArtworkAction, ReplaceEmbeddedMetadataAction,
-        ReplaceMetadataSidecarAction,
+        opened_file_fingerprint, BrokerAction, InstallMetadataSidecarAction, InstallSubtitleAction,
+        MoveAction, ReplaceEmbeddedMetadataAction, ReplaceMetadataSidecarAction,
     },
     catalog::{Catalog, CatalogHandle, CatalogItem, ConfirmPlanOutcome, MutationPlanDraft},
     config::{AppConfig, Identity, MutationMode, RootScope, VisibleRoot, TOMBSTONE_FOLDER},
@@ -218,7 +217,7 @@ pub(super) struct TmdbDetailsRequest {
 }
 
 pub fn router(state: AppState) -> Router {
-    Router::new()
+    let router = Router::new()
         .route("/", get(index))
         .route("/assets/{*asset_path}", get(frontend_asset))
         .route("/api/v1/status", get(status))
@@ -226,6 +225,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/roots", get(roots))
         .route("/api/v1/items", get(items))
         .route("/api/v1/items/{item_id}", get(item_details))
+        .route(
+            "/api/v1/items/{item_id}/image/sources",
+            get(artwork_http::image_sources),
+        )
         .route(
             "/api/v1/items/{item_id}/image",
             get(artwork_http::item_image),
@@ -333,7 +336,8 @@ pub fn router(state: AppState) -> Router {
         ))
         .layer(axum::middleware::from_fn(enforce_same_origin))
         .fallback(not_found)
-        .with_state(Arc::new(state))
+        .with_state(Arc::new(state));
+    homelab_common::work::isolate_handlers(router, 16)
 }
 
 async fn index(State(state): State<Arc<AppState>>) -> Response {

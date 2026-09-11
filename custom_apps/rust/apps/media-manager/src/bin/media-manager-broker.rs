@@ -33,7 +33,7 @@ fn run() -> Result<(), String> {
         return Err("another mutation broker process holds the global queue lock".to_string());
     }
 
-    let mut catalog = Catalog::open(&config.database_path())
+    let mut catalog = Catalog::initialize(&config.database_path())
         .map_err(|error| format!("open control database: {error}"))?;
     if let Some(expired) = catalog
         .claim_expired_preview_action(unix_timestamp())

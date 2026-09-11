@@ -1,3 +1,4 @@
+import { wireJson } from "./test-support/wire-fixtures";
 // @vitest-environment node
 
 import { createDOM } from "@builder.io/qwik/testing";
@@ -34,22 +35,19 @@ it("does not append a stale page after selecting another library", async () => {
     />,
   );
   await vi.waitFor(() => expect(screen.textContent).toContain("Video issue"));
-  const loadMoreClick = userEvent(
-    screen.querySelector(".health-load-more"),
-    "click",
-  );
   await new Promise((resolve) => setTimeout(resolve, 0));
 
   const select = screen.querySelector("select");
   if (!select) throw new Error("missing select");
   (select as HTMLSelectElement).value = "shared-music";
   await userEvent(select, "change");
-  await vi.waitFor(() =>
-    expect(screen.textContent).toContain("Track needs an artist"),
-  );
+  await vi.waitFor(async () => {
+    // Flush the test platform after a non-blocking resource update.
+    await userEvent(screen, "click");
+    expect(screen.textContent).toContain("Track needs an artist");
+  });
 
   resolveNextPage(healthResponse("old-video-item", "Old video response"));
-  await loadMoreClick;
   await new Promise((resolve) => setTimeout(resolve, 0));
 
   expect(screen.textContent).toContain("Track needs an artist");
@@ -64,7 +62,7 @@ it("shows a retryable error without describing a failed page as healthy", async 
       attempts += 1;
       if (attempts === 1) {
         return new Response(
-          JSON.stringify({
+          wireJson({
             error: {
               code: "scan_failed",
               message: "The library could not be inspected.",
@@ -88,12 +86,103 @@ it("shows a retryable error without describing a failed page as healthy", async 
     expect(screen.textContent).toContain("The library could not be inspected."),
   );
   expect(screen.textContent).not.toContain("No metadata issues");
-  expect(screen.textContent).not.toContain("0 issues across");
+  expect(screen.textContent).toContain("incomplete");
 
   await userEvent(screen.querySelector(".health-retry"), "click");
   await vi.waitFor(() =>
     expect(screen.textContent).toContain("Recovered issue"),
   );
+});
+
+it("inspects every library and every page by default and shows source values", async () => {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const path = String(input);
+    if (path.includes("rootId=videos") && !path.includes("cursor="))
+      return healthResponse("video-1", "Title differs", "next");
+    const response = healthResponse(
+      path.includes("cursor=") ? "video-2" : "music-1",
+      "Title differs",
+    );
+    const payload = await response.json();
+    payload.results[0].title = "Current title";
+    payload.results[0].health[0] = {
+      code: "conflicting-title",
+      severity: "warning",
+      field: "title",
+      title: "Title differs",
+      message: "Compare sources",
+      sources: ["sidecar", "embedded"],
+      currentValue: "Current title",
+      currentSources: ["Sidecar"],
+      proposedValues: [{ value: "Proposed title", sources: ["Embedded tags"] }],
+    };
+    return new Response(wireJson(payload));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  const { render, screen, userEvent } = await createDOM();
+  await render(
+    <MetadataHealthView
+      roots={[
+        { id: "videos", label: "Videos" },
+        { id: "music", label: "Music" },
+      ]}
+    />,
+  );
+  await vi.waitFor(async () => {
+    await userEvent(screen, "click");
+    expect(screen.querySelectorAll(".health-result")).toHaveLength(3);
+  });
+  expect(screen.textContent).toContain("All libraries");
+  expect(screen.textContent).toContain("Current title");
+  expect(screen.textContent).toContain("Proposed title");
+  expect(screen.textContent).toContain("Embedded tags");
+  expect(
+    fetchMock.mock.calls.some(([path]) => String(path).includes("cursor=next")),
+  ).toBe(true);
+});
+
+it("preserves issues from other libraries when one library fails", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL) =>
+      String(input).includes("rootId=broken")
+        ? new Response(
+            wireJson({ error: { message: "Library unavailable" } }),
+            { status: 502 },
+          )
+        : healthResponse("good-item", "Useful issue"),
+    ),
+  );
+  const { render, screen, userEvent } = await createDOM();
+  await render(
+    <MetadataHealthView
+      roots={[
+        { id: "good", label: "Good" },
+        { id: "broken", label: "Broken" },
+      ]}
+    />,
+  );
+  await vi.waitFor(() => expect(screen.textContent).toContain("incomplete"));
+  expect(screen.textContent).toContain("Useful issue");
+  expect(screen.textContent).toContain("Library unavailable");
+});
+
+it("rejects repeated pages before duplicating their issues", async () => {
+  const fetchMock = vi.fn(async () =>
+    healthResponse("same-item", "Repeated issue", "same-cursor"),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  const { render, screen, userEvent } = await createDOM();
+  await render(
+    <MetadataHealthView roots={[{ id: "videos", label: "Videos" }]} />,
+  );
+  await vi.waitFor(async () => {
+    await userEvent(screen, "click");
+    expect(screen.textContent).toContain("repeated page");
+  });
+  expect(screen.textContent).toContain("incomplete");
+  expect(screen.querySelectorAll(".health-result")).toHaveLength(1);
+  expect(fetchMock).toHaveBeenCalledTimes(2);
 });
 
 function healthResponse(
@@ -102,7 +191,7 @@ function healthResponse(
   nextCursor: string | null = null,
 ): Response {
   return new Response(
-    JSON.stringify({
+    wireJson({
       rootId: "root",
       inspectedItems: 1,
       issueCount: 1,

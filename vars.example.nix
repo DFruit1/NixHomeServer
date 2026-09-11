@@ -29,7 +29,7 @@ let
       adminEmail = "admin@example.test"; # Single contact address used for both ACME and the Kanidm admin account.
       sshPublicKey = "ssh-ed25519 CHANGE_ME example-admin-key"; # Public key authorized for the local Unix administrator.
       localAdminUser = "admin"; # Local Unix SSH/sudo account for bootstrap and operations.
-      authSessionExpirySeconds = 259200; # Maximum Kanidm authentication-session lifetime in seconds (3 days).
+      authSessionExpirySeconds = 2592000; # Maximum Kanidm authentication-session lifetime in seconds (30 days).
     };
 
     network = {
@@ -39,6 +39,7 @@ let
       lanIp = "192.0.2.10"; # Static LAN address for the server.
       lanPrefixLength = 24; # LAN CIDR prefix length; 24 is typical for home networks.
       lanGateway = "192.0.2.1"; # Router address on the same LAN subnet.
+      lanMode = "static"; # "static" pins lanIp; "dhcp" leases it, but lanIp must still be the router's reservation because DNS and firewall scoping use it.
       netbirdIp = "100.64.0.10"; # Stable NetBird address assigned to this server.
       netbirdCidr = "100.64.0.0/10"; # NetBird network in canonical IPv4 CIDR form.
     };
@@ -46,6 +47,7 @@ let
     system = {
       hostPlatform = "x86_64-linux"; # Nix target platform. Supported values: "x86_64-linux" and "aarch64-linux".
       hardwareProfile = "generated"; # Hardware profile: "generated", "existing-server", or "generic-uefi".
+      cpuVendor = "auto"; # Microcode vendor: "auto" trusts the generated hardware module, or force "intel"/"amd".
       timeZone = "Etc/UTC"; # IANA time zone for timers, logs, and local maintenance windows.
       hostId = "00000000"; # Replace with a stable 8-character hexadecimal host ID for zfs-mirror.
       buildMode = "remote"; # Build allocation: "local", "remote", "balanced" (2 slots each with 1 requested core/job), or "maximum-effort" (all slots on both).

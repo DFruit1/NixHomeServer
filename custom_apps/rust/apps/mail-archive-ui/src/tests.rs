@@ -3771,3 +3771,47 @@ fn canary_mailbox_seeds_messages_and_attachments() {
         assert_eq!(count_message_catalog_rows(&config), 4);
     });
 }
+
+#[test]
+fn database_initialization_is_versioned_and_does_not_repeat_legacy_cleanup() {
+    let temp = TempDir::new().unwrap();
+    let config = test_config(&temp);
+    ensure_app_layout(&config).unwrap();
+    initialize_db(&config).unwrap();
+    let db = open_db(&config).unwrap();
+    let version: i64 = db
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 1);
+    db.execute_batch("CREATE TABLE deleted_messages (id INTEGER);")
+        .unwrap();
+    initialize_db(&config).unwrap();
+    assert!(db.prepare("SELECT * FROM deleted_messages").is_ok());
+}
+
+#[test]
+fn database_initialization_rejects_future_schemas_without_creating_tables() {
+    let temp = TempDir::new().unwrap();
+    let config = test_config(&temp);
+    ensure_app_layout(&config).unwrap();
+    let db = open_db(&config).unwrap();
+    db.pragma_update(None, "user_version", 99).unwrap();
+    assert!(initialize_db(&config).unwrap_err().contains("unsupported"));
+    assert!(db.prepare("SELECT * FROM accounts").is_err());
+}
+
+#[test]
+fn failed_database_migrations_roll_back_schema_changes() {
+    let temp = TempDir::new().unwrap();
+    let config = test_config(&temp);
+    ensure_app_layout(&config).unwrap();
+    let db = open_db(&config).unwrap();
+    db.execute_batch("CREATE TABLE attachment_paperless_tasks (id INTEGER);")
+        .unwrap();
+    assert!(initialize_db(&config).is_err());
+    assert!(db.prepare("SELECT * FROM accounts").is_err());
+    let version: i64 = db
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 0);
+}

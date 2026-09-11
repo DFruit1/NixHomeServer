@@ -1,3 +1,14 @@
+import type {
+  InstalledSubtitle,
+  InstalledSubtitleContent,
+  SubtitleMatch,
+  VideoSummary,
+  SubtitleSearchResponse,
+  SubtitleCue,
+  SubtitleContent,
+  BatchSubtitleResult,
+  InstalledSubtitlesResponse,
+} from "./api-contract.generated";
 import {
   $,
   component$,
@@ -17,31 +28,6 @@ import type {
   Status,
   VideoProbe,
 } from "./root-types";
-
-interface InstalledSubtitle {
-  source: "external" | "embedded";
-  itemId?: string;
-  relativePath?: string;
-  streamIndex?: number;
-  sizeBytes?: number;
-  format?: string | null;
-  language?: string | null;
-  title?: string | null;
-  isDefault: boolean;
-  isForced: boolean;
-  isHearingImpaired: boolean;
-  isPreviewable: boolean;
-}
-
-interface InstalledSubtitleContent {
-  cues: SubtitleCue[];
-  truncated: boolean;
-  validation: {
-    cueCount: number;
-    issueCount: number;
-    issues: Array<{ cueIndex: number; kind: string; message: string }>;
-  };
-}
 
 export const SubtitleCard = component$<{
   items: CatalogItem[];
@@ -72,10 +58,9 @@ export const SubtitleCard = component$<{
     if (item?.mediaKind !== "video") return;
     inspector.loading = true;
     try {
-      const response = await api<{
-        subtitles?: InstalledSubtitle[];
-        consumers?: MetadataConsumer[];
-      }>(`/items/${encodeURIComponent(selectedItemId)}/subtitles`);
+      const response = await api<InstalledSubtitlesResponse>(
+        `/items/${encodeURIComponent(selectedItemId)}/subtitles`,
+      );
       if (props.selectedItemId !== selectedItemId) return;
       inspector.subtitles = response.subtitles ?? [];
       inspector.consumers = response.consumers ?? [];
@@ -237,65 +222,6 @@ export const SubtitleCard = component$<{
     </div>
   );
 });
-
-interface SubtitleMatch {
-  providerId: string;
-  fileId: number;
-  fileName: string;
-  language: string;
-  release: string;
-  downloadCount: number;
-  fps?: number;
-  votes?: number;
-  uploadDate?: string;
-  subFormat?: string;
-  hearingImpaired: boolean;
-  hashMatched: boolean;
-  machineTranslated: boolean;
-  aiTranslated: boolean;
-  fpsCompatible?: boolean | null;
-}
-
-interface VideoSummary {
-  codec?: string;
-  width?: number;
-  height?: number;
-  fps?: number;
-}
-
-interface SubtitleSearchResponse {
-  provider: string;
-  query: string;
-  languages: string;
-  matchMethod: "movie-hash" | "title-fallback";
-  results: SubtitleMatch[];
-  video?: VideoProbe | null;
-  videoSummary?: VideoSummary;
-  requestId: string;
-}
-
-interface SubtitleCue {
-  index: number;
-  startMs: number;
-  endMs: number;
-  text: string;
-}
-
-interface SubtitleContent {
-  provider: string;
-  fileId: number;
-  cues: SubtitleCue[];
-  truncated: boolean;
-  requestId: string;
-}
-
-interface BatchSubtitleResult {
-  itemId: string;
-  relativePath: string;
-  videoSummary: VideoSummary;
-  results: SubtitleMatch[];
-  matchMethod: string;
-}
 
 interface SubtitleState {
   rootId: string;
@@ -521,8 +447,8 @@ const BrowseView = component$<BrowseViewProps>((props) => {
                   </td>
                   <td>
                     {probe?.hasEmbeddedSubtitles
-                      ? probe.subtitleLanguages?.length > 0
-                        ? probe.subtitleLanguages.join(", ")
+                      ? (probe.subtitleLanguages?.length ?? 0) > 0
+                        ? (probe.subtitleLanguages ?? []).join(", ")
                         : "Yes"
                       : "None"}
                   </td>
@@ -611,6 +537,7 @@ export function formatCueTime(milliseconds: number): string {
 
 export const SubtitleView = component$<{
   roots: MediaRoot[];
+  item?: CatalogItem;
   session?: Session;
   status?: Status;
 }>((props) => {
@@ -622,9 +549,9 @@ export const SubtitleView = component$<{
         integration.id === "opensubtitles" && integration.available,
     ) ?? false;
   const subtitle = useStore<SubtitleState>({
-    rootId: videoRoots[0]?.id ?? "",
-    items: [],
-    itemId: "",
+    rootId: props.item?.rootId ?? videoRoots[0]?.id ?? "",
+    items: props.item ? [props.item] : [],
+    itemId: props.item?.id ?? "",
     language: "en",
     query: "",
     hearingImpaired: false,
@@ -683,7 +610,7 @@ export const SubtitleView = component$<{
   });
 
   useVisibleTask$(async () => {
-    if (subtitle.rootId) await loadVideos(subtitle.rootId);
+    if (!props.item && subtitle.rootId) await loadVideos(subtitle.rootId);
   });
 
   const search = $(async () => {
@@ -843,7 +770,12 @@ export const SubtitleView = component$<{
       );
 
   return (
-    <section class="subtitle-layout">
+    <section
+      class={{
+        "subtitle-layout": true,
+        "subtitle-layout--embedded": Boolean(props.item),
+      }}
+    >
       {subtitle.error && (
         <div class="message error" role="alert">
           <Icon name="alert" size={18} />
@@ -861,26 +793,36 @@ export const SubtitleView = component$<{
       )}
 
       <section class="panel subtitle-controls">
-        <div class="panel-heading">
-          <div>
-            <h3>Catalog selection</h3>
-          </div>
-          <span class={{ "status-badge": true, live: props.session?.canEdit }}>
-            {props.session?.canEdit ? "Editor" : "Viewer"}
-          </span>
-        </div>
-        <div class="subtitle-mode-toggle">
-          <label class="mode-toggle">
-            <input
-              type="checkbox"
-              checked={subtitle.browseMode}
-              onChange$={(_, input) => (subtitle.browseMode = input.checked)}
-            />
-            <span>
-              {subtitle.browseMode ? "Browse all videos" : "Single video mode"}
-            </span>
-          </label>
-        </div>
+        {!props.item && (
+          <>
+            <div class="panel-heading">
+              <div>
+                <h3>Catalog selection</h3>
+              </div>
+              <span
+                class={{ "status-badge": true, live: props.session?.canEdit }}
+              >
+                {props.session?.canEdit ? "Editor" : "Viewer"}
+              </span>
+            </div>
+            <div class="subtitle-mode-toggle">
+              <label class="mode-toggle">
+                <input
+                  type="checkbox"
+                  checked={subtitle.browseMode}
+                  onChange$={(_, input) =>
+                    (subtitle.browseMode = input.checked)
+                  }
+                />
+                <span>
+                  {subtitle.browseMode
+                    ? "Browse all videos"
+                    : "Single video mode"}
+                </span>
+              </label>
+            </div>
+          </>
+        )}
         {subtitle.browseMode ? (
           <BrowseView
             items={subtitle.items}
@@ -921,50 +863,54 @@ export const SubtitleView = component$<{
           />
         ) : (
           <div class="subtitle-fields">
-            <label>
-              <span>Video library</span>
-              <select
-                value={subtitle.rootId}
-                onChange$={(_, select) => loadVideos(select.value)}
-              >
-                {videoRoots.map((root) => (
-                  <option value={root.id} key={root.id}>
-                    {`${root.label}${root.available ? "" : " (unavailable)"}`}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label class="video-select">
-              <span>Cataloged video</span>
-              <select
-                value={subtitle.itemId}
-                disabled={subtitle.loadingItems || videoItems.length === 0}
-                onChange$={(_, select) => {
-                  subtitle.itemId = select.value;
-                  subtitle.results = [];
-                  subtitle.video = undefined;
-                  subtitle.preview = undefined;
-                  subtitle.content = undefined;
-                }}
-              >
-                <option value="">
-                  {subtitle.loadingItems
-                    ? "Loading videos…"
-                    : videoItems.length === 0
-                      ? "No supported videos found in this library"
-                      : selectableVideos.length === 0
-                        ? "No videos without subtitles in this library"
-                        : "Choose a video…"}
-                </option>
-                {selectableVideos.map((item) => (
-                  <option value={item.id} key={item.id}>
-                    {`${item.relativePath}${subtitleStatusLabel(
-                      subtitle.subtitleStatus[item.relativePath],
-                    )}`}
-                  </option>
-                ))}
-              </select>
-            </label>
+            {!props.item && (
+              <>
+                <label>
+                  <span>Video library</span>
+                  <select
+                    value={subtitle.rootId}
+                    onChange$={(_, select) => loadVideos(select.value)}
+                  >
+                    {videoRoots.map((root) => (
+                      <option value={root.id} key={root.id}>
+                        {`${root.label}${root.available ? "" : " (unavailable)"}`}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label class="video-select">
+                  <span>Cataloged video</span>
+                  <select
+                    value={subtitle.itemId}
+                    disabled={subtitle.loadingItems || videoItems.length === 0}
+                    onChange$={(_, select) => {
+                      subtitle.itemId = select.value;
+                      subtitle.results = [];
+                      subtitle.video = undefined;
+                      subtitle.preview = undefined;
+                      subtitle.content = undefined;
+                    }}
+                  >
+                    <option value="">
+                      {subtitle.loadingItems
+                        ? "Loading videos…"
+                        : videoItems.length === 0
+                          ? "No supported videos found in this library"
+                          : selectableVideos.length === 0
+                            ? "No videos without subtitles in this library"
+                            : "Choose a video…"}
+                    </option>
+                    {selectableVideos.map((item) => (
+                      <option value={item.id} key={item.id}>
+                        {`${item.relativePath}${subtitleStatusLabel(
+                          subtitle.subtitleStatus[item.relativePath],
+                        )}`}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </>
+            )}
             <label class="language-field">
               <span>Language</span>
               <input
@@ -989,16 +935,18 @@ export const SubtitleView = component$<{
               />
               <span>Prefer SDH / hearing-impaired naming</span>
             </label>
-            <label class="checkbox-field">
-              <input
-                type="checkbox"
-                checked={subtitle.showWithSubtitles}
-                onChange$={(_, input) =>
-                  (subtitle.showWithSubtitles = input.checked)
-                }
-              />
-              <span>Show files that already have subtitles</span>
-            </label>
+            {!props.item && (
+              <label class="checkbox-field">
+                <input
+                  type="checkbox"
+                  checked={subtitle.showWithSubtitles}
+                  onChange$={(_, input) =>
+                    (subtitle.showWithSubtitles = input.checked)
+                  }
+                />
+                <span>Show files that already have subtitles</span>
+              </label>
+            )}
           </div>
         )}
       </section>
@@ -1025,15 +973,14 @@ export const SubtitleView = component$<{
           <div class="setup-body">
             {providerAvailable ? (
               <p class="setup-ready">
-                Online search is set up and working. Choose a cataloged video
-                above, then search: the file hash is checked first for exact
-                matches, with a title fallback.
+                Search for subtitles for the selected video. The file hash is
+                checked first for exact matches, with a title fallback.
               </p>
             ) : (
               <>
                 <p class="setup-missing">
-                  Your OpenSubtitles account is not set up. Subtitle uploads on
-                  the right work without it. To enable search:
+                  Your OpenSubtitles account is not set up. You can still upload
+                  subtitle files from your device. To enable search:
                 </p>
                 <ol class="setup-steps">
                   <li>
@@ -1134,8 +1081,8 @@ export const SubtitleView = component$<{
                     <span class="label">Embedded Subtitles</span>
                     <span class="value">
                       {subtitle.video.hasEmbeddedSubtitles
-                        ? subtitle.video.subtitleLanguages?.length > 0
-                          ? subtitle.video.subtitleLanguages.join(", ")
+                        ? (subtitle.video.subtitleLanguages?.length ?? 0) > 0
+                          ? (subtitle.video.subtitleLanguages ?? []).join(", ")
                           : "Yes (embedded)"
                         : "None"}
                     </span>

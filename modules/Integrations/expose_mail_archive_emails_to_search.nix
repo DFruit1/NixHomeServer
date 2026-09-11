@@ -11,10 +11,9 @@
       repo.search.sources.mail-archive = {
         displayName = "Mail";
         sourceType = "mail-archive";
-        aclGroup = "mail-archive-users";
         appBase = "https://emails.${vars.domain}";
         settings = {
-          sharedRoot = config.repo.mailArchiveUi.paths.sharedEmailsRoot;
+          emailsRoots = [ config.repo.mailArchiveUi.paths.sharedEmailsRoot ];
           usersRoot = vars.usersRoot;
         };
       };

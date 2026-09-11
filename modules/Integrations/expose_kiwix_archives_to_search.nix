@@ -10,7 +10,6 @@
       repo.search.sources.kiwix = {
         displayName = "Wiki";
         sourceType = "kiwix";
-        aclGroup = "kiwix-users";
         appBase = "https://wiki.${vars.domain}";
         settings = {
           libraryRoot = config.repo.kiwix.paths.libraryRoot;

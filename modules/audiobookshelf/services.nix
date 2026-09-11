@@ -26,6 +26,7 @@ in
         })
       ];
       serviceConfig.WorkingDirectory = lib.mkForce "/var/lib/${config.services.audiobookshelf.dataDir}";
+      environment.REFRESH_TOKEN_EXPIRY = "2592000";
     };
   };
 }

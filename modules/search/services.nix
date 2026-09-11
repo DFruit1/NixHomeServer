@@ -16,7 +16,6 @@ let
           inherit id;
           display_name = source.displayName;
           source_type = source.sourceType;
-          acl_group = source.aclGroup;
           app_base = source.appBase;
           settings = source.settings;
         })
@@ -24,27 +23,29 @@ let
     )
   );
 
-  # Field definitions baked into the copied configset before the core is
-  # created. Solr 9.10 no longer exposes the REST schema API, so the fields
-  # must exist in managed-schema.xml at provisioning time.
-  searchSchemaFieldsFile = pkgs.writeText "search-schema-fields.xml" (
-    lib.concatStringsSep "\n" [
-      "<field name=\"source\" type=\"string\" stored=\"true\" indexed=\"true\"/>"
-      "<field name=\"title\" type=\"text_general\" stored=\"true\" indexed=\"true\"/>"
-      # Stored: the unified highlighter fragments snippets by re-analysing the
-      # stored value when the field has no term vectors. Solr compresses stored
-      # fields, and queries request an explicit fl that excludes the body.
-      "<field name=\"body\" type=\"text_general\" stored=\"true\" indexed=\"true\"/>"
-      "<field name=\"content_type\" type=\"string\" stored=\"true\" indexed=\"true\"/>"
-      "<field name=\"origin_url\" type=\"string\" stored=\"true\" indexed=\"true\"/>"
-      "<field name=\"app_url\" type=\"string\" stored=\"true\" indexed=\"true\"/>"
-      "<field name=\"file_path\" type=\"string\" stored=\"true\" indexed=\"false\"/>"
-      "<field name=\"size_bytes\" type=\"plong\" stored=\"true\" indexed=\"false\"/>"
-      "<field name=\"content_created\" type=\"pdate\" stored=\"true\" indexed=\"true\"/>"
-      "<field name=\"content_modified\" type=\"pdate\" stored=\"true\" indexed=\"false\"/>"
-      "<field name=\"acl_groups\" type=\"string\" stored=\"true\" indexed=\"true\" multiValued=\"true\"/>"
-    ]
-  );
+      # Field definitions baked into the copied configset before the core is
+      # created. Solr 9.10 no longer exposes the REST schema API, so the fields
+      # must exist in managed-schema.xml at provisioning time.
+      searchSchemaFieldsFile = pkgs.writeText "search-schema-fields.xml" (
+        lib.concatStringsSep "\n" [
+          "<field name=\"source\" type=\"string\" stored=\"true\" indexed=\"true\"/>"
+          "<field name=\"title\" type=\"text_general\" stored=\"true\" indexed=\"true\"/>"
+          # Stored: the unified highlighter fragments snippets by re-analysing the
+          # stored value when the field has no term vectors. Solr compresses stored
+          # fields, and queries request an explicit fl that excludes the body.
+          "<field name=\"body\" type=\"text_general\" stored=\"true\" indexed=\"true\"/>"
+          "<field name=\"content_type\" type=\"string\" stored=\"true\" indexed=\"true\"/>"
+          "<field name=\"origin_url\" type=\"string\" stored=\"true\" indexed=\"true\"/>"
+          "<field name=\"app_url\" type=\"string\" stored=\"true\" indexed=\"true\"/>"
+          "<field name=\"file_path\" type=\"string\" stored=\"true\" indexed=\"false\"/>"
+          "<field name=\"size_bytes\" type=\"plong\" stored=\"true\" indexed=\"false\"/>"
+          "<field name=\"content_created\" type=\"pdate\" stored=\"true\" indexed=\"true\"/>"
+          "<field name=\"content_modified\" type=\"pdate\" stored=\"true\" indexed=\"false\"/>"
+          # Owning user for per-user sources, or the shared sentinel for
+          # collections with no per-user ownership; used for filtering/faceting.
+          "<field name=\"owner_s\" type=\"string\" stored=\"true\" indexed=\"true\"/>"
+        ]
+      );
 
   solrPreStartScript = pkgs.writeShellScript "search-solr-prestart" ''
     set -euo pipefail
@@ -195,14 +196,6 @@ in
               ];
               description = "Extractor used for this source.";
             };
-            aclGroup = lib.mkOption {
-              type = lib.types.nullOr lib.types.str;
-              default = null;
-              description = ''
-                Kanidm group that grants visibility of this source. Sources
-                without a group are visible to every signed-in user.
-              '';
-            };
             appBase = lib.mkOption {
               type = lib.types.str;
               description = "Base URL of the origin application used for result links.";
@@ -237,6 +230,7 @@ in
       "search-solr-core-bootstrap"
       "search-ui"
       "search-index"
+      "search-reindex"
       "search-reconcile"
     ];
 
@@ -328,6 +322,22 @@ in
         };
     };
 
+    # Rebuilds the derived Solr index from the authoritative search database.
+    # Run manually after the Solr core is lost, recreated, or its schema
+    # changes; no source re-extraction is required.
+    systemd.services.search-reindex = {
+      description = "Rebuild the Solr index from the Search database";
+      environment = commonEnvironment;
+      serviceConfig =
+        hardenedService
+        // {
+          Type = "oneshot";
+          User = "search";
+          Group = "search";
+          ExecStart = "${cfg.package}/bin/search reindex";
+        };
+    };
+
     systemd.timers.search-reconcile = {
       wantedBy = [ "timers.target" ];
       timerConfig = {
@@ -351,9 +361,6 @@ in
           SEARCH_UI_ADDRESS = loopback;
           SEARCH_UI_PORT = toString cfg.port;
           SEARCH_APP_BASE = "https://${host}";
-          SEARCH_OIDC_ISSUER = vars.kanidmIssuer "search-web";
-          SEARCH_OIDC_CLIENT_ID = "search-web";
-          SEARCH_OIDC_CLIENT_SECRET_FILE = config.age.secrets.searchClientSecret.path;
           SEARCH_LOGOUT_REDIRECT_URL = "https://${config.repo.authGateway.domain}/oauth2/sign_out";
         };
       serviceConfig =
@@ -363,7 +370,6 @@ in
           User = "search";
           Group = "search";
           ExecStart = "${cfg.package}/bin/search serve";
-          ReadOnlyPaths = [ config.age.secrets.searchClientSecret.path ];
           Restart = "on-failure";
           RestartSec = "5s";
         };

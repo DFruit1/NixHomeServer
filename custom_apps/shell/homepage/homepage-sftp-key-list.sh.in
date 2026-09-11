@@ -1,0 +1,23 @@
+set -euo pipefail
+
+username="${1:-}"
+if ! @NIX_GNUGREP@/bin/grep -Eq '^[a-z][a-z0-9._-]{0,63}$' <<<"$username"; then
+  echo "invalid username" >&2
+  exit 1
+fi
+
+target=@NIX_SFTPAUTHORIZEDKEYSDIR_QUOTED@/"$username"
+if [[ -L "$target" || ! -f "$target" ]]; then
+  exit 0
+fi
+owner_group="$(@NIX_COREUTILS@/bin/stat -c '%U:%G' "$target")"
+mode="$(@NIX_COREUTILS@/bin/stat -c '%a' "$target")"
+if [[ "$owner_group" != "root:root" || "$mode" != "644" ]]; then
+  echo "authorized-keys file has unsafe ownership or mode" >&2
+  exit 1
+fi
+if ! @NIX_OPENSSH@/bin/ssh-keygen -lf "$target" >/dev/null 2>&1; then
+  echo "authorized-keys file failed structural validation" >&2
+  exit 1
+fi
+exec @NIX_OPENSSH@/bin/ssh-keygen -lf "$target"

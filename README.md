@@ -11,6 +11,9 @@ Choose the guide that matches what you are doing:
 
 - [First installation](documentation/quickstart.md) — hardware discovery,
 secrets, destructive disk provisioning, installation, and first boot.
+- [New owner checklist](documentation/new-owner-checklist.md) — hand this
+repository to a different owner, house, Cloudflare account, and NetBird network
+without inheriting the previous owner's keys or accounts.
 - [Routine operations](documentation/operations.md) — guarded deploys,
 validation, service checks, users, backups, Mail Archive, and maintenance.
 - [Restore and recovery](documentation/restore-and-recovery.md) — system-disk,
@@ -25,6 +28,8 @@ memory sizing, local OpenAI API, and vision requests.
   unstable-package switch, migration checks, and local Bonsai AI configuration.
 - [Custom app development](documentation/custom-app-development.md) — package,
 module, and test conventions.
+- [Known issues](documentation/known-issues.md) — tracked pre-existing
+follow-ups (Rust formatting drift, orphan secret-manifest entries).
 
 The [Quickstart](documentation/quickstart.md) is the authoritative bootstrap
 procedure. It intentionally contains the exact destructive commands and safety
@@ -151,8 +156,10 @@ the latest completely passing outputs as indirect GC roots under
 An exhaustive `--all-apps` run never replaces those daily warm roots.
 
 The flake also exposes lint, Rust, frontend, module-removal, encrypted restore
-round-trip, Disko evaluation, and NixOS VM checks. CI runs the lean gate on
-pushes and pull requests, plus the exhaustive all-app gate on a weekly schedule.
+round-trip, Disko evaluation, and NixOS VM checks. Pushes and pull requests run
+`scripts/validate-repo.sh --build-checks --all-apps`: compiled Rust tests,
+frontend checks, and the lean all-app script suite. The weekly job adds the
+full runtime and Homepage end-to-end suite. VM execution remains opt-in.
 
 ## Reliability and Recovery Boundaries
 

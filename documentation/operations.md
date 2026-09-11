@@ -1090,15 +1090,25 @@ content is derived from the authoritative Postgres `search` database. Source
 integrations (paperless export, Kiwix ZIMs, Browsertrix WACZ archives, mail
 archive `.eml` files, FreshRSS entries) register themselves in
 `repo.search.sources` and the long-running `search-index.service` daemon syncs each one every hour.
-A result is only visible to a user signed in with that source's access group
-(for example `paperless-users`); sources without a group are visible to all
-signed-in users.
+
+Search is a server-admin tool. It is fronted by the shared authentication
+gateway and restricted to the `search-admins` Kanidm group (the Kanidm admin
+account is a member); the app itself trusts the gateway's forwarded identity
+headers and enforces no per-source access. Every admin can search every source,
+and the UI narrows results with filters instead of hiding them: app source,
+owning user, content type, and a date range on `content_created`. The index
+carries an `owner`/`owner_s` field derived per source (mailbox owner for mail,
+username for FreshRSS, correspondent for Paperless, and the `shared` sentinel
+for Kiwix and Browsertrix archives, which have no per-user ownership). Facet
+counts update with the selected filters, so an admin can see the composition of
+a result set and drill in without leaving the page.
 
 Normal checks and manual actions:
 
 ```bash
 systemctl status search-solr search-ui search-index.service search-reconcile.timer
 sudo systemctl restart search-index.service        # re-index every source now (daemon restarts its loop)
+sudo systemctl start search-reindex.service        # rebuild Solr from the search database (no re-extraction)
 sudo systemctl start search-reconcile.service      # purge sources removed from the config
 ```
 
@@ -1108,16 +1118,19 @@ Notes:
   nixpkgs no longer ships Solr. Pin upgrades belong there, with a new tarball
   hash.
 * The Solr core is derived state. If it is lost or corrupt, rerun
-  `search-solr-core-bootstrap.service` and then `search-index.service`; both
-  rebuild it from the search database and the source apps.
+  `search-solr-core-bootstrap.service` to recreate the empty core and then
+  `search-reindex.service`, which repopulates Solr from the authoritative
+  search database. Because the database already holds every indexed field,
+  rebuilds never re-run source extraction; a normal `search-index.service` pass
+  would skip documents whose checksums already match.
 * Schema changes only take effect when the seeded `_default` configset is
   rebuilt: `search-solr.service` pre-start re-seeds it with the baked field
   definitions only while the directory is missing. After changing a field
   definition in `modules/search/services.nix` on an already-deployed server,
   stop `search-solr.service`, move the seeded
   `/var/lib/solr/home/configsets/_default` aside, and start the service again;
-  the core bootstrap then recreates the core and `search-index.service`
-  reindexes from scratch.
+  the core bootstrap then recreates the empty core and
+  `search-reindex.service` repopulates it from the search database.
 * ZIM indexing levels. By default every ZIM is indexed at archive level
   only (one document per archive — instant passes). ZIMs listed in
   `repo.search.metadataZims` (file-name substrings) additionally contribute
@@ -1133,7 +1146,8 @@ Notes:
   history. Re-enabling resumes where things left off — the indexer re-syncs
   sources into the existing database and only re-pushes changed documents.
 * Backups cover the search database only (`dumps/search.pgdump`); Solr data
-  is intentionally not backed up because it is fully rebuildable.
+  is intentionally not backed up because `search-reindex.service` rebuilds it
+  from the database.
 
 ## Mail Archive Operations
 
@@ -1278,6 +1292,17 @@ For the full local gate:
 ```bash
 scripts/validate-repo.sh --full
 ```
+
+To reproduce the push/PR gate, including compiled Rust tests, frontend checks,
+and the lean catalog-wide script suite:
+
+```bash
+scripts/validate-repo.sh --build-checks --all-apps
+```
+
+`--build-checks` builds the selected flake checks without opting into the full
+runtime or Homepage end-to-end suites. It does not replace the GC roots from
+a passing full validation. The weekly CI job still runs `--full --all-apps`.
 
 To run the repository-wide optional-module matrix and build every custom app:
 
@@ -1888,7 +1913,8 @@ end-session, front-channel logout, or back-channel logout endpoint.
 
 A single Kanidm sign-in covers every application. The shared gateway cookie
 expires just before the Kanidm auth session it was minted from (the
-`authSessionExpirySeconds` setting in `vars.nix`, currently 14 days). While the
+`authSessionExpirySeconds` setting in `vars.nix`, currently 30 days; the
+gateway derives its `--cookie-expire` from it automatically). While the
 Kanidm session is alive, a lapsed gateway cookie or an expired
 application-local session re-authenticates through a silent redirect, so no
 login prompt appears. When the Kanidm session ends, every application prompts
@@ -1896,6 +1922,24 @@ again on next use. Cookie refresh is deliberately not configured: Caddy
 forward_auth discards `Set-Cookie` from the auth subrequest, so a refreshed
 cookie could never reach the browser, and Kanidm destroys OAuth2 sessions on
 refresh-token reuse.
+
+Application-local session lifetimes are aligned to the same 30-day target where
+the application exposes a supported setting:
+
+- Search (`SEARCH`-managed session cookie) and Audiobookshelf
+  (`REFRESH_TOKEN_EXPIRY`) are set to 30 days.
+- Paperless (`PAPERLESS_SESSION_COOKIE_AGE`) is set to 30 days while
+  `PAPERLESS_ACCOUNT_SESSION_REMEMBER` remains enabled.
+- Files remains capped at its short browser session because the Filestash cookie
+  carries the SFTP credential, and the Homepage Vault remains a short-lived
+  step-up session by design.
+- Immich, Kavita, and Jellyfin do not expose a supported server-side session/TTL
+  setting. Immich chooses the session duration from the client at each login
+  (OAuth sessions have no expiry and stay valid until logout); Kavita's JWT
+  lifetime and Jellyfin's user-token lifetime are fixed by the pinned builds
+  (Jellyfin tokens live until logout or revocation). A Kanidm session that
+  outlives those local sessions still re-authenticates silently, so no password
+  prompt appears; the app-local view simply reruns OIDC.
 
 Application-local logout behavior is:
 

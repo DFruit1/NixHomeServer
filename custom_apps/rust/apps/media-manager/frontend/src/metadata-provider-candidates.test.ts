@@ -31,6 +31,7 @@ describe("provider candidate normalization", () => {
   it("maps Google Books fields without accepting provider image URLs", () => {
     const candidate = googleBooksMetadataMatchCandidate("item-2", {
       volumeId: "zyTCAlFPjgYC",
+      industryIdentifiers: [],
       title: "Dune",
       authors: ["Frank Herbert"],
       publisher: "Ace",

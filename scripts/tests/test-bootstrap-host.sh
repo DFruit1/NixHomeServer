@@ -4,7 +4,7 @@ set -euo pipefail
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test-common.sh"
 cd "$TESTS_REPO_ROOT"
-ensure_tools age age-keygen git jq mktemp nix openssl rg sed
+ensure_tools age age-keygen git jq mktemp nix openssl python3 rg sed
 
 tmpdir="$(mktemp -d)"
 cleanup() { rm -rf "$tmpdir"; }
@@ -28,6 +28,8 @@ fixture_files=(
   vars.example.nix
   secrets/manifest.nix
   lib/derive-vars.nix
+  lib/merge-ports.nix
+  modules/catalog.nix
   lib/authorization-groups.nix
   lib/identity-access.nix
   lib/identity-validation.nix
@@ -35,10 +37,25 @@ fixture_files=(
   lib/file-access-gids.nix
   lib/backup-access.nix
 )
+for registration in "$TESTS_REPO_ROOT"/modules/*/registration.nix; do
+  fixture_files+=("${registration#"$TESTS_REPO_ROOT"/}")
+done
 for fixture_file in "${fixture_files[@]}"; do
   mkdir -p "$fixture/$(dirname "$fixture_file")"
   cp "$TESTS_REPO_ROOT/$fixture_file" "$fixture/$fixture_file"
 done
+
+# Keep installed-system markers inside the fixture. In particular, first-boot
+# refusal tests must never inspect or reconcile the actual server's checkout.
+python3 - "$fixture/scripts/admin/bootstrap-host.sh" "$tmpdir/absent-installation" <<'PYTHON'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+source = path.read_text()
+for marker in ["/persist/etc/nixos", "/run/agenix"]:
+    source = source.replace(marker, sys.argv[2] + marker)
+path.write_text(source)
+PYTHON
 
 # A minimal offline flake so the phases that read evaluated settings work in
 # the fixture exactly as they do in a real checkout. The nixpkgs input pins the
@@ -236,8 +253,19 @@ cmp -s "$tmpdir/kanidm.before" "$tmpdir/kanidm.after" || {
   exit 1
 }
 
-# --- pin-guid: refuses without the pool, and is not applicable on ext4.
-if run_phase "$tmpdir/guid1.log" pin-guid; then
+# --- pin-guid: unavailable ZFS tools must refuse even on a ZFS-capable test host.
+# Stub discovery for this case so the fixture never inspects the host's pool.
+if (
+  # shellcheck disable=SC2329 # Invoked indirectly by the fixture subprocess.
+  command() {
+    if [[ "${1:-}" == -v && "${2:-}" == zpool ]]; then
+      return 1
+    fi
+    builtin command "$@"
+  }
+  export -f command
+  run_phase "$tmpdir/guid1.log" pin-guid
+); then
   echo "❌ pin-guid ran without a ZFS pool."
   cat "$tmpdir/guid1.log"
   exit 1
@@ -261,7 +289,18 @@ rg -Fq 'already converged: storage profile' "$tmpdir/guid2.log" || {
 sed -i 's/profile = "single-disk-ext4"/profile = "zfs-mirror"/' "$fixture/vars.nix"
 
 # --- install and first-boot: environment refusals.
-if run_phase "$tmpdir/install1.log" install; then
+if (
+  # shellcheck disable=SC2329 # Invoked indirectly by the fixture subprocess.
+  id() {
+    if [[ "${1:-}" == -u ]]; then
+      printf '1000\n'
+      return 0
+    fi
+    command id "$@"
+  }
+  export -f id
+  run_phase "$tmpdir/install1.log" install
+); then
   echo "❌ install ran without root."
   cat "$tmpdir/install1.log"
   exit 1

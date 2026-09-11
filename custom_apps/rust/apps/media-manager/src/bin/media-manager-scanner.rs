@@ -16,7 +16,8 @@ fn run() -> Result<(), String> {
     let config = AppConfig::from_env()?;
     std::fs::create_dir_all(&config.state_dir)
         .map_err(|error| format!("create state directory: {error}"))?;
-    Catalog::open(&config.database_path()).map_err(|error| format!("open catalog: {error}"))?;
+    Catalog::initialize(&config.database_path())
+        .map_err(|error| format!("open catalog: {error}"))?;
     let handle = CatalogHandle::new(config.database_path());
 
     let mut roots_scanned = 0usize;

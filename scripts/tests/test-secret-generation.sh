@@ -128,12 +128,24 @@ if ! rg -Fq 'cannot be decrypted' "$tmpdir/wrong-recipient.log"; then
   exit 1
 fi
 
+if NIXHOMESERVER_REPO_ROOT="$test_repo" bash "$test_repo/scripts/generate-all-secrets.sh" \
+  --rekey --source-identity "$old_identity" --identity "$new_identity" \
+  >"$tmpdir/rekey-external-guard.log" 2>&1; then
+  echo "❌ Rekey carried external secrets over without --allow-external-secrets."
+  exit 1
+fi
+if ! rg -Fq 'would carry external secrets over to the new recipient' "$tmpdir/rekey-external-guard.log"; then
+  echo "❌ Rekey external-secret guard did not explain the account carry-over risk."
+  cat "$tmpdir/rekey-external-guard.log"
+  exit 1
+fi
+
 symlink_secret="serverBootstrapSudoPassword"
 mv "$test_repo/secrets/${symlink_secret}.age" "$tmpdir/${symlink_secret}.age"
 printf '%s' 'outside-ciphertext-target' >"$tmpdir/outside-ciphertext-target"
 ln -s "$tmpdir/outside-ciphertext-target" "$test_repo/secrets/${symlink_secret}.age"
 if NIXHOMESERVER_REPO_ROOT="$test_repo" bash "$test_repo/scripts/generate-all-secrets.sh" \
-  --rekey --source-identity "$old_identity" --identity "$new_identity" \
+  --rekey --allow-external-secrets --source-identity "$old_identity" --identity "$new_identity" \
   >"$tmpdir/symlinked-rekey.log" 2>&1; then
   echo "❌ Rekey accepted a symlinked ciphertext target."
   exit 1
@@ -148,7 +160,7 @@ mv "$tmpdir/${symlink_secret}.age" "$test_repo/secrets/${symlink_secret}.age"
 ciphertext_hashes_before_failure="$(sha256sum "$test_repo"/secrets/*.age | sort -k2)"
 if NIXHOMESERVER_TEST_FAIL_REKEY_AFTER=2 \
   NIXHOMESERVER_REPO_ROOT="$test_repo" bash "$test_repo/scripts/generate-all-secrets.sh" \
-  --rekey --source-identity "$old_identity" --identity "$new_identity" \
+  --rekey --allow-external-secrets --source-identity "$old_identity" --identity "$new_identity" \
   >"$tmpdir/injected-rekey-failure.log" 2>&1; then
   echo "❌ Injected mid-publication rekey failure unexpectedly succeeded."
   exit 1
@@ -166,7 +178,7 @@ for name in "${manifest_names[@]}"; do
 done
 
 NIXHOMESERVER_REPO_ROOT="$test_repo" bash "$test_repo/scripts/generate-all-secrets.sh" \
-  --rekey --source-identity "$old_identity" --identity "$new_identity" >/dev/null
+  --rekey --allow-external-secrets --source-identity "$old_identity" --identity "$new_identity" >/dev/null
 
 for name in "${manifest_names[@]}"; do
   after_file="$tmpdir/after-$name"

@@ -1,0 +1,78 @@
+set -euo pipefail
+
+username="${1:-}"
+if ! @NIX_GNUGREP@/bin/grep -Eq '^[a-z][a-z0-9._-]{0,63}$' <<<"$username"; then
+  echo "invalid username" >&2
+  exit 1
+fi
+
+public_key="$(@NIX_COREUTILS@/bin/cat | @NIX_COREUTILS@/bin/tr -d '\r' | @NIX_GNUSED@/bin/sed -e 's/[[:space:]]*$//')"
+case "$public_key" in
+  "ssh-ed25519 "*|"ssh-rsa "*|"ecdsa-sha2-nistp256 "*|"ecdsa-sha2-nistp384 "*|"ecdsa-sha2-nistp521 "*|"sk-ssh-ed25519@openssh.com "*|"sk-ecdsa-sha2-nistp256@openssh.com "*)
+    ;;
+  *)
+    echo "invalid OpenSSH public key" >&2
+    exit 1
+    ;;
+esac
+
+if printf '%s' "$public_key" | @NIX_GNUGREP@/bin/grep -q '[[:cntrl:]]'; then
+  echo "invalid control character in public key" >&2
+  exit 1
+fi
+
+key_check="$(@NIX_COREUTILS@/bin/mktemp)"
+trap '@NIX_COREUTILS@/bin/rm -f "$key_check"' EXIT
+@NIX_COREUTILS@/bin/printf '%s\n' "$public_key" > "$key_check"
+if ! @NIX_OPENSSH@/bin/ssh-keygen -l -f "$key_check" >/dev/null 2>&1; then
+  echo "invalid or corrupted OpenSSH public key" >&2
+  exit 1
+fi
+@NIX_COREUTILS@/bin/rm -f "$key_check"
+trap - EXIT
+
+@NIX_COREUTILS@/bin/install -d -m 0755 -o root -g root @NIX_SFTPAUTHORIZEDKEYSDIR_QUOTED@
+exec 9>"@NIX_SFTPAUTHORIZEDKEYSDIR@/.$username.lock"
+@NIX_UTIL_LINUX@/bin/flock -x 9
+target="@NIX_SFTPAUTHORIZEDKEYSDIR@/$username"
+if [[ -L "$target" ]]; then
+  echo "refusing symlinked authorized-keys file" >&2
+  exit 1
+fi
+tmp="$(@NIX_COREUTILS@/bin/mktemp @NIX_SFTPAUTHORIZEDKEYSDIR_SERVICEUSER_XXXXXX_QUOTED@)"
+trap 'rm -f "$tmp"' EXIT
+if [[ -e "$target" ]]; then
+  owner_group="$(@NIX_COREUTILS@/bin/stat -c '%U:%G' "$target")"
+  mode="$(@NIX_COREUTILS@/bin/stat -c '%a' "$target")"
+  if [[ "$owner_group" != "root:root" || "$mode" != "644" || ! -f "$target" ]]; then
+    echo "existing authorized-keys file has unsafe ownership, mode, or type" >&2
+    exit 1
+  fi
+  @NIX_COREUTILS@/bin/cat "$target" > "$tmp"
+fi
+if ! @NIX_GNUGREP@/bin/grep -Fqx -- "$public_key" "$tmp"; then
+  key_count="$(@NIX_GNUGREP@/bin/grep -cve '^[[:space:]]*$' "$tmp" || true)"
+  if (( key_count >= 10 )); then
+    echo "at most 10 SFTP device keys may be registered; ask an administrator to retire an old key" >&2
+    exit 1
+  fi
+  @NIX_COREUTILS@/bin/printf '%s\n' "$public_key" >> "$tmp"
+fi
+@NIX_COREUTILS@/bin/chown root:root "$tmp"
+@NIX_COREUTILS@/bin/chmod 0644 "$tmp"
+@NIX_COREUTILS@/bin/mv "$tmp" "$target"
+
+if ! @NIX_GNUGREP@/bin/grep -Fqx -- "$public_key" "$target"; then
+  echo "saved authorized-keys file does not contain submitted key" >&2
+  exit 1
+fi
+
+owner_group="$(@NIX_COREUTILS@/bin/stat -c '%U:%G' "$target")"
+mode="$(@NIX_COREUTILS@/bin/stat -c '%a' "$target")"
+if [ "$owner_group" != "root:root" ] || [ "$mode" != "644" ]; then
+  echo "saved public key has incorrect ownership or mode: $owner_group $mode" >&2
+  exit 1
+fi
+
+key_count="$(@NIX_GNUGREP@/bin/grep -cve '^[[:space:]]*$' "$target")"
+@NIX_COREUTILS@/bin/printf 'saved %s owner=%s mode=%s registered-keys=%s\n' "$target" "$owner_group" "$mode" "$key_count"

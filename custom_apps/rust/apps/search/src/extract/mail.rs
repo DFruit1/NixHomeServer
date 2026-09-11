@@ -9,14 +9,21 @@ use crate::timeutil::{parse_date, sha256_hex};
 
 pub struct MailExtractor;
 
-struct MailRoots {
-    files: Vec<PathBuf>,
+#[derive(Debug)]
+struct MailRoot {
+    path: PathBuf,
+    /// Mailbox owner derived from the per-user archive layout, or `None` for a
+    /// shared archive root.
+    owner: Option<String>,
 }
 
-fn collect_roots(source: &SourceConfig) -> Result<MailRoots, String> {
-    let mut roots: Vec<PathBuf> = Vec::new();
+fn collect_roots(source: &SourceConfig) -> Result<Vec<MailRoot>, String> {
+    let mut roots: Vec<MailRoot> = Vec::new();
     for root in source.setting_str_list("emailsRoots") {
-        roots.push(PathBuf::from(root));
+        roots.push(MailRoot {
+            path: PathBuf::from(root),
+            owner: None,
+        });
     }
     if let Some(users_root) = source.setting_str("usersRoot") {
         let users_root = PathBuf::from(users_root);
@@ -24,12 +31,19 @@ fn collect_roots(source: &SourceConfig) -> Result<MailRoots, String> {
             for entry in entries.filter_map(|entry| entry.ok()) {
                 let path = entry.path();
                 if path.is_dir() {
-                    roots.push(path.join("_Emails"));
+                    let owner = path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .map(str::to_string);
+                    roots.push(MailRoot {
+                        path: path.join("_Emails"),
+                        owner,
+                    });
                 }
             }
         }
     }
-    Ok(MailRoots { files: roots })
+    Ok(roots)
 }
 
 fn walk_eml(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
@@ -140,13 +154,23 @@ impl super::Extractor for MailExtractor {
     ) -> Result<(), String> {
         let roots = collect_roots(source)?;
         let app_base = source.app_base.trim_end_matches('/').to_string();
-        let mut emails: Vec<PathBuf> = Vec::new();
-        for root in &roots.files {
-            walk_eml(root, 0, &mut emails);
+        // A path may be reachable through both a shared and a per-user root;
+        // the first (owner-bearing) walk wins.
+        let mut emails: Vec<(PathBuf, String)> = Vec::new();
+        let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+        for root in &roots {
+            let mut found: Vec<PathBuf> = Vec::new();
+            walk_eml(&root.path, 0, &mut found);
+            let owner = root.owner.clone().unwrap_or_else(|| "shared".to_string());
+            for path in found {
+                if seen.insert(path.clone()) {
+                    emails.push((path, owner.clone()));
+                }
+            }
         }
-        emails.sort();
+        emails.sort_by(|left, right| left.0.cmp(&right.0));
 
-        for path in emails {
+        for (path, owner) in emails {
             let bytes = match std::fs::read(&path) {
                 Ok(bytes) => bytes,
                 Err(err) => {
@@ -169,6 +193,10 @@ impl super::Extractor for MailExtractor {
             };
             let size_bytes = bytes.len() as i64;
             let mut metadata = serde_json::Map::new();
+            metadata.insert(
+                "owner".to_string(),
+                serde_json::Value::String(owner.clone()),
+            );
             for (key, value) in [
                 ("from", &parsed.from),
                 ("to", &parsed.to),
@@ -247,6 +275,60 @@ Content-Type: text/html; charset=utf-8\r\n\
             parsed.body.contains("Quarterly report attached"),
             "got: {}",
             parsed.body
+        );
+    }
+
+    /// The Search integration populates `emailsRoots` (shared archive) and
+    /// `usersRoot` (per-user archives); `collect_roots` must honour both.
+    #[test]
+    fn collects_shared_and_per_user_roots() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let shared = dir.path().join("_Emails");
+        std::fs::create_dir_all(&shared).expect("shared root");
+        let users = dir.path().join("users");
+        std::fs::create_dir_all(users.join("alice/_Emails")).expect("alice root");
+        std::fs::create_dir_all(users.join("bob/_Emails")).expect("bob root");
+
+        let source = SourceConfig {
+            id: "mail-archive".to_string(),
+            display_name: "Mail".to_string(),
+            source_type: "mail-archive".to_string(),
+            app_base: "https://emails.example.org".to_string(),
+            settings: [
+                (
+                    "emailsRoots".to_string(),
+                    serde_json::json!([shared.to_string_lossy()]),
+                ),
+                (
+                    "usersRoot".to_string(),
+                    serde_json::json!(users.to_string_lossy()),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        };
+
+        let mut roots = collect_roots(&source).expect("roots");
+        roots.sort_by(|left, right| left.path.cmp(&right.path));
+        assert!(
+            roots
+                .iter()
+                .any(|root| root.path == shared && root.owner.is_none()),
+            "shared root missing: {roots:?}"
+        );
+        assert!(
+            roots
+                .iter()
+                .any(|root| root.path == users.join("alice/_Emails")
+                    && root.owner.as_deref() == Some("alice")),
+            "alice root missing: {roots:?}"
+        );
+        assert!(
+            roots
+                .iter()
+                .any(|root| root.path == users.join("bob/_Emails")
+                    && root.owner.as_deref() == Some("bob")),
+            "bob root missing: {roots:?}"
         );
     }
 }

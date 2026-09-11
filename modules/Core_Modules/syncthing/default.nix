@@ -43,6 +43,7 @@ let
   syncthingHost = "syncthing.${vars.domain}";
 in
 {
+  imports = [ ./media-manager.nix ];
   config = lib.mkMerge [
     (lib.mkIf enabled {
       services.syncthing = {

@@ -1,10 +1,15 @@
-{ pkgs, rustLib, sharedFrontendDeps, workspaceVersion, workspaceSrc ? null, sharedCargoArtifacts ? null, cargoLock ? null, ... }:
+{ pkgs, rustLib, workspaceVersion, workspaceSrc ? null, sharedCargoArtifacts ? null, cargoLock ? null, ... }:
 
 let
+  frontendDependencies = rustLib.mkPnpmDeps {
+    name = "media-manager-frontend";
+    srcDir = ./frontend;
+    hash = "sha256-GU8O2kA3o+SmAA5BRF/ws7jQqG+Tg7OX41bSw6ownZk=";
+  };
   frontendDist = rustLib.mkPnpmFrontend {
     name = "media-manager-frontend";
     srcDir = ./frontend;
-    pnpmDeps = sharedFrontendDeps;
+    pnpmDeps = frontendDependencies;
     requiredOutputs = [
       "dist/index.html"
       "dist/.vite/manifest.json"
@@ -19,6 +24,7 @@ let
     srcDir = ./.;
     modulePath = ../../../../modules/Core_Modules/media-manager;
     inherit workspaceSrc sharedCargoArtifacts cargoLock;
+    cargoNextestExtraArgs = "--package homelab-common";
     nativeBuildInputs = [ pkgs.pkg-config ];
     buildInputs = [ pkgs.sqlite ];
     shellEnv = {

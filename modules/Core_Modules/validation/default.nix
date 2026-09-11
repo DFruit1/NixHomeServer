@@ -592,6 +592,10 @@ in
       message = "nixhomeserver: system.hardwareProfile = existing-server is this repo's checked-in x86_64 hardware profile. Generate hardware-configuration.nix and use generated for aarch64-linux.";
     }
     {
+      assertion = builtins.elem vars.cpuVendor [ "auto" "intel" "amd" ];
+      message = "nixhomeserver: system.cpuVendor must be one of auto, intel, or amd.";
+    }
+    {
       assertion = builtins.elem vars.storageProfile supportedStorageProfiles;
       message = "nixhomeserver: storage.profile must be one of: ${lib.concatStringsSep ", " supportedStorageProfiles}.";
     }
@@ -735,6 +739,10 @@ in
     {
       assertion = builtins.elem vars.dnsMode [ "split-horizon" "netbird-only" ];
       message = "nixhomeserver: dnsMode must be either split-horizon or netbird-only.";
+    }
+    {
+      assertion = builtins.elem vars.lanMode [ "static" "dhcp" ];
+      message = "nixhomeserver: network.lanMode must be either static or dhcp.";
     }
     {
       assertion = networkValidation.validIPv4 vars.serverLanIP;

@@ -1,24 +1,21 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
-use std::time::Duration;
 
 use axum::extract::{Query, State};
-use axum::http::{header, HeaderMap, StatusCode};
-use axum::response::{Html, IntoResponse, Redirect, Response};
-use axum::routing::{get, post};
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{Html, IntoResponse, Response};
+use axum::routing::get;
 use axum::{Json, Router};
-use homelab_common::{env_or, log_server_started, read_secret_file, shutdown_signal};
-use rand::RngCore;
+use homelab_common::{env_or, log_server_started, shutdown_signal};
 use serde_json::json;
 
 use crate::config::Settings;
-use crate::db::{self, UiSource};
+use crate::db;
+use crate::identity::Identity;
 use crate::solr::SolrClient;
 use crate::timeutil::now_epoch;
 use crate::zim_search::{self, ZimHit, ZimIndexEntry, ZimSearchConfig};
 
-const SESSION_COOKIE: &str = "search_session";
-const SESSION_TTL_SECONDS: i64 = 7 * 24 * 60 * 60;
 const MAX_RESULTS: usize = 50;
 /// How long the discovered ZIM library listing is cached between queries.
 const ZIM_CACHE_TTL_SECONDS: i64 = 300;
@@ -30,15 +27,11 @@ struct AppState {
 
 struct Inner {
     settings: Settings,
-    http: reqwest::Client,
     solr: SolrClient,
-    sessions: Mutex<HashMap<String, Session>>,
-    pending_states: Mutex<HashMap<String, i64>>,
-    discovery: Mutex<Option<Discovery>>,
     zim_cache: Mutex<ZimCache>,
-    /// URL sign-out redirects to after the local session is cleared, so the
-    /// browser continues through the shared SSO logout chain.
-    logout_redirect: String,
+    /// Shared gateway sign-out URL the browser continues through, so a Search
+    /// sign-out also clears the shared SSO cookie.
+    logout_url: String,
     /// One shared Postgres connection for the small source-listing queries,
     /// connected lazily and evicted on failure so the next request reconnects.
     db: tokio::sync::Mutex<Option<std::sync::Arc<tokio_postgres::Client>>>,
@@ -51,67 +44,38 @@ struct ZimCache {
     entries: HashMap<String, (Vec<ZimIndexEntry>, i64)>,
 }
 
-#[derive(Clone)]
-struct Session {
-    username: String,
-    groups: Vec<String>,
-    expires_at: i64,
-}
-
-#[derive(Clone, Debug)]
-struct Discovery {
-    authorization_endpoint: String,
-    token_endpoint: String,
-    userinfo_endpoint: String,
-}
-
 pub async fn run() -> Result<(), String> {
     let settings = Settings::from_env()?;
     let address = env_or("SEARCH_UI_ADDRESS", "127.0.0.1");
     let port: u16 = env_or("SEARCH_UI_PORT", "8092")
         .parse()
         .map_err(|_| "SEARCH_UI_PORT must be a port number".to_string())?;
-    let issuer = env_or("SEARCH_OIDC_ISSUER", "");
-    match std::env::var("SEARCH_OIDC_CLIENT_SECRET_FILE") {
-        Ok(path) => read_secret_file(std::path::Path::new(&path)).map(|_| ())?,
-        Err(_) => return Err("SEARCH_OIDC_CLIENT_SECRET_FILE must be set".to_string()),
-    };
-    let logout_redirect = env_or("SEARCH_LOGOUT_REDIRECT_URL", "");
+    let logout_url = env_or("SEARCH_LOGOUT_REDIRECT_URL", "");
+    address
+        .parse::<std::net::IpAddr>()
+        .ok()
+        .filter(std::net::IpAddr::is_loopback)
+        .ok_or_else(|| {
+            "SEARCH_UI_ADDRESS must be loopback; Search trusts forwarded identity headers"
+                .to_string()
+        })?;
 
     let state = AppState {
         inner: std::sync::Arc::new(Inner {
             settings,
-            http: reqwest::Client::builder()
-                .timeout(Duration::from_secs(30))
-                .build()
-                .expect("reqwest client"),
             solr: SolrClient::new(
                 &env_or("SEARCH_SOLR_URL", "http://127.0.0.1:8983/solr"),
                 &env_or("SEARCH_SOLR_CORE", "search"),
             ),
-            sessions: Mutex::new(HashMap::new()),
-            pending_states: Mutex::new(HashMap::new()),
-            discovery: Mutex::new(None),
             zim_cache: Mutex::new(ZimCache::default()),
-            logout_redirect,
+            logout_url,
             db: tokio::sync::Mutex::new(None),
         }),
     };
 
-    // Warm the OIDC discovery cache so the first login is fast, but do not
-    // block startup on Kanidm availability.
-    let warm = state.clone();
-    let issuer_warm = issuer.clone();
-    tokio::spawn(async move {
-        let _ = discovery(&warm, &issuer_warm).await;
-    });
-
     let app = Router::new()
         .route("/", get(index))
         .route("/healthz", get(health))
-        .route("/login", get(login))
-        .route("/login/callback", get(login_callback))
-        .route("/logout", post(logout))
         .route("/api/sources", get(api_sources))
         .route("/api/search", get(api_search))
         .with_state(state.clone());
@@ -131,289 +95,21 @@ async fn health() -> &'static str {
     "ok"
 }
 
-/// Fetches (and caches) the OIDC discovery document for the issuer.
-async fn discovery(state: &AppState, issuer: &str) -> Result<Discovery, String> {
-    if let Some(cached) = state.inner.discovery.lock().unwrap().clone() {
-        return Ok(cached);
-    }
-    if issuer.is_empty() {
-        return Err("SEARCH_OIDC_ISSUER must be set".to_string());
-    }
-    let url = format!(
-        "{}/.well-known/openid-configuration",
-        issuer.trim_end_matches('/')
-    );
-    let response: serde_json::Value = state
-        .inner
-        .http
-        .get(&url)
-        .send()
-        .await
-        .map_err(|err| format!("failed to reach OIDC discovery: {err}"))?
-        .json()
-        .await
-        .map_err(|err| format!("failed to parse OIDC discovery: {err}"))?;
-    let endpoint = |name: &str| -> Result<String, String> {
-        response
-            .get(name)
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_string)
-            .ok_or_else(|| format!("OIDC discovery is missing '{name}'"))
-    };
-    let found = Discovery {
-        authorization_endpoint: endpoint("authorization_endpoint")?,
-        token_endpoint: endpoint("token_endpoint")?,
-        userinfo_endpoint: endpoint("userinfo_endpoint")?,
-    };
-    *state.inner.discovery.lock().unwrap() = Some(found.clone());
-    Ok(found)
-}
-
-fn session_cookie(headers: &HeaderMap) -> Option<String> {
-    let cookies = headers.get(header::COOKIE)?.to_str().ok()?;
-    for pair in cookies.split(';') {
-        let pair = pair.trim();
-        if let Some((name, value)) = pair.split_once('=') {
-            if name == SESSION_COOKIE && !value.is_empty() {
-                return Some(value.to_string());
-            }
-        }
-    }
-    None
-}
-
-fn current_session(state: &AppState, headers: &HeaderMap) -> Option<Session> {
-    let cookie = session_cookie(headers)?;
-    let mut sessions = state.inner.sessions.lock().unwrap();
-    let session = sessions.get(&cookie).cloned()?;
-    if session.expires_at < crate::timeutil::now_epoch() {
-        sessions.remove(&cookie);
-        return None;
-    }
-    Some(session)
-}
-
-async fn index(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    match current_session(&state, &headers) {
-        Some(_) => Html(include_str!("ui.html")).into_response(),
-        None => Redirect::to("/login").into_response(),
-    }
-}
-
-async fn login(State(state): State<AppState>) -> Response {
-    let discovery = match discovery(&state, &env_or("SEARCH_OIDC_ISSUER", "")).await {
-        Ok(discovery) => discovery,
-        Err(err) => return (StatusCode::SERVICE_UNAVAILABLE, err).into_response(),
-    };
-    let app_base = env_or("SEARCH_APP_BASE", "");
-    if app_base.is_empty() {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "SEARCH_APP_BASE must be set",
-        )
-            .into_response();
-    }
-    let mut state_bytes = [0u8; 16];
-    rand::thread_rng().fill_bytes(&mut state_bytes);
-    let state_value = homelab_common::sha256_hex(&state_bytes);
-    let created = crate::timeutil::now_epoch();
-    state
-        .inner
-        .pending_states
-        .lock()
-        .unwrap()
-        .insert(state_value.clone(), created);
-
-    let redirect_uri = format!("{}/login/callback", app_base.trim_end_matches('/'));
-    let authorize = form_urlencoded::Serializer::new(String::new())
-        .append_pair("response_type", "code")
-        .append_pair("client_id", &env_or("SEARCH_OIDC_CLIENT_ID", "search-web"))
-        .append_pair("redirect_uri", &redirect_uri)
-        .append_pair("scope", "openid profile email groups_name")
-        .append_pair("state", &state_value)
-        .finish();
-    Redirect::to(&format!("{}?{authorize}", discovery.authorization_endpoint)).into_response()
-}
-
-async fn login_callback(
-    State(state): State<AppState>,
-    Query(params): Query<HashMap<String, String>>,
-) -> Response {
-    let code = params.get("code").cloned().unwrap_or_default();
-    let returned_state = params.get("state").cloned().unwrap_or_default();
-    if code.is_empty() || returned_state.is_empty() {
-        return (StatusCode::BAD_REQUEST, "missing code or state").into_response();
-    }
-    if state
-        .inner
-        .pending_states
-        .lock()
-        .unwrap()
-        .remove(&returned_state)
-        .is_none()
-    {
-        return (StatusCode::BAD_REQUEST, "unknown login state").into_response();
-    }
-
-    let discovery = match discovery(&state, &env_or("SEARCH_OIDC_ISSUER", "")).await {
-        Ok(discovery) => discovery,
-        Err(err) => return (StatusCode::SERVICE_UNAVAILABLE, err).into_response(),
-    };
-    let app_base = env_or("SEARCH_APP_BASE", "");
-    let redirect_uri = format!("{}/login/callback", app_base.trim_end_matches('/'));
-    let client_secret = std::env::var("SEARCH_OIDC_CLIENT_SECRET_FILE")
-        .map(|path| read_secret_file(std::path::Path::new(&path)).unwrap_or_default())
-        .unwrap_or_default();
-
-    let token_response: serde_json::Value = match state
-        .inner
-        .http
-        .post(&discovery.token_endpoint)
-        .form(&[
-            ("grant_type", "authorization_code"),
-            ("code", code.as_str()),
-            ("redirect_uri", redirect_uri.as_str()),
-            (
-                "client_id",
-                env_or("SEARCH_OIDC_CLIENT_ID", "search-web").as_str(),
-            ),
-            ("client_secret", client_secret.trim()),
-        ])
-        .send()
-        .await
-    {
-        Ok(response) => match response.json().await {
-            Ok(value) => value,
-            Err(err) => {
-                return (
-                    StatusCode::BAD_GATEWAY,
-                    format!("token parse failed: {err}"),
-                )
-                    .into_response()
-            }
-        },
-        Err(err) => {
-            return (
-                StatusCode::BAD_GATEWAY,
-                format!("token request failed: {err}"),
-            )
-                .into_response()
-        }
-    };
-    let access_token = token_response
-        .get("access_token")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default()
-        .to_string();
-    if access_token.is_empty() {
-        return (
-            StatusCode::BAD_GATEWAY,
-            "OIDC token response contained no access token",
-        )
-            .into_response();
-    }
-
-    let userinfo: serde_json::Value = match state
-        .inner
-        .http
-        .get(&discovery.userinfo_endpoint)
-        .bearer_auth(&access_token)
-        .send()
-        .await
-    {
-        Ok(response) => match response.json().await {
-            Ok(value) => value,
-            Err(err) => {
-                return (
-                    StatusCode::BAD_GATEWAY,
-                    format!("userinfo parse failed: {err}"),
-                )
-                    .into_response()
-            }
-        },
-        Err(err) => {
-            return (
-                StatusCode::BAD_GATEWAY,
-                format!("userinfo request failed: {err}"),
-            )
-                .into_response()
-        }
-    };
-
-    let username = userinfo
-        .get("preferred_username")
-        .and_then(serde_json::Value::as_str)
-        .or_else(|| userinfo.get("sub").and_then(serde_json::Value::as_str))
-        .unwrap_or("unknown")
-        .to_string();
-    let groups = parse_groups(&userinfo);
-
-    let mut session_bytes = [0u8; 24];
-    rand::thread_rng().fill_bytes(&mut session_bytes);
-    let session_id = homelab_common::sha256_hex(&session_bytes);
-    let expires_at = crate::timeutil::now_epoch() + SESSION_TTL_SECONDS;
-    state.inner.sessions.lock().unwrap().insert(
-        session_id.clone(),
-        Session {
-            username: username.clone(),
-            groups: groups.clone(),
-            expires_at,
-        },
-    );
-
-    let cookie = format!(
-        "{SESSION_COOKIE}={session_id}; Path=/; HttpOnly; SameSite=Lax; Max-Age={SESSION_TTL_SECONDS}"
-    );
-    (
-        StatusCode::FOUND,
-        [
-            (header::SET_COOKIE, cookie),
-            (header::LOCATION, "/".to_string()),
-        ],
-    )
-        .into_response()
-}
-
-fn parse_groups(userinfo: &serde_json::Value) -> Vec<String> {
-    let Some(groups) = userinfo.get("groups") else {
-        return Vec::new();
-    };
-    match groups {
-        serde_json::Value::Array(items) => items
-            .iter()
-            .filter_map(|item| match item {
-                serde_json::Value::String(name) => Some(name.clone()),
-                serde_json::Value::Object(object) => object
-                    .get("name")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_string),
-                _ => None,
-            })
-            .collect(),
-        _ => Vec::new(),
-    }
-}
-
-async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    if let Some(cookie) = session_cookie(&headers) {
-        state.inner.sessions.lock().unwrap().remove(&cookie);
-    }
-    let cleared = format!("{SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0");
-    let target = if state.inner.logout_redirect.is_empty() {
-        "/".to_string()
+/// Serves the single-file UI. Authentication is enforced by the shared gateway
+/// (admin-only) before requests reach this loopback server, so there is no
+/// local session to check here.
+async fn index(State(state): State<AppState>) -> Response {
+    let logout = if state.inner.logout_url.is_empty() {
+        String::new()
     } else {
-        state.inner.logout_redirect.clone()
+        format!(
+            "<script>window.SEARCH_LOGOUT_URL = {};</script>",
+            serde_json::Value::String(state.inner.logout_url.clone())
+        )
     };
-    (
-        StatusCode::FOUND,
-        [(header::SET_COOKIE, cleared), (header::LOCATION, target)],
-    )
-        .into_response()
+    Html(include_str!("ui.html").replace("<!--LOGOUT_URL-->", &logout)).into_response()
 }
 
-/// Returns the shared, lazily-connected source-listing client. A failed
-/// query evicts it so the next request reconnects instead of retrying a dead
-/// connection forever.
 async fn shared_db_client(
     state: &AppState,
 ) -> Result<std::sync::Arc<tokio_postgres::Client>, String> {
@@ -426,16 +122,15 @@ async fn shared_db_client(
     Ok(client)
 }
 
-/// Resolves the sources the current user may search.
-async fn allowed_sources(
-    state: &AppState,
-    headers: &HeaderMap,
-) -> Result<(Session, Vec<UiSource>), Box<Response>> {
-    let Some(session) = current_session(state, headers) else {
-        return Err(Box::new(
-            (StatusCode::UNAUTHORIZED, "not signed in").into_response(),
-        ));
-    };
+/// Validates the gateway-forwarded identity and loads every registered source.
+///
+/// Authorization is enforced centrally by the shared auth gateway (admin-only
+/// group). Every authenticated admin may search every source; there is no
+/// per-source ACL any more.
+async fn gate(state: &AppState, headers: &HeaderMap) -> Result<Vec<db::UiSource>, Box<Response>> {
+    if Identity::from_headers(headers).is_err() {
+        return Err(Box::new(not_signed_in()));
+    }
     let client = match shared_db_client(state).await {
         Ok(client) => client,
         Err(err) => {
@@ -444,28 +139,24 @@ async fn allowed_sources(
             ))
         }
     };
-    let sources = match db::list_sources(&client).await {
-        Ok(sources) => sources,
+    match db::list_sources(&client).await {
+        Ok(sources) => Ok(sources),
         Err(err) => {
             *state.inner.db.lock().await = None;
-            return Err(Box::new(
+            Err(Box::new(
                 (StatusCode::INTERNAL_SERVER_ERROR, err).into_response(),
-            ));
+            ))
         }
-    };
-    let allowed: Vec<UiSource> = sources
-        .into_iter()
-        .filter(|source| match &source.acl_group {
-            Some(group) => session.groups.iter().any(|claimed| claimed == group),
-            None => true,
-        })
-        .collect();
-    Ok((session, allowed))
+    }
+}
+
+fn not_signed_in() -> Response {
+    (StatusCode::UNAUTHORIZED, "not signed in").into_response()
 }
 
 async fn api_sources(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    match allowed_sources(&state, &headers).await {
-        Ok((_session, sources)) => Json(json!({
+    match gate(&state, &headers).await {
+        Ok(sources) => Json(json!({
             "sources": sources
                 .into_iter()
                 .map(|source| json!({ "id": source.id, "displayName": source.display_name }))
@@ -479,9 +170,52 @@ async fn api_sources(State(state): State<AppState>, headers: HeaderMap) -> Respo
 #[derive(serde::Deserialize)]
 struct SearchParams {
     q: String,
+    #[serde(default, rename = "type")]
+    content_type: Option<String>,
     source: Option<String>,
+    owner: Option<String>,
+    #[serde(default)]
+    after: Option<String>,
+    #[serde(default)]
+    before: Option<String>,
     #[serde(default)]
     page: Option<usize>,
+}
+
+impl SearchParams {
+    fn filters(&self) -> crate::solr::SearchFilters {
+        crate::solr::SearchFilters {
+            source: nonempty(self.source.as_deref()),
+            content_type: nonempty(self.content_type.as_deref()),
+            owner: nonempty(self.owner.as_deref()),
+            created_after: nonempty(self.after.as_deref()),
+            created_before: nonempty(self.before.as_deref()),
+        }
+    }
+}
+
+fn nonempty(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+/// Filters federated ZIM hits (which are not Solr documents) by the facets the
+/// admin selected. ZIM articles have no owner, so any owner filter excludes
+/// them, and they carry no timestamp, so any date filter excludes them too.
+fn zim_hit_matches(hit: &ZimHit, filters: &crate::solr::SearchFilters) -> bool {
+    let source_ok = filters
+        .source
+        .as_deref()
+        .is_none_or(|source| source == "kiwix");
+    let type_ok = filters
+        .content_type
+        .as_deref()
+        .is_none_or(|value| value == "text/html");
+    let owner_ok = filters.owner.is_none();
+    let date_free = filters.created_after.is_none() && filters.created_before.is_none();
+    source_ok && type_ok && owner_ok && date_free && hit.origin_url.starts_with("http")
 }
 
 async fn api_search(
@@ -489,40 +223,40 @@ async fn api_search(
     headers: HeaderMap,
     Query(params): Query<SearchParams>,
 ) -> Response {
-    let (session, allowed) = match allowed_sources(&state, &headers).await {
-        Ok(result) => result,
-        Err(response) => return *response,
-    };
+    if Identity::from_headers(&headers).is_err() {
+        return not_signed_in();
+    }
     let query = params.q.trim().to_string();
     if query.is_empty() {
         return Json(json!({ "hits": [], "total": 0 })).into_response();
     }
 
-    let mut selected: Vec<&str> = allowed.iter().map(|source| source.id.as_str()).collect();
-    if let Some(requested) = params.source.as_deref() {
-        selected.retain(|source| *source == requested);
-    }
-    if selected.is_empty() {
-        return Json(json!({ "hits": [], "total": 0, "message": "no sources available" }))
-            .into_response();
-    }
+    let client = match shared_db_client(&state).await {
+        Ok(client) => client,
+        Err(err) => return (StatusCode::INTERNAL_SERVER_ERROR, err).into_response(),
+    };
+    let sources = match db::list_sources(&client).await {
+        Ok(sources) => sources,
+        Err(err) => {
+            *state.inner.db.lock().await = None;
+            return (StatusCode::INTERNAL_SERVER_ERROR, err).into_response();
+        }
+    };
+    let selected: Vec<String> = sources.into_iter().map(|source| source.id).collect();
+    let filters = params.filters();
 
     let page = params.page.unwrap_or(0);
     let rows = MAX_RESULTS;
     let offset = page.saturating_mul(rows);
-    eprintln!(
-        "search: user '{}' queried {:?} across {:?}",
-        session.username, query, selected
-    );
 
-    // Federate article hits from the ZIM archives' native Xapian indexes when
-    // the kiwix source participates in this search. Index-less ZIMs are
-    // already covered by Solr (the fallback extractor), so only Xapian-bearing
-    // archives are queried here, avoiding duplicate results. ZIM hits are
-    // pinned to the first page: they have no pagination of their own, and
-    // re-prepending them on every page would repeat them and displace the
-    // next Solr window.
-    let include_zim_hits = page == 0;
+    // Federated ZIM article hits are only queried (and only make sense) when
+    // the kiwix source is actually in scope. They have no pagination of their
+    // own, so they are pinned to the first page.
+    let zim_in_scope = filters
+        .source
+        .as_deref()
+        .is_none_or(|source| source == "kiwix");
+    let include_zim_hits = page == 0 && zim_in_scope && filters.owner.is_none();
     let zim_hits = if include_zim_hits {
         federate_zims(&state, &selected, &query).await
     } else {
@@ -532,12 +266,13 @@ async fn api_search(
     match state
         .inner
         .solr
-        .search(&query, &selected, rows, offset)
+        .search(&query, &selected, &filters, rows, offset)
         .await
     {
         Ok(response) => {
             let mut hits: Vec<serde_json::Value> = zim_hits
                 .iter()
+                .filter(|hit| zim_hit_matches(hit, &filters))
                 .map(|hit| {
                     json!({
                         "id": format!("kiwix:{}", crate::timeutil::sha256_hex(&[&hit.origin_url])),
@@ -547,6 +282,7 @@ async fn api_search(
                         "originUrl": hit.origin_url,
                         "appUrl": hit.app_url,
                         "contentType": "text/html",
+                        "owner": "shared",
                         "score": 0,
                         "created": null,
                     })
@@ -561,17 +297,17 @@ async fn api_search(
                     "originUrl": hit.origin_url,
                     "appUrl": hit.app_url,
                     "contentType": hit.content_type,
+                    "owner": hit.owner,
                     "score": hit.score,
                     "created": hit.created,
                 }));
             }
-            // No truncate: Solr already returns at most `rows`, so truncating
-            // the merged list would silently drop the tail of the Solr window.
             Json(json!({
                 "hits": hits,
                 "total": response.total + if include_zim_hits { zim_hits.len() as u64 } else { 0 },
-                "sourceFacets": response.source_facets.iter().map(|(name, count)| json!({ "name": name, "count": count })).collect::<Vec<_>>(),
-                "contentTypeFacets": response.content_type_facets.iter().map(|(name, count)| json!({ "name": name, "count": count })).collect::<Vec<_>>(),
+                "sourceFacets": facet_json(&response.source_facets),
+                "contentTypeFacets": facet_json(&response.content_type_facets),
+                "ownerFacets": facet_json(&response.owner_facets),
             }))
             .into_response()
         }
@@ -579,13 +315,20 @@ async fn api_search(
     }
 }
 
+fn facet_json(facets: &[(String, u64)]) -> Vec<serde_json::Value> {
+    facets
+        .iter()
+        .map(|(name, count)| json!({ "name": name, "count": count }))
+        .collect()
+}
+
 /// Queries the ZIM archives' native Xapian indexes for any kiwix source that is
 /// part of the current search, returning merged article hits. Never fails the
 /// whole request: unavailable archives or tools are skipped inside `zim_search`.
-async fn federate_zims(state: &AppState, selected: &[&str], query: &str) -> Vec<ZimHit> {
+async fn federate_zims(state: &AppState, selected: &[String], query: &str) -> Vec<ZimHit> {
     let mut hits: Vec<ZimHit> = Vec::new();
     for source in &state.inner.settings.sources {
-        if source.source_type != "kiwix" || !selected.contains(&source.id.as_str()) {
+        if source.source_type != "kiwix" || !selected.iter().any(|id| id == &source.id) {
             continue;
         }
         let Some(library_root) = source.setting_str("libraryRoot") else {
@@ -637,35 +380,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_group_claims() {
-        let string_form = json!({ "groups": ["kiwix-users", "paperless-users"] });
-        assert_eq!(
-            parse_groups(&string_form),
-            vec!["kiwix-users", "paperless-users"]
-        );
-        let object_form = json!({ "groups": [ { "name": "mail-archive-users" } ] });
-        assert_eq!(parse_groups(&object_form), vec!["mail-archive-users"]);
-        assert_eq!(parse_groups(&json!({})), Vec::<String>::new());
-        assert_eq!(
-            parse_groups(&json!({ "groups": "x" })),
-            Vec::<String>::new()
-        );
+    fn identity_is_required() {
+        assert!(Identity::from_headers(&HeaderMap::new()).is_err());
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-user", "admin".parse().expect("header"));
+        assert!(Identity::from_headers(&headers).is_ok());
     }
 
     #[test]
-    fn finds_session_cookie() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            header::COOKIE,
-            "other=1; search_session=abc123".parse().expect("cookie"),
-        );
-        assert_eq!(
-            session_cookie(&headers).as_deref(),
-            Some("abc123".to_string()).as_deref()
-        );
-        let mut empty = HeaderMap::new();
-        empty.insert(header::COOKIE, "other=1".parse().expect("cookie"));
-        assert_eq!(session_cookie(&empty), None);
+    fn zim_hits_follow_filters() {
+        let hit = ZimHit {
+            title: "Article".to_string(),
+            snippet: None,
+            origin_url: "https://wiki.example.org/content/w/A/Help.html".to_string(),
+            app_url: "https://wiki.example.org".to_string(),
+        };
+        let none = crate::solr::SearchFilters::default();
+        assert!(zim_hit_matches(&hit, &none));
+        let owner = crate::solr::SearchFilters {
+            owner: Some("dsaw".to_string()),
+            ..Default::default()
+        };
+        assert!(!zim_hit_matches(&hit, &owner));
+        let other_source = crate::solr::SearchFilters {
+            source: Some("paperless".to_string()),
+            ..Default::default()
+        };
+        assert!(!zim_hit_matches(&hit, &other_source));
+        let dated = crate::solr::SearchFilters {
+            created_after: Some("2024-01-01".to_string()),
+            ..Default::default()
+        };
+        assert!(!zim_hit_matches(&hit, &dated));
     }
 
     #[test]

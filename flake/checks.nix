@@ -136,6 +136,14 @@ let
 in
 {
   media-manager-package = rustApps.media-manager.package;
+  media-manager-api-contract = pkgs.runCommand "media-manager-api-contract"
+    {
+      nativeBuildInputs = [ (pkgs.python3.withPackages (python: [ python.pyyaml ])) ];
+    } ''
+    cd ${self}
+    python3 scripts/helpers/generate-media-api.py --check
+    touch "$out"
+  '';
 
   shellcheck = pkgs.runCommand "shellcheck"
     {
@@ -145,6 +153,7 @@ in
     } ''
     cd ${self}
     shellcheck -x -e SC1091,SC2016,SC2154,SC2029 scripts/*.sh scripts/helpers/*.sh scripts/admin/*.sh scripts/tests/*.sh bootstrap/*.sh
+    shellcheck -s bash -e SC1091,SC2016,SC2154,SC2029 custom_apps/shell/*/*.sh.in
     touch "$out"
   '';
 

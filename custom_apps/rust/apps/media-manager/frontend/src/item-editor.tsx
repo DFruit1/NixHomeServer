@@ -64,7 +64,7 @@ import {
   type TmdbDetails,
 } from "./metadata-provider-candidates";
 import { parseTvEpisodeFilename } from "./root-routing";
-import { SubtitleCard } from "./subtitle-view";
+import { SubtitleView } from "./subtitle-view";
 import type {
   CatalogItem,
   DashboardState,
@@ -1475,91 +1475,77 @@ export const ItemEditor = component$<{
 
   return (
     <section class="panel editor-card" ref={cardRef}>
-      <div class="editor-heading">
-        <div class="editor-tabs" role="tablist" aria-label="Edit selected item">
-          {!props.folder && (
+      {!props.folder && (
+        <div class="editor-heading">
+          <div
+            class="editor-tabs"
+            role="tablist"
+            aria-label="Edit selected item"
+          >
+            {!props.folder && (
+              <button
+                type="button"
+                role="tab"
+                aria-selected={tab.value === "explore"}
+                class={{ "editor-tab": true, active: tab.value === "explore" }}
+                onClick$={() => (tab.value = "explore")}
+              >
+                <Icon name="search" size={16} />
+                Explore
+              </button>
+            )}
             <button
               type="button"
               role="tab"
-              aria-selected={tab.value === "explore"}
-              class={{ "editor-tab": true, active: tab.value === "explore" }}
-              onClick$={() => (tab.value = "explore")}
+              aria-selected={tab.value === "metadata"}
+              class={{ "editor-tab": true, active: tab.value === "metadata" }}
+              onClick$={() => (tab.value = "metadata")}
             >
-              <Icon name="search" size={16} />
-              Explore
+              <Icon name="tag" size={16} />
+              Metadata
             </button>
-          )}
-          <button
-            type="button"
-            role="tab"
-            aria-selected={tab.value === "metadata"}
-            class={{ "editor-tab": true, active: tab.value === "metadata" }}
-            onClick$={() => (tab.value = "metadata")}
-          >
-            <Icon name="tag" size={16} />
-            Metadata
-          </button>
-          {!props.folder && (
-            <>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={tab.value === "rename"}
-                class={{ "editor-tab": true, active: tab.value === "rename" }}
-                onClick$={() => (tab.value = "rename")}
-              >
-                <Icon name="scan" size={16} />
-                Rename
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={tab.value === "subtitles"}
-                class={{
-                  "editor-tab": true,
-                  active: tab.value === "subtitles",
-                }}
-                onClick$={() => (tab.value = "subtitles")}
-              >
-                <Icon name="captions" size={16} />
-                Subtitles
-              </button>
-            </>
-          )}
-        </div>
-        <div class="editor-heading-actions">
-          {tab.value === "metadata" &&
-            props.state.session?.canEdit &&
-            metadata.mediaType !== "collection" &&
-            metadata.mediaType !== "podcast" && (
-              <button
-                class="secondary-button"
-                type="button"
-                disabled={
-                  !portableWriteAvailable ||
-                  metadata.loadingDetails ||
-                  metadata.confirming
-                }
-                onClick$={toggleMetadataDraft}
-              >
-                <Icon name={metadata.isDraft ? "check" : "tag"} size={17} />
-                {metadata.isDraft
-                  ? metadata.isDirty
-                    ? "Discard draft"
-                    : "Inspect current"
-                  : "Create draft"}
-              </button>
+            {!props.folder && (
+              <>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={tab.value === "rename"}
+                  class={{ "editor-tab": true, active: tab.value === "rename" }}
+                  onClick$={() => (tab.value = "rename")}
+                >
+                  <Icon name="scan" size={16} />
+                  Rename
+                </button>
+                {selectedItem?.mediaKind === "video" && (
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={tab.value === "subtitles"}
+                    class={{
+                      "editor-tab": true,
+                      active: tab.value === "subtitles",
+                    }}
+                    onClick$={() => (tab.value = "subtitles")}
+                  >
+                    <Icon name="captions" size={16} />
+                    Subtitles
+                  </button>
+                )}
+              </>
             )}
-          <button
-            class="close-button"
-            type="button"
-            aria-label="Close item editor"
-            onClick$={closeEditor}
-          >
-            ×
-          </button>
+          </div>
+          <div class="editor-heading-actions">
+            <button
+              class="close-button"
+              type="button"
+              aria-label="Close item editor"
+              onClick$={closeEditor}
+            >
+              ×
+            </button>
+          </div>
         </div>
-      </div>
+      )}
 
       {tab.value === "explore" ? (
         <>
@@ -1573,254 +1559,63 @@ export const ItemEditor = component$<{
         </>
       ) : tab.value === "metadata" ? (
         <>
-          <details class="metadata-inspector">
-            <summary class="metadata-inspector-heading">
-              <div>
-                <span class="eyebrow">Current metadata</span>
-                <h3>Sources, differences, and write targets</h3>
-                <p>
-                  Compare the filename, portable metadata, and connected media
-                  apps when you need more context.
-                </p>
-              </div>
-              <span class="metadata-inspector-toggle" />
-            </summary>
-            <div class="metadata-source-grid">
-              {metadata.observations.map((observation) => (
-                <article class="metadata-source-card" key={observation.source}>
-                  <div>
-                    <strong>{observation.label}</strong>
-                    <span class="source-kind">{observation.source}</span>
-                  </div>
-                  <div
-                    class="metadata-layer-badges"
-                    aria-label="Metadata persistence"
+          <div class="metadata-toolbar">
+            <div
+              class="metadata-section-tabs"
+              role="tablist"
+              aria-label="Metadata fields"
+            >
+              {METADATA_SECTIONS.map((item) => (
+                <button
+                  type="button"
+                  role="tab"
+                  key={item.id}
+                  aria-selected={section.value === item.id}
+                  class={{
+                    "metadata-section-tab": true,
+                    active: section.value === item.id,
+                  }}
+                  onClick$={() => (section.value = item.id)}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+            <div class="metadata-draft-actions">
+              {" "}
+              {props.state.session?.canEdit &&
+                metadata.mediaType !== "collection" &&
+                metadata.mediaType !== "podcast" && (
+                  <button
+                    class="secondary-button"
+                    type="button"
+                    disabled={
+                      !portableWriteAvailable ||
+                      metadata.loadingDetails ||
+                      metadata.confirming
+                    }
+                    onClick$={toggleMetadataDraft}
                   >
-                    {observation.storage && (
-                      <span>{observation.storage.replaceAll("-", " ")}</span>
-                    )}
-                    {observation.survivesRescan && <span>Survives rescan</span>}
-                    {observation.locked === true && <span>Locked in app</span>}
-                    {observation.consumedBy?.map((consumer) => (
-                      <span key={consumer}>Read by {consumer}</span>
-                    ))}
-                  </div>
-                  <dl>
-                    <div>
-                      <dt>Title</dt>
-                      <dd>{metadataFieldValue(observation.fields.title)}</dd>
-                    </div>
-                    {observation.relativePath && (
-                      <div>
-                        <dt>File</dt>
-                        <dd>{observation.relativePath}</dd>
-                      </div>
-                    )}
-                    {observation.appItemId && (
-                      <div>
-                        <dt>App ID</dt>
-                        <dd>{observation.appItemId}</dd>
-                      </div>
-                    )}
-                    {observation.observedAt && (
-                      <div>
-                        <dt>Observed</dt>
-                        <dd>
-                          {new Date(
-                            observation.observedAt * 1000,
-                          ).toLocaleString()}
-                        </dd>
-                      </div>
-                    )}
-                  </dl>
-                  <ObservationStructuredDetails fields={observation.fields} />
-                  {observation.rawPreview && (
-                    <details class="metadata-raw-source">
-                      <summary>
-                        View raw {observation.format?.toUpperCase() ?? "source"}
-                      </summary>
-                      <pre>{observation.rawPreview}</pre>
-                    </details>
-                  )}
-                </article>
-              ))}
+                    <Icon name={metadata.isDraft ? "check" : "tag"} size={17} />
+                    {metadata.isDraft
+                      ? metadata.isDirty
+                        ? "Discard draft"
+                        : "Inspect current"
+                      : "Create draft"}
+                  </button>
+                )}
+              {props.folder && (
+                <button
+                  class="close-button"
+                  type="button"
+                  aria-label="Close item editor"
+                  onClick$={closeEditor}
+                >
+                  ×
+                </button>
+              )}
             </div>
-            {(metadata.health.length > 0 ||
-              metadata.inspectionWarnings.length > 0) && (
-              <section class="metadata-health" aria-label="Metadata health">
-                <div class="metadata-subheading">
-                  <div>
-                    <span class="eyebrow">Metadata health</span>
-                    <h4>Checks worth reviewing</h4>
-                  </div>
-                  <span class="pane-count">
-                    {metadata.health.length +
-                      metadata.inspectionWarnings.length}
-                  </span>
-                </div>
-                <div class="metadata-health-list">
-                  {metadata.health.map((issue, index) => (
-                    <article
-                      class={{
-                        "metadata-health-item": true,
-                        [`severity-${issue.severity}`]: true,
-                      }}
-                      key={`${issue.code}-${index}`}
-                    >
-                      <Icon
-                        name={issue.severity === "info" ? "scan" : "alert"}
-                        size={17}
-                      />
-                      <div>
-                        <strong>{issue.title}</strong>
-                        <p>{issue.message}</p>
-                        {issue.sources.length > 0 && (
-                          <span>Sources: {issue.sources.join(" · ")}</span>
-                        )}
-                      </div>
-                    </article>
-                  ))}
-                  {metadata.inspectionWarnings.map((warning, index) => (
-                    <article
-                      class="metadata-health-item severity-info"
-                      key={`${warning}-${index}`}
-                    >
-                      <Icon name="scan" size={17} />
-                      <div>
-                        <strong>Source could not be inspected</strong>
-                        <p>{warning}</p>
-                      </div>
-                    </article>
-                  ))}
-                </div>
-              </section>
-            )}
-            {metadata.observations.length > 0 && (
-              <div class="metadata-comparison-scroll">
-                <table class="metadata-comparison">
-                  <thead>
-                    <tr>
-                      <th>Field</th>
-                      {metadata.observations.map((observation) => (
-                        <th key={observation.source}>{observation.label}</th>
-                      ))}
-                      <th>Effective source</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {INSPECTED_METADATA_FIELDS.map((field) => (
-                      <tr key={field}>
-                        <th>{metadataFieldLabel(field)}</th>
-                        {metadata.observations.map((observation) => (
-                          <td key={`${observation.source}-${field}`}>
-                            {metadataFieldValue(observation.fields[field])}
-                          </td>
-                        ))}
-                        <td>
-                          <span class="source-pill">
-                            {metadata.fieldSources[field] ?? "—"}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-            <div class="metadata-consumers">
-              {metadata.consumers.map((consumer) => (
-                <article class="metadata-consumer" key={consumer.id}>
-                  <div>
-                    <strong>{consumer.label}</strong>
-                    <span
-                      class={{ "status-badge": true, live: consumer.available }}
-                    >
-                      {consumer.available ? "Connected" : "Unavailable"}
-                    </span>
-                  </div>
-                  <p>{consumer.message}</p>
-                  <footer>
-                    <span>
-                      {consumer.effect === "read-after-refresh"
-                        ? "Refresh after applying"
-                        : "Embedded-file edit required"}
-                    </span>
-                    {consumer.nativeUrl && consumer.canManageNatively && (
-                      <a
-                        href={consumer.nativeUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        Open in {consumer.label}
-                      </a>
-                    )}
-                  </footer>
-                </article>
-              ))}
-            </div>
-            {metadata.modificationTargets.length > 0 && (
-              <section
-                class="metadata-targets"
-                aria-label="Modification targets"
-              >
-                <div class="metadata-subheading">
-                  <div>
-                    <span class="eyebrow">Where changes go</span>
-                    <h4>Modification targets</h4>
-                  </div>
-                </div>
-                <div class="metadata-target-list">
-                  {metadata.modificationTargets.map((target) => (
-                    <article
-                      class={{
-                        "metadata-target": true,
-                        unavailable: !target.available,
-                      }}
-                      key={target.id}
-                    >
-                      <div>
-                        <strong>{target.label}</strong>
-                        <span class="source-kind">
-                          {target.kind === "portable-file"
-                            ? "Portable"
-                            : "App only"}
-                        </span>
-                        {target.recommended && (
-                          <span class="status-badge live">Recommended</span>
-                        )}
-                      </div>
-                      <p>{target.message}</p>
-                      <footer>
-                        <span>
-                          {!target.available
-                            ? "Inspection only"
-                            : target.requiresRefresh
-                              ? "Refresh app after applying"
-                              : "Applies inside the app"}
-                        </span>
-                      </footer>
-                    </article>
-                  ))}
-                </div>
-              </section>
-            )}
-            {metadata.mediaType === "book" && (
-              <p class="metadata-compatibility-note">
-                Kavita consumes metadata inside the book container, not a
-                neighboring OPF. EPUB package metadata and root ComicInfo.xml in
-                CBZ can be updated here with a recoverable container rebuild;
-                PDF XMP and CBR remain inspection-only.
-              </p>
-            )}
-            {metadata.mediaType === "podcast" && (
-              <p class="metadata-compatibility-note">
-                Podcasts remain a separate Audiobookshelf media type. Embedded
-                episode tags can be inspected here; feed matching and app-local
-                edits stay in Audiobookshelf until a safe portable podcast
-                writer is enabled.
-              </p>
-            )}
-          </details>
+          </div>
           {metadata.isDraft && sourceChoices.length > 0 && (
             <section
               class="metadata-source-choices"
@@ -1891,27 +1686,6 @@ export const ItemEditor = component$<{
               </div>
             </section>
           )}
-          <div
-            class="metadata-section-tabs"
-            role="tablist"
-            aria-label="Metadata fields"
-          >
-            {METADATA_SECTIONS.map((item) => (
-              <button
-                type="button"
-                role="tab"
-                key={item.id}
-                aria-selected={section.value === item.id}
-                class={{
-                  "metadata-section-tab": true,
-                  active: section.value === item.id,
-                }}
-                onClick$={() => (section.value = item.id)}
-              >
-                {item.label}
-              </button>
-            ))}
-          </div>
           <fieldset
             class="metadata-form editor-metadata-form"
             disabled={!metadata.isDraft}
@@ -2386,11 +2160,269 @@ export const ItemEditor = component$<{
               </dl>
             </div>
           )}
+          {section.value === "advanced" && (
+            <details class="metadata-inspector">
+              <summary class="metadata-inspector-heading">
+                Sources and write targets
+              </summary>
+              <div class="metadata-source-grid">
+                {metadata.observations.map((observation) => (
+                  <article
+                    class="metadata-source-card"
+                    key={observation.source}
+                  >
+                    <div>
+                      <strong>{observation.label}</strong>
+                      <span class="source-kind">{observation.source}</span>
+                    </div>
+                    <div
+                      class="metadata-layer-badges"
+                      aria-label="Metadata persistence"
+                    >
+                      {observation.storage && (
+                        <span>{observation.storage.replaceAll("-", " ")}</span>
+                      )}
+                      {observation.survivesRescan && (
+                        <span>Survives rescan</span>
+                      )}
+                      {observation.locked === true && (
+                        <span>Locked in app</span>
+                      )}
+                      {observation.consumedBy?.map((consumer) => (
+                        <span key={consumer}>Read by {consumer}</span>
+                      ))}
+                    </div>
+                    <dl>
+                      <div>
+                        <dt>Title</dt>
+                        <dd>{metadataFieldValue(observation.fields.title)}</dd>
+                      </div>
+                      {observation.relativePath && (
+                        <div>
+                          <dt>File</dt>
+                          <dd>{observation.relativePath}</dd>
+                        </div>
+                      )}
+                      {observation.appItemId && (
+                        <div>
+                          <dt>App ID</dt>
+                          <dd>{observation.appItemId}</dd>
+                        </div>
+                      )}
+                      {observation.observedAt && (
+                        <div>
+                          <dt>Observed</dt>
+                          <dd>
+                            {new Date(
+                              observation.observedAt * 1000,
+                            ).toLocaleString()}
+                          </dd>
+                        </div>
+                      )}
+                    </dl>
+                    <ObservationStructuredDetails fields={observation.fields} />
+                    {observation.rawPreview && (
+                      <details class="metadata-raw-source">
+                        <summary>
+                          View raw{" "}
+                          {observation.format?.toUpperCase() ?? "source"}
+                        </summary>
+                        <pre>{observation.rawPreview}</pre>
+                      </details>
+                    )}
+                  </article>
+                ))}
+              </div>
+              {(metadata.health.length > 0 ||
+                metadata.inspectionWarnings.length > 0) && (
+                <section class="metadata-health" aria-label="Metadata health">
+                  <div class="metadata-subheading">
+                    <div>
+                      <span class="eyebrow">Metadata health</span>
+                      <h4>Checks worth reviewing</h4>
+                    </div>
+                    <span class="pane-count">
+                      {metadata.health.length +
+                        metadata.inspectionWarnings.length}
+                    </span>
+                  </div>
+                  <div class="metadata-health-list">
+                    {metadata.health.map((issue, index) => (
+                      <article
+                        class={{
+                          "metadata-health-item": true,
+                          [`severity-${issue.severity}`]: true,
+                        }}
+                        key={`${issue.code}-${index}`}
+                      >
+                        <Icon
+                          name={issue.severity === "info" ? "scan" : "alert"}
+                          size={17}
+                        />
+                        <div>
+                          <strong>{issue.title}</strong>
+                          <p>{issue.message}</p>
+                          {issue.sources.length > 0 && (
+                            <span>Sources: {issue.sources.join(" · ")}</span>
+                          )}
+                        </div>
+                      </article>
+                    ))}
+                    {metadata.inspectionWarnings.map((warning, index) => (
+                      <article
+                        class="metadata-health-item severity-info"
+                        key={`${warning}-${index}`}
+                      >
+                        <Icon name="scan" size={17} />
+                        <div>
+                          <strong>Source could not be inspected</strong>
+                          <p>{warning}</p>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                </section>
+              )}
+              {metadata.observations.length > 0 && (
+                <div class="metadata-comparison-scroll">
+                  <table class="metadata-comparison">
+                    <thead>
+                      <tr>
+                        <th>Field</th>
+                        {metadata.observations.map((observation) => (
+                          <th key={observation.source}>{observation.label}</th>
+                        ))}
+                        <th>Effective source</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {INSPECTED_METADATA_FIELDS.map((field) => (
+                        <tr key={field}>
+                          <th>{metadataFieldLabel(field)}</th>
+                          {metadata.observations.map((observation) => (
+                            <td key={`${observation.source}-${field}`}>
+                              {metadataFieldValue(observation.fields[field])}
+                            </td>
+                          ))}
+                          <td>
+                            <span class="source-pill">
+                              {metadata.fieldSources[field] ?? "—"}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              <div class="metadata-consumers">
+                {metadata.consumers.map((consumer) => (
+                  <article class="metadata-consumer" key={consumer.id}>
+                    <div>
+                      <strong>{consumer.label}</strong>
+                      <span
+                        class={{
+                          "status-badge": true,
+                          live: consumer.available,
+                        }}
+                      >
+                        {consumer.available ? "Connected" : "Unavailable"}
+                      </span>
+                    </div>
+                    <p>{consumer.message}</p>
+                    <footer>
+                      <span>
+                        {consumer.effect === "read-after-refresh"
+                          ? "Refresh after applying"
+                          : "Embedded-file edit required"}
+                      </span>
+                      {consumer.nativeUrl && consumer.canManageNatively && (
+                        <a
+                          href={consumer.nativeUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          Open in {consumer.label}
+                        </a>
+                      )}
+                    </footer>
+                  </article>
+                ))}
+              </div>
+              {metadata.modificationTargets.length > 0 && (
+                <section
+                  class="metadata-targets"
+                  aria-label="Modification targets"
+                >
+                  <div class="metadata-subheading">
+                    <div>
+                      <span class="eyebrow">Where changes go</span>
+                      <h4>Modification targets</h4>
+                    </div>
+                  </div>
+                  <div class="metadata-target-list">
+                    {metadata.modificationTargets.map((target) => (
+                      <article
+                        class={{
+                          "metadata-target": true,
+                          unavailable: !target.available,
+                        }}
+                        key={target.id}
+                      >
+                        <div>
+                          <strong>{target.label}</strong>
+                          <span class="source-kind">
+                            {target.kind === "portable-file"
+                              ? "Portable"
+                              : "App only"}
+                          </span>
+                          {target.recommended && (
+                            <span class="status-badge live">Recommended</span>
+                          )}
+                        </div>
+                        <p>{target.message}</p>
+                        <footer>
+                          <span>
+                            {!target.available
+                              ? "Inspection only"
+                              : target.requiresRefresh
+                                ? "Refresh app after applying"
+                                : "Applies inside the app"}
+                          </span>
+                        </footer>
+                      </article>
+                    ))}
+                  </div>
+                </section>
+              )}
+              {metadata.mediaType === "book" && (
+                <p class="metadata-compatibility-note">
+                  Kavita consumes metadata inside the book container, not a
+                  neighboring OPF. EPUB package metadata and root ComicInfo.xml
+                  in CBZ can be updated here with a recoverable container
+                  rebuild; PDF XMP and CBR remain inspection-only.
+                </p>
+              )}
+              {metadata.mediaType === "podcast" && (
+                <p class="metadata-compatibility-note">
+                  Podcasts remain a separate Audiobookshelf media type. Embedded
+                  episode tags can be inspected here; feed matching and
+                  app-local edits stay in Audiobookshelf until a safe portable
+                  podcast writer is enabled.
+                </p>
+              )}
+            </details>
+          )}
         </>
-      ) : tab.value === "subtitles" ? (
-        <SubtitleCard
-          items={props.state.items}
-          selectedItemId={props.state.selectedItemId}
+      ) : tab.value === "subtitles" && selectedItem?.mediaKind === "video" ? (
+        <SubtitleView
+          key={props.state.selectedItemId}
+          item={props.state.items.find(
+            (item) => item.id === props.state.selectedItemId,
+          )}
+          roots={props.state.roots}
+          session={props.state.session}
+          status={props.state.status}
         />
       ) : (
         <div class="rename-fields">

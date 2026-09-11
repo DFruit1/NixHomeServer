@@ -128,6 +128,11 @@ test_scripts=(
   scripts/tests/test-freshrss-module.sh
   scripts/tests/test-freshness-marker.sh
   scripts/tests/test-rust-workspace-dependencies.sh
+  scripts/tests/test-rust-source-isolation.sh
+  scripts/tests/test-app-registration.sh
+  scripts/tests/test-shell-template.sh
+  scripts/tests/test-validation-build-checks.sh
+  scripts/tests/test-frontend-package-independence.sh
   scripts/tests/test-homepage-guidance.sh
   scripts/tests/test-homepage-vault.sh
   scripts/tests/test-portal-landing.sh

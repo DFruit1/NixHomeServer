@@ -234,6 +234,32 @@ eval_fails_with 'dnsSettings.lanHosts must be an attribute set mapping DNS names
 in system.nixosConfigurations.${base.hostname}.config.system.build.toplevel.drvPath
 '
 
+invalid_portability_settings_log="$(capture_eval_failure '
+  base = import ./vars.nix { inherit lib; };
+  vars = base // { cpuVendor = "risc-v"; lanMode = "carrier-pigeon"; };
+  pkgs = f.inputs.nixpkgs.legacyPackages.${base.hostPlatform};
+  packages = import ./flake/packages.nix {
+    inherit lib pkgs;
+    crane = f.inputs.crane;
+  };
+  system = import ./flake/system.nix {
+    inputs = f.inputs;
+    inherit lib vars pkgs;
+    system = base.hostPlatform;
+    appPackages = packages.appPackages;
+  };
+in system.nixosConfigurations.${base.hostname}.config.system.build.toplevel.drvPath
+')"
+for expected_message in \
+  'system.cpuVendor must be one of auto, intel, or amd' \
+  'network.lanMode must be either static or dhcp'; do
+  if ! rg -Fq "$expected_message" <<<"$invalid_portability_settings_log"; then
+    echo "❌ Invalid host-flexibility settings failed without the actionable message: $expected_message"
+    printf '%s\n' "$invalid_portability_settings_log"
+    exit 1
+  fi
+done
+
 identity_input_model_json="$(flake_eval_json '
   derive = import ./lib/identity-access.nix { inherit lib; };
   model = derive {

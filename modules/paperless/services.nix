@@ -108,6 +108,7 @@ in
         PAPERLESS_APPS = "allauth.socialaccount.providers.openid_connect";
         PAPERLESS_URL = "https://${paperlessHost}";
         PAPERLESS_LOGOUT_REDIRECT_URL = "https://${config.repo.authGateway.domain}/oauth2/sign_out";
+        PAPERLESS_SESSION_COOKIE_AGE = "2592000";
         PAPERLESS_ALLOWED_HOSTS = paperlessHost;
         PAPERLESS_EXPORT_DIR = paths.export;
         PAPERLESS_OCR_LANGUAGE = "eng";
@@ -140,8 +141,8 @@ in
       };
       script = ''
         set -euo pipefail
-        units=(paperless-consumer.service paperless-scheduler.service paperless-task-queue.service paperless-web.service)
-        restart_paperless() { systemctl start "''${units[@]}"; }
+        units=(paperless-scheduler.service paperless-task-queue.service paperless-web.service)
+        restart_paperless() { systemctl start "''${units[@]}" paperless-consumer.service; }
         trap restart_paperless EXIT
         systemctl stop "''${units[@]}"
         runuser -u paperless -- paperless-manage document_exporter \

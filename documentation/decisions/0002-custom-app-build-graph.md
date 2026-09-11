@@ -2,6 +2,7 @@
 
 - Status: accepted
 - Date: 2026-08-03
+- Frontend dependency ownership and Rust workspace source selection are superseded by [0008](0008-application-owned-registration-and-sources.md).
 
 ## Context
 

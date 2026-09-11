@@ -10,7 +10,6 @@
       repo.search.sources.browsertrix = {
         displayName = "Web Archives";
         sourceType = "browsertrix";
-        aclGroup = "web-archive-users";
         appBase = "https://archives.${vars.domain}";
         settings = {
           archiveRoot = config.repo.browsertrixDownloader.paths.archiveRoot;

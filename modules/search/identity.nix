@@ -2,9 +2,7 @@
 
 let
   cfg = config.repo.search;
-  host = "search.${vars.domain}";
-  accessGroup = "search-users";
-  oauthScopes = [ "openid" "profile" "email" "groups_name" ];
+  accessGroup = "search-admins";
 in
 {
   config = lib.mkIf cfg.enable {
@@ -16,20 +14,17 @@ in
       createHome = false;
     };
 
-    services.kanidm.provision = {
-      groups.${accessGroup}.members = vars.kanidmAppUsers;
-
-      systems.oauth2.search-web = {
-        displayName = "Search";
-        originUrl = "https://${host}/login/callback";
-        originLanding = "https://${host}";
-        basicSecretFile = config.age.secrets.searchClientSecret.path;
-        preferShortUsername = true;
-        scopeMaps.${accessGroup} = oauthScopes;
-      };
+    # Search is an admin-only tool. The shared gateway enforces the group on
+    # every request; the app trusts the gateway's forwarded identity headers.
+    services.kanidm.provision.groups.${accessGroup} = {
+      members = [ vars.kanidmAdminUser ];
+      overwriteMembers = false;
     };
 
+    services.kanidm.provision.systems.oauth2.auth-gateway-web.scopeMaps.${accessGroup} =
+      [ "openid" "profile" "email" "groups_name" ];
+
     nixhomeserver.kanidmGroupDescriptions.${accessGroup} =
-      "Grants sign-in to the server-wide Search app and visibility of every source the user can already access.";
+      "Grants server-admin access to the server-wide Search app.";
   };
 }

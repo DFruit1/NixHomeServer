@@ -1,0 +1,47 @@
+set -euo pipefail
+base_url="http://@NIX_VARS_NETWORKING_LOOPBACKIPV4@:@NIX_VARS_NETWORKING_PORTS_JELLYFIN@"
+api_key_file=/var/lib/jellyfin/data/library-sync.api-key
+[[ -f "$api_key_file" && ! -L "$api_key_file" ]] || {
+  echo "Jellyfin library-sync API key is unavailable" >&2
+  exit 1
+}
+api_key="$(tr -d '\r\n' <"$api_key_file")"
+[[ "$api_key" =~ ^[A-Za-z0-9._~-]+$ ]] || {
+  echo "Jellyfin library-sync API key is malformed" >&2
+  exit 1
+}
+jellyfin_curl() {
+  printf 'header = "X-Emby-Token: %s"\n' "$api_key" \
+    | curl --config - --fail --silent --show-error --max-time 30 "$@"
+}
+
+tasks="$(jellyfin_curl "$base_url/ScheduledTasks")"
+task_id="$(jq -er '
+  map(select((.Key // .key) == "RefreshLibrary"))
+  | first
+  | (.Id // .id)
+  | select(type == "string" and test("^[A-Fa-f0-9-]+$"))
+' <<<"$tasks")"
+previous_finished="$(jq -r \
+  --arg taskId "$task_id" \
+  'map(select((.Id // .id) == $taskId)) | first | (.LastExecutionResult.EndTimeUtc // .lastExecutionResult.endTimeUtc // "")' \
+  <<<"$tasks")"
+jellyfin_curl -X POST "$base_url/ScheduledTasks/Running/$task_id" >/dev/null
+
+saw_running=false
+for _ in $(seq 1 3600); do
+  task="$(jellyfin_curl "$base_url/ScheduledTasks/$task_id")"
+  state="$(jq -r '.State // .state // empty' <<<"$task")"
+  finished="$(jq -r '.LastExecutionResult.EndTimeUtc // .lastExecutionResult.endTimeUtc // ""' <<<"$task")"
+  if [[ "$state" == "Running" || "$state" == "Cancelling" ]]; then
+    saw_running=true
+  elif [[ "$state" == "Idle" && ( "$saw_running" == "true" || ( -n "$finished" && "$finished" != "$previous_finished" ) ) ]]; then
+    status="$(jq -r '.LastExecutionResult.Status // .lastExecutionResult.status // empty' <<<"$task")"
+    [[ "$status" == "Completed" ]] && exit 0
+    echo "Jellyfin scheduled task ended with status: ${status:-unknown}" >&2
+    exit 1
+  fi
+  sleep 2
+done
+echo "Timed out waiting for the Jellyfin library scan" >&2
+exit 1

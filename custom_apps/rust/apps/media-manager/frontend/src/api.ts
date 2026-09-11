@@ -1,3 +1,4 @@
+import { validateApiResponse } from "./api-contract";
 export interface ServerError {
   error?: {
     code?: string;
@@ -64,16 +65,35 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
     ...init,
     headers,
   });
-  const payload = (await response.json().catch(() => ({}))) as T & ServerError;
+  if (
+    response.status === 204 &&
+    validateApiResponse(path, init.method ?? "GET", response.status, null)
+  )
+    return undefined as T;
+  const payload: unknown = await response.json().catch(() => undefined);
+  const serverError =
+    payload !== null && typeof payload === "object"
+      ? (payload as ServerError).error
+      : undefined;
   if (!response.ok) {
     throw new ApiError(
       response.status,
-      payload.error?.code ?? "request_failed",
-      payload.error?.message ?? "The request could not be completed.",
-      payload.error?.requestId ?? "unknown",
+      serverError?.code ?? "request_failed",
+      serverError?.message ?? "The request could not be completed.",
+      serverError?.requestId ?? "unknown",
     );
   }
-  return payload;
+  if (
+    !validateApiResponse(path, init?.method ?? "GET", response.status, payload)
+  ) {
+    throw new ApiError(
+      response.status,
+      "invalid_response",
+      "The server returned an invalid response.",
+      "unknown",
+    );
+  }
+  return payload as T;
 }
 
 export async function apiBlob(path: string): Promise<Blob> {

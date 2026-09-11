@@ -23,7 +23,6 @@ import {
 import { LibraryMiniPlayer } from "./mini-player";
 import { PlayerView } from "./player-view";
 import { RefreshView } from "./refresh-view";
-import { SubtitleView } from "./subtitle-view";
 import { EmptyState, LoadingState } from "./view-states";
 import { MetadataHealthView } from "./metadata-health-view";
 import {
@@ -493,12 +492,6 @@ export default component$((props: RootProps) => {
           />
         ) : view.value === "conversions" ? (
           <ConversionsView initial={state.conversions} />
-        ) : view.value === "subtitles" ? (
-          <SubtitleView
-            roots={state.roots}
-            session={state.session}
-            status={state.status}
-          />
         ) : view.value === "player" ? (
           <PlayerView state={state} />
         ) : view.value === "accounts" ? (
@@ -1080,7 +1073,8 @@ function artworkCandidateId(
   const prefix = `${selectedFolder}/`;
   const inside = items.filter((item) => item.relativePath.startsWith(prefix));
   return (
-    inside.find((item) => item.mediaKind !== "artwork")?.id ??
+    inside.find((item) => MEDIA_QUICK_ACTION_KINDS.includes(item.mediaKind))
+      ?.id ??
     inside.find((item) => item.mediaKind === "artwork")?.id ??
     inside[0]?.id ??
     ""
@@ -1090,10 +1084,37 @@ function artworkCandidateId(
 const MediaImage = component$<{
   imageId: string;
   title: string;
+  item?: CatalogItem;
+  state: DashboardState;
 }>(
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   (props) => {
     const failed = useSignal(false);
+    const sourceInfo = useStore<{
+      loading: boolean;
+      error: string;
+      sources: Array<{ id: string; label: string; status: string }>;
+    }>({ loading: false, error: "", sources: [] });
+    useTask$(async ({ track }) => {
+      const imageId = track(() => props.imageId);
+      const imageFailed = track(() => failed.value);
+      sourceInfo.sources = [];
+      sourceInfo.error = "";
+      sourceInfo.loading = false;
+      if (!imageId || !imageFailed) return;
+      sourceInfo.loading = true;
+      try {
+        const result = await api<{ sources: typeof sourceInfo.sources }>(
+          `/items/${encodeURIComponent(imageId)}/image/sources`,
+        );
+        if (props.imageId === imageId && failed.value)
+          sourceInfo.sources = result.sources ?? [];
+      } catch (error) {
+        if (props.imageId === imageId) sourceInfo.error = readableError(error);
+      } finally {
+        if (props.imageId === imageId) sourceInfo.loading = false;
+      }
+    });
     useTask$(({ track }) => {
       track(() => props.imageId);
       failed.value = false;
@@ -1108,8 +1129,52 @@ const MediaImage = component$<{
             onError$={() => (failed.value = true)}
           />
         ) : (
-          <div class="media-image-placeholder" aria-hidden="true">
+          <div class="media-image-placeholder">
             <Icon name="image" size={30} />
+            {props.imageId ? (
+              <>
+                <strong>No image to display</strong>
+                {sourceInfo.loading && (
+                  <p role="status">Checking image sources…</p>
+                )}
+                <dl class="image-source-list">
+                  {sourceInfo.sources.map((source) => (
+                    <div key={source.id}>
+                      <dt>{source.label}</dt>
+                      <dd>
+                        {(
+                          {
+                            available: "Image found",
+                            missing: "Not found",
+                            unavailable: "Could not read",
+                            unknown: "Not reported",
+                            unsupported: "Not supported",
+                          } as Record<string, string>
+                        )[source.status] ?? "Not reported"}
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
+                {sourceInfo.error && (
+                  <p role="alert">Image sources could not be checked.</p>
+                )}
+                {props.item &&
+                  props.item.mediaKind !== "subtitle" &&
+                  props.item.mediaKind !== "iso" && (
+                    <CoverArtCard
+                      item={props.item}
+                      state={props.state}
+                      compact
+                      heading="Upload image"
+                      note=""
+                      close$={() => {}}
+                      closeLabel="Close image upload"
+                    />
+                  )}
+              </>
+            ) : (
+              <span>Select a title or folder</span>
+            )}
           </div>
         )}
       </figure>
@@ -1124,6 +1189,7 @@ const CoverArtCard = component$<{
   note: string;
   close$: QRL<() => void>;
   closeLabel: string;
+  compact?: boolean;
 }>((props) => {
   const uploadInput = useSignal<HTMLInputElement>();
   const replacement = useStore<{
@@ -1177,24 +1243,36 @@ const CoverArtCard = component$<{
     }
   });
   return (
-    <section class="panel editor-card non-media-card">
-      <div class="editor-heading">
-        <div class="non-media-heading">
-          <Icon name="image" size={18} />
-          <h3>{props.heading}</h3>
+    <section
+      class={
+        props.compact
+          ? "image-placeholder-upload"
+          : "panel editor-card non-media-card"
+      }
+    >
+      {!props.compact && (
+        <div class="editor-heading">
+          <div class="non-media-heading">
+            <Icon name="image" size={18} />
+            <h3>{props.heading}</h3>
+          </div>
+          <button
+            class="close-button"
+            type="button"
+            aria-label={props.closeLabel}
+            onClick$={props.close$}
+          >
+            ×
+          </button>
         </div>
-        <button
-          class="close-button"
-          type="button"
-          aria-label={props.closeLabel}
-          onClick$={props.close$}
-        >
-          ×
-        </button>
-      </div>
+      )}
       <div class="non-media-body">
-        <p>{props.note}</p>
-        <code>{props.item.relativePath}</code>
+        {!props.compact && (
+          <>
+            <p>{props.note}</p>
+            <code>{props.item.relativePath}</code>
+          </>
+        )}
         <input
           ref={uploadInput}
           class="visually-hidden"
@@ -1243,14 +1321,15 @@ const CoverArtCard = component$<{
           <Icon name="image" size={18} />
           {replacement.uploading
             ? "Preparing replacement…"
-            : "Replace cover art"}
+            : props.compact
+              ? "Upload image from device"
+              : "Replace cover art"}
         </button>
         {replacement.preview && (
           <div class="non-media-confirm">
-            <p>
-              The current file will move into a <code>superseded</code>
-              subfolder before the new image is installed.
-            </p>
+            {replacement.preview.warnings.map((warning) => (
+              <p key={warning}>{warning}</p>
+            ))}
             <button
               class="primary-button"
               type="button"
@@ -1576,6 +1655,12 @@ const LibraryDetailPane = component$<{
     MEDIA_QUICK_ACTION_KINDS.includes(props.selectedItem.mediaKind)
       ? props.selectedItem
       : undefined;
+  const imageId = artworkCandidateId(
+    props.state.items,
+    props.state.selectedItemId,
+    props.activeFolder,
+  );
+  const imageItem = props.state.items.find((item) => item.id === imageId);
   return (
     <div
       class={{
@@ -1587,11 +1672,9 @@ const LibraryDetailPane = component$<{
     >
       <div class="root-picker-image">
         <MediaImage
-          imageId={artworkCandidateId(
-            props.state.items,
-            props.state.selectedItemId,
-            props.activeFolder,
-          )}
+          imageId={imageId}
+          item={imageItem}
+          state={props.state}
           title={props.imageTitle}
         />
       </div>
@@ -1813,11 +1896,13 @@ const LibraryView = component$<{
     props.state.notice = "";
   });
   return (
-    <section class="library-layout">
+    <section
+      class={{
+        "library-layout": true,
+        [`library-layout--${activeScope || "dual"}`]: true,
+      }}
+    >
       <div class="library-tabs" role="tablist" aria-label="Media categories">
-        <span class="library-tabs-active-label" aria-hidden="true">
-          {CATEGORY_TABS.find((tab) => tab.id === activeCategory)?.label ?? ""}
-        </span>
         {CATEGORY_TABS.map((tab) => {
           const hasRoots = libraryRoots.some(
             (root) => root.category === tab.id,
@@ -1842,7 +1927,7 @@ const LibraryView = component$<{
               disabled={!hasRoots}
               onClick$={() => props.loadCategoryItems$(tab.id)}
             >
-              <Icon name={tab.icon} size={17} />
+              <Icon name={tab.icon} size={28} />
               <span class="library-tab-label">{tab.label}</span>
             </button>
           );
@@ -1902,6 +1987,14 @@ const LibraryView = component$<{
   );
 });
 
+function treeContainsItem(node: TreeNode, itemId: string): boolean {
+  return (
+    Boolean(itemId) &&
+    (node.item?.id === itemId ||
+      node.children.some((child) => treeContainsItem(child, itemId)))
+  );
+}
+
 const TreeBranch = component$<{
   node: TreeNode;
   depth: number;
@@ -1926,6 +2019,9 @@ const TreeBranch = component$<{
           "tree-row": true,
           file: true,
           selected: props.selectedItemId === node.item.id,
+          "wrap-title":
+            Boolean(props.selectedFolder) &&
+            node.path.startsWith(`${props.selectedFolder}/`),
         }}
         style={{ paddingLeft: `${14 + props.depth * 16}px` }}
         role="treeitem"
@@ -1953,6 +2049,7 @@ const TreeBranch = component$<{
           "tree-row": true,
           folder: true,
           selected: props.selectedFolder === node.path,
+          "wrap-title": treeContainsItem(node, props.selectedItemId),
           "sibling-muted": mutedBySibling,
         }}
         style={{ paddingLeft: `${14 + props.depth * 16}px` }}

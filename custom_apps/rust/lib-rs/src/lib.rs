@@ -20,3 +20,5 @@ pub use static_files::{
     content_type_for_extension, content_type_for_path, decode_relative_path,
     is_safe_single_component, read_static_file, StaticFileError,
 };
+
+pub mod work;

@@ -88,6 +88,10 @@ impl super::Extractor for FreshRssExtractor {
 
             for entry in entries {
                 let mut metadata = serde_json::Map::new();
+                metadata.insert(
+                    "owner".to_string(),
+                    serde_json::Value::String(username.clone()),
+                );
                 if let Some(feed) = entry.feed_name.filter(|feed| !feed.is_empty()) {
                     metadata.insert("feed".to_string(), serde_json::Value::String(feed));
                 }

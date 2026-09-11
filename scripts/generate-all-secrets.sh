@@ -11,7 +11,7 @@ Usage:
   scripts/generate-all-secrets.sh --identity <age-key>
   scripts/generate-all-secrets.sh --fresh --identity <new-age-key>
   scripts/generate-all-secrets.sh --replace-external <manifest-name> --identity <current-age-key>
-  scripts/generate-all-secrets.sh --rekey --source-identity <old-age-key> --identity <new-age-key>
+  scripts/generate-all-secrets.sh --rekey --source-identity <old-age-key> --identity <new-age-key> [--allow-external-secrets]
 
 Generate repo-managed secrets and validate/encrypt staged external secrets from
 secrets/unencrypted/. This is the only documented secrets entrypoint for operators.
@@ -20,7 +20,10 @@ The default mode preserves existing values but proves that every manifest secret
 decrypts with the configured identity. --fresh explicitly replaces all generated
 values and requires staged replacements for every external value. --rekey
 preserves all values by decrypting them with the old identity before atomically
-encrypting them to the recipient in secrets/pubkeys/age.pub.
+encrypting them to the recipient in secrets/pubkeys/age.pub. Rekeying external
+secrets (NetBird, Cloudflare, MEGA, provider accounts) binds the new host to the
+previous owner's accounts, so --rekey refuses them unless --allow-external-secrets
+is passed; prefer --fresh with the new owner's staged values.
 --replace-external updates only the named staged external value and verifies all
 other ciphertext without rotating generated application credentials.
 EOF
@@ -31,6 +34,7 @@ source_identity_file=""
 secret_mode="verify"
 fresh_requested=0
 rekey_requested=0
+allow_external_secrets=0
 replace_external_names=()
 while (($# > 0)); do
   case "$1" in
@@ -52,6 +56,10 @@ while (($# > 0)); do
     --rekey)
       secret_mode="rekey"
       rekey_requested=1
+      shift
+      ;;
+    --allow-external-secrets)
+      allow_external_secrets=1
       shift
       ;;
     --replace-external)
@@ -80,6 +88,10 @@ if ((${#replace_external_names[@]} > 0)) && [[ "$secret_mode" != "verify" ]]; th
 fi
 if [[ "$secret_mode" != "rekey" && -n "$source_identity_file" ]]; then
   echo "❌ --source-identity is valid only with --rekey." >&2
+  exit 1
+fi
+if [[ "$secret_mode" != "rekey" && "$allow_external_secrets" == "1" ]]; then
+  echo "❌ --allow-external-secrets is valid only with --rekey." >&2
   exit 1
 fi
 
@@ -128,6 +140,28 @@ if [[ "$secret_mode" == "rekey" ]]; then
 
   if ! secret_names="$(manifest_secret_names)" || [[ -z "$secret_names" ]]; then
     echo "❌ Manifest contains no active secret set to rekey." >&2
+    exit 1
+  fi
+
+  # Rekeying preserves values, so external secrets would bind the new host to
+  # the previous owner's NetBird/Cloudflare/MEGA/provider accounts. Require an
+  # explicit opt-in rather than silently carrying those accounts over.
+  external_rekey_names=""
+  while IFS=$'\t' read -r external_name _validator _required; do
+    [[ -n "$external_name" ]] || continue
+    if grep -qxF "$external_name" <<<"$secret_names"; then
+      external_rekey_names+="${external_rekey_names:+$'\n'}${external_name}"
+    fi
+  done <<<"$external_specs"
+  if [[ -n "$external_rekey_names" && "$allow_external_secrets" != "1" ]]; then
+    echo "❌ --rekey would carry external secrets over to the new recipient:" >&2
+    while IFS= read -r external_name; do
+      printf '     %s\n' "$external_name" >&2
+    done <<<"$external_rekey_names"
+    echo "   Those values bind this host to existing NetBird, Cloudflare, MEGA, and" >&2
+    echo "   provider accounts. For a new owner or host, use --fresh with newly staged" >&2
+    echo "   values so the new owner's accounts are used. Pass --allow-external-secrets" >&2
+    echo "   only to intentionally preserve the existing external accounts." >&2
     exit 1
   fi
 

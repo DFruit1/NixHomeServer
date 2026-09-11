@@ -1,0 +1,14 @@
+set -euo pipefail
+config_file=/var/lib/syncthing/.config/syncthing/config.xml
+[[ -f "$config_file" && ! -L "$config_file" ]] || {
+  echo "Syncthing configuration is unavailable" >&2
+  exit 1
+}
+api_key="$(xmllint --xpath 'string(configuration/gui/apikey)' "$config_file")"
+[[ "$api_key" =~ ^[A-Za-z0-9_-]+$ ]] || {
+  echo "Syncthing API key is unavailable or malformed" >&2
+  exit 1
+}
+printf 'header = "X-API-Key: %s"\n' "$api_key" \
+  | curl --config - --fail --silent --show-error --max-time 300 -X POST \
+    http://127.0.0.1:8384/rest/db/scan >/dev/null

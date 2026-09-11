@@ -129,11 +129,20 @@ paths:
                 year: { type: integer, minimum: 1801, maximum: 2100 }
                 mediaType: { type: string, enum: [movie, tv, auto], default: auto }
       responses:
-        "200": { description: Ranked, non-writing movie and television candidates. }
-        "401": { $ref: "#/components/responses/Error" }
-        "422": { $ref: "#/components/responses/Error" }
-        "428": { $ref: "#/components/responses/Error" }
-        "502": { $ref: "#/components/responses/Error" }
+        '200':
+          description: TmdbSearchResponse
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TmdbSearchResponse'
+        '401':
+          $ref: '#/components/responses/Error'
+        '422':
+          $ref: '#/components/responses/Error'
+        '428':
+          $ref: '#/components/responses/Error'
+        '502':
+          $ref: '#/components/responses/Error'
   /provider-lookups/tmdb/details:
     post:
       operationId: getTmdbDetailsWithRuntimeAccount
@@ -158,11 +167,20 @@ paths:
                   minimum: 1
                   description: Required for episode details.
       responses:
-        "200": { description: Normalized details with provider and external IDs. }
-        "401": { $ref: "#/components/responses/Error" }
-        "422": { $ref: "#/components/responses/Error" }
-        "428": { $ref: "#/components/responses/Error" }
-        "502": { $ref: "#/components/responses/Error" }
+        '200':
+          description: TmdbDetailsResponse
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TmdbDetailsResponse'
+        '401':
+          $ref: '#/components/responses/Error'
+        '422':
+          $ref: '#/components/responses/Error'
+        '428':
+          $ref: '#/components/responses/Error'
+        '502':
+          $ref: '#/components/responses/Error'
   /provider-lookups/tmdb/images/{size}/{fileName}:
     get:
       operationId: getTmdbImage
@@ -193,7 +211,7 @@ paths:
           required: true
           schema: { type: string, format: uuid }
       responses:
-        "200": { description: Bounded, content-sniffed front artwork bytes. }
+        "200": { description: "Bounded, content-sniffed front artwork bytes." }
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
@@ -232,7 +250,7 @@ paths:
           required: true
           schema: { type: string, pattern: "^[A-Za-z0-9_-]{1,128}$" }
       responses:
-        "200": { description: Bounded, content-sniffed cover bytes. }
+        "200": { description: "Bounded, content-sniffed cover bytes." }
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
@@ -341,10 +359,18 @@ paths:
                 query: { type: string, minLength: 1, maxLength: 200 }
                 languages: { type: string }
       responses:
-        "200": { description: Exact hash matches or title-fallback candidates. }
-        "401": { $ref: "#/components/responses/Error" }
-        "428": { $ref: "#/components/responses/Error" }
-        "502": { $ref: "#/components/responses/Error" }
+        '200':
+          description: ProviderSubtitleSearchResponse
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderSubtitleSearchResponse'
+        '401':
+          $ref: '#/components/responses/Error'
+        '428':
+          $ref: '#/components/responses/Error'
+        '502':
+          $ref: '#/components/responses/Error'
   /provider-lookups/opensubtitles/download:
     post:
       operationId: downloadOpenSubtitlesWithRuntimeAccount
@@ -384,10 +410,18 @@ paths:
                 fingerprint: { type: string, minLength: 4, maxLength: 16384 }
                 duration: { type: integer, minimum: 1, maximum: 86400 }
       responses:
-        "200": { description: Deduplicated MusicBrainz release-group IDs. }
-        "401": { $ref: "#/components/responses/Error" }
-        "428": { $ref: "#/components/responses/Error" }
-        "502": { $ref: "#/components/responses/Error" }
+        '200':
+          description: AcoustidLookupResponse
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AcoustidLookupResponse'
+        '401':
+          $ref: '#/components/responses/Error'
+        '428':
+          $ref: '#/components/responses/Error'
+        '502':
+          $ref: '#/components/responses/Error'
   /roots:
     get:
       operationId: listRoots
@@ -416,6 +450,9 @@ paths:
       responses:
         "200":
           description: Catalog items scoped to one visible root.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ItemsResponse" }
         "403":
           $ref: "#/components/responses/Error"
   /items/{itemId}:
@@ -447,6 +484,9 @@ paths:
       responses:
         "200":
           description: MKVMaker progress, or an unavailable state.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ConversionEnvelope" }
   /conversions/inbox:
     get:
       operationId: listConversionInbox
@@ -475,6 +515,43 @@ paths:
                     type: array
                     items: { $ref: "#/components/schemas/InboxIso" }
         "401":
+          $ref: "#/components/responses/Error"
+  /items/{itemId}/image/sources:
+    get:
+      operationId: getItemImageSources
+      description: >-
+        Checks readable sidecar, embedded and sibling artwork for a visible item.
+        Configured application exports report cached image availability when present;
+        unknown means the export does not report artwork, not that artwork is absent.
+      parameters:
+        - in: path
+          name: itemId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Image source availability, independently of display success.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sources, requestId]
+                properties:
+                  requestId: { type: string }
+                  sources:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, label, status]
+                      properties:
+                        id: { type: string }
+                        label: { type: string }
+                        status:
+                          type: string
+                          enum: [available, missing, unavailable, unknown, unsupported]
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
           $ref: "#/components/responses/Error"
   /items/{itemId}/image:
     get:
@@ -578,22 +655,26 @@ paths:
           image/webp:
             schema: { type: string, format: binary, maxLength: 33554432 }
       responses:
-        "201":
-          description: Digest-bound no-overwrite install or archive-and-replace mutation preview.
-        "400":
-          $ref: "#/components/responses/Error"
-        "401":
-          $ref: "#/components/responses/Error"
-        "403":
-          $ref: "#/components/responses/Error"
-        "404":
-          $ref: "#/components/responses/Error"
-        "409":
-          $ref: "#/components/responses/Error"
-        "415":
-          $ref: "#/components/responses/Error"
-        "413":
-          $ref: "#/components/responses/Error"
+        '201':
+          description: MutationPreview
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MutationPreview'
+        '400':
+          $ref: '#/components/responses/Error'
+        '401':
+          $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
+        '415':
+          $ref: '#/components/responses/Error'
+        '413':
+          $ref: '#/components/responses/Error'
   /items/{itemId}/subtitles:
     get:
       operationId: getInstalledSubtitles
@@ -604,11 +685,18 @@ paths:
           required: true
           schema: { type: string }
       responses:
-        "200":
-          description: Installed subtitle inventory and the native Jellyfin management capability.
-        "401": { $ref: "#/components/responses/Error" }
-        "404": { $ref: "#/components/responses/Error" }
-        "409": { $ref: "#/components/responses/Error" }
+        '200':
+          description: InstalledSubtitlesResponse
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InstalledSubtitlesResponse'
+        '401':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
   /items/{itemId}/subtitles/installed/{subtitleId}/content:
     get:
       operationId: previewInstalledSubtitle
@@ -623,11 +711,20 @@ paths:
           required: true
           schema: { type: string }
       responses:
-        "200": { description: Parsed cue preview and validation report. }
-        "401": { $ref: "#/components/responses/Error" }
-        "404": { $ref: "#/components/responses/Error" }
-        "409": { $ref: "#/components/responses/Error" }
-        "413": { $ref: "#/components/responses/Error" }
+        '200':
+          description: InstalledSubtitleContent
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InstalledSubtitleContent'
+        '401':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
+        '413':
+          $ref: '#/components/responses/Error'
   /items/{itemId}/subtitles/search:
     get:
       operationId: searchOpenSubtitles
@@ -649,14 +746,16 @@ paths:
           name: query
           schema: { type: string, maxLength: 200 }
       responses:
-        "200":
-          description: >-
-            Downloadable subtitle file matches, release details, hash-match
-            flags, and the movie-hash or title-fallback matching method.
-        "403":
-          $ref: "#/components/responses/Error"
-        "503":
-          $ref: "#/components/responses/Error"
+        '200':
+          description: SubtitleSearchResponse
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubtitleSearchResponse'
+        '403':
+          $ref: '#/components/responses/Error'
+        '503':
+          $ref: '#/components/responses/Error'
   /items/{itemId}/subtitles/provider:
     post:
       operationId: previewOpenSubtitlesInstall
@@ -679,12 +778,16 @@ paths:
                 language: { type: string }
                 hearingImpaired: { type: boolean, default: false }
       responses:
-        "201":
-          description: Digest-bound subtitle install preview.
-        "403":
-          $ref: "#/components/responses/Error"
-        "503":
-          $ref: "#/components/responses/Error"
+        '201':
+          description: MutationPreview
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MutationPreview'
+        '403':
+          $ref: '#/components/responses/Error'
+        '503':
+          $ref: '#/components/responses/Error'
   /items/{itemId}/subtitles/upload:
     post:
       operationId: previewUploadedSubtitleInstall
@@ -714,12 +817,16 @@ paths:
           application/x-ass:
             schema: { type: string, format: binary, maxLength: 10485760 }
       responses:
-        "201":
-          description: Digest-bound subtitle install preview.
-        "403":
-          $ref: "#/components/responses/Error"
-        "415":
-          $ref: "#/components/responses/Error"
+        '201':
+          description: MutationPreview
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MutationPreview'
+        '403':
+          $ref: '#/components/responses/Error'
+        '415':
+          $ref: '#/components/responses/Error'
   /items/{itemId}/metadata:
     get:
       operationId: getItemMetadata
@@ -871,10 +978,14 @@ paths:
                   maxProperties: 32
                   additionalProperties: { type: string, maxLength: 256 }
       responses:
-        "201":
-          description: Digest-bound no-overwrite metadata sidecar preview.
-        "403":
-          $ref: "#/components/responses/Error"
+        '201':
+          description: MutationPreview
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MutationPreview'
+        '403':
+          $ref: '#/components/responses/Error'
   /folders/metadata/sidecar:
     post:
       operationId: previewFolderMetadataSidecar
@@ -945,12 +1056,20 @@ paths:
                   maxProperties: 32
                   additionalProperties: { type: string, maxLength: 256 }
       responses:
-        "201":
-          description: Digest-bound no-overwrite folder sidecar preview.
-        "400": { $ref: "#/components/responses/Error" }
-        "401": { $ref: "#/components/responses/Error" }
-        "403": { $ref: "#/components/responses/Error" }
-        "409": { $ref: "#/components/responses/Error" }
+        '201':
+          description: MutationPreview
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MutationPreview'
+        '400':
+          $ref: '#/components/responses/Error'
+        '401':
+          $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
   /items/{itemId}/metadata/lookup:
     post:
       operationId: lookupMusicMetadata
@@ -1081,10 +1200,14 @@ paths:
               properties:
                 rootId: { type: string }
       responses:
-        "200":
-          description: Synchronous scan summary.
-        "403":
-          $ref: "#/components/responses/Error"
+        '200':
+          description: ScanResponse
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScanResponse'
+        '403':
+          $ref: '#/components/responses/Error'
   /plans:
     post:
       operationId: previewMutationPlan
@@ -1100,6 +1223,9 @@ paths:
       responses:
         "201":
           description: Previewed plan including its digest and warnings.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationPreview" }
         "403":
           $ref: "#/components/responses/Error"
         "503":
@@ -1121,14 +1247,18 @@ paths:
           schema:
             type: string
       responses:
-        "202":
-          description: Mutation job durably queued.
-        "409":
-          $ref: "#/components/responses/Error"
-        "412":
-          $ref: "#/components/responses/Error"
-        "503":
-          $ref: "#/components/responses/Error"
+        '202':
+          description: PlanStatus
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlanStatus'
+        '409':
+          $ref: '#/components/responses/Error'
+        '412':
+          $ref: '#/components/responses/Error'
+        '503':
+          $ref: '#/components/responses/Error'
   /plans/{planId}:
     get:
       operationId: getMutationPlanStatus
@@ -1139,10 +1269,125 @@ paths:
           required: true
           schema: { type: string }
       responses:
-        "200":
-          description: Current previewed, queued, running, completed, failed, expired, or rejected state.
-        "401": { $ref: "#/components/responses/Error" }
-        "404": { $ref: "#/components/responses/Error" }
+        '200':
+          description: PlanStatus
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlanStatus'
+        '401':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+  /items/{itemId}/playback:
+    parameters:
+    - in: path
+      name: itemId
+      required: true
+      schema:
+        type: string
+    get:
+      responses:
+        '200':
+          description: PlaybackPosition
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlaybackPosition'
+    put:
+      responses:
+        '200':
+          description: SavedResponse
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SavedResponse'
+  /conversions/inbox/error:
+    get:
+      responses:
+        '200':
+          description: ConversionError
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversionError'
+  /metadata/tmdb/search:
+    post:
+      responses:
+        '200':
+          description: TmdbSearchResponse
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TmdbSearchResponse'
+  /metadata/tmdb/details:
+    post:
+      responses:
+        '200':
+          description: TmdbDetailsResponse
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TmdbDetailsResponse'
+  /items/{itemId}/subtitles/provider/{fileId}/content:
+    parameters:
+    - in: path
+      name: itemId
+      required: true
+      schema:
+        type: string
+    - in: path
+      name: fileId
+      required: true
+      schema:
+        type: string
+    get:
+      responses:
+        '200':
+          description: SubtitleContent
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubtitleContent'
+  /subtitles/batch-search:
+    post:
+      responses:
+        '200':
+          description: BatchSubtitleResponse
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchSubtitleResponse'
+  /items/{itemId}/core-info:
+    parameters:
+    - in: path
+      name: itemId
+      required: true
+      schema:
+        type: string
+    post:
+      responses:
+        '201':
+          description: MutationPreview
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MutationPreview'
+  /items/{itemId}/subtitles/adjust:
+    parameters:
+    - in: path
+      name: itemId
+      required: true
+      schema:
+        type: string
+    post:
+      responses:
+        '201':
+          description: MutationPreview
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MutationPreview'
 components:
   securitySchemes:
     forwardedIdentity:
@@ -1169,10 +1414,12 @@ components:
           type: array
           items:
             type: object
-            required: [id, available]
+            required: [id, label, available, capabilities]
             properties:
               id: { type: string }
+              label: { type: string }
               available: { type: boolean }
+              capabilities: { type: array, items: { type: string } }
     Session:
       type: object
       required: [username, groups, canEdit]
@@ -1200,6 +1447,7 @@ components:
       properties:
         id: { type: string }
         name: { type: string }
+        logoUrl: { type: string, nullable: true }
         mediaDomains: { type: array, items: { type: string } }
         setupKind: { type: string, enum: [public, apiKey, account] }
         implementationStatus: { type: string, enum: [active, planned] }
@@ -1352,8 +1600,9 @@ components:
         coverUrl: { type: string, format: uri }
     Root:
       type: object
-      required: [id, label, category, scope]
+      required: [id, label, category, scope, available]
       properties:
+        available: { type: boolean }
         id: { type: string }
         label: { type: string }
         category: { type: string }
@@ -1371,6 +1620,10 @@ components:
         sizeBytes: { type: integer, minimum: 0 }
         modifiedNs: { type: integer, minimum: 0 }
         fingerprint: { type: string }
+        videoProbe:
+          anyOf:
+            - { $ref: "#/components/schemas/VideoProbe" }
+            - { type: "null" }
     InboxIso:
       type: object
       required: [name, sizeBytes, modifiedNs]
@@ -1382,6 +1635,8 @@ components:
           description: ISO 9660 primary volume label, when the disc provides one.
         sizeBytes: { type: integer, minimum: 0 }
         modifiedNs: { type: integer, minimum: 0 }
+        hasErrorLog: { type: boolean }
+        outputDir: { type: string }
     IntegrationRefresh:
       type: object
       required: [integrationId, state]
@@ -1541,6 +1796,18 @@ components:
         title: { type: string }
         message: { type: string }
         sources: { type: array, items: { type: string } }
+        currentValue:
+          description: Effective catalog value for the affected field; null when missing.
+        currentSources: { type: array, items: { type: string } }
+        proposedValues:
+          description: Distinct non-filename alternatives for review, not automatic changes.
+          type: array
+          items:
+            type: object
+            required: [value, sources]
+            properties:
+              value: {}
+              sources: { type: array, items: { type: string } }
     MetadataHealthResult:
       type: object
       required: [itemId, rootId, relativePath, mediaKind, health]
@@ -1549,6 +1816,7 @@ components:
         rootId: { type: string }
         relativePath: { type: string }
         mediaKind: { type: string, enum: [video, music, audiobook, podcast, book] }
+        title: { type: string, nullable: true }
         health:
           type: array
           minItems: 1
@@ -1714,3 +1982,616 @@ components:
             message: { type: string }
             requestId: { type: string }
             details: { type: object }
+    VideoProbe:
+      type: object
+      required: [hasEmbeddedSubtitles]
+      properties:
+        fps: { type: number }
+        width: { type: integer }
+        height: { type: integer }
+        codec: { type: string }
+        hasEmbeddedSubtitles: { type: boolean }
+        subtitleLanguages: { type: array, items: { type: string } }
+        subtitleStreams:
+          type: array
+          items:
+            type: object
+            required: [index, codec, isDefault, isForced, isHearingImpaired]
+            properties:
+              index: { type: integer }
+              codec: { type: string }
+              language: { type: string }
+              title: { type: string }
+              isDefault: { type: boolean }
+              isForced: { type: boolean }
+              isHearingImpaired: { type: boolean }
+    Conversion:
+      type: object
+      properties:
+        title: { type: string }
+        mediaKind: { type: string }
+        percent: { type: number }
+        detail: { type: string }
+        sourceIso: { type: string }
+    ConversionEnvelope:
+      type: object
+      required: [available, progress]
+      properties:
+        available: { type: boolean }
+        progress:
+          type: object
+          properties:
+            state: { type: string }
+            conversions: { type: array, items: { $ref: "#/components/schemas/Conversion" } }
+            queued: { type: array, items: { type: string } }
+    MutationPreview:
+      type: object
+      required: [id, digest, expiresAt, actions, warnings]
+      properties:
+        id: { type: string }
+        digest: { type: string }
+        expiresAt: { type: integer }
+        actions:
+          type: array
+          items:
+            type: object
+            properties:
+              kind: { type: string }
+              sourceRelativePath: { type: string }
+              destinationRelativePath: { type: string }
+              replacementRelativePath: { type: string }
+              archivedRelativePath: { type: string }
+        warnings: { type: array, items: { type: string } }
+        affectedConsumers: { type: array, items: { $ref: "#/components/schemas/MetadataConsumer" } }
+    ItemsResponse:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/CatalogItem" } }
+        nextCursor: { type: [string, "null"] }
+    TmdbCandidate:
+      type: object
+      required:
+      - mediaType
+      - tmdbId
+      - title
+      properties:
+        mediaType:
+          anyOf:
+          - const: movie
+          - const: tv
+        tmdbId:
+          type: number
+        title:
+          type: string
+        year:
+          type: number
+          nullable: true
+        overview:
+          type: string
+        voteAverage:
+          type: number
+        voteCount:
+          type: number
+        posterPath:
+          type: string
+          nullable: true
+    TmdbDetails:
+      type: object
+      required:
+      - mediaType
+      - tmdbId
+      - title
+      properties:
+        mediaType:
+          anyOf:
+          - const: movie
+          - const: tv
+          - const: season
+          - const: episode
+        tmdbId:
+          type: number
+        seriesTmdbId:
+          type: number
+        seriesTitle:
+          type: string
+        title:
+          type: string
+        episodeTitle:
+          type: string
+        year:
+          type: number
+          nullable: true
+        overview:
+          type: string
+        voteAverage:
+          type: number
+        voteCount:
+          type: number
+        posterPath:
+          type: string
+          nullable: true
+        stillPath:
+          type: string
+          nullable: true
+        runtimeMinutes:
+          type: number
+          nullable: true
+        season:
+          type: number
+        episode:
+          type: number
+        genres:
+          type: array
+          items:
+            type: string
+        releaseDate:
+          type: string
+          nullable: true
+        firstAirDate:
+          type: string
+          nullable: true
+        airDate:
+          type: string
+          nullable: true
+        crew:
+          type: array
+          items:
+            type: object
+            required:
+            - name
+            - job
+            properties:
+              name:
+                type: string
+              job:
+                type: string
+              department:
+                type: string
+        externalIds:
+          type: object
+          required: []
+          properties:
+            imdbId:
+              type: string
+              nullable: true
+            wikidataId:
+              type: string
+              nullable: true
+          nullable: true
+    Integration:
+      type: object
+      required:
+      - id
+      - label
+      - available
+      - capabilities
+      properties:
+        id:
+          type: string
+        label:
+          type: string
+        available:
+          type: boolean
+        capabilities:
+          type: array
+          items:
+            type: string
+    ConversionInbox:
+      type: object
+      required:
+      - available
+      - pending
+      - processed
+      - failed
+      properties:
+        available:
+          type: boolean
+        pending:
+          type: array
+          items:
+            $ref: '#/components/schemas/InboxIso'
+        processed:
+          type: array
+          items:
+            $ref: '#/components/schemas/InboxIso'
+        failed:
+          type: array
+          items:
+            $ref: '#/components/schemas/InboxIso'
+        filesBaseUrl:
+          type: string
+    PlaybackTarget:
+      type: object
+      required:
+      - id
+      - label
+      - available
+      properties:
+        id:
+          type: string
+        label:
+          type: string
+        available:
+          type: boolean
+        url:
+          anyOf:
+          - type: string
+          - type: 'null'
+
+    TmdbSearchResponse:
+      type: object
+      required:
+      - results
+      - query
+      - year
+      - mediaType
+      - requestId
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/TmdbCandidate'
+        query: &id001
+          type: string
+        year:
+          anyOf:
+          - &id002
+            type: integer
+          - type: 'null'
+        mediaType: *id001
+        requestId: *id001
+        provider: *id001
+    TmdbDetailsResponse:
+      type: object
+      required:
+      - details
+      - requestId
+      properties:
+        details:
+          $ref: '#/components/schemas/TmdbDetails'
+        requestId: *id001
+        provider: *id001
+    AcoustidLookupResponse:
+      type: object
+      required:
+      - provider
+      - releaseGroupIds
+      - requestId
+      properties:
+        provider:
+          const: acoustid
+        releaseGroupIds:
+          type: array
+          items: *id001
+        requestId: *id001
+    SubtitleMatch:
+      type: object
+      required:
+      - providerId
+      - fileId
+      - fileName
+      - language
+      - release
+      - downloadCount
+      - votes
+      - hearingImpaired
+      - hashMatched
+      - machineTranslated
+      - aiTranslated
+      properties:
+        providerId: *id001
+        fileId: *id002
+        fileName: *id001
+        language: *id001
+        release: *id001
+        downloadCount: *id002
+        fps: &id004
+          type: number
+        votes: *id002
+        uploadDate: *id001
+        subFormat: *id001
+        hearingImpaired: &id003
+          type: boolean
+        hashMatched: *id003
+        machineTranslated: *id003
+        aiTranslated: *id003
+        fpsCompatible:
+          anyOf:
+          - *id003
+          - type: 'null'
+    VideoSummary:
+      type: object
+      required:
+      - codec
+      - width
+      - height
+      - fps
+      properties:
+        codec:
+          anyOf:
+          - *id001
+          - type: 'null'
+        width:
+          anyOf:
+          - *id004
+          - type: 'null'
+        height:
+          anyOf:
+          - *id004
+          - type: 'null'
+        fps:
+          anyOf:
+          - *id004
+          - type: 'null'
+    ProviderSubtitleSearchResponse:
+      type: object
+      required:
+      - provider
+      - matchMethod
+      - results
+      - requestId
+      properties:
+        provider:
+          const: opensubtitles
+        matchMethod:
+          enum:
+          - movie-hash
+          - title-fallback
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/SubtitleMatch'
+        requestId: *id001
+    SubtitleSearchResponse:
+      type: object
+      required:
+      - provider
+      - query
+      - languages
+      - matchMethod
+      - results
+      - video
+      - videoSummary
+      - requestId
+      properties:
+        provider:
+          const: opensubtitles
+        query: *id001
+        languages: *id001
+        matchMethod:
+          enum:
+          - movie-hash
+          - title-fallback
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/SubtitleMatch'
+        video:
+          anyOf:
+          - $ref: '#/components/schemas/VideoProbe'
+          - type: 'null'
+        videoSummary:
+          $ref: '#/components/schemas/VideoSummary'
+        requestId: *id001
+    InstalledSubtitle:
+      type: object
+      required:
+      - source
+      - isDefault
+      - isForced
+      - isHearingImpaired
+      - isPreviewable
+      properties:
+        source:
+          enum:
+          - external
+          - embedded
+        itemId: *id001
+        relativePath: *id001
+        streamIndex: *id002
+        sizeBytes: *id004
+        format:
+          anyOf:
+          - *id001
+          - type: 'null'
+        language:
+          anyOf:
+          - *id001
+          - type: 'null'
+        title:
+          anyOf:
+          - *id001
+          - type: 'null'
+        isDefault: *id003
+        isForced: *id003
+        isHearingImpaired: *id003
+        isPreviewable: *id003
+    InstalledSubtitlesResponse:
+      type: object
+      required:
+      - itemId
+      - subtitles
+      - consumers
+      - requestId
+      properties:
+        itemId: *id001
+        subtitles:
+          type: array
+          items:
+            $ref: '#/components/schemas/InstalledSubtitle'
+        consumers:
+          type: array
+          items:
+            $ref: '#/components/schemas/MetadataConsumer'
+        requestId: *id001
+    SubtitleCue:
+      type: object
+      required:
+      - index
+      - startMs
+      - endMs
+      - text
+      properties:
+        index: *id002
+        startMs: *id004
+        endMs: *id004
+        text: *id001
+    SubtitleValidation:
+      type: object
+      required:
+      - cueCount
+      - issueCount
+      - issues
+      properties:
+        cueCount: *id002
+        issueCount: *id002
+        issues:
+          type: array
+          items:
+            type: object
+            required:
+            - cueIndex
+            - kind
+            - message
+            properties:
+              cueIndex: *id002
+              kind: *id001
+              message: *id001
+    InstalledSubtitleContent:
+      type: object
+      required:
+      - cues
+      - truncated
+      - validation
+      - requestId
+      properties:
+        cues:
+          type: array
+          items:
+            $ref: '#/components/schemas/SubtitleCue'
+        truncated: *id003
+        validation:
+          $ref: '#/components/schemas/SubtitleValidation'
+        requestId: *id001
+    SubtitleContent:
+      type: object
+      required:
+      - provider
+      - fileId
+      - cues
+      - truncated
+      - requestId
+      properties:
+        provider:
+          const: opensubtitles
+        fileId: *id002
+        cues:
+          type: array
+          items:
+            $ref: '#/components/schemas/SubtitleCue'
+        truncated: *id003
+        requestId: *id001
+    BatchSubtitleResult:
+      type: object
+      required:
+      - itemId
+      - relativePath
+      - videoSummary
+      - results
+      - matchMethod
+      properties:
+        itemId: *id001
+        relativePath: *id001
+        videoSummary:
+          $ref: '#/components/schemas/VideoSummary'
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/SubtitleMatch'
+        matchMethod:
+          enum:
+          - movie-hash
+          - title-fallback
+    BatchSubtitleResponse:
+      type: object
+      required:
+      - batchResults
+      - requestId
+      properties:
+        batchResults:
+          type: array
+          items:
+            $ref: '#/components/schemas/BatchSubtitleResult'
+        requestId: *id001
+    ScanResponse:
+      type: object
+      required:
+      - rootId
+      - result
+      - requestId
+      properties:
+        rootId: *id001
+        result:
+          type: object
+          required:
+          - filesSeen
+          - itemsIndexed
+          - itemsRemoved
+          - entriesSkipped
+          - skippedPaths
+          properties:
+            filesSeen: *id002
+            itemsIndexed: *id002
+            itemsRemoved: *id002
+            entriesSkipped: *id002
+            skippedPaths:
+              type: array
+              items: *id001
+        requestId: *id001
+    PlanStatus:
+      type: object
+      required:
+      - id
+      - state
+      - requestId
+      properties:
+        id: *id001
+        state:
+          enum:
+          - previewed
+          - queued
+          - running
+          - completed
+          - failed
+          - expired
+          - rejected
+        error:
+          anyOf:
+          - *id001
+          - type: 'null'
+        requestId: *id001
+    PlaybackPosition:
+      type: object
+      required:
+      - position
+      properties:
+        position:
+          anyOf:
+          - *id004
+          - type: 'null'
+    SavedResponse:
+      type: object
+      required:
+      - saved
+      properties:
+        saved:
+          const: true
+    ConversionError:
+      type: object
+      required:
+      - content
+      - requestId
+      properties:
+        content: *id001
+        requestId: *id001

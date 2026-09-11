@@ -25,7 +25,7 @@ pub(super) fn seed_canary_mailbox(config: &AppConfig) -> Result<(), String> {
         .map_err(|error| format!("failed to create canary index directory: {error}"))?;
 
     for message in canary_messages() {
-        let path = account_paths.maildir.join(&message.relative_path);
+        let path = account_paths.maildir.join(message.relative_path);
         fs::create_dir_all(
             path.parent()
                 .ok_or_else(|| "canary mail path has no parent".to_string())?,
@@ -156,13 +156,7 @@ fn canary_messages() -> Vec<CanaryMessage> {
     ]
 }
 
-fn plain_message(
-    subject: &str,
-    from: &str,
-    date: &str,
-    message_id: &str,
-    body: &str,
-) -> String {
+fn plain_message(subject: &str, from: &str, date: &str, message_id: &str, body: &str) -> String {
     format!(
         "From: {from}\r\n\
          To: Canary Reader <reader@canary.invalid>\r\n\

@@ -10,7 +10,6 @@
       repo.search.sources.paperless = {
         displayName = "Documents";
         sourceType = "paperless";
-        aclGroup = "paperless-users";
         appBase = "https://paperless.${vars.domain}";
         settings = {
           exportPath = config.repo.paperless.paths.export;

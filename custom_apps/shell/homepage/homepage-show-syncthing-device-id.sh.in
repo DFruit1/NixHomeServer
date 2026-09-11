@@ -1,0 +1,6 @@
+set -euo pipefail
+
+exec @NIX_SYNCTHING@/bin/syncthing \
+  --config=@NIX_SYNCTHINGCONFIGDIR_QUOTED@ \
+  --data=@NIX_SYNCTHINGDATADIR_QUOTED@ \
+  device-id

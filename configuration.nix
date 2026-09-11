@@ -1,4 +1,4 @@
-{ vars, ... }:
+{ lib, vars, ... }:
 
 let
   catalog = import ./modules/catalog.nix;
@@ -9,5 +9,8 @@ in
     ./modules/Core_Modules
   ]
   ++ map (name: catalog.apps.${name}.module) vars.enabledApps
-  ++ catalog.integrations;
+  ++ map (entry: entry.module) (
+    (import ./lib/select-integrations.nix { inherit lib; })
+      catalog.integrationDefinitions
+      vars.enabledApps);
 }

@@ -2,6 +2,7 @@ mod bootstrap_solr;
 mod config;
 mod db;
 mod extract;
+mod identity;
 mod indexer;
 mod server;
 mod solr;
@@ -15,7 +16,7 @@ fn main() -> ExitCode {
     let command = match std::env::args().nth(1) {
         Some(cmd) => cmd,
         None => {
-            eprintln!("usage: search <serve|index|index-daemon|reconcile|bootstrap-solr>");
+            eprintln!("usage: search <serve|index|index-daemon|reindex|reconcile|bootstrap-solr>");
             return ExitCode::FAILURE;
         }
     };
@@ -35,11 +36,12 @@ fn main() -> ExitCode {
         "serve" => runtime.block_on(server::run()),
         "index" => runtime.block_on(indexer::run_index()),
         "index-daemon" => runtime.block_on(indexer::run_index_daemon()),
+        "reindex" => runtime.block_on(indexer::run_reindex()),
         "reconcile" => runtime.block_on(indexer::run_reconcile()),
         "bootstrap-solr" => runtime.block_on(bootstrap_solr::run()),
         other => {
             eprintln!("unknown command: {other}");
-            eprintln!("usage: search <serve|index|index-daemon|reconcile|bootstrap-solr>");
+            eprintln!("usage: search <serve|index|index-daemon|reindex|reconcile|bootstrap-solr>");
             return ExitCode::FAILURE;
         }
     };

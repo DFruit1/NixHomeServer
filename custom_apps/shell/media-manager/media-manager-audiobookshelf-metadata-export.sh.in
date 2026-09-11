@@ -1,0 +1,92 @@
+set -euo pipefail
+base_url="http://@NIX_VARS_NETWORKING_LOOPBACKIPV4@:@NIX_VARS_NETWORKING_PORTS_AUDIOBOOKSHELF@"
+output=@NIX_AUDIOBOOKSHELFMETADATACACHE_QUOTED@
+service_ready=0
+for _ in $(seq 1 30); do
+  if (exec 3<>/dev/tcp/@NIX_VARS_NETWORKING_LOOPBACKIPV4@/@NIX_VARS_NETWORKING_PORTS_AUDIOBOOKSHELF@) 2>/dev/null; then
+    service_ready=1
+    break
+  fi
+  sleep 2
+done
+(( service_ready == 1 )) || {
+  echo "Audiobookshelf did not become ready before metadata export" >&2
+  exit 1
+}
+password="$(< @NIX_CONFIG_AGE_SECRETS_ABSBOOTSTRAPPASS_PATH@)"
+login="$(jq -cn \
+  --arg username @NIX_VARS_KANIDMADMINUSER_QUOTED@ \
+  --arg password "$password" \
+  '{username:$username,password:$password}')"
+response="$(printf '%s' "$login" | curl --fail --silent --show-error --max-time 30 \
+  -X POST -H 'Content-Type: application/json' --data-binary @- "$base_url/login")"
+unset password login
+token="$(jq -r '.user.token // .user.accessToken // .token // .accessToken // empty' <<<"$response")"
+[[ "$token" =~ ^[A-Za-z0-9._~+/-]+$ ]] || exit 1
+libraries="$(printf 'header = "Authorization: Bearer %s"\n' "$token" \
+  | curl --config - --fail --silent --show-error --max-time 60 --max-filesize 16777216 \
+    "$base_url/api/libraries")"
+work="$(mktemp -d)"
+trap 'rm -rf -- "$work"' EXIT
+: >"$work/entries.jsonl"
+while IFS= read -r library_id; do
+  [[ -n "$library_id" ]] || continue
+  printf 'header = "Authorization: Bearer %s"\n' "$token" \
+    | curl --config - --fail --silent --show-error --max-time 90 --max-filesize 16777216 \
+      --get "$base_url/api/libraries/$library_id/items" \
+      --data-urlencode 'limit=10000' --data-urlencode 'page=0' --data-urlencode 'minified=0' \
+    | jq -ce \
+      --arg shared @NIX_VARS_SHAREDROOT_QUOTED@ \
+      --arg users @NIX_VARS_USERSROOT_QUOTED@ \
+      --argjson observedAt "$(date +%s)" '
+      def clean($n): if type == "string" then .[0:$n] else null end;
+      def names: map(if type == "object" then .name else . end | clean(500)) | map(select(. != null));
+      def location:
+        . as $path
+        | if startswith($shared + "/_Audiobooks/") then {rootId:"shared-audiobooks",ownerUsername:null,relativePath:ltrimstr($shared + "/_Audiobooks/")}
+          elif startswith($shared + "/_Podcasts/") then {rootId:"shared-podcasts",ownerUsername:null,relativePath:ltrimstr($shared + "/_Podcasts/")}
+          elif startswith($users + "/") then
+            (ltrimstr($users + "/") | split("/")) as $parts
+            | select(($parts|length) >= 3 and ($parts[1] == "_Audiobooks" or $parts[1] == "_Podcasts") and ($parts[0] | test("^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")))
+            | (if $parts[1] == "_Podcasts" then "podcasts" else "audiobooks" end) as $category
+            | {rootId:("personal-" + $category),ownerUsername:$parts[0],relativePath:($parts[2:]|join("/"))}
+          else empty end;
+      select((.total // 0) <= 10000)
+      | .results[]
+      | select((.path|type) == "string" and (.path|length) <= 4096)
+      | (.path | location) as $location
+      | (.media.metadata // {}) as $metadata
+      | (.media // {}) as $media
+      | $location + {
+          itemId:(.id|clean(128)), observedAt:$observedAt,
+          mediaType:(if ($location.rootId | endswith("podcasts")) then "podcast" else "audiobook" end),
+          title:($metadata.title|clean(500)),
+          subtitle:($metadata.subtitle|clean(500)),
+          authors:(if ($metadata.authors|type) == "array" then (($metadata.authors // [])|names)[:64] elif ($metadata.author|type) == "string" then [($metadata.author|clean(500))] else [] end),
+          narrators:(($metadata.narrators // [])|names)[:64],
+          series:((($metadata.series // [])[0].name)|clean(500)),
+          volumeNumber:((($metadata.series // [])[0].sequence)|clean(64)),
+          publisher:($metadata.publisher|clean(500)),
+          isbn:($metadata.isbn|clean(64)), language:($metadata.language|clean(32)),
+          genres:(($metadata.genres // [])|names)[:64],
+          description:($metadata.description|clean(20000)),
+          year:(try ($metadata.publishedYear|tonumber) catch null),
+          publishedDate:(($metadata.publishedDate // $metadata.releaseDate)|clean(32)),
+          explicit:(if ($metadata.explicit|type) == "boolean" then $metadata.explicit else null end),
+          tags:(($media.tags // $metadata.tags // [])|names)[:64],
+          chapters:(($media.chapters // [])[:512] | map({id:(.id|clean(128)),title:(.title|clean(500)),start:.start,end:.end})),
+          audioFiles:(($media.audioFiles // [])[:512] | map({index:.index,filename:(.metadata.filename|clean(500)),size:.metadata.size,duration:.duration,codec:(.codec|clean(32)),bitRate:.bitRate,channels:.channels,language:(.language|clean(32)),trackNumber:(.trackNumFromMeta // .trackNumFromFilename),discNumber:(.discNumFromMeta // .discNumFromFilename),embeddedCoverArt:(.embeddedCoverArt|clean(32)),error:(.error|clean(500))})),
+          ebookFile:(if ($media.ebookFile|type) == "object" then {filename:($media.ebookFile.metadata.filename|clean(500)),size:$media.ebookFile.metadata.size,extension:($media.ebookFile.metadata.ext|clean(16))} else null end),
+          providerIds:({isbn:($metadata.isbn|clean(64)),asin:($metadata.asin|clean(64)),itunes:($metadata.itunesId|tostring|clean(128)),feedUrl:($metadata.feedURL|clean(2048))}|with_entries(select(.value != null and .value != "null"))),
+          isLocked:(($metadata.isLocked // false) == true)
+        }
+      | select(.relativePath != "" and (.relativePath | split("/") | all(. != "" and . != "." and . != "..")))' \
+    >>"$work/entries.jsonl"
+done < <(jq -r '(.libraries // .)[]?.id // empty' <<<"$libraries")
+tmp="$(mktemp "$(dirname "$output")/.metadata.XXXXXX")"
+jq -sc '{schemaVersion:1,observedAt:(now|floor),entries:.} | select((.entries|length) <= 10000)' \
+  "$work/entries.jsonl" >"$tmp"
+chmod 0640 "$tmp"
+mv -f -- "$tmp" "$output"
+trap - EXIT
+rm -rf -- "$work"

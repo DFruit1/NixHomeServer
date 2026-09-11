@@ -1,6 +1,7 @@
 { appPackages, config, lib, oauth2Proxy, pkgs, vars, ... }:
 
 let
+  renderShell = import ../../../lib/render-shell-template.nix { inherit lib; };
   serviceUser = "homepage";
   serviceGroup = "homepage";
   listenAddress = vars.networking.loopbackIPv4;
@@ -8,22 +9,13 @@ let
   host = "homepage.${vars.domain}";
 
   photosHost = "photos.${vars.domain}";
-  sharePhotosHost = "sharephotos.${vars.domain}";
-  filesHost = "files.${vars.domain}";
   paperlessHost = "paperless.${vars.domain}";
   audiobooksHost = "audiobooks.${vars.domain}";
   videosHost = "videos.${vars.domain}";
   booksHost = "books.${vars.domain}";
   wikiHost = "wiki.${vars.domain}";
   rssHost = "rss.${vars.domain}";
-  passwordsHost = "passwords.${vars.domain}";
   emailsHost = "emails.${vars.domain}";
-  downloadsHost = "ytdownload.${vars.domain}";
-  chaptarrHost = "chaptarr.${vars.domain}";
-  sonarrHost = "sonarr.${vars.domain}";
-  radarrHost = "radarr.${vars.domain}";
-  prowlarrHost = "prowlarr.${vars.domain}";
-  torrentsHost = "torrents.${vars.domain}";
   backupsHost = vars.kopiaDomain;
   mediaManagerHost = "media.${vars.domain}";
   syncthingHost = "syncthing.${vars.domain}";
@@ -116,21 +108,13 @@ let
   immichEnabled = hostEnabled photosHost;
   paperlessEnabled = hostEnabled paperlessHost;
   audiobookshelfEnabled = hostEnabled audiobooksHost;
-  filesEnabled = hostEnabled filesHost;
   filesSftpEnabled = builtins.hasAttr "files-sftp-sshd" config.systemd.services;
   jellyfinEnabled = hostEnabled videosHost;
   offlineMediaEnabledForHomepage = offlineMediaEnabled;
   kavitaEnabled = hostEnabled booksHost;
   kiwixEnabled = hostEnabled wikiHost;
   freshrssEnabled = hostEnabled rssHost;
-  vaultwardenEnabled = hostEnabled passwordsHost;
   mailArchiveEnabled = hostEnabled emailsHost;
-  youtubeDownloaderEnabled = hostEnabled downloadsHost;
-  chaptarrEnabled = hostEnabled chaptarrHost;
-  sonarrEnabled = hostEnabled sonarrHost;
-  radarrEnabled = hostEnabled radarrHost;
-  prowlarrEnabled = hostEnabled prowlarrHost;
-  qbittorrentEnabled = hostEnabled torrentsHost;
   mediaManagerEnabled = hostEnabled mediaManagerHost;
   kopiaEnabled = hostEnabled backupsHost;
   personalPath = relativePath: "/${relativePath}";
@@ -139,1157 +123,124 @@ let
   vaultRuntimeDir = "/run/homepage-vault";
   deploySettingsDir = "/var/lib/deploy-settings";
   buildModeStateFile = "${deploySettingsDir}/build-mode.json";
-  nixBuildModeApply = pkgs.writeShellScript "homepage-nix-build-mode-apply" ''
-    set -euo pipefail
-
-    state_file=${lib.escapeShellArg buildModeStateFile}
-    new_file="$state_file.new"
-
-    cleanup() { rm -f "$new_file"; }
-    trap cleanup EXIT
-
-    ${pkgs.coreutils}/bin/cat > "$new_file"
-    mode="$(${pkgs.jq}/bin/jq -er '.buildMode // empty' "$new_file")" || {
-      echo "invalid build mode payload" >&2
-      exit 1
-    }
-    case "$mode" in
-      local|remote|balanced|maximum-effort) ;;
-      *)
-        echo "build mode must be local, remote, balanced, or maximum-effort" >&2
-        exit 1
-        ;;
-    esac
-    ${pkgs.jq}/bin/jq -c '{schemaVersion: 1, buildMode: $mode, updatedAt: (now | todateiso8601)}' \
-      --arg mode "$mode" "$new_file" > "$new_file.canonical"
-    ${pkgs.coreutils}/bin/mv -f "$new_file.canonical" "$new_file"
-    ${pkgs.coreutils}/bin/chmod 0644 "$new_file"
-    ${pkgs.coreutils}/bin/mv -f "$new_file" "$state_file"
-    ${pkgs.coreutils}/bin/cat "$state_file"
-  '';
+  nixBuildModeApply = pkgs.writeShellScript "homepage-nix-build-mode-apply" (renderShell ../../../custom_apps/shell/homepage/homepage-nix-build-mode-apply.sh.in {
+    BUILDMODESTATEFILE_QUOTED = lib.escapeShellArg buildModeStateFile;
+    COREUTILS = pkgs.coreutils;
+    JQ = pkgs.jq;
+  });
   powerScheduleCfg = config.nixhomeserver.powerSchedule;
-  powerScheduleApply = pkgs.writeShellScript "homepage-power-schedule-apply" ''
-    set -euo pipefail
-
-    state_file=${lib.escapeShellArg powerScheduleCfg.stateFile}
-    validator=${powerScheduleCfg.validator}
-    new_file="$state_file.new"
-
-    cleanup() { rm -f "$new_file"; }
-    trap cleanup EXIT
-
-    ${pkgs.coreutils}/bin/cat > "$new_file"
-    canonical="$(${pkgs.jq}/bin/jq -cerf "$validator" "$new_file")" || {
-      echo "invalid power schedule payload" >&2
-      exit 1
-    }
-    ${pkgs.jq}/bin/jq -c '. + {schemaVersion: 1, updatedAt: (now | todateiso8601)}' <<<"$canonical" > "$new_file"
-    ${pkgs.coreutils}/bin/chmod 0644 "$new_file"
-    ${pkgs.coreutils}/bin/mv -f "$new_file" "$state_file"
-    ${pkgs.coreutils}/bin/cat "$state_file"
-  '';
+  powerScheduleApply = pkgs.writeShellScript "homepage-power-schedule-apply" (renderShell ../../../custom_apps/shell/homepage/homepage-power-schedule-apply.sh.in {
+    POWERSCHEDULECFG_STATEFILE_QUOTED = lib.escapeShellArg powerScheduleCfg.stateFile;
+    POWERSCHEDULECFG_VALIDATOR = powerScheduleCfg.validator;
+    COREUTILS = pkgs.coreutils;
+    JQ = pkgs.jq;
+  });
   kanidmVaultUrl = "https://${vars.kanidmDomain}:${toString vars.networking.ports.kanidm}";
-  installSftpKey = pkgs.writeShellScript "homepage-install-sftp-key" ''
-    set -euo pipefail
-
-    username="''${1:-}"
-    if ! ${pkgs.gnugrep}/bin/grep -Eq '^[a-z][a-z0-9._-]{0,63}$' <<<"$username"; then
-      echo "invalid username" >&2
-      exit 1
-    fi
-
-    public_key="$(${pkgs.coreutils}/bin/cat | ${pkgs.coreutils}/bin/tr -d '\r' | ${pkgs.gnused}/bin/sed -e 's/[[:space:]]*$//')"
-    case "$public_key" in
-      "ssh-ed25519 "*|"ssh-rsa "*|"ecdsa-sha2-nistp256 "*|"ecdsa-sha2-nistp384 "*|"ecdsa-sha2-nistp521 "*|"sk-ssh-ed25519@openssh.com "*|"sk-ecdsa-sha2-nistp256@openssh.com "*)
-        ;;
-      *)
-        echo "invalid OpenSSH public key" >&2
-        exit 1
-        ;;
-    esac
-
-    if printf '%s' "$public_key" | ${pkgs.gnugrep}/bin/grep -q '[[:cntrl:]]'; then
-      echo "invalid control character in public key" >&2
-      exit 1
-    fi
-
-    key_check="$(${pkgs.coreutils}/bin/mktemp)"
-    trap '${pkgs.coreutils}/bin/rm -f "$key_check"' EXIT
-    ${pkgs.coreutils}/bin/printf '%s\n' "$public_key" > "$key_check"
-    if ! ${pkgs.openssh}/bin/ssh-keygen -l -f "$key_check" >/dev/null 2>&1; then
-      echo "invalid or corrupted OpenSSH public key" >&2
-      exit 1
-    fi
-    ${pkgs.coreutils}/bin/rm -f "$key_check"
-    trap - EXIT
-
-    ${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root ${lib.escapeShellArg sftpAuthorizedKeysDir}
-    exec 9>"${sftpAuthorizedKeysDir}/.$username.lock"
-    ${pkgs.util-linux}/bin/flock -x 9
-    target="${sftpAuthorizedKeysDir}/$username"
-    if [[ -L "$target" ]]; then
-      echo "refusing symlinked authorized-keys file" >&2
-      exit 1
-    fi
-    tmp="$(${pkgs.coreutils}/bin/mktemp ${lib.escapeShellArg "${sftpAuthorizedKeysDir}/.${serviceUser}.XXXXXX"})"
-    trap 'rm -f "$tmp"' EXIT
-    if [[ -e "$target" ]]; then
-      owner_group="$(${pkgs.coreutils}/bin/stat -c '%U:%G' "$target")"
-      mode="$(${pkgs.coreutils}/bin/stat -c '%a' "$target")"
-      if [[ "$owner_group" != "root:root" || "$mode" != "644" || ! -f "$target" ]]; then
-        echo "existing authorized-keys file has unsafe ownership, mode, or type" >&2
-        exit 1
-      fi
-      ${pkgs.coreutils}/bin/cat "$target" > "$tmp"
-    fi
-    if ! ${pkgs.gnugrep}/bin/grep -Fqx -- "$public_key" "$tmp"; then
-      key_count="$(${pkgs.gnugrep}/bin/grep -cve '^[[:space:]]*$' "$tmp" || true)"
-      if (( key_count >= 10 )); then
-        echo "at most 10 SFTP device keys may be registered; ask an administrator to retire an old key" >&2
-        exit 1
-      fi
-      ${pkgs.coreutils}/bin/printf '%s\n' "$public_key" >> "$tmp"
-    fi
-    ${pkgs.coreutils}/bin/chown root:root "$tmp"
-    ${pkgs.coreutils}/bin/chmod 0644 "$tmp"
-    ${pkgs.coreutils}/bin/mv "$tmp" "$target"
-
-    if ! ${pkgs.gnugrep}/bin/grep -Fqx -- "$public_key" "$target"; then
-      echo "saved authorized-keys file does not contain submitted key" >&2
-      exit 1
-    fi
-
-    owner_group="$(${pkgs.coreutils}/bin/stat -c '%U:%G' "$target")"
-    mode="$(${pkgs.coreutils}/bin/stat -c '%a' "$target")"
-    if [ "$owner_group" != "root:root" ] || [ "$mode" != "644" ]; then
-      echo "saved public key has incorrect ownership or mode: $owner_group $mode" >&2
-      exit 1
-    fi
-
-    key_count="$(${pkgs.gnugrep}/bin/grep -cve '^[[:space:]]*$' "$target")"
-    ${pkgs.coreutils}/bin/printf 'saved %s owner=%s mode=%s registered-keys=%s\n' "$target" "$owner_group" "$mode" "$key_count"
-  '';
-  showSyncthingDeviceId = pkgs.writeShellScript "homepage-show-syncthing-device-id" ''
-    set -euo pipefail
-
-    exec ${pkgs.syncthing}/bin/syncthing \
-      --config=${lib.escapeShellArg syncthingConfigDir} \
-      --data=${lib.escapeShellArg syncthingDataDir} \
-      device-id
-  '';
-  vaultSyncthingKeyHelper = pkgs.writeShellScript "homepage-syncthing-api-key" ''
-    set -euo pipefail
-
-    action="''${1:-}"
-    config_file=${lib.escapeShellArg "${syncthingConfigDir}/config.xml"}
-    case "$action" in
-      show|regenerate)
-        ;;
-      *)
-        echo "action must be show or regenerate" >&2
-        exit 1
-        ;;
-    esac
-
-    if [[ ! -f "$config_file" || -L "$config_file" ]]; then
-      echo "syncthing config file is missing" >&2
-      exit 1
-    fi
-
-    owner_group="$(${pkgs.coreutils}/bin/stat -c '%U:%G' "$config_file")"
-    if [[ "$owner_group" != "syncthing:syncthing" ]]; then
-      echo "syncthing config file has unexpected ownership: $owner_group" >&2
-      exit 1
-    fi
-
-    key_count="$(${pkgs.gnugrep}/bin/grep -c '<apikey>' "$config_file" || true)"
-    if [[ "$key_count" != "1" ]]; then
-      echo "expected exactly one apikey element in the syncthing config, found $key_count" >&2
-      exit 1
-    fi
-
-    gui_address="$(${pkgs.libxml2}/bin/xmllint --xpath 'string(configuration/gui/address)' "$config_file")"
-    rest_port="''${gui_address##*:}"
-    rest_url="http://127.0.0.1:$rest_port"
-
-    if [[ "$action" == "show" ]]; then
-      key="$(${pkgs.libxml2}/bin/xmllint --xpath 'string(configuration/gui/apikey)' "$config_file")"
-      if [[ -z "$key" ]]; then
-        echo "syncthing api key is empty" >&2
-        exit 1
-      fi
-      ${pkgs.coreutils}/bin/printf '%s' "$key"
-      exit 0
-    fi
-
-    new_key="$(${pkgs.openssl}/bin/openssl rand -hex 32)"
-    ${pkgs.coreutils}/bin/install -d -m 0755 /run/homepage-vault
-    exec 8>/run/homepage-vault/syncthing-api-key.lock
-    ${pkgs.util-linux}/bin/flock -x 8
-
-    was_active="$(${pkgs.systemd}/bin/systemctl is-active syncthing.service || true)"
-
-    if [[ "$was_active" == "active" ]]; then
-      ${pkgs.systemd}/bin/systemctl stop syncthing.service
-    fi
-
-    if ! ${pkgs.python3}/bin/python3 - "$config_file" "$new_key" <<'PY'
-import re
-import sys
-
-path, new_key = sys.argv[1:3]
-with open(path, "r", encoding="utf-8") as handle:
-    text = handle.read()
-pattern = re.compile(r"(<apikey>)[^<]*(</apikey>)")
-if not pattern.search(text):
-    raise SystemExit("apikey element not found in the syncthing config")
-replacement = pattern.sub(lambda match: match.group(1) + new_key + match.group(2), text, count=1)
-with open(path + ".homepage-vault-new", "w", encoding="utf-8") as handle:
-    handle.write(replacement)
-PY
-    then
-      if [[ "$was_active" == "active" ]]; then
-        ${pkgs.systemd}/bin/systemctl start syncthing.service
-      fi
-      echo "syncthing api key update failed" >&2
-      exit 1
-    fi
-
-    ${pkgs.coreutils}/bin/mv "$config_file.homepage-vault-new" "$config_file"
-    ${pkgs.coreutils}/bin/chown syncthing:syncthing "$config_file"
-    ${pkgs.coreutils}/bin/chmod 600 "$config_file"
-    if ! ${pkgs.libxml2}/bin/xmllint --noout "$config_file" >/dev/null 2>&1; then
-      echo "updated syncthing config failed xml validation" >&2
-      exit 1
-    fi
-
-    if [[ "$was_active" == "active" ]]; then
-      ${pkgs.systemd}/bin/systemctl start syncthing.service
-      attempt=0
-      until ${pkgs.curl}/bin/curl --fail --silent --max-time 5 -H "X-API-Key: $new_key" "$rest_url/rest/system/ping" >/dev/null 2>&1; do
-        attempt=$((attempt + 1))
-        if (( attempt > 30 )); then
-          echo "syncthing did not accept the regenerated api key" >&2
-          exit 1
-        fi
-        sleep 2
-      done
-    fi
-
-    ${pkgs.coreutils}/bin/printf '%s' "$new_key"
-  '';
-  sftpKeyListHelper = pkgs.writeShellScript "homepage-sftp-key-list" ''
-    set -euo pipefail
-
-    username="''${1:-}"
-    if ! ${pkgs.gnugrep}/bin/grep -Eq '^[a-z][a-z0-9._-]{0,63}$' <<<"$username"; then
-      echo "invalid username" >&2
-      exit 1
-    fi
-
-    target=${lib.escapeShellArg sftpAuthorizedKeysDir}/"$username"
-    if [[ -L "$target" || ! -f "$target" ]]; then
-      exit 0
-    fi
-    owner_group="$(${pkgs.coreutils}/bin/stat -c '%U:%G' "$target")"
-    mode="$(${pkgs.coreutils}/bin/stat -c '%a' "$target")"
-    if [[ "$owner_group" != "root:root" || "$mode" != "644" ]]; then
-      echo "authorized-keys file has unsafe ownership or mode" >&2
-      exit 1
-    fi
-    if ! ${pkgs.openssh}/bin/ssh-keygen -lf "$target" >/dev/null 2>&1; then
-      echo "authorized-keys file failed structural validation" >&2
-      exit 1
-    fi
-    exec ${pkgs.openssh}/bin/ssh-keygen -lf "$target"
-  '';
-  freshrssApiPasswordHelper = pkgs.writeShellScript "homepage-freshrss-api-password" ''
-    set -euo pipefail
-
-    username="''${1:-}"
-    if ! ${pkgs.gnugrep}/bin/grep -Eq '^[a-z][a-z0-9._-]{0,63}$' <<<"$username"; then
-      echo "invalid username" >&2
-      exit 1
-    fi
-
-    password="$(${pkgs.coreutils}/bin/cat | ${pkgs.coreutils}/bin/tr -d '\r\n')"
-    if [[ -z "$password" ]] || ! ${pkgs.gnugrep}/bin/grep -Eq '^[A-Za-z0-9]{16,128}$' <<<"$password"; then
-      echo "invalid freshrss api password payload" >&2
-      exit 1
-    fi
-
-    data_dir=${lib.escapeShellArg config.repo.freshrss.stateDir}
-    output="$(
-      ${pkgs.util-linux}/bin/setpriv --reuid freshrss --regid freshrss --init-groups \
-        env FRESHRSS_DATA_PATH="$data_dir" HOME="$data_dir" \
-        ${config.services.freshrss.package}/cli/update-user.php \
-        --user "$username" --api-password "$password" 2>&1
-    )" || {
-      printf '%s\n' "$output" >&2
-      echo "freshrss api password could not be set; sign in to the Feeds app once, then try again" >&2
-      exit 1
-    }
-    echo "freshrss api password updated for $username"
-  '';
-  kavitaApiKeysHelper = pkgs.writeShellScript "homepage-kavita-keys" ''
-    set -euo pipefail
-
-    username="''${1:-}"
-    if ! ${pkgs.gnugrep}/bin/grep -Eq '^[a-z][a-z0-9._-]{0,63}$' <<<"$username"; then
-      echo "invalid username" >&2
-      exit 1
-    fi
-
-    payload="$(${pkgs.coreutils}/bin/cat)"
-
-    exec ${pkgs.python3}/bin/python3 - \
-      ${lib.escapeShellArg "/var/lib/kavita/config/kavita.db"} \
-      ${lib.escapeShellArg config.age.secrets.kavitaTokenKey.path} \
-      ${lib.escapeShellArg "http://${vars.networking.loopbackIPv4}:${toString vars.networking.ports.kavita}"} \
-      "$username" <<'PY'
-import base64
-import hashlib
-import hmac
-import json
-import sqlite3
-import sys
-import time
-import urllib.error
-import urllib.request
-
-database_path, token_key_path, base_url, username = sys.argv[1:5]
-try:
-    payload = json.loads(sys.stdin.read() or "{}")
-except ValueError:
-    raise SystemExit("invalid request payload")
-action = payload.get("action")
-if action not in ("list", "create", "rotate", "delete"):
-    raise SystemExit("action must be list, create, rotate, or delete")
-
-with sqlite3.connect(f"file:{database_path}?mode=ro", uri=True, timeout=5) as database:
-    row = database.execute(
-        "select Id, UserName from AspNetUsers where UserName = ? limit 1",
-        (username,),
-    ).fetchone()
-if row is None:
-    raise SystemExit("Kavita account not found; sign in to the Books app once, then try again")
-user_id = str(row[0])
-user_name = row[1]
-
-token_key = open(token_key_path, "rb").read().strip()
-if len(token_key) < 32:
-    raise SystemExit("Kavita token key is malformed")
-
-def encode(value):
-    return base64.urlsafe_b64encode(value).rstrip(b"=")
-
-now = int(time.time())
-header = encode(json.dumps({"alg": "HS512", "typ": "JWT"}, separators=(",", ":")).encode())
-claims = {"name": user_name, "nameid": user_id, "role": ["Login"], "nbf": now, "iat": now, "exp": now + 300}
-unsigned = header + b"." + encode(json.dumps(claims, separators=(",", ":")).encode())
-token = (unsigned + b"." + encode(hmac.new(token_key, unsigned, hashlib.sha512).digest())).decode()
-
-def request(method, path, body=None):
-    data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(
-        base_url + path,
-        data=data,
-        method=method,
-        headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
-    )
-    with urllib.request.urlopen(req, timeout=30) as response:
-        body_text = response.read().decode()
-    return json.loads(body_text) if body_text else None
-
-try:
-    if action == "list":
-        keys = request("GET", "/api/Users/auth-keys")
-        if not isinstance(keys, list):
-            raise SystemExit("Kavita returned an unexpected auth key list")
-        print(json.dumps({"keys": keys}))
-    elif action == "create":
-        key = request("POST", "/api/Users/create-auth-key", {"name": payload.get("name"), "keyLength": 32})
-        print(json.dumps({"key": key}))
-    elif action == "rotate":
-        keys = request("GET", "/api/Users/auth-keys")
-        name = next((entry.get("name") for entry in keys if entry.get("id") == int(payload["authKeyId"])), None)
-        if name is None:
-            raise SystemExit("API key not found for this account")
-        key = request(
-            "POST",
-            f"/api/Users/rotate-auth-key?authKeyId={int(payload['authKeyId'])}",
-            {"name": name, "keyLength": 32},
-        )
-        print(json.dumps({"key": key}))
-    elif action == "delete":
-        request("DELETE", f"/api/Users/auth-key?authKeyId={int(payload['authKeyId'])}")
-        print(json.dumps({"deleted": int(payload["authKeyId"])}))
-except urllib.error.HTTPError as error:
-    detail = error.read().decode(errors="replace")[:400]
-    raise SystemExit(f"Kavita request failed ({error.code}): {detail}")
-PY
-  '';
-  offlineMediaStatus = pkgs.writeShellScript "homepage-offline-media-status" ''
-    set -euo pipefail
-
-    username="''${1:-}"
-    if ! ${pkgs.gnugrep}/bin/grep -Eq '^[a-z][a-z0-9._-]{0,63}$' <<<"$username"; then
-      echo "invalid username" >&2
-      exit 1
-    fi
-
-    state_file=${lib.escapeShellArg offlineMediaStateFile}
-    folder_specs_json=${lib.escapeShellArg offlineMediaFolderSpecsJson}
-    users_root=${lib.escapeShellArg vars.usersRoot}
-    runtime_error=""
-    runtime_devices='[]'
-
-    if [[ -f "$state_file" ]]; then
-      state="$(${pkgs.jq}/bin/jq -c '
-        if .version == 2 then .
-        else {
-          version: 2,
-          users: (
-            to_entries
-            | map(select((.value.deviceId // "") != ""))
-            | map({
-              key: .key,
-              value: {
-                devices: [{
-                  deviceId: .value.deviceId,
-                  deviceName: (.value.deviceName // (.key + "-media")),
-                  createdAt: (.value.updatedAt // ""),
-                  updatedAt: (.value.updatedAt // "")
-                }]
-              }
-            })
-            | from_entries
-          )
-        }
-        end' "$state_file")"
-    else
-      state='{"version":2,"users":{}}'
-    fi
-    if ! ${pkgs.jq}/bin/jq -e '${offlineMediaStateValidationJq}' <<<"$state" >/dev/null; then
-      echo "offline media enrollment state is invalid" >&2
-      exit 1
-    fi
-
-    api_key_file="$(${pkgs.coreutils}/bin/mktemp)"
-    headers_file="$(${pkgs.coreutils}/bin/mktemp)"
-    trap 'rm -f "$api_key_file" "$headers_file"' EXIT
-    if ! ${pkgs.libxml2}/bin/xmllint \
-      --xpath 'string(configuration/gui/apikey)' \
-      ${lib.escapeShellArg syncthingConfigDir}/config.xml \
-      >"$api_key_file" 2>/dev/null \
-      || [[ ! -s "$api_key_file" ]]; then
-      runtime_error="Syncthing configuration is unavailable"
-    else
-      { ${pkgs.coreutils}/bin/printf 'X-API-Key: '; ${pkgs.coreutils}/bin/cat "$api_key_file"; } >"$headers_file"
-
-      api() {
-        local path="$1"
-        ${pkgs.curl}/bin/curl -fsSL \
-          --connect-timeout 1 \
-          --max-time 3 \
-          -H "@$headers_file" \
-          "http://127.0.0.1:8384$path"
-      }
-
-      if api /rest/system/ping >/dev/null 2>&1; then
-        if connections="$(api /rest/system/connections 2>/dev/null)" \
-          && device_stats="$(api /rest/stats/device 2>/dev/null)"; then
-          while IFS=$'\t' read -r enrolled_device_id; do
-            [[ -n "$enrolled_device_id" ]] || continue
-            completion_rows='[]'
-            sync_error=""
-            while IFS=$'\t' read -r folder_id_prefix; do
-              folder_id="$folder_id_prefix-$username"
-              if completion="$(api "/rest/db/completion?device=$enrolled_device_id&folder=$folder_id" 2>/dev/null)"; then
-                completion_rows="$(${pkgs.jq}/bin/jq \
-                  --argjson completion "$completion" \
-                  '. + [$completion]' \
-                  <<<"$completion_rows")"
-              else
-                sync_error="One or more folder statuses could not be read"
-              fi
-            done < <(${pkgs.jq}/bin/jq -r '.[] | [.folderIdPrefix] | @tsv' <<<"$folder_specs_json")
-
-            runtime_device="$(${pkgs.jq}/bin/jq -n \
-              --arg deviceId "$enrolled_device_id" \
-              --arg syncError "$sync_error" \
-              --argjson connections "$connections" \
-              --argjson stats "$device_stats" \
-              --argjson rows "$completion_rows" \
-              '{
-                deviceId: $deviceId,
-                connected: ($connections.connections[$deviceId].connected // false),
-                lastSeen: ($stats[$deviceId].lastSeen // null),
-                needBytes: ([$rows[]?.needBytes // 0] | add // 0),
-                needItems: ([$rows[]?.needItems // 0] | add // 0),
-                completion: (
-                  ([$rows[]?.globalBytes // 0] | add // 0) as $total
-                  | ([$rows[]?.needBytes // 0] | add // 0) as $needed
-                  | if $total > 0 then ((($total - $needed) * 10000 / $total) | floor / 100) else 100 end
-                ),
-                syncError: (if $syncError == "" then null else $syncError end)
-              }')"
-            runtime_devices="$(${pkgs.jq}/bin/jq \
-              --argjson device "$runtime_device" \
-              '. + [$device]' \
-              <<<"$runtime_devices")"
-          done < <(${pkgs.jq}/bin/jq -r --arg username "$username" '.users[$username].devices[]?.deviceId' <<<"$state")
-        else
-          runtime_error="Syncthing status is temporarily unavailable"
-        fi
-      else
-        runtime_error="Syncthing is not responding"
-      fi
-    fi
-
-    ${pkgs.jq}/bin/jq -n \
-      --arg username "$username" \
-      --arg usersRoot "$users_root" \
-      --arg runtimeError "$runtime_error" \
-      --argjson specs "$folder_specs_json" \
-      --argjson state "$state" \
-      --argjson runtimeDevices "$runtime_devices" \
-      '{
-        folders: [
-          $specs[] | {
-            key,
-            label,
-            folderId: (.folderIdPrefix + "-" + $username),
-            folderLabel: ("NixHomeServer " + .label + " - " + $username),
-            serverFolderPath: ($usersRoot + "/" + $username + "/" + .relativePath),
-            suggestedDevicePath
-          }
-        ],
-        devices: (
-          ($state.users[$username].devices // [])
-          | map(
-              . as $saved
-              | . + (
-                  first($runtimeDevices[]? | select(.deviceId == $saved.deviceId))
-                  // (if $runtimeError == "" then {} else {syncError: $runtimeError} end)
-                )
-            )
-        ),
-        runtimeError: (if $runtimeError == "" then null else $runtimeError end)
-      }'
-  '';
-  offlineMediaEnroll = pkgs.writeShellScript "homepage-offline-media-enroll" ''
-    set -euo pipefail
-
-    username="''${1:-}"
-    if ! ${pkgs.gnugrep}/bin/grep -Eq '^[a-z][a-z0-9._-]{0,63}$' <<<"$username"; then
-      echo "invalid username" >&2
-      exit 1
-    fi
-
-    payload="$(${pkgs.coreutils}/bin/cat)"
-    device_id="$(${pkgs.jq}/bin/jq -er '.deviceId' <<<"$payload")"
-    device_name="$(${pkgs.jq}/bin/jq -er --arg fallback "$username-media" '
-      if .deviceName == null then $fallback
-      elif (.deviceName | type) == "string" then .deviceName
-      else error("deviceName must be a string")
-      end
-    ' <<<"$payload")"
-
-    if ! ${pkgs.gnugrep}/bin/grep -Eq '^[A-Z2-7]{7}(-[A-Z2-7]{7}){7}$' <<<"$device_id"; then
-      echo "invalid Syncthing device ID" >&2
-      exit 1
-    fi
-    if ! ${pkgs.jq}/bin/jq -en --arg deviceName "$device_name" \
-      '$deviceName | test("^[A-Za-z0-9._ -]{1,64}$")' >/dev/null; then
-      echo "invalid Syncthing device name" >&2
-      exit 1
-    fi
-
-    server_device_id="$(${showSyncthingDeviceId})"
-    if [[ "$device_id" == "$server_device_id" ]]; then
-      echo "paste this device's Syncthing device ID, not the server device ID" >&2
-      exit 1
-    fi
-
-    state_dir=${lib.escapeShellArg offlineMediaStateDir}
-    state_file=${lib.escapeShellArg offlineMediaStateFile}
-    folder_specs_json=${lib.escapeShellArg offlineMediaFolderSpecsJson}
-    users_root=${lib.escapeShellArg vars.usersRoot}
-
-    install -d -m 0750 -o root -g root "$state_dir"
-    exec 9>"$state_dir/.devices.lock"
-    ${pkgs.util-linux}/bin/flock -x 9
-
-    # The browser token can outlive a group change.  Verify current Kanidm
-    # membership under the same lock before creating folders, ACLs, peers, or
-    # enrollment state.  Offline-media access is always additive to users.
-    identity_home="$(${pkgs.coreutils}/bin/mktemp -d)"
-    trap '${pkgs.coreutils}/bin/rm -rf "$identity_home"' EXIT
-    export HOME="$identity_home"
-    KANIDM_PASSWORD="$(< ${config.age.secrets.kanidmAdminPass.path})"
-    export KANIDM_PASSWORD
-    ${pkgs.kanidm_1_11}/bin/kanidm login \
-      -H ${lib.escapeShellArg "https://${vars.kanidmDomain}:${toString vars.networking.ports.kanidm}"} \
-      -D idm_admin >/dev/null
-
-    snapshot_enrollment_group() {
-      local group_name="$1"
-      local group_json
-      if ! group_json="$(${pkgs.kanidm_1_11}/bin/kanidm group get \
-        "$group_name" \
-        -H ${lib.escapeShellArg "https://${vars.kanidmDomain}:${toString vars.networking.ports.kanidm}"} \
-        -D idm_admin \
-        -o json)"; then
-        echo "unable to verify current offline-media membership; no device was enrolled" >&2
-        return 1
-      fi
-      ${pkgs.jq}/bin/jq -cer '
-        def local_username:
-          split("@")[0] as $username
-          | if ($username | test("^[a-z][a-z0-9._-]{0,63}$")) then
-              $username
-            else
-              error("invalid local username in member entry")
-            end;
-        if ((.attrs.member // []) | type) != "array" then
-          error("invalid member attribute")
-        elif any(.attrs.member[]?; type != "string") then
-          error("member array contains a non-string entry")
-        else
-          [ .attrs.member[]? | local_username ] | unique
-        end
-      ' <<<"$group_json"
-    }
-
-    if ! baseline_members="$(${pkgs.jq}/bin/jq -c . <<<"$(snapshot_enrollment_group users)")"; then
-      exit 1
-    fi
-    if [[ ${lib.escapeShellArg offlineMediaAccessGroup} == users ]]; then
-      access_members="$baseline_members"
-    elif ! access_members="$(${pkgs.jq}/bin/jq -c . <<<"$(snapshot_enrollment_group ${lib.escapeShellArg offlineMediaAccessGroup})")"; then
-      exit 1
-    fi
-    if ! ${pkgs.jq}/bin/jq -en \
-      --arg username "$username" \
-      --argjson baseline "$baseline_members" \
-      --argjson access "$access_members" \
-      '($baseline | index($username) != null) and ($access | index($username) != null)' >/dev/null; then
-      echo "current Kanidm membership no longer permits offline-media enrollment" >&2
-      exit 1
-    fi
-    ${pkgs.coreutils}/bin/rm -rf "$identity_home"
-    trap - EXIT
-
-    # Validate persistent enrollment state before provisioning folders or
-    # changing ACLs.  First-host initialization is an atomic replacement, so
-    # interruption cannot leave a truncated devices.json behind.
-    if [[ ! -f "$state_file" ]]; then
-      state_init_tmp="$(${pkgs.coreutils}/bin/mktemp "$state_dir/.devices.XXXXXX")"
-      if ! ${pkgs.coreutils}/bin/printf '{"version":2,"users":{}}\n' > "$state_init_tmp" \
-        || ! ${pkgs.jq}/bin/jq -e '${offlineMediaStateValidationJq}' "$state_init_tmp" >/dev/null \
-        || ! ${pkgs.coreutils}/bin/chmod 0640 "$state_init_tmp" \
-        || ! ${pkgs.coreutils}/bin/chown root:root "$state_init_tmp" \
-        || ! ${pkgs.coreutils}/bin/mv "$state_init_tmp" "$state_file"; then
-        ${pkgs.coreutils}/bin/rm -f "$state_init_tmp"
-        echo "unable to initialize offline media enrollment state" >&2
-        exit 1
-      fi
-    fi
-    if ! ${pkgs.jq}/bin/jq -e '${offlineMediaStateValidationJq}' "$state_file" >/dev/null; then
-      echo "offline media enrollment state is invalid; refusing to provision folders or change ACLs" >&2
-      exit 1
-    fi
-
-    missing_folder=0
-    while IFS=$'\t' read -r relative_path; do
-      folder_path="$users_root/$username/$relative_path"
-      [[ -d "$folder_path" ]] || missing_folder=1
-    done < <(${pkgs.jq}/bin/jq -r '.[] | [.relativePath] | @tsv' <<<"$folder_specs_json")
-    if (( missing_folder == 1 )); then
-      ${pkgs.systemd}/bin/systemctl start fileshare-user-root-sync.service
-    fi
-    while IFS=$'\t' read -r relative_path; do
-      folder_path="$users_root/$username/$relative_path"
-      if [[ ! -d "$folder_path" ]]; then
-        echo "offline media folder is not provisioned for $username: $folder_path" >&2
-        exit 1
-      fi
-    done < <(${pkgs.jq}/bin/jq -r '.[] | [.relativePath] | @tsv' <<<"$folder_specs_json")
-
-    grant_syncthing_read() {
-      local folder_path="$1"
-      local parent_path="$folder_path"
-
-      while [[ "$parent_path" != "$users_root/$username" && "$parent_path" != "/" ]]; do
-        parent_path="$(${pkgs.coreutils}/bin/dirname "$parent_path")"
-        ${pkgs.acl}/bin/setfacl -m g:syncthing:--x "$parent_path"
-      done
-
-      ${pkgs.acl}/bin/setfacl -R -m g:syncthing:r-X "$folder_path"
-      ${pkgs.findutils}/bin/find "$folder_path" -type d -exec ${pkgs.acl}/bin/setfacl -m d:g:syncthing:r-x '{}' +
-      install -d -m 0755 -o root -g root "$folder_path/.stfolder"
-      ${pkgs.acl}/bin/setfacl -m g:syncthing:r-x "$folder_path/.stfolder"
-    }
-
-    while IFS=$'\t' read -r relative_path; do
-      grant_syncthing_read "$users_root/$username/$relative_path"
-    done < <(${pkgs.jq}/bin/jq -r '.[] | [.relativePath] | @tsv' <<<"$folder_specs_json")
-
-    api_key_file="$(${pkgs.coreutils}/bin/mktemp)"
-    headers_file="$(${pkgs.coreutils}/bin/mktemp)"
-    trap 'rm -f "$api_key_file" "$headers_file"' EXIT
-    ${pkgs.libxml2}/bin/xmllint \
-      --xpath 'string(configuration/gui/apikey)' \
-      ${lib.escapeShellArg syncthingConfigDir}/config.xml \
-      >"$api_key_file"
-    { ${pkgs.coreutils}/bin/printf 'X-API-Key: '; ${pkgs.coreutils}/bin/cat "$api_key_file"; } >"$headers_file"
-
-    api() {
-      local path="$1"
-      shift
-      ${pkgs.curl}/bin/curl -fsSLk \
-        -H "@$headers_file" \
-        "$@" \
-        "http://127.0.0.1:8384$path"
-    }
-
-    api_json() {
-      local method="$1"
-      local path="$2"
-      local json="$3"
-
-      ${pkgs.coreutils}/bin/printf '%s' "$json" | ${pkgs.curl}/bin/curl -fsSLk \
-        -X "$method" \
-        -H "@$headers_file" \
-        -H 'content-type: application/json' \
-        --data-binary @- \
-        "http://127.0.0.1:8384$path" >/dev/null
-    }
-
-    api /rest/system/ping >/dev/null
-
-    devices_json="$(api /rest/config/devices)"
-    default_device_json="$(api /rest/config/defaults/device)"
-    device_json="$(
-      ${pkgs.jq}/bin/jq -n \
-        --arg deviceId "$device_id" \
-        --arg name "$device_name" \
-        --argjson devices "$devices_json" \
-        --argjson defaultDevice "$default_device_json" \
-        '(
-          ($devices[]? | select(.deviceID == $deviceId)) // $defaultDevice
-        )
-        | .deviceID = $deviceId
-        | .name = $name
-        | .addresses = ((.addresses // []) | if length > 0 then . else ["dynamic"] end)'
-    )"
-
-    # Commit the validated enrollment intent before the first Syncthing
-    # mutation.  If a later API call fails, the reconciler can safely finish
-    # converging this durable intent and a user retry remains idempotent.
-    state_tmp="$(${pkgs.coreutils}/bin/mktemp "$state_dir/.devices.XXXXXX")"
-    ${pkgs.jq}/bin/jq \
-      --arg username "$username" \
-      --arg deviceId "$device_id" \
-      --arg deviceName "$device_name" \
-      --arg updatedAt "$(${pkgs.coreutils}/bin/date -u +%Y-%m-%dT%H:%M:%SZ)" \
-      '
-      def v2:
-        if .version == 2 then .
-        else {
-          version: 2,
-          users: (
-            to_entries
-            | map(select((.value.deviceId // "") != ""))
-            | map({
-              key: .key,
-              value: {
-                devices: [{
-                  deviceId: .value.deviceId,
-                  deviceName: (.value.deviceName // (.key + "-media")),
-                  createdAt: (.value.updatedAt // $updatedAt),
-                  updatedAt: (.value.updatedAt // $updatedAt)
-                }]
-              }
-            })
-            | from_entries
-          )
-        }
-        end;
-      v2
-      | .version = 2
-      | .users[$username].devices = (
-          ((.users[$username].devices // []) | map(select(.deviceId != $deviceId)))
-          + [{
-            deviceId: $deviceId,
-            deviceName: $deviceName,
-            createdAt: (((.users[$username].devices // [])[]? | select(.deviceId == $deviceId) | .createdAt) // $updatedAt),
-            updatedAt: $updatedAt
-          }]
-        )
-      ' \
-      "$state_file" > "$state_tmp"
-    if ! ${pkgs.jq}/bin/jq -e '${offlineMediaStateValidationJq}' "$state_tmp" >/dev/null; then
-      ${pkgs.coreutils}/bin/rm -f "$state_tmp"
-      echo "refusing to save invalid offline media enrollment state" >&2
-      exit 1
-    fi
-    chmod 0640 "$state_tmp"
-    chown root:root "$state_tmp"
-    mv "$state_tmp" "$state_file"
-
-    api_json POST /rest/config/devices "$device_json"
-
-    while IFS=$'\t' read -r key label relative_path folder_id_prefix suggested_device_path; do
-      folder_id="$folder_id_prefix-$username"
-      folder_label="NixHomeServer $label - $username"
-      folder_path="$users_root/$username/$relative_path"
-      folders_json="$(api /rest/config/folders)"
-      default_folder_json="$(api /rest/config/defaults/folder)"
-      folder_json="$(
-        ${pkgs.jq}/bin/jq -n \
-          --arg folderId "$folder_id" \
-          --arg label "$folder_label" \
-          --arg path "$folder_path" \
-          --arg deviceId "$device_id" \
-          --argjson folders "$folders_json" \
-          --argjson defaultFolder "$default_folder_json" \
-          '(
-            ($folders[]? | select(.id == $folderId)) // $defaultFolder
-          )
-          | .id = $folderId
-          | .label = $label
-          | .path = $path
-          | .type = "sendonly"
-          | .devices = ((((.devices // []) | map(.deviceID)) + [$deviceId]) | unique | map({ deviceID: . }))
-          | .fsWatcherEnabled = true
-          | .rescanIntervalS = 300'
-      )"
-      api_json POST /rest/config/folders "$folder_json"
-    done < <(${pkgs.jq}/bin/jq -r '.[] | [.key, .label, .relativePath, .folderIdPrefix, .suggestedDevicePath] | @tsv' <<<"$folder_specs_json")
-
-    if api /rest/config/restart-required | ${pkgs.jq}/bin/jq -e '.requiresRestart == true' >/dev/null; then
-      ${pkgs.systemd}/bin/systemctl restart syncthing.service
-    fi
-
-    status_json="$(${offlineMediaStatus} "$username")"
-    ${pkgs.jq}/bin/jq -n \
-      --arg username "$username" \
-      --arg serverDeviceId "$server_device_id" \
-      --arg enrolledDeviceId "$device_id" \
-      --arg enrolledDeviceName "$device_name" \
-      --argjson status "$status_json" \
-      '{
-        ok: true,
-        username: $username,
-        serverDeviceId: $serverDeviceId,
-        enrolledDeviceId: $enrolledDeviceId,
-        enrolledDeviceName: $enrolledDeviceName,
-        folders: $status.folders,
-        devices: $status.devices
-      }'
-  '';
-  offlineMediaRemove = pkgs.writeShellScript "homepage-offline-media-remove" ''
-    set -euo pipefail
-
-    username="''${1:-}"
-    device_id="''${2:-}"
-    if ! ${pkgs.gnugrep}/bin/grep -Eq '^[a-z][a-z0-9._-]{0,63}$' <<<"$username"; then
-      echo "invalid username" >&2
-      exit 1
-    fi
-    if ! ${pkgs.gnugrep}/bin/grep -Eq '^[A-Z2-7]{7}(-[A-Z2-7]{7}){7}$' <<<"$device_id"; then
-      echo "invalid Syncthing device ID" >&2
-      exit 1
-    fi
-
-    state_dir=${lib.escapeShellArg offlineMediaStateDir}
-    state_file=${lib.escapeShellArg offlineMediaStateFile}
-    folder_specs_json=${lib.escapeShellArg offlineMediaFolderSpecsJson}
-
-    install -d -m 0750 -o root -g root "$state_dir"
-    exec 9>"$state_dir/.devices.lock"
-    ${pkgs.util-linux}/bin/flock -x 9
-    if [[ ! -f "$state_file" ]]; then
-      state_init_tmp="$(${pkgs.coreutils}/bin/mktemp "$state_dir/.devices.XXXXXX")"
-      if ! ${pkgs.coreutils}/bin/printf '{"version":2,"users":{}}\n' > "$state_init_tmp" \
-        || ! ${pkgs.jq}/bin/jq -e '${offlineMediaStateValidationJq}' "$state_init_tmp" >/dev/null \
-        || ! ${pkgs.coreutils}/bin/chmod 0640 "$state_init_tmp" \
-        || ! ${pkgs.coreutils}/bin/chown root:root "$state_init_tmp" \
-        || ! ${pkgs.coreutils}/bin/mv "$state_init_tmp" "$state_file"; then
-        ${pkgs.coreutils}/bin/rm -f "$state_init_tmp"
-        echo "unable to initialize offline media enrollment state" >&2
-        exit 1
-      fi
-    fi
-    if ! ${pkgs.jq}/bin/jq -e '${offlineMediaStateValidationJq}' "$state_file" >/dev/null; then
-      echo "offline media enrollment state is invalid; refusing to change Syncthing" >&2
-      exit 1
-    fi
-
-    api_key_file="$(${pkgs.coreutils}/bin/mktemp)"
-    headers_file="$(${pkgs.coreutils}/bin/mktemp)"
-    trap 'rm -f "$api_key_file" "$headers_file"' EXIT
-    ${pkgs.libxml2}/bin/xmllint \
-      --xpath 'string(configuration/gui/apikey)' \
-      ${lib.escapeShellArg syncthingConfigDir}/config.xml \
-      >"$api_key_file"
-    { ${pkgs.coreutils}/bin/printf 'X-API-Key: '; ${pkgs.coreutils}/bin/cat "$api_key_file"; } >"$headers_file"
-
-    api() {
-      local path="$1"
-      shift
-      ${pkgs.curl}/bin/curl -fsSLk \
-        -H "@$headers_file" \
-        "$@" \
-        "http://127.0.0.1:8384$path"
-    }
-
-    api_json() {
-      local method="$1"
-      local path="$2"
-      local json="$3"
-
-      ${pkgs.coreutils}/bin/printf '%s' "$json" | ${pkgs.curl}/bin/curl -fsSLk \
-        -X "$method" \
-        -H "@$headers_file" \
-        -H 'content-type: application/json' \
-        --data-binary @- \
-        "http://127.0.0.1:8384$path" >/dev/null
-    }
-
-    api /rest/system/ping >/dev/null
-
-    while IFS=$'\t' read -r folder_id_prefix; do
-      folder_id="$folder_id_prefix-$username"
-      folders_json="$(api /rest/config/folders)"
-      if ! ${pkgs.jq}/bin/jq -e --arg folderId "$folder_id" 'any(.[]; .id == $folderId)' >/dev/null <<<"$folders_json"; then
-        continue
-      fi
-      if ! ${pkgs.jq}/bin/jq -e --arg folderId "$folder_id" --arg deviceId "$device_id" \
-          'any(.[] | select(.id == $folderId) | (.devices // [])[]?; .deviceID == $deviceId)' \
-          <<<"$folders_json" >/dev/null; then
-        continue
-      fi
-      folder_json="$(
-        ${pkgs.jq}/bin/jq \
-          --arg folderId "$folder_id" \
-          --arg deviceId "$device_id" \
-          '(.[] | select(.id == $folderId))
-          | .devices = ((.devices // []) | map(select(.deviceID != $deviceId)))' \
-          <<<"$folders_json"
-      )"
-      api_json POST /rest/config/folders "$folder_json"
-    done < <(${pkgs.jq}/bin/jq -r '.[] | [.folderIdPrefix] | @tsv' <<<"$folder_specs_json")
-
-    remaining_refs="$(api /rest/config/folders | ${pkgs.jq}/bin/jq --arg deviceId "$device_id" '[.[].devices[]? | select(.deviceID == $deviceId)] | length')"
-    if [[ "$remaining_refs" == "0" ]]; then
-      devices_json="$(api /rest/config/devices)"
-      if ${pkgs.jq}/bin/jq -e --arg deviceId "$device_id" \
-          'any(.[]; .deviceID == $deviceId)' <<<"$devices_json" >/dev/null; then
-        api /rest/config/devices/"$device_id" -X DELETE >/dev/null
-      fi
-    fi
-
-    tmp="$(${pkgs.coreutils}/bin/mktemp "$state_dir/.devices.XXXXXX")"
-    ${pkgs.jq}/bin/jq \
-      --arg username "$username" \
-      --arg deviceId "$device_id" \
-      --arg updatedAt "$(${pkgs.coreutils}/bin/date -u +%Y-%m-%dT%H:%M:%SZ)" \
-      '
-      def v2:
-        if .version == 2 then .
-        else {
-          version: 2,
-          users: (
-            to_entries
-            | map(select((.value.deviceId // "") != ""))
-            | map({
-              key: .key,
-              value: {
-                devices: [{
-                  deviceId: .value.deviceId,
-                  deviceName: (.value.deviceName // (.key + "-media")),
-                  createdAt: (.value.updatedAt // $updatedAt),
-                  updatedAt: (.value.updatedAt // $updatedAt)
-                }]
-              }
-            })
-            | from_entries
-          )
-        }
-        end;
-      v2
-      | .version = 2
-      | .users[$username].devices = ((.users[$username].devices // []) | map(select(.deviceId != $deviceId)))
-      | if (.users[$username].devices | length) == 0 then del(.users[$username]) else . end
-      ' \
-      "$state_file" > "$tmp"
-    chmod 0640 "$tmp"
-    chown root:root "$tmp"
-    mv "$tmp" "$state_file"
-
-    if api /rest/config/restart-required | ${pkgs.jq}/bin/jq -e '.requiresRestart == true' >/dev/null; then
-      ${pkgs.systemd}/bin/systemctl restart syncthing.service
-    fi
-
-    status_json="$(${offlineMediaStatus} "$username")"
-    ${pkgs.jq}/bin/jq -n \
-      --arg username "$username" \
-      --arg removedDeviceId "$device_id" \
-      --argjson status "$status_json" \
-      '{
-        ok: true,
-        username: $username,
-        removedDeviceId: $removedDeviceId,
-        folders: $status.folders,
-        devices: $status.devices
-      }'
-  '';
-
-  serviceCards = [
+  installSftpKey = pkgs.writeShellScript "homepage-install-sftp-key" (renderShell ../../../custom_apps/shell/homepage/homepage-install-sftp-key.sh.in {
+    GNUGREP = pkgs.gnugrep;
+    COREUTILS = pkgs.coreutils;
+    GNUSED = pkgs.gnused;
+    OPENSSH = pkgs.openssh;
+    SFTPAUTHORIZEDKEYSDIR_QUOTED = lib.escapeShellArg sftpAuthorizedKeysDir;
+    SFTPAUTHORIZEDKEYSDIR = sftpAuthorizedKeysDir;
+    UTIL_LINUX = pkgs.util-linux;
+    SFTPAUTHORIZEDKEYSDIR_SERVICEUSER_XXXXXX_QUOTED = lib.escapeShellArg "${sftpAuthorizedKeysDir}/.${serviceUser}.XXXXXX";
+  });
+  showSyncthingDeviceId = pkgs.writeShellScript "homepage-show-syncthing-device-id" (renderShell ../../../custom_apps/shell/homepage/homepage-show-syncthing-device-id.sh.in {
+    SYNCTHING = pkgs.syncthing;
+    SYNCTHINGCONFIGDIR_QUOTED = lib.escapeShellArg syncthingConfigDir;
+    SYNCTHINGDATADIR_QUOTED = lib.escapeShellArg syncthingDataDir;
+  });
+  vaultSyncthingKeyHelper = pkgs.writeShellScript "homepage-syncthing-api-key" (renderShell ../../../custom_apps/shell/homepage/homepage-syncthing-api-key.sh.in {
+    SYNCTHINGCONFIGDIR_CONFIG_XML_QUOTED = lib.escapeShellArg "${syncthingConfigDir}/config.xml";
+    COREUTILS = pkgs.coreutils;
+    GNUGREP = pkgs.gnugrep;
+    LIBXML2 = pkgs.libxml2;
+    OPENSSL = pkgs.openssl;
+    UTIL_LINUX = pkgs.util-linux;
+    SYSTEMD = pkgs.systemd;
+    PYTHON3 = pkgs.python3;
+    CURL = pkgs.curl;
+  });
+  sftpKeyListHelper = pkgs.writeShellScript "homepage-sftp-key-list" (renderShell ../../../custom_apps/shell/homepage/homepage-sftp-key-list.sh.in {
+    GNUGREP = pkgs.gnugrep;
+    SFTPAUTHORIZEDKEYSDIR_QUOTED = lib.escapeShellArg sftpAuthorizedKeysDir;
+    COREUTILS = pkgs.coreutils;
+    OPENSSH = pkgs.openssh;
+  });
+  freshrssApiPasswordHelper = pkgs.writeShellScript "homepage-freshrss-api-password" (renderShell ../../../custom_apps/shell/homepage/homepage-freshrss-api-password.sh.in {
+    GNUGREP = pkgs.gnugrep;
+    COREUTILS = pkgs.coreutils;
+    CONFIG_REPO_FRESHRSS_STATEDIR_QUOTED = lib.escapeShellArg config.repo.freshrss.stateDir;
+    UTIL_LINUX = pkgs.util-linux;
+    CONFIG_SERVICES_FRESHRSS_PACKAGE = config.services.freshrss.package;
+  });
+  kavitaApiKeysHelper = pkgs.writeShellScript "homepage-kavita-keys" (renderShell ../../../custom_apps/shell/homepage/homepage-kavita-keys.sh.in {
+    GNUGREP = pkgs.gnugrep;
+    COREUTILS = pkgs.coreutils;
+    PYTHON3 = pkgs.python3;
+    VAR_LIB_KAVITA_CONFIG_KAVITA_DB_QUOTED = lib.escapeShellArg "/var/lib/kavita/config/kavita.db";
+    CONFIG_AGE_SECRETS_KAVITATOKENKEY_PATH_QUOTED = lib.escapeShellArg config.age.secrets.kavitaTokenKey.path;
+    HTTP_VARS_NETWORKING_LOOPBACKIPV4_TOSTRING_VARS_NETWORKING_PORTS_KAVITA_QUOTED = lib.escapeShellArg "http://${vars.networking.loopbackIPv4}:${toString vars.networking.ports.kavita}";
+  });
+  offlineMediaStatus = pkgs.writeShellScript "homepage-offline-media-status" (renderShell ../../../custom_apps/shell/homepage/homepage-offline-media-status.sh.in {
+    GNUGREP = pkgs.gnugrep;
+    OFFLINEMEDIASTATEFILE_QUOTED = lib.escapeShellArg offlineMediaStateFile;
+    OFFLINEMEDIAFOLDERSPECSJSON_QUOTED = lib.escapeShellArg offlineMediaFolderSpecsJson;
+    VARS_USERSROOT_QUOTED = lib.escapeShellArg vars.usersRoot;
+    JQ = pkgs.jq;
+    OFFLINEMEDIASTATEVALIDATIONJQ = offlineMediaStateValidationJq;
+    COREUTILS = pkgs.coreutils;
+    LIBXML2 = pkgs.libxml2;
+    SYNCTHINGCONFIGDIR_QUOTED = lib.escapeShellArg syncthingConfigDir;
+    CURL = pkgs.curl;
+  });
+  offlineMediaEnroll = pkgs.writeShellScript "homepage-offline-media-enroll" (renderShell ../../../custom_apps/shell/homepage/homepage-offline-media-enroll.sh.in {
+    GNUGREP = pkgs.gnugrep;
+    COREUTILS = pkgs.coreutils;
+    JQ = pkgs.jq;
+    SHOWSYNCTHINGDEVICEID = showSyncthingDeviceId;
+    OFFLINEMEDIASTATEDIR_QUOTED = lib.escapeShellArg offlineMediaStateDir;
+    OFFLINEMEDIASTATEFILE_QUOTED = lib.escapeShellArg offlineMediaStateFile;
+    OFFLINEMEDIAFOLDERSPECSJSON_QUOTED = lib.escapeShellArg offlineMediaFolderSpecsJson;
+    VARS_USERSROOT_QUOTED = lib.escapeShellArg vars.usersRoot;
+    UTIL_LINUX = pkgs.util-linux;
+    CONFIG_AGE_SECRETS_KANIDMADMINPASS_PATH = config.age.secrets.kanidmAdminPass.path;
+    KANIDM_1_11 = pkgs.kanidm_1_11;
+    HTTPS_VARS_KANIDMDOMAIN_TOSTRING_VARS_NETWORKING_PORTS_KANIDM_QUOTED = lib.escapeShellArg "https://${vars.kanidmDomain}:${toString vars.networking.ports.kanidm}";
+    OFFLINEMEDIAACCESSGROUP_QUOTED = lib.escapeShellArg offlineMediaAccessGroup;
+    OFFLINEMEDIASTATEVALIDATIONJQ = offlineMediaStateValidationJq;
+    SYSTEMD = pkgs.systemd;
+    ACL = pkgs.acl;
+    FINDUTILS = pkgs.findutils;
+    LIBXML2 = pkgs.libxml2;
+    SYNCTHINGCONFIGDIR_QUOTED = lib.escapeShellArg syncthingConfigDir;
+    CURL = pkgs.curl;
+    OFFLINEMEDIASTATUS = offlineMediaStatus;
+  });
+  offlineMediaRemove = pkgs.writeShellScript "homepage-offline-media-remove" (renderShell ../../../custom_apps/shell/homepage/homepage-offline-media-remove.sh.in {
+    GNUGREP = pkgs.gnugrep;
+    OFFLINEMEDIASTATEDIR_QUOTED = lib.escapeShellArg offlineMediaStateDir;
+    OFFLINEMEDIASTATEFILE_QUOTED = lib.escapeShellArg offlineMediaStateFile;
+    OFFLINEMEDIAFOLDERSPECSJSON_QUOTED = lib.escapeShellArg offlineMediaFolderSpecsJson;
+    UTIL_LINUX = pkgs.util-linux;
+    COREUTILS = pkgs.coreutils;
+    JQ = pkgs.jq;
+    OFFLINEMEDIASTATEVALIDATIONJQ = offlineMediaStateValidationJq;
+    LIBXML2 = pkgs.libxml2;
+    SYNCTHINGCONFIGDIR_QUOTED = lib.escapeShellArg syncthingConfigDir;
+    CURL = pkgs.curl;
+    SYSTEMD = pkgs.systemd;
+    OFFLINEMEDIASTATUS = offlineMediaStatus;
+  });
+
+  catalog = import ../../catalog.nix;
+  registeredCards = lib.concatMap
+    (entry: entry.registration.homepage { inherit config vars; })
+    (lib.attrValues catalog.apps);
+  coreCards = [
     {
-      id = "photos";
-      name = "Photos";
-      url = "https://${photosHost}";
-      enabled = immichEnabled;
-      category = "media";
-      description = "Photo and video library with private login and public share-link support.";
-      loginNotes = "Use Kanidm. Public shares use https://${sharePhotosHost}.";
-      projectUrl = "https://immich.app";
-      logoUrl = "/logos/immich.svg";
-      appName = "immich";
-      uploadNotes = "Upload through Immich web or the mobile app.";
-      requiredAnyGroups = [ "immich-users" ];
-    }
-    {
-      id = "documents";
-      name = "Documents";
-      url = "https://${paperlessHost}";
-      enabled = paperlessEnabled;
-      category = "files";
-      description = "Paperless document archive with OCR, search, tags, and exports.";
-      loginNotes = "Use Kanidm; first login creates the local account.";
-      projectUrl = "https://docs.paperless-ngx.com";
-      logoUrl = "/logos/paperless-ngx.svg";
-      appName = "paperless-ngx";
-      uploadNotes = "Upload PDFs and image documents through Paperless.";
-      requiredAnyGroups = [ "paperless-users" ];
-    }
-    {
-      id = "files";
-      name = "Files";
-      url = "https://${filesHost}";
-      enabled = filesEnabled;
-      category = "files";
-      description = "Browser file workspace backed by each user's restricted SFTP root.";
-      loginNotes = "Requires ${filesWebAccessGroup} for browser access.";
-      projectUrl = "https://www.filestash.app";
-      logoUrl = "/logos/filestash.svg";
-      appName = "filestash";
-      uploadNotes = "Use Files for general uploads and app-specific media folders.";
-      requiredAnyGroups = [ filesWebAccessGroup ];
-    }
-    {
-      id = "audiobooks";
-      name = "Audiobooks";
-      url = "https://${audiobooksHost}/audiobookshelf/";
-      enabled = audiobookshelfEnabled;
-      category = "media";
-      description = "Audiobooks and long-form audio libraries.";
-      loginNotes = "Use Kanidm. The configured server operator owns the Audiobookshelf root account; app-admin does not grant Audiobookshelf administrator rights.";
-      projectUrl = "https://www.audiobookshelf.org";
-      logoUrl = "/logos/audiobookshelf.svg";
-      appName = "audiobookshelf";
-      uploadNotes = "Place audiobook folders under _Audiobooks.";
-      requiredAnyGroups = [ "audiobookshelf-users" ];
-    }
-    {
-      id = "videos";
-      name = "Videos";
-      url = "https://${videosHost}";
-      enabled = jellyfinEnabled;
-      category = "media";
-      description = "Metadata-rich movie and show libraries.";
-      loginNotes = "In a browser, choose “Sign in with Kanidm”. In a TV or native app, choose Quick Connect, note the six-digit code, then authorize it at https://${videosHost}/sso/OIDC/QuickConnect/kanidm in any browser. A native app’s password box accepts only the separate Jellyfin local password; the Kanidm password will not work there. If discovery finds nothing, keep the client on the same IPv4 LAN, disable Wi-Fi client isolation, and check the client firewall guidance in Admin tools.";
-      projectUrl = "https://jellyfin.org";
-      logoUrl = "/logos/jellyfin.svg";
-      appName = "jellyfin";
-      uploadNotes = "Place movies under _Videos/_Movies and series under _Videos/_Shows.";
-      requiredAnyGroups = [ "jellyfin-users" ];
-    }
-    {
-      id = "chaptarr";
-      name = "Book Downloads";
-      url = "https://${chaptarrHost}";
-      enabled = chaptarrEnabled;
-      category = "media";
-      description = "Audiobook and ebook monitoring, metadata, and legal download automation.";
-      loginNotes = "Requires media-automation-users through Kanidm.";
-      projectUrl = "https://github.com/Chaptarr/chaptarr";
-      logoUrl = "/logos/chaptarr.svg";
-      appName = "chaptarr";
-      uploadNotes = "Imported audiobooks land in Audiobookshelf; ebooks land in Kavita.";
-      requiredAnyGroups = [ "media-automation-users" ];
-    }
-    {
-      id = "sonarr";
-      name = "TV Show Downloads";
-      url = "https://${sonarrHost}";
-      enabled = sonarrEnabled;
-      category = "media";
-      description = "TV show monitoring and legal download automation.";
-      loginNotes = "Requires media-automation-users through Kanidm.";
-      projectUrl = "https://sonarr.tv";
-      logoUrl = "/logos/sonarr.svg";
-      appName = "sonarr";
-      uploadNotes = "Imported shows land in shared _Videos/_Shows.";
-      requiredAnyGroups = [ "media-automation-users" ];
-    }
-    {
-      id = "radarr";
-      name = "Movie Downloads";
-      url = "https://${radarrHost}";
-      enabled = radarrEnabled;
-      category = "media";
-      description = "Movie monitoring and legal download automation.";
-      loginNotes = "Requires media-automation-users through Kanidm.";
-      projectUrl = "https://radarr.video";
-      logoUrl = "/logos/radarr.svg";
-      appName = "radarr";
-      uploadNotes = "Imported movies land in shared _Videos/_Movies.";
-      requiredAnyGroups = [ "media-automation-users" ];
-    }
-    {
-      id = "prowlarr";
-      name = "Prowlarr";
-      url = "https://${prowlarrHost}";
-      enabled = prowlarrEnabled;
-      category = "media";
-      description = "Indexer manager for Sonarr and Radarr.";
-      loginNotes = "Requires media-automation-users through Kanidm.";
-      projectUrl = "https://prowlarr.com";
-      logoUrl = "/logos/prowlarr.svg";
-      appName = "prowlarr";
-      uploadNotes = "Add only legal indexers and sources.";
-      requiredAnyGroups = [ "media-automation-users" ];
-    }
-    {
-      id = "torrents";
-      name = "Torrents";
-      url = "https://${torrentsHost}";
-      enabled = qbittorrentEnabled;
-      category = "media";
-      description = "qBittorrent download client for legally sourced media.";
-      loginNotes = "Requires media-automation-users through Kanidm.";
-      projectUrl = "https://www.qbittorrent.org";
-      logoUrl = "/logos/qbittorrent.svg";
-      appName = "qbittorrent";
-      uploadNotes = "Completed downloads are staged under shared _Downloads.";
-      requiredAnyGroups = [ "media-automation-users" ];
-    }
-    {
+      order = 10;
       id = "offline-media";
       name = "Offline Media";
       url = "/services/offline-media";
@@ -1305,6 +256,7 @@ PY
       requiredAnyGroups = offlineMediaRequiredAnyGroups;
     }
     {
+      order = 11;
       id = "media-manager";
       name = "Media Manager";
       url = "https://${mediaManagerHost}";
@@ -1319,88 +271,7 @@ PY
       requiredAnyGroups = [ "media-manager-editors" "users" ];
     }
     {
-      id = "books";
-      name = "Books";
-      url = "https://${booksHost}";
-      enabled = kavitaEnabled;
-      category = "media";
-      description = "Ebooks, comics, and manga in Kavita.";
-      loginNotes = "Use Kanidm; first login provisions the local account.";
-      projectUrl = "https://www.kavitareader.com";
-      logoUrl = "/logos/kavita.svg";
-      appName = "kavita";
-      uploadNotes = "Place books under _Books/_Ebooks, _Comics, or _Manga.";
-      requiredAnyGroups = [ "kavita-users" ];
-    }
-    {
-      id = "wiki";
-      name = "Offline Wiki";
-      url = "https://${wikiHost}";
-      enabled = kiwixEnabled;
-      category = "knowledge";
-      description = "Kiwix ZIM library for offline reference material.";
-      loginNotes = "Use Kanidm with kiwix-users membership.";
-      projectUrl = "https://kiwix.org";
-      logoUrl = "/logos/kiwix.svg";
-      appName = "kiwix";
-      uploadNotes = "Operators upload .zim files to the configured Kiwix library root.";
-      requiredAnyGroups = [ "kiwix-users" ];
-    }
-    {
-      id = "feeds";
-      name = "Feeds";
-      url = "https://${rssHost}";
-      enabled = freshrssEnabled;
-      category = "knowledge";
-      description = "Private RSS and Atom subscriptions with a separate feed library for each user.";
-      loginNotes = "Use Kanidm with freshrss-users membership; first login creates the FreshRSS account.";
-      projectUrl = "https://freshrss.org";
-      logoUrl = "/logos/freshrss.svg";
-      appName = "freshrss";
-      uploadNotes = "Add feed URLs or import an OPML subscription list from FreshRSS settings.";
-      requiredAnyGroups = [ "freshrss-users" ];
-    }
-    {
-      id = "emails";
-      name = "Mail Archive";
-      url = "https://${emailsHost}";
-      enabled = mailArchiveEnabled;
-      category = "knowledge";
-      description = "Private mail search, attachment export, and Paperless handoff.";
-      loginNotes = "Requires mail-archive-users.";
-      logoUrl = "/logos/mail-archive-ui.svg";
-      appName = "custom app with notmuch / maildir";
-      uploadNotes = "Synced mail appears as visible .eml mirrors under _Emails.";
-      requiredAnyGroups = [ "mail-archive-users" ];
-    }
-    {
-      id = "downloads";
-      name = "YouTube Downloads";
-      url = "https://${downloadsHost}";
-      enabled = youtubeDownloaderEnabled;
-      category = "media";
-      description = "Authenticated yt-dlp queue for audio and video downloads.";
-      loginNotes = "Requires downloads-users.";
-      projectUrl = "https://github.com/yt-dlp/yt-dlp";
-      logoUrl = "/logos/youtube.svg";
-      appName = "custom app with yt-dlp";
-      uploadNotes = "Downloads land in personal or shared media folders.";
-      requiredAnyGroups = [ "downloads-users" ];
-    }
-    {
-      id = "passwords";
-      name = "Passwords";
-      url = "https://${passwordsHost}";
-      enabled = vaultwardenEnabled;
-      category = "identity";
-      description = "Shared password manager for server and account credentials.";
-      loginNotes = "Vaultwarden is self-service: open the signup page on first visit and register with your local account email.";
-      projectUrl = "https://github.com/dani-garcia/vaultwarden";
-      logoUrl = "/logos/vaultwarden.svg";
-      appName = "vaultwarden";
-      uploadNotes = "Store Kanidm credentials, recovery codes, and app-local passwords here.";
-    }
-    {
+      order = 18;
       id = "kopia";
       name = "Kopia";
       url = "https://${backupsHost}";
@@ -1415,6 +286,9 @@ PY
       requiredAnyGroups = [ vars.backupAdminGroup ];
     }
   ];
+  serviceCards = map
+    (card: lib.filterAttrs (name: value: name != "order" && value != null) card)
+    (lib.sort (a: b: a.order < b.order) config.repo.homepage.serviceCards);
 
   folderGuides = [
     {
@@ -1829,7 +703,14 @@ PY
   });
 in
 {
+  options.repo.homepage.serviceCards = lib.mkOption {
+    type = lib.types.listOf (import ../../../lib/homepage-card-type.nix { inherit lib; });
+    default = [ ];
+    description = "Application-owned Homepage cards, ordered for presentation.";
+  };
+
   config = lib.mkMerge [
+    { repo.homepage.serviceCards = registeredCards ++ coreCards; }
     {
       users.groups.${serviceGroup} = { };
 

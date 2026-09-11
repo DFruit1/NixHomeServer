@@ -13,7 +13,6 @@ let
   qbittorrentEnabled = moduleEnabled "qbittorrent" && config.repo.qbittorrent.enable;
   radarrEnabled = moduleEnabled "radarr" && config.repo.radarr.enable;
   sonarrEnabled = moduleEnabled "sonarr" && config.repo.sonarr.enable;
-  searchEnabled = moduleEnabled "search" && config.repo.search.enable;
   groundwaterEnabled =
     moduleEnabled "groundwater-logger"
     && config.repo.groundwaterLogger.enable;
@@ -112,9 +111,6 @@ in
   }
   // lib.optionalAttrs (moduleEnabled "vaultwarden") {
     vaultwardenAdminToken = { file = secretFile "vaultwardenAdminToken"; owner = "vaultwarden"; mode = "0400"; };
-  }
-  // lib.optionalAttrs searchEnabled {
-    searchClientSecret = { file = secretFile "searchClientSecret"; owner = "kanidm"; group = "search"; mode = "0440"; };
   }
   // lib.optionalAttrs groundwaterEnabled {
     groundwaterAppMqttPassword = { file = secretFile "groundwaterAppMqttPassword"; owner = "groundwater-logger"; group = "groundwater-logger"; mode = "0400"; };

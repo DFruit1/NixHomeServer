@@ -1,10 +1,15 @@
-{ pkgs, rustLib, sharedFrontendDeps, workspaceVersion, workspaceSrc ? null, sharedCargoArtifacts ? null, cargoLock ? null, ... }:
+{ pkgs, rustLib, workspaceVersion, workspaceSrc ? null, sharedCargoArtifacts ? null, cargoLock ? null, ... }:
 
 let
+  frontendDependencies = rustLib.mkPnpmDeps {
+    name = "mail-archive-ui-frontend";
+    srcDir = ./frontend;
+    hash = "sha256-GU8O2kA3o+SmAA5BRF/ws7jQqG+Tg7OX41bSw6ownZk=";
+  };
   frontendDist = rustLib.mkPnpmFrontend {
     name = "mail-archive-ui-frontend";
     srcDir = ./frontend;
-    pnpmDeps = sharedFrontendDeps;
+    pnpmDeps = frontendDependencies;
     requiredOutputs = [
       "dist/.vite/manifest.json"
       "dist/q-manifest.json"

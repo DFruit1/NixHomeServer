@@ -1,0 +1,96 @@
+    set -euo pipefail
+
+    username="${1:-}"
+    if ! @NIX_GNUGREP@/bin/grep -Eq '^[a-z][a-z0-9._-]{0,63}$' <<<"$username"; then
+      echo "invalid username" >&2
+      exit 1
+    fi
+
+    @NIX_COREUTILS@/bin/cat >/dev/null
+
+    exec @NIX_PYTHON3@/bin/python3 - \
+      @NIX_VAR_LIB_KAVITA_CONFIG_KAVITA_DB_QUOTED@ \
+      @NIX_CONFIG_AGE_SECRETS_KAVITATOKENKEY_PATH_QUOTED@ \
+      @NIX_HTTP_VARS_NETWORKING_LOOPBACKIPV4_TOSTRING_VARS_NETWORKING_PORTS_KAVITA_QUOTED@ \
+      "$username" <<'PY'
+import base64
+import hashlib
+import hmac
+import json
+import sqlite3
+import sys
+import time
+import urllib.error
+import urllib.request
+
+database_path, token_key_path, base_url, username = sys.argv[1:5]
+try:
+    payload = json.loads(sys.stdin.read() or "{}")
+except ValueError:
+    raise SystemExit("invalid request payload")
+action = payload.get("action")
+if action not in ("list", "create", "rotate", "delete"):
+    raise SystemExit("action must be list, create, rotate, or delete")
+
+with sqlite3.connect(f"file:{database_path}?mode=ro", uri=True, timeout=5) as database:
+    row = database.execute(
+        "select Id, UserName from AspNetUsers where UserName = ? limit 1",
+        (username,),
+    ).fetchone()
+if row is None:
+    raise SystemExit("Kavita account not found; sign in to the Books app once, then try again")
+user_id = str(row[0])
+user_name = row[1]
+
+token_key = open(token_key_path, "rb").read().strip()
+if len(token_key) < 32:
+    raise SystemExit("Kavita token key is malformed")
+
+def encode(value):
+    return base64.urlsafe_b64encode(value).rstrip(b"=")
+
+now = int(time.time())
+header = encode(json.dumps({"alg": "HS512", "typ": "JWT"}, separators=(",", ":")).encode())
+claims = {"name": user_name, "nameid": user_id, "role": ["Login"], "nbf": now, "iat": now, "exp": now + 300}
+unsigned = header + b"." + encode(json.dumps(claims, separators=(",", ":")).encode())
+token = (unsigned + b"." + encode(hmac.new(token_key, unsigned, hashlib.sha512).digest())).decode()
+
+def request(method, path, body=None):
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(
+        base_url + path,
+        data=data,
+        method=method,
+        headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=30) as response:
+        body_text = response.read().decode()
+    return json.loads(body_text) if body_text else None
+
+try:
+    if action == "list":
+        keys = request("GET", "/api/Users/auth-keys")
+        if not isinstance(keys, list):
+            raise SystemExit("Kavita returned an unexpected auth key list")
+        print(json.dumps({"keys": keys}))
+    elif action == "create":
+        key = request("POST", "/api/Users/create-auth-key", {"name": payload.get("name"), "keyLength": 32})
+        print(json.dumps({"key": key}))
+    elif action == "rotate":
+        keys = request("GET", "/api/Users/auth-keys")
+        name = next((entry.get("name") for entry in keys if entry.get("id") == int(payload["authKeyId"])), None)
+        if name is None:
+            raise SystemExit("API key not found for this account")
+        key = request(
+            "POST",
+            f"/api/Users/rotate-auth-key?authKeyId={int(payload['authKeyId'])}",
+            {"name": name, "keyLength": 32},
+        )
+        print(json.dumps({"key": key}))
+    elif action == "delete":
+        request("DELETE", f"/api/Users/auth-key?authKeyId={int(payload['authKeyId'])}")
+        print(json.dumps({"deleted": int(payload["authKeyId"])}))
+except urllib.error.HTTPError as error:
+    detail = error.read().decode(errors="replace")[:400]
+    raise SystemExit(f"Kavita request failed ({error.code}): {detail}")
+PY

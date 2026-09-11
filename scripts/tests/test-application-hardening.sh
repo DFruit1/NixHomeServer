@@ -30,7 +30,7 @@ forbid_match modules/immich/public-proxy.nix 'toString proxyUid|config\.users\.u
 youtube_module=modules/youtube-downloader/services.nix
 youtube_paths=modules/youtube-downloader/filepaths.nix
 youtube_http=custom_apps/node/apps/youtube-downloader/src/server/http.ts
-youtube_db=custom_apps/node/apps/youtube-downloader/src/server/db.ts
+youtube_db=custom_apps/node/apps/youtube-downloader/src/server/job-repository.ts
 groundwater_network=modules/groundwater-logger/networking.nix
 canary_module=modules/Core_Modules/homepage/canary.nix
 canary_runner=modules/Core_Modules/homepage/canary-runner.mjs

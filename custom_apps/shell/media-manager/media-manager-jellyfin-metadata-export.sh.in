@@ -1,0 +1,88 @@
+set -euo pipefail
+base_url="http://@NIX_VARS_NETWORKING_LOOPBACKIPV4@:@NIX_VARS_NETWORKING_PORTS_JELLYFIN@"
+api_key_file=/var/lib/jellyfin/data/library-sync.api-key
+output=@NIX_JELLYFINMETADATACACHE_QUOTED@
+api_key_mirror=@NIX_JELLYFINAPIKEYMIRROR_QUOTED@
+# Mirror the Jellyfin-owned key into the Media Manager cache directory
+# before anything else so the unprivileged web service can read it even
+# while Jellyfin itself is still starting. The export runs as
+# root:media-manager, so the mirrored copy is group-readable by design.
+[[ -f "$api_key_file" && ! -L "$api_key_file" ]] || exit 1
+api_key="$(tr -d '\r\n' <"$api_key_file")"
+[[ "$api_key" =~ ^[A-Za-z0-9._~-]+$ ]] || exit 1
+key_tmp="$(mktemp "$(dirname "$api_key_mirror")/.api-key.XXXXXX")"
+trap 'rm -f -- "$key_tmp"' EXIT
+printf '%s\n' "$api_key" >"$key_tmp"
+chmod 0640 "$key_tmp"
+mv -f -- "$key_tmp" "$api_key_mirror"
+trap - EXIT
+service_ready=0
+for _ in $(seq 1 30); do
+  if curl --fail --silent --show-error --max-time 5 \
+    "$base_url/System/Info/Public" >/dev/null 2>&1; then
+    service_ready=1
+    break
+  fi
+  sleep 2
+done
+(( service_ready == 1 )) || {
+  echo "Jellyfin did not become ready before metadata export" >&2
+  exit 1
+}
+tmp="$(mktemp "$(dirname "$output")/.metadata.XXXXXX")"
+trap 'rm -f -- "$tmp"' EXIT
+printf 'header = "X-Emby-Token: %s"\n' "$api_key" \
+  | curl --config - --fail --silent --show-error --max-time 90 --max-filesize 16777216 \
+    --get "$base_url/Items" \
+    --data-urlencode 'Recursive=true' \
+    --data-urlencode 'IncludeItemTypes=Movie,Episode,Audio' \
+     --data-urlencode 'Fields=Path,Overview,Genres,Studios,People,ProviderIds,MediaStreams,PremiereDate,ProductionYear,CommunityRating,OfficialRating,RunTimeTicks,SeriesName,ParentIndexNumber,IndexNumber,Id,ImageTags' \
+    --data-urlencode 'Limit=10000' \
+  | jq -e \
+    --arg shared @NIX_VARS_SHAREDROOT_QUOTED@ \
+    --arg users @NIX_VARS_USERSROOT_QUOTED@ \
+    --argjson observedAt "$(date +%s)" '
+    def clean($n): if type == "string" then .[0:$n] else null end;
+    def location:
+      . as $path
+      | if startswith($shared + "/_Videos/") then {rootId:"shared-videos",ownerUsername:null,relativePath:ltrimstr($shared + "/_Videos/")}
+        elif startswith($shared + "/_Music/") then {rootId:"shared-music",ownerUsername:null,relativePath:ltrimstr($shared + "/_Music/")}
+        elif startswith($shared + "/_Audiobooks/") then {rootId:"shared-audiobooks",ownerUsername:null,relativePath:ltrimstr($shared + "/_Audiobooks/")}
+        elif startswith($shared + "/_Books/") then {rootId:"shared-books",ownerUsername:null,relativePath:ltrimstr($shared + "/_Books/")}
+        elif startswith($users + "/") then
+          (ltrimstr($users + "/") | split("/")) as $p
+          | select(($p|length) >= 3 and ($p[0] | test("^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")))
+          | ({"_Videos":"videos","_Music":"music","_Audiobooks":"audiobooks","_Books":"books"}[$p[1]]) as $category
+          | select($category != null)
+          | {rootId:("personal-" + $category),ownerUsername:$p[0],relativePath:($p[2:]|join("/"))}
+        else empty end;
+    select((.TotalRecordCount // 0) <= 10000)
+    | {schemaVersion:1, observedAt:$observedAt, entries:[.Items[]
+        | select((.Path|type) == "string" and (.Path|length) <= 4096)
+        | (.Path | location) as $location
+        | $location + {
+             mediaType:(if .Type == "Episode" then "episode" elif .Type == "Movie" then "movie" elif ($location.rootId | endswith("audiobooks")) then "audiobook" else "music" end),
+             itemId: .Id,
+             observedAt: $observedAt,
+             imageTags: (.ImageTags // {}),
+             title:(.Name|clean(500)), year:.ProductionYear,
+            series:(.SeriesName|clean(500)), season:.ParentIndexNumber, episode:.IndexNumber,
+            episodeTitle:(if .Type == "Episode" then (.Name|clean(500)) else null end),
+            description:(.Overview|clean(20000)),
+            publisher:((.Studios // [])[0].Name|clean(500)),
+            genres:((.Genres // [])[:64] | map(clean(500))),
+            writers:((.People // []) | map(select(.Type == "Writer") | .Name | clean(500))[:64]),
+            premiereDate:(.PremiereDate|clean(32)),
+            runtimeMinutes:(if (.RunTimeTicks|type) == "number" then ((.RunTimeTicks / 600000000)|round) else null end),
+            officialRating:(.OfficialRating|clean(64)), communityRating:.CommunityRating,
+            providerIds:((.ProviderIds // {}) | to_entries[:32] | map(select((.key|length)<=64 and (.value|type)=="string" and (.value|length)<=256)) | from_entries),
+            videoStreams:((.MediaStreams // []) | map(select(.Type == "Video") | {codec:(.Codec|clean(32)),height:.Height,width:.Width,videoRange:(.VideoRange|clean(32)),bitRate:.BitRate})[:8]),
+            audioStreams:((.MediaStreams // []) | map(select(.Type == "Audio") | {codec:(.Codec|clean(32)),language:(.Language|clean(15)),channelLayout:(.ChannelLayout|clean(32)),channels:.Channels,bitRate:.BitRate})[:16]),
+            subtitleStreams:((.MediaStreams // []) | map(select(.Type == "Subtitle") | {index:.Index,codec:(.Codec|clean(32)),language:(.Language|clean(15)),title:((.DisplayTitle // .Title)|clean(128)),isDefault:(.IsDefault == true),isForced:(.IsForced == true),isHearingImpaired:(.IsHearingImpaired == true),isExternal:(.IsExternal == true)})[:32])
+          }
+        | select(.relativePath != "" and (.relativePath | split("/") | all(. != "" and . != "." and . != "..")))]}
+    | select((.entries|length) <= 10000)
+  ' >"$tmp"
+chmod 0640 "$tmp"
+mv -f -- "$tmp" "$output"
+trap - EXIT

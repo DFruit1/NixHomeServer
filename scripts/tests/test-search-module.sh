@@ -29,8 +29,6 @@ require_fixed modules/catalog.nix './Integrations/expose_freshrss_entries_to_sea
   "The FreshRSS Search integration must be registered in the catalog."
 require_fixed modules/Core_Modules/impermanence/default.nix '"/var/lib/solr"' \
   "Solr state should remain persistent when the Search module is removed."
-require_fixed modules/Core_Modules/age/default.nix 'searchClientSecret' \
-  "The Search OIDC client secret must be declared for agenix."
 for integration in expose_paperless_documents_to_search expose_kiwix_archives_to_search expose_browsertrix_crawls_to_search expose_mail_archive_emails_to_search expose_freshrss_entries_to_search; do
   require_fixed "modules/Integrations/${integration}.nix" 'lib.hasAttrByPath [ "repo" "search" ] options' \
     "Search integrations must stay evaluable when the Search module is not imported (${integration})."
@@ -39,10 +37,16 @@ require_fixed modules/search/services.nix 'ensureDatabases = [ "search" ]' \
   "Search must own its database provisioning in the host PostgreSQL cluster."
 require_fixed modules/search/services.nix 'solr start -f' \
   "The packaged Solr must run in the foreground under systemd."
+require_fixed modules/Integrations/expose_mail_archive_emails_to_search.nix 'emailsRoots' \
+  "The mail Search integration must populate the emailsRoots setting the extractor reads."
+require_fixed modules/search/services.nix 'search reindex' \
+  "Search must expose the DB-driven Solr rebuild command in a service."
 require_fixed modules/search/backups.nix 'outputName = "search.pgdump"' \
   "The authoritative search database must be included in logical backups."
 forbid_match modules/search/services.nix 'config[.]repo[.](paperless|kiwix|browsertrixDownloader|mailArchiveUi|freshrss)' \
   "The Search module must not reference other application modules directly; integrations carry that wiring."
+forbid_match modules/search 'acl_group' \
+  "Search must not carry per-source ACLs; access is admin-only via the shared gateway."
 
 host="$(test_default_host)"
 result="$(NIXHOMESERVER_TEST_HOST="$host" nix eval --impure --json --expr '
@@ -79,16 +83,19 @@ in {
   solrUser = cfg.systemd.services.search-solr.serviceConfig.User;
   solrExecStart = toString cfg.systemd.services.search-solr.serviceConfig.ExecStart;
   bootstrapExecStart = toString cfg.systemd.services.search-solr-core-bootstrap.serviceConfig.ExecStart;
+  reindexExecStart = toString cfg.systemd.services.search-reindex.serviceConfig.ExecStart;
+  reindexGuarded = builtins.elem "search-reindex" cfg.repo.storage.dataPool.guardedServices;
   indexAfter = cfg.systemd.services.search-index.after;
   uiCaddyHosts = cfg.services.caddy.virtualHosts ? "search.${vars.domain}";
   privateHost = cfg.services.unbound.privateHosts."search.${vars.domain}".target;
   oauthClient = cfg.services.kanidm.provision.systems.oauth2 ? "search-web";
-  kanidmGroup = cfg.services.kanidm.provision.groups ? "search-users";
+  adminGroup = cfg.services.kanidm.provision.groups ? "search-admins";
+  gatewayApp = cfg.repo.authGateway.protectedApps.search or null;
+  expectedHost = "search.${vars.domain}";
   sources = builtins.attrNames cfg.repo.search.sources;
   pgDumps = map (entry: entry.database) cfg.repo.backups.postgresqlDumps;
   uiSandbox = cfg.systemd.services.search-ui.serviceConfig;
   uiPort = cfg.repo.search.port;
-  uiSecret = cfg.systemd.services.search-ui.environment.SEARCH_OIDC_CLIENT_SECRET_FILE;
   uiLogoutRedirect = cfg.systemd.services.search-ui.environment.SEARCH_LOGOUT_REDIRECT_URL or null;
   fulltextZims = cfg.repo.search.fulltextZims;
   kiwixSearchBin = cfg.systemd.services.search-ui.environment.SEARCH_KIWIXSEARCH;
@@ -102,18 +109,23 @@ if ! jq -e '
   and (.solrUser == "solr")
   and (.solrExecStart | contains("solr start -f"))
   and (.bootstrapExecStart | contains("search bootstrap-solr"))
+  and (.reindexExecStart | contains("search reindex"))
+  and .reindexGuarded
   and (.indexType == "simple")
   and (.indexAfter | index("data-pool-layout.service") != null)
   and .uiCaddyHosts
   and (.privateHost == "private")
-  and .oauthClient
-  and .kanidmGroup
+  and (.oauthClient == false)
+  and .adminGroup
+  and (.gatewayApp != null)
+  and (.gatewayApp.host == .expectedHost)
+  and (.gatewayApp.upstream == "http://127.0.0.1:8092")
+  and (.gatewayApp.allowedGroups == ["search-admins"])
   and (.sources | length == 0)
   and (.pgDumps | index("search") != null)
   and (.uiSandbox.NoNewPrivileges == true)
   and (.uiSandbox.ProtectSystem == "strict")
   and (.uiPort == 8092)
-  and (.uiSecret | contains("searchClientSecret"))
   and (.uiLogoutRedirect != null)
   and (.uiLogoutRedirect | contains("/oauth2/sign_out"))
   and (.fulltextZims | type == "array")

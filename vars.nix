@@ -50,7 +50,7 @@ let
       adminEmail = "dsaw@tuta.io"; # Single contact address used for both ACME and the Kanidm admin account.
       sshPublicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDECt+GBZcPahwDCtWiMgn24qGdqMOJhP/pHo/pKsHAF From PC desktop into Home Server"; # Public key authorized for the local Unix administrator.
       localAdminUser = "dsaw"; # Local Unix SSH/sudo account retained for this existing server.
-      authSessionExpirySeconds = 1209600; # 14 days: how long Kanidm keeps users logged in (auth session lifetime in seconds).
+      authSessionExpirySeconds = 2592000; # 30 days: how long Kanidm keeps users logged in (auth session lifetime in seconds).
     };
 
     network = {
@@ -60,6 +60,7 @@ let
       lanIp = "192.168.8.12"; # Static LAN address for the server.
       lanPrefixLength = 24; # LAN CIDR prefix length; 24 is typical for home networks.
       lanGateway = "192.168.8.1"; # Router address on the same LAN subnet.
+      lanMode = "static"; # "static" pins lanIp; "dhcp" leases it, but lanIp must still be the router's reservation because DNS and firewall scoping use it.
       netbirdIp = "100.72.113.237"; # Stable NetBird address assigned to this server.
       netbirdCidr = "100.64.0.0/10"; # NetBird network in canonical IPv4 CIDR form.
     };
@@ -67,6 +68,7 @@ let
     system = {
       hostPlatform = "x86_64-linux"; # Nix target platform. Supported values: "x86_64-linux" and "aarch64-linux".
       hardwareProfile = "existing-server"; # Hardware profile: "generated", "existing-server", or "generic-uefi".
+      cpuVendor = "auto"; # Microcode vendor: "auto" trusts the generated hardware module, or force "intel"/"amd".
       timeZone = "Australia/Sydney"; # IANA time zone for timers, logs, and local maintenance windows.
       hostId = "84e8c12a"; # Stable 8-character hexadecimal host ID required by ZFS.
       buildMode = "maximum-effort"; # Build allocation: "local", "remote", "balanced" (2 slots each with 1 requested core/job), or "maximum-effort" (all slots on both).

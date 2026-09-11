@@ -35,7 +35,6 @@ let
     (mkTarget { id = "downloads"; name = "YouTube Downloads"; host = "ytdownload.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "YouTube|Downloads"; })
     (mkTarget { id = "passwords"; name = "Passwords"; host = "passwords.${vars.domain}"; coverageMode = "local-boundary"; expectedPattern = "Vaultwarden|Bitwarden|Passwords"; })
     (mkTarget { id = "backups"; name = "Local Backups"; host = vars.kopiaDomain; coverageMode = "gateway-boundary"; expectedPattern = "Kopia|Backups"; expectAccessDenied = true; })
-    (mkTarget { id = "monitor"; name = "Monitor"; host = vars.monitorDomain; coverageMode = "gateway-boundary"; expectedPattern = "Beszel|Monitor"; })
   ];
   targets = map (target: removeAttrs target [ "host" "active" ]) (builtins.filter (target: target.active && hostEnabled target.host) allTargets);
   canaryConfig = pkgs.writeText "homepage-canary-config.json" (builtins.toJSON {

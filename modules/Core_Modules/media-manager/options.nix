@@ -1,4 +1,4 @@
-{ appPackages, config, lib, vars, ... }:
+{ appPackages, lib, vars, ... }:
 
 let
   rootType = lib.types.submodule {
@@ -18,9 +18,26 @@ let
       label = lib.mkOption { type = lib.types.str; };
       available = lib.mkOption { type = lib.types.bool; default = false; };
       capabilities = lib.mkOption { type = lib.types.listOf lib.types.str; default = [ ]; };
+      environment = lib.mkOption { type = lib.types.attrsOf lib.types.str; default = { }; };
+      readOnlyPaths = lib.mkOption { type = lib.types.listOf lib.types.str; default = [ ]; };
+      refresh = lib.mkOption {
+        default = null;
+        type = lib.types.nullOr (lib.types.submodule {
+          options = {
+            unit = lib.mkOption { type = lib.types.strMatching "[a-zA-Z0-9@_.:-]+[.]service"; };
+            metadataUnit = lib.mkOption {
+              type = lib.types.either (lib.types.enum [ "" ]) (lib.types.strMatching "[a-zA-Z0-9@_.:-]+[.]service");
+              default = "";
+            };
+            successMessage = lib.mkOption { type = lib.types.str; };
+            failureMessage = lib.mkOption { type = lib.types.str; };
+          };
+        });
+        description = "Configuration-owned refresh units; browser requests can only select a registered integration ID.";
+      };
     };
   };
-  hasModule = name: config.nixhomeserver.modules.${name} or false;
+  catalog = import ../../catalog.nix;
 in
 {
   options.repo.mediaManager = {
@@ -100,26 +117,7 @@ in
     };
   };
 
-  config.repo.mediaManager.integrations = {
-    jellyfin = {
-      label = "Jellyfin";
-      available = hasModule "jellyfin";
-      capabilities = [ "library-refresh" ];
-    };
-    audiobookshelf = {
-      label = "Audiobookshelf";
-      available = hasModule "audiobookshelf";
-      capabilities = [ "library-refresh" ];
-    };
-    kavita = {
-      label = "Kavita";
-      available = hasModule "kavita";
-      capabilities = [ "library-refresh" ];
-    };
-    syncthing = {
-      label = "Syncthing";
-      available = config.services.syncthing.enable or false;
-      capabilities = [ "folder-rescan" ];
-    };
-  };
+  config.repo.mediaManager.integrations = lib.mapAttrs
+    (_: entry: entry.registration.mediaManager)
+    (lib.filterAttrs (_: entry: entry.registration ? mediaManager) catalog.apps);
 }

@@ -1,191 +1,119 @@
-import { $, component$, useSignal, useStore, useTask$ } from "@builder.io/qwik";
-import { api, errorDetail, readableError } from "./api";
+import type {
+  MetadataHealthIssue,
+  MetadataHealthResult,
+  MetadataIssuesPage as MetadataIssuesEnvelope,
+} from "./api-contract.generated";
+import {
+  $,
+  component$,
+  useSignal,
+  useStore,
+  useResource$,
+} from "@builder.io/qwik";
+import { api, readableError } from "./api";
 
 interface HealthRoot {
   id: string;
   label: string;
 }
 
-interface MetadataHealthIssue {
-  code: string;
-  severity: "info" | "warning" | "error";
-  field?: string;
-  title: string;
-  message: string;
-  sources: string[];
+function displayValue(value: unknown): string {
+  if (value == null || value === "") return "Not set";
+  if (Array.isArray(value))
+    return value.map(displayValue).join(", ") || "Not set";
+  return typeof value === "object" ? JSON.stringify(value) : String(value);
 }
-
-interface MetadataHealthResult {
-  itemId: string;
-  rootId: string;
-  relativePath: string;
-  mediaKind: string;
-  health: MetadataHealthIssue[];
-}
-
-interface MetadataIssuesEnvelope {
-  rootId: string;
-  results: MetadataHealthResult[];
-  inspectedItems: number;
-  issueCount: number;
-  severityCounts: Record<"error" | "warning" | "info", number>;
-  nextCursor?: string;
-}
-
-const HealthIcon = component$<{
-  name: "alert" | "arrow" | "check" | "library" | "tag";
-  size?: number;
-}>((props) => {
-  const paths = {
-    alert: ["M12 4 3 20h18z", "M12 9v4", "M12 17h.01"],
-    arrow: ["M5 12h14", "m14 7 5 5-5 5"],
-    check: ["m5 12 4 4L19 6"],
-    library: ["M4 5h5l2 2h9v12H4z", "M4 9h16"],
-    tag: ["M20 13 13 20 4 11V4h7z", "M8.5 8.5h.01"],
-  };
-  return (
-    <svg
-      aria-hidden="true"
-      class="icon"
-      width={props.size ?? 20}
-      height={props.size ?? 20}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      stroke-width="1.75"
-      stroke-linecap="round"
-      stroke-linejoin="round"
-    >
-      {paths[props.name].map((path) => (
-        <path d={path} key={path} />
-      ))}
-    </svg>
-  );
-});
-
-const HealthLoadingState = component$(() => (
-  <div class="loading-grid" aria-label="Loading metadata health">
-    <span />
-    <span />
-    <span />
-    <span />
-  </div>
-));
 
 export const MetadataHealthView = component$<{
   roots: HealthRoot[];
   initialRootId?: string;
 }>((props) => {
-  const initialRoot =
-    props.roots.find((root) => root.id === props.initialRootId) ??
-    props.roots[0];
   const inbox = useStore({
-    rootId: initialRoot?.id ?? "",
+    rootId: props.roots.some((root) => root.id === props.initialRootId)
+      ? props.initialRootId!
+      : "",
     results: [] as MetadataHealthResult[],
     inspectedItems: 0,
     issueCount: 0,
-    errorCount: 0,
-    warningCount: 0,
-    infoCount: 0,
-    nextCursor: "",
-    loading: true,
-    loadingMore: false,
-    error: "",
-    errorDetail: "",
+    scanning: false,
+    errors: [] as string[],
   });
   const requestRevision = useSignal(0);
 
-  const replacePage = $(async (rootId: string) => {
+  const inspectLibraries = $(async (rootId: string) => {
     const revision = ++requestRevision.value;
     inbox.results = [];
     inbox.inspectedItems = 0;
     inbox.issueCount = 0;
-    inbox.errorCount = 0;
-    inbox.warningCount = 0;
-    inbox.infoCount = 0;
-    inbox.nextCursor = "";
-    inbox.loadingMore = false;
-    inbox.error = "";
-    if (!rootId) {
-      inbox.loading = false;
-      return;
-    }
-    inbox.loading = true;
-    try {
-      const page = await api<MetadataIssuesEnvelope>(
-        `/metadata/issues?rootId=${encodeURIComponent(rootId)}&pageSize=20`,
-      );
-      if (revision !== requestRevision.value) return;
-      inbox.results = page.results;
-      inbox.inspectedItems = page.inspectedItems;
-      inbox.issueCount = page.issueCount;
-      inbox.errorCount = page.severityCounts.error;
-      inbox.warningCount = page.severityCounts.warning;
-      inbox.infoCount = page.severityCounts.info;
-      inbox.nextCursor = page.nextCursor ?? "";
-    } catch (error) {
-      if (revision !== requestRevision.value) return;
-      inbox.error = readableError(error);
-      inbox.errorDetail = errorDetail(error);
-    } finally {
-      if (revision === requestRevision.value) inbox.loading = false;
-    }
+    inbox.errors = [];
+    inbox.scanning = true;
+    const roots = props.roots.filter((root) => !rootId || root.id === rootId);
+    let index = 0;
+    // Limit concurrent library scans; each root's bounded API pages stay ordered.
+    await Promise.all(
+      Array.from({ length: Math.min(3, roots.length) }, async () => {
+        while (index < roots.length && revision === requestRevision.value) {
+          const root = roots[index++];
+          let cursor = "";
+          const seenCursors = new Set<string>();
+          try {
+            do {
+              const page = await api<MetadataIssuesEnvelope>(
+                `/metadata/issues?rootId=${encodeURIComponent(root.id)}&pageSize=20${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
+              );
+              if (revision !== requestRevision.value) return;
+              const nextCursor = page.nextCursor ?? "";
+              if (nextCursor && seenCursors.has(nextCursor))
+                throw new Error(
+                  "The library returned a repeated page. Retry the inspection.",
+                );
+              inbox.results = [
+                ...inbox.results,
+                ...page.results.map((result) => ({
+                  ...result,
+                  rootId: root.id,
+                })),
+              ];
+              inbox.inspectedItems += page.inspectedItems;
+              inbox.issueCount += page.issueCount;
+              cursor = nextCursor;
+              seenCursors.add(cursor);
+            } while (cursor && revision === requestRevision.value);
+          } catch (error) {
+            if (revision === requestRevision.value)
+              inbox.errors = [
+                ...inbox.errors,
+                `${root.label}: ${readableError(error)}`,
+              ];
+          }
+        }
+      }),
+    );
+    if (revision === requestRevision.value) inbox.scanning = false;
   });
 
-  useTask$(({ track }) => {
+  const inspection = useResource$(({ track, cleanup }) => {
     const rootId = track(() => inbox.rootId);
-    return replacePage(rootId);
+    const revision = requestRevision.value + 1;
+    cleanup(() => {
+      if (requestRevision.value === revision) requestRevision.value++;
+    });
+    return inspectLibraries(rootId);
   });
 
-  const loadMore = $(async () => {
-    if (!inbox.rootId || !inbox.nextCursor || inbox.loadingMore) return;
-    const revision = requestRevision.value;
-    const rootId = inbox.rootId;
-    inbox.loadingMore = true;
-    inbox.error = "";
-    try {
-      const page = await api<MetadataIssuesEnvelope>(
-        `/metadata/issues?rootId=${encodeURIComponent(rootId)}&pageSize=20&cursor=${encodeURIComponent(inbox.nextCursor)}`,
-      );
-      if (revision !== requestRevision.value || rootId !== inbox.rootId) return;
-      inbox.results = [...inbox.results, ...page.results];
-      inbox.inspectedItems += page.inspectedItems;
-      inbox.issueCount += page.issueCount;
-      inbox.errorCount += page.severityCounts.error;
-      inbox.warningCount += page.severityCounts.warning;
-      inbox.infoCount += page.severityCounts.info;
-      inbox.nextCursor = page.nextCursor ?? "";
-    } catch (error) {
-      if (revision !== requestRevision.value || rootId !== inbox.rootId) return;
-      inbox.error = readableError(error);
-      inbox.errorDetail = errorDetail(error);
-    } finally {
-      if (revision === requestRevision.value && rootId === inbox.rootId) {
-        inbox.loadingMore = false;
-      }
-    }
-  });
-
-  const issueLabel = `${inbox.issueCount} ${inbox.issueCount === 1 ? "issue" : "issues"}`;
-  const inspectedLabel = `${inbox.inspectedItems} inspected ${inbox.inspectedItems === 1 ? "item" : "items"}`;
   return (
-    <section class="health-page">
-      <header class="health-toolbar">
-        <div>
-          <p class="eyebrow">Metadata review queue</p>
-          <h2>Find the records that need attention</h2>
-          <p>
-            Review missing fields and disagreements between filenames, embedded
-            tags, sidecars, and connected media applications.
-          </p>
-        </div>
+    <section
+      class="health-page"
+      aria-busy={inspection.loading || inbox.scanning}
+    >
+      <div class="health-toolbar">
         <label>
           <span>Library</span>
           <select
-            aria-label="Library"
             value={inbox.rootId}
             onChange$={(_, element) => (inbox.rootId = element.value)}
           >
+            <option value="">All libraries</option>
             {props.roots.map((root) => (
               <option key={root.id} value={root.id}>
                 {root.label}
@@ -193,112 +121,102 @@ export const MetadataHealthView = component$<{
             ))}
           </select>
         </label>
-      </header>
+        <p class="health-summary" role="status">
+          {inbox.scanning
+            ? `Checking libraries · ${inbox.inspectedItems} items inspected`
+            : `${inbox.issueCount} ${inbox.issueCount === 1 ? "issue" : "issues"} across ${inbox.inspectedItems} inspected ${inbox.inspectedItems === 1 ? "item" : "items"}${inbox.errors.length ? " · incomplete" : ""}`}
+        </p>
+      </div>
 
-      {!inbox.loading && inbox.rootId && !inbox.error && (
-        <div class="health-summary" aria-live="polite">
-          <strong>
-            {issueLabel} across {inspectedLabel}
-          </strong>
-          <span>{inbox.errorCount} errors</span>
-          <span>{inbox.warningCount} warnings</span>
-          <span>{inbox.infoCount} notes</span>
-        </div>
-      )}
-
-      {inbox.loading ? (
-        <HealthLoadingState />
-      ) : inbox.error ? (
-        <div class="empty-state health-error-state" role="alert">
-          <div class="empty-glyph">
-            <HealthIcon name="alert" />
-          </div>
-          <h4>Library health could not be loaded</h4>
-          <p title={inbox.errorDetail || undefined}>{inbox.error}</p>
+      {inbox.errors.length > 0 && (
+        <div class="health-error-state" role="alert">
+          {inbox.errors.map((error) => (
+            <p key={error}>{error}</p>
+          ))}
           <button
             type="button"
             class="secondary-button health-retry"
-            onClick$={() => replacePage(inbox.rootId)}
+            disabled={inbox.scanning}
+            onClick$={() => inspectLibraries(inbox.rootId)}
           >
             Try again
           </button>
         </div>
-      ) : !inbox.rootId ? (
-        <div class="empty-state">
-          <div class="empty-glyph">
-            <HealthIcon name="library" />
-          </div>
-          <h4>No media libraries are visible</h4>
-          <p>
-            A library will appear here after it is enabled for your account.
-          </p>
-        </div>
-      ) : inbox.results.length === 0 ? (
-        <div class="empty-state health-empty">
-          <div class="empty-glyph">
-            <HealthIcon name="check" />
-          </div>
-          <h4>No metadata issues in this page</h4>
-          <p>
-            The inspected records agree across their available metadata sources.
-          </p>
-        </div>
-      ) : (
-        <div class="health-results">
-          {inbox.results.map((result) => {
-            const filename =
-              result.relativePath.split("/").at(-1) ?? result.relativePath;
-            return (
-              <article class="health-result" key={result.itemId}>
-                <header>
-                  <div>
-                    <span class="health-kind">{result.mediaKind}</span>
-                    <h3>{filename}</h3>
-                    <p title={result.relativePath}>{result.relativePath}</p>
-                  </div>
-                  <a
-                    class="health-review-link"
-                    href={`?view=library&root=${encodeURIComponent(result.rootId)}&item=${encodeURIComponent(result.itemId)}`}
-                  >
-                    Review metadata <HealthIcon name="arrow" size={15} />
-                  </a>
-                </header>
-                <div class="health-result-issues">
-                  {result.health.map((issue) => (
-                    <div
-                      class={`health-result-issue severity-${issue.severity}`}
-                      key={`${issue.code}-${issue.field ?? "record"}`}
-                    >
-                      <HealthIcon
-                        name={issue.severity === "info" ? "tag" : "alert"}
-                        size={17}
-                      />
+      )}
+      {props.roots.length === 0 ? (
+        <p>No media libraries are visible.</p>
+      ) : !inbox.scanning &&
+        !inbox.errors.length &&
+        inbox.results.length === 0 ? (
+        <p class="health-empty">
+          No metadata issues found in the inspected libraries.
+        </p>
+      ) : null}
+
+      <div class="health-results">
+        {inbox.results.map((result) => (
+          <article
+            class="health-result"
+            key={`${result.rootId}:${result.itemId}`}
+          >
+            <header>
+              <div>
+                <h3>{result.title || result.relativePath.split("/").at(-1)}</h3>
+                <p>
+                  {props.roots.find((root) => root.id === result.rootId)
+                    ?.label ?? result.rootId}
+                </p>
+              </div>
+              <a
+                class="health-review-link"
+                href={`?view=library&root=${encodeURIComponent(result.rootId)}&item=${encodeURIComponent(result.itemId)}`}
+              >
+                Review metadata
+              </a>
+            </header>
+            <div class="health-result-issues">
+              {result.health.map((issue) => (
+                <section
+                  class="health-result-issue"
+                  key={`${issue.code}-${issue.field ?? "record"}`}
+                >
+                  <h4>{issue.title}</h4>
+                  {issue.field && "currentValue" in issue ? (
+                    <div class="health-comparison">
                       <div>
-                        <strong>{issue.title}</strong>
-                        <p>{issue.message}</p>
-                        {issue.sources.length > 0 && (
-                          <span>{issue.sources.join(" · ")}</span>
+                        <span class="health-value-label">Current</span>
+                        <p>{displayValue(issue.currentValue)}</p>
+                        {!!issue.currentSources?.length && (
+                          <small>{issue.currentSources.join(" · ")}</small>
+                        )}
+                      </div>
+                      <div>
+                        <span class="health-value-label">Proposed</span>
+                        {issue.proposedValues?.length ? (
+                          issue.proposedValues.map((candidate, index) => (
+                            <div class="health-candidate" key={index}>
+                              <p>{displayValue(candidate.value)}</p>
+                              <small>{candidate.sources.join(" · ")}</small>
+                            </div>
+                          ))
+                        ) : (
+                          <p class="health-no-proposal">{issue.message}</p>
                         )}
                       </div>
                     </div>
-                  ))}
-                </div>
-              </article>
-            );
-          })}
-        </div>
-      )}
-
-      {inbox.nextCursor && (
-        <button
-          type="button"
-          class="secondary-button health-load-more"
-          disabled={inbox.loadingMore}
-          onClick$={loadMore}
-        >
-          {inbox.loadingMore ? "Inspecting…" : "Inspect next 20 items"}
-        </button>
-      )}
+                  ) : (
+                    <p>{issue.message}</p>
+                  )}
+                </section>
+              ))}
+            </div>
+            <details class="health-file-details">
+              <summary>File details</summary>
+              <p>{result.relativePath}</p>
+            </details>
+          </article>
+        ))}
+      </div>
     </section>
   );
 });

@@ -18,7 +18,6 @@ pub struct SourceConfig {
     pub id: String,
     pub display_name: String,
     pub source_type: String,
-    pub acl_group: Option<String>,
     pub app_base: String,
     pub settings: BTreeMap<String, serde_json::Value>,
 }
@@ -93,8 +92,6 @@ struct RawSource {
     display_name: Option<String>,
     source_type: String,
     #[serde(default)]
-    acl_group: Option<String>,
-    #[serde(default)]
     app_base: String,
     #[serde(default)]
     settings: BTreeMap<String, serde_json::Value>,
@@ -134,14 +131,12 @@ pub fn parse_sources(raw: &str) -> Result<Vec<SourceConfig>, String> {
             .display_name
             .unwrap_or_else(|| raw_source.id.clone());
         let source_type = raw_source.source_type;
-        let acl_group = raw_source.acl_group.filter(|group| !group.is_empty());
         let app_base = raw_source.app_base;
         let settings = raw_source.settings;
         sources.push(SourceConfig {
             id: raw_source.id,
             display_name,
             source_type,
-            acl_group,
             app_base,
             settings,
         });
@@ -168,7 +163,6 @@ mod tests {
         let sources = parse_sources(raw).expect("sources parse");
         assert_eq!(sources.len(), 1);
         assert_eq!(sources[0].display_name, "paperless");
-        assert_eq!(sources[0].acl_group, None);
         assert_eq!(
             sources[0].require_setting("exportPath").unwrap(),
             "/mnt/data/paperless/export"
@@ -178,12 +172,11 @@ mod tests {
     }
 
     #[test]
-    fn parses_acl_group_and_lists() {
+    fn parses_named_source_and_lists() {
         let raw = r#"[{
             "id": "kiwix",
             "display_name": "Wiki",
             "source_type": "kiwix",
-            "acl_group": "kiwix-users",
             "app_base": "https://wiki.example.org",
             "settings": {
                 "libraryRoot": "/mnt/data/kiwix",
@@ -191,7 +184,7 @@ mod tests {
             }
         }]"#;
         let sources = parse_sources(raw).expect("sources parse");
-        assert_eq!(sources[0].acl_group.as_deref(), Some("kiwix-users"));
+        assert_eq!(sources[0].display_name, "Wiki");
         assert_eq!(
             sources[0].setting_str_list("fulltextZims"),
             ["wikipedia_en"]

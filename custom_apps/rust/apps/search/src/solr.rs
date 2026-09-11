@@ -20,16 +20,14 @@ pub struct SolrDocument {
     pub size_bytes: i64,
     pub content_created: Option<i64>,
     pub content_modified: Option<i64>,
-    pub acl_groups: Vec<String>,
+    /// Owning user for per-user sources, or a shared sentinel for collections
+    /// with no per-user ownership. Indexed as `owner_s` for filtering/faceting.
+    pub owner: String,
     pub metadata: Value,
 }
 
 impl SolrDocument {
-    pub fn from_record(
-        source_id: &str,
-        record: &db::DocumentRecord,
-        acl_group: Option<&str>,
-    ) -> Self {
+    pub fn from_record(source_id: &str, record: &db::DocumentRecord, owner: &str) -> Self {
         Self {
             id: db::full_document_id(source_id, &record.external_id),
             source: source_id.to_string(),
@@ -42,10 +40,7 @@ impl SolrDocument {
             size_bytes: record.size_bytes,
             content_created: record.content_created_at,
             content_modified: record.content_modified_at,
-            acl_groups: acl_group
-                .filter(|group| !group.is_empty())
-                .map(|group| vec![group.to_string()])
-                .unwrap_or_default(),
+            owner: owner.to_string(),
             metadata: record.metadata.clone(),
         }
     }
@@ -68,8 +63,8 @@ impl SolrDocument {
         if let Some(modified) = self.content_modified {
             doc["content_modified"] = json!(epoch_to_solr_date(modified));
         }
-        if !self.acl_groups.is_empty() {
-            doc["acl_groups"] = json!(self.acl_groups);
+        if !self.owner.is_empty() {
+            doc["owner_s"] = json!(self.owner);
         }
         if let Value::Object(entries) = &self.metadata {
             for (key, value) in entries {
@@ -115,6 +110,7 @@ pub struct SearchHit {
     pub origin_url: String,
     pub app_url: String,
     pub content_type: String,
+    pub owner: String,
     pub score: f64,
     pub created: Option<i64>,
 }
@@ -125,6 +121,60 @@ pub struct SearchResponse {
     pub total: u64,
     pub source_facets: Vec<(String, u64)>,
     pub content_type_facets: Vec<(String, u64)>,
+    pub owner_facets: Vec<(String, u64)>,
+}
+
+/// Admin-selected filters applied to the Solr query. Every field is optional;
+/// an unset filter does not constrain results.
+#[derive(Debug, Clone, Default)]
+pub struct SearchFilters {
+    pub source: Option<String>,
+    pub content_type: Option<String>,
+    pub owner: Option<String>,
+    /// Inclusive lower/upper bounds, `YYYY-MM-DD`, on `content_created`.
+    pub created_after: Option<String>,
+    pub created_before: Option<String>,
+}
+
+impl SearchFilters {
+    /// Builds the Solr `fq` clauses for the selected filters.
+    fn clauses(&self, selected_sources: &[String]) -> Vec<String> {
+        let mut clauses = Vec::new();
+        if let Some(source) = &self.source {
+            clauses.push(format!("source:{}", solr_string_term(source)));
+        } else if !selected_sources.is_empty() {
+            let allowed = selected_sources
+                .iter()
+                .map(|source| solr_string_term(source))
+                .collect::<Vec<_>>()
+                .join(" OR ");
+            clauses.push(format!("source:({allowed})"));
+        }
+        if let Some(content_type) = &self.content_type {
+            clauses.push(format!("content_type:{}", solr_string_term(content_type)));
+        }
+        if let Some(owner) = &self.owner {
+            clauses.push(format!("owner_s:{}", solr_string_term(owner)));
+        }
+        if self.created_after.is_some() || self.created_before.is_some() {
+            let lower = self
+                .created_after
+                .clone()
+                .unwrap_or_else(|| "*".to_string());
+            let upper = self
+                .created_before
+                .clone()
+                .unwrap_or_else(|| "*".to_string());
+            clauses.push(format!(
+                "content_created:[{lower}T00:00:00Z TO {upper}T23:59:59Z]"
+            ));
+        }
+        clauses
+    }
+}
+
+fn solr_string_term(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 pub struct SolrClient {
@@ -264,7 +314,8 @@ impl SolrClient {
     pub async fn search(
         &self,
         query: &str,
-        allowed_sources: &[&str],
+        selected_sources: &[String],
+        filters: &SearchFilters,
         rows: usize,
         offset: usize,
     ) -> Result<SearchResponse, String> {
@@ -273,7 +324,8 @@ impl SolrClient {
             // Stored fields only: never leak the stored body into responses.
             (
                 "fl",
-                "id source title origin_url app_url content_type content_created score".to_string(),
+                "id source title origin_url app_url content_type owner_s content_created score"
+                    .to_string(),
             ),
             ("defType", "edismax".to_string()),
             ("qf", "title^4 body".to_string()),
@@ -281,22 +333,18 @@ impl SolrClient {
             ("start", offset.to_string()),
             ("facet", "true".to_string()),
             ("facet.field", "{!ex=src}source".to_string()),
-            ("facet.field", "content_type".to_string()),
+            ("facet.field", "{!ex=ct}content_type".to_string()),
+            ("facet.field", "{!ex=own}owner_s".to_string()),
             ("facet.mincount", "1".to_string()),
-            ("facet.limit", "20".to_string()),
+            ("facet.limit", "50".to_string()),
             ("hl", "true".to_string()),
             ("hl.fl", "body".to_string()),
             ("hl.fragsize", "220".to_string()),
             ("hl.snippets", "1".to_string()),
             ("wt", "json".to_string()),
         ];
-        if !allowed_sources.is_empty() {
-            let filter = allowed_sources
-                .iter()
-                .map(|source| format!("\"{source}\""))
-                .collect::<Vec<_>>()
-                .join(" OR ");
-            params.push(("fq", format!("source:({filter})")));
+        for clause in filters.clauses(selected_sources) {
+            params.push(("fq", clause));
         }
         let url = format!("{}/{}/select", self.base_url, self.core);
         let response: Value = self
@@ -401,6 +449,11 @@ pub fn parse_search_response(response: &Value) -> Result<SearchResponse, String>
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string(),
+            owner: doc
+                .get("owner_s")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
             created: doc
                 .get("content_created")
                 .and_then(Value::as_str)
@@ -411,15 +464,16 @@ pub fn parse_search_response(response: &Value) -> Result<SearchResponse, String>
     }
 
     let facet_counts = response.pointer("/facet_counts/facet_fields").cloned();
-    let (source_facets, content_type_facets) = match facet_counts {
+    let (source_facets, content_type_facets, owner_facets) = match facet_counts {
         Some(Value::Object(fields)) => (
             fields.get("source").map(facet_pairs).unwrap_or_default(),
             fields
                 .get("content_type")
                 .map(facet_pairs)
                 .unwrap_or_default(),
+            fields.get("owner_s").map(facet_pairs).unwrap_or_default(),
         ),
-        _ => (Vec::new(), Vec::new()),
+        _ => (Vec::new(), Vec::new(), Vec::new()),
     };
 
     Ok(SearchResponse {
@@ -427,6 +481,7 @@ pub fn parse_search_response(response: &Value) -> Result<SearchResponse, String>
         total,
         source_facets,
         content_type_facets,
+        owner_facets,
     })
 }
 
@@ -467,7 +522,8 @@ mod tests {
             "facet_counts": {
                 "facet_fields": {
                     "source": { "paperless": 1, "kiwix": 1 },
-                    "content_type": { "application/pdf": 1 }
+                    "content_type": { "application/pdf": 1 },
+                    "owner_s": { "acme": 1 }
                 }
             }
         });
@@ -484,6 +540,32 @@ mod tests {
             parsed.content_type_facets,
             vec![("application/pdf".to_string(), 1u64)]
         );
+        assert_eq!(parsed.owner_facets, vec![("acme".to_string(), 1u64)]);
+    }
+
+    #[test]
+    fn filters_build_fq_clauses() {
+        let selected = vec!["paperless".to_string(), "mail-archive".to_string()];
+        let none = SearchFilters::default();
+        assert_eq!(
+            none.clauses(&selected),
+            vec!["source:(\"paperless\" OR \"mail-archive\")"]
+        );
+
+        let filtered = SearchFilters {
+            source: Some("mail-archive".to_string()),
+            content_type: Some("message/rfc822".to_string()),
+            owner: Some("dsaw".to_string()),
+            created_after: Some("2024-01-01".to_string()),
+            created_before: Some("2024-12-31".to_string()),
+        };
+        let clauses = filtered.clauses(&selected);
+        assert!(clauses.contains(&"source:\"mail-archive\"".to_string()));
+        assert!(clauses.contains(&"content_type:\"message/rfc822\"".to_string()));
+        assert!(clauses.contains(&"owner_s:\"dsaw\"".to_string()));
+        assert!(clauses.contains(
+            &"content_created:[2024-01-01T00:00:00Z TO 2024-12-31T23:59:59Z]".to_string()
+        ));
     }
 
     #[test]
@@ -501,13 +583,14 @@ mod tests {
             checksum: "sum".to_string(),
             content_created_at: Some(0),
             content_modified_at: None,
-            metadata: serde_json::json!({ "correspondent": "acme", "page_count": 4 }),
+            metadata: serde_json::json!({ "owner": "acme", "correspondent": "acme", "page_count": 4 }),
         };
-        let doc = SolrDocument::from_record("paperless", &record, Some("paperless-users"));
+        let doc = SolrDocument::from_record("paperless", &record, "acme");
         let rendered = doc.to_solr_json();
         assert_eq!(rendered["meta_correspondent_s"], json!("acme"));
         assert_eq!(rendered["meta_page_count_s"], json!("4"));
-        assert_eq!(rendered["acl_groups"], json!(["paperless-users"]));
+        assert_eq!(rendered["owner_s"], json!("acme"));
+        assert_eq!(rendered["meta_owner_s"], json!("acme"));
         assert_eq!(rendered["content_created"], json!("1970-01-01T00:00:00Z"));
         assert!(rendered.get("content_modified").is_none());
     }

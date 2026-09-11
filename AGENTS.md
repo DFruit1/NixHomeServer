@@ -136,3 +136,7 @@ Integration tests requiring VM boot (failure-alert, jellyfin-oidc).
 Requires `/dev/kvm`. Runs in 5-15 min. **Only run when diagnosing persistent bugs
 where integration test coverage would be severely hampered without VM validation,
 or with explicit user permission.**
+
+## Media App UI Changes
+
+* Any change to media-manager text or UI layout must consider mobile phone screens as well as desktop screens. Verify the rendered library and metadata views at a phone width (about 390px) and a desktop width (about 1280px), including long titles and folder names, wrapped labels, image placeholders, upload controls, and subtitle management. Fix clipping, horizontal overflow, and inaccessible touch controls before considering the change complete.

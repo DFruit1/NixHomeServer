@@ -1,0 +1,26 @@
+set -euo pipefail
+
+state_file=@NIX_BUILDMODESTATEFILE_QUOTED@
+new_file="$state_file.new"
+
+cleanup() { rm -f "$new_file"; }
+trap cleanup EXIT
+
+@NIX_COREUTILS@/bin/cat > "$new_file"
+mode="$(@NIX_JQ@/bin/jq -er '.buildMode // empty' "$new_file")" || {
+  echo "invalid build mode payload" >&2
+  exit 1
+}
+case "$mode" in
+  local|remote|balanced|maximum-effort) ;;
+  *)
+    echo "build mode must be local, remote, balanced, or maximum-effort" >&2
+    exit 1
+    ;;
+esac
+@NIX_JQ@/bin/jq -c '{schemaVersion: 1, buildMode: $mode, updatedAt: (now | todateiso8601)}' \
+  --arg mode "$mode" "$new_file" > "$new_file.canonical"
+@NIX_COREUTILS@/bin/mv -f "$new_file.canonical" "$new_file"
+@NIX_COREUTILS@/bin/chmod 0644 "$new_file"
+@NIX_COREUTILS@/bin/mv -f "$new_file" "$state_file"
+@NIX_COREUTILS@/bin/cat "$state_file"

@@ -1,3 +1,15 @@
+export type {
+  GoogleBooksCandidate,
+  MusicReleaseCandidate as MusicCandidate,
+  TmdbCandidate,
+  TmdbDetails,
+} from "./api-contract.generated";
+import type {
+  GoogleBooksCandidate,
+  MusicReleaseCandidate as MusicCandidate,
+  TmdbCandidate,
+  TmdbDetails,
+} from "./api-contract.generated";
 import type {
   MetadataMatchCandidate,
   MetadataMatchField,
@@ -5,79 +17,6 @@ import type {
 import type { OpenLibraryCandidate } from "./open-library-panel";
 
 export type MusicLookupMode = "auto" | "fingerprint" | "search";
-
-export interface MusicCandidate {
-  releaseGroupId: string;
-  releaseId?: string;
-  artist: string;
-  title: string;
-  releaseType?: string;
-  year?: number;
-  releaseDate?: string;
-  releaseStatus?: string;
-  country?: string;
-  barcode?: string;
-  catalogNumber?: string;
-  packaging?: string;
-  disambiguation?: string;
-  genres: string[];
-  label?: string;
-  trackCount?: number;
-  matchMethod: "fingerprint" | "search";
-}
-
-export interface TmdbCandidate {
-  mediaType: "movie" | "tv";
-  tmdbId: number;
-  title: string;
-  year?: number;
-  overview?: string;
-  voteAverage?: number;
-  voteCount?: number;
-  posterPath?: string;
-}
-
-export interface TmdbDetails {
-  mediaType: "movie" | "tv" | "season" | "episode";
-  tmdbId: number;
-  seriesTmdbId?: number;
-  seriesTitle?: string;
-  title: string;
-  episodeTitle?: string;
-  year?: number;
-  overview?: string;
-  voteAverage?: number;
-  voteCount?: number;
-  posterPath?: string;
-  stillPath?: string;
-  runtimeMinutes?: number;
-  season?: number;
-  episode?: number;
-  genres?: string[];
-  releaseDate?: string;
-  firstAirDate?: string;
-  airDate?: string;
-  crew?: Array<{ name: string; job: string; department?: string }>;
-  externalIds?: { imdbId?: string; wikidataId?: string };
-}
-
-export interface GoogleBooksCandidate {
-  volumeId: string;
-  title: string;
-  subtitle?: string;
-  authors: string[];
-  publisher?: string;
-  publishedDate?: string;
-  year?: number;
-  description?: string;
-  isbn?: string;
-  categories: string[];
-  language?: string;
-  pageCount?: number;
-  averageRating?: number;
-  ratingsCount?: number;
-  coverAvailable: boolean;
-}
 
 const LIST_FIELDS = new Set(["authors", "narrators", "genres", "writers"]);
 const NUMERIC_FIELDS = new Set([
@@ -223,7 +162,7 @@ export function musicMetadataMatchCandidate(
     provider: {
       kind: "musicbrainz",
       releaseGroupId: candidate.releaseGroupId,
-      releaseId: candidate.releaseId,
+      releaseId: candidate.releaseId ?? undefined,
       matchMethod: candidate.matchMethod,
     },
     providerLabel: "MusicBrainz",

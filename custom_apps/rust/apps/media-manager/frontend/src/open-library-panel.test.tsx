@@ -1,3 +1,4 @@
+import { wireJson } from "./test-support/wire-fixtures";
 // @vitest-environment node
 
 import { $ } from "@builder.io/qwik";
@@ -14,7 +15,7 @@ it("selects an edition and stages its cover through the confirmed artwork workfl
       if (path.includes("/works/OL893415W/editions")) {
         const nextPage = path.includes("offset=12");
         return new Response(
-          JSON.stringify({
+          wireJson({
             provider: "open-library",
             workId: "OL893415W",
             offset: 0,
@@ -49,7 +50,7 @@ it("selects an edition and stages its cover through the confirmed artwork workfl
         init?.method === "POST"
       ) {
         return new Response(
-          JSON.stringify({
+          wireJson({
             id: "plan-cover",
             digest: "cover-digest",
             actions: [
@@ -64,7 +65,9 @@ it("selects an edition and stages its cover through the confirmed artwork workfl
         );
       }
       if (path.endsWith("/plans/plan-cover/confirm")) {
-        return new Response(JSON.stringify({ state: "queued" }));
+        return new Response(wireJson({ id: "plan-cover", state: "queued" }), {
+          status: 202,
+        });
       }
       throw new Error(`unexpected request: ${path}`);
     },

@@ -1,3 +1,4 @@
+import { wireJson } from "./test-support/wire-fixtures";
 // @vitest-environment node
 
 import { createDOM } from "@builder.io/qwik/testing";
@@ -20,6 +21,7 @@ describe("Media Manager navigation", () => {
     expect(viewFromSearch("?view=library")).toBe("library");
     expect(viewFromSearch("?view=conversions")).toBe("conversions");
     expect(viewFromSearch("?view=health")).toBe("health");
+    expect(viewFromSearch("?view=subtitles")).toBe("library");
     expect(viewFromSearch("?view=accounts")).toBe("accounts");
     expect(viewFromSearch("?view=overview")).toBe("library");
     expect(viewFromSearch("?view=unknown")).toBe("library");
@@ -60,7 +62,7 @@ describe("Media Manager navigation", () => {
               : path.includes("/items?rootId=shared-videos")
                 ? { items: [] }
                 : { available: false, progress: {} };
-        return new Response(JSON.stringify(payload));
+        return new Response(wireJson(payload));
       }),
     );
 
@@ -71,7 +73,6 @@ describe("Media Manager navigation", () => {
       ["Libraries", "?view=library"],
       ["Library health", "?view=health"],
       ["Conversions", "?view=conversions"],
-      ["Subtitles", "?view=subtitles"],
       ["Metadata sources", "?view=accounts"],
       ["App refresh", "?view=refresh"],
     ]);
@@ -83,6 +84,7 @@ describe("Media Manager navigation", () => {
       expect(link, `${label} navigation link`).toBeDefined();
       expect(link?.getAttribute("href")).toBe(href);
     }
+    expect(screen.querySelector('a[href="?view=subtitles"]')).toBeFalsy();
     expect(screen.textContent).not.toContain("Overview");
   });
 
@@ -136,7 +138,7 @@ describe("Media Manager navigation", () => {
                     ],
                   }
                 : { available: false, progress: {} };
-        return new Response(JSON.stringify(payload));
+        return new Response(wireJson(payload));
       }),
     );
 
@@ -172,7 +174,7 @@ describe("Media Manager navigation", () => {
           init?.method === "PUT"
         ) {
           return new Response(
-            JSON.stringify({
+            wireJson({
               provider: {
                 id: "tmdb",
                 name: "The Movie Database (TMDB)",
@@ -197,7 +199,7 @@ describe("Media Manager navigation", () => {
           init?.method === "POST"
         ) {
           return new Response(
-            JSON.stringify({
+            wireJson({
               providerId: "tmdb",
               status: "ready",
               message: "The provider accepted this account.",
@@ -248,7 +250,7 @@ describe("Media Manager navigation", () => {
                     ],
                   }
                 : { available: false, progress: {} };
-        return new Response(JSON.stringify(payload));
+        return new Response(wireJson(payload));
       },
     );
     vi.stubGlobal("fetch", fetchMock);
@@ -430,7 +432,7 @@ describe("Media Manager navigation", () => {
                     ],
                   }
                 : { available: false, progress: {} };
-        return new Response(JSON.stringify(payload));
+        return new Response(wireJson(payload));
       }),
     );
 
@@ -470,7 +472,7 @@ describe("Media Manager navigation", () => {
             : path.includes("/items?rootId=shared-videos")
               ? { items: [] }
               : { available: false, progress: {} };
-      return new Response(JSON.stringify(payload));
+      return new Response(wireJson(payload));
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -514,7 +516,7 @@ describe("Media Manager navigation", () => {
                   ],
                 }
               : { available: false, progress: {} };
-      return new Response(JSON.stringify(payload));
+      return new Response(wireJson(payload));
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -557,7 +559,7 @@ describe("Media Manager navigation", () => {
               : path.includes("/items?rootId=")
                 ? { items: [] }
                 : { available: false, progress: {} };
-        return new Response(JSON.stringify(payload));
+        return new Response(wireJson(payload));
       }),
     );
 
@@ -630,7 +632,7 @@ describe("Media Manager refresh feedback", () => {
           refreshStatusReads++ === 0
         ) {
           return new Response(
-            JSON.stringify({
+            wireJson({
               error: { code: "temporarily_unavailable", message: "Try again." },
             }),
             { status: 503 },
@@ -673,7 +675,9 @@ describe("Media Manager refresh feedback", () => {
                         }
                       : { integrationId: "jellyfin", state: "idle" }
                     : {};
-        return new Response(JSON.stringify(payload));
+        return new Response(wireJson(payload), {
+          status: init?.method === "POST" ? 202 : 200,
+        });
       },
     );
     vi.stubGlobal("fetch", fetchMock);
@@ -729,7 +733,7 @@ describe("Media Manager refresh feedback", () => {
             : path.endsWith("/roots")
               ? []
               : { available: false, progress: {} };
-        return new Response(JSON.stringify(payload));
+        return new Response(wireJson(payload));
       }),
     );
 
@@ -785,7 +789,7 @@ describe("Media Manager conversions inbox", () => {
                 : path.endsWith("/conversions")
                   ? { available: true, progress: { conversions: [] } }
                   : {};
-        return new Response(JSON.stringify(payload));
+        return new Response(wireJson(payload));
       }),
     );
 
@@ -849,7 +853,7 @@ describe("Media Manager conversions inbox", () => {
                       },
                     }
                   : {};
-        return new Response(JSON.stringify(payload));
+        return new Response(wireJson(payload));
       }),
     );
 
@@ -908,7 +912,7 @@ describe("Media Manager library browser", () => {
                   ),
                 }
               : { available: false, progress: {} };
-      return new Response(JSON.stringify(payload));
+      return new Response(wireJson(payload));
     });
   }
 
@@ -931,7 +935,7 @@ describe("Media Manager library browser", () => {
     const libraryFetch = libraryFetchMock([]);
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       if (String(input).endsWith("/items/arrival")) {
-        return new Response(JSON.stringify(item));
+        return new Response(wireJson(item));
       }
       return libraryFetch(input);
     });
@@ -1091,7 +1095,7 @@ describe("Media Manager library browser", () => {
                     sources: ["folder"],
                   }
                 : { available: false, progress: {} };
-      return new Response(JSON.stringify(payload));
+      return new Response(wireJson(payload));
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -1231,6 +1235,109 @@ describe("Media Manager library browser", () => {
     ).toHaveLength(1);
   });
 
+  it("shows checked image sources and stages an upload inside a missing-image placeholder", async () => {
+    const items = [
+      {
+        id: "video-1",
+        rootId: "shared-videos",
+        relativePath: "A long collection/Movie.mkv",
+        mediaKind: "video",
+        sizeBytes: 1024,
+      },
+      {
+        id: "subtitle-1",
+        rootId: "shared-videos",
+        relativePath: "A long collection/A subtitle.srt",
+        mediaKind: "subtitle",
+        sizeBytes: 128,
+      },
+    ];
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = String(input);
+        if (path.endsWith("/image/sources"))
+          return new Response(
+            wireJson({
+              sources: [
+                { id: "sidecar", label: "Sidecar image", status: "missing" },
+                {
+                  id: "embedded",
+                  label: "Embedded image",
+                  status: "available",
+                },
+                { id: "jellyfin", label: "Jellyfin export", status: "unknown" },
+              ],
+            }),
+          );
+        if (path.includes("/image/replacement?"))
+          return new Response(
+            wireJson({
+              id: "image-plan",
+              digest: "image-digest",
+              warnings: ["A new cover image will be installed."],
+            }),
+            { status: 201 },
+          );
+        if (path.endsWith("/confirm"))
+          return new Response(wireJson({ id: "image-plan", state: "queued" }), {
+            status: 202,
+          });
+        return libraryFetchMock(items, true)(input);
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const { render, screen, userEvent } = await createDOM();
+    await render(
+      <Root
+        initialView="library"
+        initialRootId="shared-videos"
+        initialItemId="video-1"
+      />,
+    );
+    await vi.waitFor(() =>
+      expect(screen.querySelector(".media-image img")).toBeTruthy(),
+    );
+    await userEvent(screen.querySelector(".media-image img"), "error");
+    await vi.waitFor(() =>
+      expect(screen.textContent).toContain("Jellyfin export"),
+    );
+    const placeholder = screen.querySelector(".media-image-placeholder");
+    expect(placeholder?.textContent).toContain("Image found");
+    expect(placeholder?.textContent).toContain("Not found");
+    expect(placeholder?.textContent).toContain("Not reported");
+    expect(placeholder?.textContent).toContain("Upload image from device");
+    expect(screen.querySelector(".tree-row.folder.wrap-title")).toBeTruthy();
+    const input = placeholder?.querySelector("input[type=file]");
+    Object.defineProperty(input, "files", {
+      configurable: true,
+      value: [{ name: "cover.png", type: "image/png" }],
+    });
+    await userEvent(input ?? null, "change");
+    await vi.waitFor(() =>
+      expect(placeholder?.textContent).toContain("Confirm replacement"),
+    );
+    const confirm = Array.from(
+      placeholder?.querySelectorAll("button") ?? [],
+    ).find((button) => button.textContent?.includes("Confirm replacement"));
+    await userEvent(confirm ?? null, "click");
+    expect(
+      fetchMock.mock.calls.some(
+        ([path, init]) =>
+          String(path).endsWith("/plans/image-plan/confirm") &&
+          init?.method === "POST",
+      ),
+    ).toBe(true);
+    await userEvent(screen.querySelector(".tree-folder-name"), "click");
+    await vi.waitFor(() =>
+      expect(
+        screen.querySelector(".media-image-placeholder")?.textContent,
+      ).toContain("Upload image from device"),
+    );
+    expect(screen.querySelectorAll(".tree-row.file.wrap-title")).toHaveLength(
+      2,
+    );
+  });
+
   it("shows a benign cover-art card instead of requesting media metadata", async () => {
     const items = [
       {
@@ -1253,7 +1360,9 @@ describe("Media Manager library browser", () => {
       "click",
     );
 
-    expect(screen.textContent).toContain("Image File (Cover Art)");
+    await vi.waitFor(() =>
+      expect(screen.textContent).toContain("Image File (Cover Art)"),
+    );
     expect(screen.textContent).toContain("Replace cover art");
     expect(screen.querySelector(".non-media-card")).toBeDefined();
     expect(screen.querySelector(".message.error")).toBeUndefined();
@@ -1303,6 +1412,11 @@ describe("Media Manager library browser", () => {
         (button) => button.querySelector(".tree-name")?.textContent === name,
       );
     await userEvent(fileButton("A-cover.jpg") ?? null, "click");
+    await vi.waitFor(() =>
+      expect(
+        screen.querySelector(".non-media-card input[type=file]"),
+      ).toBeTruthy(),
+    );
     const input = screen.querySelector<HTMLInputElement>(
       ".non-media-card input[type=file]",
     );
@@ -1322,7 +1436,9 @@ describe("Media Manager library browser", () => {
 
     await userEvent(fileButton("B-cover.jpg") ?? null, "click");
     resolveUpload(
-      new Response(JSON.stringify({ id: "plan-a", digest: "a".repeat(64) })),
+      new Response(wireJson({ id: "plan-a", digest: "a".repeat(64) }), {
+        status: 201,
+      }),
     );
     await uploadChange;
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -1362,7 +1478,7 @@ describe("Media Manager library browser", () => {
       }
       if (path.includes("relativePath=_Shows%2FAlpha")) {
         return new Response(
-          JSON.stringify({
+          wireJson({
             mediaType: "series",
             title: "Alpha current",
             sources: ["folder"],
@@ -1371,7 +1487,7 @@ describe("Media Manager library browser", () => {
       }
       if (path.includes("relativePath=_Shows%2FBeta")) {
         return new Response(
-          JSON.stringify({
+          wireJson({
             mediaType: "series",
             title: "Beta current",
             sources: ["folder"],
@@ -1429,7 +1545,7 @@ describe("Media Manager library browser", () => {
 
     resolvePreview(
       new Response(
-        JSON.stringify({
+        wireJson({
           id: "alpha-plan",
           digest: "a".repeat(64),
           expiresAt: 9999999999,
@@ -1441,6 +1557,7 @@ describe("Media Manager library browser", () => {
           ],
           warnings: [],
         }),
+        { status: 201 },
       ),
     );
     await previewClick;
@@ -1501,7 +1618,7 @@ describe("Media Manager library browser", () => {
                 : path.includes("/folders/metadata?")
                   ? { mediaType: "movie", title: "Collection" }
                   : { available: false, progress: {} };
-      return new Response(JSON.stringify(payload));
+      return new Response(wireJson(payload));
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -1707,7 +1824,7 @@ describe("Media Manager library browser", () => {
                     ],
                   }
                 : { available: false, progress: {} };
-      return new Response(JSON.stringify(payload));
+      return new Response(wireJson(payload));
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -1738,7 +1855,20 @@ describe("Media Manager library browser", () => {
     ).toBe("movie");
     expect(screen.textContent).toContain("IMDB");
     expect(screen.textContent).toContain("tt0000000");
-    expect(screen.textContent).toContain("Current metadata");
+    expect(screen.textContent).not.toContain(
+      "Sources, differences, and write targets",
+    );
+    expect(screen.querySelector(".metadata-toolbar")?.textContent).toContain(
+      "Create draft",
+    );
+    expect(screen.querySelector(".metadata-inspector")).toBeFalsy();
+    await userEvent(
+      Array.from(screen.querySelectorAll(".metadata-section-tab")).find(
+        (button) => button.textContent?.trim() === "Advanced",
+      ) ?? null,
+      "click",
+    );
+    expect(screen.textContent).toContain("Sources and write targets");
     expect(screen.textContent).toContain("NFO sidecar");
     expect(screen.textContent).toContain("Jellyfin");
     expect(screen.textContent).toContain("Refresh after applying");
@@ -1757,6 +1887,12 @@ describe("Media Manager library browser", () => {
     expect(
       screen.querySelector(".editor-metadata-form")?.hasAttribute("disabled"),
     ).toBe(true);
+    await userEvent(
+      Array.from(screen.querySelectorAll(".metadata-section-tab")).find(
+        (button) => button.textContent?.trim() === "Basics",
+      ) ?? null,
+      "click",
+    );
     const draftButton = Array.from(screen.querySelectorAll("button")).find(
       (button) => button.textContent?.trim() === "Create draft",
     );
@@ -1848,7 +1984,7 @@ describe("Media Manager library browser", () => {
                           sources: ["filename"],
                         }
                       : { available: false, progress: {} };
-        return new Response(JSON.stringify(payload));
+        return new Response(wireJson(payload));
       }),
     );
 
@@ -1958,13 +2094,14 @@ describe("Media Manager library browser", () => {
           sidecarRequests += 1;
           if (sidecarRequests === 2) return stalePreview;
           return new Response(
-            JSON.stringify({
+            wireJson({
               id: "metadata-plan",
               digest: "a".repeat(64),
               expiresAt: Date.now() + 1_800_000,
               actions: [{ destinationRelativePath: "_Movies/Arrival.nfo" }],
               warnings: [],
             }),
+            { status: 201 },
           );
         }
         if (
@@ -2000,7 +2137,7 @@ describe("Media Manager library browser", () => {
                       sources: ["filename"],
                     }
                   : { available: false, progress: {} };
-        return new Response(JSON.stringify(payload));
+        return new Response(wireJson(payload));
       }),
     );
 
@@ -2047,7 +2184,11 @@ describe("Media Manager library browser", () => {
     await vi.waitFor(() => expect(confirmRequests).toBe(1));
     title.value = "Arrival — Edited During Confirmation";
     await userEvent(title, "input");
-    resolveConfirmation(new Response("{}", { status: 202 }));
+    resolveConfirmation(
+      new Response(wireJson({ id: "metadata-plan", state: "queued" }), {
+        status: 202,
+      }),
+    );
     await confirmClick;
     expect(title.value).toBe("Arrival — Edited During Confirmation");
     expect(screen.textContent).toContain("Discard changes");
@@ -2060,13 +2201,14 @@ describe("Media Manager library browser", () => {
     await userEvent(title, "input");
     resolveStalePreview(
       new Response(
-        JSON.stringify({
+        wireJson({
           id: "stale-metadata-plan",
           digest: "b".repeat(64),
           expiresAt: Date.now() + 1_800_000,
           actions: [{ destinationRelativePath: "_Movies/Arrival.nfo" }],
           warnings: [],
         }),
+        { status: 201 },
       ),
     );
     await stalePreviewClick;
@@ -2170,7 +2312,7 @@ describe("Media Manager library browser", () => {
                           },
                         }
                       : { available: false, progress: {} };
-        return new Response(JSON.stringify(payload));
+        return new Response(wireJson(payload));
       }),
     );
 
@@ -2188,6 +2330,9 @@ describe("Media Manager library browser", () => {
     await vi.waitFor(() =>
       expect(screen.textContent).toContain("Movie.en.forced.srt"),
     );
+    expect(screen.textContent).toContain("Upload");
+    expect(screen.textContent).toContain("OpenSubtitles");
+    expect(screen.textContent).not.toContain("Cataloged video");
     expect(screen.textContent).toContain("English SDH");
     expect(screen.textContent).toContain("forced");
     expect(screen.textContent).toContain("SDH/CC");
@@ -2248,12 +2393,12 @@ describe("Media Manager library browser", () => {
                     }
                   : undefined;
         if (payload !== undefined) {
-          return new Response(JSON.stringify(payload));
+          return new Response(wireJson(payload));
         }
         if (path.endsWith("/plans") && init?.method === "POST") {
           previewRequests += 1;
           return new Response(
-            JSON.stringify({
+            wireJson({
               id: "plan-tombstone",
               digest: "abc123",
               expiresAt: Date.now() + 1800000,
@@ -2274,7 +2419,7 @@ describe("Media Manager library browser", () => {
           confirmRequests += 1;
           return removalConfirmation;
         }
-        return new Response(JSON.stringify({ available: false, progress: {} }));
+        return new Response(wireJson({ available: false, progress: {} }));
       },
     );
     vi.stubGlobal("fetch", fetchMock);
@@ -2327,7 +2472,11 @@ describe("Media Manager library browser", () => {
     await vi.waitFor(() => expect(confirmRequests).toBe(1));
     title.value = "Example Movie — Newer Unsaved Edit";
     await userEvent(title, "input");
-    resolveRemoval(new Response("{}", { status: 202 }));
+    resolveRemoval(
+      new Response(wireJson({ id: "plan-tombstone", state: "queued" }), {
+        status: 202,
+      }),
+    );
     await confirmationClick;
     expect(title.value).toBe("Example Movie — Newer Unsaved Edit");
     expect(screen.textContent).toContain("Discard changes");
@@ -2403,7 +2552,7 @@ describe("Media Manager library browser", () => {
                         ],
                       }
                     : { available: false, progress: {} };
-        return new Response(JSON.stringify(payload));
+        return new Response(wireJson(payload));
       },
     );
     vi.stubGlobal("fetch", fetchMock);
@@ -2462,7 +2611,9 @@ describe("Media Manager library browser", () => {
           ?.getAttribute("value"),
       ).toBe("Nevermind"),
     );
-    expect(screen.textContent).toContain("Current metadata");
+    expect(screen.querySelector(".metadata-toolbar")?.textContent).toContain(
+      "Discard draft",
+    );
     const mainForm = screen.querySelector(".editor-metadata-form");
     expect(mainForm).toBeDefined();
     const fieldValue = (labelText: string): string | null => {
@@ -2512,11 +2663,11 @@ describe("Media Manager library browser", () => {
         const path = String(input);
         if (path.endsWith("/status"))
           return new Response(
-            JSON.stringify({ mutationMode: "enabled", integrations: [] }),
+            wireJson({ mutationMode: "enabled", integrations: [] }),
           );
         if (path.endsWith("/session"))
           return new Response(
-            JSON.stringify({
+            wireJson({
               username: "dsaw",
               groups: ["users"],
               canEdit: true,
@@ -2524,7 +2675,7 @@ describe("Media Manager library browser", () => {
           );
         if (path.endsWith("/roots"))
           return new Response(
-            JSON.stringify([
+            wireJson([
               {
                 id: "shared-videos",
                 label: "Shared videos",
@@ -2535,10 +2686,10 @@ describe("Media Manager library browser", () => {
             ]),
           );
         if (path.includes("/items?rootId=shared-videos"))
-          return new Response(JSON.stringify({ items }));
+          return new Response(wireJson({ items }));
         if (path.endsWith("/items/movie-1/metadata"))
           return new Response(
-            JSON.stringify({
+            wireJson({
               mediaType: "movie",
               title: "Arrival",
               language: "en",
@@ -2551,7 +2702,7 @@ describe("Media Manager library browser", () => {
           init?.method === "POST"
         )
           return new Response(
-            JSON.stringify({
+            wireJson({
               provider: "tmdb",
               results: [
                 {
@@ -2572,7 +2723,7 @@ describe("Media Manager library browser", () => {
           init?.method === "POST"
         )
           return new Response(
-            JSON.stringify({
+            wireJson({
               provider: "tmdb",
               details: {
                 mediaType: "movie",
@@ -2588,7 +2739,7 @@ describe("Media Manager library browser", () => {
               },
             }),
           );
-        return new Response(JSON.stringify({ available: false, progress: {} }));
+        return new Response(wireJson({ available: false, progress: {} }));
       },
     );
     vi.stubGlobal("fetch", fetchMock);
@@ -2662,11 +2813,11 @@ describe("Media Manager library browser", () => {
         const path = String(input);
         if (path.endsWith("/status"))
           return new Response(
-            JSON.stringify({ mutationMode: "enabled", integrations: [] }),
+            wireJson({ mutationMode: "enabled", integrations: [] }),
           );
         if (path.endsWith("/session"))
           return new Response(
-            JSON.stringify({
+            wireJson({
               username: "dsaw",
               groups: ["users"],
               canEdit: true,
@@ -2674,7 +2825,7 @@ describe("Media Manager library browser", () => {
           );
         if (path.endsWith("/roots"))
           return new Response(
-            JSON.stringify([
+            wireJson([
               {
                 id: "shared-books",
                 label: "Shared books",
@@ -2685,15 +2836,15 @@ describe("Media Manager library browser", () => {
             ]),
           );
         if (path.includes("/items?rootId=shared-books"))
-          return new Response(JSON.stringify({ items }));
+          return new Response(wireJson({ items }));
         if (path.endsWith("/items/book-1/metadata"))
           return new Response(
-            JSON.stringify({
+            wireJson({
               mediaType: "book",
               title: "Dune",
               authors: ["Frank Herbert"],
               language: "en",
-              sources: ["epub"],
+              sources: ["embedded-epub"],
             }),
           );
         if (
@@ -2701,7 +2852,7 @@ describe("Media Manager library browser", () => {
           init?.method === "POST"
         )
           return new Response(
-            JSON.stringify({
+            wireJson({
               provider: "open-library",
               results: [
                 {
@@ -2723,7 +2874,7 @@ describe("Media Manager library browser", () => {
               ],
             }),
           );
-        return new Response(JSON.stringify({ available: false, progress: {} }));
+        return new Response(wireJson({ available: false, progress: {} }));
       },
     );
     vi.stubGlobal("fetch", fetchMock);
@@ -2777,7 +2928,7 @@ describe("Media Manager library browser", () => {
       expect.stringContaining("/provider-lookups/open-library/search"),
       expect.objectContaining({
         method: "POST",
-        body: JSON.stringify({ query: "Dune Frank Herbert" }),
+        body: wireJson({ query: "Dune Frank Herbert" }),
       }),
     );
   });
@@ -2808,15 +2959,15 @@ describe("Media Manager library browser", () => {
         const path = String(input);
         if (path.endsWith("/status"))
           return new Response(
-            JSON.stringify({ mutationMode: "enabled", integrations: [] }),
+            wireJson({ mutationMode: "enabled", integrations: [] }),
           );
         if (path.endsWith("/session"))
           return new Response(
-            JSON.stringify({ username: "dsaw", groups: [], canEdit: true }),
+            wireJson({ username: "dsaw", groups: [], canEdit: true }),
           );
         if (path.endsWith("/roots"))
           return new Response(
-            JSON.stringify([
+            wireJson([
               {
                 id: "shared-videos",
                 label: "Shared videos",
@@ -2827,18 +2978,18 @@ describe("Media Manager library browser", () => {
             ]),
           );
         if (path.includes("/items?rootId=shared-videos"))
-          return new Response(JSON.stringify({ items }));
+          return new Response(wireJson({ items }));
         if (path.endsWith("/items/movie-1/metadata"))
           return new Response(
-            JSON.stringify({ mediaType: "movie", title: "Arrival" }),
+            wireJson({ mediaType: "movie", title: "Arrival" }),
           );
         if (path.endsWith("/items/movie-2/metadata"))
           return new Response(
-            JSON.stringify({ mediaType: "movie", title: "Blade Runner" }),
+            wireJson({ mediaType: "movie", title: "Blade Runner" }),
           );
         if (path.endsWith("/provider-lookups/tmdb/search"))
           return new Response(
-            JSON.stringify({
+            wireJson({
               provider: "tmdb",
               results: [
                 {
@@ -2855,7 +3006,7 @@ describe("Media Manager library browser", () => {
           init?.method === "POST"
         )
           return pendingDetails;
-        return new Response(JSON.stringify({ available: false, progress: {} }));
+        return new Response(wireJson({ available: false, progress: {} }));
       },
     );
     vi.stubGlobal("fetch", fetchMock);
@@ -2897,7 +3048,7 @@ describe("Media Manager library browser", () => {
     );
     resolveDetails(
       new Response(
-        JSON.stringify({
+        wireJson({
           provider: "tmdb",
           details: {
             mediaType: "movie",
@@ -2932,7 +3083,7 @@ describe("Media Manager library browser", () => {
       const path = String(input);
       if (path.endsWith("/items/movie-1/playback-targets")) {
         return new Response(
-          JSON.stringify({
+          wireJson({
             targets: [
               {
                 id: "jellyfin",
@@ -2946,7 +3097,7 @@ describe("Media Manager library browser", () => {
       }
       if (path.endsWith("/items/movie-1/metadata")) {
         return new Response(
-          JSON.stringify({
+          wireJson({
             mediaType: "movie",
             title: "Arrival",
             sources: ["filename"],
@@ -3032,7 +3183,7 @@ describe("Media Manager library browser", () => {
       const path = String(input);
       if (path.endsWith("/items/track-1/playback-targets")) {
         return new Response(
-          JSON.stringify({
+          wireJson({
             targets: [
               {
                 id: "jellyfin",
@@ -3046,7 +3197,7 @@ describe("Media Manager library browser", () => {
       }
       if (path.endsWith("/items/track-1/metadata")) {
         return new Response(
-          JSON.stringify({
+          wireJson({
             mediaType: "music",
             title: "Lithium",
             sources: ["filename"],
@@ -3068,6 +3219,11 @@ describe("Media Manager library browser", () => {
         ),
       ).toBeDefined(),
     );
+    expect(
+      Array.from(screen.querySelectorAll(".editor-tab")).some((tab) =>
+        tab.textContent?.includes("Subtitles"),
+      ),
+    ).toBe(false);
     await userEvent(
       Array.from(screen.querySelectorAll("button")).find(
         (button) => button.textContent?.trim() === "Play here",
@@ -3241,7 +3397,7 @@ describe("Media Manager visual hierarchy", () => {
             : path.endsWith("/roots")
               ? []
               : { available: false, progress: {} };
-        return new Response(JSON.stringify(payload));
+        return new Response(wireJson(payload));
       }),
     );
 

@@ -20,7 +20,7 @@ async fn run() -> Result<(), String> {
     let config = AppConfig::from_env()?;
     std::fs::create_dir_all(&config.state_dir)
         .map_err(|error| format!("create state directory: {error}"))?;
-    Catalog::open(&config.database_path())
+    Catalog::initialize(&config.database_path())
         .map_err(|error| format!("initialize catalog: {error}"))?;
     let address = std::net::SocketAddr::new(config.address, config.port);
     let tmdb_client = config.tmdb_api_key_file.as_ref().and_then(|path| {

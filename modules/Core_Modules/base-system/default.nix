@@ -72,22 +72,25 @@ in
   networking = {
     hostName = vars.hostname;
     hostId = vars.hostId;
-    useDHCP = lib.mkForce false;
-    defaultGateway = vars.serverLanGateway;
+    useDHCP = lib.mkForce (vars.lanMode == "dhcp");
+    defaultGateway = lib.mkIf (vars.lanMode == "static") vars.serverLanGateway;
     nameservers = [ "127.0.0.1" ];
     hosts = {
       "127.0.0.1" = [ vars.kanidmDomain ];
       "::1" = [ vars.kanidmDomain ];
     };
-    interfaces.${vars.netIface} = {
-      useDHCP = lib.mkForce false;
-      ipv4.addresses = [
-        {
-          address = vars.serverLanIP;
-          prefixLength = vars.serverLanPrefixLength;
-        }
-      ];
-    };
+    interfaces.${vars.netIface} =
+      if vars.lanMode == "dhcp" then {
+        useDHCP = lib.mkForce true;
+      } else {
+        useDHCP = lib.mkForce false;
+        ipv4.addresses = [
+          {
+            address = vars.serverLanIP;
+            prefixLength = vars.serverLanPrefixLength;
+          }
+        ];
+      };
   };
 
   networking.networkmanager.enable = false;
@@ -115,8 +118,8 @@ in
   # root pool during boot. The managed data pool is reconciled separately.
   boot.zfs.forceImportRoot = false;
 
-  hardware.cpu.intel.updateMicrocode = isX86;
-  hardware.cpu.amd.updateMicrocode = isX86;
+  hardware.cpu.intel.updateMicrocode = lib.mkIf (isX86 && vars.cpuVendor == "intel") true;
+  hardware.cpu.amd.updateMicrocode = lib.mkIf (isX86 && vars.cpuVendor == "amd") true;
 
   networking.firewall.allowedTCPPorts = [ 22 ];
 

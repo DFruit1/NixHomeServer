@@ -10,7 +10,6 @@
       repo.search.sources.freshrss = {
         displayName = "Feeds";
         sourceType = "freshrss";
-        aclGroup = "freshrss-users";
         appBase = "https://rss.${vars.domain}";
         settings = {
           stateDir = config.repo.freshrss.stateDir;

@@ -143,6 +143,10 @@ impl super::Extractor for PaperlessExtractor {
             }
 
             let mut metadata = serde_json::Map::new();
+            // Paperless has no document owner. The correspondent is the closest
+            // meaningful per-document identity, so it doubles as the "user"
+            // facet value; documents without one are grouped as shared.
+            let mut owner = "shared".to_string();
             if let Some(correspondent) = document.get("correspondent") {
                 let name = match correspondent {
                     Value::Number(number) => number
@@ -153,9 +157,11 @@ impl super::Extractor for PaperlessExtractor {
                     other => other.to_string(),
                 };
                 if !name.is_empty() {
-                    metadata.insert("correspondent".to_string(), Value::String(name));
+                    metadata.insert("correspondent".to_string(), Value::String(name.clone()));
+                    owner = name;
                 }
             }
+            metadata.insert("owner".to_string(), Value::String(owner));
             if let Some(Value::Array(tags)) = document.get("tags") {
                 let names: Vec<String> = tags
                     .iter()

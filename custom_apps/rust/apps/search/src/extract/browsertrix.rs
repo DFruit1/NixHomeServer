@@ -369,7 +369,7 @@ impl super::Extractor for BrowsertrixExtractor {
                     .unwrap_or(0),
                 content_created_at: None,
                 content_modified_at: None,
-                metadata: serde_json::json!({ "crawl": package.name }),
+                metadata: serde_json::json!({ "crawl": package.name, "owner": "shared" }),
             });
 
             for page in &package.pages {
@@ -390,7 +390,7 @@ impl super::Extractor for BrowsertrixExtractor {
                     size_bytes: 0,
                     content_created_at: page.timestamp,
                     content_modified_at: None,
-                    metadata: serde_json::json!({ "crawl": package.name }),
+                    metadata: serde_json::json!({ "crawl": package.name, "owner": "shared" }),
                 });
             }
         }

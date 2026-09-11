@@ -12,6 +12,7 @@
 , shellEnv ? { }
 , shellHook ? ""
 , cargoExtraArgs ? "--locked"
+, cargoNextestExtraArgs ? ""
 , nativeBuildInputs ? [ ]
 , buildInputs ? [ ]
 , # Optional workspace mode: build against a shared source tree and prebuilt
@@ -85,16 +86,23 @@ let
     pname = name;
     strictDeps = true;
     cargoExtraArgs = effectiveCargoExtraArgs;
+  } // lib.optionalAttrs (cargoLock != null) {
+    # Workspace sources are assembled derivations; vendoring must not inspect
+    # their outputs during evaluation (especially with a remote build store).
+    cargoVendorDir = craneLib.vendorCargoDeps { inherit cargoLock; };
   };
 
-  cargoArtifacts = if sharedCargoArtifacts != null
+  cargoArtifacts =
+    if sharedCargoArtifacts != null
     then sharedCargoArtifacts
-    else craneLib.buildDepsOnly (commonArgs // {
-      src = packageSrc;
-    });
+    else
+      craneLib.buildDepsOnly (commonArgs // {
+        src = packageSrc;
+      });
 
   rawChecks = mkRustChecks {
-    inherit name packageSrc checkSrc commonArgs cargoLock;
+    inherit name packageSrc checkSrc commonArgs cargoLock cargoNextestExtraArgs;
+    cargoFmtExtraArgs = lib.optionalString useWorkspace "--package ${name} --package homelab-common";
     cargoArtifacts = if sharedCargoArtifacts != null then sharedCargoArtifacts else null;
   };
 

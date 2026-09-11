@@ -147,7 +147,7 @@ EOF
   fi
 fi
 
-if rg -n 'logoUrl = "https?://' modules/Core_Modules/homepage/services.nix; then
+if rg -n 'logoUrl = "https?://' modules/Core_Modules/homepage/services.nix modules/*/registration.nix; then
   echo "Homepage service logos must be packaged locally rather than fetched during page views." >&2
   exit 1
 fi
@@ -156,7 +156,7 @@ while IFS= read -r logo_path; do
     echo "Homepage service logo is referenced but not packaged: ${logo_path}" >&2
     exit 1
   fi
-done < <(rg -o -N 'logoUrl = "(/logos/[^"]+)"' modules/Core_Modules/homepage/services.nix -r '$1' | sort -u)
+done < <(rg --no-filename -o -N 'logoUrl = "(/logos/[^"]+)"' modules/Core_Modules/homepage/services.nix modules/*/registration.nix -r '$1' | sort -u)
 
 if rg -n 'shows live groups|live group catalog' documentation/kanidm.md; then
   echo "Kanidm documentation must not describe evaluated groups as live membership." >&2
@@ -181,7 +181,7 @@ if rg -Fq '/usr/local/bin/sshfs' custom_apps/node/apps/homepage/src/shared/ui-co
   echo "SSHFS guidance must support Apple Silicon, NixOS, and non-default install prefixes." >&2
   exit 1
 fi
-require_fixed modules/Core_Modules/homepage/services.nix 'loginNotes = "Requires ${filesWebAccessGroup} for browser access."' \
+require_fixed modules/files/registration.nix 'loginNotes = "Requires ${vars.fileAccess.webAccessGroup} for browser access."' \
   "Files guidance must use the evaluated configurable web-access group."
 require_fixed modules/Core_Modules/homepage/services.nix '++ lib.optionals immichEnabled [' \
   "Homepage must omit Immich reconciliation commands when Immich is disabled."

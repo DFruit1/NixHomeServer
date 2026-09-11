@@ -1,0 +1,113 @@
+      set -euo pipefail
+      shopt -s nullglob
+      base_url="http://@NIX_VARS_NETWORKING_LOOPBACKIPV4@:@NIX_VARS_NETWORKING_PORTS_KAVITA@"
+      output=@NIX_KAVITAMETADATACACHE_QUOTED@
+      service_ready=0
+      for _ in $(seq 1 30); do
+        if (exec 3<>/dev/tcp/@NIX_VARS_NETWORKING_LOOPBACKIPV4@/@NIX_VARS_NETWORKING_PORTS_KAVITA@) 2>/dev/null; then
+          service_ready=1
+          break
+        fi
+        sleep 2
+      done
+      (( service_ready == 1 )) || {
+        echo "Kavita did not become ready before metadata export" >&2
+        exit 1
+      }
+      db=/var/lib/kavita/config/kavita.db
+      token_key_file=@NIX_CONFIG_AGE_SECRETS_KAVITATOKENKEY_PATH_QUOTED@
+      admin_username=@NIX_VARS_KANIDMADMINUSER_QUOTED@
+      [[ -f "$db" && ! -L "$db" && -f "$token_key_file" && ! -L "$token_key_file" ]] || exit 1
+      admin_token="$(python3 - "$token_key_file" "$db" "$admin_username" <<'PY'
+import base64, hashlib, hmac, json, sqlite3, sys, time
+def encode(value): return base64.urlsafe_b64encode(value).rstrip(b"=")
+token_key_path, database_path, username = sys.argv[1:]
+with sqlite3.connect(f"file:{database_path}?mode=ro", uri=True, timeout=5) as database:
+    row = database.execute("select Id, UserName from AspNetUsers where UserName = ? limit 1", (username,)).fetchone()
+if row is None: raise SystemExit("Kavita admin identity is unavailable")
+token_key = open(token_key_path, "rb").read().strip()
+if len(token_key) < 32: raise SystemExit("Kavita token key is malformed")
+now = int(time.time())
+header = encode(json.dumps({"alg":"HS512","typ":"JWT"}, separators=(",", ":")).encode())
+payload = encode(json.dumps({"name":row[1],"nameid":str(row[0]),"role":["Admin","Login"],"nbf":now,"iat":now,"exp":now+300}, separators=(",", ":")).encode())
+unsigned = header + b"." + payload
+print((unsigned + b"." + encode(hmac.new(token_key, unsigned, hashlib.sha512).digest())).decode())
+PY
+)"
+      series="$(printf 'header = "Authorization: Bearer %s"\n' "$admin_token" \
+        | curl --config - --fail --silent --show-error --max-time 90 --max-filesize 16777216 \
+          -X POST -H 'Content-Type: application/json' --data '{}' \
+          "$base_url/api/Series/all-v2?PageNumber=1&PageSize=10000")"
+      work="$(mktemp -d)"
+      trap 'rm -rf -- "$work"' EXIT
+      mkdir "$work/results"
+      printf 'header = "Authorization: Bearer %s"\n' "$admin_token" >"$work/curl.conf"
+      chmod 0600 "$work/curl.conf"
+      unset admin_token
+      # The worker shell, rather than this parent shell, expands its positional parameters.
+      # shellcheck disable=SC2016
+      jq -r '.[].id // empty' <<<"$series" \
+        | xargs -r -P 4 -n 1 bash -c '
+            base_url="$1"
+            work="$2"
+            series_id="$3"
+            [[ "$series_id" =~ ^[0-9]+$ ]] || exit 1
+            curl --config "$work/curl.conf" --fail --silent --show-error \
+              --max-time 15 --max-filesize 1048576 --get \
+              --data-urlencode "seriesId=$series_id" "$base_url/api/Series/metadata" \
+              | jq -ce --argjson seriesId "$series_id" ". + {seriesId:\$seriesId}" \
+                >"$work/results/$series_id.json"
+          ' _ "$base_url" "$work"
+      result_files=("$work"/results/*.json)
+      if (( ${#result_files[@]} > 0 )); then
+        jq -s '.' "${result_files[@]}" >"$work/metadata.json"
+      else
+        printf '[]\n' >"$work/metadata.json"
+      fi
+      tmp="$(mktemp "$(dirname "$output")/.metadata.XXXXXX")"
+      trap 'rm -f -- "$tmp"; rm -rf -- "$work"' EXIT
+      jq -e \
+        --arg shared @NIX_VARS_SHAREDROOT_QUOTED@ \
+        --arg users @NIX_VARS_USERSROOT_QUOTED@ \
+        --slurpfile metadata "$work/metadata.json" \
+        --argjson observedAt "$(date +%s)" '
+        def clean($n): if type == "string" then .[0:$n] else null end;
+        def names: map(if type == "object" then .name else . end | clean(500)) | map(select(. != null));
+        def location:
+          . as $path
+          | if startswith($shared + "/_Books/") then {rootId:"shared-books",ownerUsername:null,relativePath:(ltrimstr($shared + "/_Books/")|rtrimstr("/"))}
+            elif startswith($users + "/") then
+              (ltrimstr($users + "/") | split("/")) as $parts
+              | select(($parts|length) >= 3 and $parts[1] == "_Books" and ($parts[0] | test("^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")))
+              | {rootId:"personal-books",ownerUsername:$parts[0],relativePath:($parts[2:]|join("/")|rtrimstr("/"))}
+            else empty end;
+        select(type == "array" and length <= 10000)
+        | ($metadata[0] | map({key:(.seriesId|tostring),value:.}) | from_entries) as $metadataById
+        | {schemaVersion:1,observedAt:$observedAt,entries:[.[]
+            | select((.folderPath|type) == "string" and (.folderPath|length) <= 4096)
+            | (.folderPath|location) as $location
+            | ($metadataById[(.id|tostring)] // {}) as $details
+            | $location + {
+                itemId:(.id|tostring), observedAt:$observedAt,
+                title:((.localizedName // .name)|clean(500)),
+                series:(.name|clean(500)),
+                year:(if ($details.releaseYear // 0) > 0 then $details.releaseYear else null end),
+                description:($details.summary|clean(20000)),
+                language:($details.language|clean(32)),
+                genres:(($details.genres // [])|names)[:64],
+                tags:(($details.tags // [])|names)[:64],
+                writers:(($details.writers // [])|names)[:64],
+                authors:(($details.writers // [])|names)[:64],
+                publisher:((($details.publishers // [])[0].name)|clean(500)),
+                ageRating:$details.ageRating,
+                publicationStatus:$details.publicationStatus,
+                fieldLocks:{title:((.localizedNameLocked // false) == true),sortTitle:((.sortNameLocked // false) == true),language:(($details.languageLocked // false) == true),description:(($details.summaryLocked // false) == true),genres:(($details.genresLocked // false) == true),tags:(($details.tagsLocked // false) == true),writers:(($details.writerLocked // false) == true),publisher:(($details.publisherLocked // false) == true),year:(($details.releaseYearLocked // false) == true),ageRating:(($details.ageRatingLocked // false) == true),publicationStatus:(($details.publicationStatusLocked // false) == true)},
+                isLocked:((.localizedNameLocked // false) == true or (.sortNameLocked // false) == true or ($details.languageLocked // false) == true or ($details.summaryLocked // false) == true or ($details.genresLocked // false) == true or ($details.tagsLocked // false) == true or ($details.writerLocked // false) == true or ($details.publisherLocked // false) == true or ($details.releaseYearLocked // false) == true),
+                providerIds:({anilist:(if (.aniListId // 0) > 0 then (.aniListId|tostring) else null end),mal:(if (.malId // 0) > 0 then (.malId|tostring) else null end),hardcover:(if (.hardcoverId // 0) > 0 then (.hardcoverId|tostring) else null end),metron:(if (.metronId // 0) > 0 then (.metronId|tostring) else null end),comicVine:(.comicVineId|clean(128)),mangaBaka:(if (.mangaBakaId // 0) > 0 then (.mangaBakaId|tostring) else null end),webLinks:($details.webLinks|clean(2048))}|with_entries(select(.value != null)))
+              }
+            | select(.relativePath != "" and (.relativePath | split("/") | all(. != "" and . != "." and . != "..")))]}
+      ' <<<"$series" >"$tmp"
+      chmod 0640 "$tmp"
+      mv -f -- "$tmp" "$output"
+      trap - EXIT
+      rm -rf -- "$work"

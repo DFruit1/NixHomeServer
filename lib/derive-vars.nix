@@ -72,7 +72,7 @@ let
     accessGroup = "users";
   };
   enabled = name: builtins.elem name configuredApplications.enabled;
-  ports = {
+  corePorts = {
     http = 80;
     https = 443;
     dns = 53;
@@ -88,81 +88,11 @@ let
     homepage = 8084;
     mediaManager = 8087;
     mediaManagerProvider = 8089;
-  }
-  // lib.optionalAttrs (enabled "files") {
-    oauth2ProxyFilestash = 4184;
-    filestash = 8334;
-    filestashTransfers = 9443;
-    filesSftp = 2222;
-  }
-  // lib.optionalAttrs (enabled "mail-archive-ui") {
-    oauth2ProxyMailArchive = 4181;
-    mailArchiveUi = 9011;
-  }
-  // lib.optionalAttrs (enabled "kiwix") {
-    oauth2ProxyKiwix = 4182;
-    kiwix = 8081;
-    kiwixArchives = 8082;
-  }
-  // lib.optionalAttrs (enabled "youtube-downloader") {
-    oauth2ProxyDownloads = 4183;
-    youtubeDownloader = 8083;
-  }
-  // lib.optionalAttrs (enabled "browsertrix-downloader") {
-    oauth2ProxyBrowsertrix = 4188;
-    browsertrixDownloader = 8088;
-  }
-  // lib.optionalAttrs (enabled "groundwater-logger") {
-    groundwaterLogger = 8091;
-    groundwaterMqtt = 1883;
-  }
-  // lib.optionalAttrs (enabled "bonsai") {
-    bonsai = 8086;
-  }
-  // lib.optionalAttrs (enabled "paperless") {
-    paperless = 8000;
-  }
-  // lib.optionalAttrs (enabled "audiobookshelf") {
-    audiobookshelf = 13378;
-  }
-  // lib.optionalAttrs (enabled "chaptarr") {
-    chaptarr = 8789;
-  }
-  // lib.optionalAttrs (enabled "immich") {
-    immich = 2283;
-    immichPublicProxy = 3300;
-  }
-  // lib.optionalAttrs (enabled "kavita") {
-    kavita = 5000;
-  }
-  // lib.optionalAttrs (enabled "vaultwarden") {
-    vaultwarden = 8222;
-  }
-  // lib.optionalAttrs (enabled "jellyfin") {
-    jellyfin = 8096;
-    jellyfinDiscovery = 7359;
-  }
-  // lib.optionalAttrs (enabled "sonarr") {
-    sonarr = 8989;
-    oauth2ProxySonarr = 4190;
-  }
-  // lib.optionalAttrs (enabled "radarr") {
-    radarr = 7878;
-    oauth2ProxyRadarr = 4191;
-  }
-  // lib.optionalAttrs (enabled "prowlarr") {
-    prowlarr = 9696;
-    oauth2ProxyProwlarr = 4192;
-  }
-  // lib.optionalAttrs (enabled "qbittorrent") {
-    qbittorrentWeb = 8085;
-    qbittorrentTorrent = 51413;
-    oauth2ProxyQbittorrent = 4193;
-  }
-  // lib.optionalAttrs (enabled "search") {
-    search = 8092;
-    searchSolr = 8983;
   };
+  appCatalog = import ../modules/catalog.nix;
+  selectedPorts = map (entry: entry.registration.ports)
+    (lib.attrValues (lib.filterAttrs (name: _: enabled name) appCatalog.apps));
+  ports = (import ./merge-ports.nix { inherit lib; }) ([ corePorts ] ++ selectedPorts);
   advanced = {
     loopbackIPv4 = "127.0.0.1";
     loopbackIPv6 = "::1";
@@ -316,10 +246,12 @@ rec {
   lanDnsDomain = networking.dns.lanDomain;
   lanDnsHosts = networking.dns.lanHosts;
   netIface = networking.interfaces.lan;
+  lanMode = network.lanMode or "static"; # "static" pins network.lanIp; "dhcp" leases it, but lanIp must still be the reserved address used by DNS and firewall scoping.
   kanidmAuthSessionExpirySeconds = configuredIdentity.authSessionExpirySeconds or 259200; # Kanidm auth session lifetime in seconds; operator-set in vars.nix, defaults to 3 days.
   kanidmPrivilegeSessionExpirySeconds = 900; # Kanidm privileged write window in seconds.
   filesSessionExpirationHours = 8; # Files web UI browser session lifetime in hours.
   brandName = branding.displayName;
+  cpuVendor = system.cpuVendor or "auto"; # "auto" defers to the generated hardware module; "intel"/"amd" force that vendor's microcode on x86.
 
   storageProfile = storage.profile or "zfs-mirror";
   enableRootRollback = storage.enableRootRollback or false;
@@ -378,7 +310,6 @@ rec {
 
   kanidmDomain = "id.${domain}";
   kopiaDomain = "kopia.${domain}";
-  monitorDomain = "monitor.${domain}";
   kanidmBaseUrl = "https://${kanidmDomain}";
   kanidmIssuer = clientId: "${kanidmBaseUrl}/oauth2/openid/${clientId}";
   kanidmDiscoveryUrl = clientId: "${kanidmIssuer clientId}/.well-known/openid-configuration";

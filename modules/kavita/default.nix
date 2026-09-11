@@ -2,6 +2,7 @@
 
 {
   imports = [
+    ./media-manager.nix
     ./networking.nix
     ./identity.nix
     ./filepaths.nix

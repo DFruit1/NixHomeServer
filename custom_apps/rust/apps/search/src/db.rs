@@ -57,6 +57,8 @@ pub async fn migrate(client: &mut Client) -> Result<(), String> {
                 id TEXT PRIMARY KEY,
                 display_name TEXT NOT NULL,
                 source_type TEXT NOT NULL,
+                -- Legacy source-level ACL column; unused since Search became
+                -- admin-only and every admin searches every source.
                 acl_group TEXT,
                 app_base TEXT NOT NULL DEFAULT '',
                 settings JSONB NOT NULL DEFAULT '{}',
@@ -94,12 +96,11 @@ pub async fn register_source(client: &mut Client, source: &SourceConfig) -> Resu
     client
         .execute(
             "
-            INSERT INTO sources (id, display_name, source_type, acl_group, app_base, settings)
-            VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+            INSERT INTO sources (id, display_name, source_type, app_base, settings)
+            VALUES ($1, $2, $3, $4, $5::jsonb)
             ON CONFLICT (id) DO UPDATE SET
                 display_name = EXCLUDED.display_name,
                 source_type = EXCLUDED.source_type,
-                acl_group = EXCLUDED.acl_group,
                 app_base = EXCLUDED.app_base,
                 settings = EXCLUDED.settings
             ",
@@ -107,7 +108,6 @@ pub async fn register_source(client: &mut Client, source: &SourceConfig) -> Resu
                 &source.id,
                 &source.display_name,
                 &source.source_type,
-                &source.acl_group,
                 &source.app_base,
                 &settings,
             ],
@@ -144,6 +144,68 @@ pub async fn existing_checksums(
         .into_iter()
         .map(|row| (row.get::<_, String>(0), row.get::<_, String>(1)))
         .collect())
+}
+
+/// Loads one keyset-paginated batch of a source's documents, ordered by the
+/// full document id. Pass the previous batch's last id as `after_id` to fetch
+/// the next page. Returning each row's id lets a full Solr rebuild stream a
+/// source without holding every document (bodies included) in memory at once.
+pub async fn documents_batch(
+    client: &Client,
+    source_id: &str,
+    after_id: Option<&str>,
+    limit: i64,
+) -> Result<Vec<(String, DocumentRecord)>, String> {
+    const COLUMNS: &str = "id, external_id, kind, title, body_text, content_type, \
+        origin_url, app_url, file_path, size_bytes, checksum, content_created_at, \
+        content_modified_at, metadata";
+    let rows = match after_id {
+        Some(after) => {
+            client
+                .query(
+                    &format!(
+                        "SELECT {COLUMNS} FROM documents \
+                         WHERE source_id = $1 AND id > $2 ORDER BY id LIMIT $3"
+                    ),
+                    &[&source_id, &after, &limit],
+                )
+                .await
+        }
+        None => {
+            client
+                .query(
+                    &format!(
+                        "SELECT {COLUMNS} FROM documents \
+                         WHERE source_id = $1 ORDER BY id LIMIT $2"
+                    ),
+                    &[&source_id, &limit],
+                )
+                .await
+        }
+    }
+    .map_err(|err| format!("failed to read documents for '{source_id}': {err}"))?;
+    Ok(rows.into_iter().map(row_to_document).collect())
+}
+
+fn row_to_document(row: tokio_postgres::Row) -> (String, DocumentRecord) {
+    (
+        row.get(0),
+        DocumentRecord {
+            external_id: row.get(1),
+            kind: row.get(2),
+            title: row.get(3),
+            body_text: row.get(4),
+            content_type: row.get(5),
+            origin_url: row.get(6),
+            app_url: row.get(7),
+            file_path: row.get(8),
+            size_bytes: row.get(9),
+            checksum: row.get(10),
+            content_created_at: row.get(11),
+            content_modified_at: row.get(12),
+            metadata: row.get(13),
+        },
+    )
 }
 
 /// Postgres TEXT and jsonb reject NUL bytes; source data (emails, HTML,
@@ -279,13 +341,12 @@ pub async fn purge_source(client: &mut Client, source_id: &str) -> Result<(), St
 pub struct UiSource {
     pub id: String,
     pub display_name: String,
-    pub acl_group: Option<String>,
 }
 
 pub async fn list_sources(client: &Client) -> Result<Vec<UiSource>, String> {
     let rows = client
         .query(
-            "SELECT id, display_name, acl_group FROM sources ORDER BY display_name",
+            "SELECT id, display_name FROM sources ORDER BY display_name",
             &[],
         )
         .await
@@ -295,7 +356,6 @@ pub async fn list_sources(client: &Client) -> Result<Vec<UiSource>, String> {
         .map(|row| UiSource {
             id: row.get(0),
             display_name: row.get(1),
-            acl_group: row.get(2),
         })
         .collect())
 }
