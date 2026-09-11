@@ -141,20 +141,23 @@ impl SearchFilters {
     fn clauses(&self, selected_sources: &[String]) -> Vec<String> {
         let mut clauses = Vec::new();
         if let Some(source) = &self.source {
-            clauses.push(format!("source:{}", solr_string_term(source)));
+            clauses.push(format!("{{!tag=src}}source:{}", solr_string_term(source)));
         } else if !selected_sources.is_empty() {
             let allowed = selected_sources
                 .iter()
                 .map(|source| solr_string_term(source))
                 .collect::<Vec<_>>()
                 .join(" OR ");
-            clauses.push(format!("source:({allowed})"));
+            clauses.push(format!("{{!tag=src}}source:({allowed})"));
         }
         if let Some(content_type) = &self.content_type {
-            clauses.push(format!("content_type:{}", solr_string_term(content_type)));
+            clauses.push(format!(
+                "{{!tag=ct}}content_type:{}",
+                solr_string_term(content_type)
+            ));
         }
         if let Some(owner) = &self.owner {
-            clauses.push(format!("owner_s:{}", solr_string_term(owner)));
+            clauses.push(format!("{{!tag=own}}owner_s:{}", solr_string_term(owner)));
         }
         if self.created_after.is_some() || self.created_before.is_some() {
             let lower = self
@@ -549,7 +552,7 @@ mod tests {
         let none = SearchFilters::default();
         assert_eq!(
             none.clauses(&selected),
-            vec!["source:(\"paperless\" OR \"mail-archive\")"]
+            vec!["{!tag=src}source:(\"paperless\" OR \"mail-archive\")"]
         );
 
         let filtered = SearchFilters {
@@ -560,9 +563,9 @@ mod tests {
             created_before: Some("2024-12-31".to_string()),
         };
         let clauses = filtered.clauses(&selected);
-        assert!(clauses.contains(&"source:\"mail-archive\"".to_string()));
-        assert!(clauses.contains(&"content_type:\"message/rfc822\"".to_string()));
-        assert!(clauses.contains(&"owner_s:\"dsaw\"".to_string()));
+        assert!(clauses.contains(&"{!tag=src}source:\"mail-archive\"".to_string()));
+        assert!(clauses.contains(&"{!tag=ct}content_type:\"message/rfc822\"".to_string()));
+        assert!(clauses.contains(&"{!tag=own}owner_s:\"dsaw\"".to_string()));
         assert!(clauses.contains(
             &"content_created:[2024-01-01T00:00:00Z TO 2024-12-31T23:59:59Z]".to_string()
         ));
