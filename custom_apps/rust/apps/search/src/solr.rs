@@ -367,7 +367,20 @@ impl SolrClient {
     }
 }
 
+/// Parses a Solr facet field. Solr returns facets as a flat array interleaving
+/// name and count (`["paperless", 3, "mail", 1]`); accept the object form too
+/// for hand-written fixtures.
 fn facet_pairs(facet: &Value) -> Vec<(String, u64)> {
+    if let Some(entries) = facet.as_array() {
+        return entries
+            .chunks_exact(2)
+            .filter_map(|pair| {
+                let name = pair[0].as_str()?.to_string();
+                let count = pair[1].as_u64()?;
+                (count > 0).then_some((name, count))
+            })
+            .collect();
+    }
     facet
         .as_object()
         .map(|entries| {
@@ -524,9 +537,9 @@ mod tests {
             },
             "facet_counts": {
                 "facet_fields": {
-                    "source": { "paperless": 1, "kiwix": 1 },
-                    "content_type": { "application/pdf": 1 },
-                    "owner_s": { "acme": 1 }
+                    "source": ["paperless", 1, "kiwix", 1],
+                    "content_type": ["application/pdf", 1],
+                    "owner_s": ["acme", 1]
                 }
             }
         });
