@@ -13,8 +13,10 @@ in
     }
   ];
 
-  # Both upstreams bind loopback only; Caddy terminates TLS and is the sole
-  # ingress. No Cloudflare ingress and no direct firewall ports are published.
+  # Both upstreams bind loopback only; Caddy terminates TLS. This is the sole
+  # ingress for LAN and NetBird. Public Cloudflare access is added separately
+  # by public-access.nix through a dedicated gated edge. No direct firewall
+  # ports are published.
   services.caddy.virtualHosts = {
     ${cloudHost} = {
       logFormat = null;
@@ -29,6 +31,10 @@ in
       logFormat = null;
       useACMEHost = vars.domain;
       extraConfig = ''
+        # Answer the editor root deterministically so the deploy public-route
+        # check never depends on Collabora's optional welcome screen.
+        @root path /
+        respond @root "Collabora Online editor" 200
         reverse_proxy http://${loopback}:${toString vars.networking.ports.collaboraOnline} {
           header_up X-Forwarded-Proto https
         }

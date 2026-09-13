@@ -99,6 +99,11 @@ require_fixed modules/opencloud/services.nix \
 forbid_match "$facet" 'service_root' \
   "the Collabora editor must not be moved under a cloud-host path."
 
+# The editor root must answer the deploy public-route check deterministically.
+require_fixed modules/opencloud/networking.nix \
+  'respond @root "Collabora Online editor" 200' \
+  "the office host root must not depend on Collabora's optional welcome screen."
+
 # The gate crate must be wired into packaging and flake checks.
 require_fixed custom_apps/rust/apps/default.nix \
   'opencloud-share-gate = import ./opencloud-share-gate/default.nix {' \
