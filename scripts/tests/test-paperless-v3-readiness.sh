@@ -80,7 +80,7 @@ jq -e '
   and .aiEnabled == "true"
   and .aiBackend == "openai-like"
   and .aiModel == "bonsai-ternary-27b"
-  and .aiEndpoint == "http://127.0.0.1:8086/v1"
+  and .aiEndpoint == "http://127.0.0.1:8094/v1"
   and .duplicatePolicy == "true"
   and (.hasV2Polling | not)
   and .v3Polling == "60"

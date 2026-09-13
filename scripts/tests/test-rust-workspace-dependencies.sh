@@ -9,6 +9,7 @@ ensure_tools cargo jq rg
 workspace_manifest="custom_apps/Cargo.toml"
 nix_workspace="custom_apps/rust/apps/default.nix"
 member_manifests=(
+  custom_apps/rust/apps/ai-gate/Cargo.toml
   custom_apps/rust/apps/browsertrix-downloader/Cargo.toml
   custom_apps/rust/apps/kanidm-canary-bootstrap/Cargo.toml
   custom_apps/rust/apps/mail-archive-ui/Cargo.toml
@@ -58,7 +59,7 @@ metadata="$(cargo metadata \
   --format-version 1)"
 
 jq -e '
-  (.packages | length == 6)
+  (.packages | length == 7)
   and ([.packages[].version] | unique | length == 1)
   and ([.packages[].edition] | unique == ["2021"])
   and (

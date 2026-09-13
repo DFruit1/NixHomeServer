@@ -3,7 +3,10 @@
 let
   power = {
     enable = true;
-    cpuGovernor = "powersave";
+    # This host now runs CPU-side MoE expert evaluation for local inference, and
+    # the amd-pstate-epp driver is already biased to balance_performance. Pin the
+    # governor to performance so bursty prompt processing is not clock-limited.
+    cpuGovernor = "performance";
     nightlySuspend = {
       # Suspends to RAM (S3): while suspended, Cloudflare Tunnel, DNS, and all
       # hosted services are offline until the RTC wake. The host is re-checked
@@ -45,6 +48,10 @@ let
       denyList = [ ];
     };
     fstrimCalendar = "Sun *-*-* 19:00:00";
+    gpu = {
+      enable = true;
+      powerLimitWatts = 175;
+    };
   };
 
   usbCfg = power.usbAutoSuspend;
@@ -150,14 +157,71 @@ let
     systemd
     util-linux
   ];
+  gpuPowerLimitScript = pkgs.writeShellApplication {
+    name = "set-gpu-power-limit";
+    runtimeInputs = with pkgs; [
+      coreutils
+    ];
+    text = ''
+      set -euo pipefail
+      power_limit_watts=${toString power.gpu.powerLimitWatts}
+      power_limit_uw=$((power_limit_watts * 1000000))
+
+      find_intel_hwmon() {
+        for hwmon in /sys/class/hwmon/hwmon*; do
+          name="$(cat "$hwmon/name" 2>/dev/null || echo "")"
+          if [[ "$name" == "xe" ]] && [[ -f "$hwmon/power1_cap" ]]; then
+            echo "$hwmon"
+            return 0
+          fi
+        done
+        return 1
+      }
+
+      hwmon="$(find_intel_hwmon)" || {
+        echo "No Intel xe hwmon with power1_cap found" >&2
+        exit 1
+      }
+
+      current_cap="$(cat "$hwmon/power1_cap" 2>/dev/null || echo "0")"
+      crit_cap="$(cat "$hwmon/power1_crit" 2>/dev/null || echo "0")"
+
+      echo "Intel GPU hwmon: $hwmon"
+      echo "Current power cap: $((current_cap / 1000000))W"
+      echo "Critical power cap: $((crit_cap / 1000000))W"
+
+      # power1_crit is the firmware's instantaneous limit, not a sustained
+      # power recommendation. Preserve it; only lower the sustained cap.
+      if (( power_limit_uw <= 0 || crit_cap <= 0 || power_limit_uw > crit_cap )); then
+        echo "Requested ''${power_limit_watts}W exceeds critical cap $((crit_cap / 1000000))W; skipping"
+        exit 1
+      fi
+
+      if (( power_limit_uw == current_cap )); then
+        echo "Power cap already set to ''${power_limit_watts}W; nothing to do"
+        exit 0
+      fi
+
+      echo "Setting Intel GPU power limit to ''${power_limit_watts}W"
+      echo "$power_limit_uw" > "$hwmon/power1_cap"
+      actual_cap="$(cat "$hwmon/power1_cap")"
+      if (( actual_cap != power_limit_uw )); then
+        echo "GPU power cap readback mismatch: $actual_cap != $power_limit_uw" >&2
+        exit 1
+      fi
+      echo "Power cap verified at ''${power_limit_watts}W"
+    '';
+  };
   systemPackages =
     (with pkgs; [
       ethtool
+      intel-gpu-tools
       pciutils
       powertop
       usbutils
     ])
     ++ [
+      gpuPowerLimitScript
       kernelPackages.cpupower
     ]
     ++ lib.optional isX86 kernelPackages.turbostat;
@@ -232,8 +296,9 @@ in
       lib.optionalAttrs vars.enableZfsDataPool {
         zfs-arc-tune = {
           description = "Set ZFS ARC maximum to a percentage of system RAM";
-          wantedBy = [ "zfs-import-cache.service" ];
-          before = [ "zfs-import-cache.service" ];
+          path = [ pkgs.gawk ];
+          wantedBy = [ "multi-user.target" ];
+          before = [ "zfs-import.target" ];
           after = [ "systemd-modules-load.service" ];
           unitConfig.DefaultDependencies = false;
           serviceConfig = {
@@ -242,7 +307,7 @@ in
           };
           script = ''
             total_kb=$(awk '/^MemTotal:/{print $2}' /proc/meminfo)
-            arc_max=$(( total_kb * 1024 * ${toString (vars.zfsArcMaxPercent or 50)} / 100 ))
+            arc_max=$(( total_kb * 1024 * ${toString (if moduleEnabled "qwen-flash-next" then 8 else (vars.zfsArcMaxPercent or 50))} / 100 ))
             echo "$arc_max" > /sys/module/zfs/parameters/zfs_arc_max
           '';
         };
@@ -251,7 +316,7 @@ in
       immich-machine-learning.serviceConfig = {
         MemoryHigh = "4G";
         MemoryMax = "6G";
-        CPUQuota = "250%";
+        CPUQuota = "400%";
       };
       immich-server.serviceConfig = {
         MemoryHigh = "1500M";
@@ -263,7 +328,7 @@ in
       kavita.serviceConfig = {
         MemoryHigh = "750M";
         MemoryMax = "1G";
-        CPUQuota = "150%";
+        CPUQuota = "200%";
         CPUWeight = 60;
         IOWeight = 60;
         Nice = 5;
@@ -306,7 +371,7 @@ in
       };
     }
     // lib.optionalAttrs (hasModule "youtube-downloader") {
-      youtube-downloader.serviceConfig.CPUQuota = "200%";
+      youtube-downloader.serviceConfig.CPUQuota = "400%";
     }
     // lib.optionalAttrs (moduleEnabled "sonarr") {
       sonarr.serviceConfig = { MemoryHigh = "500M"; MemoryMax = "750M"; };
@@ -552,6 +617,26 @@ in
         OnCalendar = [ "*-*-* *:00/15:00" ];
         Persistent = false;
       };
+    };
+
+    systemd.services.gpu-power-limit = lib.mkIf power.gpu.enable {
+      description = "Set Intel GPU power limit to ${toString power.gpu.powerLimitWatts}W";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "systemd-udev-trigger.service" ];
+      before = [ "multi-user.target" ];
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = "${gpuPowerLimitScript}/bin/set-gpu-power-limit";
+        Restart = "on-failure";
+        RestartSec = "10s";
+      };
+    };
+
+    # Reapply after driver resets or resume, and expose failures rather than
+    # leaving a oneshot active after the hardware has forgotten its limit.
+    systemd.timers.gpu-power-limit = lib.mkIf power.gpu.enable {
+      wantedBy = [ "timers.target" ];
+      timerConfig = { OnBootSec = "30s"; OnUnitInactiveSec = "1min"; };
     };
 
     systemd.tmpfiles.rules = [

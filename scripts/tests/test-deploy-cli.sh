@@ -452,3 +452,6 @@ require_fixed modules/Core_Modules/homepage/services.nix 'homepage-nix-build-mod
   "The dashboard build mode must be written through a narrowly-scoped root helper."
 
 echo "✅ Deploy CLI tests passed."
+
+require_fixed scripts/helpers/deploy-executor.sh 'nixpkgs#cargo' \
+  "Remote debug validation must provide Cargo for workspace dependency checks."

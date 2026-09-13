@@ -7,6 +7,7 @@
     ./networking.nix
     ./bootstrap.nix
     ./services.nix
+    ./gate.nix
     ./backups.nix
   ];
 

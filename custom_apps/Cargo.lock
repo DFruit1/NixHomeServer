@@ -62,6 +62,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ai-gate"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "homelab-common",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tower",
+]
+
+[[package]]
 name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"

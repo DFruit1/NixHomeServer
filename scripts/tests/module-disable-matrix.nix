@@ -10,18 +10,38 @@ let
       modules = [ ../../modules/bonsai ];
       disable = { repo.bonsai.enable = lib.mkForce false; };
       registryName = "bonsai";
-      services = [ "bonsai-llama" "bonsai-model-prepare" ];
+      services = [ "bonsai-gate" "bonsai-llama" "bonsai-model-prepare" ];
       timers = [ ];
-      hosts = [ ];
-      gatewayApps = [ ];
+      hosts = [ "ai" ];
+      gatewayApps = [ "bonsai" ];
       oauthClients = [ ];
-      kanidmGroups = [ ];
+      kanidmGroups = [ "ai-users" ];
       users = [ "bonsai" ];
       groups = [ "bonsai" ];
       secrets = [ ];
       backupApps = [ ];
       guardedServices = [ ];
       persistencePaths = [ "/var/lib/bonsai" ];
+    };
+    calibre-web = {
+      disable = { repo.calibreWeb.enable = lib.mkForce false; };
+      registryName = "calibre-web";
+      services = [
+        "calibre-web"
+        "calibre-web-oauth2-proxy"
+        "calibre-web-library-layout-v1"
+      ];
+      timers = [ ];
+      hosts = [ "calibre" ];
+      gatewayApps = [ "calibre" ];
+      oauthClients = [ "calibre-web-web" ];
+      kanidmGroups = [ "calibre-web-users" ];
+      users = [ "calibre-web" ];
+      groups = [ "calibre-web" ];
+      secrets = [ "calibreWebOauth2ProxyClientSecret" "calibreWebOauth2ProxyCookieSecret" ];
+      backupApps = [ "calibre-web" ];
+      guardedServices = [ "calibre-web-library-layout-v1" "calibre-web" ];
+      persistencePaths = [ "/var/lib/calibre-web" ];
     };
     qwen-flash-next = {
       modules = [ ../../modules/qwen-flash-next ];
@@ -307,7 +327,8 @@ let
   evaluate = name: case:
     let
       host = baseHost.extendModules {
-        modules = (case.modules or [ ]) ++ [ case.disable ];
+        modules = lib.optionals (!(baseHost.config.nixhomeserver.modules.${case.registryName} or false))
+          (case.modules or [ ]) ++ [ case.disable ];
       };
       cfg = host.config;
       fullHosts = map (short: "${short}.${vars.domain}") case.hosts;

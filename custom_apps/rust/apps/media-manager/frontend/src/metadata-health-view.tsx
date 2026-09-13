@@ -24,6 +24,89 @@ function displayValue(value: unknown): string {
   return typeof value === "object" ? JSON.stringify(value) : String(value);
 }
 
+interface HealthGroup {
+  key: string;
+  rootId: string;
+  album: string | null;
+  results: MetadataHealthResult[];
+}
+
+function groupResults(results: MetadataHealthResult[]): HealthGroup[] {
+  const order: string[] = [];
+  const byKey = new Map<string, HealthGroup>();
+  for (const result of results) {
+    const album = result.albumGroup ?? null;
+    const key = `${result.rootId}:${album ?? result.itemId}`;
+    let group = byKey.get(key);
+    if (!group) {
+      group = { key, rootId: result.rootId, album, results: [] };
+      byKey.set(key, group);
+      order.push(key);
+    }
+    group.results.push(result);
+  }
+  return order.map((key) => byKey.get(key)!);
+}
+
+const MAX_GROUPED_FILES = 25;
+
+interface GroupedIssue {
+  key: string;
+  issue: MetadataHealthIssue;
+}
+
+function groupIssues(results: MetadataHealthResult[]): GroupedIssue[] {
+  const multipleFiles = results.length > 1;
+  const order: string[] = [];
+  const byKey = new Map<
+    string,
+    { issue: MetadataHealthIssue; files: Set<string>; explicitCount: number }
+  >();
+  for (const result of results) {
+    const fileName =
+      result.relativePath.split("/").at(-1) ?? result.relativePath;
+    for (const issue of result.health) {
+      const key = JSON.stringify([
+        issue.code,
+        issue.field ?? null,
+        issue.currentValue ?? null,
+        (issue.proposedValues ?? []).map((candidate) => candidate.value),
+      ]);
+      let merged = byKey.get(key);
+      if (!merged) {
+        merged = { issue, files: new Set(), explicitCount: 0 };
+        byKey.set(key, merged);
+        order.push(key);
+      }
+      merged.explicitCount = Math.max(
+        merged.explicitCount,
+        issue.affectedFileCount ?? 0,
+      );
+      const affected = issue.affectedFiles?.length
+        ? issue.affectedFiles
+        : multipleFiles
+          ? [fileName]
+          : [];
+      for (const file of affected) merged.files.add(file);
+    }
+  }
+  return order.map((key) => {
+    const merged = byKey.get(key)!;
+    const files = [...merged.files];
+    if (files.length === 0 && merged.explicitCount === 0) {
+      return { key, issue: merged.issue };
+    }
+    return {
+      key,
+      issue: {
+        ...merged.issue,
+        affectedFiles: files.slice(0, MAX_GROUPED_FILES),
+        affectedFileCount: merged.explicitCount || files.length,
+      },
+    };
+  });
+}
+
 export const MetadataHealthView = component$<{
   roots: HealthRoot[];
   initialRootId?: string;
@@ -154,31 +237,37 @@ export const MetadataHealthView = component$<{
       ) : null}
 
       <div class="health-results">
-        {inbox.results.map((result) => (
-          <article
-            class="health-result"
-            key={`${result.rootId}:${result.itemId}`}
-          >
+        {groupResults(inbox.results).map((group) => (
+          <article class="health-result" key={group.key}>
             <header>
               <div>
-                <h3>{result.title || result.relativePath.split("/").at(-1)}</h3>
+                <h3>
+                  {group.album
+                    ? (group.album.split("/").at(-1) ?? group.album)
+                    : group.results[0].title ||
+                      group.results[0].relativePath.split("/").at(-1)}
+                </h3>
                 <p>
-                  {props.roots.find((root) => root.id === result.rootId)
-                    ?.label ?? result.rootId}
+                  {props.roots.find((root) => root.id === group.rootId)
+                    ?.label ?? group.rootId}
+                  {group.results.length > 1 &&
+                    ` · album · ${group.results.length} files`}
                 </p>
               </div>
-              <a
-                class="health-review-link"
-                href={`?view=library&root=${encodeURIComponent(result.rootId)}&item=${encodeURIComponent(result.itemId)}`}
-              >
-                Review metadata
-              </a>
+              {group.results.length === 1 && (
+                <a
+                  class="health-review-link"
+                  href={`?view=library&root=${encodeURIComponent(group.rootId)}&item=${encodeURIComponent(group.results[0].itemId)}`}
+                >
+                  Review metadata
+                </a>
+              )}
             </header>
             <div class="health-result-issues">
-              {result.health.map((issue) => (
+              {groupIssues(group.results).map(({ key, issue }) => (
                 <section
                   class="health-result-issue"
-                  key={`${issue.code}-${issue.field ?? "record"}`}
+                  key={`${group.key}-${key}`}
                 >
                   <h4>{issue.title}</h4>
                   {issue.field && "currentValue" in issue ? (
@@ -207,13 +296,43 @@ export const MetadataHealthView = component$<{
                   ) : (
                     <p>{issue.message}</p>
                   )}
+                  {(issue.affectedFiles?.length ?? 0) > 0 && (
+                    <details class="health-file-details">
+                      <summary>
+                        Affects{" "}
+                        {issue.affectedFileCount ?? issue.affectedFiles!.length}{" "}
+                        {(issue.affectedFileCount ??
+                          issue.affectedFiles!.length) === 1
+                          ? "file"
+                          : "files"}
+                      </summary>
+                      <p>{issue.affectedFiles!.join(", ")}</p>
+                    </details>
+                  )}
                 </section>
               ))}
             </div>
-            <details class="health-file-details">
-              <summary>File details</summary>
-              <p>{result.relativePath}</p>
-            </details>
+            {group.results.length === 1 ? (
+              <details class="health-file-details">
+                <summary>File details</summary>
+                <p>{group.results[0].relativePath}</p>
+              </details>
+            ) : (
+              <details class="health-file-details">
+                <summary>Files in this album ({group.results.length})</summary>
+                {group.results.map((result) => (
+                  <p key={result.itemId}>
+                    <a
+                      class="health-review-link"
+                      href={`?view=library&root=${encodeURIComponent(group.rootId)}&item=${encodeURIComponent(result.itemId)}`}
+                    >
+                      Review
+                    </a>{" "}
+                    {result.relativePath}
+                  </p>
+                ))}
+              </details>
+            )}
           </article>
         ))}
       </div>

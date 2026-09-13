@@ -18,6 +18,7 @@ runtime_json="$(NIXHOMESERVER_TEST_HOST="$host" flake_eval_json '
 in {
   snapshotRoots = cfg.repo.backups.snapshotRoots;
   rebuildableSnapshotPaths = cfg.repo.backups.rebuildableSnapshotPaths;
+  bonsaiPresent = cfg.nixhomeserver.modules.bonsai or false;
   repositoryPath = cfg.repo.backups.repositoryPath;
   kopiaBootstrapScript = cfg.systemd.services.kopia-repository-bootstrap.script;
   kopiaPolicyReconcile =
@@ -99,7 +100,7 @@ jq -e '
   and (.snapshotRoots | index($paperless) != null)
   and (.snapshotRoots | length == (unique | length))
   and (.snapshotRoots | all(startswith("/")))
-  and (.rebuildableSnapshotPaths | sort == ["var/lib/atticd/storage"])
+  and (.bonsaiPresent as $bonsai | .rebuildableSnapshotPaths | sort == (["var/lib/atticd/storage"] + (if $bonsai then ["var/lib/bonsai/models"] else [] end)))
   and (.kopiaBootstrapScript | contains("policy set") | not)
   and (.kopiaPolicyReconcile != null)
   and (.kopiaPolicyReconcile.remainAfterExit == true)

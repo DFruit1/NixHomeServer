@@ -32,6 +32,7 @@ import type {
   Root as MediaRoot,
   Session,
   Status,
+  TrackOrderReport,
 } from "./api-contract.generated";
 export type {
   CatalogItem,
@@ -49,6 +50,7 @@ export type {
   Root as MediaRoot,
   Session,
   Status,
+  TrackOrderReport,
 } from "./api-contract.generated";
 export type View =
   | "library"

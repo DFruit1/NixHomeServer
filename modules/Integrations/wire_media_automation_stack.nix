@@ -311,20 +311,24 @@ in
           curl --silent --show-error --fail -H "X-Api-Key: $prowlarr_key" "$@"
         }
 
-        for _ in $(seq 1 60); do
-          if papi "$prowlarr_url/api/v1/system/status" >/dev/null; then
-            break
-          fi
-          sleep 1
-        done
-        papi "$prowlarr_url/api/v1/system/status" >/dev/null || {
-          echo "Prowlarr HTTP endpoint is not ready; retrying media bootstrap." >&2
-          exit 1
+        # `/api/v1/system/status` answers before the database-backed endpoints
+        # are ready, and requests during a Prowlarr restart return HTTP 400.
+        # Retry the real endpoints so a restart race cannot fail activation.
+        papi_get() {
+          local attempt
+          for attempt in $(seq 1 120); do
+            if papi "$@"; then
+              return 0
+            fi
+            sleep 1
+          done
+          echo "Prowlarr API endpoint did not become ready; retrying media bootstrap." >&2
+          return 1
         }
 
-        existing_id="$(papi "$prowlarr_url/api/v1/downloadclient" | jq -r '.[] | select(.name == "qBittorrent") | .id' | head -n1)"
+        existing_id="$(papi_get "$prowlarr_url/api/v1/downloadclient" | jq -r '.[] | select(.name == "qBittorrent") | .id' | head -n1)"
         payload="$(
-          papi "$prowlarr_url/api/v1/downloadclient/schema" \
+          papi_get "$prowlarr_url/api/v1/downloadclient/schema" \
             | jq -c \
               --arg host "$qbit_host" \
               --arg port "$qbit_port" \
@@ -683,15 +687,19 @@ in
           curl --silent --show-error --fail -H "@$papi_header" "$@"
         }
 
-        for _ in $(seq 1 60); do
-          if papi "$prowlarr_url/api/v1/system/status" >/dev/null; then
-            break
-          fi
-          sleep 1
-        done
-        papi "$prowlarr_url/api/v1/system/status" >/dev/null || {
-          echo "Prowlarr HTTP endpoint is not ready; retrying media bootstrap." >&2
-          exit 1
+        # `/api/v1/system/status` answers before the database-backed endpoints
+        # are ready, and requests during a Prowlarr restart return HTTP 400.
+        # Retry the real endpoints so a restart race cannot fail activation.
+        papi_get() {
+          local attempt
+          for attempt in $(seq 1 120); do
+            if papi "$@"; then
+              return 0
+            fi
+            sleep 1
+          done
+          echo "Prowlarr API endpoint did not become ready; retrying media bootstrap." >&2
+          return 1
         }
 
         upsert_app() {
@@ -708,9 +716,9 @@ in
           api_key_files+=("$api_key_file")
           printf '%s' "$api_key" > "$api_key_file"
 
-          existing_id="$(papi "$prowlarr_url/api/v1/applications" | jq -r --arg name "$name" '.[] | select(.name == $name) | .id' | head -n1)"
+          existing_id="$(papi_get "$prowlarr_url/api/v1/applications" | jq -r --arg name "$name" '.[] | select(.name == $name) | .id' | head -n1)"
           payload="$(
-            papi "$prowlarr_url/api/v1/applications/schema" \
+            papi_get "$prowlarr_url/api/v1/applications/schema" \
               | jq -c \
                 --arg implementation "$implementation" \
                 --arg name "$name" \

@@ -1404,6 +1404,7 @@ pub(super) async fn metadata_issues(
             "relativePath": item.relative_path,
             "mediaKind": item.media_kind,
             "title": metadata.get("title"),
+            "albumGroup": album_group(&item),
             "health": health,
         }));
     }
@@ -1529,13 +1530,64 @@ pub(super) async fn folder_metadata(
     let consumers = consumer_effects(&state.config, consumer_kind);
     let application_available = consumers.iter().any(|consumer| consumer.available);
     response["consumers"] = json!(consumers);
-    response["health"] = json!(health_issues(consumer_kind, &response, &observations));
+    let mut health = health_issues(consumer_kind, &response, &observations);
+    // Folder-level play-order analysis for audio albums: one grouped report
+    // per album (never one warning per file), computed from the audio
+    // siblings, the playlist sidecar, and the embedded track tags.
+    let mut track_order_value = Value::Null;
+    let mut track_order_warnings = Vec::new();
+    if matches!(media_type, "audiobook" | "podcast" | "music") {
+        if let Some(root) = root.as_ref() {
+            let root_path = root.resolved_path.clone();
+            let folder_path = folder.relative_path.clone();
+            let category = folder.category;
+            match tokio::task::spawn_blocking(move || {
+                crate::track_order::inspect_folder_track_order(
+                    std::path::Path::new(&root_path),
+                    &folder_path,
+                    category,
+                )
+            })
+            .await
+            {
+                Ok((Some(report), warnings)) => {
+                    track_order_warnings = warnings;
+                    for problem in &report.problems {
+                        health.push(MetadataHealthIssue {
+                            code: problem.code.clone(),
+                            severity: problem.severity.clone(),
+                            field: None,
+                            title: problem.title.clone(),
+                            message: format!(
+                                "{} Fix the order, then rescan the library and refresh the player app.",
+                                problem.message
+                            ),
+                            sources: vec!["track-order".to_string()],
+                            current_value: None,
+                            current_sources: Vec::new(),
+                            proposed_values: Vec::new(),
+                            affected_files: problem.affected_files.clone(),
+                            affected_file_count: Some(problem.affected_file_count),
+                        });
+                    }
+                    track_order_value = json!(report);
+                }
+                Ok((None, warnings)) => track_order_warnings = warnings,
+                Err(_) => {
+                    track_order_warnings =
+                        vec!["Track-order inspection did not complete.".to_string()]
+                }
+            }
+        }
+    }
+    response["trackOrder"] = track_order_value;
+    response["health"] = json!(health);
     response["modificationTargets"] = json!(modification_targets(
         consumer_kind,
         "folder",
         application_available
     ));
-    response["inspectionWarnings"] = json!([]);
+    response["inspectionWarnings"] = json!(track_order_warnings);
     let mut result = Json(response).into_response();
     result.headers_mut().insert(
         CACHE_CONTROL,
@@ -1805,6 +1857,21 @@ async fn load_application_metadata_cache(cache_file: &FilePath) -> Option<Value>
     }
     cache.get("entries")?.as_array()?;
     Some(cache)
+}
+
+/// Album grouping key for library health results: audio folders are assessed
+/// as one album, so the health view can collapse a whole audiobook's files
+/// into a single grouped warning instead of one row per file.
+fn album_group(item: &CatalogItem) -> Value {
+    if matches!(
+        item.media_kind,
+        MediaKind::Audiobook | MediaKind::Podcast | MediaKind::Music
+    ) {
+        if let Some((parent, _)) = item.relative_path.rsplit_once('/') {
+            return Value::String(parent.to_string());
+        }
+    }
+    Value::Null
 }
 
 fn cached_application_metadata_entry(

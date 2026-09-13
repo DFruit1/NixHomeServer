@@ -80,7 +80,12 @@ in
       TimeoutStartSec = "3m";
       CapabilityBoundingSet = [ ];
       AmbientCapabilities = [ ];
-      ReadOnlyPaths = [ "/var/lib/kavita/config" config.age.secrets.kavitaTokenKey.path ];
+      # SQLite must create and read -shm/-wal side files when opening the
+      # WAL-mode database, even for mode=ro access. The exporter still opens
+      # the database with mode=ro, so its content is never modified; only the
+      # directory needs to be writable for side-file management.
+      ReadWritePaths = [ "/var/lib/kavita/config" ];
+      ReadOnlyPaths = [ config.age.secrets.kavitaTokenKey.path ];
       IPAddressDeny = "any";
       IPAddressAllow = [ "localhost" ];
       SystemCallArchitectures = "native";

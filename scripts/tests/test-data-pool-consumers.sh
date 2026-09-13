@@ -13,6 +13,7 @@ let
     "paperless-task-queue" "paperless-web" "paperless-exporter"
     "immich-storage-layout-v1" "immich-server"
     "kavita-storage-layout-v1" "kavita" "kavita-stale-reference-cleanup"
+    "calibre-web-library-layout-v1" "calibre-web"
     "kiwix-library-root-layout-v1" "kiwix-library-sync" "kiwix-library-watch" "kiwix-serve"
     "mail-archive-ui-storage-layout-v1" "mail-archive-ui" "mail-archive-sync" "mail-archive-paperless-tasks"
     "mkvmaker-storage-layout-v1" "mkvmaker-import"
@@ -21,6 +22,7 @@ let
     "audiobookshelf-storage-layout-v1" "audiobookshelf"
     "media-folder-layout-v2" "jellyfin-storage-layout-v1" "jellyfin"
     "youtube-downloader" "filestash" "files-archives-sync" "files-archives-watch"
+    "opencloud-storage-layout-v1" "opencloud-secret-materialize" "opencloud-init-config" "opencloud"
   ];
 in {
   dataRoot = "/mnt/data";

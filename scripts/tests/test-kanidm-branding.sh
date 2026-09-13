@@ -13,8 +13,8 @@ kanidm_logo_dir="modules/Core_Modules/kanidm/assets/apps"
 
 mapfile -t homepage_logos < <(find "$homepage_logo_dir" -maxdepth 1 -type f -name '*.svg' -printf '%f\n' | sort)
 
-if [[ "${#homepage_logos[@]}" -ne 19 ]]; then
-  echo "❌ Expected the Homepage service catalog to contain 18 SVG logos; found ${#homepage_logos[@]}." >&2
+if [[ "${#homepage_logos[@]}" -ne 21 ]]; then
+  echo "❌ Expected the Homepage service catalog to contain 21 SVG logos; found ${#homepage_logos[@]}." >&2
   exit 1
 fi
 
@@ -59,8 +59,10 @@ require_fixed modules/immich/identity.nix 'assets/apps/immich.svg' "Immich must 
 require_fixed modules/jellyfin/identity.nix 'assets/apps/jellyfin.svg' "Jellyfin must use its Homepage logo in Kanidm."
 require_fixed modules/kavita/identity.nix 'assets/apps/kavita.svg' "Kavita must use its Homepage logo in Kanidm."
 require_fixed modules/kiwix/identity.nix 'assets/apps/kiwix.svg' "Kiwix must use its Homepage logo in Kanidm."
+require_fixed modules/calibre-web/identity.nix 'assets/apps/calibre-web.svg' "Calibre-Web must use its Homepage logo in Kanidm."
 require_fixed modules/Core_Modules/kopia/identity.nix 'assets/apps/kopia.svg' "Kopia must use its Homepage logo in Kanidm."
 require_fixed modules/mail-archive-ui/identity.nix 'assets/apps/mail-archive-ui.svg' "Mail Archive must use its Homepage logo in Kanidm."
+require_fixed modules/opencloud/identity.nix 'assets/apps/opencloud.svg' "OpenCloud must use its Homepage logo in Kanidm."
 require_fixed modules/paperless/identity.nix 'assets/apps/paperless-ngx.svg' "Paperless must use its Homepage logo in Kanidm."
 require_fixed modules/prowlarr/identity.nix 'assets/apps/prowlarr.svg' "Prowlarr must use its Homepage logo in Kanidm."
 require_fixed modules/qbittorrent/identity.nix 'assets/apps/qbittorrent.svg' "qBittorrent must use its Homepage logo in Kanidm."

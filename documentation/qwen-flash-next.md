@@ -5,12 +5,16 @@ pinned mainline llama.cpp build and an OpenAI-compatible API. The model is a
 125B-parameter mixture-of-experts preview of the Qwen4 architecture with about
 6B active parameters, native vision, tool calling, and a 262,144-token context.
 
-The module is **disabled by default** and is not part of `vars.applications.enabled`.
-Nothing is imported or built until it is explicitly enabled on the host.
+In this repository Qwen is reserved for background jobs. It runs as its own
+loopback-only llama-server with no web UI, so `https://ai.sydneybasiniot.org`
+never offers it: that UI is Bonsai-only (see [Bonsai operations](bonsai.md)).
+Qwen does not start at boot. A background job starts
+`qwen-flash-next-llama.service` when it needs the model, and stopping it frees
+its RAM and the GPU again. Because Bonsai and Qwen share the single 24 GiB Arc
+card, starting Qwen stops the Bonsai UI model first; Bonsai is restarted
+automatically when the background run ends.
 
-The API binds only to `127.0.0.1`. It has no API authentication and is not
-published through Caddy, Cloudflare, NetBird, or the LAN firewall. Local
-applications use:
+Background consumers use the loopback OpenAI-compatible API:
 
 ```text
 http://127.0.0.1:8093/v1
@@ -57,6 +61,12 @@ applications.enabled = [ ... "qwen-flash-next" ];
 repo.qwenFlashNext.enable = true;
 ```
 
+`repo.qwenFlashNext.loadAtBoot` (default `true`) controls the boot-time start.
+When Qwen and Bonsai are enabled together, the background integration defaults
+it to `false` so the UI model keeps the GPU until a job explicitly starts the
+Qwen unit. Start it with `sudo systemctl start qwen-flash-next-llama.service`
+and stop it with `sudo systemctl stop qwen-flash-next-llama.service`.
+
 ## Memory And Context
 
 The IQ4_XS weights need about 94 GB before runtime overhead. This host has
@@ -102,30 +112,55 @@ Thinking behaviour (`enable_thinking`, `preserve_thinking`, `reasoning_effort`)
 is selected per request through the chat template; `--jinja` is enabled so
 OpenAI-compatible clients can pass `chat_template_kwargs`.
 
-Unsloth ships a Multi-Token-Prediction (MTP) head for 1.3–1.7× faster
-inference. It is not wired in yet; speculative decoding can be added later via
-`repo.qwenFlashNext.extraArgs`.
+Unsloth ships separate Multi-Token-Prediction (MTP) draft heads for 1.3–1.7×
+faster inference. They are not used here: the heads (`nextn`/`hc_head_*`
+tensors) require the MTP graph from the Unsloth llama.cpp fork or upstream pull
+request #28243, and the pinned mainline `b10897` runtime fails to load them
+with a tensor-name mismatch. Enabling MTP means changing the pinned runtime,
+not just adding a flag.
+
+The host configuration instead enables self-speculative n-gram decoding
+(`--spec-type ngram-simple`). It needs no draft model — llama.cpp builds a
+lookup table on the host CPU from the accepted context and proposes candidate
+tokens that the main model verifies exactly. On this host it measured roughly
++27% decode throughput (7.95 vs 6.27 tok/s, 22% draft acceptance) on ordinary
+prose at temperature 0; the gain is larger on repetitive text and smaller on
+unpredictable output, and it turns off automatically where it does not help.
 
 ## GPU Acceleration (Intel Arc Pro B60)
 
-The Vulkan path is wired but **disabled** until the GPU is installed and the
-NixOS graphics stack can be validated on the host.
+The standalone Qwen server enables Vulkan on the installed Arc Pro B60. Its
+Resizable BAR is enabled. Because the module no longer runs under the shared
+router, the layer split and loader flags are set directly on the host:
 
 ```nix
-repo.qwenFlashNext.gpu.enable = true;      # builds llama.cpp with GGML_VULKAN
-repo.qwenFlashNext.gpuLayers = "auto";     # offload as many layers as fit
-repo.qwenFlashNext.cpuMoe = true;          # keep MoE experts in system RAM
+repo.qwenFlashNext.gpu.enable = true;   # builds llama.cpp with GGML_VULKAN
+repo.qwenFlashNext.gpuLayers = "all";   # offload every non-expert tensor
+repo.qwenFlashNext.cpuMoe = false;      # --n-cpu-moe supersedes --cpu-moe
+repo.qwenFlashNext.extraArgs = [
+  "--n-cpu-moe" "42"        # first 42 of 48 expert layers stay in system RAM
+  "--spec-type" "ngram-simple"
+  "--load-mode" "none"
+  "--no-host"
+  "--no-op-offload"
+];
 ```
 
 When enabled, the module activates `hardware.graphics` with the Intel compute
 runtime, media driver, mesa (ANV Vulkan driver), and Vulkan tools, and the
 systemd unit gains access to the `render` and `video` groups and `/dev/dri`.
 
-Expectations with a single 24 GB Arc Pro B60 and ~94 GB of weights:
+Expectations with a single 24 GB Arc Pro B60 and ~87 GiB of weights:
 
-- Use `--cpu-moe` (`repo.qwenFlashNext.cpuMoe = true`): dense and attention
-  weights on the GPU, MoE experts in RAM. Offloading the whole model is not
-  possible.
+- `n-gpu-layers = all` plus `n-cpu-moe = 42` sends every dense and attention
+  tensor to the GPU and keeps the last 6 of 48 layers' MoE experts in VRAM
+  while the first 42 layers' experts stay in system RAM. Offloading the whole
+  expert pool is not possible.
+- Measured on this host, `n-cpu-moe = 42` beats `--cpu-moe` by about 9% decode
+  and 18% prefill. Going to `n-cpu-moe = 38` (10 expert layers on the GPU)
+  overflows the 24 GiB card and decode collapses to roughly half.
+- The UI model is stopped before Qwen starts so the card is free; do not run
+  both models at once.
 - ReBAR must be enabled in firmware; without it llama.cpp falls back to slow
   paths on Arc.
 - Vulkan support for this very new architecture is less mature than the CPU
@@ -134,10 +169,16 @@ Expectations with a single 24 GB Arc Pro B60 and ~94 GB of weights:
 
 ## Service Operations
 
+The Qwen server does not start at boot while Bonsai is enabled. Verify the
+model artifacts, then start it for a background run:
+
 ```bash
-sudo systemctl status qwen-flash-next-model-prepare.service qwen-flash-next-llama.service
+sudo systemctl status qwen-flash-next-model-prepare.service
+sudo systemctl start qwen-flash-next-llama.service
 curl --fail http://127.0.0.1:8093/health
 ```
+
+Starting Qwen stops `bonsai-llama.service`; stopping Qwen restarts it.
 
 Text request:
 
@@ -157,3 +198,23 @@ Disable the running services without deleting the persisted artifacts:
 ```nix
 repo.qwenFlashNext.enable = false;
 ```
+
+## Hardware power and memory checks
+
+The host keeps the Arc Pro B60 sustained power cap at 175 W. The firmware's
+440 W `power1_crit` is an instantaneous limit, not a recommended sustained
+cap; it is left untouched. `gpu-power-limit.service` verifies sysfs readback
+and its timer reapplies the cap after driver resets/resume within about a
+minute. Hardware telemetry exposed by this kernel is limited to the power
+cap and its 15 ms averaging interval; a cap readback is not a wattmeter.
+
+```bash
+sudo systemctl start gpu-power-limit.service
+sudo journalctl -u gpu-power-limit.service -n 20 --no-pager
+cat /sys/class/hwmon/hwmon*/name
+cat /sys/module/zfs/parameters/zfs_arc_max
+```
+
+The ARC tuning service is attached to `multi-user.target`, since this host
+has no `zfs-import-cache.service`. Its 8% ceiling must be visible in the
+live module parameter after activation.

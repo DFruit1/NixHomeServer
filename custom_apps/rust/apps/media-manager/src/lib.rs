@@ -17,5 +17,6 @@ pub mod scanner;
 pub mod subtitle_format;
 pub mod subtitles;
 pub mod tmdb;
+pub mod track_order;
 pub mod transfer;
 pub mod video_probe;

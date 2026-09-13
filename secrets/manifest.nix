@@ -60,6 +60,14 @@
       description = "Cookie secret for the Kiwix OAuth2 Proxy.";
       bytes = 32;
     };
+    calibreWebOauth2ProxyClientSecret = {
+      description = "OIDC client secret for the Calibre-Web OAuth2 Proxy.";
+      bytes = 32;
+    };
+    calibreWebOauth2ProxyCookieSecret = {
+      description = "Cookie secret for the Calibre-Web OAuth2 Proxy.";
+      bytes = 32;
+    };
     youtubeDownloaderOauth2ProxyClientSecret = {
       description = "OIDC client secret for the YouTube downloader OAuth2 Proxy.";
       bytes = 32;

@@ -524,6 +524,8 @@ URLs for a site with `nix run .#show-config-summary -- --host <host>`.
 - Private Immich app: `https://<photos-domain>`
 - Public Immich share links: `https://<share-photos-domain>`
 - Authenticated Filestash browser UI: `https://<files-domain>/`
+- OpenCloud collaboration and sync: `https://<cloud-domain>/`
+- Collabora online office: `https://<office-domain>/`
 - LAN-only direct SFTP: `sftp://<username>@<server-lan-host>:<filesSftp-port>/`
 - Private Vaultwarden: `https://<passwords-domain>`
 - Local Kopia backup management UI: `https://<kopia-domain>/`
@@ -531,6 +533,32 @@ URLs for a site with `nix run .#show-config-summary -- --host <host>`.
 Use the private photos hostname for the owner's normal Immich login on LAN or
 NetBird. Use the public share hostname only for public album or photo links sent
 to other people.
+
+## OpenCloud Operations
+
+OpenCloud is a self-contained collaboration server that stores its own
+non-collaborative PosixFS tree under `/mnt/data/opencloud`. It does not share
+the Filestash `_Files` or `_Shared` trees, so the two file surfaces never
+contend for the same paths or permissions.
+
+- Sign in with Kanidm. Members of `opencloud-users` get the `user` role;
+  members of `opencloud-admins` get the `admin` role. OpenCloud autoprovisions
+  each user into its internal IDM on first login.
+- The browser client, the OpenCloud desktop client, and the mobile clients all
+  share one public PKCE client (`opencloud-web`) because Kanidm issues a
+  distinct issuer per client. Web and desktop sign-in use that shared client;
+  desktop sync reaches the server through the cloud hostname.
+- To sync on desktop, point the OpenCloud desktop client at
+  `https://<cloud-domain>` and complete the browser sign-in; the client syncs
+  the personal and shared spaces.
+- Online office editing runs through Collabora on `https://<office-domain>`
+  with the WOPI bridge at `https://<cloud-domain>`. Both upstreams bind
+  loopback and are served only through Caddy.
+- Generated config and the seeded IDM admin credential live under
+  `/mnt/data/opencloud/config`. The admin credential is generated once on
+  first boot and is never placed in the Nix store.
+- Backups include the whole `/mnt/data/opencloud` tree; Collabora state under
+  `/var/lib/cool` is persisted and snapshotted with `/persist`.
 
 ### Jellyfin login paths
 
@@ -1083,12 +1111,56 @@ The service boundary, storage paths, crawler isolation policy, image update
 procedure, and recovery behavior are documented in
 [`browsertrix-downloader.md`](browsertrix-downloader.md).
 
+## Content Placement
+
+Each library has a different job. Paperless is the filing cabinet for personal
+documents and short technical papers; Kavita is the reader for novels, manga,
+and comics; Calibre-Web is the catalogue for technical books and reference
+manuals. See [`content-placement.md`](content-placement.md) for the full
+decision table, examples, and how to add content to each.
+
+## Calibre-Web Operations
+
+Calibre-Web serves the shared Calibre technical library at
+`https://calibre.<domain>`, fronted by the shared auth gateway and restricted
+to the `calibre-web-users` Kanidm group. Calibre-Web has no OIDC support, so it
+keeps its own local account for uploads and library management: the first boot
+seeds the standard `admin`/`admin123` account, which the operator should change
+immediately after the first sign-in. Browsing is free to any gateway-authorized
+user; uploading and editing require the local account.
+
+The library lives at `/mnt/data/shared/_Calibre/Library`
+(`repo.calibreWeb.paths.libraryRoot`). A first-boot oneshot
+(`calibre-web-library-layout-v1.service`) provisions the directory and seeds a
+pristine empty `metadata.db`; Calibre-Web cannot create a library itself.
+
+Normal checks and manual actions:
+
+```bash
+systemctl status calibre-web calibre-web-library-layout-v1.service
+sudo -u calibre-web calibredb add \
+  --with-library /mnt/data/shared/_Calibre/Library /path/to/books/*.pdf
+sudo systemctl restart search-index.service   # index new books into Search now
+```
+
+Notes:
+
+* The Search integration (`expose_calibre_web_library_to_search.nix`) reads
+  `metadata.db` and extracts body text from EPUB, PDF, and plain-text formats.
+  Other formats (MOBI, AZW3, DJVU) are still catalogued by title, author,
+  series, tags, and description but their body text is not extracted.
+* Backups cover `/var/lib/calibre-web` (Calibre-Web settings and local
+  accounts) and the library itself, with SQLite dumps of `app.db` and
+  `metadata.db`. Removing the module leaves both on disk.
+
 ## Search Operations
 
 The unified Search app (https://search.<domain>) queries one Solr core whose
 content is derived from the authoritative Postgres `search` database. Source
 integrations (paperless export, Kiwix ZIMs, Browsertrix WACZ archives, mail
-archive `.eml` files, FreshRSS entries) register themselves in
+archive `.eml` files, FreshRSS entries, the Calibre-Web technical library, and
+the Jellyfin, Audiobookshelf, and Kavita media libraries) register themselves
+in
 `repo.search.sources` and the long-running `search-index.service` daemon syncs each one every hour.
 
 Search is a server-admin tool. It is fronted by the shared authentication

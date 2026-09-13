@@ -314,7 +314,7 @@ test('top-level pages and profile menu render without full reloads', async ({ pa
   await expect(page).toHaveURL(/\/admins$/);
   await expect(page.getByRole('heading', { name: 'Admin tools' })).toBeVisible();
   await expect(page.getByText(/These commands can change the live server/)).toBeVisible();
-  await expect(page.getByPlaceholder(/Search commands/)).toBeVisible();
+  await expect(page.getByPlaceholder(/^Search/)).toBeVisible();
 
   await expect(page.getByText('Validate config & prerequisites')).toBeVisible();
   await expect(page.getByText('Test deploy')).toBeVisible();
@@ -330,19 +330,19 @@ test('top-level pages and profile menu render without full reloads', async ({ pa
   await expect(page.getByText('./scripts/deploy.sh --action test')).toBeVisible();
   await expect(page.getByText('systemctl status caddy.service --no-pager')).toBeVisible();
 
-  await page.getByPlaceholder(/Search commands/).fill('snapshot');
+  await page.getByPlaceholder(/^Search/).fill('snapshot');
   await expect(page.getByText('Backup schedule')).toBeVisible();
   await expect(page.getByText('Trigger snapshot now')).toBeVisible();
   await expect(page.getByText('Test deploy')).toHaveCount(0);
 
-  await page.getByPlaceholder(/Search commands/).fill('kanidm');
+  await page.getByPlaceholder(/^Search/).fill('kanidm');
   await expect(page.getByText('Verify user exists')).toBeVisible();
   await expect(page.getByText('Create user', { exact: true })).toBeVisible();
   await expect(page.getByText('Grant app access')).toBeVisible();
   await expect(page.getByText('Revoke access')).toBeVisible();
   await expect(page.getByText('Generate sign-in link')).toBeVisible();
 
-  await page.getByPlaceholder(/Search commands/).fill('nonexistent');
+  await page.getByPlaceholder(/^Search/).fill('nonexistent');
   await expect(page.getByText('No commands match your search.')).toBeVisible();
 
   await page.getByRole('link', { name: 'Detailed Guide' }).click();

@@ -6,11 +6,19 @@ let
   preflightDir = "${dataDir}/v3-migration-preflight";
   bonsaiPresent = lib.hasAttrByPath [ "repo" "bonsai" ] options;
   bonsaiEnabled = bonsaiPresent && config.repo.bonsai.enable;
+  gatePresent = lib.hasAttrByPath [ "repo" "bonsai" "gate" ] options;
+  gateEnabled = bonsaiEnabled && gatePresent && config.repo.bonsai.gate.enable;
+  # All Paperless LLM traffic goes through ai-gate (127.0.0.1:8094), never
+  # directly to llama-server (127.0.0.1:8086). The gate serializes the single
+  # upstream slot (parallel=1) with a bounded queue: bursts fail fast with
+  # 429/504 instead of piling up and starving the host.
   bonsaiApiBase =
-    if bonsaiPresent then
+    if gatePresent then
+      config.repo.bonsai.gate.gateBaseUrl
+    else if bonsaiPresent then
       config.repo.bonsai.apiBaseUrl
     else
-      "http://127.0.0.1:8086/v1";
+      "http://127.0.0.1:8094/v1";
   bonsaiModel =
     if bonsaiPresent then
       config.repo.bonsai.modelName
@@ -52,6 +60,14 @@ in
         assertion = !cfg.v3.ai.enable || bonsaiEnabled;
         message = "Paperless v3 AI requires the Bonsai module and repo.bonsai.enable = true.";
       }
+      {
+        assertion = !cfg.v3.ai.enable || gateEnabled;
+        message = "Paperless v3 AI must go through ai-gate (repo.bonsai.gate.enable = true) so suggestion bursts cannot pile up on llama-server.";
+      }
+      {
+        assertion = !cfg.v3.ai.enable || !cfg.v3.ai.localEmbeddings;
+        message = "Paperless v3 AI stays Suggest-only (reversible categorising/tagging): keep repo.paperless.v3.ai.localEmbeddings = false so no nightly embedding index or document chat runs against the shared local model yet.";
+      }
     ];
 
     services.paperless.settings =
@@ -68,6 +84,12 @@ in
       }
       // lib.optionalAttrs cfg.v3.ai.enable (
         {
+          # Reversible, non-destructive by construction: upstream Paperless v3
+          # surfaces LLM output through the per-document "Suggest" control and
+          # never replaces the built-in Auto/exact/fuzzy matching. Nothing is
+          # auto-applied on consume; the operator confirms title, tags,
+          # correspondent, document type, and dates, so a bad suggestion is a
+          # discarded draft, not a mutated archive.
           PAPERLESS_AI_ENABLED = "true";
           PAPERLESS_AI_LLM_BACKEND = "openai-like";
           PAPERLESS_AI_LLM_MODEL = bonsaiModel;

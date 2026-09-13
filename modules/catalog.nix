@@ -14,7 +14,11 @@ rec {
       "absBootstrapPass"
       "absClientSecret"
     ] [ ];
-    bonsai = app ./bonsai "Bonsai AI" "automation" [ ] [ ];
+    bonsai = app ./bonsai "Bonsai AI" "automation" [ ] [
+      "bonsai-gate"
+      "bonsai-llama"
+      "bonsai-model-prepare"
+    ];
     browsertrix-downloader = app ./browsertrix-downloader "Web Archives" "knowledge" [
       "browsertrixDownloaderOauth2ProxyClientSecret"
       "browsertrixDownloaderOauth2ProxyCookieSecret"
@@ -22,6 +26,13 @@ rec {
       "browsertrix-downloader-storage-layout-v1"
       "browsertrix-downloader"
       "browsertrix-downloader-worker"
+    ];
+    calibre-web = app ./calibre-web "Technical Library" "knowledge" [
+      "calibreWebOauth2ProxyClientSecret"
+      "calibreWebOauth2ProxyCookieSecret"
+    ] [
+      "calibre-web-library-layout-v1"
+      "calibre-web"
     ];
     chaptarr = app ./chaptarr "Chaptarr" "media-automation" [ ] [
       "chaptarr"
@@ -78,6 +89,12 @@ rec {
     offline-music = app ./offline-music "Offline Music" "media" [ ] [
       "offline-media-reconcile"
     ];
+    opencloud = app ./opencloud "OpenCloud" "files" [ ] [
+      "opencloud-storage-layout-v1"
+      "opencloud-secret-materialize"
+      "opencloud-init-config"
+      "opencloud"
+    ];
     paperless = app ./paperless "Paperless" "productivity" [ "paperlessClientSecret" ] [
       "paperless-storage-layout-v1"
       "paperless-consumer"
@@ -133,6 +150,7 @@ rec {
   };
 
   integrationDefinitions = [
+    { module = ./Integrations/reserve_qwen_for_background_jobs.nix; allApps = [ "bonsai" "qwen-flash-next" ]; anyApps = [ ]; }
     { module = ./Integrations/expose_browsertrix_crawls_to_search.nix; allApps = [ "search" "browsertrix-downloader" ]; anyApps = [ ]; }
     { module = ./Integrations/expose_calibre_web_library_to_search.nix; allApps = [ "search" "calibre-web" ]; anyApps = [ ]; }
     { module = ./Integrations/expose_freshrss_entries_to_search.nix; allApps = [ "search" "freshrss" ]; anyApps = [ ]; }
@@ -143,6 +161,7 @@ rec {
     { module = ./Integrations/expose_mail_archive_emails_in_files.nix; allApps = [ "mail-archive-ui" "files" ]; anyApps = [ ]; }
     { module = ./Integrations/grant_archives_access_to_kiwix_library.nix; allApps = [ "browsertrix-downloader" "kiwix" ]; anyApps = [ ]; }
     { module = ./Integrations/grant_files_access_to_audiobookshelf_media.nix; allApps = [ "files" "audiobookshelf" ]; anyApps = [ ]; }
+    { module = ./Integrations/grant_files_access_to_calibre_library.nix; allApps = [ "files" "calibre-web" ]; anyApps = [ ]; }
     { module = ./Integrations/grant_files_access_to_jellyfin_media.nix; allApps = [ "files" "jellyfin" ]; anyApps = [ ]; }
     { module = ./Integrations/grant_files_access_to_kavita_media.nix; allApps = [ "files" "kavita" ]; anyApps = [ ]; }
     { module = ./Integrations/grant_files_access_to_kiwix_library.nix; allApps = [ "files" "kiwix" ]; anyApps = [ ]; }

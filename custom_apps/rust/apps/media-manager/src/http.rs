@@ -20,7 +20,7 @@ use crate::{
         application_observation, consumer_effects, filename_observation, folder_sidecar_path,
         health_issues, initial_field_sources, inspect_embedded_metadata, inspect_sidecar,
         item_sidecar_path, merge_managed_sidecar, modification_targets, rewrite_embedded_metadata,
-        MetadataObservation,
+        MetadataHealthIssue, MetadataObservation,
     },
     naming::{
         canonical_movie_directory, canonical_music_track, canonical_tv_episode, clean_component,

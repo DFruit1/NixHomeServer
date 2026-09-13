@@ -76,6 +76,7 @@ import type {
   MetadataSidecarInspection,
   MutationPreview,
   NamingProfile,
+  TrackOrderReport,
 } from "./root-types";
 
 export type {
@@ -135,6 +136,7 @@ interface MetadataEditorState {
   fieldSources: Record<string, string>;
   consumers: MetadataConsumer[];
   health: MetadataHealthIssue[];
+  trackOrder?: TrackOrderReport;
   modificationTargets: MetadataModificationTarget[];
   inspectionWarnings: string[];
   sidecar?: MetadataSidecarInspection;
@@ -312,6 +314,7 @@ export const ItemEditor = component$<{
     fieldSources: {},
     consumers: [],
     health: [],
+    trackOrder: undefined,
     modificationTargets: [],
     inspectionWarnings: [],
     isDraft: false,
@@ -502,6 +505,7 @@ export const ItemEditor = component$<{
     metadata.fieldSources = {};
     metadata.consumers = [];
     metadata.health = [];
+    metadata.trackOrder = undefined;
     metadata.modificationTargets = [];
     metadata.inspectionWarnings = [];
     metadata.sidecar = undefined;
@@ -597,6 +601,7 @@ export const ItemEditor = component$<{
         (details.fieldSources as Record<string, string>) ?? {};
       metadata.consumers = (details.consumers as MetadataConsumer[]) ?? [];
       metadata.health = (details.health as MetadataHealthIssue[]) ?? [];
+      metadata.trackOrder = details.trackOrder as TrackOrderReport | undefined;
       metadata.modificationTargets =
         (details.modificationTargets as MetadataModificationTarget[]) ?? [];
       metadata.inspectionWarnings =
@@ -2265,6 +2270,20 @@ export const ItemEditor = component$<{
                           {issue.sources.length > 0 && (
                             <span>Sources: {issue.sources.join(" · ")}</span>
                           )}
+                          {(issue.affectedFiles?.length ?? 0) > 0 && (
+                            <details class="health-file-details">
+                              <summary>
+                                Affects{" "}
+                                {issue.affectedFileCount ??
+                                  issue.affectedFiles!.length}{" "}
+                                {(issue.affectedFileCount ??
+                                  issue.affectedFiles!.length) === 1
+                                  ? "file"
+                                  : "files"}
+                              </summary>
+                              <p>{issue.affectedFiles!.join(", ")}</p>
+                            </details>
+                          )}
                         </div>
                       </article>
                     ))}
@@ -2280,6 +2299,56 @@ export const ItemEditor = component$<{
                         </div>
                       </article>
                     ))}
+                  </div>
+                </section>
+              )}
+              {metadata.trackOrder && metadata.trackOrder.fileCount > 0 && (
+                <section class="metadata-health" aria-label="Track order">
+                  <div class="metadata-subheading">
+                    <div>
+                      <span class="eyebrow">Play order</span>
+                      <h4>Track order</h4>
+                    </div>
+                    <span class="pane-count">
+                      {metadata.trackOrder.fileCount}
+                    </span>
+                  </div>
+                  <p>
+                    Files play by disc, then track number.{" "}
+                    {metadata.trackOrder.playlistName
+                      ? `Ordered against ${metadata.trackOrder.playlistName}. `
+                      : "No playlist found in this folder. "}
+                    Rows marked “differs” disagree between filename, tag, or
+                    playlist — align the filename numbers with the embedded
+                    track numbers, then rescan the library and refresh the
+                    player app.
+                  </p>
+                  <div class="metadata-comparison-scroll">
+                    <table class="metadata-comparison">
+                      <thead>
+                        <tr>
+                          <th>File</th>
+                          <th>Filename #</th>
+                          <th>Tag #</th>
+                          <th>Playlist #</th>
+                          <th>Plays as</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {metadata.trackOrder.files.map((file) => (
+                          <tr key={file.fileName}>
+                            <th>
+                              {file.fileName}
+                              {file.status === "mismatch" ? " · differs" : ""}
+                            </th>
+                            <td>{file.filenameNumber ?? "—"}</td>
+                            <td>{file.tagTrack ?? "—"}</td>
+                            <td>{file.playlistPosition ?? "—"}</td>
+                            <td>#{file.effectivePosition}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
                 </section>
               )}

@@ -869,7 +869,7 @@ deploy_validate_source_hash "$source_hash" || {
 if [[ "$DEBUG_MODE" == "true" ]]; then
   echo "running debug validation"
   nix shell --inputs-from . \
-    nixpkgs#age nixpkgs#gawk nixpkgs#gitMinimal nixpkgs#gnugrep \
+    nixpkgs#age nixpkgs#cargo nixpkgs#gawk nixpkgs#gitMinimal nixpkgs#gnugrep \
     nixpkgs#gnused nixpkgs#gnutar nixpkgs#jq nixpkgs#nodejs \
     nixpkgs#openssl nixpkgs#python3 nixpkgs#ripgrep nixpkgs#sqlite \
     nixpkgs#util-linux \

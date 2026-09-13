@@ -17,6 +17,7 @@ let
     moduleEnabled "groundwater-logger"
     && config.repo.groundwaterLogger.enable;
   browsertrixEnabled = moduleEnabled "browsertrix-downloader";
+  calibreWebEnabled = moduleEnabled "calibre-web" && config.repo.calibreWeb.enable;
   atticEnabled = moduleEnabled "attic";
   failureAlertWebhookFile = secretFile "failureAlertWebhookUrl";
   openSubtitlesCredentialsFile = secretFile "openSubtitlesCredentials";
@@ -79,6 +80,10 @@ in
   // lib.optionalAttrs kiwixEnabled {
     kiwixOauth2ProxyClientSecret = { file = secretFile "kiwixOauth2ProxyClientSecret"; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };
     kiwixOauth2ProxyCookieSecret = { file = secretFile "kiwixOauth2ProxyCookieSecret"; owner = "oauth2-proxy"; mode = "0400"; };
+  }
+  // lib.optionalAttrs calibreWebEnabled {
+    calibreWebOauth2ProxyClientSecret = { file = secretFile "calibreWebOauth2ProxyClientSecret"; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };
+    calibreWebOauth2ProxyCookieSecret = { file = secretFile "calibreWebOauth2ProxyCookieSecret"; owner = "oauth2-proxy"; mode = "0400"; };
   }
   // lib.optionalAttrs (moduleEnabled "youtube-downloader") {
     youtubeDownloaderOauth2ProxyClientSecret = { file = secretFile "youtubeDownloaderOauth2ProxyClientSecret"; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };

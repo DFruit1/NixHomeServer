@@ -156,6 +156,7 @@ echo "✅ App module facet boundary tests passed."
 # App modules must not reference sibling app internals; use modules/Integrations instead.
 declare -A app_roots=(
   [repo.audiobookshelf]=audiobookshelf
+  [repo.calibreWeb]=calibre-web
   [repo.files]=files
   [repo.immich]=immich
   [repo.jellyfin]=jellyfin
@@ -170,6 +171,7 @@ declare -A app_roots=(
   [repo.vaultwarden]=vaultwarden
   [repo.youtubeDownloader]=youtube-downloader
   [services.audiobookshelf]=audiobookshelf
+  [services.calibre-web]=calibre-web
   [services.filestash]=files
   [services.immich]=immich
   [services.jellyfin]=jellyfin

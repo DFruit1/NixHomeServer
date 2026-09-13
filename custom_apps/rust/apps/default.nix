@@ -34,6 +34,11 @@ let
   };
 in
 {
+  ai-gate = import ./ai-gate/default.nix {
+    inherit lib pkgs rustLib;
+    inherit workspaceVersion sharedCargoArtifacts cargoLock;
+    workspaceSrc = workspaceSource "ai-gate";
+  };
   browsertrix-downloader = import ./browsertrix-downloader/default.nix {
     inherit lib pkgs rustLib;
     inherit workspaceVersion sharedCargoArtifacts cargoLock;

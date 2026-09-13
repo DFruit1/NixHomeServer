@@ -98,6 +98,7 @@ test_scripts=(
   scripts/tests/test-nix-store-capacity-gc.sh
   scripts/tests/test-disk-space-cleanup.sh
   scripts/tests/test-offline-media-reliability.sh
+  scripts/tests/test-opencloud-module.sh
   scripts/tests/test-deploy-cli.sh
   scripts/tests/test-deploy-transaction-runtime.sh
   scripts/tests/test-evaluated-service-hardening.sh
@@ -150,6 +151,9 @@ test_scripts=(
   scripts/tests/test-mail-archive-paperless-reliability.sh
   scripts/tests/test-media-manager-core.sh
   scripts/tests/test-paperless-v3-readiness.sh
+  scripts/tests/test-ai-gate.sh
+  scripts/tests/test-gpu-power-limit.sh
+  scripts/tests/test-background-qwen-split.sh
   scripts/tests/test-mkvmaker-automation.sh
   scripts/tests/test-platform-storage-profiles.sh
   scripts/tests/test-runtime-reliability.sh

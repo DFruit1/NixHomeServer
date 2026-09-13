@@ -8,6 +8,9 @@ let
   mailArchiveEnabled =
     hasModule "mail-archive-ui"
     && config.services.mail-archive-ui.enable;
+  # `moduleEnabled` cannot resolve the camelCase option for a hyphenated app
+  # name, so gate Calibre-Web explicitly.
+  calibreWebEnabled = hasModule "calibre-web" && config.repo.calibreWeb.enable;
   mediaAutomationEnabled = lib.any moduleEnabled [ "chaptarr" "sonarr" "radarr" "prowlarr" "qbittorrent" ];
   appPersonNames = lib.unique (
     vars.kanidmAppUsers
@@ -98,6 +101,9 @@ let
     // lib.optionalAttrs (moduleEnabled "kiwix") {
       "kiwix-users" = "Grants Kiwix offline wiki access.";
     }
+    // lib.optionalAttrs (calibreWebEnabled) {
+      "calibre-web-users" = "Grants technical library access.";
+    }
     // lib.optionalAttrs mailArchiveEnabled {
       "mail-archive-users" = "Grants private mail archive access.";
     }
@@ -106,6 +112,10 @@ let
     }
     // lib.optionalAttrs (hasModule "paperless") {
       "paperless-users" = "Grants Paperless document archive access.";
+    }
+    // lib.optionalAttrs (hasModule "opencloud") {
+      "opencloud-users" = "Grants OpenCloud sign-in and file storage access.";
+      "opencloud-admins" = "Grants OpenCloud administration.";
     };
   kanidmGroupDescriptions = coreKanidmGroupDescriptions // appKanidmGroupDescriptions;
   authGatewayScopeGroups = lib.unique (
@@ -121,6 +131,7 @@ let
     ]
     ++ lib.optionals (hasModule "youtube-downloader") [ "downloads-users" ]
     ++ lib.optionals (moduleEnabled "kiwix") [ "kiwix-users" ]
+    ++ lib.optionals (calibreWebEnabled) [ "calibre-web-users" ]
     ++ lib.optionals mailArchiveEnabled [ "mail-archive-users" ]
     ++ lib.optionals mediaAutomationEnabled [ "media-automation-users" ]
   );

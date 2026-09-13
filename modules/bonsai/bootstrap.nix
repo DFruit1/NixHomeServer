@@ -123,28 +123,28 @@ in
 
       revision = lib.mkOption {
         type = lib.types.str;
-        default = "abbae723028d71be674e71e1a71201a6f43fab22";
+        default = "86e89f34c93201c3dfd5e5880fedb0022fc7e34d";
         readOnly = true;
         description = "Pinned Hugging Face repository revision containing the verified model artifacts.";
       };
 
       fileName = lib.mkOption {
         type = lib.types.str;
-        default = "Ternary-Bonsai-27B-Q2_0.gguf";
+        default = "Ternary-Bonsai-27B-Q2_g64.gguf";
         readOnly = true;
         description = "Official ternary Q2_0 language-model artifact.";
       };
 
       sha256 = lib.mkOption {
         type = lib.types.str;
-        default = "868c11714cf8fe47f5ec9eeb2be0ab1a337112886f92ee0ede6b855c4fa31757";
+        default = "59a45d1ecef702b14531b06d22949f33b25c1897da31a8c0b298e01e4d9138eb";
         readOnly = true;
         description = "SHA-256 digest published by the Hugging Face LFS metadata for the model artifact.";
       };
 
       sizeBytes = lib.mkOption {
         type = lib.types.ints.positive;
-        default = 7165121600;
+        default = 7585330240;
         readOnly = true;
         description = "Expected model artifact size.";
       };

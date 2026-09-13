@@ -34,6 +34,7 @@ let
       echo "Starting Qwen3.8-Flash-Next with context size $context_size (backend ${cfg.runtime.backend})"
 
       exec ${cfg.runtime.package}/bin/llama-server \
+        --no-webui \
         --model ${lib.escapeShellArg cfg.paths.modelFile} \
         --mmproj ${lib.escapeShellArg cfg.paths.projectorFile} \
         --alias ${lib.escapeShellArg cfg.modelName} \
@@ -58,6 +59,16 @@ let
 in
 {
   options.repo.qwenFlashNext = {
+    loadAtBoot = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        Whether the loopback-only Qwen server starts with multi-user.target.
+        Background consumers (for example a nightly job) can instead start the
+        unit on demand and stop it afterwards to release RAM and the GPU.
+      '';
+    };
+
     contextSize = lib.mkOption {
       type = lib.types.ints.unsigned;
       default = 0;
@@ -165,11 +176,12 @@ in
 
     systemd.services.qwen-flash-next-llama = {
       description = "Qwen3.8-Flash-Next local vision-language inference API";
-      wantedBy = [ "multi-user.target" ];
+      wantedBy = lib.optional cfg.loadAtBoot "multi-user.target";
       wants = [ "qwen-flash-next-model-prepare.service" "qwen-flash-next-storage-layout-v1.service" ];
       requires = [ "qwen-flash-next-model-prepare.service" ];
       after = [ "qwen-flash-next-model-prepare.service" "qwen-flash-next-storage-layout-v1.service" ];
       unitConfig = {
+        RequiresMountsFor = [ vars.dataRoot ];
         StartLimitIntervalSec = "15min";
         StartLimitBurst = 3;
         OnFailure = [ config.repo.monitoring.failureAlerts.targetUnit ];
@@ -192,7 +204,6 @@ in
         IOWeight = 20;
         IOSchedulingClass = "best-effort";
         IOSchedulingPriority = 6;
-        RequiresMountsFor = [ vars.dataRoot ];
         NoNewPrivileges = true;
         # The Vulkan backend needs access to /dev/dri, so device isolation is
         # dropped only when the GPU path is explicitly enabled.

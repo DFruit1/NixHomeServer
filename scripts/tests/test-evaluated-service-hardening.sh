@@ -49,6 +49,7 @@ services_json="$(
       builtins.mapAttrs
         (_: service: service.serviceConfig)
         (builtins.intersectAttrs {
+          bonsai-gate = null;
           bonsai-llama = null;
           bonsai-model-prepare = null;
           groundwater-logger = null;
@@ -80,6 +81,7 @@ require_service_setting() {
 }
 
 for service in \
+  bonsai-gate \
   bonsai-llama \
   bonsai-model-prepare \
   groundwater-logger \
@@ -99,7 +101,7 @@ for service in \
     "must hide home directories"
 done
 
-for service in bonsai-llama groundwater-logger mail-archive-ui youtube-downloader; do
+for service in bonsai-gate bonsai-llama groundwater-logger mail-archive-ui youtube-downloader; do
   service_present "$service" || continue
   require_service_setting "$service" '.ProtectKernelModules == true' \
     "long-running custom apps must not access kernel modules"

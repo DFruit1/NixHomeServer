@@ -49,7 +49,7 @@ export const BuildModeCard = component$(() => {
       <div class="canary-panel__header">
         <div>
           <h2 id="build-mode-heading">Nix build mode</h2>
-          <p>Sets the default build allocation for guarded deploys of this server. A per-deploy --build-mode flag still overrides it.</p>
+          <p>Default build allocation for guarded deploys. A per-deploy --build-mode flag overrides it.</p>
         </div>
       </div>
       {status.value?.warning && <div class="notice">{status.value.warning}</div>}
@@ -82,8 +82,8 @@ export const BuildModeCard = component$(() => {
         </form>
       )}
       <p class="power-schedule__notes">
-        The saved mode is stored on the server and read by the next guarded deploy from this workstation. Dry-runs
-        report the vars.nix allocation and ignore the dashboard setting.
+        Stored on the server and read by the next guarded deploy. Dry-runs ignore this and report the vars.nix
+        allocation.
       </p>
     </section>
   );

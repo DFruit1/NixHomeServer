@@ -31,12 +31,16 @@ let
   mailArchiveEnabled =
     hasModule "mail-archive-ui"
     && config.services.mail-archive-ui.enable;
+  # `moduleEnabled` cannot resolve the camelCase option for a hyphenated app
+  # name, so gate Calibre-Web explicitly.
+  calibreWebEnabled = hasModule "calibre-web" && config.repo.calibreWeb.enable;
   sidecarServices = [
     "kopia-oauth2-proxy"
   ]
   ++ lib.optionals (hasModule "files") [ "filestash-oauth2-proxy" ]
   ++ lib.optionals homepageEnabled [ "homepage-oauth2-proxy" ]
   ++ lib.optionals (moduleEnabled "kiwix") [ "kiwix-oauth2-proxy" ]
+  ++ lib.optionals (calibreWebEnabled) [ "calibre-web-oauth2-proxy" ]
   ++ lib.optionals mailArchiveEnabled [ "mail-archive-oauth2-proxy" ]
   ++ lib.optionals (moduleEnabled "prowlarr") [ "prowlarr-oauth2-proxy" ]
   ++ lib.optionals (moduleEnabled "qbittorrent") [ "qbittorrent-oauth2-proxy" ]
@@ -74,6 +78,9 @@ let
   }
   // lib.optionalAttrs (moduleEnabled "kiwix") {
     kiwix = mkApp "wiki.${vars.domain}" "http://${loopback}:${toString vars.networking.ports.kiwix}" [ "kiwix-users" ];
+  }
+  // lib.optionalAttrs (calibreWebEnabled) {
+    calibre = mkApp "calibre.${vars.domain}" "http://${loopback}:${toString vars.networking.ports.calibreWeb}" [ "calibre-web-users" ];
   }
   // lib.optionalAttrs (hasModule "youtube-downloader") {
     downloads = mkApp "ytdownload.${vars.domain}" "http://${loopback}:${toString vars.networking.ports.youtubeDownloader}" [ "downloads-users" ];

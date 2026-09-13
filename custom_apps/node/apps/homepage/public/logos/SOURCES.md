@@ -8,5 +8,6 @@ The Homepage vendors these application logos so cards do not depend on third-par
 - `audiobookshelf.svg`: https://raw.githubusercontent.com/advplyr/audiobookshelf/master/client/static/icon.svg
 - `jellyfin.svg`: https://raw.githubusercontent.com/jellyfin/jellyfin-ux/master/branding/SVG/icon-transparent.svg
 - `kavita.svg`: https://raw.githubusercontent.com/Kareadita/Kavita/develop/UI/Web/src/assets/images/logo.svg
+- `calibre-web.svg`: https://raw.githubusercontent.com/janeczku/calibre-web/master/cps/static/icon.svg
 - `vaultwarden.svg`: https://raw.githubusercontent.com/dani-garcia/vaultwarden/main/resources/vaultwarden-icon.svg
 - `mail-archive-ui.svg`: repository-local Mail Archive UI branding from `custom_apps/rust/apps/mail-archive-ui/frontend/src/styles.css`

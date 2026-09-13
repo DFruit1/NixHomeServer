@@ -118,16 +118,19 @@ export default component$(() => {
       {homepage.data?.buildModeAvailable && <BuildModeCard />}
       <section class="section admin-page">
         <header class="admin-page-header">
-          <span class="eyebrow">Server administration</span>
           <h1>Admin tools</h1>
-          <p>Commands and guidance generated from the deployed configuration. Command output is the source of truth for current runtime state.</p>
         </header>
         <div class="guide-callout">
-          <p><strong>These commands can change the live server.</strong> Check where each runs and replace placeholders like SERVICE, USERNAME, and APP-GROUP before copying.</p>
+          <p><strong>These commands can change the live server.</strong> Replace placeholders like SERVICE, USERNAME, and APP-GROUP before copying.</p>
         </div>
         <label class="admin-search">
-          <span class="sr-only">Search commands</span>
-          <input type="search" value={searchQuery.value} onInput$={setSearchQuery} placeholder="Search commands — e.g. deploy, backup, user, DNS" />
+          <input
+            type="search"
+            aria-label="Search commands"
+            value={searchQuery.value}
+            onInput$={setSearchQuery}
+            placeholder="Search…"
+          />
         </label>
         {filteredSteps.length > 0 ? (
           <div class="admin-task-list">

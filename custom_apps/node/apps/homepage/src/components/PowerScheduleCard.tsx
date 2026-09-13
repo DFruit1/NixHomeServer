@@ -73,7 +73,7 @@ export const PowerScheduleCard = component$(() => {
       <div class="canary-panel__header">
         <div>
           <h2 id="power-schedule-heading">Power schedule</h2>
-          <p>Controls the nightly suspend windows and the morning wake alarm. Changes apply on the next 15-minute check without a rebuild.</p>
+          <p>Nightly suspend windows and morning wake alarm; changes apply on the next 15-minute check.</p>
         </div>
       </div>
       {schedule.value?.warning && <div class="notice">{schedule.value.warning}</div>}
@@ -131,9 +131,8 @@ export const PowerScheduleCard = component$(() => {
         </form>
       )}
       <p class="power-schedule__notes">
-        Sleep checks between the forced cutoff and the evening start are skipped entirely. “Skip sleep for today”
-        applies only to today and automatically expires at the next calendar date. If the server wakes during an
-        overnight sleep window, that same window is held off until the next evening.
+        Sleep checks between the forced cutoff and evening start are skipped. “Skip sleep for today” expires at the
+        next calendar date, and a wake during an overnight window holds that window until the next evening.
       </p>
     </section>
   );

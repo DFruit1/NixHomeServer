@@ -185,6 +185,115 @@ it("rejects repeated pages before duplicating their issues", async () => {
   expect(fetchMock).toHaveBeenCalledTimes(2);
 });
 
+it("groups audio files of one album into a single warning", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => {
+      const first = await healthResponse("lawson-01", "Track ordering");
+      const payload = await first.json();
+      payload.results = [
+        {
+          itemId: "lawson-01",
+          rootId: "audiobooks",
+          relativePath: "Lawson/01_lawson.mp3",
+          mediaKind: "audiobook",
+          albumGroup: "Lawson",
+          health: [
+            {
+              code: "missing-track-numbers",
+              severity: "info",
+              title: "Some files have no track number",
+              message: "Confirm filename ordering.",
+              sources: ["embedded-audio-tags"],
+            },
+          ],
+        },
+        {
+          itemId: "lawson-02",
+          rootId: "audiobooks",
+          relativePath: "Lawson/02_lawson.mp3",
+          mediaKind: "audiobook",
+          albumGroup: "Lawson",
+          health: [
+            {
+              code: "missing-track-numbers",
+              severity: "info",
+              title: "Some files have no track number",
+              message: "Confirm filename ordering.",
+              sources: ["embedded-audio-tags"],
+            },
+          ],
+        },
+      ];
+      payload.inspectedItems = 2;
+      payload.issueCount = 2;
+      return new Response(wireJson(payload));
+    }),
+  );
+  const { render, screen, userEvent } = await createDOM();
+  await render(
+    <MetadataHealthView roots={[{ id: "audiobooks", label: "Audiobooks" }]} />,
+  );
+  await vi.waitFor(async () => {
+    await userEvent(screen, "click");
+    expect(screen.querySelectorAll(".health-result")).toHaveLength(1);
+  });
+  const issues = screen.querySelectorAll(".health-result-issue");
+  expect(issues).toHaveLength(1);
+  expect(issues[0].textContent).toContain("Some files have no track number");
+  expect(issues[0].textContent).toContain("Affects 2 files");
+  expect(issues[0].textContent).toContain("01_lawson.mp3");
+  expect(issues[0].textContent).toContain("02_lawson.mp3");
+  expect(screen.textContent).toContain("2 files");
+  expect(screen.textContent).toContain("Lawson/01_lawson.mp3");
+  expect(screen.textContent).toContain("Lawson/02_lawson.mp3");
+});
+
+it("keeps distinct album issue values as separate entries", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => {
+      const response = await healthResponse("lawson-01", "Title differs");
+      const payload = await response.json();
+      payload.results = ["01", "02"].map((track) => ({
+        itemId: `lawson-${track}`,
+        rootId: "audiobooks",
+        relativePath: `Lawson/${track}_lawson.mp3`,
+        mediaKind: "audiobook",
+        albumGroup: "Lawson",
+        health: [
+          {
+            code: "conflicting-title",
+            severity: "warning",
+            field: "title",
+            title: "Title differs",
+            message: "Compare sources",
+            sources: ["sidecar", "embedded"],
+            currentValue: `Current ${track}`,
+            currentSources: ["Sidecar"],
+            proposedValues: [
+              { value: `Proposed ${track}`, sources: ["Embedded tags"] },
+            ],
+          },
+        ],
+      }));
+      payload.inspectedItems = 2;
+      payload.issueCount = 2;
+      return new Response(wireJson(payload));
+    }),
+  );
+  const { render, screen, userEvent } = await createDOM();
+  await render(
+    <MetadataHealthView roots={[{ id: "audiobooks", label: "Audiobooks" }]} />,
+  );
+  await vi.waitFor(async () => {
+    await userEvent(screen, "click");
+    expect(screen.querySelectorAll(".health-result-issue")).toHaveLength(2);
+  });
+  expect(screen.textContent).toContain("Current 01");
+  expect(screen.textContent).toContain("Proposed 02");
+});
+
 function healthResponse(
   itemId: string,
   title: string,

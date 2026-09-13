@@ -188,6 +188,7 @@ in
       wants = [ "network-online.target" "qwen-flash-next-storage-layout-v1.service" ];
       after = [ "network-online.target" "qwen-flash-next-storage-layout-v1.service" ];
       unitConfig = {
+        RequiresMountsFor = [ vars.dataRoot ];
         StartLimitIntervalSec = "1h";
         StartLimitBurst = 4;
       };
@@ -201,7 +202,6 @@ in
         Restart = "on-failure";
         RestartSec = "5min";
         TimeoutStartSec = "infinity";
-        RequiresMountsFor = [ vars.dataRoot ];
         UMask = "0027";
         NoNewPrivileges = true;
         PrivateTmp = true;
