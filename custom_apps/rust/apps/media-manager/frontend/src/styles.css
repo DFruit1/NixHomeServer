@@ -1285,6 +1285,33 @@ a:focus-visible {
   gap: 16px;
   border-bottom: 1px solid var(--line);
 }
+.editor-heading-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.editor-file {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.editor-file-kind {
+  flex: 0 0 auto;
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.editor-file strong {
+  min-width: 0;
+  font-family: var(--font-serif);
+  font-size: 15px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
 .editor-heading-actions {
   display: flex;
   align-items: center;
@@ -2035,6 +2062,22 @@ a:focus-visible {
 .secondary-button:active {
   scale: 0.96;
 }
+.file-organization {
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.file-organization-heading {
+  padding: 0 20px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.file-organization-heading h4 {
+  margin: 0;
+  font-family: var(--font-serif);
+  font-size: 15px;
+  font-weight: 500;
+}
 .rename-fields {
   padding: 0 20px 18px;
   display: grid;
@@ -2277,6 +2320,51 @@ a:focus-visible {
 }
 .media-image {
   margin: 0;
+}
+.media-image.editable {
+  position: relative;
+  cursor: pointer;
+}
+.media-image.editable:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.media-image.editable img {
+  transition: filter 120ms ease-out;
+}
+.media-image.editable:hover img,
+.media-image.editable:focus-visible img {
+  filter: brightness(0.82);
+}
+.media-image-edit {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  translate: -50% 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 3px;
+  color: var(--accent-ink);
+  background: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease-out;
+}
+.media-image.editable:hover .media-image-edit,
+.media-image.editable:focus-visible .media-image-edit {
+  opacity: 1;
+}
+@media (hover: none) {
+  .media-image.editable .media-image-edit {
+    opacity: 1;
+  }
 }
 .media-image img,
 .media-image-placeholder {
@@ -5889,6 +5977,9 @@ a:focus-visible {
     align-items: flex-start;
     gap: 8px;
     padding: 12px;
+  }
+  .editor-heading-main {
+    flex: 1;
   }
   .editor-tabs {
     display: grid;

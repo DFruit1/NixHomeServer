@@ -259,7 +259,7 @@ function updateMetadataDraftField(
   markMetadataDraftDirty(metadata, dashboard);
 }
 
-export type EditorCommandAction = "" | "explore" | "title";
+export type EditorCommandAction = "" | "explore";
 
 export const ItemEditor = component$<{
   state: DashboardState;
@@ -281,6 +281,10 @@ export const ItemEditor = component$<{
   const selectedRoot = props.state.roots.find(
     (root) => root.id === (props.folder?.rootId ?? selectedItem?.rootId),
   );
+  const selectedFilePath =
+    props.folder?.relativePath ?? selectedItem?.relativePath ?? "";
+  const selectedFileName =
+    selectedFilePath.split("/").filter(Boolean).at(-1) ?? selectedFilePath;
   const musicbrainzIntegration = props.state.status?.integrations.find(
     (integration) => integration.id === "musicbrainz",
   );
@@ -653,38 +657,16 @@ export const ItemEditor = component$<{
     }
   });
 
-  // eslint-disable-next-line qwik/no-use-visible-task -- focusing a freshly rendered input needs the DOM
+  // eslint-disable-next-line qwik/no-use-visible-task -- selecting the explore tab needs the DOM
   useVisibleTask$(({ track }) => {
     const revision = track(() => props.command?.revision ?? 0);
     const action = props.command?.action;
-    if (!revision || !action) return;
-    if (action === "explore" && !props.folder) {
-      const kind =
-        metadata.mediaKind || mediaKindForMediaType(metadata.mediaType);
-      if (supportsMediaAction(props.state.status, kind, "lookup-metadata")) {
-        tab.value = "explore";
-      }
-      return;
+    if (!revision || action !== "explore" || props.folder) return;
+    const kind =
+      metadata.mediaKind || mediaKindForMediaType(metadata.mediaType);
+    if (supportsMediaAction(props.state.status, kind, "lookup-metadata")) {
+      tab.value = "explore";
     }
-    if (action !== "title") return;
-    tab.value = "metadata";
-    section.value = "basics";
-    if (!metadata.isDraft) {
-      metadata.isDraft = true;
-      metadata.draftSessionRevision += 1;
-      props.state.metadataDraftRevision += 1;
-    }
-    void (async () => {
-      for (let attempt = 0; attempt < 20; attempt++) {
-        await wait(50);
-        if (metadata.loadingDetails) continue;
-        const input =
-          cardRef.value?.querySelector<HTMLInputElement>(".title-input input");
-        if (!input) continue;
-        input.focus();
-        if (input.ownerDocument.activeElement === input) return;
-      }
-    })();
   });
 
   const toggleMetadataDraft = $(() => {
@@ -1204,11 +1186,9 @@ export const ItemEditor = component$<{
   });
 
   const lookupOpenLibrary = $(async () => {
-    const fallbackQuery =
-      metadata.isbn.trim() ||
-      [metadata.title.trim(), metadata.authors.trim()]
-        .filter(Boolean)
-        .join(" ");
+    const fallbackQuery = [metadata.title.trim(), metadata.authors.trim()]
+      .filter(Boolean)
+      .join(" ");
     const query = metadata.openLibraryQuery.trim() || fallbackQuery;
     if (
       !props.state.session?.canEdit ||
@@ -1401,9 +1381,12 @@ export const ItemEditor = component$<{
           (target) => target.kind === "portable-file" && target.available,
         );
   const normalizedDraftValues = normalizedMetadataValues(metadata);
-  const openLibraryFallbackQuery =
-    metadata.isbn.trim() ||
-    [metadata.title.trim(), metadata.authors.trim()].filter(Boolean).join(" ");
+  const openLibraryFallbackQuery = [
+    metadata.title.trim(),
+    metadata.authors.trim(),
+  ]
+    .filter(Boolean)
+    .join(" ");
   const matchRows =
     metadata.matchCandidate?.itemKey === metadata.itemId &&
     metadata.matchCandidate.itemKey ===
@@ -1510,86 +1493,80 @@ export const ItemEditor = component$<{
 
   return (
     <section class="panel editor-card" ref={cardRef}>
-      {!props.folder && (
-        <div class="editor-heading">
-          <div
-            class="editor-tabs"
-            role="tablist"
-            aria-label="Edit selected item"
-          >
-            {canLookupMetadata && (
+      <div class="editor-heading">
+        <div class="editor-heading-main">
+          {selectedFilePath && (
+            <div class="editor-file" title={selectedFilePath}>
+              <span class="editor-file-kind">
+                {props.folder ? "Folder" : "File"}
+              </span>
+              <strong>{selectedFileName}</strong>
+            </div>
+          )}
+          {!props.folder && (
+            <div
+              class="editor-tabs"
+              role="tablist"
+              aria-label="Edit selected item"
+            >
+              {canLookupMetadata && (
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={tab.value === "explore"}
+                  class={{
+                    "editor-tab": true,
+                    active: tab.value === "explore",
+                  }}
+                  onClick$={() => (tab.value = "explore")}
+                >
+                  <Icon name="search" size={16} />
+                  Explore
+                </button>
+              )}
               <button
                 type="button"
                 role="tab"
-                aria-selected={tab.value === "explore"}
-                class={{ "editor-tab": true, active: tab.value === "explore" }}
-                onClick$={() => (tab.value = "explore")}
+                aria-selected={tab.value === "metadata"}
+                class={{ "editor-tab": true, active: tab.value === "metadata" }}
+                onClick$={() => (tab.value = "metadata")}
               >
-                <Icon name="search" size={16} />
-                Explore
+                <Icon name="tag" size={16} />
+                Metadata
               </button>
-            )}
-            <button
-              type="button"
-              role="tab"
-              aria-selected={tab.value === "metadata"}
-              class={{ "editor-tab": true, active: tab.value === "metadata" }}
-              onClick$={() => (tab.value = "metadata")}
-            >
-              <Icon name="tag" size={16} />
-              Metadata
-            </button>
-            {!props.folder && (
-              <>
-                {canGuidedRename && (
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={tab.value === "rename"}
-                    class={{
-                      "editor-tab": true,
-                      active: tab.value === "rename",
-                    }}
-                    onClick$={() => (tab.value = "rename")}
-                  >
-                    <Icon name="scan" size={16} />
-                    Rename
-                  </button>
-                )}
-                {supportsMediaAction(
-                  props.state.status,
-                  selectedItem?.mediaKind,
-                  "manage-subtitles",
-                ) && (
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={tab.value === "subtitles"}
-                    class={{
-                      "editor-tab": true,
-                      active: tab.value === "subtitles",
-                    }}
-                    onClick$={() => (tab.value = "subtitles")}
-                  >
-                    <Icon name="captions" size={16} />
-                    Subtitles
-                  </button>
-                )}
-              </>
-            )}
-          </div>
-          <div class="editor-heading-actions">
-            <button
-              class="close-button"
-              type="button"
-              aria-label="Close item editor"
-              onClick$={closeEditor}
-            >
-              ×
-            </button>
-          </div>
+              {supportsMediaAction(
+                props.state.status,
+                selectedItem?.mediaKind,
+                "manage-subtitles",
+              ) && (
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={tab.value === "subtitles"}
+                  class={{
+                    "editor-tab": true,
+                    active: tab.value === "subtitles",
+                  }}
+                  onClick$={() => (tab.value = "subtitles")}
+                >
+                  <Icon name="captions" size={16} />
+                  Subtitles
+                </button>
+              )}
+            </div>
+          )}
         </div>
-      )}
+        <div class="editor-heading-actions">
+          <button
+            class="close-button"
+            type="button"
+            aria-label="Close item editor"
+            onClick$={closeEditor}
+          >
+            ×
+          </button>
+        </div>
+      </div>
 
       {tab.value === "explore" ? (
         <>
@@ -1644,16 +1621,6 @@ export const ItemEditor = component$<{
                       ? "Discard draft"
                       : "Inspect current"
                     : "Create draft"}
-                </button>
-              )}
-              {props.folder && (
-                <button
-                  class="close-button"
-                  type="button"
-                  aria-label="Close item editor"
-                  onClick$={closeEditor}
-                >
-                  ×
                 </button>
               )}
             </div>
@@ -2519,6 +2486,235 @@ export const ItemEditor = component$<{
               )}
             </details>
           )}
+          {canGuidedRename && !props.folder && (
+            <section
+              class="file-organization"
+              aria-labelledby="file-organization-title"
+            >
+              <div class="file-organization-heading">
+                <span class="eyebrow">File organization</span>
+                <h4 id="file-organization-title">Rename this file</h4>
+              </div>
+              <div class="rename-fields">
+                <label class="profile-field">
+                  <span>Media profile</span>
+                  <select
+                    value={props.state.editProfile}
+                    onInput$={(_, input) => {
+                      props.state.editProfile = input.value as NamingProfile;
+                      props.state.preview = undefined;
+                    }}
+                  >
+                    {profilesForCategory(selectedRoot?.category).map(
+                      (profile) => (
+                        <option value={profile.id} key={profile.id}>
+                          {profile.label}
+                        </option>
+                      ),
+                    )}
+                  </select>
+                </label>
+                <label class="title-field">
+                  <span>Title</span>
+                  <input
+                    value={props.state.editTitle}
+                    onInput$={(_, input) =>
+                      (props.state.editTitle = input.value)
+                    }
+                    autocomplete="off"
+                  />
+                </label>
+                <label class="year-field">
+                  <span>
+                    Release year <small>optional</small>
+                  </span>
+                  <input
+                    inputMode="numeric"
+                    maxLength={4}
+                    placeholder="Unknown"
+                    value={props.state.editYear}
+                    onInput$={(_, input) =>
+                      (props.state.editYear = input.value
+                        .replace(/\D/g, "")
+                        .slice(0, 4))
+                    }
+                  />
+                </label>
+                {props.state.editProfile === "tv" && (
+                  <>
+                    <label class="number-field">
+                      <span>Season</span>
+                      <input
+                        inputMode="numeric"
+                        maxLength={3}
+                        placeholder="1"
+                        value={props.state.editSeason}
+                        onInput$={(_, input) =>
+                          (props.state.editSeason = numericValue(
+                            input.value,
+                            3,
+                          ))
+                        }
+                      />
+                    </label>
+                    <label class="number-field">
+                      <span>Episode</span>
+                      <input
+                        inputMode="numeric"
+                        maxLength={4}
+                        placeholder="1"
+                        value={props.state.editEpisode}
+                        onInput$={(_, input) =>
+                          (props.state.editEpisode = numericValue(
+                            input.value,
+                            4,
+                          ))
+                        }
+                      />
+                    </label>
+                    <label class="detail-field">
+                      <span>
+                        Episode title <small>optional</small>
+                      </span>
+                      <input
+                        value={props.state.editEpisodeTitle}
+                        onInput$={(_, input) =>
+                          (props.state.editEpisodeTitle = input.value)
+                        }
+                        autocomplete="off"
+                      />
+                    </label>
+                  </>
+                )}
+                {props.state.editProfile === "music" && (
+                  <>
+                    <label>
+                      <span>Artist</span>
+                      <input
+                        value={props.state.editCreator}
+                        onInput$={(_, input) =>
+                          (props.state.editCreator = input.value)
+                        }
+                        autocomplete="off"
+                      />
+                    </label>
+                    <label>
+                      <span>Album</span>
+                      <input
+                        value={props.state.editCollection}
+                        onInput$={(_, input) =>
+                          (props.state.editCollection = input.value)
+                        }
+                        autocomplete="off"
+                      />
+                    </label>
+                    <label class="number-field">
+                      <span>Track</span>
+                      <input
+                        inputMode="numeric"
+                        maxLength={3}
+                        value={props.state.editTrack}
+                        onInput$={(_, input) =>
+                          (props.state.editTrack = numericValue(input.value, 3))
+                        }
+                      />
+                    </label>
+                    <label class="number-field">
+                      <span>
+                        Disc <small>optional</small>
+                      </span>
+                      <input
+                        inputMode="numeric"
+                        maxLength={2}
+                        value={props.state.editDisc}
+                        onInput$={(_, input) =>
+                          (props.state.editDisc = numericValue(input.value, 2))
+                        }
+                      />
+                    </label>
+                  </>
+                )}
+                {["audiobook", "book"].includes(props.state.editProfile) && (
+                  <>
+                    <label>
+                      <span>Author</span>
+                      <input
+                        value={props.state.editCreator}
+                        onInput$={(_, input) =>
+                          (props.state.editCreator = input.value)
+                        }
+                        autocomplete="off"
+                      />
+                    </label>
+                    <label>
+                      <span>
+                        Series <small>optional</small>
+                      </span>
+                      <input
+                        value={props.state.editCollection}
+                        onInput$={(_, input) =>
+                          (props.state.editCollection = input.value)
+                        }
+                        autocomplete="off"
+                      />
+                    </label>
+                  </>
+                )}
+                <p class="organization-note">
+                  Folder names are constructed from these fields. Unknown years
+                  stay omitted; no destination path is accepted from the
+                  browser.
+                </p>
+                <button
+                  class="secondary-button rename-preview-button"
+                  type="button"
+                  disabled={props.state.planning || !renameReady(props.state)}
+                  onClick$={props.previewRename$}
+                >
+                  <Icon name="scan" size={18} />
+                  {props.state.planning ? "Preparing…" : "Preview organization"}
+                </button>
+              </div>
+              {props.state.preview && (
+                <div class="plan-preview">
+                  <div class="path-change">
+                    <span>
+                      {props.state.preview.actions[0]?.sourceRelativePath}
+                    </span>
+                    <Icon name="arrow" size={17} />
+                    <strong>
+                      {props.state.preview.actions[0]?.destinationRelativePath}
+                    </strong>
+                  </div>
+                  {props.state.preview.warnings.map((warning) => (
+                    <p class="plan-warning" key={warning}>
+                      <Icon name="alert" size={16} /> {warning}
+                    </p>
+                  ))}
+                  <div class="plan-actions">
+                    <span>
+                      Preview expires in 30 minutes and is bound to the current
+                      file fingerprint.
+                    </span>
+                    <button
+                      class="primary-button"
+                      type="button"
+                      disabled={
+                        props.state.status?.mutationMode !== "enabled" ||
+                        props.state.confirming
+                      }
+                      onClick$={props.confirmRename$}
+                    >
+                      <Icon name="check" size={18} />
+                      {props.state.confirming
+                        ? "Queuing…"
+                        : "Confirm exact plan"}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </section>
+          )}
         </>
       ) : tab.value === "subtitles" &&
         supportsMediaAction(
@@ -2535,280 +2731,73 @@ export const ItemEditor = component$<{
           session={props.state.session}
           status={props.state.status}
         />
-      ) : (
-        <div class="rename-fields">
-          <label class="profile-field">
-            <span>Media profile</span>
-            <select
-              value={props.state.editProfile}
-              onInput$={(_, input) => {
-                props.state.editProfile = input.value as NamingProfile;
-                props.state.preview = undefined;
-              }}
-            >
-              {profilesForCategory(selectedRoot?.category).map((profile) => (
-                <option value={profile.id} key={profile.id}>
-                  {profile.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label class="title-field">
-            <span>Title</span>
-            <input
-              value={props.state.editTitle}
-              onInput$={(_, input) => (props.state.editTitle = input.value)}
-              autocomplete="off"
-            />
-          </label>
-          <label class="year-field">
+      ) : null}
+
+      {metadata.preview && (
+        <div class="plan-preview">
+          <div class="destination-card">
+            <Icon name="tag" size={21} />
             <span>
-              Release year <small>optional</small>
+              <small>Metadata sidecar</small>
+              <strong>
+                {metadata.preview.actions[0]?.destinationRelativePath}
+                {metadata.preview.actions[0]?.replacementRelativePath}
+              </strong>
             </span>
-            <input
-              inputMode="numeric"
-              maxLength={4}
-              placeholder="Unknown"
-              value={props.state.editYear}
-              onInput$={(_, input) =>
-                (props.state.editYear = input.value
-                  .replace(/\D/g, "")
-                  .slice(0, 4))
-              }
-            />
-          </label>
-          {props.state.editProfile === "tv" && (
-            <>
-              <label class="number-field">
-                <span>Season</span>
-                <input
-                  inputMode="numeric"
-                  maxLength={3}
-                  placeholder="1"
-                  value={props.state.editSeason}
-                  onInput$={(_, input) =>
-                    (props.state.editSeason = numericValue(input.value, 3))
-                  }
-                />
-              </label>
-              <label class="number-field">
-                <span>Episode</span>
-                <input
-                  inputMode="numeric"
-                  maxLength={4}
-                  placeholder="1"
-                  value={props.state.editEpisode}
-                  onInput$={(_, input) =>
-                    (props.state.editEpisode = numericValue(input.value, 4))
-                  }
-                />
-              </label>
-              <label class="detail-field">
-                <span>
-                  Episode title <small>optional</small>
-                </span>
-                <input
-                  value={props.state.editEpisodeTitle}
-                  onInput$={(_, input) =>
-                    (props.state.editEpisodeTitle = input.value)
-                  }
-                  autocomplete="off"
-                />
-              </label>
-            </>
-          )}
-          {props.state.editProfile === "music" && (
-            <>
-              <label>
-                <span>Artist</span>
-                <input
-                  value={props.state.editCreator}
-                  onInput$={(_, input) =>
-                    (props.state.editCreator = input.value)
-                  }
-                  autocomplete="off"
-                />
-              </label>
-              <label>
-                <span>Album</span>
-                <input
-                  value={props.state.editCollection}
-                  onInput$={(_, input) =>
-                    (props.state.editCollection = input.value)
-                  }
-                  autocomplete="off"
-                />
-              </label>
-              <label class="number-field">
-                <span>Track</span>
-                <input
-                  inputMode="numeric"
-                  maxLength={3}
-                  value={props.state.editTrack}
-                  onInput$={(_, input) =>
-                    (props.state.editTrack = numericValue(input.value, 3))
-                  }
-                />
-              </label>
-              <label class="number-field">
-                <span>
-                  Disc <small>optional</small>
-                </span>
-                <input
-                  inputMode="numeric"
-                  maxLength={2}
-                  value={props.state.editDisc}
-                  onInput$={(_, input) =>
-                    (props.state.editDisc = numericValue(input.value, 2))
-                  }
-                />
-              </label>
-            </>
-          )}
-          {["audiobook", "book"].includes(props.state.editProfile) && (
-            <>
-              <label>
-                <span>Author</span>
-                <input
-                  value={props.state.editCreator}
-                  onInput$={(_, input) =>
-                    (props.state.editCreator = input.value)
-                  }
-                  autocomplete="off"
-                />
-              </label>
-              <label>
-                <span>
-                  Series <small>optional</small>
-                </span>
-                <input
-                  value={props.state.editCollection}
-                  onInput$={(_, input) =>
-                    (props.state.editCollection = input.value)
-                  }
-                  autocomplete="off"
-                />
-              </label>
-            </>
-          )}
-          <p class="organization-note">
-            Folder names are constructed from these fields. Unknown years stay
-            omitted; no destination path is accepted from the browser.
-          </p>
-          <button
-            class="secondary-button rename-preview-button"
-            type="button"
-            disabled={props.state.planning || !renameReady(props.state)}
-            onClick$={props.previewRename$}
+          </div>
+          <section
+            class="metadata-change-review"
+            aria-label="Metadata field changes"
           >
-            <Icon name="scan" size={18} />
-            {props.state.planning ? "Preparing…" : "Preview organization"}
-          </button>
+            <div class="metadata-change-review-heading">
+              <strong>Review field changes</strong>
+              <span>{metadata.previewChanges.length} changed</span>
+            </div>
+            {metadata.previewChanges.length > 0 ? (
+              <dl>
+                {metadata.previewChanges.map((change) => (
+                  <div key={change.field}>
+                    <dt>{change.label}</dt>
+                    <dd>
+                      <span>{change.before}</span>
+                      <Icon name="arrow" size={15} />
+                      <strong>{change.after}</strong>
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            ) : (
+              <p>
+                No field values differ. This creates a portable metadata copy
+                from the currently inspected values.
+              </p>
+            )}
+          </section>
+          {metadata.preview.warnings.map((warning) => (
+            <p class="plan-warning" key={warning}>
+              <Icon name="shield" size={16} /> {warning}
+            </p>
+          ))}
+          <div class="plan-actions">
+            <span>
+              Review the destination above. Confirmation installs only the
+              staged sidecar represented by this digest.
+            </span>
+            <button
+              class="primary-button"
+              type="button"
+              disabled={
+                props.state.status?.mutationMode !== "enabled" ||
+                metadata.confirming
+              }
+              onClick$={confirmMetadata}
+            >
+              <Icon name="check" size={18} />
+              {metadata.confirming ? "Queuing…" : "Confirm metadata"}
+            </button>
+          </div>
         </div>
       )}
-
-      {tab.value === "rename"
-        ? props.state.preview && (
-            <div class="plan-preview">
-              <div class="path-change">
-                <span>
-                  {props.state.preview.actions[0]?.sourceRelativePath}
-                </span>
-                <Icon name="arrow" size={17} />
-                <strong>
-                  {props.state.preview.actions[0]?.destinationRelativePath}
-                </strong>
-              </div>
-              {props.state.preview.warnings.map((warning) => (
-                <p class="plan-warning" key={warning}>
-                  <Icon name="alert" size={16} /> {warning}
-                </p>
-              ))}
-              <div class="plan-actions">
-                <span>
-                  Preview expires in 30 minutes and is bound to the current file
-                  fingerprint.
-                </span>
-                <button
-                  class="primary-button"
-                  type="button"
-                  disabled={
-                    props.state.status?.mutationMode !== "enabled" ||
-                    props.state.confirming
-                  }
-                  onClick$={props.confirmRename$}
-                >
-                  <Icon name="check" size={18} />
-                  {props.state.confirming ? "Queuing…" : "Confirm exact plan"}
-                </button>
-              </div>
-            </div>
-          )
-        : metadata.preview && (
-            <div class="plan-preview">
-              <div class="destination-card">
-                <Icon name="tag" size={21} />
-                <span>
-                  <small>Metadata sidecar</small>
-                  <strong>
-                    {metadata.preview.actions[0]?.destinationRelativePath}
-                    {metadata.preview.actions[0]?.replacementRelativePath}
-                  </strong>
-                </span>
-              </div>
-              <section
-                class="metadata-change-review"
-                aria-label="Metadata field changes"
-              >
-                <div class="metadata-change-review-heading">
-                  <strong>Review field changes</strong>
-                  <span>{metadata.previewChanges.length} changed</span>
-                </div>
-                {metadata.previewChanges.length > 0 ? (
-                  <dl>
-                    {metadata.previewChanges.map((change) => (
-                      <div key={change.field}>
-                        <dt>{change.label}</dt>
-                        <dd>
-                          <span>{change.before}</span>
-                          <Icon name="arrow" size={15} />
-                          <strong>{change.after}</strong>
-                        </dd>
-                      </div>
-                    ))}
-                  </dl>
-                ) : (
-                  <p>
-                    No field values differ. This creates a portable metadata
-                    copy from the currently inspected values.
-                  </p>
-                )}
-              </section>
-              {metadata.preview.warnings.map((warning) => (
-                <p class="plan-warning" key={warning}>
-                  <Icon name="shield" size={16} /> {warning}
-                </p>
-              ))}
-              <div class="plan-actions">
-                <span>
-                  Review the destination above. Confirmation installs only the
-                  staged sidecar represented by this digest.
-                </span>
-                <button
-                  class="primary-button"
-                  type="button"
-                  disabled={
-                    props.state.status?.mutationMode !== "enabled" ||
-                    metadata.confirming
-                  }
-                  onClick$={confirmMetadata}
-                >
-                  <Icon name="check" size={18} />
-                  {metadata.confirming ? "Queuing…" : "Confirm metadata"}
-                </button>
-              </div>
-            </div>
-          )}
 
       {!props.folder && (
         <div class="editor-remove">

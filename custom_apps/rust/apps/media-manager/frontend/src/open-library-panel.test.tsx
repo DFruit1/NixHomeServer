@@ -150,3 +150,36 @@ it("selects an edition and stages its cover through the confirmed artwork workfl
     }),
   );
 });
+
+it("prefills the lookup input from the fallback query and respects clearing", async () => {
+  const { render, screen, userEvent } = await createDOM();
+  await render(
+    <OpenLibraryPanel
+      itemId="book-1"
+      mutationMode="read-only"
+      query=""
+      fallbackQuery="Dune Frank Herbert"
+      candidates={[]}
+      loading={false}
+      error=""
+      canEdit={true}
+      onQueryInput$={$(() => undefined)}
+      onSearch$={$(() => undefined)}
+      onCompare$={$(() => undefined)}
+    />,
+  );
+
+  const input = screen.querySelector<HTMLInputElement>(
+    ".open-library-panel input",
+  );
+  expect(input?.value).toBe("Dune Frank Herbert");
+  if (!input) throw new Error("lookup input was not rendered");
+  input.value = "";
+  await userEvent(input, "input");
+  await vi.waitFor(() =>
+    expect(
+      screen.querySelector<HTMLInputElement>(".open-library-panel input")
+        ?.value,
+    ).toBe(""),
+  );
+});

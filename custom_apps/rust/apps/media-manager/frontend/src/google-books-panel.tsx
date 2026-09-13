@@ -11,22 +11,43 @@ export const GoogleBooksPanel = component$<{
   onCompare$: QRL<(candidate: GoogleBooksCandidate) => void>;
 }>((props) => {
   const state = useStore<{
+    itemKey: string;
     query: string;
+    queryTouched: boolean;
     candidates: GoogleBooksCandidate[];
     loading: boolean;
     error: string;
     revision: number;
     selected?: GoogleBooksCandidate;
-  }>({ query: "", candidates: [], loading: false, error: "", revision: 0 });
+  }>({
+    itemKey: "",
+    query: "",
+    queryTouched: false,
+    candidates: [],
+    loading: false,
+    error: "",
+    revision: 0,
+  });
 
   useTask$(({ track }) => {
     track(() => props.itemId);
-    state.query = "";
     state.candidates = [];
     state.loading = false;
     state.error = "";
     state.revision += 1;
     state.selected = undefined;
+  });
+
+  useTask$(({ track }) => {
+    const itemId = track(() => props.itemId);
+    const fallbackQuery = track(() => props.fallbackQuery);
+    if (state.itemKey !== itemId) {
+      state.itemKey = itemId;
+      state.queryTouched = false;
+    }
+    if (!state.queryTouched) {
+      state.query = fallbackQuery;
+    }
   });
 
   const search = $(async () => {
@@ -70,10 +91,17 @@ export const GoogleBooksPanel = component$<{
         <label class="title-input">
           <span>Title, author, or ISBN</span>
           <input
-            value={state.query || props.fallbackQuery}
+            value={state.query}
             maxLength={500}
-            placeholder="e.g. Dune Frank Herbert"
-            onInput$={(_, input) => (state.query = input.value)}
+            placeholder={
+              props.fallbackQuery
+                ? `e.g. ${props.fallbackQuery}`
+                : "e.g. Dune Frank Herbert"
+            }
+            onInput$={(_, input) => {
+              state.queryTouched = true;
+              state.query = input.value;
+            }}
           />
         </label>
         <div class="metadata-actions">

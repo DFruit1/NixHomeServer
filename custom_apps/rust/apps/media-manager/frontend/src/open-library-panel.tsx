@@ -42,6 +42,9 @@ export const OpenLibraryPanel = component$<{
   onCompare$: QRL<(candidate: OpenLibraryCandidate) => void>;
 }>((props) => {
   const state = useStore<{
+    itemKey: string;
+    query: string;
+    queryTouched: boolean;
     expandedWorkId: string;
     editions: Record<string, OpenLibraryEdition[]>;
     editionTotals: Record<string, number>;
@@ -53,6 +56,9 @@ export const OpenLibraryPanel = component$<{
     selectedCoverId: number;
     selectedCoverTitle: string;
   }>({
+    itemKey: "",
+    query: "",
+    queryTouched: false,
     expandedWorkId: "",
     editions: {},
     editionTotals: {},
@@ -76,6 +82,17 @@ export const OpenLibraryPanel = component$<{
     state.editionRevision += 1;
     state.selectedCoverId = 0;
     state.selectedCoverTitle = "";
+  });
+  useTask$(({ track }) => {
+    const itemId = track(() => props.itemId);
+    const fallbackQuery = track(() => props.fallbackQuery);
+    if (state.itemKey !== itemId) {
+      state.itemKey = itemId;
+      state.queryTouched = false;
+    }
+    if (!state.queryTouched) {
+      state.query = props.query || fallbackQuery;
+    }
   });
   const loadEditions = $(
     async (candidate: OpenLibraryCandidate, append = false) => {
@@ -147,10 +164,18 @@ export const OpenLibraryPanel = component$<{
         <label class="title-input">
           <span>Title, author, or ISBN</span>
           <input
-            value={props.query || props.fallbackQuery}
+            value={state.query}
             maxLength={500}
-            placeholder="e.g. Dune Frank Herbert or 9780441172719"
-            onInput$={(_, input) => props.onQueryInput$(input.value)}
+            placeholder={
+              props.fallbackQuery
+                ? `e.g. ${props.fallbackQuery}`
+                : "e.g. Dune Frank Herbert or 9780441172719"
+            }
+            onInput$={(_, input) => {
+              state.queryTouched = true;
+              state.query = input.value;
+              props.onQueryInput$(input.value);
+            }}
           />
         </label>
         <div class="metadata-actions">

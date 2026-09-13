@@ -1,4 +1,5 @@
-import { component$, type QRL } from "@builder.io/qwik";
+import { component$, useVisibleTask$, type QRL } from "@builder.io/qwik";
+import { revealWhenMounted } from "./reveal";
 
 export const MATCHABLE_METADATA_FIELDS = [
   ["mediaType", "Media type"],
@@ -128,6 +129,14 @@ export const MetadataMatchWorkspace = component$<{
   );
   const selected = new Set(activeSelection);
   const changedCount = props.rows.filter((row) => row.hasChange).length;
+  // eslint-disable-next-line qwik/no-use-visible-task -- the comparison opens below the source list and must be revealed
+  useVisibleTask$(({ track }) => {
+    const candidate = track(() => props.candidate);
+    if (!candidate) return;
+    revealWhenMounted(() =>
+      document.querySelector<HTMLElement>(".metadata-match-workspace"),
+    );
+  });
   return (
     <section
       class="metadata-match-workspace"

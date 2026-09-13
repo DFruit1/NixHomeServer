@@ -1,4 +1,11 @@
-import { $, component$, useStore, useTask$ } from "@builder.io/qwik";
+import {
+  $,
+  component$,
+  useStore,
+  useTask$,
+  useVisibleTask$,
+} from "@builder.io/qwik";
+import { revealWhenMounted } from "./reveal";
 import { api, apiBlob, readableError } from "./api";
 
 interface ArtworkPlan {
@@ -47,6 +54,15 @@ export const RemoteArtwork = component$<{
     state.error = "";
     state.notice = "";
     state.plan = undefined;
+  });
+
+  // eslint-disable-next-line qwik/no-use-visible-task -- the artwork preview opens below the candidate list and must be revealed
+  useVisibleTask$(({ track }) => {
+    const sourceUrl = track(() => props.sourceUrl);
+    if (!sourceUrl) return;
+    revealWhenMounted(() =>
+      document.querySelector<HTMLElement>(".remote-artwork-preview"),
+    );
   });
 
   const stage = $(async () => {

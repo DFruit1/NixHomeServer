@@ -1663,11 +1663,11 @@ describe("Media Manager library browser", () => {
       expect(screen.querySelector(".editor-tab")).toBeDefined(),
     );
 
-    const renameTab = Array.from(screen.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "Rename",
+    const metadataTab = Array.from(screen.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Metadata",
     );
     await new Promise((r) => setTimeout(r, 0));
-    await userEvent(renameTab ?? null, "click");
+    await userEvent(metadataTab ?? null, "click");
 
     expect(screen.querySelectorAll(".number-field input")).toHaveLength(2);
     expect(
@@ -3069,7 +3069,7 @@ describe("Media Manager library browser", () => {
     );
   });
 
-  it("offers play, explore, image, and title actions under the selected item", async () => {
+  it("offers play and explore actions and reveals cover editing from the image", async () => {
     const items = [
       {
         id: "movie-1",
@@ -3132,12 +3132,7 @@ describe("Media Manager library browser", () => {
       screen.querySelector(".editor-tab.active")?.textContent?.trim(),
     ).toBe("Explore");
 
-    await userEvent(
-      Array.from(screen.querySelectorAll("button")).find(
-        (button) => button.textContent?.trim() === "Edit image",
-      ) ?? null,
-      "click",
-    );
+    await userEvent(screen.querySelector(".media-image.editable"), "click");
     expect(screen.textContent).toContain("Edit cover image");
     expect(screen.textContent).toContain("Replace cover art");
     await userEvent(
@@ -3146,27 +3141,31 @@ describe("Media Manager library browser", () => {
     );
     expect(screen.textContent).not.toContain("Edit cover image");
 
+    expect(
+      Array.from(screen.querySelectorAll("button")).some(
+        (button) => button.textContent?.trim() === "Edit image",
+      ),
+    ).toBe(false);
+    expect(
+      Array.from(screen.querySelectorAll("button")).some(
+        (button) => button.textContent?.trim() === "Edit title",
+      ),
+    ).toBe(false);
+
     await userEvent(
       Array.from(screen.querySelectorAll("button")).find(
-        (button) => button.textContent?.trim() === "Edit title",
+        (button) => button.textContent?.trim() === "Metadata",
       ) ?? null,
       "click",
     );
-    await vi.waitFor(() =>
-      expect(
-        screen.querySelector(".editor-tab.active")?.textContent?.trim(),
-      ).toBe("Metadata"),
-    );
-    await vi.waitFor(() =>
-      expect(
-        screen.querySelector<HTMLInputElement>(
-          ".editor-metadata-form .title-input input",
-        )?.value,
-      ).toBe("Arrival"),
-    );
     expect(
-      screen.querySelector(".editor-metadata-form")?.hasAttribute("disabled"),
-    ).toBe(false);
+      screen.querySelector(".editor-tab.active")?.textContent?.trim(),
+    ).toBe("Metadata");
+    expect(
+      screen.querySelector<HTMLInputElement>(
+        ".editor-metadata-form .title-input input",
+      )?.value,
+    ).toBe("Arrival");
   });
 
   it("plays a music selection in a page mini player", async () => {
@@ -3298,7 +3297,7 @@ describe("Media Manager library browser", () => {
 
     await vi.waitFor(() => expect(editorTab(screen, "Explore")).toBeNull());
     expect(editorTab(screen, "Metadata")).toBeDefined();
-    expect(editorTab(screen, "Rename")).toBeDefined();
+    expect(editorTab(screen, "Rename")).toBeNull();
     expect(editorTab(screen, "Subtitles")).toBeNull();
     expect(
       Array.from(screen.querySelectorAll("button")).some(

@@ -1087,6 +1087,8 @@ const MediaImage = component$<{
   title: string;
   item?: CatalogItem;
   state: DashboardState;
+  canEditCover?: boolean;
+  onEditCover$?: QRL<() => void>;
 }>(
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   (props) => {
@@ -1120,15 +1122,40 @@ const MediaImage = component$<{
       track(() => props.imageId);
       failed.value = false;
     });
+    const coverEditable =
+      Boolean(props.canEditCover) &&
+      Boolean(props.imageId) &&
+      !failed.value &&
+      Boolean(props.onEditCover$);
+    const editCoverKeyDown$ = $((event: KeyboardEvent) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      props.onEditCover$?.();
+    });
     return (
-      <figure class="media-image">
+      <figure
+        class={{ "media-image": true, editable: coverEditable }}
+        role={coverEditable ? "button" : undefined}
+        tabIndex={coverEditable ? 0 : undefined}
+        aria-label={coverEditable ? "Edit cover image" : undefined}
+        onClick$={coverEditable ? props.onEditCover$ : undefined}
+        onKeyDown$={coverEditable ? editCoverKeyDown$ : undefined}
+      >
         {props.imageId && !failed.value ? (
-          <img
-            src={`/api/v1/items/${encodeURIComponent(props.imageId)}/image`}
-            alt={`Cover artwork for ${props.title}`}
-            loading="lazy"
-            onError$={() => (failed.value = true)}
-          />
+          <>
+            <img
+              src={`/api/v1/items/${encodeURIComponent(props.imageId)}/image`}
+              alt={`Cover artwork for ${props.title}`}
+              loading="lazy"
+              onError$={() => (failed.value = true)}
+            />
+            {coverEditable && (
+              <span class="media-image-edit" aria-hidden="true">
+                <Icon name="image" size={16} />
+                Edit cover
+              </span>
+            )}
+          </>
         ) : (
           <div class="media-image-placeholder">
             <Icon name="image" size={30} />
@@ -1378,8 +1405,6 @@ const ItemQuickActions = component$<{
   item: CatalogItem;
   state: DashboardState;
   editorCommand: { action: EditorCommandAction; revision: number };
-  coverOpen: boolean;
-  onToggleCover$: QRL<() => void>;
 }>((props) => {
   const playback = useStore<{
     itemId: string;
@@ -1407,7 +1432,6 @@ const ItemQuickActions = component$<{
       if (playback.itemId === itemId) playback.target = undefined;
     }
   });
-  const canEdit = props.state.session?.canEdit ?? false;
   const playInline = supportsMediaAction(
     props.state.status,
     props.item.mediaKind,
@@ -1417,16 +1441,6 @@ const ItemQuickActions = component$<{
     props.state.status,
     props.item.mediaKind,
     "lookup-metadata",
-  );
-  const canEditArtwork = supportsMediaAction(
-    props.state.status,
-    props.item.mediaKind,
-    "edit-artwork",
-  );
-  const canEditTitle = supportsMediaAction(
-    props.state.status,
-    props.item.mediaKind,
-    "edit-portable-metadata",
   );
   const playTarget = playback.target;
   const startInPagePlayer = $(() => {
@@ -1487,28 +1501,6 @@ const ItemQuickActions = component$<{
         >
           <Icon name="search" size={17} />
           Explore metadata
-        </button>
-      )}
-      {canEditArtwork && (
-        <button
-          class="quick-action-button"
-          type="button"
-          disabled={!canEdit}
-          onClick$={props.onToggleCover$}
-        >
-          <Icon name="image" size={17} />
-          {props.coverOpen ? "Close image editor" : "Edit image"}
-        </button>
-      )}
-      {canEditTitle && (
-        <button
-          class="quick-action-button"
-          type="button"
-          disabled={!canEdit}
-          onClick$={() => sendEditorCommand("title")}
-        >
-          <Icon name="tag" size={17} />
-          Edit title
         </button>
       )}
     </div>
@@ -1683,6 +1675,14 @@ const LibraryDetailPane = component$<{
     props.activeFolder,
   );
   const imageItem = props.state.items.find((item) => item.id === imageId);
+  const canEditCover =
+    Boolean(selectedMediaItem) &&
+    (props.state.session?.canEdit ?? false) &&
+    supportsMediaAction(
+      props.state.status,
+      selectedMediaItem?.mediaKind,
+      "edit-artwork",
+    );
   return (
     <div
       class={{
@@ -1698,6 +1698,8 @@ const LibraryDetailPane = component$<{
           item={imageItem}
           state={props.state}
           title={props.imageTitle}
+          canEditCover={canEditCover}
+          onEditCover$={() => (coverEditing.value = !coverEditing.value)}
         />
       </div>
       {selectedMediaItem && (
@@ -1705,8 +1707,6 @@ const LibraryDetailPane = component$<{
           item={selectedMediaItem}
           state={props.state}
           editorCommand={editorCommand}
-          coverOpen={coverEditing.value}
-          onToggleCover$={() => (coverEditing.value = !coverEditing.value)}
         />
       )}
       {selectedMediaItem && coverEditing.value && (
