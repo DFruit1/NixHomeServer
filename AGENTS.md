@@ -21,11 +21,34 @@ This repository defines a reproducible NixOS home-server focused on:
 
 ---
 
-## Git Tracking
+## Git Tracking and Committing
 
 * Ensure all new git files (except for those in .gitignore) are tracked as soon as they are created to avoid visibility issues during nix rebuilds
 * Avoid tracking huge files and directories that do not need to be tracked, such as build directories or caches
 * Do not track plaintext secrets or other sensitive information
+* Agents are authorized to stage, commit, and push their own completed work
+  without asking on each change. Commit and push autonomously once a logical
+  unit of work is complete and its applicable validation gate passes.
+* Before every commit, inspect `git status --short` and `git diff`, then stage
+  only the files that belong to the change. Never `git add -A`, `git commit -a`,
+  or stash/reset unrelated work. Leave pre-existing user changes untouched and
+  uncommitted unless they are explicitly part of the task.
+* Do not commit or push work that fails the relevant gate (`validate-repo.sh`,
+  `validate-repo.sh --full`, or the owning app/frontend test). One logical change
+  per commit; split unrelated edits into separate commits.
+* Commit messages: imperative subject, ~72-column wrap, conventional prefix
+  where it fits (`feat:`, `fix:`, `docs:`, `test:`, `refactor:`, `chore:`) or a
+  domain prefix (`opencloud:`, `media-manager:`, `kanidm:`). Add a body when the
+  reason is not obvious from the subject.
+* Prefer committing validated work before starting a guarded deploy so the
+  helper's recorded tested source hash corresponds to a commit.
+* Push to the configured upstream after committing. If the branch has no
+  upstream, push with `-u origin <branch>`. Verify the remote and branch are the
+  intended target, and never push secrets.
+* Never amend, rebase, force-push, skip hooks, or rewrite published history
+  unless the user explicitly asks. Never force-push a shared branch.
+* Do not create empty commits, and do not commit generated artifacts, caches,
+  `target/`, `dist/`, `node_modules/`, or `result` links.
 
 ---
 
