@@ -34,8 +34,11 @@ This repository defines a reproducible NixOS home-server focused on:
   or stash/reset unrelated work. Leave pre-existing user changes untouched and
   uncommitted unless they are explicitly part of the task.
 * Do not commit or push work that fails the relevant gate (`validate-repo.sh`,
-  `validate-repo.sh --full`, or the owning app/frontend test). One logical change
-  per commit; split unrelated edits into separate commits.
+  `validate-repo.sh --full`, or the owning app/frontend test).
+* One logical change per commit is the default, but multiple changes may be
+  merged into the same commit when that simplifies the history. A block of work
+  bounded by a time period (for example a session or a day) is an acceptable
+  commit boundary in place of individual features or hunks.
 * Commit messages: imperative subject, ~72-column wrap, conventional prefix
   where it fits (`feat:`, `fix:`, `docs:`, `test:`, `refactor:`, `chore:`) or a
   domain prefix (`opencloud:`, `media-manager:`, `kanidm:`). Add a body when the
