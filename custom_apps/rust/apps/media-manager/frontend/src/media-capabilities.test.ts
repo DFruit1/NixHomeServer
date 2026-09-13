@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Status } from "./api-contract.generated";
 import {
   isLibraryKind,
+  mediaKindForMediaType,
   mediaKindProfile,
   supportsMediaAction,
 } from "./media-capabilities";
@@ -54,5 +55,22 @@ describe("media capabilities", () => {
   it("returns no profile for an unknown kind", () => {
     expect(mediaKindProfile(status(), "unknown")).toBeUndefined();
     expect(mediaKindProfile(status(), undefined)).toBeUndefined();
+  });
+
+  it("maps editor media types to their catalog kind", () => {
+    expect(mediaKindForMediaType("movie")).toBe("video");
+    expect(mediaKindForMediaType("series")).toBe("video");
+    expect(mediaKindForMediaType("season")).toBe("video");
+    expect(mediaKindForMediaType("episode")).toBe("video");
+    expect(mediaKindForMediaType("music")).toBe("music");
+    expect(mediaKindForMediaType("audiobook")).toBe("audiobook");
+    expect(mediaKindForMediaType("podcast")).toBe("podcast");
+    expect(mediaKindForMediaType("book")).toBe("book");
+  });
+
+  it("returns no catalog kind for grouping labels and unknown types", () => {
+    expect(mediaKindForMediaType("collection")).toBeUndefined();
+    expect(mediaKindForMediaType("unexpected")).toBeUndefined();
+    expect(mediaKindForMediaType(undefined)).toBeUndefined();
   });
 });
