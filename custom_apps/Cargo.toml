@@ -6,6 +6,7 @@ members = [
   "rust/apps/kanidm-canary-bootstrap",
   "rust/apps/mail-archive-ui",
   "rust/apps/media-manager",
+  "rust/apps/opencloud-share-gate",
   "rust/apps/search",
   "rust/lib-rs",
 ]

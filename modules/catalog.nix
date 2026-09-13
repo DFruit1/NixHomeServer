@@ -94,6 +94,8 @@ rec {
       "opencloud-secret-materialize"
       "opencloud-init-config"
       "opencloud"
+      "opencloud-share-gate"
+      "opencloud-public-edge"
     ];
     paperless = app ./paperless "Paperless" "productivity" [ "paperlessClientSecret" ] [
       "paperless-storage-layout-v1"

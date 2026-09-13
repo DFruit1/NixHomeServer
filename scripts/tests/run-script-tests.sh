@@ -99,6 +99,7 @@ test_scripts=(
   scripts/tests/test-disk-space-cleanup.sh
   scripts/tests/test-offline-media-reliability.sh
   scripts/tests/test-opencloud-module.sh
+  scripts/tests/test-opencloud-public-access.sh
   scripts/tests/test-deploy-cli.sh
   scripts/tests/test-deploy-transaction-runtime.sh
   scripts/tests/test-evaluated-service-hardening.sh

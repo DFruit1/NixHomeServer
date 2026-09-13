@@ -59,6 +59,11 @@ in
     inherit workspaceVersion sharedCargoArtifacts cargoLock;
     workspaceSrc = workspaceSource "media-manager";
   };
+  opencloud-share-gate = import ./opencloud-share-gate/default.nix {
+    inherit rustLib;
+    inherit workspaceVersion sharedCargoArtifacts cargoLock;
+    workspaceSrc = workspaceSource "opencloud-share-gate";
+  };
   search = import ./search/default.nix {
     inherit pkgs rustLib;
     inherit workspaceVersion sharedCargoArtifacts cargoLock;

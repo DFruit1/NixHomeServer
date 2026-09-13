@@ -14,6 +14,7 @@ member_manifests=(
   custom_apps/rust/apps/kanidm-canary-bootstrap/Cargo.toml
   custom_apps/rust/apps/mail-archive-ui/Cargo.toml
   custom_apps/rust/apps/media-manager/Cargo.toml
+  custom_apps/rust/apps/opencloud-share-gate/Cargo.toml
   custom_apps/rust/apps/search/Cargo.toml
   custom_apps/rust/lib-rs/Cargo.toml
 )
@@ -59,7 +60,7 @@ metadata="$(cargo metadata \
   --format-version 1)"
 
 jq -e '
-  (.packages | length == 7)
+  (.packages | length == 8)
   and ([.packages[].version] | unique | length == 1)
   and ([.packages[].edition] | unique == ["2021"])
   and (
@@ -87,6 +88,7 @@ nix_versions="$(flake_eval_json '
     "kanidm-canary-bootstrap"
     "mail-archive-ui"
     "media-manager"
+    "opencloud-share-gate"
   ];
 in builtins.listToAttrs (map (name: {
   inherit name;

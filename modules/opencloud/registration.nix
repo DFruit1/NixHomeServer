@@ -1,6 +1,8 @@
 {
   ports = {
     opencloud = 9200;
+    opencloudShareGate = 9201;
+    opencloudPublicEdge = 9202;
     collaboraOnline = 9980;
   };
   homepage = { config, vars }: [

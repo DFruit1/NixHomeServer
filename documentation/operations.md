@@ -586,6 +586,43 @@ contend for the same paths or permissions.
 - Backups include the whole `/mnt/data/opencloud` tree; Collabora state under
   `/var/lib/cool` is persisted and snapshotted with `/persist`.
 
+### Public share-link access
+
+Public share links are the only OpenCloud surface reachable from the public
+internet, and they are served on the same `cloud.<domain>` hostname as local
+access so generated links stay valid.
+
+- The Cloudflare tunnel points `cloud.<domain>` (OpenCloud) and
+  `office.<domain>` (Collabora) at a dedicated loopback Caddy edge
+  (`opencloud-public-edge`) instead of the ordinary Caddy vhosts. LAN and
+  NetBird clients still resolve those hosts privately through Unbound and
+  bypass the edge entirely.
+- A request without a valid share cookie is admitted only when it targets a
+  public share link (`/s/<token>` or `/index.php/s/<token>`). The
+  `opencloud-share-gate` service validates the token against OpenCloud's own
+  unauthenticated `tokeninfo/unprotected` OCS endpoint, which answers with OCS
+  status 200 for any existing link (including password-protected links), and
+  then issues the signed `__Secure-ocshare` cookie. Share passwords, OIDC
+  login, and WOPI tokens are still enforced by OpenCloud and Collabora; the
+  cookie only decides whether a request is allowed to reach them.
+- Collabora's server-to-server WOPI callbacks on `cloud.<domain>/wopi` are
+  admitted without the browser cookie because OpenCloud authenticates them with
+  the short-lived WOPI access token.
+- The cookie is scoped to the bare domain so the Collabora editor iframe on
+  `office.<domain>` shares the same session. It is a signed, `Secure`,
+  `HttpOnly` value; only its HMAC is trusted, so a forged value is rejected.
+- The gate fails closed: if OpenCloud is unreachable or the token endpoint
+  errors, share navigation is rejected rather than passed through.
+- The cookie signing key is generated automatically on first start under
+  `/run/opencloud-share-gate/cookie.key` and preserved across service restarts
+  within a boot. A reboot invalidates outstanding share cookies; recipients
+  simply re-open their link.
+- Recover by checking `opencloud-share-gate.service` and
+  `opencloud-public-edge.service`, then `journalctl -u opencloud-share-gate`.
+  If `/s/<token>` returns a generic 404 for a link you know is valid, confirm
+  the token endpoint from the host:
+  `curl -s 'http://127.0.0.1:9200/ocs/v2.php/apps/files_sharing/api/v1/tokeninfo/unprotected/<token>?format=json'`.
+
 ### Jellyfin login paths
 
 Jellyfin keeps its existing accounts authoritative, so watch history, personal

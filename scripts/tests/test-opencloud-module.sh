@@ -17,7 +17,8 @@ for required_file in \
   collabora.nix \
   webapps.nix \
   bootstrap.nix \
-  backups.nix; do
+  backups.nix \
+  public-access.nix; do
   [[ -f "modules/opencloud/$required_file" ]] || {
     echo "❌ OpenCloud module is missing modules/opencloud/$required_file." >&2
     exit 1

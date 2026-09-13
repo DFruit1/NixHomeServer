@@ -41,6 +41,7 @@ let
     mail-archive-ui = "mail-archive-ui";
     media-manager = null;
     mkvmaker = "mkvmaker";
+    opencloud-share-gate = "opencloud";
     search = "search";
   };
   selectedRustApps = lib.filterAttrs
