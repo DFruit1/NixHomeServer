@@ -175,7 +175,12 @@ in
       RestartSec = "5s";
       NoNewPrivileges = true;
       PrivateTmp = true;
+      RuntimeDirectory = "opencloud-public-edge";
+      RuntimeDirectoryMode = "0700";
     };
+    # Caddy writes autosave/instance state under $HOME; give it a writable
+    # runtime home instead of the read-only /var/empty system default.
+    environment.HOME = "/run/opencloud-public-edge";
   };
 
   # Never publish a dead edge to the tunnel. The cloudflared NixOS module runs
