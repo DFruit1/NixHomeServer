@@ -6,6 +6,7 @@ import type {
 } from "./api-contract.generated";
 import { $, component$, type QRL, useStore, useTask$ } from "@builder.io/qwik";
 import { api, readableError } from "./api";
+import { Icon } from "./icon";
 import { RemoteArtwork } from "./remote-artwork";
 
 function editionCandidate(
@@ -146,218 +147,227 @@ export const OpenLibraryPanel = component$<{
   });
 
   return (
-    <section class="panel musicbrainz-panel open-library-panel">
-      <div class="panel-heading">
-        <div>
-          <h3>Open Library lookup</h3>
-        </div>
-        <span class="status-badge access-free">
-          Free access · No account required
+    <details class="panel musicbrainz-panel open-library-panel source-accordion">
+      <summary class="source-accordion-summary">
+        <span class="source-accordion-title">Open Library</span>
+        <span class="status-badge access-free">Free access</span>
+        <span class="source-accordion-chevron">
+          <Icon name="chevron-down" size={16} />
         </span>
-      </div>
-      <p class="quiet-copy">
-        Search public book records by title, author, or ISBN, then compare the
-        best edition with the current metadata. Results never change the file
-        until you add fields to the draft and confirm it.
-      </p>
-      <div class="metadata-form">
-        <label class="title-input">
-          <span>Title, author, or ISBN</span>
-          <input
-            value={state.query}
-            maxLength={500}
-            placeholder={
-              props.fallbackQuery
-                ? `e.g. ${props.fallbackQuery}`
-                : "e.g. Dune Frank Herbert or 9780441172719"
-            }
-            onInput$={(_, input) => {
-              state.queryTouched = true;
-              state.query = input.value;
-              props.onQueryInput$(input.value);
-            }}
-          />
-        </label>
-        <div class="metadata-actions">
-          <button
-            class="primary-button"
-            type="button"
-            disabled={
-              !props.canEdit ||
-              props.loading ||
-              !(props.query.trim() || props.fallbackQuery.trim())
-            }
-            onClick$={props.onSearch$}
+      </summary>
+      <div class="source-accordion-body">
+        <p class="quiet-copy">
+          Search public book records by title, author, or ISBN, then add fields
+          to the draft.{" "}
+          <a
+            class="metadata-source-setup-link"
+            href="https://openlibrary.org/"
+            target="_blank"
+            rel="noreferrer"
           >
-            {props.loading ? "Looking up…" : "Find books"}
-          </button>
+            About Open Library
+          </a>
+        </p>
+        <div class="metadata-form">
+          <label class="source-query-input">
+            <span>Title, author, or ISBN</span>
+            <input
+              value={state.query}
+              maxLength={500}
+              placeholder={
+                props.fallbackQuery
+                  ? `e.g. ${props.fallbackQuery}`
+                  : "e.g. Dune Frank Herbert or 9780441172719"
+              }
+              onInput$={(_, input) => {
+                state.queryTouched = true;
+                state.query = input.value;
+                props.onQueryInput$(input.value);
+              }}
+            />
+          </label>
+          <div class="metadata-actions">
+            <button
+              class="primary-button"
+              type="button"
+              disabled={
+                !props.canEdit ||
+                props.loading ||
+                !(props.query.trim() || props.fallbackQuery.trim())
+              }
+              onClick$={props.onSearch$}
+            >
+              {props.loading ? "Looking up…" : "Find books"}
+            </button>
+          </div>
         </div>
-      </div>
-      {props.error && <p class="error-copy">{props.error}</p>}
-      <div class="subtitle-results">
-        {props.candidates.map((candidate) => (
-          <article
-            class="subtitle-result open-library-result"
-            key={`${candidate.workId}-${candidate.editionId ?? "work"}`}
-          >
-            <div>
-              <strong>
-                {candidate.editionTitle ?? candidate.title}
-                {candidate.publishYear ? ` (${candidate.publishYear})` : ""}
-              </strong>
-              <span>
-                {candidate.authors.join(", ") || "Unknown author"}
-                {candidate.publishers[0] ? ` · ${candidate.publishers[0]}` : ""}
-                {candidate.isbn13
-                  ? ` · ISBN ${candidate.isbn13}`
-                  : candidate.isbn10
-                    ? ` · ISBN ${candidate.isbn10}`
+        {props.error && <p class="error-copy">{props.error}</p>}
+        <div class="subtitle-results">
+          {props.candidates.map((candidate) => (
+            <article
+              class="subtitle-result open-library-result"
+              key={`${candidate.workId}-${candidate.editionId ?? "work"}`}
+            >
+              <div>
+                <strong>
+                  {candidate.editionTitle ?? candidate.title}
+                  {candidate.publishYear ? ` (${candidate.publishYear})` : ""}
+                </strong>
+                <span>
+                  {candidate.authors.join(", ") || "Unknown author"}
+                  {candidate.publishers[0]
+                    ? ` · ${candidate.publishers[0]}`
                     : ""}
-              </span>
-              <span class="open-library-result-facts">
-                {candidate.editionCount != null
-                  ? `${candidate.editionCount.toLocaleString()} editions`
-                  : "Edition count unavailable"}
-                {candidate.publishDate ? ` · ${candidate.publishDate}` : ""}
-                {candidate.firstPublishYear &&
-                candidate.firstPublishYear !== candidate.publishYear
-                  ? ` · first published ${candidate.firstPublishYear}`
-                  : ""}
-                {candidate.numberOfPages
-                  ? ` · ${candidate.numberOfPages.toLocaleString()} pages`
-                  : ""}
-              </span>
-              {candidate.subjects.length > 0 && (
-                <p>{candidate.subjects.slice(0, 5).join(" · ")}</p>
-              )}
-            </div>
-            <div class="open-library-result-actions">
-              <button
-                class="secondary-button"
-                type="button"
-                disabled={props.loading}
-                onClick$={() => props.onCompare$(candidate)}
-              >
-                Compare fields
-              </button>
-              <button
-                class="secondary-button"
-                type="button"
-                disabled={state.editionLoading}
-                onClick$={() => loadEditions(candidate)}
-              >
-                {state.expandedWorkId === candidate.workId
-                  ? "Hide editions"
-                  : "View editions"}
-              </button>
-              {candidate.coverId && (
+                  {candidate.isbn13
+                    ? ` · ISBN ${candidate.isbn13}`
+                    : candidate.isbn10
+                      ? ` · ISBN ${candidate.isbn10}`
+                      : ""}
+                </span>
+                <span class="open-library-result-facts">
+                  {candidate.editionCount != null
+                    ? `${candidate.editionCount.toLocaleString()} editions`
+                    : "Edition count unavailable"}
+                  {candidate.publishDate ? ` · ${candidate.publishDate}` : ""}
+                  {candidate.firstPublishYear &&
+                  candidate.firstPublishYear !== candidate.publishYear
+                    ? ` · first published ${candidate.firstPublishYear}`
+                    : ""}
+                  {candidate.numberOfPages
+                    ? ` · ${candidate.numberOfPages.toLocaleString()} pages`
+                    : ""}
+                </span>
+                {candidate.subjects.length > 0 && (
+                  <p>{candidate.subjects.slice(0, 5).join(" · ")}</p>
+                )}
+              </div>
+              <div class="open-library-result-actions">
                 <button
                   class="secondary-button"
                   type="button"
-                  onClick$={() =>
-                    selectCover(
-                      candidate.coverId ?? 0,
-                      candidate.editionTitle ?? candidate.title,
-                    )
-                  }
+                  disabled={props.loading}
+                  onClick$={() => props.onCompare$(candidate)}
                 >
-                  Preview cover
+                  Compare fields
                 </button>
-              )}
-            </div>
-            {state.expandedWorkId === candidate.workId && (
-              <div class="open-library-editions">
-                <p class="quiet-copy">
-                  {state.editionTotals[candidate.workId] ??
-                    candidate.editionCount ??
-                    0}{" "}
-                  editions available
-                </p>
-                {state.editionError && (
-                  <p class="error-copy">{state.editionError}</p>
+                <button
+                  class="secondary-button"
+                  type="button"
+                  disabled={state.editionLoading}
+                  onClick$={() => loadEditions(candidate)}
+                >
+                  {state.expandedWorkId === candidate.workId
+                    ? "Hide editions"
+                    : "View editions"}
+                </button>
+                {candidate.coverId && (
+                  <button
+                    class="secondary-button"
+                    type="button"
+                    onClick$={() =>
+                      selectCover(
+                        candidate.coverId ?? 0,
+                        candidate.editionTitle ?? candidate.title,
+                      )
+                    }
+                  >
+                    Preview cover
+                  </button>
                 )}
-                {(state.editions[candidate.workId] ?? []).map((edition) => (
-                  <article class="open-library-edition" key={edition.editionId}>
-                    <div>
-                      <strong>{edition.title}</strong>
-                      <span>
-                        {edition.publishDate ?? "Publication date unavailable"}
-                        {edition.publishers[0]
-                          ? ` · ${edition.publishers[0]}`
-                          : ""}
-                        {edition.isbn13
-                          ? ` · ISBN ${edition.isbn13}`
-                          : edition.isbn10
-                            ? ` · ISBN ${edition.isbn10}`
+              </div>
+              {state.expandedWorkId === candidate.workId && (
+                <div class="open-library-editions">
+                  <p class="quiet-copy">
+                    {state.editionTotals[candidate.workId] ??
+                      candidate.editionCount ??
+                      0}{" "}
+                    editions available
+                  </p>
+                  {state.editionError && (
+                    <p class="error-copy">{state.editionError}</p>
+                  )}
+                  {(state.editions[candidate.workId] ?? []).map((edition) => (
+                    <article
+                      class="open-library-edition"
+                      key={edition.editionId}
+                    >
+                      <div>
+                        <strong>{edition.title}</strong>
+                        <span>
+                          {edition.publishDate ??
+                            "Publication date unavailable"}
+                          {edition.publishers[0]
+                            ? ` · ${edition.publishers[0]}`
                             : ""}
-                      </span>
-                    </div>
-                    <div class="open-library-result-actions">
-                      <button
-                        class="secondary-button"
-                        type="button"
-                        onClick$={() =>
-                          props.onCompare$(editionCandidate(candidate, edition))
-                        }
-                      >
-                        Compare edition
-                      </button>
-                      {edition.coverId && (
+                          {edition.isbn13
+                            ? ` · ISBN ${edition.isbn13}`
+                            : edition.isbn10
+                              ? ` · ISBN ${edition.isbn10}`
+                              : ""}
+                        </span>
+                      </div>
+                      <div class="open-library-result-actions">
                         <button
                           class="secondary-button"
                           type="button"
                           onClick$={() =>
-                            selectCover(edition.coverId ?? 0, edition.title)
+                            props.onCompare$(
+                              editionCandidate(candidate, edition),
+                            )
                           }
                         >
-                          Preview cover
+                          Compare edition
                         </button>
-                      )}
-                    </div>
-                  </article>
-                ))}
-                {state.editionLoading && (
-                  <p class="quiet-copy">Loading editions…</p>
-                )}
-                {state.editionHasMore[candidate.workId] && (
-                  <button
-                    class="secondary-button"
-                    type="button"
-                    disabled={state.editionLoading}
-                    onClick$={() => loadEditions(candidate, true)}
-                  >
-                    Load more editions
-                  </button>
-                )}
-              </div>
-            )}
-          </article>
-        ))}
-        {props.candidates.length === 0 && (
-          <p class="quiet-copy">
-            Candidate books will appear here with author, publisher, ISBN, and
-            edition details so you can disambiguate before filling fields.
-          </p>
+                        {edition.coverId && (
+                          <button
+                            class="secondary-button"
+                            type="button"
+                            onClick$={() =>
+                              selectCover(edition.coverId ?? 0, edition.title)
+                            }
+                          >
+                            Preview cover
+                          </button>
+                        )}
+                      </div>
+                    </article>
+                  ))}
+                  {state.editionLoading && (
+                    <p class="quiet-copy">Loading editions…</p>
+                  )}
+                  {state.editionHasMore[candidate.workId] && (
+                    <button
+                      class="secondary-button"
+                      type="button"
+                      disabled={state.editionLoading}
+                      onClick$={() => loadEditions(candidate, true)}
+                    >
+                      Load more editions
+                    </button>
+                  )}
+                </div>
+              )}
+            </article>
+          ))}
+          {props.candidates.length === 0 && (
+            <p class="quiet-copy">
+              Candidate books will appear here with author, publisher, ISBN, and
+              edition details so you can disambiguate before filling fields.
+            </p>
+          )}
+        </div>
+        {state.selectedCoverId > 0 && (
+          <RemoteArtwork
+            itemId={props.itemId}
+            sourceUrl={`/provider-lookups/open-library/covers/${state.selectedCoverId}`}
+            sourceLabel="Open Library"
+            title={state.selectedCoverTitle}
+            actionNoun="cover"
+            canEdit={props.canEdit}
+            mutationMode={props.mutationMode}
+          />
         )}
       </div>
-      {state.selectedCoverId > 0 && (
-        <RemoteArtwork
-          itemId={props.itemId}
-          sourceUrl={`/provider-lookups/open-library/covers/${state.selectedCoverId}`}
-          sourceLabel="Open Library"
-          title={state.selectedCoverTitle}
-          actionNoun="cover"
-          canEdit={props.canEdit}
-          mutationMode={props.mutationMode}
-        />
-      )}
-      <p class="metadata-compatibility-note">
-        Book data and cover identifiers are supplied by{" "}
-        <a href="https://openlibrary.org/" target="_blank" rel="noreferrer">
-          Open Library
-        </a>
-        . Lookups are intentionally limited to human-triggered searches.
-      </p>
-    </section>
+    </details>
   );
 });

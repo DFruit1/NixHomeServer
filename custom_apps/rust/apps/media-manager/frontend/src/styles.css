@@ -2940,6 +2940,98 @@ a:focus-visible {
 .musicbrainz-panel .metadata-form {
   border-bottom: 1px solid var(--line);
 }
+/* ── Metadata source accordions ── */
+.metadata-view {
+  display: flex;
+  flex-direction: column;
+}
+.metadata-sources {
+  margin: 14px 20px 0;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--card);
+  overflow: hidden;
+}
+.metadata-sources .source-accordion {
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  box-shadow: none;
+}
+.metadata-sources .source-accordion:last-child {
+  border-bottom: 0;
+}
+.source-accordion-summary {
+  width: 100%;
+  min-height: 46px;
+  padding: 8px 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  list-style: none;
+}
+.source-accordion-summary::-webkit-details-marker {
+  display: none;
+}
+.source-accordion-summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.source-accordion-title {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--font-serif);
+  font-size: 15px;
+  font-weight: 500;
+}
+.source-accordion-chevron {
+  flex: 0 0 auto;
+  display: inline-flex;
+  color: var(--ink-faint);
+  transition: transform 120ms ease-out;
+}
+.source-accordion[open] .source-accordion-chevron,
+.source-accordion-summary[aria-expanded="true"] .source-accordion-chevron {
+  transform: rotate(180deg);
+}
+.source-accordion-body {
+  padding: 0 14px 14px;
+}
+.source-accordion-body .quiet-copy {
+  padding: 0 0 10px;
+}
+.source-accordion-body .metadata-form {
+  padding: 12px 0;
+  gap: 10px;
+}
+.source-accordion-body .subtitle-results {
+  min-height: 0;
+}
+.source-accordion-body .subtitle-result {
+  padding: 12px 0;
+}
+.source-accordion-body .open-library-result-actions {
+  justify-content: flex-start;
+}
+.subtitles-accordion {
+  margin: 10px 20px 0;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--card);
+  overflow: hidden;
+}
+@media (prefers-reduced-motion: reduce) {
+  .source-accordion-chevron {
+    transition: none;
+  }
+}
 .open-library-result-facts {
   font-variant-numeric: tabular-nums;
 }

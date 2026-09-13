@@ -916,14 +916,6 @@ describe("Media Manager library browser", () => {
     });
   }
 
-  function editorTab(screen: HTMLElement, label: string) {
-    return (
-      Array.from(
-        screen.querySelectorAll<HTMLButtonElement>(".editor-tab"),
-      ).find((button) => button.textContent?.trim() === label) ?? null
-    );
-  }
-
   it("opens a metadata item selected by a durable library URL", async () => {
     const item = {
       id: "arrival",
@@ -1660,14 +1652,8 @@ describe("Media Manager library browser", () => {
     await userEvent(screen.querySelector(".tree-row.file"), "click");
 
     await vi.waitFor(() =>
-      expect(screen.querySelector(".editor-tab")).toBeDefined(),
+      expect(screen.querySelector(".editor-card")).toBeDefined(),
     );
-
-    const metadataTab = Array.from(screen.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "Metadata",
-    );
-    await new Promise((r) => setTimeout(r, 0));
-    await userEvent(metadataTab ?? null, "click");
 
     expect(screen.querySelectorAll(".number-field input")).toHaveLength(2);
     expect(
@@ -1834,24 +1820,20 @@ describe("Media Manager library browser", () => {
     await userEvent(screen.querySelector(".tree-row.file"), "click");
 
     await vi.waitFor(() =>
-      expect(
-        screen.querySelector(".editor-tab.active")?.textContent?.trim(),
-      ).toBe("Explore"),
+      expect(screen.querySelector(".tmdb-panel")).toBeTruthy(),
     );
-    expect(screen.textContent).toContain("TMDB lookup");
-    await userEvent(editorTab(screen, "Metadata"), "click");
+    expect(screen.textContent).toContain("The Movie Database");
     await vi.waitFor(() =>
       expect(
         screen
-          .querySelector(".metadata-form .title-input input")
+          .querySelector(".editor-metadata-form .title-input input")
           ?.getAttribute("value"),
       ).toBe("Example Movie"),
     );
     expect(
-      screen.querySelector(".editor-tab.active")?.textContent?.trim(),
-    ).toBe("Metadata");
-    expect(
-      screen.querySelector(".metadata-form select")?.getAttribute("value"),
+      screen
+        .querySelector(".editor-metadata-form select")
+        ?.getAttribute("value"),
     ).toBe("movie");
     expect(screen.textContent).toContain("IMDB");
     expect(screen.textContent).toContain("tt0000000");
@@ -1997,12 +1979,6 @@ describe("Media Manager library browser", () => {
     await userEvent(fileButton("Arrival.mkv") ?? null, "click");
     await vi.waitFor(() =>
       expect(
-        screen.querySelector(".editor-tab.active")?.textContent?.trim(),
-      ).toBe("Explore"),
-    );
-    await userEvent(editorTab(screen, "Metadata"), "click");
-    await vi.waitFor(() =>
-      expect(
         screen
           .querySelector<HTMLInputElement>(
             ".editor-metadata-form .title-input input",
@@ -2144,12 +2120,6 @@ describe("Media Manager library browser", () => {
     const { render, screen, userEvent } = await createDOM();
     await render(<Root initialView="library" initialRootId="shared-videos" />);
     await userEvent(screen.querySelector(".tree-row.file"), "click");
-    await vi.waitFor(() =>
-      expect(
-        screen.querySelector(".editor-tab.active")?.textContent?.trim(),
-      ).toBe("Explore"),
-    );
-    await userEvent(editorTab(screen, "Metadata"), "click");
     await vi.waitFor(() =>
       expect(screen.textContent).toContain("Create draft"),
     );
@@ -2320,12 +2290,12 @@ describe("Media Manager library browser", () => {
     await render(<Root initialView="library" initialRootId="shared-videos" />);
     await userEvent(screen.querySelector(".tree-row.file"), "click");
     await vi.waitFor(() =>
-      expect(screen.querySelector(".editor-tabs")).toBeTruthy(),
+      expect(screen.querySelector(".editor-card")).toBeTruthy(),
     );
-    const subtitlesTab = Array.from(
-      screen.querySelectorAll(".editor-tab"),
-    ).find((button) => button.textContent?.includes("Subtitles"));
-    await userEvent(subtitlesTab ?? null, "click");
+    const subtitlesToggle = screen.querySelector(
+      ".subtitles-accordion .source-accordion-summary",
+    );
+    await userEvent(subtitlesToggle ?? null, "click");
 
     await vi.waitFor(() =>
       expect(screen.textContent).toContain("Movie.en.forced.srt"),
@@ -2426,12 +2396,11 @@ describe("Media Manager library browser", () => {
 
     const { render, screen, userEvent } = await createDOM();
     await render(<Root initialView="library" initialRootId="shared-videos" />);
-
     await userEvent(screen.querySelector(".tree-row.file"), "click");
+
     await vi.waitFor(() =>
-      expect(screen.querySelector(".editor-tab")).toBeDefined(),
+      expect(screen.querySelector(".editor-card")).toBeDefined(),
     );
-    await userEvent(editorTab(screen, "Metadata"), "click");
     await new Promise((resolve) => setTimeout(resolve, 0));
     const draftButton = Array.from(screen.querySelectorAll("button")).find(
       (button) => button.textContent?.trim() === "Create draft",
@@ -2568,7 +2537,7 @@ describe("Media Manager library browser", () => {
     await vi.waitFor(() =>
       expect(screen.querySelector(".musicbrainz-panel")).toBeDefined(),
     );
-    expect(screen.textContent).toContain("MusicBrainz lookup");
+    expect(screen.textContent).toContain("MusicBrainz");
     expect(screen.textContent).toContain("Fingerprint ready");
 
     await userEvent(
@@ -2603,7 +2572,6 @@ describe("Media Manager library browser", () => {
     );
     await userEvent(applyButton ?? null, "click");
 
-    await userEvent(editorTab(screen, "Metadata"), "click");
     await vi.waitFor(() =>
       expect(
         screen
@@ -2750,7 +2718,7 @@ describe("Media Manager library browser", () => {
     await vi.waitFor(() =>
       expect(screen.querySelector(".tmdb-panel")).toBeDefined(),
     );
-    expect(screen.textContent).toContain("TMDB lookup");
+    expect(screen.textContent).toContain("The Movie Database");
     expect(
       screen
         .querySelector(".tmdb-panel .metadata-source-setup-link")
@@ -2783,7 +2751,6 @@ describe("Media Manager library browser", () => {
         "Added 7 TMDB fields to the draft. Review them before previewing",
       ),
     );
-    await userEvent(editorTab(screen, "Metadata"), "click");
     await vi.waitFor(() =>
       expect(screen.querySelector(".editor-facts")?.textContent).toContain(
         "TMDB ID",
@@ -2888,8 +2855,8 @@ describe("Media Manager library browser", () => {
     await vi.waitFor(() =>
       expect(screen.querySelector(".open-library-panel")).toBeDefined(),
     );
-    expect(screen.textContent).toContain("Open Library lookup");
-    expect(screen.textContent).toContain("No account required");
+    expect(screen.textContent).toContain("Open Library");
+    expect(screen.textContent).toContain("Free access");
 
     await userEvent(
       screen.querySelector(".open-library-panel .primary-button"),
@@ -2918,7 +2885,6 @@ describe("Media Manager library browser", () => {
     await vi.waitFor(() =>
       expect(screen.textContent).toContain("Open Library fields to the draft"),
     );
-    await userEvent(editorTab(screen, "Metadata"), "click");
     await vi.waitFor(() =>
       expect(screen.querySelector(".editor-facts")?.textContent).toContain(
         "OPENLIBRARY ID",
@@ -3038,7 +3004,6 @@ describe("Media Manager library browser", () => {
     );
 
     await userEvent(files[1], "click");
-    await userEvent(editorTab(screen, "Metadata"), "click");
     await vi.waitFor(() =>
       expect(
         screen
@@ -3069,7 +3034,7 @@ describe("Media Manager library browser", () => {
     );
   });
 
-  it("offers play and explore actions and reveals cover editing from the image", async () => {
+  it("offers play and metadata actions and reveals cover editing from the image", async () => {
     const items = [
       {
         id: "movie-1",
@@ -3122,16 +3087,6 @@ describe("Media Manager library browser", () => {
     expect(playLink?.getAttribute("target")).toBe("_blank");
     expect(playLink?.textContent).toContain("Play in Jellyfin");
 
-    await userEvent(
-      Array.from(screen.querySelectorAll("button")).find(
-        (button) => button.textContent?.trim() === "Explore metadata",
-      ) ?? null,
-      "click",
-    );
-    expect(
-      screen.querySelector(".editor-tab.active")?.textContent?.trim(),
-    ).toBe("Explore");
-
     await userEvent(screen.querySelector(".media-image.editable"), "click");
     expect(screen.textContent).toContain("Edit cover image");
     expect(screen.textContent).toContain("Replace cover art");
@@ -3158,9 +3113,6 @@ describe("Media Manager library browser", () => {
       ) ?? null,
       "click",
     );
-    expect(
-      screen.querySelector(".editor-tab.active")?.textContent?.trim(),
-    ).toBe("Metadata");
     expect(
       screen.querySelector<HTMLInputElement>(
         ".editor-metadata-form .title-input input",
@@ -3218,11 +3170,7 @@ describe("Media Manager library browser", () => {
         ),
       ).toBeDefined(),
     );
-    expect(
-      Array.from(screen.querySelectorAll(".editor-tab")).some((tab) =>
-        tab.textContent?.includes("Subtitles"),
-      ),
-    ).toBe(false);
+    expect(screen.querySelector(".subtitles-accordion")).toBeUndefined();
     await userEvent(
       Array.from(screen.querySelectorAll("button")).find(
         (button) => button.textContent?.trim() === "Play here",
@@ -3293,12 +3241,19 @@ describe("Media Manager library browser", () => {
     await render(
       <Root initialView="library" initialRootId="shared-podcasts" />,
     );
+    const showToggle = Array.from(
+      screen.querySelectorAll(".tree-row.folder .tree-toggle"),
+    ).at(-1);
+    await userEvent(showToggle ?? null, "click");
+    await vi.waitFor(() =>
+      expect(screen.querySelector(".tree-row.file")).toBeTruthy(),
+    );
     await userEvent(screen.querySelector(".tree-row.file"), "click");
-
-    await vi.waitFor(() => expect(editorTab(screen, "Explore")).toBeNull());
-    expect(editorTab(screen, "Metadata")).toBeDefined();
-    expect(editorTab(screen, "Rename")).toBeNull();
-    expect(editorTab(screen, "Subtitles")).toBeNull();
+    await vi.waitFor(() =>
+      expect(screen.querySelector(".editor-card")).toBeDefined(),
+    );
+    expect(screen.querySelector(".metadata-sources")).toBeUndefined();
+    expect(screen.querySelector(".subtitles-accordion")).toBeUndefined();
     expect(
       Array.from(screen.querySelectorAll("button")).some(
         (button) => button.textContent?.trim() === "Explore metadata",

@@ -1,5 +1,6 @@
 import { $, component$, type QRL, useStore, useTask$ } from "@builder.io/qwik";
 import { api, readableError } from "./api";
+import { Icon } from "./icon";
 import type { GoogleBooksCandidate } from "./metadata-provider-candidates";
 import { RemoteArtwork } from "./remote-artwork";
 
@@ -72,119 +73,113 @@ export const GoogleBooksPanel = component$<{
   });
 
   return (
-    <section class="panel musicbrainz-panel google-books-panel">
-      <div class="panel-heading">
-        <div>
-          <h3>Google Books lookup</h3>
+    <details class="panel musicbrainz-panel google-books-panel source-accordion">
+      <summary class="source-accordion-summary">
+        <span class="source-accordion-title">Google Books</span>
+        <span class="status-badge access-key">API key</span>
+        <span class="source-accordion-chevron">
+          <Icon name="chevron-down" size={16} />
+        </span>
+      </summary>
+      <div class="source-accordion-body">
+        <p class="quiet-copy">
+          A second edition source.{" "}
+          <a class="metadata-source-setup-link" href="?view=accounts">
+            Configure the key
+          </a>
+        </p>
+        <div class="metadata-form">
+          <label class="source-query-input">
+            <span>Title, author, or ISBN</span>
+            <input
+              value={state.query}
+              maxLength={500}
+              placeholder={
+                props.fallbackQuery
+                  ? `e.g. ${props.fallbackQuery}`
+                  : "e.g. Dune Frank Herbert"
+              }
+              onInput$={(_, input) => {
+                state.queryTouched = true;
+                state.query = input.value;
+              }}
+            />
+          </label>
+          <div class="metadata-actions">
+            <button
+              class="primary-button"
+              type="button"
+              disabled={
+                !props.canEdit ||
+                state.loading ||
+                !(state.query.trim() || props.fallbackQuery.trim())
+              }
+              onClick$={search}
+            >
+              {state.loading ? "Looking up…" : "Find Google Books"}
+            </button>
+          </div>
         </div>
-        <span class="status-badge access-key">API key required</span>
-      </div>
-      <p class="quiet-copy">
-        Search Google Books as a second edition source, then choose metadata
-        fields and cover art independently. Configure the key in{" "}
-        <a class="metadata-source-setup-link" href="?view=accounts">
-          Metadata sources
-        </a>
-        .
-      </p>
-      <div class="metadata-form">
-        <label class="title-input">
-          <span>Title, author, or ISBN</span>
-          <input
-            value={state.query}
-            maxLength={500}
-            placeholder={
-              props.fallbackQuery
-                ? `e.g. ${props.fallbackQuery}`
-                : "e.g. Dune Frank Herbert"
-            }
-            onInput$={(_, input) => {
-              state.queryTouched = true;
-              state.query = input.value;
-            }}
-          />
-        </label>
-        <div class="metadata-actions">
-          <button
-            class="primary-button"
-            type="button"
-            disabled={
-              !props.canEdit ||
-              state.loading ||
-              !(state.query.trim() || props.fallbackQuery.trim())
-            }
-            onClick$={search}
-          >
-            {state.loading ? "Looking up…" : "Find Google Books"}
-          </button>
-        </div>
-      </div>
-      {state.error && <p class="error-copy">{state.error}</p>}
-      <div class="subtitle-results">
-        {state.candidates.map((candidate) => (
-          <article
-            class="subtitle-result open-library-result"
-            key={candidate.volumeId}
-          >
-            <div>
-              <strong>
-                {candidate.title}
-                {candidate.year ? ` (${candidate.year})` : ""}
-              </strong>
-              <span>
-                {candidate.authors.join(", ") || "Unknown author"}
-                {candidate.publisher ? ` · ${candidate.publisher}` : ""}
-                {candidate.isbn ? ` · ISBN ${candidate.isbn}` : ""}
-                {candidate.pageCount
-                  ? ` · ${candidate.pageCount.toLocaleString()} pages`
-                  : ""}
-              </span>
-              {candidate.description && <p>{candidate.description}</p>}
-            </div>
-            <div class="open-library-result-actions">
-              <button
-                class="secondary-button"
-                type="button"
-                onClick$={() => props.onCompare$(candidate)}
-              >
-                Compare fields
-              </button>
-              {candidate.coverAvailable && (
+        {state.error && <p class="error-copy">{state.error}</p>}
+        <div class="subtitle-results">
+          {state.candidates.map((candidate) => (
+            <article
+              class="subtitle-result open-library-result"
+              key={candidate.volumeId}
+            >
+              <div>
+                <strong>
+                  {candidate.title}
+                  {candidate.year ? ` (${candidate.year})` : ""}
+                </strong>
+                <span>
+                  {candidate.authors.join(", ") || "Unknown author"}
+                  {candidate.publisher ? ` · ${candidate.publisher}` : ""}
+                  {candidate.isbn ? ` · ISBN ${candidate.isbn}` : ""}
+                  {candidate.pageCount
+                    ? ` · ${candidate.pageCount.toLocaleString()} pages`
+                    : ""}
+                </span>
+                {candidate.description && <p>{candidate.description}</p>}
+              </div>
+              <div class="open-library-result-actions">
                 <button
                   class="secondary-button"
                   type="button"
-                  onClick$={() => (state.selected = candidate)}
+                  onClick$={() => props.onCompare$(candidate)}
                 >
-                  Preview cover
+                  Compare fields
                 </button>
-              )}
-            </div>
-          </article>
-        ))}
-        {state.candidates.length === 0 && (
-          <p class="quiet-copy">
-            Google Books candidates will appear here with edition, ISBN,
-            publisher, and cover details.
-          </p>
+                {candidate.coverAvailable && (
+                  <button
+                    class="secondary-button"
+                    type="button"
+                    onClick$={() => (state.selected = candidate)}
+                  >
+                    Preview cover
+                  </button>
+                )}
+              </div>
+            </article>
+          ))}
+          {state.candidates.length === 0 && (
+            <p class="quiet-copy">
+              Google Books candidates will appear here with edition, ISBN,
+              publisher, and cover details.
+            </p>
+          )}
+        </div>
+        {state.selected && (
+          <RemoteArtwork
+            itemId={props.itemId}
+            sourceUrl={`/provider-lookups/google-books/volumes/${encodeURIComponent(state.selected.volumeId)}/cover`}
+            sourceLabel="Google Books"
+            title={state.selected.title}
+            canEdit={props.canEdit}
+            mutationMode={props.mutationMode}
+          />
         )}
       </div>
-      {state.selected && (
-        <RemoteArtwork
-          itemId={props.itemId}
-          sourceUrl={`/provider-lookups/google-books/volumes/${encodeURIComponent(state.selected.volumeId)}/cover`}
-          sourceLabel="Google Books"
-          title={state.selected.title}
-          canEdit={props.canEdit}
-          mutationMode={props.mutationMode}
-        />
-      )}
-      <p class="metadata-compatibility-note">
-        Volume metadata and cover references are supplied by{" "}
-        <a href="https://books.google.com/" target="_blank" rel="noreferrer">
-          Google Books
-        </a>
-        .
-      </p>
-    </section>
+    </details>
   );
 });

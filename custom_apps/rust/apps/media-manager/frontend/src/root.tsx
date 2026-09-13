@@ -1437,11 +1437,6 @@ const ItemQuickActions = component$<{
     props.item.mediaKind,
     "play-inline",
   );
-  const canLookup = supportsMediaAction(
-    props.state.status,
-    props.item.mediaKind,
-    "lookup-metadata",
-  );
   const playTarget = playback.target;
   const startInPagePlayer = $(() => {
     const { title, artist } = trackDisplay(props.item);
@@ -1493,16 +1488,14 @@ const ItemQuickActions = component$<{
           Play
         </button>
       )}
-      {canLookup && (
-        <button
-          class="quick-action-button"
-          type="button"
-          onClick$={() => sendEditorCommand("explore")}
-        >
-          <Icon name="search" size={17} />
-          Explore metadata
-        </button>
-      )}
+      <button
+        class="quick-action-button"
+        type="button"
+        onClick$={() => sendEditorCommand("metadata")}
+      >
+        <Icon name="tag" size={17} />
+        Metadata
+      </button>
     </div>
   );
 });

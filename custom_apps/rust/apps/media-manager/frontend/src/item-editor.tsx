@@ -13,7 +13,6 @@ import {
   allowMetadataDraftDiscard,
   commaSeparated,
   INSPECTED_METADATA_FIELDS,
-  type EditorTab,
   formatBytes,
   mediaTypeForFolder,
   mediaTypeForItem,
@@ -31,6 +30,7 @@ import {
   REVIEWED_METADATA_FIELDS,
   SOURCE_SELECTABLE_METADATA_FIELDS,
 } from "./item-editor-helpers";
+import { revealWhenMounted } from "./reveal";
 import { ObservationStructuredDetails } from "./metadata-observation-details";
 import {
   activeMetadataMatchSelection,
@@ -259,7 +259,7 @@ function updateMetadataDraftField(
   markMetadataDraftDirty(metadata, dashboard);
 }
 
-export type EditorCommandAction = "" | "explore";
+export type EditorCommandAction = "" | "metadata";
 
 export const ItemEditor = component$<{
   state: DashboardState;
@@ -272,9 +272,9 @@ export const ItemEditor = component$<{
   close$?: QRL<() => void>;
   command?: { action: EditorCommandAction; revision: number };
 }>((props) => {
-  const tab = useSignal<EditorTab>("metadata");
   const section = useSignal<MetadataSection>("basics");
   const cardRef = useSignal<HTMLElement>();
+  const subtitlesOpen = useSignal(false);
   const selectedItem = props.state.items.find(
     (item) => item.id === props.state.selectedItemId,
   );
@@ -459,17 +459,6 @@ export const ItemEditor = component$<{
       : props.state.items.find(
           (candidate) => candidate.id === props.state.selectedItemId,
         );
-    if (selectionChanged) {
-      tab.value =
-        !props.folder &&
-        supportsMediaAction(
-          props.state.status,
-          item?.mediaKind,
-          "lookup-metadata",
-        )
-          ? "explore"
-          : "metadata";
-    }
     metadata.itemId = selectionKey;
     metadata.isDraft = false;
     if (selectionChanged) {
@@ -657,16 +646,12 @@ export const ItemEditor = component$<{
     }
   });
 
-  // eslint-disable-next-line qwik/no-use-visible-task -- selecting the explore tab needs the DOM
+  // eslint-disable-next-line qwik/no-use-visible-task -- revealing the editor needs the DOM
   useVisibleTask$(({ track }) => {
     const revision = track(() => props.command?.revision ?? 0);
-    const action = props.command?.action;
-    if (!revision || action !== "explore" || props.folder) return;
-    const kind =
-      metadata.mediaKind || mediaKindForMediaType(metadata.mediaType);
-    if (supportsMediaAction(props.state.status, kind, "lookup-metadata")) {
-      tab.value = "explore";
-    }
+    const action = track(() => props.command?.action);
+    if (!revision || action !== "metadata") return;
+    revealWhenMounted(() => cardRef.value);
   });
 
   const toggleMetadataDraft = $(() => {
@@ -1400,8 +1385,7 @@ export const ItemEditor = component$<{
   const sourceChoices = metadata.isDraft
     ? metadataSourceChoices(metadata.observations, normalizedDraftValues)
     : [];
-  const exploreHasSources = !props.folder && canLookupMetadata;
-  const exploreSources = (
+  const metadataSources = (
     <>
       {["movie", "series", "season", "episode"].includes(
         metadata.mediaType,
@@ -1477,17 +1461,6 @@ export const ItemEditor = component$<{
           onCompare$={compareMusicCandidate}
         />
       )}
-      {metadata.matchCandidate && matchRows.length > 0 && (
-        <MetadataMatchWorkspace
-          candidate={metadata.matchCandidate}
-          rows={matchRows}
-          selectedFields={metadata.matchSelection}
-          canEdit={props.state.session?.canEdit ?? false}
-          onToggle$={toggleMetadataMatchField}
-          onApply$={applyMetadataMatch}
-          onCancel$={cancelMetadataMatch}
-        />
-      )}
     </>
   );
 
@@ -1503,58 +1476,6 @@ export const ItemEditor = component$<{
               <strong>{selectedFileName}</strong>
             </div>
           )}
-          {!props.folder && (
-            <div
-              class="editor-tabs"
-              role="tablist"
-              aria-label="Edit selected item"
-            >
-              {canLookupMetadata && (
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={tab.value === "explore"}
-                  class={{
-                    "editor-tab": true,
-                    active: tab.value === "explore",
-                  }}
-                  onClick$={() => (tab.value = "explore")}
-                >
-                  <Icon name="search" size={16} />
-                  Explore
-                </button>
-              )}
-              <button
-                type="button"
-                role="tab"
-                aria-selected={tab.value === "metadata"}
-                class={{ "editor-tab": true, active: tab.value === "metadata" }}
-                onClick$={() => (tab.value = "metadata")}
-              >
-                <Icon name="tag" size={16} />
-                Metadata
-              </button>
-              {supportsMediaAction(
-                props.state.status,
-                selectedItem?.mediaKind,
-                "manage-subtitles",
-              ) && (
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={tab.value === "subtitles"}
-                  class={{
-                    "editor-tab": true,
-                    active: tab.value === "subtitles",
-                  }}
-                  onClick$={() => (tab.value = "subtitles")}
-                >
-                  <Icon name="captions" size={16} />
-                  Subtitles
-                </button>
-              )}
-            </div>
-          )}
         </div>
         <div class="editor-heading-actions">
           <button
@@ -1568,1170 +1489,1164 @@ export const ItemEditor = component$<{
         </div>
       </div>
 
-      {tab.value === "explore" ? (
-        <>
-          {exploreSources}
-          {!exploreHasSources && (
-            <p class="explore-empty-note">
-              No automatic metadata sources for this media type. Use the
-              Metadata tab for manual entry.
-            </p>
+      <div class="metadata-view">
+        {!props.folder && canLookupMetadata && (
+          <div class="metadata-sources">{metadataSources}</div>
+        )}
+        {!props.folder &&
+          supportsMediaAction(
+            props.state.status,
+            selectedItem?.mediaKind,
+            "manage-subtitles",
+          ) && (
+            <section class="source-accordion subtitles-accordion">
+              <button
+                class="source-accordion-summary"
+                type="button"
+                aria-expanded={subtitlesOpen.value}
+                onClick$={() => (subtitlesOpen.value = !subtitlesOpen.value)}
+              >
+                <span class="source-accordion-title">Subtitles</span>
+                <span class="source-accordion-chevron">
+                  <Icon name="chevron-down" size={16} />
+                </span>
+              </button>
+              {subtitlesOpen.value && (
+                <div class="source-accordion-body">
+                  <SubtitleView
+                    key={props.state.selectedItemId}
+                    item={props.state.items.find(
+                      (item) => item.id === props.state.selectedItemId,
+                    )}
+                    roots={props.state.roots}
+                    session={props.state.session}
+                    status={props.state.status}
+                  />
+                </div>
+              )}
+            </section>
           )}
-        </>
-      ) : tab.value === "metadata" ? (
-        <>
-          <div class="metadata-toolbar">
-            <div
-              class="metadata-section-tabs"
-              role="tablist"
-              aria-label="Metadata fields"
-            >
-              {METADATA_SECTIONS.map((item) => (
-                <button
-                  type="button"
-                  role="tab"
-                  key={item.id}
-                  aria-selected={section.value === item.id}
-                  class={{
-                    "metadata-section-tab": true,
-                    active: section.value === item.id,
-                  }}
-                  onClick$={() => (section.value = item.id)}
-                >
-                  {item.label}
-                </button>
+        {metadata.matchCandidate && matchRows.length > 0 && (
+          <MetadataMatchWorkspace
+            candidate={metadata.matchCandidate}
+            rows={matchRows}
+            selectedFields={metadata.matchSelection}
+            canEdit={props.state.session?.canEdit ?? false}
+            onToggle$={toggleMetadataMatchField}
+            onApply$={applyMetadataMatch}
+            onCancel$={cancelMetadataMatch}
+          />
+        )}
+        <div class="metadata-toolbar">
+          <div
+            class="metadata-section-tabs"
+            role="tablist"
+            aria-label="Metadata fields"
+          >
+            {METADATA_SECTIONS.map((item) => (
+              <button
+                type="button"
+                role="tab"
+                key={item.id}
+                aria-selected={section.value === item.id}
+                class={{
+                  "metadata-section-tab": true,
+                  active: section.value === item.id,
+                }}
+                onClick$={() => (section.value = item.id)}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+          <div class="metadata-draft-actions">
+            {" "}
+            {props.state.session?.canEdit && canEditPortableMetadata && (
+              <button
+                class="secondary-button"
+                type="button"
+                disabled={
+                  !portableWriteAvailable ||
+                  metadata.loadingDetails ||
+                  metadata.confirming
+                }
+                onClick$={toggleMetadataDraft}
+              >
+                <Icon name={metadata.isDraft ? "check" : "tag"} size={17} />
+                {metadata.isDraft
+                  ? metadata.isDirty
+                    ? "Discard draft"
+                    : "Inspect current"
+                  : "Create draft"}
+              </button>
+            )}
+          </div>
+        </div>
+        {metadata.isDraft && sourceChoices.length > 0 && (
+          <section
+            class="metadata-source-choices"
+            aria-labelledby="metadata-source-choices-title"
+          >
+            <div class="metadata-source-choices-heading">
+              <div>
+                <span class="eyebrow">Compare and merge</span>
+                <h3 id="metadata-source-choices-title">Choose source values</h3>
+                <p>
+                  Review each field independently. Nothing is written until you
+                  preview and confirm the metadata sidecar.
+                </p>
+              </div>
+              <span class="pane-count">{sourceChoices.length}</span>
+            </div>
+            <div class="metadata-source-choice-list">
+              {sourceChoices.map((choice) => (
+                <article key={choice.field}>
+                  <strong>{choice.label}</strong>
+                  <div
+                    class="metadata-source-choice-options"
+                    role="group"
+                    aria-label={`${choice.label} source values`}
+                  >
+                    {choice.options.map((option) => {
+                      const isCurrent =
+                        normalizedDraftValues[choice.field] === option.value;
+                      return (
+                        <button
+                          key={`${choice.field}-${option.source}`}
+                          type="button"
+                          class={{
+                            "metadata-source-choice": true,
+                            current: isCurrent,
+                          }}
+                          disabled={isCurrent}
+                          aria-pressed={isCurrent}
+                          onClick$={() =>
+                            updateMetadataDraftField(
+                              metadata,
+                              props.state,
+                              choice.field,
+                              option.value,
+                            )
+                          }
+                        >
+                          <span class="metadata-source-choice-label">
+                            {option.label}
+                          </span>
+                          <span
+                            class="metadata-source-choice-value"
+                            title={option.value}
+                          >
+                            {option.value}
+                          </span>
+                          <span class="metadata-source-choice-action">
+                            {isCurrent ? "In draft" : "Use value"}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </article>
               ))}
             </div>
-            <div class="metadata-draft-actions">
-              {" "}
-              {props.state.session?.canEdit && canEditPortableMetadata && (
+          </section>
+        )}
+        <fieldset
+          class="metadata-form editor-metadata-form"
+          disabled={!metadata.isDraft}
+        >
+          {section.value === "basics" && (
+            <>
+              <label>
+                <span>Media type</span>
+                <select
+                  value={metadata.mediaType}
+                  disabled={Boolean(props.folder)}
+                  onChange$={(_, select) =>
+                    updateMetadataDraftField(
+                      metadata,
+                      props.state,
+                      "mediaType",
+                      select.value,
+                    )
+                  }
+                >
+                  <option value="movie">Movie</option>
+                  <option value="collection">Collection</option>
+                  <option value="series">TV series</option>
+                  <option value="season">TV season</option>
+                  <option value="episode">TV episode</option>
+                  <option value="music">Music</option>
+                  <option value="audiobook">Audiobook</option>
+                  <option value="podcast">Podcast</option>
+                  <option value="book">Book</option>
+                </select>
+              </label>
+              <label class="title-input">
+                <span>Title</span>
+                <input
+                  value={metadata.title}
+                  maxLength={500}
+                  onInput$={(_, input) =>
+                    updateMetadataDraftField(
+                      metadata,
+                      props.state,
+                      "title",
+                      input.value,
+                    )
+                  }
+                />
+              </label>
+              <label>
+                <span>
+                  Year <small>omit when unknown</small>
+                </span>
+                <input
+                  value={metadata.year}
+                  inputMode="numeric"
+                  maxLength={4}
+                  placeholder="Unknown"
+                  onInput$={(_, input) =>
+                    updateMetadataDraftField(
+                      metadata,
+                      props.state,
+                      "year",
+                      input.value.replace(/\D/g, "").slice(0, 4),
+                    )
+                  }
+                />
+              </label>
+              {metadata.mediaType === "episode" && (
+                <>
+                  <label>
+                    <span>Season</span>
+                    <input
+                      value={metadata.season}
+                      inputMode="numeric"
+                      onInput$={(_, input) =>
+                        updateMetadataDraftField(
+                          metadata,
+                          props.state,
+                          "season",
+                          numericValue(input.value, 4),
+                        )
+                      }
+                    />
+                  </label>
+                  <label>
+                    <span>Episode</span>
+                    <input
+                      value={metadata.episode}
+                      inputMode="numeric"
+                      onInput$={(_, input) =>
+                        updateMetadataDraftField(
+                          metadata,
+                          props.state,
+                          "episode",
+                          numericValue(input.value, 5),
+                        )
+                      }
+                    />
+                  </label>
+                  <label class="title-input">
+                    <span>Episode title</span>
+                    <input
+                      value={metadata.episodeTitle}
+                      maxLength={500}
+                      onInput$={(_, input) =>
+                        updateMetadataDraftField(
+                          metadata,
+                          props.state,
+                          "episodeTitle",
+                          input.value,
+                        )
+                      }
+                    />
+                  </label>
+                </>
+              )}
+              <label>
+                <span>Language code</span>
+                <input
+                  value={metadata.language}
+                  maxLength={15}
+                  onInput$={(_, input) =>
+                    updateMetadataDraftField(
+                      metadata,
+                      props.state,
+                      "language",
+                      input.value.toLowerCase().replace(/[^a-z0-9-]/g, ""),
+                    )
+                  }
+                />
+              </label>
+              <label>
+                <span>
+                  Genres <small>comma-separated</small>
+                </span>
+                <input
+                  value={metadata.genres}
+                  onInput$={(_, input) =>
+                    updateMetadataDraftField(
+                      metadata,
+                      props.state,
+                      "genres",
+                      input.value,
+                    )
+                  }
+                />
+              </label>
+            </>
+          )}
+          {section.value === "advanced" && (
+            <>
+              <span class="metadata-group-heading">People</span>
+              <label>
+                <span>
+                  Authors / artists <small>comma-separated</small>
+                </span>
+                <input
+                  value={metadata.authors}
+                  onInput$={(_, input) =>
+                    updateMetadataDraftField(
+                      metadata,
+                      props.state,
+                      "authors",
+                      input.value,
+                    )
+                  }
+                />
+              </label>
+              <label>
+                <span>
+                  Narrators <small>comma-separated</small>
+                </span>
+                <input
+                  value={metadata.narrators}
+                  onInput$={(_, input) =>
+                    updateMetadataDraftField(
+                      metadata,
+                      props.state,
+                      "narrators",
+                      input.value,
+                    )
+                  }
+                />
+              </label>
+              <label class="title-input">
+                <span>
+                  Writers <small>comma-separated</small>
+                </span>
+                <input
+                  value={metadata.writers}
+                  onInput$={(_, input) =>
+                    updateMetadataDraftField(
+                      metadata,
+                      props.state,
+                      "writers",
+                      input.value,
+                    )
+                  }
+                />
+              </label>
+              <span class="metadata-group-heading">Series</span>
+              <label>
+                <span>Series</span>
+                <input
+                  value={metadata.series}
+                  onInput$={(_, input) =>
+                    updateMetadataDraftField(
+                      metadata,
+                      props.state,
+                      "series",
+                      input.value,
+                    )
+                  }
+                />
+              </label>
+              <label>
+                <span>Volume</span>
+                <input
+                  value={metadata.volumeNumber}
+                  onInput$={(_, input) =>
+                    updateMetadataDraftField(
+                      metadata,
+                      props.state,
+                      "volumeNumber",
+                      input.value,
+                    )
+                  }
+                />
+              </label>
+              <span class="metadata-group-heading">Release &amp; ratings</span>
+              <label>
+                <span>Publisher / studio</span>
+                <input
+                  value={metadata.publisher}
+                  onInput$={(_, input) =>
+                    updateMetadataDraftField(
+                      metadata,
+                      props.state,
+                      "publisher",
+                      input.value,
+                    )
+                  }
+                />
+              </label>
+              <label>
+                <span>Premiere date</span>
+                <input
+                  type="date"
+                  value={metadata.premiereDate}
+                  onInput$={(_, input) =>
+                    updateMetadataDraftField(
+                      metadata,
+                      props.state,
+                      "premiereDate",
+                      input.value,
+                    )
+                  }
+                />
+              </label>
+              <label>
+                <span>
+                  Runtime <small>minutes</small>
+                </span>
+                <input
+                  value={metadata.runtimeMinutes}
+                  inputMode="numeric"
+                  onInput$={(_, input) =>
+                    updateMetadataDraftField(
+                      metadata,
+                      props.state,
+                      "runtimeMinutes",
+                      numericValue(input.value, 6),
+                    )
+                  }
+                />
+              </label>
+              <label>
+                <span>Official rating</span>
+                <input
+                  value={metadata.officialRating}
+                  maxLength={64}
+                  onInput$={(_, input) =>
+                    updateMetadataDraftField(
+                      metadata,
+                      props.state,
+                      "officialRating",
+                      input.value,
+                    )
+                  }
+                />
+              </label>
+              <label>
+                <span>
+                  Community rating <small>0–10</small>
+                </span>
+                <input
+                  value={metadata.communityRating}
+                  inputMode="decimal"
+                  onInput$={(_, input) =>
+                    updateMetadataDraftField(
+                      metadata,
+                      props.state,
+                      "communityRating",
+                      input.value.replace(/[^0-9.]/g, "").slice(0, 5),
+                    )
+                  }
+                />
+              </label>
+              <span class="metadata-group-heading">Publication</span>
+              <label>
+                <span>ISBN</span>
+                <input
+                  value={metadata.isbn}
+                  onInput$={(_, input) =>
+                    updateMetadataDraftField(
+                      metadata,
+                      props.state,
+                      "isbn",
+                      input.value,
+                    )
+                  }
+                />
+              </label>
+              <span class="metadata-group-heading">Description</span>
+              <label class="description-input">
+                <span>Description</span>
+                <textarea
+                  value={metadata.description}
+                  maxLength={20000}
+                  rows={5}
+                  onInput$={(_, input) =>
+                    updateMetadataDraftField(
+                      metadata,
+                      props.state,
+                      "description",
+                      input.value,
+                    )
+                  }
+                />
+              </label>
+            </>
+          )}
+        </fieldset>
+        <div class="metadata-actions">
+          <span>
+            {metadata.loadingDetails
+              ? "Reading available metadata…"
+              : metadata.isDirty
+                ? `${metadataFieldChanges(metadata.baseline, normalizedMetadataValues(metadata)).length} unsaved field change${metadataFieldChanges(metadata.baseline, normalizedMetadataValues(metadata)).length === 1 ? "" : "s"}.`
+                : `Sources: ${metadata.sources.join(" + ") || "select an item"}. NFO is used for video/music; OPF is used for books and audiobooks.`}
+          </span>
+          <div class="metadata-action-buttons">
+            {metadata.isDirty && (
+              <button
+                class="text-button"
+                type="button"
+                disabled={metadata.confirming}
+                onClick$={discardMetadataDraft}
+              >
+                Discard changes
+              </button>
+            )}
+            {metadata.pendingPlanId &&
+              metadata.pendingConsumers.some(
+                (consumer) =>
+                  consumer.available &&
+                  consumer.effect !== "native-podcast-metadata",
+              ) && (
                 <button
                   class="secondary-button"
                   type="button"
-                  disabled={
-                    !portableWriteAvailable ||
-                    metadata.loadingDetails ||
-                    metadata.confirming
-                  }
-                  onClick$={toggleMetadataDraft}
+                  disabled={metadata.propagating}
+                  onClick$={refreshAndVerify}
                 >
-                  <Icon name={metadata.isDraft ? "check" : "tag"} size={17} />
-                  {metadata.isDraft
-                    ? metadata.isDirty
-                      ? "Discard draft"
-                      : "Inspect current"
-                    : "Create draft"}
+                  <Icon name="refresh" size={18} />
+                  {metadata.propagating
+                    ? "Refreshing and verifying…"
+                    : "Refresh and verify"}
                 </button>
               )}
-            </div>
-          </div>
-          {metadata.isDraft && sourceChoices.length > 0 && (
-            <section
-              class="metadata-source-choices"
-              aria-labelledby="metadata-source-choices-title"
+            <button
+              class="primary-button"
+              type="button"
+              disabled={
+                !props.state.session?.canEdit ||
+                !metadata.isDraft ||
+                !metadata.itemId ||
+                metadata.mediaType === "collection" ||
+                !portableWriteAvailable ||
+                !metadata.title.trim() ||
+                metadata.planning
+              }
+              onClick$={previewMetadata}
             >
-              <div class="metadata-source-choices-heading">
-                <div>
-                  <span class="eyebrow">Compare and merge</span>
-                  <h3 id="metadata-source-choices-title">
-                    Choose source values
-                  </h3>
-                  <p>
-                    Review each field independently. Nothing is written until
-                    you preview and confirm the metadata sidecar.
-                  </p>
-                </div>
-                <span class="pane-count">{sourceChoices.length}</span>
-              </div>
-              <div class="metadata-source-choice-list">
-                {sourceChoices.map((choice) => (
-                  <article key={choice.field}>
-                    <strong>{choice.label}</strong>
-                    <div
-                      class="metadata-source-choice-options"
-                      role="group"
-                      aria-label={`${choice.label} source values`}
-                    >
-                      {choice.options.map((option) => {
-                        const isCurrent =
-                          normalizedDraftValues[choice.field] === option.value;
-                        return (
-                          <button
-                            key={`${choice.field}-${option.source}`}
-                            type="button"
-                            class={{
-                              "metadata-source-choice": true,
-                              current: isCurrent,
-                            }}
-                            disabled={isCurrent}
-                            aria-pressed={isCurrent}
-                            onClick$={() =>
-                              updateMetadataDraftField(
-                                metadata,
-                                props.state,
-                                choice.field,
-                                option.value,
-                              )
-                            }
-                          >
-                            <span class="metadata-source-choice-label">
-                              {option.label}
-                            </span>
-                            <span
-                              class="metadata-source-choice-value"
-                              title={option.value}
-                            >
-                              {option.value}
-                            </span>
-                            <span class="metadata-source-choice-action">
-                              {isCurrent ? "In draft" : "Use value"}
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </article>
-                ))}
-              </div>
-            </section>
-          )}
-          <fieldset
-            class="metadata-form editor-metadata-form"
-            disabled={!metadata.isDraft}
-          >
-            {section.value === "basics" && (
-              <>
-                <label>
-                  <span>Media type</span>
-                  <select
-                    value={metadata.mediaType}
-                    disabled={Boolean(props.folder)}
-                    onChange$={(_, select) =>
-                      updateMetadataDraftField(
-                        metadata,
-                        props.state,
-                        "mediaType",
-                        select.value,
-                      )
-                    }
-                  >
-                    <option value="movie">Movie</option>
-                    <option value="collection">Collection</option>
-                    <option value="series">TV series</option>
-                    <option value="season">TV season</option>
-                    <option value="episode">TV episode</option>
-                    <option value="music">Music</option>
-                    <option value="audiobook">Audiobook</option>
-                    <option value="podcast">Podcast</option>
-                    <option value="book">Book</option>
-                  </select>
-                </label>
-                <label class="title-input">
-                  <span>Title</span>
-                  <input
-                    value={metadata.title}
-                    maxLength={500}
-                    onInput$={(_, input) =>
-                      updateMetadataDraftField(
-                        metadata,
-                        props.state,
-                        "title",
-                        input.value,
-                      )
-                    }
-                  />
-                </label>
-                <label>
-                  <span>
-                    Year <small>omit when unknown</small>
-                  </span>
-                  <input
-                    value={metadata.year}
-                    inputMode="numeric"
-                    maxLength={4}
-                    placeholder="Unknown"
-                    onInput$={(_, input) =>
-                      updateMetadataDraftField(
-                        metadata,
-                        props.state,
-                        "year",
-                        input.value.replace(/\D/g, "").slice(0, 4),
-                      )
-                    }
-                  />
-                </label>
-                {metadata.mediaType === "episode" && (
-                  <>
-                    <label>
-                      <span>Season</span>
-                      <input
-                        value={metadata.season}
-                        inputMode="numeric"
-                        onInput$={(_, input) =>
-                          updateMetadataDraftField(
-                            metadata,
-                            props.state,
-                            "season",
-                            numericValue(input.value, 4),
-                          )
-                        }
-                      />
-                    </label>
-                    <label>
-                      <span>Episode</span>
-                      <input
-                        value={metadata.episode}
-                        inputMode="numeric"
-                        onInput$={(_, input) =>
-                          updateMetadataDraftField(
-                            metadata,
-                            props.state,
-                            "episode",
-                            numericValue(input.value, 5),
-                          )
-                        }
-                      />
-                    </label>
-                    <label class="title-input">
-                      <span>Episode title</span>
-                      <input
-                        value={metadata.episodeTitle}
-                        maxLength={500}
-                        onInput$={(_, input) =>
-                          updateMetadataDraftField(
-                            metadata,
-                            props.state,
-                            "episodeTitle",
-                            input.value,
-                          )
-                        }
-                      />
-                    </label>
-                  </>
-                )}
-                <label>
-                  <span>Language code</span>
-                  <input
-                    value={metadata.language}
-                    maxLength={15}
-                    onInput$={(_, input) =>
-                      updateMetadataDraftField(
-                        metadata,
-                        props.state,
-                        "language",
-                        input.value.toLowerCase().replace(/[^a-z0-9-]/g, ""),
-                      )
-                    }
-                  />
-                </label>
-                <label>
-                  <span>
-                    Genres <small>comma-separated</small>
-                  </span>
-                  <input
-                    value={metadata.genres}
-                    onInput$={(_, input) =>
-                      updateMetadataDraftField(
-                        metadata,
-                        props.state,
-                        "genres",
-                        input.value,
-                      )
-                    }
-                  />
-                </label>
-              </>
-            )}
-            {section.value === "advanced" && (
-              <>
-                <span class="metadata-group-heading">People</span>
-                <label>
-                  <span>
-                    Authors / artists <small>comma-separated</small>
-                  </span>
-                  <input
-                    value={metadata.authors}
-                    onInput$={(_, input) =>
-                      updateMetadataDraftField(
-                        metadata,
-                        props.state,
-                        "authors",
-                        input.value,
-                      )
-                    }
-                  />
-                </label>
-                <label>
-                  <span>
-                    Narrators <small>comma-separated</small>
-                  </span>
-                  <input
-                    value={metadata.narrators}
-                    onInput$={(_, input) =>
-                      updateMetadataDraftField(
-                        metadata,
-                        props.state,
-                        "narrators",
-                        input.value,
-                      )
-                    }
-                  />
-                </label>
-                <label class="title-input">
-                  <span>
-                    Writers <small>comma-separated</small>
-                  </span>
-                  <input
-                    value={metadata.writers}
-                    onInput$={(_, input) =>
-                      updateMetadataDraftField(
-                        metadata,
-                        props.state,
-                        "writers",
-                        input.value,
-                      )
-                    }
-                  />
-                </label>
-                <span class="metadata-group-heading">Series</span>
-                <label>
-                  <span>Series</span>
-                  <input
-                    value={metadata.series}
-                    onInput$={(_, input) =>
-                      updateMetadataDraftField(
-                        metadata,
-                        props.state,
-                        "series",
-                        input.value,
-                      )
-                    }
-                  />
-                </label>
-                <label>
-                  <span>Volume</span>
-                  <input
-                    value={metadata.volumeNumber}
-                    onInput$={(_, input) =>
-                      updateMetadataDraftField(
-                        metadata,
-                        props.state,
-                        "volumeNumber",
-                        input.value,
-                      )
-                    }
-                  />
-                </label>
-                <span class="metadata-group-heading">
-                  Release &amp; ratings
-                </span>
-                <label>
-                  <span>Publisher / studio</span>
-                  <input
-                    value={metadata.publisher}
-                    onInput$={(_, input) =>
-                      updateMetadataDraftField(
-                        metadata,
-                        props.state,
-                        "publisher",
-                        input.value,
-                      )
-                    }
-                  />
-                </label>
-                <label>
-                  <span>Premiere date</span>
-                  <input
-                    type="date"
-                    value={metadata.premiereDate}
-                    onInput$={(_, input) =>
-                      updateMetadataDraftField(
-                        metadata,
-                        props.state,
-                        "premiereDate",
-                        input.value,
-                      )
-                    }
-                  />
-                </label>
-                <label>
-                  <span>
-                    Runtime <small>minutes</small>
-                  </span>
-                  <input
-                    value={metadata.runtimeMinutes}
-                    inputMode="numeric"
-                    onInput$={(_, input) =>
-                      updateMetadataDraftField(
-                        metadata,
-                        props.state,
-                        "runtimeMinutes",
-                        numericValue(input.value, 6),
-                      )
-                    }
-                  />
-                </label>
-                <label>
-                  <span>Official rating</span>
-                  <input
-                    value={metadata.officialRating}
-                    maxLength={64}
-                    onInput$={(_, input) =>
-                      updateMetadataDraftField(
-                        metadata,
-                        props.state,
-                        "officialRating",
-                        input.value,
-                      )
-                    }
-                  />
-                </label>
-                <label>
-                  <span>
-                    Community rating <small>0–10</small>
-                  </span>
-                  <input
-                    value={metadata.communityRating}
-                    inputMode="decimal"
-                    onInput$={(_, input) =>
-                      updateMetadataDraftField(
-                        metadata,
-                        props.state,
-                        "communityRating",
-                        input.value.replace(/[^0-9.]/g, "").slice(0, 5),
-                      )
-                    }
-                  />
-                </label>
-                <span class="metadata-group-heading">Publication</span>
-                <label>
-                  <span>ISBN</span>
-                  <input
-                    value={metadata.isbn}
-                    onInput$={(_, input) =>
-                      updateMetadataDraftField(
-                        metadata,
-                        props.state,
-                        "isbn",
-                        input.value,
-                      )
-                    }
-                  />
-                </label>
-                <span class="metadata-group-heading">Description</span>
-                <label class="description-input">
-                  <span>Description</span>
-                  <textarea
-                    value={metadata.description}
-                    maxLength={20000}
-                    rows={5}
-                    onInput$={(_, input) =>
-                      updateMetadataDraftField(
-                        metadata,
-                        props.state,
-                        "description",
-                        input.value,
-                      )
-                    }
-                  />
-                </label>
-              </>
-            )}
-          </fieldset>
-          <div class="metadata-actions">
-            <span>
-              {metadata.loadingDetails
-                ? "Reading available metadata…"
-                : metadata.isDirty
-                  ? `${metadataFieldChanges(metadata.baseline, normalizedMetadataValues(metadata)).length} unsaved field change${metadataFieldChanges(metadata.baseline, normalizedMetadataValues(metadata)).length === 1 ? "" : "s"}.`
-                  : `Sources: ${metadata.sources.join(" + ") || "select an item"}. NFO is used for video/music; OPF is used for books and audiobooks.`}
-            </span>
-            <div class="metadata-action-buttons">
-              {metadata.isDirty && (
-                <button
-                  class="text-button"
-                  type="button"
-                  disabled={metadata.confirming}
-                  onClick$={discardMetadataDraft}
-                >
-                  Discard changes
-                </button>
-              )}
-              {metadata.pendingPlanId &&
-                metadata.pendingConsumers.some(
-                  (consumer) =>
-                    consumer.available &&
-                    consumer.effect !== "native-podcast-metadata",
-                ) && (
-                  <button
-                    class="secondary-button"
-                    type="button"
-                    disabled={metadata.propagating}
-                    onClick$={refreshAndVerify}
-                  >
-                    <Icon name="refresh" size={18} />
-                    {metadata.propagating
-                      ? "Refreshing and verifying…"
-                      : "Refresh and verify"}
-                  </button>
-                )}
-              <button
-                class="primary-button"
-                type="button"
-                disabled={
-                  !props.state.session?.canEdit ||
-                  !metadata.isDraft ||
-                  !metadata.itemId ||
-                  metadata.mediaType === "collection" ||
-                  !portableWriteAvailable ||
-                  !metadata.title.trim() ||
-                  metadata.planning
-                }
-                onClick$={previewMetadata}
-              >
-                <Icon name="scan" size={18} />
-                {metadata.mediaType === "collection"
-                  ? "Grouping folder"
-                  : metadata.mediaType === "book"
-                    ? metadata.planning
-                      ? "Rebuilding container…"
-                      : "Preview embedded metadata update"
-                    : metadata.planning
-                      ? "Preparing…"
-                      : metadata.sidecar?.exists
-                        ? "Preview safe sidecar update"
-                        : "Preview metadata sidecar"}
-              </button>
-            </div>
+              <Icon name="scan" size={18} />
+              {metadata.mediaType === "collection"
+                ? "Grouping folder"
+                : metadata.mediaType === "book"
+                  ? metadata.planning
+                    ? "Rebuilding container…"
+                    : "Preview embedded metadata update"
+                  : metadata.planning
+                    ? "Preparing…"
+                    : metadata.sidecar?.exists
+                      ? "Preview safe sidecar update"
+                      : "Preview metadata sidecar"}
+            </button>
           </div>
-          {(metadata.videoStreams.length > 0 ||
-            metadata.audioStreams.length > 0 ||
-            metadata.subtitleStreams.length > 0 ||
-            Object.keys(metadata.providerIds).length > 0) && (
-            <div class="editor-facts" aria-label="Jellyfin media facts">
-              <h5>Media facts</h5>
-              <dl>
-                {metadata.videoStreams.map((stream, index) => (
-                  <div key={`video-${index}`}>
-                    <dt>Video</dt>
-                    <dd>
-                      {[
-                        stream.height ? `${String(stream.height)}p` : "",
-                        stream.codec ? String(stream.codec) : "",
-                        stream.videoRange ? String(stream.videoRange) : "",
-                      ]
-                        .filter(Boolean)
-                        .join(" · ")}
-                    </dd>
+        </div>
+        {(metadata.videoStreams.length > 0 ||
+          metadata.audioStreams.length > 0 ||
+          metadata.subtitleStreams.length > 0 ||
+          Object.keys(metadata.providerIds).length > 0) && (
+          <div class="editor-facts" aria-label="Jellyfin media facts">
+            <h5>Media facts</h5>
+            <dl>
+              {metadata.videoStreams.map((stream, index) => (
+                <div key={`video-${index}`}>
+                  <dt>Video</dt>
+                  <dd>
+                    {[
+                      stream.height ? `${String(stream.height)}p` : "",
+                      stream.codec ? String(stream.codec) : "",
+                      stream.videoRange ? String(stream.videoRange) : "",
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </dd>
+                </div>
+              ))}
+              {metadata.audioStreams.map((stream, index) => (
+                <div key={`audio-${index}`}>
+                  <dt>Audio</dt>
+                  <dd>
+                    {[
+                      stream.language ? String(stream.language) : "",
+                      stream.codec ? String(stream.codec) : "",
+                      stream.channelLayout ? String(stream.channelLayout) : "",
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </dd>
+                </div>
+              ))}
+              {metadata.subtitleStreams.map((stream, index) => (
+                <div key={`subtitle-${index}`}>
+                  <dt>Subtitle</dt>
+                  <dd>
+                    {[
+                      stream.language
+                        ? String(stream.language)
+                        : "Unknown language",
+                      stream.codec ? String(stream.codec) : "",
+                      stream.title ? String(stream.title) : "",
+                      stream.isDefault ? "default" : "",
+                      stream.isForced ? "forced" : "",
+                      stream.isHearingImpaired ? "SDH/CC" : "",
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </dd>
+                </div>
+              ))}
+              {Object.entries(metadata.providerIds).map(([provider, id]) => (
+                <div key={provider}>
+                  <dt>{provider.toUpperCase()} ID</dt>
+                  <dd>{id}</dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+        )}
+        {section.value === "advanced" && (
+          <details class="metadata-inspector">
+            <summary class="metadata-inspector-heading">
+              Sources and write targets
+            </summary>
+            <div class="metadata-source-grid">
+              {metadata.observations.map((observation) => (
+                <article class="metadata-source-card" key={observation.source}>
+                  <div>
+                    <strong>{observation.label}</strong>
+                    <span class="source-kind">{observation.source}</span>
                   </div>
-                ))}
-                {metadata.audioStreams.map((stream, index) => (
-                  <div key={`audio-${index}`}>
-                    <dt>Audio</dt>
-                    <dd>
-                      {[
-                        stream.language ? String(stream.language) : "",
-                        stream.codec ? String(stream.codec) : "",
-                        stream.channelLayout
-                          ? String(stream.channelLayout)
-                          : "",
-                      ]
-                        .filter(Boolean)
-                        .join(" · ")}
-                    </dd>
-                  </div>
-                ))}
-                {metadata.subtitleStreams.map((stream, index) => (
-                  <div key={`subtitle-${index}`}>
-                    <dt>Subtitle</dt>
-                    <dd>
-                      {[
-                        stream.language
-                          ? String(stream.language)
-                          : "Unknown language",
-                        stream.codec ? String(stream.codec) : "",
-                        stream.title ? String(stream.title) : "",
-                        stream.isDefault ? "default" : "",
-                        stream.isForced ? "forced" : "",
-                        stream.isHearingImpaired ? "SDH/CC" : "",
-                      ]
-                        .filter(Boolean)
-                        .join(" · ")}
-                    </dd>
-                  </div>
-                ))}
-                {Object.entries(metadata.providerIds).map(([provider, id]) => (
-                  <div key={provider}>
-                    <dt>{provider.toUpperCase()} ID</dt>
-                    <dd>{id}</dd>
-                  </div>
-                ))}
-              </dl>
-            </div>
-          )}
-          {section.value === "advanced" && (
-            <details class="metadata-inspector">
-              <summary class="metadata-inspector-heading">
-                Sources and write targets
-              </summary>
-              <div class="metadata-source-grid">
-                {metadata.observations.map((observation) => (
-                  <article
-                    class="metadata-source-card"
-                    key={observation.source}
+                  <div
+                    class="metadata-layer-badges"
+                    aria-label="Metadata persistence"
                   >
-                    <div>
-                      <strong>{observation.label}</strong>
-                      <span class="source-kind">{observation.source}</span>
-                    </div>
-                    <div
-                      class="metadata-layer-badges"
-                      aria-label="Metadata persistence"
-                    >
-                      {observation.storage && (
-                        <span>{observation.storage.replaceAll("-", " ")}</span>
-                      )}
-                      {observation.survivesRescan && (
-                        <span>Survives rescan</span>
-                      )}
-                      {observation.locked === true && (
-                        <span>Locked in app</span>
-                      )}
-                      {observation.consumedBy?.map((consumer) => (
-                        <span key={consumer}>Read by {consumer}</span>
-                      ))}
-                    </div>
-                    <dl>
-                      <div>
-                        <dt>Title</dt>
-                        <dd>{metadataFieldValue(observation.fields.title)}</dd>
-                      </div>
-                      {observation.relativePath && (
-                        <div>
-                          <dt>File</dt>
-                          <dd>{observation.relativePath}</dd>
-                        </div>
-                      )}
-                      {observation.appItemId && (
-                        <div>
-                          <dt>App ID</dt>
-                          <dd>{observation.appItemId}</dd>
-                        </div>
-                      )}
-                      {observation.observedAt && (
-                        <div>
-                          <dt>Observed</dt>
-                          <dd>
-                            {new Date(
-                              observation.observedAt * 1000,
-                            ).toLocaleString()}
-                          </dd>
-                        </div>
-                      )}
-                    </dl>
-                    <ObservationStructuredDetails fields={observation.fields} />
-                    {observation.rawPreview && (
-                      <details class="metadata-raw-source">
-                        <summary>
-                          View raw{" "}
-                          {observation.format?.toUpperCase() ?? "source"}
-                        </summary>
-                        <pre>{observation.rawPreview}</pre>
-                      </details>
+                    {observation.storage && (
+                      <span>{observation.storage.replaceAll("-", " ")}</span>
                     )}
-                  </article>
-                ))}
-              </div>
-              {(metadata.health.length > 0 ||
-                metadata.inspectionWarnings.length > 0) && (
-                <section class="metadata-health" aria-label="Metadata health">
-                  <div class="metadata-subheading">
-                    <div>
-                      <span class="eyebrow">Metadata health</span>
-                      <h4>Checks worth reviewing</h4>
-                    </div>
-                    <span class="pane-count">
-                      {metadata.health.length +
-                        metadata.inspectionWarnings.length}
-                    </span>
-                  </div>
-                  <div class="metadata-health-list">
-                    {metadata.health.map((issue, index) => (
-                      <article
-                        class={{
-                          "metadata-health-item": true,
-                          [`severity-${issue.severity}`]: true,
-                        }}
-                        key={`${issue.code}-${index}`}
-                      >
-                        <Icon
-                          name={issue.severity === "info" ? "scan" : "alert"}
-                          size={17}
-                        />
-                        <div>
-                          <strong>{issue.title}</strong>
-                          <p>{issue.message}</p>
-                          {issue.sources.length > 0 && (
-                            <span>Sources: {issue.sources.join(" · ")}</span>
-                          )}
-                          {(issue.affectedFiles?.length ?? 0) > 0 && (
-                            <details class="health-file-details">
-                              <summary>
-                                Affects{" "}
-                                {issue.affectedFileCount ??
-                                  issue.affectedFiles!.length}{" "}
-                                {(issue.affectedFileCount ??
-                                  issue.affectedFiles!.length) === 1
-                                  ? "file"
-                                  : "files"}
-                              </summary>
-                              <p>{issue.affectedFiles!.join(", ")}</p>
-                            </details>
-                          )}
-                        </div>
-                      </article>
-                    ))}
-                    {metadata.inspectionWarnings.map((warning, index) => (
-                      <article
-                        class="metadata-health-item severity-info"
-                        key={`${warning}-${index}`}
-                      >
-                        <Icon name="scan" size={17} />
-                        <div>
-                          <strong>Source could not be inspected</strong>
-                          <p>{warning}</p>
-                        </div>
-                      </article>
+                    {observation.survivesRescan && <span>Survives rescan</span>}
+                    {observation.locked === true && <span>Locked in app</span>}
+                    {observation.consumedBy?.map((consumer) => (
+                      <span key={consumer}>Read by {consumer}</span>
                     ))}
                   </div>
-                </section>
-              )}
-              {metadata.trackOrder && metadata.trackOrder.fileCount > 0 && (
-                <section class="metadata-health" aria-label="Track order">
-                  <div class="metadata-subheading">
+                  <dl>
                     <div>
-                      <span class="eyebrow">Play order</span>
-                      <h4>Track order</h4>
+                      <dt>Title</dt>
+                      <dd>{metadataFieldValue(observation.fields.title)}</dd>
                     </div>
-                    <span class="pane-count">
-                      {metadata.trackOrder.fileCount}
-                    </span>
+                    {observation.relativePath && (
+                      <div>
+                        <dt>File</dt>
+                        <dd>{observation.relativePath}</dd>
+                      </div>
+                    )}
+                    {observation.appItemId && (
+                      <div>
+                        <dt>App ID</dt>
+                        <dd>{observation.appItemId}</dd>
+                      </div>
+                    )}
+                    {observation.observedAt && (
+                      <div>
+                        <dt>Observed</dt>
+                        <dd>
+                          {new Date(
+                            observation.observedAt * 1000,
+                          ).toLocaleString()}
+                        </dd>
+                      </div>
+                    )}
+                  </dl>
+                  <ObservationStructuredDetails fields={observation.fields} />
+                  {observation.rawPreview && (
+                    <details class="metadata-raw-source">
+                      <summary>
+                        View raw {observation.format?.toUpperCase() ?? "source"}
+                      </summary>
+                      <pre>{observation.rawPreview}</pre>
+                    </details>
+                  )}
+                </article>
+              ))}
+            </div>
+            {(metadata.health.length > 0 ||
+              metadata.inspectionWarnings.length > 0) && (
+              <section class="metadata-health" aria-label="Metadata health">
+                <div class="metadata-subheading">
+                  <div>
+                    <span class="eyebrow">Metadata health</span>
+                    <h4>Checks worth reviewing</h4>
                   </div>
-                  <p>
-                    Files play by disc, then track number.{" "}
-                    {metadata.trackOrder.playlistName
-                      ? `Ordered against ${metadata.trackOrder.playlistName}. `
-                      : "No playlist found in this folder. "}
-                    Rows marked “differs” disagree between filename, tag, or
-                    playlist — align the filename numbers with the embedded
-                    track numbers, then rescan the library and refresh the
-                    player app.
-                  </p>
-                  <div class="metadata-comparison-scroll">
-                    <table class="metadata-comparison">
-                      <thead>
-                        <tr>
-                          <th>File</th>
-                          <th>Filename #</th>
-                          <th>Tag #</th>
-                          <th>Playlist #</th>
-                          <th>Plays as</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {metadata.trackOrder.files.map((file) => (
-                          <tr key={file.fileName}>
-                            <th>
-                              {file.fileName}
-                              {file.status === "mismatch" ? " · differs" : ""}
-                            </th>
-                            <td>{file.filenameNumber ?? "—"}</td>
-                            <td>{file.tagTrack ?? "—"}</td>
-                            <td>{file.playlistPosition ?? "—"}</td>
-                            <td>#{file.effectivePosition}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                  <span class="pane-count">
+                    {metadata.health.length +
+                      metadata.inspectionWarnings.length}
+                  </span>
+                </div>
+                <div class="metadata-health-list">
+                  {metadata.health.map((issue, index) => (
+                    <article
+                      class={{
+                        "metadata-health-item": true,
+                        [`severity-${issue.severity}`]: true,
+                      }}
+                      key={`${issue.code}-${index}`}
+                    >
+                      <Icon
+                        name={issue.severity === "info" ? "scan" : "alert"}
+                        size={17}
+                      />
+                      <div>
+                        <strong>{issue.title}</strong>
+                        <p>{issue.message}</p>
+                        {issue.sources.length > 0 && (
+                          <span>Sources: {issue.sources.join(" · ")}</span>
+                        )}
+                        {(issue.affectedFiles?.length ?? 0) > 0 && (
+                          <details class="health-file-details">
+                            <summary>
+                              Affects{" "}
+                              {issue.affectedFileCount ??
+                                issue.affectedFiles!.length}{" "}
+                              {(issue.affectedFileCount ??
+                                issue.affectedFiles!.length) === 1
+                                ? "file"
+                                : "files"}
+                            </summary>
+                            <p>{issue.affectedFiles!.join(", ")}</p>
+                          </details>
+                        )}
+                      </div>
+                    </article>
+                  ))}
+                  {metadata.inspectionWarnings.map((warning, index) => (
+                    <article
+                      class="metadata-health-item severity-info"
+                      key={`${warning}-${index}`}
+                    >
+                      <Icon name="scan" size={17} />
+                      <div>
+                        <strong>Source could not be inspected</strong>
+                        <p>{warning}</p>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              </section>
+            )}
+            {metadata.trackOrder && metadata.trackOrder.fileCount > 0 && (
+              <section class="metadata-health" aria-label="Track order">
+                <div class="metadata-subheading">
+                  <div>
+                    <span class="eyebrow">Play order</span>
+                    <h4>Track order</h4>
                   </div>
-                </section>
-              )}
-              {metadata.observations.length > 0 && (
+                  <span class="pane-count">
+                    {metadata.trackOrder.fileCount}
+                  </span>
+                </div>
+                <p>
+                  Files play by disc, then track number.{" "}
+                  {metadata.trackOrder.playlistName
+                    ? `Ordered against ${metadata.trackOrder.playlistName}. `
+                    : "No playlist found in this folder. "}
+                  Rows marked “differs” disagree between filename, tag, or
+                  playlist — align the filename numbers with the embedded track
+                  numbers, then rescan the library and refresh the player app.
+                </p>
                 <div class="metadata-comparison-scroll">
                   <table class="metadata-comparison">
                     <thead>
                       <tr>
-                        <th>Field</th>
-                        {metadata.observations.map((observation) => (
-                          <th key={observation.source}>{observation.label}</th>
-                        ))}
-                        <th>Effective source</th>
+                        <th>File</th>
+                        <th>Filename #</th>
+                        <th>Tag #</th>
+                        <th>Playlist #</th>
+                        <th>Plays as</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {INSPECTED_METADATA_FIELDS.map((field) => (
-                        <tr key={field}>
-                          <th>{metadataFieldLabel(field)}</th>
-                          {metadata.observations.map((observation) => (
-                            <td key={`${observation.source}-${field}`}>
-                              {metadataFieldValue(observation.fields[field])}
-                            </td>
-                          ))}
-                          <td>
-                            <span class="source-pill">
-                              {metadata.fieldSources[field] ?? "—"}
-                            </span>
-                          </td>
+                      {metadata.trackOrder.files.map((file) => (
+                        <tr key={file.fileName}>
+                          <th>
+                            {file.fileName}
+                            {file.status === "mismatch" ? " · differs" : ""}
+                          </th>
+                          <td>{file.filenameNumber ?? "—"}</td>
+                          <td>{file.tagTrack ?? "—"}</td>
+                          <td>{file.playlistPosition ?? "—"}</td>
+                          <td>#{file.effectivePosition}</td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
                 </div>
-              )}
-              <div class="metadata-consumers">
-                {metadata.consumers.map((consumer) => (
-                  <article class="metadata-consumer" key={consumer.id}>
-                    <div>
-                      <strong>{consumer.label}</strong>
-                      <span
-                        class={{
-                          "status-badge": true,
-                          live: consumer.available,
-                        }}
-                      >
-                        {consumer.available ? "Connected" : "Unavailable"}
-                      </span>
-                    </div>
-                    <p>{consumer.message}</p>
-                    <footer>
-                      <span>
-                        {consumer.effect === "read-after-refresh"
-                          ? "Refresh after applying"
-                          : "Embedded-file edit required"}
-                      </span>
-                      {consumer.nativeUrl && consumer.canManageNatively && (
-                        <a
-                          href={consumer.nativeUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          Open in {consumer.label}
-                        </a>
-                      )}
-                    </footer>
-                  </article>
-                ))}
-              </div>
-              {metadata.modificationTargets.length > 0 && (
-                <section
-                  class="metadata-targets"
-                  aria-label="Modification targets"
-                >
-                  <div class="metadata-subheading">
-                    <div>
-                      <span class="eyebrow">Where changes go</span>
-                      <h4>Modification targets</h4>
-                    </div>
-                  </div>
-                  <div class="metadata-target-list">
-                    {metadata.modificationTargets.map((target) => (
-                      <article
-                        class={{
-                          "metadata-target": true,
-                          unavailable: !target.available,
-                        }}
-                        key={target.id}
-                      >
-                        <div>
-                          <strong>{target.label}</strong>
-                          <span class="source-kind">
-                            {target.kind === "portable-file"
-                              ? "Portable"
-                              : "App only"}
+              </section>
+            )}
+            {metadata.observations.length > 0 && (
+              <div class="metadata-comparison-scroll">
+                <table class="metadata-comparison">
+                  <thead>
+                    <tr>
+                      <th>Field</th>
+                      {metadata.observations.map((observation) => (
+                        <th key={observation.source}>{observation.label}</th>
+                      ))}
+                      <th>Effective source</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {INSPECTED_METADATA_FIELDS.map((field) => (
+                      <tr key={field}>
+                        <th>{metadataFieldLabel(field)}</th>
+                        {metadata.observations.map((observation) => (
+                          <td key={`${observation.source}-${field}`}>
+                            {metadataFieldValue(observation.fields[field])}
+                          </td>
+                        ))}
+                        <td>
+                          <span class="source-pill">
+                            {metadata.fieldSources[field] ?? "—"}
                           </span>
-                          {target.recommended && (
-                            <span class="status-badge live">Recommended</span>
-                          )}
-                        </div>
-                        <p>{target.message}</p>
-                        <footer>
-                          <span>
-                            {!target.available
-                              ? "Inspection only"
-                              : target.requiresRefresh
-                                ? "Refresh app after applying"
-                                : "Applies inside the app"}
-                          </span>
-                        </footer>
-                      </article>
+                        </td>
+                      </tr>
                     ))}
-                  </div>
-                </section>
-              )}
-              {metadata.mediaType === "book" && (
-                <p class="metadata-compatibility-note">
-                  Kavita consumes metadata inside the book container, not a
-                  neighboring OPF. EPUB package metadata and root ComicInfo.xml
-                  in CBZ can be updated here with a recoverable container
-                  rebuild; PDF XMP and CBR remain inspection-only.
-                </p>
-              )}
-              {metadata.mediaType === "podcast" && (
-                <p class="metadata-compatibility-note">
-                  Podcasts remain a separate Audiobookshelf media type. Embedded
-                  episode tags can be inspected here; feed matching and
-                  app-local edits stay in Audiobookshelf until a safe portable
-                  podcast writer is enabled.
-                </p>
-              )}
-            </details>
-          )}
-          {canGuidedRename && !props.folder && (
-            <section
-              class="file-organization"
-              aria-labelledby="file-organization-title"
-            >
-              <div class="file-organization-heading">
-                <span class="eyebrow">File organization</span>
-                <h4 id="file-organization-title">Rename this file</h4>
+                  </tbody>
+                </table>
               </div>
-              <div class="rename-fields">
-                <label class="profile-field">
-                  <span>Media profile</span>
-                  <select
-                    value={props.state.editProfile}
-                    onInput$={(_, input) => {
-                      props.state.editProfile = input.value as NamingProfile;
-                      props.state.preview = undefined;
-                    }}
-                  >
-                    {profilesForCategory(selectedRoot?.category).map(
-                      (profile) => (
-                        <option value={profile.id} key={profile.id}>
-                          {profile.label}
-                        </option>
-                      ),
-                    )}
-                  </select>
-                </label>
-                <label class="title-field">
-                  <span>Title</span>
-                  <input
-                    value={props.state.editTitle}
-                    onInput$={(_, input) =>
-                      (props.state.editTitle = input.value)
-                    }
-                    autocomplete="off"
-                  />
-                </label>
-                <label class="year-field">
-                  <span>
-                    Release year <small>optional</small>
-                  </span>
-                  <input
-                    inputMode="numeric"
-                    maxLength={4}
-                    placeholder="Unknown"
-                    value={props.state.editYear}
-                    onInput$={(_, input) =>
-                      (props.state.editYear = input.value
-                        .replace(/\D/g, "")
-                        .slice(0, 4))
-                    }
-                  />
-                </label>
-                {props.state.editProfile === "tv" && (
-                  <>
-                    <label class="number-field">
-                      <span>Season</span>
-                      <input
-                        inputMode="numeric"
-                        maxLength={3}
-                        placeholder="1"
-                        value={props.state.editSeason}
-                        onInput$={(_, input) =>
-                          (props.state.editSeason = numericValue(
-                            input.value,
-                            3,
-                          ))
-                        }
-                      />
-                    </label>
-                    <label class="number-field">
-                      <span>Episode</span>
-                      <input
-                        inputMode="numeric"
-                        maxLength={4}
-                        placeholder="1"
-                        value={props.state.editEpisode}
-                        onInput$={(_, input) =>
-                          (props.state.editEpisode = numericValue(
-                            input.value,
-                            4,
-                          ))
-                        }
-                      />
-                    </label>
-                    <label class="detail-field">
-                      <span>
-                        Episode title <small>optional</small>
-                      </span>
-                      <input
-                        value={props.state.editEpisodeTitle}
-                        onInput$={(_, input) =>
-                          (props.state.editEpisodeTitle = input.value)
-                        }
-                        autocomplete="off"
-                      />
-                    </label>
-                  </>
-                )}
-                {props.state.editProfile === "music" && (
-                  <>
-                    <label>
-                      <span>Artist</span>
-                      <input
-                        value={props.state.editCreator}
-                        onInput$={(_, input) =>
-                          (props.state.editCreator = input.value)
-                        }
-                        autocomplete="off"
-                      />
-                    </label>
-                    <label>
-                      <span>Album</span>
-                      <input
-                        value={props.state.editCollection}
-                        onInput$={(_, input) =>
-                          (props.state.editCollection = input.value)
-                        }
-                        autocomplete="off"
-                      />
-                    </label>
-                    <label class="number-field">
-                      <span>Track</span>
-                      <input
-                        inputMode="numeric"
-                        maxLength={3}
-                        value={props.state.editTrack}
-                        onInput$={(_, input) =>
-                          (props.state.editTrack = numericValue(input.value, 3))
-                        }
-                      />
-                    </label>
-                    <label class="number-field">
-                      <span>
-                        Disc <small>optional</small>
-                      </span>
-                      <input
-                        inputMode="numeric"
-                        maxLength={2}
-                        value={props.state.editDisc}
-                        onInput$={(_, input) =>
-                          (props.state.editDisc = numericValue(input.value, 2))
-                        }
-                      />
-                    </label>
-                  </>
-                )}
-                {["audiobook", "book"].includes(props.state.editProfile) && (
-                  <>
-                    <label>
-                      <span>Author</span>
-                      <input
-                        value={props.state.editCreator}
-                        onInput$={(_, input) =>
-                          (props.state.editCreator = input.value)
-                        }
-                        autocomplete="off"
-                      />
-                    </label>
-                    <label>
-                      <span>
-                        Series <small>optional</small>
-                      </span>
-                      <input
-                        value={props.state.editCollection}
-                        onInput$={(_, input) =>
-                          (props.state.editCollection = input.value)
-                        }
-                        autocomplete="off"
-                      />
-                    </label>
-                  </>
-                )}
-                <p class="organization-note">
-                  Folder names are constructed from these fields. Unknown years
-                  stay omitted; no destination path is accepted from the
-                  browser.
-                </p>
-                <button
-                  class="secondary-button rename-preview-button"
-                  type="button"
-                  disabled={props.state.planning || !renameReady(props.state)}
-                  onClick$={props.previewRename$}
-                >
-                  <Icon name="scan" size={18} />
-                  {props.state.planning ? "Preparing…" : "Preview organization"}
-                </button>
-              </div>
-              {props.state.preview && (
-                <div class="plan-preview">
-                  <div class="path-change">
-                    <span>
-                      {props.state.preview.actions[0]?.sourceRelativePath}
-                    </span>
-                    <Icon name="arrow" size={17} />
-                    <strong>
-                      {props.state.preview.actions[0]?.destinationRelativePath}
-                    </strong>
-                  </div>
-                  {props.state.preview.warnings.map((warning) => (
-                    <p class="plan-warning" key={warning}>
-                      <Icon name="alert" size={16} /> {warning}
-                    </p>
-                  ))}
-                  <div class="plan-actions">
-                    <span>
-                      Preview expires in 30 minutes and is bound to the current
-                      file fingerprint.
-                    </span>
-                    <button
-                      class="primary-button"
-                      type="button"
-                      disabled={
-                        props.state.status?.mutationMode !== "enabled" ||
-                        props.state.confirming
-                      }
-                      onClick$={props.confirmRename$}
+            )}
+            <div class="metadata-consumers">
+              {metadata.consumers.map((consumer) => (
+                <article class="metadata-consumer" key={consumer.id}>
+                  <div>
+                    <strong>{consumer.label}</strong>
+                    <span
+                      class={{
+                        "status-badge": true,
+                        live: consumer.available,
+                      }}
                     >
-                      <Icon name="check" size={18} />
-                      {props.state.confirming
-                        ? "Queuing…"
-                        : "Confirm exact plan"}
-                    </button>
+                      {consumer.available ? "Connected" : "Unavailable"}
+                    </span>
+                  </div>
+                  <p>{consumer.message}</p>
+                  <footer>
+                    <span>
+                      {consumer.effect === "read-after-refresh"
+                        ? "Refresh after applying"
+                        : "Embedded-file edit required"}
+                    </span>
+                    {consumer.nativeUrl && consumer.canManageNatively && (
+                      <a
+                        href={consumer.nativeUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        Open in {consumer.label}
+                      </a>
+                    )}
+                  </footer>
+                </article>
+              ))}
+            </div>
+            {metadata.modificationTargets.length > 0 && (
+              <section
+                class="metadata-targets"
+                aria-label="Modification targets"
+              >
+                <div class="metadata-subheading">
+                  <div>
+                    <span class="eyebrow">Where changes go</span>
+                    <h4>Modification targets</h4>
                   </div>
                 </div>
+                <div class="metadata-target-list">
+                  {metadata.modificationTargets.map((target) => (
+                    <article
+                      class={{
+                        "metadata-target": true,
+                        unavailable: !target.available,
+                      }}
+                      key={target.id}
+                    >
+                      <div>
+                        <strong>{target.label}</strong>
+                        <span class="source-kind">
+                          {target.kind === "portable-file"
+                            ? "Portable"
+                            : "App only"}
+                        </span>
+                        {target.recommended && (
+                          <span class="status-badge live">Recommended</span>
+                        )}
+                      </div>
+                      <p>{target.message}</p>
+                      <footer>
+                        <span>
+                          {!target.available
+                            ? "Inspection only"
+                            : target.requiresRefresh
+                              ? "Refresh app after applying"
+                              : "Applies inside the app"}
+                        </span>
+                      </footer>
+                    </article>
+                  ))}
+                </div>
+              </section>
+            )}
+            {metadata.mediaType === "book" && (
+              <p class="metadata-compatibility-note">
+                Kavita consumes metadata inside the book container, not a
+                neighboring OPF. EPUB package metadata and root ComicInfo.xml in
+                CBZ can be updated here with a recoverable container rebuild;
+                PDF XMP and CBR remain inspection-only.
+              </p>
+            )}
+            {metadata.mediaType === "podcast" && (
+              <p class="metadata-compatibility-note">
+                Podcasts remain a separate Audiobookshelf media type. Embedded
+                episode tags can be inspected here; feed matching and app-local
+                edits stay in Audiobookshelf until a safe portable podcast
+                writer is enabled.
+              </p>
+            )}
+          </details>
+        )}
+        {canGuidedRename && !props.folder && (
+          <section
+            class="file-organization"
+            aria-labelledby="file-organization-title"
+          >
+            <div class="file-organization-heading">
+              <span class="eyebrow">File organization</span>
+              <h4 id="file-organization-title">Rename this file</h4>
+            </div>
+            <div class="rename-fields">
+              <label class="profile-field">
+                <span>Media profile</span>
+                <select
+                  value={props.state.editProfile}
+                  onInput$={(_, input) => {
+                    props.state.editProfile = input.value as NamingProfile;
+                    props.state.preview = undefined;
+                  }}
+                >
+                  {profilesForCategory(selectedRoot?.category).map(
+                    (profile) => (
+                      <option value={profile.id} key={profile.id}>
+                        {profile.label}
+                      </option>
+                    ),
+                  )}
+                </select>
+              </label>
+              <label class="title-field">
+                <span>Title</span>
+                <input
+                  value={props.state.editTitle}
+                  onInput$={(_, input) => (props.state.editTitle = input.value)}
+                  autocomplete="off"
+                />
+              </label>
+              <label class="year-field">
+                <span>
+                  Release year <small>optional</small>
+                </span>
+                <input
+                  inputMode="numeric"
+                  maxLength={4}
+                  placeholder="Unknown"
+                  value={props.state.editYear}
+                  onInput$={(_, input) =>
+                    (props.state.editYear = input.value
+                      .replace(/\D/g, "")
+                      .slice(0, 4))
+                  }
+                />
+              </label>
+              {props.state.editProfile === "tv" && (
+                <>
+                  <label class="number-field">
+                    <span>Season</span>
+                    <input
+                      inputMode="numeric"
+                      maxLength={3}
+                      placeholder="1"
+                      value={props.state.editSeason}
+                      onInput$={(_, input) =>
+                        (props.state.editSeason = numericValue(input.value, 3))
+                      }
+                    />
+                  </label>
+                  <label class="number-field">
+                    <span>Episode</span>
+                    <input
+                      inputMode="numeric"
+                      maxLength={4}
+                      placeholder="1"
+                      value={props.state.editEpisode}
+                      onInput$={(_, input) =>
+                        (props.state.editEpisode = numericValue(input.value, 4))
+                      }
+                    />
+                  </label>
+                  <label class="detail-field">
+                    <span>
+                      Episode title <small>optional</small>
+                    </span>
+                    <input
+                      value={props.state.editEpisodeTitle}
+                      onInput$={(_, input) =>
+                        (props.state.editEpisodeTitle = input.value)
+                      }
+                      autocomplete="off"
+                    />
+                  </label>
+                </>
               )}
-            </section>
-          )}
-        </>
-      ) : tab.value === "subtitles" &&
-        supportsMediaAction(
-          props.state.status,
-          selectedItem?.mediaKind,
-          "manage-subtitles",
-        ) ? (
-        <SubtitleView
-          key={props.state.selectedItemId}
-          item={props.state.items.find(
-            (item) => item.id === props.state.selectedItemId,
-          )}
-          roots={props.state.roots}
-          session={props.state.session}
-          status={props.state.status}
-        />
-      ) : null}
+              {props.state.editProfile === "music" && (
+                <>
+                  <label>
+                    <span>Artist</span>
+                    <input
+                      value={props.state.editCreator}
+                      onInput$={(_, input) =>
+                        (props.state.editCreator = input.value)
+                      }
+                      autocomplete="off"
+                    />
+                  </label>
+                  <label>
+                    <span>Album</span>
+                    <input
+                      value={props.state.editCollection}
+                      onInput$={(_, input) =>
+                        (props.state.editCollection = input.value)
+                      }
+                      autocomplete="off"
+                    />
+                  </label>
+                  <label class="number-field">
+                    <span>Track</span>
+                    <input
+                      inputMode="numeric"
+                      maxLength={3}
+                      value={props.state.editTrack}
+                      onInput$={(_, input) =>
+                        (props.state.editTrack = numericValue(input.value, 3))
+                      }
+                    />
+                  </label>
+                  <label class="number-field">
+                    <span>
+                      Disc <small>optional</small>
+                    </span>
+                    <input
+                      inputMode="numeric"
+                      maxLength={2}
+                      value={props.state.editDisc}
+                      onInput$={(_, input) =>
+                        (props.state.editDisc = numericValue(input.value, 2))
+                      }
+                    />
+                  </label>
+                </>
+              )}
+              {["audiobook", "book"].includes(props.state.editProfile) && (
+                <>
+                  <label>
+                    <span>Author</span>
+                    <input
+                      value={props.state.editCreator}
+                      onInput$={(_, input) =>
+                        (props.state.editCreator = input.value)
+                      }
+                      autocomplete="off"
+                    />
+                  </label>
+                  <label>
+                    <span>
+                      Series <small>optional</small>
+                    </span>
+                    <input
+                      value={props.state.editCollection}
+                      onInput$={(_, input) =>
+                        (props.state.editCollection = input.value)
+                      }
+                      autocomplete="off"
+                    />
+                  </label>
+                </>
+              )}
+              <p class="organization-note">
+                Folder names are constructed from these fields. Unknown years
+                stay omitted; no destination path is accepted from the browser.
+              </p>
+              <button
+                class="secondary-button rename-preview-button"
+                type="button"
+                disabled={props.state.planning || !renameReady(props.state)}
+                onClick$={props.previewRename$}
+              >
+                <Icon name="scan" size={18} />
+                {props.state.planning ? "Preparing…" : "Preview organization"}
+              </button>
+            </div>
+            {props.state.preview && (
+              <div class="plan-preview">
+                <div class="path-change">
+                  <span>
+                    {props.state.preview.actions[0]?.sourceRelativePath}
+                  </span>
+                  <Icon name="arrow" size={17} />
+                  <strong>
+                    {props.state.preview.actions[0]?.destinationRelativePath}
+                  </strong>
+                </div>
+                {props.state.preview.warnings.map((warning) => (
+                  <p class="plan-warning" key={warning}>
+                    <Icon name="alert" size={16} /> {warning}
+                  </p>
+                ))}
+                <div class="plan-actions">
+                  <span>
+                    Preview expires in 30 minutes and is bound to the current
+                    file fingerprint.
+                  </span>
+                  <button
+                    class="primary-button"
+                    type="button"
+                    disabled={
+                      props.state.status?.mutationMode !== "enabled" ||
+                      props.state.confirming
+                    }
+                    onClick$={props.confirmRename$}
+                  >
+                    <Icon name="check" size={18} />
+                    {props.state.confirming ? "Queuing…" : "Confirm exact plan"}
+                  </button>
+                </div>
+              </div>
+            )}
+          </section>
+        )}
+      </div>
 
       {metadata.preview && (
         <div class="plan-preview">
