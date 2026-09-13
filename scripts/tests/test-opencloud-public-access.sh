@@ -21,6 +21,7 @@ public_json="$(
       (builtins.attrNames ingress));
     domain = builtins.substring 6 (builtins.stringLength cloudHost) cloudHost;
     officeHost = "office.${domain}";
+    tunnelUnit = "cloudflared-tunnel-${tunnelName}";
     gate = cfg.systemd.services.opencloud-share-gate;
     edge = cfg.systemd.services.opencloud-public-edge;
   in {
@@ -33,8 +34,9 @@ public_json="$(
     gateRuntimeDirectoryMode = gate.serviceConfig.RuntimeDirectoryMode or null;
     gateRestart = gate.serviceConfig.Restart or null;
     edgeExecStart = toString edge.serviceConfig.ExecStart;
-    cloudflaredWants = cfg.systemd.services.cloudflared.wants or [ ];
-    cloudflaredAfter = cfg.systemd.services.cloudflared.after or [ ];
+    tunnelWants = cfg.systemd.services.${tunnelUnit}.wants or [ ];
+    tunnelAfter = cfg.systemd.services.${tunnelUnit}.after or [ ];
+    hasBareCloudflaredUnit = cfg.systemd.services ? "cloudflared";
     caddyHosts = builtins.attrNames cfg.services.caddy.virtualHosts;
     privateHosts = builtins.attrNames cfg.services.unbound.privateHosts;
   }'
@@ -58,8 +60,9 @@ jq -e '
   and (.gateUser == "opencloud-share-gate")
   and (.gateRestart == "on-failure")
   and (.edgeExecStart | contains("caddy"))
-  and (.cloudflaredWants | index("opencloud-public-edge.service") != null)
-  and (.cloudflaredAfter | index("opencloud-public-edge.service") != null)
+  and (.hasBareCloudflaredUnit == false)
+  and (.tunnelWants | index("opencloud-public-edge.service") != null)
+  and (.tunnelAfter | index("opencloud-public-edge.service") != null)
   and (.caddyHosts | index(("cloud." + $domain)) != null)
   and (.caddyHosts | index(("office." + $domain)) != null)
   and (.privateHosts | index(("cloud." + $domain)) != null)

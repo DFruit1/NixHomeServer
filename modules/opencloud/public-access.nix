@@ -178,9 +178,13 @@ in
     };
   };
 
-  # Never publish a dead edge to the tunnel.
-  systemd.services.cloudflared.wants = [ "opencloud-public-edge.service" ];
-  systemd.services.cloudflared.after = [ "opencloud-public-edge.service" ];
+  # Never publish a dead edge to the tunnel. The cloudflared NixOS module runs
+  # one unit per tunnel named `cloudflared-tunnel-<name>`; the bare
+  # `cloudflared.service` is not a real unit.
+  systemd.services."cloudflared-tunnel-${vars.cloudflareTunnelName}" = {
+    wants = [ "opencloud-public-edge.service" ];
+    after = [ "opencloud-public-edge.service" ];
+  };
 
   services.cloudflared.tunnels.${vars.cloudflareTunnelName}.ingress = {
     ${cloudHost} = {
