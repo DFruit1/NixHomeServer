@@ -118,7 +118,10 @@ pub fn filename_sequence_number(file_name: &str) -> Option<(u64, u64)> {
     }
     if !explicit_disc
         && rest.starts_with('d')
-        && rest[1..].chars().next().is_some_and(|character| character.is_ascii_digit())
+        && rest[1..]
+            .chars()
+            .next()
+            .is_some_and(|character| character.is_ascii_digit())
     {
         let tail = &rest[1..];
         if let Some((number, consumed)) = leading_number(tail) {
@@ -132,7 +135,11 @@ pub fn filename_sequence_number(file_name: &str) -> Option<(u64, u64)> {
     for word in ["part", "track", "trk"] {
         if let Some(tail) = rest.strip_prefix(word) {
             let tail = tail.trim_start_matches([' ', '-', '_', '.', '#']);
-            if tail.chars().next().is_some_and(|character| character.is_ascii_digit()) {
+            if tail
+                .chars()
+                .next()
+                .is_some_and(|character| character.is_ascii_digit())
+            {
                 rest = tail;
                 break;
             }
@@ -233,8 +240,7 @@ pub fn assess_track_order(
             (
                 files[index].tag_disc.unwrap_or(u64::MAX),
                 files[index].tag_track.unwrap_or(u64::MAX),
-                filename_sequence_number(&files[index].file_name)
-                    .unwrap_or((u64::MAX, u64::MAX)),
+                filename_sequence_number(&files[index].file_name).unwrap_or((u64::MAX, u64::MAX)),
                 &files[index].file_name,
             )
         };
@@ -294,7 +300,10 @@ pub fn assess_track_order(
     let mut unnumbered = Vec::new();
     for file in &files {
         match filename_sequence_number(&file.file_name).map(|(_, track)| track) {
-            Some(number) => numbers.entry(number).or_default().push(file.file_name.clone()),
+            Some(number) => numbers
+                .entry(number)
+                .or_default()
+                .push(file.file_name.clone()),
             None => unnumbered.push(file.file_name.clone()),
         }
     }
@@ -315,7 +324,11 @@ pub fn assess_track_order(
             "The filename sequence has gaps or duplicates, so plain filename sorting drifts from the intended playback order. Renumber the files with zero-padded track numbers and rescan.".to_string(),
             affected,
         ));
-    } else if starts_at_zero && files.iter().any(|file| file.tag_track.is_some_and(|tag| tag >= 1)) {
+    } else if starts_at_zero
+        && files
+            .iter()
+            .any(|file| file.tag_track.is_some_and(|tag| tag >= 1))
+    {
         // The Lawson shape: 00-based files against 01-based tags. Either
         // scheme alone sorts the same files, but the player mixes the two
         // per file and collides them.
@@ -343,12 +356,7 @@ pub fn assess_track_order(
         let present: BTreeSet<&str> = files.iter().map(|file| file.file_name.as_str()).collect();
         let lower_present: BTreeMap<String, &str> = files
             .iter()
-            .map(|file| {
-                (
-                    file.file_name.to_ascii_lowercase(),
-                    file.file_name.as_str(),
-                )
-            })
+            .map(|file| (file.file_name.to_ascii_lowercase(), file.file_name.as_str()))
             .collect();
         let mut unresolved = Vec::new();
         let mut case_hints = Vec::new();
@@ -401,10 +409,7 @@ pub fn assess_track_order(
             .map(|file| file.file_name.as_str())
             .ne(by_effective.iter().map(|file| file.file_name.as_str()));
         if differs {
-            let affected: Vec<String> = listed
-                .iter()
-                .map(|file| file.file_name.clone())
-                .collect();
+            let affected: Vec<String> = listed.iter().map(|file| file.file_name.clone()).collect();
             problems.push(grouped_problem(
                 "playlist-order-differs",
                 "warning",
@@ -429,8 +434,7 @@ pub fn assess_track_order(
         .iter()
         .enumerate()
         .map(|(index, file)| {
-            let filename_number =
-                filename_sequence_number(&file.file_name).map(|(_, track)| track);
+            let filename_number = filename_sequence_number(&file.file_name).map(|(_, track)| track);
             let agreed = match (filename_number, file.tag_track) {
                 (Some(filename), Some(tag)) => {
                     filename == tag && filename_rank[&index] == effective_position[&index]
@@ -445,7 +449,11 @@ pub fn assess_track_order(
                 tag_track: file.tag_track,
                 playlist_position: playlist_positions.get(&file.file_name).copied(),
                 effective_position: effective_position[&index],
-                status: if agreed { "agree".to_string() } else { "mismatch".to_string() },
+                status: if agreed {
+                    "agree".to_string()
+                } else {
+                    "mismatch".to_string()
+                },
             }
         })
         .collect::<Vec<_>>();
@@ -506,9 +514,7 @@ pub fn inspect_folder_track_order(
         Err(_) => {
             return (
                 None,
-                vec![
-                    "The folder could not be opened for track-order inspection.".to_string(),
-                ],
+                vec!["The folder could not be opened for track-order inspection.".to_string()],
             );
         }
     };
@@ -518,9 +524,7 @@ pub fn inspect_folder_track_order(
         Err(_) => {
             return (
                 None,
-                vec![
-                    "The folder could not be listed for track-order inspection.".to_string(),
-                ],
+                vec!["The folder could not be listed for track-order inspection.".to_string()],
             );
         }
     };
@@ -532,7 +536,9 @@ pub fn inspect_folder_track_order(
             break;
         }
         let Ok(entry) = entry else { continue };
-        let Ok(file_type) = entry.file_type() else { continue };
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
         if !file_type.is_file() || file_type.is_symlink() {
             continue;
         }
@@ -658,7 +664,10 @@ mod tests {
         assert_eq!(filename_sequence_number("track 07.mp3"), Some((1, 7)));
         assert_eq!(filename_sequence_number("07/31.mp3"), Some((1, 7)));
         assert_eq!(filename_sequence_number("Prologue.mp3"), None);
-        assert_eq!(filename_sequence_number("Andy's Gone With Cattle.mp3"), None);
+        assert_eq!(
+            filename_sequence_number("Andy's Gone With Cattle.mp3"),
+            None
+        );
     }
 
     #[test]
@@ -716,7 +725,10 @@ mod tests {
 
     #[test]
     fn consistent_one_based_folder_is_clean() {
-        let files = vec![file("01_lawson.mp3", Some(1)), file("02_lawson.mp3", Some(2))];
+        let files = vec![
+            file("01_lawson.mp3", Some(1)),
+            file("02_lawson.mp3", Some(2)),
+        ];
         let playlist = vec!["01_lawson.mp3".to_string(), "02_lawson.mp3".to_string()];
         let report = assess_track_order(
             files,
@@ -754,11 +766,8 @@ mod tests {
             "01_Lawson.mp3\n02_lawson.mp3\n",
         )
         .expect("m3u");
-        let (report, warnings) = inspect_folder_track_order(
-            temp.path(),
-            "Lawson",
-            LibraryCategory::Audiobooks,
-        );
+        let (report, warnings) =
+            inspect_folder_track_order(temp.path(), "Lawson", LibraryCategory::Audiobooks);
         assert!(warnings.is_empty(), "{warnings:?}");
         let report = report.expect("report");
         assert_eq!(report.file_count, 2);
@@ -782,6 +791,10 @@ mod tests {
             .iter()
             .find(|problem| problem.code == "unresolved-playlist-entries")
             .unwrap();
-        assert!(unresolved.message.contains("01_lawson.mp3"), "{}", unresolved.message);
+        assert!(
+            unresolved.message.contains("01_lawson.mp3"),
+            "{}",
+            unresolved.message
+        );
     }
 }

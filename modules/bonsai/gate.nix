@@ -1,4 +1,4 @@
-{ config, lib, pkgs, vars, appPackages, ... }:
+{ config, lib, vars, appPackages, ... }:
 
 let
   cfg = config.repo.bonsai;

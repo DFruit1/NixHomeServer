@@ -40,7 +40,7 @@ let
   ++ lib.optionals (hasModule "files") [ "filestash-oauth2-proxy" ]
   ++ lib.optionals homepageEnabled [ "homepage-oauth2-proxy" ]
   ++ lib.optionals (moduleEnabled "kiwix") [ "kiwix-oauth2-proxy" ]
-  ++ lib.optionals (calibreWebEnabled) [ "calibre-web-oauth2-proxy" ]
+  ++ lib.optionals calibreWebEnabled [ "calibre-web-oauth2-proxy" ]
   ++ lib.optionals mailArchiveEnabled [ "mail-archive-oauth2-proxy" ]
   ++ lib.optionals (moduleEnabled "prowlarr") [ "prowlarr-oauth2-proxy" ]
   ++ lib.optionals (moduleEnabled "qbittorrent") [ "qbittorrent-oauth2-proxy" ]
@@ -79,7 +79,7 @@ let
   // lib.optionalAttrs (moduleEnabled "kiwix") {
     kiwix = mkApp "wiki.${vars.domain}" "http://${loopback}:${toString vars.networking.ports.kiwix}" [ "kiwix-users" ];
   }
-  // lib.optionalAttrs (calibreWebEnabled) {
+  // lib.optionalAttrs calibreWebEnabled {
     calibre = mkApp "calibre.${vars.domain}" "http://${loopback}:${toString vars.networking.ports.calibreWeb}" [ "calibre-web-users" ];
   }
   // lib.optionalAttrs (hasModule "youtube-downloader") {

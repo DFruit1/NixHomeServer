@@ -1,18 +1,18 @@
 use axum::{
-    Router,
     body::Bytes,
     extract::{Query, State},
-    http::{HeaderMap, Method, StatusCode, Uri, header},
+    http::{header, HeaderMap, Method, StatusCode, Uri},
     response::{IntoResponse, Response},
     routing::{any, get},
+    Router,
 };
 use serde_json::json;
 use std::{
     collections::HashMap,
     net::SocketAddr,
     sync::{
-        Arc,
         atomic::{AtomicU64, AtomicUsize, Ordering},
+        Arc,
     },
     time::Duration,
 };
@@ -63,8 +63,9 @@ impl Settings {
         if queue_timeout_secs == 0 || upstream_timeout_secs == 0 || max_body_bytes == 0 {
             return Err("AI_GATE timeouts and body limit must be positive".to_string());
         }
-        let upstream =
-            homelab_common::env_or("AI_GATE_UPSTREAM", "http://127.0.0.1:8086").trim_end_matches('/').to_string();
+        let upstream = homelab_common::env_or("AI_GATE_UPSTREAM", "http://127.0.0.1:8086")
+            .trim_end_matches('/')
+            .to_string();
         Ok(Self {
             listen: homelab_common::env_or("AI_GATE_LISTEN", "127.0.0.1:8094"),
             upstream,
@@ -147,12 +148,17 @@ async fn proxy_handler(
                 }
                 Ok(_) => {
                     state.queued.fetch_add(1, Ordering::SeqCst);
-                    let wait =
-                        tokio::time::timeout(state.settings.queue_timeout, state.semaphore.acquire());
+                    let wait = tokio::time::timeout(
+                        state.settings.queue_timeout,
+                        state.semaphore.acquire(),
+                    );
                     let permit = match wait.await {
                         Err(_) => {
                             state.queued.fetch_sub(1, Ordering::SeqCst);
-                            state.counters.queue_timeouts.fetch_add(1, Ordering::Relaxed);
+                            state
+                                .counters
+                                .queue_timeouts
+                                .fetch_add(1, Ordering::Relaxed);
                             return (
                                 StatusCode::GATEWAY_TIMEOUT,
                                 axum::Json(json!({
@@ -188,8 +194,14 @@ async fn proxy_handler(
         }
     }
 
-    let mut upstream_request = state.client.request(method.clone(), target).body(body.to_vec());
-    if let Some(content_type) = headers.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()) {
+    let mut upstream_request = state
+        .client
+        .request(method.clone(), target)
+        .body(body.to_vec());
+    if let Some(content_type) = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+    {
         upstream_request = upstream_request.header(header::CONTENT_TYPE, content_type);
     }
     if let Some(accept) = headers.get(header::ACCEPT).and_then(|v| v.to_str().ok()) {
@@ -199,7 +211,10 @@ async fn proxy_handler(
     let upstream_response = match upstream_request.send().await {
         Ok(response) => response,
         Err(_) => {
-            state.counters.upstream_errors.fetch_add(1, Ordering::Relaxed);
+            state
+                .counters
+                .upstream_errors
+                .fetch_add(1, Ordering::Relaxed);
             return (
                 StatusCode::BAD_GATEWAY,
                 axum::Json(json!({"error": "local AI upstream is unavailable"})),
@@ -218,7 +233,10 @@ async fn proxy_handler(
     let response_bytes = match upstream_response.bytes().await {
         Ok(bytes) => bytes,
         Err(_) => {
-            state.counters.upstream_errors.fetch_add(1, Ordering::Relaxed);
+            state
+                .counters
+                .upstream_errors
+                .fetch_add(1, Ordering::Relaxed);
             return (
                 StatusCode::BAD_GATEWAY,
                 axum::Json(json!({"error": "local AI upstream closed the response"})),
@@ -229,7 +247,10 @@ async fn proxy_handler(
     if status.is_success() {
         state.counters.upstream_ok.fetch_add(1, Ordering::Relaxed);
     } else {
-        state.counters.upstream_errors.fetch_add(1, Ordering::Relaxed);
+        state
+            .counters
+            .upstream_errors
+            .fetch_add(1, Ordering::Relaxed);
     }
     (
         status,
@@ -337,14 +358,20 @@ async fn main() -> std::process::ExitCode {
     let address: SocketAddr = match settings.listen.parse() {
         Ok(address) => address,
         Err(error) => {
-            homelab_common::log_startup_failed("ai-gate", &format!("invalid listen address: {error}"));
+            homelab_common::log_startup_failed(
+                "ai-gate",
+                &format!("invalid listen address: {error}"),
+            );
             return std::process::ExitCode::FAILURE;
         }
     };
     // Only loopback listeners are supported; the upstream has no auth.
     let is_loopback = matches!(address.ip(), std::net::IpAddr::V4(ip) if ip.is_loopback());
     if !is_loopback {
-        homelab_common::log_startup_failed("ai-gate", "AI_GATE_LISTEN must be a 127.x loopback address");
+        homelab_common::log_startup_failed(
+            "ai-gate",
+            "AI_GATE_LISTEN must be a 127.x loopback address",
+        );
         return std::process::ExitCode::FAILURE;
     }
     let state = AppState {
@@ -357,7 +384,10 @@ async fn main() -> std::process::ExitCode {
         {
             Ok(client) => client,
             Err(error) => {
-                homelab_common::log_startup_failed("ai-gate", &format!("client build failed: {error}"));
+                homelab_common::log_startup_failed(
+                    "ai-gate",
+                    &format!("client build failed: {error}"),
+                );
                 return std::process::ExitCode::FAILURE;
             }
         },
@@ -388,7 +418,7 @@ mod tests {
 
     #[test]
     fn immediate_permit_never_queues() {
-        assert_eq!(decide_queue(1, 99, 0).unwrap(), false);
+        assert!(!decide_queue(1, 99, 0).unwrap());
     }
 
     #[test]
@@ -399,8 +429,8 @@ mod tests {
 
     #[test]
     fn waiting_is_allowed_below_capacity() {
-        assert_eq!(decide_queue(0, 0, 2).unwrap(), true);
-        assert_eq!(decide_queue(0, 1, 2).unwrap(), true);
+        assert!(decide_queue(0, 0, 2).unwrap());
+        assert!(decide_queue(0, 1, 2).unwrap());
     }
 
     #[test]

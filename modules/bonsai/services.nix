@@ -55,7 +55,7 @@ let
         --repeat-last-n ${toString cfg.repeatLastN} \
         ${lib.optionalString (cfg.dryMultiplier > 0) "--dry-multiplier ${toString cfg.dryMultiplier} --dry-base 1.75 --dry-allowed-length 2"} \
         ${lib.optionalString (!cfg.reasoningPreserve) "--no-reasoning-preserve"} \
-        ${lib.optionalString (cfg.speculativeNgram) "--spec-type ngram-simple"} \
+        ${lib.optionalString cfg.speculativeNgram "--spec-type ngram-simple"} \
         ${lib.optionalString (cfg.gpu.enable && cfg.arcLoaderFlags) "--load-mode none --no-host --no-op-offload"} \
         ${lib.optionalString (cfg.imageMaxTokens > 0) "--image-max-tokens ${toString cfg.imageMaxTokens}"} \
         ${lib.optionalString cfg.quantizeKvCache "--cache-type-k q4_0 --cache-type-v q4_0"} \

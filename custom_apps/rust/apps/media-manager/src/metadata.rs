@@ -520,17 +520,17 @@ pub fn rewrite_embedded_metadata(
 /// Read just the disc/track numbers of one audio file for folder-level
 /// play-order analysis. Returns `(None, None)` for unreadable or untagged
 /// files instead of failing, so one bad sibling cannot sink a whole album.
-pub(crate) fn audio_track_numbers(
-    root: &Path,
-    relative_path: &str,
-) -> (Option<u64>, Option<u64>) {
+pub(crate) fn audio_track_numbers(root: &Path, relative_path: &str) -> (Option<u64>, Option<u64>) {
     let Some(file_type) = FileType::from_path(relative_path) else {
         return (None, None);
     };
     let Ok(file) = open_regular_file_beneath(root, relative_path) else {
         return (None, None);
     };
-    if file.metadata().is_ok_and(|metadata| metadata.len() > MAX_CONTAINER_BYTES) {
+    if file
+        .metadata()
+        .is_ok_and(|metadata| metadata.len() > MAX_CONTAINER_BYTES)
+    {
         return (None, None);
     }
     let Ok(tagged) = Probe::with_file_type(std::io::BufReader::new(file), file_type)
@@ -542,10 +542,7 @@ pub(crate) fn audio_track_numbers(
     let Some(tag) = tagged.primary_tag().or_else(|| tagged.first_tag()) else {
         return (None, None);
     };
-    (
-        tag.disk().map(u64::from),
-        tag.track().map(u64::from),
-    )
+    (tag.disk().map(u64::from), tag.track().map(u64::from))
 }
 
 fn inspect_audio_tags(

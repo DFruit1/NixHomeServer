@@ -101,7 +101,7 @@ let
     // lib.optionalAttrs (moduleEnabled "kiwix") {
       "kiwix-users" = "Grants Kiwix offline wiki access.";
     }
-    // lib.optionalAttrs (calibreWebEnabled) {
+    // lib.optionalAttrs calibreWebEnabled {
       "calibre-web-users" = "Grants technical library access.";
     }
     // lib.optionalAttrs mailArchiveEnabled {
@@ -131,7 +131,7 @@ let
     ]
     ++ lib.optionals (hasModule "youtube-downloader") [ "downloads-users" ]
     ++ lib.optionals (moduleEnabled "kiwix") [ "kiwix-users" ]
-    ++ lib.optionals (calibreWebEnabled) [ "calibre-web-users" ]
+    ++ lib.optionals calibreWebEnabled [ "calibre-web-users" ]
     ++ lib.optionals mailArchiveEnabled [ "mail-archive-users" ]
     ++ lib.optionals mediaAutomationEnabled [ "media-automation-users" ]
   );
