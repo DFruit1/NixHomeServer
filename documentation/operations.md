@@ -554,6 +554,32 @@ contend for the same paths or permissions.
 - Online office editing runs through Collabora on `https://<office-domain>`
   with the WOPI bridge at `https://<cloud-domain>`. Both upstreams bind
   loopback and are served only through Caddy.
+- Collabora is hardened beyond the upstream defaults: macro execution is
+  disabled, the admin console and metrics endpoint are closed, loopback is the
+  only accepted POST client and the only external data source for documents
+  (`net.post_allow`/`net.lok_allow`). Inserting an image from an external URL
+  inside a document is therefore blocked; download it first and insert the
+  file. WOPI proof stays disabled because its key path is fixed at the
+  read-only Nix store config directory and cannot be persisted without a
+  package change.
+- Collabora resource ceilings keep one document from exhausting the host:
+  a 2048 MiB virtual-memory limit and 4096 open-file limit per document
+  process, two worker threads per document, idle documents unloaded after
+  30 minutes, a single prespawn child and idle subforkit, cleanup starting at
+  50% memory, and a 100 MiB maximum document size.
+- Four client-side web apps are pinned in the Nix store and exposed through
+  `WEB_ASSET_APPS_PATH`, keeping them reproducible and out of the mutable data
+  tree: draw.io (`.drawio`/`.vsdx` diagrams), unzip (extract archives in
+  place), a JSON viewer, and a three.js viewer for 3D project assets
+  (`.3mf`, `.stl`, `.obj`, `.ply`, `.gltf`, `.glb`). No App Store download or
+  data-pool copy is required; the apps appear in the OpenCloud menu after a
+  deploy.
+- draw.io embeds the public `https://embed.diagrams.net` editor in an iframe.
+  That origin is already allowed by the Content-Security-Policy; to avoid
+  loading diagrams through a third party, point the app's `url` config at a
+  self-hosted draw.io instance instead.
+- The 3D model viewer is a community app (listed in `opencloud-eu/awesome-apps`
+  but not the App Store) and is vendored as-is from its release bundle.
 - Generated config and the seeded IDM admin credential live under
   `/mnt/data/opencloud/config`. The admin credential is generated once on
   first boot and is never placed in the Nix store.

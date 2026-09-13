@@ -15,6 +15,7 @@ for required_file in \
   filepaths.nix \
   services.nix \
   collabora.nix \
+  webapps.nix \
   bootstrap.nix \
   backups.nix; do
   [[ -f "modules/opencloud/$required_file" ]] || {
@@ -48,6 +49,20 @@ opencloud_json="$(
       aliasGroups = cfg.services.collabora-online.aliasGroups;
       wopiAllow = cfg.services.collabora-online.settings.storage.wopi."@allow" or false;
       sslEnable = cfg.services.collabora-online.settings.ssl.enable or true;
+      listen = cfg.services.collabora-online.settings.net.listen or "";
+      proto = cfg.services.collabora-online.settings.net.proto or "";
+      postAllowHosts = cfg.services.collabora-online.settings.net.post_allow.host or [];
+      lokAllowHosts = cfg.services.collabora-online.settings.net.lok_allow.host or [];
+      macrosEnabled = cfg.services.collabora-online.settings.security.enable_macros_execution or true;
+      seccomp = cfg.services.collabora-online.settings.security.seccomp or false;
+      serverSignature = cfg.services.collabora-online.settings.security.server_signature or true;
+      metricsUnauthenticated = cfg.services.collabora-online.settings.security.enable_metrics_unauthenticated or true;
+      adminConsole = cfg.services.collabora-online.settings.admin_console.enable or true;
+      maxConcurrency = cfg.services.collabora-online.settings.per_document.max_concurrency or 0;
+      limitVirtMemMb = cfg.services.collabora-online.settings.per_document.limit_virt_mem_mb or 0;
+      idleTimeout = cfg.services.collabora-online.settings.per_document.idle_timeout_secs or 0;
+      maxFileSize = cfg.services.collabora-online.settings.storage.wopi.max_file_size or 0;
+      memproportion = cfg.services.collabora-online.settings.memproportion or 0;
     };
     caddy = builtins.attrNames cfg.services.caddy.virtualHosts;
     privateHosts = builtins.attrNames cfg.services.unbound.privateHosts;
@@ -85,6 +100,8 @@ jq -e '
   and (.opencloud.environment.STORAGE_USERS_POSIX_ROOT | endswith("/storage"))
   and (.opencloud.environment.COLLABORATION_WOPI_SRC | startswith("https://cloud."))
   and (.opencloud.environment.COLLABORATION_APP_ADDR | startswith("https://office."))
+  and (.opencloud.environment.WEB_ASSET_APPS_PATH | startswith("/nix/store/"))
+  and (.opencloud.environment.WEB_ASSET_APPS_PATH | test("opencloud-web-apps"))
   and (.opencloud.guarded | index("opencloud") != null)
   and (.opencloud.guarded | index("opencloud-storage-layout-v1") != null)
   and (.opencloud.initAfter | index("opencloud-secret-materialize.service") != null)
@@ -95,6 +112,20 @@ jq -e '
   and (.collabora.wopiAllow == true)
   and (.collabora.sslEnable == false)
   and (.collabora.aliasGroups | length == 1)
+  and (.collabora.macrosEnabled == false)
+  and (.collabora.seccomp == true)
+  and (.collabora.serverSignature == false)
+  and (.collabora.metricsUnauthenticated == false)
+  and (.collabora.adminConsole == false)
+  and (.collabora.listen == "loopback")
+  and (.collabora.proto == "IPv4")
+  and (.collabora.postAllowHosts == ["127.0.0.1/32", "::1/128"])
+  and (.collabora.lokAllowHosts == ["127.0.0.1/32", "::1/128", "localhost"])
+  and (.collabora.maxConcurrency == 2)
+  and (.collabora.limitVirtMemMb == 2048)
+  and (.collabora.idleTimeout == 1800)
+  and (.collabora.maxFileSize == 104857600)
+  and (.collabora.memproportion > 0 and .collabora.memproportion < 100)
   and (.caddy | index($cloud) != null)
   and (.privateHosts | index($cloud) != null)
   and (.caddy | index($office) != null)
@@ -124,5 +155,29 @@ require_fixed modules/opencloud/services.nix \
 require_fixed modules/opencloud/filepaths.nix \
   'opencloud-storage-layout-v1' \
   "OpenCloud must provision its data-pool storage layout before starting."
+require_fixed modules/opencloud/collabora.nix \
+  'security.enable_macros_execution = false;' \
+  "Collabora must keep document macro execution disabled."
+require_fixed modules/opencloud/collabora.nix \
+  'net.listen = "loopback";' \
+  "Collabora must bind its HTTP port to loopback only."
+require_fixed modules/opencloud/collabora.nix \
+  'admin_console.enable = false;' \
+  "Collabora must keep the unauthenticated admin console closed."
+require_fixed modules/opencloud/webapps.nix \
+  'WEB_ASSET_APPS_PATH' \
+  "OpenCloud must load the pinned web app bundle from WEB_ASSET_APPS_PATH."
+require_fixed modules/opencloud/webapps.nix \
+  'draw-io-2.2.0.zip' \
+  "OpenCloud must pin the draw.io web app bundle."
+require_fixed modules/opencloud/webapps.nix \
+  'unzip-2.1.0.zip' \
+  "OpenCloud must pin the unzip web app bundle."
+require_fixed modules/opencloud/webapps.nix \
+  'json-viewer-2.1.0.zip' \
+  "OpenCloud must pin the JSON viewer web app bundle."
+require_fixed modules/opencloud/webapps.nix \
+  '3dviewer.zip' \
+  "OpenCloud must pin the 3D model viewer web app bundle."
 
 echo "✅ OpenCloud OIDC, PosixFS storage, collaboration, and wiring checks passed."

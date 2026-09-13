@@ -7,6 +7,7 @@
     ./filepaths.nix
     ./services.nix
     ./collabora.nix
+    ./webapps.nix
     ./bootstrap.nix
     ./backups.nix
   ];
