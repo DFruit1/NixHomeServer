@@ -140,6 +140,7 @@ export type IconName =
   | "refresh"
   | "shield"
   | "folder"
+  | "file"
   | "check"
   | "alert"
   | "scan"

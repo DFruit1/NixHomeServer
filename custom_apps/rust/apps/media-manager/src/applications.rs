@@ -18,6 +18,10 @@ pub struct ConsumerProfile {
     pub effect: &'static str,
     pub portable: bool,
     pub message: &'static str,
+    /// Ordered description of the sources the application reads for this kind
+    /// and the priority it applies. Declared here so the UI can show users
+    /// exactly where each program reads metadata from.
+    pub source_priority: &'static str,
 }
 
 /// The application-local metadata edit target (the app's native editor).
@@ -85,6 +89,7 @@ impl MediaApplication for Jellyfin {
             effect: "read-after-refresh",
             portable: true,
             message: "Jellyfin reads correctly named local NFO files after a library refresh.",
+            source_priority: "NFO sidecar → embedded file tags → Jellyfin library database",
         })
     }
     fn native_edit_target(&self, _kind: MediaKind) -> Option<NativeEditTarget> {
@@ -140,11 +145,13 @@ impl MediaApplication for Audiobookshelf {
                 effect: "read-after-refresh",
                 portable: true,
                 message: "Audiobookshelf reads OPF/NFO files according to the library metadata priority.",
+                source_priority: "metadata.opf sidecar → embedded audio tags → Audiobookshelf library database",
             }),
             MediaKind::Podcast => Some(ConsumerProfile {
                 effect: "native-podcast-metadata",
                 portable: false,
                 message: "Audiobookshelf keeps podcasts as a distinct media type; embedded episode tags remain portable, while feed and episode metadata can be managed in its native editor.",
+                source_priority: "Embedded episode tags → Audiobookshelf podcast feed database",
             }),
             _ => None,
         }
@@ -201,6 +208,7 @@ impl MediaApplication for Kavita {
             effect: "embedded-metadata-required",
             portable: false,
             message: "Kavita requires OPF inside EPUB, ComicInfo.xml inside comic archives, or PDF XMP metadata; an external OPF is ignored.",
+            source_priority: "Embedded container metadata only — EPUB OPF, CBZ ComicInfo, or PDF XMP; an external sidecar is ignored",
         })
     }
     fn native_edit_target(&self, _kind: MediaKind) -> Option<NativeEditTarget> {

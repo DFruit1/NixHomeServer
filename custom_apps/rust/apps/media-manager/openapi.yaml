@@ -1812,7 +1812,7 @@ components:
         consumerEffective: { type: boolean }
     MetadataConsumer:
       type: object
-      required: [id, label, available, effect, canManageNatively, portableWriteSupported, message]
+      required: [id, label, available, effect, canManageNatively, portableWriteSupported, message, sourcePriority]
       properties:
         id: { type: string, enum: [jellyfin, audiobookshelf, kavita] }
         label: { type: string }
@@ -1821,6 +1821,9 @@ components:
         canManageNatively: { type: boolean }
         portableWriteSupported: { type: boolean }
         message: { type: string }
+        sourcePriority:
+          description: Ordered sources the application reads for this kind, highest priority first, so users know where the program gets its metadata.
+          type: string
         nativeUrl: { type: string, format: uri }
     MetadataHealthIssue:
       type: object

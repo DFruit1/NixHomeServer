@@ -41,6 +41,7 @@ export const Icon = component$<{ name: IconName; size?: number }>((props) => {
       "m9 12 2 2 4-4",
     ],
     folder: ["M3 6h7l2 2h9v11H3z"],
+    file: ["M6 2h8l4 4v16H6z", "M14 2v5h5"],
     check: ["m5 12 4 4L19 6"],
     alert: ["M12 4 3 20h18z", "M12 9v4", "M12 17h.01"],
     scan: ["M4 8V4h4", "M16 4h4v4", "M20 16v4h-4", "M8 20H4v-4", "M8 12h8"],

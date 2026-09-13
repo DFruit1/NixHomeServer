@@ -275,6 +275,7 @@ export const ItemEditor = component$<{
   const section = useSignal<MetadataSection>("basics");
   const cardRef = useSignal<HTMLElement>();
   const subtitlesOpen = useSignal(false);
+  const writePortable = useSignal(true);
   const selectedItem = props.state.items.find(
     (item) => item.id === props.state.selectedItemId,
   );
@@ -453,6 +454,7 @@ export const ItemEditor = component$<{
     const loadRevision = metadata.draftRevision;
     if (selectionChanged) {
       section.value = "basics";
+      writePortable.value = true;
     }
     const item = props.folder
       ? undefined
@@ -1365,6 +1367,13 @@ export const ItemEditor = component$<{
       : metadata.modificationTargets.some(
           (target) => target.kind === "portable-file" && target.available,
         );
+  const portableTarget = metadata.modificationTargets.find(
+    (target) => target.kind === "portable-file",
+  );
+  const sidecarChoiceLabel =
+    portableTarget?.id === "portable-embedded"
+      ? "Write the new metadata inside the book file"
+      : "Write the new metadata to a sidecar file";
   const normalizedDraftValues = normalizedMetadataValues(metadata);
   const openLibraryFallbackQuery = [
     metadata.title.trim(),
@@ -1470,8 +1479,8 @@ export const ItemEditor = component$<{
         <div class="editor-heading-main">
           {selectedFilePath && (
             <div class="editor-file" title={selectedFilePath}>
-              <span class="editor-file-kind">
-                {props.folder ? "Folder" : "File"}
+              <span class="editor-file-icon" aria-hidden="true">
+                <Icon name={props.folder ? "folder" : "file"} size={18} />
               </span>
               <strong>{selectedFileName}</strong>
             </div>
@@ -1991,14 +2000,86 @@ export const ItemEditor = component$<{
             </>
           )}
         </fieldset>
-        <div class="metadata-actions">
-          <span>
-            {metadata.loadingDetails
-              ? "Reading available metadata…"
-              : metadata.isDirty
-                ? `${metadataFieldChanges(metadata.baseline, normalizedMetadataValues(metadata)).length} unsaved field change${metadataFieldChanges(metadata.baseline, normalizedMetadataValues(metadata)).length === 1 ? "" : "s"}.`
-                : `Sources: ${metadata.sources.join(" + ") || "select an item"}. NFO is used for video/music; OPF is used for books and audiobooks.`}
-          </span>
+        <div class="metadata-actions metadata-actions--editor">
+          {metadata.isDraft && (
+            <div class="metadata-preview-block">
+              <label class="sidecar-choice">
+                <input
+                  type="checkbox"
+                  checked={writePortable.value}
+                  onChange$={(_, input) =>
+                    (writePortable.value = input.checked)
+                  }
+                />
+                <span class="sidecar-choice-control" aria-hidden="true">
+                  <Icon name="check" size={14} />
+                </span>
+                <span class="sidecar-choice-label">{sidecarChoiceLabel}</span>
+                <span
+                  class="info-tip"
+                  tabIndex={0}
+                  role="note"
+                  aria-label="Where each app reads metadata from"
+                >
+                  ?
+                  <span class="info-tip-panel" role="tooltip">
+                    <strong>
+                      {portableTarget?.id === "portable-embedded"
+                        ? "Embedded metadata"
+                        : "Sidecar formats"}
+                    </strong>
+                    <p>
+                      {portableTarget?.id === "portable-embedded"
+                        ? "Book metadata is written inside the EPUB or CBZ container; PDF XMP and CBR stay inspection-only. Each app reads it in this order:"
+                        : "Metadata is written beside the media as an NFO for video and music, or an OPF for audiobooks, leaving the media file untouched. Each app reads it in this order:"}
+                    </p>
+                    <ul>
+                      {metadata.consumers.map((consumer) => (
+                        <li key={consumer.id}>
+                          <strong>{consumer.label}:</strong>{" "}
+                          {consumer.sourcePriority}
+                        </li>
+                      ))}
+                    </ul>
+                  </span>
+                </span>
+              </label>
+              <button
+                class="primary-button metadata-preview-button"
+                type="button"
+                disabled={
+                  !props.state.session?.canEdit ||
+                  !metadata.itemId ||
+                  metadata.mediaType === "collection" ||
+                  !portableWriteAvailable ||
+                  !writePortable.value ||
+                  !metadata.title.trim() ||
+                  metadata.planning
+                }
+                onClick$={previewMetadata}
+              >
+                <Icon name="scan" size={18} />
+                {metadata.mediaType === "collection"
+                  ? "Grouping folder"
+                  : metadata.mediaType === "book"
+                    ? metadata.planning
+                      ? "Rebuilding container…"
+                      : "Preview embedded metadata update"
+                    : metadata.planning
+                      ? "Preparing…"
+                      : metadata.sidecar?.exists
+                        ? "Preview safe sidecar update"
+                        : "Preview metadata sidecar"}
+              </button>
+              <span class="metadata-sources-note">
+                {metadata.loadingDetails
+                  ? "Reading available metadata…"
+                  : metadata.isDirty
+                    ? `${metadataFieldChanges(metadata.baseline, normalizedMetadataValues(metadata)).length} unsaved field change${metadataFieldChanges(metadata.baseline, normalizedMetadataValues(metadata)).length === 1 ? "" : "s"}.`
+                    : `Sources: ${metadata.sources.join(" + ") || "select an item"}. NFO is used for video/music; OPF is used for books and audiobooks.`}
+              </span>
+            </div>
+          )}
           <div class="metadata-action-buttons">
             {metadata.isDirty && (
               <button
@@ -2028,33 +2109,6 @@ export const ItemEditor = component$<{
                     : "Refresh and verify"}
                 </button>
               )}
-            <button
-              class="primary-button"
-              type="button"
-              disabled={
-                !props.state.session?.canEdit ||
-                !metadata.isDraft ||
-                !metadata.itemId ||
-                metadata.mediaType === "collection" ||
-                !portableWriteAvailable ||
-                !metadata.title.trim() ||
-                metadata.planning
-              }
-              onClick$={previewMetadata}
-            >
-              <Icon name="scan" size={18} />
-              {metadata.mediaType === "collection"
-                ? "Grouping folder"
-                : metadata.mediaType === "book"
-                  ? metadata.planning
-                    ? "Rebuilding container…"
-                    : "Preview embedded metadata update"
-                  : metadata.planning
-                    ? "Preparing…"
-                    : metadata.sidecar?.exists
-                      ? "Preview safe sidecar update"
-                      : "Preview metadata sidecar"}
-            </button>
           </div>
         </div>
         {(metadata.videoStreams.length > 0 ||
@@ -2123,7 +2177,7 @@ export const ItemEditor = component$<{
         {section.value === "advanced" && (
           <details class="metadata-inspector">
             <summary class="metadata-inspector-heading">
-              Sources and write targets
+              Sources and comparisons
             </summary>
             <div class="metadata-source-grid">
               {metadata.observations.map((observation) => (
@@ -2329,102 +2383,6 @@ export const ItemEditor = component$<{
                   </tbody>
                 </table>
               </div>
-            )}
-            <div class="metadata-consumers">
-              {metadata.consumers.map((consumer) => (
-                <article class="metadata-consumer" key={consumer.id}>
-                  <div>
-                    <strong>{consumer.label}</strong>
-                    <span
-                      class={{
-                        "status-badge": true,
-                        live: consumer.available,
-                      }}
-                    >
-                      {consumer.available ? "Connected" : "Unavailable"}
-                    </span>
-                  </div>
-                  <p>{consumer.message}</p>
-                  <footer>
-                    <span>
-                      {consumer.effect === "read-after-refresh"
-                        ? "Refresh after applying"
-                        : "Embedded-file edit required"}
-                    </span>
-                    {consumer.nativeUrl && consumer.canManageNatively && (
-                      <a
-                        href={consumer.nativeUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        Open in {consumer.label}
-                      </a>
-                    )}
-                  </footer>
-                </article>
-              ))}
-            </div>
-            {metadata.modificationTargets.length > 0 && (
-              <section
-                class="metadata-targets"
-                aria-label="Modification targets"
-              >
-                <div class="metadata-subheading">
-                  <div>
-                    <span class="eyebrow">Where changes go</span>
-                    <h4>Modification targets</h4>
-                  </div>
-                </div>
-                <div class="metadata-target-list">
-                  {metadata.modificationTargets.map((target) => (
-                    <article
-                      class={{
-                        "metadata-target": true,
-                        unavailable: !target.available,
-                      }}
-                      key={target.id}
-                    >
-                      <div>
-                        <strong>{target.label}</strong>
-                        <span class="source-kind">
-                          {target.kind === "portable-file"
-                            ? "Portable"
-                            : "App only"}
-                        </span>
-                        {target.recommended && (
-                          <span class="status-badge live">Recommended</span>
-                        )}
-                      </div>
-                      <p>{target.message}</p>
-                      <footer>
-                        <span>
-                          {!target.available
-                            ? "Inspection only"
-                            : target.requiresRefresh
-                              ? "Refresh app after applying"
-                              : "Applies inside the app"}
-                        </span>
-                      </footer>
-                    </article>
-                  ))}
-                </div>
-              </section>
-            )}
-            {metadata.mediaType === "book" && (
-              <p class="metadata-compatibility-note">
-                Kavita consumes metadata inside the book container, not a
-                neighboring OPF. EPUB package metadata and root ComicInfo.xml in
-                CBZ can be updated here with a recoverable container rebuild;
-                PDF XMP and CBR remain inspection-only.
-              </p>
-            )}
-            {metadata.mediaType === "podcast" && (
-              <p class="metadata-compatibility-note">
-                Podcasts remain a separate Audiobookshelf media type. Embedded
-                episode tags can be inspected here; feed matching and app-local
-                edits stay in Audiobookshelf until a safe portable podcast
-                writer is enabled.
-              </p>
             )}
           </details>
         )}

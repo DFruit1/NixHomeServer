@@ -1506,6 +1506,12 @@ describe("Media Manager library browser", () => {
         screen.querySelector<HTMLInputElement>(".title-input input")?.value,
       ).toBe("Alpha current"),
     );
+    await userEvent(
+      Array.from(screen.querySelectorAll("button")).find(
+        (button) => button.textContent?.trim() === "Create draft",
+      ) ?? null,
+      "click",
+    );
     const previewClick = userEvent(
       Array.from(screen.querySelectorAll("button")).find((button) =>
         button.textContent?.includes("Preview metadata sidecar"),
@@ -1850,16 +1856,12 @@ describe("Media Manager library browser", () => {
       ) ?? null,
       "click",
     );
-    expect(screen.textContent).toContain("Sources and write targets");
+    expect(screen.textContent).toContain("Sources and comparisons");
     expect(screen.textContent).toContain("NFO sidecar");
     expect(screen.textContent).toContain("Jellyfin");
-    expect(screen.textContent).toContain("Refresh after applying");
     expect(screen.textContent).toContain("Survives rescan");
     expect(screen.textContent).toContain("Metadata health");
     expect(screen.textContent).toContain("Title differs between sources");
-    expect(screen.textContent).toContain("Portable file metadata");
-    expect(screen.textContent).toContain("Jellyfin app metadata");
-    expect(screen.textContent).toContain("Sources: filename + sidecar");
     expect(screen.querySelector(".metadata-inspector")?.tagName).toBe(
       "DETAILS",
     );

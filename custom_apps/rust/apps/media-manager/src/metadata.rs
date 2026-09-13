@@ -137,6 +137,7 @@ pub struct ConsumerEffect {
     pub can_manage_natively: bool,
     pub portable_write_supported: bool,
     pub message: String,
+    pub source_priority: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub native_url: Option<String>,
 }
@@ -1184,6 +1185,7 @@ pub fn consumer_effects(config: &AppConfig, media_kind: MediaKind) -> Vec<Consum
                 can_manage_natively: true,
                 portable_write_supported: profile.portable,
                 message: profile.message.to_string(),
+                source_priority: profile.source_priority.to_string(),
                 native_url: app.public_url(config),
             })
         })

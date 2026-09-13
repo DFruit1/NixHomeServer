@@ -897,8 +897,10 @@ pub(super) async fn installed_subtitles(
             "available": state.config.integrations.iter().any(|integration| integration.id == "jellyfin" && integration.available),
             "effect": "read-after-refresh",
             "canManageNatively": true,
+            "portableWriteSupported": true,
             "nativeUrl": state.config.jellyfin_public_url,
-            "message": "Jellyfin can list, upload, search, download, and remove subtitles natively. Media Manager adds portable-file inspection and validation."
+            "message": "Jellyfin can list, upload, search, download, and remove subtitles natively. Media Manager adds portable-file inspection and validation.",
+            "sourcePriority": "Embedded subtitle streams → matching external subtitle sidecar → Jellyfin library database"
         }],
         "requestId": request_id,
     }))

@@ -1294,21 +1294,18 @@ a:focus-visible {
 .editor-file {
   min-width: 0;
   display: flex;
-  align-items: baseline;
-  gap: 8px;
+  align-items: center;
+  gap: 9px;
 }
-.editor-file-kind {
+.editor-file-icon {
   flex: 0 0 auto;
+  display: inline-flex;
   color: var(--ink-faint);
-  font-family: var(--font-mono);
-  font-size: 9px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
 }
 .editor-file strong {
   min-width: 0;
   font-family: var(--font-serif);
-  font-size: 15px;
+  font-size: 17px;
   font-weight: 500;
   overflow-wrap: anywhere;
 }
@@ -2043,12 +2040,17 @@ a:focus-visible {
 .close-button {
   width: 38px;
   height: 38px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border: 1px solid transparent;
   border-radius: 3px;
   color: var(--ink-soft);
   background: transparent;
   cursor: pointer;
-  font-size: 20px;
+  font-size: 23px;
+  line-height: 1;
   transition-property: color, background-color, border-color, scale;
   transition-duration: 120ms;
   transition-timing-function: ease-out;
@@ -3309,6 +3311,134 @@ a:focus-visible {
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
+}
+.metadata-actions--editor {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+}
+.metadata-actions--editor .metadata-action-buttons {
+  justify-content: center;
+}
+.metadata-preview-block {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  text-align: center;
+}
+.metadata-preview-button {
+  min-height: 44px;
+  width: 100%;
+  max-width: 340px;
+}
+.metadata-sources-note {
+  max-width: 48ch;
+  color: var(--ink-faint);
+  font-size: 10.5px;
+  line-height: 1.5;
+  text-wrap: pretty;
+}
+.sidecar-choice {
+  position: relative;
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  cursor: pointer;
+  color: var(--ink-soft);
+}
+.sidecar-choice input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+.sidecar-choice-control {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  color: transparent;
+  background: var(--card);
+  transition-property: color, background-color, border-color;
+  transition-duration: 120ms;
+  transition-timing-function: ease-out;
+}
+.sidecar-choice input:checked + .sidecar-choice-control {
+  border-color: var(--accent);
+  color: var(--accent-ink);
+  background: var(--accent);
+}
+.sidecar-choice input:focus-visible + .sidecar-choice-control {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.sidecar-choice-label {
+  font-size: 12px;
+  line-height: 1.4;
+}
+.info-tip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  color: var(--ink-faint);
+  background: var(--card);
+  cursor: help;
+  font-size: 11px;
+  font-weight: 600;
+}
+.info-tip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.info-tip-panel {
+  position: absolute;
+  right: -8px;
+  bottom: calc(100% + 10px);
+  z-index: 40;
+  width: min(320px, 82vw);
+  display: none;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  color: var(--ink-soft);
+  background: var(--card);
+  box-shadow: 0 10px 30px rgba(33, 29, 21, 0.18);
+  text-align: left;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.info-tip:hover .info-tip-panel,
+.info-tip:focus .info-tip-panel,
+.info-tip:focus-within .info-tip-panel {
+  display: flex;
+}
+.info-tip-panel strong {
+  font-size: 11px;
+}
+.info-tip-panel p {
+  margin: 0;
+}
+.info-tip-panel ul {
+  margin: 0;
+  padding-left: 16px;
+  display: grid;
+  gap: 4px;
+}
+.info-tip-panel li {
+  line-height: 1.45;
 }
 .editor-metadata-form + .metadata-actions {
   position: sticky;
@@ -5361,8 +5491,8 @@ a:focus-visible {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: 36px;
+  height: 36px;
   border: none;
   border-radius: 2px;
   background: transparent;
@@ -6066,7 +6196,7 @@ a:focus-visible {
 }
 @media (max-width: 920px) {
   .editor-heading {
-    align-items: flex-start;
+    align-items: center;
     gap: 8px;
     padding: 12px;
   }
@@ -6084,7 +6214,7 @@ a:focus-visible {
     padding: 0 8px;
     white-space: normal;
   }
-  .editor-heading > .close-button {
+  .editor-heading-actions .close-button {
     flex: 0 0 44px;
     min-height: 44px;
   }
