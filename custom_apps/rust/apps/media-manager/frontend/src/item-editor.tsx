@@ -64,6 +64,10 @@ import {
   type TmdbDetails,
 } from "./metadata-provider-candidates";
 import { parseTvEpisodeFilename } from "./root-routing";
+import {
+  mediaKindForMediaType,
+  supportsMediaAction,
+} from "./media-capabilities";
 import { SubtitleView } from "./subtitle-view";
 import type {
   CatalogItem,
@@ -108,6 +112,7 @@ function metadataSelectionKey(
 interface MetadataEditorState {
   itemId: string;
   mediaType: string;
+  mediaKind: string;
   title: string;
   year: string;
   authors: string;
@@ -286,6 +291,7 @@ export const ItemEditor = component$<{
   const metadata = useStore<MetadataEditorState>({
     itemId: "",
     mediaType: "movie",
+    mediaKind: "",
     title: "",
     year: "",
     authors: "",
@@ -442,7 +448,6 @@ export const ItemEditor = component$<{
     props.state.metadataDraftRevision += 1;
     const loadRevision = metadata.draftRevision;
     if (selectionChanged) {
-      tab.value = props.folder ? "metadata" : "explore";
       section.value = "basics";
     }
     const item = props.folder
@@ -450,6 +455,17 @@ export const ItemEditor = component$<{
       : props.state.items.find(
           (candidate) => candidate.id === props.state.selectedItemId,
         );
+    if (selectionChanged) {
+      tab.value =
+        !props.folder &&
+        supportsMediaAction(
+          props.state.status,
+          item?.mediaKind,
+          "lookup-metadata",
+        )
+          ? "explore"
+          : "metadata";
+    }
     metadata.itemId = selectionKey;
     metadata.isDraft = false;
     if (selectionChanged) {
@@ -470,6 +486,8 @@ export const ItemEditor = component$<{
     metadata.mediaType = props.folder
       ? mediaTypeForFolder(selectedRoot?.category, props.folder.relativePath)
       : mediaTypeForItem(item);
+    metadata.mediaKind =
+      item?.mediaKind ?? mediaKindForMediaType(metadata.mediaType) ?? "";
     const filename =
       (props.folder?.relativePath ?? item?.relativePath)?.split("/").at(-1) ??
       "";
@@ -549,6 +567,7 @@ export const ItemEditor = component$<{
       )
         return;
       if (details.mediaType) metadata.mediaType = String(details.mediaType);
+      if (details.mediaKind) metadata.mediaKind = String(details.mediaKind);
       if (details.title) metadata.title = String(details.title);
       if (details.year != null && details.year !== "")
         metadata.year = String(details.year);
@@ -640,7 +659,11 @@ export const ItemEditor = component$<{
     const action = props.command?.action;
     if (!revision || !action) return;
     if (action === "explore" && !props.folder) {
-      tab.value = "explore";
+      const kind =
+        metadata.mediaKind || mediaKindForMediaType(metadata.mediaType);
+      if (supportsMediaAction(props.state.status, kind, "lookup-metadata")) {
+        tab.value = "explore";
+      }
       return;
     }
     if (action !== "title") return;
@@ -1354,6 +1377,23 @@ export const ItemEditor = component$<{
     props.state.notice = `Added ${selectionCount} ${candidate.providerLabel} field${selectionCount === 1 ? "" : "s"} to the draft. Review them before previewing the portable metadata change.`;
   });
 
+  const actionKind =
+    metadata.mediaKind || mediaKindForMediaType(metadata.mediaType);
+  const canLookupMetadata = supportsMediaAction(
+    props.state.status,
+    actionKind,
+    "lookup-metadata",
+  );
+  const canGuidedRename = supportsMediaAction(
+    props.state.status,
+    actionKind,
+    "guided-rename",
+  );
+  const canEditPortableMetadata = supportsMediaAction(
+    props.state.status,
+    actionKind,
+    "edit-portable-metadata",
+  );
   const portableWriteAvailable =
     metadata.modificationTargets.length === 0
       ? !["book", "podcast"].includes(metadata.mediaType)
@@ -1377,17 +1417,7 @@ export const ItemEditor = component$<{
   const sourceChoices = metadata.isDraft
     ? metadataSourceChoices(metadata.observations, normalizedDraftValues)
     : [];
-  const exploreHasSources =
-    !props.folder &&
-    [
-      "movie",
-      "series",
-      "season",
-      "episode",
-      "book",
-      "audiobook",
-      "music",
-    ].includes(metadata.mediaType);
+  const exploreHasSources = !props.folder && canLookupMetadata;
   const exploreSources = (
     <>
       {["movie", "series", "season", "episode"].includes(
@@ -1487,7 +1517,7 @@ export const ItemEditor = component$<{
             role="tablist"
             aria-label="Edit selected item"
           >
-            {!props.folder && (
+            {canLookupMetadata && (
               <button
                 type="button"
                 role="tab"
@@ -1511,17 +1541,26 @@ export const ItemEditor = component$<{
             </button>
             {!props.folder && (
               <>
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={tab.value === "rename"}
-                  class={{ "editor-tab": true, active: tab.value === "rename" }}
-                  onClick$={() => (tab.value = "rename")}
-                >
-                  <Icon name="scan" size={16} />
-                  Rename
-                </button>
-                {selectedItem?.mediaKind === "video" && (
+                {canGuidedRename && (
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={tab.value === "rename"}
+                    class={{
+                      "editor-tab": true,
+                      active: tab.value === "rename",
+                    }}
+                    onClick$={() => (tab.value = "rename")}
+                  >
+                    <Icon name="scan" size={16} />
+                    Rename
+                  </button>
+                )}
+                {supportsMediaAction(
+                  props.state.status,
+                  selectedItem?.mediaKind,
+                  "manage-subtitles",
+                ) && (
                   <button
                     type="button"
                     role="tab"
@@ -1588,27 +1627,25 @@ export const ItemEditor = component$<{
             </div>
             <div class="metadata-draft-actions">
               {" "}
-              {props.state.session?.canEdit &&
-                metadata.mediaType !== "collection" &&
-                metadata.mediaType !== "podcast" && (
-                  <button
-                    class="secondary-button"
-                    type="button"
-                    disabled={
-                      !portableWriteAvailable ||
-                      metadata.loadingDetails ||
-                      metadata.confirming
-                    }
-                    onClick$={toggleMetadataDraft}
-                  >
-                    <Icon name={metadata.isDraft ? "check" : "tag"} size={17} />
-                    {metadata.isDraft
-                      ? metadata.isDirty
-                        ? "Discard draft"
-                        : "Inspect current"
-                      : "Create draft"}
-                  </button>
-                )}
+              {props.state.session?.canEdit && canEditPortableMetadata && (
+                <button
+                  class="secondary-button"
+                  type="button"
+                  disabled={
+                    !portableWriteAvailable ||
+                    metadata.loadingDetails ||
+                    metadata.confirming
+                  }
+                  onClick$={toggleMetadataDraft}
+                >
+                  <Icon name={metadata.isDraft ? "check" : "tag"} size={17} />
+                  {metadata.isDraft
+                    ? metadata.isDirty
+                      ? "Discard draft"
+                      : "Inspect current"
+                    : "Create draft"}
+                </button>
+              )}
               {props.folder && (
                 <button
                   class="close-button"
@@ -2483,7 +2520,12 @@ export const ItemEditor = component$<{
             </details>
           )}
         </>
-      ) : tab.value === "subtitles" && selectedItem?.mediaKind === "video" ? (
+      ) : tab.value === "subtitles" &&
+        supportsMediaAction(
+          props.state.status,
+          selectedItem?.mediaKind,
+          "manage-subtitles",
+        ) ? (
         <SubtitleView
           key={props.state.selectedItemId}
           item={props.state.items.find(

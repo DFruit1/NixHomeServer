@@ -481,6 +481,7 @@ async fn status(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respo
         "service": "media-manager",
         "mutationMode": state.config.mutation_mode,
         "integrations": integrations,
+        "mediaKinds": crate::capabilities::profiles(),
         "requestId": request_id,
     }))
     .into_response()

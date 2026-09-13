@@ -137,6 +137,25 @@ Requires `/dev/kvm`. Runs in 5-15 min. **Only run when diagnosing persistent bug
 where integration test coverage would be severely hampered without VM validation,
 or with explicit user permission.**
 
+## Service-Access Canary
+
+The authenticated Homepage canary (`modules/Core_Modules/homepage/canary.nix`)
+logs in as `canary-user` and verifies every enabled private application host
+after deploy. It is the only check that catches broken routing, DNS, or Kanidm
+access for a newly added service.
+
+* Every new user-facing app or other private browser host must have a canary
+  target in `canary.nix`.
+* `scripts/tests/test-canary-target-coverage.sh` (lean tier) fails when an
+  enabled Caddy host is neither covered nor listed in
+  `repo.canary.coverageExemptHosts`. Add an exemption only for surfaces that are
+  not independently browser-loginable (identity provider, gateway login,
+  embedded editors, public shares, API-only or device-local UIs) and document
+  the reason.
+* After deploying a new app, run the canary and inspect the rendered result:
+  `sudo systemctl start homepage-canary.service && sudo homepage-canary-assert`.
+  A green deploy is not proof of access.
+
 ## Media App UI Changes
 
 * Any change to media-manager text or UI layout must consider mobile phone screens as well as desktop screens. Verify the rendered library and metadata views at a phone width (about 390px) and a desktop width (about 1280px), including long titles and folder names, wrapped labels, image placeholders, upload controls, and subtitle management. Fix clipping, horizontal overflow, and inaccessible touch controls before considering the change complete.

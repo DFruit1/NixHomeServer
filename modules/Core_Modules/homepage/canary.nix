@@ -21,6 +21,8 @@ let
     (mkTarget { id = "photos"; name = "Photos"; host = "photos.${vars.domain}"; coverageMode = "native-oidc"; expectedPattern = "Immich|Photos"; })
     (mkTarget { id = "documents"; name = "Documents"; host = "paperless.${vars.domain}"; coverageMode = "native-oidc"; expectedPattern = "Paperless|Documents"; })
     (mkTarget { id = "files"; name = "Files"; host = "files.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "Filestash|Files"; })
+    (mkTarget { id = "cloud"; name = "OpenCloud"; host = "cloud.${vars.domain}"; coverageMode = "native-oidc"; expectedPattern = "OpenCloud|Files|All files"; })
+    (mkTarget { id = "media-manager"; name = "Media Manager"; host = "media.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "Media Manager|Media"; })
     (mkTarget { id = "audiobooks"; name = "Audiobooks"; host = "audiobooks.${vars.domain}"; path = "/audiobookshelf/"; coverageMode = "native-oidc"; expectedPattern = "Audiobookshelf|Audiobooks"; })
     (mkTarget { id = "videos"; name = "Videos"; host = "videos.${vars.domain}"; coverageMode = "native-oidc"; expectedPattern = "Jellyfin|Videos|My Media"; oidcLoginPath = "/sso/OIDC/Start/kanidm"; quickConnectCheck = true; })
     (mkTarget { id = "chaptarr"; name = "Book Downloads"; host = "chaptarr.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "Chaptarr|Book"; })
@@ -29,14 +31,18 @@ let
     (mkTarget { id = "prowlarr"; name = "Prowlarr"; host = "prowlarr.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "Prowlarr"; })
     (mkTarget { id = "torrents"; name = "Torrents"; host = "torrents.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "qBittorrent|Torrents"; })
     (mkTarget { id = "books"; name = "Books"; host = "books.${vars.domain}"; coverageMode = "native-oidc"; expectedPattern = "Kavita|Books"; })
+    (mkTarget { id = "calibre"; name = "Technical Library"; host = "calibre.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "Technical Library|Calibre"; })
     (mkTarget { id = "wiki"; name = "Offline Wiki"; host = "wiki.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "Kiwix|Offline Wiki"; })
+    (mkTarget { id = "archives"; name = "Web Archives"; host = "archives.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "Web Archives|Browsertrix"; })
     (mkTarget { id = "feeds"; name = "Feeds"; host = "rss.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "FreshRSS|Feeds"; })
     (mkTarget { id = "emails"; name = "Mail Archive"; host = "emails.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "Mail Archive|Emails"; })
     (mkTarget { id = "downloads"; name = "YouTube Downloads"; host = "ytdownload.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "YouTube|Downloads"; })
     (mkTarget { id = "passwords"; name = "Passwords"; host = "passwords.${vars.domain}"; coverageMode = "local-boundary"; expectedPattern = "Vaultwarden|Bitwarden|Passwords"; })
+    (mkTarget { id = "search"; name = "Search"; host = "search.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "Search"; })
     (mkTarget { id = "backups"; name = "Local Backups"; host = vars.kopiaDomain; coverageMode = "gateway-boundary"; expectedPattern = "Kopia|Backups"; expectAccessDenied = true; })
   ];
-  targets = map (target: removeAttrs target [ "host" "active" ]) (builtins.filter (target: target.active && hostEnabled target.host) allTargets);
+  activeTargets = builtins.filter (target: target.active && hostEnabled target.host) allTargets;
+  targets = map (target: removeAttrs target [ "host" "active" ]) activeTargets;
   canaryConfig = pkgs.writeText "homepage-canary-config.json" (builtins.toJSON {
     schemaVersion = 1;
     username = vars.kanidmCanaryUser;
@@ -86,126 +92,155 @@ let
   '';
 in
 {
-  users.groups.${canaryGroup} = { };
-  users.users.${canaryUser} = {
-    isSystemUser = true;
-    group = canaryGroup;
-    home = stateDir;
-  };
-  users.users.homepage.extraGroups = [ canaryGroup ];
-
-  environment.systemPackages = [ assertLatest ];
-
-  systemd.services.kanidm-canary-bootstrap = {
-    description = "Provision and verify the synthetic Kanidm canary credentials";
-    wantedBy = [ "multi-user.target" ];
-    after = [ "kanidm.service" ];
-    wants = [ "kanidm.service" ];
-    before = [ "homepage-canary.service" ];
-    restartTriggers = [ config.age.secrets.canaryUserPassword.file ];
-    environment = {
-      KANIDM_URL = vars.kanidmBaseUrl;
-      KANIDM_ADMIN_USERNAME = "idm_admin";
-      CANARY_USERNAME = vars.kanidmCanaryUser;
-      CANARY_TOTP_SEED_FILE = totpSeedPath;
-    };
-    serviceConfig = {
-      Type = "oneshot";
-      RemainAfterExit = true;
-      ExecStart = "${appPackages.kanidm-canary-bootstrap}/bin/kanidm-canary-bootstrap";
-      LoadCredential = [
-        "idm-admin-password:${config.age.secrets.kanidmAdminPass.path}"
-        "canary-password:${config.age.secrets.canaryUserPassword.path}"
+  options.repo.canary = {
+    coverageExemptHosts = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [
+        config.repo.authGateway.domain
+        "id.${vars.domain}"
+        "office.${vars.domain}"
+        "ai.${vars.domain}"
+        "syncthing.${vars.domain}"
+        "sharephotos.${vars.domain}"
+        "www.${vars.domain}"
+        vars.domain
       ];
-      StateDirectory = "homepage-canary-credentials";
-      StateDirectoryMode = "0700";
-      Restart = "on-failure";
-      RestartSec = "5s";
-      TimeoutStartSec = "2min";
-      PrivateTmp = true;
-      ProtectSystem = "strict";
-      ProtectHome = true;
-      NoNewPrivileges = true;
-      RestrictSUIDSGID = true;
-      UMask = "0077";
-      ReadWritePaths = [ credentialStateDir ];
+      description = ''
+        Private application hosts intentionally excluded from authenticated
+        canary coverage. Keep this list minimal and only for surfaces that are
+        not independently browser-loginable (identity provider, gateway login,
+        embedded editors, public shares, API-only or device-local UIs).
+      '';
+    };
+    coveredHosts = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      readOnly = true;
+      default = map (target: target.host) activeTargets;
+      description = "Hosts covered by an active authenticated canary target.";
     };
   };
 
-  systemd.services.homepage-canary = {
-    description = "Headless browser service-access canary";
-    unitConfig = {
-      OnFailure = [ config.repo.monitoring.failureAlerts.targetUnit ];
-      OnFailureJobMode = "replace-irreversibly";
+  config = {
+    users.groups.${canaryGroup} = { };
+    users.users.${canaryUser} = {
+      isSystemUser = true;
+      group = canaryGroup;
+      home = stateDir;
     };
-    after = [ "network-online.target" "kanidm-canary-bootstrap.service" "caddy.service" "homepage.service" ];
-    wants = [ "network-online.target" "caddy.service" "homepage.service" ];
-    requires = [ "kanidm-canary-bootstrap.service" ];
-    environment = {
-      CANARY_CONFIG_FILE = canaryConfig;
-      CANARY_STATE_DIR = stateDir;
-      HOME = stateDir;
+    users.users.homepage.extraGroups = [ canaryGroup ];
+
+    environment.systemPackages = [ assertLatest ];
+
+    systemd.services.kanidm-canary-bootstrap = {
+      description = "Provision and verify the synthetic Kanidm canary credentials";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "kanidm.service" ];
+      wants = [ "kanidm.service" ];
+      before = [ "homepage-canary.service" ];
+      restartTriggers = [ config.age.secrets.canaryUserPassword.file ];
+      environment = {
+        KANIDM_URL = vars.kanidmBaseUrl;
+        KANIDM_ADMIN_USERNAME = "idm_admin";
+        CANARY_USERNAME = vars.kanidmCanaryUser;
+        CANARY_TOTP_SEED_FILE = totpSeedPath;
+      };
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = "${appPackages.kanidm-canary-bootstrap}/bin/kanidm-canary-bootstrap";
+        LoadCredential = [
+          "idm-admin-password:${config.age.secrets.kanidmAdminPass.path}"
+          "canary-password:${config.age.secrets.canaryUserPassword.path}"
+        ];
+        StateDirectory = "homepage-canary-credentials";
+        StateDirectoryMode = "0700";
+        Restart = "on-failure";
+        RestartSec = "5s";
+        TimeoutStartSec = "2min";
+        PrivateTmp = true;
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        NoNewPrivileges = true;
+        RestrictSUIDSGID = true;
+        UMask = "0077";
+        ReadWritePaths = [ credentialStateDir ];
+      };
     };
-    serviceConfig = {
-      Type = "oneshot";
-      User = canaryUser;
-      Group = canaryGroup;
-      ExecStartPre = cleanupRunningState;
-      ExecStart = "${pkgs.util-linux}/bin/flock --nonblock /run/homepage-canary/run.lock ${runner}/bin/homepage-canary-runner";
-      ExecStopPost = cleanupRunningState;
-      LoadCredential = [
-        "kanidm-password:${config.age.secrets.canaryUserPassword.path}"
-        "kanidm-totp-seed:${totpSeedPath}"
-      ];
-      StateDirectory = "homepage-canary";
-      StateDirectoryMode = "0750";
-      RuntimeDirectory = "homepage-canary";
-      RuntimeDirectoryMode = "0750";
-      TimeoutStartSec = "12min";
-      PrivateTmp = true;
-      ProtectSystem = "strict";
-      ProtectHome = true;
-      NoNewPrivileges = true;
-      RestrictSUIDSGID = true;
-      UMask = "0027";
-      ReadOnlyPaths = [
-        canaryConfig
-        config.age.secrets.canaryUserPassword.path
-        totpSeedPath
-      ];
-      ReadWritePaths = [ stateDir ];
+
+    systemd.services.homepage-canary = {
+      description = "Headless browser service-access canary";
+      unitConfig = {
+        OnFailure = [ config.repo.monitoring.failureAlerts.targetUnit ];
+        OnFailureJobMode = "replace-irreversibly";
+      };
+      after = [ "network-online.target" "kanidm-canary-bootstrap.service" "caddy.service" "homepage.service" ];
+      wants = [ "network-online.target" "caddy.service" "homepage.service" ];
+      requires = [ "kanidm-canary-bootstrap.service" ];
+      environment = {
+        CANARY_CONFIG_FILE = canaryConfig;
+        CANARY_STATE_DIR = stateDir;
+        HOME = stateDir;
+      };
+      serviceConfig = {
+        Type = "oneshot";
+        User = canaryUser;
+        Group = canaryGroup;
+        ExecStartPre = cleanupRunningState;
+        ExecStart = "${pkgs.util-linux}/bin/flock --nonblock /run/homepage-canary/run.lock ${runner}/bin/homepage-canary-runner";
+        ExecStopPost = cleanupRunningState;
+        LoadCredential = [
+          "kanidm-password:${config.age.secrets.canaryUserPassword.path}"
+          "kanidm-totp-seed:${totpSeedPath}"
+        ];
+        StateDirectory = "homepage-canary";
+        StateDirectoryMode = "0750";
+        RuntimeDirectory = "homepage-canary";
+        RuntimeDirectoryMode = "0750";
+        TimeoutStartSec = "12min";
+        PrivateTmp = true;
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        NoNewPrivileges = true;
+        RestrictSUIDSGID = true;
+        UMask = "0027";
+        ReadOnlyPaths = [
+          canaryConfig
+          config.age.secrets.canaryUserPassword.path
+          totpSeedPath
+        ];
+        ReadWritePaths = [ stateDir ];
+      };
     };
+
+    systemd.timers.homepage-canary = {
+      description = "Periodically verify authenticated service access";
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        OnBootSec = "15min";
+        OnUnitActiveSec = "6h";
+        RandomizedDelaySec = "15min";
+        Persistent = true;
+        Unit = "homepage-canary.service";
+      };
+    };
+
+    systemd.tmpfiles.rules = [
+      "d ${stateDir} 0750 ${canaryUser} ${canaryGroup} -"
+      "d ${stateDir}/failures 0750 ${canaryUser} ${canaryGroup} 14d"
+    ];
+
+    security.sudo.extraRules = [
+      {
+        users = [ "homepage" ];
+        commands = [{ command = "${trigger}"; options = [ "NOPASSWD" ]; }];
+      }
+    ];
+
+    systemd.services.homepage.environment = {
+      HOMEPAGE_CANARY_ADMIN_USER = vars.kanidmAdminUser;
+      HOMEPAGE_CANARY_STATE_DIR = stateDir;
+      HOMEPAGE_CANARY_TRIGGER_COMMAND = "${trigger}";
+    };
+    systemd.services.homepage.serviceConfig.ReadOnlyPaths = [ stateDir ];
   };
-
-  systemd.timers.homepage-canary = {
-    description = "Periodically verify authenticated service access";
-    wantedBy = [ "timers.target" ];
-    timerConfig = {
-      OnBootSec = "15min";
-      OnUnitActiveSec = "6h";
-      RandomizedDelaySec = "15min";
-      Persistent = true;
-      Unit = "homepage-canary.service";
-    };
-  };
-
-  systemd.tmpfiles.rules = [
-    "d ${stateDir} 0750 ${canaryUser} ${canaryGroup} -"
-    "d ${stateDir}/failures 0750 ${canaryUser} ${canaryGroup} 14d"
-  ];
-
-  security.sudo.extraRules = [
-    {
-      users = [ "homepage" ];
-      commands = [{ command = "${trigger}"; options = [ "NOPASSWD" ]; }];
-    }
-  ];
-
-  systemd.services.homepage.environment = {
-    HOMEPAGE_CANARY_ADMIN_USER = vars.kanidmAdminUser;
-    HOMEPAGE_CANARY_STATE_DIR = stateDir;
-    HOMEPAGE_CANARY_TRIGGER_COMMAND = "${trigger}";
-  };
-  systemd.services.homepage.serviceConfig.ReadOnlyPaths = [ stateDir ];
-
 }

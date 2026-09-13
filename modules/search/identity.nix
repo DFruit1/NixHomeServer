@@ -14,10 +14,11 @@ in
       createHome = false;
     };
 
-    # Search is an admin-only tool. The shared gateway enforces the group on
+    # Search is a privileged tool. The shared gateway enforces the group on
     # every request; the app trusts the gateway's forwarded identity headers.
+    # Server admins and the configured app users are members.
     services.kanidm.provision.groups.${accessGroup} = {
-      members = [ vars.kanidmAdminUser ];
+      members = vars.kanidmAppUsers;
       overwriteMembers = false;
     };
 

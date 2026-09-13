@@ -1,4 +1,5 @@
 use super::*;
+use crate::capabilities::MediaAction;
 use crate::media::{classify, LibraryCategory, MediaKind, SidecarFormat};
 
 struct VisibleMediaFolder {
@@ -1136,6 +1137,7 @@ async fn item_metadata_value(
     application_caches: Option<&ApplicationMetadataCaches>,
 ) -> Value {
     let mut response = filename_metadata(item);
+    response["mediaKind"] = json!(item.media_kind);
     let mut observations = vec![filename_observation(&response)];
     let mut field_sources = initial_field_sources(&response, "filename");
     let mut inspection_warnings = Vec::new();
@@ -1487,6 +1489,7 @@ pub(super) async fn folder_metadata(
     let mut field_sources = initial_field_sources(&response, "folder");
     let (sidecar_path, sidecar_format) = folder_sidecar_path(&folder.relative_path, media_type);
     let consumer_kind = folder.category.primary_kind();
+    response["mediaKind"] = json!(consumer_kind);
     let consumer_effective = !matches!(consumer_kind, MediaKind::Book | MediaKind::Podcast);
     let root = state
         .config
@@ -1536,7 +1539,7 @@ pub(super) async fn folder_metadata(
     // siblings, the playlist sidecar, and the embedded track tags.
     let mut track_order_value = Value::Null;
     let mut track_order_warnings = Vec::new();
-    if matches!(media_type, "audiobook" | "podcast" | "music") {
+    if folder.category.profile().supports(MediaAction::TrackOrder) {
         if let Some(root) = root.as_ref() {
             let root_path = root.resolved_path.clone();
             let folder_path = folder.relative_path.clone();

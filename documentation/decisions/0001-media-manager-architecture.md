@@ -2,7 +2,7 @@
 
 - Status: accepted
 - Date: 2026-08-01
-- Updated: 2026-08-05
+- Updated: 2026-09-13
 
 ## Context
 
@@ -78,6 +78,17 @@ pass arbitrary file descriptors to another process. Stale or invalid snapshots
 fail closed to filename metadata. Episode sidecars use Jellyfin's
 `episodedetails`, `showtitle`, `season`, and `episode` NFO fields.
 
+Library behavior is described by one capability table instead of scattered
+per-kind checks. Every media kind maps to a curation unit (a single file, a
+folder bundle whose files are parts such as an album, a companion image or
+subtitle, or an uncatalogued container) and the closed set of user-facing
+actions it supports: inline or application playback, artwork, portable versus
+native metadata, provider lookups, subtitles, guided rename, and track order.
+The scanner, HTTP handlers, and library UI derive their behavior from this
+table, which is published on the status endpoint so the browser does not keep
+its own kind lists. Whether the application that serves a kind is actually
+deployed remains runtime state in the application registry.
+
 Manual refresh is a closed, coalescing adapter surface available to every
 authenticated user. The unprivileged web process may only enqueue fixed
 integration identifiers and exposes the request's durable queued, running,
@@ -107,6 +118,8 @@ available for later reconciliation.
   MKVMaker are disabled.
 - Cross-library moves require a typed semantic operation and consumer-impact
   report instead of path manipulation.
+- A new media kind, or a change to how a kind is curated or acted on, is
+  expressed once in the capability table and reaches the scanner, API, and UI.
 - The dedicated mutation broker can be disabled without affecting conversion
   visibility or catalog inspection.
 - Application refreshes remain usable from a viewer session without granting

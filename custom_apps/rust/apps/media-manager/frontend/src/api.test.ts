@@ -13,6 +13,7 @@ describe("api", () => {
               service: "media-manager",
               mutationMode: "enabled",
               integrations: [],
+              mediaKinds: [],
             }),
           ),
       ),
@@ -23,6 +24,7 @@ describe("api", () => {
       service: "media-manager",
       mutationMode: "enabled",
       integrations: [],
+      mediaKinds: [],
     });
   });
 

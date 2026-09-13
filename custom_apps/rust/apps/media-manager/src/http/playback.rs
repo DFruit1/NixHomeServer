@@ -1,4 +1,5 @@
 use super::*;
+use crate::capabilities::MediaAction;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -197,7 +198,7 @@ pub(super) async fn item_stream(
         Ok(item) => item,
         Err(error) => return error.with_request_id(request_id.clone()).into_response(),
     };
-    if !matches!(item.media_kind, MediaKind::Music | MediaKind::Audiobook) {
+    if !item.media_kind.supports(MediaAction::PlayInline) {
         return ApiError::new(
             StatusCode::CONFLICT,
             "audio_item_required",

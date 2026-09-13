@@ -1,4 +1,5 @@
 import { contract } from "../api-contract.generated";
+import { mediaKindForMediaType } from "../media-capabilities";
 
 // Builders fill transport fields omitted by UI-focused tests from the canonical
 // contract. Explicit domain values are preserved, including deliberately empty
@@ -6,6 +7,74 @@ import { contract } from "../api-contract.generated";
 const schemas = (
   contract as { components: { schemas: Record<string, Schema> } }
 ).components.schemas;
+// Canonical status capability table for UI tests, mirroring the Rust
+// `capabilities` module. Tests that exercise capability-gated UI get a
+// representative server payload instead of an empty list.
+const mediaKindProfiles = [
+  {
+    kind: "video",
+    curationUnit: "file",
+    actions: [
+      "play-external",
+      "edit-artwork",
+      "edit-portable-metadata",
+      "lookup-metadata",
+      "manage-subtitles",
+      "guided-rename",
+    ],
+  },
+  {
+    kind: "music",
+    curationUnit: "folder_bundle",
+    actions: [
+      "play-inline",
+      "play-external",
+      "edit-artwork",
+      "edit-portable-metadata",
+      "lookup-metadata",
+      "guided-rename",
+      "track-order",
+    ],
+  },
+  {
+    kind: "audiobook",
+    curationUnit: "folder_bundle",
+    actions: [
+      "play-inline",
+      "play-external",
+      "edit-artwork",
+      "edit-portable-metadata",
+      "lookup-metadata",
+      "guided-rename",
+      "track-order",
+    ],
+  },
+  {
+    kind: "podcast",
+    curationUnit: "folder_bundle",
+    actions: [
+      "play-external",
+      "edit-artwork",
+      "edit-native-metadata",
+      "guided-rename",
+      "track-order",
+    ],
+  },
+  {
+    kind: "book",
+    curationUnit: "file",
+    actions: [
+      "play-external",
+      "edit-artwork",
+      "edit-portable-metadata",
+      "lookup-metadata",
+      "guided-rename",
+    ],
+  },
+  { kind: "artwork", curationUnit: "companion", actions: ["edit-artwork"] },
+  { kind: "subtitle", curationUnit: "companion", actions: [] },
+  { kind: "iso", curationUnit: "container", actions: [] },
+];
 type Schema = {
   $ref?: string;
   type?: string | string[];
@@ -95,6 +164,10 @@ function complete(value: unknown): unknown {
     !("workId" in object)
   )
     name = "OpenLibrarySearchResponse";
+  if (name === "Status" && !("mediaKinds" in object))
+    object.mediaKinds = mediaKindProfiles;
+  if (name === "ItemMetadata" && !("mediaKind" in object))
+    object.mediaKind = mediaKindForMediaType(object.mediaType as string);
   if (
     (object.provider && typeof object.provider === "object") ||
     (Array.isArray(object.sources) &&

@@ -3249,6 +3249,68 @@ describe("Media Manager library browser", () => {
     );
     expect(screen.querySelector(".mini-player")).toBeUndefined();
   });
+
+  it("hides lookup and portable-metadata actions for a native-only podcast", async () => {
+    const podcast = {
+      id: "episode-1",
+      rootId: "shared-podcasts",
+      relativePath: "_Podcasts/Show/Episode 1.mp3",
+      mediaKind: "podcast",
+      sizeBytes: 2048,
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      const payload = path.endsWith("/status")
+        ? { mutationMode: "enabled", integrations: [] }
+        : path.endsWith("/session")
+          ? { username: "dsaw", groups: ["users"], canEdit: true }
+          : path.endsWith("/roots")
+            ? [
+                {
+                  id: "shared-podcasts",
+                  label: "Shared podcasts",
+                  category: "podcasts",
+                  scope: "shared",
+                  available: true,
+                },
+              ]
+            : path.endsWith("/items/episode-1/metadata")
+              ? {
+                  mediaType: "podcast",
+                  mediaKind: "podcast",
+                  title: "Episode 1",
+                  sources: ["filename"],
+                }
+              : path.endsWith("/items/episode-1/playback-targets")
+                ? { targets: [] }
+                : path.includes("/items?rootId=")
+                  ? { items: [podcast] }
+                  : { available: false, progress: {} };
+      return new Response(wireJson(payload));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { render, screen, userEvent } = await createDOM();
+    await render(
+      <Root initialView="library" initialRootId="shared-podcasts" />,
+    );
+    await userEvent(screen.querySelector(".tree-row.file"), "click");
+
+    await vi.waitFor(() => expect(editorTab(screen, "Explore")).toBeNull());
+    expect(editorTab(screen, "Metadata")).toBeDefined();
+    expect(editorTab(screen, "Rename")).toBeDefined();
+    expect(editorTab(screen, "Subtitles")).toBeNull();
+    expect(
+      Array.from(screen.querySelectorAll("button")).some(
+        (button) => button.textContent?.trim() === "Explore metadata",
+      ),
+    ).toBe(false);
+    expect(
+      Array.from(screen.querySelectorAll("button")).some(
+        (button) => button.textContent?.trim() === "Create draft",
+      ),
+    ).toBe(false);
+  });
 });
 
 describe("Jellyfin TV filename parsing", () => {

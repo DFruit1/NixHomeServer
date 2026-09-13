@@ -1,4 +1,4 @@
-{ config, lib, unstablePkgs, vars, ... }:
+{ config, lib, pkgs, unstablePkgs, vars, ... }:
 
 let
   cfg = config.repo.opencloud;
@@ -6,6 +6,54 @@ let
   adminEnvFile = "${stateDir}/config/opencloud-admin.env";
   cloudHost = "cloud.${vars.domain}";
   officeHost = "office.${vars.domain}";
+  # OpenCloud's built-in Content-Security-Policy only allows same-origin
+  # connections, which blocks the browser from fetching an external IdP's OIDC
+  # discovery document and leaves the login view spinning. Mirror the built-in
+  # directives and add the Kanidm issuer origin to `connect-src`.
+  idpOrigin = "https://${vars.kanidmDomain}";
+  cspFile = pkgs.writeText "opencloud-csp.yaml" ''
+    directives:
+      child-src:
+        - "'self'"
+      connect-src:
+        - "'self'"
+        - "blob:"
+        - "https://raw.githubusercontent.com/opencloud-eu/awesome-apps/"
+        - "https://update.opencloud.eu/"
+        - "${idpOrigin}/"
+      default-src:
+        - "'none'"
+      font-src:
+        - "'self'"
+      frame-ancestors:
+        - "'self'"
+      frame-src:
+        - "'self'"
+        - "blob:"
+        - "https://embed.diagrams.net/"
+        - "https://${officeHost}/"
+        - "${idpOrigin}/"
+      img-src:
+        - "'self'"
+        - "data:"
+        - "blob:"
+        - "https://raw.githubusercontent.com/opencloud-eu/awesome-apps/"
+        - "https://${officeHost}/"
+      manifest-src:
+        - "'self'"
+      media-src:
+        - "'self'"
+      object-src:
+        - "'self'"
+        - "blob:"
+      script-src:
+        - "'self'"
+        - "'unsafe-inline'"
+      style-src:
+        - "'self'"
+        - "'unsafe-inline'"
+        - "blob:"
+  '';
 in
 {
   services.opencloud = {
@@ -23,6 +71,8 @@ in
     environmentFile = adminEnvFile;
     environment = {
       OC_CONFIG_DIR = "${stateDir}/config";
+      # Allow the browser to reach the external Kanidm issuer for OIDC.
+      PROXY_CSP_CONFIG_FILE_LOCATION = toString cspFile;
       # Caddy is the only TLS terminator, so the proxy must speak plain HTTP on
       # the loopback port. PROXY_TLS defaults to true and is independent of
       # OC_INSECURE, which only relaxes certificate validation.

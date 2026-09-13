@@ -540,7 +540,12 @@ const checkAuthenticated = async (sessionId, target) => {
           await navigate(sessionId, oidcEntryUrl);
           await sleep(750);
           await traceOidcPage('provider-start');
-        } else {
+        } else if (hostOf(await currentUrl(sessionId)) !== target.kanidmHost) {
+          // Some applications redirect straight to the IdP before rendering any
+          // local login action. In that case there is nothing on the app page to
+          // click, and the only matching link on the IdP page is its external
+          // "powered by" branding; click only while still on the application
+          // host and otherwise let the existing IdP session complete SSO.
           const clicked = await waitFor(
             async () => clickMatching(sessionId, 'kanidm|openid|oauth|single sign|sso'),
             15_000,
@@ -549,6 +554,11 @@ const checkAuthenticated = async (sessionId, target) => {
         }
       }
       if (hostOf(await currentUrl(sessionId)) === target.kanidmHost) {
+        // Kanidm may still require OAuth2 consent for a client whose scopes the
+        // synthetic account has not approved in this session. Granting consent
+        // mirrors what an interactive user does; the button is absent when no
+        // consent is outstanding, so a miss is harmless.
+        await clickMatching(sessionId, 'proceed|allow|grant|consent|authorize').catch(() => false);
         await waitFor(async () => hostOf(await currentUrl(sessionId)) !== target.kanidmHost);
       }
       if (oidcTrace.length > 0) await traceOidcPage('provider-return');

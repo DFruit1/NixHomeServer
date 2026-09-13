@@ -21,6 +21,7 @@ import {
   type EditorCommandAction,
 } from "./item-editor";
 import { LibraryMiniPlayer } from "./mini-player";
+import { isLibraryKind, supportsMediaAction } from "./media-capabilities";
 import { PlayerView } from "./player-view";
 import { RefreshView } from "./refresh-view";
 import { EmptyState, LoadingState } from "./view-states";
@@ -1064,6 +1065,7 @@ function folderDisplayName(folder: string): string {
 }
 
 function artworkCandidateId(
+  status: Status | undefined,
   items: CatalogItem[],
   selectedItemId: string,
   selectedFolder: string,
@@ -1073,8 +1075,7 @@ function artworkCandidateId(
   const prefix = `${selectedFolder}/`;
   const inside = items.filter((item) => item.relativePath.startsWith(prefix));
   return (
-    inside.find((item) => MEDIA_QUICK_ACTION_KINDS.includes(item.mediaKind))
-      ?.id ??
+    inside.find((item) => isLibraryKind(status, item.mediaKind))?.id ??
     inside.find((item) => item.mediaKind === "artwork")?.id ??
     inside[0]?.id ??
     ""
@@ -1159,8 +1160,11 @@ const MediaImage = component$<{
                   <p role="alert">Image sources could not be checked.</p>
                 )}
                 {props.item &&
-                  props.item.mediaKind !== "subtitle" &&
-                  props.item.mediaKind !== "iso" && (
+                  supportsMediaAction(
+                    props.state.status,
+                    props.item.mediaKind,
+                    "edit-artwork",
+                  ) && (
                     <CoverArtCard
                       item={props.item}
                       state={props.state}
@@ -1370,14 +1374,6 @@ function trackDisplay(item: CatalogItem): { title: string; artist: string } {
   return { title: stem, artist: "" };
 }
 
-const MEDIA_QUICK_ACTION_KINDS = [
-  "video",
-  "music",
-  "audiobook",
-  "podcast",
-  "book",
-];
-
 const ItemQuickActions = component$<{
   item: CatalogItem;
   state: DashboardState;
@@ -1412,7 +1408,26 @@ const ItemQuickActions = component$<{
     }
   });
   const canEdit = props.state.session?.canEdit ?? false;
-  const isMusic = props.item.mediaKind === "music";
+  const playInline = supportsMediaAction(
+    props.state.status,
+    props.item.mediaKind,
+    "play-inline",
+  );
+  const canLookup = supportsMediaAction(
+    props.state.status,
+    props.item.mediaKind,
+    "lookup-metadata",
+  );
+  const canEditArtwork = supportsMediaAction(
+    props.state.status,
+    props.item.mediaKind,
+    "edit-artwork",
+  );
+  const canEditTitle = supportsMediaAction(
+    props.state.status,
+    props.item.mediaKind,
+    "edit-portable-metadata",
+  );
   const playTarget = playback.target;
   const startInPagePlayer = $(() => {
     const { title, artist } = trackDisplay(props.item);
@@ -1430,7 +1445,7 @@ const ItemQuickActions = component$<{
       role="group"
       aria-label="Selected media actions"
     >
-      {isMusic ? (
+      {playInline ? (
         <button
           class="quick-action-button play"
           type="button"
@@ -1464,32 +1479,38 @@ const ItemQuickActions = component$<{
           Play
         </button>
       )}
-      <button
-        class="quick-action-button"
-        type="button"
-        onClick$={() => sendEditorCommand("explore")}
-      >
-        <Icon name="search" size={17} />
-        Explore metadata
-      </button>
-      <button
-        class="quick-action-button"
-        type="button"
-        disabled={!canEdit}
-        onClick$={props.onToggleCover$}
-      >
-        <Icon name="image" size={17} />
-        {props.coverOpen ? "Close image editor" : "Edit image"}
-      </button>
-      <button
-        class="quick-action-button"
-        type="button"
-        disabled={!canEdit}
-        onClick$={() => sendEditorCommand("title")}
-      >
-        <Icon name="tag" size={17} />
-        Edit title
-      </button>
+      {canLookup && (
+        <button
+          class="quick-action-button"
+          type="button"
+          onClick$={() => sendEditorCommand("explore")}
+        >
+          <Icon name="search" size={17} />
+          Explore metadata
+        </button>
+      )}
+      {canEditArtwork && (
+        <button
+          class="quick-action-button"
+          type="button"
+          disabled={!canEdit}
+          onClick$={props.onToggleCover$}
+        >
+          <Icon name="image" size={17} />
+          {props.coverOpen ? "Close image editor" : "Edit image"}
+        </button>
+      )}
+      {canEditTitle && (
+        <button
+          class="quick-action-button"
+          type="button"
+          disabled={!canEdit}
+          onClick$={() => sendEditorCommand("title")}
+        >
+          <Icon name="tag" size={17} />
+          Edit title
+        </button>
+      )}
     </div>
   );
 });
@@ -1652,10 +1673,11 @@ const LibraryDetailPane = component$<{
   });
   const selectedMediaItem =
     props.selectedItem &&
-    MEDIA_QUICK_ACTION_KINDS.includes(props.selectedItem.mediaKind)
+    isLibraryKind(props.state.status, props.selectedItem.mediaKind)
       ? props.selectedItem
       : undefined;
   const imageId = artworkCandidateId(
+    props.state.status,
     props.state.items,
     props.state.selectedItemId,
     props.activeFolder,
@@ -1698,9 +1720,7 @@ const LibraryDetailPane = component$<{
         />
       )}
       {props.selectedItem &&
-        ["video", "music", "audiobook", "podcast", "book"].includes(
-          props.selectedItem.mediaKind,
-        ) && (
+        isLibraryKind(props.state.status, props.selectedItem.mediaKind) && (
           <ItemEditor
             state={props.state}
             previewRename$={props.previewRename$}

@@ -105,6 +105,7 @@ test_scripts=(
   scripts/tests/test-data-pool-consumers.sh
   scripts/tests/test-public-route-check.sh
   scripts/tests/test-canary-render-check.sh
+  scripts/tests/test-canary-target-coverage.sh
   scripts/tests/test-application-hardening.sh
   scripts/tests/test-archive-view-safety.sh
   scripts/tests/test-auth-gateway-logout.sh

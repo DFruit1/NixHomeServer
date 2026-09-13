@@ -1,5 +1,6 @@
 use super::*;
 use crate::artwork_edit::ArtworkPlanAction;
+use crate::capabilities::MediaAction;
 
 const JELLYFIN_IMAGE_CACHE_TTL: Duration = Duration::from_secs(3600);
 const JELLYFIN_IMAGE_CACHE_MAX_ENTRIES: usize = 2048;
@@ -726,7 +727,7 @@ pub(super) async fn preview_artwork_replacement(
         Err(_) => return ApiError::internal(request_id).into_response(),
     };
     let item = match visible_catalog_item(&state.config, &identity, &catalog, &item_id) {
-        Ok(item) if !matches!(item.media_kind, MediaKind::Subtitle | MediaKind::Iso) => item,
+        Ok(item) if item.media_kind.supports(MediaAction::EditArtwork) => item,
         Ok(_) => {
             return ApiError::new(
                 StatusCode::CONFLICT,

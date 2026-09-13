@@ -52,6 +52,10 @@ must not break unrelated evaluation or delete retained application data.
 8. Track each new non-ignored file immediately with an explicit `git add
    <path>`. Never stage unrelated changes, caches, build outputs, plaintext
    secrets, or generated bulk data.
+9. When the app exposes a private browser host, add an authenticated canary
+   target in `modules/Core_Modules/homepage/canary.nix`. The lean-tier
+   `test-canary-target-coverage.sh` gate fails until the host is covered or
+   documented as an exemption under `repo.canary.coverageExemptHosts`.
 
 ## Prove removability
 
@@ -62,6 +66,8 @@ Add or update regression coverage before claiming completion:
   `scripts/tests/module-disable-matrix.nix` for disabled-module behavior.
 - `scripts/tests/test-module-removal-evaluation.sh` and
   `flake/module-removal-matrix.nix` for physical removal behavior.
+- `scripts/tests/test-canary-target-coverage.sh` for authenticated canary
+  coverage of every enabled private host.
 - Focused tests for secrets, persistence, backup paths, service hardening,
   routes, identity reconciliation, or storage consumers when those boundaries
   change.
@@ -77,5 +83,7 @@ to select the repository-level validation gate.
 - Persistence remains centrally defined and survives module removal.
 - Backup and restore boundaries remain explicit.
 - Disabled and physically removed configurations evaluate.
+- Every enabled private browser host has a canary target or a documented
+  exemption.
 - New source files are tracked; sensitive and bulky files are not.
 - Documentation explains operator-visible behavior and recovery implications.

@@ -1165,8 +1165,9 @@ in
 
 Search is a server-admin tool. It is fronted by the shared authentication
 gateway and restricted to the `search-admins` Kanidm group (the Kanidm admin
-account is a member); the app itself trusts the gateway's forwarded identity
-headers and enforces no per-source access. Every admin can search every source,
+account and the operator's configured app users are members); the app itself
+trusts the gateway's forwarded identity headers and enforces no per-source
+access. Every admin can search every source,
 and the UI narrows results with filters instead of hiding them: app source,
 owning user, content type, normalised author/tag/series/year facets, and a date
 range on `content_created`. The index

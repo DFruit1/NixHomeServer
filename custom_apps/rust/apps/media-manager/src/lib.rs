@@ -2,6 +2,7 @@ pub mod applications;
 pub(crate) mod artwork;
 pub mod artwork_edit;
 pub mod broker;
+pub mod capabilities;
 pub mod catalog;
 pub mod config;
 pub mod core;

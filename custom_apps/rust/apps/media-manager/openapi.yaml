@@ -1405,7 +1405,7 @@ components:
   schemas:
     Status:
       type: object
-      required: [schemaVersion, service, mutationMode, integrations]
+      required: [schemaVersion, service, mutationMode, integrations, mediaKinds]
       properties:
         schemaVersion: { type: integer, const: 1 }
         service: { type: string, const: media-manager }
@@ -1420,6 +1420,34 @@ components:
               label: { type: string }
               available: { type: boolean }
               capabilities: { type: array, items: { type: string } }
+        mediaKinds:
+          description: Intrinsic needs and available actions for every media kind.
+          type: array
+          items: { $ref: "#/components/schemas/MediaKindProfile" }
+    MediaKindProfile:
+      type: object
+      required: [kind, curationUnit, actions]
+      properties:
+        kind: { type: string }
+        curationUnit:
+          type: string
+          enum: [file, folder_bundle, companion, container]
+        actions:
+          type: array
+          items:
+            type: string
+            enum:
+              [
+                play-inline,
+                play-external,
+                edit-artwork,
+                edit-portable-metadata,
+                edit-native-metadata,
+                lookup-metadata,
+                manage-subtitles,
+                guided-rename,
+                track-order,
+              ]
     Session:
       type: object
       required: [username, groups, canEdit]
@@ -1656,6 +1684,7 @@ components:
       required:
         [
           mediaType,
+          mediaKind,
           title,
           genres,
           writers,
@@ -1689,6 +1718,10 @@ components:
                 book,
               ],
           }
+        mediaKind:
+          description: Catalog media kind backing this metadata, including folder pseudo-items.
+          type: string
+          enum: [video, music, audiobook, podcast, book]
         title: { type: string }
         year: { type: integer, nullable: true }
         series: { type: string, nullable: true }
