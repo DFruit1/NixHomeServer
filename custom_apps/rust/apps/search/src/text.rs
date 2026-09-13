@@ -115,9 +115,110 @@ fn decode_entities(input: &str) -> String {
     out
 }
 
-/// Decodes a small set of common HTML entities in already-extracted text.
-pub fn decode_html_entities(input: &str) -> String {
-    decode_entities(input)
+/// Number of leading bytes of a document body scanned when building a snippet.
+/// Bodies can be multi-megabyte (mail threads, OCR output); the snippet only
+/// needs the first query match, so scanning is bounded to protect query latency
+/// and memory without storing anything extra.
+const SNIPPET_SCAN_LIMIT: usize = 400_000;
+/// Target number of characters shown in a body snippet.
+const SNIPPET_CHARS: usize = 260;
+
+/// Normalises a query into lowercase alphanumeric terms, in order, deduped.
+pub fn query_terms(query: &str) -> Vec<String> {
+    let mut terms: Vec<String> = Vec::new();
+    for word in query.split_whitespace() {
+        let term = word
+            .trim_matches(|c: char| !c.is_alphanumeric())
+            .to_lowercase();
+        if !term.is_empty() && !terms.contains(&term) {
+            terms.push(term);
+        }
+    }
+    terms
+}
+
+/// Builds a short plain-text snippet around the first query term and wraps every
+/// query term present in it in `<em>` tags, the same highlight markup Solr used
+/// to emit, so the UI has one rendering path for every source. Returns `None`
+/// when no term is present or the text is empty.
+pub fn snippet_from_text(text: &str, query: &str) -> Option<String> {
+    let terms = query_terms(query);
+    let needle = terms.first()?;
+    let text = text
+        .get(..text.len().min(SNIPPET_SCAN_LIMIT))
+        .unwrap_or(text);
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    let (position, needle_len) = find_case_insensitive_from(text, 0, needle)?;
+    let start = position.saturating_sub(60);
+    let end = (position + needle_len + SNIPPET_CHARS).min(text.len());
+    let window = &text[snap_to_boundary(text, start)..snap_to_boundary(text, end)];
+    let window = window.trim();
+    if window.is_empty() {
+        None
+    } else {
+        Some(highlight_terms(window, &terms))
+    }
+}
+
+/// Converts HTML to text (bounded by `html_limit` bytes) then snippets it. Used
+/// by runtime-federated sources that fetch the document body on demand.
+pub fn snippet_from_html(html: &str, query: &str, html_limit: usize) -> Option<String> {
+    let truncated = html.get(..html.len().min(html_limit)).unwrap_or(html);
+    snippet_from_text(&html_to_text(truncated), query)
+}
+
+/// Wraps every case-insensitive occurrence of each term in `<em>` tags so
+/// snippets render through one UI path. Matches never overlap: terms are applied
+/// left to right over plain text.
+pub fn highlight_terms(text: &str, terms: &[String]) -> String {
+    if terms.is_empty() {
+        return text.to_string();
+    }
+    let mut marked = String::with_capacity(text.len());
+    let mut cursor = 0;
+    while let Some((start, end)) = terms
+        .iter()
+        .filter_map(|term| find_case_insensitive_from(text, cursor, term))
+        .min_by_key(|&(start, _)| start)
+    {
+        marked.push_str(&text[cursor..start]);
+        marked.push_str("<em>");
+        marked.push_str(&text[start..end]);
+        marked.push_str("</em>");
+        cursor = end;
+    }
+    marked.push_str(&text[cursor..]);
+    marked
+}
+
+/// Case-insensitive byte-span search for `needle` at or after `from`, returning
+/// (start, end) offsets into `haystack`. Only matches when lowercasing both
+/// sides preserves the byte layout, so returned offsets are always valid
+/// character boundaries; exotic casing expansions (e.g. 'İ') are skipped as a
+/// cosmetic no-op rather than risking misplaced or invalid spans.
+fn find_case_insensitive_from(haystack: &str, from: usize, needle: &str) -> Option<(usize, usize)> {
+    let hay = haystack.get(from..)?;
+    let hay_lower = hay.to_lowercase();
+    let needle_lower = needle.to_lowercase();
+    if hay_lower.len() != hay.len() || needle_lower.len() != needle.len() {
+        return None;
+    }
+    hay_lower
+        .find(&needle_lower)
+        .map(|at| (from + at, from + at + needle_lower.len()))
+}
+
+/// Clamps a byte offset to a UTF-8 character boundary.
+fn snap_to_boundary(value: &str, byte: usize) -> usize {
+    let byte = byte.min(value.len());
+    let mut boundary = byte;
+    while boundary > 0 && !value.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    boundary
 }
 
 #[cfg(test)]
@@ -187,5 +288,95 @@ mod tests {
     fn decodes_entities_in_fallback() {
         let text = html_to_text("<div>Fish &amp; Chips</div>");
         assert!(text.contains("Fish & Chips"), "got: {text}");
+    }
+
+    #[test]
+    fn normalises_query_terms() {
+        assert_eq!(
+            query_terms("Quantum  computing!!"),
+            vec!["quantum", "computing"]
+        );
+        assert_eq!(query_terms("a b a"), vec!["a", "b"]);
+        assert_eq!(query_terms("!!!"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn finds_spans_case_insensitively() {
+        assert_eq!(
+            find_case_insensitive_from("Hello World", 0, "world"),
+            Some((6, 11))
+        );
+        assert_eq!(
+            find_case_insensitive_from("Hello World", 0, "WORLD"),
+            Some((6, 11))
+        );
+        assert_eq!(find_case_insensitive_from("Hello World", 0, "xyz"), None);
+        assert_eq!(
+            find_case_insensitive_from("ab cd ab", 3, "ab"),
+            Some((6, 8))
+        );
+        assert_eq!(find_case_insensitive_from("ab", 2, "ab"), None);
+    }
+
+    #[test]
+    fn highlights_terms_like_solr() {
+        assert_eq!(
+            highlight_terms("about quantum physics", &["quantum".to_string()]),
+            "about <em>quantum</em> physics"
+        );
+        assert_eq!(
+            highlight_terms(
+                "Quantum COMPUTING notes",
+                &["quantum".to_string(), "computing".to_string()]
+            ),
+            "<em>Quantum</em> <em>COMPUTING</em> notes"
+        );
+        assert_eq!(
+            highlight_terms("a b a", &["a".to_string()]),
+            "<em>a</em> b <em>a</em>"
+        );
+        assert_eq!(
+            highlight_terms("plain text", &["zebra".to_string()]),
+            "plain text"
+        );
+    }
+
+    #[test]
+    fn snaps_to_char_boundaries() {
+        let value = "héllo wörld";
+        let snapped = snap_to_boundary(value, 3);
+        assert!(value.is_char_boundary(snapped));
+        assert_eq!(snap_to_boundary(value, 0), 0);
+        assert_eq!(snap_to_boundary(value, value.len() + 5), value.len());
+    }
+
+    #[test]
+    fn builds_plain_text_snippets_around_keyword() {
+        let text = "This is a long article about quantum computing and other topics.";
+        let snippet = snippet_from_text(text, "quantum").expect("snippet");
+        assert!(snippet.contains("<em>quantum</em>"));
+        assert!(snippet.contains("computing"));
+        assert_eq!(snippet_from_text(text, "zebra"), None);
+        assert_eq!(snippet_from_text(text, "!!!"), None);
+        assert_eq!(snippet_from_text("", "quantum"), None);
+        // Multi-term queries highlight every term present.
+        let multi = snippet_from_text(text, "QUANTUM other").expect("multi");
+        assert!(multi.contains("<em>quantum</em>") && multi.contains("<em>other</em>"));
+    }
+
+    #[test]
+    fn snippet_slicing_survives_multibyte_boundary() {
+        let filler = "é".repeat(2000);
+        let text = format!("about quantum physics {filler}");
+        let snippet = snippet_from_text(&text, "quantum").expect("snippet");
+        assert!(snippet.contains("quantum"));
+    }
+
+    #[test]
+    fn snippets_from_html_bounded() {
+        let html = "<html><body><p>Quarterly <b>report</b> attached</p></body></html>";
+        let snippet = snippet_from_html(html, "report", 200_000).expect("snippet");
+        assert!(snippet.contains("<em>report</em>"));
+        assert_eq!(snippet_from_html("", "report", 200_000), None);
     }
 }

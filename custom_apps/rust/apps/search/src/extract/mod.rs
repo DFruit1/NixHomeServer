@@ -1,12 +1,14 @@
 pub mod browsertrix;
+pub mod calibre;
 pub mod freshrss;
 pub mod kiwix;
 pub mod mail;
+pub mod media_snapshot;
 pub mod paperless;
 
 use serde_json::Value;
 
-use crate::config::{Settings, SourceConfig};
+use crate::config::{is_federated, Settings, SourceConfig};
 
 /// A single extracted document ready for persistence and indexing.
 #[derive(Debug, Clone)]
@@ -84,6 +86,13 @@ pub fn run(
     settings: &Settings,
     emit: &mut dyn FnMut(ExtractedDocument),
 ) -> Result<(), String> {
+    // Runtime-federated sources are queried live at search time (see
+    // `server::federate_runtime_sources`) and are never copied into the index.
+    // Emitting nothing here still lets the indexer prune any documents left by
+    // an earlier extraction-based configuration of the same source.
+    if is_federated(&source.source_type) {
+        return Ok(());
+    }
     let extractor: Box<dyn Extractor> = match source.source_type.as_str() {
         "paperless" => Box::new(paperless::PaperlessExtractor {
             pdftotext: settings.pdftotext.clone(),
@@ -97,6 +106,10 @@ pub fn run(
         "browsertrix" => Box::new(browsertrix::BrowsertrixExtractor),
         "mail-archive" => Box::new(mail::MailExtractor),
         "freshrss" => Box::new(freshrss::FreshRssExtractor),
+        "calibre" => Box::new(calibre::CalibreExtractor {
+            pdftotext: settings.pdftotext.clone(),
+        }),
+        "media-snapshot" => Box::new(media_snapshot::MediaSnapshotExtractor),
         other => return Err(format!("no extractor for source type '{other}'")),
     };
     extractor.extract(source, emit)

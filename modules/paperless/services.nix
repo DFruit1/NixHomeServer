@@ -60,6 +60,15 @@ in
     description = "Enable Tika and Gotenberg for Office document conversion.";
   };
 
+  options.repo.paperless.additionalAllowedHosts = lib.mkOption {
+    type = lib.types.listOf lib.types.str;
+    default = [ ];
+    description = ''
+      Extra Host header values Paperless accepts, in addition to its public
+      hostname. Used by internal clients that reach Paperless over loopback.
+    '';
+  };
+
   imports = [
     ./package.nix
     ./v3.nix
@@ -109,7 +118,9 @@ in
         PAPERLESS_URL = "https://${paperlessHost}";
         PAPERLESS_LOGOUT_REDIRECT_URL = "https://${config.repo.authGateway.domain}/oauth2/sign_out";
         PAPERLESS_SESSION_COOKIE_AGE = "2592000";
-        PAPERLESS_ALLOWED_HOSTS = paperlessHost;
+        PAPERLESS_ALLOWED_HOSTS = lib.concatStringsSep "," (
+          [ paperlessHost ] ++ config.repo.paperless.additionalAllowedHosts
+        );
         PAPERLESS_EXPORT_DIR = paths.export;
         PAPERLESS_OCR_LANGUAGE = "eng";
         PAPERLESS_OCR_CLEAN = "clean";

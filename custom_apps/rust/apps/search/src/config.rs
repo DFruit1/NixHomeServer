@@ -5,13 +5,23 @@ use serde::Deserialize;
 
 use homelab_common::env_required;
 
-const KNOWN_SOURCE_TYPES: [&str; 5] = [
+const KNOWN_SOURCE_TYPES: [&str; 8] = [
     "paperless",
+    "paperless-api",
     "kiwix",
     "browsertrix",
     "mail-archive",
     "freshrss",
+    "calibre",
+    "media-snapshot",
 ];
+
+/// Source types that are queried live at search time instead of being copied
+/// into the index. They are still registered so the UI lists them and the
+/// reconciler keeps them, but the indexer extracts no documents from them.
+pub fn is_federated(source_type: &str) -> bool {
+    matches!(source_type, "paperless-api")
+}
 
 #[derive(Debug, Clone)]
 pub struct SourceConfig {
@@ -31,6 +41,10 @@ pub struct Settings {
     pub zimdump: Option<PathBuf>,
     pub kiwix_search: Option<PathBuf>,
     pub pdftotext: Option<PathBuf>,
+    /// File holding the Paperless REST API token used by runtime-federated
+    /// Paperless sources. Read lazily so a missing token degrades to
+    /// "no Paperless results" rather than failing startup.
+    pub paperless_token_file: Option<PathBuf>,
 }
 
 impl Settings {
@@ -41,6 +55,10 @@ impl Settings {
         let zimdump = std::env::var("SEARCH_ZIMDUMP").ok().map(PathBuf::from);
         let kiwix_search = std::env::var("SEARCH_KIWIXSEARCH").ok().map(PathBuf::from);
         let pdftotext = std::env::var("SEARCH_PDFTOTEXT").ok().map(PathBuf::from);
+        let paperless_token_file = std::env::var("SEARCH_PAPERLESS_TOKEN_FILE")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .map(PathBuf::from);
 
         let mut sources = Vec::new();
         if let Some(path) = std::env::var("SEARCH_SOURCES_FILE").ok().map(PathBuf::from) {
@@ -58,6 +76,7 @@ impl Settings {
             zimdump,
             kiwix_search,
             pdftotext,
+            paperless_token_file,
         })
     }
 }

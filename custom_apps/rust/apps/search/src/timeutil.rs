@@ -19,6 +19,17 @@ pub fn parse_date(raw: &str) -> Option<i64> {
     if let Ok(datetime) = DateTime::parse_from_rfc2822(raw) {
         return Some(datetime.timestamp());
     }
+    // Paperless returns `created` as a plain calendar date (e.g. 2024-02-01).
+    if let Ok(date) = chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d") {
+        return date.and_hms_opt(0, 0, 0).map(|dt| dt.and_utc().timestamp());
+    }
+    // Calibre stores timestamps as UTC "YYYY-MM-DD HH:MM:SS[.ffffff][+HH:MM]".
+    if let Ok(datetime) = chrono::DateTime::parse_from_str(raw, "%Y-%m-%d %H:%M:%S%.f%:z") {
+        return Some(datetime.timestamp());
+    }
+    if let Ok(datetime) = chrono::NaiveDateTime::parse_from_str(raw, "%Y-%m-%d %H:%M:%S%.f") {
+        return Some(datetime.and_utc().timestamp());
+    }
     None
 }
 
@@ -67,6 +78,8 @@ mod tests {
             parse_date("Tue, 14 Nov 2023 22:13:20 +0000"),
             Some(1_700_000_000)
         );
+        // Paperless `created` values are plain calendar dates.
+        assert_eq!(parse_date("2024-02-01"), Some(1_706_745_600));
         assert_eq!(parse_date(""), None);
         assert_eq!(parse_date("not a date"), None);
     }

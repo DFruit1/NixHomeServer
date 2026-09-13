@@ -30,10 +30,11 @@ let
         lib.concatStringsSep "\n" [
           "<field name=\"source\" type=\"string\" stored=\"true\" indexed=\"true\"/>"
           "<field name=\"title\" type=\"text_general\" stored=\"true\" indexed=\"true\"/>"
-          # Stored: the unified highlighter fragments snippets by re-analysing the
-          # stored value when the field has no term vectors. Solr compresses stored
-          # fields, and queries request an explicit fl that excludes the body.
-          "<field name=\"body\" type=\"text_general\" stored=\"true\" indexed=\"true\"/>"
+          # Index-only: the authoritative body lives once in Postgres and
+          # snippets are rebuilt from it after the query, so Solr never stores
+          # a second copy of the corpus. Queries request an explicit fl that
+          # excludes the body.
+          "<field name=\"body\" type=\"text_general\" stored=\"false\" indexed=\"true\"/>"
           "<field name=\"content_type\" type=\"string\" stored=\"true\" indexed=\"true\"/>"
           "<field name=\"origin_url\" type=\"string\" stored=\"true\" indexed=\"true\"/>"
           "<field name=\"app_url\" type=\"string\" stored=\"true\" indexed=\"true\"/>"
@@ -189,10 +190,13 @@ in
             sourceType = lib.mkOption {
               type = lib.types.enum [
                 "paperless"
+                "paperless-api"
                 "kiwix"
                 "browsertrix"
                 "mail-archive"
                 "freshrss"
+                "calibre"
+                "media-snapshot"
               ];
               description = "Extractor used for this source.";
             };

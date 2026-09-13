@@ -208,6 +208,47 @@ fn row_to_document(row: tokio_postgres::Row) -> (String, DocumentRecord) {
     )
 }
 
+/// Body text and metadata for one already-indexed document. Loaded after a Solr
+/// query so the authoritative body copy is only ever read from Postgres; Solr
+/// holds the inverted index, not a second stored copy of the text.
+#[derive(Debug, Clone)]
+pub struct DocumentEnrichment {
+    pub body_text: String,
+    pub metadata: Value,
+}
+
+/// Loads body text and metadata for the given full document ids in one query.
+/// Ids that no longer exist (deleted between the Solr query and this read) are
+/// simply absent from the result rather than an error.
+pub async fn enrich_documents(
+    client: &Client,
+    ids: &[String],
+) -> Result<HashMap<String, DocumentEnrichment>, String> {
+    if ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let ids = ids.to_vec();
+    let rows = client
+        .query(
+            "SELECT id, body_text, metadata FROM documents WHERE id = ANY($1)",
+            &[&ids],
+        )
+        .await
+        .map_err(|err| format!("failed to load result bodies from Postgres: {err}"))?;
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            (
+                row.get::<_, String>(0),
+                DocumentEnrichment {
+                    body_text: row.get(1),
+                    metadata: row.get(2),
+                },
+            )
+        })
+        .collect())
+}
+
 /// Postgres TEXT and jsonb reject NUL bytes; source data (emails, HTML,
 /// titles) can contain them. Strip them at the database boundary so no
 /// extractor's output can fail an insert.

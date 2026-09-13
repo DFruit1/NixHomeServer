@@ -1096,10 +1096,14 @@ gateway and restricted to the `search-admins` Kanidm group (the Kanidm admin
 account is a member); the app itself trusts the gateway's forwarded identity
 headers and enforces no per-source access. Every admin can search every source,
 and the UI narrows results with filters instead of hiding them: app source,
-owning user, content type, and a date range on `content_created`. The index
+owning user, content type, normalised author/tag/series/year facets, and a date
+range on `content_created`. The index
 carries an `owner`/`owner_s` field derived per source (mailbox owner for mail,
-username for FreshRSS, correspondent for Paperless, and the `shared` sentinel
-for Kiwix and Browsertrix archives, which have no per-user ownership). Facet
+username for FreshRSS, correspondent for Paperless, the owning user for
+per-user media libraries, and the `shared` sentinel
+for Kiwix archives, Browsertrix archives, shared media roots, and the shared
+Calibre-Web library,
+which have no per-user ownership). Facet
 counts update with the selected filters, so an admin can see the composition of
 a result set and drill in without leaving the page.
 
@@ -1123,13 +1127,78 @@ Notes:
   search database. Because the database already holds every indexed field,
   rebuilds never re-run source extraction; a normal `search-index.service` pass
   would skip documents whose checksums already match.
+* Storage model. Each document body is stored once, in the authoritative
+  Postgres `search` database. Solr keeps only the full-text index for it (the
+  `body` field is `stored="false"`), so a result's snippet is rebuilt from
+  Postgres at query time and Solr never holds a second copy of the corpus.
+  Per-document metadata also stays in Postgres, with one deliberate exception:
+  a small, fixed set of normalised facets — owner, author, tag, series, and
+  year — is copied into Solr dynamic fields (`owner_s`, `author_ss`, `tag_ss`,
+  `series_ss`, `year_i`) because those are the dimensions the UI filters and
+  facets on. Extractors write their own metadata keys (`authors` vs `author`
+  vs `from`, `tags` vs `genres`, `series` vs `feed`); the indexer normalises
+  them into that vocabulary so every source participates in the same facets.
+  Because `_default` defines `*_ss`/`*_i` dynamic fields, adding a facet
+  dimension never requires a schema/configset rebuild. The UI presents the
+  snippet and selected metadata identically for every source.
+* Facet dimensions. The UI narrows results by user, source, content type, and
+  the cross-source author, tag, series, and year facets; selecting a chip adds
+  an `fq` clause and the facet counts update around it. High-cardinality
+  facets are capped at 12 values each. Federated sources apply the same
+  normalisation to their in-memory metadata, so an active facet filter either
+  matches a federated hit or excludes it rather than silently including it.
+  After this feature is first deployed, run `systemctl start
+  search-reindex.service` once: the incremental indexer skips documents whose
+  checksums are unchanged, so existing documents only receive the new facet
+  fields on a reindex.
+* Media library metadata. Jellyfin, Audiobookshelf, and Kavita are indexed from
+  the bounded, read-only JSON metadata snapshots that Media Manager already
+  exports to `/var/cache/media-manager-jellyfin`, `…-audiobookshelf`, and
+  `…-kavita` (`metadata.json`). Each entry contributes its title (with episode
+  coordinates folded in), description, series, authors, narrators, genres,
+  tags, publisher, language, and year, so authors and narrators are searchable
+  even when a description never names them. Search reads the snapshots as the
+  `search` user, which joins the `media-manager` group through the integration;
+  no Jellyfin/Audiobookshelf/Kavita credentials or APIs are involved, and each
+  application still owns its own library scan. A snapshot that is briefly
+  missing or malformed is treated as an extraction error, so the existing
+  document set is retained rather than pruned. Disabling a media application
+  removes its source on the next `search-reconcile` pass.
+* Runtime-federated sources. A source that already ships a queryable index is
+  searched at request time instead of being copied into Solr. Two sources work
+  this way:
+  * Kiwix: a ZIM with an embedded Xapian index is detected automatically and
+    queried live via `kiwix-search` (body and title are resolved from the
+    archive on demand); only ZIMs without an embedded index are extracted into
+    Solr.
+  * Paperless: Search queries Paperless's own Tantivy index over loopback at
+    `http://127.0.0.1:<port>/api/documents/`, using the advanced `query`
+    parameter with a fallback to `text` for input the advanced parser rejects.
+    `paperless-search-api-token.service` mints an idempotent DRF token for a
+    dedicated, view-only `search-service` local user (member of
+    `paperless-users`) and writes it to `/run/paperless-search-api-token`
+    (`root:search`, `0640`); the Search UI reads it per query, so a missing
+    token simply yields no Paperless results instead of failing the search. The
+    token lives in the Paperless database and is regenerated on every boot, so
+    it is never backed up. Paperless is configured to accept the loopback Host
+    header via `repo.paperless.additionalAllowedHosts`.
+  Add a future source the same way when it exposes a search API, so duplicate
+  bodies are never indexed. Switching a source from indexed to federated leaves
+  its old documents in the database until the next `search-index` pass, which
+  prunes them because the federated extractor emits none.
+* Paperless permissions. Because Search now uses the Paperless API, results are
+  subject to the permission filter Paperless applies for the `search-service`
+  user. Documents owned by (or shared only with) another account will not appear
+  to Search. The service user is a member of `paperless-users` (global view
+  permissions) but is deliberately not a superuser, so a leaked token cannot
+  modify documents.
 * Schema changes only take effect when the seeded `_default` configset is
   rebuilt: `search-solr.service` pre-start re-seeds it with the baked field
   definitions only while the directory is missing. After changing a field
-  definition in `modules/search/services.nix` on an already-deployed server,
-  stop `search-solr.service`, move the seeded
-  `/var/lib/solr/home/configsets/_default` aside, and start the service again;
-  the core bootstrap then recreates the empty core and
+  definition in `modules/search/services.nix` on an already-deployed server
+  (including the body `stored` flag), stop `search-solr.service`, move the
+  seeded `/var/lib/solr/home/configsets/_default` aside, and start the service
+  again; the core bootstrap then recreates the empty core and
   `search-reindex.service` repopulates it from the search database.
 * ZIM indexing levels. By default every ZIM is indexed at archive level
   only (one document per archive — instant passes). ZIMs listed in

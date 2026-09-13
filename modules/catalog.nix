@@ -134,8 +134,10 @@ rec {
 
   integrationDefinitions = [
     { module = ./Integrations/expose_browsertrix_crawls_to_search.nix; allApps = [ "search" "browsertrix-downloader" ]; anyApps = [ ]; }
+    { module = ./Integrations/expose_calibre_web_library_to_search.nix; allApps = [ "search" "calibre-web" ]; anyApps = [ ]; }
     { module = ./Integrations/expose_freshrss_entries_to_search.nix; allApps = [ "search" "freshrss" ]; anyApps = [ ]; }
     { module = ./Integrations/expose_kiwix_archives_to_search.nix; allApps = [ "search" "kiwix" ]; anyApps = [ ]; }
+    { module = ./Integrations/expose_media_manager_libraries_to_search.nix; allApps = [ "search" ]; anyApps = [ "jellyfin" "audiobookshelf" "kavita" ]; }
     { module = ./Integrations/expose_mail_archive_emails_to_search.nix; allApps = [ "search" "mail-archive-ui" ]; anyApps = [ ]; }
     { module = ./Integrations/expose_paperless_documents_to_search.nix; allApps = [ "search" "paperless" ]; anyApps = [ ]; }
     { module = ./Integrations/expose_mail_archive_emails_in_files.nix; allApps = [ "mail-archive-ui" "files" ]; anyApps = [ ]; }

@@ -5,7 +5,7 @@ use tokio::process::Command;
 use tokio::time::timeout;
 
 use crate::extract::kiwix::{clean_title_from_path, entry_origin, has_xapian_fulltext};
-use crate::text::{html_title, html_to_text};
+use crate::text::{html_title, snippet_from_html};
 
 /// How many ZIM archives a single query will search at most.
 const MAX_ZIMS_PER_QUERY: usize = 8;
@@ -42,13 +42,18 @@ pub struct ZimIndexEntry {
     pub has_xapian: bool,
 }
 
-/// One article hit surfaced from a ZIM's native Xapian index.
+/// One article hit surfaced from a ZIM's native Xapian index. The body text is
+/// never copied into the Search index; it is resolved from the archive at query
+/// time, so these hits carry only what the current query rendered.
 #[derive(Debug, Clone)]
 pub struct ZimHit {
     pub title: String,
     pub snippet: Option<String>,
     pub origin_url: String,
     pub app_url: String,
+    /// Archive name and entry path, presented to the UI exactly like the
+    /// metadata of indexed sources so federation is invisible to the user.
+    pub metadata: serde_json::Value,
 }
 
 /// Enumerates the ZIM archives in the library root and records, for each,
@@ -172,6 +177,7 @@ async fn search_zim(
             snippet,
             origin_url: entry_origin(app_base, stem, &path),
             app_url: app_base.trim_end_matches('/').to_string(),
+            metadata: serde_json::json!({ "archive": stem, "entry_path": path }),
         });
     }
     hits
@@ -281,98 +287,11 @@ fn title_and_snippet(html: &[u8], derived: &str, query: &str) -> (String, Option
     (title, snippet)
 }
 
-/// Builds a short snippet around the query's first keyword and wraps every
-/// query term present in it in `<em>` tags, the same highlight markup Solr
-/// emits for its own snippets. Returns None when the first keyword is not
-/// present or the text is not convertible.
+/// Builds a short snippet around the query's first keyword from article HTML.
+/// Delegates to the shared text snippet builder so ZIM hits and indexed hits
+/// render through exactly the same highlighting path.
 fn make_snippet(html: &str, query: &str) -> Option<String> {
-    let terms = query_terms(query);
-    let needle = terms.first()?;
-    // `get` instead of byte slicing: the limit can land inside a multi-byte
-    // UTF-8 character, which would panic a plain range index.
-    let truncated = html
-        .get(..html.len().min(SNIPPET_HTML_LIMIT))
-        .unwrap_or(html);
-    let text = html_to_text(truncated);
-    let text = text.trim();
-    if text.is_empty() {
-        return None;
-    }
-    let (position, needle_len) = find_case_insensitive_from(text, 0, needle)?;
-    let start = position.saturating_sub(50);
-    let end = (position + needle_len + 140).min(text.len());
-    let window = &text[snap_to_boundary(text, start)..snap_to_boundary(text, end)];
-    let window = window.trim();
-    if window.is_empty() {
-        None
-    } else {
-        Some(highlight_terms(window, &terms))
-    }
-}
-
-/// Normalises a query into lowercase alphanumeric terms, in order, deduped.
-fn query_terms(query: &str) -> Vec<String> {
-    let mut terms: Vec<String> = Vec::new();
-    for word in query.split_whitespace() {
-        let term = word
-            .trim_matches(|c: char| !c.is_alphanumeric())
-            .to_lowercase();
-        if !term.is_empty() && !terms.contains(&term) {
-            terms.push(term);
-        }
-    }
-    terms
-}
-
-/// Wraps every case-insensitive occurrence of each term in `<em>` tags so ZIM
-/// snippets render through the same UI path as Solr highlight fragments.
-/// Matches never overlap: terms are applied left to right over plain text.
-fn highlight_terms(text: &str, terms: &[String]) -> String {
-    if terms.is_empty() {
-        return text.to_string();
-    }
-    let mut marked = String::with_capacity(text.len());
-    let mut cursor = 0;
-    while let Some((start, end)) = terms
-        .iter()
-        .filter_map(|term| find_case_insensitive_from(text, cursor, term))
-        .min_by_key(|&(start, _)| start)
-    {
-        marked.push_str(&text[cursor..start]);
-        marked.push_str("<em>");
-        marked.push_str(&text[start..end]);
-        marked.push_str("</em>");
-        cursor = end;
-    }
-    marked.push_str(&text[cursor..]);
-    marked
-}
-
-/// Case-insensitive byte-span search for `needle` at or after `from`, returning
-/// (start, end) offsets into `haystack`. Only matches when lowercasing both
-/// sides preserves the byte layout, so returned offsets are always valid
-/// character boundaries; exotic casing expansions (e.g. 'İ') are skipped as a
-/// cosmetic no-op rather than risking misplaced or invalid spans.
-fn find_case_insensitive_from(haystack: &str, from: usize, needle: &str) -> Option<(usize, usize)> {
-    let hay = haystack.get(from..)?;
-    let hay_lower = hay.to_lowercase();
-    let needle_lower = needle.to_lowercase();
-    if hay_lower.len() != hay.len() || needle_lower.len() != needle.len() {
-        return None;
-    }
-    hay_lower
-        .find(&needle_lower)
-        .map(|at| (from + at, from + at + needle_lower.len()))
-}
-
-/// Clamps a byte offset to a UTF-8 character boundary.
-fn snap_to_boundary(value: &str, byte: usize) -> usize {
-    let byte = byte.min(value.len());
-    let mut boundary = byte;
-    while boundary > 0 && !value.is_char_boundary(boundary) {
-        boundary -= 1;
-    }
-    boundary
+    snippet_from_html(html, query, SNIPPET_HTML_LIMIT)
 }
 
 #[cfg(test)]
@@ -387,72 +306,6 @@ mod tests {
             "Foo (disambiguation)"
         );
         assert_eq!(clean_title_from_path("index.html"), "index");
-    }
-
-    #[test]
-    fn finds_spans_case_insensitively() {
-        assert_eq!(
-            find_case_insensitive_from("Hello World", 0, "world"),
-            Some((6, 11))
-        );
-        assert_eq!(
-            find_case_insensitive_from("Hello World", 0, "WORLD"),
-            Some((6, 11))
-        );
-        assert_eq!(find_case_insensitive_from("Hello World", 0, "xyz"), None);
-        // A search resumes after `from` and offsets stay absolute.
-        assert_eq!(
-            find_case_insensitive_from("ab cd ab", 3, "ab"),
-            Some((6, 8))
-        );
-        assert_eq!(find_case_insensitive_from("ab", 2, "ab"), None);
-    }
-
-    #[test]
-    fn normalises_query_terms() {
-        assert_eq!(
-            query_terms("Quantum  computing!!"),
-            vec!["quantum", "computing"]
-        );
-        assert_eq!(query_terms("a b a"), vec!["a", "b"]);
-        assert_eq!(query_terms("!!!"), Vec::<String>::new());
-    }
-
-    #[test]
-    fn highlights_terms_like_solr() {
-        assert_eq!(
-            highlight_terms("about quantum physics", &["quantum".to_string()]),
-            "about <em>quantum</em> physics"
-        );
-        // Multiple terms, case-insensitive, left to right.
-        assert_eq!(
-            highlight_terms(
-                "Quantum COMPUTING notes",
-                &["quantum".to_string(), "computing".to_string()]
-            ),
-            "<em>Quantum</em> <em>COMPUTING</em> notes"
-        );
-        // Repeated occurrences of one term are all marked.
-        assert_eq!(
-            highlight_terms("a b a", &["a".to_string()]),
-            "<em>a</em> b <em>a</em>"
-        );
-        // An absent term leaves the text untouched.
-        assert_eq!(
-            highlight_terms("plain text", &["zebra".to_string()]),
-            "plain text"
-        );
-    }
-
-    #[test]
-    fn snaps_to_char_boundaries() {
-        let value = "héllo wörld";
-        let snapped = snap_to_boundary(value, 3);
-        assert!(value.is_char_boundary(snapped));
-        let snapped = snap_to_boundary(value, 0);
-        assert_eq!(snapped, 0);
-        let snapped = snap_to_boundary(value, value.len() + 5);
-        assert_eq!(snapped, value.len());
     }
 
     #[test]

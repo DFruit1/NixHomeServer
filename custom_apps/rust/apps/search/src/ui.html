@@ -156,6 +156,12 @@
   }
   .result__snippet { margin: var(--space-1) 0; }
   .result__meta { font-size: 0.8rem; color: var(--text-muted); word-break: break-word; }
+  .result__details {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    margin-top: 2px;
+    word-break: break-word;
+  }
   mark { background: var(--mark); color: inherit; }
   .empty { color: var(--text-muted); padding: var(--space-4) 0; }
 </style>
@@ -196,6 +202,10 @@
   <div class="facet-row" id="ownerFacets"><h2>Users</h2></div>
   <div class="facet-row" id="sourceFacets"><h2>Sources</h2></div>
   <div class="facet-row" id="typeFacets"><h2>Types</h2></div>
+  <div class="facet-row" id="authorFacets"><h2>Authors</h2></div>
+  <div class="facet-row" id="tagFacets"><h2>Tags</h2></div>
+  <div class="facet-row" id="seriesFacets"><h2>Series</h2></div>
+  <div class="facet-row" id="yearFacets"><h2>Years</h2></div>
 </div>
 
 <p id="status" role="status">Loading sources…</p>
@@ -212,6 +222,10 @@ const typeEl = document.getElementById('type');
 const afterEl = document.getElementById('after');
 const beforeEl = document.getElementById('before');
 
+// Chip-only filters (the dimensions that have no select control). Owner,
+// source, and type reuse their selects above.
+const chipFilters = { author: '', tag: '', series: '', year: '' };
+
 function esc(value) {
   const div = document.createElement('div');
   div.textContent = value == null ? '' : String(value);
@@ -226,6 +240,30 @@ function highlight(snippet) {
 function fmtDate(epoch) {
   if (!epoch) return '';
   return new Date(epoch * 1000).toLocaleDateString();
+}
+
+// Friendly labels for metadata keys that appear across the different sources.
+// Unknown keys fall back to a title-cased, underscore-stripped version so every
+// source surfaces its metadata through the same presentation.
+const META_LABELS = {
+  from: 'From', to: 'To', cc: 'Cc',
+  correspondent: 'Correspondent', tags: 'Tags',
+  document_type: 'Type', file: 'File',
+  feed: 'Feed', author: 'Author',
+  archive: 'Archive', entry_path: 'Path', crawl: 'Crawl',
+  added: 'Added',
+};
+
+function labelFor(key) {
+  return META_LABELS[key] || key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function metaPairs(metadata) {
+  if (!metadata || typeof metadata !== 'object') return [];
+  return Object.entries(metadata)
+    .filter(([, value]) => value !== null && value !== undefined && value !== '')
+    .slice(0, 6)
+    .map(([key, value]) => `${labelFor(key)}: ${value}`);
 }
 
 function option(value, label) {
@@ -246,6 +284,9 @@ function params() {
   if (ownerEl.value) p.set('owner', ownerEl.value);
   if (sourceEl.value) p.set('source', sourceEl.value);
   if (typeEl.value) p.set('type', typeEl.value);
+  for (const [key, value] of Object.entries(chipFilters)) {
+    if (value) p.set(key, value);
+  }
   if (afterEl.value) p.set('after', afterEl.value);
   if (beforeEl.value) p.set('before', beforeEl.value);
   return p;
@@ -259,10 +300,15 @@ function facetButton(name, count, key) {
   button.className = 'chip';
   button.textContent = `${name} (${count})`;
   const targets = { owner: ownerEl, source: sourceEl, type: typeEl };
-  const target = targets[key];
-  button.setAttribute('aria-pressed', String(target.value === name));
+  const selectTarget = targets[key];
+  const active = selectTarget ? selectTarget.value === name : chipFilters[key] === name;
+  button.setAttribute('aria-pressed', String(active));
   button.addEventListener('click', () => {
-    target.value = target.value === name ? '' : name;
+    if (selectTarget) {
+      selectTarget.value = selectTarget.value === name ? '' : name;
+    } else {
+      chipFilters[key] = chipFilters[key] === name ? '' : name;
+    }
     runSearch();
   });
   return button;
@@ -272,7 +318,11 @@ function renderFacets(data) {
   const map = {
     ownerFacets: ['owner', document.getElementById('ownerFacets')],
     sourceFacets: ['source', document.getElementById('sourceFacets')],
-    typeFacets: ['type', document.getElementById('typeFacets')],
+    contentTypeFacets: ['type', document.getElementById('typeFacets')],
+    authorFacets: ['author', document.getElementById('authorFacets')],
+    tagFacets: ['tag', document.getElementById('tagFacets')],
+    seriesFacets: ['series', document.getElementById('seriesFacets')],
+    yearFacets: ['year', document.getElementById('yearFacets')],
   };
   let any = false;
   for (const key of Object.keys(map)) {
@@ -294,6 +344,10 @@ function render(data) {
   statusEl.textContent = hits.length
     ? `${data.total} result${data.total === 1 ? '' : 's'}`
     : 'No results';
+  // Keep the select controls in step with the facet values the query returned,
+  // so the dropdowns are usable and show the active chip rather than empty.
+  fillSelect(ownerEl, (data.ownerFacets || []).map((facet) => facet.name), 'All users');
+  fillSelect(typeEl, (data.contentTypeFacets || []).map((facet) => facet.name), 'All types');
   renderFacets(data);
   resultsEl.replaceChildren(...hits.map((hit) => {
     const container = document.createElement('div');
@@ -302,11 +356,14 @@ function render(data) {
     const meta = [hit.contentType, hit.owner, hit.created ? fmtDate(hit.created) : '']
       .filter(Boolean)
       .join(' · ');
+    const details = metaPairs(hit.metadata).join(' · ');
+    const snippet = hit.snippet ? highlight(hit.snippet) : '';
     container.innerHTML =
       `<div class="result__head"><span class="badge">${esc(hit.source)}</span>` +
       `<a class="result__title" href="${esc(link)}">${esc(hit.title)}</a></div>` +
-      (hit.snippet ? `<div class="result__snippet">${highlight(hit.snippet)}</div>` : '') +
-      `<div class="result__meta">${esc(meta)}</div>`;
+      (snippet ? `<div class="result__snippet">${snippet}</div>` : '') +
+      (meta ? `<div class="result__meta">${esc(meta)}</div>` : '') +
+      (details ? `<div class="result__details">${esc(details)}</div>` : '');
     return container;
   }));
 }

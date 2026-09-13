@@ -27,9 +27,13 @@ require_fixed modules/catalog.nix './Integrations/expose_mail_archive_emails_to_
   "The mail archive Search integration must be registered in the catalog."
 require_fixed modules/catalog.nix './Integrations/expose_freshrss_entries_to_search.nix' \
   "The FreshRSS Search integration must be registered in the catalog."
+require_fixed modules/catalog.nix './Integrations/expose_calibre_web_library_to_search.nix' \
+  "The Calibre-Web Search integration must be registered in the catalog."
+require_fixed modules/catalog.nix './Integrations/expose_media_manager_libraries_to_search.nix' \
+  "The Media Manager library Search integration must be registered in the catalog."
 require_fixed modules/Core_Modules/impermanence/default.nix '"/var/lib/solr"' \
   "Solr state should remain persistent when the Search module is removed."
-for integration in expose_paperless_documents_to_search expose_kiwix_archives_to_search expose_browsertrix_crawls_to_search expose_mail_archive_emails_to_search expose_freshrss_entries_to_search; do
+for integration in expose_paperless_documents_to_search expose_kiwix_archives_to_search expose_browsertrix_crawls_to_search expose_mail_archive_emails_to_search expose_freshrss_entries_to_search expose_calibre_web_library_to_search expose_media_manager_libraries_to_search; do
   require_fixed "modules/Integrations/${integration}.nix" 'lib.hasAttrByPath [ "repo" "search" ] options' \
     "Search integrations must stay evaluable when the Search module is not imported (${integration})."
 done
@@ -39,8 +43,26 @@ require_fixed modules/search/services.nix 'solr start -f' \
   "The packaged Solr must run in the foreground under systemd."
 require_fixed modules/Integrations/expose_mail_archive_emails_to_search.nix 'emailsRoots' \
   "The mail Search integration must populate the emailsRoots setting the extractor reads."
+require_fixed modules/Integrations/expose_paperless_documents_to_search.nix 'sourceType = "paperless-api"' \
+  "Paperless must be runtime-federated through its own API, not copied into the index."
+require_fixed modules/Integrations/expose_paperless_documents_to_search.nix 'paperless-search-api-token' \
+  "The Paperless Search integration must provision the API token service."
+require_fixed modules/Integrations/expose_media_manager_libraries_to_search.nix 'sourceType = "media-snapshot"' \
+  "Media Manager libraries must be indexed from their read-only metadata snapshots."
+require_fixed modules/Integrations/expose_media_manager_libraries_to_search.nix 'users.search.extraGroups' \
+  "The Media Manager Search integration must grant the indexer read access to the snapshots."
 require_fixed modules/search/services.nix 'search reindex' \
   "Search must expose the DB-driven Solr rebuild command in a service."
+require_fixed modules/search/services.nix 'name=\"body\" type=\"text_general\" stored=\"false\"' \
+  "The Solr body field must stay index-only; the authoritative copy lives in Postgres."
+require_fixed custom_apps/rust/apps/search/src/solr.rs 'author_ss' \
+  "Search must index normalised author facets into Solr dynamic fields."
+require_fixed custom_apps/rust/apps/search/src/solr.rs 'year_i' \
+  "Search must index a normalised year facet into a Solr dynamic field."
+require_fixed custom_apps/rust/apps/search/src/facets.rs 'AUTHOR_KEYS' \
+  "Search must normalise extractor metadata keys into shared facet dimensions."
+require_fixed custom_apps/rust/apps/search/src/ui.html 'authorFacets' \
+  "The Search UI must expose the cross-source author facet."
 require_fixed modules/search/backups.nix 'outputName = "search.pgdump"' \
   "The authoritative search database must be included in logical backups."
 forbid_match modules/search/services.nix 'config[.]repo[.](paperless|kiwix|browsertrixDownloader|mailArchiveUi|freshrss)' \

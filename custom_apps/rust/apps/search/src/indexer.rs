@@ -382,6 +382,7 @@ mod tests {
             zimdump: None,
             kiwix_search: None,
             pdftotext: None,
+            paperless_token_file: None,
         };
 
         let mut docs = Vec::new();
@@ -402,6 +403,7 @@ mod tests {
         assert_eq!(payload["content_type"], json!("application/pdf"));
         assert!(payload.get("content_created").is_some());
         assert_eq!(payload["owner_s"], json!("ACME"));
-        assert_eq!(payload["meta_correspondent_s"], json!("ACME"));
+        // Metadata stays authoritative in Postgres and is not copied to Solr.
+        assert!(payload.get("meta_correspondent_s").is_none());
     }
 }

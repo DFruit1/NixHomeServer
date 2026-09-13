@@ -200,7 +200,7 @@ impl super::Extractor for PaperlessExtractor {
     }
 }
 
-fn extract_pdf_text(path: &Path, pdftotext: Option<&Path>) -> Result<String, String> {
+pub(crate) fn extract_pdf_text(path: &Path, pdftotext: Option<&Path>) -> Result<String, String> {
     let pdftotext = pdftotext
         .filter(|path| path.exists())
         .ok_or_else(|| "SEARCH_PDFTOTEXT must point to a pdftotext binary".to_string())?;
