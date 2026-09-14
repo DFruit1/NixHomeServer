@@ -599,20 +599,22 @@ access so generated links stay valid.
   bypass the edge entirely.
 - A request without a valid share cookie is admitted only when it targets a
   public share link (`/s/<token>` or `/index.php/s/<token>`). The
-  `opencloud-share-gate` service validates the token against OpenCloud's own
-  unauthenticated `tokeninfo/unprotected` OCS endpoint, which answers with OCS
-  status 200 for any existing link (including password-protected links), and
-  then issues the signed `__Secure-ocshare` cookie. Share passwords, OIDC
-  login, and WOPI tokens are still enforced by OpenCloud and Collabora; the
-  cookie only decides whether a request is allowed to reach them.
+  `opencloud-share-gate` service validates the token with a `PROPFIND` against
+  OpenCloud's unauthenticated public WebDAV endpoint
+  (`/remote.php/dav/public-files/<token>/`), the same signal the web client
+  uses: 207 for a link that needs no password, 401 for an existing
+  password-protected link, and 404 for an unknown or expired token. It then
+  issues the signed `__Secure-ocshare` cookie. Share passwords, OIDC login, and
+  WOPI tokens are still enforced by OpenCloud and Collabora; the cookie only
+  decides whether a request is allowed to reach them.
 - Collabora's server-to-server WOPI callbacks on `cloud.<domain>/wopi` are
   admitted without the browser cookie because OpenCloud authenticates them with
   the short-lived WOPI access token.
 - The cookie is scoped to the bare domain so the Collabora editor iframe on
   `office.<domain>` shares the same session. It is a signed, `Secure`,
   `HttpOnly` value; only its HMAC is trusted, so a forged value is rejected.
-- The gate fails closed: if OpenCloud is unreachable or the token endpoint
-  errors, share navigation is rejected rather than passed through.
+- The gate fails closed: if OpenCloud is unreachable or the public WebDAV
+  probe errors, share navigation is rejected rather than passed through.
 - The cookie signing key is generated automatically on first start under
   `/run/opencloud-share-gate/cookie.key` and preserved across service restarts
   within a boot. A reboot invalidates outstanding share cookies; recipients
@@ -620,8 +622,9 @@ access so generated links stay valid.
 - Recover by checking `opencloud-share-gate.service` and
   `opencloud-public-edge.service`, then `journalctl -u opencloud-share-gate`.
   If `/s/<token>` returns a generic 404 for a link you know is valid, confirm
-  the token endpoint from the host:
-  `curl -s 'http://127.0.0.1:9200/ocs/v2.php/apps/files_sharing/api/v1/tokeninfo/unprotected/<token>?format=json'`.
+  the share probe from the host (207 = no password, 401 = password-protected,
+  404 = unknown token):
+  `curl -s -o /dev/null -w '%{http_code}' -X PROPFIND -H 'Depth: 0' 'http://127.0.0.1:9200/remote.php/dav/public-files/<token>/'`.
 
 ### Jellyfin login paths
 

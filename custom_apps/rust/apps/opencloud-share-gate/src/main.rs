@@ -7,11 +7,14 @@
 //! authorizes data access itself: OpenCloud and Collabora still enforce their
 //! own share passwords, OIDC login, and WOPI tokens.
 //!
-//! Share validity is checked against OpenCloud's own unauthenticated
-//! `tokeninfo/unprotected` OCS endpoint. A valid token answers with OCS
-//! status code 200 even when a password is still required; an unknown or
-//! expired token answers with a server error. Anything but a definitive
-//! success is treated as invalid so the gate fails closed.
+//! Share validity is checked against OpenCloud's own unauthenticated public
+//! WebDAV endpoint (`PROPFIND /remote.php/dav/public-files/<token>/`), the
+//! same signal the web client uses: 207 for a link that needs no password,
+//! 401 for an existing password-protected link, and 404 for an unknown or
+//! expired token. Anything but a definitive answer is treated as invalid so
+//! the gate fails closed. (The OCS `tokeninfo/unprotected` endpoint is not
+//! used because it collapses "unknown token" and "password required" into the
+//! same server error.)
 
 use axum::{
     body::Body,
@@ -22,7 +25,7 @@ use axum::{
     Router,
 };
 use hmac::{Hmac, Mac};
-use serde_json::{json, Value};
+use serde_json::json;
 use sha2::Sha256;
 use std::{
     net::{IpAddr, SocketAddr},
@@ -249,22 +252,20 @@ async fn share_navigation(
 
 async fn validate_share(state: &AppState, token: &str) -> Result<bool, String> {
     let url = format!(
-        "{}/ocs/v2.php/apps/files_sharing/api/v1/tokeninfo/unprotected/{token}",
+        "{}/remote.php/dav/public-files/{token}/",
         state.settings.opencloud_url
     );
+    let method = reqwest::Method::from_bytes(b"PROPFIND").map_err(|error| error.to_string())?;
     let response = state
         .client
-        .get(url)
-        .query(&[("format", "json")])
-        .header(header::ACCEPT, "application/json")
+        .request(method, url)
+        .header("Depth", "0")
         .send()
         .await
         .map_err(|error| error.to_string())?;
-    if response.status() != StatusCode::OK {
-        return Ok(false);
-    }
-    let body: Value = response.json().await.map_err(|error| error.to_string())?;
-    Ok(body.pointer("/ocs/meta/statuscode").and_then(Value::as_u64) == Some(200))
+    // 207: share exists and needs no password. 401: share exists but is
+    // password-protected. 404/403: unknown or expired token.
+    Ok(matches!(response.status().as_u16(), 200..=299 | 401))
 }
 
 fn redirect_to(uri: &Uri) -> Response {

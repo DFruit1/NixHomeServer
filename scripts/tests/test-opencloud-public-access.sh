@@ -118,4 +118,13 @@ require_fixed modules/catalog.nix \
   '"opencloud-share-gate"' \
   "the share gate service must be registered in the OpenCloud catalog entry."
 
+# The gate must use the public WebDAV probe, which distinguishes unknown tokens
+# from password-protected links; tokeninfo collapses both into one server error.
+require_fixed custom_apps/rust/apps/opencloud-share-gate/src/main.rs \
+  'remote.php/dav/public-files' \
+  "the share gate must validate tokens against the public WebDAV endpoint."
+forbid_match custom_apps/rust/apps/opencloud-share-gate/src/main.rs \
+  'ocs/v2.php/apps/files_sharing/api/v1/tokeninfo/unprotected' \
+  "the share gate must not rely on the OCS tokeninfo endpoint."
+
 echo "✅ OpenCloud public share-link gate and edge wiring checks passed."
