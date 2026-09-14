@@ -53,7 +53,7 @@ jq -e '
   and (.gateEnv.OPENCLOUD_SHARE_GATE_COOKIE_NAME == "__Secure-ocshare")
   and (.gateEnv.OPENCLOUD_SHARE_GATE_COOKIE_DOMAIN == ("." + $domain))
   and (.gateEnv.OPENCLOUD_SHARE_GATE_COOKIE_KEY_FILE | endswith("cookie.key"))
-  and (.gateEnv.OPENCLOUD_SHARE_GATE_COOKIE_TTL_SECS | tonumber > 0)
+  and (.gateEnv.OPENCLOUD_SHARE_GATE_COOKIE_TTL_SECS == "1800")
   and (.gateEnv.OPENCLOUD_SHARE_GATE_OPENCLOUD_URL | startswith("http://127.0.0.1:"))
   and (.gateRuntimeDirectory == "opencloud-share-gate")
   and (.gateRuntimeDirectoryMode == "0700")

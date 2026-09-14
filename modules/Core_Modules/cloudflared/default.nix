@@ -8,6 +8,7 @@ in
 {
   imports = [
     ./bootstrap.nix
+    ./dns.nix
   ];
 
   users.users.cloudflared = {

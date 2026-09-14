@@ -28,7 +28,11 @@ let
 
   cookieName = "__Secure-ocshare";
   cookieDomain = ".${vars.domain}";
-  cookieTtlSecs = 12 * 60 * 60;
+  # Short-lived on purpose: the cookie only decides whether an already-admitted
+  # visitor may keep reaching OpenCloud/Collabora. A revoked or expired share
+  # therefore stops being admitted shortly after, while OpenCloud continues to
+  # enforce the share/password/WOPI auth on every data request.
+  cookieTtlSecs = 30 * 60;
 
   upstreamHeaders = ''
     header_up X-Forwarded-Proto https
