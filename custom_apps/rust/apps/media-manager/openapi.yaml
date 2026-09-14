@@ -1777,7 +1777,9 @@ components:
           items: { $ref: "#/components/schemas/MetadataHealthIssue" }
         trackOrder:
           description: Folder-level play-order report for audio albums; null for other folders.
-          $ref: "#/components/schemas/TrackOrderReport"
+          anyOf:
+            - $ref: "#/components/schemas/TrackOrderReport"
+            - type: "null"
         modificationTargets:
           type: array
           items: { $ref: "#/components/schemas/MetadataModificationTarget" }

@@ -109,10 +109,19 @@ fn create_artwork_plan(
     artwork_plan: ArtworkPlanAction,
     request_id: String,
 ) -> Result<Response, ApiError> {
-    let replacing = matches!(artwork_plan.broker_action, BrokerAction::ReplaceArtwork(_));
-    let archived_relative_path = artwork_plan.archived_relative_path;
-    let destination_relative_path = artwork_plan.destination_relative_path;
-    let actions = vec![artwork_plan.broker_action];
+    let ArtworkPlanAction {
+        broker_action,
+        archive_action,
+        archived_relative_path,
+        destination_relative_path,
+    } = artwork_plan;
+    let replacing = matches!(broker_action, BrokerAction::ReplaceArtwork(_));
+    let extracted_embedded = archive_action.is_some();
+    let mut actions = Vec::with_capacity(2);
+    if let Some(archive_action) = archive_action {
+        actions.push(archive_action);
+    }
+    actions.push(broker_action);
     let expires_at = unix_timestamp().saturating_add(30 * 60);
     let canonical = serde_json::to_vec(&json!({
         "actor": identity.username,
@@ -174,17 +183,24 @@ fn create_artwork_plan(
         })?;
     let mut warnings = if replacing {
         vec![
-            "The current image will be moved into its superseded subfolder before the replacement is installed.",
-            "The staged replacement is fingerprint-bound and will never overwrite another destination.",
+            "The current image will be moved into its superseded subfolder before the replacement is installed.".to_string(),
+            "The staged replacement is fingerprint-bound and will never overwrite another destination.".to_string(),
+        ]
+    } else if extracted_embedded {
+        vec![
+            "The embedded cover was extracted into its superseded subfolder before the new cover is installed.".to_string(),
+            "The media file is left untouched; a new cover image will be installed beside it.".to_string(),
+            "The staged cover is fingerprint-bound and will never overwrite an existing destination.".to_string(),
         ]
     } else {
         vec![
-            "A new cover image will be installed beside the selected media file.",
-            "The staged cover is fingerprint-bound and will never overwrite an existing destination.",
+            "A new cover image will be installed beside the selected media file.".to_string(),
+            "The staged cover is fingerprint-bound and will never overwrite an existing destination.".to_string(),
         ]
     };
     if state.config.mutation_mode == MutationMode::ReadOnly {
-        warnings.push("The service is in read-only mode; this plan cannot be confirmed.");
+        warnings
+            .push("The service is in read-only mode; this plan cannot be confirmed.".to_string());
     }
     Ok((
         StatusCode::CREATED,
@@ -711,6 +727,47 @@ pub(super) async fn item_image(
         .into_response()
 }
 
+struct StagedEmbeddedArtwork {
+    staged: StagedSidecar,
+    extension: String,
+}
+
+/// Extract the current embedded cover from a media container into provider
+/// staging so the plan can archive it beside the media before installing a new
+/// cover sidecar. The container itself is never rewritten.
+async fn stage_embedded_artwork(
+    state: &Arc<AppState>,
+    identity: &Identity,
+    item: &CatalogItem,
+    request_id: &str,
+) -> Option<StagedEmbeddedArtwork> {
+    let root = state.config.resolve_visible_root(identity, &item.root_id)?;
+    let root_path = root.resolved_path.clone();
+    let item_path = item.relative_path.clone();
+    let body = match tokio::task::spawn_blocking(move || {
+        read_embedded_artwork(FilePath::new(&root_path), &item_path)
+    })
+    .await
+    {
+        Ok(Ok(Some(body))) => body,
+        _ => return None,
+    };
+    let extension = crate::artwork::artwork_extension_for_content_type(&body.content_type)?;
+    let staged = stage_sidecar(
+        &state.config,
+        "embedded-artwork",
+        extension,
+        &body.bytes,
+        request_id,
+    )
+    .await
+    .ok()?;
+    Some(StagedEmbeddedArtwork {
+        staged,
+        extension: extension.to_string(),
+    })
+}
+
 pub(super) async fn preview_artwork_replacement(
     State(state): State<Arc<AppState>>,
     Path(item_id): Path<String>,
@@ -765,16 +822,23 @@ pub(super) async fn preview_artwork_replacement(
         preferred_artwork(&same_directory, &item.relative_path)
     };
     drop(catalog);
+    let embedded_staging =
+        if existing_artwork.is_none() && is_embedded_artwork_capable(item.media_kind) {
+            stage_embedded_artwork(&state, &identity, &item, &request_id).await
+        } else {
+            None
+        };
     let body = match to_bytes(request.into_body(), MAX_ARTWORK_UPLOAD_BYTES).await {
         Ok(body) => body,
         Err(_) => {
+            discard_embedded_staging(&embedded_staging).await;
             return ApiError::new(
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "artwork_size_invalid",
                 "Cover artwork must be no larger than 32 MiB.",
                 request_id,
             )
-            .into_response()
+            .into_response();
         }
     };
     let upload_format = query.format;
@@ -785,23 +849,38 @@ pub(super) async fn preview_artwork_replacement(
     .await
     {
         Ok(Ok(extension)) => extension,
-        Ok(Err(error)) => return error.with_request_id(request_id).into_response(),
+        Ok(Err(error)) => {
+            discard_embedded_staging(&embedded_staging).await;
+            return error.with_request_id(request_id).into_response();
+        }
         Err(error) => {
             log_event(
                 "artwork_validation_task_failed",
                 &request_id,
                 json!({ "error": error.to_string() }),
             );
+            discard_embedded_staging(&embedded_staging).await;
             return ApiError::internal(request_id).into_response();
         }
     };
-    let staged = match stage_sidecar(&state.config, extension, &body, &request_id).await {
+    let staged = match stage_sidecar(&state.config, "sidecar", extension, &body, &request_id).await
+    {
         Ok(staged) => staged,
-        Err(error) => return error.into_response(),
+        Err(error) => {
+            discard_embedded_staging(&embedded_staging).await;
+            return error.into_response();
+        }
     };
     let edit_request = crate::artwork_edit::ArtworkEditRequest {
         item: &item,
         existing_artwork: existing_artwork.as_ref(),
+        embedded_artwork: embedded_staging.as_ref().map(|embedded| {
+            crate::artwork_edit::EmbeddedArtworkStaging {
+                staging_filename: &embedded.staged.filename,
+                expected: &embedded.staged.expected,
+                extension: &embedded.extension,
+            }
+        }),
         extension,
         staging_filename: &staged.filename,
         expected: &staged.expected,
@@ -813,6 +892,7 @@ pub(super) async fn preview_artwork_replacement(
         application.plan_artwork_edit(edit_request)
     } else {
         let _ = tokio::fs::remove_file(&staged.path).await;
+        discard_embedded_staging(&embedded_staging).await;
         return ApiError::new(
             StatusCode::CONFLICT,
             "artwork_edit_unsupported",
@@ -825,6 +905,7 @@ pub(super) async fn preview_artwork_replacement(
         Ok(catalog) => catalog,
         Err(_) => {
             let _ = tokio::fs::remove_file(&staged.path).await;
+            discard_embedded_staging(&embedded_staging).await;
             return ApiError::internal(request_id).into_response();
         }
     };
@@ -839,7 +920,14 @@ pub(super) async fn preview_artwork_replacement(
         Ok(response) => response,
         Err(error) => {
             let _ = tokio::fs::remove_file(staged.path).await;
+            discard_embedded_staging(&embedded_staging).await;
             error.into_response()
         }
+    }
+}
+
+async fn discard_embedded_staging(staging: &Option<StagedEmbeddedArtwork>) {
+    if let Some(embedded) = staging {
+        let _ = tokio::fs::remove_file(&embedded.staged.path).await;
     }
 }

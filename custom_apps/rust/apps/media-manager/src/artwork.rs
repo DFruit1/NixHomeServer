@@ -117,6 +117,16 @@ pub(crate) fn read_embedded_artwork(
     }))
 }
 
+pub(crate) fn artwork_extension_for_content_type(content_type: &str) -> Option<&'static str> {
+    match content_type {
+        "image/jpeg" => Some("jpg"),
+        "image/png" => Some("png"),
+        "image/gif" => Some("gif"),
+        "image/webp" => Some("webp"),
+        _ => None,
+    }
+}
+
 pub(crate) fn sniff_image_content_type(bytes: &[u8]) -> Option<String> {
     const SIGNATURES: &[(&str, &[u8])] = &[
         ("image/jpeg", &[0xFF, 0xD8, 0xFF]),

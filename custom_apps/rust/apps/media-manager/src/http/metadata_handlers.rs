@@ -723,7 +723,14 @@ async fn prepare_metadata_action(
         })?,
         None => generated.to_string(),
     };
-    let staged = stage_sidecar(config, format.extension(), contents.as_bytes(), request_id).await?;
+    let staged = stage_sidecar(
+        config,
+        "sidecar",
+        format.extension(),
+        contents.as_bytes(),
+        request_id,
+    )
+    .await?;
     let action = if let Some((_, expected_source)) = existing {
         let (parent, filename) = destination_relative_path
             .rsplit_once('/')

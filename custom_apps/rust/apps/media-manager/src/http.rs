@@ -1322,6 +1322,7 @@ struct StagedSidecar {
 
 async fn stage_sidecar(
     config: &AppConfig,
+    prefix: &str,
     extension: &str,
     bytes: &[u8],
     request_id: &str,
@@ -1337,7 +1338,7 @@ async fn stage_sidecar(
             );
             ApiError::internal(request_id.to_string())
         })?;
-    let staging_filename = format!("sidecar-{request_id}.{extension}");
+    let staging_filename = format!("{prefix}-{request_id}.{extension}");
     let staging_path = staging_directory.join(&staging_filename);
     let mut staged = tokio::fs::OpenOptions::new()
         .create_new(true)

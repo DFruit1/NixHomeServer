@@ -63,6 +63,15 @@ pub struct ReplaceArtworkAction {
     pub expected_replacement: String,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchiveEmbeddedArtworkAction {
+    pub staging_filename: String,
+    pub root_id: String,
+    pub archived_relative_path: String,
+    pub expected: String,
+}
+
 pub type ReplaceMetadataSidecarAction = ReplaceArtworkAction;
 pub type ReplaceEmbeddedMetadataAction = ReplaceArtworkAction;
 
@@ -73,6 +82,7 @@ pub enum BrokerAction {
     InstallSubtitle(InstallSubtitleAction),
     InstallMetadataSidecar(InstallMetadataSidecarAction),
     InstallArtwork(InstallArtworkAction),
+    ArchiveEmbeddedArtwork(ArchiveEmbeddedArtworkAction),
     ReplaceMetadataSidecar(ReplaceMetadataSidecarAction),
     ReplaceEmbeddedMetadata(ReplaceEmbeddedMetadataAction),
     ReplaceArtwork(ReplaceArtworkAction),
@@ -198,6 +208,9 @@ pub fn apply_broker_action(
             apply_install_metadata_sidecar(config, username, action)
         }
         BrokerAction::InstallArtwork(action) => apply_install_artwork(config, username, action),
+        BrokerAction::ArchiveEmbeddedArtwork(action) => {
+            apply_archive_embedded_artwork(config, username, action)
+        }
         BrokerAction::ReplaceMetadataSidecar(action) => {
             apply_replace_metadata_sidecar(config, username, action)
         }
@@ -224,6 +237,9 @@ pub fn recover_broker_action(
             recover_installed_metadata_sidecar(config, username, action)
         }
         BrokerAction::InstallArtwork(action) => recover_installed_artwork(config, username, action),
+        BrokerAction::ArchiveEmbeddedArtwork(action) => {
+            recover_archived_embedded_artwork(config, username, action)
+        }
         BrokerAction::ReplaceMetadataSidecar(action) => {
             recover_replaced_metadata_sidecar(config, username, action)
         }
@@ -249,6 +265,9 @@ pub fn discard_staged_broker_action(
             discard_staged_file(config, &action.staging_filename, &action.expected)
         }
         BrokerAction::InstallArtwork(action) => {
+            discard_staged_file(config, &action.staging_filename, &action.expected)
+        }
+        BrokerAction::ArchiveEmbeddedArtwork(action) => {
             discard_staged_file(config, &action.staging_filename, &action.expected)
         }
         BrokerAction::ReplaceMetadataSidecar(action) => discard_staged_file(
@@ -606,6 +625,76 @@ fn validate_install_artwork_action(
     {
         return Err(BrokerError::new(
             "new artwork must use a supported cover image filename",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+pub fn apply_archive_embedded_artwork(
+    config: &AppConfig,
+    username: &str,
+    action: &ArchiveEmbeddedArtworkAction,
+) -> Result<(), BrokerError> {
+    validate_archive_embedded_artwork_action(config, username, action)?;
+    apply_staged_no_replace(
+        config,
+        username,
+        &action.staging_filename,
+        &action.root_id,
+        &action.archived_relative_path,
+        &action.expected,
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn recover_archived_embedded_artwork(
+    config: &AppConfig,
+    username: &str,
+    action: &ArchiveEmbeddedArtworkAction,
+) -> Result<bool, BrokerError> {
+    validate_archive_embedded_artwork_action(config, username, action)?;
+    recover_staged_no_replace(
+        config,
+        username,
+        &action.staging_filename,
+        &action.root_id,
+        &action.archived_relative_path,
+        &action.expected,
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn validate_archive_embedded_artwork_action(
+    config: &AppConfig,
+    username: &str,
+    action: &ArchiveEmbeddedArtworkAction,
+) -> Result<(), BrokerError> {
+    if !safe_component(&action.staging_filename) {
+        return Err(BrokerError::new("staging filename is not a safe component"));
+    }
+    let identity = Identity::try_new(username, ["users"])
+        .map_err(|_| BrokerError::new("plan owner is not a safe identity component"))?;
+    let root = config
+        .resolve_visible_root(&identity, &action.root_id)
+        .ok_or_else(|| BrokerError::new("artwork root ID is not registered"))?;
+    if !LibraryCategory::ALL.contains(&root.category) {
+        return Err(BrokerError::new(
+            "extracted artwork may only be archived in a media root",
+        ));
+    }
+    let (archive_parent, archive_leaf) = safe_parent_and_leaf(&action.archived_relative_path)?;
+    if archive_parent.last().copied() != Some("superseded") {
+        return Err(BrokerError::new(
+            "extracted artwork must be archived in a superseded child",
+        ));
+    }
+    let valid_extension = [".jpg", ".jpeg", ".png", ".gif", ".webp"]
+        .iter()
+        .any(|extension| archive_leaf.to_ascii_lowercase().ends_with(extension));
+    if !valid_extension {
+        return Err(BrokerError::new(
+            "extracted artwork must use .jpg, .jpeg, .png, .gif, or .webp",
         ));
     }
     Ok(())

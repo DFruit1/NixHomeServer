@@ -5,9 +5,9 @@ use media_manager::{
         apply_broker_action, apply_install_metadata_sidecar, apply_install_subtitle, apply_move,
         apply_replace_artwork, apply_replace_metadata_sidecar, discard_staged_broker_action,
         file_fingerprint, move_destination_matches, open_regular_file_beneath,
-        recover_broker_action, BrokerAction, InstallArtworkAction, InstallMetadataSidecarAction,
-        InstallSubtitleAction, MoveAction, ReplaceArtworkAction, ReplaceEmbeddedMetadataAction,
-        ReplaceMetadataSidecarAction,
+        recover_broker_action, ArchiveEmbeddedArtworkAction, BrokerAction, InstallArtworkAction,
+        InstallMetadataSidecarAction, InstallSubtitleAction, MoveAction, ReplaceArtworkAction,
+        ReplaceEmbeddedMetadataAction, ReplaceMetadataSidecarAction,
     },
     config::AppConfig,
 };
@@ -381,6 +381,83 @@ fn broker_replaces_artwork_as_one_recoverable_no_overwrite_operation() {
         fs::read(shared.join("_Videos/Recovery/cover.png")).expect("recovered replacement"),
         b"\x89PNG\r\n\x1a\nrecovered replacement"
     );
+}
+
+#[test]
+fn broker_archives_extracted_embedded_artwork_without_overwrite() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let shared = temp.path().join("shared");
+    let users = temp.path().join("users");
+    let state = temp.path().join("state");
+    fs::create_dir_all(shared.join("_Videos/Movie")).expect("movie directory");
+    fs::create_dir_all(state.join("provider-staging")).expect("staging directory");
+    fs::write(shared.join("_Videos/Movie/Movie.mkv"), b"movie").expect("movie");
+    let staged = state.join("provider-staging/artwork-1.jpg");
+    fs::write(&staged, b"embedded-cover").expect("staged embedded cover");
+    let mut config = AppConfig::for_test(
+        shared.to_str().expect("shared path"),
+        users.to_str().expect("users path"),
+    );
+    config.state_dir = state.clone();
+    let action = ArchiveEmbeddedArtworkAction {
+        staging_filename: "artwork-1.jpg".to_string(),
+        root_id: "shared-videos".to_string(),
+        archived_relative_path: "Movie/superseded/Movie-request.jpg".to_string(),
+        expected: file_fingerprint(&staged).expect("staged fingerprint"),
+    };
+
+    apply_broker_action(
+        &config,
+        "editor",
+        &BrokerAction::ArchiveEmbeddedArtwork(action.clone()),
+    )
+    .expect("archive embedded artwork");
+    assert_eq!(
+        fs::read(shared.join("_Videos/Movie/superseded/Movie-request.jpg"))
+            .expect("archived embedded cover"),
+        b"embedded-cover"
+    );
+    assert!(!staged.exists());
+    assert!(recover_broker_action(
+        &config,
+        "editor",
+        &BrokerAction::ArchiveEmbeddedArtwork(action)
+    )
+    .expect("completed archive recovery"));
+
+    let collision_stage = state.join("provider-staging/artwork-2.jpg");
+    fs::write(&collision_stage, b"second-cover").expect("second stage");
+    let collision = ArchiveEmbeddedArtworkAction {
+        staging_filename: "artwork-2.jpg".to_string(),
+        root_id: "shared-videos".to_string(),
+        archived_relative_path: "Movie/superseded/Movie-request.jpg".to_string(),
+        expected: file_fingerprint(&collision_stage).expect("second stage fingerprint"),
+    };
+    assert!(apply_broker_action(
+        &config,
+        "editor",
+        &BrokerAction::ArchiveEmbeddedArtwork(collision)
+    )
+    .is_err());
+    assert_eq!(
+        fs::read(shared.join("_Videos/Movie/superseded/Movie-request.jpg"))
+            .expect("original archive retained"),
+        b"embedded-cover"
+    );
+    assert!(collision_stage.exists());
+
+    let outside = ArchiveEmbeddedArtworkAction {
+        staging_filename: "artwork-2.jpg".to_string(),
+        root_id: "shared-videos".to_string(),
+        archived_relative_path: "Movie/Movie-request.jpg".to_string(),
+        expected: file_fingerprint(&collision_stage).expect("outside fingerprint"),
+    };
+    assert!(apply_broker_action(
+        &config,
+        "editor",
+        &BrokerAction::ArchiveEmbeddedArtwork(outside)
+    )
+    .is_err());
 }
 
 #[test]

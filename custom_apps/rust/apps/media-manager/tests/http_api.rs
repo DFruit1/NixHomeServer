@@ -2436,6 +2436,73 @@ async fn media_item_artwork_upload_previews_a_no_overwrite_cover_install() {
 }
 
 #[tokio::test]
+async fn embedded_cover_is_archived_before_a_new_artwork_sidecar_is_installed() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let (app, _) = test_app_with_mode(&temp, MutationMode::Enabled);
+    std::fs::create_dir_all(temp.path().join("shared/_Music/Album")).expect("album directory");
+    std::fs::write(
+        temp.path().join("shared/_Music/Album/Track.mp3"),
+        mp3_with_embedded_artwork("image/jpeg", b"embedded-cover"),
+    )
+    .expect("tagged audio");
+    editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-music"}"#).await;
+    let track_id = item_id_by_kind(&app, "shared-music", "music").await;
+
+    let response = app
+        .oneshot(editor_post_request(
+            &format!("/api/v1/items/{track_id}/image/replacement?format=png"),
+            Body::from(one_pixel_png()),
+        ))
+        .await
+        .expect("artwork replacement preview");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("preview body");
+    let preview: Value = serde_json::from_slice(&body).expect("preview JSON");
+    let actions = preview["actions"].as_array().expect("actions");
+    assert_eq!(actions.len(), 2);
+    assert_eq!(actions[0]["kind"], "archive_embedded_artwork");
+    let archived = actions[0]["archivedRelativePath"]
+        .as_str()
+        .expect("archive path");
+    assert!(archived.starts_with("Album/superseded/Track-"));
+    assert!(archived.ends_with(".jpg"));
+    assert_eq!(actions[1]["kind"], "install_artwork");
+    assert_eq!(actions[1]["destinationRelativePath"], "Album/cover.png");
+    assert!(preview["warnings"]
+        .as_array()
+        .expect("warnings")
+        .iter()
+        .any(|warning| warning
+            .as_str()
+            .is_some_and(|warning| warning.contains("embedded cover"))));
+}
+
+#[tokio::test]
+async fn folder_metadata_with_null_track_order_matches_the_wire_contract() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let (app, _) = test_app_with_mode(&temp, MutationMode::Enabled);
+    std::fs::create_dir_all(temp.path().join("shared/_Videos/Movie")).expect("movie directory");
+    std::fs::write(temp.path().join("shared/_Videos/Movie/Movie.mkv"), b"movie").expect("movie");
+    editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-videos"}"#).await;
+
+    let response = app
+        .oneshot(viewer_get_request(
+            "/api/v1/folders/metadata?rootId=shared-videos&relativePath=Movie",
+        ))
+        .await
+        .expect("folder metadata response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("folder metadata body");
+    let metadata: Value = serde_json::from_slice(&body).expect("folder metadata JSON");
+    assert!(metadata["trackOrder"].is_null());
+    api_contract::assert_component("ItemMetadata", &metadata);
+}
+
+#[tokio::test]
 async fn unauthenticated_artwork_upload_is_rejected_before_reading_a_large_body() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let body = vec![0_u8; 32 * 1024 * 1024 + 2048];

@@ -294,6 +294,7 @@ mod tests {
                 let plan = application.plan_artwork_edit(ArtworkEditRequest {
                     item: &item,
                     existing_artwork: existing,
+                    embedded_artwork: None,
                     extension: "png",
                     staging_filename: "upload.png",
                     expected: "new-image",

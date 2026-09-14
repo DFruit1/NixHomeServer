@@ -501,7 +501,7 @@ pub(super) async fn install_provider_subtitle(
         request.hearing_impaired,
         "srt",
     );
-    let staged = match stage_sidecar(&state.config, "srt", &bytes, &request_id).await {
+    let staged = match stage_sidecar(&state.config, "sidecar", "srt", &bytes, &request_id).await {
         Ok(staged) => staged,
         Err(error) => return error.into_response(),
     };
@@ -741,7 +741,8 @@ pub(super) async fn adjust_subtitle_timing(
         request.hearing_impaired,
         "srt",
     );
-    let staged = match stage_sidecar(&state.config, "srt", &adjusted, &request_id).await {
+    let staged = match stage_sidecar(&state.config, "sidecar", "srt", &adjusted, &request_id).await
+    {
         Ok(staged) => staged,
         Err(error) => return error.into_response(),
     };
@@ -1174,7 +1175,8 @@ pub(super) async fn upload_subtitle(
         query.hearing_impaired,
         extension,
     );
-    let staged = match stage_sidecar(&state.config, extension, &body, &request_id).await {
+    let staged = match stage_sidecar(&state.config, "sidecar", extension, &body, &request_id).await
+    {
         Ok(staged) => staged,
         Err(error) => return error.into_response(),
     };

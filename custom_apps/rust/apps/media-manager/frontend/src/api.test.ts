@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { api, ApiError } from "./api";
+import { validateApiResponse } from "./api-contract";
 
 describe("api", () => {
   it("returns parsed JSON for successful requests", async () => {
@@ -127,5 +128,68 @@ it("rejects an undocumented bodyless success", async () => {
   );
   await expect(api("/session")).rejects.toMatchObject({
     code: "invalid_response",
+  });
+});
+
+describe("metadata contract", () => {
+  const baseMetadata = {
+    mediaType: "movie",
+    mediaKind: "video",
+    title: "Movie",
+    genres: [],
+    writers: [],
+    providerIds: {},
+    videoStreams: [],
+    audioStreams: [],
+    subtitleStreams: [],
+    sources: ["folder"],
+    observations: [],
+    fieldSources: {},
+    sidecar: {
+      relativePath: "metadata.nfo",
+      format: "nfo",
+      exists: false,
+      canReplace: true,
+      consumerEffective: true,
+    },
+    consumers: [
+      {
+        id: "jellyfin",
+        label: "Jellyfin",
+        available: true,
+        effect: "read-after-refresh",
+        canManageNatively: true,
+        portableWriteSupported: true,
+        message: "Jellyfin reads local NFO files after a refresh.",
+        sourcePriority: "NFO sidecar",
+      },
+    ],
+    health: [],
+    modificationTargets: [],
+    inspectionWarnings: [],
+  };
+
+  it("accepts a folder metadata response with a null track order", () => {
+    expect(
+      validateApiResponse("/folders/metadata", "GET", 200, {
+        ...baseMetadata,
+        trackOrder: null,
+      }),
+    ).toBe(true);
+  });
+
+  it("accepts a folder metadata response with a track-order report", () => {
+    expect(
+      validateApiResponse("/folders/metadata", "GET", 200, {
+        ...baseMetadata,
+        mediaType: "music",
+        trackOrder: {
+          status: "ok",
+          fileCount: 0,
+          files: [],
+          problems: [],
+        },
+      }),
+    ).toBe(true);
   });
 });

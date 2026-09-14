@@ -2071,13 +2071,6 @@ export const ItemEditor = component$<{
                         ? "Preview safe sidecar update"
                         : "Preview metadata sidecar"}
               </button>
-              <span class="metadata-sources-note">
-                {metadata.loadingDetails
-                  ? "Reading available metadata…"
-                  : metadata.isDirty
-                    ? `${metadataFieldChanges(metadata.baseline, normalizedMetadataValues(metadata)).length} unsaved field change${metadataFieldChanges(metadata.baseline, normalizedMetadataValues(metadata)).length === 1 ? "" : "s"}.`
-                    : `Sources: ${metadata.sources.join(" + ") || "select an item"}. NFO is used for video/music; OPF is used for books and audiobooks.`}
-              </span>
             </div>
           )}
           <div class="metadata-action-buttons">
