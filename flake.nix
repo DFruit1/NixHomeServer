@@ -114,7 +114,7 @@
       formatter = forAllSystems (system: nixpkgs.legacyPackages.${system}.nixpkgs-fmt);
       packages = forAllSystems (system: {
         mkvmaker = packageDataBySystem.${system}.appPackages.mkvmaker;
-      });
+      } // packageDataBySystem.${system}.tauriApps);
       checks = forAllSystems
         (system: mkChecks system packageDataBySystem.${system} vars.enabledApps false);
       legacyPackages = forAllSystems (system: {
