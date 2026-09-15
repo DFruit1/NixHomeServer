@@ -333,6 +333,31 @@ let
 
         substituteInPlace server/middleware/session.go \
                 --replace-fail $'if ctx.Backend, err = _extractBackend(req, ctx); err != nil {\n\t\t\tif len(ctx.Session) == 0 {\n\t\t\t\tSendErrorResult(res, ErrNotAuthorized)\n\t\t\t\treturn\n\t\t\t}\n\t\t\tSendErrorResult(res, err)\n\t\t\treturn\n\t\t}' $'if ctx.Backend, err = _extractBackend(req, ctx); err != nil {\n\t\t\tif req.Method == http.MethodGet && req.URL.Path == WithBase("/api/session") {\n\t\t\t\tRecoverFromBadCookie(res)\n\t\t\t\tctx.Session = map[string]string{}\n\t\t\t\tctx.Backend = nil\n\t\t\t} else if len(ctx.Session) == 0 {\n\t\t\t\tSendErrorResult(res, ErrNotAuthorized)\n\t\t\t\treturn\n\t\t\t} else {\n\t\t\t\tSendErrorResult(res, err)\n\t\t\t\treturn\n\t\t\t}\n\t\t}'
+
+        # Shares are read/download only: force every share session non-writable
+        # regardless of the flags stored on the link (this also neutralizes any
+        # link created before this policy), and stop `can_share` from handing
+        # out re-share rights.
+        substituteInPlace server/model/permissions.go \
+                --replace-fail 'return ctx.Share.CanWrite' 'return false' \
+                --replace-fail 'return ctx.Share.CanUpload' 'return false' \
+                --replace-fail 'return ctx.Share.CanShare' 'return false'
+
+        # Store new and edited links as read-only (read enabled, write/upload/
+        # reshare disabled) so the persisted flags and the UI agree with the
+        # enforced policy, whatever role the client asked for.
+        substituteInPlace server/ctrl/share.go \
+                --replace-fail 'NewBoolFromInterface(ctx.Body["can_read"])' 'true' \
+                --replace-fail 'NewBoolFromInterface(ctx.Body["can_write"])' 'false' \
+                --replace-fail 'NewBoolFromInterface(ctx.Body["can_upload"])' 'false' \
+                --replace-fail 'NewBoolFromInterface(ctx.Body["can_share"])' 'false' \
+                --replace-fail 'NewBoolFromInterface(ctx.Body["can_manage_own"])' 'false'
+
+        # `/api/files/unzip` only requires CanRead before it writes the
+        # extracted tree, so require upload explicitly to keep shares
+        # read-only.
+        substituteInPlace server/ctrl/files.go \
+                --replace-fail $'if model.CanRead(ctx) == false {\n\t\tLog.Debug("extract::permission \'permission denied\'")' $'if model.CanUpload(ctx) == false {\n\t\tLog.Debug("extract::permission \'permission denied\'")'
     ''
     + (old.postPatch or "");
   });

@@ -87,4 +87,29 @@ jq -e '
   exit 1
 }
 
-echo "✅ Filestash transfers.vhost: 443 share listener, default-deny share allowlist, Host rewrite, header stripping, ingress, and DNS are correct."
+# Shares are read/download only. The backend patches must force share sessions
+# non-writable, persist links as read-only, and close the archive-extraction
+# write path that otherwise only checks read access.
+services_module=modules/files/services.nix
+require_fixed "$services_module" "'return ctx.Share.CanWrite' 'return false'" \
+  "share sessions must be forced read-only (write)"
+require_fixed "$services_module" "'return ctx.Share.CanUpload' 'return false'" \
+  "share sessions must be forced read-only (upload)"
+require_fixed "$services_module" "'return ctx.Share.CanShare' 'return false'" \
+  "share sessions must not be able to reshare"
+require_fixed "$services_module" "'NewBoolFromInterface(ctx.Body[\"can_read\"])' 'true'" \
+  "stored share links must remain readable"
+require_fixed "$services_module" "'NewBoolFromInterface(ctx.Body[\"can_write\"])' 'false'" \
+  "stored share links must be persisted read-only (write)"
+require_fixed "$services_module" "'NewBoolFromInterface(ctx.Body[\"can_upload\"])' 'false'" \
+  "stored share links must be persisted read-only (upload)"
+require_fixed "$services_module" "'NewBoolFromInterface(ctx.Body[\"can_share\"])' 'false'" \
+  "stored share links must be persisted without reshare"
+require_fixed "$services_module" 'if model.CanUpload(ctx) == false {' \
+  "archive extraction must require upload rights"
+require_fixed "$services_module" 'extract::permission' \
+  "archive extraction must be covered by the read-only share patch"
+require_fixed "$services_module" 'default_access = "viewer"' \
+  "new share links must default to viewer access"
+
+echo "✅ Filestash transfers.vhost: 443 read-only share listener, default-deny allowlist, Host rewrite, header stripping, ingress, and DNS are correct."

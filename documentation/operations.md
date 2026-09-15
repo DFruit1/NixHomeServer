@@ -230,11 +230,18 @@ authentication headers are stripped so a share visitor cannot forge an
 authenticated session, and HTML/SVG responses are forced to download with
 `nosniff`.
 
-New share links default to read-only (`features.share.default_access =
-"viewer"`); grant write or upload explicitly when creating a link. Two upstream
-limitations remain: the email-recipient restriction needs SMTP, which this
-module does not configure, and share tokens are short client-generated strings
-with no edge rate limit, so treat public links as low-entropy secrets.
+Share links are read/download only. Every share session is forced non-writable
+server-side (`server/model/permissions.go`) regardless of the flags stored on a
+link, new and edited links are persisted read-only (`server/ctrl/share.go`),
+and archive extraction, which otherwise only requires read access, additionally
+requires upload rights (`server/ctrl/files.go`). Re-sharing through `can_share`
+is disabled, and existing links are neutralized by the same enforcement. New
+links default to viewer (`features.share.default_access = "viewer"`). This does
+not restrict the authenticated `files.<domain>` workspace, where signed-in
+owners can still manage their own files normally. Two upstream limitations
+remain: the email-recipient restriction needs SMTP, which this module does not
+configure, and share tokens are short client-generated strings with no edge
+rate limit, so treat public links as low-entropy secrets.
 
 When the `files` module is disabled, the transfers host, Cloudflare ingress,
 Unbound private host records, and associated firewall rules are automatically
