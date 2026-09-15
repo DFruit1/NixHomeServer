@@ -102,6 +102,8 @@ in
         "ai.${vars.domain}"
         "syncthing.${vars.domain}"
         "sharephotos.${vars.domain}"
+        # Unauthenticated Filestash share-link host; not browser-loginable.
+        "transfers.${vars.domain}"
         "www.${vars.domain}"
         vars.domain
       ];

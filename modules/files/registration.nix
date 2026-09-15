@@ -2,7 +2,6 @@
   ports = {
     oauth2ProxyFilestash = 4184;
     filestash = 8334;
-    filestashTransfers = 9443;
     filesSftp = 2222;
   };
   homepage = { config, vars }: [

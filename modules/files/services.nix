@@ -6,7 +6,6 @@ let
   oauth2ProxyPort = vars.networking.ports.oauth2ProxyFilestash;
   host = "files.${vars.domain}";
   transfersHost = "transfers.${vars.domain}";
-  transfersPort = vars.networking.ports.filestashTransfers;
   stateDir = config.repo.files.paths.stateDir;
   managedDir = "${stateDir}/.nixos-managed";
   secretRuntimeDir = "/run/filestash-secrets";
@@ -75,8 +74,8 @@ let
       echo "filestash frontend: expected 3 share-link anchors, found $anchor_count" >&2
       exit 1
     fi
-    sed -i "s~window\\.location\\.origin+\"/s/\"~https://${transfersHost}:${toString transfersPort}/s/~g" "$app"
-    replaced_count="$(grep -oF 'https://${transfersHost}:${toString transfersPort}/s/' "$app" | wc -l)"
+    sed -i "s~window\\.location\\.origin+\"/s/\"~https://${transfersHost}/s/~g" "$app"
+    replaced_count="$(grep -oF 'https://${transfersHost}/s/' "$app" | wc -l)"
     if [ "$replaced_count" -ne 3 ]; then
       echo "filestash frontend: share-link rewrite incomplete ($replaced_count/3)" >&2
       exit 1
@@ -418,7 +417,13 @@ in
           };
           features = {
             api.enable = true;
-            share.enable = true;
+            share = {
+              enable = true;
+              # Upstream defaults new links to `editor` (anonymous read, write,
+              # and upload). Default to read-only and require an explicit choice
+              # for write access on the public share host.
+              default_access = "viewer";
+            };
             protection.enable_chromecast = false;
           };
           log = {

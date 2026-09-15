@@ -194,25 +194,6 @@ independently, and a targeted single-app topology.
 The following imported modules also have a convenient active-feature switch.
 Setting one to `false` removes its services, routes, DNS, configured identity
 surfaces, app-owned secret materialization/requirements, backup registrations,
-
-## Transfers Share Host
-
-A dedicated public share host `transfers.<domain>` on port `9443` enables
-unauthenticated visitors to open Filestash share links without OAuth2
-authentication. Share links copied from the authenticated `files.<domain>` UI are
-rewritten to use the transfers host via a deterministic string replacement in the
-shipped frontend bundle. The host is served through a Cloudflare tunnel with
-origin server name validation and is additionally reachable on the LAN and
-Netbird when the `files` module is enabled. The Caddy vhost rewrites the
-`Host` header to `files.<domain>` so that Filestash's SecureOrigin middleware and
-`general.host` configuration remain on the expected hostname.
-
-When the `files` module is disabled, the transfers host, Cloudflare ingress,
-Unbound private host records, and associated firewall rules are automatically
-removed.
-
-The exhaustive regression suite evaluates Core-only, every optional module removed
-independently, and a targeted single-app topology.
 and integrations while leaving centrally managed persistence in place:
 
 ```nix
@@ -226,6 +207,38 @@ repo.radarr.enable = false;
 repo.sonarr.enable = false;
 services.mail-archive-ui.enable = false;
 ```
+
+## Transfers Share Host
+
+A dedicated public share host `transfers.<domain>` enables unauthenticated
+visitors to open Filestash share links without OAuth2 authentication. It is
+served on the standard HTTPS listener (port 443) as its own vhost, so generated
+links carry no non-standard port and stay reachable through Cloudflare's proxy
+and from networks that only allow 443 egress; the same host also works on the
+LAN and Netbird, where the Core caddy module already opens port 443. Share URLs
+are rewritten to the transfers host via a deterministic string replacement in
+the shipped frontend bundle, and the Caddy vhost rewrites the `Host` header to
+`files.<domain>` so Filestash's SecureOrigin middleware and `general.host`
+configuration remain on the expected hostname.
+
+The public listener is default-deny. It proxies only the share frontend, the
+static SPA bundle, the public config/session read endpoints, share proof
+submission, and share-scoped file/export access. The admin console,
+`/api/backend`, session authentication, `/api/share` list/upsert/delete, and
+non-share file or API-key access are not reachable from the public origin. Proxy
+authentication headers are stripped so a share visitor cannot forge an
+authenticated session, and HTML/SVG responses are forced to download with
+`nosniff`.
+
+New share links default to read-only (`features.share.default_access =
+"viewer"`); grant write or upload explicitly when creating a link. Two upstream
+limitations remain: the email-recipient restriction needs SMTP, which this
+module does not configure, and share tokens are short client-generated strings
+with no edge rate limit, so treat public links as low-entropy secrets.
+
+When the `files` module is disabled, the transfers host, Cloudflare ingress,
+Unbound private host records, and associated firewall rules are automatically
+removed.
 
 Offline Media uses
 `offlineMedia.enable = false` in `vars.nix`; its cleanup unit revokes generated

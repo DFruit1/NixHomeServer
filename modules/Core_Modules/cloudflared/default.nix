@@ -31,10 +31,10 @@ in
         };
       } // lib.optionalAttrs filesEnabled {
         # Unauthenticated public share-link host for Filestash. cloudflared
-        # connects to the dedicated Caddy listener over TLS and validates the
+        # connects to the shared Caddy HTTPS listener and validates the
         # presented certificate against this hostname.
         "transfers.${vars.domain}" = {
-          service = "https://${loopback}:${toString vars.networking.ports.filestashTransfers}";
+          service = "https://${loopback}:${toString httpsPort}";
           originRequest.originServerName = "transfers.${vars.domain}";
         };
       };

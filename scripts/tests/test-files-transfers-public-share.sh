@@ -17,24 +17,23 @@ transfers_json="$(
       cfg = (builtins.getAttr hostName flake.nixosConfigurations).config;
       domain = vars.domain;
       transfersHost = "transfers.${domain}";
-      transfersPort = vars.networking.ports.filestashTransfers;
+      httpsPort = vars.networking.ports.https;
       filesPort = vars.networking.ports.filestash;
       oauth2ProxyPort = vars.networking.ports.oauth2ProxyFilestash;
-      transfersVhost = cfg.services.caddy.virtualHosts.${"${transfersHost}:${toString transfersPort}"} or null;
+      transfersVhost = cfg.services.caddy.virtualHosts.${transfersHost} or null;
       tunnel = cfg.services.cloudflared.tunnels.${vars.cloudflareTunnelName};
       frontierVhost = cfg.services.caddy.virtualHosts.${"files.${domain}"} or null;
     in
     {
       transfersVhostUseACME = transfersVhost.useACMEHost or null;
       transfersVhostHost = transfersHost;
-      transfersVhostAddress = "${transfersHost}:${toString transfersPort}";
+      # Portless key means the share host reuses the standard 443 listener.
+      transfersVhostAddress = transfersHost;
       transfersVhostExtra = transfersVhost.extraConfig or null;
       transfersUnboundTarget = (cfg.services.unbound.privateHosts.${transfersHost} or { }).target or null;
       transfersIngress = tunnel.ingress.${transfersHost} or null;
       frontierVhostExtra = frontierVhost.extraConfig or null;
-      netbirdPorts = cfg.networking.firewall.interfaces.${vars.networking.interfaces.netbird}.allowedTCPPorts;
-      lanPorts = cfg.networking.firewall.interfaces.${vars.networking.interfaces.lan}.allowedTCPPorts or [ ];
-      transfersPort = transfersPort;
+      httpsPort = httpsPort;
       filesPort = filesPort;
       oauth2ProxyPort = oauth2ProxyPort;
       domain = domain;
@@ -48,24 +47,44 @@ test -n "$transfers_vhost_address" || {
   exit 1
 }
 
-# Share visitors must never be able to forge proxy-authentication headers, and
-# the transfers host must bypass oauth2-proxy entirely.
+# The share host must be served on the standard HTTPS listener so generated
+# links carry no non-standard port and stay reachable through Cloudflare and
+# from networks that only allow 443 egress. Share visitors must never be able to
+# forge proxy-authentication headers, and the transfers host must bypass
+# oauth2-proxy entirely. The public listener is also default-deny: only the
+# share frontend, SPA assets, public config/session reads, proof submission, and
+# share-scoped file/export access are proxied, so the admin console,
+# `/api/backend`, session authentication, and non-share file or API-key access
+# stay off the public origin.
 jq -e '
   . as $root
   | ($root.transfersVhostUseACME == $root.domain)
+  # The vhost key must be the bare hostname (port 443), not a custom port.
+  and ($root.transfersVhostAddress == $root.transfersVhostHost)
   and ($root.transfersVhostExtra | contains("header_up -X-Auth-Request-Preferred-Username"))
   and ($root.transfersVhostExtra | contains("header_up -X-Forwarded-User"))
   and ($root.transfersVhostExtra | contains("header_up -X-Forwarded-Preferred-Username"))
   and ($root.transfersVhostExtra | contains(":\($root.oauth2ProxyPort)") | not)
+  and ($root.transfersVhostExtra | contains("handle @transfers_frontend"))
+  and ($root.transfersVhostExtra | contains("handle @transfers_static"))
+  and ($root.transfersVhostExtra | contains("handle @transfers_public_config"))
+  and ($root.transfersVhostExtra | contains("handle @transfers_session"))
+  and ($root.transfersVhostExtra | contains("handle @transfers_share_proof"))
+  and ($root.transfersVhostExtra | contains("path /api/files/* /api/onlyoffice/* /api/wopi/*"))
+  and ($root.transfersVhostExtra | contains("query share=*"))
+  and ($root.transfersVhostExtra | contains("handle @transfers_share_export"))
+  and ($root.transfersVhostExtra | contains("respond"))
+  # The public allowlist must not name the sensitive surfaces it blocks.
+  and ($root.transfersVhostExtra | contains("/admin") | not)
+  and ($root.transfersVhostExtra | contains("/api/backend") | not)
+  and ($root.transfersVhostExtra | contains("/api/session/auth") | not)
   and ($root.transfersUnboundTarget == "private")
-  and (.transfersIngress.service == "https://127.0.0.1:\($root.transfersPort)")
+  and (.transfersIngress.service == "https://127.0.0.1:\($root.httpsPort)")
   and (.transfersIngress.originRequest.originServerName == $root.transfersVhostHost)
-  and (($root.netbirdPorts | index($root.transfersPort)) != null)
-  and (($root.lanPorts | index($root.transfersPort)) != null)
 ' <<<"$transfers_json" >/dev/null || {
   echo "❌ Filestash transfers public share surface is misconfigured."
   jq . <<<"$transfers_json"
   exit 1
 }
 
-echo "✅ Filestash transfers.vhost: public share listener, Host rewrite, header stripping, ingress, DNS, and firewall are correct."
+echo "✅ Filestash transfers.vhost: 443 share listener, default-deny share allowlist, Host rewrite, header stripping, ingress, and DNS are correct."
