@@ -66,8 +66,8 @@ require_fixed custom_apps/node/apps/homepage/src/components/ProfileMenu.tsx \
   'href="/oauth2/sign_out"' \
   "Homepage sign-out must use the canonical shared logout endpoint"
 require_fixed custom_apps/node/apps/youtube-downloader/src/client/profile-menu.tsx \
-  'href="/oauth2/sign_out"' \
-  "YouTube Downloader sign-out must use the canonical shared logout endpoint"
+  "apiUrl('/oauth2/sign_out')" \
+  "YouTube Downloader sign-out must resolve the canonical shared logout endpoint through apiUrl"
 
 require_fixed custom_apps/rust/apps/search/src/server.rs \
   'SEARCH_LOGOUT_REDIRECT_URL' \
