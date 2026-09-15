@@ -18,7 +18,7 @@ let
   } ''
     mkdir -p $out
     ${lib.concatMapStrings (std: ''
-      tar -xf ${std} -C $out --strip-components=1
+      tar -xf ${std} -C $out --strip-components=2
     '') [
       (pkgsUnstable.fetchurl {
         name = "rust-std-${rustcVersion}-aarch64-linux-android.tar.xz";
