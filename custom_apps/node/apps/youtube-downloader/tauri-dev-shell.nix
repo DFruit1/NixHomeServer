@@ -64,13 +64,19 @@ let
   '';
 
   # Android SDK/NDK are unfree; scope the license acceptance to this shell.
+  # Skip the emulator and system images: this shell only compiles APKs.
   androidPkgs = (import pkgsUnstable.path {
     inherit (pkgsUnstable.stdenv.hostPlatform) system;
     config = {
       allowUnfree = true;
       android_sdk.accept_license = true;
     };
-  }).androidenv.androidPkgs;
+  }).androidenv.composeAndroidPackages {
+    numLatestPlatformVersions = 3;
+    includeEmulator = false;
+    includeSystemImages = false;
+    includeNDK = true;
+  };
 
   androidNdkBin = "${androidPkgs.ndk-bundle}/toolchains/llvm/prebuilt/linux-x86_64/bin";
 
