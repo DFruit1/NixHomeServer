@@ -10,6 +10,11 @@ use crate::timeutil::now_epoch;
 /// Bound on how many external ids one pruning statement may carry.
 const DB_DELETE_CHUNK: usize = 5000;
 
+/// Namespace for Search's session advisory locks. The second lock key is
+/// derived from the source id, so index/reconcile/reindex passes serialize per
+/// source while different sources still index concurrently.
+const LOCK_NAMESPACE: i32 = 0x5345_4152;
+
 /// The full persistence record for one indexed document.
 #[derive(Debug, Clone)]
 pub struct DocumentRecord {
@@ -91,13 +96,23 @@ pub async fn migrate(client: &mut Client) -> Result<(), String> {
         )
         .await
         .map_err(|err| format!("failed to apply search schema: {err}"))?;
-    // Fingerprint of the source's inputs from the last fully successful pass.
-    // NULL means "no cheap change signal"; the indexer then always extracts.
-    // Added separately so existing databases pick the column up on migration.
+    // Added separately so existing databases pick the columns up on migration:
+    //   source_fingerprint — inputs of the last successful pass (skip signal).
+    //   last_error/last_error_at — most recent per-source failure, cleared on
+    //     success, so a silently stale source is visible to operators.
+    //   index_version — mapping revision the Solr projection was built with;
+    //     a bump forces a rebuild from Postgres without re-extraction.
     client
-        .batch_execute("ALTER TABLE sources ADD COLUMN IF NOT EXISTS source_fingerprint TEXT")
+        .batch_execute(
+            "
+            ALTER TABLE sources ADD COLUMN IF NOT EXISTS source_fingerprint TEXT;
+            ALTER TABLE sources ADD COLUMN IF NOT EXISTS last_error TEXT;
+            ALTER TABLE sources ADD COLUMN IF NOT EXISTS last_error_at BIGINT;
+            ALTER TABLE sources ADD COLUMN IF NOT EXISTS index_version INTEGER NOT NULL DEFAULT 0;
+            ",
+        )
         .await
-        .map_err(|err| format!("failed to add source_fingerprint column: {err}"))
+        .map_err(|err| format!("failed to add source tracking columns: {err}"))
 }
 
 pub async fn register_source(client: &mut Client, source: &SourceConfig) -> Result<(), String> {
@@ -137,11 +152,82 @@ pub async fn mark_synced(
 ) -> Result<(), String> {
     client
         .execute(
-            "UPDATE sources SET last_synced_at = $2, source_fingerprint = $3 WHERE id = $1",
+            "UPDATE sources SET last_synced_at = $2, source_fingerprint = $3, \
+             last_error = NULL, last_error_at = NULL WHERE id = $1",
             &[&source_id, &now_epoch(), &fingerprint],
         )
         .await
         .map_err(|err| format!("failed to update sync time for source '{source_id}': {err}"))?;
+    Ok(())
+}
+
+/// Records the latest failure for a source so a repeatedly failing source is
+/// visible (database, `/api/sources`, and logs) instead of silently going
+/// stale behind a healthy-looking daemon.
+pub async fn mark_failed(client: &Client, source_id: &str, error: &str) -> Result<(), String> {
+    client
+        .execute(
+            "UPDATE sources SET last_error = $2, last_error_at = $3 WHERE id = $1",
+            &[&source_id, &error, &now_epoch()],
+        )
+        .await
+        .map_err(|err| format!("failed to record failure for source '{source_id}': {err}"))?;
+    Ok(())
+}
+
+/// Returns the mapping revision this source's Solr projection was built with.
+/// A source that predates the column (or was never indexed) reports 0.
+pub async fn source_index_version(client: &Client, source_id: &str) -> Result<i64, String> {
+    let rows = client
+        .query(
+            "SELECT index_version FROM sources WHERE id = $1",
+            &[&source_id],
+        )
+        .await
+        .map_err(|err| format!("failed to read index version for '{source_id}': {err}"))?;
+    Ok(rows.into_iter().next().map(|row| row.get(0)).unwrap_or(0))
+}
+
+pub async fn set_index_version(
+    client: &Client,
+    source_id: &str,
+    version: i64,
+) -> Result<(), String> {
+    client
+        .execute(
+            "UPDATE sources SET index_version = $2 WHERE id = $1",
+            &[&source_id, &version],
+        )
+        .await
+        .map_err(|err| format!("failed to update index version for '{source_id}': {err}"))?;
+    Ok(())
+}
+
+/// Tries to take the per-source advisory lock. Returns `false` when another
+/// index/reconcile/reindex operation is already working on the same source, so
+/// the caller can skip instead of interleaving writes. Session-scoped, so a
+/// crashed holder releases it automatically when its connection drops.
+pub async fn try_source_lock(client: &Client, source_id: &str) -> Result<bool, String> {
+    let row = client
+        .query_one(
+            "SELECT pg_try_advisory_lock($1, hashtext($2))",
+            &[&LOCK_NAMESPACE, &source_id],
+        )
+        .await
+        .map_err(|err| format!("failed to acquire index lock for '{source_id}': {err}"))?;
+    Ok(row.get(0))
+}
+
+/// Releases the per-source advisory lock. Best-effort: a failure is logged by
+/// the caller rather than failing the indexing pass.
+pub async fn unlock_source(client: &Client, source_id: &str) -> Result<(), String> {
+    client
+        .execute(
+            "SELECT pg_advisory_unlock($1, hashtext($2))",
+            &[&LOCK_NAMESPACE, &source_id],
+        )
+        .await
+        .map_err(|err| format!("failed to release index lock for '{source_id}': {err}"))?;
     Ok(())
 }
 
@@ -440,12 +526,14 @@ pub async fn purge_source(client: &mut Client, source_id: &str) -> Result<(), St
 pub struct UiSource {
     pub id: String,
     pub display_name: String,
+    pub last_synced_at: Option<i64>,
+    pub last_error: Option<String>,
 }
 
 pub async fn list_sources(client: &Client) -> Result<Vec<UiSource>, String> {
     let rows = client
         .query(
-            "SELECT id, display_name FROM sources ORDER BY display_name",
+            "SELECT id, display_name, last_synced_at, last_error FROM sources ORDER BY display_name",
             &[],
         )
         .await
@@ -455,6 +543,8 @@ pub async fn list_sources(client: &Client) -> Result<Vec<UiSource>, String> {
         .map(|row| UiSource {
             id: row.get(0),
             display_name: row.get(1),
+            last_synced_at: row.get(2),
+            last_error: row.get(3),
         })
         .collect())
 }

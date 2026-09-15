@@ -201,6 +201,7 @@
 <div class="facets" id="facets" hidden>
   <div class="facet-row" id="ownerFacets"><h2>Users</h2></div>
   <div class="facet-row" id="sourceFacets"><h2>Sources</h2></div>
+  <div class="facet-row" id="kindFacets"><h2>Kinds</h2></div>
   <div class="facet-row" id="typeFacets"><h2>Types</h2></div>
   <div class="facet-row" id="authorFacets"><h2>Authors</h2></div>
   <div class="facet-row" id="tagFacets"><h2>Tags</h2></div>
@@ -224,7 +225,7 @@ const beforeEl = document.getElementById('before');
 
 // Chip-only filters (the dimensions that have no select control). Owner,
 // source, and type reuse their selects above.
-const chipFilters = { author: '', tag: '', series: '', year: '' };
+const chipFilters = { kind: '', author: '', tag: '', series: '', year: '' };
 
 function esc(value) {
   const div = document.createElement('div');
@@ -318,6 +319,7 @@ function renderFacets(data) {
   const map = {
     ownerFacets: ['owner', document.getElementById('ownerFacets')],
     sourceFacets: ['source', document.getElementById('sourceFacets')],
+    kindFacets: ['kind', document.getElementById('kindFacets')],
     contentTypeFacets: ['type', document.getElementById('typeFacets')],
     authorFacets: ['author', document.getElementById('authorFacets')],
     tagFacets: ['tag', document.getElementById('tagFacets')],

@@ -173,7 +173,12 @@ async fn api_sources(State(state): State<AppState>, headers: HeaderMap) -> Respo
         Ok(sources) => Json(json!({
             "sources": sources
                 .into_iter()
-                .map(|source| json!({ "id": source.id, "displayName": source.display_name }))
+                .map(|source| json!({
+                    "id": source.id,
+                    "displayName": source.display_name,
+                    "lastSyncedAt": source.last_synced_at,
+                    "lastError": source.last_error,
+                }))
                 .collect::<Vec<_>>(),
         }))
         .into_response(),
@@ -187,6 +192,7 @@ struct SearchParams {
     #[serde(default, rename = "type")]
     content_type: Option<String>,
     source: Option<String>,
+    kind: Option<String>,
     owner: Option<String>,
     author: Option<String>,
     tag: Option<String>,
@@ -204,6 +210,7 @@ impl SearchParams {
     fn filters(&self) -> crate::solr::SearchFilters {
         crate::solr::SearchFilters {
             source: nonempty(self.source.as_deref()),
+            kind: nonempty(self.kind.as_deref()),
             content_type: nonempty(self.content_type.as_deref()),
             owner: nonempty(self.owner.as_deref()),
             author: nonempty(self.author.as_deref()),
@@ -314,6 +321,7 @@ async fn api_search(
                 "hits": hits,
                 "total": response.total + federated_hits.len() as u64,
                 "sourceFacets": facet_json(&response.source_facets),
+                "kindFacets": facet_json(&response.kind_facets),
                 "contentTypeFacets": facet_json(&response.content_type_facets),
                 "ownerFacets": facet_json(&response.owner_facets),
                 "authorFacets": facet_json(&response.author_facets),

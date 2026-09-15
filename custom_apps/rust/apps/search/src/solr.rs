@@ -32,6 +32,10 @@ const SOLR_COMMIT_WITHIN_MS: u64 = 10_000;
 pub struct SolrDocument {
     pub id: String,
     pub source: String,
+    /// Extract-kind (email, web-page, book, …). Indexed as `kind_s` so the UI
+    /// can filter results by the sort of thing a document is; the `_s` dynamic
+    /// field in the stock configset already provides the definition.
+    pub kind: String,
     pub title: String,
     pub body: String,
     pub content_type: String,
@@ -58,6 +62,7 @@ impl SolrDocument {
         Self {
             id: db::full_document_id(source_id, &record.external_id),
             source: source_id.to_string(),
+            kind: record.kind.clone(),
             title: record.title.clone(),
             body: record.body_text.clone(),
             content_type: record.content_type.clone(),
@@ -79,6 +84,7 @@ impl SolrDocument {
         let mut doc = json!({
             "id": self.id,
             "source": self.source,
+            "kind_s": self.kind,
             "title": self.title,
             "body": self.body,
             "content_type": self.content_type,
@@ -133,6 +139,7 @@ pub struct SearchResponse {
     pub hits: Vec<SearchHit>,
     pub total: u64,
     pub source_facets: Vec<(String, u64)>,
+    pub kind_facets: Vec<(String, u64)>,
     pub content_type_facets: Vec<(String, u64)>,
     pub owner_facets: Vec<(String, u64)>,
     pub author_facets: Vec<(String, u64)>,
@@ -146,6 +153,7 @@ pub struct SearchResponse {
 #[derive(Debug, Clone, Default)]
 pub struct SearchFilters {
     pub source: Option<String>,
+    pub kind: Option<String>,
     pub content_type: Option<String>,
     pub owner: Option<String>,
     pub author: Option<String>,
@@ -170,6 +178,9 @@ impl SearchFilters {
                 .collect::<Vec<_>>()
                 .join(" OR ");
             clauses.push(format!("{{!tag=src}}source:({allowed})"));
+        }
+        if let Some(kind) = &self.kind {
+            clauses.push(format!("{{!tag=kind}}kind_s:{}", solr_string_term(kind)));
         }
         if let Some(content_type) = &self.content_type {
             clauses.push(format!(
@@ -462,6 +473,7 @@ impl SolrClient {
             ("start", offset.to_string()),
             ("facet", "true".to_string()),
             ("facet.field", "{!ex=src}source".to_string()),
+            ("facet.field", "{!ex=kind}kind_s".to_string()),
             ("facet.field", "{!ex=ct}content_type".to_string()),
             ("facet.field", "{!ex=own}owner_s".to_string()),
             ("facet.field", "{!ex=auth limit=12}author_ss".to_string()),
@@ -605,6 +617,7 @@ pub fn parse_search_response(response: &Value) -> Result<SearchResponse, String>
         hits,
         total,
         source_facets: facets_of("source"),
+        kind_facets: facets_of("kind_s"),
         content_type_facets: facets_of("content_type"),
         owner_facets: facets_of("owner_s"),
         author_facets: facets_of("author_ss"),
@@ -648,6 +661,7 @@ mod tests {
             "facet_counts": {
                 "facet_fields": {
                     "source": ["paperless", 1, "kiwix", 1],
+                    "kind_s": ["document", 1],
                     "content_type": ["application/pdf", 1],
                     "owner_s": ["acme", 1],
                     "author_ss": ["ACME", 1],
@@ -663,6 +677,7 @@ mod tests {
         assert_eq!(parsed.hits[0].id, "paperless:1");
         assert_eq!(parsed.hits[0].created, Some(1_706_745_600));
         assert_eq!(parsed.source_facets.len(), 2);
+        assert_eq!(parsed.kind_facets, vec![("document".to_string(), 1u64)]);
         assert_eq!(
             parsed.content_type_facets,
             vec![("application/pdf".to_string(), 1u64)]
@@ -687,6 +702,7 @@ mod tests {
 
         let filtered = SearchFilters {
             source: Some("mail-archive".to_string()),
+            kind: Some("email".to_string()),
             content_type: Some("message/rfc822".to_string()),
             owner: Some("dsaw".to_string()),
             author: Some("Alice".to_string()),
@@ -698,6 +714,7 @@ mod tests {
         };
         let clauses = filtered.clauses(&selected);
         assert!(clauses.contains(&"{!tag=src}source:\"mail-archive\"".to_string()));
+        assert!(clauses.contains(&"{!tag=kind}kind_s:\"email\"".to_string()));
         assert!(clauses.contains(&"{!tag=ct}content_type:\"message/rfc822\"".to_string()));
         assert!(clauses.contains(&"{!tag=own}owner_s:\"dsaw\"".to_string()));
         assert!(clauses.contains(&"{!tag=auth}author_ss:\"Alice\"".to_string()));
@@ -730,6 +747,8 @@ mod tests {
         let rendered = doc.to_solr_json();
         // Body is sent for indexing (the schema stores it `stored="false"`).
         assert_eq!(rendered["body"], json!("searchable body"));
+        // The extract kind is indexed for the kind facet/filter.
+        assert_eq!(rendered["kind_s"], json!("document"));
         // Owner and the normalised facets are copied for filtering/faceting.
         assert_eq!(rendered["owner_s"], json!("acme"));
         assert_eq!(rendered["author_ss"], json!(["acme"]));

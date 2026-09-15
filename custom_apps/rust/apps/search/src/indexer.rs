@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::time::Duration;
 
-use crate::config::{Settings, SourceConfig};
+use crate::config::{is_federated, Settings, SourceConfig};
 use crate::db::{self, DocumentRecord};
 use crate::extract::{self, ExtractedDocument};
 use crate::solr::{SolrClient, SolrDocument};
@@ -18,6 +18,13 @@ const SOURCE_TIMEOUT: Duration = Duration::from_secs(12 * 60 * 60);
 /// Escape hatch for operators who genuinely emptied a source: set
 /// `SEARCH_ALLOW_MASS_DELETE=1` to let a pass prune every known document.
 const ALLOW_MASS_DELETE_ENV: &str = "SEARCH_ALLOW_MASS_DELETE";
+
+/// Revision of the Postgres -> Solr projection (which fields and facets are
+/// derived, and how). Bump this whenever `facets.rs` or `SolrDocument` mapping
+/// changes: every source whose stored `index_version` differs is rebuilt from
+/// Postgres, so the change reaches documents the checksum-based pass would
+/// otherwise skip. 1 is the first revision (adds `kind_s`).
+const INDEX_VERSION: i64 = 1;
 
 /// Guards against a source silently producing no documents at all — most often
 /// a mount that is present but empty, or an integration whose data was
@@ -51,6 +58,7 @@ pub async fn run_index() -> Result<(), String> {
     db::migrate(&mut client).await?;
     let solr = SolrClient::new(&settings.solr_url, &settings.solr_core);
 
+    let mut failed: Vec<String> = Vec::new();
     for source in &settings.sources {
         let source_id = source.id.clone();
         let result = match tokio::time::timeout(
@@ -61,17 +69,34 @@ pub async fn run_index() -> Result<(), String> {
         {
             Ok(Ok(())) => Ok(()),
             Ok(Err(err)) => Err(err),
-            Err(_elapsed) => Err(format!(
-                "source exceeded the {}h watchdog",
-                SOURCE_TIMEOUT.as_secs() / 3600
-            )),
+            Err(_elapsed) => {
+                // The future was dropped before it could unlock; release the
+                // per-source lock best-effort so the next pass can proceed.
+                let _ = db::unlock_source(&client, &source_id).await;
+                Err(format!(
+                    "source exceeded the {}h watchdog",
+                    SOURCE_TIMEOUT.as_secs() / 3600
+                ))
+            }
         };
-        // One broken source must not stop the others from staying fresh.
+        // One broken source must not stop the others from staying fresh, but
+        // the failure is recorded per source and surfaced to the caller.
         if let Err(err) = result {
             eprintln!("search: indexing source '{source_id}' failed: {err}");
+            if let Err(mark_err) = db::mark_failed(&client, &source_id, &err).await {
+                eprintln!("search: could not record failure for '{source_id}': {mark_err}");
+            }
+            failed.push(source_id);
         }
     }
-    Ok(())
+    if failed.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "indexing failed for source(s): {}",
+            failed.join(", ")
+        ))
+    }
 }
 
 async fn index_source(
@@ -82,6 +107,24 @@ async fn index_source(
 ) -> Result<(), String> {
     eprintln!("search: indexing source '{}'…", source.id);
     db::register_source(client, source).await?;
+
+    // Refresh the Solr projection when the indexing mapping changes. A rebuild
+    // reads from Postgres alone, so it is cheap and is what makes a
+    // facets/schema change reach documents the checksum-based pass skips.
+    if db::source_index_version(client, &source.id).await? != INDEX_VERSION {
+        eprintln!(
+            "search: source '{}': index mapping is out of date; rebuilding from database",
+            source.id
+        );
+        if reindex_source(solr, client, &source.id).await?.is_none() {
+            eprintln!(
+                "search: source '{}': another indexing operation holds the lock; skipping",
+                source.id
+            );
+            return Ok(());
+        }
+    }
+
     // A source that can prove its inputs are unchanged since the last fully
     // successful pass is skipped outright, avoiding the expensive per-document
     // extraction (pdftotext/zimdump) that otherwise runs on every pass.
@@ -97,6 +140,35 @@ async fn index_source(
             }
         }
     }
+
+    // Serialize with reconcile/reindex and with any overlapping pass for this
+    // source so their Solr writes cannot interleave.
+    if !db::try_source_lock(client, &source.id).await? {
+        eprintln!(
+            "search: source '{}': another indexing operation holds the lock; skipping",
+            source.id
+        );
+        return Ok(());
+    }
+    let result = index_source_locked(source, settings, client, solr, fingerprint.as_deref()).await;
+    if let Err(err) = db::unlock_source(client, &source.id).await {
+        eprintln!(
+            "search: source '{}': failed to release index lock: {err}",
+            source.id
+        );
+    }
+    result
+}
+
+/// The extraction/persist/prune pass for one source. The caller must already
+/// hold that source's advisory lock.
+async fn index_source_locked(
+    source: &SourceConfig,
+    settings: &Settings,
+    client: &mut tokio_postgres::Client,
+    solr: &SolrClient,
+    fingerprint: Option<&str>,
+) -> Result<(), String> {
     let existing = db::existing_checksums(client, &source.id).await?;
     eprintln!(
         "search: source '{}': {} known docs",
@@ -180,7 +252,13 @@ async fn index_source(
         .filter(|external_id| !seen.contains(*external_id))
         .cloned()
         .collect();
-    if refuse_full_wipe(existing.len(), seen.len()) && !mass_delete_allowed() {
+    // Federated sources intentionally emit nothing so that documents left by
+    // an earlier extraction-based configuration are pruned; the wipe guard
+    // must not block that intentional cleanup.
+    if !is_federated(&source.source_type)
+        && refuse_full_wipe(existing.len(), seen.len())
+        && !mass_delete_allowed()
+    {
         return Err(format!(
             "source '{}' produced no documents but {} are indexed; refusing to delete them \
              (set {ALLOW_MASS_DELETE_ENV}=1 to override)",
@@ -204,7 +282,7 @@ async fn index_source(
     // Streaming adds/deletes use commitWithin; one explicit commit per source
     // makes the whole pass durable without a hard commit per batch.
     solr.commit().await?;
-    db::mark_synced(client, &source_id, fingerprint.as_deref()).await?;
+    db::mark_synced(client, &source_id, fingerprint).await?;
     eprintln!(
         "search: source '{}': synced ({} changed, {} missing removed)",
         source_id,
@@ -307,8 +385,15 @@ pub async fn run_reconcile() -> Result<(), String> {
             "search: source '{}': index drift detected (postgres {}, solr {}); rebuilding",
             source.id, postgres, solr_docs
         );
-        let rebuilt = reindex_source(&solr, &client, &source.id).await?;
-        eprintln!("search: source '{}': rebuilt ({} docs)", source.id, rebuilt);
+        match reindex_source(&solr, &client, &source.id).await? {
+            Some(rebuilt) => {
+                eprintln!("search: source '{}': rebuilt ({} docs)", source.id, rebuilt)
+            }
+            None => eprintln!(
+                "search: source '{}': rebuild skipped; another indexing operation holds the lock",
+                source.id
+            ),
+        }
     }
     Ok(())
 }
@@ -328,12 +413,19 @@ pub async fn run_reindex() -> Result<(), String> {
     let sources = db::list_sources(&client).await?;
     let mut total = 0usize;
     for source in &sources {
-        let source_total = reindex_source(&solr, &client, &source.id).await?;
-        total += source_total;
-        eprintln!(
-            "search: reindexed source '{}' ({} docs)",
-            source.id, source_total
-        );
+        match reindex_source(&solr, &client, &source.id).await? {
+            Some(source_total) => {
+                total += source_total;
+                eprintln!(
+                    "search: reindexed source '{}' ({} docs)",
+                    source.id, source_total
+                );
+            }
+            None => eprintln!(
+                "search: source '{}': reindex skipped; another indexing operation holds the lock",
+                source.id
+            ),
+        }
     }
     eprintln!("search: reindex complete ({total} docs)");
     Ok(())
@@ -341,11 +433,36 @@ pub async fn run_reindex() -> Result<(), String> {
 
 /// Rebuilds one source's Solr documents from the authoritative Postgres copy.
 ///
+/// Takes the source's advisory lock; returns `None` when another indexing
+/// operation holds it, so the caller skips rather than interleaving writes.
+async fn reindex_source(
+    solr: &SolrClient,
+    client: &tokio_postgres::Client,
+    source_id: &str,
+) -> Result<Option<usize>, String> {
+    if !db::try_source_lock(client, source_id).await? {
+        return Ok(None);
+    }
+    let result = rebuild_source(solr, client, source_id).await;
+    if result.is_ok() {
+        // The rebuilt projection matches the current mapping revision.
+        if let Err(err) = db::set_index_version(client, source_id, INDEX_VERSION).await {
+            eprintln!("search: source '{source_id}': failed to record index version: {err}");
+        }
+    }
+    if let Err(err) = db::unlock_source(client, source_id).await {
+        eprintln!("search: source '{source_id}': failed to release index lock: {err}");
+    }
+    result.map(Some)
+}
+
+/// The rebuild body; the caller must already hold the source's advisory lock.
+///
 /// The source's existing Solr documents are deleted first so entries that no
 /// longer exist in Postgres are removed too, then every stored document is
 /// streamed back in and committed once. The Postgres copy carries every indexed
 /// field, so no source re-extraction is needed, and a rerun is safe.
-async fn reindex_source(
+async fn rebuild_source(
     solr: &SolrClient,
     client: &tokio_postgres::Client,
     source_id: &str,
