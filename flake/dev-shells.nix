@@ -1,6 +1,10 @@
-{ pkgs, rustLib }:
+{ pkgs, pkgsUnstable, rustLib }:
 
 {
+  youtube-downloader-tauri = import ../custom_apps/node/apps/youtube-downloader/tauri-dev-shell.nix {
+    inherit pkgs pkgsUnstable rustLib;
+  };
+
   ops = pkgs.mkShell {
     name = "ops-dev-shell";
     packages = (with pkgs; [

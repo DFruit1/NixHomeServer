@@ -132,10 +132,11 @@
         (system:
           let
             pkgs = nixpkgs.legacyPackages.${system};
+            pkgsUnstable = inputs.nixpkgs-unstable.legacyPackages.${system};
             packageData = packageDataBySystem.${system};
           in
           import ./flake/dev-shells.nix {
-            inherit pkgs;
+            inherit pkgs pkgsUnstable;
             inherit (packageData) rustLib;
           });
       apps = forAllSystems
