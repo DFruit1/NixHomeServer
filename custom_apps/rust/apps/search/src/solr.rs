@@ -4,7 +4,20 @@ use serde_json::{json, Value};
 
 use crate::db;
 use crate::facets;
+use crate::retry;
 use crate::timeutil::epoch_to_solr_date;
+
+/// Attempts per Solr HTTP operation. Solr restarts and brief network blips are
+/// common on a home server; retrying an idempotent add/delete avoids throwing
+/// away a long extraction pass.
+const SOLR_ATTEMPTS: u32 = 4;
+/// Bound on how many ids one delete request may carry, so a source that is
+/// emptied wholesale cannot build a multi-megabyte request body.
+const SOLR_DELETE_CHUNK: usize = 1000;
+/// Solr soft-commit horizon for streaming adds/deletes. Batches coalesce into
+/// one commit instead of imposing a hard commit per batch; the indexer issues
+/// one explicit hard commit once a source has finished syncing.
+const SOLR_COMMIT_WITHIN_MS: u64 = 10_000;
 
 /// One document rendered for the Solr index.
 ///
@@ -283,61 +296,147 @@ impl SolrClient {
             return Ok(());
         }
         let payload: Vec<Value> = docs.iter().map(SolrDocument::to_solr_json).collect();
-        let url = format!("{}/{}/update?commit=true", self.base_url, self.core);
-        let response: Value = self
-            .http
-            .post(&url)
-            .json(&json!({ "add": payload }))
-            .send()
-            .await
-            .map_err(|err| format!("solr add request failed: {err}"))?
-            .json()
-            .await
-            .map_err(|err| format!("solr add response parse failed: {err}"))?;
-        if response.get("error").is_some() {
-            return Err(format!("solr rejected document add: {response}"));
+        let url = format!(
+            "{}/{}/update?commitWithin={SOLR_COMMIT_WITHIN_MS}",
+            self.base_url, self.core
+        );
+        retry::with_retry("solr add", SOLR_ATTEMPTS, || async {
+            let response: Value = self
+                .http
+                .post(&url)
+                .json(&json!({ "add": payload }))
+                .send()
+                .await
+                .map_err(|err| format!("solr add request failed: {err}"))?
+                .json()
+                .await
+                .map_err(|err| format!("solr add response parse failed: {err}"))?;
+            if response.get("error").is_some() {
+                return Err(format!("solr rejected document add: {response}"));
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    /// Deletes documents by id, splitting the request into bounded chunks so a
+    /// source whose whole document set disappears cannot push an unbounded body.
+    pub async fn delete_ids(&self, ids: &[String]) -> Result<(), String> {
+        for chunk in ids.chunks(SOLR_DELETE_CHUNK) {
+            self.delete_ids_chunk(chunk).await?;
         }
         Ok(())
     }
 
-    pub async fn delete_ids(&self, ids: &[String]) -> Result<(), String> {
+    async fn delete_ids_chunk(&self, ids: &[String]) -> Result<(), String> {
         if ids.is_empty() {
             return Ok(());
         }
-        let url = format!("{}/{}/update?commit=true", self.base_url, self.core);
-        let payload: Vec<Value> = ids.iter().map(|id| json!({ "delete": id })).collect();
-        let response: Value = self
-            .http
-            .post(&url)
-            .json(&Value::Array(payload))
-            .send()
-            .await
-            .map_err(|err| format!("solr delete request failed: {err}"))?
-            .json()
-            .await
-            .map_err(|err| format!("solr delete response parse failed: {err}"))?;
-        if response.get("error").is_some() {
-            return Err(format!("solr rejected deletes: {response}"));
-        }
-        Ok(())
+        let url = format!(
+            "{}/{}/update?commitWithin={SOLR_COMMIT_WITHIN_MS}",
+            self.base_url, self.core
+        );
+        let payload: Value = Value::Array(ids.iter().map(|id| json!({ "delete": id })).collect());
+        retry::with_retry("solr delete", SOLR_ATTEMPTS, || async {
+            let response: Value = self
+                .http
+                .post(&url)
+                .json(&payload)
+                .send()
+                .await
+                .map_err(|err| format!("solr delete request failed: {err}"))?
+                .json()
+                .await
+                .map_err(|err| format!("solr delete response parse failed: {err}"))?;
+            if response.get("error").is_some() {
+                return Err(format!("solr rejected deletes: {response}"));
+            }
+            Ok(())
+        })
+        .await
     }
 
     pub async fn delete_by_source(&self, source: &str) -> Result<(), String> {
+        let url = format!(
+            "{}/{}/update?commitWithin={SOLR_COMMIT_WITHIN_MS}",
+            self.base_url, self.core
+        );
+        let query = format!("source:{}", solr_string_term(source));
+        retry::with_retry("solr delete-by-source", SOLR_ATTEMPTS, || async {
+            let response: Value = self
+                .http
+                .post(&url)
+                .json(&json!({ "delete": { "query": query } }))
+                .send()
+                .await
+                .map_err(|err| format!("solr delete-by-source request failed: {err}"))?
+                .json()
+                .await
+                .map_err(|err| format!("solr delete-by-source response parse failed: {err}"))?;
+            if response.get("error").is_some() {
+                return Err(format!("solr rejected delete-by-source: {response}"));
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    /// Issues one explicit hard commit. Streaming adds/deletes use
+    /// `commitWithin`, so the indexer calls this once per source (and once per
+    /// completed rebuild) to make the pass durable without paying a hard commit
+    /// on every batch.
+    pub async fn commit(&self) -> Result<(), String> {
         let url = format!("{}/{}/update?commit=true", self.base_url, self.core);
-        let response: Value = self
-            .http
-            .post(&url)
-            .json(&json!({ "delete": { "query": format!("source:{source}") } }))
-            .send()
-            .await
-            .map_err(|err| format!("solr delete-by-source request failed: {err}"))?
-            .json()
-            .await
-            .map_err(|err| format!("solr delete-by-source response parse failed: {err}"))?;
-        if response.get("error").is_some() {
-            return Err(format!("solr rejected delete-by-source: {response}"));
-        }
-        Ok(())
+        retry::with_retry("solr commit", SOLR_ATTEMPTS, || async {
+            let response: Value = self
+                .http
+                .post(&url)
+                .json(&json!({ "commit": {} }))
+                .send()
+                .await
+                .map_err(|err| format!("solr commit request failed: {err}"))?
+                .json()
+                .await
+                .map_err(|err| format!("solr commit response parse failed: {err}"))?;
+            if response.get("error").is_some() {
+                return Err(format!("solr rejected commit: {response}"));
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    /// Returns how many documents Solr currently holds for a source. Used by
+    /// the reconciler to detect drift between the authoritative Postgres copy
+    /// and the derived Solr index.
+    pub async fn document_count(&self, source: &str) -> Result<u64, String> {
+        let url = format!("{}/{}/select", self.base_url, self.core);
+        let params = [
+            ("q", "*:*".to_string()),
+            ("fq", format!("source:{}", solr_string_term(source))),
+            ("rows", "0".to_string()),
+            ("wt", "json".to_string()),
+        ];
+        retry::with_retry("solr count", SOLR_ATTEMPTS, || async {
+            let response: Value = self
+                .http
+                .post(&url)
+                .form(&params)
+                .send()
+                .await
+                .map_err(|err| format!("solr count request failed: {err}"))?
+                .json()
+                .await
+                .map_err(|err| format!("solr count response parse failed: {err}"))?;
+            if response.get("error").is_some() {
+                return Err(format!("solr rejected count query: {response}"));
+            }
+            response
+                .pointer("/response/numFound")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| format!("solr count response missing numFound: {response}"))
+        })
+        .await
     }
 
     pub async fn search(

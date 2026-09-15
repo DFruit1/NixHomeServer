@@ -145,6 +145,47 @@ fn contains_fulltext_index(listing: &str) -> bool {
     listing.contains("fulltext/xapian") || listing.contains("fulltextIndex/xapian")
 }
 
+/// Cheap fingerprint of a Kiwix source's inputs: the set of ZIM files and each
+/// file's length and mtime, plus the configured settings (so changing
+/// `fulltextZims` re-extracts). ZIM files are immutable once written, so an
+/// unchanged fingerprint means the source cannot have changed and the whole
+/// extraction (the `zimdump list`/`dump` calls that dominate a pass) can be
+/// skipped. Returns `None` when the library root is unreadable, which leaves
+/// the indexer to extraction and its normal error path.
+pub(crate) fn source_fingerprint(source: &SourceConfig) -> Option<String> {
+    let library_root = source.require_setting("libraryRoot").ok()?;
+    let mut zims: Vec<PathBuf> = std::fs::read_dir(PathBuf::from(&library_root))
+        .ok()?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("zim")
+        })
+        .collect();
+    zims.sort();
+    let mut parts: Vec<String> = Vec::with_capacity(zims.len());
+    for zim in zims {
+        let meta = std::fs::metadata(&zim).ok()?;
+        let mtime_nanos = meta
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0);
+        let name = zim
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        parts.push(format!("{name}\u{1f}{}\u{1f}{mtime_nanos}", meta.len()));
+    }
+    let settings = serde_json::to_string(&source.settings).ok()?;
+    Some(crate::timeutil::sha256_hex(&[
+        &source.source_type,
+        &settings,
+        &parts.join("\n"),
+    ]))
+}
+
 pub(crate) fn entry_origin(app_base: &str, zim_stem: &str, entry_path: &str) -> String {
     format!(
         "{}/content/{}/{}",
@@ -316,6 +357,49 @@ mod tests {
         assert!(matches_any("wikisource_en_all_maxi_2026-02.zim", &patterns));
         assert!(!matches_any("wikibooks_en_all_maxi_2026-04.zim", &patterns));
         assert!(!matches_any("wikisource_en_all_maxi_2026-02.zim", &[]));
+    }
+
+    #[test]
+    fn fingerprint_tracks_zim_inventory_and_settings() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let library = dir.path().join("library");
+        std::fs::create_dir_all(&library).expect("mkdir");
+        std::fs::write(library.join("wiki.zim"), b"zim").expect("write");
+
+        let parse = |library: &Path| {
+            let raw = format!(
+                r#"[{{"id":"kiwix","source_type":"kiwix","app_base":"https://wiki.example.org","settings":{{"libraryRoot":"{}"}}}}]"#,
+                library.display()
+            );
+            crate::config::parse_sources(&raw)
+                .expect("sources")
+                .remove(0)
+        };
+
+        let source = parse(&library);
+        let first = source_fingerprint(&source).expect("fingerprint");
+        // Recomputing with unchanged inputs is stable, so a pass can be skipped.
+        assert_eq!(source_fingerprint(&source), Some(first.clone()));
+
+        // Adding a ZIM changes the fingerprint and forces re-extraction.
+        std::fs::write(library.join("books.zim"), b"zim").expect("write");
+        let second = source_fingerprint(&source).expect("fingerprint");
+        assert_ne!(first, second);
+
+        // Changing the extraction settings also changes the fingerprint.
+        let raw = format!(
+            r#"[{{"id":"kiwix","source_type":"kiwix","app_base":"https://wiki.example.org","settings":{{"libraryRoot":"{}","fulltextZims":["wiki"]}}}}]"#,
+            library.display()
+        );
+        let configured = crate::config::parse_sources(&raw)
+            .expect("sources")
+            .remove(0);
+        assert_ne!(source_fingerprint(&configured), Some(second));
+
+        // An unreadable library root yields no fingerprint, so the indexer
+        // falls back to extraction and its normal error path.
+        let missing = parse(Path::new("/nonexistent/library/root"));
+        assert_eq!(source_fingerprint(&missing), None);
     }
 
     #[test]

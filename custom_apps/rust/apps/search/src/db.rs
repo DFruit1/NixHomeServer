@@ -2,10 +2,13 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use serde_json::Value;
-use tokio_postgres::{Client, NoTls};
+use tokio_postgres::{Client, NoTls, Statement};
 
 use crate::config::SourceConfig;
 use crate::timeutil::now_epoch;
+
+/// Bound on how many external ids one pruning statement may carry.
+const DB_DELETE_CHUNK: usize = 5000;
 
 /// The full persistence record for one indexed document.
 #[derive(Debug, Clone)]
@@ -87,7 +90,14 @@ pub async fn migrate(client: &mut Client) -> Result<(), String> {
             ",
         )
         .await
-        .map_err(|err| format!("failed to apply search schema: {err}"))
+        .map_err(|err| format!("failed to apply search schema: {err}"))?;
+    // Fingerprint of the source's inputs from the last fully successful pass.
+    // NULL means "no cheap change signal"; the indexer then always extracts.
+    // Added separately so existing databases pick the column up on migration.
+    client
+        .batch_execute("ALTER TABLE sources ADD COLUMN IF NOT EXISTS source_fingerprint TEXT")
+        .await
+        .map_err(|err| format!("failed to add source_fingerprint column: {err}"))
 }
 
 pub async fn register_source(client: &mut Client, source: &SourceConfig) -> Result<(), String> {
@@ -117,15 +127,50 @@ pub async fn register_source(client: &mut Client, source: &SourceConfig) -> Resu
     Ok(())
 }
 
-pub async fn mark_synced(client: &mut Client, source_id: &str) -> Result<(), String> {
+/// Records a fully successful pass: the sync time and (when the extractor
+/// provides one) the input fingerprint that lets a later pass skip
+/// re-extraction. Only called after every document was persisted and pruned.
+pub async fn mark_synced(
+    client: &mut Client,
+    source_id: &str,
+    fingerprint: Option<&str>,
+) -> Result<(), String> {
     client
         .execute(
-            "UPDATE sources SET last_synced_at = $2 WHERE id = $1",
-            &[&source_id, &now_epoch()],
+            "UPDATE sources SET last_synced_at = $2, source_fingerprint = $3 WHERE id = $1",
+            &[&source_id, &now_epoch(), &fingerprint],
         )
         .await
         .map_err(|err| format!("failed to update sync time for source '{source_id}': {err}"))?;
     Ok(())
+}
+
+/// Returns the input fingerprint recorded by the last successful pass, if any.
+pub async fn source_fingerprint(
+    client: &Client,
+    source_id: &str,
+) -> Result<Option<String>, String> {
+    let rows = client
+        .query(
+            "SELECT source_fingerprint FROM sources WHERE id = $1",
+            &[&source_id],
+        )
+        .await
+        .map_err(|err| format!("failed to read source fingerprint for '{source_id}': {err}"))?;
+    Ok(rows.into_iter().next().and_then(|row| row.get(0)))
+}
+
+/// Counts the documents stored for a source. Used to detect drift against the
+/// derived Solr index.
+pub async fn count_documents(client: &Client, source_id: &str) -> Result<i64, String> {
+    let row = client
+        .query_one(
+            "SELECT COUNT(*) FROM documents WHERE source_id = $1",
+            &[&source_id],
+        )
+        .await
+        .map_err(|err| format!("failed to count documents for '{source_id}': {err}"))?;
+    Ok(row.get(0))
 }
 
 /// Loads existing document checksums for a source, keyed by external id.
@@ -271,18 +316,11 @@ fn strip_nul_json(value: serde_json::Value) -> serde_json::Value {
     }
 }
 
-pub async fn upsert_document(
-    client: &mut Client,
-    source: &SourceConfig,
-    doc: &DocumentRecord,
-) -> Result<(), String> {
-    let id = full_document_id(&source.id, &doc.external_id);
-    let metadata = strip_nul_json(
-        serde_json::to_value(&doc.metadata)
-            .map_err(|err| format!("failed to serialize document metadata: {err}"))?,
-    );
+/// Prepares the document upsert once so a whole source can reuse the parsed
+/// statement instead of re-parsing it for every document.
+pub async fn prepare_upsert(client: &Client) -> Result<Statement, String> {
     client
-        .execute(
+        .prepare(
             "
             INSERT INTO documents (
                 id, source_id, external_id, kind, title, body_text, content_type,
@@ -306,6 +344,25 @@ pub async fn upsert_document(
                 metadata = EXCLUDED.metadata,
                 indexed_at = EXCLUDED.indexed_at
             ",
+        )
+        .await
+        .map_err(|err| format!("failed to prepare document upsert: {err}"))
+}
+
+pub async fn upsert_document(
+    client: &Client,
+    statement: &Statement,
+    source: &SourceConfig,
+    doc: &DocumentRecord,
+) -> Result<(), String> {
+    let id = full_document_id(&source.id, &doc.external_id);
+    let metadata = strip_nul_json(
+        serde_json::to_value(&doc.metadata)
+            .map_err(|err| format!("failed to serialize document metadata: {err}"))?,
+    );
+    client
+        .execute(
+            statement,
             &[
                 &id,
                 &source.id,
@@ -331,21 +388,22 @@ pub async fn upsert_document(
 }
 
 /// Removes documents whose external ids are no longer produced by the source.
+/// Ids are deleted in bounded chunks so a source that disappears wholesale does
+/// not build one unbounded array parameter.
 pub async fn delete_missing(
     client: &mut Client,
     source_id: &str,
     external_ids: &[String],
 ) -> Result<(), String> {
-    if external_ids.is_empty() {
-        return Ok(());
+    for chunk in external_ids.chunks(DB_DELETE_CHUNK) {
+        client
+            .execute(
+                "DELETE FROM documents WHERE source_id = $1 AND external_id = ANY($2)",
+                &[&source_id, &chunk],
+            )
+            .await
+            .map_err(|err| format!("failed to prune documents for source '{source_id}': {err}"))?;
     }
-    client
-        .execute(
-            "DELETE FROM documents WHERE source_id = $1 AND external_id = ANY($2)",
-            &[&source_id, &external_ids],
-        )
-        .await
-        .map_err(|err| format!("failed to prune documents for source '{source_id}': {err}"))?;
     Ok(())
 }
 

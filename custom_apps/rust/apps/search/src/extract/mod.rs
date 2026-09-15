@@ -81,6 +81,21 @@ pub trait Extractor {
     ) -> Result<(), String>;
 }
 
+/// Returns a cheap fingerprint of a source's inputs when the extractor can
+/// prove that unchanged inputs imply an unchanged document set. The indexer
+/// skips re-extraction when the fingerprint still matches the last successful
+/// pass. `None` means "no cheap signal; always extract".
+///
+/// Only sources whose inputs are genuinely observable belong here: a wrong
+/// fingerprint silently serves a stale index, so extractors without a reliable
+/// signal must return `None`.
+pub fn source_fingerprint(source: &SourceConfig) -> Option<String> {
+    match source.source_type.as_str() {
+        "kiwix" => kiwix::source_fingerprint(source),
+        _ => None,
+    }
+}
+
 pub fn run(
     source: &SourceConfig,
     settings: &Settings,

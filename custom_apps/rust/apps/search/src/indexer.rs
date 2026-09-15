@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::time::Duration;
 
 use crate::config::{Settings, SourceConfig};
@@ -13,6 +14,32 @@ const CHANNEL_DEPTH: usize = 64;
 /// below this; a hung source (dead DB connection, stalled subprocess) must
 /// not stall the daemon forever.
 const SOURCE_TIMEOUT: Duration = Duration::from_secs(12 * 60 * 60);
+
+/// Escape hatch for operators who genuinely emptied a source: set
+/// `SEARCH_ALLOW_MASS_DELETE=1` to let a pass prune every known document.
+const ALLOW_MASS_DELETE_ENV: &str = "SEARCH_ALLOW_MASS_DELETE";
+
+/// Guards against a source silently producing no documents at all — most often
+/// a mount that is present but empty, or an integration whose data was
+/// temporarily moved. Deleting every known document on such a pass would wipe
+/// the source from both Postgres and Solr, so the pass refuses instead.
+///
+/// This deliberately keys on the pass emitting *nothing*, not on a full id
+/// turnover: a renamed archive or a re-hashed source legitimately replaces
+/// every id while still emitting documents, and must be allowed to sync.
+fn refuse_full_wipe(existing: usize, seen: usize) -> bool {
+    existing > 0 && seen == 0
+}
+
+fn mass_delete_allowed() -> bool {
+    std::env::var(ALLOW_MASS_DELETE_ENV)
+        .ok()
+        .map(|value| {
+            let value = value.trim().to_ascii_lowercase();
+            !value.is_empty() && value != "0" && value != "false"
+        })
+        .unwrap_or(false)
+}
 
 pub async fn run_index() -> Result<(), String> {
     let settings = Settings::from_env()?;
@@ -47,10 +74,6 @@ pub async fn run_index() -> Result<(), String> {
     Ok(())
 }
 
-struct SourceSyncResult {
-    seen: Vec<String>,
-}
-
 async fn index_source(
     source: &SourceConfig,
     settings: &Settings,
@@ -59,13 +82,28 @@ async fn index_source(
 ) -> Result<(), String> {
     eprintln!("search: indexing source '{}'…", source.id);
     db::register_source(client, source).await?;
-    eprintln!("search: source '{}': registered", source.id);
+    // A source that can prove its inputs are unchanged since the last fully
+    // successful pass is skipped outright, avoiding the expensive per-document
+    // extraction (pdftotext/zimdump) that otherwise runs on every pass.
+    let fingerprint = extract::source_fingerprint(source);
+    if let Some(fingerprint) = &fingerprint {
+        if let Some(previous) = db::source_fingerprint(client, &source.id).await? {
+            if &previous == fingerprint {
+                eprintln!(
+                    "search: source '{}': inputs unchanged since last successful pass; skipping",
+                    source.id
+                );
+                return Ok(());
+            }
+        }
+    }
     let existing = db::existing_checksums(client, &source.id).await?;
     eprintln!(
         "search: source '{}': {} known docs",
         source.id,
         existing.len()
     );
+    let upsert = db::prepare_upsert(client).await?;
     let source_id = source.id.clone();
     let (sender, mut receiver) = tokio::sync::mpsc::channel::<ExtractedDocument>(CHANNEL_DEPTH);
 
@@ -73,10 +111,10 @@ async fn index_source(
         let source = source.clone();
         let settings = settings.clone();
         tokio::task::spawn_blocking(move || {
-            let mut seen: Vec<String> = Vec::new();
+            let mut seen: HashSet<String> = HashSet::new();
             let mut failure: Option<String> = None;
             let mut emit = |doc: ExtractedDocument| {
-                seen.push(doc.external_id.clone());
+                seen.insert(doc.external_id.clone());
                 if let Err(err) = sender.blocking_send(doc) {
                     failure = Some(format!("indexing channel closed: {err}"));
                 }
@@ -109,7 +147,9 @@ async fn index_source(
         changed_count += 1;
         pending.push(record);
         if pending.len() >= SOLR_BATCH_SIZE {
-            if let Err(err) = push_batch(solr, client, source, &source_id, &mut pending).await {
+            if let Err(err) =
+                push_batch(solr, client, &upsert, source, &source_id, &mut pending).await
+            {
                 failure = Some(err);
                 break;
             }
@@ -130,25 +170,41 @@ async fn index_source(
         source.id,
         seen.len()
     );
-    let sync = SourceSyncResult { seen };
     if let Some(err) = failure.or(emit_failure).or_else(|| extract_result.err()) {
         return Err(err);
     }
-    push_batch(solr, client, source, &source_id, &mut pending).await?;
+    push_batch(solr, client, &upsert, source, &source_id, &mut pending).await?;
 
-    let seen_set: std::collections::HashSet<&String> = sync.seen.iter().collect();
     let missing: Vec<String> = existing
         .keys()
-        .filter(|external_id| !seen_set.contains(external_id))
+        .filter(|external_id| !seen.contains(*external_id))
         .cloned()
         .collect();
+    if refuse_full_wipe(existing.len(), seen.len()) && !mass_delete_allowed() {
+        return Err(format!(
+            "source '{}' produced no documents but {} are indexed; refusing to delete them \
+             (set {ALLOW_MASS_DELETE_ENV}=1 to override)",
+            source.id,
+            existing.len()
+        ));
+    }
+    if !missing.is_empty() {
+        eprintln!(
+            "search: source '{}': pruning {} documents no longer produced",
+            source.id,
+            missing.len()
+        );
+    }
     db::delete_missing(client, &source_id, &missing).await?;
     let missing_ids: Vec<String> = missing
         .iter()
         .map(|external_id| db::full_document_id(&source_id, external_id))
         .collect();
     solr.delete_ids(&missing_ids).await?;
-    db::mark_synced(client, &source_id).await?;
+    // Streaming adds/deletes use commitWithin; one explicit commit per source
+    // makes the whole pass durable without a hard commit per batch.
+    solr.commit().await?;
+    db::mark_synced(client, &source_id, fingerprint.as_deref()).await?;
     eprintln!(
         "search: source '{}': synced ({} changed, {} missing removed)",
         source_id,
@@ -184,6 +240,7 @@ fn document_owner(record: &DocumentRecord) -> String {
 async fn push_batch(
     solr: &SolrClient,
     client: &mut tokio_postgres::Client,
+    upsert: &tokio_postgres::Statement,
     source: &SourceConfig,
     source_id: &str,
     pending: &mut Vec<DocumentRecord>,
@@ -198,7 +255,7 @@ async fn push_batch(
         .collect();
     flush_solr(solr, solr_docs).await?;
     for record in &records {
-        db::upsert_document(client, source, record)
+        db::upsert_document(client, upsert, source, record)
             .await
             .map_err(|err| format!("failed to persist indexed documents: {err}"))?;
     }
@@ -234,6 +291,25 @@ pub async fn run_reconcile() -> Result<(), String> {
         solr.delete_by_source(&orphan).await?;
         db::purge_source(&mut client, &orphan).await?;
     }
+
+    // Detect drift between the authoritative Postgres copy and the derived
+    // Solr index. A document lost from Solr while its Postgres row is unchanged
+    // is invisible to the incremental checksum comparison, so only a count
+    // comparison (and a rebuild) can heal it. Rebuilds only run on a mismatch,
+    // so the normal daily pass costs two count queries per source.
+    for source in &settings.sources {
+        let postgres = db::count_documents(&client, &source.id).await?;
+        let solr_docs = solr.document_count(&source.id).await?;
+        if postgres as u64 == solr_docs {
+            continue;
+        }
+        eprintln!(
+            "search: source '{}': index drift detected (postgres {}, solr {}); rebuilding",
+            source.id, postgres, solr_docs
+        );
+        let rebuilt = reindex_source(&solr, &client, &source.id).await?;
+        eprintln!("search: source '{}': rebuilt ({} docs)", source.id, rebuilt);
+    }
     Ok(())
 }
 
@@ -252,33 +328,7 @@ pub async fn run_reindex() -> Result<(), String> {
     let sources = db::list_sources(&client).await?;
     let mut total = 0usize;
     for source in &sources {
-        let mut after: Option<String> = None;
-        let mut source_total = 0usize;
-        loop {
-            let batch = db::documents_batch(
-                &client,
-                &source.id,
-                after.as_deref(),
-                REINDEX_BATCH_SIZE as i64,
-            )
-            .await?;
-            if batch.is_empty() {
-                break;
-            }
-            let docs: Vec<SolrDocument> = batch
-                .iter()
-                .map(|(_, record)| {
-                    SolrDocument::from_record(&source.id, record, &document_owner(record))
-                })
-                .collect();
-            solr.add_documents(&docs).await?;
-            source_total += docs.len();
-            let complete = batch.len() < REINDEX_BATCH_SIZE;
-            after = batch.last().map(|(id, _)| id.clone());
-            if complete {
-                break;
-            }
-        }
+        let source_total = reindex_source(&solr, &client, &source.id).await?;
         total += source_total;
         eprintln!(
             "search: reindexed source '{}' ({} docs)",
@@ -287,6 +337,53 @@ pub async fn run_reindex() -> Result<(), String> {
     }
     eprintln!("search: reindex complete ({total} docs)");
     Ok(())
+}
+
+/// Rebuilds one source's Solr documents from the authoritative Postgres copy.
+///
+/// The source's existing Solr documents are deleted first so entries that no
+/// longer exist in Postgres are removed too, then every stored document is
+/// streamed back in and committed once. The Postgres copy carries every indexed
+/// field, so no source re-extraction is needed, and a rerun is safe.
+async fn reindex_source(
+    solr: &SolrClient,
+    client: &tokio_postgres::Client,
+    source_id: &str,
+) -> Result<usize, String> {
+    solr.delete_by_source(source_id).await?;
+    // Commit the delete before re-adding: a delete-by-query and later adds
+    // sharing one commit window are not guaranteed to be ordered, and the
+    // delete could otherwise remove the freshly added documents.
+    solr.commit().await?;
+    let mut after: Option<String> = None;
+    let mut total = 0usize;
+    loop {
+        let batch = db::documents_batch(
+            client,
+            source_id,
+            after.as_deref(),
+            REINDEX_BATCH_SIZE as i64,
+        )
+        .await?;
+        if batch.is_empty() {
+            break;
+        }
+        let docs: Vec<SolrDocument> = batch
+            .iter()
+            .map(|(_, record)| {
+                SolrDocument::from_record(source_id, record, &document_owner(record))
+            })
+            .collect();
+        solr.add_documents(&docs).await?;
+        total += docs.len();
+        let complete = batch.len() < REINDEX_BATCH_SIZE;
+        after = batch.last().map(|(id, _)| id.clone());
+        if complete {
+            break;
+        }
+    }
+    solr.commit().await?;
+    Ok(total)
 }
 
 /// Long-running indexer loop. Runs as a Type=simple service so that NixOS
@@ -328,6 +425,17 @@ mod tests {
             });
         // An empty flush never touches the network.
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn refuses_to_wipe_a_source_that_produced_nothing() {
+        // An empty index, or a pass that emitted documents, is allowed to prune.
+        assert!(refuse_full_wipe(3, 0));
+        assert!(refuse_full_wipe(1, 0));
+        assert!(!refuse_full_wipe(3, 1));
+        // A full id turnover (same count, all new ids) must still sync.
+        assert!(!refuse_full_wipe(3, 3));
+        assert!(!refuse_full_wipe(0, 0));
     }
 
     #[test]

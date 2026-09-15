@@ -7,6 +7,7 @@ mod federate;
 mod identity;
 mod indexer;
 mod paperless_search;
+mod retry;
 mod server;
 mod solr;
 mod text;
