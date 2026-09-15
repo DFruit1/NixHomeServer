@@ -1,6 +1,7 @@
 import { $, component$, useSignal } from '@builder.io/qwik';
 import type { CurrentUser, Job } from '../shared/types.js';
 import { buildFileBrowserUrl } from './file-browser-url.js';
+import { apiFetch, apiUrl } from './api.js';
 
 type JobListProps = {
   title: string;
@@ -11,7 +12,7 @@ type JobListProps = {
 
 export const JobList = component$<JobListProps>(({ title, jobs, refresh, currentUser }) => {
   const action = $(async (job: Job, command: 'cancel' | 'retry' | 'delete') => {
-    const response = await fetch(`/api/jobs/${job.id}${command === 'delete' ? '' : `/${command}`}`, {
+    const response = await apiFetch(`/api/jobs/${job.id}${command === 'delete' ? '' : `/${command}`}`, {
       method: command === 'delete' ? 'DELETE' : 'POST',
       headers: { 'content-type': 'application/json' },
       body: '{}',
@@ -22,7 +23,7 @@ export const JobList = component$<JobListProps>(({ title, jobs, refresh, current
   });
 
   const resolveAlert = $(async (job: Job, command: 'download-again' | 'split-chapters' | 'single-file' | 'cancel') => {
-    const response = await fetch(`/api/jobs/${job.id}/resolve-alert`, {
+    const response = await apiFetch(`/api/jobs/${job.id}/resolve-alert`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ action: command }),
@@ -85,7 +86,7 @@ const JobCard = component$<JobCardProps>(({ job, canSwipeClear, action, resolveA
   const suppressClick = useSignal(false);
   const swiped = useSignal(false);
   const coverIndex = coverFileIndex(job);
-  const coverUrl = coverIndex == null ? undefined : `/api/jobs/${encodeURIComponent(job.id)}/files/${coverIndex}`;
+  const coverUrl = coverIndex == null ? undefined : apiUrl(`/api/jobs/${encodeURIComponent(job.id)}/files/${coverIndex}`);
   const artUrl = coverUrl ?? youtubeThumbnailUrl(job.request.url);
   const terminalMessage = ['failed', 'cancelled'].includes(job.status) ? singleLine(job.error) : undefined;
 

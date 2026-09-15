@@ -5,6 +5,7 @@ import { isYouTubeUrl, normalizeDownloadUrl } from './shared/url.js';
 import { ProfileMenu } from './client/profile-menu.js';
 import { OptionsPanel, OPTION_KEYS, type OptionKey, type BooleanOptionKey } from './client/options-panel.js';
 import { JobList } from './client/job-list.js';
+import { apiFetch } from './client/api.js';
 import './client/styles.css';
 
 const CLIPBOARD_URL_RE = /https?:\/\/[^\s]+/g;
@@ -50,7 +51,7 @@ export default component$(() => {
   const recentPastedUrls = useSignal<string[]>([]);
 
   const refresh = $(async () => {
-    const [meResponse, jobsResponse] = await Promise.all([fetch('/api/me'), fetch('/api/jobs')]);
+    const [meResponse, jobsResponse] = await Promise.all([apiFetch('/api/me'), apiFetch('/api/jobs')]);
     if (!meResponse.ok) {
       throw new Error('Authentication is required');
     }
@@ -119,7 +120,7 @@ export default component$(() => {
   });
 
   const clearHistory = $(async () => {
-    const response = await fetch('/api/jobs', {
+    const response = await apiFetch('/api/jobs', {
       method: 'DELETE',
       headers: { 'content-type': 'application/json' },
       body: '{}',
@@ -170,7 +171,7 @@ export default component$(() => {
       ytDlpVersion: ytDlpVersion.value,
     };
     try {
-      const response = await fetch('/api/jobs', {
+      const response = await apiFetch('/api/jobs', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(request),
