@@ -63,6 +63,28 @@ let
     exec ${pkgsUnstable.rustc}/bin/rustc "$@"
   '';
 
+  # tauri-cli insists on `rustup target add` before an Android build. The
+  # Android std lives in the pinned sysroot instead, so satisfy the check
+  # with a shim rather than pulling in rustup and its network toolchains.
+  rustupShim = pkgs.writeShellScriptBin "rustup" ''
+    case "''${1:-}" in
+      target)
+        case "''${2:-}" in
+          add) exit 0 ;;
+          list)
+            printf '%s\n' \
+              aarch64-linux-android \
+              armv7-linux-androideabi \
+              i686-linux-android \
+              x86_64-linux-android
+            exit 0
+            ;;
+        esac
+        ;;
+    esac
+    exit 0
+  '';
+
   # Android SDK/NDK are unfree; scope the license acceptance to this shell.
   # Skip the emulator and system images: this shell only compiles APKs.
   androidPkgs = (import pkgsUnstable.path {
@@ -114,6 +136,7 @@ pkgs.mkShell {
   ]) ++ [
     androidPkgs.androidsdk
     androidPkgs.ndk-bundle
+    rustupShim
     pkgs.nodejs
     pkgs.pnpm
     pkgs.pkg-config
