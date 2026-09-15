@@ -6,6 +6,23 @@ let
   proxyListenPort = vars.networking.ports.immichPublicProxy;
   photosHost = "photos.${vars.domain}";
   shareHost = "sharephotos.${vars.domain}";
+
+  # Pin the proxy version locally so the multi-select / "download all" zip UI
+  # (fixed against PrivateTmp OOM and Cloudflare caching in 3.3.x) ships
+  # independently of the nixpkgs-unstable snapshot.
+  proxyPackage = unstablePkgs.callPackage ./package.nix { };
+
+  # Derive the runtime config from the package's own config.json so upstream
+  # defaults (response headers, quality caps, metadata) are preserved. Only
+  # allowDownload is changed: 1 = follow each share's Immich download setting,
+  # which surfaces the multi-select toolbar and "download all" button for
+  # shares whose owner enabled downloads in Immich.
+  proxyConfig = pkgs.runCommand "immich-public-proxy-config.json" {
+    nativeBuildInputs = [ pkgs.jq ];
+  } ''
+    jq '.ipp.allowDownload = 1' \
+      ${proxyPackage}/lib/node_modules/immich-public-proxy/config.json > $out
+  '';
 in
 {
   config = {
@@ -22,6 +39,7 @@ in
       ];
       environment = {
         IPP_PORT = toString proxyListenPort;
+        IPP_CONFIG = "${proxyConfig}";
         IMMICH_URL = "https://${photosHost}";
         PUBLIC_BASE_URL = "https://${shareHost}";
       };
@@ -38,7 +56,7 @@ in
             ${pkgs.systemd}/bin/systemctl --user stop immich-public-proxy.service || true
           ${pkgs.procps}/bin/pkill -u ${proxyUser} -f 'podman|conmon|passt|node dist/index.js' || true
         ''}";
-        ExecStart = "${unstablePkgs.immich-public-proxy}/bin/immich-public-proxy";
+        ExecStart = "${proxyPackage}/bin/immich-public-proxy";
         Restart = "on-failure";
         RestartSec = "5s";
         NoNewPrivileges = true;
