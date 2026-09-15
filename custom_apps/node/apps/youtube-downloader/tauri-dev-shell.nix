@@ -53,7 +53,7 @@ let
         rm -rf unpack/component
         mkdir -p unpack/component
         tar -xf ${source} -C unpack/component
-        ( cd unpack/component/*/ && ./install.sh --prefix=$out --disable-ldconfig )
+        ( cd unpack/component/*/ && bash ./install.sh --prefix=$out --disable-ldconfig )
       '') components}
       runHook postInstall
     '';
