@@ -72,13 +72,16 @@ let
       android_sdk.accept_license = true;
     };
   }).androidenv.composeAndroidPackages {
-    numLatestPlatformVersions = 3;
+    numLatestPlatformVersions = 4;
     includeEmulator = false;
     includeSystemImages = false;
     includeNDK = true;
   };
 
-  androidNdkBin = "${androidPkgs.ndk-bundle}/toolchains/llvm/prebuilt/linux-x86_64/bin";
+  # nixpkgs exposes the real SDK/NDK trees under libexec/android-sdk.
+  androidSdkRoot = "${androidPkgs.androidsdk}/libexec/android-sdk";
+  androidNdkRoot = "${androidPkgs.ndk-bundle}/libexec/android-sdk/ndk-bundle";
+  androidNdkBin = "${androidNdkRoot}/toolchains/llvm/prebuilt/linux-x86_64/bin";
 
   androidAbis = [
     { triple = "aarch64-linux-android"; clang = "aarch64-linux-android"; cargoKey = "AARCH64_LINUX_ANDROID"; ccKey = "aarch64_linux_android"; }
@@ -122,9 +125,9 @@ pkgs.mkShell {
 
   env = {
     RUSTC = "${rustcWrapper}";
-    ANDROID_HOME = "${androidPkgs.androidsdk}";
-    ANDROID_SDK_ROOT = "${androidPkgs.androidsdk}";
-    NDK_HOME = "${androidPkgs.ndk-bundle}";
+    ANDROID_HOME = androidSdkRoot;
+    ANDROID_SDK_ROOT = androidSdkRoot;
+    NDK_HOME = androidNdkRoot;
     JAVA_HOME = "${pkgsUnstable.jdk17}";
   };
 
