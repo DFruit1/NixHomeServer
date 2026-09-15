@@ -76,6 +76,7 @@ let
     includeEmulator = false;
     includeSystemImages = false;
     includeNDK = true;
+    buildToolsVersions = [ "35.0.0" "36.0.0" "37.0.0" ];
   };
 
   # nixpkgs exposes the real SDK/NDK trees under libexec/android-sdk.
