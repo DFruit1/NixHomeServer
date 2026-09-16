@@ -185,7 +185,13 @@ pub async fn source_index_version(client: &Client, source_id: &str) -> Result<i6
         )
         .await
         .map_err(|err| format!("failed to read index version for '{source_id}': {err}"))?;
-    Ok(rows.into_iter().next().map(|row| row.get(0)).unwrap_or(0))
+    // The column is INTEGER, so read it as i32; tokio-postgres rejects an i64
+    // read of an int4 column with a deserialization error.
+    Ok(rows
+        .into_iter()
+        .next()
+        .map(|row| i64::from(row.get::<_, i32>(0)))
+        .unwrap_or(0))
 }
 
 pub async fn set_index_version(
@@ -196,7 +202,7 @@ pub async fn set_index_version(
     client
         .execute(
             "UPDATE sources SET index_version = $2 WHERE id = $1",
-            &[&source_id, &version],
+            &[&source_id, &(version as i32)],
         )
         .await
         .map_err(|err| format!("failed to update index version for '{source_id}': {err}"))?;
