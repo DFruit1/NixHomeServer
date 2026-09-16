@@ -28,6 +28,20 @@ in
         preferShortUsername = true;
         scopeMaps."downloads-users" = [ "openid" "profile" "email" "groups_name" ];
       };
+
+      # Public PKCE client for the native desktop and Android shells. Desktop
+      # uses a loopback redirect with an arbitrary port, so localhost redirects
+      # are enabled per RFC 8252; Android uses the app's custom scheme.
+      systems.oauth2.youtube-downloader-app = {
+        displayName = "Downloads (app)";
+        imageFile = ../Core_Modules/kanidm/assets/apps/youtube.svg;
+        originUrl = [ "org.sydneybasiniot.youtubedownloader://auth/callback" ];
+        originLanding = "https://${host}";
+        public = true;
+        enableLocalhostRedirects = true;
+        preferShortUsername = true;
+        scopeMaps."downloads-users" = [ "openid" "profile" "email" "groups_name" ];
+      };
     };
   };
 }
