@@ -147,9 +147,9 @@ pkgs.mkShell {
     NDK_HOME = androidNdkRoot;
     JAVA_HOME = "${pkgsUnstable.jdk17}";
     # AGP downloads aapt2 from Maven, which is a generic Linux binary that
-    # NixOS cannot exec. Point gradle at the patched Nix build-tools aapt2
-    # through its ORG_GRADLE_PROJECT_ project-property mechanism.
-    "ORG_GRADLE_PROJECT_android.aapt2FromMavenOverride" = "${androidSdkRoot}/build-tools/35.0.0/aapt2";
+    # NixOS cannot exec. Consumers point gradle at this patched build-tools
+    # aapt2 through android.aapt2FromMavenOverride.
+    AAPT2 = "${androidSdkRoot}/build-tools/35.0.0/aapt2";
   };
 
   shellHook = ''
