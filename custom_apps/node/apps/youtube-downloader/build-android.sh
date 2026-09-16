@@ -9,7 +9,10 @@ script_path="$(readlink -f "${BASH_SOURCE[0]}")"
 app_dir="$(dirname "$script_path")"
 
 if [[ -z "${AAPT2:-}" ]]; then
-  repo_root="$(git -C "$app_dir" rev-parse --show-toplevel)"
+  repo_root="$(git -C "$app_dir" rev-parse --show-toplevel 2>/dev/null || true)"
+  if [[ -z "$repo_root" ]]; then
+    repo_root="$(cd "$app_dir/../../../.." && pwd)"
+  fi
   exec nix develop "$repo_root#devShells.$(uname -m)-linux.youtube-downloader-tauri" \
     --command bash "$script_path" "$@"
 fi
