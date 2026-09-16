@@ -147,8 +147,9 @@ pkgs.mkShell {
     NDK_HOME = androidNdkRoot;
     JAVA_HOME = "${pkgsUnstable.jdk17}";
     # AGP downloads aapt2 from Maven, which is a generic Linux binary that
-    # NixOS cannot exec. Point gradle at the patched Nix build-tools aapt2.
-    AAPT2 = "${androidSdkRoot}/build-tools/35.0.0/aapt2";
+    # NixOS cannot exec. Point gradle at the patched Nix build-tools aapt2
+    # through its ORG_GRADLE_PROJECT_ project-property mechanism.
+    "ORG_GRADLE_PROJECT_android.aapt2FromMavenOverride" = "${androidSdkRoot}/build-tools/35.0.0/aapt2";
   };
 
   shellHook = ''
@@ -157,6 +158,6 @@ pkgs.mkShell {
     echo "youtube-downloader-tauri: cargo-tauri $(${pkgsUnstable.cargo-tauri}/bin/cargo-tauri --version | cut -d' ' -f2), rustc $(${rustToolchain}/bin/rustc --version | cut -d' ' -f2)"
     echo "  android sdk: $ANDROID_HOME"
     echo "  android ndk: $NDK_HOME"
-    echo "  build: cargo tauri android build --debug --apk --target aarch64 -- -Pandroid.aapt2FromMavenOverride=$AAPT2"
+    echo "  build: cargo tauri android build --debug --apk --target aarch64"
   '';
 }
