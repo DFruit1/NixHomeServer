@@ -104,6 +104,9 @@ in
         "sharephotos.${vars.domain}"
         # Unauthenticated Filestash share-link host; not browser-loginable.
         "transfers.${vars.domain}"
+        # API-only bearer-token endpoint for the native YouTube Downloader
+        # shell; serves no browser UI and returns 404 outside /api.
+        "ytdownload-app.${vars.domain}"
         "www.${vars.domain}"
         vars.domain
       ];

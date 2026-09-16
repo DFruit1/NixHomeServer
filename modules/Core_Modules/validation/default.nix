@@ -179,7 +179,11 @@ let
     ++ (client.redirects or [ ]);
   isAllowedOauth2Url = url:
     lib.hasPrefix "https://" url
-    || url == "app.immich:///oauth-callback";
+    || builtins.elem url [
+      "app.immich:///oauth-callback"
+      # Native desktop/Android client of the YouTube Downloader Tauri shell.
+      "org.sydneybasiniot.youtubedownloader://auth/callback"
+    ];
   insecureOauth2Urls = lib.concatMap
     (name:
       let
