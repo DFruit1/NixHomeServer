@@ -55,7 +55,10 @@ beforeEach(async () => {
     sharedWriteGroup: 'files-shared-users',
     fileBrowserSharedMountName: '_Shared',
     eventRetentionDays: 90,
+    authIssuerUrl: 'https://id.example.test/oauth2/openid/youtube-downloader-app',
+    authAudience: 'youtube-downloader-app',
     authGroupsClaim: 'groups',
+    authRequiredGroup: 'downloads-users',
   };
   db = new Database(config.databasePath);
   await db.migrate();
@@ -110,6 +113,16 @@ describe('authenticated job APIs', () => {
   it('rejects API requests without a trusted authentication header', async () => {
     const response = await fetch(`${baseUrl}/api/jobs`);
     expect(response.status).toBe(401);
+  });
+
+  it('publishes the native client auth configuration without authenticating', async () => {
+    const response = await fetch(`${baseUrl}/api/auth-config`);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      issuer: 'https://id.example.test/oauth2/openid/youtube-downloader-app',
+      clientId: 'youtube-downloader-app',
+      groupsClaim: 'groups',
+    });
   });
 
   it.each([

@@ -1,7 +1,7 @@
 import { $, component$, useSignal } from '@builder.io/qwik';
 import type { CurrentUser, Job } from '../shared/types.js';
 import { buildFileBrowserUrl } from './file-browser-url.js';
-import { apiFetch, apiUrl } from './api.js';
+import { apiFetch, apiUrl, isTauriRuntime } from './api.js';
 
 type JobListProps = {
   title: string;
@@ -86,7 +86,11 @@ const JobCard = component$<JobCardProps>(({ job, canSwipeClear, action, resolveA
   const suppressClick = useSignal(false);
   const swiped = useSignal(false);
   const coverIndex = coverFileIndex(job);
-  const coverUrl = coverIndex == null ? undefined : apiUrl(`/api/jobs/${encodeURIComponent(job.id)}/files/${coverIndex}`);
+  // The native shell cannot attach a bearer token to an <img> request, so it
+  // falls back to the public YouTube thumbnail instead of a protected cover.
+  const coverUrl = coverIndex == null || isTauriRuntime()
+    ? undefined
+    : apiUrl(`/api/jobs/${encodeURIComponent(job.id)}/files/${coverIndex}`);
   const artUrl = coverUrl ?? youtubeThumbnailUrl(job.request.url);
   const terminalMessage = ['failed', 'cancelled'].includes(job.status) ? singleLine(job.error) : undefined;
 

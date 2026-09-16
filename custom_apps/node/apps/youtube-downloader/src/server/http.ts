@@ -58,6 +58,15 @@ const handleApi = async (
   response: ServerResponse,
   url: URL,
 ): Promise<void> => {
+  if (request.method === 'GET' && url.pathname === '/api/auth-config') {
+    sendJson(response, 200, {
+      issuer: config.authIssuerUrl ?? null,
+      clientId: config.authAudience ?? null,
+      groupsClaim: config.authGroupsClaim,
+    });
+    return;
+  }
+
   const mutationBody = request.method === 'POST' || request.method === 'DELETE'
     ? await readMutationJson<unknown>(request)
     : undefined;

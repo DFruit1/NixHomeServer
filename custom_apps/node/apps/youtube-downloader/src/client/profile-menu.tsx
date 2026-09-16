@@ -7,9 +7,10 @@ type ProfileMenuProps = {
   onImageChange: (_event: Event, target: HTMLInputElement) => Promise<void>;
   onImageClear: () => void;
   onClearHistory: () => Promise<void>;
+  onSignOut?: () => Promise<void>;
 };
 
-export const ProfileMenu = component$<ProfileMenuProps>(({ image, username, onImageChange, onImageClear, onClearHistory }) => {
+export const ProfileMenu = component$<ProfileMenuProps>(({ image, username, onImageChange, onImageClear, onClearHistory, onSignOut }) => {
   const menuRef = useSignal<HTMLDetailsElement>();
   const closeMenu = $(() => {
     if (menuRef.value) {
@@ -78,9 +79,15 @@ export const ProfileMenu = component$<ProfileMenuProps>(({ image, username, onIm
         <button class="profile-action" type="button" onClick$={clearAndClose}>
           Clear history
         </button>
-        <a class="profile-signout" href={apiUrl('/oauth2/sign_out')} onClick$={closeMenu}>
-          Log out
-        </a>
+        {onSignOut ? (
+          <button class="profile-signout" type="button" onClick$={onSignOut}>
+            Log out
+          </button>
+        ) : (
+          <a class="profile-signout" href={apiUrl('/oauth2/sign_out')} onClick$={closeMenu}>
+            Log out
+          </a>
+        )}
       </section>
     </details>
   );

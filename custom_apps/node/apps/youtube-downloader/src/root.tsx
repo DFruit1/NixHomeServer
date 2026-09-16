@@ -5,7 +5,15 @@ import { isYouTubeUrl, normalizeDownloadUrl } from './shared/url.js';
 import { ProfileMenu } from './client/profile-menu.js';
 import { OptionsPanel, OPTION_KEYS, type OptionKey, type BooleanOptionKey } from './client/options-panel.js';
 import { JobList } from './client/job-list.js';
-import { apiFetch } from './client/api.js';
+import { apiFetch, isTauriRuntime, serverBaseUrl } from './client/api.js';
+import {
+  fetchAuthConfig,
+  getAuthStatus,
+  installTauriTransport,
+  signIn,
+  signOut,
+  storeServerBaseUrl,
+} from './client/tauri.js';
 import './client/styles.css';
 
 const CLIPBOARD_URL_RE = /https?:\/\/[^\s]+/g;
@@ -49,6 +57,11 @@ export default component$(() => {
   const pinnedOptions = useSignal<OptionKey[]>([]);
   const submitting = useSignal(false);
   const recentPastedUrls = useSignal<string[]>([]);
+  const connectionState = useSignal<'checking' | 'signed-out' | 'ready'>('checking');
+  const serverUrlInput = useSignal('');
+  const connecting = useSignal(false);
+  const connectError = useSignal('');
+  const pollTimer = useSignal<number | undefined>();
 
   const refresh = $(async () => {
     const [meResponse, jobsResponse] = await Promise.all([apiFetch('/api/me'), apiFetch('/api/jobs')]);
@@ -62,6 +75,49 @@ export default component$(() => {
     }
   });
 
+  const startPolling = $(() => {
+    if (pollTimer.value != null) {
+      return;
+    }
+    pollTimer.value = window.setInterval(() => {
+      refresh().catch(() => undefined);
+    }, 2500);
+  });
+
+  const connect = $(async () => {
+    if (connecting.value) {
+      return;
+    }
+    connecting.value = true;
+    connectError.value = '';
+    try {
+      storeServerBaseUrl(serverUrlInput.value);
+      const authConfig = await fetchAuthConfig();
+      if (!authConfig.issuer || !authConfig.clientId) {
+        throw new Error('This server does not accept app sign-in yet.');
+      }
+      await signIn(authConfig.issuer, authConfig.clientId);
+      connectionState.value = 'ready';
+      await refresh();
+      await startPolling();
+    } catch (caught) {
+      connectError.value = caught instanceof Error ? caught.message : String(caught);
+    } finally {
+      connecting.value = false;
+    }
+  });
+
+  const disconnect = $(async () => {
+    await signOut().catch(() => undefined);
+    if (pollTimer.value != null) {
+      window.clearInterval(pollTimer.value);
+      pollTimer.value = undefined;
+    }
+    me.value = undefined;
+    jobs.value = [];
+    connectionState.value = 'signed-out';
+  });
+
   useVisibleTask$(({ cleanup }) => {
     profileImage.value = window.localStorage.getItem('homepage.profileImage') ?? '';
     try {
@@ -70,14 +126,36 @@ export default component$(() => {
     } catch {
       pinnedOptions.value = [];
     }
-    refresh().catch((caught) => {
-      error.value = caught instanceof Error ? caught.message : String(caught);
+    serverUrlInput.value = serverBaseUrl();
+
+    const begin = $(async () => {
+      connectionState.value = 'ready';
+      await refresh().catch((caught) => {
+        error.value = caught instanceof Error ? caught.message : String(caught);
+      });
+      await startPolling();
     });
-    const timer = window.setInterval(() => {
-      refresh().catch(() => undefined);
-    }, 2500);
+
+    const initialise = async () => {
+      if (isTauriRuntime()) {
+        installTauriTransport();
+        const status = await getAuthStatus().catch(() => ({ signedIn: false }));
+        if (!status.signedIn) {
+          connectionState.value = 'signed-out';
+          return;
+        }
+        await begin();
+        return;
+      }
+      await begin();
+    };
+    void initialise();
+
     cleanup(() => {
-      window.clearInterval(timer);
+      if (pollTimer.value != null) {
+        window.clearInterval(pollTimer.value);
+        pollTimer.value = undefined;
+      }
     });
   });
 
@@ -197,6 +275,45 @@ export default component$(() => {
     .sort((left, right) => activeJobRank(left) - activeJobRank(right) || left.createdAt.localeCompare(right.createdAt));
   const historyJobs = jobs.value.filter((job) => !['queued', 'alert', 'probing', 'running', 'postprocessing'].includes(job.status));
 
+  if (connectionState.value !== 'ready') {
+    return (
+      <main class="shell">
+        <section class="toolbar">
+          <div>
+            <h1><span>Youtube</span> Downloader</h1>
+          </div>
+        </section>
+        <section class="download-form">
+          <p class="destination-note">
+            {connectionState.value === 'checking'
+              ? 'Checking sign-in…'
+              : 'Connect this app to your server, then sign in with Kanidm.'}
+          </p>
+          <label class="url-field">
+            <input
+              type="url"
+              aria-label="Server URL"
+              value={serverUrlInput.value}
+              onInput$={(_, target) => (serverUrlInput.value = target.value)}
+              placeholder="https://ytdownload-app.example.org"
+            />
+          </label>
+          {connectError.value && <p class="error">{connectError.value}</p>}
+          <div class="submit-actions">
+            <button
+              class="primary"
+              type="button"
+              disabled={connecting.value || connectionState.value === 'checking' || !serverUrlInput.value.trim()}
+              onClick$={connect}
+            >
+              {connecting.value ? 'Signing in' : 'Sign in'}
+            </button>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
   return (
     <main class="shell">
       <section class="toolbar">
@@ -209,6 +326,7 @@ export default component$(() => {
           onImageChange={updateProfileImage}
           onImageClear={clearProfileImage}
           onClearHistory={clearHistory}
+          onSignOut={isTauriRuntime() ? disconnect : undefined}
         >
           <OptionsPanel
             location="profile"
