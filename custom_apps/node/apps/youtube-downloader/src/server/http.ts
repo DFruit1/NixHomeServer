@@ -4,7 +4,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import type { AppConfig } from './config.js';
-import { currentUserFromHeaders } from './auth.js';
+import { authenticateRequest } from './auth.js';
 import { Database } from './db.js';
 import { JobQueue, validateDownloadUrl } from './queue.js';
 import { normalizeDownloadUrl } from '../shared/url.js';
@@ -61,7 +61,7 @@ const handleApi = async (
   const mutationBody = request.method === 'POST' || request.method === 'DELETE'
     ? await readMutationJson<unknown>(request)
     : undefined;
-  const user = currentUserFromHeaders(request.headers, config);
+  const user = await authenticateRequest(request.headers, config);
 
   if (request.method === 'GET' && url.pathname === '/api/me') {
     sendJson(response, 200, user);

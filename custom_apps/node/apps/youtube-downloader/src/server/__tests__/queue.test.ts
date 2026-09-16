@@ -57,6 +57,7 @@ const config = (): AppConfig => ({
   sharedWriteGroup: 'files-shared-users',
   fileBrowserSharedMountName: '_Shared',
   eventRetentionDays: 90,
+    authGroupsClaim: 'groups',
 });
 
 beforeEach(async () => {

@@ -55,6 +55,7 @@ beforeEach(async () => {
     sharedWriteGroup: 'files-shared-users',
     fileBrowserSharedMountName: '_Shared',
     eventRetentionDays: 90,
+    authGroupsClaim: 'groups',
   };
   db = new Database(config.databasePath);
   await db.migrate();

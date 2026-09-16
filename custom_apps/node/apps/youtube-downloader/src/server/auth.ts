@@ -1,6 +1,11 @@
 import type { IncomingHttpHeaders } from 'node:http';
 import type { AppConfig } from './config.js';
 import type { CurrentUser } from '../shared/types.js';
+import { normaliseUsername, parseGroups, type Identity } from './identity.js';
+import { createJwksKeyProvider, verifyBearerToken, type KeyProvider } from './bearer-auth.js';
+
+export { normaliseUsername, parseGroups };
+export type { Identity };
 
 const USER_HEADERS = [
   'x-forwarded-preferred-username',
@@ -14,7 +19,6 @@ const USER_HEADERS = [
 ] as const;
 
 const EMAIL_HEADERS = ['x-forwarded-email', 'x-auth-request-email'] as const;
-const GROUP_HEADERS = ['x-forwarded-groups', 'x-auth-request-groups'] as const;
 
 const headerValue = (headers: IncomingHttpHeaders, name: string): string | undefined => {
   const value = headers[name];
@@ -24,61 +28,27 @@ const headerValue = (headers: IncomingHttpHeaders, name: string): string | undef
   return value;
 };
 
-export const normaliseUsername = (value: string | undefined): string | undefined => {
-  if (!value) {
-    return undefined;
+const trimSlashes = (value: string): string => value.replace(/^\/+|\/+$/g, '');
+
+const pathWithoutTrailingSlash = (value: string): string => value.replace(/\/+$/, '');
+
+const relativePath = (root: string, child: string): string => {
+  const cleanRoot = pathWithoutTrailingSlash(root);
+  const cleanChild = pathWithoutTrailingSlash(child);
+  if (cleanChild === cleanRoot) {
+    return '';
   }
-  const first = value.split(',', 1)[0]?.trim();
-  if (!first) {
-    return undefined;
-  }
-  const localPart = first.split('@', 1)[0];
-  return /^[A-Za-z0-9._-]{1,64}$/.test(localPart) ? localPart : undefined;
+  return cleanChild.startsWith(`${cleanRoot}/`) ? cleanChild.slice(cleanRoot.length + 1) : trimSlashes(cleanChild);
 };
 
-export const parseGroups = (headers: IncomingHttpHeaders): string[] => {
-  const groups = new Set<string>();
-  for (const name of GROUP_HEADERS) {
-    const value = headerValue(headers, name);
-    if (!value) {
-      continue;
-    }
-    for (const group of value.split(/[,\s]+/)) {
-      const clean = group.trim();
-      if (clean) {
-        groups.add(clean);
-      }
-    }
-  }
-  return [...groups].sort();
-};
+const joinBrowserPath = (...parts: string[]): string => parts.map(trimSlashes).filter(Boolean).join('/');
 
-export const currentUserFromHeaders = (headers: IncomingHttpHeaders, config: AppConfig): CurrentUser => {
-  let username: string | undefined;
-  for (const name of USER_HEADERS) {
-    username = normaliseUsername(headerValue(headers, name));
-    if (username) {
-      break;
-    }
-  }
-  if (!username) {
-    throw new Error('missing authenticated user header');
-  }
-
-  let email: string | undefined;
-  for (const name of EMAIL_HEADERS) {
-    email = headerValue(headers, name)?.split(',', 1)[0]?.trim();
-    if (email) {
-      break;
-    }
-  }
-
-  const groups = parseGroups(headers);
-  const canWriteShared = groups.includes(config.sharedWriteGroup);
+export const buildCurrentUser = (identity: Identity, config: AppConfig): CurrentUser => {
+  const canWriteShared = identity.groups.includes(config.sharedWriteGroup);
   return {
-    username,
-    email,
-    groups,
+    username: identity.username,
+    email: identity.email,
+    groups: identity.groups,
     canWriteShared,
     fileBrowserUrlTemplate: config.fileBrowserUrlTemplate,
     fileBrowserPathRoots: {
@@ -103,17 +73,62 @@ export const currentUserFromHeaders = (headers: IncomingHttpHeaders, config: App
   };
 };
 
-const trimSlashes = (value: string): string => value.replace(/^\/+|\/+$/g, '');
-
-const pathWithoutTrailingSlash = (value: string): string => value.replace(/\/+$/, '');
-
-const relativePath = (root: string, child: string): string => {
-  const cleanRoot = pathWithoutTrailingSlash(root);
-  const cleanChild = pathWithoutTrailingSlash(child);
-  if (cleanChild === cleanRoot) {
-    return '';
+export const currentUserFromHeaders = (headers: IncomingHttpHeaders, config: AppConfig): CurrentUser => {
+  let username: string | undefined;
+  for (const name of USER_HEADERS) {
+    username = normaliseUsername(headerValue(headers, name));
+    if (username) {
+      break;
+    }
   }
-  return cleanChild.startsWith(`${cleanRoot}/`) ? cleanChild.slice(cleanRoot.length + 1) : trimSlashes(cleanChild);
+  if (!username) {
+    throw new Error('missing authenticated user header');
+  }
+
+  let email: string | undefined;
+  for (const name of EMAIL_HEADERS) {
+    email = headerValue(headers, name)?.split(',', 1)[0]?.trim();
+    if (email) {
+      break;
+    }
+  }
+
+  return buildCurrentUser({ username, email, groups: parseGroups(headers) }, config);
 };
 
-const joinBrowserPath = (...parts: string[]): string => parts.map(trimSlashes).filter(Boolean).join('/');
+const keyProviders = new Map<string, KeyProvider>();
+
+const keyProviderFor = (issuer: string): KeyProvider => {
+  let provider = keyProviders.get(issuer);
+  if (!provider) {
+    provider = createJwksKeyProvider({ issuer });
+    keyProviders.set(issuer, provider);
+  }
+  return provider;
+};
+
+export const authenticateRequest = async (
+  headers: IncomingHttpHeaders,
+  config: AppConfig,
+  keyProvider?: KeyProvider,
+): Promise<CurrentUser> => {
+  const authorization = headerValue(headers, 'authorization');
+  const issuer = config.authIssuerUrl;
+  if (issuer && authorization && authorization.startsWith('Bearer ')) {
+    const token = authorization.slice('Bearer '.length).trim();
+    if (!token) {
+      throw new Error('missing authenticated user token');
+    }
+    const identity = await verifyBearerToken(token, {
+      issuer,
+      audience: config.authAudience ?? '',
+      groupsClaim: config.authGroupsClaim,
+      getKey: keyProvider ?? keyProviderFor(issuer),
+    });
+    if (config.authRequiredGroup && !identity.groups.includes(config.authRequiredGroup)) {
+      throw new Error(`not authorised: group ${config.authRequiredGroup} is required`);
+    }
+    return buildCurrentUser(identity, config);
+  }
+  return currentUserFromHeaders(headers, config);
+};

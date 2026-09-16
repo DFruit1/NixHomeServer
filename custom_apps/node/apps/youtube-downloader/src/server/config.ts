@@ -18,6 +18,10 @@ export type AppConfig = {
   fileBrowserUrlTemplate?: string;
   fileBrowserSharedMountName: string;
   eventRetentionDays: number;
+  authIssuerUrl?: string;
+  authAudience?: string;
+  authGroupsClaim: string;
+  authRequiredGroup?: string;
 };
 
 export const loadConfig = (): AppConfig => {
@@ -40,5 +44,9 @@ export const loadConfig = (): AppConfig => {
     fileBrowserUrlTemplate: process.env.YOUTUBE_DOWNLOADER_FILE_BROWSER_URL_TEMPLATE,
     fileBrowserSharedMountName: process.env.YOUTUBE_DOWNLOADER_FILE_BROWSER_SHARED_MOUNT_NAME ?? '_Shared',
     eventRetentionDays: numberFromEnv('YOUTUBE_DOWNLOADER_EVENT_RETENTION_DAYS', 90),
+    authIssuerUrl: process.env.YOUTUBE_DOWNLOADER_AUTH_ISSUER_URL,
+    authAudience: process.env.YOUTUBE_DOWNLOADER_AUTH_AUDIENCE,
+    authGroupsClaim: process.env.YOUTUBE_DOWNLOADER_AUTH_GROUPS_CLAIM ?? 'groups',
+    authRequiredGroup: process.env.YOUTUBE_DOWNLOADER_AUTH_REQUIRED_GROUP,
   };
 };
