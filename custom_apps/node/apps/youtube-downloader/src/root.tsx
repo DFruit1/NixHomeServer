@@ -7,12 +7,17 @@ import { OptionsPanel, OPTION_KEYS, type OptionKey, type BooleanOptionKey } from
 import { JobList } from './client/job-list.js';
 import { apiFetch, isTauriRuntime, serverBaseUrl } from './client/api.js';
 import {
+  addPendingJob,
   fetchAuthConfig,
+  flushPendingJobs,
   getAuthStatus,
   installTauriTransport,
+  listPendingJobs,
+  removePendingJob,
   signIn,
   signOut,
   storeServerBaseUrl,
+  type PendingJob,
 } from './client/tauri.js';
 import './client/styles.css';
 
@@ -62,6 +67,8 @@ export default component$(() => {
   const connecting = useSignal(false);
   const connectError = useSignal('');
   const pollTimer = useSignal<number | undefined>();
+  const pendingJobs = useSignal<PendingJob[]>([]);
+  const pendingNotice = useSignal('');
 
   const refresh = $(async () => {
     const [meResponse, jobsResponse] = await Promise.all([apiFetch('/api/me'), apiFetch('/api/jobs')]);
@@ -105,6 +112,15 @@ export default component$(() => {
     } finally {
       connecting.value = false;
     }
+  });
+
+  const refreshPending = $(async () => {
+    pendingJobs.value = await listPendingJobs();
+  });
+
+  const removePending = $(async (id: string) => {
+    await removePendingJob(id);
+    await refreshPending();
   });
 
   const disconnect = $(async () => {
@@ -156,6 +172,37 @@ export default component$(() => {
         window.clearInterval(pollTimer.value);
         pollTimer.value = undefined;
       }
+    });
+  });
+
+  useVisibleTask$(({ cleanup }) => {
+    if (!isTauriRuntime()) {
+      return;
+    }
+    let cancelled = false;
+    const tick = async () => {
+      const outcome = await flushPendingJobs();
+      if (cancelled) {
+        return;
+      }
+      if (outcome.sent > 0) {
+        pendingNotice.value = `Sent ${outcome.sent} queued download${outcome.sent === 1 ? '' : 's'} to the server.`;
+        await refresh().catch(() => undefined);
+      }
+      pendingJobs.value = await listPendingJobs();
+    };
+    void tick();
+    const timer = window.setInterval(() => {
+      void tick();
+    }, 15000);
+    const onOnline = () => {
+      void tick();
+    };
+    window.addEventListener('online', onOnline);
+    cleanup(() => {
+      cancelled = true;
+      window.clearInterval(timer);
+      window.removeEventListener('online', onOnline);
     });
   });
 
@@ -256,7 +303,9 @@ export default component$(() => {
       });
       if (!response.ok) {
         const body = await response.json().catch(() => ({}));
-        throw new Error(body.error || 'Download could not be queued');
+        const httpError = new Error(body.error || 'Download could not be queued') as Error & { httpStatus?: number };
+        httpError.httpStatus = response.status;
+        throw httpError;
       }
       if (usedClipboard) {
         recentPastedUrls.value = [normalizedUrl, ...recentPastedUrls.value].slice(0, RECENT_AUTO_QUEUED_URL_LIMIT);
@@ -264,7 +313,15 @@ export default component$(() => {
       url.value = '';
       await refresh();
     } catch (caught) {
-      error.value = caught instanceof Error ? caught.message : String(caught);
+      const isHttpError = caught instanceof Error && 'httpStatus' in caught;
+      if (isTauriRuntime() && !isHttpError) {
+        await addPendingJob(normalizedUrl);
+        pendingNotice.value = 'The server is unreachable; queued on this device.';
+        await refreshPending();
+        url.value = '';
+      } else {
+        error.value = caught instanceof Error ? caught.message : String(caught);
+      }
     } finally {
       submitting.value = false;
     }
@@ -499,6 +556,37 @@ export default component$(() => {
           </button>
         </div>
       </section>
+
+      {isTauriRuntime() && (pendingJobs.value.length > 0 || pendingNotice.value) && (
+        <section class="jobs">
+          <h2>Pending on this device</h2>
+          {pendingNotice.value && <p class="destination-note">{pendingNotice.value}</p>}
+          {pendingJobs.value.length === 0 ? (
+            <p class="empty">Nothing queued</p>
+          ) : (
+            <div class="job-stack">
+              {pendingJobs.value.map((job) => (
+                <article class="job" key={job.id}>
+                  <div class="job-content">
+                    <div class="job-head">
+                      <div>
+                        <strong>{job.url}</strong>
+                        {job.lastError && <p>{job.lastError}</p>}
+                      </div>
+                      <span class="status-badge queued">pending</span>
+                    </div>
+                    <div class="job-actions">
+                      <button type="button" onClick$={() => removePending(job.id)}>
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
 
       <JobList title="Active" jobs={activeJobs} refresh={refresh} currentUser={me.value} />
       <JobList title="History" jobs={historyJobs} refresh={refresh} currentUser={me.value} />

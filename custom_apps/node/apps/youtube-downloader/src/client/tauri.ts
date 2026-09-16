@@ -89,8 +89,52 @@ export const signOut = (): Promise<void> => {
   return invoke<void>('oauth_logout');
 };
 
+export type PendingJob = {
+  id: string;
+  url: string;
+  addedAt: number;
+  lastError?: string | null;
+};
+
+export type FlushOutcome = {
+  sent: number;
+  remaining: number;
+  errors: string[];
+};
+
 export const storeServerBaseUrl = (url: string): void => {
-  window.localStorage.setItem(SERVER_BASE_URL_STORAGE_KEY, url.trim().replace(/\/+$/, ''));
+  const trimmed = url.trim().replace(/\/+$/, '');
+  window.localStorage.setItem(SERVER_BASE_URL_STORAGE_KEY, trimmed);
+  // Persist for the Rust-side background queue flush.
+  void tauriInvoke()?.('set_server_base_url', { url: trimmed }).catch(() => undefined);
+};
+
+export const listPendingJobs = async (): Promise<PendingJob[]> => {
+  const invoke = tauriInvoke();
+  if (!invoke) {
+    return [];
+  }
+  return (await invoke<PendingJob[]>('queue_list').catch(() => [])) ?? [];
+};
+
+export const addPendingJob = async (url: string): Promise<void> => {
+  await tauriInvoke()?.('queue_add', { url }).catch(() => undefined);
+};
+
+export const removePendingJob = async (id: string): Promise<void> => {
+  await tauriInvoke()?.('queue_remove', { id }).catch(() => undefined);
+};
+
+export const flushPendingJobs = async (): Promise<FlushOutcome> => {
+  const invoke = tauriInvoke();
+  if (!invoke) {
+    return { sent: 0, remaining: 0, errors: [] };
+  }
+  return invoke<FlushOutcome>('queue_flush').catch((error) => ({
+    sent: 0,
+    remaining: 0,
+    errors: [ error instanceof Error ? error.message : String(error) ],
+  }));
 };
 
 export const fetchAuthConfig = async (): Promise<AuthConfig> => {
