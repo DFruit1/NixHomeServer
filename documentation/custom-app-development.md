@@ -76,6 +76,30 @@ Nix check:
 nix build .#checks.x86_64-linux.mail-archive-ui-frontend --no-link --print-build-logs
 ```
 
+## YouTube Downloader Tauri Shell
+
+`youtube-downloader` also ships a Tauri 2 shell under `src-tauri`, used for
+the desktop app and the Android client. Both load the same Vite/Qwik client
+and route every API call through `src/client/api.ts`.
+
+Builds run on a pinned toolchain instead of a host installation:
+
+```bash
+nix build .#youtube-downloader-tauri           # Linux desktop binary
+nix develop .#youtube-downloader-tauri         # interactive shell
+custom_apps/node/apps/youtube-downloader/build-android.sh   # debug APK
+```
+
+The Android shell pins the official Rust toolchain and the four Android
+`rust-std` components as fixed-output fetches, because nixpkgs' patched rustc
+is metadata-incompatible with upstream `rust-std`. `autoPatchelfHook` makes
+the upstream binaries runnable on NixOS, and the shell provides the Android
+SDK/NDK, JDK, and the NDK linkers. Gradle still resolves its dependency graph
+from the network; the committed `src-tauri/gen/android` project is its input.
+
+`android.aapt2FromMavenOverride` points gradle at the Nix build-tools aapt2,
+which `build-android.sh` injects for the build and restores afterwards.
+
 ## Package Manager
 
 Use `pnpm` for custom frontend apps. The repo already packages
