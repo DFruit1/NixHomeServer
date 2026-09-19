@@ -746,13 +746,29 @@ in
             echo "Prowlarr did not expose the $implementation application schema; retrying media bootstrap." >&2
             return 1
           }
-          if [[ -n "$existing_id" && "$existing_id" != "null" ]]; then
-            jq --argjson id "$existing_id" '.id = $id' <<<"$payload" \
-              | papi -X PUT -H 'Content-Type: application/json' --data-binary @- "$prowlarr_url/api/v1/applications/$existing_id" >/dev/null
-          else
-            printf '%s' "$payload" \
-              | papi -X POST -H 'Content-Type: application/json' --data-binary @- "$prowlarr_url/api/v1/applications" >/dev/null
-          fi
+          # Mutations are not covered by papi_get's retry loop, and Prowlarr
+          # answers HTTP 400 while it is still starting or restarting. Retry the
+          # create/update so a restart race cannot fail activation. A POST whose
+          # response was lost may already have landed, so re-resolve the id by
+          # name between attempts instead of blindly creating a duplicate.
+          local attempt
+          for attempt in $(seq 1 120); do
+            if [[ -n "$existing_id" && "$existing_id" != "null" ]]; then
+              if jq --argjson id "$existing_id" '.id = $id' <<<"$payload" \
+                | papi -X PUT -H 'Content-Type: application/json' --data-binary @- "$prowlarr_url/api/v1/applications/$existing_id" >/dev/null; then
+                return 0
+              fi
+            else
+              if printf '%s' "$payload" \
+                | papi -X POST -H 'Content-Type: application/json' --data-binary @- "$prowlarr_url/api/v1/applications" >/dev/null; then
+                return 0
+              fi
+            fi
+            existing_id="$(papi_get "$prowlarr_url/api/v1/applications" | jq -r --arg name "$name" '.[] | select(.name == $name) | .id' | head -n1)"
+            sleep 1
+          done
+          echo "Prowlarr did not accept the $implementation application link; retrying media bootstrap." >&2
+          return 1
         }
 
         ${lib.optionalString sonarrEnabled ''
