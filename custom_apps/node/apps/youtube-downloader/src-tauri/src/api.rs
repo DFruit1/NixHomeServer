@@ -42,10 +42,17 @@ pub async fn api_request(
     for (name, value) in headers.unwrap_or_default() {
         request = request.header(name, value);
     }
-    let trusted = queue::server_base_url(&app)
-        .map(|base| same_origin(&url, &base))
+    let base_url = queue::server_base_url(&app);
+    let trusted = base_url
+        .as_deref()
+        .map(|base| same_origin(&url, base))
         .unwrap_or(false);
     if trusted {
+        // The server's CSRF guard requires an Origin whose host matches Host
+        // for mutations; a webview fetch would send this automatically.
+        if let Some(base) = &base_url {
+            request = request.header(reqwest::header::ORIGIN, base);
+        }
         if let Some(token) = auth::authorization_token(&app).await? {
             request = request.bearer_auth(token);
         }

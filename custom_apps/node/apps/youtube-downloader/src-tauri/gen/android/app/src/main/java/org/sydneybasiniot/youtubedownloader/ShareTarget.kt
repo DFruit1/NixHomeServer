@@ -45,6 +45,8 @@ object ShareTarget {
             .setType("text/plain"),
         )
         .setLongLived(true)
+        // Rank 0 asks the system to prefer this target in the Direct Share row.
+        .setRank(0)
         .setCategories(setOf("com.android.intent.action.SEND"))
         .build()
       ShortcutManagerCompat.pushDynamicShortcut(context, shortcut)

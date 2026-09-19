@@ -221,6 +221,9 @@ pub async fn queue_flush(app: AppHandle) -> Result<FlushOutcome, String> {
     for mut job in load_queue(&app) {
         let request = client
             .post(format!("{base_url}/api/jobs"))
+            // The server's CSRF guard requires a same-origin Origin header on
+            // mutations, which a browser sends automatically.
+            .header(reqwest::header::ORIGIN, &base_url)
             .bearer_auth(&token)
             .json(&default_request(&job.url));
         match request.send().await {
