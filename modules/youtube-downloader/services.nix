@@ -38,6 +38,12 @@ in
     description = "Retention period for detailed events belonging to terminal download jobs.";
   };
 
+  options.repo.youtubeDownloader.appRefreshTokenDays = lib.mkOption {
+    type = lib.types.ints.positive;
+    default = 90;
+    description = "Refresh-token lifetime for the native app OAuth2 client, in days. Capped by the Kanidm auth-session expiry.";
+  };
+
   config = lib.mkMerge [
     {
       systemd.services.youtube-downloader-ownership-migration = {

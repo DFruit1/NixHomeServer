@@ -1,7 +1,9 @@
-{ config, vars, ... }:
+{ config, pkgs, vars, ... }:
 
 let
   host = "ytdownload.${vars.domain}";
+  kanidmCliUrl = "https://${vars.kanidmDomain}:${toString vars.networking.ports.kanidm}";
+  appRefreshTokenSeconds = config.repo.youtubeDownloader.appRefreshTokenDays * 86400;
 in
 
 {
@@ -41,6 +43,40 @@ in
         enableLocalhostRedirects = true;
         preferShortUsername = true;
         scopeMaps."downloads-users" = [ "openid" "profile" "email" "groups_name" ];
+      };
+    };
+
+    # Kanidm hard-codes refresh tokens to 16 hours; raise the native app client
+    # so the phone and desktop shells keep working without a fresh login.
+    systemd.services.youtube-downloader-oauth2-refresh = {
+      description = "Set the YouTube Downloader app refresh-token expiry";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "kanidm.service" ];
+      wants = [ "kanidm.service" ];
+      path = [ pkgs.kanidm_1_11 ];
+      script = ''
+        set -euo pipefail
+
+        export HOME="$(mktemp -d)"
+        trap 'rm -rf "$HOME"' EXIT
+        KANIDM_PASSWORD="$(< ${config.age.secrets.kanidmAdminPass.path})"
+        export KANIDM_PASSWORD
+
+        kanidm login \
+          -H ${kanidmCliUrl} \
+          -D idm_admin >/dev/null
+
+        kanidm system oauth2 set-refresh-token-expiry \
+          -H ${kanidmCliUrl} \
+          -D idm_admin \
+          youtube-downloader-app \
+          ${toString appRefreshTokenSeconds}
+      '';
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        Restart = "on-failure";
+        RestartSec = "30s";
       };
     };
   };

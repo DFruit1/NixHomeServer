@@ -29,7 +29,7 @@ let
       adminEmail = "admin@example.test"; # Single contact address used for both ACME and the Kanidm admin account.
       sshPublicKey = "ssh-ed25519 CHANGE_ME example-admin-key"; # Public key authorized for the local Unix administrator.
       localAdminUser = "admin"; # Local Unix SSH/sudo account for bootstrap and operations.
-      authSessionExpirySeconds = 2592000; # Maximum Kanidm authentication-session lifetime in seconds (30 days).
+      authSessionExpirySeconds = 7776000; # Maximum Kanidm authentication-session lifetime in seconds (90 days). Also caps native-app silent refresh.
     };
 
     network = {
