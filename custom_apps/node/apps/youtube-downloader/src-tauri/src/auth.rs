@@ -16,6 +16,29 @@ const CALLBACK_PATH: &str = "/callback";
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(300);
 const TOKEN_SKEW_SECONDS: u64 = 30;
 const DEFAULT_SCOPE: &str = "openid profile email groups_name";
+const CUSTOM_SCHEME_REDIRECT: &str = "org.sydneybasiniot.youtubedownloader://auth/callback";
+#[cfg(target_os = "android")]
+const CALLBACK_FILE: &str = "oauth-callback.txt";
+
+fn build_authorize_url(
+    endpoint: &str,
+    client_id: &str,
+    redirect_uri: &str,
+    scope: &str,
+    state: &str,
+    challenge: &str,
+) -> Result<url::Url, String> {
+    let mut url = url::Url::parse(endpoint).map_err(|error| error.to_string())?;
+    url.query_pairs_mut()
+        .append_pair("response_type", "code")
+        .append_pair("client_id", client_id)
+        .append_pair("redirect_uri", redirect_uri)
+        .append_pair("scope", scope)
+        .append_pair("state", state)
+        .append_pair("code_challenge", challenge)
+        .append_pair("code_challenge_method", "S256");
+    Ok(url)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredTokens {
@@ -260,6 +283,52 @@ fn await_callback(listener: TcpListener, expected_state: &str) -> Result<String,
     }
 }
 
+#[cfg(target_os = "android")]
+fn read_callback_file(app: &AppHandle) -> Option<String> {
+    let dir = app.path().app_data_dir().ok()?;
+    let candidates = [
+        dir.join("files").join(CALLBACK_FILE),
+        dir.join(CALLBACK_FILE),
+    ];
+    for candidate in candidates {
+        if let Ok(contents) = std::fs::read_to_string(&candidate) {
+            let _ = std::fs::remove_file(&candidate);
+            return Some(contents);
+        }
+    }
+    None
+}
+
+/// Wait for AuthCallbackActivity to hand back the custom-scheme redirect.
+#[cfg(target_os = "android")]
+fn await_android_callback(app: &AppHandle, expected_state: &str) -> Result<String, String> {
+    let deadline = Instant::now() + CALLBACK_TIMEOUT;
+    loop {
+        if Instant::now() > deadline {
+            return Err("timed out waiting for the browser sign-in".into());
+        }
+        if let Some(content) = read_callback_file(app) {
+            let params: HashMap<String, String> = url::form_urlencoded::parse(
+                content.trim().trim_start_matches('?').as_bytes(),
+            )
+            .into_owned()
+            .collect();
+            if let Some(error) = params.get("error") {
+                let description = params.get("error_description").cloned().unwrap_or_default();
+                return Err(format!("authorisation failed: {error} {description}"));
+            }
+            match params.get("state") {
+                Some(state) if state == expected_state => {}
+                _ => return Err("authorisation state mismatch".into()),
+            }
+            if let Some(code) = params.get("code") {
+                return Ok(code.clone());
+            }
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
 fn to_stored_tokens(
     issuer: &str,
     client_id: &str,
@@ -317,36 +386,60 @@ pub async fn oauth_login(
     let client = client()?;
     let discovery = discover(&client, &issuer).await?;
 
-    let listener = TcpListener::bind("127.0.0.1:0").map_err(|error| error.to_string())?;
-    let port = listener
-        .local_addr()
-        .map_err(|error| error.to_string())?
-        .port();
-    let redirect_uri = format!("http://127.0.0.1:{port}{CALLBACK_PATH}");
     let verifier = random_urlsafe(32);
     let challenge = code_challenge(&verifier);
     let state = random_urlsafe(16);
 
-    let mut authorize_url =
-        url::Url::parse(&discovery.authorization_endpoint).map_err(|error| error.to_string())?;
-    authorize_url
-        .query_pairs_mut()
-        .append_pair("response_type", "code")
-        .append_pair("client_id", &client_id)
-        .append_pair("redirect_uri", &redirect_uri)
-        .append_pair("scope", &scope)
-        .append_pair("state", &state)
-        .append_pair("code_challenge", &challenge)
-        .append_pair("code_challenge_method", "S256");
+    // Android returns through the app scheme so the browser never shows the
+    // loopback page; desktop uses a loopback listener.
+    #[cfg(target_os = "android")]
+    let (redirect_uri, code) = {
+        let redirect_uri = CUSTOM_SCHEME_REDIRECT.to_string();
+        let authorize_url = build_authorize_url(
+            &discovery.authorization_endpoint,
+            &client_id,
+            &redirect_uri,
+            &scope,
+            &state,
+            &challenge,
+        )?;
+        app.opener()
+            .open_url(authorize_url.as_str(), None::<&str>)
+            .map_err(|error| error.to_string())?;
+        let handle = app.clone();
+        let expected_state = state.clone();
+        let code =
+            tauri::async_runtime::spawn_blocking(move || await_android_callback(&handle, &expected_state))
+                .await
+                .map_err(|error| error.to_string())??;
+        (redirect_uri, code)
+    };
 
-    app.opener()
-        .open_url(authorize_url.as_str(), None::<&str>)
-        .map_err(|error| error.to_string())?;
-
-    let expected_state = state.clone();
-    let code = tauri::async_runtime::spawn_blocking(move || await_callback(listener, &expected_state))
-        .await
-        .map_err(|error| error.to_string())??;
+    #[cfg(not(target_os = "android"))]
+    let (redirect_uri, code) = {
+        let listener = TcpListener::bind("127.0.0.1:0").map_err(|error| error.to_string())?;
+        let port = listener
+            .local_addr()
+            .map_err(|error| error.to_string())?
+            .port();
+        let redirect_uri = format!("http://127.0.0.1:{port}{CALLBACK_PATH}");
+        let authorize_url = build_authorize_url(
+            &discovery.authorization_endpoint,
+            &client_id,
+            &redirect_uri,
+            &scope,
+            &state,
+            &challenge,
+        )?;
+        app.opener()
+            .open_url(authorize_url.as_str(), None::<&str>)
+            .map_err(|error| error.to_string())?;
+        let expected_state = state.clone();
+        let code = tauri::async_runtime::spawn_blocking(move || await_callback(listener, &expected_state))
+            .await
+            .map_err(|error| error.to_string())??;
+        (redirect_uri, code)
+    };
 
     let form = [
         ("grant_type", "authorization_code"),
@@ -366,13 +459,23 @@ pub async fn oauth_login(
     Ok(AuthStatus::from(&tokens))
 }
 
-pub async fn access_token(app: &AppHandle) -> Result<Option<String>, String> {
+/// Kanidm carries identity claims such as `groups` in the ID token (this is
+/// what oauth2-proxy consumes), so prefer it for API authorisation and fall
+/// back to the access token only when no ID token was issued.
+fn authorization_value(tokens: &StoredTokens) -> String {
+    tokens
+        .id_token
+        .clone()
+        .unwrap_or_else(|| tokens.access_token.clone())
+}
+
+pub async fn authorization_token(app: &AppHandle) -> Result<Option<String>, String> {
     let tokens = match load_tokens(app) {
         Some(tokens) => tokens,
         None => return Ok(None),
     };
     if tokens.expires_at > now_seconds() {
-        return Ok(Some(tokens.access_token));
+        return Ok(Some(authorization_value(&tokens)));
     }
     let refresh_token = match tokens.refresh_token.clone() {
         Some(refresh_token) => refresh_token,
@@ -396,9 +499,17 @@ pub async fn access_token(app: &AppHandle) -> Result<Option<String>, String> {
         .await
         .map_err(|error| error.to_string())?;
     match to_stored_tokens(&issuer, &client_id, response) {
-        Ok(refreshed) => {
+        Ok(mut refreshed) => {
+            // A refresh response may omit the ID token; keep the previous one
+            // so the groups claim stays available.
+            if refreshed.id_token.is_none() {
+                refreshed.id_token = tokens.id_token.clone();
+            }
+            if refreshed.username.is_none() {
+                refreshed.username = tokens.username.clone();
+            }
             store_tokens(app, &refreshed)?;
-            Ok(Some(refreshed.access_token))
+            Ok(Some(authorization_value(&refreshed)))
         }
         Err(error) => {
             clear_tokens(app)?;

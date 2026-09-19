@@ -191,7 +191,7 @@ pub async fn queue_flush(app: AppHandle) -> Result<FlushOutcome, String> {
             });
         }
     };
-    let token = match auth::access_token(&app).await {
+    let token = match auth::authorization_token(&app).await {
         Ok(Some(token)) => token,
         Ok(None) => {
             let message = "Sign in to send the queue.";

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { currentUserFromHeaders, normaliseUsername, parseGroups } from '../auth.js';
+import { buildCurrentUser, currentUserFromHeaders, normaliseUsername, parseGroups } from '../auth.js';
 import type { AppConfig } from '../config.js';
 
 const config = {
@@ -24,6 +24,15 @@ describe('auth headers', () => {
       'files-shared-users',
       'users',
     ]);
+  });
+
+  it('matches a group claim supplied in SPN form', () => {
+    const user = buildCurrentUser(
+      { username: 'dsaw', groups: ['files-shared-users@id.example.test'] },
+      config,
+    );
+    expect(user.canWriteShared).toBe(true);
+    expect(user.destinations).toEqual(['personal', 'shared']);
   });
 
   it('marks shared writers from the shared files Kanidm group', () => {

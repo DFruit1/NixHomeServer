@@ -24,6 +24,26 @@
             </intent-filter>
         </activity>
 
+        <!-- OIDC redirect target: hands the code to Rust without showing the
+             loopback page. -->
+        <activity
+            android:name=".AuthCallbackActivity"
+            android:theme="@android:style/Theme.NoDisplay"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:launchMode="singleTask">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="org.sydneybasiniot.youtubedownloader"
+                    android:host="auth"
+                    android:pathPrefix="/callback" />
+            </intent-filter>
+        </activity>
+
         <!-- Share a link straight into the offline download queue without
              showing UI or pulling the main task to the foreground. -->
         <activity

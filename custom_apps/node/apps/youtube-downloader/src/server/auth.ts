@@ -28,6 +28,15 @@ const headerValue = (headers: IncomingHttpHeaders, name: string): string | undef
   return value;
 };
 
+// Kanidm group claims may be a bare name or an SPN (name@domain); compare on
+// the short, case-insensitive name so either form matches.
+const normaliseGroup = (group: string): string => group.split('@', 1)[0]?.trim().toLowerCase() ?? '';
+
+const hasGroup = (groups: string[], required: string): boolean => {
+  const target = normaliseGroup(required);
+  return target !== '' && groups.some((group) => normaliseGroup(group) === target);
+};
+
 const trimSlashes = (value: string): string => value.replace(/^\/+|\/+$/g, '');
 
 const pathWithoutTrailingSlash = (value: string): string => value.replace(/\/+$/, '');
@@ -44,7 +53,7 @@ const relativePath = (root: string, child: string): string => {
 const joinBrowserPath = (...parts: string[]): string => parts.map(trimSlashes).filter(Boolean).join('/');
 
 export const buildCurrentUser = (identity: Identity, config: AppConfig): CurrentUser => {
-  const canWriteShared = identity.groups.includes(config.sharedWriteGroup);
+  const canWriteShared = hasGroup(identity.groups, config.sharedWriteGroup);
   return {
     username: identity.username,
     email: identity.email,
@@ -126,7 +135,7 @@ export const authenticateRequest = async (
       groupsClaim: config.authGroupsClaim,
       getKey: keyProvider ?? keyProviderFor(issuer),
     });
-    if (config.authRequiredGroup && !identity.groups.includes(config.authRequiredGroup)) {
+    if (config.authRequiredGroup && !hasGroup(identity.groups, config.authRequiredGroup)) {
       throw new Error(`not authorised: group ${config.authRequiredGroup} is required`);
     }
     return buildCurrentUser(identity, config);

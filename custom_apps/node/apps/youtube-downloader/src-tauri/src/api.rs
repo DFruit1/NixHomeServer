@@ -46,7 +46,7 @@ pub async fn api_request(
         .map(|base| same_origin(&url, &base))
         .unwrap_or(false);
     if trusted {
-        if let Some(token) = auth::access_token(&app).await? {
+        if let Some(token) = auth::authorization_token(&app).await? {
             request = request.bearer_auth(token);
         }
     }
