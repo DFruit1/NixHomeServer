@@ -125,6 +125,17 @@ export default component$(() => {
     await refreshPending();
   });
 
+  const flushNow = $(async () => {
+    const outcome = await flushPendingJobs();
+    pendingNotice.value = outcome.sent > 0
+      ? `Sent ${outcome.sent} queued download${outcome.sent === 1 ? '' : 's'} to the server.`
+      : (outcome.errors[0] ?? '');
+    if (outcome.sent > 0) {
+      await refresh().catch(() => undefined);
+    }
+    await refreshPending();
+  });
+
   const disconnect = $(async () => {
     await signOut().catch(() => undefined);
     if (pollTimer.value != null) {
@@ -190,6 +201,8 @@ export default component$(() => {
       if (outcome.sent > 0) {
         pendingNotice.value = `Sent ${outcome.sent} queued download${outcome.sent === 1 ? '' : 's'} to the server.`;
         await refresh().catch(() => undefined);
+      } else if (outcome.remaining > 0 && outcome.errors.length > 0) {
+        pendingNotice.value = outcome.errors[0];
       }
       pendingJobs.value = await listPendingJobs();
     };
@@ -585,6 +598,9 @@ export default component$(() => {
                       <span class="status-badge queued">pending</span>
                     </div>
                     <div class="job-actions">
+                      <button type="button" onClick$={flushNow}>
+                        Send now
+                      </button>
                       <button type="button" onClick$={() => removePending(job.id)}>
                         Remove
                       </button>

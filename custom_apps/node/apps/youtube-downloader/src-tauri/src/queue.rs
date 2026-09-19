@@ -167,20 +167,50 @@ pub fn set_server_base_url(app: AppHandle, url: String) -> Result<(), String> {
     std::fs::write(path, serialised).map_err(|error| error.to_string())
 }
 
+fn mark_all_errors(app: &AppHandle, message: &str) -> Vec<PendingJob> {
+    let mut jobs = load_queue(app);
+    for job in &mut jobs {
+        job.last_error = Some(message.to_string());
+    }
+    let _ = save_queue(app, &jobs);
+    jobs
+}
+
 #[tauri::command]
 pub async fn queue_flush(app: AppHandle) -> Result<FlushOutcome, String> {
     sync_shared_files(&app);
     let base_url = match server_base_url(&app) {
         Some(base_url) => base_url,
         None => {
+            let message = "No server is configured yet.";
+            let jobs = mark_all_errors(&app, message);
             return Ok(FlushOutcome {
                 sent: 0,
-                remaining: load_queue(&app).len(),
-                errors: vec!["No server is configured yet.".into()],
-            })
+                remaining: jobs.len(),
+                errors: vec![message.into()],
+            });
         }
     };
-    let token = auth::access_token(&app).await?;
+    let token = match auth::access_token(&app).await {
+        Ok(Some(token)) => token,
+        Ok(None) => {
+            let message = "Sign in to send the queue.";
+            let jobs = mark_all_errors(&app, message);
+            return Ok(FlushOutcome {
+                sent: 0,
+                remaining: jobs.len(),
+                errors: vec![message.into()],
+            });
+        }
+        Err(error) => {
+            let jobs = mark_all_errors(&app, &error);
+            return Ok(FlushOutcome {
+                sent: 0,
+                remaining: jobs.len(),
+                errors: vec![error],
+            });
+        }
+    };
     let client = reqwest::Client::builder()
         .build()
         .map_err(|error| error.to_string())?;
@@ -189,12 +219,10 @@ pub async fn queue_flush(app: AppHandle) -> Result<FlushOutcome, String> {
     let mut errors = Vec::new();
     let mut remaining = Vec::new();
     for mut job in load_queue(&app) {
-        let mut request = client
+        let request = client
             .post(format!("{base_url}/api/jobs"))
+            .bearer_auth(&token)
             .json(&default_request(&job.url));
-        if let Some(token) = &token {
-            request = request.bearer_auth(token);
-        }
         match request.send().await {
             Ok(response) if response.status().is_success() => {
                 sent += 1;

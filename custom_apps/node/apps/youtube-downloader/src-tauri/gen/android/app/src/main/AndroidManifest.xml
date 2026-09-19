@@ -22,8 +22,17 @@
                 <!-- AndroidTV support -->
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
+        </activity>
 
-            <!-- Share a link straight into the offline download queue. -->
+        <!-- Share a link straight into the offline download queue without
+             showing UI or pulling the main task to the foreground. -->
+        <activity
+            android:name=".ShareActivity"
+            android:theme="@android:style/Theme.NoDisplay"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity="">
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />

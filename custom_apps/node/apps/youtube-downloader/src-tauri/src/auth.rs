@@ -145,14 +145,46 @@ fn client() -> Result<reqwest::Client, String> {
 
 async fn discover(client: &reqwest::Client, issuer: &str) -> Result<Discovery, String> {
     let url = format!("{issuer}/.well-known/openid-configuration");
-    client
-        .get(url)
-        .send()
-        .await
-        .map_err(|error| error.to_string())?
-        .json::<Discovery>()
-        .await
-        .map_err(|error| error.to_string())
+    let response = get_with_retry(client, &url).await?;
+    response.json::<Discovery>().await.map_err(|error| error.to_string())
+}
+
+/// Phone networks drop connections mid-request; retry a couple of times before
+/// surfacing a transport failure to the user.
+async fn get_with_retry(client: &reqwest::Client, url: &str) -> Result<reqwest::Response, String> {
+    let mut last_error = String::new();
+    for attempt in 0..3u64 {
+        match client.get(url).send().await {
+            Ok(response) => return Ok(response),
+            Err(error) => {
+                last_error = error.to_string();
+                if attempt < 2 {
+                    std::thread::sleep(Duration::from_secs(attempt + 1));
+                }
+            }
+        }
+    }
+    Err(last_error)
+}
+
+async fn post_form_with_retry(
+    client: &reqwest::Client,
+    url: &str,
+    form: &[(&str, &str)],
+) -> Result<reqwest::Response, String> {
+    let mut last_error = String::new();
+    for attempt in 0..3u64 {
+        match client.post(url).form(form).send().await {
+            Ok(response) => return Ok(response),
+            Err(error) => {
+                last_error = error.to_string();
+                if attempt < 2 {
+                    std::thread::sleep(Duration::from_secs(attempt + 1));
+                }
+            }
+        }
+    }
+    Err(last_error)
 }
 
 fn respond(stream: &mut TcpStream, status: &str, body: &str) {
@@ -323,12 +355,8 @@ pub async fn oauth_login(
         ("client_id", client_id.as_str()),
         ("code_verifier", verifier.as_str()),
     ];
-    let response = client
-        .post(&discovery.token_endpoint)
-        .form(&form)
-        .send()
-        .await
-        .map_err(|error| error.to_string())?
+    let response = post_form_with_retry(&client, &discovery.token_endpoint, &form)
+        .await?
         .json::<TokenResponse>()
         .await
         .map_err(|error| error.to_string())?;
@@ -362,12 +390,8 @@ pub async fn access_token(app: &AppHandle) -> Result<Option<String>, String> {
         ("refresh_token", refresh_token.as_str()),
         ("client_id", client_id.as_str()),
     ];
-    let response = client
-        .post(&discovery.token_endpoint)
-        .form(&form)
-        .send()
-        .await
-        .map_err(|error| error.to_string())?
+    let response = post_form_with_retry(&client, &discovery.token_endpoint, &form)
+        .await?
         .json::<TokenResponse>()
         .await
         .map_err(|error| error.to_string())?;
