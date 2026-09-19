@@ -284,19 +284,37 @@ fn await_callback(listener: TcpListener, expected_state: &str) -> Result<String,
 }
 
 #[cfg(target_os = "android")]
-fn read_callback_file(app: &AppHandle) -> Option<String> {
-    let dir = app.path().app_data_dir().ok()?;
-    let candidates = [
-        dir.join("files").join(CALLBACK_FILE),
-        dir.join(CALLBACK_FILE),
-    ];
-    for candidate in candidates {
-        if let Ok(contents) = std::fs::read_to_string(&candidate) {
+fn callback_candidates(app: &AppHandle) -> Vec<std::path::PathBuf> {
+    match app.path().app_data_dir() {
+        Ok(dir) => vec![
+            dir.join("files").join(CALLBACK_FILE),
+            dir.join(CALLBACK_FILE),
+        ],
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Drop any callback left behind by an earlier attempt before starting again.
+#[cfg(target_os = "android")]
+fn clear_callback_files(app: &AppHandle) {
+    for candidate in callback_candidates(app) {
+        let _ = std::fs::remove_file(candidate);
+    }
+}
+
+/// Read and remove every callback file. AuthCallbackActivity writes the same
+/// content to several candidate directories, and a file from a previous
+/// attempt can outlive the one Rust already consumed.
+#[cfg(target_os = "android")]
+fn take_callback_files(app: &AppHandle) -> Vec<String> {
+    let mut contents = Vec::new();
+    for candidate in callback_candidates(app) {
+        if let Ok(content) = std::fs::read_to_string(&candidate) {
             let _ = std::fs::remove_file(&candidate);
-            return Some(contents);
+            contents.push(content);
         }
     }
-    None
+    contents
 }
 
 /// Wait for AuthCallbackActivity to hand back the custom-scheme redirect.
@@ -307,7 +325,7 @@ fn await_android_callback(app: &AppHandle, expected_state: &str) -> Result<Strin
         if Instant::now() > deadline {
             return Err("timed out waiting for the browser sign-in".into());
         }
-        if let Some(content) = read_callback_file(app) {
+        for content in take_callback_files(app) {
             let params: HashMap<String, String> = url::form_urlencoded::parse(
                 content.trim().trim_start_matches('?').as_bytes(),
             )
@@ -317,12 +335,12 @@ fn await_android_callback(app: &AppHandle, expected_state: &str) -> Result<Strin
                 let description = params.get("error_description").cloned().unwrap_or_default();
                 return Err(format!("authorisation failed: {error} {description}"));
             }
-            match params.get("state") {
-                Some(state) if state == expected_state => {}
-                _ => return Err("authorisation state mismatch".into()),
-            }
-            if let Some(code) = params.get("code") {
-                return Ok(code.clone());
+            // A mismatched state is a stale file from a previous attempt, not a
+            // live response; keep waiting for the matching one.
+            if params.get("state").map(String::as_str) == Some(expected_state) {
+                if let Some(code) = params.get("code") {
+                    return Ok(code.clone());
+                }
             }
         }
         std::thread::sleep(Duration::from_millis(200));
@@ -394,6 +412,7 @@ pub async fn oauth_login(
     // loopback page; desktop uses a loopback listener.
     #[cfg(target_os = "android")]
     let (redirect_uri, code) = {
+        clear_callback_files(&app);
         let redirect_uri = CUSTOM_SCHEME_REDIRECT.to_string();
         let authorize_url = build_authorize_url(
             &discovery.authorization_endpoint,
