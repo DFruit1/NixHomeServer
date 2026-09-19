@@ -87,8 +87,11 @@ in
   systemd.services.cloudflare-dns-sync = {
     description = "Ensure Cloudflare DNS records exist for every tunnel ingress host";
     wantedBy = [ "multi-user.target" ];
-    wants = [ "network-online.target" ];
-    after = [ "network-online.target" ];
+    # The API host is resolved through the local Unbound resolver, so wait for
+    # it to listen before the first curl; network-online.target alone can be
+    # reached before Unbound is up and then every lookup fails.
+    wants = [ "network-online.target" "unbound.service" ];
+    after = [ "network-online.target" "unbound.service" ];
     serviceConfig = {
       Type = "oneshot";
       RemainAfterExit = true;
