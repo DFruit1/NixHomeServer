@@ -23,6 +23,7 @@ import './client/styles.css';
 
 const CLIPBOARD_URL_RE = /https?:\/\/[^\s]+/g;
 const RECENT_AUTO_QUEUED_URL_LIMIT = 6;
+const AUTO_CONNECT_KEY = 'youtubeDownloader.autoConnectAttempted';
 
 const trimClipboardToken = (token: string): string => token.trim().replace(/^[([{"'\`]+|[)\]}"'\`.,;:!?]+$/g, '');
 
@@ -111,6 +112,7 @@ export default component$(() => {
       await startPolling();
     } catch (caught) {
       connectError.value = caught instanceof Error ? caught.message : String(caught);
+      connectionState.value = 'signed-out';
     } finally {
       connecting.value = false;
     }
@@ -170,6 +172,16 @@ export default component$(() => {
         installTauriTransport();
         const status = await getAuthStatus().catch(() => ({ signedIn: false }));
         if (!status.signedIn) {
+          // The bundled default is the correct API host, so go straight to
+          // login on first run; fall back to the panel if it fails.
+          const base = serverBaseUrl();
+          const autoAttempted = window.localStorage.getItem(AUTO_CONNECT_KEY) === '1';
+          if (base && !autoAttempted) {
+            window.localStorage.setItem(AUTO_CONNECT_KEY, '1');
+            serverUrlInput.value = base;
+            await connect();
+            return;
+          }
           connectionState.value = 'signed-out';
           return;
         }
