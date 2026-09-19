@@ -30,9 +30,9 @@ let
   offlineMediaRequiredAnyGroups = [ offlineMediaAccessGroup ];
   offlineMediaLoginNotes =
     if offlineMediaAccessGroup == "users" then
-      "Requires baseline users membership; connect each computer or phone once, then Syncthing keeps its offline copies up to date."
+      "Requires baseline users membership; connect each computer or phone once while it is on the home network. Syncthing only syncs while the device is on the home LAN, so sync never uses mobile data."
     else
-      "Requires baseline users membership plus ${offlineMediaAccessGroup}; connect each computer or phone once, then Syncthing keeps its offline copies up to date.";
+      "Requires baseline users membership plus ${offlineMediaAccessGroup}; connect each computer or phone once while it is on the home network. Syncthing only syncs while the device is on the home LAN, so sync never uses mobile data.";
   filesWebAccessGroup = vars.fileAccess.webAccessGroup or "files-personal-users";
   filesSftpAccessGroup = vars.fileAccess.sftpAccessGroup or "files-sftp-users";
   filesSharedAccessGroup = vars.fileAccess.sharedAccessGroup or "files-shared-users";
@@ -246,7 +246,7 @@ let
       url = "/services/offline-media";
       enabled = offlineMediaEnabledForHomepage;
       category = "media";
-      description = "Automatically keep copies of your server music and videos on a computer or phone.";
+      description = "Automatically keep copies of your server music and videos on a computer or phone while it is on the home network.";
       loginNotes = offlineMediaLoginNotes;
       projectUrl = "https://syncthing.net";
       logoUrl = "/logos/syncthing.svg";
@@ -658,16 +658,16 @@ let
       requiredAnyGroups = offlineMediaRequiredAnyGroups;
       connectionAddresses = [
         {
-          address = "tcp://${syncthingHost}:22000";
-          label = "Recommended server address";
+          address = "tcp://${vars.networking.lan.ip}:22000";
+          label = "At home (LAN) — recommended";
         }
         {
-          address = "tcp://${vars.networking.lan.ip}:22000";
-          label = "At home (LAN)";
+          address = "tcp://${syncthingHost}:22000";
+          label = "Private hostname (home LAN or NetBird)";
         }
         {
           address = "tcp://${vars.networking.netbird.ip}:22000";
-          label = "Away from home (NetBird)";
+          label = "Away from home (NetBird) — optional, may use mobile data";
         }
       ];
       folders = [ ];

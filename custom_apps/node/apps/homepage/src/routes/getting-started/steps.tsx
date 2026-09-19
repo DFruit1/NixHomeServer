@@ -454,7 +454,7 @@ export const buildSteps = (ctx: StepsContext): GettingStartedStep[] => {
             {offlineMediaStatus === 'available' && (
               <article>
                 <div><span class="eyebrow">Offline Media</span><h3>Sync media with Syncthing-Fork</h3></div>
-                <p>Install Syncthing-Fork on Android, copy its device ID, then enrol the device. Accept every shared folder as <strong>Receive Only</strong>. iPhone and iPad are not supported.</p>
+                <p>Install Syncthing-Fork on Android, copy its device ID, then enrol the device. Accept every shared folder as <strong>Receive Only</strong>. Sync runs only while the device is on the home network, so it never uses mobile data. iPhone and iPad are not supported.</p>
                 <div class="getting-started-actions compact">
                   <a class="secondary-link" href="https://f-droid.org/en/packages/com.github.catfriend1.syncthingfork/" target="_blank" rel="noreferrer">Download Syncthing-Fork</a>
                   <Link class="secondary-link" href="/services/offline-media">Set up Offline Media</Link>
@@ -487,7 +487,7 @@ export const buildSteps = (ctx: StepsContext): GettingStartedStep[] => {
             <p>Each optional client connects over the private network or the app's assigned hostname. Where supported, apps reuse the Kanidm session for sign-in.</p>
             <p>Photos (Immich) backs up from your phone; Videos (Jellyfin) uses seeded household accounts; Books (Inkita) and Audiobooks (Lissen or Audiobookshelf) attach to their libraries.</p>
             <p>Jellyfin supports Quick Connect to avoid sharing a password; otherwise the bootstrap password should be changed on first sign-in and saved in your password manager.</p>
-            <p>Offline Media (Syncthing-Fork) replicates folders as Receive Only to mirror media onto the device for offline use; iPhone and iPad are not supported.</p>
+            <p>Offline Media (Syncthing-Fork) replicates folders as Receive Only to mirror media onto the device for offline use. The server disables global discovery, relays, and NAT, so a device only connects on the same home LAN and sync never uses mobile data; the optional NetBird address can enable away-from-home sync. iPhone and iPad are not supported.</p>
           </>
         ),
       },

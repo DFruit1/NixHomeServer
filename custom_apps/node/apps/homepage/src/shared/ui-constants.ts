@@ -55,6 +55,7 @@ export const serviceTips: Record<string, string[]> = {
     'Put music files in your personal _Music folder.',
     'Use _Videos/_YouTube and _Videos/_Other for videos you want synced to enrolled devices.',
     'Syncthing folders are published send-only from the server; use receive-only on devices where available.',
+    'Syncing runs only while a device is on the same home network as the server, so it never uses mobile data.',
   ],
   books: [
     'Use _Ebooks for prose, _Comics for comics, and _Manga for manga.',
@@ -146,6 +147,7 @@ export const detailedServiceTips: Record<string, string[]> = {
     ...serviceTips['offline-media']!,
     'Remove a lost or retired device from Homepage so it no longer receives updates.',
     'A reinstalled Syncthing client has a new device ID and must be enrolled again.',
+    'A device can show Not connected while it is away from home; it reconnects automatically when back on the home network.',
   ],
   books: [
     ...serviceTips.books!,

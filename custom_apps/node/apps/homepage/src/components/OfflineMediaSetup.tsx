@@ -147,8 +147,9 @@ export const OfflineMediaSetupPanel = component$(
             <ol class="steps">
               <li>In Syncthing-Fork, choose <strong>Add device</strong>, then scan or paste the server ID shown on the right.</li>
               <li>
-                Add the at-home or away-from-home address shown under <strong>Connection help</strong>. This keeps the
-                connection reliable when automatic discovery is unavailable.
+                Add the at-home (LAN) address from <strong>Connection help</strong> to keep the connection reliable when
+                automatic discovery is unavailable. Syncing only runs while this device is on the same home network, so
+                it never uses mobile data.
               </li>
               <li>
                 Copy your device ID from Syncthing-Fork, paste it below, give the device a name, and select{' '}
@@ -190,7 +191,11 @@ export const OfflineMediaSetupPanel = component$(
 
             <details class="detail-block compact">
               <summary>Connection help</summary>
-              <p>If Syncthing-Fork cannot find the server automatically, add one of these addresses to the server device:</p>
+              <p>
+                Sync is LAN-only by design: it runs while this device is on the same home network as the server and
+                never uses mobile data. If Syncthing-Fork cannot find the server automatically, add the at-home (LAN)
+                address to the server device.
+              </p>
               <div class="qr-grid">
                 {offlineMedia.connectionAddresses.map((connection) => (
                   <QrValue
@@ -200,6 +205,10 @@ export const OfflineMediaSetupPanel = component$(
                   />
                 ))}
               </div>
+              <p class="hint">
+                The away-from-home (NetBird) address is optional. Add it only if you deliberately want to sync while
+                away from home; it can use mobile data.
+              </p>
               {folders.length > 0 && (
                 <p class="hint">Folders you will be offered: {folders.map((folder) => folder.label).join(', ')}.</p>
               )}

@@ -1191,6 +1191,59 @@ Immich sharing flow:
 2. Create an album or photo share link
 3. Send the generated public share URL to recipients.
 
+## Offline Media (Syncthing)
+
+Offline Media publishes selected personal folders (`_Music`, `_Videos/_YouTube`,
+`_Videos/_Other`) send-only from the server to enrolled Android devices running
+Syncthing-Fork. Enrol devices from **Offline Media** in Homepage; each device
+needs baseline `users` membership plus the configured access group.
+
+**Syncing is LAN-only by design.** `modules/Core_Modules/syncthing/default.nix`
+disables global announce, relays, and NAT, leaving only local broadcast
+discovery (`UDP 21027`) and direct connections (`TCP/QUIC 22000`). The firewall
+opens those ports on the home LAN interface and TCP 22000 on the NetBird
+interface. As a result:
+
+- A device syncs only while it is on the same home IPv4 broadcast network as the
+  server. Guest Wi-Fi, a different VLAN, AP or client isolation, or a stopped
+  Syncthing client prevents the connection.
+- Away from home a device is expected to show **Not connected** and no media is
+  downloaded. This is intentional: it keeps sync from consuming mobile data.
+- The Homepage **Connection help** panel lists an optional
+  `tcp://<server-netbird-ip>:22000` address. Add it on a device only if you
+  deliberately want away-from-home sync; doing so can use mobile data.
+
+Check enrollment and sync health on the server:
+
+```bash
+sudo jq . /persist/appdata/offline-media/devices.json
+sudo systemctl status offline-media-reconcile.service syncthing.service --no-pager
+sudo journalctl -u offline-media-reconcile -n 50 --no-pager
+```
+
+Query Syncthing directly. The API key lives in the GUI configuration:
+
+```bash
+api_key="$(sudo sed -n 's:.*<apikey>\(.*\)</apikey>.*:\1:p' \
+  /var/lib/syncthing/.config/syncthing/config.xml)"
+curl -fsS -H "X-API-Key: $api_key" http://127.0.0.1:8384/rest/system/connections | jq '.connections'
+curl -fsS -H "X-API-Key: $api_key" http://127.0.0.1:8384/rest/stats/device | jq .
+```
+
+Interpreting the result:
+
+- An empty `/rest/system/discovery` cache and no
+  `/rest/cluster/pending/devices` entries means no device is announcing on the
+  LAN. Check that the phone is on the home network, that Syncthing-Fork is
+  running, and that the operating system allows it to run in the background.
+- A `lastSeen` older than the current session with no connection attempts is the
+  normal signature of an away-from-home device, not a server fault.
+- A reinstalled Syncthing client has a new device ID and must be enrolled again;
+  it appears as a pending device once it reaches the LAN.
+
+The `offline-media-reconcile.timer` re-verifies Kanidm membership and revokes
+folders and devices for users who lose access.
+
 ## Browsertrix Downloader Operations
 
 The service boundary, storage paths, crawler isolation policy, image update
