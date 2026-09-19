@@ -14,6 +14,37 @@ const buildEnv = (import.meta as unknown as { env?: Record<string, string | unde
 
 const buildDefaultBaseUrl = (buildEnv.VITE_SERVER_BASE_URL ?? FALLBACK_SERVER_BASE_URL).replace(/\/+$/, '');
 
+const NATIVE_HOST_PREFIX = 'ytdownload-app';
+const WEB_HOST_PREFIX = 'ytdownload';
+
+/// Accept the web address, an apex domain, or a bare host and resolve it to
+/// the native API host, so the user never has to know the exact subdomain.
+export const normaliseServerBaseUrl = (input: string): string => {
+  const trimmed = input.trim();
+  if (!trimmed) {
+    return '';
+  }
+  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  let url: URL;
+  try {
+    url = new URL(withScheme);
+  } catch {
+    return trimmed.replace(/\/+$/, '');
+  }
+  const labels = url.hostname.split('.');
+  const first = labels[0]?.toLowerCase();
+  if (first === WEB_HOST_PREFIX || first === 'www') {
+    labels[0] = NATIVE_HOST_PREFIX;
+  } else if (labels.length === 2) {
+    labels.unshift(NATIVE_HOST_PREFIX);
+  }
+  url.hostname = labels.join('.');
+  url.pathname = '';
+  url.search = '';
+  url.hash = '';
+  return url.toString().replace(/\/+$/, '');
+};
+
 const normalisePath = (path: string): string => (path.startsWith('/') ? path : `/${path}`);
 
 const trimTrailingSlashes = (value: string): string => value.replace(/\/+$/, '');

@@ -5,7 +5,7 @@ import { isYouTubeUrl, normalizeDownloadUrl } from './shared/url.js';
 import { ProfileMenu } from './client/profile-menu.js';
 import { OptionsPanel, OPTION_KEYS, type OptionKey, type BooleanOptionKey } from './client/options-panel.js';
 import { JobList } from './client/job-list.js';
-import { apiFetch, isTauriRuntime, serverBaseUrl } from './client/api.js';
+import { apiFetch, isTauriRuntime, normaliseServerBaseUrl, serverBaseUrl } from './client/api.js';
 import {
   addPendingJob,
   fetchAuthConfig,
@@ -98,7 +98,9 @@ export default component$(() => {
     connecting.value = true;
     connectError.value = '';
     try {
-      storeServerBaseUrl(serverUrlInput.value);
+      const baseUrl = normaliseServerBaseUrl(serverUrlInput.value);
+      serverUrlInput.value = baseUrl;
+      storeServerBaseUrl(baseUrl);
       const authConfig = await fetchAuthConfig();
       if (!authConfig.issuer || !authConfig.clientId) {
         throw new Error('This server does not accept app sign-in yet.');
@@ -352,6 +354,12 @@ export default component$(() => {
               aria-label="Server URL"
               value={serverUrlInput.value}
               onInput$={(_, target) => (serverUrlInput.value = target.value)}
+              onBlur$={() => {
+                const normalised = normaliseServerBaseUrl(serverUrlInput.value);
+                if (normalised) {
+                  serverUrlInput.value = normalised;
+                }
+              }}
               placeholder="https://ytdownload-app.sydneybasiniot.org"
             />
           </label>

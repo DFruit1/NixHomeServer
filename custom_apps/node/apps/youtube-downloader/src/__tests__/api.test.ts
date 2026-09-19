@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { apiFetch, resetApiTransport, resolveApiUrl, setApiTransport } from '../client/api.js';
+import {
+  apiFetch,
+  normaliseServerBaseUrl,
+  resetApiTransport,
+  resolveApiUrl,
+  setApiTransport,
+} from '../client/api.js';
 
 afterEach(() => {
   resetApiTransport();
@@ -30,6 +36,33 @@ describe('resolveApiUrl', () => {
 
   it('falls back to a relative URL when no base URL is configured', () => {
     expect(resolveApiUrl('/healthz', { tauri: true })).toBe('/healthz');
+  });
+});
+
+describe('normaliseServerBaseUrl', () => {
+  it('maps the web host to the native api host', () => {
+    expect(normaliseServerBaseUrl('ytdownload.sydneybasiniot.org')).toBe(
+      'https://ytdownload-app.sydneybasiniot.org',
+    );
+    expect(normaliseServerBaseUrl('https://ytdownload.sydneybasiniot.org/')).toBe(
+      'https://ytdownload-app.sydneybasiniot.org',
+    );
+  });
+
+  it('prepends the native label to an apex domain or www host', () => {
+    expect(normaliseServerBaseUrl('sydneybasiniot.org')).toBe('https://ytdownload-app.sydneybasiniot.org');
+    expect(normaliseServerBaseUrl('www.sydneybasiniot.org')).toBe('https://ytdownload-app.sydneybasiniot.org');
+  });
+
+  it('leaves an already-correct api host untouched', () => {
+    expect(normaliseServerBaseUrl('https://ytdownload-app.sydneybasiniot.org')).toBe(
+      'https://ytdownload-app.sydneybasiniot.org',
+    );
+  });
+
+  it('leaves unrelated hosts and empty input untouched', () => {
+    expect(normaliseServerBaseUrl('http://localhost:5173')).toBe('http://localhost:5173');
+    expect(normaliseServerBaseUrl('')).toBe('');
   });
 });
 
