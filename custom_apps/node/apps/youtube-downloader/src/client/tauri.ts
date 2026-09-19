@@ -140,6 +140,11 @@ export const flushPendingJobs = async (): Promise<FlushOutcome> => {
 export const fetchAuthConfig = async (): Promise<AuthConfig> => {
   const response = await apiFetch('/api/auth-config');
   if (!response.ok) {
+    if (response.status === 401 || response.status === 403) {
+      throw new Error(
+        'This looks like the web address. Sign-in needs the API host, for example https://ytdownload-app.<your-domain>.',
+      );
+    }
     throw new Error(`The server returned ${response.status} for its sign-in configuration.`);
   }
   return response.json() as Promise<AuthConfig>;

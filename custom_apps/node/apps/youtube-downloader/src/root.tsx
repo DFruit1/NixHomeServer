@@ -352,7 +352,7 @@ export default component$(() => {
               aria-label="Server URL"
               value={serverUrlInput.value}
               onInput$={(_, target) => (serverUrlInput.value = target.value)}
-              placeholder="https://ytdownload-app.example.org"
+              placeholder="https://ytdownload-app.sydneybasiniot.org"
             />
           </label>
           {connectError.value && <p class="error">{connectError.value}</p>}

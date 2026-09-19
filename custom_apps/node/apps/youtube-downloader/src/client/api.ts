@@ -5,9 +5,14 @@ export type ApiUrlOptions = {
   baseUrl?: string;
 };
 
+// The native shells talk to the LAN-only API host, which serves
+// /api/auth-config without a browser session. Overridable at build time or in
+// the connection settings.
+const FALLBACK_SERVER_BASE_URL = 'https://ytdownload-app.sydneybasiniot.org';
+
 const buildEnv = (import.meta as unknown as { env?: Record<string, string | undefined> }).env ?? {};
 
-const buildDefaultBaseUrl = (buildEnv.VITE_SERVER_BASE_URL ?? '').replace(/\/+$/, '');
+const buildDefaultBaseUrl = (buildEnv.VITE_SERVER_BASE_URL ?? FALLBACK_SERVER_BASE_URL).replace(/\/+$/, '');
 
 const normalisePath = (path: string): string => (path.startsWith('/') ? path : `/${path}`);
 

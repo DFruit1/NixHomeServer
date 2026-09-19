@@ -4,3 +4,4 @@
 /gen/android/**/.gradle/
 /gen/android/**/build/
 /gen/android/local.properties
+/gen/android/keystore.properties

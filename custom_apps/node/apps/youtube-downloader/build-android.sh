@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Build the debug Android APK reproducibly.
+# Build the Android APK reproducibly.
 #
-# Run directly from a checkout; the script re-execs itself inside the pinned
-# Nix dev shell when the Android toolchain is not already present.
+# Produces a size-optimised release APK (roughly 15 MB versus ~165 MB for a
+# debug build) and signs it with the local Android debug keystore so it can be
+# sideloaded. Run directly from a checkout; the script re-execs itself inside
+# the pinned Nix dev shell when the Android toolchain is not already present.
 set -euo pipefail
 
 script_path="$(readlink -f "${BASH_SOURCE[0]}")"
@@ -33,7 +35,21 @@ cp "$gradle_properties" "$backup"
 trap 'cp "$backup" "$gradle_properties"; rm -f "$backup"' EXIT
 printf '\nandroid.aapt2FromMavenOverride=%s\n' "$AAPT2" >>"$gradle_properties"
 
-cargo tauri android build --debug --apk --target aarch64
+cargo tauri android build --apk --target aarch64
 
-apk="src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk"
-echo "APK: $app_dir/$apk"
+release_dir="src-tauri/gen/android/app/build/outputs/apk/universal/release"
+unsigned_apk="$release_dir/app-universal-release-unsigned.apk"
+aligned_apk="$release_dir/app-universal-release-aligned.apk"
+signed_apk="$release_dir/app-universal-release.apk"
+
+build_tools="${ANDROID_HOME}/build-tools/35.0.0"
+export PATH="${JAVA_HOME}/bin:${PATH}"
+"$build_tools/zipalign" -f -p 4 "$unsigned_apk" "$aligned_apk"
+"$build_tools/apksigner" sign \
+  --ks "${HOME}/.android/debug.keystore" \
+  --ks-pass pass:android \
+  --key-pass pass:android \
+  --ks-key-alias androiddebugkey \
+  --out "$signed_apk" "$aligned_apk"
+
+echo "APK: $app_dir/$signed_apk"
