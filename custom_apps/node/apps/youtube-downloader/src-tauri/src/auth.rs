@@ -15,6 +15,14 @@ use tauri_plugin_opener::OpenerExt;
 const CALLBACK_PATH: &str = "/callback";
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(300);
 const TOKEN_SKEW_SECONDS: u64 = 30;
+// Kanidm rotates refresh tokens, so two concurrent refreshes would invalidate
+// each other and surface as invalid_grant; serialise them.
+static REFRESH_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+
+fn refresh_lock() -> &'static tokio::sync::Mutex<()> {
+    REFRESH_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
 const DEFAULT_SCOPE: &str = "openid profile email groups_name";
 const CUSTOM_SCHEME_REDIRECT: &str = "org.sydneybasiniot.youtubedownloader://auth/callback";
 #[cfg(target_os = "android")]
@@ -145,10 +153,18 @@ fn clear_tokens(app: &AppHandle) -> Result<(), String> {
     }
 }
 
-fn username_from_id_token(id_token: &str) -> Option<String> {
+fn id_token_claims(id_token: &str) -> Option<serde_json::Value> {
     let payload = id_token.split('.').nth(1)?;
     let decoded = URL_SAFE_NO_PAD.decode(payload).ok()?;
-    let value: serde_json::Value = serde_json::from_slice(&decoded).ok()?;
+    serde_json::from_slice(&decoded).ok()
+}
+
+fn id_token_expiry(id_token: &str) -> Option<u64> {
+    id_token_claims(id_token)?.get("exp").and_then(|exp| exp.as_u64())
+}
+
+fn username_from_id_token(id_token: &str) -> Option<String> {
+    let value = id_token_claims(id_token)?;
     for key in ["preferred_username", "name", "email"] {
         if let Some(candidate) = value.get(key).and_then(|entry| entry.as_str()) {
             let local = candidate.split('@').next().unwrap_or(candidate).split(',').next()?.trim();
@@ -359,7 +375,16 @@ fn to_stored_tokens(
     let access_token = response
         .access_token
         .ok_or_else(|| "token response had no access token".to_string())?;
-    let expires_at = now_seconds() + response.expires_in.unwrap_or(300).saturating_sub(TOKEN_SKEW_SECONDS);
+    // The ID token is what we send to the API, so refresh before whichever of
+    // the access and ID tokens expires first.
+    let access_expiry = now_seconds() + response.expires_in.unwrap_or(300).saturating_sub(TOKEN_SKEW_SECONDS);
+    let id_expiry = response
+        .id_token
+        .as_deref()
+        .and_then(id_token_expiry)
+        .map(|exp| exp.saturating_sub(TOKEN_SKEW_SECONDS))
+        .unwrap_or(u64::MAX);
+    let expires_at = access_expiry.min(id_expiry);
     let username = response
         .id_token
         .as_deref()
@@ -496,6 +521,17 @@ pub async fn authorization_token(app: &AppHandle) -> Result<Option<String>, Stri
     if tokens.expires_at > now_seconds() {
         return Ok(Some(authorization_value(&tokens)));
     }
+
+    let _guard = refresh_lock().lock().await;
+    // Another request may have refreshed while we waited for the lock.
+    let tokens = match load_tokens(app) {
+        Some(tokens) => tokens,
+        None => return Ok(None),
+    };
+    if tokens.expires_at > now_seconds() {
+        return Ok(Some(authorization_value(&tokens)));
+    }
+
     let refresh_token = match tokens.refresh_token.clone() {
         Some(refresh_token) => refresh_token,
         None => {

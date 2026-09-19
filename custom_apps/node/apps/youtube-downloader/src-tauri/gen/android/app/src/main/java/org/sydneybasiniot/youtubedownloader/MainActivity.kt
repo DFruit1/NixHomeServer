@@ -12,7 +12,7 @@ class MainActivity : TauriActivity() {
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
     applySafeAreaInsets()
-    ShareTarget.publishShortcut(this)
+    ShareTarget.publishShortcuts(this)
   }
 
   /**
