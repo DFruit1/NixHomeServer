@@ -13,6 +13,7 @@ export type CurrentUser = {
   canWriteShared: boolean;
   destinations: Destination[];
   fileBrowserUrlTemplate?: string;
+  appDownloadUrl?: string;
   fileBrowserPathRoots?: {
     usersRoot: string;
     sharedMountName: string;

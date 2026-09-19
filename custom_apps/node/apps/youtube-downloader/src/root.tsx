@@ -384,6 +384,7 @@ export default component$(() => {
           onImageClear={clearProfileImage}
           onClearHistory={clearHistory}
           onSignOut={isTauriRuntime() ? disconnect : undefined}
+          appDownloadUrl={isTauriRuntime() ? undefined : me.value?.appDownloadUrl}
         >
           <OptionsPanel
             location="profile"

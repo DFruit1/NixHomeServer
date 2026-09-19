@@ -316,6 +316,7 @@ select:focus {
 
 .profile-action,
 .profile-signout {
+  display: block;
   min-height: 40px;
   border: 1px solid var(--border-strong);
   border-radius: 6px;

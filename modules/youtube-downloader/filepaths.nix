@@ -25,6 +25,12 @@ in
       description = "YouTube Downloader cache root.";
     };
 
+    appDir = lib.mkOption {
+      type = lib.types.str;
+      default = "${config.repo.youtubeDownloader.paths.stateRoot}/app";
+      description = "Directory holding release artifacts offered for download, such as the Android APK.";
+    };
+
     tempDir = lib.mkOption {
       type = lib.types.str;
       default = "${config.repo.youtubeDownloader.paths.cacheRoot}/tmp";
@@ -78,6 +84,7 @@ in
     systemd.tmpfiles.rules = [
       "d ${paths.stateRoot} 0750 youtube-downloader youtube-downloader -"
       "d ${paths.stateDir} 0750 youtube-downloader youtube-downloader -"
+      "d ${paths.appDir} 0750 youtube-downloader youtube-downloader -"
       "d ${paths.cacheRoot} 0750 youtube-downloader youtube-downloader -"
       "d ${paths.tempDir} 0750 youtube-downloader youtube-downloader -"
       "d ${paths.sharedVideoRoot} 0770 youtube-downloader ${sharedAccessGroup} -"

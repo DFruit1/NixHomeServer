@@ -115,6 +115,16 @@ describe('authenticated job APIs', () => {
     expect(response.status).toBe(401);
   });
 
+  it('reports the app download as missing when no artifact is configured', async () => {
+    const response = await fetch(`${baseUrl}/api/app/download`, { headers: authHeaders('alice') });
+    expect(response.status).toBe(404);
+  });
+
+  it('requires authentication for the app download', async () => {
+    const response = await fetch(`${baseUrl}/api/app/download`);
+    expect(response.status).toBe(401);
+  });
+
   it('publishes the native client auth configuration without authenticating', async () => {
     const response = await fetch(`${baseUrl}/api/auth-config`);
     expect(response.status).toBe(200);

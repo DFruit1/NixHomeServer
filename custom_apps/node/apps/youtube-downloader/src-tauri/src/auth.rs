@@ -171,6 +171,9 @@ fn await_callback(listener: TcpListener, expected_state: &str) -> Result<String,
     loop {
         match listener.accept() {
             Ok((mut stream, _)) => {
+                // A connected browser that never sends a request must not block
+                // the callback loop forever.
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
                 let mut reader = match stream.try_clone() {
                     Ok(clone) => BufReader::new(clone),
                     Err(error) => return Err(error.to_string()),

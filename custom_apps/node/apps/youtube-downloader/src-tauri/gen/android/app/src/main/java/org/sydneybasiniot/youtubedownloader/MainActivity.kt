@@ -2,6 +2,7 @@ package org.sydneybasiniot.youtubedownloader
 
 import android.content.Intent
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.enableEdgeToEdge
 import java.io.File
 
@@ -31,7 +32,14 @@ class MainActivity : TauriActivity() {
     val shared = intent.getStringExtra(Intent.EXTRA_TEXT) ?: return false
     val url = extractUrl(shared) ?: return true
     return try {
-      File(filesDir, "pending-share.jsonl").appendText("$url\n")
+      val line = "$url\n"
+      // The Rust side resolves app data through the Tauri path API, which has
+      // historically differed from filesDir on Android; write to every
+      // plausible hand-off location and let the queue deduplicate by URL.
+      listOfNotNull(filesDir, filesDir.parentFile, dataDir)
+        .distinct()
+        .forEach { directory -> File(directory, "pending-share.jsonl").appendText(line) }
+      Toast.makeText(applicationContext, "Queued for download", Toast.LENGTH_SHORT).show()
       true
     } catch (_: Exception) {
       false

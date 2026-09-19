@@ -72,6 +72,11 @@ const handleApi = async (
     : undefined;
   const user = await authenticateRequest(request.headers, config);
 
+  if (request.method === 'GET' && url.pathname === '/api/app/download') {
+    await serveAppDownload(response, config);
+    return;
+  }
+
   if (request.method === 'GET' && url.pathname === '/api/me') {
     sendJson(response, 200, user);
     return;
@@ -159,6 +164,23 @@ const handleApi = async (
   }
 
   throw new Error('api route not found');
+};
+
+const serveAppDownload = async (response: ServerResponse, config: AppConfig): Promise<void> => {
+  const apkPath = config.appApkPath;
+  if (!apkPath) {
+    throw new Error('app download not found');
+  }
+  const info = await stat(apkPath).catch(() => undefined);
+  if (!info?.isFile()) {
+    throw new Error('app download not found');
+  }
+  response.statusCode = 200;
+  response.setHeader('content-type', 'application/vnd.android.package-archive');
+  response.setHeader('content-disposition', 'attachment; filename="youtube-downloader.apk"');
+  response.setHeader('content-length', String(info.size));
+  response.setHeader('cache-control', 'private, max-age=0, must-revalidate');
+  await pipeline(createReadStream(apkPath), response);
 };
 
 const serveJobFile = async (

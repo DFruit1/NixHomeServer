@@ -8,9 +8,10 @@ type ProfileMenuProps = {
   onImageClear: () => void;
   onClearHistory: () => Promise<void>;
   onSignOut?: () => Promise<void>;
+  appDownloadUrl?: string;
 };
 
-export const ProfileMenu = component$<ProfileMenuProps>(({ image, username, onImageChange, onImageClear, onClearHistory, onSignOut }) => {
+export const ProfileMenu = component$<ProfileMenuProps>(({ image, username, onImageChange, onImageClear, onClearHistory, onSignOut, appDownloadUrl }) => {
   const menuRef = useSignal<HTMLDetailsElement>();
   const closeMenu = $(() => {
     if (menuRef.value) {
@@ -76,6 +77,11 @@ export const ProfileMenu = component$<ProfileMenuProps>(({ image, username, onIm
           <h3>Options</h3>
           <Slot />
         </div>
+        {appDownloadUrl && (
+          <a class="profile-action" href={appDownloadUrl} download onClick$={closeMenu}>
+            Download Android app
+          </a>
+        )}
         <button class="profile-action" type="button" onClick$={clearAndClose}>
           Clear history
         </button>

@@ -106,6 +106,7 @@ in
           YOUTUBE_DOWNLOADER_AUTH_AUDIENCE = "youtube-downloader-app";
           YOUTUBE_DOWNLOADER_AUTH_GROUPS_CLAIM = "groups";
           YOUTUBE_DOWNLOADER_AUTH_REQUIRED_GROUP = "downloads-users";
+          YOUTUBE_DOWNLOADER_APP_APK = "${paths.appDir}/youtube-downloader.apk";
         };
         serviceConfig = {
           Type = "simple";

@@ -51,6 +51,7 @@ export const buildCurrentUser = (identity: Identity, config: AppConfig): Current
     groups: identity.groups,
     canWriteShared,
     fileBrowserUrlTemplate: config.fileBrowserUrlTemplate,
+    ...(config.appApkPath ? { appDownloadUrl: '/api/app/download' } : {}),
     fileBrowserPathRoots: {
       usersRoot: config.usersRoot,
       sharedMountName: config.fileBrowserSharedMountName,
