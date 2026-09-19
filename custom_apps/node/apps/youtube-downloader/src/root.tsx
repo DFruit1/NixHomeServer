@@ -348,7 +348,7 @@ export default component$(() => {
     } catch (caught) {
       const isHttpError = caught instanceof Error && 'httpStatus' in caught;
       if (isTauriRuntime() && !isHttpError) {
-        await addPendingJob(normalizedUrl);
+        await addPendingJob(normalizedUrl, mediaType.value);
         pendingNotice.value = 'The server is unreachable; queued on this device.';
         await refreshPending();
         url.value = '';
@@ -613,7 +613,9 @@ export default component$(() => {
                         <strong>{job.url}</strong>
                         {job.lastError && <p>{job.lastError}</p>}
                       </div>
-                      <span class="status-badge queued">pending</span>
+                      <span class="status-badge queued">
+                        pending · {job.mediaType === 'video' ? 'video' : 'audio'}
+                      </span>
                     </div>
                     <div class="job-actions">
                       <button type="button" onClick$={flushNow}>

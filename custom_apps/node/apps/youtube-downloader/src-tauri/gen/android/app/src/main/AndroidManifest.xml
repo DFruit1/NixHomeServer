@@ -45,9 +45,26 @@
         </activity>
 
         <!-- Share a link straight into the offline download queue without
-             showing UI or pulling the main task to the foreground. -->
+             showing UI or pulling the main task to the foreground. Two targets
+             so audio and video appear as distinct share-sheet options. -->
         <activity
-            android:name=".ShareActivity"
+            android:name=".ShareAudioActivity"
+            android:label="@string/share_audio_label"
+            android:theme="@android:style/Theme.NoDisplay"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity="">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".ShareVideoActivity"
+            android:label="@string/share_video_label"
             android:theme="@android:style/Theme.NoDisplay"
             android:exported="true"
             android:excludeFromRecents="true"
