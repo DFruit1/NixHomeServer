@@ -173,6 +173,12 @@ export default component$(() => {
           connectionState.value = 'signed-out';
           return;
         }
+        // Make sure the Rust-side queue flush knows the server even on a
+        // launch where the user never re-entered it.
+        const base = serverBaseUrl();
+        if (base) {
+          storeServerBaseUrl(base);
+        }
         await begin();
         return;
       }
