@@ -52,6 +52,10 @@ in
     logFormat = null;
     useACMEHost = vars.domain;
     extraConfig = ''
+      @root path /
+      handle @root {
+        respond "YouTube Downloader API" 200
+      }
       @api path /api/*
       handle @api {
         ${stripSpoofableHeaders}
@@ -66,6 +70,13 @@ in
   services.unbound.privateHosts.${nativeHost} = {
     target = "private";
     publishOnLan = true;
-    publishOnNetbird = false;
+    publishOnNetbird = true;
+  };
+
+  # The native API is bearer-authenticated and API-only, so it can be reached
+  # away from home through the tunnel without the browser login gateway.
+  services.cloudflared.tunnels.${vars.cloudflareTunnelName}.ingress.${nativeHost} = {
+    service = "https://${loopback}:${toString vars.networking.ports.https}";
+    originRequest.originServerName = nativeHost;
   };
 }
