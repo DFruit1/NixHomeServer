@@ -160,6 +160,32 @@ let
 
   directoryCommands = builtins.concatStringsSep "\n" (map mkDirCmd cfg.directories);
   zfsDatasetCommands = builtins.concatStringsSep "\n" (map mkDatasetEnsure cfg.datasets);
+  # Application modules provision some of their data-pool paths through
+  # systemd.tmpfiles rules (their own or an upstream module's), which can create
+  # empty placeholder directories on the root filesystem before this service
+  # mounts the pool. Those directories are safe to shadow, so they are
+  # allowlisted here by their top-level name in addition to the empty-scaffold
+  # check in the guard below.
+  dataRootManagedTopLevelNames = lib.unique (
+    lib.concatMap
+      (entry:
+        let
+          prefix = "${vars.dataRoot}/";
+        in
+        if entry.path == vars.dataRoot then
+          [ ]
+        else if lib.hasPrefix prefix entry.path then
+          [ (builtins.head (lib.splitString "/" (lib.removePrefix prefix entry.path))) ]
+        else
+          [ ]
+      )
+      cfg.directories
+  );
+  dataRootManagedCasePattern =
+    if dataRootManagedTopLevelNames == [ ] then
+      "@nixhomeserver-no-managed-data-root-entries@"
+    else
+      lib.concatStringsSep "|" dataRootManagedTopLevelNames;
   directoryLayoutScript = ''
     set -euo pipefail
     ${directoryCommands}
@@ -197,6 +223,40 @@ let
       fi
     }
 
+    # The pool is mounted over dataRoot, so anything already there on the root
+    # filesystem is shadowed. Layout-managed directories and empty placeholder
+    # scaffolds (created by systemd.tmpfiles before this service runs) carry no
+    # data and are safe to shadow; a regular or special file means real content
+    # would be hidden, so refuse and let the pool import failure surface.
+    refuse_unexpected_data_root_entries() {
+      local mountpoint="$1"
+      local entry name real_content
+
+      if ${pkgs.util-linux}/bin/mountpoint -q "$mountpoint" || [[ ! -d "$mountpoint" ]]; then
+        return 0
+      fi
+
+      while IFS= read -r entry; do
+        [[ -n "$entry" ]] || continue
+        name="$(basename "$entry")"
+        case "$name" in
+          ${dataRootManagedCasePattern})
+            continue
+            ;;
+        esac
+
+        if [[ -d "$entry" && ! -L "$entry" ]] \
+          && real_content="$(${pkgs.findutils}/bin/find "$entry" -mindepth 1 \
+            \( -type f -o -type l -o -type s -o -type p -o -type b -o -type c \) -print -quit)" \
+          && [[ -z "$real_content" ]]; then
+          continue
+        fi
+
+        echo "Refusing to hide unexpected path $entry beneath unmounted data-pool path $mountpoint" >&2
+        exit 1
+      done < <(${pkgs.findutils}/bin/find "$mountpoint" -mindepth 1 -maxdepth 1 -print)
+    }
+
     ensure_dataset() {
       local dataset="$1"
       local mountpoint="$2"
@@ -230,7 +290,7 @@ let
       fi
     }
 
-    refuse_nonempty_mountpoint '${vars.dataRoot}'
+    refuse_unexpected_data_root_entries '${vars.dataRoot}'
     set_zfs_property '${vars.zfsDataPool.name}' canmount on
     set_zfs_property '${vars.zfsDataPool.name}' mountpoint '${vars.dataRoot}'
     set_zfs_property '${vars.zfsDataPool.name}' 'com.sun:auto-snapshot' true

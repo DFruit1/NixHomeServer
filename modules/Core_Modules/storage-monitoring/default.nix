@@ -210,7 +210,7 @@ in
         };
         requires = lib.optional vars.enableZfsDataPool "data-pool-layout.service";
         after = [ "local-fs.target" ] ++ lib.optional vars.enableZfsDataPool "data-pool-layout.service";
-        path = [ pkgs.coreutils pkgs.jq pkgs.systemd pkgs.util-linux ];
+        path = [ pkgs.coreutils pkgs.gawk pkgs.jq pkgs.systemd pkgs.util-linux ];
         serviceConfig = {
           Type = "oneshot";
           UMask = "0077";
