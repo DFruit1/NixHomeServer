@@ -57,6 +57,8 @@ let
   '';
 in
 {
+  imports = [ ./shutdown-guard.nix ];
+
   system.stateVersion = "25.05";
 
   boot.initrd.supportedFilesystems = [ "btrfs" "ext4" "vfat" ]

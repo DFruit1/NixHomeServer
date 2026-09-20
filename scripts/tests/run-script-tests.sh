@@ -97,6 +97,7 @@ test_scripts=(
   scripts/tests/test-netbird-login-convergence.sh
   scripts/tests/test-nix-store-capacity-gc.sh
   scripts/tests/test-disk-space-cleanup.sh
+  scripts/tests/test-shutdown-guard.sh
   scripts/tests/test-offline-media-reliability.sh
   scripts/tests/test-opencloud-module.sh
   scripts/tests/test-opencloud-public-access.sh
