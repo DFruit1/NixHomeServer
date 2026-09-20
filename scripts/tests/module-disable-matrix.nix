@@ -46,7 +46,7 @@ let
     forgejo = {
       disable = { repo.forgejo.enable = lib.mkForce false; };
       registryName = "forgejo";
-      services = [ "forgejo" "forgejo-mirrors" "forgejo-oidc-bootstrap" ];
+      services = [ "forgejo" "forgejo-mirrors" "forgejo-oidc-bootstrap" "forgejo-storage-layout-v1" ];
       timers = [ "forgejo-mirrors" ];
       hosts = [ "git" ];
       gatewayApps = [ ];

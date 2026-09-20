@@ -107,15 +107,57 @@ in
       };
     };
 
+    # The Forgejo units set ProtectSystem=strict with ReadWritePaths pointing at
+    # state subdirectories. Under impermanence /var/lib/forgejo is a bind mount
+    # that only materializes during activation, so those subdirectories must be
+    # created after the mount is active and before the services start.
+    systemd.services.forgejo-storage-layout-v1 = {
+      description = "Provision Forgejo state directories";
+      wantedBy = [ "multi-user.target" ];
+      before = [
+        "forgejo-secrets.service"
+        "forgejo.service"
+        "forgejo-oidc-bootstrap.service"
+        "forgejo-mirrors.service"
+      ];
+      unitConfig.RequiresMountsFor = [ stateDir ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+      };
+      path = [ pkgs.coreutils ];
+      script = ''
+        set -euo pipefail
+        install -d -m 0750 -o forgejo -g forgejo ${stateDir}
+        install -d -m 0750 -o forgejo -g forgejo ${stateDir}/custom
+        install -d -m 0750 -o forgejo -g forgejo ${stateDir}/custom/conf
+        install -d -m 0750 -o forgejo -g forgejo ${stateDir}/data
+        install -d -m 0750 -o forgejo -g forgejo ${stateDir}/data/lfs
+        install -d -m 0750 -o forgejo -g forgejo ${stateDir}/dump
+        install -d -m 0750 -o forgejo -g forgejo ${stateDir}/log
+        install -d -m 0750 -o forgejo -g forgejo ${stateDir}/repositories
+        install -d -m 0700 -o forgejo -g forgejo ${stateDir}/.ssh
+      '';
+    };
+
+    systemd.services.forgejo-secrets = {
+      wants = [ "forgejo-storage-layout-v1.service" ];
+      after = [ "forgejo-storage-layout-v1.service" ];
+      unitConfig.RequiresMountsFor = [ stateDir ];
+    };
+
     systemd.services.forgejo = {
       wants = [
         "network-online.target"
         "unbound.service"
+        "forgejo-storage-layout-v1.service"
       ];
       after = [
         "network-online.target"
         "unbound.service"
+        "forgejo-storage-layout-v1.service"
       ];
+      unitConfig.RequiresMountsFor = [ stateDir ];
     };
 
     systemd.services.forgejo-mirrors = lib.mkIf (cfg.mirrors != [ ]) (
