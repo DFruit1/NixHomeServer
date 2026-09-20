@@ -200,6 +200,7 @@ and integrations while leaving centrally managed persistence in place:
 repo.groundwaterLogger.enable = false;
 repo.bonsai.enable = false;
 repo.chaptarr.enable = false;
+repo.forgejo.enable = false;
 repo.kiwix.enable = false;
 repo.prowlarr.enable = false;
 repo.qbittorrent.enable = false;
@@ -312,6 +313,50 @@ module is removed. Backup preparation takes an integrity-checked
 OCI image itself is rebuildable and is pinned by multi-architecture digest in
 `modules/chaptarr/services.nix`; update that digest deliberately after reviewing
 upstream release notes.
+
+## Forgejo (Git) Operations
+
+Forgejo is a private git forge at `https://git.<domain>` available on the LAN and
+NetBird only. It has no public Cloudflare route. Login uses Kanidm OIDC; the
+first sign-in creates the local Forgejo account, and members of the Kanidm
+`app-admin` group become Forgejo administrators through the `forgejo_role` claim.
+Local password registration is disabled, so accounts are only ever provisioned
+from the identity provider.
+
+The built-in SSH server serves git over SSH on the port reported by
+`vars.networking.ports.forgejoSsh`, scoped by the host firewall to the LAN and
+NetBird interfaces. Use `git@git.<domain>:<owner>/<repo>.git` with an SSH key
+registered in Forgejo, or HTTPS with an access token.
+
+### Declarative GitHub mirrors
+
+Repositories listed under `forgejo.mirrors` in `vars.nix` are pulled into
+Forgejo as pull mirrors and refreshed by `forgejo-mirrors.service` (boot plus a
+six-hour timer):
+
+```nix
+forgejo = {
+  mirrors = [
+    { url = "https://github.com/owner/repo.git"; }
+    { url = "https://github.com/another/project.git"; interval = "6h"; private = true; }
+  ];
+};
+```
+
+Each mirror is owned by the dedicated local `forgejo-mirror` account by default,
+and every Kanidm app user is granted read access so the mirrors are visible in
+their Forgejo dashboard. Set `owner` on an entry only after that account exists
+from a first Kanidm login. Private upstream repositories and higher GitHub rate
+limits require a token staged at `secrets/unencrypted/forgejoGithubToken` and
+encrypted with `nix run .#generate-secrets`; the token is passed to Forgejo as
+the migration `auth_token` and never written to the Nix store.
+
+The mirror reconciler is idempotent: it creates missing mirrors, leaves existing
+ones to Forgejo's own mirror scheduler, and reissues its scoped API token if the
+stored token is rejected. Repository data, LFS objects, local accounts, and the
+Forgejo database live under `/var/lib/forgejo`, which is persisted centrally and
+captured by Kopia as `forgejo.sqlite` plus the state root. Removing or disabling
+the module leaves `/var/lib/forgejo` and its backups intact.
 
 ## Local-Console Administrator Recovery
 
@@ -549,6 +594,7 @@ URLs for a site with `nix run .#show-config-summary -- --host <host>`.
 - LAN-only direct SFTP: `sftp://<username>@<server-lan-host>:<filesSftp-port>/`
 - Private Vaultwarden: `https://<passwords-domain>`
 - Local Kopia backup management UI: `https://<kopia-domain>/`
+- Private Forgejo git forge: `https://<git-domain>/` (git over SSH on `<forgejoSsh-port>`)
 
 Use the private photos hostname for the owner's normal Immich login on LAN or
 NetBird. Use the public share hostname only for public album or photo links sent
@@ -1429,6 +1475,72 @@ Notes:
 * Backups cover the search database only (`dumps/search.pgdump`); Solr data
   is intentionally not backed up because `search-reindex.service` rebuilds it
   from the database.
+
+### Admin PDF archive
+
+Some feeds (academic and repository feeds in particular) publish only an
+abstract in the entry body while the actual paper lives behind a PDF link.
+Readability/Af_Readability cannot help there because it only parses HTML. The
+Search binary therefore ships a separate, server-admin-only archive pass that
+walks the stored FreshRSS entries, finds PDF URLs in each entry's link and
+`href`s, and downloads them into a persistent archive.
+
+It is opt-in and off by default. Enable it in `vars.nix`:
+
+```nix
+repo.search.pdfArchive.enable = true;
+```
+
+With it enabled, `search-pdf-archive.timer` runs `search archive-pdfs` weekly
+(`repo.search.pdfArchive.period`, systemd duration), and an operator can trigger
+a pass at any time:
+
+```bash
+sudo systemctl start search-pdf-archive.service
+sudo systemctl status search-pdf-archive.service
+journalctl -u search-pdf-archive.service -n 50 --no-pager
+```
+
+Tuning options: `repo.search.pdfArchive.maxPerRun` (default 200),
+`maxBytes` (default 25 MiB), `timeoutSeconds` (default 30), and `sources`
+(empty means every configured FreshRSS source).
+
+Behaviour and state:
+
+* **No web route.** The pass is never reachable through the shared gateway;
+  only an operator shell or the timer can run it. This is deliberate: a mass
+  download must not be a user-facing action.
+* **Manifest.** The search database's `pdf_archive` table is the system of
+  record. It is keyed by a URL digest, so a PDF linked from several entries or
+  users is downloaded once, and a previously `downloaded` URL is skipped on
+  later passes. Failed downloads are recorded with their error and retried next
+  pass.
+* **Files.** PDFs are written under
+  `/var/lib/search/pdf-archive/<owner>/<url-hash>.pdf`, which is persisted
+  centrally and included in the Kopia snapshot. Re-running the pass is
+  idempotent: an existing file is adopted into the manifest without a network
+  fetch.
+* **Downloads are PDF-only.** A response is stored only when it is
+  `application/pdf`, within the size limit, and actually starts with `%PDF-`.
+  Landing pages that merely link to a PDF are not followed recursively; only
+  the entry's own link and `href`s are considered.
+* **Not yet indexed.** Archived PDFs are not added to the Search corpus in this
+  scaffold. The manifest records enough metadata (owner, feed, title, origin
+  URL, path) to add a `pdftotext`-based extractor later.
+
+Egress trust boundary:
+
+* The `freshrss` user is confined by `freshrss-egress-policy.service`, an
+  nftables rule keyed on `skuid freshrss` that rejects private, local, and
+  link-local destinations. That protects the *server-side feed fetch*: a feed
+  cannot be used to make FreshRSS probe the LAN.
+* The PDF archive runs as the `search` user, which is **not** covered by that
+  rule. It can therefore reach public *and* private/link-local addresses. This
+  is acceptable only because the pass is admin-triggered and the source set is
+  the trusted FreshRSS feeds; keep it that way. If the archive is ever widened
+  to untrusted or user-supplied URLs, replicate the `freshrss` egress policy
+  for the archive service (or run it as the `freshrss` user) before enabling
+  it.
 
 ## Mail Archive Operations
 

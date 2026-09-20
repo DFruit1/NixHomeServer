@@ -53,6 +53,7 @@ let
       "sharephotos.${vars.domain}"
     ]
     ++ lib.optionals (hasModule "files") [ "files.${vars.domain}" ]
+    ++ lib.optionals (hasModule "forgejo" && (config.repo.forgejo.enable or false)) [ "git.${vars.domain}" ]
     ++ lib.optionals (hasModule "paperless") [ "paperless.${vars.domain}" ]
     ++ lib.optionals (hasModule "audiobookshelf") [ "audiobooks.${vars.domain}" ]
     ++ lib.optionals (hasModule "jellyfin") [ "videos.${vars.domain}" ]

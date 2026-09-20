@@ -24,5 +24,8 @@ in
   config.assertions = mkSecretAssertions [
     "youtubeDownloaderOauth2ProxyClientSecret"
     "youtubeDownloaderOauth2ProxyCookieSecret"
+    # identity.nix reads the core Kanidm admin password to converge the OAuth2
+    # refresh-token expiry, so the secret must be asserted here.
+    "kanidmAdminPass"
   ];
 }

@@ -14,7 +14,7 @@
       description = "Indexer manager for Sonarr and Radarr.";
       loginNotes = "Requires media-automation-users through Kanidm.";
       projectUrl = "https://prowlarr.com";
-      logoUrl = "/logos/prowlarr.svg";
+      logoUrl = "/logos/prowlarr.png";
       appName = "prowlarr";
       uploadNotes = "Add only legal indexers and sources.";
       requiredAnyGroups = [ "media-automation-users" ];

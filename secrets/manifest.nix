@@ -152,6 +152,10 @@
       description = "Token key for Kavita.";
       bytes = 64;
     };
+    forgejoClientSecret = {
+      description = "OIDC client secret for Forgejo.";
+      bytes = 32;
+    };
     groundwaterAppMqttPassword = {
       description = "MQTT password for the groundwater logger web app bridge.";
       bytes = 32;
@@ -212,6 +216,14 @@
       validator = "acoustid-credentials-json";
       required = false;
       consumedBy = "when the Media Manager metadata editor is enabled";
+    };
+    forgejoGithubToken = {
+      description = "Optional GitHub personal access token used when Forgejo pulls private or rate-limited GitHub mirrors.";
+      format = "plain GitHub token value";
+      settingPath = "secrets/unencrypted/forgejoGithubToken";
+      validator = "nonempty";
+      required = false;
+      consumedBy = "when Forgejo is enabled and GitHub mirrors are declared";
     };
   };
 }

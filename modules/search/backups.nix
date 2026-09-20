@@ -21,6 +21,15 @@
           payloadRoots = [ ];
           notes = "Derived Solr index state; rebuilt from the search database, not backed up.";
         }
+      ]
+      ++ lib.optionals config.repo.search.pdfArchive.enable [
+        {
+          app = "search";
+          component = "pdf-archive";
+          stateRoot = config.repo.search.paths.pdfArchive;
+          payloadRoots = [ ];
+          notes = "Admin-downloaded PDFs discovered in FreshRSS entries; the download manifest lives in the search database.";
+        }
       ];
       postgresqlDumps = [
         {

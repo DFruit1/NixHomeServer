@@ -112,7 +112,35 @@ pub async fn migrate(client: &mut Client) -> Result<(), String> {
             ",
         )
         .await
-        .map_err(|err| format!("failed to add source tracking columns: {err}"))
+        .map_err(|err| format!("failed to add source tracking columns: {err}"))?;
+    // Admin PDF archival manifest. Keyed by URL digest so the same PDF linked
+    // from several entries (or several users) is downloaded once. Status is
+    // one of candidate (dry run), downloaded, or failed.
+    client
+        .batch_execute(
+            "
+            CREATE TABLE IF NOT EXISTS pdf_archive (
+                url_hash TEXT PRIMARY KEY,
+                source_id TEXT NOT NULL,
+                entry_external_id TEXT NOT NULL,
+                owner TEXT NOT NULL,
+                feed TEXT NOT NULL DEFAULT '',
+                title TEXT NOT NULL DEFAULT '',
+                origin_url TEXT NOT NULL,
+                file_path TEXT NOT NULL DEFAULT '',
+                sha256 TEXT NOT NULL DEFAULT '',
+                size_bytes BIGINT NOT NULL DEFAULT 0,
+                status TEXT NOT NULL,
+                error TEXT,
+                discovered_at BIGINT NOT NULL DEFAULT 0,
+                downloaded_at BIGINT
+            );
+            CREATE INDEX IF NOT EXISTS pdf_archive_source_status
+                ON pdf_archive (source_id, status);
+            ",
+        )
+        .await
+        .map_err(|err| format!("failed to apply PDF archive schema: {err}"))
 }
 
 pub async fn register_source(client: &mut Client, source: &SourceConfig) -> Result<(), String> {
@@ -553,6 +581,94 @@ pub async fn list_sources(client: &Client) -> Result<Vec<UiSource>, String> {
             last_error: row.get(3),
         })
         .collect())
+}
+
+/// One row of the admin PDF archive manifest. `url_hash` is the primary key so
+/// a PDF linked from multiple entries is stored once.
+#[derive(Debug, Clone)]
+pub struct PdfArchiveRecord {
+    pub url_hash: String,
+    pub source_id: String,
+    pub entry_external_id: String,
+    pub owner: String,
+    pub feed: String,
+    pub title: String,
+    pub origin_url: String,
+    pub file_path: String,
+    pub sha256: String,
+    pub size_bytes: i64,
+    pub status: String,
+    pub error: Option<String>,
+    pub discovered_at: i64,
+    pub downloaded_at: Option<i64>,
+}
+
+/// Returns the manifest status for a URL digest, if it has been seen before.
+pub async fn pdf_archive_status(client: &Client, url_hash: &str) -> Result<Option<String>, String> {
+    let rows = client
+        .query(
+            "SELECT status FROM pdf_archive WHERE url_hash = $1",
+            &[&url_hash],
+        )
+        .await
+        .map_err(|err| format!("failed to read PDF archive status: {err}"))?;
+    Ok(rows.into_iter().next().map(|row| row.get(0)))
+}
+
+/// Inserts or updates one PDF archive manifest row. A re-discovery overwrites
+/// the previous row, so a failed download is retried on the next pass while a
+/// successful one is skipped by the caller before reaching this point.
+pub async fn upsert_pdf_archive(client: &Client, record: &PdfArchiveRecord) -> Result<(), String> {
+    client
+        .execute(
+            "
+            INSERT INTO pdf_archive (
+                url_hash, source_id, entry_external_id, owner, feed, title,
+                origin_url, file_path, sha256, size_bytes, status, error,
+                discovered_at, downloaded_at
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
+            )
+            ON CONFLICT (url_hash) DO UPDATE SET
+                source_id = EXCLUDED.source_id,
+                entry_external_id = EXCLUDED.entry_external_id,
+                owner = EXCLUDED.owner,
+                feed = EXCLUDED.feed,
+                title = EXCLUDED.title,
+                origin_url = EXCLUDED.origin_url,
+                file_path = EXCLUDED.file_path,
+                sha256 = EXCLUDED.sha256,
+                size_bytes = EXCLUDED.size_bytes,
+                status = EXCLUDED.status,
+                error = EXCLUDED.error,
+                discovered_at = EXCLUDED.discovered_at,
+                downloaded_at = EXCLUDED.downloaded_at
+            ",
+            &[
+                &record.url_hash,
+                &record.source_id,
+                &record.entry_external_id,
+                &record.owner,
+                &record.feed,
+                &record.title,
+                &record.origin_url,
+                &record.file_path,
+                &record.sha256,
+                &record.size_bytes,
+                &record.status,
+                &record.error,
+                &record.discovered_at,
+                &record.downloaded_at,
+            ],
+        )
+        .await
+        .map_err(|err| {
+            format!(
+                "failed to upsert PDF archive row '{}': {err}",
+                record.url_hash
+            )
+        })?;
+    Ok(())
 }
 
 pub fn full_document_id(source_id: &str, external_id: &str) -> String {

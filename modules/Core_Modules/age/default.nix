@@ -18,8 +18,10 @@ let
     && config.repo.groundwaterLogger.enable;
   browsertrixEnabled = moduleEnabled "browsertrix-downloader";
   calibreWebEnabled = moduleEnabled "calibre-web" && config.repo.calibreWeb.enable;
+  forgejoEnabled = moduleEnabled "forgejo" && config.repo.forgejo.enable;
   atticEnabled = moduleEnabled "attic";
   failureAlertWebhookFile = secretFile "failureAlertWebhookUrl";
+  forgejoGithubTokenFile = secretFile "forgejoGithubToken";
   openSubtitlesCredentialsFile = secretFile "openSubtitlesCredentials";
   acoustidApiKeyFile = secretFile "acoustidApiKey";
 in
@@ -88,6 +90,12 @@ in
   // lib.optionalAttrs (moduleEnabled "youtube-downloader") {
     youtubeDownloaderOauth2ProxyClientSecret = { file = secretFile "youtubeDownloaderOauth2ProxyClientSecret"; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };
     youtubeDownloaderOauth2ProxyCookieSecret = { file = secretFile "youtubeDownloaderOauth2ProxyCookieSecret"; owner = "oauth2-proxy"; mode = "0400"; };
+  }
+  // lib.optionalAttrs forgejoEnabled {
+    forgejoClientSecret = { file = secretFile "forgejoClientSecret"; owner = "kanidm"; group = "forgejo"; mode = "0440"; };
+  }
+  // lib.optionalAttrs (forgejoEnabled && builtins.pathExists forgejoGithubTokenFile) {
+    forgejoGithubToken = { file = forgejoGithubTokenFile; owner = "forgejo"; mode = "0400"; };
   }
   // lib.optionalAttrs browsertrixEnabled {
     browsertrixDownloaderOauth2ProxyClientSecret = { file = secretFile "browsertrixDownloaderOauth2ProxyClientSecret"; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };

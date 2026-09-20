@@ -1,6 +1,7 @@
 import { $, component$, useSignal } from '@builder.io/qwik';
 import type { VaultFeature, VaultFreshrssPassword } from '../shared/types.js';
 import { copyVaultSecret, vaultRequest } from '../shared/vault-client.js';
+import { ExplainMore } from './ExplainMore.js';
 
 export const VaultFreshrssCard = component$(({ feature, username }: { feature: VaultFeature; username: string }) => {
   const confirmGenerate = useSignal(false);
@@ -38,23 +39,18 @@ export const VaultFreshrssCard = component$(({ feature, username }: { feature: V
   return (
     <article class="vault-card" id={`vault-${feature.id}`}>
       <header class="vault-card__head">
-        <h2>{feature.name}</h2>
+        <h3>{feature.name}</h3>
         <p>{feature.description}</p>
       </header>
-      <aside class="guide-callout neutral">
-        Feed reader apps sign in to the Google Reader API with your username and this API password instead of your
-        Kanidm sign-in. The server cannot show an existing API password, only replace it. Generating a new password
-        makes readers holding the old password ask you to sign in again.
-      </aside>
       {!confirmGenerate.value ? (
         <button type="button" class="vault-danger-button" onClick$={() => {
           confirmGenerate.value = true;
         }}>
-          {result.value ? 'Generate a new API password' : 'Register an API password'}
+          {result.value ? 'Replace app password' : 'Create app password'}
         </button>
       ) : (
         <div class="vault-confirm">
-          <p>Generate a new FreshRSS API password for <strong>{username}</strong>?</p>
+          <p>Generate a new FreshRSS app password for <strong>{username}</strong>?</p>
           <button type="button" class="vault-danger-button" disabled={generating.value} onClick$={generate}>
             {generating.value ? 'Generating…' : 'Yes, generate'}
           </button>
@@ -87,7 +83,7 @@ export const VaultFreshrssCard = component$(({ feature, username }: { feature: V
               </dd>
             </div>
             <div>
-              <dt>Google Reader API address</dt>
+              <dt>Feed reader address</dt>
               <dd>
                 <code>{result.value.greaderUrl}</code>
                 <button type="button" onClick$={() => copy('url', result.value?.greaderUrl ?? '')}>
@@ -101,6 +97,22 @@ export const VaultFreshrssCard = component$(({ feature, username }: { feature: V
           )}
         </div>
       )}
+      <ExplainMore
+        title="FreshRSS app password"
+        plain={
+          <p>
+            Feed reader apps usually cannot use your normal login, so they sign in with your username and this separate
+            password instead. The old password stops working the moment you replace it.
+          </p>
+        }
+        technical={
+          <p>
+            The server generates the password and stores only its hash, so an existing password can never be shown
+            again, only replaced. Reader apps connect through the Google Reader API at the address above; generating a
+            new password makes any reader still holding the old one ask you to sign in again.
+          </p>
+        }
+      />
     </article>
   );
 });

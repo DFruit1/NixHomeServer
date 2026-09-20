@@ -1,6 +1,7 @@
 import { $, component$, useSignal, useVisibleTask$ } from '@builder.io/qwik';
 import type { VaultFeature, VaultSyncthingKey } from '../shared/types.js';
 import { copyVaultSecret, vaultRequest } from '../shared/vault-client.js';
+import { ExplainMore } from './ExplainMore.js';
 
 export const VaultSyncthingCard = component$(({ feature }: { feature: VaultFeature }) => {
   const apiKey = useSignal('');
@@ -57,14 +58,10 @@ export const VaultSyncthingCard = component$(({ feature }: { feature: VaultFeatu
   return (
     <article class="vault-card" id={`vault-${feature.id}`}>
       <header class="vault-card__head">
-        <h2>{feature.name}</h2>
+        <h3>{feature.name}</h3>
         <p>{feature.description}</p>
       </header>
-      <aside class="guide-callout neutral">
-        Anyone holding this key controls the server's Syncthing through its REST interface. Server automation reads
-        the key from Syncthing's configuration, so regenerating it only affects external scripts and clients.
-      </aside>
-      {loading.value && <p class="hint">Loading the API key…</p>}
+      {loading.value && <p class="hint">Loading the key…</p>}
       {loadError.value && <p class="key-status error">{loadError.value}</p>}
       {!loading.value && !loadError.value && (
         <>
@@ -112,6 +109,22 @@ export const VaultSyncthingCard = component$(({ feature }: { feature: VaultFeatu
           {actionError.value && <p class="key-status error">{actionError.value}</p>}
         </>
       )}
+      <ExplainMore
+        title="Syncthing key"
+        plain={
+          <p>
+            Syncthing uses this key so other devices and scripts can control it without your password. Treat it like a
+            password and keep it out of shared chats or notes.
+          </p>
+        }
+        technical={
+          <p>
+            This is the Syncthing REST API key stored in <code>config.xml</code>. Regenerating it restarts Syncthing and
+            immediately invalidates every external script or client holding the old value. Server-side automation reads
+            the key from Syncthing's own configuration, so it is unaffected.
+          </p>
+        }
+      />
     </article>
   );
 });

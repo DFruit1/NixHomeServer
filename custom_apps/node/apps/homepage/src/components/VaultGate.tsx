@@ -119,18 +119,44 @@ export const VaultGate = component$(({
   };
 
   return (
-    <section class="vault-gate" aria-label="Keys and secrets unlock">
+    <section class={{ 'vault-gate': true, 'vault-gate--open': unlocked }} aria-label="Keys and secrets unlock">
+      <header class="vault-gate__brand">
+        <img class="vault-gate__logo" src="/logos/kanidm.svg" alt="" width={44} height={44} />
+        <div class="vault-gate__brand-text">
+          <span class="vault-gate__provider">Kanidm account</span>
+          <h2>{unlocked ? 'Keys and secrets unlocked' : 'Unlock keys and secrets'}</h2>
+        </div>
+        <span
+          class={{ 'vault-status': true, 'vault-status--open': unlocked }}
+          role="status"
+          aria-label={unlocked ? 'Status: unlocked' : 'Status: locked'}
+        >
+          {unlocked ? (
+            <svg class="vault-status__icon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="5" y="11" width="14" height="10" rx="2" />
+              <path d="M8 11V7a4 4 0 0 1 7.5-2" />
+            </svg>
+          ) : (
+            <svg class="vault-status__icon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="5" y="11" width="14" height="10" rx="2" />
+              <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+            </svg>
+          )}
+          {unlocked ? 'Unlocked' : 'Locked'}
+        </span>
+      </header>
+
       {!unlocked ? (
         <form
           class="vault-unlock"
           preventdefault:submit
           onSubmit$={submit}
         >
-          <h2>Unlock keys and secrets</h2>
           <p>
-            This area shows and changes app credentials. Confirm it is really you with a second sign-in. The unlock
-            lasts {Math.round((sessionTtlSeconds ?? 900) / 60)} minutes, or {Math.round((idleTtlSeconds ?? 300) / 60)}
-            {' '}minutes after your last action, and ends when you close the browser.
+            These settings can create and replace the credentials that apps use to reach your server. To keep them safe,
+            confirm it is really you with a second sign-in. The unlock lasts{' '}
+            {Math.round((sessionTtlSeconds ?? 900) / 60)} minutes, or {Math.round((idleTtlSeconds ?? 300) / 60)} minutes
+            after your last action, and ends when you close the browser.
           </p>
           {!totpRequired.value ? (
             <>

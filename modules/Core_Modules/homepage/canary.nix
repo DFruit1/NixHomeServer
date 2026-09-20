@@ -38,6 +38,7 @@ let
     (mkTarget { id = "emails"; name = "Mail Archive"; host = "emails.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "Mail Archive|Emails"; })
     (mkTarget { id = "downloads"; name = "YouTube Downloads"; host = "ytdownload.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "YouTube|Downloads"; })
     (mkTarget { id = "passwords"; name = "Passwords"; host = "passwords.${vars.domain}"; coverageMode = "local-boundary"; expectedPattern = "Vaultwarden|Bitwarden|Passwords"; })
+    (mkTarget { id = "git"; name = "Git"; host = "git.${vars.domain}"; coverageMode = "native-oidc"; expectedPattern = "Forgejo|Dashboard|Repositories"; })
     (mkTarget { id = "search"; name = "Search"; host = "search.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "Search"; })
     (mkTarget { id = "backups"; name = "Local Backups"; host = vars.kopiaDomain; coverageMode = "gateway-boundary"; expectedPattern = "Kopia|Backups"; expectAccessDenied = true; })
   ];

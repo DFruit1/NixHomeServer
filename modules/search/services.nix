@@ -97,6 +97,16 @@ let
     SEARCH_PDFTOTEXT = "${pkgs."poppler-utils"}/bin/pdftotext";
   };
 
+  pdfArchiveEnvironment = {
+    SEARCH_PDF_ARCHIVE_DIR = paths.pdfArchive;
+    SEARCH_PDF_ARCHIVE_MAX_PER_RUN = toString cfg.pdfArchive.maxPerRun;
+    SEARCH_PDF_ARCHIVE_MAX_BYTES = toString cfg.pdfArchive.maxBytes;
+    SEARCH_PDF_ARCHIVE_TIMEOUT_SECONDS = toString cfg.pdfArchive.timeoutSeconds;
+  }
+  // lib.optionalAttrs (cfg.pdfArchive.sources != [ ]) {
+    SEARCH_PDF_ARCHIVE_SOURCES = lib.concatStringsSep "," cfg.pdfArchive.sources;
+  };
+
   hardenedService = {
     NoNewPrivileges = true;
     PrivateTmp = true;
@@ -150,6 +160,53 @@ in
       type = lib.types.str;
       default = "1d";
       description = "How often Search purges sources whose integrations were removed.";
+    };
+
+    pdfArchive = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = ''
+          Whether to run the admin-only PDF archive pass. When enabled, a
+          systemd timer walks the stored FreshRSS entries, downloads the PDFs
+          they link to, and records them in the search database manifest.
+          This is a server-admin feature: it is never exposed through the web
+          gateway, and the downloads run as the unrestricted `search` user.
+        '';
+      };
+
+      period = lib.mkOption {
+        type = lib.types.str;
+        default = "7d";
+        description = "How often the PDF archive timer runs (systemd duration).";
+      };
+
+      maxPerRun = lib.mkOption {
+        type = lib.types.ints.positive;
+        default = 200;
+        description = "Maximum number of PDFs to download in a single archive pass.";
+      };
+
+      maxBytes = lib.mkOption {
+        type = lib.types.ints.positive;
+        default = 26214400;
+        description = "Maximum size in bytes of a single archived PDF (25 MiB by default).";
+      };
+
+      timeoutSeconds = lib.mkOption {
+        type = lib.types.ints.positive;
+        default = 30;
+        description = "Per-request timeout in seconds for a PDF download.";
+      };
+
+      sources = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        description = ''
+          FreshRSS source ids to archive. Empty means every configured
+          FreshRSS source.
+        '';
+      };
     };
 
     metadataZims = lib.mkOption {
@@ -229,14 +286,16 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    repo.storage.dataPool.guardedServices = [
-      "search-solr"
-      "search-solr-core-bootstrap"
-      "search-ui"
-      "search-index"
-      "search-reindex"
-      "search-reconcile"
-    ];
+    repo.storage.dataPool.guardedServices =
+      [
+        "search-solr"
+        "search-solr-core-bootstrap"
+        "search-ui"
+        "search-index"
+        "search-reindex"
+        "search-reconcile"
+      ]
+      ++ lib.optional cfg.pdfArchive.enable "search-pdf-archive";
 
     users.groups.solr = { };
     users.users.solr = {
@@ -348,6 +407,43 @@ in
         OnBootSec = "10min";
         OnUnitActiveSec = cfg.reconcilePeriod;
         Persistent = true;
+      };
+    };
+
+    # Admin-only PDF archival. Runs the same binary as the indexer, as the
+    # `search` user, and writes into a persisted, StateDirectory-managed tree.
+    # It is deliberately not triggered by any web route: an operator runs
+    # `systemctl start search-pdf-archive.service` or lets the timer do it.
+    systemd.services.search-pdf-archive = lib.mkIf cfg.pdfArchive.enable {
+      description = "Archive PDFs linked from stored FreshRSS entries (admin-only)";
+      wants = [ "postgresql.service" ];
+      after = [
+        "postgresql.service"
+        "data-pool-layout.service"
+      ];
+      environment = commonEnvironment // pdfArchiveEnvironment;
+      serviceConfig =
+        hardenedService
+        // {
+          Type = "oneshot";
+          User = "search";
+          Group = "search";
+          StateDirectory = "search/pdf-archive";
+          ExecStart = "${cfg.package}/bin/search archive-pdfs";
+          # A large first backfill can legitimately run for a while; keep the
+          # watchdog generous so it is not mistaken for a hang.
+          TimeoutStartSec = "2h";
+        };
+    };
+
+    systemd.timers.search-pdf-archive = lib.mkIf cfg.pdfArchive.enable {
+      description = "Periodically archive PDFs linked from stored FreshRSS entries";
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        OnBootSec = "30min";
+        OnUnitActiveSec = cfg.pdfArchive.period;
+        Persistent = true;
+        Unit = "search-pdf-archive.service";
       };
     };
 

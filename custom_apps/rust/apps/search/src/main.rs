@@ -7,6 +7,7 @@ mod federate;
 mod identity;
 mod indexer;
 mod paperless_search;
+mod pdf_archive;
 mod retry;
 mod server;
 mod solr;
@@ -20,7 +21,9 @@ fn main() -> ExitCode {
     let command = match std::env::args().nth(1) {
         Some(cmd) => cmd,
         None => {
-            eprintln!("usage: search <serve|index|index-daemon|reindex|reconcile|bootstrap-solr>");
+            eprintln!(
+                "usage: search <serve|index|index-daemon|reindex|reconcile|archive-pdfs|bootstrap-solr>"
+            );
             return ExitCode::FAILURE;
         }
     };
@@ -42,10 +45,13 @@ fn main() -> ExitCode {
         "index-daemon" => runtime.block_on(indexer::run_index_daemon()),
         "reindex" => runtime.block_on(indexer::run_reindex()),
         "reconcile" => runtime.block_on(indexer::run_reconcile()),
+        "archive-pdfs" => runtime.block_on(pdf_archive::run()),
         "bootstrap-solr" => runtime.block_on(bootstrap_solr::run()),
         other => {
             eprintln!("unknown command: {other}");
-            eprintln!("usage: search <serve|index|index-daemon|reindex|reconcile|bootstrap-solr>");
+            eprintln!(
+                "usage: search <serve|index|index-daemon|reindex|reconcile|archive-pdfs|bootstrap-solr>"
+            );
             return ExitCode::FAILURE;
         }
     };

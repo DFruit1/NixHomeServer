@@ -11,3 +11,5 @@ The Homepage vendors these application logos so cards do not depend on third-par
 - `calibre-web.svg`: https://raw.githubusercontent.com/janeczku/calibre-web/master/cps/static/icon.svg
 - `vaultwarden.svg`: https://raw.githubusercontent.com/dani-garcia/vaultwarden/main/resources/vaultwarden-icon.svg
 - `mail-archive-ui.svg`: repository-local Mail Archive UI branding from `custom_apps/rust/apps/mail-archive-ui/frontend/src/styles.css`
+- `kanidm.svg`: https://raw.githubusercontent.com/kanidm/kanidm/master/artwork/logo-square.svg (Kanidm artwork by Jesse Irwin, used unmodified under CC-BY-NC-ND for identity-provider attribution on the Keys & Secrets page)
+- `forgejo.svg`: repository-local Forgejo attribution mark drawn for this project (orange square with a git-branch glyph).

@@ -24,7 +24,7 @@ fn open_read_only(path: &PathBuf) -> Result<Connection, String> {
         .map_err(|err| format!("failed to open FreshRSS database {}: {err}", path.display()))
 }
 
-fn user_databases(state_dir: &str) -> Vec<PathBuf> {
+pub(crate) fn user_databases(state_dir: &str) -> Vec<PathBuf> {
     let mut databases = Vec::new();
     let users_dir = PathBuf::from(state_dir).join("users");
     let Ok(entries) = std::fs::read_dir(&users_dir) else {

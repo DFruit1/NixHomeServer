@@ -69,6 +69,26 @@ forbid_match modules/search/services.nix 'config[.]repo[.](paperless|kiwix|brows
   "The Search module must not reference other application modules directly; integrations carry that wiring."
 forbid_match modules/search 'acl_group' \
   "Search must not carry per-source ACLs; access is admin-only via the shared gateway."
+require_fixed modules/search/filepaths.nix 'pdfArchive' \
+  "Search must define the admin PDF archive path."
+require_fixed modules/search/services.nix 'search archive-pdfs' \
+  "Search must expose the admin PDF archive command in a service."
+require_fixed modules/search/services.nix 'SEARCH_PDF_ARCHIVE_DIR' \
+  "The PDF archive service must receive its target directory."
+require_fixed modules/search/services.nix 'search-pdf-archive' \
+  "The PDF archive service and timer must be named consistently."
+require_fixed modules/search/backups.nix 'component = "pdf-archive"' \
+  "Archived PDFs must be included in the central backup inventory."
+require_fixed modules/Core_Modules/impermanence/default.nix '"/var/lib/search/pdf-archive"' \
+  "Archived PDFs must remain persistent when the Search module is removed."
+require_fixed custom_apps/rust/apps/search/src/main.rs '"archive-pdfs" =>' \
+  "The search binary must dispatch the archive-pdfs command."
+if [[ ! -f custom_apps/rust/apps/search/src/pdf_archive.rs ]]; then
+  echo "❌ Search must ship the admin PDF archive implementation." >&2
+  exit 1
+fi
+require_fixed custom_apps/rust/apps/search/src/pdf_archive.rs 'pdf_urls_in_entry' \
+  "The PDF archive must discover PDF links from FreshRSS entries."
 
 host="$(test_default_host)"
 result="$(NIXHOMESERVER_TEST_HOST="$host" nix eval --impure --json --expr '
@@ -96,7 +116,12 @@ let
     system = vars.hostPlatform;
     appPackages = packageData.appPackages;
   };
-  cfg = system.nixosConfigurations.${hostName}.config;
+  host = system.nixosConfigurations.${hostName};
+  cfg = host.config;
+  pdfCfg = (host.extendModules {
+    modules = [ { repo.search.pdfArchive.enable = true; } ];
+  }).config;
+  pdfArchiveService = pdfCfg.systemd.services.search-pdf-archive;
 in {
   moduleEnabled = cfg.nixhomeserver.modules.search or false;
   uiUser = cfg.systemd.services.search-ui.serviceConfig.User;
@@ -122,6 +147,16 @@ in {
   fulltextZims = cfg.repo.search.fulltextZims;
   kiwixSearchBin = cfg.systemd.services.search-ui.environment.SEARCH_KIWIXSEARCH;
   zimdumpBin = cfg.systemd.services.search-ui.environment.SEARCH_ZIMDUMP;
+  pdfArchiveUser = pdfArchiveService.serviceConfig.User;
+  pdfArchiveExecStart = toString pdfArchiveService.serviceConfig.ExecStart;
+  pdfArchiveEnvDir = pdfArchiveService.environment.SEARCH_PDF_ARCHIVE_DIR;
+  pdfArchiveStateDir = pdfArchiveService.serviceConfig.StateDirectory;
+  pdfArchiveGuarded = builtins.elem "search-pdf-archive" pdfCfg.repo.storage.dataPool.guardedServices;
+  pdfArchiveTimer = pdfCfg.systemd.timers.search-pdf-archive.timerConfig.Persistent or false;
+  pdfArchivePersisted = builtins.elem pdfCfg.repo.search.paths.pdfArchive pdfCfg.repo.impermanence.inventory.persistenceDirectories;
+  pdfArchiveBackup = builtins.any
+    (entry: entry.app == "search" && entry.component == "pdf-archive")
+    pdfCfg.repo.backups.appStateEntries;
 }')"
 
 if ! jq -e '
@@ -153,6 +188,14 @@ if ! jq -e '
   and (.fulltextZims | type == "array")
   and (.kiwixSearchBin | contains("kiwix-search"))
   and (.zimdumpBin | contains("zimdump"))
+  and (.pdfArchiveUser == "search")
+  and (.pdfArchiveExecStart | contains("search archive-pdfs"))
+  and (.pdfArchiveEnvDir == "/var/lib/search/pdf-archive")
+  and (.pdfArchiveStateDir == "search/pdf-archive")
+  and .pdfArchiveGuarded
+  and .pdfArchiveTimer
+  and .pdfArchivePersisted
+  and .pdfArchiveBackup
 ' <<<"$result" >/dev/null; then
   echo "❌ Search module invariants were not satisfied." >&2
   jq . <<<"$result" >&2

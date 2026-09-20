@@ -43,6 +43,22 @@ let
       guardedServices = [ "calibre-web-library-layout-v1" "calibre-web" ];
       persistencePaths = [ "/var/lib/calibre-web" ];
     };
+    forgejo = {
+      disable = { repo.forgejo.enable = lib.mkForce false; };
+      registryName = "forgejo";
+      services = [ "forgejo" "forgejo-mirrors" "forgejo-oidc-bootstrap" ];
+      timers = [ "forgejo-mirrors" ];
+      hosts = [ "git" ];
+      gatewayApps = [ ];
+      oauthClients = [ "forgejo-web" ];
+      kanidmGroups = [ "forgejo-users" ];
+      users = [ "forgejo" ];
+      groups = [ "forgejo" ];
+      secrets = [ "forgejoClientSecret" ];
+      backupApps = [ "forgejo" ];
+      guardedServices = [ ];
+      persistencePaths = [ "/var/lib/forgejo" ];
+    };
     qwen-flash-next = {
       modules = [ ../../modules/qwen-flash-next ];
       disable = { repo.qwenFlashNext.enable = lib.mkForce false; };
@@ -300,8 +316,9 @@ let
         "search-ui"
         "search-index"
         "search-reconcile"
+        "search-pdf-archive"
       ];
-      timers = [ "search-reconcile" ];
+      timers = [ "search-reconcile" "search-pdf-archive" ];
       hosts = [ "search" ];
       gatewayApps = [ "search" ];
       oauthClients = [ ];
@@ -316,8 +333,9 @@ let
         "search-ui"
         "search-index"
         "search-reconcile"
+        "search-pdf-archive"
       ];
-      persistencePaths = [ "/var/lib/solr" ];
+      persistencePaths = [ "/var/lib/solr" "/var/lib/search/pdf-archive" ];
     };
   };
 

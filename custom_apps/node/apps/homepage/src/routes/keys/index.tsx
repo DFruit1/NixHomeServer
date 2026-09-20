@@ -7,19 +7,20 @@ import { VaultSshKeysCard } from '../../components/VaultSshKeysCard.js';
 import { VaultSyncthingCard } from '../../components/VaultSyncthingCard.js';
 import { HomepageContext } from '../../shared/homepage-context.js';
 import { brandedPageTitle } from '../../shared/branding.js';
-import type { VaultStatus } from '../../shared/types.js';
+import type { VaultFeature, VaultStatus } from '../../shared/types.js';
 import { vaultRequest } from '../../shared/vault-client.js';
 
 export default component$(() => {
   const homepage = useContext(HomepageContext);
   const data = homepage.data;
-  const vault = useStore<{ status?: VaultStatus; loading: boolean; error: string }>({
-    loading: true,
-    error: '',
-  });
+  const vault = useStore<{ status?: VaultStatus; error: string }>({ error: '' });
+  const loading = useSignal(false);
   const loadFailed = useSignal(false);
 
   const refresh = $(async () => {
+    if (!vault.status) {
+      loading.value = true;
+    }
     const result = await vaultRequest<VaultStatus>('GET', '/api/vault');
     if (result.status === 200 && result.data) {
       vault.status = result.data;
@@ -27,6 +28,7 @@ export default component$(() => {
     } else {
       loadFailed.value = true;
     }
+    loading.value = false;
   });
 
   useVisibleTask$(({ cleanup }) => {
@@ -44,19 +46,28 @@ export default component$(() => {
   const allowed = features.filter((feature) => feature.allowed);
   const denied = features.filter((feature) => !feature.allowed);
   const featureById = (id: string) => allowed.find((feature) => feature.id === id);
+  const appPasswords = [
+    featureById('freshrssApiPassword'),
+    featureById('kavitaApiKeys'),
+    featureById('syncthingApiKey'),
+  ].filter((feature): feature is VaultFeature => Boolean(feature));
+  const sshKeys = featureById('sshKeys');
 
   return (
     <section class={{ section: true, 'vault-page': true }} aria-label="Keys and secrets">
       <header class="section-heading stacked">
         <h1>Keys &amp; Secrets</h1>
         <p>
-          Register and regenerate app API keys, app passwords, and SSH device keys in one place. Every change here is
-          sensitive, so the server asks for a second sign-in and keeps the area unlocked only for a short time.
+          This section lets you create credentials for apps and services that cannot use your regular username and
+          password. Save every new credential in your password manager as soon as it is shown.
+        </p>
+        <p class="hint">
+          Everything here stays locked. Unlock it with a second Kanidm sign-in, and lock it again when you are done.
         </p>
       </header>
 
-      {vault.loading && <p class="hint">Checking vault status…</p>}
-      {loadFailed.value && <p class="notice">Keys and secrets are temporarily unavailable. Try again in a moment.</p>}
+      {!vault.status && loading.value && <p class="hint">Checking vault status…</p>}
+      {!vault.status && loadFailed.value && <p class="notice">Keys and secrets are temporarily unavailable. Try again in a moment.</p>}
 
       {vault.status && (
         <>
@@ -69,17 +80,36 @@ export default component$(() => {
             onRefresh={refresh}
           />
 
-          {vault.status.unlocked && (
-            <div class="vault-cards">
-              {user && featureById('sshKeys') && <VaultSshKeysCard feature={featureById('sshKeys')!} />}
-              {user && featureById('syncthingApiKey') && <VaultSyncthingCard feature={featureById('syncthingApiKey')!} />}
-              {user && featureById('freshrssApiPassword') && (
-                <VaultFreshrssCard feature={featureById('freshrssApiPassword')!} username={user.username} />
+          {vault.status.unlocked && user && (
+            <>
+              {appPasswords.length > 0 && (
+                <section class="vault-group" aria-labelledby="vault-app-passwords">
+                  <header class="vault-group__head">
+                    <h2 id="vault-app-passwords">App passwords</h2>
+                    <p>Passwords and keys that apps use to sign in as you instead of your normal login.</p>
+                  </header>
+                  <div class="vault-cards">
+                    {featureById('freshrssApiPassword') && (
+                      <VaultFreshrssCard feature={featureById('freshrssApiPassword')!} username={user.username} />
+                    )}
+                    {featureById('kavitaApiKeys') && (
+                      <VaultKavitaCard feature={featureById('kavitaApiKeys')!} username={user.username} />
+                    )}
+                    {featureById('syncthingApiKey') && <VaultSyncthingCard feature={featureById('syncthingApiKey')!} />}
+                  </div>
+                </section>
               )}
-              {user && featureById('kavitaApiKeys') && (
-                <VaultKavitaCard feature={featureById('kavitaApiKeys')!} username={user.username} />
+
+              {sshKeys && (
+                <section class="vault-group" aria-labelledby="vault-device-keys">
+                  <header class="vault-group__head">
+                    <h2 id="vault-device-keys">Device keys</h2>
+                    <p>Keys that let your own computer, phone, or tablet reach your files without a password.</p>
+                  </header>
+                  <VaultSshKeysCard feature={sshKeys} />
+                </section>
               )}
-            </div>
+            </>
           )}
 
           {denied.length > 0 && (

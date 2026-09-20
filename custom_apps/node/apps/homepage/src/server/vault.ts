@@ -21,17 +21,17 @@ import { currentUserFromHeaders } from './auth.js';
 export { VaultHttpError };
 
 const FEATURE_NAMES: Record<VaultFeatureId, string> = {
-  sshKeys: 'SSH public keys',
-  syncthingApiKey: 'Syncthing API key',
-  freshrssApiPassword: 'FreshRSS API password',
-  kavitaApiKeys: 'Kavita API keys',
+  sshKeys: 'SFTP device keys',
+  syncthingApiKey: 'Syncthing',
+  freshrssApiPassword: 'FreshRSS',
+  kavitaApiKeys: 'Kavita',
 };
 
 const FEATURE_DESCRIPTIONS: Record<VaultFeatureId, string> = {
-  sshKeys: 'Register device SSH public keys used for SFTP and SSHFS access to your files.',
-  syncthingApiKey: 'Server-side Syncthing REST API key used by server automation. Regenerating restarts Syncthing and invalidates every client holding the old key.',
-  freshrssApiPassword: 'A separate API password for feed reader apps that connect through the Google Reader API.',
-  kavitaApiKeys: 'Per-user API keys that OPDS and third-party Kavita clients use to sign in.',
+  sshKeys: 'Add a key for each computer, phone, or tablet that connects to your files over SFTP or SSHFS.',
+  syncthingApiKey: 'A key for scripts and tools that control the server\u2019s Syncthing.',
+  freshrssApiPassword: 'A password that feed reader apps use to sign in as you.',
+  kavitaApiKeys: 'Keys that reading apps use to sign in as you.',
 };
 
 export type VaultHttpResponse = {

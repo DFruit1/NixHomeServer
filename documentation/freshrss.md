@@ -108,6 +108,14 @@ Content → Location of the article content**). Prefer the CSS path when a site
 has a stable, known article container; prefer Af_Readability when the selector
 is unknown or changes often. Avoid enabling both for the same feed.
 
+When a feed publishes only an abstract and the real content is a PDF,
+Af_Readability cannot help. The Search app's opt-in **admin PDF archive**
+(`repo.search.pdfArchive.enable`) walks these same stored entries, downloads
+the PDFs they link to into `/var/lib/search/pdf-archive`, and records them in
+the search database manifest. It is a server-admin feature with no web route;
+see "Admin PDF archive" in `documentation/operations.md` for the trust and
+egress implications.
+
 ## Service checks
 
 ```bash

@@ -95,9 +95,10 @@ test('the SSH card lists and registers device keys', async ({ page, baseURL }) =
   await unlockThroughApi(page, baseURL, 'dsaw', allAccessGroups);
   await page.goto('/keys');
 
-  const sshCard = page.locator('article').filter({ has: page.getByRole('heading', { name: 'SSH public keys' }) });
+  const sshCard = page.locator('article').filter({ has: page.getByRole('heading', { name: 'SFTP device keys' }) });
   await expect(sshCard.getByRole('heading', { name: 'Registered device keys' })).toBeVisible();
 
+  await sshCard.locator('details.vault-manual-key > summary').click();
   await sshCard.locator('#vault-ssh-public-key').fill(validPublicKey);
   await sshCard.getByRole('button', { name: 'Save Public Key' }).click();
   await expect(sshCard.getByText(/SFTP device key added and verified on the server./)).toBeVisible();
@@ -109,11 +110,24 @@ test('the SSH card lists and registers device keys', async ({ page, baseURL }) =
   await expect(sshCard.locator('li').filter({ hasText: 'laptop' })).toHaveCount(1);
 });
 
+test('the SSH card generates a device key in the browser', async ({ page, baseURL }) => {
+  await unlockThroughApi(page, baseURL, 'dsaw', allAccessGroups);
+  await page.goto('/keys');
+
+  const sshCard = page.locator('article').filter({ has: page.getByRole('heading', { name: 'SFTP device keys' }) });
+  await sshCard.locator('#vault-ssh-device-name').fill('Phone');
+  await sshCard.getByRole('button', { name: 'Generate a key pair' }).click();
+
+  await expect(sshCard.getByText('Save your private key now.')).toBeVisible();
+  await expect(sshCard.getByText('Phone_ed25519')).toBeVisible();
+  await expect(sshCard.locator('li').filter({ hasText: 'Phone' })).toHaveCount(1);
+});
+
 test('the Syncthing card reveals and regenerates the server API key', async ({ page, baseURL }) => {
   await unlockThroughApi(page, baseURL, 'dsaw', allAccessGroups);
   await page.goto('/keys');
 
-  const card = page.locator('article').filter({ has: page.getByRole('heading', { name: 'Syncthing API key' }) });
+  const card = page.locator('article').filter({ has: page.getByRole('heading', { name: 'Syncthing' }) });
   await expect(card.locator('code').filter({ hasText: '••••' })).toBeVisible();
 
   await card.getByRole('button', { name: 'Reveal' }).click();
@@ -132,9 +146,9 @@ test('the FreshRSS card registers an API password that is shown once', async ({ 
   await unlockThroughApi(page, baseURL, 'dsaw', allAccessGroups);
   await page.goto('/keys');
 
-  const card = page.locator('article').filter({ has: page.getByRole('heading', { name: 'FreshRSS API password' }) });
-  await card.getByRole('button', { name: 'Register an API password' }).click();
-  await expect(card.getByText(/Generate a new FreshRSS API password for/)).toBeVisible();
+  const card = page.locator('article').filter({ has: page.getByRole('heading', { name: 'FreshRSS' }) });
+  await card.getByRole('button', { name: 'Create app password' }).click();
+  await expect(card.getByText(/Generate a new FreshRSS app password for/)).toBeVisible();
   await card.getByRole('button', { name: 'Yes, generate' }).click();
 
   await expect(card.getByText('Shown once.')).toBeVisible();
@@ -142,7 +156,7 @@ test('the FreshRSS card registers an API password that is shown once', async ({ 
   await expect(passwordCode).toHaveText(/^[A-Za-z0-9]{32}$/);
   await expect(card.getByText('https://rss.example.test/api/greader.php')).toBeVisible();
 
-  await card.getByRole('button', { name: 'Generate a new API password' }).click();
+  await card.getByRole('button', { name: 'Replace app password' }).click();
   await card.getByRole('button', { name: 'Yes, generate' }).click();
   const secondPassword = await passwordCode.textContent();
   expect(secondPassword).toMatch(/^[A-Za-z0-9]{32}$/);
@@ -152,7 +166,7 @@ test('the Kavita card creates, rotates, and deletes API keys', async ({ page, ba
   await unlockThroughApi(page, baseURL, 'dsaw', allAccessGroups);
   await page.goto('/keys');
 
-  const card = page.locator('article').filter({ has: page.getByRole('heading', { name: 'Kavita API keys' }) });
+  const card = page.locator('article').filter({ has: page.getByRole('heading', { name: 'Kavita' }) });
   await expect(card.locator('.vault-kavita-key').filter({ hasText: 'opds' })).toBeVisible();
 
   await card.locator('#vault-kavita-name').fill('Tablet reader');
@@ -178,9 +192,9 @@ test('features outside the account permissions are listed as unavailable', async
   await page.goto('/keys');
 
   await expect(page.getByRole('heading', { name: 'Not available to your account' })).toBeVisible();
-  await expect(page.getByText('Syncthing API key')).toBeVisible();
+  await expect(page.getByText('Syncthing')).toBeVisible();
   await expect(page.getByText('· administrators only')).toBeVisible();
-  await expect(page.locator('article').filter({ has: page.getByRole('heading', { name: 'Syncthing API key' }) })).toHaveCount(0);
+  await expect(page.locator('article').filter({ has: page.getByRole('heading', { name: 'Syncthing' }) })).toHaveCount(0);
 
   const syncthing = await page.request.get('/api/vault/syncthing', { headers: identityHeaders('basic', 'users') });
   expect(syncthing.status()).toBe(403);

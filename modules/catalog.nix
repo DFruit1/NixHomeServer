@@ -40,6 +40,7 @@ rec {
       "media-automation-bootstrap-chaptarr"
     ];
     files = app ./files "Files" "storage" [ ] [ ];
+    forgejo = app ./forgejo "Git" "operations" [ "forgejoClientSecret" ] [ ];
     freshrss = app ./freshrss "FreshRSS" "knowledge" [ ] [ ];
     groundwater-logger = app ./groundwater-logger "Groundwater Logger" "operations" [
       "groundwaterAppMqttPassword"
@@ -136,6 +137,7 @@ rec {
       "search-index"
       "search-reindex"
       "search-reconcile"
+      "search-pdf-archive"
     ];
     sonarr = app ./sonarr "Sonarr" "media-automation" [
       "sonarrOauth2ProxyClientSecret"

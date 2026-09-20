@@ -100,6 +100,15 @@ let
       enable = true; # Whether to provision Syncthing-backed offline media folders and enrollment tools.
     };
 
+    forgejo = {
+      # Declarative GitHub pull mirrors maintained by Forgejo. Add entries such
+      # as { url = "https://github.com/owner/repo.git"; } and the reconcile
+      # service creates and refreshes them automatically. Optionally stage a
+      # GitHub token at secrets/unencrypted/forgejoGithubToken to mirror
+      # private repositories or raise API rate limits.
+      mirrors = [ ];
+    };
+
     offsiteBackup = {
       enable = false; # Whether to mirror the encrypted Kopia repository to the opinionated MEGA destination.
       email = "REPLACE_WITH_MEGA_EMAIL"; # MEGA account email; required only when offsite backup is enabled.

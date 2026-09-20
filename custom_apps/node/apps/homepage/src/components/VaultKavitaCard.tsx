@@ -1,6 +1,7 @@
 import { $, component$, useSignal, useVisibleTask$ } from '@builder.io/qwik';
 import type { KavitaAuthKey, VaultFeature, VaultKavitaKeys } from '../shared/types.js';
 import { copyVaultSecret, vaultRequest } from '../shared/vault-client.js';
+import { ExplainMore } from './ExplainMore.js';
 
 const keyLine = (key: KavitaAuthKey): string =>
   [key.name, key.createdAtUtc ? `created ${key.createdAtUtc.slice(0, 10)}` : '', key.lastAccessedAtUtc ? `used ${key.lastAccessedAtUtc.slice(0, 10)}` : '']
@@ -68,14 +69,10 @@ export const VaultKavitaCard = component$(({ feature, username }: { feature: Vau
   return (
     <article class="vault-card" id={`vault-${feature.id}`}>
       <header class="vault-card__head">
-        <h2>{feature.name}</h2>
+        <h3>{feature.name}</h3>
         <p>{feature.description}</p>
       </header>
-      <aside class="guide-callout neutral">
-        Reader apps for {username} sign in with one of these keys (OPDS apps use the address below). Rotating a key
-        invalidates the previous value immediately; deleted keys stop working at once.
-      </aside>
-      {loading.value && <p class="hint">Loading API keys…</p>}
+      {loading.value && <p class="hint">Loading keys…</p>}
       {loadError.value && <p class="key-status error">{loadError.value}</p>}
       {!loading.value && !loadError.value && (
         <>
@@ -183,6 +180,21 @@ export const VaultKavitaCard = component$(({ feature, username }: { feature: Vau
           {actionError.value && <p class="key-status error">{actionError.value}</p>}
         </>
       )}
+      <ExplainMore
+        title="Kavita keys"
+        plain={
+          <p>
+            Kavita uses these keys so reading apps can sign in as {username} without your normal password. Give each
+            device its own key so you can retire one without affecting the others.
+          </p>
+        }
+        technical={
+          <p>
+            These are per-user Kavita API keys. OPDS reading apps also need the catalogue address above. Regenerating a
+            key invalidates its previous value immediately, and deleting a key stops it working at once.
+          </p>
+        }
+      />
     </article>
   );
 });
