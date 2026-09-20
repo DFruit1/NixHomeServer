@@ -8,8 +8,8 @@
 # prints machine-readable state for the desktop orchestrator, and `cancel`
 # aborts both the watcher and the pending system shutdown.
 #
-# Critical tasks are configured through the bash arrays CRITICAL_UNITS and
-# CRITICAL_PROCESSES in $SHUTDOWN_GUARD_CONF (default
+# Critical tasks are configured through the bash arrays CRITICAL_UNITS,
+# CRITICAL_PROCESSES, and CRITICAL_COMMANDS in $SHUTDOWN_GUARD_CONF (default
 # /etc/nixhomeserver/shutdown-guard.conf). Run this through `sudo`; it is
 # covered by the host's existing NOPASSWD admin contract.
 
@@ -26,6 +26,7 @@ DEFAULT_POLL_SEC=30
 
 CRITICAL_UNITS=()
 CRITICAL_PROCESSES=()
+CRITICAL_COMMANDS=()
 if [[ -r "$CONF_FILE" ]]; then
   # shellcheck source=/dev/null
   source "$CONF_FILE"
@@ -84,10 +85,10 @@ write_status() {
   mv -f "$tmp" "$STATUS_FILE"
 }
 
-# Print the first active critical task as "unit:<name>" or "process:<name>".
-# Exit 0 when idle, 1 when busy (with the task name on stdout).
+# Print the first active critical task as "unit:<name>", "process:<name>", or
+# "command:<text>". Exit 0 when idle, 1 when busy (with the task on stdout).
 critical_task() {
-  local unit active process
+  local unit active process check
   for unit in "${CRITICAL_UNITS[@]}"; do
     [[ -n "$unit" ]] || continue
     active="$(systemctl show --property=ActiveState --value "$unit" 2>/dev/null || true)"
@@ -102,6 +103,13 @@ critical_task() {
     [[ -n "$process" ]] || continue
     if pgrep -x "$process" >/dev/null 2>&1; then
       printf 'process:%s\n' "$process"
+      return 1
+    fi
+  done
+  for check in "${CRITICAL_COMMANDS[@]}"; do
+    [[ -n "$check" ]] || continue
+    if eval "$check" >/dev/null 2>&1; then
+      printf 'command:%s\n' "$check"
       return 1
     fi
   done

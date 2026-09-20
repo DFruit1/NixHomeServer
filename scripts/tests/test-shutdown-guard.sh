@@ -25,6 +25,7 @@ mkdir -p "$mock_bin" "$flags"
 cat >"$conf" <<'EOF'
 CRITICAL_UNITS=(kopia.service media-manager.service)
 CRITICAL_PROCESSES=(rsync)
+CRITICAL_COMMANDS=("test -e \"${MOCK_FLAGS}/command_busy\"")
 EOF
 
 cat >"$mock_bin/systemctl" <<'EOF'
@@ -104,7 +105,20 @@ busy_process="$(run_guard check)"
 expect_equal "$busy_process" "busy process:rsync" "Guard should report an active critical process."
 rm -f "$flags/pgrep_busy"
 
-# 4. Dry run must not schedule anything.
+# 4. Active command detection (used for ZFS scrub/resilver).
+touch "$flags/command_busy"
+busy_command="$(run_guard check)"
+case "$busy_command" in
+  "busy command:"*) : ;;
+  *)
+    echo "❌ Guard should report an active critical command." >&2
+    echo "   Actual: $busy_command" >&2
+    exit 1
+    ;;
+esac
+rm -f "$flags/command_busy"
+
+# 5. Dry run must not schedule anything.
 : >"$flags/shutdown.log"
 dry="$(run_guard start --timeout 5 --grace 5 --dry-run)"
 if [[ "$dry" != dry-run:* ]]; then
@@ -117,7 +131,7 @@ fi
   exit 1
 }
 
-# 5. Real start schedules a shutdown and launches the watcher.
+# 6. Real start schedules a shutdown and launches the watcher.
 : >"$flags/shutdown.log"
 : >"$flags/systemd-run.log"
 run_guard start --timeout 7 --grace 3 --poll 1 >/dev/null
@@ -125,13 +139,13 @@ require_fixed "$flags/shutdown.log" "-h +7" "Guard should schedule a shutdown at
 require_fixed "$flags/systemd-run.log" "watch --deadline" "Guard should launch the watcher."
 require_fixed "$state_dir/status" "state=scheduled" "Guard should record the scheduled state."
 
-# 6. Watcher with no critical task shuts down immediately at the deadline.
+# 7. Watcher with no critical task shuts down immediately at the deadline.
 : >"$flags/shutdown.log"
 run_guard watch --deadline 1 --grace-deadline 1 --poll 1
 require_fixed "$flags/shutdown.log" "-h now" "Watcher should shut down when no critical task is active."
 require_fixed "$state_dir/status" "state=shutting-down" "Watcher should record the shutting-down state."
 
-# 7. Watcher with an active task past the grace window treats it as hung.
+# 8. Watcher with an active task past the grace window treats it as hung.
 : >"$flags/shutdown.log"
 touch "$flags/systemctl_active"
 run_guard watch --deadline 1 --grace-deadline 1 --poll 1

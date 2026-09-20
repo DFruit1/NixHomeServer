@@ -5,8 +5,10 @@ let
     name = "nixhomeserver-shutdown-guard";
     runtimeInputs = with pkgs; [
       coreutils
+      gnugrep
       procps
       systemd
+      zfs
     ];
     text = builtins.readFile ../../../scripts/helpers/shutdown-guard.sh;
   };
@@ -21,7 +23,10 @@ in
 
   environment.etc."nixhomeserver/shutdown-guard.conf".text = ''
     # Critical tasks that postpone a guarded server shutdown. Edit through this
-    # module, not directly on the host.
+    # module, not directly on the host. Only task units belong here: always-on
+    # daemons such as kopia.service, media-manager.service, and
+    # youtube-downloader.service stay active by design and must never block a
+    # shutdown. Their child work is covered by CRITICAL_PROCESSES.
     CRITICAL_UNITS=(
       backup-prepare.service
       files-archives-sync.service
@@ -30,13 +35,10 @@ in
       kopia-full-maintenance.service
       kopia-persist-snapshot.service
       kopia-snapshot-verify.service
-      kopia.service
       mail-archive-sync.service
       media-manager-refresh-dispatch.service
       media-manager-scanner.service
-      media-manager.service
       rclone-mega-kopia-sync.service
-      youtube-downloader.service
     )
     CRITICAL_PROCESSES=(
       borg
@@ -47,6 +49,9 @@ in
       rsync
       yt-dlp
       zfs
+    )
+    CRITICAL_COMMANDS=(
+      "zpool status 2>/dev/null | grep -Eq 'scrub in progress|resilver in progress'"
     )
   '';
 }
