@@ -611,12 +611,6 @@ export default component$(() => {
           </div>
         </div>
 
-        <p class={{ 'destination-note': true, warning: destination.value === 'shared' || (mediaType.value === 'audio' && saveAudioToAudiobooks.value) }}>
-          {destination.value === 'personal' && !(mediaType.value === 'audio' && saveAudioToAudiobooks.value)
-            ? 'This download will be included in your Offline Media sync.'
-            : 'This destination is not copied to your personal Offline Media devices.'}
-        </p>
-
         {pinnedOptions.value.length > 0 && (
           <OptionsPanel
             location="pinned"
@@ -684,7 +678,7 @@ export default component$(() => {
         </section>
       )}
 
-      <JobList title="Active" jobs={activeJobs} refresh={refresh} currentUser={me.value} />
+      {activeJobs.length > 0 && <JobList title="Active" jobs={activeJobs} refresh={refresh} currentUser={me.value} />}
       <JobList title="History" jobs={historyJobs} refresh={refresh} currentUser={me.value} />
     </main>
   );

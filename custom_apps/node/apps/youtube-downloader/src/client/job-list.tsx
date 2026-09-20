@@ -57,6 +57,7 @@ export const JobList = component$<JobListProps>(({ title, jobs, refresh, current
             <JobCard
               key={job.id}
               job={job}
+              isHistory={isHistory}
               canSwipeClear={isHistory && ['completed', 'failed', 'cancelled'].includes(job.status)}
               action={action}
               resolveAlert={resolveAlert}
@@ -72,6 +73,7 @@ export const JobList = component$<JobListProps>(({ title, jobs, refresh, current
 
 type JobCardProps = {
   job: Job;
+  isHistory: boolean;
   canSwipeClear: boolean;
   action: (job: Job, command: 'cancel' | 'retry' | 'delete') => Promise<void>;
   resolveAlert: (job: Job, command: 'download-again' | 'split-chapters' | 'single-file' | 'cancel') => Promise<void>;
@@ -79,7 +81,7 @@ type JobCardProps = {
   stopPropagation: (event: Event) => void;
 };
 
-const JobCard = component$<JobCardProps>(({ job, canSwipeClear, action, resolveAlert, openInBrowser, stopPropagation }) => {
+const JobCard = component$<JobCardProps>(({ job, isHistory, canSwipeClear, action, resolveAlert, openInBrowser, stopPropagation }) => {
   const dragStartX = useSignal<number | undefined>();
   const dragOffset = useSignal(0);
   const isDragging = useSignal(false);
@@ -93,6 +95,7 @@ const JobCard = component$<JobCardProps>(({ job, canSwipeClear, action, resolveA
     : apiUrl(`/api/jobs/${encodeURIComponent(job.id)}/files/${coverIndex}`);
   const artUrl = coverUrl ?? youtubeThumbnailUrl(job.request.url);
   const terminalMessage = ['failed', 'cancelled'].includes(job.status) ? singleLine(job.error) : undefined;
+  const meta = isHistory ? jobMetaLine(job) : undefined;
 
   const endDrag = $(async () => {
     if (!isDragging.value) {
@@ -166,6 +169,7 @@ const JobCard = component$<JobCardProps>(({ job, canSwipeClear, action, resolveA
           </div>
           <span class={`status-badge ${job.status}`}>{job.status}</span>
         </div>
+        {meta && <p class="job-meta">{meta}</p>}
         {job.status === 'alert' && <p class="alert-message">{job.alert?.message || job.error || 'Confirmation is required before this download can continue.'}</p>}
         {['queued', 'probing', 'running', 'postprocessing'].includes(job.status) && (
           <div class="progress-block">
@@ -249,6 +253,19 @@ const JobCard = component$<JobCardProps>(({ job, canSwipeClear, action, resolveA
           )}
         </div>
       </div>
+      {isHistory && canSwipeClear && (
+        <button
+          type="button"
+          class="job-clear"
+          aria-label={`Clear ${job.source?.title || job.request.url} from history`}
+          onClick$={(event) => {
+            stopPropagation(event);
+            action(job, 'delete');
+          }}
+        >
+          Clear
+        </button>
+      )}
     </article>
   );
 });
@@ -274,6 +291,15 @@ const progressLabel = (job: Job): string => {
     return job.progress?.phase === 'move' ? 'Moving files into the library' : 'Post-processing media';
   }
   return 'Starting download';
+};
+
+const jobMetaLine = (job: Job): string => {
+  const format = job.request.mediaType === 'video'
+    ? job.request.videoContainer?.toUpperCase()
+    : job.request.audioFormat?.toUpperCase();
+  return [job.request.mediaType, job.request.destination, job.source?.channel, format]
+    .filter((part): part is string => Boolean(part?.trim()))
+    .join(', ');
 };
 
 const coverFileIndex = (job: Job): number | undefined => {
