@@ -1,7 +1,7 @@
 import { component$, $, useSignal, useVisibleTask$ } from '@builder.io/qwik';
 import type { CurrentUser, Job, CreateJobRequest, YtDlpVersion } from './shared/types.js';
 import { AUDIO_FORMATS, AUDIO_QUALITIES, VIDEO_CONTAINERS, VIDEO_QUALITIES } from './shared/types.js';
-import { isYouTubeUrl, normalizeDownloadUrl } from './shared/url.js';
+import { isYouTubeUrl, normaliseSharedPromptUrl, normalizeDownloadUrl } from './shared/url.js';
 import { ProfileMenu } from './client/profile-menu.js';
 import { OptionsPanel, OPTION_KEYS, type OptionKey, type BooleanOptionKey } from './client/options-panel.js';
 import { JobList } from './client/job-list.js';
@@ -12,11 +12,13 @@ import {
   flushPendingJobs,
   getAuthStatus,
   installTauriTransport,
+  leaveApp,
   listPendingJobs,
   removePendingJob,
   signIn,
   signOut,
   storeServerBaseUrl,
+  takePendingPrompt,
   type PendingJob,
 } from './client/tauri.js';
 import './client/styles.css';
@@ -70,6 +72,10 @@ export default component$(() => {
   const pollTimer = useSignal<number | undefined>();
   const pendingJobs = useSignal<PendingJob[]>([]);
   const pendingNotice = useSignal('');
+  const urlInput = useSignal<HTMLInputElement>();
+  // Set when the form was prefilled by the "Choose options" share target, so
+  // queueing returns to the app the link came from.
+  const returnAfterQueue = useSignal(false);
 
   const refresh = $(async () => {
     const [meResponse, jobsResponse] = await Promise.all([apiFetch('/api/me'), apiFetch('/api/jobs')]);
@@ -120,6 +126,31 @@ export default component$(() => {
 
   const refreshPending = $(async () => {
     pendingJobs.value = await listPendingJobs();
+  });
+
+  const captureSharedPrompt = $(async () => {
+    if (!isTauriRuntime()) {
+      return;
+    }
+    const sharedUrl = await takePendingPrompt();
+    if (!sharedUrl) {
+      return;
+    }
+    const normalized = normaliseSharedPromptUrl(sharedUrl);
+    if (!normalized) {
+      return;
+    }
+    url.value = normalized;
+    returnAfterQueue.value = true;
+    urlInput.value?.focus();
+  });
+
+  const returnToSource = $(async () => {
+    if (!returnAfterQueue.value) {
+      return;
+    }
+    returnAfterQueue.value = false;
+    await leaveApp();
   });
 
   const removePending = $(async (id: string) => {
@@ -239,6 +270,23 @@ export default component$(() => {
     });
   });
 
+  useVisibleTask$(({ cleanup }) => {
+    if (!isTauriRuntime()) {
+      return;
+    }
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        void captureSharedPrompt();
+      } else if (!submitting.value) {
+        // Leaving the app by hand cancels a pending return-to-source intent.
+        returnAfterQueue.value = false;
+      }
+    };
+    void captureSharedPrompt();
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    cleanup(() => document.removeEventListener('visibilitychange', onVisibilityChange));
+  });
+
   const updateBooleanOption = $((key: BooleanOptionKey, value: boolean) => {
     const signals = { splitChapters, includeChannel, includeDate, embedAudioCoverArt, saveAudioToAudiobooks, autoQueueOnPaste };
     signals[key].value = value;
@@ -345,6 +393,7 @@ export default component$(() => {
       }
       url.value = '';
       await refresh();
+      await returnToSource();
     } catch (caught) {
       const isHttpError = caught instanceof Error && 'httpStatus' in caught;
       if (isTauriRuntime() && !isHttpError) {
@@ -352,6 +401,7 @@ export default component$(() => {
         pendingNotice.value = 'The server is unreachable; queued on this device.';
         await refreshPending();
         url.value = '';
+        await returnToSource();
       } else {
         error.value = caught instanceof Error ? caught.message : String(caught);
       }
@@ -446,6 +496,7 @@ export default component$(() => {
       <section class="download-form">
         <label class="url-field">
           <input
+            ref={urlInput}
             type="url"
             aria-label="URL"
             value={url.value}

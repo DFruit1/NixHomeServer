@@ -110,6 +110,26 @@ export const storeServerBaseUrl = (url: string): void => {
   void tauriInvoke()?.('set_server_base_url', { url: trimmed }).catch(() => undefined);
 };
 
+/**
+ * A link handed over by the "Choose options" share target, if one is waiting.
+ * Taking it clears it so a later resume does not re-prefill the form.
+ */
+export const takePendingPrompt = async (): Promise<string | null> => {
+  const invoke = tauriInvoke();
+  if (!invoke) {
+    return null;
+  }
+  return (await invoke<string | null>('prompt_take').catch(() => null)) ?? null;
+};
+
+/**
+ * Send the app to the background after a prompted share is queued, returning
+ * to the app the link came from. No-op outside Android.
+ */
+export const leaveApp = async (): Promise<void> => {
+  await tauriInvoke()?.('leave_app').catch(() => undefined);
+};
+
 export const listPendingJobs = async (): Promise<PendingJob[]> => {
   const invoke = tauriInvoke();
   if (!invoke) {

@@ -1,6 +1,7 @@
 <resources>
     <string name="app_name">"YouTube Downloader"</string>
     <string name="main_activity_title">"YouTube Downloader"</string>
-    <string name="share_audio_label">"Download audio"</string>
-    <string name="share_video_label">"Download video"</string>
+    <string name="share_audio_label">"Music download"</string>
+    <string name="share_video_label">"Video download"</string>
+    <string name="share_prompt_label">"Choose options"</string>
 </resources>

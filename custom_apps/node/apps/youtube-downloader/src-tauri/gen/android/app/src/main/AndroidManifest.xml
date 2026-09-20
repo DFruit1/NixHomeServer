@@ -44,9 +44,9 @@
             </intent-filter>
         </activity>
 
-        <!-- Share a link straight into the offline download queue without
-             showing UI or pulling the main task to the foreground. Two targets
-             so audio and video appear as distinct share-sheet options. -->
+        <!-- Share targets. Music and Video queue straight into the offline
+             download queue without showing UI; Choose options opens the app
+             with the link prefilled so other settings can be chosen first. -->
         <activity
             android:name=".ShareAudioActivity"
             android:label="@string/share_audio_label"
@@ -74,6 +74,42 @@
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".SharePromptActivity"
+            android:label="@string/share_prompt_label"
+            android:theme="@android:style/Theme.NoDisplay"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity="">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
+
+        <!-- Sent by the app once a prompted share has been queued; moves the
+             whole task to the back so the app that shared the link returns.
+             No taskAffinity override, so it joins the main task and taking the
+             task back reveals the source app. -->
+        <activity
+            android:name=".ReturnActivity"
+            android:label="@string/main_activity_title"
+            android:theme="@android:style/Theme.NoDisplay"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="org.sydneybasiniot.youtubedownloader"
+                    android:host="return" />
             </intent-filter>
         </activity>
 

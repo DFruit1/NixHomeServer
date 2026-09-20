@@ -12,11 +12,21 @@ import java.io.File
 object ShareTarget {
   const val HANDOFF_FILE = "pending-share.jsonl"
 
+  /**
+   * A link the user wants to refine before queueing. Kept separate from the
+   * job hand-off so it prefills the form instead of queueing immediately.
+   */
+  const val PROMPT_FILE = "pending-prompt.txt"
+
   /** Pull the first http(s) URL out of a shared blob of text. */
   fun extractUrl(text: String): String? {
     val match = Regex("https?://\\S+").find(text) ?: return null
     return match.value.trim().trimEnd('.', ',', ')', ']', '}', '\'', '"')
   }
+
+  /** Candidate hand-off directories used by both the queue and prompt files. */
+  private fun handoffDirs(context: Context): List<File> =
+    listOfNotNull(context.filesDir, context.filesDir.parentFile, context.dataDir).distinct()
 
   /**
    * The Rust side resolves app data through the Tauri path API, which has
@@ -26,17 +36,23 @@ object ShareTarget {
   fun queue(context: Context, url: String, mediaType: String) {
     val json = JSONObject().put("url", url).put("mediaType", mediaType).toString()
     val line = "$json\n"
-    listOfNotNull(context.filesDir, context.filesDir.parentFile, context.dataDir)
-      .distinct()
-      .forEach { directory ->
-        File(directory, HANDOFF_FILE).appendText(line)
-      }
+    handoffDirs(context).forEach { directory ->
+      File(directory, HANDOFF_FILE).appendText(line)
+    }
   }
 
-  /** Publish the audio and video Direct Share targets. */
+  /** Record a link to prefill into the app's form rather than queue at once. */
+  fun queuePrompt(context: Context, url: String) {
+    handoffDirs(context).forEach { directory ->
+      File(directory, PROMPT_FILE).writeText("$url\n")
+    }
+  }
+
+  /** Publish the audio, video and prompt Direct Share targets. */
   fun publishShortcuts(context: Context) {
     publish(context, "share-audio", R.string.share_audio_label, ShareAudioActivity::class.java, 0)
     publish(context, "share-video", R.string.share_video_label, ShareVideoActivity::class.java, 1)
+    publish(context, "share-prompt", R.string.share_prompt_label, SharePromptActivity::class.java, 2)
   }
 
   private fun publish(

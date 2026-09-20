@@ -61,3 +61,12 @@ export const normalizeDownloadUrl = (value: string): string => {
 
   return clean.toString();
 };
+
+/**
+ * Normalise a link handed over by the Android share targets, returning
+ * `undefined` when it is not a usable YouTube URL.
+ */
+export const normaliseSharedPromptUrl = (value: string): string | undefined => {
+  const normalized = normalizeDownloadUrl(value);
+  return isYouTubeUrl(normalized) ? normalized : undefined;
+};

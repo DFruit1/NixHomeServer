@@ -10,6 +10,7 @@ use crate::auth;
 const QUEUE_FILE: &str = "pending-jobs.json";
 const SETTINGS_FILE: &str = "settings.json";
 const SHARED_FILE: &str = "pending-share.jsonl";
+const PROMPT_FILE: &str = "pending-prompt.txt";
 
 fn default_media_type() -> String {
     "audio".to_string()
@@ -189,6 +190,31 @@ fn default_request(url: &str, media_type: &str) -> serde_json::Value {
         "includeDate": true,
         "ytDlpVersion": "packaged",
     })
+}
+
+/// Take a link handed over by the "Choose options" share target, if any. The
+/// file mirrors the queue hand-off locations because Android's app data path
+/// and Tauri's path API do not always agree.
+#[tauri::command]
+pub fn prompt_take(app: AppHandle) -> Option<String> {
+    let mut candidates = Vec::new();
+    if let Ok(path) = app_data_file(&app, PROMPT_FILE) {
+        if let Some(parent) = path.parent() {
+            candidates.push(parent.join("files").join(PROMPT_FILE));
+        }
+        candidates.push(path);
+    }
+    for candidate in candidates {
+        let contents = match std::fs::read_to_string(&candidate) {
+            Ok(contents) => contents,
+            Err(_) => continue,
+        };
+        let _ = std::fs::remove_file(&candidate);
+        if let Some(url) = contents.lines().map(str::trim).find(|line| !line.is_empty()) {
+            return Some(url.to_string());
+        }
+    }
+    None
 }
 
 #[tauri::command]

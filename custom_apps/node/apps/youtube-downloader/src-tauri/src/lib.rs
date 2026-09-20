@@ -2,6 +2,25 @@ mod api;
 mod auth;
 mod queue;
 
+/// After a prompted share has been queued, send the app to the background so
+/// the source app (usually YouTube) comes back. Android resolves the custom
+/// scheme through ReturnActivity, which moves the task to the back.
+#[tauri::command]
+fn leave_app(app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    {
+        use tauri_plugin_opener::OpenerExt;
+        app.opener()
+            .open_url("org.sydneybasiniot.youtubedownloader://return", None::<&str>)
+            .map_err(|error| error.to_string())?;
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -19,11 +38,13 @@ pub fn run() {
             auth::oauth_logout,
             auth::oauth_login,
             api::api_request,
+            queue::prompt_take,
             queue::queue_list,
             queue::queue_add,
             queue::queue_remove,
             queue::queue_flush,
             queue::set_server_base_url,
+            leave_app,
         ])
         .run(tauri::generate_context!())
         .expect("error while running the YouTube Downloader shell");
