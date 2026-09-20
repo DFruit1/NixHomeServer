@@ -44,6 +44,7 @@ in
       restartTriggers = [ config.age.secrets.forgejoClientSecret.file ];
       path = with pkgs; [
         config.services.forgejo.package
+        bash
         coreutils
         gawk
         gnugrep

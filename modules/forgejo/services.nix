@@ -172,6 +172,7 @@ in
         ];
         path = with pkgs; [
           config.services.forgejo.package
+          bash
           coreutils
           curl
           findutils
