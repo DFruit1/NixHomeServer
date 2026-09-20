@@ -13,8 +13,8 @@ kanidm_logo_dir="modules/Core_Modules/kanidm/assets/apps"
 
 mapfile -t homepage_logos < <(find "$homepage_logo_dir" -maxdepth 1 -type f -name '*.svg' -printf '%f\n' | sort)
 
-if [[ "${#homepage_logos[@]}" -ne 21 ]]; then
-  echo "❌ Expected the Homepage service catalog to contain 21 SVG logos; found ${#homepage_logos[@]}." >&2
+if [[ "${#homepage_logos[@]}" -ne 23 ]]; then
+  echo "❌ Expected the Homepage service catalog to contain 23 SVG logos; found ${#homepage_logos[@]}." >&2
   exit 1
 fi
 
@@ -55,6 +55,7 @@ fi
 
 require_fixed modules/audiobookshelf/identity.nix 'assets/apps/audiobookshelf.svg' "Audiobookshelf must use its Homepage logo in Kanidm."
 require_fixed modules/files/identity.nix 'assets/apps/filestash.svg' "Filestash must use its Homepage logo in Kanidm."
+require_fixed modules/forgejo/identity.nix 'assets/apps/forgejo.svg' "Forgejo must use its Homepage logo in Kanidm."
 require_fixed modules/immich/identity.nix 'assets/apps/immich.svg' "Immich must use its Homepage logo in Kanidm."
 require_fixed modules/jellyfin/identity.nix 'assets/apps/jellyfin.svg' "Jellyfin must use its Homepage logo in Kanidm."
 require_fixed modules/kavita/identity.nix 'assets/apps/kavita.svg' "Kavita must use its Homepage logo in Kanidm."
