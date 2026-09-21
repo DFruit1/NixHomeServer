@@ -1,9 +1,28 @@
 import type { CurrentUser } from '../shared/types.js';
+import { isTauriRuntime, serverBaseUrl } from './api.js';
+
+// The native shells load the client from `tauri.localhost`, so deriving the
+// Filebrowser host from `window.location` would produce `files.localhost` over
+// cleartext, which Android blocks. Fall back to the configured server host
+// instead, matching the web app's `files.<domain>` URL.
+const defaultFileBrowserLocation = (): Pick<Location, 'hostname' | 'protocol'> => {
+  if (isTauriRuntime()) {
+    try {
+      const parsed = new URL(serverBaseUrl());
+      if (parsed.hostname) {
+        return { hostname: parsed.hostname, protocol: parsed.protocol };
+      }
+    } catch {
+      // Fall through to the page origin when the stored server URL is unusable.
+    }
+  }
+  return window.location;
+};
 
 export const buildFileBrowserUrl = (
   outputFolder: string | undefined,
   currentUser: CurrentUser | undefined,
-  location: Pick<Location, 'hostname' | 'protocol'> = window.location,
+  location: Pick<Location, 'hostname' | 'protocol'> = defaultFileBrowserLocation(),
 ): string | undefined => {
   if (!outputFolder) {
     return undefined;
