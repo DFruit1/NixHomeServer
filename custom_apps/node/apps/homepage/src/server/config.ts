@@ -3,6 +3,7 @@ import type {
   FolderGuide,
   KanidmGroupManagementSource,
   OfflineMediaConnectionAddress,
+  OfflineMediaConnectionKind,
   OfflineMediaSetup,
   PowerScheduleValues,
   ServiceCard,
@@ -103,6 +104,13 @@ const singleLineString = (value: unknown, maximumLength: number): string | undef
   return trimmed;
 };
 
+const offlineMediaConnectionKinds: readonly OfflineMediaConnectionKind[] = ['lan', 'hostname', 'netbird'];
+
+const normaliseOfflineMediaConnectionKind = (value: unknown): OfflineMediaConnectionKind | undefined =>
+  typeof value === 'string' && (offlineMediaConnectionKinds as readonly string[]).includes(value)
+    ? value as OfflineMediaConnectionKind
+    : undefined;
+
 export const normaliseOfflineMediaConnectionAddresses = (value: unknown): OfflineMediaConnectionAddress[] => {
   if (!Array.isArray(value)) {
     return [];
@@ -122,8 +130,9 @@ export const normaliseOfflineMediaConnectionAddresses = (value: unknown): Offlin
     const label = legacyAddress
       ? 'Server address'
       : singleLineString(objectEntry?.label, 100) ?? 'Server address';
+    const kind = legacyAddress ? undefined : normaliseOfflineMediaConnectionKind(objectEntry?.kind);
     seenAddresses.add(address);
-    connections.push({ address, label });
+    connections.push(kind ? { address, label, kind } : { address, label });
   }
   return connections;
 };

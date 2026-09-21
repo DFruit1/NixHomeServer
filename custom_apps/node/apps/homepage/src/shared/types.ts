@@ -97,9 +97,12 @@ export type OfflineMediaDevice = {
   syncError?: string | null;
 };
 
+export type OfflineMediaConnectionKind = 'lan' | 'hostname' | 'netbird';
+
 export type OfflineMediaConnectionAddress = {
   address: string;
   label: string;
+  kind?: OfflineMediaConnectionKind;
 };
 
 export type OfflineMediaSetup = {

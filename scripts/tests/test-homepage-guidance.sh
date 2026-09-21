@@ -227,10 +227,10 @@ require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/steps.ts
   "New-user guidance must explain first-login provisioning for apps that keep local accounts."
 require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/steps.tsx 'Do not use a public photo-share link or the public share hostname' \
   "Mobile Photos guidance must distinguish the private app URL from public share links."
-require_fixed custom_apps/node/apps/homepage/src/components/OfflineMediaSetup.tsx 'Syncthing-Fork is the supported app.' \
-  "Offline Media guidance must name the single supported mobile app."
-require_fixed custom_apps/node/apps/homepage/src/components/OfflineMediaSetup.tsx 'iPhone and iPad are not supported.' \
-  "Offline Media guidance must state the unsupported iOS boundary."
+require_fixed custom_apps/node/apps/homepage/src/components/OfflineMediaSetup.tsx 'Set up Syncthing-Fork (Android Only)' \
+  "Offline Media guidance must mark the supported mobile app as Android-only."
+require_fixed custom_apps/node/apps/homepage/src/components/OfflineMediaSetup.tsx 'offline-media-lan-address' \
+  "Offline Media guidance must show the detected LAN address inline instead of deferring to Connection help."
 require_fixed custom_apps/node/apps/homepage/src/components/OfflineMediaSetup.tsx 'offline-media-status-column' \
   "Offline Media must keep the server QR code and connection status in the dedicated layout column."
 if rg -Fq 'Möbius Sync' custom_apps/node/apps/homepage/src/components/OfflineMediaSetup.tsx; then

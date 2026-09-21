@@ -51,6 +51,9 @@ export const OfflineMediaSetupPanel = component$(
     const devices = useSignal<OfflineMediaDevice[]>(offlineMedia?.devices ?? []);
     const runtimeError = useSignal(offlineMedia?.runtimeError ?? '');
     const folders = offlineMedia?.folders ?? [];
+    const lanConnection =
+      offlineMedia?.connectionAddresses.find((connection) => connection.kind === 'lan')
+      ?? offlineMedia?.connectionAddresses[0];
 
     useVisibleTask$(({ cleanup }) => {
       const refreshStatus = async () => {
@@ -142,14 +145,23 @@ export const OfflineMediaSetupPanel = component$(
       <section class="detail-block offline-media-setup">
         <div class="offline-media-layout">
           <div class="offline-media-setup-main">
-            <h3>Set up Syncthing-Fork</h3>
-            <p class="hint"><strong>Syncthing-Fork is the supported app.</strong> Install it on an Android phone or tablet. iPhone and iPad are not supported.</p>
+            <h3>Set up Syncthing-Fork (Android Only)</h3>
             <ol class="steps">
               <li>In Syncthing-Fork, choose <strong>Add device</strong>, then scan or paste the server ID shown on the right.</li>
               <li>
-                Add the at-home (LAN) address from <strong>Connection help</strong> to keep the connection reliable when
-                automatic discovery is unavailable. Syncing only runs while this device is on the same home network, so
-                it never uses mobile data.
+                {lanConnection ? (
+                  <>
+                    Add the at-home (LAN) address{' '}
+                    <code class="offline-media-lan-address">{lanConnection.address}</code> to the server device in
+                    Syncthing-Fork to keep the connection reliable when automatic discovery is unavailable.
+                  </>
+                ) : (
+                  <>
+                    Add the at-home (LAN) address shown in <strong>Connection help</strong> to keep the connection
+                    reliable when automatic discovery is unavailable.
+                  </>
+                )}{' '}
+                Syncing only runs while this device is on the same home network, so it never uses mobile data.
               </li>
               <li>
                 Copy your device ID from Syncthing-Fork, paste it below, give the device a name, and select{' '}

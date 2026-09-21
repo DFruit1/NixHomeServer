@@ -73,9 +73,10 @@ describe('homepage configuration branding', () => {
             {
               address: ' tcp://server.internal:22000 ',
               label: ' Recommended server address ',
+              kind: 'lan',
             },
             'tcp://100.64.0.10:22000',
-            { address: 'tcp://192.168.1.10:22000', label: 42 },
+            { address: 'tcp://192.168.1.10:22000', label: 42, kind: 'not-a-kind' },
             { address: 'tcp://bad\naddress:22000', label: 'Invalid' },
             { address: '', label: 'Invalid' },
             42,
@@ -89,6 +90,7 @@ describe('homepage configuration branding', () => {
         {
           address: 'tcp://server.internal:22000',
           label: 'Recommended server address',
+          kind: 'lan',
         },
         {
           address: 'tcp://100.64.0.10:22000',

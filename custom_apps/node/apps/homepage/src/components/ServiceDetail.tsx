@@ -4,7 +4,6 @@ import { serviceTips } from '../shared/ui-constants.js';
 import { ServiceLogo } from './ServiceLogo.js';
 import { OfflineMediaSetupPanel } from './OfflineMediaSetup.js';
 import { SftpAccessInstructions } from './SftpAccessInstructions.js';
-import { MkvConversionCard } from './MkvConversionCard.js';
 
 export const ServiceDetail = component$(
   ({
@@ -41,7 +40,7 @@ export const ServiceDetail = component$(
             )}
           </div>
         </div>
-        <p>{service.description}</p>
+        {!isOfflineMedia && <p>{service.description}</p>}
         {!isOfflineMedia && (
           <div class="detail-actions">
             <a class="primary-link" href={service.url} target="_blank" rel="noreferrer">
@@ -88,12 +87,7 @@ export const ServiceDetail = component$(
             </ul>
           </section>
         )}
-        {isOfflineMedia && (
-          <>
-            <MkvConversionCard />
-            <OfflineMediaSetupPanel offlineMedia={offlineMedia} username={username} />
-          </>
-        )}
+        {isOfflineMedia && <OfflineMediaSetupPanel offlineMedia={offlineMedia} username={username} />}
         {service.id === 'sftp' && <SftpAccessInstructions username={displayUsername} serverHost={serverHost} port={serverPort} />}
       </article>
     );

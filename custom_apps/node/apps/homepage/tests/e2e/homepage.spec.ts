@@ -52,56 +52,35 @@ test('all locally mapped service icons are packaged and renderable', async ({ pa
   await expect(page.locator('.app-symbol--backups')).not.toHaveText('L');
 });
 
-test('offline media connection help renders the configured network labels', async ({ page }) => {
+test('offline media page shows the detected LAN address and network labels', async ({ page }) => {
   await page.setExtraHTTPHeaders({
     'x-forwarded-groups': 'users',
   });
-  await page.route('**/api/mkvmaker/progress', async (route) => {
-    await route.fulfill({
-      contentType: 'application/json',
-      body: JSON.stringify({
-        enabled: true,
-        available: true,
-        state: 'converting',
-        conversions: [{
-          title: 'Example Movie',
-          mediaKind: 'movie',
-          itemName: 'Example Movie.mkv',
-          itemIndex: 1,
-          itemCount: 1,
-          percent: 42.5,
-          itemPercent: 42.5,
-          etaSeconds: 900,
-          rateFps: 58.2,
-        }],
-      }),
-    });
-  });
   await page.goto('/services/offline-media');
 
-  await expect(page.getByText('Automatically keep copies of your server music and videos on a computer or phone.', { exact: true })).toBeVisible();
   await expect(page.locator('.service-detail-heading .app-symbol--offline-media img')).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'DVD conversion progress' })).toBeVisible();
-  await expect(page.getByText('Example Movie', { exact: true })).toBeVisible();
-  await expect(page.getByRole('progressbar', { name: 'Example Movie 42.5% converted' })).toHaveAttribute('value', '42.5');
-  await expect(page.getByText('ETA 15 min · 58.2 fps', { exact: true })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Set up Syncthing-Fork' })).toBeVisible();
-  await expect(page.getByText('Syncthing-Fork is the supported app.')).toBeVisible();
-  await expect(page.getByText('iPhone and iPad are not supported.')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Set up Syncthing-Fork (Android Only)' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'DVD conversion progress' })).toHaveCount(0);
+  await expect(page.getByText(/Automatically keep copies/)).toHaveCount(0);
+  await expect(page.getByText('Syncthing-Fork is the supported app.')).toHaveCount(0);
+  await expect(page.getByText('iPhone and iPad are not supported.')).toHaveCount(0);
   await expect(page.getByRole('heading', { name: 'Connection status' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Keep media on your device' })).toHaveCount(0);
   await expect(page.getByText(/Möbius Sync/)).toHaveCount(0);
+  await expect(page.locator('.offline-media-lan-address')).toHaveText('tcp://192.168.8.12:22000');
   const offlineMediaLayout = page.locator('.offline-media-layout');
   await expect(offlineMediaLayout).toHaveCSS('display', 'grid');
   await expect.poll(() => offlineMediaLayout.evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(' ').length))
     .toBe((page.viewportSize()?.width ?? 1280) <= 760 ? 1 : 2);
   await page.locator('summary').filter({ hasText: 'Connection help' }).click();
-  await expect(page.getByRole('heading', { name: 'Recommended server address' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'At home (LAN)' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Away from home (NetBird)' })).toBeVisible();
-  await expect(page.getByText('tcp://server.internal:22000', { exact: true })).toBeVisible();
-  await expect(page.getByText('tcp://192.168.8.12:22000', { exact: true })).toBeVisible();
-  await expect(page.getByText('tcp://100.72.113.237:22000', { exact: true })).toBeVisible();
+  const connectionHelp = page.locator('details').filter({ hasText: 'Connection help' });
+  await expect(connectionHelp.getByRole('heading', { name: 'Recommended server address' })).toBeVisible();
+  await expect(connectionHelp.getByRole('heading', { name: 'At home (LAN)' })).toBeVisible();
+  await expect(connectionHelp.getByRole('heading', { name: 'Away from home (NetBird)' })).toBeVisible();
+  await expect(connectionHelp.getByText('tcp://server.internal:22000', { exact: true })).toBeVisible();
+  await expect(connectionHelp.getByText('tcp://192.168.8.12:22000', { exact: true })).toBeVisible();
+  await expect(connectionHelp.getByText('tcp://100.72.113.237:22000', { exact: true })).toBeVisible();
+  await expectNoHorizontalOverflow(page);
 });
 
 test('homepage navigation and SFTP upload flow stay client-side', async ({ page }) => {

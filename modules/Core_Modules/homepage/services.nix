@@ -246,7 +246,7 @@ let
       url = "/services/offline-media";
       enabled = offlineMediaEnabledForHomepage;
       category = "media";
-      description = "Automatically keep copies of your server music and videos on a computer or phone while it is on the home network.";
+      description = "Automatically keep copies of your server music and videos on a computer or android phone while it is on the home network.";
       loginNotes = offlineMediaLoginNotes;
       projectUrl = "https://syncthing.net";
       logoUrl = "/logos/syncthing.svg";
@@ -660,14 +660,17 @@ let
         {
           address = "tcp://${vars.networking.lan.ip}:22000";
           label = "At home (LAN) — recommended";
+          kind = "lan";
         }
         {
           address = "tcp://${syncthingHost}:22000";
           label = "Private hostname (home LAN or NetBird)";
+          kind = "hostname";
         }
         {
           address = "tcp://${vars.networking.netbird.ip}:22000";
           label = "Away from home (NetBird) — optional, may use mobile data";
+          kind = "netbird";
         }
       ];
       folders = [ ];

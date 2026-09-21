@@ -146,7 +146,7 @@
       "url": "/services/offline-media",
       "enabled": true,
       "category": "media",
-      "description": "Automatically keep copies of your server music and videos on a computer or phone.",
+      "description": "Automatically keep copies of your server music and videos on a computer or android phone.",
       "loginNotes": "Use Kanidm on the homepage, then enroll your Syncthing device ID.",
       "logoUrl": "/logos/syncthing.svg",
       "uploadNotes": "Use _Music, _Videos/_YouTube, and _Videos/_Other in your personal files root.",
@@ -259,15 +259,18 @@
     "connectionAddresses": [
       {
         "address": "tcp://server.internal:22000",
-        "label": "Recommended server address"
+        "label": "Recommended server address",
+        "kind": "hostname"
       },
       {
         "address": "tcp://192.168.8.12:22000",
-        "label": "At home (LAN)"
+        "label": "At home (LAN)",
+        "kind": "lan"
       },
       {
         "address": "tcp://100.72.113.237:22000",
-        "label": "Away from home (NetBird)"
+        "label": "Away from home (NetBird)",
+        "kind": "netbird"
       }
     ],
     "folders": [
