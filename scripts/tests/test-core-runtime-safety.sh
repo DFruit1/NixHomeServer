@@ -174,7 +174,7 @@ jq -e '
   and (.power.homepageReadWritePaths | index("/var/lib/power-schedule") != null)
   and (.power as $power | ($power.homepageSudoCommands | index($power.homepageEnv.HOMEPAGE_POWER_SCHEDULE_APPLY_COMMAND)) != null)
   and (.power.buildModeEnv.HOMEPAGE_BUILD_MODE_FILE == "/var/lib/deploy-settings/build-mode.json")
-  and (.power.buildModeEnv.HOMEPAGE_BUILD_MODE_DEFAULT == "maximum-effort")
+  and (.power.buildModeEnv.HOMEPAGE_BUILD_MODE_DEFAULT == "balanced")
   and (.power.buildModeEnv.HOMEPAGE_BUILD_MODE_APPLY_COMMAND | type == "string" and length > 0)
   and (.power.homepageReadWritePaths | index("/var/lib/deploy-settings") != null)
   and (.power as $power | ($power.homepageSudoCommands | index($power.buildModeEnv.HOMEPAGE_BUILD_MODE_APPLY_COMMAND)) != null)

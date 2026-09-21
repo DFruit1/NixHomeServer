@@ -58,6 +58,12 @@ This repository defines a reproducible NixOS home-server focused on:
 ## Rebuild Command
 
 * Prefer the guarded deploy helper for rebuild. 
+* Use the guarded helper's default allocation so the dashboard-selected build
+  mode applies: run `nix run .#deploy -- --action test|switch` (or
+  `scripts/deploy.sh` with the same arguments) without `--build-mode`,
+  `--build-locally`, or `--build-host`. Do not run raw `nixos-rebuild` for an
+  ordinary rebuild; it bypasses the dashboard and silently falls back to the
+  `vars.nix` default.
 * Rebuilds including nix drv and rust build artifacts should be done on the remote server when possible.
 * The deployed bootstrap sudo password is stored as the root-only agenix
 secret `serverBootstrapSudoPassword`, which materializes at
