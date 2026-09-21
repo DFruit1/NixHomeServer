@@ -107,7 +107,9 @@ in
           YOUTUBE_DOWNLOADER_CONCURRENCY = "1";
           YOUTUBE_DOWNLOADER_SHARED_WRITE_GROUP = vars.fileAccess.sharedAccessGroup or "files-shared-users";
           YOUTUBE_DOWNLOADER_FILE_BROWSER_SHARED_MOUNT_NAME = vars.fileAccess.sharedMountName or "_Shared";
-          YOUTUBE_DOWNLOADER_FILE_BROWSER_URL_TEMPLATE = "https://files.${vars.domain}/files/%path%/";
+          # Deliberately no "%path%" placeholder: systemd expands specifiers in
+          # Environment= values, so the client appends /files/<path>/ itself.
+          YOUTUBE_DOWNLOADER_FILE_BROWSER_URL_TEMPLATE = "https://files.${vars.domain}";
           YOUTUBE_DOWNLOADER_EVENT_RETENTION_DAYS = toString config.repo.youtubeDownloader.eventRetentionDays;
           YOUTUBE_DOWNLOADER_AUTH_ISSUER_URL = vars.kanidmIssuer "youtube-downloader-app";
           YOUTUBE_DOWNLOADER_AUTH_AUDIENCE = "youtube-downloader-app";
