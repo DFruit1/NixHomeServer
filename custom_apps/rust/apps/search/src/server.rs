@@ -204,9 +204,19 @@ struct SearchParams {
     before: Option<String>,
     #[serde(default)]
     page: Option<usize>,
+    #[serde(default)]
+    sort: Option<String>,
 }
 
 impl SearchParams {
+    /// Maps the UI's `sort` value to a Solr ordering. Unknown or missing values
+    /// fall back to relevance so a hand-edited URL cannot break the query.
+    fn sort_order(&self) -> crate::solr::SortOrder {
+        match nonempty(self.sort.as_deref()).as_deref() {
+            Some("newest") => crate::solr::SortOrder::Newest,
+            _ => crate::solr::SortOrder::Relevance,
+        }
+    }
     fn filters(&self) -> crate::solr::SearchFilters {
         crate::solr::SearchFilters {
             source: nonempty(self.source.as_deref()),
@@ -279,7 +289,14 @@ async fn api_search(
     match state
         .inner
         .solr
-        .search(&query, &selected, &filters, rows, offset)
+        .search(
+            &query,
+            &selected,
+            &filters,
+            rows,
+            offset,
+            params.sort_order(),
+        )
         .await
     {
         Ok(response) => {
@@ -296,6 +313,9 @@ async fn api_search(
             };
             let mut hits: Vec<serde_json::Value> =
                 federated_hits.iter().map(FederatedHit::to_json).collect();
+            // Federated hits are only ever returned on the first page, so more
+            // results remain exactly when Solr still has rows past this page.
+            let has_more = offset + response.hits.len() < response.total as usize;
             for hit in response.hits.iter() {
                 let enriched = enrichment.get(&hit.id);
                 let snippet =
@@ -320,6 +340,7 @@ async fn api_search(
             Json(json!({
                 "hits": hits,
                 "total": response.total + federated_hits.len() as u64,
+                "hasMore": has_more,
                 "sourceFacets": facet_json(&response.source_facets),
                 "kindFacets": facet_json(&response.kind_facets),
                 "contentTypeFacets": facet_json(&response.content_type_facets),
@@ -596,5 +617,25 @@ mod tests {
         let out = truncate(&value, 3);
         assert_eq!(out.chars().count(), 3);
         assert!(value.starts_with(&out));
+    }
+
+    #[test]
+    fn sort_param_maps_to_order() {
+        let params = |value: serde_json::Value| -> SearchParams {
+            serde_json::from_value(value).expect("params")
+        };
+        assert_eq!(
+            params(json!({ "q": "x" })).sort_order(),
+            crate::solr::SortOrder::Relevance
+        );
+        assert_eq!(
+            params(json!({ "q": "x", "sort": "newest" })).sort_order(),
+            crate::solr::SortOrder::Newest
+        );
+        // Unknown values fall back to relevance rather than failing the query.
+        assert_eq!(
+            params(json!({ "q": "x", "sort": "bogus" })).sort_order(),
+            crate::solr::SortOrder::Relevance
+        );
     }
 }

@@ -139,8 +139,10 @@ pub fn query_terms(query: &str) -> Vec<String> {
 
 /// Builds a short plain-text snippet around the first query term and wraps every
 /// query term present in it in `<em>` tags, the same highlight markup Solr used
-/// to emit, so the UI has one rendering path for every source. Returns `None`
-/// when no term is present or the text is empty.
+/// to emit, so the UI has one rendering path for every source. The text is
+/// HTML-escaped before the markers are inserted, so a body that literally
+/// contains `<em>` cannot masquerade as a highlight and no other markup can leak
+/// through. Returns `None` when no term is present or the text is empty.
 pub fn snippet_from_text(text: &str, query: &str) -> Option<String> {
     let terms = query_terms(query);
     let needle = terms.first()?;
@@ -172,10 +174,12 @@ pub fn snippet_from_html(html: &str, query: &str, html_limit: usize) -> Option<S
 
 /// Wraps every case-insensitive occurrence of each term in `<em>` tags so
 /// snippets render through one UI path. Matches never overlap: terms are applied
-/// left to right over plain text.
+/// left to right over plain text. The non-marker text is HTML-escaped, so the
+/// returned string is safe to insert as HTML; a literal `<em>` in the source
+/// becomes `&lt;em&gt;` and is never mistaken for a highlight.
 pub fn highlight_terms(text: &str, terms: &[String]) -> String {
     if terms.is_empty() {
-        return text.to_string();
+        return escape_html(text);
     }
     let mut marked = String::with_capacity(text.len());
     let mut cursor = 0;
@@ -184,14 +188,31 @@ pub fn highlight_terms(text: &str, terms: &[String]) -> String {
         .filter_map(|term| find_case_insensitive_from(text, cursor, term))
         .min_by_key(|&(start, _)| start)
     {
-        marked.push_str(&text[cursor..start]);
+        marked.push_str(&escape_html(&text[cursor..start]));
         marked.push_str("<em>");
-        marked.push_str(&text[start..end]);
+        marked.push_str(&escape_html(&text[start..end]));
         marked.push_str("</em>");
         cursor = end;
     }
-    marked.push_str(&text[cursor..]);
+    marked.push_str(&escape_html(&text[cursor..]));
     marked
+}
+
+/// Escapes the five HTML-significant characters so snippet text can be inserted
+/// into markup without carrying any structure of its own.
+fn escape_html(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(ch),
+        }
+    }
+    out
 }
 
 /// Case-insensitive byte-span search for `needle` at or after `from`, returning
@@ -378,5 +399,18 @@ mod tests {
         let snippet = snippet_from_html(html, "report", 200_000).expect("snippet");
         assert!(snippet.contains("<em>report</em>"));
         assert_eq!(snippet_from_html("", "report", 200_000), None);
+    }
+
+    #[test]
+    fn snippet_escapes_markup_but_keeps_highlights() {
+        let text = "literal <em>tag</em> and quantum & more";
+        let snippet = snippet_from_text(text, "quantum").expect("snippet");
+        // The query term is still highlighted...
+        assert!(snippet.contains("<em>quantum</em>"));
+        // ...while literal markup and ampersands in the body are escaped so they
+        // cannot masquerade as a highlight or inject structure.
+        assert!(snippet.contains("&lt;em&gt;tag&lt;/em&gt;"));
+        assert!(snippet.contains("&amp; more"));
+        assert!(!snippet.contains("literal <em>tag"));
     }
 }

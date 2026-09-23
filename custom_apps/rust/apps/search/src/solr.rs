@@ -230,6 +230,27 @@ fn solr_string_term(value: &str) -> String {
     format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
+/// Result ordering chosen by the user. Relevance is Solr's default score order;
+/// Newest orders by the document's content date so the most recent material
+/// surfaces first regardless of score.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SortOrder {
+    #[default]
+    Relevance,
+    Newest,
+}
+
+impl SortOrder {
+    /// The Solr `sort` clause, or `None` to leave the default score order.
+    fn clause(self) -> Option<&'static str> {
+        match self {
+            SortOrder::Relevance => None,
+            // `score desc` breaks ties between documents sharing a date.
+            SortOrder::Newest => Some("content_created desc, score desc"),
+        }
+    }
+}
+
 pub struct SolrClient {
     http: reqwest::Client,
     base_url: String,
@@ -457,6 +478,7 @@ impl SolrClient {
         filters: &SearchFilters,
         rows: usize,
         offset: usize,
+        sort: SortOrder,
     ) -> Result<SearchResponse, String> {
         let mut params: Vec<(&str, String)> = vec![
             ("q", query.to_string()),
@@ -484,6 +506,9 @@ impl SolrClient {
             ("facet.limit", "50".to_string()),
             ("wt", "json".to_string()),
         ];
+        if let Some(clause) = sort.clause() {
+            params.push(("sort", clause.to_string()));
+        }
         for clause in filters.clauses(selected_sources) {
             params.push(("fq", clause));
         }
@@ -760,5 +785,15 @@ mod tests {
         assert!(rendered.get("meta_owner_s").is_none());
         assert_eq!(rendered["content_created"], json!("2024-02-01T00:00:00Z"));
         assert!(rendered.get("content_modified").is_none());
+    }
+
+    #[test]
+    fn sort_order_maps_to_solr_clause() {
+        // Relevance leaves Solr's default score ordering untouched.
+        assert_eq!(SortOrder::Relevance.clause(), None);
+        assert_eq!(
+            SortOrder::Newest.clause(),
+            Some("content_created desc, score desc")
+        );
     }
 }
