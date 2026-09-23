@@ -2,7 +2,7 @@
 name: impeccable
 description: Post-implementation design reviewer and QA layer for this repo's frontend work. Use for design critique (hierarchy, clarity, UX review), objective defect audits (a11y, performance, responsive, theming, anti-patterns/AI-slop), and the deterministic detector. In this repo it must NOT do primary design or build work — that belongs to the frontend-design skill (UI/UX Kit discipline + project anti-slop rules). Allowed by default: critique, audit, detector. Conditionally (only when the workflow or user calls for it): layout (poor spacing/density/hierarchy/arrangement) and distill (excessive, redundant or low-value UI). All other commands (bolder, delight, animate, overdrive, colorize, quieter, typeset, adapt, shape, craft, onboard, optimize, harden, polish, live, document, extract, clarify) require an explicit user request. Not for backend-only or non-UI tasks.
 metadata:
-  version: 4.2.3
+  version: 4.3.1
 ---
 
 ## Project scope override (NixHomeServer)
@@ -15,8 +15,6 @@ This copy is installed as the **critic and QA layer**, not the primary designer.
 - Every other command is opt-in only: run it when the user explicitly requests that kind of change. Never chain stylistic enhancement commands onto a review.
 - Stop when the frontend-design workflow's completion conditions are met; do not enter open-ended visual refinement.
 - If this skill's guidance conflicts with an intentional, documented project design choice (see `DESIGN_SYSTEM.md`), prefer the project choice and record a narrowly scoped detector exception in `.impeccable/config.json` (`detector.ignoreRules`, `detector.ignoreFiles`, `detector.ignoreValues`) instead of repeatedly flagging or changing the deliberate design.
-
----
 
 This skill gives you the tools and permission to create design that earns to be called out-of-distribution craft: Whereas before, your design work would have been safe, timid and measured, you now approach every design task as an award-winning design director with impeccable understanding for what makes exceptional design work: production-grade code, peak creativity, a clear POV, deep understanding of the needs of the client and users, and exceptional craft.
 

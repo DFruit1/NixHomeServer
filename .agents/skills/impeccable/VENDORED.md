@@ -5,10 +5,10 @@ designer — see `.agents/skills/frontend-design/SKILL.md`.
 
 - Upstream: https://github.com/pbakaus/impeccable (npm: `impeccable`)
 - License: Apache-2.0 (`LICENSE`, `NOTICE.md` in this directory)
-- Pinned: skill v4.2.3 (tag `skill-v4.2.3`), engine v0.1.4 (`scripts/VERSION`), installed via
+- Pinned: skill v4.3.1 (tag `skill-v4.3.1`), engine v0.1.5 (`scripts/VERSION`), installed via
   `npx impeccable@latest install --providers=codex --scope=project --no-hooks`
   (the codex provider's repo-local layout `.agents/skills/` is the layout this repo's
-  opencode reads), vendored 2026-09-09
+  opencode reads), vendored 2026-09-24
 
 ## Local patches (re-apply after re-vendoring)
 
