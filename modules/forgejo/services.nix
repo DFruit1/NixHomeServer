@@ -160,7 +160,7 @@ in
       unitConfig.RequiresMountsFor = [ stateDir ];
     };
 
-    systemd.services.forgejo-mirrors = lib.mkIf (cfg.mirrors != [ ]) (
+    systemd.services.forgejo-mirrors = lib.mkIf (cfg.mirrors != [ ])
       {
         description = "Reconcile declarative Forgejo pull mirrors";
         wantedBy = [ "multi-user.target" ];
@@ -208,8 +208,7 @@ in
           LoadCredential = [ "github-token:${config.age.secrets.forgejoGithubToken.path}" ];
         };
         script = "bash ${./reconcile-mirrors.sh}";
-      }
-    );
+      };
 
     systemd.timers.forgejo-mirrors = lib.mkIf (cfg.mirrors != [ ]) {
       description = "Periodically reconcile declarative Forgejo pull mirrors";
