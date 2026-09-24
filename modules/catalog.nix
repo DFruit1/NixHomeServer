@@ -162,6 +162,7 @@ rec {
     { module = ./Integrations/expose_media_manager_libraries_to_search.nix; allApps = [ "search" ]; anyApps = [ "jellyfin" "audiobookshelf" "kavita" ]; }
     { module = ./Integrations/expose_mail_archive_emails_to_search.nix; allApps = [ "search" "mail-archive-ui" ]; anyApps = [ ]; }
     { module = ./Integrations/expose_paperless_documents_to_search.nix; allApps = [ "search" "paperless" ]; anyApps = [ ]; }
+    { module = ./Integrations/expose_search_to_media_manager.nix; allApps = [ "search" ]; anyApps = [ ]; }
     { module = ./Integrations/expose_mail_archive_emails_in_files.nix; allApps = [ "mail-archive-ui" "files" ]; anyApps = [ ]; }
     { module = ./Integrations/grant_archives_access_to_kiwix_library.nix; allApps = [ "browsertrix-downloader" "kiwix" ]; anyApps = [ ]; }
     { module = ./Integrations/grant_files_access_to_audiobookshelf_media.nix; allApps = [ "files" "audiobookshelf" ]; anyApps = [ ]; }

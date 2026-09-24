@@ -27,6 +27,23 @@ pub struct ScannedItem {
     pub fingerprint: String,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ReconcileOutcome {
+    pub changed: usize,
+    pub removed: usize,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScanSchedule {
+    pub interval_minutes: i64,
+    pub next_scan_at: i64,
+    pub last_scanned_at: Option<i64>,
+    pub last_change_at: Option<i64>,
+}
+
+pub const INITIAL_SCAN_INTERVAL_MINUTES: i64 = 15;
+pub const MAX_SCAN_INTERVAL_MINUTES: i64 = 24 * 60;
+
 #[derive(Clone, Debug)]
 pub struct MutationPlanDraft {
     pub id: String,
@@ -52,6 +69,38 @@ pub struct MutationPlanStatus {
     pub error: Option<String>,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MutationPlanSummary {
+    pub id: String,
+    pub owner_username: String,
+    pub state: String,
+    pub operation_kind: String,
+    pub item_ids: Vec<String>,
+    pub action_count: i64,
+    pub completed_action_count: i64,
+    pub created_at: String,
+    pub confirmed_at: Option<String>,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+    pub expires_at: i64,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RetryPlanOutcome {
+    Queued,
+    NotFound,
+    StateConflict,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AbandonPlanOutcome {
+    Rejected,
+    NotFound,
+    StateConflict,
+}
+
 #[derive(Clone, Debug)]
 pub struct ClaimedMutationPlan {
     pub id: String,
@@ -66,7 +115,7 @@ pub struct ClaimedMutationAction {
 }
 
 #[derive(Clone, Debug)]
-pub struct ExpiredPreviewAction {
+pub struct DiscardablePreviewAction {
     pub plan_id: String,
     pub ordinal: usize,
     pub action: BrokerAction,
@@ -109,7 +158,7 @@ impl Catalog {
         connection.pragma_update(None, "journal_mode", "WAL")?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if !(0..=3).contains(&version) {
+        if !(0..=4).contains(&version) {
             return Err(unsupported_schema(version));
         }
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -157,7 +206,8 @@ impl Catalog {
                 0 => create_mutation_schema(&transaction)?,
                 1 => migrate_mutation_schema_v1(&transaction)?,
                 2 => migrate_playback_positions(&transaction)?,
-                3 => break,
+                3 => migrate_scan_schedule(&transaction)?,
+                4 => break,
                 version => return Err(unsupported_schema(version)),
             }
         }
@@ -174,7 +224,7 @@ impl Catalog {
         connection.busy_timeout(std::time::Duration::from_secs(30))?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if version != 3 {
+        if version != 4 {
             return Err(unsupported_schema(version));
         }
         Ok(Self { connection })
@@ -206,7 +256,7 @@ impl Catalog {
         after_relative_path: Option<&str>,
         limit: usize,
     ) -> rusqlite::Result<Vec<CatalogItem>> {
-        let limit = limit.min(500) as i64;
+        let limit = limit.min(1000) as i64;
         if let Some(after_relative_path) = after_relative_path {
             let mut statement = self.connection.prepare(
                 "SELECT id, root_id, owner_username, relative_path, media_kind,
@@ -417,6 +467,94 @@ impl Catalog {
         )
     }
 
+    /// Returns the persisted adaptive scan schedule for a root, if it has one.
+    pub fn scan_schedule(
+        &self,
+        root_id: &str,
+        owner_username: Option<&str>,
+    ) -> rusqlite::Result<Option<ScanSchedule>> {
+        self.connection
+            .query_row(
+                "SELECT interval_minutes, next_scan_at, last_scanned_at, last_change_at
+                   FROM catalog_scan_schedule
+                  WHERE root_id = ?1 AND owner_username = ?2",
+                rusqlite::params![root_id, owner_username.unwrap_or_default()],
+                |row| {
+                    Ok(ScanSchedule {
+                        interval_minutes: row.get(0)?,
+                        next_scan_at: row.get(1)?,
+                        last_scanned_at: row.get(2)?,
+                        last_change_at: row.get(3)?,
+                    })
+                },
+            )
+            .optional()
+    }
+
+    /// A root with no schedule has never been scanned and is due immediately.
+    pub fn scan_is_due(
+        &self,
+        root_id: &str,
+        owner_username: Option<&str>,
+        now: i64,
+    ) -> rusqlite::Result<bool> {
+        Ok(self
+            .scan_schedule(root_id, owner_username)?
+            .map(|schedule| schedule.next_scan_at <= now)
+            .unwrap_or(true))
+    }
+
+    /// Records a scan result and advances the adaptive backoff for this root. A
+    /// pass that found a change resets to the initial interval; a pass with no
+    /// change extends toward the maximum interval.
+    pub fn record_scan_outcome(
+        &mut self,
+        root_id: &str,
+        owner_username: Option<&str>,
+        changed: bool,
+        now: i64,
+    ) -> rusqlite::Result<ScanSchedule> {
+        let previous = self.scan_schedule(root_id, owner_username)?;
+        let current_interval = previous
+            .as_ref()
+            .map(|schedule| schedule.interval_minutes)
+            .unwrap_or(INITIAL_SCAN_INTERVAL_MINUTES);
+        let interval_minutes = next_scan_interval_minutes(current_interval, changed);
+        let last_change_at = if changed {
+            Some(now)
+        } else {
+            previous
+                .as_ref()
+                .and_then(|schedule| schedule.last_change_at)
+        };
+        let schedule = ScanSchedule {
+            interval_minutes,
+            next_scan_at: now.saturating_add(interval_minutes * 60),
+            last_scanned_at: Some(now),
+            last_change_at,
+        };
+        self.connection.execute(
+            "INSERT INTO catalog_scan_schedule
+               (root_id, owner_username, interval_minutes, next_scan_at,
+                last_scanned_at, last_change_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(root_id, owner_username) DO UPDATE SET
+               interval_minutes = excluded.interval_minutes,
+               next_scan_at = excluded.next_scan_at,
+               last_scanned_at = excluded.last_scanned_at,
+               last_change_at = excluded.last_change_at",
+            rusqlite::params![
+                root_id,
+                owner_username.unwrap_or_default(),
+                schedule.interval_minutes,
+                schedule.next_scan_at,
+                schedule.last_scanned_at,
+                schedule.last_change_at,
+            ],
+        )?;
+        Ok(schedule)
+    }
+
     pub fn catalog_item(&self, id: &str) -> rusqlite::Result<Option<CatalogItem>> {
         self.connection
             .query_row(
@@ -445,7 +583,7 @@ impl Catalog {
         root_id: &str,
         owner_username: Option<&str>,
         items: &[ScannedItem],
-    ) -> rusqlite::Result<usize> {
+    ) -> rusqlite::Result<ReconcileOutcome> {
         // Acquire the write reservation before reading the existing rows. A
         // deferred transaction can read alongside another writer in WAL mode,
         // then fail immediately with SQLITE_BUSY when it tries to upgrade;
@@ -453,23 +591,27 @@ impl Catalog {
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let existing_ids = {
+        let existing = {
             let mut statement = transaction.prepare(
-                "SELECT id FROM catalog_items
+                "SELECT id, fingerprint FROM catalog_items
                   WHERE root_id = ?1
                     AND (owner_username IS ?2 OR owner_username = ?2)",
             )?;
             let rows = statement.query_map(rusqlite::params![root_id, owner_username], |row| {
-                row.get::<_, String>(0)
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })?;
-            rows.collect::<rusqlite::Result<std::collections::BTreeSet<_>>>()?
+            rows.collect::<rusqlite::Result<std::collections::HashMap<_, _>>>()?
         };
         let scanned_ids = items
             .iter()
             .map(|item| item.id.as_str())
             .collect::<std::collections::BTreeSet<_>>();
 
+        let mut changed = 0usize;
         for item in items {
+            if existing.get(&item.id).map(String::as_str) != Some(item.fingerprint.as_str()) {
+                changed += 1;
+            }
             transaction.execute(
                 "INSERT INTO catalog_items
                  (id, root_id, owner_username, relative_path, media_kind,
@@ -497,8 +639,8 @@ impl Catalog {
             )?;
         }
 
-        let removed_ids = existing_ids
-            .iter()
+        let removed_ids = existing
+            .keys()
             .filter(|id| !scanned_ids.contains(id.as_str()))
             .collect::<Vec<_>>();
         for id in &removed_ids {
@@ -512,7 +654,10 @@ impl Catalog {
             rusqlite::params![root_id, owner_username.unwrap_or_default()],
         )?;
         transaction.commit()?;
-        Ok(removed_ids.len())
+        Ok(ReconcileOutcome {
+            changed,
+            removed: removed_ids.len(),
+        })
     }
 
     pub fn insert_audit_event(
@@ -611,10 +756,13 @@ impl Catalog {
         Ok(outcome)
     }
 
-    pub fn claim_expired_preview_action(
+    /// Claim one pending action from a plan that will never execute (an expired
+    /// preview or one the editor abandoned) so its private staging file can be
+    /// discarded. Overdue previews are marked expired first.
+    pub fn claim_discardable_preview_action(
         &mut self,
         now: i64,
-    ) -> rusqlite::Result<Option<ExpiredPreviewAction>> {
+    ) -> rusqlite::Result<Option<DiscardablePreviewAction>> {
         let transaction = self.connection.transaction()?;
         transaction.execute(
             "UPDATE mutation_plans
@@ -627,14 +775,14 @@ impl Catalog {
                 "SELECT plan.id, action.ordinal, action.action_json
                    FROM mutation_plans AS plan
                    JOIN mutation_actions AS action ON action.plan_id = plan.id
-                  WHERE plan.state = 'expired' AND action.state = 'pending'
+                  WHERE plan.state IN ('expired', 'rejected') AND action.state = 'pending'
                   ORDER BY plan.expires_at, plan.created_at, plan.id, action.ordinal
                   LIMIT 1",
                 [],
                 |row| {
                     let ordinal = row.get::<_, i64>(1)?;
                     let json = row.get::<_, String>(2)?;
-                    Ok(ExpiredPreviewAction {
+                    Ok(DiscardablePreviewAction {
                         plan_id: row.get(0)?,
                         ordinal: usize::try_from(ordinal).map_err(|error| {
                             rusqlite::Error::FromSqlConversionFailure(
@@ -652,7 +800,7 @@ impl Catalog {
         Ok(action)
     }
 
-    pub fn complete_expired_preview_action(
+    pub fn complete_discarded_preview_action(
         &self,
         plan_id: &str,
         ordinal: usize,
@@ -663,7 +811,7 @@ impl Catalog {
               WHERE plan_id = ?1 AND ordinal = ?2 AND state = 'pending'
                 AND EXISTS (
                   SELECT 1 FROM mutation_plans
-                   WHERE id = ?1 AND state = 'expired'
+                   WHERE id = ?1 AND state IN ('expired', 'rejected')
                 )",
             rusqlite::params![plan_id, ordinal as i64],
         )?;
@@ -708,12 +856,16 @@ impl Catalog {
             transaction.commit()?;
             return Ok(None);
         };
-        transaction.execute(
+        let changed = transaction.execute(
             "UPDATE mutation_plans
                 SET state = 'running', started_at = COALESCE(started_at, CURRENT_TIMESTAMP)
               WHERE id = ?1 AND state IN ('queued', 'running')",
             [&id],
         )?;
+        if changed == 0 {
+            transaction.commit()?;
+            return Ok(None);
+        }
         let actions = {
             let mut statement = transaction.prepare(
                 "SELECT ordinal, action_json FROM mutation_actions
@@ -821,6 +973,126 @@ impl Catalog {
             )
             .optional()
     }
+
+    /// List mutation plans newest first. `owner_username` scopes the result to
+    /// one identity; pass `None` for the editor-wide view.
+    pub fn list_mutation_plans(
+        &self,
+        owner_username: Option<&str>,
+        limit: usize,
+    ) -> rusqlite::Result<Vec<MutationPlanSummary>> {
+        let limit = limit.clamp(1, 200) as i64;
+        let mut statement = self.connection.prepare(
+            "SELECT plan.id, plan.owner_username, plan.state, plan.request_json,
+                    plan.created_at, plan.confirmed_at, plan.started_at, plan.finished_at,
+                    plan.expires_at, plan.error,
+                    (SELECT count(*) FROM mutation_actions AS action
+                      WHERE action.plan_id = plan.id),
+                    (SELECT count(*) FROM mutation_actions AS action
+                      WHERE action.plan_id = plan.id AND action.state = 'completed')
+               FROM mutation_plans AS plan
+              WHERE (?1 IS NULL OR plan.owner_username = ?1)
+              ORDER BY plan.created_at DESC, plan.id DESC
+              LIMIT ?2",
+        )?;
+        let rows = statement.query_map(rusqlite::params![owner_username, limit], |row| {
+            let request_json: String = row.get(3)?;
+            let (operation_kind, item_ids) = plan_request_summary(&request_json);
+            Ok(MutationPlanSummary {
+                id: row.get(0)?,
+                owner_username: row.get(1)?,
+                state: row.get(2)?,
+                operation_kind,
+                item_ids,
+                action_count: row.get(10)?,
+                completed_action_count: row.get(11)?,
+                created_at: row.get(4)?,
+                confirmed_at: row.get(5)?,
+                started_at: row.get(6)?,
+                finished_at: row.get(7)?,
+                expires_at: row.get(8)?,
+                error: row.get(9)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// Re-queue a failed plan so the broker resumes its incomplete actions.
+    pub fn retry_mutation_plan(
+        &mut self,
+        plan_id: &str,
+        owner_username: &str,
+    ) -> rusqlite::Result<RetryPlanOutcome> {
+        let changed = self.connection.execute(
+            "UPDATE mutation_plans
+                SET state = 'queued', error = NULL, finished_at = NULL
+              WHERE id = ?1 AND owner_username = ?2 AND state = 'failed'",
+            rusqlite::params![plan_id, owner_username],
+        )?;
+        if changed == 1 {
+            return Ok(RetryPlanOutcome::Queued);
+        }
+        match self.mutation_plan_status_for_owner(plan_id, owner_username)? {
+            Some(_) => Ok(RetryPlanOutcome::StateConflict),
+            None => Ok(RetryPlanOutcome::NotFound),
+        }
+    }
+
+    /// Cancel a plan that has not started executing. Pending staging files are
+    /// discarded by the broker's preview cleanup.
+    pub fn abandon_mutation_plan(
+        &mut self,
+        plan_id: &str,
+        owner_username: &str,
+    ) -> rusqlite::Result<AbandonPlanOutcome> {
+        let changed = self.connection.execute(
+            "UPDATE mutation_plans
+                SET state = 'rejected', finished_at = CURRENT_TIMESTAMP
+              WHERE id = ?1 AND owner_username = ?2 AND state IN ('previewed', 'queued')",
+            rusqlite::params![plan_id, owner_username],
+        )?;
+        if changed == 1 {
+            return Ok(AbandonPlanOutcome::Rejected);
+        }
+        match self.mutation_plan_status_for_owner(plan_id, owner_username)? {
+            Some(_) => Ok(AbandonPlanOutcome::StateConflict),
+            None => Ok(AbandonPlanOutcome::NotFound),
+        }
+    }
+}
+
+/// Extract the operator-facing operation kind and affected item IDs from a
+/// stored plan request without exposing the raw request payload.
+fn plan_request_summary(request_json: &str) -> (String, Vec<String>) {
+    let value: serde_json::Value = match serde_json::from_str(request_json) {
+        Ok(value) => value,
+        Err(_) => return ("unknown".to_string(), Vec::new()),
+    };
+    let kind = value
+        .get("kind")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| {
+            value
+                .pointer("/operation/kind")
+                .and_then(serde_json::Value::as_str)
+        })
+        .unwrap_or("unknown")
+        .to_string();
+    let mut item_ids: Vec<String> = value
+        .get("itemIds")
+        .and_then(serde_json::Value::as_array)
+        .map(|ids| {
+            ids.iter()
+                .filter_map(|id| id.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    if item_ids.is_empty() {
+        if let Some(item_id) = value.get("itemId").and_then(serde_json::Value::as_str) {
+            item_ids.push(item_id.to_string());
+        }
+    }
+    (kind, item_ids)
 }
 
 fn create_mutation_schema(connection: &Connection) -> rusqlite::Result<()> {
@@ -909,6 +1181,35 @@ fn migrate_playback_positions(connection: &Connection) -> rusqlite::Result<()> {
 
 fn json_to_sql_error(error: serde_json::Error) -> rusqlite::Error {
     rusqlite::Error::ToSqlConversionFailure(Box::new(error))
+}
+
+fn migrate_scan_schedule(connection: &Connection) -> rusqlite::Result<()> {
+    connection.execute_batch(
+        "CREATE TABLE IF NOT EXISTS catalog_scan_schedule (
+           root_id TEXT NOT NULL,
+           owner_username TEXT NOT NULL DEFAULT '',
+           interval_minutes INTEGER NOT NULL DEFAULT 15,
+           next_scan_at INTEGER NOT NULL DEFAULT 0,
+           last_scanned_at INTEGER,
+           last_change_at INTEGER,
+           PRIMARY KEY(root_id, owner_username)
+         ) WITHOUT ROWID;
+         PRAGMA user_version = 4;",
+    )
+}
+
+/// The adaptive polling ladder: 15/30/45/60 minutes, then hourly steps up to a
+/// 24-hour ceiling. Any detected change resets the root to the first interval.
+fn next_scan_interval_minutes(current: i64, changed: bool) -> i64 {
+    if changed {
+        return INITIAL_SCAN_INTERVAL_MINUTES;
+    }
+    let current = current.max(INITIAL_SCAN_INTERVAL_MINUTES);
+    if current < 60 {
+        (current + 15).min(60)
+    } else {
+        (current + 60).min(MAX_SCAN_INTERVAL_MINUTES)
+    }
 }
 
 fn json_from_sql_error(error: serde_json::Error) -> rusqlite::Error {

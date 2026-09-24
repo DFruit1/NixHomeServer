@@ -105,12 +105,17 @@ long-lived credential. Kavita has no public scan-job status endpoint; the
 persisted timestamp is the adapter's completion boundary, and removal of a
 baseline library is a terminal failure rather than a two-hour wait.
 
-The catalog performs a one-time lazy reconciliation when an authenticated user
-first reads a visible shared or personal root. A durable per-root and per-owner
-scan marker distinguishes an empty but already scanned directory from a new
-catalog. Concurrent first reads of the same root are serialized and re-check
-that marker before walking the filesystem. Explicit editor scans remain
-available for later reconciliation.
+Library reads are always served from the durable catalog cache and never walk
+the filesystem. A root that has never been reconciled gets one background scan
+so a fresh install fills in promptly, and a durable per-root and per-owner scan
+marker distinguishes an empty but already scanned directory from a new catalog.
+A background scanner reconciles due roots on an adaptive schedule: it starts at
+15 minutes and, while consecutive passes find no change, backs off to 30, 45,
+and 60 minutes and then in one-hour steps to a 24-hour ceiling; a detected
+change resets that root to 15 minutes. Concurrent scans of the same root are
+serialized and re-check the marker before walking the filesystem. Any
+authenticated member can force a real scan of a visible root with a
+cooldown-limited manual refresh, and editors retain an explicit rescan action.
 
 ## Consequences
 

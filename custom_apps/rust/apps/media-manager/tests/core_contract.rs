@@ -59,12 +59,12 @@ fn catalog_initialization_is_repeatable_and_uses_wal() {
     let dir = tempfile::tempdir().expect("temporary directory");
     let path = dir.path().join("control.sqlite3");
     let first = Catalog::initialize(&path).expect("create catalog");
-    assert_eq!(first.schema_version().unwrap(), 3);
+    assert_eq!(first.schema_version().unwrap(), 4);
     assert_eq!(first.get_playback_position("item", "user").unwrap(), None);
     drop(first);
     let second = Catalog::open(&path).expect("reopen catalog");
 
-    assert_eq!(second.schema_version().expect("schema version"), 3);
+    assert_eq!(second.schema_version().expect("schema version"), 4);
     assert_eq!(second.journal_mode().expect("journal mode"), "wal");
 }
 
@@ -76,7 +76,7 @@ fn opening_a_catalog_does_not_need_a_write_lock() {
     let writer = rusqlite::Connection::open(&path).unwrap();
     writer.execute_batch("BEGIN IMMEDIATE").unwrap();
     let catalog = Catalog::open(&path).expect("ordinary opens must not migrate");
-    assert_eq!(catalog.schema_version().unwrap(), 3);
+    assert_eq!(catalog.schema_version().unwrap(), 4);
 }
 
 #[test]
@@ -109,7 +109,7 @@ fn version_two_catalog_upgrades_in_one_initialization() {
         .execute_batch("DROP TABLE playback_positions; PRAGMA user_version = 2;")
         .unwrap();
     let catalog = Catalog::initialize(&path).unwrap();
-    assert_eq!(catalog.schema_version().unwrap(), 3);
+    assert_eq!(catalog.schema_version().unwrap(), 4);
     assert_eq!(catalog.get_playback_position("item", "user").unwrap(), None);
 }
 
@@ -131,7 +131,7 @@ fn version_one_catalog_upgrades_all_steps_and_preserves_plans() {
         )
         .unwrap();
     let catalog = Catalog::initialize(&path).unwrap();
-    assert_eq!(catalog.schema_version().unwrap(), 3);
+    assert_eq!(catalog.schema_version().unwrap(), 4);
     assert_eq!(
         catalog.get_playback_position("item", "alice").unwrap(),
         None

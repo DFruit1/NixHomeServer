@@ -1320,42 +1320,6 @@ pub(super) async fn metadata_issues(
     }
 
     let owner = (root.scope == RootScope::Personal).then_some(identity.username.as_str());
-    if query.cursor.is_none() {
-        let scan_root_spec = ScanRoot {
-            id: root.id.clone(),
-            owner_username: owner.map(str::to_string),
-            path: root.resolved_path.clone().into(),
-            category: root.category,
-        };
-        let catalog_handle = state.catalog.clone();
-        match tokio::task::spawn_blocking(move || rescan_root(&catalog_handle, &scan_root_spec))
-            .await
-        {
-            Ok(Ok(_)) => {}
-            Ok(Err(error)) => {
-                log_event(
-                    "metadata_health_scan_failed",
-                    &request_id,
-                    json!({ "rootId": root.id, "error": error }),
-                );
-                return ApiError::new(
-                    StatusCode::BAD_GATEWAY,
-                    "scan_failed",
-                    "The selected media root could not be cataloged.",
-                    request_id,
-                )
-                .into_response();
-            }
-            Err(error) => {
-                log_event(
-                    "metadata_health_scan_task_failed",
-                    &request_id,
-                    json!({ "rootId": root.id, "error": error.to_string() }),
-                );
-                return ApiError::internal(request_id).into_response();
-            }
-        }
-    }
 
     let catalog = match state.catalog.open() {
         Ok(catalog) => catalog,

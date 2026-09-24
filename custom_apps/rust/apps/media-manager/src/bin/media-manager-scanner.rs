@@ -1,9 +1,10 @@
 use media_manager::{
     catalog::{Catalog, CatalogHandle},
     config::AppConfig,
-    scanner::{rescan_root, ScanRoot},
+    scanner::{scan_root_if_due, ScanRoot},
 };
 use serde_json::json;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 fn main() {
     if let Err(error) = run() {
@@ -19,6 +20,7 @@ fn run() -> Result<(), String> {
     Catalog::initialize(&config.database_path())
         .map_err(|error| format!("open catalog: {error}"))?;
     let handle = CatalogHandle::new(config.database_path());
+    let now = unix_timestamp();
 
     let mut roots_scanned = 0usize;
     let mut roots_failed = 0usize;
@@ -32,8 +34,10 @@ fn run() -> Result<(), String> {
             path: spec.path.clone(),
             category: spec.category,
         };
-        match rescan_root(&handle, &root) {
-            Ok(result) => {
+        // Only roots whose adaptive schedule is due are walked, so idle
+        // libraries back off toward the 24-hour ceiling without extra I/O.
+        match scan_root_if_due(&handle, &root, now) {
+            Ok(Some(result)) => {
                 roots_scanned += 1;
                 log(
                     "info",
@@ -45,6 +49,7 @@ fn run() -> Result<(), String> {
                     }),
                 );
             }
+            Ok(None) => {}
             Err(error) => {
                 roots_failed += 1;
                 log(
@@ -69,6 +74,13 @@ fn run() -> Result<(), String> {
         json!({ "rootsScanned": roots_scanned }),
     );
     Ok(())
+}
+
+fn unix_timestamp() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs().min(i64::MAX as u64) as i64)
+        .unwrap_or(0)
 }
 
 fn log(level: &str, event: &str, detail: serde_json::Value) {

@@ -16,6 +16,7 @@ const ROOT_VIEWS: Set<View> = new Set<View>([
   "library",
   "health",
   "conversions",
+  "activity",
   "accounts",
   "refresh",
   "player",

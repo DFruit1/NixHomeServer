@@ -30,6 +30,7 @@ pub struct ScanRoot {
 pub struct ScanResult {
     pub files_seen: usize,
     pub items_indexed: usize,
+    pub items_changed: usize,
     pub items_removed: usize,
     pub entries_skipped: usize,
     pub skipped_paths: Vec<String>,
@@ -49,8 +50,82 @@ pub fn scan_root_if_needed(
         {
             return Ok(None);
         }
-        scan_root(&mut catalog, root).map(Some)
+        let result = scan_root(&mut catalog, root)?;
+        catalog
+            .record_scan_outcome(
+                &root.id,
+                root.owner_username.as_deref(),
+                scan_found_change(&result),
+                unix_timestamp(),
+            )
+            .map_err(|error| format!("record scan outcome: {error}"))?;
+        Ok(Some(result))
     })
+}
+
+/// Scans a single root only when its adaptive schedule says it is due, then
+/// records the outcome. Used by the periodic scanner so idle roots back off.
+pub fn scan_root_if_due(
+    catalog_handle: &CatalogHandle,
+    root: &ScanRoot,
+    now: i64,
+) -> Result<Option<ScanResult>, String> {
+    with_root_scan_lock(root, || {
+        let mut catalog = catalog_handle
+            .open()
+            .map_err(|error| format!("open catalog: {error}"))?;
+        if !catalog
+            .scan_is_due(&root.id, root.owner_username.as_deref(), now)
+            .map_err(|error| format!("read scan schedule: {error}"))?
+        {
+            return Ok(None);
+        }
+        let result = scan_root(&mut catalog, root)?;
+        catalog
+            .record_scan_outcome(
+                &root.id,
+                root.owner_username.as_deref(),
+                scan_found_change(&result),
+                now,
+            )
+            .map_err(|error| format!("record scan outcome: {error}"))?;
+        Ok(Some(result))
+    })
+}
+
+/// Runs a scan immediately (manual refresh or explicit editor rescan) and
+/// resets the root's adaptive backoff when it finds a change.
+pub fn scan_root_now(
+    catalog_handle: &CatalogHandle,
+    root: &ScanRoot,
+    now: i64,
+) -> Result<ScanResult, String> {
+    with_root_scan_lock(root, || {
+        let mut catalog = catalog_handle
+            .open()
+            .map_err(|error| format!("open catalog: {error}"))?;
+        let result = scan_root(&mut catalog, root)?;
+        catalog
+            .record_scan_outcome(
+                &root.id,
+                root.owner_username.as_deref(),
+                scan_found_change(&result),
+                now,
+            )
+            .map_err(|error| format!("record scan outcome: {error}"))?;
+        Ok(result)
+    })
+}
+
+fn scan_found_change(result: &ScanResult) -> bool {
+    result.items_changed > 0 || result.items_removed > 0
+}
+
+fn unix_timestamp() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs().min(i64::MAX as u64) as i64)
+        .unwrap_or(0)
 }
 
 pub fn rescan_root(catalog_handle: &CatalogHandle, root: &ScanRoot) -> Result<ScanResult, String> {
@@ -89,11 +164,11 @@ fn with_root_scan_lock<T>(
 
 pub fn scan_root(catalog: &mut Catalog, root: &ScanRoot) -> Result<ScanResult, String> {
     if !root.path.is_dir() {
-        let removed = catalog
+        let outcome = catalog
             .reconcile_root(&root.id, root.owner_username.as_deref(), &[])
             .map_err(|error| format!("clear unavailable root catalog: {error}"))?;
         return Ok(ScanResult {
-            items_removed: removed,
+            items_removed: outcome.removed,
             ..ScanResult::default()
         });
     }
@@ -195,9 +270,11 @@ pub fn scan_root(catalog: &mut Catalog, root: &ScanRoot) -> Result<ScanResult, S
     }
 
     result.items_indexed = scanned.len();
-    result.items_removed = catalog
+    let outcome = catalog
         .reconcile_root(&root.id, root.owner_username.as_deref(), &scanned)
         .map_err(|error| format!("reconcile catalog: {error}"))?;
+    result.items_changed = outcome.changed;
+    result.items_removed = outcome.removed;
     Ok(result)
 }
 

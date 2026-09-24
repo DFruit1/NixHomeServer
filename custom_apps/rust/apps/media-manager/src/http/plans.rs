@@ -1,11 +1,22 @@
 use super::*;
+use crate::catalog::{AbandonPlanOutcome, RetryPlanOutcome};
 use crate::media::LibraryCategory;
+use crate::scanner::scan_root_now;
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct PlanRequest {
     operation: Value,
     item_ids: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct PlanListQuery {
+    #[serde(default)]
+    scope: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -47,8 +58,11 @@ pub(super) async fn scan(
         category: visible_root.category,
     };
     let catalog_handle = state.catalog.clone();
-    let scan_result =
-        tokio::task::spawn_blocking(move || rescan_root(&catalog_handle, &scan_root_spec)).await;
+    let scan_now = unix_timestamp();
+    let scan_result = tokio::task::spawn_blocking(move || {
+        scan_root_now(&catalog_handle, &scan_root_spec, scan_now)
+    })
+    .await;
     let scan_result = match scan_result {
         Ok(Ok(result)) => result,
         Ok(Err(error)) => {
@@ -91,6 +105,129 @@ pub(super) async fn scan(
     }
     Json(json!({ "rootId": request.root_id, "result": scan_result, "requestId": request_id }))
         .into_response()
+}
+
+const MANUAL_REFRESH_COOLDOWN_SECONDS: u64 = 30;
+
+fn manual_refresh_allowed(key: &str) -> bool {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{Duration, Instant};
+    static MARKS: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+    let marks = MARKS.get_or_init(|| Mutex::new(HashMap::new()));
+    let Ok(mut marks) = marks.lock() else {
+        return true;
+    };
+    let now = Instant::now();
+    match marks.get(key) {
+        Some(last)
+            if now.duration_since(*last) < Duration::from_secs(MANUAL_REFRESH_COOLDOWN_SECONDS) =>
+        {
+            false
+        }
+        _ => {
+            marks.insert(key.to_string(), now);
+            true
+        }
+    }
+}
+
+/// Any authenticated user can force a real filesystem scan of a visible root;
+/// routine reads never touch the filesystem. Repeated refreshes are cooldown
+/// limited so a viewer cannot turn the API into a scan amplifier.
+pub(super) async fn refresh_root(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<ScanRequest>,
+) -> Response {
+    let request_id = request_id();
+    let identity = match identity_from_headers(&headers, &request_id) {
+        Ok(identity) => identity,
+        Err(error) => return error.into_response(),
+    };
+    let visible_root = match state
+        .config
+        .resolve_visible_root(&identity, request.root_id.as_str())
+    {
+        Some(root) => root,
+        None => {
+            return ApiError::new(
+                StatusCode::FORBIDDEN,
+                "root_not_visible",
+                "The requested root is not visible to this identity.",
+                request_id,
+            )
+            .into_response()
+        }
+    };
+    let key = format!(
+        "{}\0{}\0{}",
+        state.config.state_dir.display(),
+        identity.username,
+        request.root_id
+    );
+    if !manual_refresh_allowed(&key) {
+        return ApiError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "refresh_rate_limited",
+            "Please wait a moment before refreshing this library again.",
+            request_id,
+        )
+        .into_response();
+    }
+    let scan_root_spec = ScanRoot {
+        id: visible_root.id,
+        owner_username: (visible_root.scope == RootScope::Personal)
+            .then_some(identity.username.clone()),
+        path: visible_root.resolved_path.into(),
+        category: visible_root.category,
+    };
+    let catalog_handle = state.catalog.clone();
+    let scan_now = unix_timestamp();
+    let scan_result = tokio::task::spawn_blocking(move || {
+        scan_root_now(&catalog_handle, &scan_root_spec, scan_now)
+    })
+    .await;
+    let scan_result = match scan_result {
+        Ok(Ok(result)) => result,
+        Ok(Err(error)) => {
+            log_event(
+                "catalog_refresh_failed",
+                &request_id,
+                json!({ "error": error, "rootId": request.root_id }),
+            );
+            return ApiError::new(
+                StatusCode::BAD_GATEWAY,
+                "scan_failed",
+                "The selected media root could not be refreshed.",
+                request_id,
+            )
+            .into_response();
+        }
+        Err(error) => {
+            log_event(
+                "catalog_refresh_task_failed",
+                &request_id,
+                json!({ "error": error.to_string(), "rootId": request.root_id }),
+            );
+            return ApiError::internal(request_id).into_response();
+        }
+    };
+    if let Ok(catalog) = state.catalog.open() {
+        let _ = catalog.insert_audit_event(
+            &request_id,
+            &identity.username,
+            "catalog_root_refreshed",
+            Some(&request.root_id),
+            &serde_json::to_string(&scan_result).unwrap_or_else(|_| "{}".to_string()),
+        );
+    }
+    Json(json!({
+        "rootId": request.root_id,
+        "result": scan_result,
+        "requestId": request_id,
+    }))
+    .into_response()
 }
 
 pub(super) async fn preview_plan(
@@ -351,6 +488,214 @@ pub(super) async fn plan_status(
         )
         .into_response(),
         Err(_) => ApiError::internal(request_id).into_response(),
+    }
+}
+
+pub(super) async fn list_plans(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<PlanListQuery>,
+) -> Response {
+    let request_id = request_id();
+    let identity = match identity_from_headers(&headers, &request_id) {
+        Ok(identity) => identity,
+        Err(error) => return error.into_response(),
+    };
+    let can_view_all = identity.can_edit(&state.config.editor_group);
+    let all = query.scope.as_deref() == Some("all") && can_view_all;
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    let catalog = match state.catalog.open() {
+        Ok(catalog) => catalog,
+        Err(error) => {
+            log_event(
+                "catalog_open_failed",
+                &request_id,
+                json!({ "error": error.to_string() }),
+            );
+            return ApiError::internal(request_id).into_response();
+        }
+    };
+    let owner = if all {
+        None
+    } else {
+        Some(identity.username.as_str())
+    };
+    let plans = match catalog.list_mutation_plans(owner, limit) {
+        Ok(plans) => plans,
+        Err(error) => {
+            log_event(
+                "mutation_plan_list_failed",
+                &request_id,
+                json!({ "error": error.to_string() }),
+            );
+            return ApiError::internal(request_id).into_response();
+        }
+    };
+    Json(json!({
+        "scope": if all { "all" } else { "mine" },
+        "canViewAll": can_view_all,
+        "mutationMode": state.config.mutation_mode,
+        "plans": plans,
+        "requestId": request_id,
+    }))
+    .into_response()
+}
+
+pub(super) async fn retry_plan(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(plan_id): Path<String>,
+) -> Response {
+    let request_id = request_id();
+    let identity = match editor_identity(&state.config, &headers, &request_id) {
+        Ok(identity) => identity,
+        Err(error) => return error.into_response(),
+    };
+    if !valid_object_id(&plan_id) {
+        return ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_plan_id",
+            "The mutation plan ID is invalid.",
+            request_id,
+        )
+        .into_response();
+    }
+    if state.config.mutation_mode == MutationMode::ReadOnly {
+        return ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "mutation_mode_read_only",
+            "Mutation confirmation is disabled while the service is in read-only mode.",
+            request_id,
+        )
+        .into_response();
+    }
+    let mut catalog = match state.catalog.open() {
+        Ok(catalog) => catalog,
+        Err(error) => {
+            log_event(
+                "catalog_open_failed",
+                &request_id,
+                json!({ "error": error.to_string() }),
+            );
+            return ApiError::internal(request_id).into_response();
+        }
+    };
+    match catalog.retry_mutation_plan(&plan_id, &identity.username) {
+        Ok(RetryPlanOutcome::Queued) => {
+            if let Err(error) = catalog.insert_audit_event(
+                &request_id,
+                &identity.username,
+                "mutation_plan_retried",
+                Some(&plan_id),
+                "{}",
+            ) {
+                log_event(
+                    "audit_write_failed",
+                    &request_id,
+                    json!({ "error": error.to_string() }),
+                );
+            }
+            (
+                StatusCode::ACCEPTED,
+                Json(json!({ "id": plan_id, "state": "queued", "requestId": request_id })),
+            )
+                .into_response()
+        }
+        Ok(RetryPlanOutcome::NotFound) => ApiError::new(
+            StatusCode::NOT_FOUND,
+            "plan_not_found",
+            "The mutation plan does not exist for this identity.",
+            request_id,
+        )
+        .into_response(),
+        Ok(RetryPlanOutcome::StateConflict) => ApiError::new(
+            StatusCode::CONFLICT,
+            "plan_state_conflict",
+            "Only a failed mutation plan can be retried.",
+            request_id,
+        )
+        .into_response(),
+        Err(error) => {
+            log_event(
+                "mutation_plan_retry_failed",
+                &request_id,
+                json!({ "error": error.to_string() }),
+            );
+            ApiError::internal(request_id).into_response()
+        }
+    }
+}
+
+pub(super) async fn abandon_plan(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(plan_id): Path<String>,
+) -> Response {
+    let request_id = request_id();
+    let identity = match editor_identity(&state.config, &headers, &request_id) {
+        Ok(identity) => identity,
+        Err(error) => return error.into_response(),
+    };
+    if !valid_object_id(&plan_id) {
+        return ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_plan_id",
+            "The mutation plan ID is invalid.",
+            request_id,
+        )
+        .into_response();
+    }
+    let mut catalog = match state.catalog.open() {
+        Ok(catalog) => catalog,
+        Err(error) => {
+            log_event(
+                "catalog_open_failed",
+                &request_id,
+                json!({ "error": error.to_string() }),
+            );
+            return ApiError::internal(request_id).into_response();
+        }
+    };
+    match catalog.abandon_mutation_plan(&plan_id, &identity.username) {
+        Ok(AbandonPlanOutcome::Rejected) => {
+            if let Err(error) = catalog.insert_audit_event(
+                &request_id,
+                &identity.username,
+                "mutation_plan_abandoned",
+                Some(&plan_id),
+                "{}",
+            ) {
+                log_event(
+                    "audit_write_failed",
+                    &request_id,
+                    json!({ "error": error.to_string() }),
+                );
+            }
+            Json(json!({ "id": plan_id, "state": "rejected", "requestId": request_id }))
+                .into_response()
+        }
+        Ok(AbandonPlanOutcome::NotFound) => ApiError::new(
+            StatusCode::NOT_FOUND,
+            "plan_not_found",
+            "The mutation plan does not exist for this identity.",
+            request_id,
+        )
+        .into_response(),
+        Ok(AbandonPlanOutcome::StateConflict) => ApiError::new(
+            StatusCode::CONFLICT,
+            "plan_state_conflict",
+            "Only a previewed or queued mutation plan can be abandoned.",
+            request_id,
+        )
+        .into_response(),
+        Err(error) => {
+            log_event(
+                "mutation_plan_abandon_failed",
+                &request_id,
+                json!({ "error": error.to_string() }),
+            );
+            ApiError::internal(request_id).into_response()
+        }
     }
 }
 

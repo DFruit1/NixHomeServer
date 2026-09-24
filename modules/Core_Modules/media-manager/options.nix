@@ -18,6 +18,11 @@ let
       label = lib.mkOption { type = lib.types.str; };
       available = lib.mkOption { type = lib.types.bool; default = false; };
       capabilities = lib.mkOption { type = lib.types.listOf lib.types.str; default = [ ]; };
+      url = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Browser-facing URL for integrations that hand off to another application.";
+      };
       environment = lib.mkOption { type = lib.types.attrsOf lib.types.str; default = { }; };
       readOnlyPaths = lib.mkOption { type = lib.types.listOf lib.types.str; default = [ ]; };
       refresh = lib.mkOption {

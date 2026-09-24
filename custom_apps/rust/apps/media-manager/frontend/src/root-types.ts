@@ -25,6 +25,9 @@ import type {
   MetadataModificationTarget,
   MetadataObservation,
   MetadataSidecarInspection,
+  PlanActionResponse,
+  PlanListResponse,
+  PlanSummary,
   ProviderAccountState,
   ProviderCatalogResponse,
   ProviderCredentialField,
@@ -43,6 +46,9 @@ export type {
   MetadataModificationTarget,
   MetadataObservation,
   MetadataSidecarInspection,
+  PlanActionResponse,
+  PlanListResponse,
+  PlanSummary,
   ProviderAccountState,
   ProviderCatalogResponse,
   ProviderCredentialField,
@@ -56,6 +62,7 @@ export type View =
   | "library"
   | "health"
   | "conversions"
+  | "activity"
   | "accounts"
   | "refresh"
   | "player";
@@ -121,6 +128,7 @@ export const NAV_ITEMS: Array<{ id: View; label: string; icon: IconName }> = [
   { id: "library", label: "Libraries", icon: "library" },
   { id: "health", label: "Library health", icon: "tag" },
   { id: "conversions", label: "Conversions", icon: "disc" },
+  { id: "activity", label: "Activity", icon: "activity" },
   { id: "player", label: "Player", icon: "play" },
   { id: "accounts", label: "Metadata sources", icon: "shield" },
   { id: "refresh", label: "App refresh", icon: "refresh" },
@@ -138,6 +146,7 @@ export type IconName =
   | "search"
   | "tag"
   | "refresh"
+  | "activity"
   | "shield"
   | "folder"
   | "file"

@@ -437,6 +437,10 @@ paths:
   /items:
     get:
       operationId: listItems
+      description: >-
+        Returns one bounded page of catalog items scoped to a visible root.
+        Follow nextCursor to walk a large root; the filesystem reconciliation
+        runs only for the first, cursor-less page.
       parameters:
         - in: query
           name: rootId
@@ -447,6 +451,16 @@ paths:
           name: cursor
           schema:
             type: string
+        - in: query
+          name: pageSize
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+        - in: query
+          name: includeVideoProbes
+          schema:
+            type: boolean
       responses:
         "200":
           description: Catalog items scoped to one visible root.
@@ -1208,7 +1222,56 @@ paths:
                 $ref: '#/components/schemas/ScanResponse'
         '403':
           $ref: '#/components/responses/Error'
+  /catalog/refresh:
+    post:
+      operationId: refreshCatalogRoot
+      description: >-
+        Forces a real filesystem scan of one visible root and resets that
+        root's adaptive polling backoff. Available to any authenticated member;
+        repeated refreshes are cooldown limited.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [rootId]
+              additionalProperties: false
+              properties:
+                rootId: { type: string }
+      responses:
+        '200':
+          description: ScanResponse
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScanResponse'
+        '403':
+          $ref: '#/components/responses/Error'
+        '429':
+          $ref: '#/components/responses/Error'
   /plans:
+    get:
+      operationId: listMutationPlans
+      description: >-
+        Lists durable mutation plans newest first. Authenticated members see
+        their own plans; media-manager-editors may pass scope=all to see every
+        owner. mutationMode is reported so clients can explain why a queued
+        plan will not run.
+      parameters:
+        - in: query
+          name: scope
+          schema: { type: string, enum: [mine, all] }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 200 }
+      responses:
+        "200":
+          description: PlanListResponse
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PlanListResponse" }
+        "401": { $ref: "#/components/responses/Error" }
     post:
       operationId: previewMutationPlan
       description: >-
@@ -1259,6 +1322,45 @@ paths:
           $ref: '#/components/responses/Error'
         '503':
           $ref: '#/components/responses/Error'
+  /plans/{planId}/retry:
+    post:
+      operationId: retryMutationPlan
+      description: >-
+        Re-queues a failed mutation plan so the broker resumes its incomplete
+        actions. Requires an editor and read-write mode.
+      parameters:
+        - in: path
+          name: planId
+          required: true
+          schema: { type: string }
+      responses:
+        '202':
+          description: PlanActionResponse
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlanActionResponse' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+  /plans/{planId}/abandon:
+    post:
+      operationId: abandonMutationPlan
+      description: >-
+        Cancels a previewed or queued mutation plan before it runs and discards
+        its private staging files. Requires an editor.
+      parameters:
+        - in: path
+          name: planId
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: PlanActionResponse
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlanActionResponse' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
   /plans/{planId}:
     get:
       operationId: getMutationPlanStatus
@@ -1420,6 +1522,7 @@ components:
               label: { type: string }
               available: { type: boolean }
               capabilities: { type: array, items: { type: string } }
+              url: { type: [string, "null"] }
         mediaKinds:
           description: Intrinsic needs and available actions for every media kind.
           type: array
@@ -2132,6 +2235,49 @@ components:
       properties:
         items: { type: array, items: { $ref: "#/components/schemas/CatalogItem" } }
         nextCursor: { type: [string, "null"] }
+    PlanSummary:
+      type: object
+      required:
+        - id
+        - ownerUsername
+        - state
+        - operationKind
+        - itemIds
+        - actionCount
+        - completedActionCount
+        - createdAt
+        - expiresAt
+      properties:
+        id: { type: string }
+        ownerUsername: { type: string }
+        state:
+          enum: [previewed, queued, running, completed, failed, expired, rejected]
+        operationKind: { type: string }
+        itemIds: { type: array, items: { type: string } }
+        actionCount: { type: integer }
+        completedActionCount: { type: integer }
+        createdAt: { type: string }
+        confirmedAt: { type: [string, "null"] }
+        startedAt: { type: [string, "null"] }
+        finishedAt: { type: [string, "null"] }
+        expiresAt: { type: integer }
+        error: { type: [string, "null"] }
+    PlanListResponse:
+      type: object
+      required: [scope, canViewAll, mutationMode, plans, requestId]
+      properties:
+        scope: { enum: [mine, all] }
+        canViewAll: { type: boolean }
+        mutationMode: { enum: [read-only, enabled] }
+        plans: { type: array, items: { $ref: "#/components/schemas/PlanSummary" } }
+        requestId: { type: string }
+    PlanActionResponse:
+      type: object
+      required: [id, state, requestId]
+      properties:
+        id: { type: string }
+        state: { enum: [queued, rejected] }
+        requestId: { type: string }
     TmdbCandidate:
       type: object
       required:
@@ -2620,12 +2766,14 @@ components:
           required:
           - filesSeen
           - itemsIndexed
+          - itemsChanged
           - itemsRemoved
           - entriesSkipped
           - skippedPaths
           properties:
             filesSeen: *id002
             itemsIndexed: *id002
+            itemsChanged: *id002
             itemsRemoved: *id002
             entriesSkipped: *id002
             skippedPaths:

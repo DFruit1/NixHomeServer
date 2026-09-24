@@ -25,7 +25,7 @@ use crate::{
     naming::{
         canonical_movie_directory, canonical_music_track, canonical_tv_episode, clean_component,
     },
-    scanner::{rescan_root, ScanRoot},
+    scanner::ScanRoot,
     subtitle_format::{parse_srt, parse_subtitle, subtitle_validation},
     subtitles::{
         opensubtitles_movie_hash, OpenSubtitlesClient, OpenSubtitlesCredentials, SubtitleMatch,
@@ -92,6 +92,10 @@ struct SessionResponse {
 #[serde(rename_all = "camelCase")]
 struct ItemsQuery {
     root_id: String,
+    #[serde(default)]
+    cursor: Option<String>,
+    #[serde(default)]
+    page_size: Option<usize>,
     #[serde(default)]
     include_video_probes: bool,
 }
@@ -268,6 +272,7 @@ pub fn router(state: AppState) -> Router {
             get(conversions::conversions_inbox_error),
         )
         .route("/api/v1/scans", post(plans::scan))
+        .route("/api/v1/catalog/refresh", post(plans::refresh_root))
         .route(
             "/api/v1/items/{item_id}/subtitles/upload",
             post(subtitles::upload_subtitle),
@@ -328,9 +333,14 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/integrations/{integration_id}/refresh",
             get(refresh::integration_refresh_status).post(refresh::queue_integration_refresh),
         )
-        .route("/api/v1/plans", post(plans::preview_plan))
+        .route(
+            "/api/v1/plans",
+            get(plans::list_plans).post(plans::preview_plan),
+        )
         .route("/api/v1/plans/{plan_id}", get(plans::plan_status))
         .route("/api/v1/plans/{plan_id}/confirm", post(plans::confirm_plan))
+        .route("/api/v1/plans/{plan_id}/retry", post(plans::retry_plan))
+        .route("/api/v1/plans/{plan_id}/abandon", post(plans::abandon_plan))
         .layer(axum::extract::DefaultBodyLimit::max(
             MAX_SUBTITLE_BYTES + 1024,
         ))
@@ -440,6 +450,7 @@ async fn status(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respo
         label: "DVD ISO converter".to_string(),
         available: state.config.mkvmaker_progress_file.is_file(),
         capabilities: vec!["conversion-progress".to_string()],
+        url: None,
     });
     let opensubtitles_available = match state.config.provider_broker_base_url.as_deref() {
         Some(_) => runtime_accounts.contains("opensubtitles"),
@@ -457,6 +468,7 @@ async fn status(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respo
             "subtitle-search".to_string(),
             "subtitle-download".to_string(),
         ],
+        url: None,
     });
     let mut musicbrainz_capabilities = vec!["musicbrainz-lookup".to_string()];
     let acoustid_available = match state.config.provider_broker_base_url.as_deref() {
@@ -475,6 +487,7 @@ async fn status(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respo
         label: "MusicBrainz Picard".to_string(),
         available: true,
         capabilities: musicbrainz_capabilities,
+        url: None,
     });
     Json(json!({
         "schemaVersion": 1,
@@ -615,49 +628,6 @@ async fn items(
         }
     };
     let owner = (root.scope == RootScope::Personal).then_some(identity.username.as_str());
-    let scan_root_spec = ScanRoot {
-        id: root.id.clone(),
-        owner_username: owner.map(str::to_string),
-        path: root.resolved_path.clone().into(),
-        category: root.category,
-    };
-    let catalog_handle = state.catalog.clone();
-    match tokio::task::spawn_blocking(move || rescan_root(&catalog_handle, &scan_root_spec)).await {
-        Ok(Ok(result)) => {
-            log_event(
-                "catalog_root_reconciled",
-                &request_id,
-                json!({
-                    "rootId": root.id,
-                    "ownerUsername": owner,
-                    "result": result,
-                }),
-            );
-        }
-        Ok(Err(error)) => {
-            log_event(
-                "catalog_auto_scan_failed",
-                &request_id,
-                json!({ "rootId": root.id, "error": error }),
-            );
-            return ApiError::new(
-                StatusCode::BAD_GATEWAY,
-                "scan_failed",
-                "The selected media root could not be cataloged.",
-                request_id,
-            )
-            .into_response();
-        }
-        Err(error) => {
-            log_event(
-                "catalog_auto_scan_task_failed",
-                &request_id,
-                json!({ "rootId": root.id, "error": error.to_string() }),
-            );
-            return ApiError::internal(request_id).into_response();
-        }
-    }
-
     let catalog = match state.catalog.open() {
         Ok(catalog) => catalog,
         Err(error) => {
@@ -669,7 +639,41 @@ async fn items(
             return ApiError::internal(request_id).into_response();
         }
     };
-    let items = match catalog.list_items(&root.id, owner, 200) {
+    // Reads are always served from the catalog cache. A root that has never
+    // been reconciled gets one background scan so a fresh install fills in
+    // promptly; freshness otherwise comes from the periodic scanner and an
+    // explicit manual refresh.
+    if !catalog
+        .root_has_been_scanned(&root.id, owner)
+        .unwrap_or(true)
+    {
+        let scan_root_spec = ScanRoot {
+            id: root.id.clone(),
+            owner_username: owner.map(str::to_string),
+            path: root.resolved_path.clone().into(),
+            category: root.category,
+        };
+        let catalog_handle = state.catalog.clone();
+        let scan_request_id = request_id.clone();
+        tokio::task::spawn_blocking(move || {
+            if let Err(error) =
+                crate::scanner::scan_root_if_needed(&catalog_handle, &scan_root_spec)
+            {
+                log_event(
+                    "catalog_initial_scan_failed",
+                    &scan_request_id,
+                    json!({ "rootId": scan_root_spec.id, "error": error }),
+                );
+            }
+        });
+    }
+    let page_size = query.page_size.unwrap_or(200).clamp(1, 500);
+    let mut items = match catalog.list_items_after(
+        &root.id,
+        owner,
+        query.cursor.as_deref(),
+        page_size.saturating_add(1),
+    ) {
         Ok(items) => items,
         Err(error) => {
             log_event(
@@ -680,36 +684,19 @@ async fn items(
             return ApiError::internal(request_id).into_response();
         }
     };
-    let root_path = FilePath::new(&root.resolved_path);
-    let mut live_items = Vec::with_capacity(items.len());
-    let mut stale_ids = Vec::new();
-    for item in items {
-        if root_path.join(&item.relative_path).exists() {
-            live_items.push(item);
-        } else {
-            stale_ids.push(item.id);
-        }
-    }
-    if !stale_ids.is_empty() {
-        let count = stale_ids.len();
-        if let Err(error) = catalog.remove_items(&stale_ids) {
-            log_event(
-                "catalog_prune_failed",
-                &request_id,
-                json!({ "rootId": root.id, "staleCount": count, "error": error.to_string() }),
-            );
-        } else {
-            log_event(
-                "catalog_items_pruned",
-                &request_id,
-                json!({ "rootId": root.id, "prunedCount": count }),
-            );
-        }
-    }
+    let next_cursor = if items.len() > page_size {
+        items.truncate(page_size);
+        items.last().map(|item| item.relative_path.clone())
+    } else {
+        None
+    };
+    // Reads never touch the filesystem: stale rows are reconciled by the
+    // scanner and by explicit refreshes, not by a library view.
+    let live_items = items;
     if query.include_video_probes {
-        return items_with_video_probes(&state, &root, live_items, &request_id).await;
+        return items_with_video_probes(&state, &root, live_items, &request_id, next_cursor).await;
     }
-    Json(json!({ "items": live_items, "nextCursor": null })).into_response()
+    Json(json!({ "items": live_items, "nextCursor": next_cursor })).into_response()
 }
 
 async fn item_details(
@@ -743,11 +730,12 @@ async fn items_with_video_probes(
     root: &VisibleRoot,
     items: Vec<CatalogItem>,
     request_id: &str,
+    next_cursor: Option<String>,
 ) -> Response {
     let Some(ffprobe) = state.config.ffprobe_path.clone() else {
         return Json(json!({
             "items": items,
-            "nextCursor": null,
+            "nextCursor": next_cursor,
             "probePending": false,
         }))
         .into_response();
@@ -811,7 +799,7 @@ async fn items_with_video_probes(
         .collect::<Vec<_>>();
     Json(json!({
         "items": items,
-        "nextCursor": null,
+        "nextCursor": next_cursor,
         "probePending": probe_pending,
     }))
     .into_response()

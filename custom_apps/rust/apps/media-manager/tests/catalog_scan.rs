@@ -1,6 +1,9 @@
 use media_manager::media::{LibraryCategory, MediaKind};
 use media_manager::{
-    catalog::{Catalog, CatalogHandle, ScannedItem},
+    catalog::{
+        Catalog, CatalogHandle, ScannedItem, INITIAL_SCAN_INTERVAL_MINUTES,
+        MAX_SCAN_INTERVAL_MINUTES,
+    },
     naming::{canonical_movie_directory, canonical_tv_episode},
     scanner::{scan_root, scan_root_if_needed, ScanRoot},
 };
@@ -346,4 +349,91 @@ fn scanner_waits_for_a_concurrent_catalog_writer() {
 
     let result = result.expect("scan waits for the concurrent writer");
     assert_eq!(result.items_indexed, 1);
+}
+
+#[test]
+fn scan_schedule_backs_off_without_changes_and_resets_on_change() {
+    let dir = tempfile::tempdir().expect("temporary directory");
+    let mut catalog = Catalog::initialize(&dir.path().join("control.sqlite3")).expect("catalog");
+
+    assert!(catalog.scan_is_due("shared-videos", None, 1_000).unwrap());
+
+    let first = catalog
+        .record_scan_outcome("shared-videos", None, false, 1_000)
+        .expect("first no-change scan");
+    assert_eq!(first.interval_minutes, 30);
+    assert_eq!(first.next_scan_at, 1_000 + 30 * 60);
+    assert!(!catalog
+        .scan_is_due("shared-videos", None, first.next_scan_at - 1)
+        .unwrap());
+    assert!(catalog
+        .scan_is_due("shared-videos", None, first.next_scan_at)
+        .unwrap());
+
+    let second = catalog
+        .record_scan_outcome("shared-videos", None, false, first.next_scan_at)
+        .expect("second no-change scan");
+    assert_eq!(second.interval_minutes, 45);
+    let third = catalog
+        .record_scan_outcome("shared-videos", None, false, second.next_scan_at)
+        .expect("third no-change scan");
+    assert_eq!(third.interval_minutes, 60);
+    let fourth = catalog
+        .record_scan_outcome("shared-videos", None, false, third.next_scan_at)
+        .expect("first hourly step");
+    assert_eq!(fourth.interval_minutes, 120);
+
+    let mut last = fourth;
+    for _ in 0..64 {
+        last = catalog
+            .record_scan_outcome("shared-videos", None, false, last.next_scan_at)
+            .expect("backed-off scan");
+    }
+    assert_eq!(last.interval_minutes, MAX_SCAN_INTERVAL_MINUTES);
+
+    let reset = catalog
+        .record_scan_outcome("shared-videos", None, true, last.next_scan_at)
+        .expect("change resets backoff");
+    assert_eq!(reset.interval_minutes, INITIAL_SCAN_INTERVAL_MINUTES);
+    assert_eq!(reset.last_change_at, Some(last.next_scan_at));
+}
+
+#[test]
+fn reconcile_reports_changed_and_removed_items() {
+    let dir = tempfile::tempdir().expect("temporary directory");
+    let mut catalog = Catalog::initialize(&dir.path().join("control.sqlite3")).expect("catalog");
+    let item = |path: &str, fingerprint: &str| ScannedItem {
+        id: format!("id-{path}"),
+        relative_path: path.to_string(),
+        media_kind: MediaKind::Video,
+        size_bytes: 1,
+        modified_ns: 1,
+        fingerprint: fingerprint.to_string(),
+    };
+
+    let first = catalog
+        .reconcile_root(
+            "shared-videos",
+            None,
+            &[item("A.mkv", "1:1"), item("B.mkv", "1:1")],
+        )
+        .expect("first reconcile");
+    assert_eq!(first.changed, 2);
+    assert_eq!(first.removed, 0);
+
+    let same = catalog
+        .reconcile_root(
+            "shared-videos",
+            None,
+            &[item("A.mkv", "1:1"), item("B.mkv", "1:1")],
+        )
+        .expect("unchanged reconcile");
+    assert_eq!(same.changed, 0);
+    assert_eq!(same.removed, 0);
+
+    let changed = catalog
+        .reconcile_root("shared-videos", None, &[item("A.mkv", "2:2")])
+        .expect("changed reconcile");
+    assert_eq!(changed.changed, 1);
+    assert_eq!(changed.removed, 1);
 }

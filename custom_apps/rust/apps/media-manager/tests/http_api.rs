@@ -358,67 +358,96 @@ async fn viewer_can_read_roots_but_cannot_start_a_scan() {
 }
 
 #[tokio::test]
-async fn viewer_first_read_populates_an_unscanned_catalog() {
+async fn viewer_reads_serve_the_cached_catalog_without_walking_the_filesystem() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let app = test_app(&temp);
     std::fs::write(temp.path().join("shared/_Videos/Movie.mkv"), b"movie").expect("movie");
+    scan_root(&app, "shared-videos").await;
 
     let items = app
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/items?rootId=shared-videos")
-                .header("x-forwarded-user", "viewer")
-                .header("x-forwarded-groups", "users")
-                .body(Body::empty())
-                .expect("request"),
-        )
+        .oneshot(viewer_get_request("/api/v1/items?rootId=shared-videos"))
         .await
         .expect("items response");
-
     assert_eq!(items.status(), StatusCode::OK);
     let body = to_bytes(items.into_body(), 64 * 1024)
         .await
         .expect("items body");
     let value: Value = serde_json::from_slice(&body).expect("items json");
-    let catalog_items = value["items"].as_array().expect("items array");
-    assert_eq!(catalog_items.len(), 1);
-    assert_eq!(catalog_items[0]["relativePath"], "Movie.mkv");
+    assert_eq!(value["items"].as_array().expect("items array").len(), 1);
 }
 
 #[tokio::test]
-async fn viewer_reads_reconcile_the_catalog_with_the_current_filesystem() {
+async fn filesystem_changes_wait_for_a_scan_before_they_appear() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let app = test_app(&temp);
     let videos = temp.path().join("shared/_Videos");
-    let old_movie = videos.join("Old Movie.mkv");
-    std::fs::write(&old_movie, b"old movie").expect("old movie");
+    std::fs::write(videos.join("Old Movie.mkv"), b"old movie").expect("old movie");
+    scan_root(&app, "shared-videos").await;
 
-    let first = app
+    std::fs::remove_file(videos.join("Old Movie.mkv")).expect("remove old movie");
+    std::fs::write(videos.join("New Movie.mkv"), b"new movie").expect("new movie");
+
+    let cached = app
         .clone()
         .oneshot(viewer_get_request("/api/v1/items?rootId=shared-videos"))
         .await
-        .expect("first items response");
-    assert_eq!(first.status(), StatusCode::OK);
+        .expect("cached items");
+    let body = to_bytes(cached.into_body(), 64 * 1024)
+        .await
+        .expect("cached body");
+    let value: Value = serde_json::from_slice(&body).expect("cached json");
+    assert_eq!(value["items"][0]["relativePath"], "Old Movie.mkv");
 
-    std::fs::remove_file(old_movie).expect("remove old movie");
-    std::fs::write(videos.join("New Movie.mkv"), b"new movie").expect("new movie");
+    let refreshed = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .header("host", "media-manager.test")
+                .header("origin", "https://media-manager.test")
+                .uri("/api/v1/catalog/refresh")
+                .header("content-type", "application/json")
+                .header("x-forwarded-user", "viewer")
+                .header("x-forwarded-groups", "users")
+                .body(Body::from(r#"{"rootId":"shared-videos"}"#))
+                .expect("refresh request"),
+        )
+        .await
+        .expect("refresh response");
+    assert_eq!(refreshed.status(), StatusCode::OK);
 
-    let second = app
+    let after = app
         .oneshot(viewer_get_request("/api/v1/items?rootId=shared-videos"))
         .await
-        .expect("second items response");
-    assert_eq!(second.status(), StatusCode::OK);
-    let body = to_bytes(second.into_body(), 64 * 1024)
+        .expect("refreshed items");
+    let body = to_bytes(after.into_body(), 64 * 1024)
         .await
-        .expect("second items body");
-    let value: Value = serde_json::from_slice(&body).expect("second items json");
-    let paths = value["items"]
-        .as_array()
-        .expect("items array")
-        .iter()
-        .map(|item| item["relativePath"].as_str().expect("relative path"))
-        .collect::<Vec<_>>();
-    assert_eq!(paths, vec!["New Movie.mkv"]);
+        .expect("refreshed body");
+    let value: Value = serde_json::from_slice(&body).expect("refreshed json");
+    assert_eq!(value["items"][0]["relativePath"], "New Movie.mkv");
+}
+
+#[tokio::test]
+async fn manual_refresh_is_available_to_viewers_but_rate_limited() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let app = test_app(&temp);
+    std::fs::write(temp.path().join("shared/_Videos/Movie.mkv"), b"movie").expect("movie");
+    let refresh = || {
+        Request::builder()
+            .method("POST")
+            .header("host", "media-manager.test")
+            .header("origin", "https://media-manager.test")
+            .uri("/api/v1/catalog/refresh")
+            .header("content-type", "application/json")
+            .header("x-forwarded-user", "viewer")
+            .header("x-forwarded-groups", "users")
+            .body(Body::from(r#"{"rootId":"shared-videos"}"#))
+            .expect("refresh request")
+    };
+    let first = app.clone().oneshot(refresh()).await.expect("first refresh");
+    assert_eq!(first.status(), StatusCode::OK);
+    let second = app.oneshot(refresh()).await.expect("second refresh");
+    assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
 }
 
 #[tokio::test]
@@ -1224,6 +1253,7 @@ async fn metadata_details_merge_filename_fields_with_a_bounded_jellyfin_snapshot
         jellyfin_image_cache: Arc::new(JellyfinImageCache::new()),
         tmdb_client: None,
     });
+    scan_root(&app, "shared-videos").await;
     let items = app
         .clone()
         .oneshot(viewer_get_request("/api/v1/items?rootId=shared-videos"))
@@ -1347,6 +1377,7 @@ async fn metadata_health_inbox_ignores_filename_noise_and_pages_by_catalog_posit
         .expect("NFO sidecar");
     }
     let app = test_app(&temp);
+    scan_root(&app, "shared-videos").await;
 
     let response = app
         .clone()
@@ -1413,6 +1444,7 @@ async fn metadata_health_exposes_current_title_and_real_source_alternatives() {
         jellyfin_image_cache: Arc::new(JellyfinImageCache::new()),
         tmdb_client: None,
     });
+    scan_root(&app, "shared-videos").await;
     let response = app
         .oneshot(viewer_get_request(
             "/api/v1/metadata/issues?rootId=shared-videos",
@@ -1480,6 +1512,13 @@ async fn item_details_fail_closed_for_unknown_and_other_users_personal_records()
         .expect("private directory");
     std::fs::write(&private_item, b"movie").expect("private item");
     let app = test_app(&temp);
+    scan_root_as(
+        &app,
+        "other",
+        "users,media-manager-editors",
+        "personal-videos",
+    )
+    .await;
 
     let response = app
         .clone()
@@ -1587,6 +1626,230 @@ async fn editing_existing_metadata_previews_a_recoverable_xml_preserving_replace
     let nfo = std::fs::read_to_string(staged).expect("staged NFO");
     assert!(nfo.contains("<title>Arrival</title>"));
     assert!(nfo.contains("<customtag preserve=\"yes\">untouched</customtag>"));
+}
+
+#[tokio::test]
+async fn plan_queue_lists_abandons_and_retries() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let (app, database) = test_app_with_mode(&temp, MutationMode::Enabled);
+    std::fs::write(temp.path().join("shared/_Videos/Arrival.mkv"), b"movie").expect("movie");
+    editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-videos"}"#).await;
+    let item_id = first_item_id(&app, "shared-videos").await;
+    let preview = app
+        .clone()
+        .oneshot(editor_post_request(
+            "/api/v1/plans",
+            Body::from(
+                serde_json::json!({
+                    "operation": { "kind": "canonicalize_names", "title": "Arrival", "year": 2016 },
+                    "itemIds": [item_id]
+                })
+                .to_string(),
+            ),
+        ))
+        .await
+        .expect("preview");
+    assert_eq!(preview.status(), StatusCode::CREATED);
+    let body = to_bytes(preview.into_body(), 64 * 1024)
+        .await
+        .expect("preview body");
+    let value: Value = serde_json::from_slice(&body).expect("preview JSON");
+    let plan_id = value["id"].as_str().expect("plan ID").to_string();
+
+    let listed = app
+        .clone()
+        .oneshot(editor_get_request("/api/v1/plans"))
+        .await
+        .expect("plan list");
+    assert_eq!(listed.status(), StatusCode::OK);
+    let body = to_bytes(listed.into_body(), 64 * 1024)
+        .await
+        .expect("list body");
+    let list: Value = serde_json::from_slice(&body).expect("list JSON");
+    assert_eq!(list["scope"], "mine");
+    assert_eq!(list["canViewAll"], true);
+    assert_eq!(list["mutationMode"], "enabled");
+    assert_eq!(list["plans"][0]["id"], plan_id.as_str());
+    assert_eq!(list["plans"][0]["operationKind"], "canonicalize_names");
+    assert_eq!(list["plans"][0]["actionCount"], 1);
+    assert_eq!(list["plans"][0]["itemIds"][0], item_id);
+
+    let all = app
+        .clone()
+        .oneshot(editor_get_request("/api/v1/plans?scope=all"))
+        .await
+        .expect("all plan list");
+    let body = to_bytes(all.into_body(), 64 * 1024)
+        .await
+        .expect("all body");
+    let all: Value = serde_json::from_slice(&body).expect("all JSON");
+    assert_eq!(all["scope"], "all");
+
+    let retry_preview = app
+        .clone()
+        .oneshot(editor_post_request(
+            &format!("/api/v1/plans/{plan_id}/retry"),
+            Body::empty(),
+        ))
+        .await
+        .expect("retry preview");
+    assert_eq!(retry_preview.status(), StatusCode::CONFLICT);
+
+    let abandon = app
+        .clone()
+        .oneshot(editor_post_request(
+            &format!("/api/v1/plans/{plan_id}/abandon"),
+            Body::empty(),
+        ))
+        .await
+        .expect("abandon");
+    assert_eq!(abandon.status(), StatusCode::OK);
+    let body = to_bytes(abandon.into_body(), 64 * 1024)
+        .await
+        .expect("abandon body");
+    let abandoned: Value = serde_json::from_slice(&body).expect("abandon JSON");
+    assert_eq!(abandoned["state"], "rejected");
+    let again = app
+        .clone()
+        .oneshot(editor_post_request(
+            &format!("/api/v1/plans/{plan_id}/abandon"),
+            Body::empty(),
+        ))
+        .await
+        .expect("abandon again");
+    assert_eq!(again.status(), StatusCode::CONFLICT);
+
+    let connection = rusqlite::Connection::open(&database).expect("catalog database");
+    connection
+        .execute(
+            "UPDATE mutation_plans SET state = 'failed', error = 'rename target exists' WHERE id = ?1",
+            [&plan_id],
+        )
+        .expect("mark failed");
+    drop(connection);
+    let retried = app
+        .clone()
+        .oneshot(editor_post_request(
+            &format!("/api/v1/plans/{plan_id}/retry"),
+            Body::empty(),
+        ))
+        .await
+        .expect("retry");
+    assert_eq!(retried.status(), StatusCode::ACCEPTED);
+    let body = to_bytes(retried.into_body(), 64 * 1024)
+        .await
+        .expect("retry body");
+    let retried: Value = serde_json::from_slice(&body).expect("retry JSON");
+    assert_eq!(retried["state"], "queued");
+}
+
+#[tokio::test]
+async fn read_only_mode_blocks_plan_retry_but_allows_abandon() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let (app, database) = test_app_with_mode(&temp, MutationMode::ReadOnly);
+    std::fs::write(temp.path().join("shared/_Videos/Arrival.mkv"), b"movie").expect("movie");
+    editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-videos"}"#).await;
+    let item_id = first_item_id(&app, "shared-videos").await;
+    let preview = app
+        .clone()
+        .oneshot(editor_post_request(
+            "/api/v1/plans",
+            Body::from(
+                serde_json::json!({
+                    "operation": { "kind": "canonicalize_names", "title": "Arrival", "year": 2016 },
+                    "itemIds": [item_id]
+                })
+                .to_string(),
+            ),
+        ))
+        .await
+        .expect("preview");
+    let body = to_bytes(preview.into_body(), 64 * 1024)
+        .await
+        .expect("preview body");
+    let value: Value = serde_json::from_slice(&body).expect("preview JSON");
+    let plan_id = value["id"].as_str().expect("plan ID").to_string();
+
+    let abandoned = app
+        .clone()
+        .oneshot(editor_post_request(
+            &format!("/api/v1/plans/{plan_id}/abandon"),
+            Body::empty(),
+        ))
+        .await
+        .expect("abandon");
+    assert_eq!(abandoned.status(), StatusCode::OK);
+
+    let connection = rusqlite::Connection::open(&database).expect("catalog database");
+    connection
+        .execute(
+            "UPDATE mutation_plans SET state = 'failed' WHERE id = ?1",
+            [&plan_id],
+        )
+        .expect("mark failed");
+    drop(connection);
+
+    let retried = app
+        .clone()
+        .oneshot(editor_post_request(
+            &format!("/api/v1/plans/{plan_id}/retry"),
+            Body::empty(),
+        ))
+        .await
+        .expect("retry");
+    assert_eq!(retried.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn items_paginate_with_cursors() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let app = test_app(&temp);
+    for name in ["a.mkv", "b.mkv", "c.mkv", "d.mkv", "e.mkv"] {
+        std::fs::write(temp.path().join("shared/_Videos").join(name), b"movie").expect("movie");
+    }
+    scan_root(&app, "shared-videos").await;
+    let first = app
+        .clone()
+        .oneshot(editor_get_request(
+            "/api/v1/items?rootId=shared-videos&pageSize=2",
+        ))
+        .await
+        .expect("first page");
+    assert_eq!(first.status(), StatusCode::OK);
+    let body = to_bytes(first.into_body(), 64 * 1024)
+        .await
+        .expect("first body");
+    let page: Value = serde_json::from_slice(&body).expect("first JSON");
+    assert_eq!(page["items"].as_array().expect("items").len(), 2);
+    let cursor = page["nextCursor"].as_str().expect("cursor").to_string();
+
+    let second = app
+        .clone()
+        .oneshot(editor_get_request(&format!(
+            "/api/v1/items?rootId=shared-videos&pageSize=2&cursor={cursor}"
+        )))
+        .await
+        .expect("second page");
+    let body = to_bytes(second.into_body(), 64 * 1024)
+        .await
+        .expect("second body");
+    let page: Value = serde_json::from_slice(&body).expect("second JSON");
+    assert_eq!(page["items"].as_array().expect("items").len(), 2);
+    let cursor = page["nextCursor"].as_str().expect("cursor").to_string();
+
+    let third = app
+        .clone()
+        .oneshot(editor_get_request(&format!(
+            "/api/v1/items?rootId=shared-videos&pageSize=2&cursor={cursor}"
+        )))
+        .await
+        .expect("third page");
+    let body = to_bytes(third.into_body(), 64 * 1024)
+        .await
+        .expect("third body");
+    let page: Value = serde_json::from_slice(&body).expect("third JSON");
+    assert_eq!(page["items"].as_array().expect("items").len(), 1);
+    assert!(page["nextCursor"].is_null());
 }
 
 #[tokio::test]
@@ -1819,6 +2082,7 @@ async fn authenticated_viewer_can_queue_and_follow_a_registered_refresh() {
         label: "Jellyfin".to_string(),
         available: true,
         capabilities: vec!["library-refresh".to_string()],
+        url: None,
     }];
     let database = config.database_path();
     Catalog::initialize(&database).expect("catalog");
@@ -1869,6 +2133,7 @@ async fn authenticated_viewer_can_queue_a_registered_kavita_refresh() {
         label: "Kavita".to_string(),
         available: true,
         capabilities: vec!["library-refresh".to_string()],
+        url: None,
     }];
     let database = config.database_path();
     Catalog::initialize(&database).expect("catalog");
@@ -1907,6 +2172,7 @@ async fn refresh_status_returns_the_durable_terminal_result() {
         label: "Jellyfin".to_string(),
         available: true,
         capabilities: vec!["library-refresh".to_string()],
+        url: None,
     }];
     std::fs::create_dir_all(config.state_dir.join("refresh-results"))
         .expect("refresh results directory");
@@ -2053,6 +2319,7 @@ async fn item_image_serves_sibling_cover_artwork() {
     )
     .expect("cover");
     let app = test_app(&temp);
+    scan_root(&app, "shared-videos").await;
 
     let response = app
         .clone()
@@ -2718,6 +2985,7 @@ async fn item_image_serves_gif_cover_artwork() {
     )
     .expect("gif cover");
     let app = test_app(&temp);
+    scan_root(&app, "shared-videos").await;
 
     let response = app
         .clone()
@@ -2905,16 +3173,48 @@ fn editor_post_request(uri: &str, body: Body) -> Request<Body> {
         .expect("editor request")
 }
 
-async fn editor_json_request(app: &axum::Router, uri: &str, body: &'static str) {
+async fn editor_json_request(app: &axum::Router, uri: &str, body: &str) {
     let response = app
         .clone()
-        .oneshot(editor_post_request(uri, Body::from(body)))
+        .oneshot(editor_post_request(uri, Body::from(body.to_string())))
         .await
         .expect("editor response");
     assert_eq!(response.status(), StatusCode::OK);
 }
 
+/// Reconciles a root so tests that inspect catalog reads see fresh rows.
+async fn scan_root(app: &axum::Router, root_id: &str) {
+    editor_json_request(
+        app,
+        "/api/v1/scans",
+        &format!(r#"{{"rootId":"{root_id}"}}"#),
+    )
+    .await;
+}
+
+/// Reconciles a personal root under a specific editor identity.
+async fn scan_root_as(app: &axum::Router, user: &str, groups: &str, root_id: &str) {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .header("host", "media-manager.test")
+                .header("origin", "https://media-manager.test")
+                .uri("/api/v1/scans")
+                .header("content-type", "application/json")
+                .header("x-forwarded-user", user)
+                .header("x-forwarded-groups", groups)
+                .body(Body::from(format!(r#"{{"rootId":"{root_id}"}}"#)))
+                .expect("scan request"),
+        )
+        .await
+        .expect("scan response");
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
 async fn first_item_id(app: &axum::Router, root_id: &str) -> String {
+    scan_root(app, root_id).await;
     let response = app
         .clone()
         .oneshot(editor_get_request(&format!(
@@ -2933,6 +3233,7 @@ async fn first_item_id(app: &axum::Router, root_id: &str) -> String {
 }
 
 async fn item_id_by_kind(app: &axum::Router, root_id: &str, media_kind: &str) -> String {
+    scan_root(app, root_id).await;
     let response = app
         .clone()
         .oneshot(editor_get_request(&format!(

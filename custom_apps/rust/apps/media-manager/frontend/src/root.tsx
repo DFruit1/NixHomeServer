@@ -10,6 +10,7 @@ import {
   useOnWindow,
 } from "@builder.io/qwik";
 import { api, errorDetail, readableError } from "./api";
+import { ActivityView } from "./activity-view";
 import { ConversionsView } from "./conversions-view";
 import { Icon } from "./icon";
 import {
@@ -99,6 +100,26 @@ export {
   rootFromSearch,
   viewFromSearch,
 } from "./root-routing";
+
+async function loadRootItems(rootId: string): Promise<CatalogItem[]> {
+  const items: CatalogItem[] = [];
+  let cursor: string | null = null;
+  for (let page = 0; page < 200; page += 1) {
+    const params = new URLSearchParams({ rootId });
+    if (cursor) {
+      params.set("pageSize", "500");
+      params.set("cursor", cursor);
+    }
+    const result = await api<{
+      items: CatalogItem[];
+      nextCursor?: string | null;
+    }>(`/items?${params.toString()}`);
+    items.push(...result.items);
+    if (!result.nextCursor) return items;
+    cursor = result.nextCursor;
+  }
+  return items;
+}
 
 function beginItemEdit(
   state: DashboardState,
@@ -222,13 +243,9 @@ export default component$((props: RootProps) => {
     state.error = "";
     try {
       const results = await Promise.all(
-        categoryRoots.map((root) =>
-          api<{ items: CatalogItem[] }>(
-            `/items?rootId=${encodeURIComponent(root.id)}`,
-          ),
-        ),
+        categoryRoots.map((root) => loadRootItems(root.id)),
       );
-      state.items = results.flatMap((result) => result.items);
+      state.items = results.flat();
     } catch (error) {
       state.error = readableError(error);
       state.errorDetail = errorDetail(error);
@@ -493,6 +510,8 @@ export default component$((props: RootProps) => {
           />
         ) : view.value === "conversions" ? (
           <ConversionsView initial={state.conversions} />
+        ) : view.value === "activity" ? (
+          <ActivityView canEdit={state.session?.canEdit ?? false} />
         ) : view.value === "player" ? (
           <PlayerView state={state} />
         ) : view.value === "accounts" ? (
@@ -1783,6 +1802,7 @@ const LibraryView = component$<{
     selectedFolder: "",
   });
   const previousCategory = useSignal(props.state.selectedCategory);
+  const filter = useSignal("");
   useTask$(({ track }) => {
     const category = track(() => props.state.selectedCategory);
     if (category === previousCategory.value) return;
@@ -1791,6 +1811,7 @@ const LibraryView = component$<{
     shared.selectedFolder = "";
     props.state.selectedItemId = "";
     props.state.preview = undefined;
+    filter.value = "";
   });
   const libraryRoots = props.state.roots.filter(
     (root) => root.category !== "iso",
@@ -1808,6 +1829,27 @@ const LibraryView = component$<{
   );
   const sharedItems = props.state.items.filter((item) =>
     sharedRoots.some((root) => root.id === item.rootId),
+  );
+  const filterNeedle = filter.value.trim().toLowerCase();
+  const filtering = filterNeedle.length > 0;
+  const matchesFilter = (item: CatalogItem) => {
+    if (!filtering) return true;
+    const path = item.relativePath.toLowerCase();
+    const name = (item.relativePath.split("/").at(-1) ?? "").toLowerCase();
+    const stem = name.replace(/\.[^.]+$/, "");
+    return path.includes(filterNeedle) || stem.includes(filterNeedle);
+  };
+  const visiblePersonalItems = filtering
+    ? personalItems.filter(matchesFilter)
+    : personalItems;
+  const visibleSharedItems = filtering
+    ? sharedItems.filter(matchesFilter)
+    : sharedItems;
+  const matchCount = visiblePersonalItems.length + visibleSharedItems.length;
+  const advancedSearch = props.state.status?.integrations?.find(
+    (integration) =>
+      integration.capabilities.includes("advanced-search") &&
+      Boolean(integration.url),
   );
   const selectedItem = props.state.items.find(
     (item) => item.id === props.state.selectedItemId,
@@ -1908,94 +1950,186 @@ const LibraryView = component$<{
     props.state.preview = undefined;
     props.state.notice = "";
   });
+  const refreshing = useSignal(false);
+  const refreshLibrary$ = $(async () => {
+    if (refreshing.value) return;
+    refreshing.value = true;
+    props.state.error = "";
+    props.state.notice = "";
+    try {
+      for (const root of categoryRoots) {
+        if (!root.available) continue;
+        await api<{ result: unknown }>("/catalog/refresh", {
+          method: "POST",
+          body: JSON.stringify({ rootId: root.id }),
+        });
+      }
+      await props.loadCategoryItems$(activeCategory);
+      props.state.notice = "The library was refreshed from disk.";
+    } catch (error) {
+      props.state.error = readableError(error);
+      props.state.errorDetail = errorDetail(error);
+    } finally {
+      refreshing.value = false;
+    }
+  });
   return (
-    <section
-      class={{
-        "library-layout": true,
-        [`library-layout--${activeScope || "dual"}`]: true,
-      }}
-    >
-      <div class="library-tabs" role="tablist" aria-label="Media categories">
-        {CATEGORY_TABS.map((tab) => {
-          const hasRoots = libraryRoots.some(
-            (root) => root.category === tab.id,
-          );
-          return (
+    <section class="library-view">
+      <div class="library-toolbar">
+        <label class="library-filter">
+          <Icon name="search" size={16} />
+          <input
+            type="search"
+            value={filter.value}
+            placeholder="Filter titles and filenames"
+            aria-label="Filter titles and filenames in this library"
+            onInput$={(_, input) => (filter.value = input.value)}
+          />
+          {filtering && (
             <button
-              key={tab.id}
               type="button"
-              role="tab"
-              aria-label={tab.label}
-              aria-selected={activeCategory === tab.id}
-              title={
-                hasRoots
-                  ? undefined
-                  : `No ${tab.label.toLowerCase()} library is configured`
-              }
-              class={{
-                "library-tab": true,
-                active: activeCategory === tab.id,
-                disabled: !hasRoots,
-              }}
-              disabled={!hasRoots}
-              onClick$={() => props.loadCategoryItems$(tab.id)}
+              class="library-filter-clear"
+              aria-label="Clear filter"
+              onClick$={() => (filter.value = "")}
             >
-              <Icon name={tab.icon} size={28} />
-              <span class="library-tab-label">{tab.label}</span>
+              ×
             </button>
-          );
-        })}
+          )}
+        </label>
+        <div class="library-toolbar-trailing">
+          {filtering && (
+            <span class="library-filter-summary" role="status">
+              {matchCount === 0
+                ? `No matches for “${filter.value.trim()}”`
+                : `${matchCount} match${matchCount === 1 ? "" : "es"}`}
+            </span>
+          )}
+          {advancedSearch?.url && (
+            <a
+              class="library-advanced-search"
+              href={`${advancedSearch.url}/?q=${encodeURIComponent(filter.value.trim())}`}
+              target="_blank"
+              rel="noreferrer"
+              title="Search titles, authors, and tags across all libraries in the Search app"
+            >
+              <Icon name="search" size={15} />
+              Advanced search
+            </a>
+          )}
+          <button
+            class="secondary-button"
+            type="button"
+            disabled={refreshing.value}
+            onClick$={refreshLibrary$}
+            title="Scan this library from disk now"
+          >
+            <Icon name="refresh" size={15} />
+            {refreshing.value ? "Refreshing…" : "Refresh"}
+          </button>
+        </div>
       </div>
-      {activeScope === "shared" ? (
-        <LibraryDetailPane
-          placement="personal"
-          state={props.state}
-          selectedItem={selectedItem}
-          activeFolder={activeFolder}
-          activeFolderRootId={activeFolderRootId}
-          imageTitle={imageTitle}
-          previewRename$={props.previewRename$}
-          confirmRename$={props.confirmRename$}
-          closeFolderEditor$={closeFolderEditor$}
-        />
-      ) : (
-        <LibraryPane
-          title="Personal"
-          subtitle="No personal media files found"
-          emptyDetail="Add supported media files to your personal media folder to see them here."
-          browser={personal}
-          items={personalItems}
-          focusPath={activeScope === "personal" ? activeFocusPath : ""}
-          selectedItemId={props.state.selectedItemId}
-          selectItem$={selectPersonalItem$}
-          selectFolder$={selectPersonalFolder$}
-        />
-      )}
-      {activeScope === "personal" ? (
-        <LibraryDetailPane
-          placement="shared"
-          state={props.state}
-          selectedItem={selectedItem}
-          activeFolder={activeFolder}
-          activeFolderRootId={activeFolderRootId}
-          imageTitle={imageTitle}
-          previewRename$={props.previewRename$}
-          confirmRename$={props.confirmRename$}
-          closeFolderEditor$={closeFolderEditor$}
-        />
-      ) : (
-        <LibraryPane
-          title="Shared"
-          subtitle="No shared media files found"
-          emptyDetail="Add supported media files to the shared media folder to see them here."
-          browser={shared}
-          items={sharedItems}
-          focusPath={activeScope === "shared" ? activeFocusPath : ""}
-          selectedItemId={props.state.selectedItemId}
-          selectItem$={selectSharedItem$}
-          selectFolder$={selectSharedFolder$}
-        />
-      )}
+      <section
+        class={{
+          "library-layout": true,
+          [`library-layout--${activeScope || "dual"}`]: true,
+        }}
+      >
+        <div class="library-tabs" role="tablist" aria-label="Media categories">
+          {CATEGORY_TABS.map((tab) => {
+            const hasRoots = libraryRoots.some(
+              (root) => root.category === tab.id,
+            );
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                role="tab"
+                aria-label={tab.label}
+                aria-selected={activeCategory === tab.id}
+                title={
+                  hasRoots
+                    ? undefined
+                    : `No ${tab.label.toLowerCase()} library is configured`
+                }
+                class={{
+                  "library-tab": true,
+                  active: activeCategory === tab.id,
+                  disabled: !hasRoots,
+                }}
+                disabled={!hasRoots}
+                onClick$={() => props.loadCategoryItems$(tab.id)}
+              >
+                <Icon name={tab.icon} size={28} />
+                <span class="library-tab-label">{tab.label}</span>
+              </button>
+            );
+          })}
+        </div>
+        {activeScope === "shared" ? (
+          <LibraryDetailPane
+            placement="personal"
+            state={props.state}
+            selectedItem={selectedItem}
+            activeFolder={activeFolder}
+            activeFolderRootId={activeFolderRootId}
+            imageTitle={imageTitle}
+            previewRename$={props.previewRename$}
+            confirmRename$={props.confirmRename$}
+            closeFolderEditor$={closeFolderEditor$}
+          />
+        ) : (
+          <LibraryPane
+            title="Personal"
+            subtitle={
+              filtering
+                ? "No personal matches"
+                : "No personal media files found"
+            }
+            emptyDetail={
+              filtering
+                ? "Clear the filter to see all personal items."
+                : "Add supported media files to your personal media folder to see them here."
+            }
+            browser={personal}
+            items={visiblePersonalItems}
+            focusPath={activeScope === "personal" ? activeFocusPath : ""}
+            selectedItemId={props.state.selectedItemId}
+            selectItem$={selectPersonalItem$}
+            selectFolder$={selectPersonalFolder$}
+          />
+        )}
+        {activeScope === "personal" ? (
+          <LibraryDetailPane
+            placement="shared"
+            state={props.state}
+            selectedItem={selectedItem}
+            activeFolder={activeFolder}
+            activeFolderRootId={activeFolderRootId}
+            imageTitle={imageTitle}
+            previewRename$={props.previewRename$}
+            confirmRename$={props.confirmRename$}
+            closeFolderEditor$={closeFolderEditor$}
+          />
+        ) : (
+          <LibraryPane
+            title="Shared"
+            subtitle={
+              filtering ? "No shared matches" : "No shared media files found"
+            }
+            emptyDetail={
+              filtering
+                ? "Clear the filter to see all shared items."
+                : "Add supported media files to the shared media folder to see them here."
+            }
+            browser={shared}
+            items={visibleSharedItems}
+            focusPath={activeScope === "shared" ? activeFocusPath : ""}
+            selectedItemId={props.state.selectedItemId}
+            selectItem$={selectSharedItem$}
+            selectFolder$={selectSharedFolder$}
+          />
+        )}
+      </section>
     </section>
   );
 });

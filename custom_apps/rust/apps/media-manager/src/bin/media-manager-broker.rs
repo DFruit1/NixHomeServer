@@ -36,17 +36,17 @@ fn run() -> Result<(), String> {
     let mut catalog = Catalog::initialize(&config.database_path())
         .map_err(|error| format!("open control database: {error}"))?;
     if let Some(expired) = catalog
-        .claim_expired_preview_action(unix_timestamp())
+        .claim_discardable_preview_action(unix_timestamp())
         .map_err(|error| format!("claim expired preview cleanup: {error}"))?
     {
         discard_staged_broker_action(&config, &expired.action)
             .map_err(|error| format!("clean expired preview staging: {error}"))?;
         catalog
-            .complete_expired_preview_action(&expired.plan_id, expired.ordinal)
+            .complete_discarded_preview_action(&expired.plan_id, expired.ordinal)
             .map_err(|error| format!("record expired preview cleanup: {error}"))?;
         log(
             "info",
-            "expired_preview_cleaned",
+            "discardable_preview_cleaned",
             json!({ "planId": expired.plan_id, "ordinal": expired.ordinal }),
         );
     }

@@ -6,7 +6,7 @@ let
     (id: integration: {
       inherit id;
       inherit (integration) label available capabilities;
-    })
+    } // lib.optionalAttrs (integration.url != null) { inherit (integration) url; })
     cfg.integrations);
   commonEnvironment = {
     MEDIA_MANAGER_ADDRESS = cfg.address;

@@ -36,6 +36,11 @@ export const Icon = component$<{ name: IconName; size?: number }>((props) => {
       "M18.3 9A7 7 0 0 0 6.7 6.7L4 11",
       "M5.7 15A7 7 0 0 0 17.3 17.3L20 13",
     ],
+    activity: [
+      "M3 12a9 9 0 1 0 9-9 9 9 0 0 0-6.5 2.8",
+      "M3 4v4h4",
+      "M12 8v4l3 2",
+    ],
     shield: [
       "M12 3 5 6v5c0 4.6 2.8 8 7 10 4.2-2 7-5.4 7-10V6z",
       "m9 12 2 2 4-4",

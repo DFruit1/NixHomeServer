@@ -49,6 +49,9 @@ pub struct IntegrationCapability {
     pub available: bool,
     #[serde(default)]
     pub capabilities: Vec<String>,
+    /// Browser-facing URL for integrations that hand off to another application.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
 }
 
 #[derive(Clone, Debug)]
