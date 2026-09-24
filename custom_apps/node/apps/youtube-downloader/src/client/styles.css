@@ -763,14 +763,14 @@ fieldset button.selected:hover,
   right: 14px;
   bottom: 14px;
   z-index: 2;
-  min-height: 32px;
-  padding: 5px 12px;
+  min-height: 38px;
+  padding: 8px 16px;
   border: 1px solid var(--border-strong);
   border-radius: 6px;
   background: #fff;
   color: #2b2020;
   cursor: pointer;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 700;
   opacity: 0;
   pointer-events: none;
@@ -793,14 +793,26 @@ fieldset button.selected:hover,
   outline: none;
 }
 
+.job-footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+}
+
 .status-badge {
-  align-self: start;
+  flex: none;
+  width: 7.25rem;
+  overflow: hidden;
   border-radius: 999px;
   padding: 3px 8px;
   background: var(--accent-soft);
   color: var(--accent-strong);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 700;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .status-badge.completed {
@@ -853,8 +865,9 @@ fieldset button.selected:hover,
 
 .job-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
-  margin-top: 12px;
+  min-width: 0;
 }
 
 .error {
@@ -885,11 +898,15 @@ fieldset button.selected:hover,
   }
 
   .job-head {
-    display: grid;
+    display: block;
   }
 
   .job-art {
     width: 46%;
+  }
+
+  .job-footer {
+    flex-wrap: wrap;
   }
 
   .job-meta {

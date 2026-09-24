@@ -2004,18 +2004,6 @@ const LibraryView = component$<{
                 : `${matchCount} match${matchCount === 1 ? "" : "es"}`}
             </span>
           )}
-          {advancedSearch?.url && (
-            <a
-              class="library-advanced-search"
-              href={`${advancedSearch.url}/?q=${encodeURIComponent(filter.value.trim())}`}
-              target="_blank"
-              rel="noreferrer"
-              title="Search titles, authors, and tags across all libraries in the Search app"
-            >
-              <Icon name="search" size={15} />
-              Advanced search
-            </a>
-          )}
           <button
             class="secondary-button"
             type="button"
@@ -2119,7 +2107,7 @@ const LibraryView = component$<{
             emptyDetail={
               filtering
                 ? "Clear the filter to see all shared items."
-                : "Add supported media files to the shared media folder to see them here."
+                : "Add supported media files to your shared media folder to see them here."
             }
             browser={shared}
             items={visibleSharedItems}
@@ -2130,6 +2118,20 @@ const LibraryView = component$<{
           />
         )}
       </section>
+      {advancedSearch?.url && (
+        <div class="library-footer">
+          <a
+            class="library-advanced-search"
+            href={`${advancedSearch.url}/?q=${encodeURIComponent(filter.value.trim())}`}
+            target="_blank"
+            rel="noreferrer"
+            title="Search titles, authors, and tags across all libraries in the Search app"
+          >
+            <Icon name="search" size={15} />
+            Advanced search
+          </a>
+        </div>
+      )}
     </section>
   );
 });

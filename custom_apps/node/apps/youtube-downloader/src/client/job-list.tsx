@@ -167,7 +167,6 @@ const JobCard = component$<JobCardProps>(({ job, isHistory, canSwipeClear, actio
             <strong>{job.source?.title || job.request.url}</strong>
             {!job.outputFolder && !['failed', 'cancelled'].includes(job.status) && <p>{job.request.mediaType}</p>}
           </div>
-          <span class={`status-badge ${job.status}`}>{job.status}</span>
         </div>
         {meta && <p class="job-meta">{meta}</p>}
         {job.status === 'alert' && <p class="alert-message">{job.alert?.message || job.error || 'Confirmation is required before this download can continue.'}</p>}
@@ -180,7 +179,9 @@ const JobCard = component$<JobCardProps>(({ job, isHistory, canSwipeClear, actio
           </div>
         )}
         {job.error && !['failed', 'cancelled'].includes(job.status) && <p class="error">{job.error}</p>}
-        <div class="job-actions">
+        <div class="job-footer">
+          <span class={`status-badge ${job.status}`} title={job.status}>{job.status}</span>
+          <div class="job-actions">
           {job.status === 'alert' && job.alert?.kind === 'duplicate' && (
             <>
               <button type="button" onClick$={(event) => {
@@ -251,6 +252,7 @@ const JobCard = component$<JobCardProps>(({ job, isHistory, canSwipeClear, actio
               Retry
             </button>
           )}
+          </div>
         </div>
       </div>
       {isHistory && canSwipeClear && (

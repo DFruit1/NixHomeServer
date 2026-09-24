@@ -767,6 +767,7 @@ a:focus-visible {
   grid-template-areas: "tabs tabs" "personal shared";
   grid-template-rows: auto minmax(0, 1fr);
   align-items: stretch;
+  min-width: 0;
   gap: 12px 20px;
 }
 .library-layout--personal {
@@ -944,6 +945,7 @@ a:focus-visible {
 .catalog-panel {
   position: relative;
   height: 55vh;
+  min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -1085,6 +1087,7 @@ a:focus-visible {
 .catalog-scroll-region {
   position: relative;
   flex: 1 1 auto;
+  min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -1092,6 +1095,7 @@ a:focus-visible {
 }
 .folder-filter {
   flex: 0 0 auto;
+  min-width: 0;
   min-height: 52px;
   padding: 10px 20px;
   display: flex;
@@ -1101,6 +1105,8 @@ a:focus-visible {
   border-bottom: 1px solid var(--line);
 }
 .folder-filter-button {
+  min-width: 0;
+  max-width: 100%;
   min-height: 30px;
   padding: 0 12px;
   border: 1px solid var(--line-strong);
@@ -1112,6 +1118,9 @@ a:focus-visible {
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.05em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   transition-property: color, background-color, border-color, scale;
   transition-duration: 120ms;
   transition-timing-function: ease-out;
@@ -1130,14 +1139,17 @@ a:focus-visible {
   scale: 0.96;
 }
 .item-tree {
+  min-width: 0;
   min-height: 0;
   flex: 1 1 auto;
   padding: 6px 0;
   font-size: 12px;
+  overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
 }
 .tree-row {
+  min-width: 0;
   min-height: 40px;
   padding-right: 20px;
   display: flex;
@@ -1174,7 +1186,8 @@ a:focus-visible {
   white-space: normal;
   overflow-wrap: anywhere;
 }
-.tree-row.selected .tabular {
+.tree-row.selected .tabular,
+.tree-row .tabular {
   flex: 0 0 auto;
 }
 .tree-row.folder .tree-name {
@@ -1182,6 +1195,9 @@ a:focus-visible {
 }
 .tree-row.sibling-muted .tree-name {
   color: var(--ink-faint);
+}
+.tree-branch {
+  min-width: 0;
 }
 .tree-toggle,
 .tree-folder-name {
@@ -3633,10 +3649,12 @@ a:focus-visible {
   .library-layout {
     display: flex;
     flex-direction: column;
+    min-width: 0;
     gap: 18px;
   }
   .library-tabs {
     order: 0;
+    max-width: min(600px, 100%);
   }
   .library-detail-pane {
     order: 1;
@@ -6359,6 +6377,8 @@ a:focus-visible {
 /* In-view library filter */
 .library-view {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
   gap: 14px;
 }
 .library-toolbar {
@@ -6367,6 +6387,7 @@ a:focus-visible {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  min-width: 0;
 }
 .library-filter {
   flex: 1 1 260px;
@@ -6442,6 +6463,12 @@ a:focus-visible {
   color: var(--accent-strong);
   text-decoration: underline;
   text-underline-offset: 3px;
+}
+.library-footer {
+  display: flex;
+  justify-content: flex-start;
+  min-width: 0;
+  padding-top: 4px;
 }
 
 @media (max-width: 720px) {
