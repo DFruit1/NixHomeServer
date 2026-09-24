@@ -1,6 +1,7 @@
 mod api;
 mod auth;
 mod queue;
+mod update;
 
 /// After a prompted share has been queued, send the app to the background so
 /// the source app (usually YouTube) comes back. Android resolves the custom
@@ -44,6 +45,8 @@ pub fn run() {
             queue::queue_remove,
             queue::queue_flush,
             queue::set_server_base_url,
+            update::app_platform,
+            update::install_app_update,
             leave_app,
         ])
         .run(tauri::generate_context!())

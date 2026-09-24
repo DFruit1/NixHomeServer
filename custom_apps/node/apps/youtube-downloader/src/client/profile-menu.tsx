@@ -1,5 +1,8 @@
 import { $, component$, Slot, useSignal, useVisibleTask$ } from '@builder.io/qwik';
-import { apiUrl } from './api.js';
+import { apiUrl, apiFetch } from './api.js';
+import { tauriInvoke } from './tauri.js';
+import { installedAppVersion, installedVersionLabel, isNewerVersion } from './app-version.js';
+import type { AppVersionInfo } from '../shared/types.js';
 
 type ProfileMenuProps = {
   image: string;
@@ -13,8 +16,19 @@ type ProfileMenuProps = {
   appDownloadUrl?: string;
 };
 
+type UpdateState =
+  | { kind: 'idle' }
+  | { kind: 'checking' }
+  | { kind: 'uptodate' }
+  | { kind: 'available'; info: AppVersionInfo }
+  | { kind: 'installing' }
+  | { kind: 'handed-off' }
+  | { kind: 'error'; message: string };
+
 export const ProfileMenu = component$<ProfileMenuProps>(({ image, username, signedIn, onImageChange, onImageClear, onClearHistory, onSignIn, onSignOut, appDownloadUrl }) => {
   const menuRef = useSignal<HTMLDetailsElement>();
+  const platform = useSignal<string | null>(null);
+  const updateState = useSignal<UpdateState>({ kind: 'idle' });
   const closeMenu = $(() => {
     if (menuRef.value) {
       menuRef.value.open = false;
@@ -27,6 +41,43 @@ export const ProfileMenu = component$<ProfileMenuProps>(({ image, username, sign
   const signInAndClose = $(async () => {
     closeMenu();
     await onSignIn?.();
+  });
+
+  const checkForUpdates = $(async () => {
+    updateState.value = { kind: 'checking' };
+    try {
+      const response = await apiFetch('/api/version');
+      if (!response.ok) {
+        throw new Error(`The server returned ${response.status}.`);
+      }
+      const info = (await response.json()) as AppVersionInfo;
+      updateState.value = isNewerVersion(info.version, installedAppVersion)
+        ? { kind: 'available', info }
+        : { kind: 'uptodate' };
+    } catch (error) {
+      updateState.value = {
+        kind: 'error',
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
+  });
+
+  const installUpdate = $(async () => {
+    const invoke = tauriInvoke();
+    if (!invoke) {
+      updateState.value = { kind: 'error', message: 'Updates are only available in the Android app.' };
+      return;
+    }
+    updateState.value = { kind: 'installing' };
+    try {
+      await invoke('install_app_update');
+      updateState.value = { kind: 'handed-off' };
+    } catch (error) {
+      updateState.value = {
+        kind: 'error',
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
   });
 
   useVisibleTask$(({ cleanup }) => {
@@ -49,6 +100,21 @@ export const ProfileMenu = component$<ProfileMenuProps>(({ image, username, sign
       document.removeEventListener('keydown', onKeyDown);
     });
   });
+
+  useVisibleTask$(async () => {
+    const invoke = tauriInvoke();
+    if (!invoke) {
+      return;
+    }
+    try {
+      platform.value = await invoke<string>('app_platform');
+    } catch {
+      platform.value = 'desktop';
+    }
+  });
+
+  const state = updateState.value;
+  const showUpdateCheck = platform.value === 'android';
 
   return (
     <details ref={menuRef} class="profile-menu">
@@ -88,6 +154,48 @@ export const ProfileMenu = component$<ProfileMenuProps>(({ image, username, sign
             Download Android app
           </a>
         )}
+        {showUpdateCheck && (
+          <div class="profile-update">
+            {state.kind === 'checking' && (
+              <p class="profile-update-status" role="status">Checking for updates…</p>
+            )}
+            {state.kind === 'uptodate' && (
+              <p class="profile-update-status" role="status">You're up to date.</p>
+            )}
+            {state.kind === 'available' && (
+              <p class="profile-update-status" role="status">
+                Update available: v{state.info.version}
+                {state.info.date ? ` · ${state.info.date}` : ''}
+              </p>
+            )}
+            {state.kind === 'available' && !state.info.apkAvailable && (
+              <p class="profile-update-status">The update package is not on the server yet.</p>
+            )}
+            {state.kind === 'installing' && (
+              <p class="profile-update-status" role="status">Preparing update…</p>
+            )}
+            {state.kind === 'handed-off' && (
+              <p class="profile-update-status" role="status">Follow the system prompts to finish installing.</p>
+            )}
+            {state.kind === 'error' && (
+              <p class="error" role="alert">{state.message}</p>
+            )}
+            {state.kind === 'available' && state.info.apkAvailable && (
+              <button class="profile-action profile-action--accent" type="button" onClick$={installUpdate}>
+                Install update
+              </button>
+            )}
+            <button
+              class="profile-action"
+              type="button"
+              disabled={state.kind === 'checking' || state.kind === 'installing'}
+              onClick$={checkForUpdates}
+            >
+              {state.kind === 'checking' ? 'Checking…' : 'Check for updates'}
+            </button>
+          </div>
+        )}
+        <p class="profile-version">{installedVersionLabel}</p>
         <button class="profile-action" type="button" onClick$={clearAndClose}>
           Clear history
         </button>

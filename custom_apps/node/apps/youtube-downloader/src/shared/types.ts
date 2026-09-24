@@ -24,6 +24,12 @@ export type CurrentUser = {
   };
 };
 
+export type AppVersionInfo = {
+  version: string;
+  date: string | null;
+  apkAvailable: boolean;
+};
+
 export type Chapter = {
   index: number;
   title: string;

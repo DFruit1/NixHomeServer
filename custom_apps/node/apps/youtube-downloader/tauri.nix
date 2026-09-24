@@ -5,11 +5,11 @@
 }:
 
 let
-  version = "0.1.0";
+  packageJson = builtins.fromJSON (builtins.readFile ./package.json);
 in
 pkgs.rustPlatform.buildRustPackage {
   pname = "youtube-downloader-tauri";
-  inherit version;
+  inherit (packageJson) version;
 
   src = lib.cleanSource ./src-tauri;
 

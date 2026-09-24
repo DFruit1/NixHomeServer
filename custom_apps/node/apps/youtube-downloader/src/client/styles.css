@@ -375,6 +375,61 @@ select:focus {
   outline: none;
 }
 
+.profile-update {
+  display: grid;
+  gap: 8px;
+}
+
+.profile-update-status {
+  margin: 0;
+  color: #725b5b;
+  font-size: 13px;
+  text-align: center;
+}
+
+.profile-update .error {
+  margin: 0;
+  font-size: 13px;
+  text-align: center;
+}
+
+.profile-version {
+  margin: 0;
+  color: #725b5b;
+  font-size: 12px;
+  text-align: center;
+}
+
+.profile-action--accent {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+  font-weight: 800;
+}
+
+.profile-action--accent:hover,
+.profile-action--accent:focus-visible {
+  border-color: #991b1b;
+  background: #991b1b;
+}
+
+.profile-action:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.profile-action:disabled:hover,
+.profile-action:disabled:focus-visible {
+  border-color: var(--border-strong);
+  background: #fff;
+}
+
+.profile-action--accent:disabled:hover,
+.profile-action--accent:disabled:focus-visible {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
 fieldset {
   display: flex;
   min-width: 0;

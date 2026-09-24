@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Lets UpdateInstallActivity hand the freshly downloaded APK to the
+         system package installer for the in-app updater. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <!-- AndroidTV support -->
     <uses-feature android:name="android.software.leanback" android:required="false" />
@@ -110,6 +113,24 @@
                 <data
                     android:scheme="org.sydneybasiniot.youtubedownloader"
                     android:host="return" />
+            </intent-filter>
+        </activity>
+
+        <!-- Target for install_app_update after the APK is cached: launches
+             the system package installer via the app's FileProvider. -->
+        <activity
+            android:name=".UpdateInstallActivity"
+            android:theme="@android:style/Theme.NoDisplay"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="org.sydneybasiniot.youtubedownloader"
+                    android:host="install" />
             </intent-filter>
         </activity>
 

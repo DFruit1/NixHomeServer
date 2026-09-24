@@ -5,6 +5,10 @@
 # debug build) and signs it with the local Android debug keystore so it can be
 # sideloaded. Run directly from a checkout; the script re-execs itself inside
 # the pinned Nix dev shell when the Android toolchain is not already present.
+#
+# Release flow: bump `version` and `versionDate` in package.json, deploy the
+# server, run this script, then place the APK at
+# /var/lib/youtube-downloader/app/youtube-downloader.apk.
 set -euo pipefail
 
 script_path="$(readlink -f "${BASH_SOURCE[0]}")"
@@ -22,6 +26,20 @@ fi
 cd "$app_dir"
 
 pnpm install --frozen-lockfile
+
+# package.json is the release source of truth; keep tauri.conf.json (the
+# Android versionCode input) in lockstep so upgrades install cleanly.
+node <<'EOF'
+const fs = require('node:fs');
+const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+const confPath = 'src-tauri/tauri.conf.json';
+const conf = JSON.parse(fs.readFileSync(confPath, 'utf8'));
+if (conf.version !== pkg.version) {
+  console.log(`Syncing tauri.conf.json version: ${conf.version} -> ${pkg.version}`);
+  conf.version = pkg.version;
+  fs.writeFileSync(confPath, `${JSON.stringify(conf, null, 2)}\n`);
+}
+EOF
 
 if [[ ! -d src-tauri/gen/android ]]; then
   cargo tauri android init --ci --skip-targets-install

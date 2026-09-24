@@ -13,6 +13,7 @@ let tempDir = '';
 let db: Database;
 let server: Server;
 let baseUrl = '';
+let config: AppConfig;
 
 const request: CreateJobRequest = {
   url: 'https://www.youtube.com/watch?v=fiwd5hMQsEU',
@@ -38,7 +39,7 @@ const mutationHeaders = (username: string, origin = baseUrl): Record<string, str
 
 beforeEach(async () => {
   tempDir = await mkdtemp(path.join(os.tmpdir(), 'youtube-downloader-http-test-'));
-  const config: AppConfig = {
+  config = {
     host: '127.0.0.1',
     port: 0,
     stateDir: tempDir,
@@ -59,6 +60,8 @@ beforeEach(async () => {
     authAudience: 'youtube-downloader-app',
     authGroupsClaim: 'groups',
     authRequiredGroup: 'downloads-users',
+    appVersion: '2.3.4',
+    appVersionDate: '2026-09-24',
   };
   db = new Database(config.databasePath);
   await db.migrate();
@@ -133,6 +136,25 @@ describe('authenticated job APIs', () => {
       clientId: 'youtube-downloader-app',
       groupsClaim: 'groups',
     });
+  });
+
+  it('publishes the deployed app version without authenticating', async () => {
+    const response = await fetch(`${baseUrl}/api/version`);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      version: '2.3.4',
+      date: '2026-09-24',
+      apkAvailable: false,
+    });
+  });
+
+  it('reports the update package as available when the APK artifact exists', async () => {
+    const apkPath = path.join(tempDir, 'youtube-downloader.apk');
+    await writeFile(apkPath, 'fake apk');
+    config.appApkPath = apkPath;
+    const response = await fetch(`${baseUrl}/api/version`);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ apkAvailable: true });
   });
 
   it.each([

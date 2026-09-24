@@ -9,6 +9,7 @@
 }:
 
 let
+  packageJson = builtins.fromJSON (builtins.readFile ./package.json);
   sourcePath = toString ./.;
   src = lib.cleanSourceWith {
     src = ./.;
@@ -27,7 +28,7 @@ let
 in
 stdenvNoCC.mkDerivation (finalAttrs: {
   pname = "youtube-downloader";
-  version = "0.1.0";
+  inherit (packageJson) version;
 
   postPatch = ''
     mkdir -p src/shared/node-common
@@ -97,7 +98,9 @@ stdenvNoCC.mkDerivation (finalAttrs: {
 
     makeWrapper ${nodejs}/bin/node "$out/bin/youtube-downloader" \
       --add-flags "$out/lib/youtube-downloader/server/server/index.js" \
-      --set-default YOUTUBE_DOWNLOADER_STATIC_DIR "$out/share/youtube-downloader/client"
+      --set-default YOUTUBE_DOWNLOADER_STATIC_DIR "$out/share/youtube-downloader/client" \
+      --set YOUTUBE_DOWNLOADER_VERSION "${packageJson.version}" \
+      --set YOUTUBE_DOWNLOADER_VERSION_DATE "${packageJson.versionDate or ""}"
 
     runHook postInstall
   '';

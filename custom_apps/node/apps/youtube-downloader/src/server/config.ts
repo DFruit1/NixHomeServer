@@ -23,6 +23,8 @@ export type AppConfig = {
   authGroupsClaim: string;
   authRequiredGroup?: string;
   appApkPath?: string;
+  appVersion: string;
+  appVersionDate: string;
 };
 
 export const loadConfig = (): AppConfig => {
@@ -50,5 +52,7 @@ export const loadConfig = (): AppConfig => {
     authGroupsClaim: process.env.YOUTUBE_DOWNLOADER_AUTH_GROUPS_CLAIM ?? 'groups',
     authRequiredGroup: process.env.YOUTUBE_DOWNLOADER_AUTH_REQUIRED_GROUP,
     appApkPath: process.env.YOUTUBE_DOWNLOADER_APP_APK,
+    appVersion: process.env.YOUTUBE_DOWNLOADER_VERSION ?? '0.0.0-dev',
+    appVersionDate: process.env.YOUTUBE_DOWNLOADER_VERSION_DATE ?? '',
   };
 };

@@ -67,6 +67,13 @@ const handleApi = async (
     return;
   }
 
+  // Public like /api/auth-config: the native app checks this before the user
+  // has necessarily signed in.
+  if (request.method === 'GET' && url.pathname === '/api/version') {
+    await serveVersion(config, response);
+    return;
+  }
+
   const mutationBody = request.method === 'POST' || request.method === 'DELETE'
     ? await readMutationJson<unknown>(request)
     : undefined;
@@ -164,6 +171,19 @@ const handleApi = async (
   }
 
   throw new Error('api route not found');
+};
+
+const serveVersion = async (config: AppConfig, response: ServerResponse): Promise<void> => {
+  let apkAvailable = false;
+  if (config.appApkPath) {
+    const info = await stat(config.appApkPath).catch(() => undefined);
+    apkAvailable = Boolean(info?.isFile());
+  }
+  sendJson(response, 200, {
+    version: config.appVersion,
+    date: config.appVersionDate || null,
+    apkAvailable,
+  });
 };
 
 const serveAppDownload = async (response: ServerResponse, config: AppConfig): Promise<void> => {
