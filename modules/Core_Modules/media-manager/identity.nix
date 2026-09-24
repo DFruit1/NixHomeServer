@@ -34,4 +34,17 @@ in
 
   services.kanidm.provision.systems.oauth2.auth-gateway-web.scopeMaps.${cfg.editorGroup} =
     [ "openid" "profile" "email" "groups_name" ];
+
+  # Media Manager authenticates through the shared auth gateway. This public
+  # (secret-less) client exists only so the Kanidm app listing shows a
+  # consistent "Media Manager" card matching the homepage service card.
+  services.kanidm.provision.systems.oauth2.media-manager-web = {
+    displayName = "Media Manager";
+    imageFile = ../kanidm/assets/apps/media-manager.svg;
+    public = true;
+    originUrl = "https://${cfg.domain}/oauth2/callback";
+    originLanding = "https://${cfg.domain}";
+    preferShortUsername = true;
+    scopeMaps."users" = [ "openid" "profile" "email" "groups_name" ];
+  };
 }

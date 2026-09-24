@@ -13,7 +13,7 @@ in
       groups."media-automation-users".members = vars.kanidmAppUsers;
 
       systems.oauth2.sonarr-web = {
-        displayName = "Sonarr";
+        displayName = "TV Show Downloads";
         imageFile = ../Core_Modules/kanidm/assets/apps/sonarr.svg;
         originUrl = "https://${host}/oauth2/callback";
         originLanding = "https://${host}";

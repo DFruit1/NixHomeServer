@@ -96,7 +96,7 @@ let
       timers = [ ];
       hosts = [ "chaptarr" ];
       gatewayApps = [ "chaptarr" ];
-      oauthClients = [ ];
+      oauthClients = [ "chaptarr-web" ];
       kanidmGroups = [ ];
       users = [ "chaptarr" ];
       groups = [ "chaptarr" ];
@@ -122,7 +122,7 @@ let
       timers = [ "freshrss-account-reconcile" "freshrss-updater" ];
       hosts = [ "rss" ];
       gatewayApps = [ "freshrss" ];
-      oauthClients = [ ];
+      oauthClients = [ "freshrss-web" ];
       kanidmGroups = [ "freshrss-users" ];
       users = [ "freshrss" ];
       groups = [ "freshrss" ];
@@ -212,7 +212,7 @@ let
       timers = [ ];
       hosts = [ "chaptarr" "prowlarr" "sonarr" "radarr" "torrents" ];
       gatewayApps = [ "chaptarr" "prowlarr" "qbittorrent" "radarr" "sonarr" ];
-      oauthClients = [ "prowlarr-web" "qbittorrent-web" "radarr-web" "sonarr-web" ];
+      oauthClients = [ "chaptarr-web" "prowlarr-web" "qbittorrent-web" "radarr-web" "sonarr-web" ];
       kanidmGroups = [ "media-automation-users" ];
       users = [ "chaptarr" "prowlarr" "qbittorrent" "radarr" "sonarr" ];
       groups = [ "chaptarr" "media-automation" "prowlarr" "qbittorrent" "radarr" "sonarr" ];

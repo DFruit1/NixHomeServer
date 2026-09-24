@@ -26,7 +26,7 @@ in
     };
 
     services.kanidm.provision.systems.oauth2.kiwix-web = {
-      displayName = "Kiwix";
+      displayName = "Offline Wiki";
       imageFile = ../Core_Modules/kanidm/assets/apps/kiwix.svg;
       originUrl = "https://${host}/oauth2/callback";
       originLanding = "https://${host}";

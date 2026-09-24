@@ -13,7 +13,7 @@ in
       groups."media-automation-users".members = vars.kanidmAppUsers;
 
       systems.oauth2.radarr-web = {
-        displayName = "Radarr";
+        displayName = "Movie Downloads";
         imageFile = ../Core_Modules/kanidm/assets/apps/radarr.svg;
         originUrl = "https://${host}/oauth2/callback";
         originLanding = "https://${host}";
