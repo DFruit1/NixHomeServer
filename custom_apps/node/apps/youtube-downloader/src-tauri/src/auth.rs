@@ -62,11 +62,20 @@ pub struct StoredTokens {
     pub issuer: String,
     #[serde(default)]
     pub client_id: String,
+    /// Set when the token endpoint rejects the refresh token (`invalid_grant`).
+    /// The stored session is kept so the app stays on the main screen and keeps
+    /// queuing locally, but refresh is not retried until an explicit sign-in.
+    #[serde(default)]
+    pub refresh_invalid: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AuthStatus {
     pub signed_in: bool,
+    /// A stored session exists but its refresh token is no longer usable, so a
+    /// fresh sign-in is required before downloads can be sent to the server.
+    pub session_expired: bool,
     pub username: Option<String>,
     pub expires_at: Option<u64>,
 }
@@ -74,7 +83,8 @@ pub struct AuthStatus {
 impl From<&StoredTokens> for AuthStatus {
     fn from(tokens: &StoredTokens) -> Self {
         Self {
-            signed_in: true,
+            signed_in: !tokens.refresh_invalid,
+            session_expired: tokens.refresh_invalid,
             username: tokens.username.clone(),
             expires_at: Some(tokens.expires_at),
         }
@@ -397,15 +407,23 @@ fn to_stored_tokens(
         username,
         issuer: issuer.to_string(),
         client_id: client_id.to_string(),
+        refresh_invalid: false,
     })
 }
 
 #[tauri::command]
-pub fn oauth_status(app: AppHandle) -> AuthStatus {
+pub async fn oauth_status(app: AppHandle) -> AuthStatus {
+    if load_tokens(&app).is_some() {
+        // Renew an expired access token so a returning user stays signed in
+        // without interacting. Failures leave the stored session intact and are
+        // reported through the returned status instead of forcing a sign-out.
+        let _ = authorization_token(&app).await;
+    }
     match load_tokens(&app) {
         Some(tokens) => AuthStatus::from(&tokens),
         None => AuthStatus {
             signed_in: false,
+            session_expired: false,
             username: None,
             expires_at: None,
         },
@@ -518,8 +536,13 @@ pub async fn authorization_token(app: &AppHandle) -> Result<Option<String>, Stri
         Some(tokens) => tokens,
         None => return Ok(None),
     };
-    if tokens.expires_at > now_seconds() {
+    if tokens.expires_at > now_seconds() && !tokens.refresh_invalid {
         return Ok(Some(authorization_value(&tokens)));
+    }
+    if tokens.refresh_invalid {
+        // The refresh token was already rejected; ask for an explicit sign-in
+        // instead of retrying the token endpoint on every request.
+        return Ok(None);
     }
 
     let _guard = refresh_lock().lock().await;
@@ -528,16 +551,16 @@ pub async fn authorization_token(app: &AppHandle) -> Result<Option<String>, Stri
         Some(tokens) => tokens,
         None => return Ok(None),
     };
-    if tokens.expires_at > now_seconds() {
+    if tokens.expires_at > now_seconds() && !tokens.refresh_invalid {
         return Ok(Some(authorization_value(&tokens)));
+    }
+    if tokens.refresh_invalid {
+        return Ok(None);
     }
 
     let refresh_token = match tokens.refresh_token.clone() {
         Some(refresh_token) => refresh_token,
-        None => {
-            clear_tokens(app)?;
-            return Ok(None);
-        }
+        None => return Ok(None),
     };
     let issuer = tokens.issuer.clone();
     let client_id = tokens.client_id.clone();
@@ -553,12 +576,30 @@ pub async fn authorization_token(app: &AppHandle) -> Result<Option<String>, Stri
         .json::<TokenResponse>()
         .await
         .map_err(|error| error.to_string())?;
+
+    if let Some(error) = response.error.clone() {
+        if error == "invalid_grant" {
+            // The refresh token has expired or been revoked. Keep the stored
+            // session so the app stays usable and only asks for a fresh
+            // sign-in when the user requests one.
+            let mut invalidated = tokens.clone();
+            invalidated.refresh_invalid = true;
+            store_tokens(app, &invalidated)?;
+            return Ok(None);
+        }
+        let description = response.error_description.clone().unwrap_or_default();
+        return Err(format!("token refresh failed: {error} {description}"));
+    }
+
     match to_stored_tokens(&issuer, &client_id, response) {
         Ok(mut refreshed) => {
-            // A refresh response may omit the ID token; keep the previous one
-            // so the groups claim stays available.
+            // A refresh response may omit the ID or refresh token; keep the
+            // previous ones so the groups claim and rotation stay available.
             if refreshed.id_token.is_none() {
                 refreshed.id_token = tokens.id_token.clone();
+            }
+            if refreshed.refresh_token.is_none() {
+                refreshed.refresh_token = tokens.refresh_token.clone();
             }
             if refreshed.username.is_none() {
                 refreshed.username = tokens.username.clone();
@@ -566,9 +607,6 @@ pub async fn authorization_token(app: &AppHandle) -> Result<Option<String>, Stri
             store_tokens(app, &refreshed)?;
             Ok(Some(authorization_value(&refreshed)))
         }
-        Err(error) => {
-            clear_tokens(app)?;
-            Err(error)
-        }
+        Err(error) => Err(error),
     }
 }

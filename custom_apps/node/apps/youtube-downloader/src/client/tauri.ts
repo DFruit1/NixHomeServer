@@ -13,6 +13,7 @@ type TauriGlobal = {
 
 export type AuthStatus = {
   signedIn: boolean;
+  sessionExpired?: boolean;
   username?: string | null;
   expiresAt?: number | null;
 };

@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -368,6 +368,116 @@ describe('queue alerts', () => {
     expect(args).not.toContain('/tmp/cover.jpg');
     expect(args).not.toContain('1:v:0');
     expect(args).toContain('-vn');
+  });
+});
+
+describe('queue output layout', () => {
+  const writeFakeYtDlp = async (body: string): Promise<string> => {
+    const fake = path.join(tempDir, 'fake-yt-dlp.mjs');
+    await writeFile(fake, `#!${process.execPath}\n${body}`);
+    await chmod(fake, 0o755);
+    return fake;
+  };
+
+  const probeJson = JSON.stringify({
+    id: 'abc123',
+    title: 'Test Song',
+    channel: 'Test Channel',
+    upload_date: '20260101',
+    duration: 120,
+    chapters: [],
+    _type: 'video',
+  });
+
+  it('moves only media and metadata into the library and drops loose thumbnails', async () => {
+    const fake = await writeFakeYtDlp(`
+import { writeFileSync } from 'node:fs';
+const args = process.argv.slice(2);
+if (args.includes('--dump-single-json')) {
+  process.stdout.write(${JSON.stringify(probeJson)});
+  process.exit(0);
+}
+const template = args[args.indexOf('-o') + 1];
+const media = template.replace('%(ext)s', 'flac');
+writeFileSync(media, 'audio');
+writeFileSync(media.replace(/\\.flac$/, '.jpg'), 'thumb');
+writeFileSync(media.replace(/\\.flac$/, '.info.json'), '{}');
+process.stdout.write('[download] 100% of 1MiB\\n');
+`);
+
+    const db = new Database(path.join(tempDir, 'state.sqlite'));
+    await db.migrate();
+    const queue = new JobQueue({ ...config(), concurrency: 1, ytDlpPath: fake }, db);
+    await queue.start();
+    const id = await queue.enqueue(user, request);
+    const job = await waitForJobStatus(db, id, 'completed');
+
+    const outputFolder = job.outputFolder ?? '';
+    expect(path.basename(outputFolder)).toBe('Test Channel');
+    await expect(readdir(outputFolder)).resolves.toEqual(expect.arrayContaining(['Test Song.flac', 'Test Song.info.json']));
+    await expect(readdir(outputFolder)).resolves.not.toEqual(expect.arrayContaining([expect.stringMatching(/\.(?:jpe?g|png|webp)$/i)]));
+    expect([...job.files].sort()).toEqual(['Test Song.flac', 'Test Song.info.json']);
+
+    await queue.stop(0);
+    db.close();
+  });
+
+  it('embeds chapter covers but never copies the folder-level cover into the library', async () => {
+    const chapterProbe = JSON.stringify({
+      id: 'abc123',
+      title: 'Test Song',
+      channel: 'Test Channel',
+      upload_date: '20260101',
+      duration: 60,
+      chapters: [
+        { title: 'Intro', start_time: 0, end_time: 30 },
+        { title: 'Main', start_time: 30, end_time: 60 },
+      ],
+      _type: 'video',
+    });
+    const fake = await writeFakeYtDlp(`
+import { writeFileSync } from 'node:fs';
+const args = process.argv.slice(2);
+if (args.includes('--dump-single-json')) {
+  process.stdout.write(${JSON.stringify(chapterProbe)});
+  process.exit(0);
+}
+const template = args[args.indexOf('-o') + 1];
+const media = template.replace('%(ext)s', 'flac');
+writeFileSync(media, 'audio');
+writeFileSync(media.replace(/\\.flac$/, '.jpg'), 'thumb');
+writeFileSync(media.replace(/\\.flac$/, '.info.json'), '{}');
+process.stdout.write('[download] 100% of 1MiB\\n');
+`);
+
+    const binDir = path.join(tempDir, 'bin');
+    await mkdir(binDir, { recursive: true });
+    const fakeFfmpeg = path.join(binDir, 'ffmpeg');
+    await writeFile(
+      fakeFfmpeg,
+      `#!${process.execPath}\nimport { writeFileSync } from 'node:fs';\nconst args = process.argv.slice(2);\nwriteFileSync(args[args.length - 1], 'audio');\n`,
+    );
+    await chmod(fakeFfmpeg, 0o755);
+    const originalPath = process.env.PATH;
+    process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ''}`;
+
+    const db = new Database(path.join(tempDir, 'state.sqlite'));
+    await db.migrate();
+    const queue = new JobQueue({ ...config(), concurrency: 1, ytDlpPath: fake }, db);
+    try {
+      await queue.start();
+      const id = await queue.enqueue(user, { ...request, splitChapters: true, chaptersConfirmed: true });
+      const job = await waitForJobStatus(db, id, 'completed');
+
+      const outputFolder = job.outputFolder ?? '';
+      const names = (await readdir(outputFolder)).sort();
+      expect(names).toEqual(['01 - Intro.flac', '02 - Main.flac']);
+      expect([...job.files].sort()).toEqual(['01 - Intro.flac', '02 - Main.flac']);
+    } finally {
+      process.env.PATH = originalPath;
+      await queue.stop(0);
+      db.close();
+    }
   });
 });
 

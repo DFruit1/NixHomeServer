@@ -4,14 +4,16 @@ import { apiUrl } from './api.js';
 type ProfileMenuProps = {
   image: string;
   username: string;
+  signedIn?: boolean;
   onImageChange: (_event: Event, target: HTMLInputElement) => Promise<void>;
   onImageClear: () => void;
   onClearHistory: () => Promise<void>;
+  onSignIn?: () => Promise<void>;
   onSignOut?: () => Promise<void>;
   appDownloadUrl?: string;
 };
 
-export const ProfileMenu = component$<ProfileMenuProps>(({ image, username, onImageChange, onImageClear, onClearHistory, onSignOut, appDownloadUrl }) => {
+export const ProfileMenu = component$<ProfileMenuProps>(({ image, username, signedIn, onImageChange, onImageClear, onClearHistory, onSignIn, onSignOut, appDownloadUrl }) => {
   const menuRef = useSignal<HTMLDetailsElement>();
   const closeMenu = $(() => {
     if (menuRef.value) {
@@ -21,6 +23,10 @@ export const ProfileMenu = component$<ProfileMenuProps>(({ image, username, onIm
   const clearAndClose = $(async () => {
     await onClearHistory();
     closeMenu();
+  });
+  const signInAndClose = $(async () => {
+    closeMenu();
+    await onSignIn?.();
   });
 
   useVisibleTask$(({ cleanup }) => {
@@ -85,7 +91,11 @@ export const ProfileMenu = component$<ProfileMenuProps>(({ image, username, onIm
         <button class="profile-action" type="button" onClick$={clearAndClose}>
           Clear history
         </button>
-        {onSignOut ? (
+        {onSignIn && signedIn === false ? (
+          <button class="profile-signout" type="button" onClick$={signInAndClose}>
+            Sign in
+          </button>
+        ) : onSignOut ? (
           <button class="profile-signout" type="button" onClick$={onSignOut}>
             Log out
           </button>

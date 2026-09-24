@@ -5,6 +5,7 @@ import { isYouTubeUrl, normaliseSharedPromptUrl, normalizeDownloadUrl } from './
 import { ProfileMenu } from './client/profile-menu.js';
 import { OptionsPanel, OPTION_KEYS, type OptionKey, type BooleanOptionKey } from './client/options-panel.js';
 import { JobList } from './client/job-list.js';
+import { shouldQueueLocally } from './client/queue-fallback.js';
 import { apiFetch, isTauriRuntime, normaliseServerBaseUrl, serverBaseUrl } from './client/api.js';
 import {
   addPendingJob,
@@ -66,6 +67,9 @@ export default component$(() => {
   const submitting = useSignal(false);
   const recentPastedUrls = useSignal<string[]>([]);
   const connectionState = useSignal<'checking' | 'signed-out' | 'ready'>('checking');
+  // Whether the server currently accepts our token. `undefined` means it has
+  // not been established yet (for example while offline).
+  const signedIn = useSignal<boolean | undefined>(undefined);
   const serverUrlInput = useSignal('');
   const connecting = useSignal(false);
   const connectError = useSignal('');
@@ -79,13 +83,20 @@ export default component$(() => {
 
   const refresh = $(async () => {
     const [meResponse, jobsResponse] = await Promise.all([apiFetch('/api/me'), apiFetch('/api/jobs')]);
-    if (!meResponse.ok) {
-      throw new Error('Authentication is required');
+    if (meResponse.ok) {
+      me.value = await meResponse.json();
+      signedIn.value = true;
+      if (!me.value?.canWriteShared) {
+        destination.value = 'personal';
+      }
+    } else if (meResponse.status === 401 || meResponse.status === 403) {
+      // An expired session keeps the main screen usable; downloads fall back to
+      // the on-device queue until the user signs in again.
+      me.value = undefined;
+      signedIn.value = false;
     }
-    me.value = await meResponse.json();
-    jobs.value = await jobsResponse.json();
-    if (!me.value?.canWriteShared) {
-      destination.value = 'personal';
+    if (jobsResponse.ok) {
+      jobs.value = await jobsResponse.json();
     }
   });
 
@@ -98,14 +109,14 @@ export default component$(() => {
     }, 2500);
   });
 
-  const connect = $(async () => {
+  const connect = $(async (keepMain = false) => {
     if (connecting.value) {
       return;
     }
     connecting.value = true;
     connectError.value = '';
     try {
-      const baseUrl = normaliseServerBaseUrl(serverUrlInput.value);
+      const baseUrl = normaliseServerBaseUrl(serverUrlInput.value || serverBaseUrl());
       serverUrlInput.value = baseUrl;
       storeServerBaseUrl(baseUrl);
       const authConfig = await fetchAuthConfig();
@@ -113,15 +124,22 @@ export default component$(() => {
         throw new Error('This server does not accept app sign-in yet.');
       }
       await signIn(authConfig.issuer, authConfig.clientId);
+      window.localStorage.setItem(AUTO_CONNECT_KEY, '1');
       connectionState.value = 'ready';
       await refresh();
       await startPolling();
     } catch (caught) {
       connectError.value = caught instanceof Error ? caught.message : String(caught);
-      connectionState.value = 'signed-out';
+      if (!keepMain) {
+        connectionState.value = 'signed-out';
+      }
     } finally {
       connecting.value = false;
     }
+  });
+
+  const signInFromMain = $(async () => {
+    await connect(true);
   });
 
   const refreshPending = $(async () => {
@@ -177,7 +195,8 @@ export default component$(() => {
     }
     me.value = undefined;
     jobs.value = [];
-    connectionState.value = 'signed-out';
+    signedIn.value = false;
+    connectError.value = '';
   });
 
   useVisibleTask$(({ cleanup }) => {
@@ -201,11 +220,15 @@ export default component$(() => {
     const initialise = async () => {
       if (isTauriRuntime()) {
         installTauriTransport();
-        const status = await getAuthStatus().catch(() => ({ signedIn: false }));
-        if (!status.signedIn) {
+        const status = await getAuthStatus().catch(() => ({ signedIn: false, sessionExpired: false }));
+        const base = serverBaseUrl();
+        // A stored session (even one that has expired) keeps the user on the
+        // main screen so downloads can still be queued on this device. Only a
+        // first run with no session goes to the sign-in panel.
+        const hasSession = status.signedIn || status.sessionExpired === true;
+        if (!hasSession) {
           // The bundled default is the correct API host, so go straight to
           // login on first run; fall back to the panel if it fails.
-          const base = serverBaseUrl();
           const autoAttempted = window.localStorage.getItem(AUTO_CONNECT_KEY) === '1';
           if (base && !autoAttempted) {
             window.localStorage.setItem(AUTO_CONNECT_KEY, '1');
@@ -218,7 +241,6 @@ export default component$(() => {
         }
         // Make sure the Rust-side queue flush knows the server even on a
         // launch where the user never re-entered it.
-        const base = serverBaseUrl();
         if (base) {
           storeServerBaseUrl(base);
         }
@@ -395,10 +417,11 @@ export default component$(() => {
       await refresh();
       await returnToSource();
     } catch (caught) {
-      const isHttpError = caught instanceof Error && 'httpStatus' in caught;
-      if (isTauriRuntime() && !isHttpError) {
+      if (shouldQueueLocally(caught, isTauriRuntime())) {
         await addPendingJob(normalizedUrl, mediaType.value);
-        pendingNotice.value = 'The server is unreachable; queued on this device.';
+        pendingNotice.value = signedIn.value === false
+          ? 'You are signed out; queued on this device.'
+          : 'The server is unreachable; queued on this device.';
         await refreshPending();
         url.value = '';
         await returnToSource();
@@ -450,7 +473,7 @@ export default component$(() => {
               class="primary"
               type="button"
               disabled={connecting.value || connectionState.value === 'checking' || !serverUrlInput.value.trim()}
-              onClick$={connect}
+              onClick$={() => connect()}
             >
               {connecting.value ? 'Signing in' : 'Sign in'}
             </button>
@@ -468,10 +491,12 @@ export default component$(() => {
         </div>
         <ProfileMenu
           image={profileImage.value}
-          username={me.value?.username ?? 'Loading'}
+          username={me.value?.username ?? (signedIn.value === false ? 'Signed out' : 'Loading')}
+          signedIn={signedIn.value}
           onImageChange={updateProfileImage}
           onImageClear={clearProfileImage}
           onClearHistory={clearHistory}
+          onSignIn={isTauriRuntime() ? signInFromMain : undefined}
           onSignOut={isTauriRuntime() ? disconnect : undefined}
           appDownloadUrl={isTauriRuntime() ? undefined : me.value?.appDownloadUrl}
         >
@@ -492,6 +517,21 @@ export default component$(() => {
           />
         </ProfileMenu>
       </section>
+
+      {isTauriRuntime() && signedIn.value === false && (
+        <section class="session-notice" role="status">
+          <p>You are signed out. Downloads will queue on this device until you sign in again.</p>
+          {connectError.value && <p class="error">{connectError.value}</p>}
+          <button
+            class="primary"
+            type="button"
+            disabled={connecting.value}
+            onClick$={signInFromMain}
+          >
+            {connecting.value ? 'Signing in' : 'Sign in'}
+          </button>
+        </section>
+      )}
 
       <section class="download-form">
         <label class="url-field">

@@ -399,7 +399,10 @@ export class JobQueue {
     await this.db.setProgress(job.id, { phase: 'move' });
     const sourceDir = request.splitChapters ? path.join(tempDir, 'chapters') : tempDir;
     await mkdir(outputFolder, { recursive: true, mode: 0o775 });
-    await copyDirectoryContents(sourceDir, outputFolder);
+    // Cover art is embedded into each media file. Loose thumbnail sidecars are
+    // deliberately left in the temp directory so the synced library contains
+    // only media and metadata, keeping per-track artwork authoritative.
+    await copyDirectoryContents(sourceDir, outputFolder, { skipArtworkSidecars: true });
     await this.recordFiles(job.id, outputFolder);
     await rm(tempDir, { recursive: true, force: true });
     await this.db.setProgress(job.id, null);
