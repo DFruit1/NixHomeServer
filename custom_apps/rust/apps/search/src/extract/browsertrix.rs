@@ -417,6 +417,20 @@ fn walk(dir: &PathBuf, depth: usize) -> Vec<PathBuf> {
     found
 }
 
+/// Fingerprints every `.wacz` crawl archive (path, size, mtime) plus the source
+/// settings. WACZ archives are immutable once written, so an unchanged
+/// inventory means the expensive per-archive parsing can be skipped. Returns
+/// `None` when no archive is found, so the indexer still runs extraction.
+pub(crate) fn source_fingerprint(source: &SourceConfig) -> Option<String> {
+    let archive_root = source.setting_str("archiveRoot")?;
+    let mut files = walk(&PathBuf::from(archive_root), 0);
+    if files.is_empty() {
+        return None;
+    }
+    files.sort();
+    super::file_inventory_fingerprint(source, files)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

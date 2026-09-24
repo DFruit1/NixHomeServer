@@ -181,6 +181,21 @@ fn format_file_size(path: &Path) -> i64 {
         .unwrap_or(0)
 }
 
+/// Fingerprints the Calibre library (every file under the library root, path,
+/// size and mtime) plus the source settings. `metadata.db` changes on any
+/// Calibre import or edit, and book files change when a format is replaced, so
+/// an unchanged inventory means the expensive EPUB/PDF body extraction can be
+/// skipped. Returns `None` when the library is unreadable or empty, so the
+/// indexer still runs extraction and its normal error path.
+pub(crate) fn source_fingerprint(source: &SourceConfig) -> Option<String> {
+    let library_root = source.setting_str("libraryRoot")?;
+    let files = super::collect_files(Path::new(library_root), 6, &|_: &Path| true);
+    if files.is_empty() {
+        return None;
+    }
+    super::file_inventory_fingerprint(source, files)
+}
+
 fn extract_epub_text(path: &Path) -> Option<String> {
     let file = std::fs::File::open(path).ok()?;
     let mut archive = ZipArchive::new(std::io::BufReader::new(file)).ok()?;

@@ -19,7 +19,11 @@ use crate::text;
 use crate::timeutil::now_epoch;
 use crate::zim_search::{self, ZimIndexEntry, ZimSearchConfig};
 
-const MAX_RESULTS: usize = 50;
+/// Default page size when the client does not ask for one, and the hard upper
+/// bound a client may request. Paging is offset-based, so a very large page
+/// would make Solr materialize an unbounded result window.
+const DEFAULT_PAGE_SIZE: usize = 50;
+const MAX_PAGE_SIZE: usize = 200;
 /// How long the discovered ZIM library listing is cached between queries.
 const ZIM_CACHE_TTL_SECONDS: i64 = 300;
 /// How long Paperless correspondent/tag/document-type names are cached.
@@ -204,11 +208,20 @@ struct SearchParams {
     before: Option<String>,
     #[serde(default)]
     page: Option<usize>,
+    #[serde(default, rename = "pageSize")]
+    page_size: Option<usize>,
     #[serde(default)]
     sort: Option<String>,
 }
 
 impl SearchParams {
+    /// The requested page size, clamped so a client cannot ask for an
+    /// unbounded result window.
+    fn page_size(&self) -> usize {
+        self.page_size
+            .unwrap_or(DEFAULT_PAGE_SIZE)
+            .clamp(1, MAX_PAGE_SIZE)
+    }
     /// Maps the UI's `sort` value to a Solr ordering. Unknown or missing values
     /// fall back to relevance so a hand-edited URL cannot break the query.
     fn sort_order(&self) -> crate::solr::SortOrder {
@@ -273,7 +286,7 @@ async fn api_search(
     let filters = params.filters();
 
     let page = params.page.unwrap_or(0);
-    let rows = MAX_RESULTS;
+    let rows = params.page_size();
     let offset = page.saturating_mul(rows);
 
     // Runtime-federated hits (a source's own index queried live) have no
@@ -636,6 +649,24 @@ mod tests {
         assert_eq!(
             params(json!({ "q": "x", "sort": "bogus" })).sort_order(),
             crate::solr::SortOrder::Relevance
+        );
+    }
+
+    #[test]
+    fn page_size_is_bounded() {
+        let params = |value: serde_json::Value| -> SearchParams {
+            serde_json::from_value(value).expect("params")
+        };
+        assert_eq!(params(json!({ "q": "x" })).page_size(), DEFAULT_PAGE_SIZE);
+        assert_eq!(
+            params(json!({ "q": "x", "pageSize": 100 })).page_size(),
+            100
+        );
+        // Zero is clamped up, an oversized request is clamped down.
+        assert_eq!(params(json!({ "q": "x", "pageSize": 0 })).page_size(), 1);
+        assert_eq!(
+            params(json!({ "q": "x", "pageSize": 99_999 })).page_size(),
+            MAX_PAGE_SIZE
         );
     }
 }

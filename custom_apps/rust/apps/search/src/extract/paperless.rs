@@ -18,6 +18,20 @@ pub struct PaperlessExtractor {
     pub pdftotext: Option<PathBuf>,
 }
 
+/// Fingerprints the exporter's `manifest.json` (path, size, mtime) plus the
+/// source settings. The exporter rewrites the manifest on every run, so an
+/// unchanged fingerprint means no document changed and the pass can be skipped.
+/// Returns `None` when the manifest is absent, so the indexer still runs
+/// extraction and reports the missing-manifest error.
+pub(crate) fn source_fingerprint(source: &SourceConfig) -> Option<String> {
+    let export_path = source.setting_str("exportPath")?;
+    let manifest = PathBuf::from(export_path).join("manifest.json");
+    if !manifest.is_file() {
+        return None;
+    }
+    super::file_inventory_fingerprint(source, [manifest])
+}
+
 struct Manifest {
     documents: Vec<Value>,
     tags: HashMap<i64, String>,

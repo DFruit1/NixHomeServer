@@ -70,6 +70,23 @@ fn walk_eml(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// Fingerprints every `.eml` file across the source's roots (path, size, mtime)
+/// plus its settings. The archive is append-only in normal operation, so an
+/// unchanged inventory means the expensive per-message parse can be skipped.
+/// Returns `None` when no root is readable or no message is present, leaving
+/// the indexer to run extraction and its normal empty/wipe guards.
+pub(crate) fn source_fingerprint(source: &SourceConfig) -> Option<String> {
+    let roots = collect_roots(source).ok()?;
+    let mut files = Vec::new();
+    for root in roots {
+        walk_eml(&root.path, 0, &mut files);
+    }
+    if files.is_empty() {
+        return None;
+    }
+    super::file_inventory_fingerprint(source, files)
+}
+
 struct ParsedMail {
     subject: String,
     from: String,

@@ -208,6 +208,13 @@
         <option value="newest">Newest first</option>
       </select>
     </label>
+    <label class="field"><span>Per page</span>
+      <select id="pageSize">
+        <option value="25">25</option>
+        <option value="50" selected>50</option>
+        <option value="100">100</option>
+      </select>
+    </label>
     <label class="field field--range"><span>Date added</span>
       <span class="range">
         <input id="after" type="date" aria-label="Added on or after">
@@ -250,6 +257,7 @@ const ownerEl = document.getElementById('owner');
 const sourceEl = document.getElementById('source');
 const typeEl = document.getElementById('type');
 const sortEl = document.getElementById('sort');
+const pageSizeEl = document.getElementById('pageSize');
 const afterEl = document.getElementById('after');
 const beforeEl = document.getElementById('before');
 
@@ -349,6 +357,7 @@ function params(page) {
   if (sourceEl.value) p.set('source', sourceEl.value);
   if (typeEl.value) p.set('type', typeEl.value);
   if (sortEl.value && sortEl.value !== 'relevance') p.set('sort', sortEl.value);
+  if (pageSizeEl.value && pageSizeEl.value !== '50') p.set('pageSize', pageSizeEl.value);
   for (const [key, value] of Object.entries(chipFilters)) {
     if (value) p.set(key, value);
   }
@@ -616,6 +625,7 @@ function readUrlState() {
   afterEl.value = p.get('after') || '';
   beforeEl.value = p.get('before') || '';
   sortEl.value = p.get('sort') === 'newest' ? 'newest' : 'relevance';
+  pageSizeEl.value = ['25', '50', '100'].includes(p.get('pageSize')) ? p.get('pageSize') : '50';
   setSelectValue(ownerEl, p.get('owner'));
   setSelectValue(typeEl, p.get('type'));
   setSelectValue(sourceEl, p.get('source'));
@@ -633,6 +643,7 @@ ownerEl.addEventListener('change', runSearch);
 sourceEl.addEventListener('change', runSearch);
 typeEl.addEventListener('change', runSearch);
 sortEl.addEventListener('change', runSearch);
+pageSizeEl.addEventListener('change', runSearch);
 afterEl.addEventListener('change', runSearch);
 beforeEl.addEventListener('change', runSearch);
 clearBtn.addEventListener('click', clearFilters);

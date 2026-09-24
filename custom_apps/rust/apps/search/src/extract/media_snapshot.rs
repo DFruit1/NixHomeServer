@@ -208,6 +208,19 @@ impl MediaSnapshotExtractor {
     }
 }
 
+/// Fingerprints the exported `metadata.json` snapshot (path, size, mtime) plus
+/// the source settings. Media Manager rewrites the snapshot whenever a library
+/// changes, so an unchanged fingerprint means the parse pass can be skipped.
+/// Returns `None` when the snapshot is absent, so the indexer still runs
+/// extraction and reports the missing-snapshot error.
+pub(crate) fn source_fingerprint(source: &SourceConfig) -> Option<String> {
+    let path = source.setting_str("snapshotPath").map(PathBuf::from)?;
+    if !path.is_file() {
+        return None;
+    }
+    super::file_inventory_fingerprint(source, [path])
+}
+
 impl super::Extractor for MediaSnapshotExtractor {
     fn extract(
         &self,

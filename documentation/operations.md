@@ -1331,6 +1331,26 @@ Interpreting the result:
 The `offline-media-reconcile.timer` re-verifies Kanidm membership and revokes
 folders and devices for users who lose access.
 
+### Offline media artwork and metadata
+
+YouTube Downloader output is kept readable by Android media scanners and music
+apps:
+
+- Cover art is embedded into each media file, and a `.info.json` metadata
+  sidecar is written next to it. The loose thumbnail images that yt-dlp stages
+  (`*.jpg`, `*.jpeg`, `*.png`, `*.webp`) are not copied into the synced library.
+- Embedded per-track artwork stays authoritative. With no loose folder image, a
+  music app cannot apply one track's or one album's cover to unrelated tracks in
+  a shared channel folder, and Android's gallery does not create an album for
+  every downloaded cover image.
+
+This applies to new downloads. Loose covers written by older downloads remain on
+the server and on enrolled devices until removed. When cleaning up, only delete
+image files that sit next to a matching media file (for example `Song.flac` with
+a sibling `Song.jpg`) and any `cover.jpg` in chapter-split output; do not delete
+covers that were installed deliberately through Media Manager. Request a
+Syncthing rescan from Homepage afterwards.
+
 ## Browsertrix Downloader Operations
 
 The service boundary, storage paths, crawler isolation policy, image update
@@ -1508,6 +1528,27 @@ Notes:
   keep the fulltext list small: it reads every article and dominates the
   indexing pass. Enabling more entries increases index size and first-sync
   time.
+* Incremental indexing. Every extractor derives a cheap fingerprint of its
+  inputs (ZIM inventory, `.eml` files, FreshRSS SQLite files, `metadata.db`,
+  WACZ archives, the media snapshot, and the Paperless export manifest) plus
+  its settings. When the fingerprint matches the last successful pass the
+  indexer skips that source's extraction entirely; a changed fingerprint or a
+  missing input falls back to a full extraction pass. Fingerprints are only a
+  skip signal — the per-document checksum still governs whether a document is
+  re-pushed.
+* Kiwix federation. Every ZIM with an embedded Xapian index is searched live,
+  not just the first few: archives are queried in bounded-concurrency batches
+  (8 at a time) and each archive's article title/snippet fetches run
+  concurrently, so a large library is fully searchable without unbounded
+  subprocess fan-out. A single failing archive is skipped rather than failing
+  the query.
+* Query handling. Queries are parsed by Solr's `edismax` with phrase boosts
+  (`pf`/`ps`) so adjacent-term matches rank above scattered ones. If Solr
+  rejects a query for containing Lucene syntax characters (`:`, `[`, an
+  unbalanced quote, ...), the UI retries once with those characters escaped so
+  a literal search still returns results instead of a 502. The result page size
+  is a request parameter (`pageSize`, default 50, capped at 200) exposed as the
+  UI's Per page control.
 * Disabling the Search app keeps every piece of state: `/var/lib/solr` stays
   on disk (persisted centrally), the Postgres `search` database stays in the
   cluster, and the last `dumps/search.pgdump` backup remains in Kopia

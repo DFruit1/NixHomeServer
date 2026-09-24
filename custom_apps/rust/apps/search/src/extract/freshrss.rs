@@ -40,6 +40,20 @@ pub(crate) fn user_databases(state_dir: &str) -> Vec<PathBuf> {
     databases
 }
 
+/// Fingerprints each user's SQLite database (path, size, mtime) plus the
+/// source settings. FreshRSS rewrites the database on every new entry, so an
+/// unchanged fingerprint means no feed changed and the query/parse pass can be
+/// skipped. Returns `None` when no database is present, so the indexer still
+/// runs extraction (and its wipe guard) rather than skipping on an empty view.
+pub(crate) fn source_fingerprint(source: &SourceConfig) -> Option<String> {
+    let state_dir = source.setting_str("stateDir")?;
+    let databases = user_databases(state_dir);
+    if databases.is_empty() {
+        return None;
+    }
+    super::file_inventory_fingerprint(source, databases)
+}
+
 fn load_entries(connection: &Connection) -> Result<Vec<EntryRow>, String> {
     let mut statement = connection
         .prepare(

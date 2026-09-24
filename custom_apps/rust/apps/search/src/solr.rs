@@ -480,6 +480,44 @@ impl SolrClient {
         offset: usize,
         sort: SortOrder,
     ) -> Result<SearchResponse, String> {
+        match self
+            .select(query, selected_sources, filters, rows, offset, sort)
+            .await
+        {
+            Ok(response) => parse_search_response(&response),
+            Err(err) => {
+                // A user query can contain Lucene syntax characters (`:`, `[`,
+                // an unbalanced quote, ...) that make Solr reject the whole
+                // request. Retry once with every special character escaped so a
+                // literal search still returns results instead of a 502.
+                if !is_query_parse_error(&err) {
+                    return Err(err);
+                }
+                let escaped = escape_lucene_query(query);
+                if escaped == query {
+                    return Err(err);
+                }
+                eprintln!("search: solr rejected the query; retrying with escaped terms");
+                let response = self
+                    .select(&escaped, selected_sources, filters, rows, offset, sort)
+                    .await?;
+                parse_search_response(&response)
+            }
+        }
+    }
+
+    /// Issues one Solr select and returns the raw response, surfacing a Solr
+    /// error payload as an `Err` string so the caller can decide whether to
+    /// retry with an escaped query.
+    async fn select(
+        &self,
+        query: &str,
+        selected_sources: &[String],
+        filters: &SearchFilters,
+        rows: usize,
+        offset: usize,
+        sort: SortOrder,
+    ) -> Result<Value, String> {
         let mut params: Vec<(&str, String)> = vec![
             ("q", query.to_string()),
             // Stored fields only; the body is index-only and is enriched from
@@ -491,6 +529,13 @@ impl SolrClient {
             ),
             ("defType", "edismax".to_string()),
             ("qf", "title^4 body".to_string()),
+            // Phrase boosts: documents whose title or body contains the query
+            // terms adjacent (within the phrase slop `ps`) rank above documents
+            // where the same terms appear scattered.
+            ("pf", "title^8 body^2".to_string()),
+            ("ps", "2".to_string()),
+            ("qs", "2".to_string()),
+            ("tie", "0.1".to_string()),
             ("rows", rows.to_string()),
             ("start", offset.to_string()),
             ("facet", "true".to_string()),
@@ -526,8 +571,33 @@ impl SolrClient {
         if response.get("error").is_some() {
             return Err(format!("solr query rejected: {response}"));
         }
-        parse_search_response(&response)
+        Ok(response)
     }
+}
+
+/// Escapes the Lucene/edismax syntax characters so a literal user query is
+/// treated as text rather than operators. Whitespace is preserved so the query
+/// still splits into separate terms.
+fn escape_lucene_query(query: &str) -> String {
+    const SPECIAL: &str = r#"\+-&|!(){}[]^"~*?:/"#;
+    let mut escaped = String::with_capacity(query.len());
+    for ch in query.chars() {
+        if SPECIAL.contains(ch) {
+            escaped.push('\\');
+        }
+        escaped.push(ch);
+    }
+    escaped
+}
+
+/// Whether a Solr error looks like the query itself was rejected (bad syntax,
+/// unknown field) as opposed to a server or transport problem. Solr reports
+/// these with HTTP 400 and a `code:400` in the error payload.
+fn is_query_parse_error(err: &str) -> bool {
+    err.contains("\"code\":400")
+        || err.contains("Cannot parse")
+        || err.contains("SyntaxError")
+        || err.contains("undefined field")
 }
 
 /// Parses a Solr facet field. Solr returns facets as a flat array interleaving
@@ -795,5 +865,35 @@ mod tests {
             SortOrder::Newest.clause(),
             Some("content_created desc, score desc")
         );
+    }
+
+    #[test]
+    fn escapes_lucene_syntax_characters() {
+        assert_eq!(escape_lucene_query("plain terms"), "plain terms");
+        assert_eq!(escape_lucene_query("field:value"), r"field\:value");
+        assert_eq!(escape_lucene_query("a[b]"), r"a\[b\]");
+        assert_eq!(escape_lucene_query("c++"), r"c\+\+");
+        // An already-escaped query is escaped again; the fallback is only used
+        // when the original was rejected, so idempotence is not required.
+        assert_eq!(escape_lucene_query("a?b"), r"a\?b");
+        // Non-syntax characters are left untouched.
+        assert_eq!(escape_lucene_query("50%"), "50%");
+    }
+
+    #[test]
+    fn recognises_query_parse_errors() {
+        assert!(is_query_parse_error(
+            r#"solr query rejected: {"error":{"msg":"Cannot parse 'foo:': ...","code":400}}"#
+        ));
+        assert!(is_query_parse_error("undefined field bogus"));
+        assert!(is_query_parse_error("SyntaxError: ..."));
+        // Transport and server errors are not query parse errors and must not
+        // be retried with escaping.
+        assert!(!is_query_parse_error(
+            "solr query failed: connection refused"
+        ));
+        assert!(!is_query_parse_error(
+            r#"solr query rejected: {"error":{"msg":"boom","code":500}}"#
+        ));
     }
 }

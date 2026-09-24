@@ -6,6 +6,8 @@ pub mod mail;
 pub mod media_snapshot;
 pub mod paperless;
 
+use std::path::{Path, PathBuf};
+
 use serde_json::Value;
 
 use crate::config::{is_federated, Settings, SourceConfig};
@@ -92,8 +94,83 @@ pub trait Extractor {
 pub fn source_fingerprint(source: &SourceConfig) -> Option<String> {
     match source.source_type.as_str() {
         "kiwix" => kiwix::source_fingerprint(source),
+        "mail-archive" => mail::source_fingerprint(source),
+        "browsertrix" => browsertrix::source_fingerprint(source),
+        "freshrss" => freshrss::source_fingerprint(source),
+        "calibre" => calibre::source_fingerprint(source),
+        "media-snapshot" => media_snapshot::source_fingerprint(source),
+        "paperless" => paperless::source_fingerprint(source),
         _ => None,
     }
+}
+
+/// Fingerprints a set of input files together with the source's settings.
+///
+/// Each file contributes its path, byte length, and mtime; an unchanged set
+/// means the source's inputs cannot have changed, so the expensive extraction
+/// pass can be skipped. Returns `None` when any file cannot be stat'd, which
+/// leaves the indexer to extract and hit its normal error path rather than
+/// skipping on a partial view.
+pub(crate) fn file_inventory_fingerprint(
+    source: &SourceConfig,
+    files: impl IntoIterator<Item = PathBuf>,
+) -> Option<String> {
+    let settings = serde_json::to_string(&source.settings).ok()?;
+    let mut parts: Vec<String> = Vec::new();
+    for path in files {
+        let meta = std::fs::metadata(&path).ok()?;
+        let mtime_nanos = meta
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0);
+        parts.push(format!(
+            "{}\u{1f}{}\u{1f}{mtime_nanos}",
+            path.display(),
+            meta.len()
+        ));
+    }
+    parts.sort();
+    Some(crate::timeutil::sha256_hex(&[
+        &source.source_type,
+        &settings,
+        &parts.join("\n"),
+    ]))
+}
+
+/// Recursively collects files under `dir` (bounded by `max_depth`) whose path
+/// satisfies `matches`. Used to enumerate a source's inputs for fingerprinting.
+pub(crate) fn collect_files(
+    dir: &Path,
+    max_depth: usize,
+    matches: &dyn Fn(&Path) -> bool,
+) -> Vec<PathBuf> {
+    fn walk(
+        dir: &Path,
+        depth: usize,
+        max_depth: usize,
+        matches: &dyn Fn(&Path) -> bool,
+        out: &mut Vec<PathBuf>,
+    ) {
+        if depth > max_depth {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.filter_map(|entry| entry.ok()) {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, depth + 1, max_depth, matches, out);
+            } else if matches(&path) {
+                out.push(path);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(dir, 0, max_depth, matches, &mut out);
+    out
 }
 
 pub fn run(
@@ -128,4 +205,60 @@ pub fn run(
         other => return Err(format!("no extractor for source type '{other}'")),
     };
     extractor.extract(source, emit)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(raw: &str) -> SourceConfig {
+        crate::config::parse_sources(raw)
+            .expect("sources")
+            .remove(0)
+    }
+
+    #[test]
+    fn file_inventory_fingerprint_tracks_content_and_settings() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("input.txt");
+        std::fs::write(&file, b"one").expect("write");
+        let source = parse(&format!(
+            r#"[{{"id":"x","source_type":"paperless","app_base":"https://a","settings":{{"exportPath":"{}"}}}}]"#,
+            dir.path().display()
+        ));
+
+        let first = file_inventory_fingerprint(&source, [file.clone()]).expect("fingerprint");
+        // Recomputing with unchanged inputs is stable, so a pass can be skipped.
+        assert_eq!(
+            file_inventory_fingerprint(&source, [file.clone()]),
+            Some(first.clone())
+        );
+
+        // Changing a file's content changes the fingerprint.
+        std::fs::write(&file, b"one changed and longer").expect("rewrite");
+        let second = file_inventory_fingerprint(&source, [file.clone()]).expect("fingerprint");
+        assert_ne!(first, second);
+
+        // A missing file yields no fingerprint so extraction still runs.
+        assert_eq!(
+            file_inventory_fingerprint(&source, [dir.path().join("missing")]),
+            None
+        );
+    }
+
+    #[test]
+    fn dispatches_fingerprints_for_filesystem_sources() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let snapshot = dir.path().join("metadata.json");
+        std::fs::write(&snapshot, b"{}").expect("write");
+        let source = parse(&format!(
+            r#"[{{"id":"m","source_type":"media-snapshot","app_base":"https://a","settings":{{"snapshotPath":"{}"}}}}]"#,
+            snapshot.display()
+        ));
+        assert!(source_fingerprint(&source).is_some());
+
+        // A source whose required root setting is absent has no signal.
+        let kiwix = parse(r#"[{"id":"k","source_type":"kiwix","app_base":"https://a"}]"#);
+        assert_eq!(source_fingerprint(&kiwix), None);
+    }
 }

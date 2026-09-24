@@ -7,8 +7,10 @@ use tokio::time::timeout;
 use crate::extract::kiwix::{clean_title_from_path, entry_origin, has_xapian_fulltext};
 use crate::text::{html_title, snippet_from_html};
 
-/// How many ZIM archives a single query will search at most.
-const MAX_ZIMS_PER_QUERY: usize = 8;
+/// How many ZIM archives a single query searches concurrently. Every Xapian-
+/// bearing archive in the library is searched (no archive-count cap); this
+/// bounds the number of in-flight `kiwix-search` subprocesses instead.
+const MAX_ZIM_CONCURRENCY: usize = 8;
 /// How many article hits are kept per ZIM.
 const MAX_RESULTS_PER_ZIM: usize = 5;
 /// Total ZIM article hits returned for one query.
@@ -57,11 +59,10 @@ pub struct ZimHit {
 }
 
 /// Enumerates the ZIM archives in the library root and records, for each,
-/// whether it embeds its own Xapian fulltext index. The library is capped to
-/// a bounded number of archives so a large collection cannot make a single
-/// query unbounded; archives beyond the cap are reported so an oversized
-/// library is never silently unsearchable. Runs blocking subprocesses, so
-/// call from spawn_blocking.
+/// whether it embeds its own Xapian fulltext index. Every archive is returned;
+/// the caller bounds how many are queried concurrently, so a large library is
+/// fully searchable rather than silently truncated. Runs blocking
+/// subprocesses, so call from spawn_blocking.
 pub fn discover_zims(zimdump: &Path, library_root: &Path) -> Vec<ZimIndexEntry> {
     let mut zims: Vec<PathBuf> = std::fs::read_dir(library_root)
         .map(|reader| {
@@ -75,15 +76,7 @@ pub fn discover_zims(zimdump: &Path, library_root: &Path) -> Vec<ZimIndexEntry> 
         })
         .unwrap_or_default();
     zims.sort();
-    if zims.len() > MAX_ZIMS_PER_QUERY {
-        eprintln!(
-            "search: ZIM library holds {} archives; federating native indexes for the first {} only",
-            zims.len(),
-            MAX_ZIMS_PER_QUERY
-        );
-    }
     zims.into_iter()
-        .take(MAX_ZIMS_PER_QUERY)
         .map(|path| {
             let stem = path
                 .file_name()
@@ -105,9 +98,9 @@ pub fn discover_zims(zimdump: &Path, library_root: &Path) -> Vec<ZimIndexEntry> 
 /// the merged, bounded set of article hits. ZIMs without an embedded index are
 /// skipped: their articles are already indexed into Solr by the fallback
 /// extractor, so searching them here would only duplicate results. Archives
-/// are queried concurrently; any single ZIM that fails (missing tool,
-/// unreadable archive, timeout) is skipped rather than failing the whole
-/// query, and results keep their archive ordering.
+/// are queried in bounded-concurrency batches; any single ZIM that fails
+/// (missing tool, unreadable archive, timeout) is skipped rather than failing
+/// the whole query, and results keep their archive ordering.
 pub async fn search(
     config: &ZimSearchConfig,
     entries: &[ZimIndexEntry],
@@ -121,30 +114,37 @@ pub async fn search(
         return Vec::new();
     }
 
-    let mut tasks = tokio::task::JoinSet::new();
-    for (index, entry) in entries
+    let searchable: Vec<(usize, &ZimIndexEntry)> = entries
         .iter()
         .enumerate()
         .filter(|(_, entry)| entry.has_xapian)
-    {
-        let kiwix_search = kiwix_search.clone();
-        let zimdump = zimdump.clone();
-        let zim = entry.path.clone();
-        let stem = entry.stem.clone();
-        let app_base = config.app_base.clone();
-        let query = query.to_string();
-        tasks.spawn(async move {
-            (
-                index,
-                search_zim(&kiwix_search, &zimdump, &zim, &stem, &app_base, &query).await,
-            )
-        });
-    }
+        .collect();
+
+    // Search archives in bounded batches so a large library is fully covered
+    // without spawning an unbounded number of `kiwix-search` subprocesses.
     let mut ordered: Vec<(usize, Vec<ZimHit>)> = Vec::new();
-    while let Some(joined) = tasks.join_next().await {
-        match joined {
-            Ok((index, hits)) => ordered.push((index, hits)),
-            Err(err) => eprintln!("search: ZIM federation task failed: {err}"),
+    for chunk in searchable.chunks(MAX_ZIM_CONCURRENCY) {
+        let mut tasks = tokio::task::JoinSet::new();
+        for (index, entry) in chunk {
+            let kiwix_search = kiwix_search.clone();
+            let zimdump = zimdump.clone();
+            let zim = entry.path.clone();
+            let stem = entry.stem.clone();
+            let app_base = config.app_base.clone();
+            let query = query.to_string();
+            let index = *index;
+            tasks.spawn(async move {
+                (
+                    index,
+                    search_zim(&kiwix_search, &zimdump, &zim, &stem, &app_base, &query).await,
+                )
+            });
+        }
+        while let Some(joined) = tasks.join_next().await {
+            match joined {
+                Ok((index, hits)) => ordered.push((index, hits)),
+                Err(err) => eprintln!("search: ZIM federation task failed: {err}"),
+            }
         }
     }
     ordered.sort_by_key(|(index, _)| *index);
@@ -165,22 +165,44 @@ async fn search_zim(
     let Ok(paths) = search_paths(kiwix_search, zim, query).await else {
         return Vec::new();
     };
-    let mut hits = Vec::new();
-    for path in paths.into_iter().take(MAX_RESULTS_PER_ZIM) {
-        let path = path.trim().to_string();
-        if path.is_empty() {
-            continue;
+    let paths: Vec<String> = paths
+        .into_iter()
+        .take(MAX_RESULTS_PER_ZIM)
+        .map(|path| path.trim().to_string())
+        .filter(|path| !path.is_empty())
+        .collect();
+
+    // Resolve titles and snippets concurrently; each fetch is a `zimdump show`
+    // subprocess, so serialising them let a single multi-hit archive dominate
+    // the query's latency.
+    let mut tasks = tokio::task::JoinSet::new();
+    for (position, path) in paths.into_iter().enumerate() {
+        let zimdump = zimdump.to_path_buf();
+        let zim = zim.to_path_buf();
+        let query = query.to_string();
+        tasks.spawn(async move {
+            let (title, snippet) = fetch_title_and_snippet(&zimdump, &zim, &path, &query).await;
+            (position, path, title, snippet)
+        });
+    }
+    let mut resolved: Vec<(usize, String, String, Option<String>)> = Vec::new();
+    while let Some(joined) = tasks.join_next().await {
+        match joined {
+            Ok(hit) => resolved.push(hit),
+            Err(err) => eprintln!("search: ZIM snippet task failed: {err}"),
         }
-        let (title, snippet) = fetch_title_and_snippet(zimdump, zim, &path, query).await;
-        hits.push(ZimHit {
+    }
+    resolved.sort_by_key(|(position, ..)| *position);
+    resolved
+        .into_iter()
+        .map(|(_, path, title, snippet)| ZimHit {
             title,
             snippet,
             origin_url: entry_origin(app_base, stem, &path),
             app_url: app_base.trim_end_matches('/').to_string(),
             metadata: serde_json::json!({ "archive": stem, "entry_path": path }),
-        });
-    }
-    hits
+        })
+        .collect()
 }
 
 /// Runs `kiwix-search ZIM PATTERN` and returns the matching entry paths.
