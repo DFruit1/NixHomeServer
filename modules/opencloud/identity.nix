@@ -33,8 +33,12 @@ in
       ];
       originLanding = "https://${cloudHost}";
       preferShortUsername = true;
-      scopeMaps."opencloud-users" = [ "openid" "profile" "email" "opencloud_roles" ];
-      scopeMaps."opencloud-admins" = [ "openid" "profile" "email" "opencloud_roles" ];
+      # Native shells request offline_access (advertised via WEBFINGER_*_OIDC_
+      # CLIENT_SCOPES), and Kanidm denies the whole authorisation if any
+      # requested scope is not in the map. Grant it so desktop/mobile sign-in
+      # works; the web client does not request it.
+      scopeMaps."opencloud-users" = [ "openid" "profile" "email" "offline_access" "opencloud_roles" ];
+      scopeMaps."opencloud-admins" = [ "openid" "profile" "email" "offline_access" "opencloud_roles" ];
       claimMaps.opencloud_roles.valuesByGroup."opencloud-users" = [ "opencloudUser" ];
       claimMaps.opencloud_roles.valuesByGroup."opencloud-admins" = [ "opencloudAdmin" ];
     };

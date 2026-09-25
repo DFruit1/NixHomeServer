@@ -88,6 +88,8 @@ jq -e '
   and (.oauth.originUrl | index("oc://android.opencloud.eu") != null)
   and (.oauth.originUrl | index("oc://ios.opencloud.eu") != null)
   and (.oauth.scopeMaps."opencloud-users" | index("opencloud_roles") != null)
+  and (.oauth.scopeMaps."opencloud-users" | index("offline_access") != null)
+  and (.oauth.scopeMaps."opencloud-admins" | index("offline_access") != null)
   and (.oauth.claimMaps.opencloud_roles.valuesByGroup."opencloud-admins" == ["opencloudAdmin"])
   and (.oauth.claimMaps.opencloud_roles.valuesByGroup."opencloud-users" == ["opencloudUser"])
   and ([.groupMembers.users[]] | length > 0)
