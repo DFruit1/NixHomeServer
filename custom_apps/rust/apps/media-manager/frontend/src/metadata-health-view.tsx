@@ -2,20 +2,41 @@ import type {
   MetadataHealthIssue,
   MetadataHealthResult,
   MetadataIssuesPage as MetadataIssuesEnvelope,
+  ProviderCatalogResponse,
+  ProviderDefinition,
 } from "./api-contract.generated";
 import {
   $,
   component$,
+  type QRL,
   useSignal,
   useStore,
   useResource$,
+  useTask$,
 } from "@builder.io/qwik";
 import { api, readableError } from "./api";
+import { Icon } from "./icon";
+import type { IconName } from "./root-types";
+import {
+  candidateSources,
+  sourceStatus,
+  sourceStatusClass,
+} from "./health-source-recommendation";
 
 interface HealthRoot {
   id: string;
   label: string;
 }
+
+type MediaKind = MetadataHealthResult["mediaKind"];
+
+const KIND_SYMBOLS: Record<MediaKind, { icon: IconName; label: string }> = {
+  video: { icon: "video", label: "Video" },
+  music: { icon: "music-note", label: "Music" },
+  audiobook: { icon: "headphones", label: "Audiobook" },
+  podcast: { icon: "mic", label: "Podcast" },
+  book: { icon: "book", label: "Book" },
+};
 
 function displayValue(value: unknown): string {
   if (value == null || value === "") return "Not set";
@@ -46,6 +67,24 @@ function groupResults(results: MetadataHealthResult[]): HealthGroup[] {
     group.results.push(result);
   }
   return order.map((key) => byKey.get(key)!);
+}
+
+function groupHeading(group: HealthGroup): {
+  text: string;
+  fromFilename: boolean;
+} {
+  const first = group.results[0];
+  if (group.album)
+    return {
+      text: group.album.split("/").at(-1) ?? group.album,
+      fromFilename: false,
+    };
+  const title = first.title?.trim();
+  if (title) return { text: title, fromFilename: false };
+  return {
+    text: first.relativePath.split("/").at(-1) ?? first.relativePath,
+    fromFilename: true,
+  };
 }
 
 const MAX_GROUPED_FILES = 25;
@@ -107,6 +146,100 @@ function groupIssues(results: MetadataHealthResult[]): GroupedIssue[] {
   });
 }
 
+const HealthArtwork = component$<{ itemId: string }>((props) => {
+  const failed = useSignal(false);
+  return (
+    <div class="health-result-art" aria-hidden="true">
+      {!failed.value && (
+        <img
+          src={`/api/v1/items/${encodeURIComponent(props.itemId)}/image`}
+          alt=""
+          loading="lazy"
+          onError$={() => (failed.value = true)}
+        />
+      )}
+    </div>
+  );
+});
+
+const AlternativeSourcesDialog = component$<{
+  issue: MetadataHealthIssue;
+  mediaKind: MediaKind;
+  providers: ProviderDefinition[];
+  onClose$: QRL<() => void>;
+}>((props) => {
+  const recommended = candidateSources(
+    props.providers,
+    props.mediaKind,
+    props.issue.field ?? "",
+  );
+  const primary = recommended[0];
+  const alternatives = primary
+    ? recommended.filter((provider) => provider.id !== primary.id)
+    : recommended;
+  return (
+    <div class="dialog-backdrop" onClick$={props.onClose$}>
+      <div
+        class="dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Alternative sources"
+        onClick$={(event) => event.stopPropagation()}
+      >
+        <div class="dialog-header">
+          <h3>Alternative sources</h3>
+          <button
+            type="button"
+            class="dialog-close"
+            onClick$={props.onClose$}
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
+        <div class="dialog-body">
+          <p class="dialog-context">{props.issue.title}</p>
+          <ul class="health-source-list">
+            {alternatives.map((provider) => {
+              const status = sourceStatus(provider);
+              return (
+                <li key={provider.id}>
+                  <div class="health-source-heading">
+                    <strong>{provider.name}</strong>
+                    <span class={sourceStatusClass(status)}>
+                      {status.label}
+                    </span>
+                  </div>
+                  <p>{provider.notes}</p>
+                  <div class="health-source-links">
+                    <a
+                      href={provider.documentationUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Documentation
+                    </a>
+                    <a
+                      href={provider.setupUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Open provider setup
+                    </a>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+          <a class="health-source-manage" href="?view=accounts">
+            Manage metadata sources
+          </a>
+        </div>
+      </div>
+    </div>
+  );
+});
+
 export const MetadataHealthView = component$<{
   roots: HealthRoot[];
   initialRootId?: string;
@@ -122,6 +255,14 @@ export const MetadataHealthView = component$<{
     errors: [] as string[],
   });
   const requestRevision = useSignal(0);
+  const providerCatalog = useStore<{
+    providers: ProviderDefinition[];
+    loaded: boolean;
+  }>({ providers: [], loaded: false });
+  const alternativesFor = useSignal<{
+    issue: MetadataHealthIssue;
+    mediaKind: MediaKind;
+  } | null>(null);
 
   const inspectLibraries = $(async (rootId: string) => {
     const revision = ++requestRevision.value;
@@ -184,6 +325,18 @@ export const MetadataHealthView = component$<{
     return inspectLibraries(rootId);
   });
 
+  useTask$(async ({ track }) => {
+    track(() => inbox.results.length);
+    if (providerCatalog.loaded || inbox.results.length === 0) return;
+    providerCatalog.loaded = true;
+    try {
+      const response = await api<ProviderCatalogResponse>("/provider-accounts");
+      providerCatalog.providers = response.providers;
+    } catch {
+      providerCatalog.providers = [];
+    }
+  });
+
   return (
     <section
       class="health-page"
@@ -237,105 +390,175 @@ export const MetadataHealthView = component$<{
       ) : null}
 
       <div class="health-results">
-        {groupResults(inbox.results).map((group) => (
-          <article class="health-result" key={group.key}>
-            <header>
-              <div>
-                <h3>
-                  {group.album
-                    ? (group.album.split("/").at(-1) ?? group.album)
-                    : group.results[0].title ||
-                      group.results[0].relativePath.split("/").at(-1)}
-                </h3>
-                <p>
-                  {props.roots.find((root) => root.id === group.rootId)
-                    ?.label ?? group.rootId}
-                  {group.results.length > 1 &&
-                    ` · album · ${group.results.length} files`}
-                </p>
-              </div>
-              {group.results.length === 1 && (
-                <a
-                  class="health-review-link"
-                  href={`?view=library&root=${encodeURIComponent(group.rootId)}&item=${encodeURIComponent(group.results[0].itemId)}`}
-                >
-                  Review metadata
-                </a>
-              )}
-            </header>
-            <div class="health-result-issues">
-              {groupIssues(group.results).map(({ key, issue }) => (
-                <section
-                  class="health-result-issue"
-                  key={`${group.key}-${key}`}
-                >
-                  <h4>{issue.title}</h4>
-                  {issue.field && "currentValue" in issue ? (
-                    <div class="health-comparison">
-                      <div>
-                        <span class="health-value-label">Current</span>
-                        <p>{displayValue(issue.currentValue)}</p>
-                        {!!issue.currentSources?.length && (
-                          <small>{issue.currentSources.join(" · ")}</small>
-                        )}
-                      </div>
-                      <div>
-                        <span class="health-value-label">Proposed</span>
-                        {issue.proposedValues?.length ? (
-                          issue.proposedValues.map((candidate, index) => (
-                            <div class="health-candidate" key={index}>
-                              <p>{displayValue(candidate.value)}</p>
-                              <small>{candidate.sources.join(" · ")}</small>
-                            </div>
-                          ))
-                        ) : (
-                          <p class="health-no-proposal">{issue.message}</p>
-                        )}
-                      </div>
-                    </div>
-                  ) : (
-                    <p>{issue.message}</p>
-                  )}
-                  {(issue.affectedFiles?.length ?? 0) > 0 && (
-                    <details class="health-file-details">
-                      <summary>
-                        Affects{" "}
-                        {issue.affectedFileCount ?? issue.affectedFiles!.length}{" "}
-                        {(issue.affectedFileCount ??
-                          issue.affectedFiles!.length) === 1
-                          ? "file"
-                          : "files"}
-                      </summary>
-                      <p>{issue.affectedFiles!.join(", ")}</p>
-                    </details>
-                  )}
-                </section>
-              ))}
-            </div>
-            {group.results.length === 1 ? (
-              <details class="health-file-details">
-                <summary>File details</summary>
-                <p>{group.results[0].relativePath}</p>
-              </details>
-            ) : (
-              <details class="health-file-details">
-                <summary>Files in this album ({group.results.length})</summary>
-                {group.results.map((result) => (
-                  <p key={result.itemId}>
-                    <a
-                      class="health-review-link"
-                      href={`?view=library&root=${encodeURIComponent(group.rootId)}&item=${encodeURIComponent(result.itemId)}`}
+        {groupResults(inbox.results).map((group) => {
+          const first = group.results[0];
+          const kind = KIND_SYMBOLS[first.mediaKind] ?? {
+            icon: "file" as IconName,
+            label: first.mediaKind,
+          };
+          const heading = groupHeading(group);
+          return (
+            <article class="health-result" key={group.key}>
+              <header>
+                <HealthArtwork itemId={first.itemId} />
+                <div class="health-result-heading">
+                  <h3
+                    class={{
+                      "health-result-title-file": heading.fromFilename,
+                    }}
+                  >
+                    {heading.text}
+                  </h3>
+                  <span
+                    class="health-result-kind"
+                    role="img"
+                    aria-label={kind.label}
+                    title={kind.label}
+                  >
+                    <Icon name={kind.icon} size={18} />
+                  </span>
+                </div>
+                {group.results.length === 1 && (
+                  <a
+                    class="health-review-link"
+                    href={`?view=library&root=${encodeURIComponent(group.rootId)}&item=${encodeURIComponent(first.itemId)}`}
+                  >
+                    Review metadata
+                  </a>
+                )}
+              </header>
+              <div class="health-result-issues">
+                {groupIssues(group.results).map(({ key, issue }) => {
+                  const field = issue.field ?? "";
+                  const compares = Boolean(field) && "currentValue" in issue;
+                  const sources = compares
+                    ? candidateSources(
+                        providerCatalog.providers,
+                        first.mediaKind,
+                        field,
+                      )
+                    : [];
+                  const primary = sources[0];
+                  const primaryStatus = primary ? sourceStatus(primary) : null;
+                  return (
+                    <section
+                      class="health-result-issue"
+                      key={`${group.key}-${key}`}
                     >
-                      Review
-                    </a>{" "}
-                    {result.relativePath}
-                  </p>
-                ))}
-              </details>
-            )}
-          </article>
-        ))}
+                      <div
+                        class={{
+                          "health-comparison": true,
+                          "health-comparison-split": compares,
+                        }}
+                      >
+                        <div class="health-reason">
+                          <h4>{issue.title}</h4>
+                          {!compares && <p>{issue.message}</p>}
+                        </div>
+                        {compares && (
+                          <div class="health-value">
+                            <span class="health-value-label">Current</span>
+                            <p>{displayValue(issue.currentValue)}</p>
+                            {!!issue.currentSources?.length && (
+                              <small>{issue.currentSources.join(" · ")}</small>
+                            )}
+                          </div>
+                        )}
+                        {compares && (
+                          <div class="health-value">
+                            <span class="health-value-label">Proposed</span>
+                            {issue.proposedValues?.length ? (
+                              issue.proposedValues.map((candidate, index) => (
+                                <div class="health-candidate" key={index}>
+                                  <p>{displayValue(candidate.value)}</p>
+                                  <small>{candidate.sources.join(" · ")}</small>
+                                </div>
+                              ))
+                            ) : (
+                              <p class="health-no-proposal">{issue.message}</p>
+                            )}
+                            {primary && primaryStatus && (
+                              <>
+                                <p class="health-source">
+                                  Retrieve from <strong>{primary.name}</strong>
+                                  <span
+                                    class={sourceStatusClass(primaryStatus)}
+                                  >
+                                    {primaryStatus.label}
+                                  </span>
+                                </p>
+                                {sources.length > 1 && (
+                                  <button
+                                    type="button"
+                                    class="health-alt-sources"
+                                    onClick$={() =>
+                                      (alternativesFor.value = {
+                                        issue,
+                                        mediaKind: first.mediaKind,
+                                      })
+                                    }
+                                  >
+                                    Alternative Sources
+                                  </button>
+                                )}
+                              </>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                      {(issue.affectedFiles?.length ?? 0) > 0 && (
+                        <details class="health-file-details">
+                          <summary>
+                            Affects{" "}
+                            {issue.affectedFileCount ??
+                              issue.affectedFiles!.length}{" "}
+                            {(issue.affectedFileCount ??
+                              issue.affectedFiles!.length) === 1
+                              ? "file"
+                              : "files"}
+                          </summary>
+                          <p>{issue.affectedFiles!.join(", ")}</p>
+                        </details>
+                      )}
+                    </section>
+                  );
+                })}
+              </div>
+              {group.results.length === 1 ? (
+                <details class="health-file-details">
+                  <summary>File details</summary>
+                  <p>{first.relativePath}</p>
+                </details>
+              ) : (
+                <details class="health-file-details">
+                  <summary>
+                    Files in this album ({group.results.length})
+                  </summary>
+                  {group.results.map((result) => (
+                    <p key={result.itemId}>
+                      <a
+                        class="health-review-link"
+                        href={`?view=library&root=${encodeURIComponent(group.rootId)}&item=${encodeURIComponent(result.itemId)}`}
+                      >
+                        Review
+                      </a>{" "}
+                      {result.relativePath}
+                    </p>
+                  ))}
+                </details>
+              )}
+            </article>
+          );
+        })}
       </div>
+      {alternativesFor.value && (
+        <AlternativeSourcesDialog
+          issue={alternativesFor.value.issue}
+          mediaKind={alternativesFor.value.mediaKind}
+          providers={providerCatalog.providers}
+          onClose$={() => (alternativesFor.value = null)}
+        />
+      )}
     </section>
   );
 });

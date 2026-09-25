@@ -5632,26 +5632,74 @@ a:focus-visible {
   border-top: 1px solid var(--line-strong);
 }
 .health-result > header {
+  position: relative;
   display: flex;
   align-items: start;
   justify-content: space-between;
   gap: 16px;
   padding: 16px 0;
 }
-.health-result header > div {
+.health-result-art {
+  position: absolute;
+  z-index: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(42%, 360px);
+  overflow: hidden;
+  pointer-events: none;
+}
+.health-result-art img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+  filter: saturate(0.65);
+  opacity: 0.55;
+}
+.health-result-art::before {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, var(--paper) 0%, transparent 44%);
+  content: "";
+}
+.health-result-art::after {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(
+      180deg,
+      var(--paper) 0%,
+      transparent 22%,
+      transparent 78%,
+      var(--paper) 100%
+    ),
+    linear-gradient(90deg, transparent 70%, var(--paper) 100%);
+  content: "";
+}
+.health-result-heading,
+.health-result > header > .health-review-link {
+  position: relative;
+  z-index: 1;
+}
+.health-result-heading {
   min-width: 0;
   display: grid;
-  gap: 5px;
+  gap: 6px;
+  justify-items: start;
 }
 .health-result h3 {
   font-family: var(--font-serif);
-  font-size: 20px;
+  font-size: 22px;
   font-weight: 500;
   overflow-wrap: anywhere;
 }
-.health-result header p {
+.health-result-title-file {
+  font-style: italic;
+}
+.health-result-kind {
+  display: inline-flex;
   color: var(--ink-soft);
-  font-size: 12px;
 }
 .health-review-link {
   flex-shrink: 0;
@@ -5683,11 +5731,19 @@ a:focus-visible {
 }
 .health-comparison {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 20px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
 }
 .health-comparison > div {
   min-width: 0;
+}
+.health-comparison-split {
+  grid-template-columns: 50% 25% 25%;
+  gap: 0;
+  align-items: start;
+}
+.health-comparison-split > div {
+  padding-right: 18px;
 }
 .health-value-label {
   display: block;
@@ -5704,6 +5760,34 @@ a:focus-visible {
 }
 .health-candidate + .health-candidate {
   margin-top: 12px;
+}
+.health-source {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.health-source strong {
+  font-weight: 600;
+}
+.health-alt-sources {
+  min-height: 44px;
+  margin-top: 2px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
 }
 .health-file-details {
   padding: 6px 0 12px;
@@ -5734,9 +5818,65 @@ a:focus-visible {
 }
 .health-toolbar select:focus-visible,
 .health-review-link:focus-visible,
+.health-alt-sources:focus-visible,
 .health-file-details summary:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 3px;
+}
+.dialog-context {
+  margin: 0 0 14px;
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 600;
+}
+.health-source-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.health-source-list li {
+  padding: 14px 0;
+  border-top: 1px solid var(--line);
+}
+.health-source-list li:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+.health-source-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.health-source-heading strong {
+  font-size: 13px;
+}
+.health-source-list li > p {
+  margin-top: 6px;
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.health-source-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  margin-top: 4px;
+}
+.health-source-links a,
+.health-source-manage {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  text-underline-offset: 3px;
+}
+.health-source-manage {
+  margin-top: 4px;
+  border-top: 1px solid var(--line);
+  width: 100%;
 }
 @media (max-width: 720px) {
   .health-toolbar {
@@ -5752,12 +5892,19 @@ a:focus-visible {
     flex-wrap: wrap;
     gap: 4px;
   }
-  .health-result header > div {
+  .health-result-heading {
     flex-basis: 100%;
   }
-  .health-comparison {
+  .health-result-art {
+    width: min(56%, 220px);
+  }
+  .health-comparison,
+  .health-comparison-split {
     grid-template-columns: minmax(0, 1fr);
     gap: 14px;
+  }
+  .health-comparison-split > div {
+    padding-right: 0;
   }
 }
 

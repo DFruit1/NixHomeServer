@@ -168,7 +168,7 @@ it("preserves issues from other libraries when one library fails", async () => {
 });
 
 it("rejects repeated pages before duplicating their issues", async () => {
-  const fetchMock = vi.fn(async () =>
+  const fetchMock = vi.fn(async (_input: RequestInfo | URL) =>
     healthResponse("same-item", "Repeated issue", "same-cursor"),
   );
   vi.stubGlobal("fetch", fetchMock);
@@ -182,7 +182,10 @@ it("rejects repeated pages before duplicating their issues", async () => {
   });
   expect(screen.textContent).toContain("incomplete");
   expect(screen.querySelectorAll(".health-result")).toHaveLength(1);
-  expect(fetchMock).toHaveBeenCalledTimes(2);
+  const issuePages = fetchMock.mock.calls.filter(([path]) =>
+    String(path).includes("/metadata/issues"),
+  );
+  expect(issuePages).toHaveLength(2);
 });
 
 it("groups audio files of one album into a single warning", async () => {
@@ -293,6 +296,128 @@ it("keeps distinct album issue values as separate entries", async () => {
   expect(screen.textContent).toContain("Current 01");
   expect(screen.textContent).toContain("Proposed 02");
 });
+
+it("names the recommended source for a missing field and lists the alternatives", async () => {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const path = String(input);
+    if (path.includes("/provider-accounts"))
+      return new Response(wireJson(providerCatalog(OPEN_LIBRARY, AUDNEXUS)));
+    const response = healthResponse(
+      "lawson-01",
+      "Author or creator is missing",
+    );
+    const payload = await response.json();
+    payload.results[0].mediaKind = "audiobook";
+    payload.results[0].relativePath = "Lawson/01_lawson.mp3";
+    payload.results[0].health[0] = {
+      code: "missing-authors",
+      severity: "warning",
+      field: "authors",
+      title: "Author or creator is missing",
+      message:
+        "Add a portable creator so the item remains identifiable outside one app.",
+      sources: ["filename"],
+      currentValue: null,
+      proposedValues: [
+        { value: "Grantlee Kieza", sources: ["Embedded audio tags"] },
+      ],
+    };
+    return new Response(wireJson(payload));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  const { render, screen, userEvent } = await createDOM();
+  await render(
+    <MetadataHealthView
+      roots={[{ id: "audiobooks", label: "Shared audiobooks" }]}
+    />,
+  );
+
+  await vi.waitFor(async () => {
+    await userEvent(screen, "click");
+    expect(screen.textContent).toContain("Grantlee Kieza");
+  });
+
+  const header = screen.querySelector(".health-result header");
+  expect(header).toBeTruthy();
+  expect(header?.querySelector("p")).toBeFalsy();
+  const heading = header?.querySelector("h3");
+  expect(heading?.className).toContain("health-result-title-file");
+  expect(heading?.textContent).toBe("01_lawson.mp3");
+  expect(
+    header?.querySelector(".health-result-kind")?.getAttribute("aria-label"),
+  ).toBe("Audiobook");
+  expect(
+    screen.querySelector(".health-result-kind")?.getAttribute("role"),
+  ).toBe("img");
+
+  await vi.waitFor(async () => {
+    await userEvent(screen, "click");
+    expect(screen.textContent).toContain("Retrieve from");
+    expect(screen.textContent).toContain("Open Library");
+    expect(screen.textContent).toContain("No setup needed");
+  });
+
+  await userEvent(screen.querySelector(".health-alt-sources"), "click");
+  await vi.waitFor(() =>
+    expect(screen.querySelector('[role="dialog"]')).toBeTruthy(),
+  );
+  expect(screen.textContent).toContain("Alternative sources");
+  expect(screen.textContent).toContain("Author or creator is missing");
+  expect(screen.textContent).toContain("Audnexus");
+  expect(screen.textContent).toContain("Coming soon");
+  const documentation = screen.querySelector(
+    '.health-source-links a[href="https://api.audnex.us/"]',
+  );
+  expect(documentation).toBeTruthy();
+});
+
+const OPEN_LIBRARY = {
+  id: "open-library",
+  name: "Open Library",
+  mediaDomains: ["books", "audiobooks"],
+  setupKind: "public",
+  implementationStatus: "active",
+  canConfigure: false,
+  canTest: false,
+  capabilities: [
+    "search",
+    "isbn",
+    "editions",
+    "covers",
+    "bibliographic-metadata",
+  ],
+  credentialFields: [],
+  setupUrl: "https://openlibrary.org/",
+  documentationUrl: "https://openlibrary.org/developers/api",
+  notes: "Public book search by title or ISBN.",
+  account: { state: "notRequired" },
+};
+
+const AUDNEXUS = {
+  id: "audnexus",
+  name: "Audnexus",
+  mediaDomains: ["audiobooks"],
+  setupKind: "public",
+  implementationStatus: "planned",
+  canConfigure: false,
+  canTest: false,
+  capabilities: ["audiobook-search", "authors", "narrators", "series"],
+  credentialFields: [],
+  setupUrl: "https://audnex.us/",
+  documentationUrl: "https://api.audnex.us/",
+  notes: "Audiobook search with authors and narrators.",
+  account: { state: "notConfigured" },
+};
+
+function providerCatalog(...providers: object[]): unknown {
+  return {
+    schemaVersion: 1,
+    recoveryAdvice: "Keep the recovery copy in a password manager.",
+    requestId: "request-1",
+    providers,
+  };
+}
 
 function healthResponse(
   itemId: string,
