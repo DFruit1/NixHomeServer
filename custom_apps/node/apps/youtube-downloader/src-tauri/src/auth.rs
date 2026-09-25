@@ -465,8 +465,13 @@ pub async fn oauth_login(
             &state,
             &challenge,
         )?;
+        // Open the system browser (Chrome Custom Tabs on Android), never an
+        // in-app WebView: WebAuthn/passkeys need a full browser context, and
+        // Bitwarden's credential provider does not inject into WebViews.
+        // The opener plugin maps "inAppBrowser" to CustomTabsIntent on Android
+        // and to the default browser on desktop.
         app.opener()
-            .open_url(authorize_url.as_str(), None::<&str>)
+            .open_url(authorize_url.as_str(), Some("inAppBrowser"))
             .map_err(|error| error.to_string())?;
         let handle = app.clone();
         let expected_state = state.clone();
@@ -493,8 +498,10 @@ pub async fn oauth_login(
             &state,
             &challenge,
         )?;
+        // Same as Android: force a real browser tab for WebAuthn. The opener
+        // plugin ignores "inAppBrowser" on desktop and opens the default browser.
         app.opener()
-            .open_url(authorize_url.as_str(), None::<&str>)
+            .open_url(authorize_url.as_str(), Some("inAppBrowser"))
             .map_err(|error| error.to_string())?;
         let expected_state = state.clone();
         let code = tauri::async_runtime::spawn_blocking(move || await_callback(listener, &expected_state))
