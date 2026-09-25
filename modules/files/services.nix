@@ -293,6 +293,11 @@ let
         }
   '';
   filestashBackendWithProxyAuth = filestashPackages.backend.overrideAttrs (old: {
+    # The deployed frontoffice UI is the ESM app under `public/`, embedded into
+    # the backend via `go:embed public`, so filetype glyphs are injected into
+    # the shipped `thing.js` icon instead of the legacy bundled frontend.
+    patches = (old.patches or [ ]) ++ [ ./patches/filespage-filetype-glyphs.patch ];
+
     passthru = old.passthru // {
       overrideModAttrs = lib.composeExtensions old.passthru.overrideModAttrs (_final: _prev: {
         env = (_prev.env or { }) // {
