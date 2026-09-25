@@ -183,6 +183,9 @@ let
       "app.immich:///oauth-callback"
       # Native desktop/Android client of the YouTube Downloader Tauri shell.
       "org.sydneybasiniot.youtubedownloader://auth/callback"
+      # OpenCloud Android/iOS apps use these opaque custom-scheme redirects.
+      "oc://android.opencloud.eu"
+      "oc://ios.opencloud.eu"
     ];
   insecureOauth2Urls = lib.concatMap
     (name:

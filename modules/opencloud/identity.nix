@@ -9,9 +9,16 @@ in
     groups."opencloud-users".members = vars.kanidmAppUsers;
     groups."opencloud-admins".members = appAdminMembers;
 
-    # OpenCloud accepts a single OIDC issuer and maps every client through the
-    # same public PKCE client. `enableLocalhostRedirects` lets the desktop
-    # client complete its loopback redirect without enumerating ports.
+    # OpenCloud accepts a single OIDC issuer, so every OpenCloud client (web,
+    # desktop, iOS, Android) must use this one public PKCE client. WebFinger
+    # advertises it as the client ID for each platform, so all of their
+    # redirect URIs must be registered here:
+    # - web: the browser callback pages below
+    # - desktop: loopback redirects via `enableLocalhostRedirects`
+    # - Android/iOS: the apps hardcode an opaque custom scheme. Kanidm masks a
+    #   redirect-URI/origin rejection as the generic `InvalidState` error page,
+    #   so omitting these makes mobile sign-in fail even though the client is
+    #   otherwise correct.
     systems.oauth2.opencloud-web = {
       displayName = "OpenCloud";
       imageFile = ../Core_Modules/kanidm/assets/apps/opencloud.svg;
@@ -21,6 +28,8 @@ in
         "https://${cloudHost}/"
         "https://${cloudHost}/oidc-callback.html"
         "https://${cloudHost}/oidc-silent-redirect.html"
+        "oc://android.opencloud.eu"
+        "oc://ios.opencloud.eu"
       ];
       originLanding = "https://${cloudHost}";
       preferShortUsername = true;

@@ -85,6 +85,8 @@ jq -e '
   and (.oauth.enableLocalhostRedirects == true)
   and (.oauth.originUrl | any(endswith("/oidc-callback.html")))
   and (.oauth.originUrl | any(endswith("/oidc-silent-redirect.html")))
+  and (.oauth.originUrl | index("oc://android.opencloud.eu") != null)
+  and (.oauth.originUrl | index("oc://ios.opencloud.eu") != null)
   and (.oauth.scopeMaps."opencloud-users" | index("opencloud_roles") != null)
   and (.oauth.claimMaps.opencloud_roles.valuesByGroup."opencloud-admins" == ["opencloudAdmin"])
   and (.oauth.claimMaps.opencloud_roles.valuesByGroup."opencloud-users" == ["opencloudUser"])
