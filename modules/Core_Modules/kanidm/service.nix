@@ -172,7 +172,11 @@ in
     server.enable = true;
     client.enable = true;
     client.settings.uri = vars.kanidmBaseUrl;
-    package = pkgs.kanidmWithSecretProvisioning_1_11;
+    # Recover from stale/finalised auth sessions (browser back / mech switch)
+    # instead of the unrecoverable error page. CLI tooling stays stock.
+    package = pkgs.kanidmWithSecretProvisioning_1_11.overrideAttrs (old: {
+      patches = (old.patches or [ ]) ++ [ ./patches/login-mech-switch-recover.patch ];
+    });
 
     server.settings = {
       origin = "https://${vars.kanidmDomain}";

@@ -1,0 +1,95 @@
+--- a/server/core/src/https/views/login.rs
++++ b/server/core/src/https/views/login.rs
+@@ -569,7 +569,7 @@
+     jar: CookieJar,
+     Form(login_mech_form): Form<LoginMechForm>,
+ ) -> Response {
+-    let session_context =
++    let mut session_context =
+         cookies::get_signed::<SessionContext>(&state, &jar, COOKIE_AUTH_SESSION_ID)
+             .unwrap_or_default();
+ 
+@@ -577,16 +577,64 @@
+ 
+     let LoginMechForm { mech } = login_mech_form;
+ 
+-    let inter = state // This may change in the future ...
++    let mut inter = state // This may change in the future ...
+         .qe_r_ref
+         .handle_auth(
+             session_context.id,
+-            AuthStep::Begin(mech),
++            AuthStep::Begin(mech.clone()),
+             kopid.eventid,
+             client_auth_info.clone(),
+         )
+         .await;
+ 
++    // Recover from a stale or already-finalised auth session (browser back,
++    // mech switch after timeout/expiry). Re-init under the known username and
++    // retry the chosen mech once; otherwise clear the cookie and start over.
++    if matches!(
++        inter,
++        Err(OperationError::InvalidSessionState) | Err(OperationError::InvalidAuthState(_))
++    ) {
++        if session_context.username.is_empty() {
++            let jar = cookies::destroy(jar, COOKIE_AUTH_SESSION_ID, &state);
++            return (jar, Redirect::to(Urls::Login.as_ref())).into_response();
++        }
++
++        let reinit = state
++            .qe_r_ref
++            .handle_auth(
++                None,
++                AuthStep::Init2 {
++                    username: session_context.username.clone(),
++                    issue: AuthIssueSession::Cookie,
++                    privileged: false,
++                },
++                kopid.eventid,
++                client_auth_info.clone(),
++            )
++            .await;
++
++        match reinit {
++            Ok(ar) => {
++                session_context.id = Some(ar.sessionid);
++                session_context.password = None;
++                session_context.totp = None;
++                inter = state
++                    .qe_r_ref
++                    .handle_auth(
++                        session_context.id,
++                        AuthStep::Begin(mech),
++                        kopid.eventid,
++                        client_auth_info.clone(),
++                    )
++                    .await;
++            }
++            Err(_) => {
++                let jar = cookies::destroy(jar, COOKIE_AUTH_SESSION_ID, &state);
++                return (jar, Redirect::to(Urls::Login.as_ref())).into_response();
++            }
++        }
++    }
++
+     let display_ctx = LoginDisplayCtx {
+         domain_info: domain_info.clone(),
+         oauth2: None,
+@@ -594,6 +642,16 @@
+         error: None,
+     };
+ 
++    // Still invalid after recovery: clear the cookie and land on login rather
++    // than rendering the unrecoverable error page.
++    if matches!(
++        inter,
++        Err(OperationError::InvalidSessionState) | Err(OperationError::InvalidAuthState(_))
++    ) {
++        let jar = cookies::destroy(jar, COOKIE_AUTH_SESSION_ID, &state);
++        return (jar, Redirect::to(Urls::Login.as_ref())).into_response();
++    }
++
+     // Now process the response if ok.
+     match inter {
+         Ok(ar) => {
