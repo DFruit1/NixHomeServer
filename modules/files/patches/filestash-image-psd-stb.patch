@@ -1,0 +1,11 @@
+diff --git server/plugin/plg_image_c/image_psd.c server/plugin/plg_image_c/image_psd.c
+index a5a2184..1926890 100644
+--- server/plugin/plg_image_c/image_psd.c
++++ server/plugin/plg_image_c/image_psd.c
+@@ -1,5 +1,5 @@
+ #define STB_IMAGE_IMPLEMENTATION
+-#include "image_psd_vendor.h"
++#include <stb/stb_image.h>
+ #include <webp/encode.h>
+ #include <unistd.h>
+ #include <fcntl.h>

@@ -1,0 +1,63 @@
+diff --git server/pkg/files/handler_extract.go server/pkg/files/handler_extract.go
+index 0ba5bd7..a36d658 100644
+--- server/pkg/files/handler_extract.go
++++ server/pkg/files/handler_extract.go
+@@ -18,7 +18,7 @@ import (
+ )
+ 
+ func FileExtract(ctx *App, res http.ResponseWriter, req *http.Request) {
+-	if CanRead(ctx) == false {
++	if CanUpload(ctx) == false {
+ 		Log.Debug("extract::permission 'permission denied'")
+ 		SendErrorResult(res, ErrPermissionDenied)
+ 		return
+diff --git server/pkg/permissions/index.go server/pkg/permissions/index.go
+index 3147b90..490c3ad 100644
+--- server/pkg/permissions/index.go
++++ server/pkg/permissions/index.go
+@@ -13,21 +13,21 @@ func CanRead(ctx *App) bool {
+ 
+ func CanEdit(ctx *App) bool {
+ 	if ctx.Share.Id != "" {
+-		return ctx.Share.CanWrite
++		return false
+ 	}
+ 	return true
+ }
+ 
+ func CanUpload(ctx *App) bool {
+ 	if ctx.Share.Id != "" {
+-		return ctx.Share.CanUpload
++		return false
+ 	}
+ 	return true
+ }
+ 
+ func CanShare(ctx *App) bool {
+ 	if ctx.Share.Id != "" {
+-		return ctx.Share.CanShare
++		return false
+ 	}
+ 	return true
+ }
+diff --git server/pkg/share/handler.go server/pkg/share/handler.go
+index 717e990..9a7205d 100644
+--- server/pkg/share/handler.go
++++ server/pkg/share/handler.go
+@@ -75,11 +75,11 @@ func ShareUpsertHandler(ctx *App, res http.ResponseWriter, req *http.Request) {
+ 		Users:        NewStringpFromInterface(ctx.Body["users"]),
+ 		Expire:       NewInt64pFromInterface(ctx.Body["expire"]),
+ 		Url:          NewStringpFromInterface(ctx.Body["url"]),
+-		CanManageOwn: NewBoolFromInterface(ctx.Body["can_manage_own"]),
+-		CanShare:     NewBoolFromInterface(ctx.Body["can_share"]),
+-		CanRead:      NewBoolFromInterface(ctx.Body["can_read"]),
+-		CanWrite:     NewBoolFromInterface(ctx.Body["can_write"]),
+-		CanUpload:    NewBoolFromInterface(ctx.Body["can_upload"]),
++		CanManageOwn: false,
++		CanShare:     false,
++		CanRead:      true,
++		CanWrite:     false,
++		CanUpload:    false,
+ 	}
+ 	if err := ShareUpsert(&s); err != nil {
+ 		Log.Debug("share::upsert '%s'", err.Error())

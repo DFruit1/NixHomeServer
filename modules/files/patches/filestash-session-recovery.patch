@@ -1,0 +1,34 @@
+diff --git server/pkg/session/middleware.go server/pkg/session/middleware.go
+index f3d1c1b..00a4515 100644
+--- server/pkg/session/middleware.go
++++ server/pkg/session/middleware.go
+@@ -4,6 +4,8 @@ import (
+ 	"net/http"
+ 	"strings"
+ 
++	"github.com/mickael-kerjean/filestash/server/pkg/env"
++
+ 	. "github.com/mickael-kerjean/filestash/server/pkg/core"
+ 	. "github.com/mickael-kerjean/filestash/server/pkg/files"
+ 	. "github.com/mickael-kerjean/filestash/server/pkg/kernel"
+@@ -37,12 +39,17 @@ func Start(fn HandlerFunc) HandlerFunc {
+ 			return
+ 		}
+ 		if ctx.Backend, err = _extractBackend(req, ctx); err != nil {
+-			if len(ctx.Session) == 0 {
++			if req.Method == http.MethodGet && req.URL.Path == env.WithBase("/api/session") {
++				share.RecoverFromBadCookie(res)
++				ctx.Session = map[string]string{}
++				ctx.Backend = nil
++			} else if len(ctx.Session) == 0 {
+ 				SendErrorResult(res, ErrNotAuthorized)
+ 				return
++			} else {
++				SendErrorResult(res, err)
++				return
+ 			}
+-			SendErrorResult(res, err)
+-			return
+ 		}
+ 		ctx.Languages = _extractLanguages(req)
+ 

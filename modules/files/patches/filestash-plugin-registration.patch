@@ -1,0 +1,17 @@
+diff --git server/plugin/index.go server/plugin/index.go
+index 4ba2a75..05d508e 100644
+--- server/plugin/index.go
++++ server/plugin/index.go
+@@ -2,10 +2,12 @@ package plugin
+ 
+ import (
+ 	. "github.com/mickael-kerjean/filestash/server/common"
++	_ "github.com/mickael-kerjean/filestash/server/plugin/plg_application_office"
+ 	_ "github.com/mickael-kerjean/filestash/server/plugin/plg_authenticate_htpasswd"
+ 	_ "github.com/mickael-kerjean/filestash/server/plugin/plg_authenticate_ldap"
+ 	_ "github.com/mickael-kerjean/filestash/server/plugin/plg_authenticate_local"
+ 	_ "github.com/mickael-kerjean/filestash/server/plugin/plg_authenticate_passthrough"
++	_ "github.com/mickael-kerjean/filestash/server/plugin/plg_authenticate_proxy_password"
+ 	_ "github.com/mickael-kerjean/filestash/server/plugin/plg_authenticate_wordpress"
+ 	_ "github.com/mickael-kerjean/filestash/server/plugin/plg_backend_artifactory"
+ 	_ "github.com/mickael-kerjean/filestash/server/plugin/plg_backend_backblaze"

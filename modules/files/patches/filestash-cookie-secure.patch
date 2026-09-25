@@ -1,0 +1,14 @@
+diff --git server/pkg/cookie/rules.go server/pkg/cookie/rules.go
+index 33a13ee..791d4f1 100644
+--- server/pkg/cookie/rules.go
++++ server/pkg/cookie/rules.go
+@@ -21,6 +21,9 @@ func WithRules(req *http.Request) option {
+ 	return func(c *http.Cookie) {
+ 		c.HttpOnly = true
+ 		c.SameSite = http.SameSiteStrictMode
++		if Config.Get("general.force_ssl").Bool() {
++			c.Secure = true
++		}
+ 		if Config.Get("features.protection.iframe").String() != "" {
+ 			if f := req.Header.Get("Referer"); strings.HasPrefix(f, "https://") {
+ 				c.Secure = true
