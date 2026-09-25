@@ -144,6 +144,14 @@ If a broad search is needed, prefer `rg`/`glob` (they skip gitignored files) ove
 * The default target is consistently competent frontend quality — verify at one
   desktop and one mobile viewport, fix objective defects, then stop. Do not
   enter open-ended visual refinement loops.
+* Always check frontends for out-of-bounds and unscrollable areas. Long lists,
+  forms and editors must not be clipped by an `overflow: hidden` ancestor, and
+  every scroll region must actually scroll: confirm in the rendered page that
+  the page itself fits its viewport (`scrollHeight` vs `clientHeight`), that
+  each scroll container has a bounded height with reachable content
+  (`scrollHeight` vs `clientHeight`, scrolled to the end), and that the last
+  element sits inside its container. Do this at a desktop and a mobile
+  viewport; a green layout in the source is not evidence.
 
 ---
 

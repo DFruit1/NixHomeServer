@@ -964,7 +964,11 @@ a:focus-visible {
   .main-content--library > .message {
     flex: 0 0 auto;
   }
-  .main-content--library > .library-layout {
+  .main-content--library > .library-view {
+    min-height: 0;
+    flex: 1 1 auto;
+  }
+  .main-content--library > .library-view > .library-layout {
     min-height: 0;
     flex: 1 1 auto;
   }
@@ -6376,8 +6380,8 @@ a:focus-visible {
 
 /* In-view library filter */
 .library-view {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
   min-width: 0;
   gap: 14px;
 }
