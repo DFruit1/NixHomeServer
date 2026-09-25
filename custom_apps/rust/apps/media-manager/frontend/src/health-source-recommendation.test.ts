@@ -52,6 +52,15 @@ const tmdb = provider({
   capabilities: ["search", "details", "people"],
 });
 
+const openSubtitles = provider({
+  id: "opensubtitles",
+  name: "OpenSubtitles",
+  mediaDomains: ["subtitles"],
+  setupKind: "account",
+  capabilities: ["subtitle-search", "movie-hash-match", "subtitle-download"],
+  account: { state: "notConfigured" },
+});
+
 it("keeps sources for the media kind and puts the deployed best match first", () => {
   const ranked = candidateSources(
     [audnexus, googleBooks, openLibrary, tmdb],
@@ -77,6 +86,20 @@ it("lets a deployed source outrank a planned source that matches the field bette
 
 it("drops sources that do not cover the media kind", () => {
   expect(candidateSources([tmdb, openLibrary], "music", "title")).toEqual([]);
+});
+
+it("recommends a subtitle provider for a video missing subtitles", () => {
+  const ranked = candidateSources([openSubtitles, tmdb], "video", "subtitle");
+  expect(ranked.map((entry) => entry.id)).toEqual(["opensubtitles", "tmdb"]);
+});
+
+it("keeps subtitle providers out of a book's subtitle field", () => {
+  const ranked = candidateSources(
+    [openSubtitles, openLibrary],
+    "book",
+    "subtitle",
+  );
+  expect(ranked.map((entry) => entry.id)).toEqual(["open-library"]);
 });
 
 it("describes whether the source still needs setup", () => {

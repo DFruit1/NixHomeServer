@@ -40,6 +40,19 @@ const CAPABILITIES_BY_FIELD: Record<string, readonly string[]> = {
 
 const DEFAULT_CAPABILITIES = ["search", "details", "bibliographic-metadata"];
 
+/**
+ * Domains that answer a field only for some media kinds: a missing video
+ * subtitle is a subtitle-provider job even though the provider declares the
+ * "subtitles" domain instead of "movies".
+ */
+const FIELD_EXTRA_DOMAINS: Partial<
+  Record<MediaKind, Record<string, readonly string[]>>
+> = {
+  video: { subtitle: ["subtitles"] },
+};
+
+const FIELD_DOMAIN_BONUS = 50;
+
 export interface SourceStatus {
   label: string;
   tone: "ready" | "planned" | "idle";
@@ -77,6 +90,9 @@ function capabilityScore(provider: ProviderDefinition, field: string): number {
  * Online metadata sources that cover this media kind, best match first: a
  * deployed adapter always outranks a planned one, then how well its
  * capabilities answer the field, then whether it already works without setup.
+ * Sources that hold the field's own domain (subtitle providers for a video
+ * subtitle) are added on top of the media kind, and among deployed adapters
+ * they outrank the generic ones for that field.
  */
 export function candidateSources(
   providers: readonly ProviderDefinition[],
@@ -84,9 +100,12 @@ export function candidateSources(
   field: string,
 ): ProviderDefinition[] {
   const domains = DOMAINS_BY_KIND[mediaKind] ?? [];
+  const fieldDomains = FIELD_EXTRA_DOMAINS[mediaKind]?.[field] ?? [];
   return providers
     .filter((provider) =>
-      provider.mediaDomains.some((domain) => domains.includes(domain)),
+      provider.mediaDomains.some(
+        (domain) => domains.includes(domain) || fieldDomains.includes(domain),
+      ),
     )
     .map((provider) => ({
       provider,
@@ -97,7 +116,10 @@ export function candidateSources(
           ? 6
           : provider.account.state === "notRequired"
             ? 3
-            : 0),
+            : 0) +
+        (provider.mediaDomains.some((domain) => fieldDomains.includes(domain))
+          ? FIELD_DOMAIN_BONUS
+          : 0),
     }))
     .sort(
       (left, right) =>
