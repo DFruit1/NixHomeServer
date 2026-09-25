@@ -35,6 +35,9 @@ test('all locally mapped service icons are packaged and renderable', async ({ pa
     'kiwix',
     'youtube',
     'kopia',
+    'archives',
+    'search',
+    'bonsai',
   ]) {
     const response = await page.request.get(`/logos/${icon}.svg`);
     expect(response.ok(), `${icon} icon should be packaged`).toBeTruthy();

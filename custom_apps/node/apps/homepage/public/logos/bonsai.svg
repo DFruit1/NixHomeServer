@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Bonsai">
+  <rect width="64" height="64" rx="14" fill="#15803d"/>
+  <circle cx="24" cy="24" r="11" fill="#bbf7d0"/>
+  <circle cx="41" cy="27" r="9" fill="#86efac"/>
+  <g fill="none" stroke="#ffffff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M32 50V36"/>
+    <path d="M32 42c-3-3-7-4-11-3"/>
+    <path d="M22 50h20"/>
+  </g>
+</svg>
