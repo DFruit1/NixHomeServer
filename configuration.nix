@@ -14,6 +14,10 @@ in
       catalog.integrationDefinitions
       vars.enabledApps);
 
+  # Hermes Agent's upstream installer manages generic Linux binaries such as
+  # Node and FFmpeg. NixOS needs nix-ld to run those in the dsaw user profile.
+  programs.nix-ld.enable = true;
+
   repo =
     lib.optionalAttrs (builtins.elem "qwen-flash-next" vars.enabledApps) {
       # Qwen is the server's primary local inference endpoint. It starts at
