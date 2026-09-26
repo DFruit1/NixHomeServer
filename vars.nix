@@ -18,7 +18,6 @@ let
       enabled = [
         "attic"
         "audiobookshelf"
-        "bonsai"
         "browsertrix-downloader"
         "calibre-web"
         "chaptarr"

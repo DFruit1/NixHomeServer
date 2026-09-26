@@ -15,13 +15,9 @@ in
       vars.enabledApps);
 
   repo =
-    lib.optionalAttrs (builtins.elem "bonsai" vars.enabledApps) {
-      # The Bonsai server owns the web UI and the Arc GPU for interactive use.
-      bonsai.gpu.enable = true;
-    }
-    // lib.optionalAttrs (builtins.elem "qwen-flash-next" vars.enabledApps) {
-      # Qwen is reserved for background jobs; the split integration disables its
-      # boot-time start so the GPU is free for the UI until a job asks for it.
+    lib.optionalAttrs (builtins.elem "qwen-flash-next" vars.enabledApps) {
+      # Qwen is the server's primary local inference endpoint. It starts at
+      # boot and serves Hermes and other local clients over loopback.
       #
       # The flags below are the profile previously held by the shared router
       # preset, tuned on this host's single 24 GiB Arc Pro B60: every
@@ -32,7 +28,8 @@ in
       qwenFlashNext = {
         enable = true;
         gpu.enable = true;
-        contextSize = 32768;
+        # Hermes Agent recommends at least 64K context for tool workflows.
+        contextSize = 65536;
         gpuLayers = "all";
         cpuMoe = false;
         extraArgs = [

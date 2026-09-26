@@ -5,16 +5,12 @@ pinned mainline llama.cpp build and an OpenAI-compatible API. The model is a
 125B-parameter mixture-of-experts preview of the Qwen4 architecture with about
 6B active parameters, native vision, tool calling, and a 262,144-token context.
 
-In this repository Qwen is reserved for background jobs. It runs as its own
-loopback-only llama-server with no web UI, so `https://ai.sydneybasiniot.org`
-never offers it: that UI is Bonsai-only (see [Bonsai operations](bonsai.md)).
-Qwen does not start at boot. A background job starts
-`qwen-flash-next-llama.service` when it needs the model, and stopping it frees
-its RAM and the GPU again. Because Bonsai and Qwen share the single 24 GiB Arc
-card, starting Qwen stops the Bonsai UI model first; Bonsai is restarted
-automatically when the background run ends.
+For this server, Qwen is the primary local inference endpoint. It starts at
+boot as a loopback-only llama-server with no web UI. Bonsai is currently
+disabled. If both apps are enabled later, the optional background-job
+integration reserves Qwen for on-demand use and coordinates the shared GPU.
 
-Background consumers use the loopback OpenAI-compatible API:
+Local clients use the loopback OpenAI-compatible API:
 
 ```text
 http://127.0.0.1:8093/v1
