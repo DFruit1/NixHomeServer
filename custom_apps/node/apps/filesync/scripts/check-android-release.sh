@@ -4,6 +4,17 @@ set -euo pipefail
 app_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 apk="$app_dir/src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release-unsigned.apk"
 plugin="$app_dir/src-tauri/plugins/tauri-plugin-mobile-files/android/src/main/java/MobileFilesPlugin.kt"
+capability="$app_dir/src-tauri/capabilities/default.json"
+
+node -e '
+  const capability = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+  const opener = capability.permissions.find((permission) =>
+    typeof permission === "object" && permission.identifier === "opener:allow-open-url"
+  );
+  if (!opener?.allow?.some((entry) => entry.url === "https://*")) {
+    throw new Error("Android release must allow HTTPS URLs through the system opener");
+  }
+' "$capability"
 
 test -s "$apk" || { echo "Build the Android release APK first: missing APK" >&2; exit 1; }
 dex_strings="$(mktemp)"
