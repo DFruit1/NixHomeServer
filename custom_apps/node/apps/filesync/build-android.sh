@@ -2,4 +2,4 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
-exec bash "$repo_root/scripts/release-android-app.sh" youtube-downloader "$@"
+exec bash "$repo_root/scripts/release-android-app.sh" filesync "$@"

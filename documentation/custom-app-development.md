@@ -87,7 +87,7 @@ Builds run on a pinned toolchain instead of a host installation:
 ```bash
 nix build .#youtube-downloader-tauri           # Linux desktop binary
 nix develop .#youtube-downloader-tauri         # interactive shell
-custom_apps/node/apps/youtube-downloader/build-android.sh   # debug APK
+custom_apps/node/apps/youtube-downloader/build-android.sh --build-only   # local signed release APK
 ```
 
 The Android shell pins the official Rust toolchain and the four Android

@@ -1380,8 +1380,20 @@ The current YouTube Downloader APK at
 and whenever that file changes. When the `filesync`, `fdroid`, and `ipfs`
 modules are enabled, File Sync is published from
 `/var/lib/fdroidserver/incoming/filesync.apk` on boot and whenever that file
-changes. The F-Droid reindex success hook then updates the IPFS mirror. To
-publish the prototype APK, copy it to that path:
+changes. The F-Droid reindex success hook then updates the IPFS mirror.
+
+For either Android app, increase its version first, then run
+`pnpm release:android` in its app directory. The command builds and tests a
+release APK, signs it with the existing Android debug keystore, checks the
+current repository version and signing certificate, uploads it to the watched
+path, and waits for the F-Droid and IPFS indexes to agree. Use
+`bash build-android.sh --build-only` to make a local APK without publishing.
+Deploy the YouTube Downloader server update with the guarded deploy helper
+before publishing a client that depends on a new server API. The target server
+comes from `vars.nix`; `NIXHOMESERVER_ANDROID_RELEASE_TARGET=user@host` can
+override it for a different route to the same server.
+
+For manual recovery, copy a verified signed File Sync APK to its watched path:
 
 ```sh
 sudo install -o root -g fdroidserver -m 0644 /path/to/filesync.apk \

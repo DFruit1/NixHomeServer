@@ -43,15 +43,19 @@ root from its own preset configuration; clients cannot supply an absolute path.
 
 ## Publishing the Android prototype
 
-When the `filesync`, `fdroid`, and `ipfs` modules are enabled, the server watches
-`/var/lib/fdroidserver/incoming/filesync.apk`. Copy a signed APK there to add or
-replace File Sync in the private F-Droid repository. The watcher runs
-`fdroid-publish` and the F-Droid reindex success hook pins the updated repository
-to IPFS. Add the existing F-Droid repository URL (`https://fdroid.<your-domain>/fdroid/repo`)
-to the F-Droid client; the repository's configured IPFS mirror serves the
-immutable index and APK content. The initial prototype APK is debug-signed, so
-future updates must use the same signing certificate for Android to accept them
-as in-place upgrades.
+Run `pnpm release:android` from this app directory after increasing the version
+in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`. The
+release command builds and tests the ARM64 APK, signs it with the existing
+Android debug keystore, checks the app identity, version code, and signing
+certificate against the live F-Droid index, then uploads it to the server's
+watched File Sync path. It waits until both the F-Droid index and IPFS mirror
+serve the new APK. Use `bash build-android.sh --build-only` to create a local
+APK without publishing it. The same signing key is required for in-place
+updates; back it up before releasing from another workstation.
+
+Add the existing F-Droid repository URL
+(`https://fdroid.<your-domain>/fdroid/repo`) to the F-Droid client. The IPFS
+mirror serves the same signed index and APK content.
 
 ## Development
 
@@ -71,8 +75,8 @@ For Android, connect a device with USB debugging enabled and run:
 cargo tauri android dev --open
 ```
 
-Before sharing a release APK, build it and check that R8 kept the native
-commands that Tauri calls by name:
+The release command runs the R8 check automatically. For a manual release
+build, check that R8 kept the native commands that Tauri calls by name:
 
 ```sh
 cargo tauri android build --apk --target aarch64 --ci

@@ -9,6 +9,7 @@
     "build": "vite build",
     "test": "node --experimental-strip-types --test src/*.test.ts",
     "test:android-release": "bash scripts/check-android-release.sh",
+    "release:android": "bash build-android.sh",
     "tauri": "cargo tauri",
     "dev:tauri": "cargo tauri dev",
     "build:tauri": "cargo tauri build"

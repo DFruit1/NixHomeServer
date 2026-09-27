@@ -131,6 +131,11 @@ pkgs.mkShell {
     rustupShim
     pkgs.nodejs
     pkgs.pnpm
+    pkgs.curl
+    pkgs.jq
+    pkgs.openssh
+    pkgs.ripgrep
+    pkgs.unzip
     pkgs.pkg-config
     pkgs.openssl
     pkgsUnstable.gtk3
