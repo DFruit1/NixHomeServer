@@ -23,7 +23,7 @@ fn refresh_lock() -> &'static tokio::sync::Mutex<()> {
     REFRESH_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
-const DEFAULT_SCOPE: &str = "openid profile email groups_name";
+const DEFAULT_SCOPE: &str = "openid profile email groups_name offline_access";
 const CUSTOM_SCHEME_REDIRECT: &str = "org.sydneybasiniot.youtubedownloader://auth/callback";
 #[cfg(target_os = "android")]
 const CALLBACK_FILE: &str = "oauth-callback.txt";

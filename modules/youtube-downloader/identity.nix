@@ -42,7 +42,7 @@ in
         public = true;
         enableLocalhostRedirects = true;
         preferShortUsername = true;
-        scopeMaps."downloads-users" = [ "openid" "profile" "email" "groups_name" ];
+        scopeMaps."downloads-users" = [ "openid" "profile" "email" "groups_name" "offline_access" ];
       };
     };
 

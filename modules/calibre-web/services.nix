@@ -52,9 +52,13 @@ in
         # Books are added through the Calibre-Web UI or the documented
         # calibredb import path; both need the library to be writable.
         enableBookUploading = true;
-        # Calibre-Web has no OIDC support. The shared auth gateway enforces
-        # group membership, and Calibre-Web keeps its own local admin login for
-        # uploads and library management.
+        # OAuth2 Proxy passes this Kanidm identity header. The bootstrap unit
+        # creates matching least-privilege Calibre-Web accounts before the
+        # authenticated proxy starts.
+        reverseProxyAuth = {
+          enable = true;
+          header = "X-Forwarded-Preferred-Username";
+        };
         enableBookConversion = false;
         enableKepubify = false;
       };

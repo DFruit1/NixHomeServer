@@ -33,6 +33,8 @@ pub struct PendingJob {
     pub added_at: u64,
     #[serde(default = "default_media_type", alias = "media_type")]
     pub media_type: String,
+    #[serde(default, alias = "save_audio_to_audiobooks")]
+    pub save_audio_to_audiobooks: bool,
     #[serde(default, alias = "last_error")]
     pub last_error: Option<String>,
 }
@@ -98,13 +100,19 @@ pub fn server_base_url(app: &AppHandle) -> Option<String> {
         .filter(|url| !url.is_empty())
 }
 
-fn enqueue_url(app: &AppHandle, url: &str, media_type: &str) -> Result<(), String> {
+fn enqueue_url(
+    app: &AppHandle,
+    url: &str,
+    media_type: &str,
+    save_audio_to_audiobooks: bool,
+) -> Result<(), String> {
     let media_type = normalise_media_type(media_type);
     let mut jobs = load_queue(app);
-    if jobs
-        .iter()
-        .any(|job| job.url == url && job.media_type == media_type)
-    {
+    if jobs.iter().any(|job| {
+        job.url == url
+            && job.media_type == media_type
+            && job.save_audio_to_audiobooks == save_audio_to_audiobooks
+    }) {
         return Ok(());
     }
     jobs.push(PendingJob {
@@ -112,6 +120,7 @@ fn enqueue_url(app: &AppHandle, url: &str, media_type: &str) -> Result<(), Strin
         url: url.to_string(),
         added_at: now_seconds(),
         media_type,
+        save_audio_to_audiobooks,
         last_error: None,
     });
     save_queue(app, &jobs)
@@ -119,18 +128,29 @@ fn enqueue_url(app: &AppHandle, url: &str, media_type: &str) -> Result<(), Strin
 
 /// A shared line is either a JSON object `{url, mediaType}` or a bare URL
 /// (older builds), which is treated as audio.
-fn parse_shared_line(line: &str) -> (String, String) {
+fn parse_shared_line(line: &str) -> (String, String, bool) {
     if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
-        let url = value.get("url").and_then(|entry| entry.as_str()).unwrap_or("");
+        let url = value
+            .get("url")
+            .and_then(|entry| entry.as_str())
+            .unwrap_or("");
         if !url.is_empty() {
             let media = value
                 .get("mediaType")
                 .and_then(|entry| entry.as_str())
                 .unwrap_or("audio");
-            return (url.to_string(), normalise_media_type(media));
+            let save_audio_to_audiobooks = value
+                .get("saveAudioToAudiobooks")
+                .and_then(|entry| entry.as_bool())
+                .unwrap_or(false);
+            return (
+                url.to_string(),
+                normalise_media_type(media),
+                save_audio_to_audiobooks,
+            );
         }
     }
-    (line.to_string(), default_media_type())
+    (line.to_string(), default_media_type(), false)
 }
 
 /// URLs shared into the app on Android are dropped into a plain-text file by
@@ -155,16 +175,20 @@ pub fn sync_shared_files(app: &AppHandle) {
             if line.is_empty() {
                 continue;
             }
-            let (url, media_type) = parse_shared_line(line);
+            let (url, media_type, save_audio_to_audiobooks) = parse_shared_line(line);
             if !url.is_empty() {
-                let _ = enqueue_url(app, &url, &media_type);
+                let _ = enqueue_url(app, &url, &media_type, save_audio_to_audiobooks);
             }
         }
         let _ = std::fs::remove_file(&candidate);
     }
 }
 
-fn default_request(url: &str, media_type: &str) -> serde_json::Value {
+fn default_request(
+    url: &str,
+    media_type: &str,
+    save_audio_to_audiobooks: bool,
+) -> serde_json::Value {
     if media_type == "video" {
         return serde_json::json!({
             "url": url,
@@ -182,6 +206,7 @@ fn default_request(url: &str, media_type: &str) -> serde_json::Value {
         "url": url,
         "destination": "personal",
         "mediaType": "audio",
+        "saveAudioToAudiobooks": save_audio_to_audiobooks,
         "audioFormat": "flac",
         "audioQuality": "best",
         "splitChapters": true,
@@ -226,7 +251,7 @@ pub fn queue_list(app: AppHandle) -> Vec<PendingJob> {
 #[tauri::command]
 pub fn queue_add(app: AppHandle, url: String, media_type: Option<String>) -> Result<(), String> {
     let media = media_type.as_deref().unwrap_or("audio");
-    enqueue_url(&app, url.trim(), media)
+    enqueue_url(&app, url.trim(), media, false)
 }
 
 #[tauri::command]
@@ -306,7 +331,11 @@ pub async fn queue_flush(app: AppHandle) -> Result<FlushOutcome, String> {
             // mutations, which a browser sends automatically.
             .header(reqwest::header::ORIGIN, &base_url)
             .bearer_auth(&token)
-            .json(&default_request(&job.url, &job.media_type));
+            .json(&default_request(
+                &job.url,
+                &job.media_type,
+                job.save_audio_to_audiobooks,
+            ));
         match request.send().await {
             Ok(response) if response.status().is_success() => {
                 sent += 1;

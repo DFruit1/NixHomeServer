@@ -2,6 +2,7 @@ package org.sydneybasiniot.youtubedownloader
 
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import androidx.core.content.pm.ShortcutInfoCompat
 import androidx.core.content.pm.ShortcutManagerCompat
 import androidx.core.graphics.drawable.IconCompat
@@ -18,10 +19,15 @@ object ShareTarget {
    */
   const val PROMPT_FILE = "pending-prompt.txt"
 
-  /** Pull the first http(s) URL out of a shared blob of text. */
+  /** Pull the first valid YouTube URL out of a shared blob of text. */
   fun extractUrl(text: String): String? {
-    val match = Regex("https?://\\S+").find(text) ?: return null
-    return match.value.trim().trimEnd('.', ',', ')', ']', '}', '\'', '"')
+    val youtubeHosts = setOf("youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be", "www.youtu.be")
+    return Regex("https?://\\S+").findAll(text).firstNotNullOfOrNull { match ->
+      val candidate = match.value.trim().trimEnd('.', ',', ')', ']', '}', '\'', '"')
+      val uri = runCatching { Uri.parse(candidate) }.getOrNull() ?: return@firstNotNullOfOrNull null
+      val host = uri.host?.lowercase() ?: return@firstNotNullOfOrNull null
+      candidate.takeIf { uri.scheme == "https" && host in youtubeHosts }
+    }
   }
 
   /** Candidate hand-off directories used by both the queue and prompt files. */
@@ -33,8 +39,21 @@ object ShareTarget {
    * historically differed from filesDir on Android; write to every plausible
    * hand-off location and let the queue deduplicate by URL.
    */
-  fun queue(context: Context, url: String, mediaType: String) {
-    val json = JSONObject().put("url", url).put("mediaType", mediaType).toString()
+  fun queue(context: Context, url: String, mediaType: String, saveAudioToAudiobooks: Boolean = false) {
+    val json = JSONObject()
+      .put("url", url)
+      .put("mediaType", mediaType)
+      .put("saveAudioToAudiobooks", saveAudioToAudiobooks)
+      .toString()
+    writeQueueLine(context, json)
+  }
+
+  fun queueMusicAndVideo(context: Context, url: String) {
+    queue(context, url, "audio")
+    queue(context, url, "video")
+  }
+
+  private fun writeQueueLine(context: Context, json: String) {
     val line = "$json\n"
     handoffDirs(context).forEach { directory ->
       File(directory, HANDOFF_FILE).appendText(line)
@@ -48,11 +67,13 @@ object ShareTarget {
     }
   }
 
-  /** Publish the audio, video and prompt Direct Share targets. */
+  /** Publish the available download and prompt Direct Share targets. */
   fun publishShortcuts(context: Context) {
     publish(context, "share-audio", R.string.share_audio_label, ShareAudioActivity::class.java, 0)
     publish(context, "share-video", R.string.share_video_label, ShareVideoActivity::class.java, 1)
-    publish(context, "share-prompt", R.string.share_prompt_label, SharePromptActivity::class.java, 2)
+    publish(context, "share-audiobook", R.string.share_audiobook_label, ShareAudiobookActivity::class.java, 2)
+    publish(context, "share-both", R.string.share_both_label, ShareBothActivity::class.java, 3)
+    publish(context, "share-prompt", R.string.share_prompt_label, SharePromptActivity::class.java, 4)
   }
 
   private fun publish(

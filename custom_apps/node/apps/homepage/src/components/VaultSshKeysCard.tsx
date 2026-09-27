@@ -9,7 +9,7 @@ const fileNameFor = (comment: string): string => {
   return `${sanitised || 'nixhomeserver'}_ed25519`;
 };
 
-export const VaultSshKeysCard = component$(({ feature }: { feature: VaultFeature }) => {
+export const VaultSshKeysCard = component$(({ feature, username, isAdmin }: { feature: VaultFeature; username: string; isAdmin: boolean }) => {
   const keys = useSignal<string[]>([]);
   const loading = useSignal(true);
   const loadError = useSignal('');
@@ -24,16 +24,48 @@ export const VaultSshKeysCard = component$(({ feature }: { feature: VaultFeature
   const generatedKey = useSignal<GeneratedSshKey>();
   const generatedFileName = useSignal('nixhomeserver_ed25519');
   const copiedPublic = useSignal(false);
+  const targetUsername = useSignal(username);
+  const loadedUsername = useSignal(username);
+  const keyAction = useSignal('');
+  const keyActionError = useSignal('');
 
   const loadKeys = $(async () => {
-    const result = await vaultRequest<VaultSshKeyList>('GET', '/api/vault/ssh-keys');
+    const requestedUsername = targetUsername.value.trim() || username;
+    loading.value = true;
+    keys.value = [];
+    keyAction.value = '';
+    keyActionError.value = '';
+    const query = new URLSearchParams({ username: requestedUsername });
+    const result = await vaultRequest<VaultSshKeyList>('GET', `/api/vault/ssh-keys?${query}`);
     if (result.status === 200 && result.data?.ok) {
       keys.value = result.data.keys;
+      loadedUsername.value = requestedUsername;
       loadError.value = '';
     } else {
       loadError.value = result.error ?? result.data?.error ?? 'Registered keys could not be loaded.';
     }
     loading.value = false;
+  });
+
+  const revoke = $(async (line: string) => {
+    const fingerprint = line.trim().split(/\s+/)[1];
+    const target = loadedUsername.value;
+    if (!fingerprint || !window.confirm(`Revoke ${fingerprint} for ${target}? This device will no longer be able to connect over SFTP.`)) {
+      return;
+    }
+    keyAction.value = '';
+    keyActionError.value = '';
+    const result = await vaultRequest<{ ok: boolean; message?: string }>('DELETE', '/api/vault/ssh-keys', {
+      username: target,
+      fingerprint,
+    });
+    if (result.status === 200 && result.data?.ok) {
+      const confirmation = result.data.message ?? 'Key revoked.';
+      await loadKeys();
+      keyAction.value = confirmation;
+    } else {
+      keyActionError.value = result.error ?? result.data?.error ?? 'The key could not be revoked.';
+    }
   });
 
   useVisibleTask$(() => {
@@ -120,16 +152,45 @@ export const VaultSshKeysCard = component$(({ feature }: { feature: VaultFeature
 
       <div class="vault-keys-list">
         <h4>Registered device keys</h4>
+        {isAdmin && (
+          <div class="vault-admin-key-target">
+            <label for="vault-ssh-key-user">Manage keys for user</label>
+            <div class="vault-inline-form">
+              <input
+                id="vault-ssh-key-user"
+                type="text"
+                value={targetUsername.value}
+                autocomplete="off"
+                onInput$={(_, target) => { targetUsername.value = target.value; }}
+              />
+              <button type="button" onClick$={loadKeys}>Load keys</button>
+            </div>
+            <p class="hint">
+              Currently showing {loadedUsername.value === username ? 'your keys' : `${loadedUsername.value}'s keys`}.
+              {(targetUsername.value.trim() || username) !== loadedUsername.value && ' Load the requested user before revoking a key.'}
+            </p>
+          </div>
+        )}
         {loading.value && <p class="hint">Loading registered keys…</p>}
         {loadError.value && <p class="key-status error">{loadError.value}</p>}
+        {keyAction.value && <p class="key-status">{keyAction.value}</p>}
+        {keyActionError.value && <p class="key-status error">{keyActionError.value}</p>}
         {!loading.value && !loadError.value && keys.value.length === 0 && (
           <p class="hint">No device keys are registered yet.</p>
         )}
         {keys.value.length > 0 && (
           <ul>
             {keys.value.map((line) => (
-              <li key={line}>
+              <li key={line} class="vault-key-row">
                 <code>{line}</code>
+                <button
+                  class="vault-danger-button"
+                  type="button"
+                  disabled={loading.value || (targetUsername.value.trim() || username) !== loadedUsername.value}
+                  onClick$={() => revoke(line)}
+                >
+                  Revoke
+                </button>
               </li>
             ))}
           </ul>

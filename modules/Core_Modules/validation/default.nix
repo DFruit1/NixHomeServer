@@ -181,6 +181,7 @@ let
     lib.hasPrefix "https://" url
     || builtins.elem url [
       "app.immich:///oauth-callback"
+      "filesync://oauth/callback"
       # Native desktop/Android client of the YouTube Downloader Tauri shell.
       "org.sydneybasiniot.youtubedownloader://auth/callback"
       # OpenCloud Android/iOS apps use these opaque custom-scheme redirects.

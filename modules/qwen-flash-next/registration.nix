@@ -2,5 +2,20 @@
   ports = {
     qwenFlashNext = 8093;
   };
-  homepage = _: [ ];
+  homepage = { config, vars }: [
+    {
+      order = 22;
+      id = "qwen-flash-next";
+      name = "Local AI";
+      url = "https://ai.${vars.domain}";
+      enabled = builtins.hasAttr "ai.${vars.domain}" config.services.caddy.virtualHosts;
+      category = "knowledge";
+      description = "Private chat with the server's local Qwen Flash Next model.";
+      loginNotes = "Sign in with Kanidm; access is granted to ai-users.";
+      logoUrl = "";
+      appName = "qwen-flash-next";
+      uploadNotes = "Prompts and attachments are processed by the server's local model.";
+      requiredAnyGroups = [ "ai-users" ];
+    }
+  ];
 }

@@ -106,7 +106,7 @@ export default component$(() => {
                     <h2 id="vault-device-keys">Device keys</h2>
                     <p>Keys that let your own computer, phone, or tablet reach your files without a password.</p>
                   </header>
-                  <VaultSshKeysCard feature={sshKeys} />
+                  <VaultSshKeysCard feature={sshKeys} username={user.username} isAdmin={data?.isAdmin ?? false} />
                 </section>
               )}
             </>

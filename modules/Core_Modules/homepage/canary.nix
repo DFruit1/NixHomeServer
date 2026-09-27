@@ -40,6 +40,7 @@ let
     (mkTarget { id = "passwords"; name = "Passwords"; host = "passwords.${vars.domain}"; coverageMode = "local-boundary"; expectedPattern = "Vaultwarden|Bitwarden|Passwords"; })
     (mkTarget { id = "git"; name = "Git"; host = "git.${vars.domain}"; coverageMode = "native-oidc"; expectedPattern = "Forgejo|Dashboard|Repositories"; })
     (mkTarget { id = "search"; name = "Search"; host = "search.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "Search"; })
+    (mkTarget { id = "ai"; name = "Local AI"; host = "ai.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "llama-ui|Type a message"; })
     (mkTarget { id = "backups"; name = "Local Backups"; host = vars.kopiaDomain; coverageMode = "gateway-boundary"; expectedPattern = "Kopia|Backups"; expectAccessDenied = true; })
   ];
   activeTargets = builtins.filter (target: target.active && hostEnabled target.host) allTargets;
@@ -100,7 +101,6 @@ in
         config.repo.authGateway.domain
         "id.${vars.domain}"
         "office.${vars.domain}"
-        "ai.${vars.domain}"
         "syncthing.${vars.domain}"
         "sharephotos.${vars.domain}"
         # Unauthenticated Filestash share-link host; not browser-loginable.
@@ -108,6 +108,12 @@ in
         # API-only bearer-token endpoint for the native YouTube Downloader
         # shell; serves no browser UI and returns 404 outside /api.
         "ytdownload-app.${vars.domain}"
+        # Machine-readable APK repository consumed directly by F-Droid clients.
+        "fdroid.${vars.domain}"
+        # Private CID gateway and machine-readable aliases; no browser login UI.
+        "ipfs.${vars.domain}"
+        # Bearer-token-only sync API; the native File Sync client owns the UI.
+        "filesync-api.${vars.domain}"
         "www.${vars.domain}"
         vars.domain
       ];

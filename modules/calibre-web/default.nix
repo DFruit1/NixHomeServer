@@ -8,6 +8,7 @@
     ./services.nix
     ./oauth2-proxy.nix
     ./bootstrap.nix
+    ./oidc-bootstrap.nix
     ./backups.nix
   ];
 

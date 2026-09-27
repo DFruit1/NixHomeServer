@@ -115,7 +115,7 @@ while (($# > 0)); do
   esac
 done
 
-need nix jq rg
+need nix jq rg flock
 
 local_attic_cache="http://127.0.0.1:8080/nixhomeserver"
 if nix_uses_substituter "$local_attic_cache"; then
@@ -228,10 +228,19 @@ run_derivation_checks() {
   done < <(jq -r '[.[].outputs[]] | unique[]' <<<"$validation_outputs_json")
 }
 
-commit_validation_roots() {
-  local root_state_dir current_dir desired_manifest output_path root_path existing_root
+retain_validation_roots="${VALIDATE_RETAIN_OUTPUT_ROOTS:-0}"
+case "$retain_validation_roots" in
+  0|1) ;;
+  *)
+    echo "❌ VALIDATE_RETAIN_OUTPUT_ROOTS must be 0 or 1." >&2
+    exit 1
+    ;;
+esac
 
-  if [[ "$full_mode" != true || "$all_apps" == true || -z "$validation_outputs_json" ]]; then
+commit_validation_roots() {
+  local root_state_dir current_dir desired_manifest output_path root_path existing_root lock_fd
+
+  if [[ "$full_mode" != true || "$all_apps" == true ]]; then
     return 0
   fi
 
@@ -239,6 +248,25 @@ commit_validation_roots() {
   current_dir="$root_state_dir/current"
   desired_manifest="$eval_cache_dir/desired-validation-roots"
   install -d -m 0700 "$current_dir"
+  exec {lock_fd}>"$root_state_dir/.roots.lock"
+  flock "$lock_fd"
+
+  if [[ "$retain_validation_roots" != 1 || -z "$validation_outputs_json" ]]; then
+    while IFS= read -r -d '' existing_root; do
+      if [[ -e "$existing_root" && ! -L "$existing_root" ]]; then
+        echo "❌ Refusing to remove non-symlink validation root: $existing_root" >&2
+        exit 1
+      fi
+      rm -f "$existing_root"
+    done < <(find "$current_dir" -mindepth 1 -maxdepth 1 -type l -print0)
+    rm -rf "$pending_validation_roots_dir"
+    pending_validation_roots_dir=""
+    if [[ "$retain_validation_roots" == 0 ]]; then
+      echo "ℹ️ Released prior full-validation outputs; they are eligible for Nix GC."
+    fi
+    return 0
+  fi
+
   : >"$desired_manifest"
 
   while IFS= read -r output_path; do

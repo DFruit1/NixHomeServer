@@ -107,6 +107,7 @@ export type OfflineMediaConnectionAddress = {
 
 export type OfflineMediaSetup = {
   enabled: boolean;
+  fdroidRepoUrl?: string;
   requiredAllGroups?: string[];
   requiredAnyGroups?: string[];
   serverDeviceId?: string;

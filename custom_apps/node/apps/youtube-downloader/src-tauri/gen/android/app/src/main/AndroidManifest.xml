@@ -47,9 +47,8 @@
             </intent-filter>
         </activity>
 
-        <!-- Share targets. Music and Video queue straight into the offline
-             download queue without showing UI; Choose options opens the app
-             with the link prefilled so other settings can be chosen first. -->
+        <!-- Share targets queue downloads offline; Choose options opens the
+             app with the link prefilled so other settings can be chosen. -->
         <activity
             android:name=".ShareAudioActivity"
             android:label="@string/share_audio_label"
@@ -68,6 +67,36 @@
         <activity
             android:name=".ShareVideoActivity"
             android:label="@string/share_video_label"
+            android:theme="@android:style/Theme.NoDisplay"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity="">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".ShareAudiobookActivity"
+            android:label="@string/share_audiobook_label"
+            android:theme="@android:style/Theme.NoDisplay"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity="">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".ShareBothActivity"
+            android:label="@string/share_both_label"
             android:theme="@android:style/Theme.NoDisplay"
             android:exported="true"
             android:excludeFromRecents="true"

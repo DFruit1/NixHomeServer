@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
-import type { ChildProcessWithoutNullStreams } from 'node:child_process';
+import type { ChildProcessByStdio, ChildProcessWithoutNullStreams } from 'node:child_process';
+import type { Readable } from 'node:stream';
 import type { AppConfig } from './config.js';
 import type { CurrentUser, SftpKeyResponse } from '../shared/types.js';
 
@@ -38,6 +39,37 @@ export const installSftpPublicKey = async (config: AppConfig, user: CurrentUser,
     message: 'SFTP device key added and verified on the server.',
     details,
   };
+};
+
+export const revokeSftpPublicKey = async (
+  config: AppConfig,
+  username: string,
+  fingerprint: string,
+): Promise<SftpKeyResponse> => {
+  if (!config.sftpKeyRevokeCommand) {
+    throw new Error('SFTP key revocation is not configured');
+  }
+  if (!/^SHA256:[A-Za-z0-9+/]+$/.test(fingerprint)) {
+    throw new Error('invalid SFTP key fingerprint');
+  }
+  const detail = await new Promise<string>((resolve, reject) => {
+    const child = spawn(config.sudoPath, ['-n', config.sftpKeyRevokeCommand!, username, fingerprint], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }) as ChildProcessByStdio<null, Readable, Readable>;
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    child.stdout.on('data', (chunk: Buffer) => stdout.push(chunk));
+    child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk));
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve(Buffer.concat(stdout).toString('utf8').trim());
+      } else {
+        reject(new Error(Buffer.concat(stderr).toString('utf8').trim() || `SFTP key revocation failed with status ${code}`));
+      }
+    });
+  });
+  return { ok: true, message: 'SFTP device key revoked.', details: detail || undefined };
 };
 
 const runInstaller = (config: AppConfig, installCommand: string, username: string, publicKey: string): Promise<string | undefined> =>

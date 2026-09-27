@@ -30,6 +30,7 @@ let
         "calibre-web"
         "calibre-web-oauth2-proxy"
         "calibre-web-library-layout-v1"
+        "calibre-web-oidc-account-bootstrap"
       ];
       timers = [ ];
       hosts = [ "calibre" ];
@@ -40,7 +41,11 @@ let
       groups = [ "calibre-web" ];
       secrets = [ "calibreWebOauth2ProxyClientSecret" "calibreWebOauth2ProxyCookieSecret" ];
       backupApps = [ "calibre-web" ];
-      guardedServices = [ "calibre-web-library-layout-v1" "calibre-web" ];
+      guardedServices = [
+        "calibre-web-library-layout-v1"
+        "calibre-web-oidc-account-bootstrap"
+        "calibre-web"
+      ];
       persistencePaths = [ "/var/lib/calibre-web" ];
     };
     forgejo = {
@@ -58,6 +63,22 @@ let
       backupApps = [ "forgejo" ];
       guardedServices = [ ];
       persistencePaths = [ "/var/lib/forgejo" ];
+    };
+    ipfs = {
+      disable = { repo.ipfs.enable = lib.mkForce false; };
+      registryName = "ipfs";
+      services = [ "ipfs" "ipfs-alias" "fdroid-ipfs-publish" ];
+      timers = [ ];
+      hosts = [ "ipfs" ];
+      gatewayApps = [ ];
+      oauthClients = [ ];
+      kanidmGroups = [ ];
+      users = [ "ipfs" ];
+      groups = [ "ipfs" ];
+      secrets = [ ];
+      backupApps = [ "ipfs" ];
+      guardedServices = [ "ipfs" "ipfs-alias" "fdroid-ipfs-publish" ];
+      persistencePaths = [ "/var/lib/ipfs-distribution" ];
     };
     qwen-flash-next = {
       modules = [ ../../modules/qwen-flash-next ];

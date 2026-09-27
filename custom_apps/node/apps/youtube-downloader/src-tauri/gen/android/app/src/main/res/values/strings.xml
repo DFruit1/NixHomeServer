@@ -3,5 +3,7 @@
     <string name="main_activity_title">"YouTube Downloader"</string>
     <string name="share_audio_label">"Music download"</string>
     <string name="share_video_label">"Video download"</string>
+    <string name="share_audiobook_label">"Audiobook download"</string>
+    <string name="share_both_label">"Music and video"</string>
     <string name="share_prompt_label">"Choose options"</string>
 </resources>

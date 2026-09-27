@@ -54,6 +54,16 @@ in
     inherit workspaceVersion sharedCargoArtifacts cargoLock;
     workspaceSrc = workspaceSource "mail-archive-ui";
   };
+  filesync-api = import ./filesync-api/default.nix {
+    inherit lib pkgs rustLib;
+    inherit workspaceVersion sharedCargoArtifacts cargoLock;
+    workspaceSrc = workspaceSource "filesync-api";
+  };
+  ipfs-alias = import ./ipfs-alias/default.nix {
+    inherit rustLib;
+    inherit workspaceVersion sharedCargoArtifacts cargoLock;
+    workspaceSrc = workspaceSource "ipfs-alias";
+  };
   media-manager = import ./media-manager/default.nix {
     inherit lib pkgs rustLib;
     inherit workspaceVersion sharedCargoArtifacts cargoLock;

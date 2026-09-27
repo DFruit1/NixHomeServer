@@ -13,25 +13,18 @@ let
       useMetalKit = false;
       useRocm = false;
       inherit useVulkan;
-      useWebUi = false;
+      useWebUi = true;
     };
   runtime = baseRuntime.overrideAttrs (old: {
-      # The upstream expression still evaluates the npm-built Web UI as a
-      # derivation attribute even when useWebUi is false. Severing that
-      # reference avoids hundreds of irrelevant npm fetch derivations for this
-      # loopback, API-only deployment.
-      webui = null;
       # Building from the source root makes LLAMA_STANDALONE default ON, which
-      # turns on tests, examples, the unified `llama` app, and the prebuilt-UI
-      # download. Only llama-server (under tools) and its mtmd/multimodal
-      # dependency are needed here; the rest either wastes build time or, for
-      # the prebuilt UI, requires network access the Nix sandbox does not have.
+      # turns on tests, examples, and the unified `llama` app. Only
+      # llama-server (under tools) and its mtmd/multimodal dependency are
+      # needed here. The upstream UI is built from the pinned Nix webui
+      # derivation and served by the authenticated AI route.
       cmakeFlags = (old.cmakeFlags or [ ]) ++ [
         "-DLLAMA_BUILD_APP=OFF"
         "-DLLAMA_BUILD_EXAMPLES=OFF"
         "-DLLAMA_BUILD_TESTS=OFF"
-        "-DLLAMA_BUILD_UI=OFF"
-        "-DLLAMA_USE_PREBUILT_UI=OFF"
         # Build every CPU backend variant as a loadable module so ggml selects
         # the best available kernels (AVX2/FMA on the Zen 3 CPU) at runtime.
         # Without this the generic x86-64 baseline (SSE2) is used, which makes

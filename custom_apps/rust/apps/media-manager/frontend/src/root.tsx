@@ -507,6 +507,7 @@ export default component$((props: RootProps) => {
               (root) => root.category !== "iso" && root.available,
             )}
             initialRootId={props.initialRootId}
+            canEdit={state.session?.canEdit ?? false}
           />
         ) : view.value === "conversions" ? (
           <ConversionsView initial={state.conversions} />

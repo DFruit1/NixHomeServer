@@ -39,6 +39,8 @@ let
     browsertrix-downloader = "browsertrix-downloader";
     kanidm-canary-bootstrap = null;
     mail-archive-ui = "mail-archive-ui";
+    filesync-api = "filesync";
+    ipfs-alias = "ipfs";
     media-manager = null;
     mkvmaker = "mkvmaker";
     opencloud-share-gate = "opencloud";

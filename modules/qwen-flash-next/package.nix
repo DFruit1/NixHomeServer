@@ -2,7 +2,7 @@
 
 let
   cfg = config.repo.qwenFlashNext;
-  inherit (import ../../lib/llama-cpp-runtime.nix { inherit pkgs; useVulkan = cfg.gpu.enable; }) runtime revision;
+  inherit (import ../../lib/llama-cpp-runtime.nix { inherit pkgs; useVulkan = cfg.gpu.enable; }) runtime revision webui;
 
 in
 {
@@ -26,6 +26,13 @@ in
         default = revision;
         readOnly = true;
         description = "Pinned ggml-org/llama.cpp revision used for this runtime.";
+      };
+
+      webui = lib.mkOption {
+        type = lib.types.package;
+        default = webui;
+        readOnly = true;
+        description = "Upstream llama.cpp Web UI built from the same pinned source.";
       };
 
       backend = lib.mkOption {

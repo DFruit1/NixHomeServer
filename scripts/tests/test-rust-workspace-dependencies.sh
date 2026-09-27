@@ -11,6 +11,7 @@ nix_workspace="custom_apps/rust/apps/default.nix"
 member_manifests=(
   custom_apps/rust/apps/ai-gate/Cargo.toml
   custom_apps/rust/apps/browsertrix-downloader/Cargo.toml
+  custom_apps/rust/apps/ipfs-alias/Cargo.toml
   custom_apps/rust/apps/kanidm-canary-bootstrap/Cargo.toml
   custom_apps/rust/apps/mail-archive-ui/Cargo.toml
   custom_apps/rust/apps/media-manager/Cargo.toml
@@ -60,7 +61,7 @@ metadata="$(cargo metadata \
   --format-version 1)"
 
 jq -e '
-  (.packages | length == 8)
+  (.packages | length == 10)
   and ([.packages[].version] | unique | length == 1)
   and ([.packages[].edition] | unique == ["2021"])
   and (

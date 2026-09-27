@@ -124,7 +124,28 @@ if [[ "${DEPLOY_DRY_RUN:-}" != "1" ]] && nix_uses_substituter "$local_attic_cach
     "${XDG_CACHE_HOME:-$HOME/.cache}/nixhomeserver-attic-tunnel.log"
 fi
 
-local_nix_gc_mode="$(nix_flake_var 'vars.localNixGCMode')"
+deploy_config_json="$(NIXHOMESERVER_DEPLOY_NEED_HOSTNAME="$([[ -z "$hostname" ]] && echo 1 || echo 0)" \
+  NIXHOMESERVER_DEPLOY_NEED_TARGET="$([[ -z "$target_host" ]] && echo 1 || echo 0)" \
+  nix_flake_json '
+  {
+    localNixGCMode = vars.localNixGCMode;
+    nixGcRetentionDays = vars.nixGcRetentionDays;
+    localDiskCleanup = vars.localDiskCleanup;
+    buildMode = vars.buildMode;
+    buildSlots = vars.buildSlots;
+    buildCores = vars.buildCores;
+    hostPlatform = vars.hostPlatform;
+    serverSSHPubKey = vars.serverSSHPubKey;
+  }
+  // lib.optionalAttrs (builtins.getEnv "NIXHOMESERVER_DEPLOY_NEED_HOSTNAME" == "1") {
+    hostname = vars.hostname;
+  }
+  // lib.optionalAttrs (builtins.getEnv "NIXHOMESERVER_DEPLOY_NEED_TARGET" == "1") {
+    localAdminUser = if vars ? localAdminUser then vars.localAdminUser else vars.identity.localAdminUser;
+    serverLanIP = vars.serverLanIP;
+  }
+')"
+local_nix_gc_mode="$(jq -er '.localNixGCMode' <<<"$deploy_config_json")"
 case "$local_nix_gc_mode" in
   never|capacity|always) ;;
   *)
@@ -132,18 +153,18 @@ case "$local_nix_gc_mode" in
     exit 1
     ;;
 esac
-local_nix_gc_retention_days="$(nix_flake_var 'toString vars.nixGcRetentionDays')"
-local_disk_cleanup_trigger_percent="$(nix_flake_var 'toString vars.localDiskCleanup.triggerPercent')"
-local_disk_cleanup_monitor_paths="$(nix_flake_var 'builtins.concatStringsSep " " vars.localDiskCleanup.monitorPaths')"
-local_disk_cleanup_journal_vacuum_time="$(nix_flake_var 'vars.localDiskCleanup.journalVacuumTime')"
+local_nix_gc_retention_days="$(jq -er '.nixGcRetentionDays' <<<"$deploy_config_json")"
+local_disk_cleanup_trigger_percent="$(jq -er '.localDiskCleanup.triggerPercent' <<<"$deploy_config_json")"
+local_disk_cleanup_monitor_paths="$(jq -er '.localDiskCleanup.monitorPaths | join(" ")' <<<"$deploy_config_json")"
+local_disk_cleanup_journal_vacuum_time="$(jq -er '.localDiskCleanup.journalVacuumTime' <<<"$deploy_config_json")"
 
-configured_build_mode="$(nix_flake_var 'vars.buildMode')"
+configured_build_mode="$(jq -er '.buildMode' <<<"$deploy_config_json")"
 
 # Resolve the deployment hostname and target before build-mode selection: the
 # dashboard-selected build mode is stored on the target server and is read as
 # the default allocation for real deploys.
 if [[ -z "$hostname" ]]; then
-  hostname="$(nix_flake_var 'vars.hostname')"
+  hostname="$(jq -er '.hostname' <<<"$deploy_config_json")"
 fi
 if [[ ! "$hostname" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ ]]; then
   echo "blocked: --hostname must be one DNS hostname label" >&2
@@ -151,8 +172,8 @@ if [[ ! "$hostname" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ ]]; then
 fi
 
 if [[ -z "$target_host" ]]; then
-  local_admin_user="$(nix_flake_var 'if vars ? localAdminUser then vars.localAdminUser else vars.identity.localAdminUser')"
-  target_address="$(nix_flake_var 'vars.serverLanIP')"
+  local_admin_user="$(jq -er '.localAdminUser' <<<"$deploy_config_json")"
+  target_address="$(jq -er '.serverLanIP' <<<"$deploy_config_json")"
   target_host="${local_admin_user}@${target_address}"
 fi
 
@@ -196,12 +217,12 @@ case "$build_mode" in
     ;;
 esac
 
-local_build_slots="$(nix_flake_var 'toString vars.buildSlots.local')"
-remote_build_slots="$(nix_flake_var 'toString vars.buildSlots.remote')"
-local_build_cores="$(nix_flake_var 'toString vars.buildCores.local')"
-remote_build_cores="$(nix_flake_var 'toString vars.buildCores.remote')"
-host_platform="$(nix_flake_var 'vars.hostPlatform')"
-builder_ssh_public_key="$(nix_flake_var 'vars.serverSSHPubKey')"
+local_build_slots="$(jq -er '.buildSlots.local' <<<"$deploy_config_json")"
+remote_build_slots="$(jq -er '.buildSlots.remote' <<<"$deploy_config_json")"
+local_build_cores="$(jq -er '.buildCores.local' <<<"$deploy_config_json")"
+remote_build_cores="$(jq -er '.buildCores.remote' <<<"$deploy_config_json")"
+host_platform="$(jq -er '.hostPlatform' <<<"$deploy_config_json")"
+builder_ssh_public_key="$(jq -er '.serverSSHPubKey' <<<"$deploy_config_json")"
 
 # A one-shot mode override must carry its own native Nix slot mapping rather
 # than reusing the slots derived from the persistent vars.system.buildMode.

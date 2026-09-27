@@ -225,6 +225,26 @@ export const OfflineMediaSetupPanel = component$(
                 <p class="hint">Folders you will be offered: {folders.map((folder) => folder.label).join(', ')}.</p>
               )}
             </details>
+
+            {offlineMedia.fdroidRepoUrl && (
+              <details class="detail-block compact offline-media-fdroid">
+                <summary>Install Android apps with F-Droid</summary>
+                <p>
+                  Copy this URL, then in F-Droid open <strong>Settings</strong>, choose <strong>Repositories</strong>,
+                  tap <strong>+ (Add repository)</strong>, paste the URL, and enable the repository:
+                </p>
+                <p>
+                  <a class="offline-media-fdroid-url" href={offlineMedia.fdroidRepoUrl}>
+                    {offlineMedia.fdroidRepoUrl}
+                  </a>
+                </p>
+                <p>
+                  It is available on home Wi-Fi and away from home while connected to NetBird. F-Droid will check for
+                  app updates when it refreshes repositories; automatic installation depends on F-Droid and Android
+                  settings, and Android may ask you to confirm an update.
+                </p>
+              </details>
+            )}
           </div>
 
           <aside class="offline-media-status-column" aria-label="Server connection and sync status">

@@ -50,6 +50,7 @@ export type AppConfig = {
   devUser?: string;
   sftpKeyInstallCommand?: string;
   sftpKeyListCommand?: string;
+  sftpKeyRevokeCommand?: string;
   syncthingDeviceIdCommand?: string;
   offlineMediaStatusCommand?: string;
   offlineMediaEnrollCommand?: string;
@@ -337,6 +338,7 @@ export const loadConfig = (): AppConfig => ({
   devUser: process.env.HOMEPAGE_DEV_USER,
   sftpKeyInstallCommand: process.env.HOMEPAGE_SFTP_KEY_INSTALL_COMMAND,
   sftpKeyListCommand: process.env.HOMEPAGE_SFTP_KEY_LIST_COMMAND,
+  sftpKeyRevokeCommand: process.env.HOMEPAGE_SFTP_KEY_REVOKE_COMMAND,
   syncthingDeviceIdCommand: process.env.HOMEPAGE_SYNCTHING_DEVICE_ID_COMMAND,
   offlineMediaStatusCommand: process.env.HOMEPAGE_OFFLINE_MEDIA_STATUS_COMMAND ?? process.env.HOMEPAGE_OFFLINE_MUSIC_STATUS_COMMAND,
   offlineMediaEnrollCommand: process.env.HOMEPAGE_OFFLINE_MEDIA_ENROLL_COMMAND ?? process.env.HOMEPAGE_OFFLINE_MUSIC_ENROLL_COMMAND,

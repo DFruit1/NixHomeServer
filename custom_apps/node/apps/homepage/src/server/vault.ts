@@ -4,7 +4,7 @@ import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import type { IncomingHttpHeaders } from 'node:http';
 import { isHomepageAdmin, hasRequiredGroups } from './homepageData.js';
 import type { AppConfig } from './config.js';
-import { installSftpPublicKey, normalisePublicKey } from './sftpKey.js';
+import { installSftpPublicKey, normalisePublicKey, revokeSftpPublicKey } from './sftpKey.js';
 import type { CurrentUser, VaultFeature, VaultFeatureId, VaultStatus } from '../shared/types.js';
 import {
   VaultHttpError,
@@ -50,6 +50,9 @@ export const vaultFeatureAllowed = (config: AppConfig, user: CurrentUser, featur
   }
   if (feature === 'syncthingApiKey' && gate.adminOnly !== false) {
     return isHomepageAdmin(config, user);
+  }
+  if (feature === 'sshKeys' && isHomepageAdmin(config, user)) {
+    return true;
   }
   return hasRequiredGroups(user.groups, gate.requiredAllGroups, gate.requiredAnyGroups);
 };
@@ -189,13 +192,48 @@ export const vaultLock = (config: AppConfig, headers: IncomingHttpHeaders): Vaul
   return { status: 200, body: { ok: true }, clearSessionCookie: true };
 };
 
-export const vaultSshKeys = async (config: AppConfig, headers: IncomingHttpHeaders): Promise<VaultHttpResponse> => {
+export const vaultSshKeys = async (
+  config: AppConfig,
+  headers: IncomingHttpHeaders,
+  targetUsername?: string,
+): Promise<VaultHttpResponse> => {
   const user = requireUser(config, headers);
   requireUnlockedFeature(config, headers, user, 'sshKeys');
+  const username = targetUsername ?? user.username;
+  if (!/^[a-z][a-z0-9._-]{0,63}$/.test(username)) {
+    throw new VaultHttpError('invalid username', 400);
+  }
+  if (username !== user.username && !isHomepageAdmin(config, user)) {
+    throw new VaultHttpError('not authorised to manage this user\'s SFTP keys', 403);
+  }
   const command = requireCommand(config.sftpKeyListCommand, 'SSH key registration');
-  const output = await runHelperCommand(config, command, [user.username]);
+  const output = await runHelperCommand(config, command, [username]);
   const keys = output.split('\n').map((line) => line.trimEnd()).filter((line) => line.length > 0);
   return { status: 200, body: { ok: true, keys } };
+};
+
+export const vaultSshKeyRevoke = async (
+  config: AppConfig,
+  headers: IncomingHttpHeaders,
+  body: { fingerprint?: unknown; username?: unknown },
+): Promise<VaultHttpResponse> => {
+  const user = requireUser(config, headers);
+  requireUnlockedFeature(config, headers, user, 'sshKeys');
+  const username = typeof body.username === 'string' && body.username.trim()
+    ? body.username.trim()
+    : user.username;
+  if (!/^[a-z][a-z0-9._-]{0,63}$/.test(username)) {
+    throw new VaultHttpError('invalid username', 400);
+  }
+  if (username !== user.username && !isHomepageAdmin(config, user)) {
+    throw new VaultHttpError('not authorised to manage this user\'s SFTP keys', 403);
+  }
+  if (typeof body.fingerprint !== 'string' || !/^SHA256:[A-Za-z0-9+/]+$/.test(body.fingerprint)) {
+    throw new VaultHttpError('invalid key fingerprint', 400);
+  }
+  requireCommand(config.sftpKeyRevokeCommand, 'SFTP key revocation');
+  const result = await revokeSftpPublicKey(config, username, body.fingerprint);
+  return { status: 200, body: result };
 };
 
 export const vaultSshKeyAdd = async (

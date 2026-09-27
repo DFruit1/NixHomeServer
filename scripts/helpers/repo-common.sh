@@ -279,3 +279,16 @@ nix_flake_var() {
       ${expr}
   "
 }
+
+nix_flake_json() {
+  local expr="$1"
+  nix_eval_with_optional_cache json "
+    let
+      repoPath = builtins.getEnv \"NIXHOMESERVER_REPO_ROOT_FOR_EVAL\";
+      flake = builtins.getFlake (builtins.getEnv \"NIXHOMESERVER_FLAKE_REF_FOR_EVAL\");
+      lib = flake.inputs.nixpkgs.lib;
+      vars = import (builtins.toPath (repoPath + \"/vars.nix\")) { inherit lib; };
+    in
+      ${expr}
+  "
+}

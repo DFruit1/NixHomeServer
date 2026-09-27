@@ -12,6 +12,13 @@ API keys for OPDS and third-party reader clients. The existing SSHFS setup
 flows on the Getting Started and Detailed Guide pages continue to work; the
 vault adds a central, gated view on top.
 
+Users can revoke their own SFTP device key by fingerprint in the Device keys
+section. Homepage administrators can select another username and revoke one of
+that user's keys from the same section. Revocation updates the server's
+authorized-keys file immediately; the phone does not need to be online. The
+operation removes only the selected public key and leaves other device keys
+intact.
+
 Every vault card sits behind a second login. Unlocking re-verifies the
 user's Kanidm password (and TOTP when the account uses it) directly against
 Kanidm and mints a short-lived step-up session:
@@ -477,8 +484,12 @@ sudo systemctl start nixhomeserver-nix-gc.service
 The capacity collector above only covers the deployed server; the workstation
 that evaluates and builds deploys has no equivalent timer. Set
 `system.localNixGCMode` in `vars.nix` to `"never"`, `"capacity"`, or `"always"`.
-Always mode runs an unconditional `nix-store --gc`; never mode performs no
-deploy-time local collection.
+Always mode runs an unconditional `nix-store --gc` before every deploy,
+independent of build allocation. It makes every unrooted store path eligible
+for collection, including local check/build outputs; profile generations and
+other GC-rooted paths remain. Never mode performs no deploy-time local
+collection. Capacity mode uses the conservative cleanup below and can remove
+older profile generations according to the configured retention period.
 
 ### Workstation Disk Space Cleanup
 
@@ -1351,6 +1362,99 @@ a sibling `Song.jpg`) and any `cover.jpg` in chapter-split output; do not delete
 covers that were installed deliberately through Media Manager. Request a
 Syncthing rescan from Homepage afterwards.
 
+## Private F-Droid Repository
+
+The server hosts a private F-Droid-compatible repository at:
+
+```text
+https://fdroid.<server-domain>/fdroid/repo
+```
+
+Add that URL in F-Droid while the phone uses home Wi-Fi. The hostname is also
+published through NetBird DNS, so it works away from home when the phone is
+connected to NetBird. The repository is served over HTTPS and is not exposed
+through the public Cloudflare routes.
+
+The current YouTube Downloader APK at
+`/var/lib/youtube-downloader/app/youtube-downloader.apk` is published on boot
+and whenever that file changes. When the `filesync`, `fdroid`, and `ipfs`
+modules are enabled, File Sync is published from
+`/var/lib/fdroidserver/incoming/filesync.apk` on boot and whenever that file
+changes. The F-Droid reindex success hook then updates the IPFS mirror. To
+publish the prototype APK, copy it to that path:
+
+```sh
+sudo install -o root -g fdroidserver -m 0644 /path/to/filesync.apk \
+  /var/lib/fdroidserver/incoming/filesync.apk
+```
+
+The watcher copies the APK into the repository and regenerates its signed
+index. F-Droid creates metadata skeletons under
+`/var/lib/fdroidserver/metadata`; edit those files to add the app name,
+description, license, and links shown to users, then run
+`sudo systemctl start fdroid-reindex.service`. APK updates must keep the same
+Android app signing key and use a higher version code, or Android will reject
+the upgrade. The repository index signing key is generated on first boot and
+is stored with the repository in `/var/lib/fdroidserver`; keep the encrypted
+backup of that directory because phones trust that key for future repository
+updates.
+
+F-Droid checks configured repositories for updates. Depending on the F-Droid
+client and Android version, installing an update may still require the user to
+confirm the install or grant F-Droid permission to install apps.
+
+## Private IPFS Distribution
+
+The server runs Kubo with a private HTTPS gateway at
+`https://ipfs.<server-domain>`. Its DNS name works on the home LAN and over
+NetBird; it is not a public Cloudflare route. Kubo's control API uses a local
+Unix socket. Its TCP peer port (4001) is open only on the NetBird interface,
+with public bootstrap and content routing disabled. The gateway serves only
+content that this server has pinned. An IPFS CID identifies content; it is not
+an access token or encryption. Only publish files that the intended NetBird
+peers may read, and remember that peers can retain their own copies.
+
+Publish a file or directory with a stable channel name:
+
+```sh
+sudo ipfs-publish isos /path/to/image.iso
+sudo ipfs-publish archives /path/to/archive-directory
+```
+
+The command prints an immutable `/ipfs/<CID>` URL and a stable
+`/published/<channel>` URL. For a directory, append a filename to the stable
+URL; for a file, the channel URL serves that file directly. Publishing again to
+the same channel changes its stable URL to the new CID. Previous CIDs remain
+pinned until an administrator explicitly removes those pins, so allow for
+blockstore growth when publishing large ISO images or archives. The source file
+can be moved after Kubo has imported it.
+
+After each successful F-Droid reindex, `fdroid-ipfs-publish.service` pins the
+signed repository and advances the `fdroid` channel. The signed F-Droid index
+declares `https://ipfs.<server-domain>/fdroid` as a mirror base, which clients
+resolve to `https://ipfs.<server-domain>/fdroid/repo`. The existing
+`https://fdroid.<server-domain>/fdroid/repo` URL remains the enrollment URL.
+Check publication with:
+
+```sh
+sudo systemctl status fdroid-ipfs-publish.service
+curl -I https://ipfs.<server-domain>/fdroid/repo/index-v2.json
+```
+
+To let another Kubo peer fetch a known CID directly over NetBird, obtain this
+server's peer ID with `sudo -u ipfs env IPFS_PATH=/mnt/data/ipfs ipfs id` and
+connect that peer to
+`/ip4/<server-netbird-ip>/tcp/4001/p2p/<server-peer-id>`. Share the CID or its
+immutable HTTPS URL separately. Stable channel aliases are provided by this
+server's HTTPS gateway; peer-to-peer clients use the CID itself.
+
+Back up `/mnt/data/ipfs` together with `/var/lib/ipfs-distribution`. The first
+directory contains the pinned blocks and node identity; the second contains
+the stable channel pointers. Restoring only one side can leave alias URLs
+broken or pointing at unavailable content. Kubo's
+[gateway and pinning behavior](https://docs.ipfs.tech/how-to/replace-public-gateways-with-self-hosted-ipfs/)
+is documented upstream.
+
 ## Browsertrix Downloader Operations
 
 The service boundary, storage paths, crawler isolation policy, image update
@@ -1368,17 +1472,23 @@ decision table, examples, and how to add content to each.
 ## Calibre-Web Operations
 
 Calibre-Web serves the shared Calibre technical library at
-`https://calibre.<domain>`, fronted by the shared auth gateway and restricted
-to the `calibre-web-users` Kanidm group. Calibre-Web has no OIDC support, so it
-keeps its own local account for uploads and library management: the first boot
-seeds the standard `admin`/`admin123` account, which the operator should change
-immediately after the first sign-in. Browsing is free to any gateway-authorized
-user; uploading and editing require the local account.
+`https://calibre.<domain>`, fronted by OAuth2 Proxy and restricted to the
+`calibre-web-users` Kanidm group. OAuth2 Proxy passes each user's preferred
+Kanidm username to Calibre-Web, and
+`calibre-web-oidc-account-bootstrap.service` provisions a matching local
+Calibre-Web account with download access. New managed accounts receive random
+unshared passwords, so they sign in through Kanidm. The local `admin` account
+remains available for uploads and library management; change its default
+`admin123` password after the first sign-in. The Kanidm-backed accounts are
+read/download only.
 
 The library lives at `/mnt/data/shared/_Calibre/Library`
 (`repo.calibreWeb.paths.libraryRoot`). A first-boot oneshot
 (`calibre-web-library-layout-v1.service`) provisions the directory and seeds a
 pristine empty `metadata.db`; Calibre-Web cannot create a library itself.
+The account bootstrap runs after Calibre-Web initializes `app.db` and before
+OAuth2 Proxy accepts requests. It adds missing Kanidm users without deleting
+existing Calibre-Web accounts when a user is removed from Kanidm.
 
 Normal checks and manual actions:
 
@@ -1791,14 +1901,14 @@ Full mode runs:
   script tests
 - Homepage end-to-end checks when Homepage is selected
 
-After every gate passes, the host-scoped output set replaces the indirect roots
-under
+Host-scoped full validation temporarily roots outputs while it runs. After all
+gates pass, those temporary roots are released by default so the outputs can
+be collected by a later Nix GC. Pending roots are removed on failure, leaving
+any prior retained set untouched. Set `VALIDATE_RETAIN_OUTPUT_ROOTS=1` when
+repeated warm-cache runs are more important than store space; successful runs
+then replace the indirect roots under
 `${XDG_STATE_HOME:-$HOME/.local/state}/nixhomeserver/validation-roots/current`.
-Pending roots are removed on failure, leaving the previous passing set warm.
 The exhaustive `--all-apps` form deliberately does not update these roots.
-Repeat `scripts/validate-repo.sh --full` to reproduce a warm-cache measurement;
-Nix should report that no derivations need building or fetching while those
-roots exist.
 
 Adding `--all-apps` swaps in the repository-wide derivation and script-test
 worklists. CI uses that exhaustive form.

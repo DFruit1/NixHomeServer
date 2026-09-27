@@ -13,6 +13,7 @@ import {
   useStore,
   useResource$,
   useTask$,
+  useVisibleTask$,
 } from "@builder.io/qwik";
 import { api, readableError } from "./api";
 import { Icon } from "./icon";
@@ -88,6 +89,228 @@ function groupHeading(group: HealthGroup): {
 }
 
 const MAX_GROUPED_FILES = 25;
+
+interface OnlineMetadataCandidate {
+  title: string;
+  values: Record<string, unknown>;
+}
+
+function candidateValues(
+  providerId: string,
+  candidate: Record<string, unknown>,
+) {
+  const values: Record<string, unknown> = {};
+  const put = (field: string, value: unknown) => {
+    if (
+      value !== undefined &&
+      value !== null &&
+      value !== "" &&
+      (!Array.isArray(value) || value.length > 0)
+    )
+      values[field] = value;
+  };
+  const first = (...keys: string[]) =>
+    keys
+      .map((key) => candidate[key])
+      .find((value) => value != null && value !== "");
+  put("title", first("title", "name", "editionTitle"));
+  put("year", first("year", "publishYear", "firstPublishYear"));
+  put("description", candidate.overview ?? candidate.description);
+  put("authors", candidate.artist ?? candidate.authors);
+  put("publisher", first("label", "publisher", "publishers"));
+  if (providerId !== "tmdb")
+    put("genres", first("genres", "subjects", "categories"));
+  const languages = candidate.languages;
+  put("language", Array.isArray(languages) ? languages[0] : candidate.language);
+  put("premiereDate", first("releaseDate", "publishDate"));
+  put("isbn", first("isbn", "isbn13", "isbn10"));
+  const title = displayValue(values.title);
+  return title === "Not set" ? undefined : { title, values };
+}
+
+const HealthLookupDialog = component$<{
+  provider: ProviderDefinition;
+  itemId: string;
+  query: string;
+  issue: MetadataHealthIssue;
+  onSelect$: QRL<(value: unknown, source: string) => void>;
+  onClose$: QRL<() => void>;
+}>((props) => {
+  const state = useStore({
+    loading: false,
+    error: "",
+    candidates: [] as OnlineMetadataCandidate[],
+    query: props.query,
+  });
+
+  const search = $(async () => {
+    if (!state.query.trim()) return;
+    state.loading = true;
+    state.error = "";
+    state.candidates = [];
+    try {
+      let raw: Record<string, unknown>[] = [];
+      switch (props.provider.id) {
+        case "tmdb": {
+          const result = await api<{ results: Record<string, unknown>[] }>(
+            "/provider-lookups/tmdb/search",
+            {
+              method: "POST",
+              body: JSON.stringify({ query: state.query, mediaType: "auto" }),
+            },
+          );
+          raw = result.results;
+          break;
+        }
+        case "musicbrainz": {
+          const result = await api<{ candidates: Record<string, unknown>[] }>(
+            `/items/${encodeURIComponent(props.itemId)}/metadata/lookup`,
+            {
+              method: "POST",
+              body: JSON.stringify({ mode: "search", title: state.query }),
+            },
+          );
+          raw = result.candidates;
+          break;
+        }
+        case "open-library": {
+          const result = await api<{ results: Record<string, unknown>[] }>(
+            "/provider-lookups/open-library/search",
+            {
+              method: "POST",
+              body: JSON.stringify({ query: state.query }),
+            },
+          );
+          raw = result.results;
+          break;
+        }
+        case "google-books": {
+          const result = await api<{ results: Record<string, unknown>[] }>(
+            "/provider-lookups/google-books/search",
+            {
+              method: "POST",
+              body: JSON.stringify({ query: state.query }),
+            },
+          );
+          raw = result.results;
+          break;
+        }
+        default:
+          throw new Error(
+            `${props.provider.name} lookup is not available here.`,
+          );
+      }
+      state.candidates = raw.flatMap((candidate) => {
+        const normalized = candidateValues(props.provider.id, candidate);
+        return normalized ? [normalized] : [];
+      });
+    } catch (error) {
+      state.error = readableError(error);
+    } finally {
+      state.loading = false;
+    }
+  });
+
+  useVisibleTask$(() => search());
+
+  return (
+    <div class="dialog-backdrop" onClick$={props.onClose$}>
+      <div
+        class="dialog health-lookup-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Search ${props.provider.name}`}
+        onClick$={(event) => event.stopPropagation()}
+      >
+        <div class="dialog-header">
+          <h3>{props.provider.name} results</h3>
+          <button
+            type="button"
+            class="dialog-close"
+            onClick$={props.onClose$}
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
+        <div class="dialog-body">
+          <p class="dialog-context">{props.issue.title}</p>
+          <form
+            class="health-lookup-query"
+            preventdefault:submit
+            onSubmit$={search}
+          >
+            <label>
+              <span>Search {props.provider.name}</span>
+              <input
+                value={state.query}
+                maxLength={500}
+                onInput$={(_, input) => (state.query = input.value)}
+              />
+            </label>
+            <button
+              class="secondary-button"
+              type="submit"
+              disabled={state.loading || !state.query.trim()}
+            >
+              {state.loading ? "Searching…" : "Search"}
+            </button>
+          </form>
+          {state.loading ? (
+            <p role="status" aria-busy="true">
+              Searching {props.provider.name}…
+            </p>
+          ) : null}
+          {state.error && (
+            <p class="health-lookup-error" role="alert">
+              {state.error}
+            </p>
+          )}
+          {!state.loading && !state.error && state.candidates.length === 0 && (
+            <p>No matching online metadata was found.</p>
+          )}
+          <ul class="health-lookup-results">
+            {state.candidates.map((candidate, index) => (
+              <li key={`${candidate.title}-${index}`}>
+                <strong>{candidate.title}</strong>
+                <dl>
+                  {Object.entries(candidate.values).map(([field, value]) => (
+                    <div key={field}>
+                      <dt>{field}</dt>
+                      <dd>{displayValue(value)}</dd>
+                    </div>
+                  ))}
+                </dl>
+                {props.issue.field && props.issue.field in candidate.values ? (
+                  <button
+                    type="button"
+                    class="secondary-button health-lookup-select"
+                    onClick$={() => {
+                      props.onSelect$(
+                        candidate.values[props.issue.field!],
+                        props.provider.name,
+                      );
+                      props.onClose$();
+                    }}
+                  >
+                    Use {props.issue.field} value
+                  </button>
+                ) : (
+                  <small>
+                    This result has no {props.issue.field ?? "matching"} value.
+                  </small>
+                )}
+              </li>
+            ))}
+          </ul>
+          <a class="health-source-manage" href="?view=accounts">
+            Manage metadata sources
+          </a>
+        </div>
+      </div>
+    </div>
+  );
+});
 
 interface GroupedIssue {
   key: string;
@@ -243,6 +466,7 @@ const AlternativeSourcesDialog = component$<{
 export const MetadataHealthView = component$<{
   roots: HealthRoot[];
   initialRootId?: string;
+  canEdit?: boolean;
 }>((props) => {
   const inbox = useStore({
     rootId: props.roots.some((root) => root.id === props.initialRootId)
@@ -263,6 +487,15 @@ export const MetadataHealthView = component$<{
     issue: MetadataHealthIssue;
     mediaKind: MediaKind;
   } | null>(null);
+  const lookupFor = useSignal<{
+    provider: ProviderDefinition;
+    issue: MetadataHealthIssue;
+    itemId: string;
+    query: string;
+  } | null>(null);
+  const onlineSelections = useStore<
+    Record<string, { value: unknown; source: string }>
+  >({});
 
   const inspectLibraries = $(async (rootId: string) => {
     const revision = ++requestRevision.value;
@@ -440,6 +673,17 @@ export const MetadataHealthView = component$<{
                     : [];
                   const primary = sources[0];
                   const primaryStatus = primary ? sourceStatus(primary) : null;
+                  const lookupSupported = Boolean(
+                    primary &&
+                      [
+                        "tmdb",
+                        "musicbrainz",
+                        "open-library",
+                        "google-books",
+                      ].includes(primary.id),
+                  );
+                  const selectedOnline =
+                    onlineSelections[`${group.key}:${key}`];
                   return (
                     <section
                       class="health-result-issue"
@@ -477,16 +721,65 @@ export const MetadataHealthView = component$<{
                             ) : (
                               <p class="health-no-proposal">{issue.message}</p>
                             )}
+                            {selectedOnline && (
+                              <div
+                                class="health-online-selection"
+                                role="status"
+                              >
+                                <span class="health-value-label">
+                                  Selected online value
+                                </span>
+                                <p>{displayValue(selectedOnline.value)}</p>
+                                <small>{selectedOnline.source}</small>
+                              </div>
+                            )}
                             {primary && primaryStatus && (
                               <>
                                 <p class="health-source">
-                                  Retrieve from <strong>{primary.name}</strong>
+                                  {lookupSupported ? (
+                                    <button
+                                      type="button"
+                                      class="health-source-trigger"
+                                      disabled={
+                                        !props.canEdit ||
+                                        primary.implementationStatus !==
+                                          "active"
+                                      }
+                                      title={
+                                        !props.canEdit
+                                          ? "Metadata lookup requires editor access."
+                                          : undefined
+                                      }
+                                      onClick$={() => {
+                                        if (!props.canEdit) return;
+                                        lookupFor.value = {
+                                          provider: primary,
+                                          issue,
+                                          itemId: first.itemId,
+                                          query: groupHeading(group).text,
+                                        };
+                                      }}
+                                    >
+                                      Retrieve from {primary.name}
+                                    </button>
+                                  ) : (
+                                    <>
+                                      Retrieve from{" "}
+                                      <strong>{primary.name}</strong>
+                                    </>
+                                  )}
                                   <span
                                     class={sourceStatusClass(primaryStatus)}
                                   >
                                     {primaryStatus.label}
                                   </span>
                                 </p>
+                                {lookupSupported && props.canEdit && (
+                                  <small class="health-lookup-note">
+                                    Online selections are comparison aids. Use
+                                    Review metadata to make an edit.
+                                  </small>
+                                )}
                                 {sources.length > 1 && (
                                   <button
                                     type="button"
@@ -557,6 +850,32 @@ export const MetadataHealthView = component$<{
           mediaKind={alternativesFor.value.mediaKind}
           providers={providerCatalog.providers}
           onClose$={() => (alternativesFor.value = null)}
+        />
+      )}
+      {lookupFor.value && (
+        <HealthLookupDialog
+          provider={lookupFor.value.provider}
+          issue={lookupFor.value.issue}
+          itemId={lookupFor.value.itemId}
+          query={lookupFor.value.query}
+          onSelect$={(value, source) => {
+            const active = lookupFor.value;
+            if (!active) return;
+            const issueKey = JSON.stringify([
+              active.issue.code,
+              active.issue.field ?? null,
+              active.issue.currentValue ?? null,
+              (active.issue.proposedValues ?? []).map(
+                (candidate) => candidate.value,
+              ),
+            ]);
+            const group = groupResults(inbox.results).find((entry) =>
+              entry.results.some((result) => result.itemId === active.itemId),
+            );
+            if (group)
+              onlineSelections[`${group.key}:${issueKey}`] = { value, source };
+          }}
+          onClose$={() => (lookupFor.value = null)}
         />
       )}
     </section>

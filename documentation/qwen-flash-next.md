@@ -6,9 +6,13 @@ pinned mainline llama.cpp build and an OpenAI-compatible API. The model is a
 6B active parameters, native vision, tool calling, and a 262,144-token context.
 
 For this server, Qwen is the primary local inference endpoint. It starts at
-boot as a loopback-only llama-server with no web UI. Bonsai is currently
-disabled. If both apps are enabled later, the optional background-job
-integration reserves Qwen for on-demand use and coordinates the shared GPU.
+boot as a loopback-only llama-server with the upstream chat UI. The UI is
+available at `https://ai.<domain>` through the shared Kanidm authentication
+gateway; access is granted to `ai-users`. The same host exposes the OpenAI
+compatible API to signed-in browsers and trusted local clients. Bonsai is
+currently disabled. If both apps are enabled later, the optional
+background-job integration reserves Qwen for on-demand use and coordinates the
+shared GPU.
 
 Local clients use the loopback OpenAI-compatible API:
 
@@ -165,7 +169,7 @@ Expectations with a single 24 GB Arc Pro B60 and ~87 GiB of weights:
 
 ## Service Operations
 
-The Qwen server does not start at boot while Bonsai is enabled. Verify the
+When Bonsai and Qwen are both enabled, Qwen does not start at boot. Verify the
 model artifacts, then start it for a background run:
 
 ```bash

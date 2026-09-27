@@ -1,0 +1,9 @@
+[package]
+name = "ipfs-alias"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+axum = { workspace = true, features = ["http1", "tokio"] }
+tokio = { workspace = true, features = ["fs", "macros", "net", "rt-multi-thread"] }

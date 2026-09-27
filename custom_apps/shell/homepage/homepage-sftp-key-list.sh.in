@@ -16,6 +16,9 @@ if [[ "$owner_group" != "root:root" || "$mode" != "644" ]]; then
   echo "authorized-keys file has unsafe ownership or mode" >&2
   exit 1
 fi
+if [[ ! -s "$target" ]]; then
+  exit 0
+fi
 if ! @NIX_OPENSSH@/bin/ssh-keygen -lf "$target" >/dev/null 2>&1; then
   echo "authorized-keys file failed structural validation" >&2
   exit 1

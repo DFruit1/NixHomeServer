@@ -11,6 +11,9 @@ import android.widget.Toast
  */
 abstract class ShareActivity : Activity() {
   protected open fun mediaType(): String = "audio"
+  protected open fun saveAudioToAudiobooks(): Boolean = false
+  protected open fun queueShared(url: String) = ShareTarget.queue(this, url, mediaType(), saveAudioToAudiobooks())
+  protected open fun queuedMessage(): String = "Queued ${mediaType()} for download"
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
@@ -18,12 +21,14 @@ abstract class ShareActivity : Activity() {
     val url = shared?.let { ShareTarget.extractUrl(it) }
     if (url != null) {
       try {
-        ShareTarget.queue(this, url, mediaType())
-        Toast.makeText(applicationContext, "Queued ${mediaType()} for download", Toast.LENGTH_SHORT).show()
+        queueShared(url)
+        Toast.makeText(applicationContext, queuedMessage(), Toast.LENGTH_SHORT).show()
         ShareTarget.publishShortcuts(this)
       } catch (_: Exception) {
         // The link stays shareable another way; do not crash the share target.
       }
+    } else {
+      Toast.makeText(applicationContext, "Share a valid YouTube link", Toast.LENGTH_SHORT).show()
     }
     finish()
   }

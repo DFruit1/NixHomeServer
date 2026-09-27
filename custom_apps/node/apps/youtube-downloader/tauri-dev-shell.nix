@@ -1,5 +1,6 @@
 { pkgs
 , pkgsUnstable
+, appName ? "youtube-downloader"
 }:
 
 let
@@ -118,7 +119,7 @@ let
   '') androidAbis;
 in
 pkgs.mkShell {
-  name = "youtube-downloader-tauri-shell";
+  name = "${appName}-tauri-shell";
 
   packages = [
     rustToolchain
@@ -154,7 +155,7 @@ pkgs.mkShell {
   shellHook = ''
     export PATH="${rustToolchain}/bin:$PATH"
     ${linkerEnv}
-    echo "youtube-downloader-tauri: cargo-tauri $(${pkgsUnstable.cargo-tauri}/bin/cargo-tauri --version | cut -d' ' -f2), rustc $(${rustToolchain}/bin/rustc --version | cut -d' ' -f2)"
+    echo "${appName}-tauri: cargo-tauri $(${pkgsUnstable.cargo-tauri}/bin/cargo-tauri --version | cut -d' ' -f2), rustc $(${rustToolchain}/bin/rustc --version | cut -d' ' -f2)"
     echo "  android sdk: $ANDROID_HOME"
     echo "  android ndk: $NDK_HOME"
     echo "  build: cargo tauri android build --debug --apk --target aarch64"

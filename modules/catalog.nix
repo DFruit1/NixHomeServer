@@ -32,6 +32,7 @@ rec {
       "calibreWebOauth2ProxyCookieSecret"
     ] [
       "calibre-web-library-layout-v1"
+      "calibre-web-oidc-account-bootstrap"
       "calibre-web"
     ];
     chaptarr = app ./chaptarr "Chaptarr" "media-automation" [ ] [
@@ -40,6 +41,8 @@ rec {
       "media-automation-bootstrap-chaptarr"
     ];
     files = app ./files "Files" "storage" [ ] [ ];
+    filesync = app ./filesync "File Sync API" "storage" [ ] [ "filesync-api" ];
+    fdroid = app ./fdroid "F-Droid Repository" "operations" [ ] [ ];
     forgejo = app ./forgejo "Git" "operations" [ "forgejoClientSecret" ] [ ];
     freshrss = app ./freshrss "FreshRSS" "knowledge" [ ] [ ];
     groundwater-logger = app ./groundwater-logger "Groundwater Logger" "operations" [
@@ -50,6 +53,7 @@ rec {
       "immich-storage-layout-v1"
       "immich-server"
     ];
+    ipfs = app ./ipfs "IPFS Distribution" "operations" [ ] [ "ipfs" "ipfs-alias" "fdroid-ipfs-publish" ];
     jellyfin = app ./jellyfin "Jellyfin" "media" [ "jellyfinOidcClientSecret" ] [
       "jellyfin-oidc-bootstrap-v1"
       "jellyfin-metadata-bootstrap-v1"
@@ -154,6 +158,9 @@ rec {
   };
 
   integrationDefinitions = [
+    { module = ./Integrations/publish_fdroid_to_ipfs.nix; allApps = [ "fdroid" "ipfs" ]; anyApps = [ ]; }
+    { module = ./Integrations/publish_filesync_to_fdroid.nix; allApps = [ "fdroid" "filesync" "ipfs" ]; anyApps = [ ]; }
+    { module = ./Integrations/publish_youtube_downloader_to_fdroid.nix; allApps = [ "fdroid" "youtube-downloader" ]; anyApps = [ ]; }
     { module = ./Integrations/reserve_qwen_for_background_jobs.nix; allApps = [ "bonsai" "qwen-flash-next" ]; anyApps = [ ]; }
     { module = ./Integrations/expose_browsertrix_crawls_to_search.nix; allApps = [ "search" "browsertrix-downloader" ]; anyApps = [ ]; }
     { module = ./Integrations/expose_calibre_web_library_to_search.nix; allApps = [ "search" "calibre-web" ]; anyApps = [ ]; }

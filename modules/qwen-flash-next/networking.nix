@@ -33,10 +33,25 @@ in
     };
   };
 
-  config.assertions = lib.mkIf cfg.enable [
-    {
-      assertion = cfg.listenAddress == vars.networking.loopbackIPv4;
-      message = "Qwen Flash Next has no API authentication and must remain bound to IPv4 loopback.";
-    }
-  ];
+  config = lib.mkIf cfg.enable {
+    repo.authGateway.protectedApps.qwenFlashNext = {
+      host = "ai.${vars.domain}";
+      upstream = "http://${cfg.listenAddress}:${toString cfg.port}";
+      allowedGroups = [ "ai-users" ];
+      apiUnauthenticated401 = true;
+    };
+
+    services.unbound.privateHosts."ai.${vars.domain}".target = "private";
+
+    assertions = [
+      {
+        assertion = cfg.listenAddress == vars.networking.loopbackIPv4;
+        message = "Qwen Flash Next has no API authentication and must remain bound to IPv4 loopback.";
+      }
+      {
+        assertion = config.repo.authGateway.enable && config.repo.authGateway.mode == "gateway";
+        message = "The Qwen Flash Next UI requires the shared authentication gateway.";
+      }
+    ];
+  };
 }

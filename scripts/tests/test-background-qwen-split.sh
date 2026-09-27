@@ -7,10 +7,8 @@ ensure_tools jq nix
 # The interactive UI is Bonsai-only and Qwen is a separate background server.
 require_fixed modules/bonsai/services.nix '--path ${cfg.runtime.webui}' \
   "Bonsai server must serve the pinned web UI."
-require_fixed modules/qwen-flash-next/services.nix '--no-webui' \
-  "Qwen server must not serve a web UI."
-forbid_match modules/qwen-flash-next/services.nix '--path' \
-  "Qwen background server must not serve the UI static path."
+require_fixed modules/qwen-flash-next/services.nix '--path ${cfg.runtime.webui}' \
+  "Qwen server must serve the pinned chat UI."
 
 host="$(test_default_host)"
 NIXHOMESERVER_TEST_HOST="$host" nix eval --impure --json --expr '
@@ -50,7 +48,7 @@ NIXHOMESERVER_TEST_HOST="$host" nix eval --impure --json --expr '
   }
 ' | jq -e '.skipped or (
   .bonsaiWebui
-  and (.qwenWebui | not)
+  and .qwenWebui
   and .bonsaiBoot
   and (.bonsaiRequiresQwen | not)
   and (.qwenCommand | contains("qwen-flash-next-llama-server"))
@@ -62,9 +60,9 @@ NIXHOMESERVER_TEST_HOST="$host" nix eval --impure --json --expr '
   and (.qwenPort != .bonsaiPort)
   and .qwenListen == "127.0.0.1"
   and (.uiUpstream == ("http://127.0.0.1:" + (.bonsaiPort | tostring)))
-  and (.qwenExposed | not)
+  and .qwenExposed
   and .withoutBonsaiQwenBoot
   and (.withoutBonsaiQwenConflicts == [])
   and (.withoutBonsaiHasRestore | not)
 )' >/dev/null
-echo "Bonsai-only UI, on-demand Qwen background model, and disable isolation passed."
+echo "Bonsai and Qwen UIs, on-demand Qwen background model, and disable isolation passed."

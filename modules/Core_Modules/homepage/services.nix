@@ -19,6 +19,7 @@ let
   backupsHost = vars.kopiaDomain;
   mediaManagerHost = "media.${vars.domain}";
   syncthingHost = "syncthing.${vars.domain}";
+  fdroidHost = "fdroid.${vars.domain}";
   offlineMediaCfg = vars.offlineMedia;
   offlineMediaAccessGroupRaw = offlineMediaCfg.accessGroup or "users";
   offlineMediaAccessGroup =
@@ -111,6 +112,7 @@ let
   filesSftpEnabled = builtins.hasAttr "files-sftp-sshd" config.systemd.services;
   jellyfinEnabled = hostEnabled videosHost;
   offlineMediaEnabledForHomepage = offlineMediaEnabled;
+  fdroidEnabled = builtins.hasAttr fdroidHost config.services.caddy.virtualHosts;
   kavitaEnabled = hostEnabled booksHost;
   kiwixEnabled = hostEnabled wikiHost;
   freshrssEnabled = hostEnabled rssHost;
@@ -167,6 +169,15 @@ let
     SFTPAUTHORIZEDKEYSDIR_QUOTED = lib.escapeShellArg sftpAuthorizedKeysDir;
     COREUTILS = pkgs.coreutils;
     OPENSSH = pkgs.openssh;
+  });
+  sftpKeyRevokeHelper = pkgs.writeShellScript "homepage-revoke-sftp-key" (renderShell ../../../custom_apps/shell/homepage/homepage-revoke-sftp-key.sh.in {
+    GNUGREP = pkgs.gnugrep;
+    COREUTILS = pkgs.coreutils;
+    OPENSSH = pkgs.openssh;
+    UTIL_LINUX = pkgs.util-linux;
+    SFTPAUTHORIZEDKEYSDIR_QUOTED = lib.escapeShellArg sftpAuthorizedKeysDir;
+    SFTPAUTHORIZEDKEYSDIR = sftpAuthorizedKeysDir;
+    SFTPAUTHORIZEDKEYSDIR_SERVICEUSER_XXXXXX_QUOTED = lib.escapeShellArg "${sftpAuthorizedKeysDir}/.${serviceUser}.XXXXXX";
   });
   freshrssApiPasswordHelper = pkgs.writeShellScript "homepage-freshrss-api-password" (renderShell ../../../custom_apps/shell/homepage/homepage-freshrss-api-password.sh.in {
     GNUGREP = pkgs.gnugrep;
@@ -675,6 +686,8 @@ let
       ];
       folders = [ ];
       devices = [ ];
+    } // lib.optionalAttrs fdroidEnabled {
+      fdroidRepoUrl = "https://${fdroidHost}/fdroid/repo";
     };
     inherit folderGuides adminGuide;
     vault = {
@@ -744,6 +757,7 @@ in
           HOMEPAGE_VAULT_SYNCTHING_KEY_COMMAND = vaultSyncthingKeyHelper;
         } // lib.optionalAttrs filesSftpEnabled {
           HOMEPAGE_SFTP_KEY_LIST_COMMAND = sftpKeyListHelper;
+          HOMEPAGE_SFTP_KEY_REVOKE_COMMAND = sftpKeyRevokeHelper;
         } // lib.optionalAttrs freshrssEnabled {
           HOMEPAGE_VAULT_FRESHRSS_PASSWORD_COMMAND = freshrssApiPasswordHelper;
         } // lib.optionalAttrs kavitaEnabled {
@@ -824,6 +838,10 @@ in
           ] ++ lib.optionals filesSftpEnabled [
             {
               command = "${sftpKeyListHelper}";
+              options = [ "NOPASSWD" ];
+            }
+            {
+              command = "${sftpKeyRevokeHelper}";
               options = [ "NOPASSWD" ];
             }
           ] ++ lib.optionals freshrssEnabled [

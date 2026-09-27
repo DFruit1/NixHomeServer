@@ -180,7 +180,7 @@ describe('vault feature catalog', () => {
     const adminFeatures = Object.fromEntries(listVaultFeatures(config, user([], 'boss')).map((feature) => [feature.id, feature]));
     expect(adminFeatures.syncthingApiKey.allowed).toBe(true);
     expect(adminFeatures.syncthingApiKey.adminOnly).toBe(true);
-    expect(adminFeatures.sshKeys.allowed).toBe(false);
+    expect(adminFeatures.sshKeys.allowed).toBe(true);
     expect(adminFeatures.freshrssApiPassword.allowed).toBe(false);
   });
 
@@ -216,7 +216,7 @@ describe('vault endpoints', () => {
 
   it('guards feature endpoints behind the unlock session and group gates', async () => {
     await expect(vaultSyncthingKeyGet(config, headersFor(undefined, allAccessGroups))).rejects.toMatchObject({ status: 401 });
-    const error = await vaultSshKeys(config, headersFor()).catch((caught) => caught);
+    const error = await vaultSshKeys(config, { 'x-forwarded-preferred-username': 'mallory' }).catch((caught) => caught);
     expect(error).toBeInstanceOf(VaultHttpError);
     expect(error.status).toBe(403);
     const kavitaError = await vaultKavitaKeysGet(config, headersFor()).catch((caught) => caught);

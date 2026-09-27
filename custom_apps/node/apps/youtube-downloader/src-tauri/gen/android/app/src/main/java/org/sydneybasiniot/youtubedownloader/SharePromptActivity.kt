@@ -3,6 +3,7 @@ package org.sydneybasiniot.youtubedownloader
 import android.app.Activity
 import android.content.Intent
 import android.os.Bundle
+import android.widget.Toast
 
 /**
  * Invisible share target that opens the app with the shared link prefilled so
@@ -24,6 +25,8 @@ class SharePromptActivity : Activity() {
         Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP,
       )
       startActivity(launch)
+    } else {
+      Toast.makeText(applicationContext, "Share a valid YouTube link", Toast.LENGTH_SHORT).show()
     }
     finish()
   }

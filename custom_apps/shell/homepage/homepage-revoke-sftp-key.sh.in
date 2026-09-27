@@ -1,0 +1,61 @@
+set -euo pipefail
+
+username="${1:-}"
+fingerprint="${2:-}"
+if ! @NIX_GNUGREP@/bin/grep -Eq '^[a-z][a-z0-9._-]{0,63}$' <<<"$username"; then
+  echo "invalid username" >&2
+  exit 1
+fi
+if ! @NIX_GNUGREP@/bin/grep -Eq '^SHA256:[A-Za-z0-9+/]+$' <<<"$fingerprint"; then
+  echo "invalid key fingerprint" >&2
+  exit 1
+fi
+
+@NIX_COREUTILS@/bin/install -d -m 0755 -o root -g root @NIX_SFTPAUTHORIZEDKEYSDIR_QUOTED@
+exec 9>"@NIX_SFTPAUTHORIZEDKEYSDIR@/.$username.lock"
+@NIX_UTIL_LINUX@/bin/flock -x 9
+target="@NIX_SFTPAUTHORIZEDKEYSDIR@/$username"
+if [[ -L "$target" || ! -f "$target" ]]; then
+  echo "authorized-keys file does not exist or is not a regular file" >&2
+  exit 1
+fi
+owner_group="$( @NIX_COREUTILS@/bin/stat -c '%U:%G' "$target" )"
+mode="$( @NIX_COREUTILS@/bin/stat -c '%a' "$target" )"
+if [[ "$owner_group" != "root:root" || "$mode" != "644" ]]; then
+  echo "authorized-keys file has unsafe ownership or mode" >&2
+  exit 1
+fi
+
+tmp="$( @NIX_COREUTILS@/bin/mktemp @NIX_SFTPAUTHORIZEDKEYSDIR_SERVICEUSER_XXXXXX_QUOTED@ )"
+key_tmp="$( @NIX_COREUTILS@/bin/mktemp )"
+trap '@NIX_COREUTILS@/bin/rm -f "$tmp" "$key_tmp"' EXIT
+removed=0
+while IFS= read -r line || [[ -n "$line" ]]; do
+  if [[ -z "$line" ]]; then
+    @NIX_COREUTILS@/bin/printf '\n' >> "$tmp"
+    continue
+  fi
+  @NIX_COREUTILS@/bin/printf '%s\n' "$line" > "$key_tmp"
+  key_fingerprint="$( @NIX_OPENSSH@/bin/ssh-keygen -lf "$key_tmp" 2>/dev/null | @NIX_COREUTILS@/bin/cut -d ' ' -f 2 || true )"
+  if [[ -z "$key_fingerprint" ]]; then
+    echo "authorized-keys file contains an invalid public key" >&2
+    exit 1
+  fi
+  if [[ "$key_fingerprint" == "$fingerprint" ]]; then
+    removed=$((removed + 1))
+  else
+    @NIX_COREUTILS@/bin/printf '%s\n' "$line" >> "$tmp"
+  fi
+done < "$target"
+
+if (( removed == 0 )); then
+  echo "key fingerprint is not registered for this user" >&2
+  exit 1
+fi
+
+@NIX_COREUTILS@/bin/chown root:root "$tmp"
+@NIX_COREUTILS@/bin/chmod 0644 "$tmp"
+@NIX_COREUTILS@/bin/mv "$tmp" "$target"
+trap - EXIT
+@NIX_COREUTILS@/bin/rm -f "$key_tmp"
+@NIX_COREUTILS@/bin/printf 'revoked %s key(s) for %s\n' "$removed" "$username"

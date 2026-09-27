@@ -95,6 +95,7 @@ export type PendingJob = {
   url: string;
   addedAt: number;
   mediaType?: string | null;
+  saveAudioToAudiobooks?: boolean;
   lastError?: string | null;
 };
 

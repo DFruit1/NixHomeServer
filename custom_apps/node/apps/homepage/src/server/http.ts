@@ -19,6 +19,7 @@ import {
   vaultKavitaKeysMutate,
   vaultLock,
   vaultSshKeyAdd,
+  vaultSshKeyRevoke,
   vaultSshKeys,
   vaultSyncthingKeyGet,
   vaultSyncthingKeyRotate,
@@ -227,13 +228,20 @@ export const handleVaultApiRequest = async (
     }
 
     if (request.method === 'GET' && pathname === '/api/vault/ssh-keys') {
-      sendVaultResponse(response, await vaultSshKeys(config, request.headers));
+      const targetUsername = new URL(request.url ?? '/', 'http://localhost').searchParams.get('username') ?? undefined;
+      sendVaultResponse(response, await vaultSshKeys(config, request.headers, targetUsername));
       return true;
     }
 
     if (request.method === 'POST' && pathname === '/api/vault/ssh-keys') {
       const body = await readMutationJson<{ publicKey?: unknown }>(request);
       sendVaultResponse(response, await vaultSshKeyAdd(config, request.headers, body));
+      return true;
+    }
+
+    if (request.method === 'DELETE' && pathname === '/api/vault/ssh-keys') {
+      const body = await readMutationJson<{ fingerprint?: unknown; username?: unknown }>(request);
+      sendVaultResponse(response, await vaultSshKeyRevoke(config, request.headers, body));
       return true;
     }
 

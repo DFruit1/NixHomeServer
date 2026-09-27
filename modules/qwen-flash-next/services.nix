@@ -34,7 +34,8 @@ let
       echo "Starting Qwen3.8-Flash-Next with context size $context_size (backend ${cfg.runtime.backend})"
 
       exec ${cfg.runtime.package}/bin/llama-server \
-        --no-webui \
+        --ui \
+        --path ${cfg.runtime.webui} \
         --model ${lib.escapeShellArg cfg.paths.modelFile} \
         --mmproj ${lib.escapeShellArg cfg.paths.projectorFile} \
         --alias ${lib.escapeShellArg cfg.modelName} \

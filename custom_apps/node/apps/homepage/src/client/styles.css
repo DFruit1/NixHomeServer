@@ -2814,6 +2814,12 @@ textarea {
   overflow-wrap: anywhere;
 }
 
+.offline-media-fdroid-url {
+  display: inline-block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
 .offline-media-setup-main .offline-media-enroll-form {
   grid-template-columns: 1fr;
 }
@@ -3275,6 +3281,32 @@ textarea {
   overflow-wrap: anywhere;
 }
 
+.vault-key-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.vault-key-row code {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.vault-key-row .vault-danger-button {
+  flex: 0 0 auto;
+}
+
+.vault-admin-key-target {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.vault-admin-key-target label {
+  font-weight: 700;
+  font-size: 14px;
+}
+
 .vault-secret {
   display: grid;
   gap: 8px;
@@ -3467,6 +3499,17 @@ textarea {
 
 .vault-key-form button {
   justify-self: start;
+}
+
+@media (max-width: 480px) {
+  .vault-key-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .vault-key-row .vault-danger-button {
+    align-self: flex-start;
+  }
 }
 
 .vault-opds {

@@ -93,8 +93,10 @@ available slot on both. See
 Nix settings and one-shot overrides.
 
 `system.localNixGCMode` controls workstation collection before deploy:
-`"never"` skips it, `"capacity"` runs the same threshold-based policy used by
-the server, and `"always"` collects unconditionally. The legacy
+`"never"` skips it, `"capacity"` runs the threshold-based disk cleanup, and
+`"always"` runs `nix-store --gc` before every deploy. The latter collects
+unreachable paths in every build mode, including remote; it preserves paths
+held by profiles and other GC roots. The legacy
 `system.localNixGC` boolean still maps to `"always"` or `"never"` when the new
 setting is absent.
 
@@ -150,10 +152,13 @@ the entire application catalog, including apps disabled for this host, run:
 scripts/validate-repo.sh --full --all-apps
 ```
 
-Full host-scoped validation submits its derivations in one Nix build and keeps
-the latest completely passing outputs as indirect GC roots under
-`${XDG_STATE_HOME:-$HOME/.local/state}/nixhomeserver/validation-roots/current`.
-An exhaustive `--all-apps` run never replaces those daily warm roots.
+Full host-scoped validation submits its derivations in one Nix build. By
+default, successful runs release their temporary roots so outputs can be
+collected by the next Nix GC. Set `VALIDATE_RETAIN_OUTPUT_ROOTS=1` to retain
+the latest passing outputs as indirect GC roots under
+`${XDG_STATE_HOME:-$HOME/.local/state}/nixhomeserver/validation-roots/current`
+for faster warm-cache reruns. An exhaustive `--all-apps` run never changes
+those roots.
 
 The flake also exposes lint, Rust, frontend, module-removal, encrypted restore
 round-trip, Disko evaluation, and NixOS VM checks. Pushes and pull requests run
