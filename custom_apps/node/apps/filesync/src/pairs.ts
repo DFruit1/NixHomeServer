@@ -25,5 +25,11 @@ export function parseSavedPairs(raw: string | null, server: string): SyncPair[] 
     typeof pair.local.uri === 'string' && typeof pair.local.displayName === 'string' &&
     typeof pair.serverPath === 'string' &&
     ['phone-to-server', 'server-to-phone', 'two-way'].includes(pair.direction)
-  ).map((pair) => ({ ...pair, server: pair.server ?? server }));
+  ).map((pair) => {
+    const safe = { ...pair };
+    for (const key of ['serverRoot', 'serverFolder', 'localSubpath', 'server', 'account'] as const) {
+      if (typeof safe[key] !== 'string') delete safe[key];
+    }
+    return { ...safe, server: safe.server ?? server };
+  });
 }

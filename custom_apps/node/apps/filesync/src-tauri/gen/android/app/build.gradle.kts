@@ -37,7 +37,9 @@ android {
             }
         }
         getByName("release") {
-            isMinifyEnabled = true
+            // Tauri invokes native plugin commands by name at runtime. Keep
+            // their release bytecode intact until launch is device-verified.
+            isMinifyEnabled = false
             proguardFiles(
                 *fileTree(".") { include("**/*.pro") }
                     .plus(getDefaultProguardFile("proguard-android-optimize.txt"))

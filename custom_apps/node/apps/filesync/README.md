@@ -75,16 +75,17 @@ For Android, connect a device with USB debugging enabled and run:
 cargo tauri android dev --open
 ```
 
-The release command runs the R8 check automatically. For a manual release
-build, check that R8 kept the native commands that Tauri calls by name:
+Release minification is disabled while Android startup is being verified on a
+device. The release command checks the APK automatically. For a manual release
+build, check that the APK contains the native commands that Tauri calls by name:
 
 ```sh
 cargo tauri android build --apk --target aarch64 --ci
 pnpm test:android-release
 ```
 
-The Android release check reads the generated R8 mapping and APK. Saved-pair
-startup tests run with `pnpm test`. A connected Android device is still needed
+The Android release check reads the APK. Saved-pair startup tests run with
+`pnpm test`. A connected Android device is still needed
 to verify launch, Kanidm sign-in, SAF folder access, and an actual transfer.
 
 The user-facing sync service is an optional NixOS module named `filesync`. It
