@@ -208,6 +208,7 @@ for test_script in "${test_scripts[@]}"; do
   (
     printf '==> %s\n' "$test_script"
     if ! bash "$test_script" > "$log_file" 2>&1; then
+      echo "❌ $test_script failed; output follows:" >&2
       cat "$log_file"
       exit 1
     fi
