@@ -8,7 +8,7 @@ cd "$TESTS_REPO_ROOT"
 ensure_tools node
 
 CANARY_RUNNER_TEST_MODE=1 node --input-type=module <<'EOF'
-const { browserErrorCode, generateTotp, hasAuthenticationBoundary, hasNativeOidcLoginEntry, isAccessDeniedResponse, isBlankRender, isRetryableBrowserError, nativeOidcEntryUrl } = await import('./modules/Core_Modules/homepage/canary-runner.mjs');
+const { browserErrorCode, generateTotp, hasAuthenticationBoundary, hasNativeOidcLoginEntry, isAccessDeniedResponse, isBlankRender, isNativeOidcLoadState, isRetryableBrowserError, nativeOidcEntryUrl } = await import('./modules/Core_Modules/homepage/canary-runner.mjs');
 const cases = [
   [{ textLength: 0, visibleElements: 0, richElements: 0 }, true, 'empty HTTP 200 body'],
   [{ textLength: 12, visibleElements: 3, richElements: 0 }, true, 'near-empty visible text'],
@@ -65,6 +65,17 @@ if (!hasNativeOidcLoginEntry({ text: 'Sign in with Kanidm' })) {
 }
 if (hasNativeOidcLoginEntry({ text: 'Manual Login Use Quick Connect' })) {
   throw new Error('a Jellyfin page without its OIDC action must be rejected');
+}
+const loadStateCases = [
+  [{ coverageMode: 'native-oidc', blank: false, loginControls: 0 }, true, 'bare native OIDC loading page'],
+  [{ coverageMode: 'native-oidc', blank: true, loginControls: 0 }, false, 'blank native OIDC page is handled by the blank retry'],
+  [{ coverageMode: 'native-oidc', blank: false, loginControls: 1 }, false, 'native OIDC login form is already a boundary'],
+  [{ coverageMode: 'gateway', blank: false, loginControls: 0 }, false, 'gateway targets enforce the boundary at the edge'],
+  [{ coverageMode: 'local-boundary', blank: false, loginControls: 0 }, false, 'local boundary targets don\'t redirect client-side'],
+];
+for (const [metrics, expected, label] of loadStateCases) {
+  const actual = isNativeOidcLoadState(metrics);
+  if (actual !== expected) throw new Error(`${label}: expected ${expected}, received ${actual}`);
 }
 // RFC 6238 Appendix B SHA-256 vector: ASCII seed "12345678901234567890123456789012".
 const rfcSeed = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZA';

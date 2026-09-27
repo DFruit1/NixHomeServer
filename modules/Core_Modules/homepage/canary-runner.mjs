@@ -191,6 +191,8 @@ export const hasAuthenticationBoundary = ({ url = '', text = '', title = '', log
   || /(?:sign in|log in|authenticate|continue)\s+(?:to|with|using)\s+(?:kanidm|openid|oauth|single sign-on|sso)\b/i.test(`${title}\n${text}`);
 export const isAccessDeniedResponse = ({ responseStatus = 0 } = {}) =>
   responseStatus === 401 || responseStatus === 403;
+export const isNativeOidcLoadState = ({ coverageMode = '', blank = false, loginControls = 0 } = {}) =>
+  coverageMode === 'native-oidc' && !blank && loginControls === 0;
 const visibleElement = (sessionId, selectors) => execute(sessionId, String.raw`
 const selectors = arguments[0];
 for (const selector of selectors) {
@@ -453,6 +455,29 @@ const checkUnauthenticated = async (target) => {
       page ??= await metrics(sessionId);
       finalUrl ??= await currentUrl(sessionId);
       if (attempt === 0 && isRetryableBrowserError(page)) {
+        page = undefined;
+        finalUrl = undefined;
+        await reload(sessionId);
+        await sleep(2_000);
+        continue;
+      }
+      if (
+        attempt === 0
+        && isNativeOidcLoadState({ coverageMode: target.coverageMode, blank: page.blank, loginControls: page.loginControls })
+        && !hasAuthenticationBoundary({
+          url: finalUrl,
+          text: page.text,
+          title: page.title,
+          loginControls: page.loginControls,
+          authHost: target.authHost,
+          kanidmHost: target.kanidmHost,
+        })
+      ) {
+        // Native OIDC apps establish the authentication boundary client-side,
+        // so an unauthenticated visit can sit in a bare loading state (for
+        // example a spinner while the redirect to the IdP is in flight). A
+        // transient failure of that redirect leaves the loading page visible;
+        // reload once before treating it as exposed content.
         page = undefined;
         finalUrl = undefined;
         await reload(sessionId);
