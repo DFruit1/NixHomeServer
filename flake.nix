@@ -136,7 +136,7 @@
             packageData = packageDataBySystem.${system};
           in
           import ./flake/dev-shells.nix {
-            inherit pkgs pkgsUnstable;
+            inherit pkgs pkgsUnstable vars;
             inherit (packageData) rustLib;
           });
       apps = forAllSystems

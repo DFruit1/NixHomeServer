@@ -1,6 +1,7 @@
 { pkgs
 , pkgsUnstable
 , appName ? "youtube-downloader"
+, defaultServerUrl ? ""
 }:
 
 let
@@ -155,6 +156,7 @@ pkgs.mkShell {
     # NixOS cannot exec. Consumers point gradle at this patched build-tools
     # aapt2 through android.aapt2FromMavenOverride.
     AAPT2 = "${androidSdkRoot}/build-tools/35.0.0/aapt2";
+    FILESYNC_DEFAULT_SERVER = defaultServerUrl;
   };
 
   shellHook = ''

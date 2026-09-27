@@ -104,5 +104,7 @@ background scheduling.
 
 The user-facing sync service is an optional NixOS module named `filesync`. It
 provides the authenticated API at `https://filesync-api.<domain>` and registers
-the public Kanidm client `filesync-native`. The app uses the API address shown
-in the connection field; it must be an HTTPS origin.
+the public Kanidm client `filesync-native`. The Android release default is
+derived from the declarative NixOS domain in `vars.domain`; users can change the
+address in Settings when connecting to another server. Sign-in opens in the
+system browser and returns to the app through the `filesync://` callback.

@@ -1,4 +1,4 @@
-{ pkgs, pkgsUnstable, rustLib }:
+{ pkgs, pkgsUnstable, rustLib, vars }:
 
 {
   youtube-downloader-tauri = import ../custom_apps/node/apps/youtube-downloader/tauri-dev-shell.nix {
@@ -8,6 +8,7 @@
   filesync-tauri = import ../custom_apps/node/apps/youtube-downloader/tauri-dev-shell.nix {
     inherit pkgs pkgsUnstable;
     appName = "filesync";
+    defaultServerUrl = "https://filesync-api.${vars.domain}";
   };
 
   filesync-android-emulator = import ../custom_apps/node/apps/filesync/android-emulator-shell.nix {

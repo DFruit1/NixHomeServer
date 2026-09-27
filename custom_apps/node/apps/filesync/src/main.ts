@@ -11,20 +11,21 @@ type ServerEntry = { name: string; path: string; kind: string; size: number; mod
 const invoke = (window as TauriWindow).__TAURI__?.core?.invoke;
 const STORAGE_KEY = 'nixhomeserver.filesync.pairs.v1';
 const SETTINGS_KEY = 'nixhomeserver.filesync.server.v1';
+const DEFAULT_SERVER = import.meta.env.VITE_FILESYNC_DEFAULT_SERVER ?? '';
 const app = document.querySelector<HTMLDivElement>('#app')!;
 
 const state: { platform: string; pairs: SyncPair[]; presets: SyncPreset[]; selectedService?: string; syncingPairId?: string; server: string; user?: string; settingsAuthorized: boolean; backgroundStatus?: string; error: string; notice: string } = {
   platform: 'loading',
   pairs: readPairs(),
   presets: [],
-  server: localStorage.getItem(SETTINGS_KEY) ?? '',
+  server: localStorage.getItem(SETTINGS_KEY) ?? DEFAULT_SERVER,
   settingsAuthorized: false,
   error: '',
   notice: '',
 };
 
 function readPairs(): SyncPair[] {
-  return parseSavedPairs(localStorage.getItem(STORAGE_KEY), localStorage.getItem(SETTINGS_KEY) ?? '');
+  return parseSavedPairs(localStorage.getItem(STORAGE_KEY), localStorage.getItem(SETTINGS_KEY) ?? DEFAULT_SERVER);
 }
 
 function escapeHtml(value: string): string {
@@ -85,7 +86,7 @@ function render(): void {
     <main class="shell">
       <header class="topbar">
         <a class="brand" href="#" aria-label="File Sync home"><span class="brand-mark" aria-hidden="true">FS</span><span>File Sync</span></a>
-        <span class="prototype-label">Prototype</span>
+        <button class="text-button settings-button" type="button" id="open-settings" aria-haspopup="dialog">Settings</button>
       </header>
 
       <section class="intro" aria-labelledby="page-title">
@@ -97,12 +98,7 @@ function render(): void {
         <button class="primary-button" type="button" id="open-pair-form">Add a folder pair</button>
       </section>
 
-      <section class="server-line" aria-label="Server connection">
-        <label for="server-address">Server address</label>
-        <div class="server-input-row">
-          <input id="server-address" type="url" placeholder="https://filesync-api.example.net" value="${escapeHtml(state.server)}" autocomplete="url" />
-          <button class="secondary-button" type="button" id="save-server">Save</button>
-        </div>
+      <section class="account-line" aria-label="Account">
         <div class="account-row">
           ${state.user
             ? `<p>Signed in to Kanidm as <strong>${escapeHtml(state.user)}</strong>. Saved syncs stay connected. ${state.settingsAuthorized ? 'Settings unlocked for 24 hours after sign-in.' : 'Sign in again to change sync settings.'}${state.platform === 'android' ? ` Android checks saved pairs about every 15 minutes on unmetered networks; the system may defer a run.${state.backgroundStatus ? ` ${escapeHtml(state.backgroundStatus)}` : ''}` : ''}</p><button class="secondary-button" type="button" id="unlock-settings" ${state.settingsAuthorized ? 'disabled' : ''}>${state.settingsAuthorized ? 'Settings unlocked' : 'Unlock settings'}</button><button class="text-button" type="button" id="sign-out">Sign out</button>`
@@ -154,6 +150,17 @@ function render(): void {
       <div class="browser-list" id="server-browser-list"></div>
       <div class="dialog-actions"><button class="secondary-button" type="button" id="server-browser-up">Up one level</button><button class="primary-button" type="button" id="choose-server-folder">Use this folder</button></div>
     </dialog>
+
+    <dialog id="settings-dialog" class="pair-dialog settings-dialog" aria-labelledby="settings-heading">
+      <form method="dialog" id="settings-form">
+        <div class="dialog-heading"><h2 id="settings-heading">Settings</h2><button class="close-button" value="cancel" aria-label="Close settings">×</button></div>
+        <p class="form-hint">This address is prefilled from the server configured for this build. Change it only if you use another File Sync server.</p>
+        <label for="server-address">Server address</label>
+        <input id="server-address" type="url" value="${escapeHtml(state.server)}" autocomplete="url" autocapitalize="none" spellcheck="false" />
+        <p class="form-error" id="settings-error" role="alert"></p>
+        <div class="dialog-actions"><button class="secondary-button" value="cancel">Cancel</button><button class="primary-button" id="save-server" type="button">Save address</button></div>
+      </form>
+    </dialog>
   `;
 
   bindEvents();
@@ -168,6 +175,8 @@ let serverBrowserPath = '';
 function bindEvents(): void {
   const dialog = document.querySelector<HTMLDialogElement>('#pair-dialog')!;
   const browser = document.querySelector<HTMLDialogElement>('#server-browser')!;
+  const settingsDialog = document.querySelector<HTMLDialogElement>('#settings-dialog')!;
+  document.querySelector('#open-settings')?.addEventListener('click', () => settingsDialog.showModal());
   dialog.addEventListener('close', () => {
     const abandonedFolder = selectedFolder;
     if (abandonedFolder && !state.pairs.some((pair) => pair.local.uri === abandonedFolder.uri) && invoke) {
@@ -219,8 +228,13 @@ function bindEvents(): void {
   }));
   document.querySelector('#save-server')?.addEventListener('click', async () => {
     const input = document.querySelector<HTMLInputElement>('#server-address')!;
-    const nextServer = input.value.trim().replace(/\/+$/, '');
-    if (nextServer !== state.server && state.user && !(await ensureSettingsAuthorized())) return;
+    let nextServer: string;
+    try { nextServer = normalizeServerAddress(input.value); }
+    catch (error) {
+      document.querySelector<HTMLElement>('#settings-error')!.textContent = error instanceof Error ? error.message : String(error);
+      input.focus();
+      return;
+    }
     if (state.user && nextServer !== state.server && invoke) {
       try { await invoke<void>('logout'); state.user = undefined; state.settingsAuthorized = false; }
       catch (error) { setError(error); return; }
@@ -238,7 +252,7 @@ function bindEvents(): void {
     if (!invoke) return;
     const server = state.server.trim();
     if (!server) {
-      state.error = 'Save the sync server address before signing in.';
+      state.error = 'Open Settings to add a sync server address before signing in.';
       render();
       return;
     }
@@ -490,12 +504,25 @@ async function ensureSettingsAuthorized(): Promise<boolean> {
 async function beginInteractiveLogin(): Promise<void> {
   if (!invoke) return;
   const server = state.server.trim();
-  if (!server) throw new Error('Save the sync server address before signing in.');
+  if (!server) throw new Error('Open Settings to add a sync server address before signing in.');
   const authorizationUrl = await invoke<string>('begin_login', { serverUrl: server });
+  // With no inAppBrowser option, Tauri opens OAuth in the system browser.
   await openUrl(authorizationUrl);
-  state.notice = 'Complete sign-in in your browser, return to File Sync, then retry the settings change. Saved syncs remain available.';
+  state.notice = 'Complete sign-in in your browser, then return to File Sync. Saved syncs remain available.';
   state.error = '';
   render();
+}
+
+function normalizeServerAddress(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  let url: URL;
+  try { url = new URL(trimmed); }
+  catch { throw new Error('Enter a complete HTTPS server address, such as https://filesync-api.example.org.'); }
+  if (url.protocol !== 'https:' || url.username || url.password || url.pathname !== '/' || url.search || url.hash) {
+    throw new Error('Use an HTTPS server address without a path, query, or login details.');
+  }
+  return url.origin;
 }
 
 async function loadPresets(): Promise<void> {
