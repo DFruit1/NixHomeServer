@@ -10,6 +10,10 @@
     appName = "filesync";
   };
 
+  filesync-android-emulator = import ../custom_apps/node/apps/filesync/android-emulator-shell.nix {
+    inherit pkgs pkgsUnstable;
+  };
+
   ops = pkgs.mkShell {
     name = "ops-dev-shell";
     packages = (with pkgs; [

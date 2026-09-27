@@ -88,6 +88,20 @@ The Android release check reads the APK. Saved-pair startup tests run with
 `pnpm test`. A connected Android device is still needed
 to verify launch, Kanidm sign-in, SAF folder access, and an actual transfer.
 
+For a repeatable startup check on an x86_64 server with `/dev/kvm`, run the
+published ARM64 APK in the headless Android 11 Google APIs emulator:
+
+```sh
+nix develop .#filesync-android-emulator --command \
+  scripts/android/test-filesync-apk.sh /path/to/filesync.apk /var/tmp/filesync-test-results
+```
+
+The runner installs and launches the APK, checks that its process stays alive,
+and saves a screenshot and crash log in the result directory. It stops the
+emulator afterward. The Android 11 Google APIs x86_64 image translates ARM64
+app code; this smoke test still cannot verify phone-specific SAF providers or
+background scheduling.
+
 The user-facing sync service is an optional NixOS module named `filesync`. It
 provides the authenticated API at `https://filesync-api.<domain>` and registers
 the public Kanidm client `filesync-native`. The app uses the API address shown
