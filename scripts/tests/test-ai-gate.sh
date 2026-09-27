@@ -7,8 +7,13 @@ ensure_tools jq nix cargo
 # Rust unit tests: queue boundary, settings validation, query encoding.
 target_dir="$(mktemp -d "${TMPDIR:-/tmp}/nixhomeserver-ai-gate-target.XXXXXX")"
 trap 'rm -rf "$target_dir"' EXIT
-CARGO_TARGET_DIR="$target_dir" cargo test \
-  --manifest-path custom_apps/Cargo.toml -p ai-gate --locked 2>&1 | tail -n 5
+cargo_log="$target_dir/cargo-test.log"
+if ! CARGO_TARGET_DIR="$target_dir" cargo test \
+  --manifest-path custom_apps/Cargo.toml -p ai-gate --locked >"$cargo_log" 2>&1; then
+  cat "$cargo_log" >&2
+  exit 1
+fi
+tail -n 5 "$cargo_log"
 
 host="$(test_default_host)"
 NIXHOMESERVER_TEST_HOST="$host" nix eval --impure --json --expr '
