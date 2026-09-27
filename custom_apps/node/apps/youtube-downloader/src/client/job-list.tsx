@@ -39,7 +39,12 @@ export const JobList = component$<JobListProps>(({ title, jobs, refresh }) => {
     }
     event.preventDefault();
     event.stopPropagation();
-    const target = buildMediaManagerUrl(job.request.mediaType);
+    const folderName = job.outputFolder?.split(/[\\/]/).filter(Boolean).at(-1);
+    const mediaFile = job.files.find((file) =>
+      /\.(?:mp3|m4a|flac|opus|wav|mp4|mkv|webm|mov|m4v)$/i.test(file),
+    );
+    const itemPath = folderName && mediaFile ? `${folderName}/${mediaFile}` : undefined;
+    const target = buildMediaManagerUrl(job.request.mediaType, undefined, itemPath);
     if (isTauriRuntime()) {
       void tauriInvoke()?.('open_external_url', { url: target });
       return;

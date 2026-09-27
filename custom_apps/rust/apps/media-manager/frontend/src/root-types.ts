@@ -65,12 +65,14 @@ export type View =
   | "activity"
   | "accounts"
   | "refresh"
-  | "player";
+  | "player"
+  | "videos";
 
 export interface RootProps {
   initialView?: View;
   initialRootId?: string;
   initialItemId?: string;
+  initialPath?: string;
 }
 
 export interface TvEpisodeFields {
@@ -128,9 +130,10 @@ export const NAV_ITEMS: Array<{ id: View; label: string; icon: IconName }> = [
   { id: "library", label: "Libraries", icon: "library" },
   { id: "health", label: "Library health", icon: "tag" },
   { id: "conversions", label: "Conversions", icon: "disc" },
-  { id: "activity", label: "Activity", icon: "activity" },
-  { id: "player", label: "Player", icon: "play" },
+  { id: "player", label: "Music", icon: "music-note" },
+  { id: "videos", label: "Videos", icon: "video" },
   { id: "accounts", label: "Metadata sources", icon: "shield" },
+  { id: "activity", label: "Activity", icon: "activity" },
   { id: "refresh", label: "App refresh", icon: "refresh" },
 ];
 

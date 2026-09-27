@@ -1,5 +1,8 @@
 use super::*;
 use crate::capabilities::MediaAction;
+use std::process::{Command, Stdio};
+
+static VIDEO_TRANSCODE_LIMIT: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -201,19 +204,138 @@ pub(super) async fn item_stream(
     if !item.media_kind.supports(MediaAction::PlayInline) {
         return ApiError::new(
             StatusCode::CONFLICT,
-            "audio_item_required",
-            "Streaming requires a cataloged music or audiobook item.",
+            "playable_item_required",
+            "Streaming requires a cataloged video, music, or audiobook item.",
             request_id,
         )
         .into_response();
     }
+    let transcode = request
+        .uri()
+        .query()
+        .is_some_and(|query| query.split('&').any(|part| part == "transcode=1"));
     let root = match state.config.resolve_visible_root(&identity, &item.root_id) {
         Some(root) => root,
         None => return ApiError::internal(request_id).into_response(),
     };
-    let root_path = root.resolved_path.clone();
-    let relative_path = item.relative_path.clone();
-    let content_type = audio_content_type(&relative_path);
+    let mut root_path = root.resolved_path.clone();
+    let mut relative_path = item.relative_path.clone();
+    let content_type = if item.media_kind == crate::media::MediaKind::Video {
+        if transcode {
+            let Some(ffprobe_path) = state.config.ffprobe_path.clone() else {
+                return ApiError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "video_transcoding_unavailable",
+                    "Video conversion is not configured on this server.",
+                    request_id,
+                )
+                .into_response();
+            };
+            let ffmpeg_path = ffprobe_path.with_file_name("ffmpeg");
+            let cache_root = state.config.state_dir.join("video-transcodes");
+            let cache_name = format!(
+                "{}-{}.mp4",
+                item.id,
+                homelab_common::sha256_hex(item.fingerprint.as_bytes())
+            );
+            let source_root = root_path.clone();
+            let source_relative = relative_path.clone();
+            let output = cache_root.join(&cache_name);
+            let cache_root_for_worker = cache_root.clone();
+            let temp_name = format!(
+                "{}-{}.mp4",
+                cache_name.trim_end_matches(".mp4"),
+                &homelab_common::sha256_hex(request_id.as_bytes())[..12]
+            );
+            let temp = cache_root.join(temp_name);
+            let permit = if output.is_file() {
+                None
+            } else {
+                match VIDEO_TRANSCODE_LIMIT.acquire().await {
+                    Ok(permit) => Some(permit),
+                    Err(_) => return ApiError::internal(request_id).into_response(),
+                }
+            };
+            let result = tokio::task::spawn_blocking(move || {
+                let _permit = permit;
+                use crate::broker::open_regular_file_beneath;
+                if output.is_file() {
+                    return Ok::<(), String>(());
+                }
+                std::fs::create_dir_all(&cache_root_for_worker)
+                    .map_err(|error| error.to_string())?;
+                let input =
+                    open_regular_file_beneath(FilePath::new(&source_root), &source_relative)
+                        .map_err(|error| error.to_string())?;
+                let status = Command::new(ffmpeg_path)
+                    .args([
+                        "-hide_banner",
+                        "-loglevel",
+                        "error",
+                        "-y",
+                        "-i",
+                        "pipe:0",
+                        "-map",
+                        "0:v:0",
+                        "-map",
+                        "0:a:0?",
+                        "-c:v",
+                        "libx264",
+                        "-preset",
+                        "veryfast",
+                        "-crf",
+                        "23",
+                        "-c:a",
+                        "aac",
+                        "-movflags",
+                        "+faststart",
+                        "-f",
+                        "mp4",
+                    ])
+                    .arg(&temp)
+                    .stdin(Stdio::from(input))
+                    .status()
+                    .map_err(|error| format!("start ffmpeg: {error}"))?;
+                if !status.success() {
+                    let _ = std::fs::remove_file(&temp);
+                    return Err(format!("ffmpeg exited with status {status}"));
+                }
+                if !output.is_file() {
+                    std::fs::rename(&temp, &output).map_err(|error| error.to_string())?;
+                } else {
+                    let _ = std::fs::remove_file(&temp);
+                }
+                Ok(())
+            })
+            .await;
+            match result {
+                Ok(Ok(())) => {
+                    root_path = cache_root.to_string_lossy().into_owned();
+                    relative_path = cache_name;
+                }
+                Ok(Err(error)) => {
+                    log_event(
+                        "video_transcode_failed",
+                        &request_id,
+                        json!({ "error": error, "itemId": item_id }),
+                    );
+                    return ApiError::new(
+                        StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                        "video_transcode_failed",
+                        "The video could not be converted for browser playback.",
+                        request_id,
+                    )
+                    .into_response();
+                }
+                Err(_) => return ApiError::internal(request_id).into_response(),
+            }
+            "video/mp4"
+        } else {
+            video_content_type(&relative_path)
+        }
+    } else {
+        audio_content_type(&relative_path)
+    };
 
     let file_size = match tokio::task::spawn_blocking({
         let root_path = root_path.clone();
@@ -368,6 +490,20 @@ fn audio_content_type(path: &str) -> &'static str {
         Some("wma") => "audio/x-ms-wma",
         Some("aiff") | Some("aif") => "audio/aiff",
         Some("webm") => "audio/webm",
+        _ => "application/octet-stream",
+    }
+}
+
+fn video_content_type(path: &str) -> &'static str {
+    match path
+        .rsplit_once('.')
+        .map(|(_, extension)| extension.to_lowercase())
+        .as_deref()
+    {
+        Some("mp4") | Some("m4v") | Some("mov") => "video/mp4",
+        Some("webm") => "video/webm",
+        Some("ogv") => "video/ogg",
+        Some("mkv") => "video/x-matroska",
         _ => "application/octet-stream",
     }
 }

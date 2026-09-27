@@ -96,6 +96,7 @@ impl MediaKindProfile {
 }
 
 const VIDEO_ACTIONS: &[MediaAction] = &[
+    MediaAction::PlayInline,
     MediaAction::PlayExternal,
     MediaAction::EditArtwork,
     MediaAction::EditPortableMetadata,
@@ -255,13 +256,13 @@ mod tests {
     }
 
     #[test]
-    fn video_is_a_file_with_subtitles_and_no_inline_playback() {
+    fn video_is_a_file_with_subtitles_and_inline_playback() {
         let profile = MediaKind::Video.profile();
         assert_eq!(profile.curation_unit, CurationUnit::File);
         assert!(profile.supports(MediaAction::ManageSubtitles));
         assert!(profile.supports(MediaAction::EditPortableMetadata));
         assert!(profile.supports(MediaAction::LookupMetadata));
-        assert!(!profile.supports(MediaAction::PlayInline));
+        assert!(profile.supports(MediaAction::PlayInline));
         assert!(!profile.supports(MediaAction::TrackOrder));
     }
 

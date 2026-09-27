@@ -11,7 +11,11 @@ import { Icon } from "./icon";
 import type { CatalogItem, DashboardState } from "./root-types";
 import { EmptyState, LoadingState } from "./view-states";
 
-export const PlayerView = component$<{ state: DashboardState }>((props) => {
+export const PlayerView = component$<{
+  state: DashboardState;
+  initialItemId?: string;
+  initialPath?: string;
+}>((props) => {
   const audioRef = useSignal<HTMLAudioElement>();
   const lastSavedPosition = useSignal(0);
   const saveTimerRef = useSignal<number | undefined>();
@@ -132,6 +136,22 @@ export const PlayerView = component$<{ state: DashboardState }>((props) => {
 
   useTask$(async () => {
     await loadTracks();
+  });
+
+  useVisibleTask$(({ track }) => {
+    track(() => playerState.loading);
+    track(() => props.initialItemId);
+    track(() => props.initialPath);
+    if (!playerState.loading && (props.initialItemId || props.initialPath)) {
+      const index = playerState.tracks.findIndex(
+        (item) =>
+          item.id === props.initialItemId ||
+          (props.initialPath &&
+            (item.relativePath === props.initialPath ||
+              item.relativePath.endsWith(`/${props.initialPath}`))),
+      );
+      if (index >= 0 && playerState.currentIndex !== index) playTrack(index);
+    }
   });
 
   const savePlaybackPosition = $(() => {

@@ -24,6 +24,7 @@ import {
 import { LibraryMiniPlayer } from "./mini-player";
 import { isLibraryKind, supportsMediaAction } from "./media-capabilities";
 import { PlayerView } from "./player-view";
+import { VideosView } from "./videos-view";
 import { RefreshView } from "./refresh-view";
 import { EmptyState, LoadingState } from "./view-states";
 import { MetadataHealthView } from "./metadata-health-view";
@@ -463,6 +464,7 @@ export default component$((props: RootProps) => {
           "main-content": true,
           "main-content--library": view.value === "library",
           "main-content--conversions": view.value === "conversions",
+          "main-content--videos": view.value === "videos",
         }}
       >
         {view.value !== "library" && (
@@ -514,7 +516,17 @@ export default component$((props: RootProps) => {
         ) : view.value === "activity" ? (
           <ActivityView canEdit={state.session?.canEdit ?? false} />
         ) : view.value === "player" ? (
-          <PlayerView state={state} />
+          <PlayerView
+            state={state}
+            initialItemId={props.initialItemId}
+            initialPath={props.initialPath}
+          />
+        ) : view.value === "videos" ? (
+          <VideosView
+            roots={state.roots}
+            initialItemId={props.initialItemId}
+            initialPath={props.initialPath}
+          />
         ) : view.value === "accounts" ? (
           <ProviderAccountsView />
         ) : (

@@ -20,6 +20,7 @@ const ROOT_VIEWS: Set<View> = new Set<View>([
   "accounts",
   "refresh",
   "player",
+  "videos",
 ]);
 
 export function rootFromSearch(search: string): string {
@@ -30,12 +31,17 @@ export function itemFromSearch(search: string): string {
   return new URLSearchParams(search).get("item") ?? "";
 }
 
+export function pathFromSearch(search: string): string {
+  return new URLSearchParams(search).get("path") ?? "";
+}
+
 export function initialRouteFromSearch(search: string): RootProps {
   const itemId = itemFromSearch(search);
   return {
     initialView: viewFromSearch(search),
     initialRootId: rootFromSearch(search),
     ...(itemId ? { initialItemId: itemId } : {}),
+    ...(pathFromSearch(search) ? { initialPath: pathFromSearch(search) } : {}),
   };
 }
 

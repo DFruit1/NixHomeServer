@@ -3741,7 +3741,7 @@ async fn music_stream_lists_and_serves_audio_with_range_support() {
 }
 
 #[tokio::test]
-async fn music_stream_rejects_non_audio_items() {
+async fn video_stream_serves_video_items() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let (app, _) = test_app_with_mode(&temp, MutationMode::Enabled);
     std::fs::create_dir_all(temp.path().join("shared/_Videos/Movies")).expect("movie folder");
@@ -3758,12 +3758,14 @@ async fn music_stream_rejects_non_audio_items() {
         )))
         .await
         .expect("stream response");
-    assert_eq!(response.status(), StatusCode::CONFLICT);
-    let body = to_bytes(response.into_body(), 64 * 1024)
-        .await
-        .expect("body");
-    let value: Value = serde_json::from_slice(&body).expect("stream JSON");
-    assert_eq!(value["error"]["code"], "audio_item_required");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("video/x-matroska")
+    );
 }
 
 #[tokio::test]
