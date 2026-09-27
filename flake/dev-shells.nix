@@ -25,6 +25,7 @@
       ripgrep
       shellcheck
       statix
+      stdenv.cc
     ]) ++ rustLib.toolchain;
   };
 }

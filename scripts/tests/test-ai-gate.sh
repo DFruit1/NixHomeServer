@@ -8,7 +8,7 @@ ensure_tools jq nix cargo
 target_dir="$(mktemp -d "${TMPDIR:-/tmp}/nixhomeserver-ai-gate-target.XXXXXX")"
 trap 'rm -rf "$target_dir"' EXIT
 cargo_log="$target_dir/cargo-test.log"
-if ! CARGO_TARGET_DIR="$target_dir" cargo test \
+if ! CARGO_TARGET_DIR="$target_dir" nix develop .#ops --command cargo test \
   --manifest-path custom_apps/Cargo.toml -p ai-gate --locked >"$cargo_log" 2>&1; then
   cat "$cargo_log" >&2
   exit 1
