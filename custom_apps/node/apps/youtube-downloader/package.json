@@ -1,6 +1,6 @@
 {
   "name": "youtube-downloader",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "versionDate": "2026-09-28",
   "private": true,
   "type": "module",
