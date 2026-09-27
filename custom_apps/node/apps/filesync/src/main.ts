@@ -1,23 +1,10 @@
 import './styles.css';
 import { getCurrent, onOpenUrl } from '@tauri-apps/plugin-deep-link';
 import { openUrl } from '@tauri-apps/plugin-opener';
+import { parseSavedPairs, type Folder, type SyncDirection, type SyncPair } from './pairs';
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 type TauriWindow = Window & { __TAURI__?: { core?: { invoke?: Invoke } } };
-type Folder = { uri: string; displayName: string };
-type SyncDirection = 'phone-to-server' | 'server-to-phone' | 'two-way';
-type SyncPair = {
-  id: string;
-  name: string;
-  local: Folder;
-  serverPath: string;
-  serverRoot?: string;
-  serverFolder?: string;
-  localSubpath?: string;
-  direction: SyncDirection;
-  server?: string;
-  account?: string;
-};
 type SyncPreset = { id: string; folder: string; service: string; serviceTitle: string; title: string; description: string; serverPath: string; localSubpath: string; direction: SyncDirection };
 type ServerEntry = { name: string; path: string; kind: string; size: number; modifiedUnixMs: number };
 
@@ -37,14 +24,7 @@ const state: { platform: string; pairs: SyncPair[]; presets: SyncPreset[]; selec
 };
 
 function readPairs(): SyncPair[] {
-  try {
-    const value = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '[]') as SyncPair[];
-    return Array.isArray(value)
-      ? value.filter((pair) => pair && typeof pair.id === 'string').map((pair) => ({ ...pair, server: pair.server ?? localStorage.getItem(SETTINGS_KEY) ?? '' }))
-      : [];
-  } catch {
-    return [];
-  }
+  return parseSavedPairs(localStorage.getItem(STORAGE_KEY), localStorage.getItem(SETTINGS_KEY) ?? '');
 }
 
 function escapeHtml(value: string): string {
@@ -545,4 +525,7 @@ function readBackgroundStatus(raw: string | null): string | undefined {
   }
 }
 
+// Show the connection screen before native session and background status calls.
+// A slow or unavailable native plugin must not leave the first launch blank.
+render();
 void start();

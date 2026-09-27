@@ -71,6 +71,18 @@ For Android, connect a device with USB debugging enabled and run:
 cargo tauri android dev --open
 ```
 
+Before sharing a release APK, build it and check that R8 kept the native
+commands that Tauri calls by name:
+
+```sh
+cargo tauri android build --apk --target aarch64 --ci
+pnpm test:android-release
+```
+
+The Android release check reads the generated R8 mapping and APK. Saved-pair
+startup tests run with `pnpm test`. A connected Android device is still needed
+to verify launch, Kanidm sign-in, SAF folder access, and an actual transfer.
+
 The user-facing sync service is an optional NixOS module named `filesync`. It
 provides the authenticated API at `https://filesync-api.<domain>` and registers
 the public Kanidm client `filesync-native`. The app uses the API address shown
