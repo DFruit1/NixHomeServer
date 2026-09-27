@@ -5959,18 +5959,34 @@ a:focus-visible {
   min-width: 0;
 }
 .health-comparison-split {
-  grid-template-columns: 50% 25% 25%;
+  grid-template-columns:
+    minmax(0, 1.35fr) minmax(0, 0.95fr) minmax(0, 1.2fr)
+    minmax(0, 1.5fr);
   gap: 0;
   align-items: start;
 }
 .health-comparison-split > div {
   padding-right: 18px;
 }
+.health-comparison-split > div:last-child {
+  padding-right: 0;
+}
 .health-value-label {
   display: block;
-  margin-bottom: 4px;
+  margin-bottom: 2px;
   font-size: 12px;
   color: var(--ink-soft);
+}
+.health-value p.health-value-text {
+  font-size: 16px;
+  line-height: 1.4;
+}
+.health-unset {
+  font-style: italic;
+}
+.health-provenance p {
+  color: var(--ink-soft);
+  line-height: 1.6;
 }
 .health-comparison small {
   display: block;
@@ -5981,6 +5997,16 @@ a:focus-visible {
 }
 .health-candidate + .health-candidate {
   margin-top: 12px;
+}
+@media (max-width: 960px) {
+  .health-comparison-split {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    row-gap: 14px;
+  }
+  .health-comparison-split > .health-reason,
+  .health-comparison-split > .health-provenance {
+    grid-column: 1 / -1;
+  }
 }
 .health-source {
   display: flex;
@@ -6024,7 +6050,9 @@ a:focus-visible {
   cursor: not-allowed;
 }
 .health-lookup-note {
-  margin-top: 6px;
+  margin: 0 0 12px;
+  color: var(--ink-soft);
+  font-size: 12.5px;
   line-height: 1.5;
 }
 .health-online-selection {

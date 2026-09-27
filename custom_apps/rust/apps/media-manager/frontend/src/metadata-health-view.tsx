@@ -46,6 +46,52 @@ function displayValue(value: unknown): string {
   return typeof value === "object" ? JSON.stringify(value) : String(value);
 }
 
+function joinList(items: string[]): string {
+  if (items.length === 0) return "";
+  if (items.length === 1) return items[0];
+  return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+}
+
+function quotedList(items: string[]): string {
+  return joinList(items.map((item) => `“${item}”`));
+}
+
+function isUnset(value: unknown): boolean {
+  return displayValue(value) === "Not set";
+}
+
+function renderValue(value: unknown) {
+  if (!isUnset(value)) return displayValue(value);
+  return <em class="health-unset">Not set</em>;
+}
+
+function proposedProvenance(issue: MetadataHealthIssue): string {
+  const proposed = issue.proposedValues ?? [];
+  if (proposed.length === 0)
+    return "No configured source produced a value for this field, so there is nothing to propose yet.";
+  const sources = quotedList([
+    ...new Set(proposed.flatMap((candidate) => candidate.sources)),
+  ]);
+  const sentences = [
+    proposed.length > 1
+      ? `These proposed values come from ${sources || "an unidentified source"}.`
+      : `The proposed value comes from ${sources || "an unidentified source"}.`,
+  ];
+  if (proposed.length > 1) {
+    sentences.push(
+      "The sources disagree on this field, so check the file in Review metadata before choosing one.",
+    );
+  } else if (!isUnset(issue.currentValue)) {
+    const current = quotedList(issue.currentSources ?? []);
+    sentences.push(
+      current
+        ? `The current value comes from ${current} and differs from it, so confirm which one matches the file in Review metadata.`
+        : "A different value is already set, so confirm which one matches the file in Review metadata.",
+    );
+  }
+  return sentences.join(" ");
+}
+
 interface HealthGroup {
   key: string;
   rootId: string;
@@ -235,6 +281,10 @@ const HealthLookupDialog = component$<{
         </div>
         <div class="dialog-body">
           <p class="dialog-context">{props.issue.title}</p>
+          <p class="health-lookup-note">
+            Online selections are comparison aids. Use Review metadata to make
+            an edit.
+          </p>
           <form
             class="health-lookup-query"
             preventdefault:submit
@@ -702,7 +752,9 @@ export const MetadataHealthView = component$<{
                         {compares && (
                           <div class="health-value">
                             <span class="health-value-label">Current</span>
-                            <p>{displayValue(issue.currentValue)}</p>
+                            <p class="health-value-text">
+                              {renderValue(issue.currentValue)}
+                            </p>
                             {!!issue.currentSources?.length && (
                               <small>{issue.currentSources.join(" · ")}</small>
                             )}
@@ -714,8 +766,9 @@ export const MetadataHealthView = component$<{
                             {issue.proposedValues?.length ? (
                               issue.proposedValues.map((candidate, index) => (
                                 <div class="health-candidate" key={index}>
-                                  <p>{displayValue(candidate.value)}</p>
-                                  <small>{candidate.sources.join(" · ")}</small>
+                                  <p class="health-value-text">
+                                    {renderValue(candidate.value)}
+                                  </p>
                                 </div>
                               ))
                             ) : (
@@ -729,7 +782,9 @@ export const MetadataHealthView = component$<{
                                 <span class="health-value-label">
                                   Selected online value
                                 </span>
-                                <p>{displayValue(selectedOnline.value)}</p>
+                                <p class="health-value-text">
+                                  {renderValue(selectedOnline.value)}
+                                </p>
                                 <small>{selectedOnline.source}</small>
                               </div>
                             )}
@@ -774,12 +829,6 @@ export const MetadataHealthView = component$<{
                                     {primaryStatus.label}
                                   </span>
                                 </p>
-                                {lookupSupported && props.canEdit && (
-                                  <small class="health-lookup-note">
-                                    Online selections are comparison aids. Use
-                                    Review metadata to make an edit.
-                                  </small>
-                                )}
                                 {sources.length > 1 && (
                                   <button
                                     type="button"
@@ -796,6 +845,11 @@ export const MetadataHealthView = component$<{
                                 )}
                               </>
                             )}
+                          </div>
+                        )}
+                        {compares && (
+                          <div class="health-provenance">
+                            <p>{proposedProvenance(issue)}</p>
                           </div>
                         )}
                       </div>

@@ -295,6 +295,9 @@ it("keeps distinct album issue values as separate entries", async () => {
   });
   expect(screen.textContent).toContain("Current 01");
   expect(screen.textContent).toContain("Proposed 02");
+  expect(screen.querySelector(".health-provenance")?.textContent).toContain(
+    "The current value comes from “Sidecar” and differs from it, so confirm which one matches the file in Review metadata.",
+  );
 });
 
 it("names the recommended source for a missing field and lists the alternatives", async () => {
@@ -330,6 +333,7 @@ it("names the recommended source for a missing field and lists the alternatives"
   await render(
     <MetadataHealthView
       roots={[{ id: "audiobooks", label: "Shared audiobooks" }]}
+      canEdit
     />,
   );
 
@@ -337,6 +341,13 @@ it("names the recommended source for a missing field and lists the alternatives"
     await userEvent(screen, "click");
     expect(screen.textContent).toContain("Grantlee Kieza");
   });
+
+  expect(screen.querySelector(".health-lookup-note")).toBeFalsy();
+  expect(screen.querySelector(".health-candidate small")).toBeFalsy();
+  expect(screen.querySelector(".health-provenance")?.textContent).toBe(
+    "The proposed value comes from “Embedded audio tags”.",
+  );
+  expect(screen.querySelector(".health-unset")?.textContent).toBe("Not set");
 
   const header = screen.querySelector(".health-result header");
   expect(header).toBeTruthy();
@@ -358,6 +369,27 @@ it("names the recommended source for a missing field and lists the alternatives"
     expect(screen.textContent).toContain("No setup needed");
   });
 
+  await userEvent(screen.querySelector(".health-source-trigger"), "click");
+  await vi.waitFor(() =>
+    expect(
+      screen.querySelector('[role="dialog"] .health-lookup-note'),
+    ).toBeTruthy(),
+  );
+  expect(
+    screen
+      .querySelector('[role="dialog"] .health-lookup-note')
+      ?.textContent?.replace(/\s+/g, " "),
+  ).toBe(
+    "Online selections are comparison aids. Use Review metadata to make an edit.",
+  );
+  await userEvent(
+    screen.querySelector('[role="dialog"] .dialog-close'),
+    "click",
+  );
+  await vi.waitFor(() =>
+    expect(screen.querySelector('[role="dialog"]')).toBeFalsy(),
+  );
+
   await userEvent(screen.querySelector(".health-alt-sources"), "click");
   await vi.waitFor(() =>
     expect(screen.querySelector('[role="dialog"]')).toBeTruthy(),
@@ -370,6 +402,51 @@ it("names the recommended source for a missing field and lists the alternatives"
     '.health-source-links a[href="https://api.audnex.us/"]',
   );
   expect(documentation).toBeTruthy();
+});
+
+it("explains conflicting proposals in prose beside the compared values", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => {
+      const response = healthResponse("lawson-01", "Title differs");
+      const payload = await response.json();
+      payload.results[0].health[0] = {
+        code: "conflicting-title",
+        severity: "warning",
+        field: "title",
+        title: "Title differs between sources",
+        message:
+          "Compare the source values and choose which layer should be authoritative.",
+        sources: ["filename", "sidecar"],
+        currentValue: null,
+        currentSources: [],
+        proposedValues: [
+          { value: "Lawson: A Novel", sources: ["Embedded audio tags"] },
+          { value: "Lawson (Unabridged)", sources: ["Sidecar"] },
+        ],
+      };
+      return new Response(wireJson(payload));
+    }),
+  );
+
+  const { render, screen, userEvent } = await createDOM();
+  await render(
+    <MetadataHealthView roots={[{ id: "audiobooks", label: "Audiobooks" }]} />,
+  );
+  await vi.waitFor(async () => {
+    await userEvent(screen, "click");
+    expect(screen.querySelectorAll(".health-provenance")).toHaveLength(1);
+  });
+
+  expect(screen.querySelector(".health-provenance")?.textContent).toBe(
+    "These proposed values come from “Embedded audio tags” and “Sidecar”. " +
+      "The sources disagree on this field, so check the file in Review " +
+      "metadata before choosing one.",
+  );
+  expect(screen.querySelectorAll(".health-unset")).toHaveLength(1);
+  expect(screen.querySelector(".health-value-text")?.textContent).toBe(
+    "Not set",
+  );
 });
 
 const OPEN_LIBRARY = {
