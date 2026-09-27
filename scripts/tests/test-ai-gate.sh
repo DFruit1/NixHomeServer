@@ -5,7 +5,10 @@ cd "$TESTS_REPO_ROOT"
 ensure_tools jq nix cargo
 
 # Rust unit tests: queue boundary, settings validation, query encoding.
-cargo test --manifest-path custom_apps/Cargo.toml -p ai-gate --locked 2>&1 | tail -n 5
+target_dir="$(mktemp -d "${TMPDIR:-/tmp}/nixhomeserver-ai-gate-target.XXXXXX")"
+trap 'rm -rf "$target_dir"' EXIT
+CARGO_TARGET_DIR="$target_dir" cargo test \
+  --manifest-path custom_apps/Cargo.toml -p ai-gate --locked 2>&1 | tail -n 5
 
 host="$(test_default_host)"
 NIXHOMESERVER_TEST_HOST="$host" nix eval --impure --json --expr '
