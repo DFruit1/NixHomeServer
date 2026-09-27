@@ -122,6 +122,47 @@ server_reachable() {
   ssh "${SSH_OPTS[@]}" -o ConnectTimeout=5 "$HOST" true >/dev/null 2>&1
 }
 
+desktop_work_active() {
+  local process pattern
+  for process in aapt2 apksigner cargo cc1 cc1plus clang gcc make ninja nix nix-build \
+    nix-instantiate nix-store nixos-rebuild playwright pnpm pytest rustc vitest zipalign; do
+    if pgrep -x "$process" >/dev/null 2>&1; then
+      return 0
+    fi
+  done
+  for pattern in \
+    '(^|[[:space:]/])validate-repo[.]sh([[:space:]]|$)' \
+    '(^|[[:space:]/])run-script-tests[.]sh([[:space:]]|$)' \
+    '(^|[[:space:]/])build-android[.]sh([[:space:]]|$)' \
+    'org[.]gradle[.]wrapper[.]GradleWrapperMain' \
+    '(^|[[:space:]/])(pnpm|npm|npx)([[:space:]]|$)' \
+    '(^|[[:space:]/])(vitest|playwright|jest|bats|ctest)([[:space:]]|$)'; do
+    if pgrep -f -- "$pattern" >/dev/null 2>&1; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+wait_for_server_deadline() {
+  local remaining=$(( TIMEOUT_MIN * 60 )) step
+  if (( remaining > 300 )); then
+    sleep "$(( remaining - 300 ))"
+    remaining=300
+  fi
+  while (( remaining > 0 )); do
+    if desktop_work_active; then
+      if ! remote sudo "$GUARD" mark-activity >/dev/null; then
+        printf 'Could not report desktop work to the server; retrying at the next check.\n' >&2
+      fi
+    fi
+    step=30
+    (( remaining < step )) && step="$remaining"
+    sleep "$step"
+    remaining=$(( remaining - step ))
+  done
+}
+
 detect_terminal() {
   local candidate
   if [[ -n "${TERMINAL:-}" ]] && command -v "$TERMINAL" >/dev/null 2>&1; then
@@ -194,8 +235,8 @@ printf 'Requesting guarded shutdown on %s in %s minutes (grace %s minutes)...\n'
   "$HOST" "$TIMEOUT_MIN" "$GRACE_MIN"
 remote sudo "$GUARD" start --timeout "$TIMEOUT_MIN" --grace "$GRACE_MIN"
 
-printf 'Waiting %s minutes before polling the server...\n' "$TIMEOUT_MIN"
-sleep "$((TIMEOUT_MIN * 60))"
+printf 'Waiting %s minutes before polling the server; checking desktop work during the final five minutes...\n' "$TIMEOUT_MIN"
+wait_for_server_deadline
 
 printf 'Polling %s until it powers off...\n' "$HOST"
 poll_deadline=$(( $(date +%s) + POLL_TIMEOUT_MIN * 60 ))

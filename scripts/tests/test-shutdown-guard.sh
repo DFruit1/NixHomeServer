@@ -25,6 +25,7 @@ mkdir -p "$mock_bin" "$flags"
 cat >"$conf" <<'EOF'
 CRITICAL_UNITS=(kopia.service media-manager.service)
 CRITICAL_PROCESSES=(rsync)
+CRITICAL_PROCESS_PATTERNS=('gradle.*assembleRelease')
 CRITICAL_COMMANDS=("test -e \"${MOCK_FLAGS}/command_busy\"")
 EOF
 
@@ -32,7 +33,9 @@ cat >"$mock_bin/systemctl" <<'EOF'
 #!/usr/bin/env bash
 case "${1:-}" in
   show)
-    if [[ -e "${MOCK_FLAGS}/systemctl_active" ]]; then
+    if [[ -e "${MOCK_FLAGS}/systemctl_active" ]] ||
+       { [[ -e "${MOCK_FLAGS}/active_at" ]] &&
+         [[ "$(cat "${MOCK_FLAGS}/active_at")" == "$(cat "${MOCK_FLAGS}/now")" ]]; }; then
       printf 'active\n'
     else
       printf 'inactive\n'
@@ -44,8 +47,32 @@ EOF
 
 cat >"$mock_bin/pgrep" <<'EOF'
 #!/usr/bin/env bash
-[[ -e "${MOCK_FLAGS}/pgrep_busy" ]] && exit 0
+if [[ "${1:-}" == -f ]]; then
+  [[ -e "${MOCK_FLAGS}/pgrep_pattern_busy" ]] && exit 0
+else
+  [[ -e "${MOCK_FLAGS}/pgrep_busy" ]] && exit 0
+fi
 exit 1
+EOF
+
+cat >"$mock_bin/date" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == +%s && -e "${MOCK_FLAGS}/now" ]]; then
+  cat "${MOCK_FLAGS}/now"
+else
+  /bin/date "$@"
+fi
+EOF
+
+cat >"$mock_bin/sleep" <<'EOF'
+#!/usr/bin/env bash
+if [[ -e "${MOCK_FLAGS}/now" ]]; then
+  printf '%s\n' "$(( $(cat "${MOCK_FLAGS}/now") + $1 ))" >"${MOCK_FLAGS}/now"
+elif [[ "${MOCK_FAST_SLEEP:-}" == 1 ]]; then
+  exit 0
+else
+  /bin/sleep "$@"
+fi
 EOF
 
 cat >"$mock_bin/shutdown" <<'EOF'
@@ -58,6 +85,13 @@ cat >"$mock_bin/systemd-run" <<'EOF'
 printf '%s\n' "$*" >>"${MOCK_FLAGS}/systemd-run.log"
 EOF
 
+cat >"$mock_bin/ssh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${MOCK_FLAGS}/ssh.log"
+[[ "$*" == *' true' ]] && exit 1
+exit 0
+EOF
+
 cat >"$mock_bin/nixhomeserver-shutdown-guard" <<EOF
 #!/usr/bin/env bash
 exec bash "$TESTS_REPO_ROOT/$guard" "\$@"
@@ -66,8 +100,11 @@ EOF
 make_test_executable \
   "$mock_bin/systemctl" \
   "$mock_bin/pgrep" \
+  "$mock_bin/date" \
+  "$mock_bin/sleep" \
   "$mock_bin/shutdown" \
   "$mock_bin/systemd-run" \
+  "$mock_bin/ssh" \
   "$mock_bin/nixhomeserver-shutdown-guard"
 
 export MOCK_FLAGS="$flags"
@@ -105,7 +142,21 @@ busy_process="$(run_guard check)"
 expect_equal "$busy_process" "busy process:rsync" "Guard should report an active critical process."
 rm -f "$flags/pgrep_busy"
 
-# 4. Active command detection (used for ZFS scrub/resilver).
+# 4. A command-line process pattern catches APK builds without matching idle daemons.
+touch "$flags/pgrep_pattern_busy"
+busy_pattern="$(run_guard check)"
+expect_equal "$busy_pattern" "busy process-pattern:gradle.*assembleRelease" "Guard should report a matching APK build."
+rm -f "$flags/pgrep_pattern_busy"
+
+# 5. Recent desktop activity reaches the server guard and then expires.
+printf '1000\n' >"$flags/now"
+run_guard mark-activity >/dev/null
+expect_equal "$(run_guard check)" "busy desktop:active-work" "Guard should see desktop activity."
+printf '1061\n' >"$flags/now"
+expect_equal "$(run_guard check)" "idle" "A stale desktop marker should not block shutdown."
+rm -f "$flags/now"
+
+# 6. Active command detection (used for ZFS scrub/resilver).
 touch "$flags/command_busy"
 busy_command="$(run_guard check)"
 case "$busy_command" in
@@ -118,7 +169,7 @@ case "$busy_command" in
 esac
 rm -f "$flags/command_busy"
 
-# 5. Dry run must not schedule anything.
+# 7. Dry run must not schedule anything.
 : >"$flags/shutdown.log"
 dry="$(run_guard start --timeout 5 --grace 5 --dry-run)"
 if [[ "$dry" != dry-run:* ]]; then
@@ -131,7 +182,7 @@ fi
   exit 1
 }
 
-# 6. Real start schedules a shutdown and launches the watcher.
+# 8. Real start schedules a shutdown and launches the watcher.
 : >"$flags/shutdown.log"
 : >"$flags/systemd-run.log"
 run_guard start --timeout 7 --grace 3 --poll 1 >/dev/null
@@ -139,18 +190,36 @@ require_fixed "$flags/shutdown.log" "-h +7" "Guard should schedule a shutdown at
 require_fixed "$flags/systemd-run.log" "watch --deadline" "Guard should launch the watcher."
 require_fixed "$state_dir/status" "state=scheduled" "Guard should record the scheduled state."
 
-# 7. Watcher with no critical task shuts down immediately at the deadline.
+# 9. Watcher with no critical task shuts down immediately at the deadline.
 : >"$flags/shutdown.log"
 run_guard watch --deadline 1 --grace-deadline 1 --poll 1
 require_fixed "$flags/shutdown.log" "-h now" "Watcher should shut down when no critical task is active."
 require_fixed "$state_dir/status" "state=shutting-down" "Watcher should record the shutting-down state."
 
-# 8. Watcher with an active task past the grace window treats it as hung.
+# 10. Work seen briefly in the final five minutes triggers grace and quiet time.
+: >"$flags/shutdown.log"
+printf '1000\n' >"$flags/now"
+printf '1060\n' >"$flags/active_at"
+run_guard watch --deadline 1120 --grace-deadline 1720 --poll 30
+rm -f "$flags/now" "$flags/active_at"
+require_fixed "$flags/shutdown.log" "-h +11" "Activity before the deadline should schedule grace early."
+require_fixed "$state_dir/status" "quiet for five minutes" "A momentary lull should not end grace immediately."
+
+# 11. Watcher with an active task past the grace window stops at the backstop.
 : >"$flags/shutdown.log"
 touch "$flags/systemctl_active"
 run_guard watch --deadline 1 --grace-deadline 1 --poll 1
 rm -f "$flags/systemctl_active"
 require_fixed "$flags/shutdown.log" "-h now" "Watcher should still shut down after the grace window."
-require_fixed "$state_dir/status" "exceeded grace" "Watcher should record that the task exceeded grace."
+require_fixed "$state_dir/status" "grace expired" "Watcher should record that the grace window expired."
+
+# 12. The desktop script reports local work during the final five minutes.
+: >"$flags/ssh.log"
+touch "$flags/pgrep_busy"
+MOCK_FAST_SLEEP=1 scripts/admin/desktop-server-shutdown.sh \
+  --host test@server --timeout 1 --grace 10 --no-local-shutdown >/dev/null
+rm -f "$flags/pgrep_busy"
+require_fixed "$flags/ssh.log" "sudo nixhomeserver-shutdown-guard mark-activity" \
+  "The desktop should relay build activity to the server guard."
 
 echo "✅ Shutdown guard schedules, detects critical tasks, and enforces the grace window."

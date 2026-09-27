@@ -41,14 +41,44 @@ in
       rclone-mega-kopia-sync.service
     )
     CRITICAL_PROCESSES=(
+      aapt2
+      apksigner
       borg
+      cargo
+      cc1
+      cc1plus
+      clang
       ffmpeg
+      gcc
+      make
+      ninja
+      nix
+      nix-build
+      nix-instantiate
+      nix-store
+      nixos-rebuild
+      playwright
+      pnpm
+      pytest
       qbittorrent-nox
       rclone
       restic
       rsync
+      rustc
+      vitest
       yt-dlp
       zfs
+      zipalign
+    )
+    # Match active command lines for tools launched through bash, Java, or Node.
+    # Avoid matching idle Gradle/Kotlin daemons and always-on app processes.
+    CRITICAL_PROCESS_PATTERNS=(
+      '(^|[[:space:]/])validate-repo[.]sh([[:space:]]|$)'
+      '(^|[[:space:]/])run-script-tests[.]sh([[:space:]]|$)'
+      '(^|[[:space:]/])build-android[.]sh([[:space:]]|$)'
+      'org[.]gradle[.]wrapper[.]GradleWrapperMain'
+      '(^|[[:space:]/])(pnpm|npm|npx)([[:space:]]|$)'
+      '(^|[[:space:]/])(vitest|playwright|jest|bats|ctest)([[:space:]]|$)'
     )
     CRITICAL_COMMANDS=(
       "zpool status 2>/dev/null | grep -Eq 'scrub in progress|resilver in progress'"
