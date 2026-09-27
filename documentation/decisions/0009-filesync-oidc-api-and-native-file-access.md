@@ -15,8 +15,11 @@ storage model. Kanidm login is already the user identity for the server.
 
 The client authenticates with Kanidm OpenID Connect authorization code flow
 and PKCE. It calls a dedicated HTTPS API with bearer access tokens. The API
-validates signature, issuer, audience, expiry, and username, then resolves
-paths beneath a server-advertised personal library root for that user. Roots
+validates signature, issuer, audience, and expiry, then resolves the username
+from the Kanidm userinfo endpoint, because Kanidm's RFC 9068 access tokens
+carry no username claim, and maps paths beneath a server-advertised personal
+library root for that user. Resolved identities are cached per access token
+until the token expires. Roots
 are fixed by the enabled NixOS modules; the client can select a root ID and a
 relative path but cannot provide an absolute server path. The API has no SFTP listener or
 key management.

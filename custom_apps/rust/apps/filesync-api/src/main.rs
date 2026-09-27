@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::{
+    collections::HashMap,
     env,
     io::{self, Read},
     path::{Component, Path, PathBuf},
@@ -62,21 +63,34 @@ struct AppState {
     settings: Settings,
     http: reqwest::Client,
     jwks_uri: String,
+    userinfo_endpoint: String,
     jwks: RwLock<JwkSet>,
+    identities: RwLock<HashMap<String, CachedIdentity>>,
+}
+
+#[derive(Clone)]
+struct CachedIdentity {
+    username: String,
+    exp: u64,
 }
 
 #[derive(Debug, Deserialize)]
 struct OidcMetadata {
     issuer: String,
     jwks_uri: String,
+    userinfo_endpoint: String,
 }
 
 #[derive(Debug, Deserialize)]
-struct Claims {
+struct AccessTokenClaims {
     iss: String,
     aud: Audience,
     exp: u64,
-    preferred_username: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct UserInfoClaims {
+    preferred_username: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -187,11 +201,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         return Err(io::Error::other("Kanidm JWKS URL must use HTTPS").into());
     }
     let jwks = fetch_jwks(&http, &metadata.jwks_uri).await?;
+    let userinfo_url = reqwest::Url::parse(&metadata.userinfo_endpoint)?;
+    if userinfo_url.scheme() != "https" || userinfo_url.host_str().is_none() {
+        return Err(io::Error::other("Kanidm userinfo URL must use HTTPS").into());
+    }
     let state = Arc::new(AppState {
         settings,
         http,
         jwks_uri: metadata.jwks_uri,
+        userinfo_endpoint: metadata.userinfo_endpoint,
         jwks: RwLock::new(jwks),
+        identities: RwLock::new(HashMap::new()),
     });
 
     let app = Router::new()
@@ -301,7 +321,7 @@ async fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<String, R
     let mut validation = Validation::new(Algorithm::ES256);
     validation.set_issuer(&[state.settings.issuer.as_str()]);
     validation.set_audience(&[state.settings.audience.as_str()]);
-    let data = decode::<Claims>(token, &key, &validation).map_err(|_| {
+    let data = decode::<AccessTokenClaims>(token, &key, &validation).map_err(|_| {
         api_error(
             StatusCode::UNAUTHORIZED,
             "INVALID_TOKEN",
@@ -319,14 +339,83 @@ async fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<String, R
             "The access token does not authorize this application.",
         ));
     }
-    if !valid_username(&claims.preferred_username) {
+    let username = identity_for_token(state, token, claims.exp).await?;
+    if !valid_username(&username) {
         return Err(api_error(
             StatusCode::FORBIDDEN,
             "INVALID_IDENTITY",
             "The Kanidm identity cannot be mapped to a server user.",
         ));
     }
-    Ok(claims.preferred_username)
+    Ok(username)
+}
+
+async fn identity_for_token(
+    state: &AppState,
+    token: &str,
+    token_exp: u64,
+) -> Result<String, Response> {
+    let cache_key = format!("{:x}", Sha256::digest(token.as_bytes()));
+    if let Some(entry) = state.identities.read().await.get(&cache_key) {
+        if entry.exp > unix_now() {
+            return Ok(entry.username.clone());
+        }
+    }
+    let response = state
+        .http
+        .get(&state.userinfo_endpoint)
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(|_| {
+            api_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "IDENTITY_UNAVAILABLE",
+                "Kanidm identity lookup failed.",
+            )
+        })?;
+    let status = response.status();
+    if status.is_client_error() {
+        return Err(api_error(
+            StatusCode::UNAUTHORIZED,
+            "INVALID_TOKEN",
+            "The access token was rejected by Kanidm.",
+        ));
+    }
+    if !status.is_success() {
+        return Err(api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "IDENTITY_UNAVAILABLE",
+            "Kanidm identity lookup failed.",
+        ));
+    }
+    let payload: UserInfoClaims = response.json().await.map_err(|_| {
+        api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "IDENTITY_UNAVAILABLE",
+            "Kanidm identity lookup failed.",
+        )
+    })?;
+    let username = payload
+        .preferred_username
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            api_error(
+                StatusCode::UNAUTHORIZED,
+                "INVALID_TOKEN",
+                "Kanidm did not release an identity for this access token.",
+            )
+        })?;
+    let mut identities = state.identities.write().await;
+    identities.retain(|_, entry| entry.exp > unix_now());
+    identities.insert(
+        cache_key,
+        CachedIdentity {
+            username: username.clone(),
+            exp: token_exp,
+        },
+    );
+    Ok(username)
 }
 
 fn unix_now() -> u64 {
@@ -726,7 +815,9 @@ fn safe_file_path(value: Option<&str>) -> Result<PathBuf, &'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{safe_file_path, safe_relative_path, valid_username};
+    use super::{
+        safe_file_path, safe_relative_path, valid_username, AccessTokenClaims, UserInfoClaims,
+    };
     use std::path::Path;
 
     #[test]
@@ -736,6 +827,48 @@ mod tests {
         assert!(!valid_username("Alice"));
         assert!(!valid_username("../alice"));
         assert!(!valid_username("2alice"));
+    }
+
+    #[test]
+    fn kanidm_access_tokens_are_accepted_without_a_username_claim() {
+        let payload = r#"{
+            "iss": "https://id.example.test/oauth2/openid/filesync-native",
+            "sub": "2c9f8a3e-4f6b-4f2a-9f3e-1b2c3d4e5f60",
+            "aud": "filesync-native",
+            "exp": 1790600000,
+            "nbf": 1790550000,
+            "iat": 1790550000,
+            "jti": "3b8f8a3e-4f6b-4f2a-9f3e-1b2c3d4e5f61",
+            "client_id": "filesync-native",
+            "scope": "openid profile email offline_access",
+            "session_id": "4c8f8a3e-4f6b-4f2a-9f3e-1b2c3d4e5f62"
+        }"#;
+        let claims: AccessTokenClaims =
+            serde_json::from_str(payload).expect("RFC 9068 access token must deserialize");
+        assert_eq!(
+            claims.iss,
+            "https://id.example.test/oauth2/openid/filesync-native"
+        );
+        assert!(claims.aud.contains("filesync-native"));
+        assert_eq!(claims.exp, 1790600000);
+    }
+
+    #[test]
+    fn kanidm_userinfo_releases_the_preferred_username() {
+        let payload = r#"{
+            "iss": "https://id.example.test/oauth2/openid/filesync-native",
+            "sub": "2c9f8a3e-4f6b-4f2a-9f3e-1b2c3d4e5f60",
+            "aud": "filesync-native",
+            "exp": 1790600000,
+            "iat": 1790550000,
+            "auth_time": 1790549000,
+            "preferred_username": "canary-user",
+            "name": "Canary User",
+            "scopes": ["openid", "profile", "email", "offline_access"]
+        }"#;
+        let claims: UserInfoClaims =
+            serde_json::from_str(payload).expect("userinfo payload must deserialize");
+        assert_eq!(claims.preferred_username.as_deref(), Some("canary-user"));
     }
 
     #[test]
