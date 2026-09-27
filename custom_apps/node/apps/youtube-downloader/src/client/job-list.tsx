@@ -1,7 +1,8 @@
 import { $, component$, useSignal } from '@builder.io/qwik';
 import type { CurrentUser, Job } from '../shared/types.js';
-import { buildFileBrowserUrl } from './file-browser-url.js';
+import { buildMediaManagerUrl } from './media-manager-url.js';
 import { apiFetch, apiUrl, isTauriRuntime } from './api.js';
+import { tauriInvoke } from './tauri.js';
 
 type JobListProps = {
   title: string;
@@ -10,7 +11,7 @@ type JobListProps = {
   currentUser?: CurrentUser;
 };
 
-export const JobList = component$<JobListProps>(({ title, jobs, refresh, currentUser }) => {
+export const JobList = component$<JobListProps>(({ title, jobs, refresh }) => {
   const action = $(async (job: Job, command: 'cancel' | 'retry' | 'delete') => {
     const response = await apiFetch(`/api/jobs/${job.id}${command === 'delete' ? '' : `/${command}`}`, {
       method: command === 'delete' ? 'DELETE' : 'POST',
@@ -33,12 +34,16 @@ export const JobList = component$<JobListProps>(({ title, jobs, refresh, current
     }
   });
   const openInBrowser = $((event: Event, job: Job) => {
-    const target = buildFileBrowserUrl(job.outputFolder, currentUser);
-    if (!target) {
+    if (!job.outputFolder) {
       return;
     }
     event.preventDefault();
     event.stopPropagation();
+    const target = buildMediaManagerUrl(job.request.mediaType);
+    if (isTauriRuntime()) {
+      void tauriInvoke()?.('open_external_url', { url: target });
+      return;
+    }
     window.open(target, '_blank', 'noopener,noreferrer');
   });
   const stopPropagation = $((event: Event) => {

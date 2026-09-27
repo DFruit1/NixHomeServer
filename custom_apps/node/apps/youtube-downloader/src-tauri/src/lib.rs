@@ -22,6 +22,19 @@ fn leave_app(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Open an application link in the operating system's default browser.
+#[tauri::command]
+fn open_external_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    let parsed = url::Url::parse(&url).map_err(|error| error.to_string())?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("Only HTTP and HTTPS links can be opened externally.".to_string());
+    }
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_url(parsed.to_string(), None::<&str>)
+        .map_err(|error| error.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -48,6 +61,7 @@ pub fn run() {
             update::app_platform,
             update::install_app_update,
             leave_app,
+            open_external_url,
         ])
         .run(tauri::generate_context!())
         .expect("error while running the YouTube Downloader shell");
