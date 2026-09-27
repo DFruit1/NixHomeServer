@@ -81,6 +81,7 @@ done
 "$adb" -s "$serial" shell am start -W \
   -n org.nixhomeserver.filesync/.MainActivity >"$results/launch.log"
 sleep 10
+"$adb" -s "$serial" logcat -d -v threadtime >"$results/logcat.log"
 "$adb" -s "$serial" logcat -d -b crash >"$results/crash.log"
 "$adb" -s "$serial" exec-out screencap -p >"$results/screen.png"
 if [[ -z "$("$adb" -s "$serial" shell pidof org.nixhomeserver.filesync 2>/dev/null | tr -d '\r')" ]]; then

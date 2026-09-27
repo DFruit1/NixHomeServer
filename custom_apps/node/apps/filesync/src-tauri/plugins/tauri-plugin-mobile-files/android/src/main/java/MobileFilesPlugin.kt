@@ -80,7 +80,7 @@ class MobileFilesPlugin(private val activity: Activity) : Plugin(activity) {
   @Command
   fun backgroundSyncStatus(invoke: Invoke) {
     try {
-      SyncEngine.readStatus(activity)?.let(invoke::resolveObject) ?: invoke.resolve(null)
+      invoke.resolveObject(mapOf("value" to SyncEngine.readStatus(activity)))
     } catch (error: Exception) {
       invoke.reject("Could not read Android background sync status", error, null)
     }
@@ -102,7 +102,7 @@ class MobileFilesPlugin(private val activity: Activity) : Plugin(activity) {
   fun createTempFile(invoke: Invoke) {
     try {
       val file = File.createTempFile("filesync-", ".stage", activity.cacheDir)
-      invoke.resolveObject(file.absolutePath)
+      invoke.resolveObject(mapOf("value" to file.absolutePath))
     } catch (error: Exception) {
       invoke.reject("Could not create private transfer storage", error, null)
     }
@@ -147,7 +147,7 @@ class MobileFilesPlugin(private val activity: Activity) : Plugin(activity) {
         requireNotNull(input) { "The selected file could not be opened" }
         FileOutputStream(target).use { output -> input.copyTo(output) }
       }
-      invoke.resolveObject(target.absolutePath)
+      invoke.resolveObject(mapOf("value" to target.absolutePath))
     } catch (error: Exception) {
       invoke.reject("Could not stage the selected file", error, null)
     }
@@ -180,7 +180,7 @@ class MobileFilesPlugin(private val activity: Activity) : Plugin(activity) {
   @ActivityCallback
   fun folderPicked(invoke: Invoke, result: ActivityResult) {
     if (result.resultCode != Activity.RESULT_OK) {
-      invoke.resolve(null)
+      invoke.resolveObject(mapOf("value" to null))
       return
     }
     val uri = result.data?.data
@@ -193,7 +193,7 @@ class MobileFilesPlugin(private val activity: Activity) : Plugin(activity) {
         Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
       ) ?: 0
       activity.contentResolver.takePersistableUriPermission(uri, grantFlags)
-      invoke.resolveObject(mapOf("uri" to uri.toString(), "displayName" to displayName(uri)))
+      invoke.resolveObject(mapOf("value" to mapOf("uri" to uri.toString(), "displayName" to displayName(uri))))
     } catch (error: Exception) {
       invoke.reject("Android could not keep access to that folder", error, null)
     }
@@ -216,11 +216,7 @@ class MobileFilesPlugin(private val activity: Activity) : Plugin(activity) {
     try {
       val slot = safeSlot(invoke.getArgs().getString("slot"))
       val secret = SecureSecrets.load(activity, slot)
-      if (secret == null) {
-        invoke.resolve(null)
-      } else {
-        invoke.resolveObject(secret)
-      }
+      invoke.resolveObject(mapOf("value" to secret))
     } catch (error: Exception) {
       invoke.reject("Could not read the Kanidm session securely", error, null)
     }

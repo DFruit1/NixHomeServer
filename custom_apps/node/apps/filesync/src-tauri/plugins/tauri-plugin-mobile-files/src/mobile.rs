@@ -43,15 +43,17 @@ impl<R: Runtime> MobileFiles<R> {
     }
 
     pub fn create_temp_file(&self) -> crate::Result<String> {
-        self.0
+        let response: StringResponse = self.0
             .run_mobile_plugin("createTempFile", ())
-            .map_err(Into::into)
+            .map_err(crate::Error::from)?;
+        response.value.ok_or_else(|| crate::Error::Operation("Android returned no temporary file".into()))
     }
 
     pub fn pick_local_folder(&self) -> crate::Result<Option<PickedFolder>> {
-        self.0
+        let response: PickedFolderResponse = self.0
             .run_mobile_plugin("pickLocalFolder", ())
-            .map_err(Into::into)
+            .map_err(crate::Error::from)?;
+        Ok(response.value)
     }
 
     pub fn store_session(&self, session: String) -> crate::Result<()> {
@@ -76,9 +78,10 @@ impl<R: Runtime> MobileFiles<R> {
     }
 
     pub fn load_secret(&self, slot: String) -> crate::Result<Option<String>> {
-        self.0
+        let response: StringResponse = self.0
             .run_mobile_plugin("loadSecret", serde_json::json!({ "slot": slot }))
-            .map_err(Into::into)
+            .map_err(crate::Error::from)?;
+        Ok(response.value)
     }
 
     pub fn clear_secret(&self, slot: String) -> crate::Result<()> {
@@ -115,9 +118,10 @@ impl<R: Runtime> MobileFiles<R> {
     }
 
     pub fn background_sync_status(&self) -> crate::Result<Option<String>> {
-        self.0
+        let response: StringResponse = self.0
             .run_mobile_plugin("backgroundSyncStatus", serde_json::json!({}))
-            .map_err(Into::into)
+            .map_err(crate::Error::from)?;
+        Ok(response.value)
     }
 
     pub fn list_local_files(&self, folder_uri: String) -> crate::Result<Vec<LocalEntry>> {
@@ -136,12 +140,13 @@ impl<R: Runtime> MobileFiles<R> {
         folder_uri: String,
         relative_path: String,
     ) -> crate::Result<String> {
-        self.0
+        let response: StringResponse = self.0
             .run_mobile_plugin(
                 "stageLocalFile",
                 serde_json::json!({ "folderUri": folder_uri, "relativePath": relative_path }),
             )
-            .map_err(Into::into)
+            .map_err(crate::Error::from)?;
+        response.value.ok_or_else(|| crate::Error::Operation("Android returned no staged file".into()))
     }
 
     pub fn install_local_file(

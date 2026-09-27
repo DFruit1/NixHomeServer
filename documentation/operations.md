@@ -1411,9 +1411,13 @@ is stored with the repository in `/var/lib/fdroidserver`; keep the encrypted
 backup of that directory because phones trust that key for future repository
 updates.
 
-F-Droid checks configured repositories for updates. Depending on the F-Droid
-client and Android version, installing an update may still require the user to
-confirm the install or grant F-Droid permission to install apps.
+The release command publishes the APK and regenerates the signed F-Droid and
+IPFS indexes without a phone-side pull-to-refresh. F-Droid on the phone then
+checks configured repositories in the background. [F-Droid 2.0](https://f-droid.org/en/2026/09/24/f-droid-2.0-a-new-chapter-for-android-freedom.html)
+enables automatic update checks by default; on earlier clients, enable
+automatic repository updates in F-Droid settings. The server cannot force an
+immediate phone-side check, and Android or the F-Droid client may still require
+install permission or confirmation.
 
 ## Private IPFS Distribution
 

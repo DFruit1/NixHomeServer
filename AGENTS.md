@@ -72,6 +72,19 @@ prompt is unavoidable, refer to that secret rather than relying on memory.
 
 ---
 
+## Android Releases
+
+* After validating a release build of any Android APK, publish it to the private
+  F-Droid repository and its IPFS mirror. Use the app's `pnpm release:android`
+  command, which builds, signs, publishes, and verifies both indexes. Use
+  `--build-only` only for intermediate validation builds; it does not complete
+  a release. Do not leave a completed release APK unpublished or ask whether to
+  publish it.
+* Keep the Android version code higher than the published version and sign with
+  the existing app key so phones can update the installed app.
+
+---
+
 ## Phone Wi-Fi Access Troubleshooting
 
 Private application hosts such as Photos and Videos are served through the
