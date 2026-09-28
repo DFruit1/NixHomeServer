@@ -78,6 +78,8 @@ struct RemoteListing {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SyncPair {
+    #[serde(default)]
+    name: String,
     local: tauri_plugin_mobile_files::PickedFolder,
     server_path: String,
     #[serde(default = "default_root")]
@@ -535,8 +537,11 @@ async fn sync_pair<R: Runtime>(app: AppHandle<R>, pair: SyncPair) -> Result<Sync
             .mobile_files()
             .run_sync_pair(pair_json)
             .map_err(|error| format!("Android sync could not start: {error}"))?;
-        return serde_json::from_value(result)
-            .map_err(|_| "Android sync returned an invalid result.".to_owned());
+        return serde_json::from_value(result.clone()).map_err(|_| {
+            let preview = result.to_string();
+            let preview = preview.chars().take(160).collect::<String>();
+            format!("Android sync returned an invalid result ({preview}).")
+        });
     }
     #[cfg(not(target_os = "android"))]
     sync_pair_rust(app, pair).await

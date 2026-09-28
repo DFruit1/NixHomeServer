@@ -207,7 +207,7 @@ internal object SyncEngine {
     }
   }
 
-  fun syncPair(context: Context, pairJson: String): JSONObject {
+  fun syncPair(context: Context, pairJson: String): Map<String, Any> {
     var locked = false
     try {
       acquireSyncLock()
@@ -218,7 +218,7 @@ internal object SyncEngine {
       reportProgress(context, MANUAL_NOTIFICATION_ID, pairName, listOf(pairName),
         pair.optString("direction"), "", 0, 0)
       val result = syncOne(context, session, pair, MANUAL_NOTIFICATION_ID)
-      writeStatus(context, "Last sync finished: ${result.getInt("transferred")} files copied.")
+      writeStatus(context, "Last sync finished: ${result["transferred"] as Int} files copied.")
       return result
     } catch (error: InterruptedException) {
       Thread.currentThread().interrupt()
@@ -260,7 +260,7 @@ internal object SyncEngine {
         val pair = pairs.getJSONObject(index)
         try {
           val result = syncOne(context, session, pair, WORKER_NOTIFICATION_ID, activeNames)
-          transferred += result.getInt("transferred")
+          transferred += result["transferred"] as Int
           completedPairs++
         } catch (error: SyncFailure) {
           if (error.message?.contains("Sign in", ignoreCase = true) == true || error.message?.contains("session expired", ignoreCase = true) == true) throw error
@@ -337,7 +337,7 @@ internal object SyncEngine {
     pair: JSONObject,
     notificationId: Int,
     activePairs: List<String>? = null,
-  ): JSONObject {
+  ): Map<String, Any> {
     val pairName = pair.optString("name", "Folder pair").ifBlank { "Folder pair" }
     val names = activePairs ?: listOf(pairName)
     val direction = pair.getString("direction")
@@ -409,7 +409,10 @@ internal object SyncEngine {
         } finally { staged.delete() }
       }
     }
-    return JSONObject().put("transferred", transferred).put("skipped", skipped).put("direction", direction)
+    // Return a plain Map so Tauri's Jackson serializer emits real JSON.
+    // A JSONObject would serialize as a bean (empty/mapped fields) and the
+    // Rust side would reject it as "Android sync returned an invalid result."
+    return mapOf("transferred" to transferred, "skipped" to skipped, "direction" to direction)
   }
 
   private fun fetchRemoteTree(apiBase: String, accessToken: String, base: String, root: String): List<Entry> {
