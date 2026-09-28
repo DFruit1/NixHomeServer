@@ -281,11 +281,12 @@ internal object SyncEngine {
       throw SyncFailure("This folder pair belongs to another Kanidm account.", false)
     }
     val localSubpath = safePath(pair.optString("localSubpath"))
+    val deviceSubpath = if (folderUri.startsWith("content")) localSubpath else ""
     val serverPath = safePath(pair.optString("serverPath"))
     val root = safeRoot(pair.optString("serverRoot", "files"))
     val localEntries = listLocalFiles(context, folderUri).filter { entry ->
-      entry.kind == "file" && (localSubpath.isEmpty() || entry.path.startsWith("$localSubpath/"))
-    }.associateBy { entry -> if (localSubpath.isEmpty()) entry.path else entry.path.removePrefix("$localSubpath/") }
+      entry.kind == "file" && (deviceSubpath.isEmpty() || entry.path.startsWith("$deviceSubpath/"))
+    }.associateBy { entry -> if (deviceSubpath.isEmpty()) entry.path else entry.path.removePrefix("$deviceSubpath/") }
     val remoteEntries = fetchRemoteTree(apiBase, session.getString("accessToken"), serverPath, root)
       .filter { it.kind == "file" }.associateBy { it.path }
     var transferred = 0
@@ -293,7 +294,7 @@ internal object SyncEngine {
     if (direction == "phone-to-server") {
       for ((relative, entry) in localEntries) {
         if (remoteEntries[relative]?.sha256 == entry.sha256) { skipped++; continue }
-        val staged = stageLocalFile(context, folderUri, join(localSubpath, relative), entry.sha256)
+        val staged = stageLocalFile(context, folderUri, join(deviceSubpath, relative), entry.sha256)
         try {
           val target = join(serverPath, relative)
           val response = request(
@@ -312,7 +313,7 @@ internal object SyncEngine {
         val staged = response.file ?: throw SyncFailure("The download could not be staged.", true)
         try {
           if (sha256(staged) != entry.sha256) throw SyncFailure("Downloaded file failed its checksum: $relative", true)
-          installLocalFile(context, folderUri, join(localSubpath, relative), staged)
+          installLocalFile(context, folderUri, join(deviceSubpath, relative), staged)
           transferred++
         } finally { staged.delete() }
       }
@@ -383,6 +384,7 @@ internal object SyncEngine {
       for (child in children) {
         val name = child.name
         if (name.isBlank() || name == "." || name == ".." || name.contains('/')) continue
+        if (java.nio.file.Files.isSymbolicLink(child.toPath())) continue
         val path = join(prefix, name)
         if (child.isDirectory) {
           walk(child, path)
