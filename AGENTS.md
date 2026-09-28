@@ -85,6 +85,19 @@ prompt is unavoidable, refer to that secret rather than relying on memory.
 
 ---
 
+## Native Browser for App Sign-in
+
+* Always open OAuth/OIDC sign-in and other external links in the operating
+  system's default browser through a native intent, never in an embedded WebView
+  or an Android Chrome Custom Tab. Kanidm passkeys (WebAuthn) need a full
+  browser context and fail to register or authenticate inside WebViews and
+  Custom Tabs.
+* In Tauri apps, call the opener with no `with` target
+  (`open_url(url, None::<&str>)` / `openUrl(url)`). The `"inAppBrowser"` option
+  maps to `CustomTabsIntent` on Android and must not be used for sign-in.
+
+---
+
 ## Phone Wi-Fi Access Troubleshooting
 
 Private application hosts such as Photos and Videos are served through the
