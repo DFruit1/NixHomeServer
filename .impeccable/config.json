@@ -11,10 +11,11 @@
         "rule": "overused-font",
         "value": "inter",
         "files": [
-          "custom_apps/node/apps/homepage/**"
+          "custom_apps/node/apps/homepage/**",
+          "custom_apps/node/apps/filesync/**"
         ],
         "createdAt": "2026-09-09T08:49:23.830Z",
-        "reason": "Deliberate homepage font choice"
+        "reason": "Deliberate homepage and File Sync font choice"
       },
       {
         "rule": "side-tab",

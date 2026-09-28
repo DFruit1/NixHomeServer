@@ -14,8 +14,7 @@ const SETTINGS_KEY = 'nixhomeserver.filesync.server.v1';
 const DEFAULT_SERVER = import.meta.env.VITE_FILESYNC_DEFAULT_SERVER ?? '';
 const app = document.querySelector<HTMLDivElement>('#app')!;
 
-const state: { platform: string; pairs: SyncPair[]; presets: SyncPreset[]; selectedService?: string; syncingPairId?: string; server: string; user?: string; settingsAuthorized: boolean; backgroundStatus?: string; error: string; notice: string } = {
-  platform: 'loading',
+const state: { pairs: SyncPair[]; presets: SyncPreset[]; selectedService?: string; syncingPairId?: string; server: string; user?: string; settingsAuthorized: boolean; backgroundStatus?: string; error: string; notice: string } = {
   pairs: readPairs(),
   presets: [],
   server: localStorage.getItem(SETTINGS_KEY) ?? DEFAULT_SERVER,
@@ -33,15 +32,40 @@ function escapeHtml(value: string): string {
 }
 
 function directionText(direction: SyncDirection): string {
-  if (direction === 'phone-to-server') return 'This device to server';
-  if (direction === 'server-to-phone') return 'Server to this device';
-  return 'Two-way';
+  if (direction === 'phone-to-server') return 'Files move from this device to the server';
+  if (direction === 'server-to-phone') return 'Files move from the server to this device';
+  return 'Files move both ways';
 }
 
-function directionArrow(direction: SyncDirection): string {
-  if (direction === 'phone-to-server') return '→';
-  if (direction === 'server-to-phone') return '←';
-  return '↔';
+const SERVICE_LOGOS: Record<string, string> = {
+  files: '/logos/filestash.svg',
+  'offline-media': '/logos/syncthing.svg',
+  jellyfin: '/logos/jellyfin.svg',
+  audiobookshelf: '/logos/audiobookshelf.svg',
+  kavita: '/logos/kavita.svg',
+};
+
+function serviceInitials(title: string): string {
+  return title.trim().slice(0, 2).toUpperCase();
+}
+
+function serverLocation(pair: SyncPair): string {
+  return pair.serverRoot && pair.serverRoot !== 'files'
+    ? `/${pair.serverFolder ?? pair.serverRoot}${pair.serverPath ? `/${pair.serverPath}` : ''}`
+    : pair.serverPath ? `/_Files/${pair.serverPath}` : '/_Files';
+}
+
+function localLocation(pair: SyncPair): string {
+  return `${pair.local.displayName}${pair.localSubpath ? ` / ${pair.localSubpath}` : ''}`;
+}
+
+type Route = { sourceLabel: string; sourceValue: string; targetLabel: string; targetValue: string; arrow: string };
+
+function routeFor(direction: SyncDirection, localValue: string, serverValue: string): Route {
+  const local = { label: 'This device', value: localValue };
+  const server = { label: 'Server', value: serverValue };
+  const [source, target] = direction === 'server-to-phone' ? [server, local] : [local, server];
+  return { sourceLabel: source.label, sourceValue: source.value, targetLabel: target.label, targetValue: target.value, arrow: direction === 'two-way' ? '↔' : '→' };
 }
 
 function render(): void {
@@ -49,38 +73,46 @@ function render(): void {
   const selectedPresets = state.presets.filter((preset) => preset.service === state.selectedService);
   const presetSection = state.user ? `
     <section class="services-section" aria-labelledby="services-heading">
-      <div class="section-title-row"><h2 id="services-heading">Sync from your services</h2></div>
+      <h2 id="services-heading">Sync from your services</h2>
       ${state.selectedService ? `
         <button class="text-button back-button" type="button" id="back-to-services">← All services</button>
         <h3 class="service-heading">${escapeHtml(services.find(([id]) => id === state.selectedService)?.[1] ?? 'Service')}</h3>
         <ul class="preset-list">${selectedPresets.map((preset) => {
           const enabled = state.pairs.some((pair) => pair.server === state.server && pair.account === state.user && (pair.serverRoot ?? 'files') === preset.id && (pair.serverPath || '') === preset.serverPath);
-          return `<li class="preset-row"><div><h4>${escapeHtml(preset.title)}</h4><p>${escapeHtml(preset.description)}</p><span class="preset-route">Server /${escapeHtml(preset.folder)} ${directionArrow(preset.direction)} This device /${escapeHtml(preset.localSubpath)}</span></div><button class="${enabled ? 'secondary-button' : 'primary-button'}" type="button" data-enable-preset="${escapeHtml(preset.id)}" ${enabled || state.syncingPairId ? 'disabled' : ''}>${enabled ? 'Enabled' : 'Enable and sync'}</button></li>`;
+          const route = routeFor(preset.direction, `/${preset.localSubpath}`, `/${preset.folder}${preset.serverPath ? `/${preset.serverPath}` : ''}`);
+          return `<li class="preset-row"><div class="preset-copy"><h4>${escapeHtml(preset.title)}</h4><p>${escapeHtml(preset.description)}</p><span class="preset-route"><span class="route-label">${escapeHtml(route.sourceLabel)}</span> ${escapeHtml(route.sourceValue)} <span class="route-arrow" aria-hidden="true">${route.arrow}</span> <span class="route-label">${escapeHtml(route.targetLabel)}</span> ${escapeHtml(route.targetValue)}</span></div><button class="${enabled ? 'secondary-button' : 'primary-button'}" type="button" data-enable-preset="${escapeHtml(preset.id)}" ${enabled || state.syncingPairId ? 'disabled' : ''}>${enabled ? 'Enabled' : 'Enable and sync'}</button></li>`;
         }).join('')}</ul>
-      ` : `<div class="service-grid">${services.map(([id, title]) => `<button class="service-card" type="button" data-service="${escapeHtml(id)}"><span class="service-card-name">${escapeHtml(title)}</span><span class="service-card-symbol" aria-hidden="true">${escapeHtml(title.slice(0, 2).toUpperCase())}</span><span class="service-card-action">View sync options →</span></button>`).join('')}</div>`}
+      ` : `<div class="service-grid">${services.map(([id, title]) => {
+        const logo = SERVICE_LOGOS[id];
+        return `<button class="service-card" type="button" data-service="${escapeHtml(id)}"><span class="service-logo" aria-hidden="true"><span class="service-symbol">${escapeHtml(serviceInitials(title))}</span>${logo ? `<img src="${logo}" alt="" loading="lazy" onerror="this.remove()" />` : ''}</span><span class="service-card-name">${escapeHtml(title)}</span><span class="service-card-action">View sync options →</span></button>`;
+      }).join('')}</div>`}
       ${state.presets.length === 0 ? '<p class="services-empty">No syncable service folders are available for this account yet.</p>' : ''}
     </section>` : '';
-  const pairRows = state.pairs.map((pair) => `
+  const pairRows = state.pairs.map((pair) => {
+    const route = routeFor(pair.direction, localLocation(pair), serverLocation(pair));
+    return `
     <li class="pair-row" data-pair-id="${escapeHtml(pair.id)}">
-      <div class="pair-paths">
-        <div class="pair-location">
-          <span class="location-label">This device</span>
-          <strong>${escapeHtml(pair.local.displayName)}${pair.localSubpath ? ` / ${escapeHtml(pair.localSubpath)}` : ''}</strong>
+      <h3 class="pair-name">${escapeHtml(pair.name)}</h3>
+      <div class="pair-route">
+        <div class="route-endpoint">
+          <span class="route-role">From</span>
+          <span class="route-place">${escapeHtml(route.sourceLabel)}</span>
+          <strong class="route-path">${escapeHtml(route.sourceValue)}</strong>
         </div>
-        <span class="pair-direction" aria-label="${escapeHtml(directionText(pair.direction))}">${directionArrow(pair.direction)}</span>
-        <div class="pair-location">
-          <span class="location-label">Server</span>
-          <strong>${escapeHtml(pair.serverRoot && pair.serverRoot !== 'files' ? `/${pair.serverFolder ?? pair.serverRoot}${pair.serverPath ? `/${pair.serverPath}` : ''}` : pair.serverPath ? `/_Files/${pair.serverPath}` : '/_Files')}</strong>
+        <span class="route-arrow" aria-label="${escapeHtml(directionText(pair.direction))}">${route.arrow}</span>
+        <div class="route-endpoint">
+          <span class="route-role">To</span>
+          <span class="route-place">${escapeHtml(route.targetLabel)}</span>
+          <strong class="route-path">${escapeHtml(route.targetValue)}</strong>
         </div>
       </div>
-      <div class="pair-meta">
-        <span>${escapeHtml(pair.name)}</span>
-        <span>${escapeHtml(directionText(pair.direction))}</span>
+      <div class="pair-actions">
         <button class="text-button" type="button" data-sync="${escapeHtml(pair.id)}" ${state.syncingPairId || pair.direction === 'two-way' || (pair.server && pair.server !== state.server) || !state.user || pair.account !== state.user ? 'disabled' : ''}>${state.syncingPairId === pair.id ? 'Syncing…' : pair.direction === 'two-way' ? 'Recreate pair' : pair.server && pair.server !== state.server ? 'Different server' : !state.user ? 'Sign in to sync' : pair.account !== state.user ? 'Different account' : 'Sync now'}</button>
         <button class="text-button danger-text" type="button" data-remove="${escapeHtml(pair.id)}" aria-label="Remove ${escapeHtml(pair.name)}">Remove</button>
       </div>
     </li>
-  `).join('');
+  `;
+  }).join('');
 
   app.innerHTML = `
     <main class="shell">
@@ -90,35 +122,27 @@ function render(): void {
       </header>
 
       <section class="intro" aria-labelledby="page-title">
-        <div>
-          <p class="eyebrow">NixHomeServer</p>
-          <h1 id="page-title">Sync pairs</h1>
-          <p class="intro-copy">Choose a folder on this device and its server folder. The arrow shows which way files will move. Sync checks file contents first, so large folders can take time to scan.</p>
-        </div>
+        <h1 id="page-title">Sync pairs</h1>
         <button class="primary-button" type="button" id="open-pair-form">Add a folder pair</button>
       </section>
 
       <section class="account-line" aria-label="Account">
         <div class="account-row">
           ${state.user
-            ? `<p>Signed in to Kanidm as <strong>${escapeHtml(state.user)}</strong>. Saved syncs stay connected. ${state.settingsAuthorized ? 'Settings unlocked for 24 hours after sign-in.' : 'Sign in again to change sync settings.'}${state.platform === 'android' ? ` Android checks saved pairs about every 15 minutes on unmetered networks; the system may defer a run.${state.backgroundStatus ? ` ${escapeHtml(state.backgroundStatus)}` : ''}` : ''}</p><button class="secondary-button" type="button" id="unlock-settings" ${state.settingsAuthorized ? 'disabled' : ''}>${state.settingsAuthorized ? 'Settings unlocked' : 'Unlock settings'}</button><button class="text-button" type="button" id="sign-out">Sign out</button>`
-            : '<p>Sign in with Kanidm. Your account needs access to personal files. File Sync requests offline access so it can stay connected between manual syncs.</p><button class="secondary-button" type="button" id="sign-in">Sign in with Kanidm</button>'}
+            ? `<p class="account-user">Signed in as <strong>${escapeHtml(state.user)}</strong>${state.backgroundStatus ? ` · ${escapeHtml(state.backgroundStatus)}` : ''}</p><button class="secondary-button" type="button" id="unlock-settings" ${state.settingsAuthorized ? 'disabled' : ''}>${state.settingsAuthorized ? 'Settings unlocked' : 'Unlock settings'}</button><button class="text-button" type="button" id="sign-out">Sign out</button>`
+            : '<p class="account-user">Sign in to sync your folders.</p><button class="secondary-button" type="button" id="sign-in">Sign in</button>'}
         </div>
       </section>
 
       ${presetSection}
 
       <section class="pairs-section" aria-labelledby="pairs-heading">
-        <div class="section-title-row">
-          <h2 id="pairs-heading">Folder pairs</h2>
-          <span class="item-count">${state.pairs.length}</span>
-        </div>
+        <h2 id="pairs-heading">Folder pairs</h2>
         ${state.pairs.length === 0
-          ? '<div class="empty-state"><h3>No folders paired yet</h3><p>Add a local folder and a server destination to define a sync pair.</p><button class="text-button" id="empty-add" type="button">Add the first pair</button></div>'
+          ? '<div class="empty-state"><h3>No folders paired yet</h3><button class="text-button" id="empty-add" type="button">Add the first pair</button></div>'
           : `<ul class="pair-list">${pairRows}</ul>`}
       </section>
 
-      <p class="prototype-note">Sign-in uses Kanidm. SFTP keys are not used by this app.</p>
       <div class="toast" role="status" aria-live="polite" ${state.notice ? '' : 'hidden'}>${escapeHtml(state.notice)}</div>
       <div class="toast error-toast" role="alert" ${state.error ? '' : 'hidden'}>${escapeHtml(state.error)}</div>
     </main>
@@ -138,7 +162,6 @@ function render(): void {
           <label class="direction-choice"><input type="radio" name="direction" value="phone-to-server" checked /><span>This device <b>→</b> Server</span></label>
           <label class="direction-choice"><input type="radio" name="direction" value="server-to-phone" /><span>Server <b>→</b> This device</span></label>
         </fieldset>
-        <p class="form-hint">Files copy one way; same-name destination files are replaced, and deletions never propagate. Two-way conflict handling will be added later.</p>
         <p class="form-error" id="form-error" role="alert"></p>
         <div class="dialog-actions"><button class="secondary-button" value="cancel">Cancel</button><button class="primary-button" id="save-pair" type="button">Save pair</button></div>
       </form>
@@ -154,7 +177,6 @@ function render(): void {
     <dialog id="settings-dialog" class="pair-dialog settings-dialog" aria-labelledby="settings-heading">
       <form method="dialog" id="settings-form">
         <div class="dialog-heading"><h2 id="settings-heading">Settings</h2><button class="close-button" value="cancel" aria-label="Close settings">×</button></div>
-        <p class="form-hint">This address is prefilled from the server configured for this build. Change it only if you use another File Sync server.</p>
         <label for="server-address">Server address</label>
         <input id="server-address" type="url" value="${escapeHtml(state.server)}" autocomplete="url" autocapitalize="none" spellcheck="false" />
         <p class="form-error" id="settings-error" role="alert"></p>
@@ -423,11 +445,6 @@ async function start(): Promise<void> {
       await onOpenUrl((urls) => { for (const url of urls) void finishCallback(url); });
     } catch { /* The browser preview does not provide native deep links. */ }
     try {
-      state.platform = await invoke<string>('platform_name');
-    } catch {
-      state.platform = 'unknown';
-    }
-    try {
       state.user = await invoke<string | null>('current_user') ?? undefined;
       state.backgroundStatus = readBackgroundStatus(await invoke<string | null>('background_sync_status'));
       await persistPairs();
@@ -442,8 +459,6 @@ async function start(): Promise<void> {
       const initialLinks = await getCurrent();
       for (const url of initialLinks ?? []) void finishCallback(url);
     } catch { /* No pending native deep link. */ }
-  } else {
-    state.platform = 'browser';
   }
   render();
 }
