@@ -59,7 +59,12 @@ import {
   type TmdbCandidate,
   type TmdbDetails,
 } from "./metadata-provider-candidates";
-import { parseTvEpisodeFilename } from "./root-routing";
+import {
+  itemFromSearch,
+  parseTvEpisodeFilename,
+  pathFromSearch,
+  viewFromSearch,
+} from "./root-routing";
 import {
   type ConversionEnvelope,
   type DashboardState,
@@ -1963,6 +1968,84 @@ const LibraryView = component$<{
     props.state.preview = undefined;
     props.state.notice = "";
   });
+  const pushedSelection = useSignal<string | null>(null);
+  useTask$(({ track }) => {
+    track(() => props.state.selectedItemId);
+    track(() => personal.selectedFolder);
+    track(() => shared.selectedFolder);
+    if (typeof window === "undefined") return;
+    const itemId = props.state.selectedItemId;
+    const folder = personal.selectedFolder || shared.selectedFolder;
+    const selectionKey = itemId
+      ? `item:${itemId}`
+      : folder
+        ? `path:${folder}`
+        : "";
+    if (pushedSelection.value === selectionKey) return;
+    const firstRun = pushedSelection.value === null;
+    pushedSelection.value = selectionKey;
+    if (firstRun) return;
+    const selectedItem = itemId
+      ? props.state.items.find((item) => item.id === itemId)
+      : undefined;
+    const itemRootId = selectedItem?.rootId ?? activeFolderRootId;
+    const params = new URLSearchParams();
+    params.set("view", "library");
+    const rootId = itemRootId || props.state.selectedRootId;
+    if (rootId) params.set("root", rootId);
+    if (itemId) params.set("item", itemId);
+    else if (folder) params.set("path", folder);
+    window.history.pushState(
+      {},
+      "",
+      `${window.location.pathname}?${params.toString()}`,
+    );
+  });
+  useOnWindow(
+    "popstate",
+    $(() => {
+      if (typeof window === "undefined") return;
+      const search = window.location.search;
+      if (viewFromSearch(search) !== "library") return;
+      const itemId = itemFromSearch(search);
+      const folderPath = pathFromSearch(search);
+      if (itemId) {
+        const item = props.state.items.find(
+          (candidate) => candidate.id === itemId,
+        );
+        if (!item) return;
+        personal.selectedFolder = "";
+        shared.selectedFolder = "";
+        pushedSelection.value = `item:${itemId}`;
+        props.selectItem$(item);
+        scrollLibraryDetailToTop();
+        return;
+      }
+      if (folderPath) {
+        const scope = personalItems.some((item) =>
+          item.relativePath.startsWith(`${folderPath}/`),
+        )
+          ? "personal"
+          : "shared";
+        if (scope === "personal") {
+          personal.selectedFolder = folderPath;
+          shared.selectedFolder = "";
+        } else {
+          shared.selectedFolder = folderPath;
+          personal.selectedFolder = "";
+        }
+        pushedSelection.value = `path:${folderPath}`;
+        props.state.selectedItemId = "";
+        props.state.preview = undefined;
+        return;
+      }
+      personal.selectedFolder = "";
+      shared.selectedFolder = "";
+      pushedSelection.value = "";
+      props.state.selectedItemId = "";
+      props.state.preview = undefined;
+    }),
+  );
   const refreshing = useSignal(false);
   const refreshLibrary$ = $(async () => {
     if (refreshing.value) return;
@@ -2017,18 +2100,22 @@ const LibraryView = component$<{
                 : `${matchCount} match${matchCount === 1 ? "" : "es"}`}
             </span>
           )}
-          <button
-            class="secondary-button"
-            type="button"
-            disabled={refreshing.value}
-            onClick$={refreshLibrary$}
-            title="Scan this library from disk now"
-          >
-            <Icon name="refresh" size={15} />
-            {refreshing.value ? "Refreshing…" : "Refresh"}
-          </button>
         </div>
       </div>
+      <button
+        class={{
+          "library-fab": true,
+          "library-fab--player": Boolean(props.state.miniPlayerItemId),
+        }}
+        type="button"
+        disabled={refreshing.value}
+        onClick$={refreshLibrary$}
+        title="Scan this library from disk now"
+        aria-label="Refresh this library from disk now"
+      >
+        <Icon name="refresh" size={17} />
+        {refreshing.value ? "Refreshing…" : "Refresh"}
+      </button>
       <section
         class={{
           "library-layout": true,

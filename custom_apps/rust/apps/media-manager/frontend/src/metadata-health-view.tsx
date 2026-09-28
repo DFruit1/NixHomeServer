@@ -2,6 +2,7 @@ import type {
   MetadataHealthIssue,
   MetadataHealthResult,
   MetadataIssuesPage as MetadataIssuesEnvelope,
+  MutationPreview,
   ProviderCatalogResponse,
   ProviderDefinition,
 } from "./api-contract.generated";
@@ -92,6 +93,96 @@ function proposedProvenance(issue: MetadataHealthIssue): string {
   return sentences.join(" ");
 }
 
+const SETTABLE_HEALTH_FIELDS = new Set([
+  "title",
+  "year",
+  "series",
+  "volumeNumber",
+  "authors",
+  "narrators",
+  "language",
+]);
+
+function isSettableField(field: string): boolean {
+  return SETTABLE_HEALTH_FIELDS.has(field);
+}
+
+function asStringList(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map(String);
+  if (typeof value === "string" && value.trim()) {
+    return value
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+  return [];
+}
+
+function applySidecarFieldValue(
+  fields: Record<string, unknown>,
+  field: string,
+  value: unknown,
+) {
+  const empty = isUnset(value);
+  switch (field) {
+    case "title":
+    case "series":
+    case "volumeNumber":
+    case "language":
+      if (empty) delete fields[field];
+      else fields[field] = displayValue(value);
+      break;
+    case "authors":
+    case "narrators":
+      fields[field] = empty ? [] : asStringList(value);
+      break;
+    case "year":
+      if (empty) delete fields.year;
+      else fields.year = Number(value);
+      break;
+    default:
+      break;
+  }
+}
+
+function sidecarFieldsFromMetadata(
+  details: Record<string, unknown>,
+  field: string,
+  value: unknown,
+): Record<string, unknown> {
+  const fields: Record<string, unknown> = {
+    mediaType: details.mediaType ?? "movie",
+    title: details.title ?? "",
+    authors: asStringList(details.authors),
+    narrators: asStringList(details.narrators),
+    genres: asStringList(details.genres),
+    writers: asStringList(details.writers),
+    providerIds: details.providerIds ?? {},
+  };
+  const optional: Array<[string, unknown]> = [
+    ["series", details.series],
+    ["volumeNumber", details.volumeNumber],
+    ["publisher", details.publisher],
+    ["isbn", details.isbn],
+    ["language", details.language],
+    ["description", details.description],
+    ["episodeTitle", details.episodeTitle],
+    ["premiereDate", details.premiereDate],
+    ["officialRating", details.officialRating],
+    ["year", details.year],
+    ["season", details.season],
+    ["episode", details.episode],
+    ["runtimeMinutes", details.runtimeMinutes],
+    ["communityRating", details.communityRating],
+  ];
+  for (const [key, candidate] of optional) {
+    if (candidate !== undefined && candidate !== null && candidate !== "")
+      fields[key] = candidate;
+  }
+  applySidecarFieldValue(fields, field, value);
+  return fields;
+}
+
 interface HealthGroup {
   key: string;
   rootId: string;
@@ -174,11 +265,13 @@ function candidateValues(
   return title === "Not set" ? undefined : { title, values };
 }
 
-const HealthLookupDialog = component$<{
-  provider: ProviderDefinition;
+const ExternalProvidersDialog = component$<{
+  issue: MetadataHealthIssue;
+  mediaKind: MediaKind;
+  providers: ProviderDefinition[];
+  primary: ProviderDefinition;
   itemId: string;
   query: string;
-  issue: MetadataHealthIssue;
   onSelect$: QRL<(value: unknown, source: string) => void>;
   onClose$: QRL<() => void>;
 }>((props) => {
@@ -188,6 +281,19 @@ const HealthLookupDialog = component$<{
     candidates: [] as OnlineMetadataCandidate[],
     query: props.query,
   });
+  const recommended = candidateSources(
+    props.providers,
+    props.mediaKind,
+    props.issue.field ?? "",
+  );
+  const lookupSupported = [
+    "tmdb",
+    "musicbrainz",
+    "open-library",
+    "google-books",
+  ].includes(props.primary.id);
+  const searchable =
+    lookupSupported && props.primary.implementationStatus === "active";
 
   const search = $(async () => {
     if (!state.query.trim()) return;
@@ -196,7 +302,7 @@ const HealthLookupDialog = component$<{
     state.candidates = [];
     try {
       let raw: Record<string, unknown>[] = [];
-      switch (props.provider.id) {
+      switch (props.primary.id) {
         case "tmdb": {
           const result = await api<{ results: Record<string, unknown>[] }>(
             "/provider-lookups/tmdb/search",
@@ -243,11 +349,11 @@ const HealthLookupDialog = component$<{
         }
         default:
           throw new Error(
-            `${props.provider.name} lookup is not available here.`,
+            `${props.primary.name} lookup is not available here.`,
           );
       }
       state.candidates = raw.flatMap((candidate) => {
-        const normalized = candidateValues(props.provider.id, candidate);
+        const normalized = candidateValues(props.primary.id, candidate);
         return normalized ? [normalized] : [];
       });
     } catch (error) {
@@ -257,7 +363,9 @@ const HealthLookupDialog = component$<{
     }
   });
 
-  useVisibleTask$(() => search());
+  useVisibleTask$(() => {
+    if (searchable) void search();
+  });
 
   return (
     <div class="dialog-backdrop" onClick$={props.onClose$}>
@@ -265,11 +373,11 @@ const HealthLookupDialog = component$<{
         class="dialog health-lookup-dialog"
         role="dialog"
         aria-modal="true"
-        aria-label={`Search ${props.provider.name}`}
+        aria-label="Find values from external providers"
         onClick$={(event) => event.stopPropagation()}
       >
         <div class="dialog-header">
-          <h3>{props.provider.name} results</h3>
+          <h3>Find from External Providers</h3>
           <button
             type="button"
             class="dialog-close"
@@ -281,77 +389,124 @@ const HealthLookupDialog = component$<{
         </div>
         <div class="dialog-body">
           <p class="dialog-context">{props.issue.title}</p>
-          <p class="health-lookup-note">
-            Online selections are comparison aids. Use Review metadata to make
-            an edit.
-          </p>
-          <form
-            class="health-lookup-query"
-            preventdefault:submit
-            onSubmit$={search}
-          >
-            <label>
-              <span>Search {props.provider.name}</span>
-              <input
-                value={state.query}
-                maxLength={500}
-                onInput$={(_, input) => (state.query = input.value)}
-              />
-            </label>
-            <button
-              class="secondary-button"
-              type="submit"
-              disabled={state.loading || !state.query.trim()}
-            >
-              {state.loading ? "Searching…" : "Search"}
-            </button>
-          </form>
-          {state.loading ? (
-            <p role="status" aria-busy="true">
-              Searching {props.provider.name}…
-            </p>
-          ) : null}
-          {state.error && (
-            <p class="health-lookup-error" role="alert">
-              {state.error}
-            </p>
-          )}
-          {!state.loading && !state.error && state.candidates.length === 0 && (
-            <p>No matching online metadata was found.</p>
-          )}
-          <ul class="health-lookup-results">
-            {state.candidates.map((candidate, index) => (
-              <li key={`${candidate.title}-${index}`}>
-                <strong>{candidate.title}</strong>
-                <dl>
-                  {Object.entries(candidate.values).map(([field, value]) => (
-                    <div key={field}>
-                      <dt>{field}</dt>
-                      <dd>{displayValue(value)}</dd>
-                    </div>
-                  ))}
-                </dl>
-                {props.issue.field && props.issue.field in candidate.values ? (
-                  <button
-                    type="button"
-                    class="secondary-button health-lookup-select"
-                    onClick$={() => {
-                      props.onSelect$(
-                        candidate.values[props.issue.field!],
-                        props.provider.name,
-                      );
-                      props.onClose$();
-                    }}
-                  >
-                    Use {props.issue.field} value
-                  </button>
-                ) : (
-                  <small>
-                    This result has no {props.issue.field ?? "matching"} value.
-                  </small>
+          {searchable ? (
+            <>
+              <p class="health-lookup-note">
+                Online selections are comparison aids. Use Review metadata to
+                make an edit.
+              </p>
+              <form
+                class="health-lookup-query"
+                preventdefault:submit
+                onSubmit$={search}
+              >
+                <label>
+                  <span>Search {props.primary.name}</span>
+                  <input
+                    value={state.query}
+                    maxLength={500}
+                    onInput$={(_, input) => (state.query = input.value)}
+                  />
+                </label>
+                <button
+                  class="secondary-button"
+                  type="submit"
+                  disabled={state.loading || !state.query.trim()}
+                >
+                  {state.loading ? "Searching…" : "Search"}
+                </button>
+              </form>
+              {state.loading ? (
+                <p role="status" aria-busy="true">
+                  Searching {props.primary.name}…
+                </p>
+              ) : null}
+              {state.error && (
+                <p class="health-lookup-error" role="alert">
+                  {state.error}
+                </p>
+              )}
+              {!state.loading &&
+                !state.error &&
+                state.candidates.length === 0 && (
+                  <p>No matching online metadata was found.</p>
                 )}
-              </li>
-            ))}
+              <ul class="health-lookup-results">
+                {state.candidates.map((candidate, index) => (
+                  <li key={`${candidate.title}-${index}`}>
+                    <strong>{candidate.title}</strong>
+                    <dl>
+                      {Object.entries(candidate.values).map(
+                        ([field, value]) => (
+                          <div key={field}>
+                            <dt>{field}</dt>
+                            <dd>{displayValue(value)}</dd>
+                          </div>
+                        ),
+                      )}
+                    </dl>
+                    {props.issue.field &&
+                    props.issue.field in candidate.values ? (
+                      <button
+                        type="button"
+                        class="secondary-button health-lookup-select"
+                        onClick$={() => {
+                          props.onSelect$(
+                            candidate.values[props.issue.field!],
+                            props.primary.name,
+                          );
+                          props.onClose$();
+                        }}
+                      >
+                        Use {props.issue.field} value
+                      </button>
+                    ) : (
+                      <small>
+                        This result has no {props.issue.field ?? "matching"}{" "}
+                        value.
+                      </small>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : (
+            <p class="health-lookup-note">
+              {props.primary.name} is not set up yet. Configure it below to
+              search online metadata for this item.
+            </p>
+          )}
+          <ul class="health-source-list">
+            {recommended.map((provider) => {
+              const status = sourceStatus(provider);
+              return (
+                <li key={provider.id}>
+                  <div class="health-source-heading">
+                    <strong>{provider.name}</strong>
+                    <span class={sourceStatusClass(status)}>
+                      {status.label}
+                    </span>
+                  </div>
+                  <p>{provider.notes}</p>
+                  <div class="health-source-links">
+                    <a
+                      href={provider.documentationUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Documentation
+                    </a>
+                    <a
+                      href={provider.setupUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Open provider setup
+                    </a>
+                  </div>
+                </li>
+              );
+            })}
           </ul>
           <a class="health-source-manage" href="?view=accounts">
             Manage metadata sources
@@ -435,84 +590,6 @@ const HealthArtwork = component$<{ itemId: string }>((props) => {
   );
 });
 
-const AlternativeSourcesDialog = component$<{
-  issue: MetadataHealthIssue;
-  mediaKind: MediaKind;
-  providers: ProviderDefinition[];
-  onClose$: QRL<() => void>;
-}>((props) => {
-  const recommended = candidateSources(
-    props.providers,
-    props.mediaKind,
-    props.issue.field ?? "",
-  );
-  const primary = recommended[0];
-  const alternatives = primary
-    ? recommended.filter((provider) => provider.id !== primary.id)
-    : recommended;
-  return (
-    <div class="dialog-backdrop" onClick$={props.onClose$}>
-      <div
-        class="dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-label="Alternative sources"
-        onClick$={(event) => event.stopPropagation()}
-      >
-        <div class="dialog-header">
-          <h3>Alternative sources</h3>
-          <button
-            type="button"
-            class="dialog-close"
-            onClick$={props.onClose$}
-            aria-label="Close"
-          >
-            ×
-          </button>
-        </div>
-        <div class="dialog-body">
-          <p class="dialog-context">{props.issue.title}</p>
-          <ul class="health-source-list">
-            {alternatives.map((provider) => {
-              const status = sourceStatus(provider);
-              return (
-                <li key={provider.id}>
-                  <div class="health-source-heading">
-                    <strong>{provider.name}</strong>
-                    <span class={sourceStatusClass(status)}>
-                      {status.label}
-                    </span>
-                  </div>
-                  <p>{provider.notes}</p>
-                  <div class="health-source-links">
-                    <a
-                      href={provider.documentationUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      Documentation
-                    </a>
-                    <a
-                      href={provider.setupUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      Open provider setup
-                    </a>
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-          <a class="health-source-manage" href="?view=accounts">
-            Manage metadata sources
-          </a>
-        </div>
-      </div>
-    </div>
-  );
-});
-
 export const MetadataHealthView = component$<{
   roots: HealthRoot[];
   initialRootId?: string;
@@ -533,19 +610,18 @@ export const MetadataHealthView = component$<{
     providers: ProviderDefinition[];
     loaded: boolean;
   }>({ providers: [], loaded: false });
-  const alternativesFor = useSignal<{
+  const providersDialogFor = useSignal<{
     issue: MetadataHealthIssue;
     mediaKind: MediaKind;
-  } | null>(null);
-  const lookupFor = useSignal<{
-    provider: ProviderDefinition;
-    issue: MetadataHealthIssue;
+    primary: ProviderDefinition;
     itemId: string;
     query: string;
   } | null>(null);
   const onlineSelections = useStore<
     Record<string, { value: unknown; source: string }>
   >({});
+  const feedback = useStore({ error: "", notice: "" });
+  const applyingValue = useSignal(false);
 
   const inspectLibraries = $(async (rootId: string) => {
     const revision = ++requestRevision.value;
@@ -620,11 +696,77 @@ export const MetadataHealthView = component$<{
     }
   });
 
+  const applyValue$ = $(
+    async (
+      value: unknown,
+      origin: "Current" | "Proposed",
+      issue: MetadataHealthIssue,
+      itemId: string,
+    ) => {
+      if (!props.canEdit || applyingValue.value) return;
+      const field = issue.field ?? "";
+      if (!field || !isSettableField(field)) return;
+      if (isUnset(value)) {
+        if (
+          typeof window !== "undefined" &&
+          !window.confirm(
+            `The ${origin.toLowerCase()} value is not set. Setting it will clear the “${field}” field for this item. Continue?`,
+          )
+        )
+          return;
+      }
+      applyingValue.value = true;
+      feedback.error = "";
+      feedback.notice = "";
+      try {
+        const details = await api<Record<string, unknown>>(
+          `/items/${encodeURIComponent(itemId)}/metadata`,
+        );
+        const fields = sidecarFieldsFromMetadata(details, field, value);
+        const preview = await api<MutationPreview>(
+          `/items/${encodeURIComponent(itemId)}/metadata/sidecar`,
+          {
+            method: "POST",
+            body: JSON.stringify(fields),
+          },
+        );
+        await api(`/plans/${encodeURIComponent(preview.id)}/confirm`, {
+          method: "POST",
+          headers: { "if-match": `"${preview.digest}"` },
+        });
+        feedback.notice = `The ${origin.toLowerCase()} “${field}” value was queued for this item. See Activity to revisit the decision.`;
+      } catch (error) {
+        feedback.error = readableError(error);
+      } finally {
+        applyingValue.value = false;
+      }
+    },
+  );
+
   return (
     <section
       class="health-page"
       aria-busy={inspection.loading || inbox.scanning}
     >
+      {feedback.error && (
+        <div class="message error" role="alert">
+          <Icon name="alert" size={18} />
+          <span>{feedback.error}</span>
+          <button
+            type="button"
+            aria-label="Dismiss error"
+            onClick$={() => (feedback.error = "")}
+          >
+            ×
+          </button>
+        </div>
+      )}
+      {feedback.notice && (
+        <div class="message success" role="status">
+          <Icon name="check" size={18} />
+          <span>{feedback.notice}</span>
+        </div>
+      )}
       <div class="health-toolbar">
         <label>
           <span>Library</span>
@@ -722,18 +864,31 @@ export const MetadataHealthView = component$<{
                       )
                     : [];
                   const primary = sources[0];
-                  const primaryStatus = primary ? sourceStatus(primary) : null;
-                  const lookupSupported = Boolean(
-                    primary &&
-                      [
-                        "tmdb",
-                        "musicbrainz",
-                        "open-library",
-                        "google-books",
-                      ].includes(primary.id),
-                  );
                   const selectedOnline =
                     onlineSelections[`${group.key}:${key}`];
+                  const renderValueButton = (
+                    value: unknown,
+                    origin: "Current" | "Proposed",
+                  ) => {
+                    if (!props.canEdit || !isSettableField(field)) {
+                      return (
+                        <p class="health-value-text">{renderValue(value)}</p>
+                      );
+                    }
+                    return (
+                      <button
+                        type="button"
+                        class="health-value-set"
+                        disabled={applyingValue.value}
+                        title={`Set this ${origin.toLowerCase()} value for “${field}”`}
+                        onClick$={() =>
+                          applyValue$(value, origin, issue, first.itemId)
+                        }
+                      >
+                        {renderValue(value)}
+                      </button>
+                    );
+                  };
                   return (
                     <section
                       class="health-result-issue"
@@ -745,16 +900,10 @@ export const MetadataHealthView = component$<{
                           "health-comparison-split": compares,
                         }}
                       >
-                        <div class="health-reason">
-                          <h4>{issue.title}</h4>
-                          {!compares && <p>{issue.message}</p>}
-                        </div>
                         {compares && (
                           <div class="health-value">
                             <span class="health-value-label">Current</span>
-                            <p class="health-value-text">
-                              {renderValue(issue.currentValue)}
-                            </p>
+                            {renderValueButton(issue.currentValue, "Current")}
                             {!!issue.currentSources?.length && (
                               <small>{issue.currentSources.join(" · ")}</small>
                             )}
@@ -766,9 +915,10 @@ export const MetadataHealthView = component$<{
                             {issue.proposedValues?.length ? (
                               issue.proposedValues.map((candidate, index) => (
                                 <div class="health-candidate" key={index}>
-                                  <p class="health-value-text">
-                                    {renderValue(candidate.value)}
-                                  </p>
+                                  {renderValueButton(
+                                    candidate.value,
+                                    "Proposed",
+                                  )}
                                 </div>
                               ))
                             ) : (
@@ -788,70 +938,43 @@ export const MetadataHealthView = component$<{
                                 <small>{selectedOnline.source}</small>
                               </div>
                             )}
-                            {primary && primaryStatus && (
-                              <>
-                                <p class="health-source">
-                                  {lookupSupported ? (
-                                    <button
-                                      type="button"
-                                      class="health-source-trigger"
-                                      disabled={
-                                        !props.canEdit ||
-                                        primary.implementationStatus !==
-                                          "active"
-                                      }
-                                      title={
-                                        !props.canEdit
-                                          ? "Metadata lookup requires editor access."
-                                          : undefined
-                                      }
-                                      onClick$={() => {
-                                        if (!props.canEdit) return;
-                                        lookupFor.value = {
-                                          provider: primary,
-                                          issue,
-                                          itemId: first.itemId,
-                                          query: groupHeading(group).text,
-                                        };
-                                      }}
-                                    >
-                                      Retrieve from {primary.name}
-                                    </button>
-                                  ) : (
-                                    <>
-                                      Retrieve from{" "}
-                                      <strong>{primary.name}</strong>
-                                    </>
-                                  )}
-                                  <span
-                                    class={sourceStatusClass(primaryStatus)}
-                                  >
-                                    {primaryStatus.label}
-                                  </span>
-                                </p>
-                                {sources.length > 1 && (
-                                  <button
-                                    type="button"
-                                    class="health-alt-sources"
-                                    onClick$={() =>
-                                      (alternativesFor.value = {
-                                        issue,
-                                        mediaKind: first.mediaKind,
-                                      })
-                                    }
-                                  >
-                                    Alternative Sources
-                                  </button>
-                                )}
-                              </>
+                            {primary && (
+                              <p class="health-source">
+                                <button
+                                  type="button"
+                                  class="health-source-trigger"
+                                  disabled={!props.canEdit}
+                                  title={
+                                    !props.canEdit
+                                      ? "Metadata lookup requires editor access."
+                                      : undefined
+                                  }
+                                  onClick$={() => {
+                                    if (!props.canEdit) return;
+                                    providersDialogFor.value = {
+                                      issue,
+                                      mediaKind: first.mediaKind,
+                                      primary,
+                                      itemId: first.itemId,
+                                      query: groupHeading(group).text,
+                                    };
+                                  }}
+                                >
+                                  Find from External Providers
+                                </button>
+                              </p>
                             )}
                           </div>
                         )}
-                        {compares && (
-                          <div class="health-provenance">
-                            <p>{proposedProvenance(issue)}</p>
-                          </div>
-                        )}
+                        <div class="health-reason">
+                          <h4>{issue.title}</h4>
+                          {!compares && <p>{issue.message}</p>}
+                          {compares && (
+                            <div class="health-provenance">
+                              <p>{proposedProvenance(issue)}</p>
+                            </div>
+                          )}
+                        </div>
                       </div>
                       {(issue.affectedFiles?.length ?? 0) > 0 && (
                         <details class="health-file-details">
@@ -898,22 +1021,16 @@ export const MetadataHealthView = component$<{
           );
         })}
       </div>
-      {alternativesFor.value && (
-        <AlternativeSourcesDialog
-          issue={alternativesFor.value.issue}
-          mediaKind={alternativesFor.value.mediaKind}
+      {providersDialogFor.value && (
+        <ExternalProvidersDialog
+          issue={providersDialogFor.value.issue}
+          mediaKind={providersDialogFor.value.mediaKind}
           providers={providerCatalog.providers}
-          onClose$={() => (alternativesFor.value = null)}
-        />
-      )}
-      {lookupFor.value && (
-        <HealthLookupDialog
-          provider={lookupFor.value.provider}
-          issue={lookupFor.value.issue}
-          itemId={lookupFor.value.itemId}
-          query={lookupFor.value.query}
+          primary={providersDialogFor.value.primary}
+          itemId={providersDialogFor.value.itemId}
+          query={providersDialogFor.value.query}
           onSelect$={(value, source) => {
-            const active = lookupFor.value;
+            const active = providersDialogFor.value;
             if (!active) return;
             const issueKey = JSON.stringify([
               active.issue.code,
@@ -929,7 +1046,7 @@ export const MetadataHealthView = component$<{
             if (group)
               onlineSelections[`${group.key}:${issueKey}`] = { value, source };
           }}
-          onClose$={() => (lookupFor.value = null)}
+          onClose$={() => (providersDialogFor.value = null)}
         />
       )}
     </section>

@@ -364,9 +364,7 @@ it("names the recommended source for a missing field and lists the alternatives"
 
   await vi.waitFor(async () => {
     await userEvent(screen, "click");
-    expect(screen.textContent).toContain("Retrieve from");
-    expect(screen.textContent).toContain("Open Library");
-    expect(screen.textContent).toContain("No setup needed");
+    expect(screen.textContent).toContain("Find from External Providers");
   });
 
   await userEvent(screen.querySelector(".health-source-trigger"), "click");
@@ -382,6 +380,17 @@ it("names the recommended source for a missing field and lists the alternatives"
   ).toBe(
     "Online selections are comparison aids. Use Review metadata to make an edit.",
   );
+  const dialog = screen.querySelector('[role="dialog"]');
+  expect(dialog?.textContent).toContain("Find from External Providers");
+  expect(dialog?.textContent).toContain("Author or creator is missing");
+  expect(dialog?.textContent).toContain("Open Library");
+  expect(dialog?.textContent).toContain("No setup needed");
+  expect(dialog?.textContent).toContain("Audnexus");
+  expect(dialog?.textContent).toContain("Coming soon");
+  const documentation = screen.querySelector(
+    '.health-source-links a[href="https://api.audnex.us/"]',
+  );
+  expect(documentation).toBeTruthy();
   await userEvent(
     screen.querySelector('[role="dialog"] .dialog-close'),
     "click",
@@ -389,19 +398,6 @@ it("names the recommended source for a missing field and lists the alternatives"
   await vi.waitFor(() =>
     expect(screen.querySelector('[role="dialog"]')).toBeFalsy(),
   );
-
-  await userEvent(screen.querySelector(".health-alt-sources"), "click");
-  await vi.waitFor(() =>
-    expect(screen.querySelector('[role="dialog"]')).toBeTruthy(),
-  );
-  expect(screen.textContent).toContain("Alternative sources");
-  expect(screen.textContent).toContain("Author or creator is missing");
-  expect(screen.textContent).toContain("Audnexus");
-  expect(screen.textContent).toContain("Coming soon");
-  const documentation = screen.querySelector(
-    '.health-source-links a[href="https://api.audnex.us/"]',
-  );
-  expect(documentation).toBeTruthy();
 });
 
 it("explains conflicting proposals in prose beside the compared values", async () => {
@@ -447,6 +443,105 @@ it("explains conflicting proposals in prose beside the compared values", async (
   expect(screen.querySelector(".health-value-text")?.textContent).toBe(
     "Not set",
   );
+});
+
+it("queues a metadata change when a proposed value is clicked", async () => {
+  const fetchMock = vi.fn(
+    async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.includes("/provider-accounts"))
+        return new Response(wireJson(providerCatalog(OPEN_LIBRARY)));
+      if (path.endsWith("/metadata"))
+        return new Response(
+          wireJson({
+            mediaType: "audiobook",
+            title: "Lawson",
+            authors: [],
+            narrators: [],
+            genres: [],
+            writers: [],
+            providerIds: {},
+            sources: ["sidecar"],
+          }),
+        );
+      if (path.endsWith("/metadata/sidecar"))
+        return new Response(
+          wireJson({
+            id: "health-plan",
+            digest: "digest-1",
+            expiresAt: 0,
+            actions: [],
+          }),
+          { status: 201 },
+        );
+      if (path.includes("/plans/health-plan/confirm"))
+        return new Response(wireJson({ id: "health-plan", state: "queued" }), {
+          status: 202,
+        });
+      const response = await healthResponse(
+        "lawson-01",
+        "Author or creator is missing",
+      );
+      const payload = await response.json();
+      payload.results[0].mediaKind = "audiobook";
+      payload.results[0].health[0] = {
+        code: "missing-authors",
+        severity: "warning",
+        field: "authors",
+        title: "Author or creator is missing",
+        message: "Add a portable creator so the item remains identifiable.",
+        sources: ["filename"],
+        currentValue: null,
+        proposedValues: [
+          { value: "Grantlee Kieza", sources: ["Embedded audio tags"] },
+        ],
+      };
+      return new Response(wireJson(payload));
+    },
+  );
+  vi.stubGlobal("fetch", fetchMock);
+
+  const { render, screen, userEvent } = await createDOM();
+  await render(
+    <MetadataHealthView
+      roots={[{ id: "audiobooks", label: "Audiobooks" }]}
+      canEdit
+    />,
+  );
+  await vi.waitFor(async () => {
+    await userEvent(screen, "click");
+    expect(screen.textContent).toContain("Grantlee Kieza");
+  });
+
+  const proposedButton = Array.from(
+    screen.querySelectorAll(".health-value-set"),
+  ).find((button) => button.textContent === "Grantlee Kieza");
+  expect(proposedButton).toBeTruthy();
+  await userEvent(proposedButton!, "click");
+  await vi.waitFor(() =>
+    expect(screen.textContent).toContain(
+      "See Activity to revisit the decision.",
+    ),
+  );
+
+  const sidecarCall = fetchMock.mock.calls.find(
+    ([path, init]) =>
+      String(path).endsWith("/metadata/sidecar") && init?.method === "POST",
+  );
+  expect(sidecarCall).toBeTruthy();
+  expect(JSON.parse(String(sidecarCall![1]?.body))).toMatchObject({
+    title: "Lawson",
+    authors: ["Grantlee Kieza"],
+  });
+  const confirmCall = fetchMock.mock.calls.find(
+    ([path, init]) =>
+      String(path).includes("/plans/health-plan/confirm") &&
+      init?.method === "POST",
+  );
+  expect(confirmCall).toBeTruthy();
+  const confirmInit = confirmCall![1];
+  expect(confirmInit?.method).toBe("POST");
+  expect(new Headers(confirmInit?.headers).get("if-match")).toBe('"digest-1"');
 });
 
 const OPEN_LIBRARY = {
