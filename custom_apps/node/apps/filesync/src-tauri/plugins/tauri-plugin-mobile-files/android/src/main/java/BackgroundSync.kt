@@ -343,6 +343,7 @@ internal object SyncEngine {
 
   private fun listLocalFiles(context: Context, folderUri: String): List<Entry> {
     val tree = Uri.parse(folderUri)
+    if (tree.scheme == "file") return listLocalFilesFile(File(requireNotNull(tree.path) { "The selected folder is invalid." }))
     val result = mutableListOf<Entry>()
     fun walk(parentId: String, prefix: String) {
       val children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, parentId)
@@ -370,6 +371,31 @@ internal object SyncEngine {
     return result
   }
 
+  private fun listLocalFilesFile(dir: File): List<Entry> {
+    if (!dir.isDirectory) throw SyncFailure("The selected folder cannot be listed. Reauthorize it in File Sync.", false)
+    val result = mutableListOf<Entry>()
+    fun walk(dir: File, prefix: String) {
+      val children = dir.listFiles() ?: throw SyncFailure("The selected folder cannot be listed. Reauthorize it in File Sync.", false)
+      for (child in children) {
+        val name = child.name
+        if (name.isBlank() || name == "." || name == ".." || name.contains('/')) continue
+        val path = join(prefix, name)
+        if (child.isDirectory) {
+          walk(child, path)
+        } else {
+          val checksum = try {
+            sha256(child)
+          } catch (error: java.io.IOException) {
+            throw SyncFailure("A file in the selected folder cannot be read.", false)
+          }
+          result.add(Entry(path, "file", checksum))
+        }
+      }
+    }
+    walk(dir, "")
+    return result
+  }
+
   private fun hashDocument(context: Context, uri: Uri): String {
     val digest = MessageDigest.getInstance("SHA-256")
     context.contentResolver.openInputStream(uri)?.use { input ->
@@ -381,6 +407,16 @@ internal object SyncEngine {
 
   private fun stageLocalFile(context: Context, folderUri: String, relative: String, expectedHash: String): File {
     val tree = Uri.parse(folderUri)
+    if (tree.scheme == "file") {
+      val source = File(File(requireNotNull(tree.path) { "The selected folder is invalid." }), relative)
+      if (!source.isFile) throw SyncFailure("Selected file no longer exists: $relative", false)
+      val target = File.createTempFile("filesync-", ".upload", context.cacheDir)
+      try {
+        FileInputStream(source).use { input -> FileOutputStream(target).use { input.copyTo(it) } }
+        if (sha256(target) != expectedHash) throw SyncFailure("A local file changed while sync was preparing it. It will be checked again later.", true)
+        return target
+      } catch (error: Exception) { target.delete(); throw error }
+    }
     val document = resolveDocument(context, tree, relative)
     val target = File.createTempFile("filesync-", ".upload", context.cacheDir)
     try {
@@ -393,6 +429,10 @@ internal object SyncEngine {
 
   private fun installLocalFile(context: Context, folderUri: String, relative: String, staged: File) {
     val tree = Uri.parse(folderUri)
+    if (tree.scheme == "file") {
+      installLocalFileFile(File(requireNotNull(tree.path) { "The selected folder is invalid." }), safePath(relative).split('/'), staged)
+      return
+    }
     val parts = safePath(relative).split('/')
     var parentId = DocumentsContract.getTreeDocumentId(tree)
     for (part in parts.dropLast(1)) {
@@ -438,6 +478,36 @@ internal object SyncEngine {
     }
   }
 
+  private fun installLocalFileFile(dir: File, parts: List<String>, staged: File) {
+    var current = dir
+    for (part in parts.dropLast(1)) {
+      current = File(current, part)
+      if (!current.isDirectory && !current.mkdir()) throw SyncFailure("Could not create a destination folder: $part", true)
+    }
+    val temporary = File.createTempFile(".filesync-", ".tmp", current)
+    try {
+      FileInputStream(staged).use { input -> FileOutputStream(temporary).use { input.copyTo(it) } }
+      val target = File(current, parts.last())
+      val existing = if (target.isFile) target else null
+      if (existing != null) {
+        val backup = File(current, ".filesync-${System.nanoTime()}.backup")
+        if (!existing.renameTo(backup)) throw SyncFailure("The selected folder cannot safely replace an existing file.", false)
+        try {
+          if (!temporary.renameTo(target)) throw SyncFailure("Could not install the downloaded file.", true)
+        } catch (error: Exception) {
+          backup.renameTo(target)
+          throw error
+        }
+        backup.delete()
+      } else if (!temporary.renameTo(target)) {
+        throw SyncFailure("Could not install the downloaded file.", true)
+      }
+    } catch (error: Exception) {
+      temporary.delete()
+      throw error
+    }
+  }
+
   private fun resolveDocument(context: Context, tree: Uri, relative: String): Uri {
     var parentId = DocumentsContract.getTreeDocumentId(tree)
     var found: Uri? = null
@@ -465,6 +535,7 @@ internal object SyncEngine {
 
   private fun hasTreeGrant(context: Context, raw: String): Boolean {
     val uri = Uri.parse(raw)
+    if (uri.scheme == "file") return hasStorageAccess(context)
     if (uri.authority == EXTERNAL_STORAGE_PROVIDER && hasStorageAccess(context)) return true
     return context.contentResolver.persistedUriPermissions.any { it.uri == uri && it.isReadPermission && it.isWritePermission }
   }

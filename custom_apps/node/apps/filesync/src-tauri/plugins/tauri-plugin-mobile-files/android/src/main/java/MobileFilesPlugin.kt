@@ -134,8 +134,7 @@ class MobileFilesPlugin(private val activity: Activity) : Plugin(activity) {
       if (!folder.exists() && !folder.mkdirs()) {
         throw IllegalStateException("The folder could not be created on this device")
       }
-      val tree = DocumentsContract.buildTreeDocumentUri("com.android.externalstorage.documents", "primary:$subpath")
-      invoke.resolveObject(mapOf("value" to mapOf("uri" to tree.toString(), "displayName" to "This device")))
+      invoke.resolveObject(mapOf("value" to mapOf("uri" to Uri.fromFile(folder).toString(), "displayName" to "This device")))
     } catch (error: Exception) {
       invoke.reject("Could not create the folder on this device", error, null)
     }
@@ -185,7 +184,11 @@ class MobileFilesPlugin(private val activity: Activity) : Plugin(activity) {
     try {
       val root = Uri.parse(invoke.getArgs().getString("folderUri"))
       val result = mutableListOf<Map<String, Any>>()
-      walkTree(root, DocumentsContract.getTreeDocumentId(root), "", result)
+      if (root.scheme == "file") {
+        collectLocalFilesFile(File(requireNotNull(root.path) { "The selected folder is invalid." }), "", result)
+      } else {
+        walkTree(root, DocumentsContract.getTreeDocumentId(root), "", result)
+      }
       invoke.resolveObject(mapOf("entries" to result))
     } catch (error: Exception) {
       invoke.reject("Could not read the selected folder", error, null)
@@ -196,11 +199,18 @@ class MobileFilesPlugin(private val activity: Activity) : Plugin(activity) {
   fun stageLocalFile(invoke: Invoke) {
     try {
       val root = Uri.parse(invoke.getArgs().getString("folderUri"))
-      val uri = resolveDocument(root, invoke.getArgs().getString("relativePath"))
+      val relativePath = invoke.getArgs().getString("relativePath")
       val target = File(activity.cacheDir, "filesync-${java.util.UUID.randomUUID()}.stage")
-      activity.contentResolver.openInputStream(uri).use { input ->
-        requireNotNull(input) { "The selected file could not be opened" }
-        FileOutputStream(target).use { output -> input.copyTo(output) }
+      if (root.scheme == "file") {
+        val source = File(File(requireNotNull(root.path) { "The selected folder is invalid." }), relativePath)
+        require(source.isFile) { "The selected file could not be opened" }
+        FileInputStream(source).use { input -> FileOutputStream(target).use { input.copyTo(it) } }
+      } else {
+        val uri = resolveDocument(root, relativePath)
+        activity.contentResolver.openInputStream(uri).use { input ->
+          requireNotNull(input) { "The selected file could not be opened" }
+          FileOutputStream(target).use { output -> input.copyTo(output) }
+        }
       }
       invoke.resolveObject(mapOf("value" to target.absolutePath))
     } catch (error: Exception) {
@@ -214,10 +224,16 @@ class MobileFilesPlugin(private val activity: Activity) : Plugin(activity) {
     try {
       val root = Uri.parse(invoke.getArgs().getString("folderUri"))
       val relativePath = invoke.getArgs().getString("relativePath")
-      val uri = createTemporaryDocument(root, relativePath)
-      temporary = uri
       val source = File(invoke.getArgs().getString("stagedPath"))
       require(source.isFile && source.canonicalPath.startsWith(activity.cacheDir.canonicalPath + File.separator)) { "The staged file is invalid" }
+      if (root.scheme == "file") {
+        installLocalFileFile(File(requireNotNull(root.path) { "The selected folder is invalid." }), safeRelative(relativePath), source)
+        source.delete()
+        invoke.resolve()
+        return
+      }
+      val uri = createTemporaryDocument(root, relativePath)
+      temporary = uri
       activity.contentResolver.openOutputStream(uri, "wt").use { output ->
         requireNotNull(output) { "The destination file could not be opened" }
         FileInputStream(source).use { input -> input.copyTo(output) }
@@ -336,6 +352,61 @@ class MobileFilesPlugin(private val activity: Activity) : Plugin(activity) {
         if (isDirectory) walkTree(tree, id, path, result)
       }
     } ?: throw IllegalStateException("The selected folder cannot be listed")
+  }
+
+  private fun collectLocalFilesFile(dir: File, prefix: String, result: MutableList<Map<String, Any>>) {
+    val children = dir.listFiles() ?: throw IllegalStateException("The selected folder cannot be listed")
+    for (child in children) {
+      val name = child.name
+      if (name.isBlank() || name == "." || name == ".." || name.contains('/')) continue
+      val path = if (prefix.isEmpty()) name else "$prefix/$name"
+      val isDirectory = child.isDirectory
+      val sha256 = if (isDirectory) "" else {
+        val digest = MessageDigest.getInstance("SHA-256")
+        FileInputStream(child).use { input ->
+          val buffer = ByteArray(64 * 1024)
+          while (true) {
+            val count = input.read(buffer)
+            if (count < 0) break
+            digest.update(buffer, 0, count)
+          }
+        }
+        digest.digest().joinToString("") { byte -> "%02x".format(byte) }
+      }
+      result.add(mapOf("path" to path, "kind" to if (isDirectory) "directory" else "file",
+        "size" to if (isDirectory) 0L else child.length(), "modifiedUnixMs" to child.lastModified(), "sha256" to sha256))
+      if (isDirectory) collectLocalFilesFile(child, path, result)
+    }
+  }
+
+  private fun installLocalFileFile(dir: File, parts: List<String>, source: File) {
+    var current = dir
+    for (part in parts.dropLast(1)) {
+      current = File(current, part)
+      if (!current.isDirectory && !current.mkdir()) throw IllegalStateException("Could not create a destination folder")
+    }
+    val temporary = File.createTempFile(".filesync-", ".tmp", current)
+    try {
+      FileInputStream(source).use { input -> FileOutputStream(temporary).use { input.copyTo(it) } }
+      val target = File(current, parts.last())
+      val existing = if (target.isFile) target else null
+      if (existing != null) {
+        val backup = File(current, ".filesync-${java.util.UUID.randomUUID()}.backup")
+        if (!existing.renameTo(backup)) throw IllegalStateException("The selected folder cannot safely replace an existing file")
+        try {
+          if (!temporary.renameTo(target)) throw IllegalStateException("Could not install the downloaded file")
+        } catch (error: Exception) {
+          backup.renameTo(target)
+          throw error
+        }
+        backup.delete()
+      } else if (!temporary.renameTo(target)) {
+        throw IllegalStateException("Could not install the downloaded file")
+      }
+    } catch (error: Exception) {
+      temporary.delete()
+      throw error
+    }
   }
 
   private fun resolveDocument(tree: Uri, relativePath: String): Uri {
