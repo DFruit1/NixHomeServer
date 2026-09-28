@@ -718,8 +718,9 @@ fn format_bytes(value: u64) -> String {
     }
 }
 
-#[cfg(not(target_os = "android"))]
 fn desktop_fs_space(folder_uri: &str) -> Result<(u64, u64), String> {
+    // Shared with the Android build (where the estimators below are dead code):
+    // statvfs exists on both Linux and Android, so this stays ungated.
     use std::os::unix::ffi::OsStrExt;
     let base = if folder_uri.is_empty() {
         std::env::temp_dir()
