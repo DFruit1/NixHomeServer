@@ -2,28 +2,65 @@ import './styles.css';
 import { getCurrent, onOpenUrl } from '@tauri-apps/plugin-deep-link';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { parseSavedPairs, type Folder, type SyncDirection, type SyncPair } from './pairs';
+import { DEFAULT_BLOCK_PERCENT, DEFAULT_WARN_PERCENT, clampPercent, evaluateSpace, formatBytes } from './storage';
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 type TauriWindow = Window & { __TAURI__?: { core?: { invoke?: Invoke } } };
 type SyncPreset = { id: string; folder: string; service: string; serviceTitle: string; title: string; description: string; serverPath: string; localSubpath: string; direction: SyncDirection };
 type ServerEntry = { name: string; path: string; kind: string; size: number; modifiedUnixMs: number };
 type SyncProgress = { active: boolean; pair: string; pairs: string[]; direction: string; currentFile: string; transferred: number; skipped: number };
+type SyncEstimate = { pendingBytes: number; pendingCount: number; skipped: number; direction: string; freeBytes: number; totalBytes: number };
+type DeviceStorage = { freeBytes: number; totalBytes: number };
 
 const invoke = (window as TauriWindow).__TAURI__?.core?.invoke;
 const STORAGE_KEY = 'nixhomeserver.filesync.pairs.v1';
 const SETTINGS_KEY = 'nixhomeserver.filesync.server.v1';
 const SESSION_BACKUP_KEY = 'nixhomeserver.filesync.session-backup.v1';
+const SPACE_PREFS_KEY = 'nixhomeserver.filesync.space-limits.v1';
 const DEFAULT_SERVER = import.meta.env.VITE_FILESYNC_DEFAULT_SERVER ?? '';
 const app = document.querySelector<HTMLDivElement>('#app')!;
 
-const state: { pairs: SyncPair[]; presets: SyncPreset[]; selectedService?: string; syncingPairId?: string; removingPairId?: string; progress?: SyncProgress; server: string; user?: string; settingsAuthorized: boolean; backgroundStatus?: string; error: string; notice: string } = {
+const state: { pairs: SyncPair[]; presets: SyncPreset[]; selectedService?: string; syncingPairId?: string; removingPairId?: string; progress?: SyncProgress; server: string; user?: string; settingsAuthorized: boolean; backgroundStatus?: string; error: string; notice: string; estimates: Record<string, SyncEstimate | undefined>; estimatesDone: Record<string, boolean>; deviceStorage?: DeviceStorage; warnPercent: number; blockPercent: number } = {
   pairs: readPairs(),
   presets: [],
   server: localStorage.getItem(SETTINGS_KEY) ?? DEFAULT_SERVER,
   settingsAuthorized: false,
   error: '',
   notice: '',
+  estimates: {},
+  estimatesDone: {},
+  ...readSpacePrefs(),
 };
+
+function readSpacePrefs(): { warnPercent: number; blockPercent: number } {
+  let saved: unknown = null;
+  try { saved = JSON.parse(localStorage.getItem(SPACE_PREFS_KEY) ?? 'null'); } catch { saved = null; }
+  const warnPercent = clampPercent((saved as { warnPercent?: unknown } | null)?.warnPercent, DEFAULT_WARN_PERCENT);
+  const blockPercent = clampPercent((saved as { blockPercent?: unknown } | null)?.blockPercent, DEFAULT_BLOCK_PERCENT);
+  if (blockPercent <= warnPercent) return { warnPercent: DEFAULT_WARN_PERCENT, blockPercent: DEFAULT_BLOCK_PERCENT };
+  return { warnPercent, blockPercent };
+}
+
+function limitsFor(pair: SyncPair): { storageWarn: number; storageBlock: number } {
+  const warn = typeof pair.storageWarn === 'number' && Number.isFinite(pair.storageWarn) ? pair.storageWarn : state.warnPercent / 100;
+  const block = typeof pair.storageBlock === 'number' && Number.isFinite(pair.storageBlock) ? pair.storageBlock : state.blockPercent / 100;
+  return { storageWarn: warn, storageBlock: block };
+}
+
+function currentLimits(): { storageWarn: number; storageBlock: number } {
+  return { storageWarn: state.warnPercent / 100, storageBlock: state.blockPercent / 100 };
+}
+
+function applySpacePrefsToPairs(): void {
+  const { storageWarn, storageBlock } = { storageWarn: state.warnPercent / 100, storageBlock: state.blockPercent / 100 };
+  state.pairs = state.pairs.map((pair) => ({ ...pair, storageWarn, storageBlock }));
+}
+
+function spaceStatus(pair: SyncPair, estimate?: SyncEstimate): 'ok' | 'warn' | 'blocked' {
+  if (!estimate || pair.direction !== 'server-to-phone') return 'ok';
+  const { storageWarn, storageBlock } = limitsFor(pair);
+  return evaluateSpace({ pendingBytes: estimate.pendingBytes, freeBytes: estimate.freeBytes, totalBytes: estimate.totalBytes, warnFraction: storageWarn, blockFraction: storageBlock, direction: pair.direction }).status;
+}
 
 function readPairs(): SyncPair[] {
   return parseSavedPairs(localStorage.getItem(STORAGE_KEY), localStorage.getItem(SETTINGS_KEY) ?? DEFAULT_SERVER);
@@ -37,6 +74,33 @@ function directionText(direction: SyncDirection): string {
   if (direction === 'phone-to-server') return 'Files move from this device to the server';
   if (direction === 'server-to-phone') return 'Files move from the server to this device';
   return 'Files move both ways';
+}
+
+function spaceLine(pair: SyncPair, estimate?: SyncEstimate): string {
+  if (pair.direction === 'two-way' || !state.user) return '';
+  const id = escapeHtml(pair.id);
+  if (!estimate) {
+    return state.estimatesDone[pair.id]
+      ? ''
+      : `<p class="pair-space" data-space-for="${id}">Checking size…</p>`;
+  }
+  if (estimate.pendingBytes <= 0) return `<p class="pair-space" data-space-for="${id}">Already in sync</p>`;
+  const status = spaceStatus(pair, estimate);
+  if (pair.direction !== 'server-to-phone') {
+    return `<p class="pair-space" data-space-for="${id}">≈ ${escapeHtml(formatBytes(estimate.pendingBytes))} to upload</p>`;
+  }
+  const text = status === 'blocked'
+    ? `Not enough space: ${formatBytes(estimate.pendingBytes)} needed · ${formatBytes(estimate.freeBytes)} free`
+    : status === 'warn'
+      ? `Low space: ≈ ${formatBytes(estimate.pendingBytes)} to download · ${formatBytes(estimate.freeBytes)} free`
+      : `≈ ${formatBytes(estimate.pendingBytes)} to download · ${formatBytes(estimate.freeBytes)} free`;
+  const tone = status === 'blocked' ? ' space-blocked' : status === 'warn' ? ' space-warn' : '';
+  return `<p class="pair-space${tone}" data-space-for="${id}">${escapeHtml(text)}</p>`;
+}
+
+function storageSummary(): string {
+  if (!state.deviceStorage || !state.user) return '';
+  return ` · ${formatBytes(state.deviceStorage.freeBytes)} free of ${formatBytes(state.deviceStorage.totalBytes)} on this device`;
 }
 
 function progressCopy(progress?: SyncProgress, syncingPairId?: string): string {
@@ -103,6 +167,11 @@ function render(): void {
     </section>` : '';
   const pairRows = state.pairs.map((pair) => {
     const route = routeFor(pair.direction, localLocation(pair), serverLocation(pair));
+    const estimate = state.estimates[pair.id];
+    const blocked = spaceStatus(pair, estimate) === 'blocked';
+    const busy = Boolean(state.syncingPairId || state.removingPairId);
+    const unavailable = pair.direction === 'two-way' || (pair.server && pair.server !== state.server) || !state.user || pair.account !== state.user;
+    const syncLabel = state.syncingPairId === pair.id ? 'Syncing…' : blocked ? 'Not enough space' : pair.direction === 'two-way' ? 'Recreate pair' : pair.server && pair.server !== state.server ? 'Different server' : !state.user ? 'Sign in to sync' : pair.account !== state.user ? 'Different account' : 'Sync now';
     return `
     <li class="pair-row" data-pair-id="${escapeHtml(pair.id)}">
       <h3 class="pair-name">${escapeHtml(pair.name)}</h3>
@@ -119,8 +188,9 @@ function render(): void {
           <strong class="route-path">${escapeHtml(route.targetValue)}</strong>
         </div>
       </div>
+      ${spaceLine(pair, estimate)}
       <div class="pair-actions">
-        <button class="text-button" type="button" data-sync="${escapeHtml(pair.id)}" ${state.syncingPairId || state.removingPairId || pair.direction === 'two-way' || (pair.server && pair.server !== state.server) || !state.user || pair.account !== state.user ? 'disabled' : ''}>${state.syncingPairId === pair.id ? 'Syncing…' : pair.direction === 'two-way' ? 'Recreate pair' : pair.server && pair.server !== state.server ? 'Different server' : !state.user ? 'Sign in to sync' : pair.account !== state.user ? 'Different account' : 'Sync now'}</button>
+        <button class="text-button" type="button" data-sync="${escapeHtml(pair.id)}" ${busy || blocked || unavailable ? 'disabled' : ''}>${syncLabel}</button>
         <button class="text-button danger-text" type="button" data-remove="${escapeHtml(pair.id)}" aria-label="Remove ${escapeHtml(pair.name)}" ${state.syncingPairId || state.removingPairId ? 'disabled' : ''}>${state.removingPairId === pair.id ? 'Removing…' : 'Remove'}</button>
       </div>
     </li>
@@ -142,7 +212,7 @@ function render(): void {
       <section class="account-line" aria-label="Account">
         <div class="account-row">
           ${state.user
-            ? `<p class="account-user">Signed in as <strong>${escapeHtml(state.user)}</strong>${state.backgroundStatus ? ` · ${escapeHtml(state.backgroundStatus)}` : ''}</p><button class="secondary-button" type="button" id="unlock-settings" ${state.settingsAuthorized ? 'disabled' : ''}>${state.settingsAuthorized ? 'Settings unlocked' : 'Unlock settings'}</button><button class="text-button" type="button" id="sign-out">Sign out</button>`
+            ? `<p class="account-user">Signed in as <strong>${escapeHtml(state.user)}</strong>${state.backgroundStatus ? ` · ${escapeHtml(state.backgroundStatus)}` : ''}<span id="storage-summary">${escapeHtml(storageSummary())}</span></p><button class="secondary-button" type="button" id="unlock-settings" ${state.settingsAuthorized ? 'disabled' : ''}>${state.settingsAuthorized ? 'Settings unlocked' : 'Unlock settings'}</button><button class="text-button" type="button" id="sign-out">Sign out</button>`
             : '<p class="account-user">Sign in to sync your folders.</p><button class="secondary-button" type="button" id="sign-in">Sign in</button>'}
         </div>
       </section>
@@ -202,6 +272,14 @@ function render(): void {
         <div class="dialog-heading"><h2 id="settings-heading">Settings</h2><button class="close-button" value="cancel" aria-label="Close settings">×</button></div>
         <label for="server-address">Server address</label>
         <input id="server-address" type="url" value="${escapeHtml(state.server)}" autocomplete="url" autocapitalize="none" spellcheck="false" />
+        <fieldset>
+          <legend>Sync storage limits</legend>
+          <p class="settings-hint">Downloads always keep 15% of device storage free.</p>
+          <label for="warn-limit">Warn when a sync would use more than this share of free space (%)</label>
+          <input id="warn-limit" type="number" min="1" max="100" value="${state.warnPercent}" />
+          <label for="block-limit">Stop a sync above this share of free space (%)</label>
+          <input id="block-limit" type="number" min="1" max="100" value="${state.blockPercent}" />
+        </fieldset>
         <p class="form-error" id="settings-error" role="alert"></p>
         <div class="dialog-actions"><button class="secondary-button" value="cancel">Cancel</button><button class="primary-button" id="save-server" type="button">Save address</button></div>
       </form>
@@ -256,7 +334,7 @@ function bindEvents(): void {
     try {
       const folder = await obtainPresetFolder(preset);
       if (!folder) { button.disabled = false; return; }
-      const pair: SyncPair = { id: crypto.randomUUID(), name: preset.title, local: folder, serverRoot: preset.id, serverFolder: preset.folder, serverPath: preset.serverPath, localSubpath: preset.localSubpath, direction: preset.direction, server: state.server, account: state.user };
+      const pair: SyncPair = { id: crypto.randomUUID(), name: preset.title, local: folder, serverRoot: preset.id, serverFolder: preset.folder, serverPath: preset.serverPath, localSubpath: preset.localSubpath, direction: preset.direction, server: state.server, account: state.user, ...currentLimits() };
       if (state.pairs.some((item) => item.server === pair.server && item.account === pair.account && (item.serverRoot ?? 'files') === pair.serverRoot && item.serverPath === pair.serverPath)) {
         if (!state.pairs.some((item) => item.local.uri === folder.uri)) await invoke<void>('forget_local_folder', { folderUri: folder.uri });
         state.error = 'That server folder already has a sync pair.';
@@ -269,7 +347,7 @@ function bindEvents(): void {
         render();
         startProgressPolling();
         try {
-          const result = await invoke<{ transferred: number; skipped: number }>('sync_pair', { pair });
+          const result = await invoke<{ transferred: number; skipped: number }>('sync_pair', { pair: { ...pair, ...limitsFor(pair) } });
           state.notice = `Sync complete: ${result.transferred} transferred, ${result.skipped} unchanged.`;
         } catch (error) {
           showError(error);
@@ -281,16 +359,31 @@ function bindEvents(): void {
       }
     } catch (error) { showError(error); }
     render();
+    void refreshEstimates();
   }));
   document.querySelector('#save-server')?.addEventListener('click', async () => {
     const input = document.querySelector<HTMLInputElement>('#server-address')!;
+    const warnInput = document.querySelector<HTMLInputElement>('#warn-limit')!;
+    const blockInput = document.querySelector<HTMLInputElement>('#block-limit')!;
+    const settingsError = document.querySelector<HTMLElement>('#settings-error')!;
     let nextServer: string;
     try { nextServer = normalizeServerAddress(input.value); }
     catch (error) {
-      document.querySelector<HTMLElement>('#settings-error')!.textContent = error instanceof Error ? error.message : String(error);
+      settingsError.textContent = error instanceof Error ? error.message : String(error);
       input.focus();
       return;
     }
+    const warnPercent = clampPercent(warnInput.value, state.warnPercent);
+    const blockPercent = clampPercent(blockInput.value, state.blockPercent);
+    if (blockPercent <= warnPercent) {
+      settingsError.textContent = 'The stop limit must be higher than the warn limit.';
+      blockInput.focus();
+      return;
+    }
+    state.warnPercent = warnPercent;
+    state.blockPercent = blockPercent;
+    localStorage.setItem(SPACE_PREFS_KEY, JSON.stringify({ warnPercent, blockPercent }));
+    applySpacePrefsToPairs();
     if (state.user && nextServer !== state.server && invoke) {
       try { await invoke<void>('logout'); localStorage.removeItem(SESSION_BACKUP_KEY); state.user = undefined; state.settingsAuthorized = false; }
       catch (error) { setError(error); return; }
@@ -301,7 +394,9 @@ function bindEvents(): void {
     localStorage.setItem(SETTINGS_KEY, state.server);
     state.notice = state.server ? 'Server address saved on this device.' : 'Server address cleared.';
     state.error = '';
+    try { await persistPairs(); } catch { /* The notice already explains the save; pairs retry on next change. */ }
     render();
+    void refreshEstimates();
   });
 
   document.querySelector('#sign-in')?.addEventListener('click', async () => {
@@ -330,6 +425,9 @@ function bindEvents(): void {
       state.settingsAuthorized = false;
       state.presets = [];
       state.selectedService = undefined;
+      state.estimates = {};
+      state.estimatesDone = {};
+      state.deviceStorage = undefined;
       state.notice = 'Signed out of the sync server.';
       state.error = '';
       render();
@@ -410,7 +508,7 @@ function bindEvents(): void {
       error.textContent = 'A saved pair already uses one of these folders.';
       return;
     }
-    state.pairs = [...state.pairs, { id: crypto.randomUUID(), name, local: selectedFolder, serverRoot: selectedServerRoot, serverFolder: state.presets.find((item) => item.id === selectedServerRoot)?.folder, serverPath, direction, server: state.server, account: state.user }];
+    state.pairs = [...state.pairs, { id: crypto.randomUUID(), name, local: selectedFolder, serverRoot: selectedServerRoot, serverFolder: state.presets.find((item) => item.id === selectedServerRoot)?.folder, serverPath, direction, server: state.server, account: state.user, ...currentLimits() }];
     try { await persistPairs(); }
     catch (error) { showError(error); return; }
     selectedFolder = undefined;
@@ -421,6 +519,7 @@ function bindEvents(): void {
     state.error = '';
     dialog.close();
     render();
+    void refreshEstimates();
   });
 
   document.querySelectorAll<HTMLButtonElement>('[data-remove]').forEach((button) => {
@@ -470,6 +569,8 @@ function bindEvents(): void {
     }
     state.removingPairId = undefined;
     state.notice = 'Folder pair removed.';
+    delete state.estimates[pair.id];
+    delete state.estimatesDone[pair.id];
     render();
   });
 
@@ -484,7 +585,7 @@ function bindEvents(): void {
       render();
       startProgressPolling();
       try {
-        const result = await invoke<{ transferred: number; skipped: number }>('sync_pair', { pair });
+        const result = await invoke<{ transferred: number; skipped: number }>('sync_pair', { pair: { ...pair, ...limitsFor(pair) } });
         state.notice = `Sync complete: ${result.transferred} transferred, ${result.skipped} unchanged.`;
         state.error = '';
       } catch (error) { showError(error); }
@@ -495,6 +596,7 @@ function bindEvents(): void {
         state.backgroundStatus = readBackgroundStatus(await invoke<string | null>('background_sync_status'));
       } catch { /* Keep the last known status. */ }
       render();
+      void refreshEstimates();
     });
   });
 
@@ -535,8 +637,68 @@ async function refreshProgress(): Promise<void> {
   }
 }
 
-function parseProgress(raw: string | null): SyncProgress | undefined {
-  if (!raw) return undefined;
+let estimateRun = 0;
+
+async function refreshEstimates(): Promise<void> {
+  if (!invoke || !state.user) return;
+  const run = ++estimateRun;
+  state.estimates = {};
+  state.estimatesDone = {};
+  for (const pair of state.pairs) updateSpaceUi(pair.id);
+  for (const pair of state.pairs) {
+    if (run !== estimateRun) return;
+    if (pair.direction === 'two-way') {
+      state.estimatesDone[pair.id] = true;
+      updateSpaceUi(pair.id);
+      continue;
+    }
+    try {
+      const raw = await invoke<SyncEstimate>('estimate_sync_pair', { pair: { ...pair, ...limitsFor(pair) } });
+      if (run !== estimateRun) return;
+      state.estimates[pair.id] = {
+        pendingBytes: Number(raw.pendingBytes) || 0,
+        pendingCount: Number(raw.pendingCount) || 0,
+        skipped: Number(raw.skipped) || 0,
+        direction: typeof raw.direction === 'string' ? raw.direction : pair.direction,
+        freeBytes: Number(raw.freeBytes) || 0,
+        totalBytes: Number(raw.totalBytes) || 0,
+      };
+      state.deviceStorage = { freeBytes: Number(raw.freeBytes) || 0, totalBytes: Number(raw.totalBytes) || 0 };
+    } catch {
+      if (run !== estimateRun) return;
+      state.estimates[pair.id] = undefined;
+    }
+    state.estimatesDone[pair.id] = true;
+    updateSpaceUi(pair.id);
+  }
+}
+
+function updateSpaceUi(pairId: string): void {
+  const pair = state.pairs.find((item) => item.id === pairId);
+  if (!pair) return;
+  const html = spaceLine(pair, state.estimates[pairId]);
+  const line = document.querySelector(`[data-space-for="${CSS.escape(pairId)}"]`);
+  if (line) {
+    if (html) line.outerHTML = html;
+    else line.remove();
+  } else if (html) {
+    const actions = document.querySelector(`[data-pair-id="${CSS.escape(pairId)}"] .pair-actions`);
+    actions?.insertAdjacentHTML('beforebegin', html);
+  }
+  const button = document.querySelector<HTMLButtonElement>(`[data-sync="${CSS.escape(pairId)}"]`);
+  if (button && !state.syncingPairId && !state.removingPairId) {
+    const blocked = spaceStatus(pair, state.estimates[pairId]) === 'blocked';
+    const unavailable = pair.direction === 'two-way' || (pair.server && pair.server !== state.server) || !state.user || pair.account !== state.user;
+    button.disabled = blocked || unavailable;
+    if (!unavailable && state.syncingPairId !== pairId) {
+      button.textContent = blocked ? 'Not enough space' : 'Sync now';
+    }
+  }
+  const summary = document.querySelector('#storage-summary');
+  if (summary) summary.textContent = storageSummary();
+}
+
+function parseProgress(raw: string | null): SyncProgress | undefined {  if (!raw) return undefined;
   try {
     const value = JSON.parse(raw) as Partial<SyncProgress>;
     if (value?.active !== true) return undefined;
@@ -593,6 +755,7 @@ async function start(): Promise<void> {
     }
     try {
       state.backgroundStatus = readBackgroundStatus(await invoke<string | null>('background_sync_status'));
+      applySpacePrefsToPairs();
       await persistPairs();
       if (state.user) {
         state.settingsAuthorized = await invoke<boolean>('settings_authorized');
@@ -612,6 +775,7 @@ async function start(): Promise<void> {
     window.setInterval(() => { void refreshProgress(); }, 3000);
   }
   render();
+  void refreshEstimates();
 }
 
 async function renderServerBrowser(): Promise<void> {
@@ -646,6 +810,7 @@ async function finishCallback(url: string): Promise<void> {
       if (backup) localStorage.setItem(SESSION_BACKUP_KEY, backup);
     } catch { /* The session stays available in secure storage only. */ }
     await loadPresets();
+    applySpacePrefsToPairs();
     await persistPairs();
     state.error = '';
     state.notice = `Signed in as ${state.user}.`;
@@ -653,6 +818,7 @@ async function finishCallback(url: string): Promise<void> {
     state.error = error instanceof Error ? error.message : String(error);
   }
   render();
+  void refreshEstimates();
 }
 
 async function obtainPresetFolder(preset: SyncPreset): Promise<Folder | null> {

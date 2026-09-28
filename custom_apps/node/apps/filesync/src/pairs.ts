@@ -11,6 +11,8 @@ export type SyncPair = {
   direction: SyncDirection;
   server?: string;
   account?: string;
+  storageWarn?: number;
+  storageBlock?: number;
 };
 
 export function parseSavedPairs(raw: string | null, server: string): SyncPair[] {
@@ -29,6 +31,9 @@ export function parseSavedPairs(raw: string | null, server: string): SyncPair[] 
     const safe = { ...pair };
     for (const key of ['serverRoot', 'serverFolder', 'localSubpath', 'server', 'account'] as const) {
       if (typeof safe[key] !== 'string') delete safe[key];
+    }
+    for (const key of ['storageWarn', 'storageBlock'] as const) {
+      if (typeof safe[key] !== 'number' || !Number.isFinite(safe[key]) || safe[key] <= 0 || safe[key] > 1) delete safe[key];
     }
     return { ...safe, server: safe.server ?? server };
   });

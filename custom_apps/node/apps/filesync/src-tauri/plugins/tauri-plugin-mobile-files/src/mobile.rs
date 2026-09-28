@@ -138,6 +138,21 @@ impl<R: Runtime> MobileFiles<R> {
             .map_err(Into::into)
     }
 
+    pub fn estimate_sync_pair(&self, pair_json: String) -> crate::Result<serde_json::Value> {
+        self.0
+            .run_mobile_plugin("estimateSyncPair", serde_json::json!({ "pairJson": pair_json }))
+            .map_err(Into::into)
+    }
+
+    pub fn storage_info(&self, folder_uri: String) -> crate::Result<StorageInfo> {
+        self.0
+            .run_mobile_plugin(
+                "storageInfo",
+                serde_json::json!({ "folderUri": folder_uri }),
+            )
+            .map_err(crate::Error::from)
+    }
+
     pub fn background_sync_status(&self) -> crate::Result<Option<String>> {
         let response: StringResponse = self.0
             .run_mobile_plugin("backgroundSyncStatus", serde_json::json!({}))

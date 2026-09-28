@@ -5,6 +5,7 @@ import android.content.Context
 import android.app.NotificationChannel
 import android.content.pm.PackageManager
 import android.os.Environment
+import android.os.StatFs
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
@@ -48,6 +49,8 @@ private const val HTTP_TIMEOUT_MS = 30_000
 private const val SYNC_CHANNEL_ID = "filesync-sync"
 private const val WORKER_NOTIFICATION_ID = 41
 private const val MANUAL_NOTIFICATION_ID = 42
+private const val STORAGE_FLOOR_FRACTION = 0.15
+private const val DEFAULT_BLOCK_FRACTION = 0.95
 
 internal object BackgroundSyncScheduler {
   fun update(context: Context, enabled: Boolean) {
@@ -331,15 +334,20 @@ internal object SyncEngine {
     return session
   }
 
-  private fun syncOne(
-    context: Context,
-    session: JSONObject,
-    pair: JSONObject,
-    notificationId: Int,
-    activePairs: List<String>? = null,
-  ): Map<String, Any> {
+  private data class SyncPlan(
+    val pairName: String,
+    val direction: String,
+    val apiBase: String,
+    val accessToken: String,
+    val folderUri: String,
+    val deviceSubpath: String,
+    val serverPath: String,
+    val root: String,
+    val blockFraction: Double,
+  )
+
+  private fun loadPlan(context: Context, session: JSONObject, pair: JSONObject): SyncPlan {
     val pairName = pair.optString("name", "Folder pair").ifBlank { "Folder pair" }
-    val names = activePairs ?: listOf(pairName)
     val direction = pair.getString("direction")
     if (direction != "phone-to-server" && direction != "server-to-phone") {
       throw SyncFailure("This sync direction is not supported for background sync.", false)
@@ -367,12 +375,54 @@ internal object SyncEngine {
     }
     val localSubpath = safePath(pair.optString("localSubpath"))
     val deviceSubpath = if (folderUri.startsWith("content")) localSubpath else ""
-    val serverPath = safePath(pair.optString("serverPath"))
-    val root = safeRoot(pair.optString("serverRoot", "files"))
+    return SyncPlan(
+      pairName = pairName,
+      direction = direction,
+      apiBase = apiBase,
+      accessToken = session.getString("accessToken"),
+      folderUri = folderUri,
+      deviceSubpath = deviceSubpath,
+      serverPath = safePath(pair.optString("serverPath")),
+      root = safeRoot(pair.optString("serverRoot", "files")),
+      blockFraction = pair.optDouble("storageBlock", DEFAULT_BLOCK_FRACTION),
+    )
+  }
+
+  private fun storageBudget(freeBytes: Long, totalBytes: Long): Long =
+    (freeBytes - (totalBytes * STORAGE_FLOOR_FRACTION).toLong()).coerceAtLeast(0L)
+
+  private fun formatBytes(value: Long): String {
+    if (value < 1024) return "$value B"
+    val units = arrayOf("KB", "MB", "GB", "TB")
+    var amount = value.toDouble() / 1024
+    var unit = units[0]
+    for (candidate in units) {
+      unit = candidate
+      if (amount < 1024 || candidate == "TB") break
+      amount /= 1024
+    }
+    return if (amount >= 100) "${amount.toInt()} $unit" else "${"%.1f".format(amount)} $unit"
+  }
+  private fun syncOne(
+    context: Context,
+    session: JSONObject,
+    pair: JSONObject,
+    notificationId: Int,
+    activePairs: List<String>? = null,
+  ): Map<String, Any> {
+    val plan = loadPlan(context, session, pair)
+    val pairName = plan.pairName
+    val names = activePairs ?: listOf(pairName)
+    val direction = plan.direction
+    val folderUri = plan.folderUri
+    val deviceSubpath = plan.deviceSubpath
+    val serverPath = plan.serverPath
+    val root = plan.root
+    val apiBase = plan.apiBase
     val localEntries = listLocalFiles(context, folderUri).filter { entry ->
       entry.kind == "file" && (deviceSubpath.isEmpty() || entry.path.startsWith("$deviceSubpath/"))
     }.associateBy { entry -> if (deviceSubpath.isEmpty()) entry.path else entry.path.removePrefix("$deviceSubpath/") }
-    val remoteEntries = fetchRemoteTree(apiBase, session.getString("accessToken"), serverPath, root)
+    val remoteEntries = fetchRemoteTree(apiBase, plan.accessToken, serverPath, root)
       .filter { it.kind == "file" }.associateBy { it.path }
     var transferred = 0
     var skipped = 0
@@ -388,7 +438,7 @@ internal object SyncEngine {
         try {
           val target = join(serverPath, relative)
           val response = request(
-            fileUrl(apiBase, target, root), "PUT", accessToken = session.getString("accessToken"),
+            fileUrl(apiBase, target, root), "PUT", accessToken = plan.accessToken,
             file = staged, checksum = entry.sha256,
           )
           if (response.code !in 200..299) failHttp(response.code, "The server could not save $relative")
@@ -396,15 +446,41 @@ internal object SyncEngine {
         } finally { staged.delete() }
       }
     } else {
-      for ((relative, entry) in remoteEntries) {
-        if (localEntries[relative]?.sha256 == entry.sha256) { skipped++; continue }
+      // Downloads consume device space: pre-check the estimate, then enforce
+      // the block limit against real bytes written in case the estimate moved.
+      val pending = remoteEntries.filter { (relative, entry) ->
+        localEntries[relative]?.sha256 != entry.sha256
+      }.toList()
+      skipped += remoteEntries.size - pending.size
+      val pendingBytes = pending.sumOf { (_, entry) -> entry.size }
+      val stats = storageStats(context)
+      val budget = storageBudget(stats.freeBytes, stats.totalBytes)
+      val blockLimit = (budget * plan.blockFraction).toLong()
+      if (pendingBytes > 0 && pendingBytes > blockLimit) {
+        throw SyncFailure(
+          "Not enough free space: “$pairName” needs ${formatBytes(pendingBytes)} but only " +
+            "${formatBytes(blockLimit)} may be used (keeps 15% of device storage free). " +
+            "Free up space or raise the limit in Settings.",
+          false,
+        )
+      }
+      var writtenBytes = 0L
+      for ((relative, entry) in pending) {
         progress(relative)
-        val response = request(fileUrl(apiBase, join(serverPath, relative), root), "GET", accessToken = session.getString("accessToken"), streamToCache = context.cacheDir)
+        val response = request(fileUrl(apiBase, join(serverPath, relative), root), "GET", accessToken = plan.accessToken, streamToCache = context.cacheDir)
         if (response.code !in 200..299) failHttp(response.code, "The server could not provide $relative")
         val staged = response.file ?: throw SyncFailure("The download could not be staged.", true)
         try {
           if (sha256(staged) != entry.sha256) throw SyncFailure("Downloaded file failed its checksum: $relative", true)
           installLocalFile(context, folderUri, join(deviceSubpath, relative), staged)
+          writtenBytes += staged.length()
+          if (writtenBytes > blockLimit) {
+            throw SyncFailure(
+              "Sync stopped: “$pairName” passed its free-space limit after ${formatBytes(writtenBytes)}. " +
+                "Free up space or raise the limit in Settings, then sync again.",
+              false,
+            )
+          }
           transferred++
         } finally { staged.delete() }
       }
@@ -434,6 +510,7 @@ internal object SyncEngine {
           path = if (base.isEmpty()) absolute else absolute.removePrefix("$base/"),
           kind = item.getString("kind"),
           sha256 = item.optString("sha256"),
+          size = item.optLong("size"),
         ))
       }
     }
@@ -450,6 +527,7 @@ internal object SyncEngine {
         DocumentsContract.Document.COLUMN_DOCUMENT_ID,
         DocumentsContract.Document.COLUMN_DISPLAY_NAME,
         DocumentsContract.Document.COLUMN_MIME_TYPE,
+        DocumentsContract.Document.COLUMN_SIZE,
       )
       val cursor = context.contentResolver.query(children, projection, null, null, null)
         ?: throw SyncFailure("The selected folder cannot be listed. Reauthorize it in File Sync.", false)
@@ -461,7 +539,7 @@ internal object SyncEngine {
           val path = join(prefix, name)
           val kind = if (it.getString(2) == DocumentsContract.Document.MIME_TYPE_DIR) "directory" else "file"
           val checksum = if (kind == "file") hashDocument(context, DocumentsContract.buildDocumentUriUsingTree(tree, id)) else ""
-          result.add(Entry(path, kind, checksum))
+          result.add(Entry(path, kind, checksum, if (kind == "file" && !it.isNull(3)) it.getLong(3) else 0L))
           if (kind == "directory") walk(id, path)
         }
       }
@@ -488,7 +566,7 @@ internal object SyncEngine {
           } catch (error: java.io.IOException) {
             throw SyncFailure("A file in the selected folder cannot be read.", false)
           }
-          result.add(Entry(path, "file", checksum))
+          result.add(Entry(path, "file", checksum, child.length()))
         }
       }
     }
@@ -750,7 +828,65 @@ internal object SyncEngine {
   }
   private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
 
-  private data class Entry(val path: String, val kind: String, val sha256: String)
+  private data class Entry(val path: String, val kind: String, val sha256: String, val size: Long)
+  internal data class StorageStats(val freeBytes: Long, val totalBytes: Long)
+
+  fun storageStats(context: Context): StorageStats {
+    // Sync destinations live on shared storage, so measure that volume.
+    // A SAF folder on removable media may sit elsewhere; treat this as the
+    // primary-volume estimate and let the pre-sync check stay conservative.
+    val stat = StatFs(Environment.getExternalStorageDirectory().path)
+    return StorageStats(
+      freeBytes = stat.availableBlocksLong * stat.blockSizeLong,
+      totalBytes = stat.blockCountLong * stat.blockSizeLong,
+    )
+  }
+
+  fun estimatePair(context: Context, pairJson: String): Map<String, Any> {
+    var locked = false
+    try {
+      acquireSyncLock()
+      locked = true
+      val pair = JSONObject(pairJson)
+      val session = currentSession(context)
+      val plan = loadPlan(context, session, pair)
+      val localEntries = listLocalFiles(context, plan.folderUri).filter { entry ->
+        entry.kind == "file" && (plan.deviceSubpath.isEmpty() || entry.path.startsWith("${plan.deviceSubpath}/"))
+      }.associateBy { entry -> if (plan.deviceSubpath.isEmpty()) entry.path else entry.path.removePrefix("${plan.deviceSubpath}/") }
+      val remoteEntries = fetchRemoteTree(plan.apiBase, plan.accessToken, plan.serverPath, plan.root)
+        .filter { it.kind == "file" }.associateBy { it.path }
+      var pendingBytes = 0L
+      var pendingCount = 0
+      var skipped = 0
+      if (plan.direction == "phone-to-server") {
+        for ((relative, entry) in localEntries) {
+          if (remoteEntries[relative]?.sha256 == entry.sha256) { skipped++; continue }
+          pendingBytes += entry.size
+          pendingCount++
+        }
+      } else {
+        for ((relative, entry) in remoteEntries) {
+          if (localEntries[relative]?.sha256 == entry.sha256) { skipped++; continue }
+          pendingBytes += entry.size
+          pendingCount++
+        }
+      }
+      val stats = storageStats(context)
+      return mapOf(
+        "pendingBytes" to pendingBytes,
+        "pendingCount" to pendingCount,
+        "skipped" to skipped,
+        "direction" to plan.direction,
+        "freeBytes" to stats.freeBytes,
+        "totalBytes" to stats.totalBytes,
+      )
+    } catch (error: InterruptedException) {
+      Thread.currentThread().interrupt()
+      throw SyncFailure("Size check was interrupted.", true)
+    } finally {
+      if (locked) releaseSyncLock()
+    }
+  }
   private data class HttpResponse(val code: Int, val body: String, val file: File? = null)
 }
 

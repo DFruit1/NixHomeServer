@@ -37,9 +37,24 @@ pub struct BooleanResponse {
     pub value: bool,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageInfo {
+    pub free_bytes: u64,
+    pub total_bytes: u64,
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{PickedFolderResponse, StringResponse};
+    use super::{PickedFolderResponse, StorageInfo, StringResponse};
+
+    #[test]
+    fn storage_info_deserializes_camel_case_byte_counts() {
+        let info: StorageInfo =
+            serde_json::from_str(r#"{"freeBytes":1234,"totalBytes":8192}"#).unwrap();
+        assert_eq!(info.free_bytes, 1234);
+        assert_eq!(info.total_bytes, 8192);
+    }
 
     #[test]
     fn mobile_string_response_preserves_missing_and_present_values() {

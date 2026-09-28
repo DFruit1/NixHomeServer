@@ -139,6 +139,21 @@ impl<R: Runtime> MobileFiles<R> {
         ))
     }
 
+    pub fn storage_info(&self, folder_uri: String) -> crate::Result<StorageInfo> {
+        let base = if folder_uri.is_empty() {
+            std::env::temp_dir()
+        } else {
+            PathBuf::from(&folder_uri)
+        };
+        let base = base
+            .canonicalize()
+            .map_err(|error| crate::Error::Operation(error.to_string()))?;
+        fs_space(&base).map(|(free_bytes, total_bytes)| StorageInfo {
+            free_bytes,
+            total_bytes,
+        })
+    }
+
     pub fn background_sync_status(&self) -> crate::Result<Option<String>> {
         Ok(None)
     }
@@ -293,6 +308,22 @@ impl<R: Runtime> MobileFiles<R> {
         }
         Ok(())
     }
+}
+
+fn fs_space(path: &Path) -> crate::Result<(u64, u64)> {
+    use std::os::unix::ffi::OsStrExt;
+    let raw = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|error| crate::Error::Operation(error.to_string()))?;
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(raw.as_ptr(), &mut stat) } != 0 {
+        return Err(crate::Error::Operation(
+            "Device storage could not be read.".into(),
+        ));
+    }
+    Ok((
+        stat.f_bavail as u64 * stat.f_frsize as u64,
+        stat.f_blocks as u64 * stat.f_frsize as u64,
+    ))
 }
 
 fn safe_relative(value: &str) -> crate::Result<PathBuf> {

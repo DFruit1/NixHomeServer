@@ -91,10 +91,42 @@ struct SyncPair {
     server: Option<String>,
     #[serde(default)]
     account: Option<String>,
+    #[serde(default = "default_warn_fraction")]
+    storage_warn: f64,
+    #[serde(default = "default_block_fraction")]
+    storage_block: f64,
 }
 
 fn default_root() -> String {
     "files".into()
+}
+
+fn default_warn_fraction() -> f64 {
+    0.8
+}
+
+fn default_block_fraction() -> f64 {
+    0.95
+}
+
+const STORAGE_FLOOR_FRACTION: f64 = 0.15;
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StorageInfo {
+    free_bytes: u64,
+    total_bytes: u64,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EstimateResult {
+    pending_bytes: u64,
+    pending_count: usize,
+    skipped: usize,
+    direction: String,
+    free_bytes: u64,
+    total_bytes: u64,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -548,6 +580,54 @@ async fn sync_pair<R: Runtime>(app: AppHandle<R>, pair: SyncPair) -> Result<Sync
 }
 
 #[tauri::command]
+async fn storage_info<R: Runtime>(
+    app: AppHandle<R>,
+    folder_uri: String,
+) -> Result<StorageInfo, String> {
+    #[cfg(target_os = "android")]
+    {
+        app.mobile_files()
+            .storage_info(folder_uri)
+            .map(|info| StorageInfo {
+                free_bytes: info.free_bytes,
+                total_bytes: info.total_bytes,
+            })
+            .map_err(|error| error.to_string())
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let (free_bytes, total_bytes) = desktop_fs_space(&folder_uri)?;
+        Ok(StorageInfo {
+            free_bytes,
+            total_bytes,
+        })
+    }
+}
+
+#[tauri::command]
+async fn estimate_sync_pair<R: Runtime>(
+    app: AppHandle<R>,
+    pair: SyncPair,
+) -> Result<EstimateResult, String> {
+    #[cfg(target_os = "android")]
+    {
+        let pair_json = serde_json::to_string(&pair)
+            .map_err(|_| "The folder pair could not be prepared for Android estimation.")?;
+        let result = app
+            .mobile_files()
+            .estimate_sync_pair(pair_json)
+            .map_err(|error| format!("Android estimation could not start: {error}"))?;
+        serde_json::from_value(result.clone()).map_err(|_| {
+            let preview = result.to_string();
+            let preview = preview.chars().take(160).collect::<String>();
+            format!("Android estimation returned an invalid result ({preview}).")
+        })
+    }
+    #[cfg(not(target_os = "android"))]
+    estimate_pair_rust(app, pair).await
+}
+
+#[tauri::command]
 fn update_background_syncs<R: Runtime>(
     app: AppHandle<R>,
     pairs: Vec<SyncPair>,
@@ -589,10 +669,82 @@ fn ensure_notifications<R: Runtime>(app: AppHandle<R>) -> Result<bool, String> {
         .map_err(|_| "Android notification permission is unavailable.".to_owned())
 }
 
-async fn sync_pair_rust<R: Runtime>(
-    app: AppHandle<R>,
-    pair: SyncPair,
-) -> Result<SyncResult, String> {
+struct LoadedSync {
+    name: String,
+    direction: String,
+    base: String,
+    local_subpath: String,
+    root: String,
+    folder_uri: String,
+    block_fraction: f64,
+    session: StoredSession,
+    client: reqwest::Client,
+    local_files: std::collections::HashMap<String, tauri_plugin_mobile_files::LocalEntry>,
+    remote_files: std::collections::HashMap<String, RemoteEntry>,
+}
+
+fn storage_budget(free_bytes: u64, total_bytes: u64) -> u64 {
+    let floor = (total_bytes as f64 * STORAGE_FLOOR_FRACTION) as u64;
+    free_bytes.saturating_sub(floor)
+}
+
+fn not_enough_space_message(name: &str, pending_bytes: u64, block_limit: u64) -> String {
+    format!(
+        "Not enough free space: “{name}” needs {} but only {} may be used \
+         (keeps 15% of device storage free). Free up space or raise the limit in Settings.",
+        format_bytes(pending_bytes),
+        format_bytes(block_limit),
+    )
+}
+
+fn format_bytes(value: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    if value < 1024 {
+        return format!("{value} B");
+    }
+    let mut amount = value as f64 / 1024.0;
+    let mut unit = UNITS[1];
+    for candidate in UNITS.iter().skip(1) {
+        unit = candidate;
+        if amount < 1024.0 || *candidate == "TB" {
+            break;
+        }
+        amount /= 1024.0;
+    }
+    if amount >= 100.0 {
+        format!("{} {unit}", amount as u64)
+    } else {
+        format!("{amount:.1} {unit}")
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+fn desktop_fs_space(folder_uri: &str) -> Result<(u64, u64), String> {
+    use std::os::unix::ffi::OsStrExt;
+    let base = if folder_uri.is_empty() {
+        std::env::temp_dir()
+    } else {
+        std::path::PathBuf::from(folder_uri)
+    };
+    let base = base
+        .canonicalize()
+        .map_err(|_| "The selected local folder is no longer available.".to_owned())?;
+    let raw = std::ffi::CString::new(base.as_os_str().as_bytes())
+        .map_err(|_| "Device storage could not be read.".to_owned())?;
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(raw.as_ptr(), &mut stat) } != 0 {
+        return Err("Device storage could not be read.".into());
+    }
+    Ok((
+        stat.f_bavail as u64 * stat.f_frsize as u64,
+        stat.f_blocks as u64 * stat.f_frsize as u64,
+    ))
+}
+
+async fn load_sync<R: Runtime>(
+    app: &AppHandle<R>,
+    pair: &SyncPair,
+) -> Result<LoadedSync, String> {
     if pair.direction == "two-way" {
         return Err(
             "Two-way sync is not available yet. Choose one direction for this pair.".into(),
@@ -604,7 +756,7 @@ async fn sync_pair_rust<R: Runtime>(
     let base = safe_sync_path(&pair.server_path)?;
     let local_subpath = safe_sync_path(&pair.local_subpath)?;
     let root = safe_root_id(&pair.server_root)?;
-    let session = authenticated_session(&app).await?;
+    let session = authenticated_session(app).await?;
     let account = pair.account.as_deref().ok_or(
         "This older folder pair is not linked to a Kanidm account. Recreate it before syncing.",
     )?;
@@ -653,9 +805,86 @@ async fn sync_pair_rust<R: Runtime>(
     for item in remote.into_iter().filter(|entry| entry.kind == "file") {
         remote_files.insert(item.path.clone(), item);
     }
+    Ok(LoadedSync {
+        name: if pair.name.is_empty() {
+            "Folder pair".into()
+        } else {
+            pair.name.clone()
+        },
+        direction: pair.direction.clone(),
+        base,
+        local_subpath,
+        root,
+        folder_uri: pair.local.uri.clone(),
+        block_fraction: pair.storage_block,
+        session,
+        client,
+        local_files,
+        remote_files,
+    })
+}
+
+async fn estimate_pair_rust<R: Runtime>(
+    app: AppHandle<R>,
+    pair: SyncPair,
+) -> Result<EstimateResult, String> {
+    let plan = load_sync(&app, &pair).await?;
+    let mut pending_bytes = 0_u64;
+    let mut pending_count = 0_usize;
+    let mut skipped = 0_usize;
+    if plan.direction == "phone-to-server" {
+        for (relative, entry) in &plan.local_files {
+            if plan
+                .remote_files
+                .get(relative)
+                .is_some_and(|remote| remote.sha256 == entry.sha256)
+            {
+                skipped += 1;
+            } else {
+                pending_bytes += entry.size;
+                pending_count += 1;
+            }
+        }
+    } else {
+        for (relative, entry) in &plan.remote_files {
+            if plan
+                .local_files
+                .get(relative)
+                .is_some_and(|local| local.sha256 == entry.sha256)
+            {
+                skipped += 1;
+            } else {
+                pending_bytes += entry.size;
+                pending_count += 1;
+            }
+        }
+    }
+    let (free_bytes, total_bytes) = desktop_fs_space(&plan.folder_uri)?;
+    Ok(EstimateResult {
+        pending_bytes,
+        pending_count,
+        skipped,
+        direction: plan.direction,
+        free_bytes,
+        total_bytes,
+    })
+}
+
+async fn sync_pair_rust<R: Runtime>(
+    app: AppHandle<R>,
+    pair: SyncPair,
+) -> Result<SyncResult, String> {
+    let plan = load_sync(&app, &pair).await?;
+    let session = plan.session;
+    let client = plan.client;
+    let local_subpath = plan.local_subpath;
+    let base = plan.base;
+    let root = plan.root;
+    let local_files = plan.local_files;
+    let remote_files = plan.remote_files;
     let mut transferred = 0;
     let mut skipped = 0;
-    if pair.direction == "phone-to-server" {
+    if plan.direction == "phone-to-server" {
         for (relative, local_entry) in local_files {
             if remote_files
                 .get(&relative)
@@ -700,14 +929,32 @@ async fn sync_pair_rust<R: Runtime>(
             transferred += 1;
         }
     } else {
+        // Downloads consume device space: pre-check the estimate, then enforce
+        // the block limit against real bytes written in case the estimate moved.
+        let mut pending: Vec<(String, RemoteEntry)> = Vec::new();
         for (relative, remote_entry) in remote_files {
             if local_files
                 .get(&relative)
                 .is_some_and(|entry| entry.sha256 == remote_entry.sha256)
             {
                 skipped += 1;
-                continue;
+            } else {
+                pending.push((relative, remote_entry));
             }
+        }
+        let pending_bytes: u64 = pending.iter().map(|(_, entry)| entry.size).sum();
+        let (free_bytes, total_bytes) = desktop_fs_space(&plan.folder_uri)?;
+        let block_limit =
+            (storage_budget(free_bytes, total_bytes) as f64 * plan.block_fraction) as u64;
+        if pending_bytes > 0 && pending_bytes > block_limit {
+            return Err(not_enough_space_message(
+                &plan.name,
+                pending_bytes,
+                block_limit,
+            ));
+        }
+        let mut written_bytes = 0_u64;
+        for (relative, remote_entry) in pending {
             let source = join_sync_path(&base, &relative);
             let response = client
                 .get(file_url(&session.api_base, &source, &root)?)
@@ -748,6 +995,7 @@ async fn sync_pair_rust<R: Runtime>(
                     return Err("The file download could not be written.".into());
                 }
                 hasher.update(&bytes);
+                written_bytes += bytes.len() as u64;
             }
             if format!("{:x}", hasher.finalize()) != remote_entry.sha256 {
                 drop(output);
@@ -771,6 +1019,14 @@ async fn sync_pair_rust<R: Runtime>(
             if result.is_err() {
                 return Err(format!(
                     "Could not write server file to the selected folder: {relative}"
+                ));
+            }
+            if written_bytes > block_limit {
+                return Err(format!(
+                    "Sync stopped: “{}” passed its free-space limit after {}. \
+                     Free up space or raise the limit in Settings, then sync again.",
+                    plan.name,
+                    format_bytes(written_bytes),
                 ));
             }
             transferred += 1;
@@ -1204,6 +1460,8 @@ pub fn run() {
             server_tree,
             server_presets,
             sync_pair,
+            estimate_sync_pair,
+            storage_info,
             update_background_syncs,
             background_sync_status,
             sync_progress,

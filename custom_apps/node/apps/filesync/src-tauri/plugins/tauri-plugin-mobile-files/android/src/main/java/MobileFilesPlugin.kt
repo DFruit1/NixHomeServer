@@ -87,6 +87,28 @@ class MobileFilesPlugin(private val activity: Activity) : Plugin(activity) {
   }
 
   @Command
+  fun estimateSyncPair(invoke: Invoke) {
+    val pairJson = invoke.getArgs().getString("pairJson")
+    syncExecutor.execute {
+      try {
+        invoke.resolveObject(SyncEngine.estimatePair(activity, pairJson))
+      } catch (error: Exception) {
+        invoke.reject(error.message ?: "The sync size could not be estimated", error, null)
+      }
+    }
+  }
+
+  @Command
+  fun storageInfo(invoke: Invoke) {
+    try {
+      val stats = SyncEngine.storageStats(activity)
+      invoke.resolveObject(mapOf("freeBytes" to stats.freeBytes, "totalBytes" to stats.totalBytes))
+    } catch (error: Exception) {
+      invoke.reject("Could not read device storage", error, null)
+    }
+  }
+
+  @Command
   fun backgroundSyncStatus(invoke: Invoke) {
     try {
       invoke.resolveObject(mapOf("value" to SyncEngine.readStatus(activity)))
