@@ -267,9 +267,13 @@ internal object SyncEngine {
     if (pairServer.isNotBlank() && pairServer.trimEnd('/') != apiBase) {
       throw SyncFailure("This folder pair belongs to another server.", false)
     }
-    val folderUri = pair.getJSONObject("local").getString("uri")
+    val storedUri = pair.getJSONObject("local").getString("uri")
+    val folderUri = normalizeFolderUri(context, storedUri)
     val folderSlot = "folder-${sha256(folderUri.toByteArray()).take(32)}"
-    if (SecureSecrets.load(context, folderSlot) != folderUri || !hasTreeGrant(context, folderUri)) {
+    val storedSlot = "folder-${sha256(storedUri.toByteArray()).take(32)}"
+    val authorized = (SecureSecrets.load(context, folderSlot) == folderUri ||
+      SecureSecrets.load(context, storedSlot) == storedUri) && hasTreeGrant(context, folderUri)
+    if (!authorized) {
       throw SyncFailure("Folder access expired. Open File Sync and choose the device folder again.", false)
     }
     val identity = request(URL("$apiBase/api/v1/me"), "GET", accessToken = session.getString("accessToken"))
@@ -538,6 +542,18 @@ internal object SyncEngine {
     if (uri.scheme == "file") return hasStorageAccess(context)
     if (uri.authority == EXTERNAL_STORAGE_PROVIDER && hasStorageAccess(context)) return true
     return context.contentResolver.persistedUriPermissions.any { it.uri == uri && it.isReadPermission && it.isWritePermission }
+  }
+
+  private fun normalizeFolderUri(context: Context, raw: String): String {
+    val uri = Uri.parse(raw)
+    if (uri.scheme != "content" || uri.authority != EXTERNAL_STORAGE_PROVIDER) return raw
+    val hasGrant = context.contentResolver.persistedUriPermissions.any { it.uri == uri && it.isReadPermission && it.isWritePermission }
+    if (hasGrant || !hasStorageAccess(context)) return raw
+    val docId = runCatching { DocumentsContract.getTreeDocumentId(uri) }.getOrNull() ?: return raw
+    if (!docId.startsWith("primary:")) return raw
+    val relative = docId.removePrefix("primary:").trimEnd('/')
+    if (relative.isEmpty() || relative.split('/').any { it.isEmpty() || it == "." || it == ".." }) return raw
+    return Uri.fromFile(File(Environment.getExternalStorageDirectory(), relative)).toString()
   }
 
   private fun hasStorageAccess(context: Context): Boolean {
