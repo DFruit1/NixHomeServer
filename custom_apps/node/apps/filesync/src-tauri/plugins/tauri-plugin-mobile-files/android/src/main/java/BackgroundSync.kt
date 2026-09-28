@@ -1,7 +1,10 @@
 package org.nixhomeserver.filesync.mobilefiles
 
+import android.Manifest
 import android.content.Context
 import android.app.NotificationChannel
+import android.content.pm.PackageManager
+import android.os.Environment
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
@@ -35,6 +38,7 @@ import java.security.MessageDigest
 import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
 
+private const val EXTERNAL_STORAGE_PROVIDER = "com.android.externalstorage.documents"
 private const val PAIRS_SLOT = "background-sync-pairs"
 private const val SESSION_SLOT = "oidc-session"
 private const val STATUS_SLOT = "background-sync-status"
@@ -459,8 +463,17 @@ internal object SyncEngine {
     return null
   }
 
-  private fun hasTreeGrant(context: Context, raw: String): Boolean =
-    context.contentResolver.persistedUriPermissions.any { it.uri == Uri.parse(raw) && it.isReadPermission && it.isWritePermission }
+  private fun hasTreeGrant(context: Context, raw: String): Boolean {
+    val uri = Uri.parse(raw)
+    if (uri.authority == EXTERNAL_STORAGE_PROVIDER && hasStorageAccess(context)) return true
+    return context.contentResolver.persistedUriPermissions.any { it.uri == uri && it.isReadPermission && it.isWritePermission }
+  }
+
+  private fun hasStorageAccess(context: Context): Boolean {
+    if (Environment.isExternalStorageManager()) return true
+    return Build.VERSION.SDK_INT < Build.VERSION_CODES.R &&
+      context.checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+  }
 
   private fun cleanupStagedFiles(context: Context) {
     val cutoff = System.currentTimeMillis() - TimeUnit.DAYS.toMillis(1)

@@ -1,12 +1,19 @@
 package org.nixhomeserver.filesync.mobilefiles
 
+import android.Manifest
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
+import android.os.Environment
 import android.provider.DocumentsContract
+import android.provider.Settings
 import androidx.activity.result.ActivityResult
 import app.tauri.annotation.ActivityCallback
 import app.tauri.annotation.Command
+import app.tauri.annotation.Permission
+import app.tauri.annotation.PermissionCallback
 import app.tauri.annotation.TauriPlugin
 import app.tauri.plugin.Invoke
 import app.tauri.plugin.Plugin
@@ -16,7 +23,7 @@ import java.io.FileOutputStream
 import java.security.MessageDigest
 import java.util.concurrent.Executors
 
-@TauriPlugin
+@TauriPlugin(permissions = [Permission(strings = [Manifest.permission.WRITE_EXTERNAL_STORAGE], alias = "writeExternalStorage")])
 class MobileFilesPlugin(private val activity: Activity) : Plugin(activity) {
   @Command
   fun acquireSyncLock(invoke: Invoke) {
@@ -83,6 +90,54 @@ class MobileFilesPlugin(private val activity: Activity) : Plugin(activity) {
       invoke.resolveObject(mapOf("value" to SyncEngine.readStatus(activity)))
     } catch (error: Exception) {
       invoke.reject("Could not read Android background sync status", error, null)
+    }
+  }
+
+  @Command
+  fun ensureAllFilesAccess(invoke: Invoke) {
+    invoke.resolveObject(mapOf("value" to hasAllFilesAccess()))
+  }
+
+  @Command
+  fun requestAllFilesAccess(invoke: Invoke) {
+    if (hasAllFilesAccess()) {
+      invoke.resolveObject(mapOf("value" to true))
+      return
+    }
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+      val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+        data = Uri.parse("package:${activity.packageName}")
+      }
+      startActivityForResult(invoke, intent, "allFilesAccessRequested")
+    } else {
+      requestPermissionForAlias("writeExternalStorage", invoke, "onWriteStoragePermissionResult")
+    }
+  }
+
+  @ActivityCallback
+  fun allFilesAccessRequested(invoke: Invoke, result: ActivityResult) {
+    invoke.resolveObject(mapOf("value" to hasAllFilesAccess()))
+  }
+
+  @PermissionCallback
+  fun onWriteStoragePermissionResult(invoke: Invoke) {
+    invoke.resolveObject(mapOf("value" to hasAllFilesAccess()))
+  }
+
+  @Command
+  fun createLocalFolder(invoke: Invoke) {
+    try {
+      val subpath = invoke.getArgs().getString("subpath")
+      require(subpath.matches(Regex("[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*"))) { "Invalid folder path" }
+      require(hasAllFilesAccess()) { "All files access is required to create this folder" }
+      val folder = File(Environment.getExternalStorageDirectory(), subpath)
+      if (!folder.exists() && !folder.mkdirs()) {
+        throw IllegalStateException("The folder could not be created on this device")
+      }
+      val tree = DocumentsContract.buildTreeDocumentUri("com.android.externalstorage.documents", "primary:$subpath")
+      invoke.resolveObject(mapOf("value" to mapOf("uri" to tree.toString(), "displayName" to "This device")))
+    } catch (error: Exception) {
+      invoke.reject("Could not create the folder on this device", error, null)
     }
   }
 
@@ -231,6 +286,12 @@ class MobileFilesPlugin(private val activity: Activity) : Plugin(activity) {
     } catch (error: Exception) {
       invoke.reject("Could not clear the Kanidm session", error, null)
     }
+  }
+
+  private fun hasAllFilesAccess(): Boolean {
+    if (Environment.isExternalStorageManager()) return true
+    return Build.VERSION.SDK_INT < Build.VERSION_CODES.R &&
+      activity.checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
   }
 
   private fun safeSlot(value: String): String {

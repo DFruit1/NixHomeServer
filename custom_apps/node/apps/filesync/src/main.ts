@@ -174,6 +174,12 @@ function render(): void {
       <div class="dialog-actions"><button class="secondary-button" type="button" id="server-browser-up">Up one level</button><button class="primary-button" type="button" id="choose-server-folder">Use this folder</button></div>
     </dialog>
 
+    <dialog id="permission-dialog" class="pair-dialog" aria-labelledby="permission-heading">
+      <div class="dialog-heading"><h2 id="permission-heading">All files access</h2><button class="close-button" type="button" id="cancel-permission-request" aria-label="Close dialog">×</button></div>
+      <p id="permission-status"></p>
+      <div class="dialog-actions"><button class="secondary-button" type="button" id="choose-folder-manually">Choose folder manually</button><button class="primary-button" type="button" id="open-all-files-settings">Open settings</button></div>
+    </dialog>
+
     <dialog id="settings-dialog" class="pair-dialog settings-dialog" aria-labelledby="settings-heading">
       <form method="dialog" id="settings-form">
         <div class="dialog-heading"><h2 id="settings-heading">Settings</h2><button class="close-button" value="cancel" aria-label="Close settings">×</button></div>
@@ -223,7 +229,7 @@ function bindEvents(): void {
     if (!(await ensureSettingsAuthorized())) return;
     button.disabled = true;
     try {
-      const folder = await invoke<Folder | null>('pick_local_folder');
+      const folder = await obtainPresetFolder(preset);
       if (!folder) { button.disabled = false; return; }
       const pair: SyncPair = { id: crypto.randomUUID(), name: preset.title, local: folder, serverRoot: preset.id, serverFolder: preset.folder, serverPath: preset.serverPath, localSubpath: preset.localSubpath, direction: preset.direction, server: state.server, account: state.user };
       if (state.pairs.some((item) => item.server === pair.server && item.account === pair.account && (item.serverRoot ?? 'files') === pair.serverRoot && item.serverPath === pair.serverPath)) {
@@ -498,6 +504,39 @@ async function finishCallback(url: string): Promise<void> {
     state.error = error instanceof Error ? error.message : String(error);
   }
   render();
+}
+
+async function obtainPresetFolder(preset: SyncPreset): Promise<Folder | null> {
+  if (!invoke) return null;
+  try {
+    if (await invoke<boolean>('ensure_all_files_access')) {
+      return await invoke<Folder>('create_local_folder', { subpath: preset.localSubpath });
+    }
+  } catch (error) {
+    showError(error);
+    return null;
+  }
+  return new Promise((resolve) => {
+    const dialog = document.querySelector<HTMLDialogElement>('#permission-dialog')!;
+    const status = document.querySelector<HTMLElement>('#permission-status')!;
+    const openSettings = document.querySelector<HTMLButtonElement>('#open-all-files-settings')!;
+    const chooseManual = document.querySelector<HTMLButtonElement>('#choose-folder-manually')!;
+    const cancel = document.querySelector<HTMLButtonElement>('#cancel-permission-request')!;
+    status.textContent = `File Sync can create the ${preset.localSubpath} folder on this device automatically with All files access. Without it, you can still choose a folder manually.`;
+    dialog.showModal();
+    const done = (value: Folder | null) => { dialog.close(); resolve(value); };
+    openSettings.onclick = async () => {
+      try {
+        if (await invoke<boolean>('request_all_files_access')) {
+          done(await invoke<Folder>('create_local_folder', { subpath: preset.localSubpath }));
+        } else {
+          done(await invoke<Folder | null>('pick_local_folder'));
+        }
+      } catch (error) { showError(error); done(null); }
+    };
+    chooseManual.onclick = () => { void invoke<Folder | null>('pick_local_folder').then(done); };
+    cancel.onclick = () => done(null);
+  });
 }
 
 async function ensureSettingsAuthorized(): Promise<boolean> {

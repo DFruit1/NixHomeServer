@@ -56,6 +56,27 @@ impl<R: Runtime> MobileFiles<R> {
         Ok(response.value)
     }
 
+    pub fn ensure_all_files_access(&self) -> crate::Result<bool> {
+        let response: BooleanResponse = self.0
+            .run_mobile_plugin("ensureAllFilesAccess", ())
+            .map_err(crate::Error::from)?;
+        Ok(response.value)
+    }
+
+    pub fn request_all_files_access(&self) -> crate::Result<bool> {
+        let response: BooleanResponse = self.0
+            .run_mobile_plugin("requestAllFilesAccess", ())
+            .map_err(crate::Error::from)?;
+        Ok(response.value)
+    }
+
+    pub fn create_local_folder(&self, subpath: String) -> crate::Result<PickedFolder> {
+        let response: PickedFolderResponse = self.0
+            .run_mobile_plugin("createLocalFolder", serde_json::json!({ "subpath": subpath }))
+            .map_err(crate::Error::from)?;
+        response.value.ok_or_else(|| crate::Error::Operation("Android returned no folder".into()))
+    }
+
     pub fn store_session(&self, session: String) -> crate::Result<()> {
         self.store_secret("oidc-session".into(), session)
     }

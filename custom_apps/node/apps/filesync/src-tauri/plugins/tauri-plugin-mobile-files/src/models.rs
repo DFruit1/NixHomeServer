@@ -32,6 +32,11 @@ pub struct PickedFolderResponse {
     pub value: Option<PickedFolder>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct BooleanResponse {
+    pub value: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::{PickedFolderResponse, StringResponse};

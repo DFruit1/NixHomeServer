@@ -268,6 +268,37 @@ async fn pick_local_folder<R: Runtime>(
 }
 
 #[tauri::command]
+fn ensure_all_files_access<R: Runtime>(app: AppHandle<R>) -> Result<bool, String> {
+    app.mobile_files()
+        .ensure_all_files_access()
+        .map_err(|_| "Could not check all-files access on this device.".to_owned())
+}
+
+#[tauri::command]
+fn request_all_files_access<R: Runtime>(app: AppHandle<R>) -> Result<bool, String> {
+    app.mobile_files()
+        .request_all_files_access()
+        .map_err(|_| "Could not open the all-files access settings.".to_owned())
+}
+
+#[tauri::command]
+fn create_local_folder<R: Runtime>(
+    app: AppHandle<R>,
+    subpath: String,
+) -> Result<tauri_plugin_mobile_files::PickedFolder, String> {
+    let folder = app
+        .mobile_files()
+        .create_local_folder(subpath)
+        .map_err(|_| "Could not create the folder on this device.".to_owned())?;
+    app.mobile_files()
+        .store_secret(folder_secret_slot(&folder.uri), folder.uri.clone())
+        .map_err(|_| {
+            "Secure storage is unavailable, so this folder cannot be used by File Sync.".to_owned()
+        })?;
+    Ok(folder)
+}
+
+#[tauri::command]
 fn forget_local_folder<R: Runtime>(app: AppHandle<R>, folder_uri: String) -> Result<(), String> {
     let slot = folder_secret_slot(&folder_uri);
     let selected = app
@@ -1132,7 +1163,10 @@ pub fn run() {
             update_background_syncs,
             background_sync_status,
             pick_local_folder,
-            forget_local_folder
+            forget_local_folder,
+            ensure_all_files_access,
+            request_all_files_access,
+            create_local_folder
         ])
         .run(tauri::generate_context!())
         .expect("error while running File Sync");

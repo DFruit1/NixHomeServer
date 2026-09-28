@@ -35,7 +35,12 @@ impl<R: Runtime, T: Manager<R>> crate::MobileFilesExt<R> for T {
 /// Initializes the plugin.
 pub fn init<R: Runtime>() -> TauriPlugin<R> {
     Builder::new("mobile-files")
-        .invoke_handler(tauri::generate_handler![commands::pick_local_folder,])
+        .invoke_handler(tauri::generate_handler![
+            commands::pick_local_folder,
+            commands::ensure_all_files_access,
+            commands::request_all_files_access,
+            commands::create_local_folder,
+        ])
         .setup(|app, api| {
             #[cfg(mobile)]
             let mobile_files = mobile::init(app, api)?;

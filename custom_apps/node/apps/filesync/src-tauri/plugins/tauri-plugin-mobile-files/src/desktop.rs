@@ -58,6 +58,29 @@ impl<R: Runtime> MobileFiles<R> {
         }))
     }
 
+    pub fn ensure_all_files_access(&self) -> crate::Result<bool> {
+        Ok(true)
+    }
+
+    pub fn request_all_files_access(&self) -> crate::Result<bool> {
+        Ok(true)
+    }
+
+    pub fn create_local_folder(&self, subpath: String) -> crate::Result<PickedFolder> {
+        let root = std::env::temp_dir().join("filesync-auto");
+        let path = root.join(&subpath);
+        fs::create_dir_all(&path)?;
+        let display_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("Selected folder")
+            .to_owned();
+        Ok(PickedFolder {
+            uri: path.to_string_lossy().into_owned(),
+            display_name,
+        })
+    }
+
     pub fn store_session(&self, session: String) -> crate::Result<()> {
         self.store_secret("oidc-session".into(), session)
     }
