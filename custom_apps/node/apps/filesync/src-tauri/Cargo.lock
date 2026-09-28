@@ -1117,6 +1117,7 @@ dependencies = [
  "base64 0.22.1",
  "futures-util",
  "jsonwebtoken",
+ "libc",
  "rand 0.8.8",
  "reqwest 0.12.28",
  "serde",
@@ -4292,6 +4293,7 @@ name = "tauri-plugin-mobile-files"
 version = "0.1.0"
 dependencies = [
  "keyring",
+ "libc",
  "serde",
  "serde_json",
  "sha2",
