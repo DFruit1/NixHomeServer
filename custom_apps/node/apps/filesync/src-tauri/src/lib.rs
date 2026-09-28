@@ -1067,6 +1067,29 @@ fn folder_secret_slot(folder_uri: &str) -> String {
     format!("folder-{}", &digest[..32])
 }
 
+#[tauri::command]
+fn session_backup<R: Runtime>(app: AppHandle<R>) -> Result<Option<String>, String> {
+    let Some(session) = load_session(&app)? else {
+        return Ok(None);
+    };
+    serde_json::to_string(&session)
+        .map(Some)
+        .map_err(|_| "The saved session could not be backed up.".to_owned())
+}
+
+#[tauri::command]
+fn restore_session_backup<R: Runtime>(app: AppHandle<R>, backup: String) -> Result<(), String> {
+    let session: StoredSession = serde_json::from_str(&backup)
+        .map_err(|_| "The stored session backup is invalid.".to_owned())?;
+    store_session(&app, &session)?;
+    app.mobile_files()
+        .store_secret(
+            "settings-auth-until".into(),
+            now_seconds().saturating_add(24 * 60 * 60).to_string(),
+        )
+        .map_err(|_| "The restored session could not be saved securely.".to_owned())
+}
+
 fn ensure_https_url(value: &str) -> Result<(), String> {
     let url = Url::parse(value).map_err(|_| "Kanidm returned an invalid endpoint URL.")?;
     if url.scheme() != "https"
@@ -1152,11 +1175,13 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             platform_name,
-            begin_login,
-            finish_login,
-            current_user,
-            settings_authorized,
-            logout,
+             begin_login,
+             finish_login,
+             current_user,
+             settings_authorized,
+             session_backup,
+             restore_session_backup,
+             logout,
             server_tree,
             server_presets,
             sync_pair,

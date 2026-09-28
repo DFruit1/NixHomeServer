@@ -272,35 +272,40 @@ class MobileFilesPlugin(private val activity: Activity) : Plugin(activity) {
 
   @Command
   fun storeSecret(invoke: Invoke) {
-    try {
-      val slot = safeSlot(invoke.getArgs().getString("slot"))
-      val secret = invoke.getArgs().getString("secret")
-      SecureSecrets.store(activity, slot, secret)
-      invoke.resolve()
-    } catch (error: Exception) {
-      invoke.reject("Could not store the Kanidm session securely", error, null)
+    val slot = safeSlot(invoke.getArgs().getString("slot"))
+    val secret = invoke.getArgs().getString("secret")
+    secretsExecutor.execute {
+      try {
+        SecureSecrets.store(activity, slot, secret)
+        invoke.resolve()
+      } catch (error: Exception) {
+        invoke.reject("Could not store the Kanidm session securely", error, null)
+      }
     }
   }
 
   @Command
   fun loadSecret(invoke: Invoke) {
-    try {
-      val slot = safeSlot(invoke.getArgs().getString("slot"))
-      val secret = SecureSecrets.load(activity, slot)
-      invoke.resolveObject(mapOf("value" to secret))
-    } catch (error: Exception) {
-      invoke.reject("Could not read the Kanidm session securely", error, null)
+    val slot = safeSlot(invoke.getArgs().getString("slot"))
+    secretsExecutor.execute {
+      try {
+        invoke.resolveObject(mapOf("value" to SecureSecrets.load(activity, slot)))
+      } catch (error: Exception) {
+        invoke.reject("Could not read the Kanidm session securely", error, null)
+      }
     }
   }
 
   @Command
   fun clearSecret(invoke: Invoke) {
-    try {
-      val slot = safeSlot(invoke.getArgs().getString("slot"))
-      SecureSecrets.clear(activity, slot)
-      invoke.resolve()
-    } catch (error: Exception) {
-      invoke.reject("Could not clear the Kanidm session", error, null)
+    val slot = safeSlot(invoke.getArgs().getString("slot"))
+    secretsExecutor.execute {
+      try {
+        SecureSecrets.clear(activity, slot)
+        invoke.resolve()
+      } catch (error: Exception) {
+        invoke.reject("Could not clear the Kanidm session", error, null)
+      }
     }
   }
 
@@ -319,6 +324,7 @@ class MobileFilesPlugin(private val activity: Activity) : Plugin(activity) {
     private val syncExecutor = Executors.newSingleThreadExecutor()
     private val lockExecutor = Executors.newSingleThreadExecutor()
     private val configExecutor = Executors.newSingleThreadExecutor()
+    private val secretsExecutor = Executors.newSingleThreadExecutor()
   }
 
   private fun walkTree(tree: Uri, parentId: String, prefix: String, result: MutableList<Map<String, Any>>) {

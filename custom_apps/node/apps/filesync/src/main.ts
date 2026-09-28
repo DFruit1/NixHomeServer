@@ -11,6 +11,7 @@ type ServerEntry = { name: string; path: string; kind: string; size: number; mod
 const invoke = (window as TauriWindow).__TAURI__?.core?.invoke;
 const STORAGE_KEY = 'nixhomeserver.filesync.pairs.v1';
 const SETTINGS_KEY = 'nixhomeserver.filesync.server.v1';
+const SESSION_BACKUP_KEY = 'nixhomeserver.filesync.session-backup.v1';
 const DEFAULT_SERVER = import.meta.env.VITE_FILESYNC_DEFAULT_SERVER ?? '';
 const app = document.querySelector<HTMLDivElement>('#app')!;
 
@@ -264,7 +265,7 @@ function bindEvents(): void {
       return;
     }
     if (state.user && nextServer !== state.server && invoke) {
-      try { await invoke<void>('logout'); state.user = undefined; state.settingsAuthorized = false; }
+      try { await invoke<void>('logout'); localStorage.removeItem(SESSION_BACKUP_KEY); state.user = undefined; state.settingsAuthorized = false; }
       catch (error) { setError(error); return; }
     }
     state.server = nextServer;
@@ -297,6 +298,7 @@ function bindEvents(): void {
     if (!invoke) return;
     try {
       await invoke<void>('logout');
+      localStorage.removeItem(SESSION_BACKUP_KEY);
       state.user = undefined;
       state.settingsAuthorized = false;
       state.presets = [];
@@ -445,6 +447,17 @@ function showError(error: unknown): void {
   render();
 }
 
+async function restoreSessionBackup(): Promise<boolean> {
+  if (!invoke) return false;
+  const backup = localStorage.getItem(SESSION_BACKUP_KEY);
+  if (!backup) return false;
+  try {
+    await invoke<void>('restore_session_backup', { backup });
+    state.user = await invoke<string | null>('current_user') ?? undefined;
+    return state.user !== undefined;
+  } catch { return false; }
+}
+
 async function start(): Promise<void> {
   if (invoke) {
     try {
@@ -452,6 +465,11 @@ async function start(): Promise<void> {
     } catch { /* The browser preview does not provide native deep links. */ }
     try {
       state.user = await invoke<string | null>('current_user') ?? undefined;
+    } catch { state.user = undefined; }
+    if (!state.user && (await restoreSessionBackup())) {
+      state.notice = 'Signed in from the saved session.';
+    }
+    try {
       state.backgroundStatus = readBackgroundStatus(await invoke<string | null>('background_sync_status'));
       await persistPairs();
       if (state.user) {
@@ -496,6 +514,10 @@ async function finishCallback(url: string): Promise<void> {
   try {
     state.user = await invoke<string>('finish_login', { callbackUrl: url });
     state.settingsAuthorized = await invoke<boolean>('settings_authorized');
+    try {
+      const backup = await invoke<string | null>('session_backup');
+      if (backup) localStorage.setItem(SESSION_BACKUP_KEY, backup);
+    } catch { /* The session stays available in secure storage only. */ }
     await loadPresets();
     await persistPairs();
     state.error = '';
