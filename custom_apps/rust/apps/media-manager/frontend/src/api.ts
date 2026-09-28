@@ -54,17 +54,37 @@ export function errorDetail(error: unknown): string {
     .join(" · ");
 }
 
+const API_TIMEOUT_MS = 30_000;
+
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   if (init.body && !headers.has("content-type")) {
     headers.set("content-type", "application/json");
   }
   headers.set("accept", "application/json");
-  const response = await fetch(`/api/v1${path}`, {
-    credentials: "same-origin",
-    ...init,
-    headers,
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+  let response: Response;
+  try {
+    response = await fetch(`/api/v1${path}`, {
+      credentials: "same-origin",
+      ...init,
+      headers,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new ApiError(
+        408,
+        "timeout",
+        "The server took too long to respond. Try again.",
+        "unknown",
+      );
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
   if (
     response.status === 204 &&
     validateApiResponse(path, init.method ?? "GET", response.status, null)
@@ -97,10 +117,28 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 export async function apiBlob(path: string): Promise<Blob> {
-  const response = await fetch(`/api/v1${path}`, {
-    credentials: "same-origin",
-    headers: { accept: "image/jpeg,image/png,image/gif,image/webp" },
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+  let response: Response;
+  try {
+    response = await fetch(`/api/v1${path}`, {
+      credentials: "same-origin",
+      headers: { accept: "image/jpeg,image/png,image/gif,image/webp" },
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new ApiError(
+        408,
+        "timeout",
+        "The image took too long to download. Try again.",
+        "unknown",
+      );
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
   if (!response.ok) {
     const payload = (await response.json().catch(() => ({}))) as ServerError;
     throw new ApiError(

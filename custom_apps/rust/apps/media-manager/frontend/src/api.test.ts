@@ -29,6 +29,37 @@ describe("api", () => {
     });
   });
 
+  it("times out slow requests and throws a timeout ApiError", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        (_url: string, init?: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => {
+              reject(
+                new DOMException("The operation was aborted.", "AbortError"),
+              );
+            });
+          }),
+      ),
+    );
+
+    const promise = api("/provider-lookups/open-library/search", {
+      method: "POST",
+      body: JSON.stringify({ query: "Lawson" }),
+    });
+
+    vi.advanceTimersByTime(31_000);
+
+    await expect(promise).rejects.toMatchObject({
+      code: "timeout",
+      status: 408,
+    });
+
+    vi.useRealTimers();
+  });
+
   it("preserves the stable server error code and request ID", async () => {
     vi.stubGlobal(
       "fetch",
