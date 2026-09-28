@@ -145,6 +145,20 @@ impl<R: Runtime> MobileFiles<R> {
         Ok(response.value)
     }
 
+    pub fn sync_progress(&self) -> crate::Result<Option<String>> {
+        let response: StringResponse = self.0
+            .run_mobile_plugin("syncProgress", serde_json::json!({}))
+            .map_err(crate::Error::from)?;
+        Ok(response.value)
+    }
+
+    pub fn ensure_notifications(&self) -> crate::Result<bool> {
+        let response: BooleanResponse = self.0
+            .run_mobile_plugin("ensureNotifications", serde_json::json!({}))
+            .map_err(crate::Error::from)?;
+        Ok(response.value)
+    }
+
     pub fn list_local_files(&self, folder_uri: String) -> crate::Result<Vec<LocalEntry>> {
         let result: LocalListing = self
             .0

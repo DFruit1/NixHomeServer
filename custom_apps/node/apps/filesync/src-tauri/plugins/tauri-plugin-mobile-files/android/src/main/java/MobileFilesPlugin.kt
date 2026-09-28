@@ -10,6 +10,8 @@ import android.os.Environment
 import android.provider.DocumentsContract
 import android.provider.Settings
 import androidx.activity.result.ActivityResult
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import app.tauri.annotation.ActivityCallback
 import app.tauri.annotation.Command
 import app.tauri.annotation.Permission
@@ -90,6 +92,33 @@ class MobileFilesPlugin(private val activity: Activity) : Plugin(activity) {
       invoke.resolveObject(mapOf("value" to SyncEngine.readStatus(activity)))
     } catch (error: Exception) {
       invoke.reject("Could not read Android background sync status", error, null)
+    }
+  }
+
+  @Command
+  fun syncProgress(invoke: Invoke) {
+    try {
+      invoke.resolveObject(mapOf("value" to SyncEngine.readProgress()))
+    } catch (error: Exception) {
+      invoke.reject("Could not read Android sync progress", error, null)
+    }
+  }
+
+  @Command
+  fun ensureNotifications(invoke: Invoke) {
+    try {
+      if (Build.VERSION.SDK_INT < 33) {
+        invoke.resolveObject(mapOf("value" to true))
+        return
+      }
+      val granted = ContextCompat.checkSelfPermission(activity, Manifest.permission.POST_NOTIFICATIONS) ==
+        PackageManager.PERMISSION_GRANTED
+      if (!granted) {
+        ActivityCompat.requestPermissions(activity, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 9001)
+      }
+      invoke.resolveObject(mapOf("value" to granted))
+    } catch (error: Exception) {
+      invoke.reject("Could not check notification permission", error, null)
     }
   }
 

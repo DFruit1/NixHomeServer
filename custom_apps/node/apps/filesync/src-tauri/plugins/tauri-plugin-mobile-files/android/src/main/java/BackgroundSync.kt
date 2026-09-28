@@ -45,6 +45,9 @@ private const val STATUS_SLOT = "background-sync-status"
 private const val PERIODIC_WORK = "filesync-periodic"
 private const val IMMEDIATE_WORK = "filesync-immediate"
 private const val HTTP_TIMEOUT_MS = 30_000
+private const val SYNC_CHANNEL_ID = "filesync-sync"
+private const val WORKER_NOTIFICATION_ID = 41
+private const val MANUAL_NOTIFICATION_ID = 42
 
 internal object BackgroundSyncScheduler {
   fun update(context: Context, enabled: Boolean) {
@@ -123,17 +126,84 @@ internal class BackgroundSyncWorker(context: Context, parameters: WorkerParamete
 internal object SyncEngine {
   private val syncLock = Semaphore(1)
 
+  @Volatile private var memoryProgress: String? = null
+
   fun acquireSyncLock() = syncLock.acquire()
   fun releaseSyncLock() = syncLock.release()
 
   fun updateConfiguration(context: Context, pairsJson: String, enabled: Boolean) {
-    acquireSyncLock()
+    // Store the new pair list without taking the sync lock. A running sync
+    // already loaded its work list, so blocking removal on a long book sync
+    // froze the UI. The next run picks up the stored configuration.
+    SecureSecrets.store(context, PAIRS_SLOT, pairsJson)
+    val hasSession = !SecureSecrets.load(context, SESSION_SLOT).isNullOrBlank()
+    BackgroundSyncScheduler.update(context, enabled && hasSession)
+  }
+
+  fun readProgress(): String? = memoryProgress
+
+  private fun reportProgress(
+    context: Context,
+    notificationId: Int,
+    pairName: String,
+    activePairs: List<String>,
+    direction: String,
+    currentFile: String,
+    transferred: Int,
+    skipped: Int,
+  ) {
+    val payload = JSONObject()
+      .put("active", true)
+      .put("pair", pairName)
+      .put("pairs", JSONArray(activePairs))
+      .put("direction", direction)
+      .put("currentFile", currentFile)
+      .put("transferred", transferred)
+      .put("skipped", skipped)
+      .toString()
+    memoryProgress = payload
+    val arrow = if (direction == "server-to-phone") "↓" else "↑"
+    val title = if (activePairs.size > 1) "Syncing ${activePairs.size} folders" else "Syncing $pairName"
+    val text = if (currentFile.isBlank()) "Preparing…" else "$arrow $currentFile"
+    showSyncNotification(context, notificationId, title, text)
+  }
+
+  private fun clearProgress(context: Context, notificationId: Int) {
+    memoryProgress = null
+    runCatching {
+      (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(notificationId)
+    }
+  }
+
+  private fun showSyncNotification(context: Context, notificationId: Int, title: String, text: String) {
     try {
-      SecureSecrets.store(context, PAIRS_SLOT, pairsJson)
-      val hasSession = !SecureSecrets.load(context, SESSION_SLOT).isNullOrBlank()
-      BackgroundSyncScheduler.update(context, enabled && hasSession)
-    } finally {
-      releaseSyncLock()
+      if (Build.VERSION.SDK_INT >= 33 &&
+        context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+      ) {
+        return
+      }
+      val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        manager.createNotificationChannel(
+          NotificationChannel(SYNC_CHANNEL_ID, "File Sync activity", NotificationManager.IMPORTANCE_LOW),
+        )
+      }
+      val launchIntent = context.packageManager.getLaunchIntentForPackage(context.packageName)
+      val pendingIntent = launchIntent?.let {
+        PendingIntent.getActivity(context, 0, it, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+      }
+      val notification = NotificationCompat.Builder(context, SYNC_CHANNEL_ID)
+        .setSmallIcon(android.R.drawable.stat_sys_upload)
+        .setContentTitle(title)
+        .setContentText(text)
+        .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+        .setOngoing(true)
+        .setOnlyAlertOnce(true)
+        .setContentIntent(pendingIntent)
+        .build()
+      manager.notify(notificationId, notification)
+    } catch (_: Exception) {
+      // Notifications are best-effort; sync must continue without them.
     }
   }
 
@@ -144,7 +214,10 @@ internal object SyncEngine {
       locked = true
       val pair = JSONObject(pairJson)
       val session = currentSession(context)
-      val result = syncOne(context, session, pair)
+      val pairName = pair.optString("name", "Folder pair").ifBlank { "Folder pair" }
+      reportProgress(context, MANUAL_NOTIFICATION_ID, pairName, listOf(pairName),
+        pair.optString("direction"), "", 0, 0)
+      val result = syncOne(context, session, pair, MANUAL_NOTIFICATION_ID)
       writeStatus(context, "Last sync finished: ${result.getInt("transferred")} files copied.")
       return result
     } catch (error: InterruptedException) {
@@ -160,6 +233,7 @@ internal object SyncEngine {
       writeStatus(context, "Sync could not finish. Open File Sync to review the connection and folder access.")
       throw SyncFailure("Sync could not finish: ${error.message ?: "check the server and folder access"}.", true)
     } finally {
+      clearProgress(context, MANUAL_NOTIFICATION_ID)
       if (locked) releaseSyncLock()
     }
   }
@@ -180,10 +254,12 @@ internal object SyncEngine {
       var transferred = 0
       var completedPairs = 0
       val warnings = mutableListOf<String>()
+      val activeNames = (0 until pairs.length())
+        .map { pairs.getJSONObject(it).optString("name", "Folder pair").ifBlank { "Folder pair" } }
       for (index in 0 until pairs.length()) {
         val pair = pairs.getJSONObject(index)
         try {
-          val result = syncOne(context, session, pair)
+          val result = syncOne(context, session, pair, WORKER_NOTIFICATION_ID, activeNames)
           transferred += result.getInt("transferred")
           completedPairs++
         } catch (error: SyncFailure) {
@@ -206,6 +282,7 @@ internal object SyncEngine {
     } catch (error: Exception) {
       throw SyncFailure("Background sync could not finish: ${error.message ?: "check the server and folder access"}.", true)
     } finally {
+      runCatching { clearProgress(context, WORKER_NOTIFICATION_ID) }
       if (locked) releaseSyncLock()
     }
   }
@@ -254,7 +331,15 @@ internal object SyncEngine {
     return session
   }
 
-  private fun syncOne(context: Context, session: JSONObject, pair: JSONObject): JSONObject {
+  private fun syncOne(
+    context: Context,
+    session: JSONObject,
+    pair: JSONObject,
+    notificationId: Int,
+    activePairs: List<String>? = null,
+  ): JSONObject {
+    val pairName = pair.optString("name", "Folder pair").ifBlank { "Folder pair" }
+    val names = activePairs ?: listOf(pairName)
     val direction = pair.getString("direction")
     if (direction != "phone-to-server" && direction != "server-to-phone") {
       throw SyncFailure("This sync direction is not supported for background sync.", false)
@@ -291,9 +376,14 @@ internal object SyncEngine {
       .filter { it.kind == "file" }.associateBy { it.path }
     var transferred = 0
     var skipped = 0
+    fun progress(currentFile: String) {
+      reportProgress(context, notificationId, pairName, names, direction, currentFile, transferred, skipped)
+    }
+    progress("")
     if (direction == "phone-to-server") {
       for ((relative, entry) in localEntries) {
         if (remoteEntries[relative]?.sha256 == entry.sha256) { skipped++; continue }
+        progress(relative)
         val staged = stageLocalFile(context, folderUri, join(deviceSubpath, relative), entry.sha256)
         try {
           val target = join(serverPath, relative)
@@ -308,6 +398,7 @@ internal object SyncEngine {
     } else {
       for ((relative, entry) in remoteEntries) {
         if (localEntries[relative]?.sha256 == entry.sha256) { skipped++; continue }
+        progress(relative)
         val response = request(fileUrl(apiBase, join(serverPath, relative), root), "GET", accessToken = session.getString("accessToken"), streamToCache = context.cacheDir)
         if (response.code !in 200..299) failHttp(response.code, "The server could not provide $relative")
         val staged = response.file ?: throw SyncFailure("The download could not be staged.", true)

@@ -570,6 +570,20 @@ fn background_sync_status<R: Runtime>(app: AppHandle<R>) -> Result<Option<String
         .map_err(|_| "Android background sync status is unavailable.".to_owned())
 }
 
+#[tauri::command]
+fn sync_progress<R: Runtime>(app: AppHandle<R>) -> Result<Option<String>, String> {
+    app.mobile_files()
+        .sync_progress()
+        .map_err(|_| "Android sync progress is unavailable.".to_owned())
+}
+
+#[tauri::command]
+fn ensure_notifications<R: Runtime>(app: AppHandle<R>) -> Result<bool, String> {
+    app.mobile_files()
+        .ensure_notifications()
+        .map_err(|_| "Android notification permission is unavailable.".to_owned())
+}
+
 async fn sync_pair_rust<R: Runtime>(
     app: AppHandle<R>,
     pair: SyncPair,
@@ -1187,6 +1201,8 @@ pub fn run() {
             sync_pair,
             update_background_syncs,
             background_sync_status,
+            sync_progress,
+            ensure_notifications,
             pick_local_folder,
             forget_local_folder,
             ensure_all_files_access,

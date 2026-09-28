@@ -143,6 +143,14 @@ impl<R: Runtime> MobileFiles<R> {
         Ok(None)
     }
 
+    pub fn sync_progress(&self) -> crate::Result<Option<String>> {
+        Ok(None)
+    }
+
+    pub fn ensure_notifications(&self) -> crate::Result<bool> {
+        Ok(true)
+    }
+
     pub fn list_local_files(&self, folder_uri: String) -> crate::Result<Vec<LocalEntry>> {
         fn walk(root: &Path, dir: &Path, entries: &mut Vec<LocalEntry>) -> std::io::Result<()> {
             for item in fs::read_dir(dir)? {

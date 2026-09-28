@@ -68,6 +68,11 @@ input { min-height: 2.75rem; padding: .55rem .75rem; }
 .account-row { display: flex; flex-wrap: wrap; align-items: center; gap: .35rem 1rem; }
 .account-row p { margin: 0; color: var(--text-secondary); }
 .account-user strong { color: var(--text-primary); }
+.sync-progress { padding: 1rem 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.sync-progress[hidden] { display: none; }
+.sync-progress p { margin: 0; }
+.progress-title { overflow-wrap: anywhere; font-weight: 650; }
+.progress-counts { color: var(--text-secondary); font-size: .9rem; }
 .services-section { padding: 1.7rem 0 .4rem; }
 .service-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 13rem), 1fr)); gap: .8rem; margin-top: .8rem; }
 .service-card { display: grid; grid-template-rows: auto auto 1fr; align-items: start; gap: .7rem; min-height: 9.5rem; border: 1px solid var(--border-strong); border-radius: .5rem; padding: 1.1rem; background: var(--surface); color: var(--text-primary); text-align: left; }

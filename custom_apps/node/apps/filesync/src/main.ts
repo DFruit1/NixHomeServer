@@ -7,6 +7,7 @@ type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>
 type TauriWindow = Window & { __TAURI__?: { core?: { invoke?: Invoke } } };
 type SyncPreset = { id: string; folder: string; service: string; serviceTitle: string; title: string; description: string; serverPath: string; localSubpath: string; direction: SyncDirection };
 type ServerEntry = { name: string; path: string; kind: string; size: number; modifiedUnixMs: number };
+type SyncProgress = { active: boolean; pair: string; pairs: string[]; direction: string; currentFile: string; transferred: number; skipped: number };
 
 const invoke = (window as TauriWindow).__TAURI__?.core?.invoke;
 const STORAGE_KEY = 'nixhomeserver.filesync.pairs.v1';
@@ -15,7 +16,7 @@ const SESSION_BACKUP_KEY = 'nixhomeserver.filesync.session-backup.v1';
 const DEFAULT_SERVER = import.meta.env.VITE_FILESYNC_DEFAULT_SERVER ?? '';
 const app = document.querySelector<HTMLDivElement>('#app')!;
 
-const state: { pairs: SyncPair[]; presets: SyncPreset[]; selectedService?: string; syncingPairId?: string; server: string; user?: string; settingsAuthorized: boolean; backgroundStatus?: string; error: string; notice: string } = {
+const state: { pairs: SyncPair[]; presets: SyncPreset[]; selectedService?: string; syncingPairId?: string; removingPairId?: string; progress?: SyncProgress; server: string; user?: string; settingsAuthorized: boolean; backgroundStatus?: string; error: string; notice: string } = {
   pairs: readPairs(),
   presets: [],
   server: localStorage.getItem(SETTINGS_KEY) ?? DEFAULT_SERVER,
@@ -36,6 +37,17 @@ function directionText(direction: SyncDirection): string {
   if (direction === 'phone-to-server') return 'Files move from this device to the server';
   if (direction === 'server-to-phone') return 'Files move from the server to this device';
   return 'Files move both ways';
+}
+
+function progressCopy(progress?: SyncProgress, syncingPairId?: string): string {
+  if (progress?.active) {
+    const names = progress.pairs.length > 1 ? `${progress.pairs.length} folders` : progress.pair;
+    const arrow = progress.direction === 'server-to-phone' ? '↓' : '↑';
+    const file = progress.currentFile ? ` ${arrow} ${escapeHtml(progress.currentFile)}` : ' preparing…';
+    return `<p class="progress-title">Syncing ${escapeHtml(names)}…${file}</p><p class="progress-counts">${progress.transferred} copied · ${progress.skipped} unchanged</p>`;
+  }
+  if (syncingPairId) return '<p class="progress-title">Syncing…</p>';
+  return '';
 }
 
 const SERVICE_LOGOS: Record<string, string> = {
@@ -108,8 +120,8 @@ function render(): void {
         </div>
       </div>
       <div class="pair-actions">
-        <button class="text-button" type="button" data-sync="${escapeHtml(pair.id)}" ${state.syncingPairId || pair.direction === 'two-way' || (pair.server && pair.server !== state.server) || !state.user || pair.account !== state.user ? 'disabled' : ''}>${state.syncingPairId === pair.id ? 'Syncing…' : pair.direction === 'two-way' ? 'Recreate pair' : pair.server && pair.server !== state.server ? 'Different server' : !state.user ? 'Sign in to sync' : pair.account !== state.user ? 'Different account' : 'Sync now'}</button>
-        <button class="text-button danger-text" type="button" data-remove="${escapeHtml(pair.id)}" aria-label="Remove ${escapeHtml(pair.name)}">Remove</button>
+        <button class="text-button" type="button" data-sync="${escapeHtml(pair.id)}" ${state.syncingPairId || state.removingPairId || pair.direction === 'two-way' || (pair.server && pair.server !== state.server) || !state.user || pair.account !== state.user ? 'disabled' : ''}>${state.syncingPairId === pair.id ? 'Syncing…' : pair.direction === 'two-way' ? 'Recreate pair' : pair.server && pair.server !== state.server ? 'Different server' : !state.user ? 'Sign in to sync' : pair.account !== state.user ? 'Different account' : 'Sync now'}</button>
+        <button class="text-button danger-text" type="button" data-remove="${escapeHtml(pair.id)}" aria-label="Remove ${escapeHtml(pair.name)}" ${state.syncingPairId || state.removingPairId ? 'disabled' : ''}>${state.removingPairId === pair.id ? 'Removing…' : 'Remove'}</button>
       </div>
     </li>
   `;
@@ -133,6 +145,10 @@ function render(): void {
             ? `<p class="account-user">Signed in as <strong>${escapeHtml(state.user)}</strong>${state.backgroundStatus ? ` · ${escapeHtml(state.backgroundStatus)}` : ''}</p><button class="secondary-button" type="button" id="unlock-settings" ${state.settingsAuthorized ? 'disabled' : ''}>${state.settingsAuthorized ? 'Settings unlocked' : 'Unlock settings'}</button><button class="text-button" type="button" id="sign-out">Sign out</button>`
             : '<p class="account-user">Sign in to sync your folders.</p><button class="secondary-button" type="button" id="sign-in">Sign in</button>'}
         </div>
+      </section>
+
+      <section class="sync-progress" id="sync-progress" aria-live="polite" ${state.progress?.active || state.syncingPairId ? '' : 'hidden'}>
+        ${progressCopy(state)}
       </section>
 
       ${presetSection}
@@ -190,6 +206,12 @@ function render(): void {
         <div class="dialog-actions"><button class="secondary-button" value="cancel">Cancel</button><button class="primary-button" id="save-server" type="button">Save address</button></div>
       </form>
     </dialog>
+
+    <dialog id="remove-dialog" class="pair-dialog settings-dialog" aria-labelledby="remove-heading">
+      <div class="dialog-heading"><h2 id="remove-heading">Remove folder pair</h2><button class="close-button" type="button" id="cancel-remove" aria-label="Close dialog">×</button></div>
+      <p id="remove-copy"></p>
+      <div class="dialog-actions"><button class="secondary-button" type="button" id="cancel-remove-button">Cancel</button><button class="primary-button" type="button" id="confirm-remove">Remove pair</button></div>
+    </dialog>
   `;
 
   bindEvents();
@@ -200,6 +222,8 @@ let selectedServerPath = '';
 let selectedServerRoot = 'files';
 let hasSelectedServerFolder = false;
 let serverBrowserPath = '';
+let pendingRemoveId: string | undefined;
+let progressTimer: number | undefined;
 
 function bindEvents(): void {
   const dialog = document.querySelector<HTMLDialogElement>('#pair-dialog')!;
@@ -243,6 +267,7 @@ function bindEvents(): void {
         state.error = '';
         state.syncingPairId = pair.id;
         render();
+        startProgressPolling();
         try {
           const result = await invoke<{ transferred: number; skipped: number }>('sync_pair', { pair });
           state.notice = `Sync complete: ${result.transferred} transferred, ${result.skipped} unchanged.`;
@@ -251,6 +276,8 @@ function bindEvents(): void {
           state.notice = 'Pair saved. Use Sync now to retry.';
         }
         state.syncingPairId = undefined;
+        state.progress = undefined;
+        stopProgressPolling();
       }
     } catch (error) { showError(error); }
     render();
@@ -397,19 +424,53 @@ function bindEvents(): void {
   });
 
   document.querySelectorAll<HTMLButtonElement>('[data-remove]').forEach((button) => {
-    button.addEventListener('click', async () => {
-      if (!(await ensureSettingsAuthorized())) return;
+    button.addEventListener('click', () => {
       const pair = state.pairs.find((item) => item.id === button.dataset.remove);
-      if (!pair || !window.confirm(`Remove the “${pair.name}” folder pair? This only removes its settings.`)) return;
-      state.pairs = state.pairs.filter((item) => item.id !== pair.id);
-      try { await persistPairs(); }
-      catch (error) { showError(error); return; }
-      if (!state.pairs.some((item) => item.local.uri === pair.local.uri) && invoke) {
-        void invoke<void>('forget_local_folder', { folderUri: pair.local.uri }).catch(() => undefined);
-      }
-      state.notice = 'Folder pair removed.';
-      render();
+      if (!pair) return;
+      pendingRemoveId = pair.id;
+      const copy = document.querySelector<HTMLElement>('#remove-copy');
+      if (copy) copy.textContent = `Remove the “${pair.name}” folder pair? Synced files stay where they are; only its settings are removed.`;
+      document.querySelector<HTMLDialogElement>('#remove-dialog')?.showModal();
     });
+  });
+  document.querySelector('#cancel-remove')?.addEventListener('click', () => {
+    pendingRemoveId = undefined;
+    document.querySelector<HTMLDialogElement>('#remove-dialog')?.close();
+  });
+  document.querySelector('#cancel-remove-button')?.addEventListener('click', () => {
+    pendingRemoveId = undefined;
+    document.querySelector<HTMLDialogElement>('#remove-dialog')?.close();
+  });
+  document.querySelector('#confirm-remove')?.addEventListener('click', async () => {
+    const pair = state.pairs.find((item) => item.id === pendingRemoveId);
+    pendingRemoveId = undefined;
+    document.querySelector<HTMLDialogElement>('#remove-dialog')?.close();
+    if (!pair) return;
+    // Removal needs no fresh settings unlock: it only deletes local settings
+    // and disables background work. Requiring a sign-in here previously opened
+    // the system browser mid-tap, and the blocking window.confirm froze the
+    // WebView on Android before anything happened.
+    state.removingPairId = pair.id;
+    state.error = '';
+    render();
+    const nextPairs = state.pairs.filter((item) => item.id !== pair.id);
+    const previousPairs = state.pairs;
+    state.pairs = nextPairs;
+    try {
+      await persistPairs();
+    } catch (error) {
+      state.pairs = previousPairs;
+      showError(error);
+      state.removingPairId = undefined;
+      render();
+      return;
+    }
+    if (!state.pairs.some((item) => item.local.uri === pair.local.uri) && invoke) {
+      void invoke<void>('forget_local_folder', { folderUri: pair.local.uri }).catch(() => undefined);
+    }
+    state.removingPairId = undefined;
+    state.notice = 'Folder pair removed.';
+    render();
   });
 
   document.querySelectorAll<HTMLButtonElement>('[data-sync]').forEach((button) => {
@@ -418,18 +479,79 @@ function bindEvents(): void {
       const pair = state.pairs.find((item) => item.id === button.dataset.sync);
       if (!pair) return;
       state.syncingPairId = pair.id;
-      button.disabled = true;
-      button.textContent = 'Syncing…';
+      state.progress = undefined;
+      state.error = '';
+      render();
+      startProgressPolling();
       try {
         const result = await invoke<{ transferred: number; skipped: number }>('sync_pair', { pair });
         state.notice = `Sync complete: ${result.transferred} transferred, ${result.skipped} unchanged.`;
         state.error = '';
       } catch (error) { showError(error); }
       state.syncingPairId = undefined;
+      state.progress = undefined;
+      stopProgressPolling();
+      try {
+        state.backgroundStatus = readBackgroundStatus(await invoke<string | null>('background_sync_status'));
+      } catch { /* Keep the last known status. */ }
       render();
     });
   });
 
+}
+
+function startProgressPolling(): void {
+  stopProgressPolling();
+  if (!invoke) return;
+  void refreshProgress();
+  progressTimer = window.setInterval(() => { void refreshProgress(); }, 1000);
+}
+
+function stopProgressPolling(): void {
+  if (progressTimer !== undefined) {
+    window.clearInterval(progressTimer);
+    progressTimer = undefined;
+  }
+}
+
+async function refreshProgress(): Promise<void> {
+  if (!invoke) return;
+  let raw: string | null;
+  try {
+    raw = await invoke<string | null>('sync_progress');
+  } catch { return; }
+  const next = parseProgress(raw);
+  const changed = JSON.stringify(next ?? null) !== JSON.stringify(state.progress ?? null);
+  state.progress = next;
+  if (!changed) return;
+  const banner = document.querySelector<HTMLElement>('#sync-progress');
+  if (!banner) return;
+  if (next?.active || state.syncingPairId) {
+    banner.hidden = false;
+    banner.innerHTML = progressCopy(next, state.syncingPairId);
+  } else {
+    banner.hidden = true;
+    banner.innerHTML = '';
+  }
+}
+
+function parseProgress(raw: string | null): SyncProgress | undefined {
+  if (!raw) return undefined;
+  try {
+    const value = JSON.parse(raw) as Partial<SyncProgress>;
+    if (value?.active !== true) return undefined;
+    return {
+      active: true,
+      pair: typeof value.pair === 'string' ? value.pair : 'Folder pair',
+      pairs: Array.isArray(value.pairs) ? value.pairs.filter((item): item is string => typeof item === 'string') : [],
+      direction: typeof value.direction === 'string' ? value.direction : '',
+      currentFile: typeof value.currentFile === 'string' ? value.currentFile : '',
+      transferred: typeof value.transferred === 'number' ? value.transferred : 0,
+      skipped: typeof value.skipped === 'number' ? value.skipped : 0,
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 function setError(error: unknown): void {
@@ -483,6 +605,11 @@ async function start(): Promise<void> {
       const initialLinks = await getCurrent();
       for (const url of initialLinks ?? []) void finishCallback(url);
     } catch { /* No pending native deep link. */ }
+    // Notification permission is best-effort: sync still works without it.
+    void invoke<boolean>('ensure_notifications').catch(() => undefined);
+    // Keep the in-app banner fresh for background syncs even when no manual
+    // sync is running. refreshProgress reads in-memory progress only.
+    window.setInterval(() => { void refreshProgress(); }, 3000);
   }
   render();
 }
