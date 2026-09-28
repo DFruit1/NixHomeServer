@@ -128,7 +128,7 @@ class MobileFilesPlugin(private val activity: Activity) : Plugin(activity) {
   fun createLocalFolder(invoke: Invoke) {
     try {
       val subpath = invoke.getArgs().getString("subpath")
-      require(subpath.matches(Regex("[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*"))) { "Invalid folder path" }
+      require(subpath.matches(Regex("[A-Za-z0-9._ -]+(?:/[A-Za-z0-9._ -]+)*"))) { "Invalid folder path" }
       require(hasAllFilesAccess()) { "All files access is required to create this folder" }
       val folder = File(Environment.getExternalStorageDirectory(), subpath)
       if (!folder.exists() && !folder.mkdirs()) {
