@@ -40,6 +40,21 @@ describe("Media Manager navigation", () => {
     });
   });
 
+  it("carries a deep-link path into the playback views", () => {
+    expect(
+      initialRouteFromSearch("?view=player&path=_YouTube/Artist/Song.flac"),
+    ).toMatchObject({
+      initialView: "player",
+      initialPath: "_YouTube/Artist/Song.flac",
+    });
+    expect(
+      initialRouteFromSearch("?view=videos&path=Clip/Clip.mkv"),
+    ).toMatchObject({
+      initialView: "videos",
+      initialPath: "Clip/Clip.mkv",
+    });
+  });
+
   it("exposes every dashboard section as a native link", async () => {
     vi.stubGlobal(
       "fetch",

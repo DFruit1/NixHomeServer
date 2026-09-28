@@ -8,6 +8,7 @@ import {
 } from "@builder.io/qwik";
 import { api, readableError } from "./api";
 import { Icon } from "./icon";
+import { findTargetIndex } from "./playback-target";
 import type { CatalogItem, DashboardState } from "./root-types";
 import { EmptyState, LoadingState } from "./view-states";
 
@@ -19,6 +20,7 @@ export const PlayerView = component$<{
   const audioRef = useSignal<HTMLAudioElement>();
   const lastSavedPosition = useSignal(0);
   const saveTimerRef = useSignal<number | undefined>();
+  const initialTargetApplied = useSignal(false);
   const playerState = useStore<{
     tracks: CatalogItem[];
     currentIndex: number;
@@ -138,22 +140,6 @@ export const PlayerView = component$<{
     await loadTracks();
   });
 
-  useVisibleTask$(({ track }) => {
-    track(() => playerState.loading);
-    track(() => props.initialItemId);
-    track(() => props.initialPath);
-    if (!playerState.loading && (props.initialItemId || props.initialPath)) {
-      const index = playerState.tracks.findIndex(
-        (item) =>
-          item.id === props.initialItemId ||
-          (props.initialPath &&
-            (item.relativePath === props.initialPath ||
-              item.relativePath.endsWith(`/${props.initialPath}`))),
-      );
-      if (index >= 0 && playerState.currentIndex !== index) playTrack(index);
-    }
-  });
-
   const savePlaybackPosition = $(() => {
     const track = playerState.tracks[playerState.currentIndex];
     if (!track || track.mediaKind !== "audiobook") return;
@@ -240,9 +226,44 @@ export const PlayerView = component$<{
     audio.play().catch(() => {});
   });
 
+  // A deep link from the YouTube Downloader selects one track and asks the
+  // browser to start it. Apply it once, after the tracks load, and always call
+  // playTrack even when the target is already the current index (the player
+  // pre-selects the first track) so the stream URL is actually set. Reveal the
+  // track's album so the linked song, not just the album grid, is in view.
+  useVisibleTask$(({ track }) => {
+    track(() => playerState.loading);
+    track(() => props.initialItemId);
+    track(() => props.initialPath);
+    if (initialTargetApplied.value || playerState.loading) {
+      return;
+    }
+    const index = findTargetIndex(
+      playerState.tracks,
+      props.initialItemId,
+      props.initialPath,
+    );
+    if (index < 0) {
+      return;
+    }
+    initialTargetApplied.value = true;
+    const target = playerState.tracks[index];
+    const albumDir = target.relativePath.split("/").slice(0, -1).join("/");
+    if (albumDir) {
+      playerState.albumView = false;
+      playerState.selectedAlbumDir = albumDir;
+    }
+    playTrack(index);
+  });
+
   const togglePlay = $(() => {
     const audio = audioRef.value;
     if (!audio) return;
+    if (!audio.getAttribute("src")) {
+      if (playerState.tracks.length === 0) return;
+      playTrack(playerState.currentIndex >= 0 ? playerState.currentIndex : 0);
+      return;
+    }
     if (audio.paused) {
       audio.play().catch(() => {});
     } else {

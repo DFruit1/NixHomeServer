@@ -173,4 +173,5 @@ export type IconName =
   | "repeat"
   | "repeat-one"
   | "timer"
-  | "album";
+  | "album"
+  | "picture-in-picture";

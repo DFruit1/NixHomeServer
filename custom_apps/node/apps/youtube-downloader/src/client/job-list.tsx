@@ -1,6 +1,7 @@
 import { $, component$, useSignal } from '@builder.io/qwik';
 import type { CurrentUser, Job } from '../shared/types.js';
 import { buildMediaManagerUrl } from './media-manager-url.js';
+import { buildMediaTargetPath } from './media-target.js';
 import { apiFetch, apiUrl, isTauriRuntime } from './api.js';
 import { tauriInvoke } from './tauri.js';
 
@@ -39,11 +40,11 @@ export const JobList = component$<JobListProps>(({ title, jobs, refresh }) => {
     }
     event.preventDefault();
     event.stopPropagation();
-    const folderName = job.outputFolder?.split(/[\\/]/).filter(Boolean).at(-1);
-    const mediaFile = job.files.find((file) =>
-      /\.(?:mp3|m4a|flac|opus|wav|mp4|mkv|webm|mov|m4v)$/i.test(file),
+    const itemPath = buildMediaTargetPath(
+      job.outputFolder,
+      job.files,
+      job.request.mediaType,
     );
-    const itemPath = folderName && mediaFile ? `${folderName}/${mediaFile}` : undefined;
     const target = buildMediaManagerUrl(job.request.mediaType, undefined, itemPath);
     if (isTauriRuntime()) {
       void tauriInvoke()?.('open_external_url', { url: target });

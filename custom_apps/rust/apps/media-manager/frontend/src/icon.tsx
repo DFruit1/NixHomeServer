@@ -105,6 +105,7 @@ export const Icon = component$<{ name: IconName; size?: number }>((props) => {
       "M18 15a6 6 0 1 0 0-12 6 6 0 0 0 0 12Z",
       "M18 11a1 1 0 1 0 0 2 1 1 0 0 0 0-2Z",
     ],
+    "picture-in-picture": ["M4 4h16v16H4z", "M13 13h6v5h-6z"],
   };
   return (
     <svg

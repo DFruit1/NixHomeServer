@@ -1,6 +1,14 @@
-import { $, component$, useSignal, useStore, useTask$ } from "@builder.io/qwik";
+import {
+  $,
+  component$,
+  useSignal,
+  useStore,
+  useTask$,
+  useVisibleTask$,
+} from "@builder.io/qwik";
 import { api, readableError } from "./api";
 import { Icon } from "./icon";
+import { findTargetIndex } from "./playback-target";
 import type { CatalogItem, MediaRoot } from "./root-types";
 
 export const VideosView = component$<{
@@ -9,6 +17,8 @@ export const VideosView = component$<{
   initialPath?: string;
 }>((props) => {
   const videoRef = useSignal<HTMLVideoElement>();
+  const pipSupported = useSignal(false);
+  const pipActive = useSignal(false);
   const state = useStore({
     items: [] as CatalogItem[],
     selectedId: "",
@@ -45,14 +55,15 @@ export const VideosView = component$<{
         .filter((item) => item.mediaKind === "video")
         .sort((a, b) => a.relativePath.localeCompare(b.relativePath));
       if (!state.items.some((item) => item.id === state.selectedId)) {
-        const requested = state.items.find(
-          (item) =>
-            item.id === props.initialItemId ||
-            (props.initialPath &&
-              (item.relativePath === props.initialPath ||
-                item.relativePath.endsWith(`/${props.initialPath}`))),
+        const requestedIndex = findTargetIndex(
+          state.items,
+          props.initialItemId,
+          props.initialPath,
         );
-        state.selectedId = requested?.id ?? state.items[0]?.id ?? "";
+        state.selectedId =
+          requestedIndex >= 0
+            ? state.items[requestedIndex]!.id
+            : (state.items[0]?.id ?? "");
         state.transcode = false;
         state.transcodeLoading = false;
       }
@@ -76,6 +87,24 @@ export const VideosView = component$<{
     state.error = "";
   });
 
+  // Picture-in-Picture is available in Chrome for Android and on desktop
+  // browsers. It needs a user gesture, so it is exposed as a button rather than
+  // triggered automatically; browsers also auto-enter PiP when the page is
+  // occluded if a media session is registered below.
+  const togglePip = $(async () => {
+    const video = videoRef.value;
+    if (!video || typeof document === "undefined") return;
+    try {
+      if (document.pictureInPictureElement) {
+        await document.exitPictureInPicture();
+      } else if (document.pictureInPictureEnabled) {
+        await video.requestPictureInPicture();
+      }
+    } catch {
+      pipActive.value = false;
+    }
+  });
+
   const selected = () =>
     state.items.find((item) => item.id === state.selectedId);
   const streamUrl = () => {
@@ -90,6 +119,59 @@ export const VideosView = component$<{
         item.relativePath.toLowerCase().includes(query),
       )
     : state.items;
+
+  useVisibleTask$(({ track, cleanup }) => {
+    track(() => state.selectedId);
+    track(() => state.transcode);
+    pipSupported.value =
+      typeof document !== "undefined" &&
+      document.pictureInPictureEnabled === true;
+    const video = videoRef.value;
+    if (!video) return;
+    const onEnter = () => (pipActive.value = true);
+    const onLeave = () => (pipActive.value = false);
+    video.addEventListener("enterpictureinpicture", onEnter);
+    video.addEventListener("leavepictureinpicture", onLeave);
+    cleanup(() => {
+      video.removeEventListener("enterpictureinpicture", onEnter);
+      video.removeEventListener("leavepictureinpicture", onLeave);
+    });
+  });
+
+  useVisibleTask$(({ track, cleanup }) => {
+    track(() => state.selectedId);
+    if (typeof navigator === "undefined" || !("mediaSession" in navigator)) {
+      return;
+    }
+    const item = selected();
+    if (!item) return;
+    const filename = item.relativePath.split("/").at(-1) ?? "";
+    const folder = item.relativePath.split("/").slice(0, -1).join("/");
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: filename,
+      artist: folder,
+    });
+    navigator.mediaSession.setActionHandler("play", () => {
+      void videoRef.value?.play();
+    });
+    navigator.mediaSession.setActionHandler("pause", () => {
+      videoRef.value?.pause();
+    });
+    navigator.mediaSession.setActionHandler(
+      "enterpictureinpicture" as unknown as MediaSessionAction,
+      () => {
+        void togglePip();
+      },
+    );
+    cleanup(() => {
+      navigator.mediaSession.setActionHandler("play", null);
+      navigator.mediaSession.setActionHandler("pause", null);
+      navigator.mediaSession.setActionHandler(
+        "enterpictureinpicture" as unknown as MediaSessionAction,
+        null,
+      );
+    });
+  });
 
   return (
     <section class="video-page" aria-label="Video player">
@@ -125,11 +207,26 @@ export const VideosView = component$<{
         )}
         {selected() && (
           <div class="video-title">
-            <h2>{selected()!.relativePath.split("/").at(-1)}</h2>
-            {selected()!.relativePath.includes("/") && (
-              <p>
-                {selected()!.relativePath.split("/").slice(0, -1).join("/")}
-              </p>
+            <div class="video-title-text">
+              <h2>{selected()!.relativePath.split("/").at(-1)}</h2>
+              {selected()!.relativePath.includes("/") && (
+                <p>
+                  {selected()!.relativePath.split("/").slice(0, -1).join("/")}
+                </p>
+              )}
+            </div>
+            {pipSupported.value && (
+              <button
+                type="button"
+                class="secondary-button compact-action video-pip-button"
+                aria-pressed={pipActive.value}
+                onClick$={togglePip}
+              >
+                <Icon name="picture-in-picture" size={14} />
+                {pipActive.value
+                  ? "Exit picture in picture"
+                  : "Picture in picture"}
+              </button>
             )}
           </div>
         )}
