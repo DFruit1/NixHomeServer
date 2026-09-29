@@ -1354,7 +1354,20 @@ fn session_backup<R: Runtime>(app: AppHandle<R>) -> Result<Option<String>, Strin
 }
 
 #[tauri::command]
+fn has_session<R: Runtime>(app: AppHandle<R>) -> Result<bool, String> {
+    Ok(load_session(&app)?.is_some())
+}
+
+#[tauri::command]
 fn restore_session_backup<R: Runtime>(app: AppHandle<R>, backup: String) -> Result<(), String> {
+    // Never overwrite a live native session: the browser backup is only
+    // written at sign-in time, while refresh-token rotation happens natively
+    // afterwards. Restoring a stale backup over a good session would replace
+    // the current refresh token with a dead one and sign the user out for
+    // good on the next refresh. Only fill an empty slot.
+    if load_session(&app)?.is_some() {
+        return Ok(());
+    }
     let session: StoredSession = serde_json::from_str(&backup)
         .map_err(|_| "The stored session backup is invalid.".to_owned())?;
     store_session(&app, &session)?;
@@ -1463,6 +1476,7 @@ pub fn run() {
             sync_pair,
             estimate_sync_pair,
             storage_info,
+            has_session,
             update_background_syncs,
             background_sync_status,
             sync_progress,

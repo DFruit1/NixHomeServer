@@ -16,15 +16,17 @@ const invoke = (window as TauriWindow).__TAURI__?.core?.invoke;
 const STORAGE_KEY = 'nixhomeserver.filesync.pairs.v1';
 const SETTINGS_KEY = 'nixhomeserver.filesync.server.v1';
 const SESSION_BACKUP_KEY = 'nixhomeserver.filesync.session-backup.v1';
+const USER_KEY = 'nixhomeserver.filesync.user.v1';
 const SPACE_PREFS_KEY = 'nixhomeserver.filesync.space-limits.v1';
 const DEFAULT_SERVER = import.meta.env.VITE_FILESYNC_DEFAULT_SERVER ?? '';
 const app = document.querySelector<HTMLDivElement>('#app')!;
 
-const state: { pairs: SyncPair[]; presets: SyncPreset[]; selectedService?: string; syncingPairId?: string; removingPairId?: string; progress?: SyncProgress; server: string; user?: string; settingsAuthorized: boolean; backgroundStatus?: string; error: string; notice: string; estimates: Record<string, SyncEstimate | undefined>; estimatesDone: Record<string, boolean>; deviceStorage?: DeviceStorage; warnPercent: number; blockPercent: number } = {
+const state: { pairs: SyncPair[]; presets: SyncPreset[]; selectedService?: string; syncingPairId?: string; removingPairId?: string; progress?: SyncProgress; server: string; user?: string; offline: boolean; settingsAuthorized: boolean; backgroundStatus?: string; error: string; notice: string; estimates: Record<string, SyncEstimate | undefined>; estimatesDone: Record<string, boolean>; deviceStorage?: DeviceStorage; warnPercent: number; blockPercent: number } = {
   pairs: readPairs(),
   presets: [],
   server: localStorage.getItem(SETTINGS_KEY) ?? DEFAULT_SERVER,
   settingsAuthorized: false,
+  offline: false,
   error: '',
   notice: '',
   estimates: {},
@@ -212,7 +214,7 @@ function render(): void {
       <section class="account-line" aria-label="Account">
         <div class="account-row">
           ${state.user
-            ? `<p class="account-user">Signed in as <strong>${escapeHtml(state.user)}</strong>${state.backgroundStatus ? ` · ${escapeHtml(state.backgroundStatus)}` : ''}<span id="storage-summary">${escapeHtml(storageSummary())}</span></p><button class="secondary-button" type="button" id="unlock-settings" ${state.settingsAuthorized ? 'disabled' : ''}>${state.settingsAuthorized ? 'Settings unlocked' : 'Unlock settings'}</button><button class="text-button" type="button" id="sign-out">Sign out</button>`
+            ? `<p class="account-user">Signed in as <strong>${escapeHtml(state.user)}</strong>${state.offline ? ' (offline, will retry)' : ''}${state.backgroundStatus ? ` · ${escapeHtml(state.backgroundStatus)}` : ''}<span id="storage-summary">${escapeHtml(storageSummary())}</span></p><button class="secondary-button" type="button" id="unlock-settings" ${state.settingsAuthorized ? 'disabled' : ''}>${state.settingsAuthorized ? 'Settings unlocked' : 'Unlock settings'}</button><button class="text-button" type="button" id="sign-out">Sign out</button>`
             : '<p class="account-user">Sign in to sync your folders.</p><button class="secondary-button" type="button" id="sign-in">Sign in</button>'}
         </div>
       </section>
@@ -349,6 +351,8 @@ function bindEvents(): void {
         try {
           const result = await invoke<{ transferred: number; skipped: number }>('sync_pair', { pair: { ...pair, ...limitsFor(pair) } });
           state.notice = `Sync complete: ${result.transferred} transferred, ${result.skipped} unchanged.`;
+          state.offline = false;
+          await saveSessionBackup();
         } catch (error) {
           showError(error);
           state.notice = 'Pair saved. Use Sync now to retry.';
@@ -385,7 +389,7 @@ function bindEvents(): void {
     localStorage.setItem(SPACE_PREFS_KEY, JSON.stringify({ warnPercent, blockPercent }));
     applySpacePrefsToPairs();
     if (state.user && nextServer !== state.server && invoke) {
-      try { await invoke<void>('logout'); localStorage.removeItem(SESSION_BACKUP_KEY); state.user = undefined; state.settingsAuthorized = false; }
+      try { await invoke<void>('logout'); localStorage.removeItem(SESSION_BACKUP_KEY); localStorage.removeItem(USER_KEY); state.user = undefined; state.offline = false; state.settingsAuthorized = false; }
       catch (error) { setError(error); return; }
     }
     state.server = nextServer;
@@ -421,7 +425,9 @@ function bindEvents(): void {
     try {
       await invoke<void>('logout');
       localStorage.removeItem(SESSION_BACKUP_KEY);
+      localStorage.removeItem(USER_KEY);
       state.user = undefined;
+      state.offline = false;
       state.settingsAuthorized = false;
       state.presets = [];
       state.selectedService = undefined;
@@ -588,6 +594,8 @@ function bindEvents(): void {
         const result = await invoke<{ transferred: number; skipped: number }>('sync_pair', { pair: { ...pair, ...limitsFor(pair) } });
         state.notice = `Sync complete: ${result.transferred} transferred, ${result.skipped} unchanged.`;
         state.error = '';
+        state.offline = false;
+        await saveSessionBackup();
       } catch (error) { showError(error); }
       state.syncingPairId = undefined;
       state.progress = undefined;
@@ -727,8 +735,35 @@ function showError(error: unknown): void {
     state.settingsAuthorized = false;
     state.presets = [];
     state.selectedService = undefined;
+    state.estimates = {};
+    state.estimatesDone = {};
+    state.deviceStorage = undefined;
+    // The stored session is dead (revoked or rejected): drop the backup and
+    // the cached name so the next launch does not resurrect either of them.
+    localStorage.removeItem(SESSION_BACKUP_KEY);
+    localStorage.removeItem(USER_KEY);
   }
   render();
+}
+
+async function saveSessionBackup(): Promise<void> {
+  if (!invoke) return;
+  try {
+    const backup = await invoke<string | null>('session_backup');
+    if (backup) localStorage.setItem(SESSION_BACKUP_KEY, backup);
+  } catch { /* The session stays available in secure storage only. */ }
+}
+
+function cacheSignedInUser(username: string): void {
+  state.user = username;
+  try { localStorage.setItem(USER_KEY, username); } catch { /* The name is a display hint only. */ }
+}
+
+async function hasStoredSession(): Promise<boolean> {
+  if (!invoke) return false;
+  try {
+    return await invoke<boolean>('has_session');
+  } catch { return false; }
 }
 
 async function restoreSessionBackup(): Promise<boolean> {
@@ -738,6 +773,7 @@ async function restoreSessionBackup(): Promise<boolean> {
   try {
     await invoke<void>('restore_session_backup', { backup });
     state.user = await invoke<string | null>('current_user') ?? undefined;
+    if (state.user) cacheSignedInUser(state.user);
     return state.user !== undefined;
   } catch { return false; }
 }
@@ -750,8 +786,27 @@ async function start(): Promise<void> {
     try {
       state.user = await invoke<string | null>('current_user') ?? undefined;
     } catch { state.user = undefined; }
-    if (!state.user && (await restoreSessionBackup())) {
+    if (state.user) {
+      cacheSignedInUser(state.user);
+      // Token refresh may have rotated the session just now; keep the
+      // browser backup identical so a later restore never replays a dead
+      // refresh token over the live one.
+      await saveSessionBackup();
+    } else if (await restoreSessionBackup()) {
       state.notice = 'Signed in from the saved session.';
+      await saveSessionBackup();
+    } else {
+      // The server may just be unreachable (offline, VPN, captive portal)
+      // while a valid session sits in secure storage. Stay signed in under
+      // the cached name instead of bouncing to "Sign in to sync": the next
+      // sync attempt revalidates and surfaces the real error if the session
+      // is actually dead.
+      const cached = localStorage.getItem(USER_KEY);
+      if (cached && (await hasStoredSession())) {
+        state.user = cached;
+        state.offline = true;
+        state.notice = 'Could not reach the sync server. Showing the saved sign-in; syncs will retry.';
+      }
     }
     try {
       state.backgroundStatus = readBackgroundStatus(await invoke<string | null>('background_sync_status'));
@@ -804,11 +859,10 @@ async function finishCallback(url: string): Promise<void> {
   if (!url.startsWith('filesync://oauth/callback') || !invoke) return;
   try {
     state.user = await invoke<string>('finish_login', { callbackUrl: url });
+    state.offline = false;
+    cacheSignedInUser(state.user);
     state.settingsAuthorized = await invoke<boolean>('settings_authorized');
-    try {
-      const backup = await invoke<string | null>('session_backup');
-      if (backup) localStorage.setItem(SESSION_BACKUP_KEY, backup);
-    } catch { /* The session stays available in secure storage only. */ }
+    await saveSessionBackup();
     await loadPresets();
     applySpacePrefsToPairs();
     await persistPairs();
