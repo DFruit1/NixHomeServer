@@ -517,9 +517,17 @@ internal object SyncEngine {
     return result
   }
 
-  private fun listLocalFiles(context: Context, folderUri: String): List<Entry> {
+  /**
+   * List the device's files under [folderUri].
+   *
+   * [withHashes] is false for the size estimate, which compares (path, size,
+   * mtime) first and only asks for content when they disagree. Hashing every
+   * file up front meant reading the entire library on the device on every
+   * estimate refresh, which is the same waste the server side just removed.
+   */
+  private fun listLocalFiles(context: Context, folderUri: String, withHashes: Boolean = true): List<Entry> {
     val tree = Uri.parse(folderUri)
-    if (tree.scheme == "file") return listLocalFilesFile(File(requireNotNull(tree.path) { "The selected folder is invalid." }))
+    if (tree.scheme == "file") return listLocalFilesFile(File(requireNotNull(tree.path) { "The selected folder is invalid." }), withHashes)
     val result = mutableListOf<Entry>()
     fun walk(parentId: String, prefix: String) {
       val children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, parentId)
@@ -528,6 +536,7 @@ internal object SyncEngine {
         DocumentsContract.Document.COLUMN_DISPLAY_NAME,
         DocumentsContract.Document.COLUMN_MIME_TYPE,
         DocumentsContract.Document.COLUMN_SIZE,
+        DocumentsContract.Document.COLUMN_LAST_MODIFIED,
       )
       val cursor = context.contentResolver.query(children, projection, null, null, null)
         ?: throw SyncFailure("The selected folder cannot be listed. Reauthorize it in File Sync.", false)
@@ -538,8 +547,16 @@ internal object SyncEngine {
           if (name.isBlank() || name == "." || name == ".." || name.contains('/')) continue
           val path = join(prefix, name)
           val kind = if (it.getString(2) == DocumentsContract.Document.MIME_TYPE_DIR) "directory" else "file"
-          val checksum = if (kind == "file") hashDocument(context, DocumentsContract.buildDocumentUriUsingTree(tree, id)) else ""
-          result.add(Entry(path, kind, checksum, if (kind == "file" && !it.isNull(3)) it.getLong(3) else 0L))
+          val checksum = if (kind == "file" && withHashes) hashDocument(context, DocumentsContract.buildDocumentUriUsingTree(tree, id)) else ""
+          result.add(
+            Entry(
+              path,
+              kind,
+              checksum,
+              if (kind == "file" && !it.isNull(3)) it.getLong(3) else 0L,
+              if (kind == "file" && !it.isNull(4)) it.getLong(4) else 0L,
+            ),
+          )
           if (kind == "directory") walk(id, path)
         }
       }
@@ -548,7 +565,7 @@ internal object SyncEngine {
     return result
   }
 
-  private fun listLocalFilesFile(dir: File): List<Entry> {
+  private fun listLocalFilesFile(dir: File, withHashes: Boolean): List<Entry> {
     if (!dir.isDirectory) throw SyncFailure("The selected folder cannot be listed. Reauthorize it in File Sync.", false)
     val result = mutableListOf<Entry>()
     fun walk(dir: File, prefix: String) {
@@ -561,12 +578,14 @@ internal object SyncEngine {
         if (child.isDirectory) {
           walk(child, path)
         } else {
-          val checksum = try {
-            sha256(child)
-          } catch (error: java.io.IOException) {
-            throw SyncFailure("A file in the selected folder cannot be read.", false)
-          }
-          result.add(Entry(path, "file", checksum, child.length()))
+          val checksum = if (withHashes) {
+            try {
+              sha256(child)
+            } catch (error: java.io.IOException) {
+              throw SyncFailure("A file in the selected folder cannot be read.", false)
+            }
+          } else ""
+          result.add(Entry(path, "file", checksum, child.length(), child.lastModified()))
         }
       }
     }
@@ -751,6 +770,7 @@ internal object SyncEngine {
     method: String,
     accessToken: String? = null,
     form: Map<String, String>? = null,
+    json: String? = null,
     file: File? = null,
     checksum: String? = null,
     streamToCache: File? = null,
@@ -771,6 +791,13 @@ internal object SyncEngine {
           connection.doOutput = true
           connection.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
           val encoded = form.entries.joinToString("&") { "${encode(it.key)}=${encode(it.value)}" }.toByteArray(Charsets.UTF_8)
+          connection.setFixedLengthStreamingMode(encoded.size)
+          connection.outputStream.use { it.write(encoded) }
+        }
+        json != null -> {
+          connection.doOutput = true
+          connection.setRequestProperty("Content-Type", "application/json")
+          val encoded = json.toByteArray(Charsets.UTF_8)
           connection.setFixedLengthStreamingMode(encoded.size)
           connection.outputStream.use { it.write(encoded) }
         }
@@ -828,7 +855,13 @@ internal object SyncEngine {
   }
   private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
 
-  private data class Entry(val path: String, val kind: String, val sha256: String, val size: Long)
+  private data class Entry(
+    val path: String,
+    val kind: String,
+    val sha256: String,
+    val size: Long,
+    val modifiedUnixMs: Long = 0L,
+  )
   internal data class StorageStats(val freeBytes: Long, val totalBytes: Long)
 
   fun storageStats(context: Context): StorageStats {
@@ -850,38 +883,53 @@ internal object SyncEngine {
       val pair = JSONObject(pairJson)
       val session = currentSession(context)
       val plan = loadPlan(context, session, pair)
-      val localEntries = listLocalFiles(context, plan.folderUri).filter { entry ->
+      // Metadata only. The device used to hash every local file here, on every
+      // estimate, which meant reading the whole library to render a list of
+      // numbers.
+      val localEntries = listLocalFiles(context, plan.folderUri, withHashes = false).filter { entry ->
         entry.kind == "file" && (plan.deviceSubpath.isEmpty() || entry.path.startsWith("${plan.deviceSubpath}/"))
-      }.associateBy { entry -> if (plan.deviceSubpath.isEmpty()) entry.path else entry.path.removePrefix("${plan.deviceSubpath}/") }
-      val remoteEntries = fetchRemoteTree(plan.apiBase, plan.accessToken, plan.serverPath, plan.root)
-        .filter { it.kind == "file" }.associateBy { it.path }
-      var pendingBytes = 0L
-      var pendingCount = 0
-      var skipped = 0
-      if (plan.direction == "phone-to-server") {
-        for ((relative, entry) in localEntries) {
-          if (remoteEntries[relative]?.sha256 == entry.sha256) { skipped++; continue }
-          pendingBytes += entry.size
-          pendingCount++
+      }.map { entry ->
+        LocalFile(
+          path = if (plan.deviceSubpath.isEmpty()) entry.path else entry.path.removePrefix("${plan.deviceSubpath}/"),
+          size = entry.size,
+          modifiedUnixMs = entry.modifiedUnixMs,
+          hash = null,
+        )
+      }.sortedBy { it.path }
+
+      var data = postEstimate(plan, localEntries)
+      if (data.needsHash.isNotEmpty()) {
+        val wanted = data.needsHash.toSet()
+        val settled = localEntries.map { entry ->
+          if (entry.path in wanted) entry.copy(hash = hashLocal(context, plan, entry.path))
+          else entry
         }
-      } else {
-        for ((relative, entry) in remoteEntries) {
-          if (localEntries[relative]?.sha256 == entry.sha256) { skipped++; continue }
-          pendingBytes += entry.size
-          pendingCount++
+        data = postEstimate(plan, settled)
+        if (data.needsHash.isNotEmpty()) {
+          throw SyncFailure(
+            "${data.needsHash.take(3).joinToString(", ")} could not be compared with the server. Sync to review it.",
+            true,
+          )
         }
       }
+      if (data.unreadable.isNotEmpty()) {
+        throw SyncFailure(
+          "${data.unreadable.take(3).joinToString(", ")} could not be read on the server. Try again in a moment.",
+          true,
+        )
+      }
+
       val stats = storageStats(context)
       return mapOf(
-        "pendingBytes" to pendingBytes,
-        "pendingCount" to pendingCount,
-        "skipped" to skipped,
+        "pendingBytes" to data.pendingBytes,
+        "pendingCount" to data.pendingCount,
+        "skipped" to data.skipped,
         "direction" to plan.direction,
         "freeBytes" to stats.freeBytes,
         "totalBytes" to stats.totalBytes,
-        // totalBytes above is device storage; the folder's own size is summed
-        // from the recursive walk that already fetched every file.
-        "remoteTotalBytes" to remoteEntries.values.sumOf { it.size },
+        // totalBytes above is device storage; the folder's own size comes from
+        // the server, which is the only side that can see all of it.
+        "remoteTotalBytes" to data.remoteTotalBytes,
       )
     } catch (error: InterruptedException) {
       Thread.currentThread().interrupt()
@@ -890,6 +938,69 @@ internal object SyncEngine {
       if (locked) releaseSyncLock()
     }
   }
+
+  private data class LocalFile(
+    val path: String,
+    val size: Long,
+    val modifiedUnixMs: Long,
+    val hash: String?,
+  )
+
+  private data class EstimateData(
+    val pendingBytes: Long,
+    val pendingCount: Int,
+    val skipped: Int,
+    val remoteTotalBytes: Long,
+    val needsHash: List<String>,
+    val unreadable: List<String>,
+  )
+
+  private fun postEstimate(plan: SyncPlan, local: List<LocalFile>): EstimateData {
+    val payload = JSONObject().apply {
+      put("root", plan.root)
+      put("path", plan.serverPath)
+      put("direction", plan.direction)
+      put("local", JSONArray().apply {
+        for (file in local) {
+          put(JSONObject().apply {
+            put("path", file.path)
+            put("size", file.size)
+            put("mtimeUnixMs", file.modifiedUnixMs)
+            file.hash?.let { put("hash", it) }
+          })
+        }
+      })
+    }
+    val response = request(URL("${plan.apiBase}/api/v1/estimate"), "POST", plan.accessToken, json = payload.toString())
+    if (response.code !in 200..299) failHttp(response.code, "The size check was refused.")
+    val data = JSONObject(response.body).getJSONObject("data")
+    return EstimateData(
+      pendingBytes = data.optLong("pendingBytes"),
+      pendingCount = data.optInt("pendingCount"),
+      skipped = data.optInt("skipped"),
+      remoteTotalBytes = data.optLong("remoteTotalBytes"),
+      needsHash = data.optJSONArray("needsHash").toStringList(),
+      unreadable = data.optJSONArray("unreadable").toStringList(),
+    )
+  }
+
+  private fun JSONArray?.toStringList(): List<String> {
+    if (this == null) return emptyList()
+    return (0 until length()).map { getString(it) }
+  }
+
+  /** Hash one device file on the second pass, for a path the server flagged. */
+  private fun hashLocal(context: Context, plan: SyncPlan, relative: String): String {
+    val tree = Uri.parse(plan.folderUri)
+    val path = if (plan.deviceSubpath.isEmpty()) relative else join(plan.deviceSubpath, relative)
+    if (tree.scheme == "file") {
+      val file = File(File(requireNotNull(tree.path) { "The selected folder is invalid." }), path)
+      if (!file.isFile) throw SyncFailure("Selected file no longer exists: $relative", false)
+      return sha256(file)
+    }
+    return hashDocument(context, resolveDocument(context, tree, path))
+  }
+
   private data class HttpResponse(val code: Int, val body: String, val file: File? = null)
 }
 

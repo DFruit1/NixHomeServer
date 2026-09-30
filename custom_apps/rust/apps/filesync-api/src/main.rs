@@ -3,7 +3,7 @@ use axum::{
     extract::{Query, State},
     http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
 use cap_std::{ambient_authority, fs::Dir};
@@ -18,11 +18,15 @@ use std::{
     io::{self, Read},
     path::{Component, Path, PathBuf},
     sync::Arc,
-    time::UNIX_EPOCH,
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::{io::AsyncWriteExt, sync::RwLock};
 use tokio_util::io::ReaderStream;
 use uuid::Uuid;
+
+mod manifest;
+
+use manifest::{CachedManifest, LocalFile, ManifestKey};
 
 const SERVICE: &str = "filesync-api";
 
@@ -71,6 +75,10 @@ struct AppState {
     userinfo_endpoint: String,
     jwks: RwLock<JwkSet>,
     identities: RwLock<HashMap<String, CachedIdentity>>,
+    /// Server-side folder manifests, keyed by (username, root id, path).
+    /// Holds the recursive walk and any hashes it produced so a repeated
+    /// estimate costs one directory walk instead of one hashed read per file.
+    manifests: RwLock<HashMap<ManifestKey, CachedManifest>>,
 }
 
 #[derive(Clone)]
@@ -217,6 +225,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         userinfo_endpoint: metadata.userinfo_endpoint,
         jwks: RwLock::new(jwks),
         identities: RwLock::new(HashMap::new()),
+        manifests: RwLock::new(HashMap::new()),
     });
 
     let app = Router::new()
@@ -224,6 +233,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/v1/config", get(config))
         .route("/api/v1/me", get(me))
         .route("/api/v1/presets", get(presets))
+        .route("/api/v1/library-sizes", get(library_sizes))
+        .route("/api/v1/estimate", post(estimate))
         .route("/api/v1/tree", get(tree))
         .route("/api/v1/file", get(download).put(upload))
         .with_state(state.clone());
@@ -575,6 +586,237 @@ fn resolve_request_path(
     }
     let base = root_path(state, username, root_id).ok_or("This server folder is unavailable.")?;
     Ok((base, relative.to_path_buf()))
+}
+
+/// The directory a manifest's relative entry paths resolve against.
+fn manifest_root(base: PathBuf, relative: &Path) -> PathBuf {
+    if relative.as_os_str().is_empty() {
+        base
+    } else {
+        base.join(relative)
+    }
+}
+
+/// Return the manifest for one already-scoped folder, plus the directory that
+/// on-demand hashing must read from.
+///
+/// The walk runs in a blocking task and reuses a cached manifest when one is
+/// still fresh. The cache is not written here: the caller owns the manifest
+/// because diffing it records the hashes it had to read.
+async fn manifest_for(
+    state: &AppState,
+    key: &ManifestKey,
+    base: PathBuf,
+) -> Result<(manifest::Manifest, PathBuf), Response> {
+    let cached = {
+        let manifests = state.manifests.read().await;
+        manifests.get(key).filter(|entry| entry.is_fresh()).cloned()
+    };
+    let root = base.clone();
+    let walk = tokio::task::spawn_blocking(move || {
+        let mut fresh =
+            manifest::scan(&root).map_err(|_| "The server folder could not be read.".to_owned())?;
+        manifest::reuse_hashes(&mut fresh, cached.as_ref().map(|entry| &entry.manifest));
+        Ok::<_, String>(fresh)
+    });
+    match walk.await {
+        Ok(Ok(fresh)) => Ok((fresh, base)),
+        Ok(Err(message)) => Err(api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "IO_ERROR",
+            &message,
+        )),
+        Err(_) => Err(api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "IO_ERROR",
+            "The server folder could not be read.",
+        )),
+    }
+}
+
+/// Keep the cache bounded so many users or deep paths cannot grow it without
+/// limit. Stale entries go first; if that is not enough, the oldest goes too.
+async fn store_manifest(state: &AppState, key: ManifestKey, manifest: manifest::Manifest) {
+    const MAX_CACHED: usize = 256;
+    let mut manifests = state.manifests.write().await;
+    manifests.retain(|_, entry| entry.is_fresh());
+    while manifests.len() >= MAX_CACHED {
+        let oldest = manifests
+            .iter()
+            .min_by_key(|(_, entry)| entry.scanned_at)
+            .map(|(key, _)| key.clone());
+        match oldest {
+            Some(key) => {
+                manifests.remove(&key);
+            }
+            None => break,
+        }
+    }
+    manifests.insert(
+        key,
+        CachedManifest {
+            manifest,
+            scanned_at: SystemTime::now(),
+        },
+    );
+}
+
+#[derive(Debug, Deserialize)]
+struct SizesQuery {
+    /// Limit the answer to one root. The app asks for a single folder when the
+    /// user taps "calculate size" on one premade row, so the cost matches the
+    /// question instead of walking every library.
+    root: Option<String>,
+}
+
+/// Report the size of every syncable library root, keyed by root id.
+///
+/// Keyed by root id rather than by folder because roots share folders: the
+/// Jellyfin and Offline Media presets both live in `_Videos`, but one syncs
+/// all of it and the other only `_Videos/_YouTube`. A per-folder total would
+/// show the wrong number for one of them.
+async fn library_sizes(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<SizesQuery>,
+) -> Response {
+    let username = match authenticate(&state, &headers).await {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let started = Instant::now();
+
+    let mut sizes: HashMap<String, manifest::LibrarySize> = HashMap::new();
+    for root in &state.settings.roots {
+        if query
+            .root
+            .as_deref()
+            .is_some_and(|wanted| wanted != root.id)
+        {
+            continue;
+        }
+        let base = state.settings.users_root.join(&username).join(&root.folder);
+        if !base.join(&root.server_path).is_dir() {
+            continue;
+        }
+        let target = manifest_root(base, Path::new(&root.server_path));
+        let key: ManifestKey = (username.clone(), root.id.clone(), root.server_path.clone());
+        let (manifest, _) = match manifest_for(&state, &key, target).await {
+            Ok(value) => value,
+            Err(response) => return response,
+        };
+        sizes.insert(
+            root.id.clone(),
+            manifest::LibrarySize {
+                bytes: manifest.total_bytes,
+                files: manifest.files,
+                directories: manifest.directories,
+                truncated: manifest.truncated,
+            },
+        );
+        store_manifest(&state, key, manifest).await;
+    }
+
+    Json(json!({
+        "data": sizes,
+        "elapsedMs": started.elapsed().as_millis() as u64,
+    }))
+    .into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct EstimateRequest {
+    root: Option<String>,
+    path: Option<String>,
+    direction: String,
+    #[serde(default)]
+    local: Vec<LocalFile>,
+}
+
+/// Decide what a sync of one folder would move, without sending the library's
+/// file list to the device.
+///
+/// The client sends what it holds as `(path, size, mtime)` and the server does
+/// the diff against its own cached manifest. Files whose metadata agrees count
+/// as identical without any hashing; the few that disagree come back as
+/// `needsHash`, and only then does the client hash them and ask again.
+async fn estimate(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<EstimateRequest>,
+) -> Response {
+    let username = match authenticate(&state, &headers).await {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    if request.direction != "phone-to-server" && request.direction != "server-to-phone" {
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "INVALID_DIRECTION",
+            "Choose a supported sync direction.",
+        );
+    }
+    let relative = match safe_relative_path(request.path.as_deref().unwrap_or("")) {
+        Ok(value) => value,
+        Err(message) => return api_error(StatusCode::BAD_REQUEST, "INVALID_PATH", message),
+    };
+    for file in &request.local {
+        if safe_relative_path(&file.path).is_err() {
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "INVALID_PATH",
+                "A folder list contained an invalid path.",
+            );
+        }
+    }
+    let (base, scoped) =
+        match resolve_request_path(&state, &username, request.root.as_deref(), &relative) {
+            Ok(value) => value,
+            Err(message) => return api_error(StatusCode::BAD_REQUEST, "INVALID_PATH", message),
+        };
+    let root_dir = manifest_root(base, &scoped);
+
+    let started = Instant::now();
+    let root_id = request.root.clone().unwrap_or_else(|| "files".to_owned());
+    let key: ManifestKey = (username, root_id, scoped.to_string_lossy().into_owned());
+    let (mut manifest, _) = match manifest_for(&state, &key, root_dir.clone()).await {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+
+    let remote_total_bytes = manifest.total_bytes;
+    let files = manifest.files;
+    let directories = manifest.directories;
+    let truncated = manifest.truncated;
+    let diff = match manifest::diff(&mut manifest, &root_dir, &request.local, &request.direction) {
+        Ok(diff) => diff,
+        Err(_) => {
+            return api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "IO_ERROR",
+                "A server file could not be read for comparison.",
+            )
+        }
+    };
+    // The diff may have read files to settle a comparison, so the hashes it
+    // produced are worth keeping for the next estimate.
+    store_manifest(&state, key, manifest).await;
+
+    Json(json!({
+        "data": {
+            "pendingBytes": diff.pending_bytes,
+            "pendingCount": diff.pending_count,
+            "skipped": diff.skipped,
+            "needsHash": diff.needs_hash,
+            "unreadable": diff.unreadable,
+            "remoteTotalBytes": remote_total_bytes,
+            "files": files,
+            "directories": directories,
+            "truncated": truncated,
+        },
+        "elapsedMs": started.elapsed().as_millis() as u64,
+    }))
+    .into_response()
 }
 
 async fn tree(

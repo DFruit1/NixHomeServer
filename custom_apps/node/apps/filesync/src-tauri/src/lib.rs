@@ -563,6 +563,47 @@ async fn server_presets<R: Runtime>(app: AppHandle<R>) -> Result<Vec<SyncPreset>
         .map_err(network_error)
 }
 
+#[derive(Debug, Deserialize)]
+struct LibrarySizeListing {
+    data: std::collections::HashMap<String, LibrarySize>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LibrarySize {
+    bytes: u64,
+    #[allow(dead_code)]
+    files: usize,
+    /// The server hit a walk bound, so `bytes` is a floor rather than a total.
+    #[allow(dead_code)]
+    truncated: bool,
+}
+
+/// One request for every library folder's size, answered from the server's
+/// cached manifests without reading any file contents.
+///
+/// This is what the premade-folder list uses, so showing sizes no longer costs
+/// a per-pair estimate — and a per-pair estimate used to mean a full hashed
+/// walk of that library.
+#[tauri::command]
+async fn server_library_sizes<R: Runtime>(
+    app: AppHandle<R>,
+) -> Result<std::collections::HashMap<String, LibrarySize>, String> {
+    let session = authenticated_session(&app).await?;
+    http_client()?
+        .get(format!("{}/api/v1/library-sizes", session.api_base))
+        .bearer_auth(&session.access_token)
+        .send()
+        .await
+        .map_err(network_error)?
+        .error_for_status()
+        .map_err(network_error)?
+        .json::<LibrarySizeListing>()
+        .await
+        .map(|listing| listing.data)
+        .map_err(network_error)
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct FileActionResult {
@@ -685,6 +726,39 @@ async fn sync_pair<R: Runtime>(app: AppHandle<R>, pair: SyncPair) -> Result<Sync
     sync_pair_rust(app, pair).await
 }
 
+/// Free and total space on the device, with no folder involved.
+///
+/// The premade list needs to say "240 GB, and you have 7 GB free" before
+/// anyone has picked a destination, so this cannot require a folder URI the way
+/// `storage_info` does.
+#[tauri::command]
+// The desktop branch measures the user's home volume and needs no handle; the
+// Android branch needs the plugin. Same shape as `storage_info` below.
+#[cfg_attr(not(target_os = "android"), allow(unused_variables))]
+async fn device_storage<R: Runtime>(app: AppHandle<R>) -> Result<StorageInfo, String> {
+    #[cfg(target_os = "android")]
+    {
+        app.mobile_files()
+            .storage_info(String::new())
+            .map(|info| StorageInfo {
+                free_bytes: info.free_bytes,
+                total_bytes: info.total_bytes,
+            })
+            .map_err(|error| error.to_string())
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        // No destination chosen yet, so measure the volume the user's files
+        // would normally land on rather than any one sync folder.
+        let anchor = std::env::var("HOME").unwrap_or_else(|_| "/".to_owned());
+        let (free_bytes, total_bytes) = desktop_fs_space(&anchor)?;
+        Ok(StorageInfo {
+            free_bytes,
+            total_bytes,
+        })
+    }
+}
+
 #[tauri::command]
 async fn storage_info<R: Runtime>(
     app: AppHandle<R>,
@@ -786,7 +860,23 @@ struct LoadedSync {
     session: StoredSession,
     client: reqwest::Client,
     local_files: std::collections::HashMap<String, tauri_plugin_mobile_files::LocalEntry>,
-    remote_files: std::collections::HashMap<String, RemoteEntry>,
+}
+
+/// The server side of a plan, fetched only when a transfer needs it.
+///
+/// The estimate no longer needs this: the server diffs against its own cached
+/// manifest. Loading it here is what kept a refresh of the numbers re-reading
+/// and re-hashing the whole library, which happened on sign-in and after every
+/// enable, remove, sync and address change.
+async fn load_remote_files(
+    plan: &LoadedSync,
+) -> Result<std::collections::HashMap<String, RemoteEntry>, String> {
+    let remote = fetch_tree_recursive(&plan.client, &plan.session, &plan.base, &plan.root).await?;
+    Ok(remote
+        .into_iter()
+        .filter(|entry| entry.kind == "file")
+        .map(|entry| (entry.path.clone(), entry))
+        .collect())
 }
 
 fn storage_budget(free_bytes: u64, total_bytes: u64) -> u64 {
@@ -848,10 +938,7 @@ fn desktop_fs_space(folder_uri: &str) -> Result<(u64, u64), String> {
     ))
 }
 
-async fn load_sync<R: Runtime>(
-    app: &AppHandle<R>,
-    pair: &SyncPair,
-) -> Result<LoadedSync, String> {
+async fn load_sync<R: Runtime>(app: &AppHandle<R>, pair: &SyncPair) -> Result<LoadedSync, String> {
     if pair.direction == "two-way" {
         return Err(
             "Two-way sync is not available yet. Choose one direction for this pair.".into(),
@@ -907,11 +994,6 @@ async fn load_sync<R: Runtime>(
         }
         local_files.insert(item.path.clone(), item);
     }
-    let remote = fetch_tree_recursive(&client, &session, &base, &root).await?;
-    let mut remote_files = std::collections::HashMap::new();
-    for item in remote.into_iter().filter(|entry| entry.kind == "file") {
-        remote_files.insert(item.path.clone(), item);
-    }
     Ok(LoadedSync {
         name: if pair.name.is_empty() {
             "Folder pair".into()
@@ -927,57 +1009,164 @@ async fn load_sync<R: Runtime>(
         session,
         client,
         local_files,
-        remote_files,
     })
 }
 
+/// What the device reports about one file. Kept to metadata on the first pass;
+/// `hash` only appears for the handful of files the server could not settle.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalManifestFile {
+    path: String,
+    size: u64,
+    mtime_unix_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hash: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EstimateRequestBody {
+    root: String,
+    path: String,
+    direction: String,
+    local: Vec<LocalManifestFile>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EstimateReply {
+    data: EstimateData,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EstimateData {
+    pending_bytes: u64,
+    pending_count: usize,
+    #[allow(dead_code)]
+    skipped: usize,
+    #[serde(default)]
+    needs_hash: Vec<String>,
+    #[serde(default)]
+    unreadable: Vec<String>,
+    remote_total_bytes: u64,
+}
+
+/// A recursive hash of a large library is not something to leave hanging, so
+/// the whole estimate is bounded. The user sees a failure rather than a row
+/// stuck on "Checking size…".
+const ESTIMATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+async fn post_estimate(
+    client: &reqwest::Client,
+    session: &StoredSession,
+    body: &EstimateRequestBody,
+) -> Result<EstimateData, String> {
+    let url = format!("{}/api/v1/estimate", session.api_base);
+    let response = tokio::time::timeout(
+        ESTIMATE_TIMEOUT,
+        client
+            .post(&url)
+            .bearer_auth(&session.access_token)
+            .json(body)
+            .send(),
+    )
+    .await
+    .map_err(|_| "The size check took too long and was stopped.".to_owned())?
+    .map_err(network_error)?
+    .error_for_status()
+    .map_err(network_error)?;
+    Ok(response
+        .json::<EstimateReply>()
+        .await
+        .map_err(network_error)?
+        .data)
+}
+
+/// SHA-256 of one local file, for the second pass.
+async fn hash_local_file(
+    folder_uri: &str,
+    subpath: &str,
+    relative: &str,
+) -> Result<String, String> {
+    let path = std::path::Path::new(folder_uri).join(join_sync_path(subpath, relative));
+    let bytes = tokio::fs::read(&path)
+        .await
+        .map_err(|_| format!("Could not read {relative} to compare it"))?;
+    Ok(format!("{:x}", Sha256::digest(&bytes)))
+}
+
+/// Ask the server what a sync would move.
+///
+/// The device sends only `(path, size, mtime)` per file and the server diffs it
+/// against its own cached manifest, so an unchanged library costs no reads on
+/// either side and no per-file list crosses the network in either direction.
+/// Files whose metadata disagrees come back as `needsHash`; only those are read
+/// locally and sent back for the server to settle.
 async fn estimate_pair_rust<R: Runtime>(
     app: AppHandle<R>,
     pair: SyncPair,
 ) -> Result<EstimateResult, String> {
     let plan = load_sync(&app, &pair).await?;
-    // Every remote file size is already in hand from the recursive walk, so
-    // this costs no extra request.
-    let remote_total_bytes: u64 = plan.remote_files.values().map(|entry| entry.size).sum();
-    let mut pending_bytes = 0_u64;
-    let mut pending_count = 0_usize;
-    let mut skipped = 0_usize;
-    if plan.direction == "phone-to-server" {
-        for (relative, entry) in &plan.local_files {
-            if plan
-                .remote_files
-                .get(relative)
-                .is_some_and(|remote| remote.sha256 == entry.sha256)
-            {
-                skipped += 1;
-            } else {
-                pending_bytes += entry.size;
-                pending_count += 1;
+    let mut local: Vec<LocalManifestFile> = plan
+        .local_files
+        .values()
+        .map(|entry| LocalManifestFile {
+            path: entry.path.clone(),
+            size: entry.size,
+            mtime_unix_ms: entry.modified_unix_ms,
+            hash: None,
+        })
+        .collect();
+    local.sort_by(|left, right| left.path.cmp(&right.path));
+
+    let mut body = EstimateRequestBody {
+        root: plan.root.clone(),
+        path: plan.base.clone(),
+        direction: plan.direction.clone(),
+        local: local.clone(),
+    };
+    let mut data = post_estimate(&plan.client, &plan.session, &body).await?;
+
+    if !data.needs_hash.is_empty() {
+        let wanted: std::collections::HashSet<&str> =
+            data.needs_hash.iter().map(String::as_str).collect();
+        for entry in &mut local {
+            if wanted.contains(entry.path.as_str()) {
+                entry.hash = Some(
+                    hash_local_file(&plan.folder_uri, &plan.local_subpath, &entry.path).await?,
+                );
             }
         }
-    } else {
-        for (relative, entry) in &plan.remote_files {
-            if plan
-                .local_files
-                .get(relative)
-                .is_some_and(|local| local.sha256 == entry.sha256)
-            {
-                skipped += 1;
-            } else {
-                pending_bytes += entry.size;
-                pending_count += 1;
-            }
+        body.local = local;
+        data = post_estimate(&plan.client, &plan.session, &body).await?;
+        // The server asked for hashes and did not get a decision, so something
+        // on the device could not be read. Say so instead of reporting a
+        // number that quietly omits it.
+        if !data.needs_hash.is_empty() {
+            return Err(format!(
+                "{} could not be compared with the server. Sync to review it.",
+                data.needs_hash.join(", ")
+            ));
         }
     }
+    if !data.unreadable.is_empty() {
+        return Err(format!(
+            "{} could not be read on the server. Try again in a moment.",
+            data.unreadable.join(", ")
+        ));
+    }
+
     let (free_bytes, total_bytes) = desktop_fs_space(&plan.folder_uri)?;
     Ok(EstimateResult {
-        pending_bytes,
-        pending_count,
-        skipped,
+        pending_bytes: data.pending_bytes,
+        pending_count: data.pending_count,
+        skipped: data.skipped,
         direction: plan.direction,
         free_bytes,
         total_bytes,
-        remote_total_bytes,
+        remote_total_bytes: data.remote_total_bytes,
     })
 }
 
@@ -986,13 +1175,14 @@ async fn sync_pair_rust<R: Runtime>(
     pair: SyncPair,
 ) -> Result<SyncResult, String> {
     let plan = load_sync(&app, &pair).await?;
+    // Before anything is moved out of the plan, because this borrows it.
+    let remote_files = load_remote_files(&plan).await?;
     let session = plan.session;
     let client = plan.client;
     let local_subpath = plan.local_subpath;
     let base = plan.base;
     let root = plan.root;
     let local_files = plan.local_files;
-    let remote_files = plan.remote_files;
     let mut transferred = 0;
     let mut skipped = 0;
     if plan.direction == "phone-to-server" {
@@ -1588,19 +1778,21 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             platform_name,
-             begin_login,
-             finish_login,
-             current_user,
-             settings_authorized,
-             session_backup,
-             restore_session_backup,
-             logout,
+            begin_login,
+            finish_login,
+            current_user,
+            settings_authorized,
+            session_backup,
+            restore_session_backup,
+            logout,
             server_tree,
             server_presets,
+            server_library_sizes,
             server_file_action,
             sync_pair,
             estimate_sync_pair,
             storage_info,
+            device_storage,
             has_session,
             update_background_syncs,
             background_sync_status,

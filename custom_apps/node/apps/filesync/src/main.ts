@@ -23,7 +23,7 @@ const SPACE_PREFS_KEY = 'nixhomeserver.filesync.space-limits.v1';
 const DEFAULT_SERVER = import.meta.env.VITE_FILESYNC_DEFAULT_SERVER ?? '';
 const app = document.querySelector<HTMLDivElement>('#app')!;
 
-const state: { pairs: SyncPair[]; presets: SyncPreset[]; syncingPairId?: string; removingPairId?: string; progress?: SyncProgress; server: string; user?: string; offline: boolean; settingsAuthorized: boolean; backgroundStatus?: string; error: string; notice: string; estimates: Record<string, SyncEstimate | undefined>; estimatesDone: Record<string, boolean>; deviceStorage?: DeviceStorage; warnPercent: number; blockPercent: number; transfer?: FileTransfer } = {
+const state: { pairs: SyncPair[]; presets: SyncPreset[]; syncingPairId?: string; removingPairId?: string; progress?: SyncProgress; server: string; user?: string; offline: boolean; settingsAuthorized: boolean; backgroundStatus?: string; error: string; notice: string; estimates: Record<string, SyncEstimate | undefined>; estimatesDone: Record<string, boolean>; estimatesDoneAll: boolean; librarySizes: Record<string, LibrarySize>; sizedOnDemand: Record<string, true>; sizingPresetId?: string; deviceStorage?: DeviceStorage; warnPercent: number; blockPercent: number; transfer?: FileTransfer } = {
   pairs: readPairs(),
   presets: [],
   server: localStorage.getItem(SETTINGS_KEY) ?? DEFAULT_SERVER,
@@ -33,6 +33,9 @@ const state: { pairs: SyncPair[]; presets: SyncPreset[]; syncingPairId?: string;
   notice: '',
   estimates: {},
   estimatesDone: {},
+  estimatesDoneAll: false,
+  librarySizes: {},
+  sizedOnDemand: {},
   ...readSpacePrefs(),
 };
 
@@ -121,22 +124,38 @@ const HOME_ROOT = 'home';
 // How big the server folder behind a suggestion is, once it is set up. The
 // total is the folder's own size; the pending amount is what a sync would move
 // now, which is the part that decides whether a phone has room for it.
+/// The size line for a premade folder.
+///
+/// A paired folder already carries the server total in its own estimate, so it
+/// needs no separate lookup. An unpaired one has nothing to read it from, which
+/// is why it says nothing until someone asks — the app deliberately does not
+/// walk a library just to fill in a number nobody has looked at yet.
 function presetSizeLine(preset: SyncPreset, pair?: SyncPair): string {
   const id = escapeHtml(preset.id);
-  if (!pair) return '';
-  const estimate = state.estimates[pair.id];
-  if (!estimate) {
-    return state.estimatesDone[pair.id]
-      ? ''
-      : `<p class="suggest-size" data-preset-size-for="${id}">Checking size…</p>`;
+  if (pair) {
+    const estimate = state.estimates[pair.id];
+    if (!estimate) {
+      return state.estimatesDone[pair.id]
+        ? ''
+        : `<p class="suggest-size" data-preset-size-for="${id}">Checking size…</p>`;
+    }
+    const pending = Number(estimate.pendingBytes) || 0;
+    if (pending <= 0) {
+      return `<p class="suggest-size" data-preset-size-for="${id}">Already in sync · ${escapeHtml(formatBytes(estimate.remoteTotalBytes))} on the server</p>`;
+    }
+    const verb = preset.direction === 'phone-to-server' ? 'to upload' : 'to download';
+    return `<p class="suggest-size" data-preset-size-for="${id}">${escapeHtml(`${formatBytes(estimate.remoteTotalBytes)} on the server · ${formatBytes(pending)} ${verb}`)}</p>`;
   }
-  const total = Number(estimate.remoteTotalBytes) || 0;
-  if (total <= 0) return `<p class="suggest-size" data-preset-size-for="${id}">Server folder is empty</p>`;
-  const pending = estimate.pendingBytes;
-  const verb = preset.direction === 'phone-to-server' ? 'to upload' : 'to download';
-  const text = pending > 0
-    ? `${formatBytes(total)} on the server · ${formatBytes(pending)} ${verb}`
-    : `${formatBytes(total)} on the server`;
+
+  const size = state.librarySizes[preset.id];
+  if (!size) {
+    return state.sizingPresetId === preset.id
+      ? `<p class="suggest-size" data-preset-size-for="${id}">Calculating…</p>`
+      : '';
+  }
+  const total = size.truncated ? `At least ${formatBytes(size.bytes)}` : formatBytes(size.bytes);
+  const free = state.deviceStorage ? `${formatBytes(state.deviceStorage.freeBytes)} free on this device` : '';
+  const text = free ? `${total} on the server · ${free}` : `${total} on the server`;
   return `<p class="suggest-size" data-preset-size-for="${id}">${escapeHtml(text)}</p>`;
 }
 
@@ -213,6 +232,22 @@ function serviceMark(service: string, serviceTitle: string): string {
     : `<span class="service-symbol">${escapeHtml(serviceInitials(serviceTitle))}</span>`;
 }
 
+/// The buttons on a not-yet-paired suggestion.
+///
+/// `Calculate size` only earns its place while the size is unknown. Once the
+/// number is on screen the line answers the question, and leaving a button
+/// beside it would invite a second, redundant request.
+function presetActions(preset: SyncPreset, hasPairs: boolean): string {
+  const sizing = state.sizingPresetId === preset.id;
+  const known = Boolean(state.librarySizes[preset.id]);
+  return `<div class="suggest-actions" data-preset-actions="${escapeHtml(preset.id)}">
+    <button class="${hasPairs ? 'secondary-button' : 'primary-button'}" type="button" data-enable-preset="${escapeHtml(preset.id)}" ${state.syncingPairId ? 'disabled' : ''}>Enable</button>
+    ${known || sizing
+      ? ''
+      : `<button class="text-button" type="button" data-calc-size="${escapeHtml(preset.id)}" ${state.syncingPairId || state.sizingPresetId ? 'disabled' : ''}>Calculate size</button>`}
+  </div>`;
+}
+
 function render(): void {
   // Most people set up the folders the server already suggests, so the
   // suggested list is the page's primary content until something is paired.
@@ -227,13 +262,13 @@ function render(): void {
         <ul class="suggest-list">${state.presets.map((preset) => {
           const pair = pairForPreset(preset);
           const size = presetSizeLine(preset, pair);
-          return `<li class="suggest-row${pair ? ' is-set-up' : ''}" data-preset-row="${escapeHtml(preset.id)}">
+          return `<li class="suggest-row${pair ? ' is-set-up' : ''}${size ? ' has-size' : ''}" data-preset-row="${escapeHtml(preset.id)}">
             <span class="service-logo" aria-hidden="true">${serviceMark(preset.service, preset.serviceTitle)}</span>
             <div class="suggest-copy">
               <h3>${escapeHtml(preset.serviceTitle)}</h3>
               <p>${escapeHtml(preset.title)}</p>
             </div>
-            ${pair ? size : `<button class="${hasPairs ? 'secondary-button' : 'primary-button'}" type="button" data-enable-preset="${escapeHtml(preset.id)}" ${state.syncingPairId ? 'disabled' : ''}>Enable</button>`}
+            ${pair ? size : `${presetActions(preset, hasPairs)}${size}`}
             ${routeLine(preset.direction, `/${preset.localSubpath}`, presetServerLocation(preset))}
           </li>`;
         }).join('')}</ul>
@@ -404,6 +439,9 @@ function bindEvents(): void {
   });
   const openPairForm = async () => { if (await ensureSettingsAuthorized()) dialog.showModal(); };
   document.querySelector('#open-pair-form')?.addEventListener('click', () => void openPairForm());
+  document.querySelectorAll<HTMLButtonElement>('[data-calc-size]').forEach((button) => button.addEventListener('click', () => {
+    void calculatePresetSize(button.dataset.calcSize!);
+  }));
   document.querySelectorAll<HTMLButtonElement>('[data-enable-preset]').forEach((button) => button.addEventListener('click', async () => {
     const preset = state.presets.find((item) => item.id === button.dataset.enablePreset);
     if (!invoke || !preset) return;
@@ -440,7 +478,7 @@ function bindEvents(): void {
       }
     } catch (error) { showError(error); }
     render();
-    void refreshEstimates();
+    void refreshEstimates(true);
   }));
   document.querySelector('#save-server')?.addEventListener('click', async () => {
     const input = document.querySelector<HTMLInputElement>('#server-address')!;
@@ -717,7 +755,7 @@ function bindEvents(): void {
         state.backgroundStatus = readBackgroundStatus(await invoke<string | null>('background_sync_status'));
       } catch { /* Keep the last known status. */ }
       render();
-      void refreshEstimates();
+      void refreshEstimates(true);
     });
   });
 
@@ -759,44 +797,119 @@ async function refreshProgress(): Promise<void> {
 }
 
 let estimateRun = 0;
+let estimateInFlight: Promise<void> | undefined;
+let estimatesFreshUntil = 0;
 
-async function refreshEstimates(): Promise<void> {
+/// How long a set of numbers stays good enough to keep showing.
+///
+/// An estimate is no longer a walk of the library, but it is still a request
+/// per pair and the app asks for one on sign-in and after every enable, remove,
+/// sync and address change. Reusing a recent answer keeps a burst of those from
+/// turning into a burst of identical work.
+const ESTIMATE_FRESH_MS = 20_000;
+
+type LibrarySize = { bytes: number; files: number; truncated: boolean };
+
+/// Work out how big one premade folder is, and how much room the device has,
+/// without setting the pair up.
+///
+/// Deliberately scoped to the one root that was asked about: the question is
+/// about a single folder, so walking every library to answer it would be the
+/// same over-computation this change set out to remove.
+async function calculatePresetSize(presetId: string): Promise<void> {
+  if (!invoke || !state.user || state.sizingPresetId) return;
+  const preset = state.presets.find((item) => item.id === presetId);
+  if (!preset) return;
+  state.sizingPresetId = presetId;
+  render();
+  try {
+    // The device figure has no folder to hang off, so it is fetched on its own
+    // rather than as a side effect of some other pair's estimate.
+    const [sizes, storage] = await Promise.all([
+      invoke<Record<string, LibrarySize>>('server_library_sizes', { root: presetId }),
+      invoke<DeviceStorage>('device_storage').catch(() => undefined),
+    ]);
+    const size = sizes?.[presetId];
+    if (size) {
+      state.librarySizes[presetId] = {
+        bytes: Number(size.bytes) || 0,
+        files: Number(size.files) || 0,
+        truncated: size.truncated === true,
+      };
+    }
+    if (storage) {
+      state.deviceStorage = { freeBytes: Number(storage.freeBytes) || 0, totalBytes: Number(storage.totalBytes) || 0 };
+    }
+    state.sizedOnDemand[presetId] = true;
+    state.error = '';
+  } catch (error) {
+    state.error = error instanceof Error ? error.message : String(error);
+  } finally {
+    state.sizingPresetId = undefined;
+    // In place: a full re-render here would drop the Enable button the user may
+    // be about to press, and rebuild the whole list for one number.
+    updatePresetSize(preset);
+  }
+}
+
+async function refreshEstimates(force = false): Promise<void> {
   if (!invoke || !state.user) return;
+  if (!force && Date.now() < estimatesFreshUntil && state.estimatesDoneAll) return;
+  // A refresh already in flight will produce the same answer. Chaining onto it
+  // avoids the old behaviour where a second caller threw away the first run's
+  // partial work and started the whole thing again.
+  if (estimateInFlight) {
+    if (force) await estimateInFlight;
+    else return estimateInFlight;
+  }
   const run = ++estimateRun;
-  state.estimates = {};
-  state.estimatesDone = {};
-  for (const pair of state.pairs) updateSpaceUi(pair.id);
-  for (const preset of state.presets) updatePresetSize(preset);
-  for (const pair of state.pairs) {
-    if (run !== estimateRun) return;
-    if (pair.direction === 'two-way') {
+  const work = (async () => {
+    state.estimates = {};
+    state.estimatesDone = {};
+    state.estimatesDoneAll = false;
+    for (const pair of state.pairs) updateSpaceUi(pair.id);
+    for (const pair of state.pairs) {
+      if (run !== estimateRun) return;
+      if (pair.direction === 'two-way') {
+        state.estimatesDone[pair.id] = true;
+        updateSpaceUi(pair.id);
+        continue;
+      }
+      try {
+        const raw = await invoke<SyncEstimate>('estimate_sync_pair', { pair: { ...pair, ...limitsFor(pair) } });
+        if (run !== estimateRun) return;
+        state.estimates[pair.id] = {
+          pendingBytes: Number(raw.pendingBytes) || 0,
+          pendingCount: Number(raw.pendingCount) || 0,
+          skipped: Number(raw.skipped) || 0,
+          direction: typeof raw.direction === 'string' ? raw.direction : pair.direction,
+          freeBytes: Number(raw.freeBytes) || 0,
+          totalBytes: Number(raw.totalBytes) || 0,
+          remoteTotalBytes: Number(raw.remoteTotalBytes) || 0,
+        };
+        state.deviceStorage = { freeBytes: Number(raw.freeBytes) || 0, totalBytes: Number(raw.totalBytes) || 0 };
+      } catch {
+        if (run !== estimateRun) return;
+        state.estimates[pair.id] = undefined;
+      }
       state.estimatesDone[pair.id] = true;
       updateSpaceUi(pair.id);
-      continue;
+      // The suggestion row shows the folder total plus what is pending, so it
+      // has to be repainted as each pair's number lands. The sizes request and
+      // the estimates race, and whichever finishes first must not leave the
+      // other one's half of the line on screen.
+      for (const preset of state.presets) {
+        if (pairForPreset(preset)?.id === pair.id) updatePresetSize(preset);
+      }
     }
-    try {
-      const raw = await invoke<SyncEstimate>('estimate_sync_pair', { pair: { ...pair, ...limitsFor(pair) } });
-      if (run !== estimateRun) return;
-      state.estimates[pair.id] = {
-        pendingBytes: Number(raw.pendingBytes) || 0,
-        pendingCount: Number(raw.pendingCount) || 0,
-        skipped: Number(raw.skipped) || 0,
-        direction: typeof raw.direction === 'string' ? raw.direction : pair.direction,
-        freeBytes: Number(raw.freeBytes) || 0,
-        totalBytes: Number(raw.totalBytes) || 0,
-        remoteTotalBytes: Number(raw.remoteTotalBytes) || 0,
-      };
-      state.deviceStorage = { freeBytes: Number(raw.freeBytes) || 0, totalBytes: Number(raw.totalBytes) || 0 };
-    } catch {
-      if (run !== estimateRun) return;
-      state.estimates[pair.id] = undefined;
-    }
-    state.estimatesDone[pair.id] = true;
-    updateSpaceUi(pair.id);
-    for (const preset of state.presets) {
-      if (pairForPreset(preset)?.id === pair.id) updatePresetSize(preset);
-    }
-  }
+    if (run !== estimateRun) return;
+    state.estimatesDoneAll = true;
+    estimatesFreshUntil = Date.now() + ESTIMATE_FRESH_MS;
+  })();
+  estimateInFlight = work.finally(() => {
+    if (estimateInFlight === work) estimateInFlight = undefined;
+  });
+  await estimateInFlight;
 }
 
 function updateSpaceUi(pairId: string): void {
@@ -829,16 +942,24 @@ function updateSpaceUi(pairId: string): void {
 // the same reason the paired space line is: a full re-render would drop the
 // Enable button's focus mid-sync.
 function updatePresetSize(preset: SyncPreset): void {
+  const pair = pairForPreset(preset);
   const line = document.querySelector(`[data-preset-size-for="${CSS.escape(preset.id)}"]`);
-  const html = presetSizeLine(preset, pairForPreset(preset));
+  const html = presetSizeLine(preset, pair);
+  // The size arriving is also what retires the Calculate size button and pushes
+  // the route down a row, so the row's own class has to follow the line.
+  const row = document.querySelector(`[data-preset-row="${CSS.escape(preset.id)}"]`);
+  row?.classList.toggle('has-size', Boolean(html));
   if (line) {
     if (html) line.outerHTML = html;
     else line.remove();
-    return;
+  } else if (html) {
+    row?.querySelector('.suggest-copy')?.insertAdjacentHTML('afterend', html);
   }
-  if (!html) return;
-  const row = document.querySelector(`[data-preset-row="${CSS.escape(preset.id)}"]`);
-  row?.querySelector('.suggest-copy')?.insertAdjacentHTML('afterend', html);
+  // The size arriving is also what retires the Calculate size button, so the
+  // action cell is repainted from the same source of truth as the line.
+  const actions = document.querySelector(`[data-preset-actions="${CSS.escape(preset.id)}"]`);
+  const wanted = pair ? '' : presetActions(preset, state.pairs.length > 0);
+  if (actions && actions.innerHTML.trim() !== wanted.trim()) actions.outerHTML = wanted;
 }
 
 function parseProgress(raw: string | null): SyncProgress | undefined {  if (!raw) return undefined;
@@ -871,6 +992,11 @@ function showError(error: unknown): void {
     state.presets = [];
     state.estimates = {};
     state.estimatesDone = {};
+    state.estimatesDoneAll = false;
+    state.librarySizes = {};
+    state.sizedOnDemand = {};
+    state.sizingPresetId = undefined;
+    estimatesFreshUntil = 0;
     state.deviceStorage = undefined;
     // The stored session is dead (revoked or rejected): drop the backup and
     // the cached name so the next launch does not resurrect either of them.
