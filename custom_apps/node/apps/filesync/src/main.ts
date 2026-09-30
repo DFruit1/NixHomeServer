@@ -21,7 +21,7 @@ const SPACE_PREFS_KEY = 'nixhomeserver.filesync.space-limits.v1';
 const DEFAULT_SERVER = import.meta.env.VITE_FILESYNC_DEFAULT_SERVER ?? '';
 const app = document.querySelector<HTMLDivElement>('#app')!;
 
-const state: { pairs: SyncPair[]; presets: SyncPreset[]; selectedService?: string; syncingPairId?: string; removingPairId?: string; progress?: SyncProgress; server: string; user?: string; offline: boolean; settingsAuthorized: boolean; backgroundStatus?: string; error: string; notice: string; estimates: Record<string, SyncEstimate | undefined>; estimatesDone: Record<string, boolean>; deviceStorage?: DeviceStorage; warnPercent: number; blockPercent: number } = {
+const state: { pairs: SyncPair[]; presets: SyncPreset[]; syncingPairId?: string; removingPairId?: string; progress?: SyncProgress; server: string; user?: string; offline: boolean; settingsAuthorized: boolean; backgroundStatus?: string; error: string; notice: string; estimates: Record<string, SyncEstimate | undefined>; estimatesDone: Record<string, boolean>; deviceStorage?: DeviceStorage; warnPercent: number; blockPercent: number } = {
   pairs: readPairs(),
   presets: [],
   server: localStorage.getItem(SETTINGS_KEY) ?? DEFAULT_SERVER,
@@ -91,8 +91,12 @@ function spaceLine(pair: SyncPair, estimate?: SyncEstimate): string {
   if (pair.direction !== 'server-to-phone') {
     return `<p class="pair-space" data-space-for="${id}">≈ ${escapeHtml(formatBytes(estimate.pendingBytes))} to upload</p>`;
   }
+  // The blocked case leaves the reason to the disabled Sync button, which
+  // already reads "Not enough space"; repeating it here said the same words
+  // twice within one row. The warn case keeps its prefix because weight alone
+  // is too weak a cue for it.
   const text = status === 'blocked'
-    ? `Not enough space: ${formatBytes(estimate.pendingBytes)} needed · ${formatBytes(estimate.freeBytes)} free`
+    ? `${formatBytes(estimate.pendingBytes)} needed · ${formatBytes(estimate.freeBytes)} free`
     : status === 'warn'
       ? `Low space: ≈ ${formatBytes(estimate.pendingBytes)} to download · ${formatBytes(estimate.freeBytes)} free`
       : `≈ ${formatBytes(estimate.pendingBytes)} to download · ${formatBytes(estimate.freeBytes)} free`;
@@ -124,10 +128,6 @@ const SERVICE_LOGOS: Record<string, string> = {
   kavita: '/logos/kavita.svg',
 };
 
-function serviceInitials(title: string): string {
-  return title.trim().slice(0, 2).toUpperCase();
-}
-
 function serverLocation(pair: SyncPair): string {
   return pair.serverRoot && pair.serverRoot !== 'files'
     ? `/${pair.serverFolder ?? pair.serverRoot}${pair.serverPath ? `/${pair.serverPath}` : ''}`
@@ -147,25 +147,62 @@ function routeFor(direction: SyncDirection, localValue: string, serverValue: str
   return { sourceLabel: source.label, sourceValue: source.value, targetLabel: target.label, targetValue: target.value, arrow: direction === 'two-way' ? '↔' : '→' };
 }
 
+// One inline rendering of a route, shared by the suggested list and the paired
+// list so a folder path never changes appearance between the two.
+function routeLine(direction: SyncDirection, localValue: string, serverValue: string): string {
+  const route = routeFor(direction, localValue, serverValue);
+  return `<span class="route-line"><span class="route-place">${escapeHtml(route.sourceLabel)}</span> <strong>${escapeHtml(route.sourceValue)}</strong> <span class="route-arrow" aria-hidden="true">${route.arrow}</span> <span class="route-place">${escapeHtml(route.targetLabel)}</span> <strong>${escapeHtml(route.targetValue)}</strong></span>`;
+}
+
+function presetServerLocation(preset: SyncPreset): string {
+  return `/${preset.folder}${preset.serverPath ? `/${preset.serverPath}` : ''}`;
+}
+
+// A suggested folder is "set up" once a pair covers it. Rendering and the
+// enable handler both ask this question, so they cannot drift apart.
+function pairForPreset(preset: SyncPreset): SyncPair | undefined {
+  return state.pairs.find((pair) =>
+    pair.server === state.server &&
+    pair.account === state.user &&
+    (pair.serverRoot ?? 'files') === preset.id &&
+    (pair.serverPath ?? '') === (preset.serverPath ?? ''));
+}
+
+function serviceInitials(title: string): string {
+  return title.trim().slice(0, 2).toUpperCase();
+}
+
+function serviceMark(service: string, serviceTitle: string): string {
+  const logo = SERVICE_LOGOS[service];
+  return logo
+    ? `<img src="${logo}" alt="" loading="lazy" onerror="this.remove()" />`
+    : `<span class="service-symbol">${escapeHtml(serviceInitials(serviceTitle))}</span>`;
+}
+
 function render(): void {
-  const services = [...new Map(state.presets.map((preset) => [preset.service, preset.serviceTitle])).entries()];
-  const selectedPresets = state.presets.filter((preset) => preset.service === state.selectedService);
-  const presetSection = state.user ? `
-    <section class="services-section" aria-labelledby="services-heading">
-      <h2 id="services-heading">Sync from your services</h2>
-      ${state.selectedService ? `
-        <button class="text-button back-button" type="button" id="back-to-services">← All services</button>
-        <h3 class="service-heading">${escapeHtml(services.find(([id]) => id === state.selectedService)?.[1] ?? 'Service')}</h3>
-        <ul class="preset-list">${selectedPresets.map((preset) => {
-          const enabled = state.pairs.some((pair) => pair.server === state.server && pair.account === state.user && (pair.serverRoot ?? 'files') === preset.id && (pair.serverPath || '') === preset.serverPath);
-          const route = routeFor(preset.direction, `/${preset.localSubpath}`, `/${preset.folder}${preset.serverPath ? `/${preset.serverPath}` : ''}`);
-          return `<li class="preset-row"><div class="preset-copy"><h4>${escapeHtml(preset.title)}</h4><p>${escapeHtml(preset.description)}</p><span class="preset-route"><span class="route-label">${escapeHtml(route.sourceLabel)}</span> ${escapeHtml(route.sourceValue)} <span class="route-arrow" aria-hidden="true">${route.arrow}</span> <span class="route-label">${escapeHtml(route.targetLabel)}</span> ${escapeHtml(route.targetValue)}</span></div><button class="${enabled ? 'secondary-button' : 'primary-button'}" type="button" data-enable-preset="${escapeHtml(preset.id)}" ${enabled || state.syncingPairId ? 'disabled' : ''}>${enabled ? 'Enabled' : 'Enable and sync'}</button></li>`;
-        }).join('')}</ul>
-      ` : `<div class="service-grid">${services.map(([id, title]) => {
-        const logo = SERVICE_LOGOS[id];
-        return `<button class="service-card" type="button" data-service="${escapeHtml(id)}"><span class="service-logo" aria-hidden="true"><span class="service-symbol">${escapeHtml(serviceInitials(title))}</span>${logo ? `<img src="${logo}" alt="" loading="lazy" onerror="this.remove()" />` : ''}</span><span class="service-card-name">${escapeHtml(title)}</span><span class="service-card-action">View sync options →</span></button>`;
-      }).join('')}</div>`}
-      ${state.presets.length === 0 ? '<p class="services-empty">No syncable service folders are available for this account yet.</p>' : ''}
+  // Most people set up the folders the server already suggests, so the
+  // suggested list is the page's primary content until something is paired.
+  // Already-set-up suggestions drop out of it, which lets the section shrink
+  // to nothing without a disclosure to remember.
+  const hasPairs = state.pairs.length > 0;
+  const suggested = state.presets.filter((preset) => !pairForPreset(preset));
+  const suggestSection = state.user ? `
+    <section class="suggest-section" ${suggested.length ? 'aria-labelledby="suggest-heading"' : ''}>
+      ${suggested.length ? `
+        <h2 id="suggest-heading">${hasPairs ? 'Add another folder' : 'Suggested folders'}</h2>
+        <ul class="suggest-list">${suggested.map((preset) => `
+          <li class="suggest-row">
+            <span class="service-logo" aria-hidden="true">${serviceMark(preset.service, preset.serviceTitle)}</span>
+            <div class="suggest-copy">
+              <h3>${escapeHtml(preset.serviceTitle)}</h3>
+              <p>${escapeHtml(preset.title)}</p>
+            </div>
+            <button class="${hasPairs ? 'secondary-button' : 'primary-button'}" type="button" data-enable-preset="${escapeHtml(preset.id)}" ${state.syncingPairId ? 'disabled' : ''}>Enable</button>
+            ${routeLine(preset.direction, `/${preset.localSubpath}`, presetServerLocation(preset))}
+          </li>`).join('')}</ul>
+        ${state.presets.length === 0 ? '<p class="services-empty">No suggested folders are available for this account yet.</p>' : ''}
+      ` : ''}
+      <button class="text-button" type="button" id="open-pair-form">Pair your own folders</button>
     </section>` : '';
   const pairRows = state.pairs.map((pair) => {
     const route = routeFor(pair.direction, localLocation(pair), serverLocation(pair));
@@ -179,14 +216,12 @@ function render(): void {
       <h3 class="pair-name">${escapeHtml(pair.name)}</h3>
       <div class="pair-route">
         <div class="route-endpoint">
-          <span class="route-role">From</span>
-          <span class="route-place">${escapeHtml(route.sourceLabel)}</span>
+          <span class="route-role">From <span class="route-place">${escapeHtml(route.sourceLabel)}</span></span>
           <strong class="route-path">${escapeHtml(route.sourceValue)}</strong>
         </div>
         <span class="route-arrow" aria-label="${escapeHtml(directionText(pair.direction))}">${route.arrow}</span>
         <div class="route-endpoint">
-          <span class="route-role">To</span>
-          <span class="route-place">${escapeHtml(route.targetLabel)}</span>
+          <span class="route-role">To <span class="route-place">${escapeHtml(route.targetLabel)}</span></span>
           <strong class="route-path">${escapeHtml(route.targetValue)}</strong>
         </div>
       </div>
@@ -206,31 +241,29 @@ function render(): void {
         <button class="text-button settings-button" type="button" id="open-settings" aria-haspopup="dialog">Settings</button>
       </header>
 
-      <section class="intro" aria-labelledby="page-title">
-        <h1 id="page-title">Sync pairs</h1>
-        <button class="primary-button" type="button" id="open-pair-form">Add a folder pair</button>
-      </section>
-
-      <section class="account-line" aria-label="Account">
-        <div class="account-row">
-          ${state.user
-            ? `<p class="account-user">Signed in as <strong>${escapeHtml(state.user)}</strong>${state.offline ? ' (offline, will retry)' : ''}${state.backgroundStatus ? ` · ${escapeHtml(state.backgroundStatus)}` : ''}<span id="storage-summary">${escapeHtml(storageSummary())}</span></p><button class="secondary-button" type="button" id="unlock-settings" ${state.settingsAuthorized ? 'disabled' : ''}>${state.settingsAuthorized ? 'Settings unlocked' : 'Unlock settings'}</button><button class="text-button" type="button" id="sign-out">Sign out</button>`
-            : '<p class="account-user">Sign in to sync your folders.</p><button class="secondary-button" type="button" id="sign-in">Sign in</button>'}
-        </div>
+      <section class="account-strip" aria-label="Account">
+        <p class="account-user">${state.user
+          ? `Signed in as <strong>${escapeHtml(state.user)}</strong>${state.offline ? ' · offline, will retry' : ''}${state.backgroundStatus ? ` · ${escapeHtml(state.backgroundStatus)}` : ''}<span id="storage-summary">${escapeHtml(storageSummary())}</span>`
+          : 'Sign in to sync your folders.'}</p>
+        ${state.user
+          ? '<button class="text-button" type="button" id="sign-out">Sign out</button>'
+          : '<button class="secondary-button" type="button" id="sign-in">Sign in</button>'}
       </section>
 
       <section class="sync-progress" id="sync-progress" aria-live="polite" ${state.progress?.active || state.syncingPairId ? '' : 'hidden'}>
         ${progressCopy(state)}
       </section>
 
-      ${presetSection}
+      <h1 class="page-title">${hasPairs ? 'Folder pairs' : 'Set up your folders'}</h1>
+      ${!hasPairs && state.user ? '<p class="page-lead">Pick a folder below. File Sync copies it to this device and keeps it up to date.</p>' : ''}
 
-      <section class="pairs-section" aria-labelledby="pairs-heading">
-        <h2 id="pairs-heading">Folder pairs</h2>
-        ${state.pairs.length === 0
-          ? '<div class="empty-state"><h3>No folders paired yet</h3><button class="text-button" id="empty-add" type="button">Add the first pair</button></div>'
-          : `<ul class="pair-list">${pairRows}</ul>`}
-      </section>
+      ${hasPairs ? `
+        <section class="pairs-section">
+          <ul class="pair-list">${pairRows}</ul>
+        </section>
+      ` : ''}
+
+      ${suggestSection}
 
       <div class="toast" role="status" aria-live="polite" ${state.notice ? '' : 'hidden'}>${escapeHtml(state.notice)}</div>
       <div class="toast error-toast" role="alert" ${state.error ? '' : 'hidden'}>${escapeHtml(state.error)}</div>
@@ -272,6 +305,7 @@ function render(): void {
     <dialog id="settings-dialog" class="pair-dialog settings-dialog" aria-labelledby="settings-heading">
       <form method="dialog" id="settings-form">
         <div class="dialog-heading"><h2 id="settings-heading">Settings</h2><button class="close-button" value="cancel" aria-label="Close settings">×</button></div>
+        ${state.user && !state.settingsAuthorized ? '<button class="secondary-button unlock-button" type="button" id="unlock-settings">Unlock to change settings</button>' : ''}
         <label for="server-address">Server address</label>
         <input id="server-address" type="url" value="${escapeHtml(state.server)}" autocomplete="url" autocapitalize="none" spellcheck="false" />
         <fieldset>
@@ -322,12 +356,6 @@ function bindEvents(): void {
   });
   const openPairForm = async () => { if (await ensureSettingsAuthorized()) dialog.showModal(); };
   document.querySelector('#open-pair-form')?.addEventListener('click', () => void openPairForm());
-  document.querySelector('#empty-add')?.addEventListener('click', () => void openPairForm());
-  document.querySelectorAll<HTMLButtonElement>('[data-service]').forEach((button) => button.addEventListener('click', () => {
-    state.selectedService = button.dataset.service;
-    render();
-  }));
-  document.querySelector('#back-to-services')?.addEventListener('click', () => { state.selectedService = undefined; render(); });
   document.querySelectorAll<HTMLButtonElement>('[data-enable-preset]').forEach((button) => button.addEventListener('click', async () => {
     const preset = state.presets.find((item) => item.id === button.dataset.enablePreset);
     if (!invoke || !preset) return;
@@ -337,10 +365,11 @@ function bindEvents(): void {
       const folder = await obtainPresetFolder(preset);
       if (!folder) { button.disabled = false; return; }
       const pair: SyncPair = { id: crypto.randomUUID(), name: preset.title, local: folder, serverRoot: preset.id, serverFolder: preset.folder, serverPath: preset.serverPath, localSubpath: preset.localSubpath, direction: preset.direction, server: state.server, account: state.user, ...currentLimits() };
-      if (state.pairs.some((item) => item.server === pair.server && item.account === pair.account && (item.serverRoot ?? 'files') === pair.serverRoot && item.serverPath === pair.serverPath)) {
+      if (pairForPreset(preset)) {
         if (!state.pairs.some((item) => item.local.uri === folder.uri)) await invoke<void>('forget_local_folder', { folderUri: folder.uri });
         state.error = 'That server folder already has a sync pair.';
       } else {
+
         state.pairs = [...state.pairs, pair];
         await persistPairs();
         state.notice = `${preset.title} enabled. Copying files now.`;
@@ -394,7 +423,6 @@ function bindEvents(): void {
     }
     state.server = nextServer;
     state.presets = [];
-    state.selectedService = undefined;
     localStorage.setItem(SETTINGS_KEY, state.server);
     state.notice = state.server ? 'Server address saved on this device.' : 'Server address cleared.';
     state.error = '';
@@ -430,7 +458,6 @@ function bindEvents(): void {
       state.offline = false;
       state.settingsAuthorized = false;
       state.presets = [];
-      state.selectedService = undefined;
       state.estimates = {};
       state.estimatesDone = {};
       state.deviceStorage = undefined;
@@ -734,7 +761,6 @@ function showError(error: unknown): void {
     state.user = undefined;
     state.settingsAuthorized = false;
     state.presets = [];
-    state.selectedService = undefined;
     state.estimates = {};
     state.estimatesDone = {};
     state.deviceStorage = undefined;
