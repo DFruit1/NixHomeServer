@@ -147,10 +147,13 @@ about 11 tok/s warm at ~55% draft acceptance, up from the ~8 tok/s n-gram-only
 baseline. A sweep of the cheap, quality-neutral levers then selected the current
 profile:
 
-- `--cache-type-k/v q8_0` plus `--n-cpu-moe 38`: best decode and prefill,
-  because the smaller KV frees VRAM for four more expert layers. On an
-  8K-token prompt, prefill rose from 89 tok/s (`n-cpu-moe 40`) to 97.7 tok/s
-  (`n-cpu-moe 38`); short-prompt decode is about 12 tok/s.
+- `--cache-type-k/v q8_0` plus `--n-cpu-moe 38` and `--no-mmproj-offload`:
+  best decode and prefill, because the smaller KV frees VRAM for four more
+  expert layers. On an 8K-token prompt, prefill rose from 89 tok/s
+  (`n-cpu-moe 40`) to 97.7 tok/s (`n-cpu-moe 38`); short-prompt decode is about
+  12 tok/s. With 10 layers on the GPU there is no room for the 904 MB F16
+  vision projector, so it must stay on the CPU (`--no-mmproj-offload`); without
+  it llama.cpp aborts while loading the projector.
 - `--lazy-mode on` matched `n-cpu-moe 38` on prefill (97.5 vs 97.7) but the
   default is `auto`, so it was left alone rather than pinning a mode.
 - `--ubatch-size 4096`: fails to allocate compute buffers on this host. Stay at
@@ -180,6 +183,7 @@ repo.qwenFlashNext.cpuMoe = false;      # --n-cpu-moe supersedes --cpu-moe
 repo.qwenFlashNext.kvCacheType = "q8_0"; # frees VRAM for more expert layers
 repo.qwenFlashNext.extraArgs = [
   "--n-cpu-moe" "38"        # first 38 of 48 expert layers stay in system RAM
+  "--no-mmproj-offload"     # 10 GPU expert layers leave no VRAM for the projector
   "--load-mode" "none"      # bypass mmap for the PLE table (see below)
   "--no-host"
   "--no-op-offload"
@@ -219,6 +223,10 @@ Expectations with a single 24 GB Arc Pro B60 and ~87 GiB of weights:
   configuration that starts is stable. Measured on this host, moving 42 to 38
   with Q8_0 KV raised 8K-prompt prefill from 89 to 97.7 tok/s and warm
   short-prompt decode from roughly 11 to 12 tok/s.
+- At 10 GPU expert layers there is not enough VRAM left for the 904 MB F16
+  vision projector: llama.cpp aborts with `failed to allocate Vulkan0 buffer of
+  size 903984064` shortly after the weights load. `--no-mmproj-offload` keeps the
+  projector on the CPU, which fits; vision still works, just more slowly.
 - The UI model is stopped before Qwen starts so the card is free; do not run
   both models at once.
 - ReBAR must be enabled in firmware; without it llama.cpp falls back to slow

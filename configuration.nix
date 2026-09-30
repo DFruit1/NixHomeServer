@@ -49,6 +49,10 @@ in
           # Q8_0 KV cache frees enough VRAM for 10 layers on the GPU (was 6).
           # Measured: this lifts long-prompt prefill ~10% over n-cpu-moe 40.
           "--n-cpu-moe" "38"
+          # With 10 expert layers on the GPU there is no room for the 904 MB
+          # F16 vision projector, and llama.cpp aborts while loading it. Keep
+          # the projector on the CPU; vision still works, just slower.
+          "--no-mmproj-offload"
           # --load-mode none bypasses mmap for the ~51B per-layer-embedding
           # (PLE) table. On qwen4exp mmap over-reads this table and dominates
           # real-text prefill (TTFT), so keep it off. The Arc loader flags also
