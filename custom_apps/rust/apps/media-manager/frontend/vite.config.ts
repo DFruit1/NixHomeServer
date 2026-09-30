@@ -3,7 +3,13 @@ import { defineConfig } from "vite";
 
 export default defineConfig({
   appType: "spa",
-  plugins: [qwikVite({ csr: true })],
+  // Media Manager must build as a single bundle. Qwik's default per-symbol
+  // entry strategy emits separate chunks whose module initialization order
+  // trips a circular dependency between the root and LibraryPane chunks
+  // ("Cannot access 'f' before initialization"), leaving the app blank. The
+  // single-entry strategy orders the modules correctly. Re-test the rendered
+  // app before removing this if the import graph is refactored.
+  plugins: [qwikVite({ csr: true, entryStrategy: { type: "single" } })],
   build: {
     manifest: true,
     outDir: "dist",
