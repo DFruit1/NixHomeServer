@@ -413,12 +413,14 @@ command arguments, or shell history.
 
 The server ships `nixhomeserver-shutdown-guard`, a guarded, non-sudo shutdown
 helper for the desktop. It schedules a shutdown after a timeout (default 60
-minutes). During the final five minutes it checks for critical work every 30
-seconds; activity seen in that window triggers a grace period (default 60
-minutes). During grace, shutdown waits for at least five minutes after the
-original deadline and five quiet minutes after the last activity. The grace
-deadline is a hard backstop. It is covered by the host's existing NOPASSWD
-admin contract, so no sudo password is prompted.
+minutes) and tracks critical work every 30 seconds across the whole run-up to
+the deadline. Work that is still active in the final five minutes postpones the
+shutdown into a grace period (default 60 minutes), and shutdown happens once
+work has been quiet for five minutes. While work is still active when a grace
+window ends, the watcher extends the shutdown by a whole 10-minute block instead
+of cutting the work short, up to a total grace cap of `SHUTDOWN_GUARD_MAX_GRACE_MIN`
+(minutes, default 360). It is covered by the host's existing NOPASSWD admin
+contract, so no sudo password is prompted.
 
 Critical tasks are the bash arrays `CRITICAL_UNITS`, `CRITICAL_PROCESSES`,
 `CRITICAL_PROCESS_PATTERNS`, and `CRITICAL_COMMANDS` in
@@ -436,13 +438,23 @@ Server commands (run over SSH as the admin user):
 
 ```bash
 sudo nixhomeserver-shutdown-guard start --timeout 60 --grace 60
+sudo nixhomeserver-shutdown-guard extend --minutes 10 --reason "running tests"
 sudo nixhomeserver-shutdown-guard status
 sudo nixhomeserver-shutdown-guard cancel
 sudo nixhomeserver-shutdown-guard check
 ```
 
-`status` prints `state=`, `message=`, and `updated=` for the desktop poller.
-States are `scheduled`, `waiting`, `shutting-down`, `cancelled`, and `unknown`.
+`extend` pushes a pending shutdown later by whole blocks of minutes (default 10),
+re-arms a full grace window after it, and updates the running watcher without a
+restart. Use it to protect work the watcher cannot see, such as an agent-launched
+command that is not on the critical list. The `nixhomeserver-shutdown-guard`
+skill teaches agents to extend in ~10-minute blocks while long builds or tests
+are running.
+
+`status` prints `state=`, `message=`, and `updated=` for the desktop poller,
+plus `deadline=` and `grace_deadline=` (epoch seconds) when a shutdown is
+pending. States are `scheduled`, `waiting`, `extended`, `shutting-down`,
+`cancelled`, and `unknown`.
 
 From the desktop session, the orchestrator requests the server shutdown, polls
 until the server is down, then opens a visible terminal that schedules and

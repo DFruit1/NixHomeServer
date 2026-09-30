@@ -45,9 +45,11 @@ in
       apksigner
       borg
       cargo
+      cargo-nextest
       cc1
       cc1plus
       clang
+      esbuild
       ffmpeg
       gcc
       make
@@ -65,20 +67,29 @@ in
       restic
       rsync
       rustc
+      tsc
       vitest
+      wasm-pack
       yt-dlp
       zfs
       zipalign
+      zpool
     )
     # Match active command lines for tools launched through bash, Java, or Node.
     # Avoid matching idle Gradle/Kotlin daemons and always-on app processes.
     CRITICAL_PROCESS_PATTERNS=(
       '(^|[[:space:]/])validate-repo[.]sh([[:space:]]|$)'
       '(^|[[:space:]/])run-script-tests[.]sh([[:space:]]|$)'
+      '(^|[[:space:]/])deploy[.]sh([[:space:]]|$)'
       '(^|[[:space:]/])build-android[.]sh([[:space:]]|$)'
       'org[.]gradle[.]wrapper[.]GradleWrapperMain'
       '(^|[[:space:]/])(pnpm|npm|npx)([[:space:]]|$)'
-      '(^|[[:space:]/])(vitest|playwright|jest|bats|ctest)([[:space:]]|$)'
+      '(^|[[:space:]/])nix[[:space:]]+(build|develop|shell|flake|run|copy|store|why-depends)([[:space:]]|$)'
+      '(^|[[:space:]/])cargo[[:space:]]+(build|test|check|clippy|nextest|run|install)([[:space:]]|$)'
+      '(^|[[:space:]/])nixos-rebuild[[:space:]]'
+      '(^|[[:space:]/])(vite|esbuild|tsc|rollup)[[:space:]]+(build|--build)([[:space:]]|$)'
+      '(^|[[:space:]/])git[[:space:]]+(gc|repack|fetch|clone|fsck)([[:space:]]|$)'
+      '(^|[[:space:]/])(vitest|playwright|jest|pytest|ctest|bats)([[:space:]]|$)'
     )
     CRITICAL_COMMANDS=(
       "zpool status 2>/dev/null | grep -Eq 'scrub in progress|resilver in progress'"

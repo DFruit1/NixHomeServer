@@ -1,0 +1,4 @@
+interface:
+  display_name: "NixHomeServer Shutdown Guard"
+  short_description: "Extend the guarded shutdown timer to protect long work"
+  default_prompt: "Use $nixhomeserver-shutdown-guard to check the shutdown timer and extend it in ~10-minute blocks while long builds, tests, or other work are running."

@@ -124,8 +124,9 @@ server_reachable() {
 
 desktop_work_active() {
   local process pattern
-  for process in aapt2 apksigner cargo cc1 cc1plus clang gcc make ninja nix nix-build \
-    nix-instantiate nix-store nixos-rebuild playwright pnpm pytest rustc vitest zipalign; do
+  for process in aapt2 apksigner cargo cargo-nextest cc1 cc1plus clang esbuild gcc make ninja \
+    nix nix-build nix-instantiate nix-store nixos-rebuild playwright pnpm pytest rustc tsc \
+    vitest wasm-pack zipalign zpool; do
     if pgrep -x "$process" >/dev/null 2>&1; then
       return 0
     fi
@@ -133,10 +134,16 @@ desktop_work_active() {
   for pattern in \
     '(^|[[:space:]/])validate-repo[.]sh([[:space:]]|$)' \
     '(^|[[:space:]/])run-script-tests[.]sh([[:space:]]|$)' \
+    '(^|[[:space:]/])deploy[.]sh([[:space:]]|$)' \
     '(^|[[:space:]/])build-android[.]sh([[:space:]]|$)' \
     'org[.]gradle[.]wrapper[.]GradleWrapperMain' \
     '(^|[[:space:]/])(pnpm|npm|npx)([[:space:]]|$)' \
-    '(^|[[:space:]/])(vitest|playwright|jest|bats|ctest)([[:space:]]|$)'; do
+    '(^|[[:space:]/])nix[[:space:]]+(build|develop|shell|flake|run|copy|store|why-depends)([[:space:]]|$)' \
+    '(^|[[:space:]/])cargo[[:space:]]+(build|test|check|clippy|nextest|run|install)([[:space:]]|$)' \
+    '(^|[[:space:]/])nixos-rebuild[[:space:]]' \
+    '(^|[[:space:]/])(vite|esbuild|tsc|rollup)[[:space:]]+(build|--build)([[:space:]]|$)' \
+    '(^|[[:space:]/])git[[:space:]]+(gc|repack|fetch|clone|fsck)([[:space:]]|$)' \
+    '(^|[[:space:]/])(vitest|playwright|jest|pytest|ctest|bats)([[:space:]]|$)'; do
     if pgrep -f -- "$pattern" >/dev/null 2>&1; then
       return 0
     fi

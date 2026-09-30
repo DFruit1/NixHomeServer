@@ -148,11 +148,12 @@ busy_pattern="$(run_guard check)"
 expect_equal "$busy_pattern" "busy process-pattern:gradle.*assembleRelease" "Guard should report a matching APK build."
 rm -f "$flags/pgrep_pattern_busy"
 
-# 5. Recent desktop activity reaches the server guard and then expires.
+# 5. Recent desktop activity reaches the server guard and then expires after one
+# activity window (five minutes).
 printf '1000\n' >"$flags/now"
 run_guard mark-activity >/dev/null
 expect_equal "$(run_guard check)" "busy desktop:active-work" "Guard should see desktop activity."
-printf '1061\n' >"$flags/now"
+printf '1361\n' >"$flags/now"
 expect_equal "$(run_guard check)" "idle" "A stale desktop marker should not block shutdown."
 rm -f "$flags/now"
 
@@ -189,15 +190,21 @@ run_guard start --timeout 7 --grace 3 --poll 1 >/dev/null
 require_fixed "$flags/shutdown.log" "-h +7" "Guard should schedule a shutdown at the timeout."
 require_fixed "$flags/systemd-run.log" "watch --deadline" "Guard should launch the watcher."
 require_fixed "$state_dir/status" "state=scheduled" "Guard should record the scheduled state."
+[[ -s "$state_dir/deadline" ]] || {
+  echo "❌ Guard should persist the shutdown deadline." >&2
+  exit 1
+}
 
 # 9. Watcher with no critical task shuts down immediately at the deadline.
 : >"$flags/shutdown.log"
+rm -f "$state_dir/deadline" "$state_dir/grace-deadline" "$state_dir/grace-seconds"
 run_guard watch --deadline 1 --grace-deadline 1 --poll 1
 require_fixed "$flags/shutdown.log" "-h now" "Watcher should shut down when no critical task is active."
 require_fixed "$state_dir/status" "state=shutting-down" "Watcher should record the shutting-down state."
 
 # 10. Work seen briefly in the final five minutes triggers grace and quiet time.
 : >"$flags/shutdown.log"
+rm -f "$state_dir/deadline" "$state_dir/grace-deadline"
 printf '1000\n' >"$flags/now"
 printf '1060\n' >"$flags/active_at"
 run_guard watch --deadline 1120 --grace-deadline 1720 --poll 30
@@ -205,13 +212,45 @@ rm -f "$flags/now" "$flags/active_at"
 require_fixed "$flags/shutdown.log" "-h +11" "Activity before the deadline should schedule grace early."
 require_fixed "$state_dir/status" "quiet for five minutes" "A momentary lull should not end grace immediately."
 
-# 11. Watcher with an active task past the grace window stops at the backstop.
+# 11. An active task at the end of a grace window is extended by a whole block
+# instead of being cut short, then stops at the total grace cap.
 : >"$flags/shutdown.log"
-touch "$flags/systemctl_active"
-run_guard watch --deadline 1 --grace-deadline 1 --poll 1
-rm -f "$flags/systemctl_active"
-require_fixed "$flags/shutdown.log" "-h now" "Watcher should still shut down after the grace window."
-require_fixed "$state_dir/status" "grace expired" "Watcher should record that the grace window expired."
+rm -f "$state_dir/deadline" "$state_dir/grace-deadline"
+printf '1000\n' >"$flags/now"
+touch "$flags/pgrep_busy"
+SHUTDOWN_GUARD_MAX_GRACE_MIN=10
+export SHUTDOWN_GUARD_MAX_GRACE_MIN
+run_guard watch --deadline 1000 --grace-deadline 1000 --poll 30
+unset SHUTDOWN_GUARD_MAX_GRACE_MIN
+rm -f "$flags/now" "$flags/pgrep_busy"
+require_fixed "$flags/shutdown.log" "-h +10" "An active task should extend the shutdown by a 10-minute block."
+require_fixed "$state_dir/status" "grace expired" "Watcher should stop at the total grace cap."
+
+# 11b. The extension is persisted so a later extend call sees the new deadline.
+expected_grace=$(( 1000 + 10 * 60 ))
+expect_equal "$(cat "$state_dir/grace-deadline")" "$expected_grace" \
+  "Automatic extension should persist the new grace deadline."
+
+# 12. extend pushes a pending shutdown later in a block and re-arms grace.
+: >"$flags/shutdown.log"
+rm -f "$state_dir/deadline" "$state_dir/grace-deadline"
+printf '1000\n' >"$state_dir/deadline"
+printf '1000\n' >"$state_dir/grace-deadline"
+printf '3600\n' >"$state_dir/grace-seconds"
+printf '1000\n' >"$flags/now"
+run_guard extend --minutes 10 --reason "running validate-repo" >/dev/null
+rm -f "$flags/now"
+require_fixed "$flags/shutdown.log" "-h +10" "extend should push the shutdown out by a block."
+require_fixed "$state_dir/status" "extended" "extend should record the extended state."
+expect_equal "$(cat "$state_dir/deadline")" "1600" "extend should persist the pushed deadline."
+expect_equal "$(cat "$state_dir/grace-deadline")" "5200" "extend should re-arm the full grace window."
+
+# 13. extend refuses when no guarded shutdown is pending.
+rm -f "$state_dir/deadline" "$state_dir/grace-deadline" "$state_dir/grace-seconds"
+if run_guard extend --minutes 10 >/dev/null 2>&1; then
+  echo "❌ extend should fail when no shutdown is scheduled." >&2
+  exit 1
+fi
 
 # 12. The desktop script reports local work during the final five minutes.
 : >"$flags/ssh.log"
