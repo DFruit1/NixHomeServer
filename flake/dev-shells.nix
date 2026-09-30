@@ -39,12 +39,12 @@
   # does not pull the compiler into the closure.
   eval = pkgs.mkShell {
     name = "eval-dev-shell";
-    packages = (with pkgs; [
+    packages = with pkgs; [
       jq
       nix-eval-jobs
       nix-output-monitor
       nix-tree
       ripgrep
-    ]);
+    ];
   };
 }
