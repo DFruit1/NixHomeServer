@@ -45,9 +45,10 @@ in
         # Arc Pro B60 (see the n-cpu-moe change below).
         kvCacheType = "q8_0";
         extraArgs = [
-          # 40 keeps only the first 40 of 48 expert layers in system RAM; the
-          # Q8_0 KV cache frees enough VRAM for 8 layers on the GPU (was 6).
-          "--n-cpu-moe" "40"
+          # 38 keeps only the first 38 of 48 expert layers in system RAM; the
+          # Q8_0 KV cache frees enough VRAM for 10 layers on the GPU (was 6).
+          # Measured: this lifts long-prompt prefill ~10% over n-cpu-moe 40.
+          "--n-cpu-moe" "38"
           # --load-mode none bypasses mmap for the ~51B per-layer-embedding
           # (PLE) table. On qwen4exp mmap over-reads this table and dominates
           # real-text prefill (TTFT), so keep it off. The Arc loader flags also

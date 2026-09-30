@@ -147,9 +147,14 @@ about 11 tok/s warm at ~55% draft acceptance, up from the ~8 tok/s n-gram-only
 baseline. A sweep of the cheap, quality-neutral levers then selected the current
 profile:
 
-- `--cache-type-k/v q8_0` plus `--n-cpu-moe 40`: best decode (about 12 tok/s
-  short-prompt, 13 tok/s on a longer reasoning generation), because the smaller
-  KV frees VRAM for two more expert layers.
+- `--cache-type-k/v q8_0` plus `--n-cpu-moe 38`: best decode and prefill,
+  because the smaller KV frees VRAM for four more expert layers. On an
+  8K-token prompt, prefill rose from 89 tok/s (`n-cpu-moe 40`) to 97.7 tok/s
+  (`n-cpu-moe 38`); short-prompt decode is about 12 tok/s.
+- `--lazy-mode on` matched `n-cpu-moe 38` on prefill (97.5 vs 97.7) but the
+  default is `auto`, so it was left alone rather than pinning a mode.
+- `--ubatch-size 4096`: fails to allocate compute buffers on this host. Stay at
+  2048.
 - `--threads-batch 16` (SMT oversubscription): clearly worse, decode fell to
   ~4-9 tok/s. Threads stay at the 8 physical cores.
 - `--lazy-mode off` and `ngram-mod` chaining: no reliable gain, so left at the
@@ -174,7 +179,7 @@ repo.qwenFlashNext.gpuLayers = "all";   # offload every non-expert tensor
 repo.qwenFlashNext.cpuMoe = false;      # --n-cpu-moe supersedes --cpu-moe
 repo.qwenFlashNext.kvCacheType = "q8_0"; # frees VRAM for more expert layers
 repo.qwenFlashNext.extraArgs = [
-  "--n-cpu-moe" "40"        # first 40 of 48 expert layers stay in system RAM
+  "--n-cpu-moe" "38"        # first 38 of 48 expert layers stay in system RAM
   "--load-mode" "none"      # bypass mmap for the PLE table (see below)
   "--no-host"
   "--no-op-offload"
@@ -203,16 +208,17 @@ systemd unit gains access to the `render` and `video` groups and `/dev/dri`.
 
 Expectations with a single 24 GB Arc Pro B60 and ~87 GiB of weights:
 
-- `n-gpu-layers = all` plus `n-cpu-moe = 40` sends every dense and attention
-  tensor to the GPU and keeps the last 8 of 48 layers' MoE experts in VRAM
-  while the first 40 layers' experts stay in system RAM. Offloading the whole
+- `n-gpu-layers = all` plus `n-cpu-moe = 38` sends every dense and attention
+  tensor to the GPU and keeps the last 10 of 48 layers' MoE experts in VRAM
+  while the first 38 layers' experts stay in system RAM. Offloading the whole
   expert pool is not possible.
-- The Q8_0 KV cache is what makes `n-cpu-moe = 40` fit. With an F16 KV cache
-  the extra expert layers overflow the 24 GiB card; the smaller KV frees enough
-  VRAM for two more layers. KV is allocated at load, so a configuration that
-  starts is stable. Measured on this host, moving 42 to 40 with Q8_0 KV raised
-  warm decode from roughly 11 to 12 tok/s on short prompts and about 8 to 13 on
-  longer reasoning generations.
+- The Q8_0 KV cache is what makes `n-cpu-moe = 38` fit. With an F16 KV cache
+  the extra expert layers overflow the 24 GiB card (the older F16 profile could
+  only reach 42, and `38` was recorded as overflow); the smaller KV frees enough
+  VRAM for four more layers. KV and compute buffers are allocated at load, so a
+  configuration that starts is stable. Measured on this host, moving 42 to 38
+  with Q8_0 KV raised 8K-prompt prefill from 89 to 97.7 tok/s and warm
+  short-prompt decode from roughly 11 to 12 tok/s.
 - The UI model is stopped before Qwen starts so the card is free; do not run
   both models at once.
 - ReBAR must be enabled in firmware; without it llama.cpp falls back to slow
