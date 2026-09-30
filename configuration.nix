@@ -45,14 +45,14 @@ in
         # Arc Pro B60 (see the n-cpu-moe change below).
         kvCacheType = "q8_0";
         extraArgs = [
-          # 38 keeps only the first 38 of 48 expert layers in system RAM; the
-          # Q8_0 KV cache frees enough VRAM for 10 layers on the GPU (was 6).
-          # Measured: this lifts long-prompt prefill ~10% over n-cpu-moe 40.
-          "--n-cpu-moe" "38"
-          # With 10 expert layers on the GPU there is no room for the 904 MB
-          # F16 vision projector, and llama.cpp aborts while loading it. Keep
-          # the projector on the CPU; vision still works, just slower.
-          "--no-mmproj-offload"
+          # 40 keeps the first 40 of 48 expert layers in system RAM; the Q8_0
+          # KV cache frees enough VRAM for 8 layers on the GPU. Going lower
+          # (n-cpu-moe 38/39) leaves no headroom for the prefill compute
+          # buffers and the projector, and OOMs during prefill.
+          "--n-cpu-moe" "40"
+          # Pin lazy tensor loading on. It matched the prefill of n-cpu-moe 38
+          # on this host with no extra VRAM, so it is the safe prefill lever.
+          "--lazy-mode" "on"
           # --load-mode none bypasses mmap for the ~51B per-layer-embedding
           # (PLE) table. On qwen4exp mmap over-reads this table and dominates
           # real-text prefill (TTFT), so keep it off. The Arc loader flags also
