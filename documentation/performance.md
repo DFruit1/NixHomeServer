@@ -46,15 +46,17 @@ Expression, output mode, repository/flake references and the exported environmen
 identify a cached result. Tests that mutate a fixture at the same path must use a
 fresh cache directory. The runner evaluates the default host once.
 
-Protected Caddy hosts compress text responses — JavaScript, CSS, JSON files,
-HTML, SVG, XML, wasm, source maps and API responses (`/api`, `/api/*`) — with
-zstd/gzip. Caddy's content-type and minimum-size checks skip binary and
-already-compressed bodies, so audio/video streams keep byte-range semantics.
-Hosts that terminate their own virtual host (Immich, Jellyfin, Paperless,
-Audiobookshelf, Kavita, Vaultwarden, Forgejo, OpenCloud, IPFS, F-Droid, the
-Kanidm UI, File Sync, the YouTube Downloader API host and the Files share host)
-also enable `encode zstd gzip` locally so they are not left uncompressed.
-Authentication paths retain their existing behavior.
+Protected Caddy hosts compress text responses with `encode zstd gzip`, relying
+on Caddy's default response matcher: it selects bodies by Content-Type (HTML,
+JavaScript, CSS, JSON, SVG, XML, wasm, source maps) with a 512-byte minimum,
+skips bodies marked `no-transform`, and never touches audio/video, so
+audio/video streams keep byte-range semantics. Encoding is deliberately not
+gated on a request-path matcher, which would leave extensionless document
+routes (`/`, `/services/...`) uncompressed. Hosts that terminate their own
+virtual host (Immich, Jellyfin, Paperless, Audiobookshelf, Kavita, Vaultwarden,
+Forgejo, OpenCloud, IPFS, F-Droid, the Kanidm UI, File Sync, the YouTube
+Downloader API host and the Files share host) use the same plain
+`encode zstd gzip`. Authentication paths retain their existing behavior.
 
 ## Frontend delivery
 

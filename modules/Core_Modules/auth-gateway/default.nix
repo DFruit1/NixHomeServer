@@ -268,12 +268,15 @@ let
   '';
   mkProtectedProxyConfig = name: app: ''
     ${commonAccessLog}
-    # Compress text responses (HTML, JS, CSS, JSON, SVG, XML, wasm) across
-    # protected hosts. Caddy's own content-type and minimum-size checks skip
-    # already-compressed and binary bodies, so media streams and downloads keep
-    # their existing path. Authentication paths stay unaffected.
-    @compressible path *.js *.mjs *.css *.json *.html *.svg *.xml *.wasm *.map /api/* /api
-    encode @compressible zstd gzip
+    # Compress text responses across protected hosts. A request-path matcher
+    # must not be used here: it only ever sees the URL path, so extensionless
+    # document routes ("/", "/getting-started", ...) would skip encoding even
+    # though their bodies are HTML. Rely on Caddy's default response matcher
+    # instead, which selects by Content-Type (HTML, JS, CSS, JSON, SVG, XML,
+    # wasm, source maps) with a 512-byte minimum, skips bodies marked
+    # no-transform, and never touches audio/video, so media streams keep their
+    # byte-range semantics. Authentication paths stay unaffected.
+    encode zstd gzip
     route {
       ${stripSpoofableHeaders}
       @logout_${matcherName name} {
