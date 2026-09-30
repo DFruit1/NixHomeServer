@@ -26,6 +26,11 @@ use uuid::Uuid;
 
 const SERVICE: &str = "filesync-api";
 
+/// Reserved root id that stands for the personal folder itself rather than one
+/// of its library folders. It lets a client start browsing at the top of a
+/// user's own libraries instead of inside a single one.
+const HOME_ROOT_ID: &str = "home";
+
 #[derive(Clone)]
 struct Settings {
     listen: String,
@@ -491,6 +496,87 @@ fn root_path(state: &AppState, username: &str, root_id: Option<&str>) -> Option<
         .map(|root| state.settings.users_root.join(username).join(&root.folder))
 }
 
+/// The library folders a personal folder actually exposes to File Sync.
+///
+/// The personal folder also holds the `_Shared` and `_Backups` bindfs mounts.
+/// Those are infrastructure, not personal media, and the per-root ACL grant
+/// deliberately does not include them, so the home listing is synthesised from
+/// the configured roots instead of read off disk. That keeps the mount points
+/// unreachable without widening the `filesync-api` grant to `r-x` on every
+/// personal folder.
+fn home_folders(state: &AppState, username: &str) -> Vec<String> {
+    let mut folders: Vec<String> = state
+        .settings
+        .roots
+        .iter()
+        .filter(|root| {
+            let folder = root.folder.as_str();
+            !folder.is_empty()
+                && state
+                    .settings
+                    .users_root
+                    .join(username)
+                    .join(folder)
+                    .is_dir()
+        })
+        .map(|root| root.folder.clone())
+        .collect();
+    folders.sort_by_key(|folder| folder.to_lowercase());
+    folders.dedup();
+    folders
+}
+
+fn home_entry(name: &str) -> Entry {
+    Entry {
+        name: name.to_owned(),
+        path: name.to_owned(),
+        kind: "directory",
+        size: 0,
+        modified_unix_ms: 0,
+        sha256: String::new(),
+    }
+}
+
+/// A path under the home root may only descend into a configured library
+/// folder. Without this the reserved root would be a way to reach `_Shared`
+/// and `_Backups` by name.
+fn split_home_path(
+    roots: &[SyncRoot],
+    relative: &Path,
+) -> Result<(PathBuf, PathBuf), &'static str> {
+    let mut components = relative.components();
+    // `safe_relative_path` already rejected every other component kind, so the
+    // only way to get here without a first component is the empty path.
+    let Some(Component::Normal(first)) = components.next() else {
+        return Err("Choose a library folder inside your personal folder.");
+    };
+    if !roots.iter().any(|root| Path::new(&root.folder) == first) {
+        return Err("Only your own library folders can be browsed.");
+    }
+    Ok((PathBuf::from(first), components.collect()))
+}
+
+/// Resolve a request into the base directory to open and the path inside it.
+///
+/// The home root is anchored at the personal folder but may only descend into a
+/// configured library folder, so `home` + `_Videos/Albums` reads
+/// `_Videos/Albums` while `home` + `_Shared` is refused. The personal folder
+/// itself is never a valid target: the ACL grant gives `filesync-api` traverse
+/// on it, not read.
+fn resolve_request_path(
+    state: &AppState,
+    username: &str,
+    root_id: Option<&str>,
+    relative: &Path,
+) -> Result<(PathBuf, PathBuf), &'static str> {
+    if root_id == Some(HOME_ROOT_ID) {
+        let (folder, rest) = split_home_path(&state.settings.roots, relative)?;
+        return Ok((state.settings.users_root.join(username).join(folder), rest));
+    }
+    let base = root_path(state, username, root_id).ok_or("This server folder is unavailable.")?;
+    Ok((base, relative.to_path_buf()))
+}
+
 async fn tree(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -504,13 +590,18 @@ async fn tree(
         Ok(value) => value,
         Err(message) => return api_error(StatusCode::BAD_REQUEST, "INVALID_PATH", message),
     };
-    let Some(base) = root_path(&state, &username, query.root.as_deref()) else {
-        return api_error(
-            StatusCode::BAD_REQUEST,
-            "INVALID_ROOT",
-            "This server folder is unavailable.",
-        );
-    };
+    if query.root.as_deref() == Some(HOME_ROOT_ID) && relative.as_os_str().is_empty() {
+        let data: Vec<Entry> = home_folders(&state, &username)
+            .iter()
+            .map(|folder| home_entry(folder))
+            .collect();
+        return Json(json!({ "data": data })).into_response();
+    }
+    let (base, relative) =
+        match resolve_request_path(&state, &username, query.root.as_deref(), &relative) {
+            Ok(value) => value,
+            Err(message) => return api_error(StatusCode::BAD_REQUEST, "INVALID_PATH", message),
+        };
     let include_hashes = query.hashes.unwrap_or(false);
     let result =
         tokio::task::spawn_blocking(move || list_directory(base, relative, include_hashes)).await;
@@ -606,13 +697,11 @@ async fn download(
         Ok(value) => value,
         Err(message) => return api_error(StatusCode::BAD_REQUEST, "INVALID_PATH", message),
     };
-    let Some(base) = root_path(&state, &username, query.root.as_deref()) else {
-        return api_error(
-            StatusCode::BAD_REQUEST,
-            "INVALID_ROOT",
-            "This server folder is unavailable.",
-        );
-    };
+    let (base, relative) =
+        match resolve_request_path(&state, &username, query.root.as_deref(), &relative) {
+            Ok(value) => value,
+            Err(message) => return api_error(StatusCode::BAD_REQUEST, "INVALID_PATH", message),
+        };
     let file = tokio::task::spawn_blocking(move || -> io::Result<std::fs::File> {
         let root = Dir::open_ambient_dir(base, ambient_authority())?;
         root.open(relative).map(cap_std::fs::File::into_std)
@@ -669,13 +758,11 @@ async fn upload(
         Ok(value) => value,
         Err(message) => return api_error(StatusCode::BAD_REQUEST, "INVALID_PATH", message),
     };
-    let Some(base) = root_path(&state, &username, query.root.as_deref()) else {
-        return api_error(
-            StatusCode::BAD_REQUEST,
-            "INVALID_ROOT",
-            "This server folder is unavailable.",
-        );
-    };
+    let (base, relative) =
+        match resolve_request_path(&state, &username, query.root.as_deref(), &relative) {
+            Ok(value) => value,
+            Err(message) => return api_error(StatusCode::BAD_REQUEST, "INVALID_PATH", message),
+        };
     let parent = relative
         .parent()
         .unwrap_or_else(|| Path::new(""))
@@ -816,9 +903,69 @@ fn safe_file_path(value: Option<&str>) -> Result<PathBuf, &'static str> {
 #[cfg(test)]
 mod tests {
     use super::{
-        safe_file_path, safe_relative_path, valid_username, AccessTokenClaims, UserInfoClaims,
+        safe_file_path, safe_relative_path, split_home_path, valid_username, AccessTokenClaims,
+        SyncRoot, UserInfoClaims,
     };
     use std::path::Path;
+
+    fn roots() -> Vec<SyncRoot> {
+        [
+            ("files", "_Files"),
+            ("videos", "_Videos"),
+            ("audiobooks", "_Audiobooks"),
+            ("books", "_Books"),
+        ]
+        .into_iter()
+        .map(|(id, folder)| SyncRoot {
+            id: id.to_owned(),
+            folder: folder.to_owned(),
+            service: "test".to_owned(),
+            service_title: "Test".to_owned(),
+            title: "Test".to_owned(),
+            description: "Test".to_owned(),
+            server_path: String::new(),
+            local_subpath: String::new(),
+            direction: "server-to-phone".to_owned(),
+        })
+        .collect()
+    }
+
+    #[test]
+    fn home_paths_descend_into_a_configured_library_folder() {
+        let roots = roots();
+        assert_eq!(
+            split_home_path(&roots, Path::new("_Videos/Albums/2024")).unwrap(),
+            (
+                Path::new("_Videos").to_path_buf(),
+                Path::new("Albums/2024").to_path_buf()
+            )
+        );
+        assert_eq!(
+            split_home_path(&roots, Path::new("_Files")).unwrap(),
+            (
+                Path::new("_Files").to_path_buf(),
+                Path::new("").to_path_buf()
+            )
+        );
+    }
+
+    #[test]
+    fn home_paths_refuse_the_shared_and_backup_mounts() {
+        let roots = roots();
+        // The personal folder holds `_Shared` and `_Backups` bindfs mounts that
+        // the filesync-api ACL grant deliberately excludes. Reaching them by
+        // name through the home root would defeat that scoping.
+        assert!(split_home_path(&roots, Path::new("_Shared")).is_err());
+        assert!(split_home_path(&roots, Path::new("_Backups/Kopia")).is_err());
+        assert!(split_home_path(&roots, Path::new("secrets")).is_err());
+    }
+
+    #[test]
+    fn the_personal_folder_itself_is_not_a_target() {
+        // Traversal is already rejected upstream, and an empty home path means
+        // "list the libraries", not "sync the personal folder".
+        assert!(split_home_path(&roots(), Path::new("")).is_err());
+    }
 
     #[test]
     fn usernames_are_safe_to_map_to_user_directories() {

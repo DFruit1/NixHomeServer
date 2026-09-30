@@ -879,6 +879,9 @@ internal object SyncEngine {
         "direction" to plan.direction,
         "freeBytes" to stats.freeBytes,
         "totalBytes" to stats.totalBytes,
+        // totalBytes above is device storage; the folder's own size is summed
+        // from the recursive walk that already fetched every file.
+        "remoteTotalBytes" to remoteEntries.values.sumOf { it.size },
       )
     } catch (error: InterruptedException) {
       Thread.currentThread().interrupt()

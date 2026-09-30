@@ -54,12 +54,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .brand { display: inline-flex; align-items: center; gap: .65rem; color: var(--text-primary); text-decoration: none; font-weight: 700; }
 .brand-mark { display: grid; width: 2rem; height: 2rem; place-items: center; border-radius: .55rem; background: var(--action); color: var(--surface-page); font-size: .75rem; letter-spacing: .04em; }
 .settings-button { text-align: right; }
-.account-strip { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .2rem 1rem; padding: .55rem 0; }
 .account-user { margin: 0; color: var(--text-secondary); font-size: .9rem; }
 .account-user strong { color: var(--text-primary); }
 .page-title { margin: 1.5rem 0 0; font-size: clamp(1.7rem, 4.5vw, 2.2rem); line-height: 1.15; letter-spacing: -.03em; }
 .page-lead { max-width: 40rem; margin: .5rem 0 0; color: var(--text-secondary); }
-.visually-hidden { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .primary-button, .secondary-button { min-height: 2.75rem; border: 1px solid transparent; border-radius: .55rem; padding: .62rem 1rem; font-weight: 700; }
 .primary-button { background: var(--action); color: var(--surface-page); }
 .primary-button:hover { background: var(--action-hover); }
@@ -68,7 +66,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .pair-dialog form > label { color: var(--text-secondary); font-size: .9rem; font-weight: 650; }
 input, textarea { min-width: 0; border: 1px solid var(--border-strong); border-radius: .5rem; background: var(--surface); color: var(--text-primary); }
 input { min-height: 2.75rem; padding: .55rem .75rem; }
-.unlock-button { width: 100%; margin-bottom: .3rem; }
 .sync-progress { padding: 1rem 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
 .sync-progress[hidden] { display: none; }
 .sync-progress p { margin: 0; }
@@ -81,6 +78,9 @@ input { min-height: 2.75rem; padding: .55rem .75rem; }
 .suggest-copy { grid-area: 1 / 2; min-width: 0; }
 .suggest-row button { grid-area: 1 / 3; align-self: center; }
 .suggest-row .route-line { grid-area: 2 / 2; }
+.suggest-row.is-set-up .route-line { grid-area: 3 / 2; }
+.suggest-size { grid-area: 2 / 3; margin: 0; align-self: center; color: var(--text-secondary); font-size: .88rem; text-align: right; }
+.suggest-row.is-set-up .service-logo, .suggest-row.is-set-up .suggest-copy { opacity: .72; }
 .service-logo { display: grid; place-items: center; }
 .service-symbol { color: var(--action); font-size: 1.1rem; font-weight: 800; letter-spacing: -.04em; }
 .service-logo img { max-width: 100%; max-height: 100%; object-fit: contain; }
@@ -110,6 +110,8 @@ h2 { margin: 0 0 .65rem; font-size: 1.22rem; letter-spacing: -.015em; }
 .space-warn { color: var(--text-primary); font-weight: 650; }
 .space-blocked { color: var(--danger); font-weight: 700; }
 .settings-hint { margin: 0; color: var(--text-secondary); font-size: .85rem; }
+.settings-account { display: grid; gap: .55rem; margin: 0 0 1.1rem; padding-bottom: 1.1rem; border-bottom: 1px solid var(--border); }
+.settings-account-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
 .toast { position: fixed; right: 1rem; bottom: 1rem; max-width: calc(100vw - 2rem); border: 1px solid var(--border-strong); border-radius: .5rem; padding: .7rem 1rem; background: var(--surface); color: var(--text-primary); box-shadow: 0 .3rem 1rem #0002; }
 .toast[hidden] { display: none; }
 .error-toast { border-color: var(--danger); }
@@ -166,6 +168,8 @@ legend { padding: 0 .25rem; color: var(--text-secondary); font-weight: 650; }
   .suggest-row .service-logo { width: 2rem; height: 2rem; }
   .suggest-row button { min-height: 2.4rem; padding: .45rem .8rem; }
   .suggest-row .route-line { grid-area: 2 / 2 / 2 / -1; }
+  .suggest-row.is-set-up .route-line { grid-area: 3 / 2 / 3 / -1; }
+  .suggest-size { grid-area: 2 / 2 / 2 / -1; text-align: left; }
   .pair-route { grid-template-columns: minmax(0, 1fr); gap: .55rem; }
   .route-arrow { transform: rotate(90deg); justify-self: start; margin-left: .35rem; }
   .pair-actions { justify-content: flex-start; }

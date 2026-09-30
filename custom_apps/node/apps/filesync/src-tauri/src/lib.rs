@@ -127,6 +127,10 @@ struct EstimateResult {
     direction: String,
     free_bytes: u64,
     total_bytes: u64,
+    /// Total size of the server folder being synced. `total_bytes` is the
+    /// device's storage, so the folder's own size has to be reported
+    /// separately or the UI cannot answer "how big is this library?".
+    remote_total_bytes: u64,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -932,6 +936,9 @@ async fn estimate_pair_rust<R: Runtime>(
     pair: SyncPair,
 ) -> Result<EstimateResult, String> {
     let plan = load_sync(&app, &pair).await?;
+    // Every remote file size is already in hand from the recursive walk, so
+    // this costs no extra request.
+    let remote_total_bytes: u64 = plan.remote_files.values().map(|entry| entry.size).sum();
     let mut pending_bytes = 0_u64;
     let mut pending_count = 0_usize;
     let mut skipped = 0_usize;
@@ -970,6 +977,7 @@ async fn estimate_pair_rust<R: Runtime>(
         direction: plan.direction,
         free_bytes,
         total_bytes,
+        remote_total_bytes,
     })
 }
 

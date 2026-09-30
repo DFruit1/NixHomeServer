@@ -10,7 +10,7 @@ type TauriWindow = Window & { __TAURI__?: { core?: { invoke?: Invoke } } };
 type SyncPreset = { id: string; folder: string; service: string; serviceTitle: string; title: string; description: string; serverPath: string; localSubpath: string; direction: SyncDirection };
 type ServerEntry = BrowseEntry;
 type SyncProgress = { active: boolean; pair: string; pairs: string[]; direction: string; currentFile: string; transferred: number; skipped: number };
-type SyncEstimate = { pendingBytes: number; pendingCount: number; skipped: number; direction: string; freeBytes: number; totalBytes: number };
+type SyncEstimate = { pendingBytes: number; pendingCount: number; skipped: number; direction: string; freeBytes: number; totalBytes: number; remoteTotalBytes: number };
 type DeviceStorage = { freeBytes: number; totalBytes: number };
 type FileTransfer = { path: string; action: FileAction };
 
@@ -111,6 +111,35 @@ function storageSummary(): string {
   return ` · ${formatBytes(state.deviceStorage.freeBytes)} free of ${formatBytes(state.deviceStorage.totalBytes)} on this device`;
 }
 
+// The reserved server root that stands for the personal folder. Browsing it
+// lists the account's own library folders, so a pair can be pointed anywhere
+// under them instead of inside one pre-chosen library. The server refuses any
+// path that does not start with a configured library folder, which is what
+// keeps the `_Shared` and `_Backups` mounts out of reach.
+const HOME_ROOT = 'home';
+
+// How big the server folder behind a suggestion is, once it is set up. The
+// total is the folder's own size; the pending amount is what a sync would move
+// now, which is the part that decides whether a phone has room for it.
+function presetSizeLine(preset: SyncPreset, pair?: SyncPair): string {
+  const id = escapeHtml(preset.id);
+  if (!pair) return '';
+  const estimate = state.estimates[pair.id];
+  if (!estimate) {
+    return state.estimatesDone[pair.id]
+      ? ''
+      : `<p class="suggest-size" data-preset-size-for="${id}">Checking size…</p>`;
+  }
+  const total = Number(estimate.remoteTotalBytes) || 0;
+  if (total <= 0) return `<p class="suggest-size" data-preset-size-for="${id}">Server folder is empty</p>`;
+  const pending = estimate.pendingBytes;
+  const verb = preset.direction === 'phone-to-server' ? 'to upload' : 'to download';
+  const text = pending > 0
+    ? `${formatBytes(total)} on the server · ${formatBytes(pending)} ${verb}`
+    : `${formatBytes(total)} on the server`;
+  return `<p class="suggest-size" data-preset-size-for="${id}">${escapeHtml(text)}</p>`;
+}
+
 function progressCopy(progress?: SyncProgress, syncingPairId?: string): string {
   if (progress?.active) {
     const names = progress.pairs.length > 1 ? `${progress.pairs.length} folders` : progress.pair;
@@ -131,6 +160,9 @@ const SERVICE_LOGOS: Record<string, string> = {
 };
 
 function serverLocation(pair: SyncPair): string {
+  // A pair picked through the personal-root browser stores the whole server
+  // path, so there is no library prefix to add.
+  if (pair.serverRoot === HOME_ROOT) return `/${pair.serverPath}`;
   return pair.serverRoot && pair.serverRoot !== 'files'
     ? `/${pair.serverFolder ?? pair.serverRoot}${pair.serverPath ? `/${pair.serverPath}` : ''}`
     : pair.serverPath ? `/_Files/${pair.serverPath}` : '/_Files';
@@ -184,26 +216,28 @@ function serviceMark(service: string, serviceTitle: string): string {
 function render(): void {
   // Most people set up the folders the server already suggests, so the
   // suggested list is the page's primary content until something is paired.
-  // Already-set-up suggestions drop out of it, which lets the section shrink
-  // to nothing without a disclosure to remember.
+  // A suggestion that is already set up stays in the list and reports its
+  // size instead of offering a second Enable, so the list doubles as the
+  // answer to "how big is each of my folders?".
   const hasPairs = state.pairs.length > 0;
-  const suggested = state.presets.filter((preset) => !pairForPreset(preset));
   const suggestSection = state.user ? `
-    <section class="suggest-section" ${suggested.length ? 'aria-labelledby="suggest-heading"' : ''}>
-      ${suggested.length ? `
-        <h2 id="suggest-heading">${hasPairs ? 'Add another folder' : 'Suggested folders'}</h2>
-        <ul class="suggest-list">${suggested.map((preset) => `
-          <li class="suggest-row">
+    <section class="suggest-section" ${state.presets.length ? 'aria-labelledby="suggest-heading"' : ''}>
+      ${state.presets.length ? `
+        <h2 id="suggest-heading">Suggested folders</h2>
+        <ul class="suggest-list">${state.presets.map((preset) => {
+          const pair = pairForPreset(preset);
+          const size = presetSizeLine(preset, pair);
+          return `<li class="suggest-row${pair ? ' is-set-up' : ''}" data-preset-row="${escapeHtml(preset.id)}">
             <span class="service-logo" aria-hidden="true">${serviceMark(preset.service, preset.serviceTitle)}</span>
             <div class="suggest-copy">
               <h3>${escapeHtml(preset.serviceTitle)}</h3>
               <p>${escapeHtml(preset.title)}</p>
             </div>
-            <button class="${hasPairs ? 'secondary-button' : 'primary-button'}" type="button" data-enable-preset="${escapeHtml(preset.id)}" ${state.syncingPairId ? 'disabled' : ''}>Enable</button>
+            ${pair ? size : `<button class="${hasPairs ? 'secondary-button' : 'primary-button'}" type="button" data-enable-preset="${escapeHtml(preset.id)}" ${state.syncingPairId ? 'disabled' : ''}>Enable</button>`}
             ${routeLine(preset.direction, `/${preset.localSubpath}`, presetServerLocation(preset))}
-          </li>`).join('')}</ul>
-        ${state.presets.length === 0 ? '<p class="services-empty">No suggested folders are available for this account yet.</p>' : ''}
-      ` : ''}
+          </li>`;
+        }).join('')}</ul>
+      ` : '<p class="services-empty">No suggested folders are available for this account yet.</p>'}
       <div class="section-actions">
         <button class="text-button" type="button" id="open-files">Browse server files</button>
         <button class="text-button" type="button" id="open-pair-form">Pair your own folders</button>
@@ -246,15 +280,6 @@ function render(): void {
         <button class="text-button settings-button" type="button" id="open-settings" aria-haspopup="dialog">Settings</button>
       </header>
 
-      <section class="account-strip" aria-label="Account">
-        <p class="account-user">${state.user
-          ? `Signed in as <strong>${escapeHtml(state.user)}</strong>${state.offline ? ' · offline, will retry' : ''}${state.backgroundStatus ? ` · ${escapeHtml(state.backgroundStatus)}` : ''}<span id="storage-summary">${escapeHtml(storageSummary())}</span>`
-          : 'Sign in to sync your folders.'}</p>
-        ${state.user
-          ? '<button class="text-button" type="button" id="sign-out">Sign out</button>'
-          : '<button class="secondary-button" type="button" id="sign-in">Sign in</button>'}
-      </section>
-
       <section class="sync-progress" id="sync-progress" aria-live="polite" ${state.progress?.active || state.syncingPairId ? '' : 'hidden'}>
         ${progressCopy(state)}
       </section>
@@ -282,7 +307,6 @@ function render(): void {
         <label for="pick-folder">Folder on this device</label>
         <div class="picker-row"><span id="picked-folder">No folder selected</span><button class="secondary-button" id="pick-folder" type="button">Choose folder</button></div>
         <label for="browse-server">Folder on server</label>
-        <select id="server-root" aria-label="Server library">${state.presets.map((preset) => `<option value="${escapeHtml(preset.id)}">${escapeHtml(preset.serviceTitle)} / ${escapeHtml(preset.folder)}</option>`).join('')}</select>
         <div class="picker-row"><span id="picked-server-folder">No server folder selected</span><button class="secondary-button" id="browse-server" type="button">Browse server</button></div>
         <fieldset>
           <legend>Sync direction</legend>
@@ -303,8 +327,6 @@ function render(): void {
 
     <dialog id="files-dialog" class="pair-dialog files-dialog" aria-labelledby="files-heading">
       <div class="dialog-heading"><h2 id="files-heading">Server files</h2><button class="close-button" type="button" id="close-files" aria-label="Close files">×</button></div>
-      <label class="visually-hidden" for="files-root">Server library</label>
-      <select id="files-root">${state.presets.map((preset) => `<option value="${escapeHtml(preset.id)}">${escapeHtml(preset.serviceTitle)} / ${escapeHtml(preset.folder)}</option>`).join('')}</select>
       <p class="browser-location" id="files-location">/</p>
       <div class="browser-list" id="files-list"></div>
       <p class="form-error" id="files-error" role="alert"></p>
@@ -319,9 +341,18 @@ function render(): void {
     </dialog>
 
     <dialog id="settings-dialog" class="pair-dialog settings-dialog" aria-labelledby="settings-heading">
+      <div class="dialog-heading"><h2 id="settings-heading">Settings</h2><button class="close-button" value="cancel" aria-label="Close settings">×</button></div>
+      <div class="settings-account">
+        <p class="account-user">${state.user
+          ? `Signed in as <strong>${escapeHtml(state.user)}</strong>${state.offline ? ' · offline, will retry' : ''}${state.backgroundStatus ? ` · ${escapeHtml(state.backgroundStatus)}` : ''}<span id="storage-summary">${escapeHtml(storageSummary())}</span>`
+          : 'Sign in to sync your folders.'}</p>
+        <div class="settings-account-actions">
+          ${state.user
+            ? `${state.settingsAuthorized ? '' : '<button class="secondary-button" type="button" id="unlock-settings">Unlock settings</button>'}<button class="secondary-button" type="button" id="sign-out">Sign out</button>`
+            : '<button class="primary-button" type="button" id="sign-in">Sign in</button>'}
+        </div>
+      </div>
       <form method="dialog" id="settings-form">
-        <div class="dialog-heading"><h2 id="settings-heading">Settings</h2><button class="close-button" value="cancel" aria-label="Close settings">×</button></div>
-        ${state.user && !state.settingsAuthorized ? '<button class="secondary-button unlock-button" type="button" id="unlock-settings">Unlock to change settings</button>' : ''}
         <label for="server-address">Server address</label>
         <input id="server-address" type="url" value="${escapeHtml(state.server)}" autocomplete="url" autocapitalize="none" spellcheck="false" />
         <fieldset>
@@ -349,11 +380,10 @@ function render(): void {
 
 let selectedFolder: Folder | undefined;
 let selectedServerPath = '';
-let selectedServerRoot = 'files';
+let selectedServerRoot = HOME_ROOT;
 let hasSelectedServerFolder = false;
 let serverBrowserPath = '';
 let filesBrowserPath = '';
-let filesBrowserRoot = 'files';
 let pendingRemoveId: string | undefined;
 let progressTimer: number | undefined;
 
@@ -369,7 +399,7 @@ function bindEvents(): void {
     }
     selectedFolder = undefined;
     selectedServerPath = '';
-    selectedServerRoot = 'files';
+    selectedServerRoot = HOME_ROOT;
     hasSelectedServerFolder = false;
   });
   const openPairForm = async () => { if (await ensureSettingsAuthorized()) dialog.showModal(); };
@@ -506,27 +536,21 @@ function bindEvents(): void {
       document.querySelector<HTMLElement>('#form-error')!.textContent = 'Sign in before choosing a server folder.';
       return;
     }
-    selectedServerRoot = document.querySelector<HTMLSelectElement>('#server-root')?.value || 'files';
+    selectedServerRoot = HOME_ROOT;
     serverBrowserPath = '';
     await renderServerBrowser();
     browser.showModal();
   });
-  document.querySelector('#server-root')?.addEventListener('change', () => {
-    hasSelectedServerFolder = false;
-    selectedServerPath = '';
-    const label = document.querySelector<HTMLElement>('#picked-server-folder');
-    if (label) label.textContent = 'No server folder selected';
-  });
   document.querySelector('#close-server-browser')?.addEventListener('click', () => browser.close());
   document.querySelector('#server-browser-up')?.addEventListener('click', async () => {
-    serverBrowserPath = serverBrowserPath.split('/').slice(0, -1).join('/');
+    serverBrowserPath = parentPath(serverBrowserPath);
     await renderServerBrowser();
   });
   document.querySelector('#choose-server-folder')?.addEventListener('click', () => {
     selectedServerPath = serverBrowserPath;
     hasSelectedServerFolder = true;
     const label = document.querySelector<HTMLElement>('#picked-server-folder');
-    if (label) label.textContent = `/${state.presets.find((item) => item.id === selectedServerRoot)?.folder ?? selectedServerRoot}${selectedServerPath ? `/${selectedServerPath}` : ''}`;
+    if (label) label.textContent = `/${selectedServerPath}`;
     browser.close();
   });
 
@@ -542,25 +566,13 @@ function bindEvents(): void {
       render();
       return;
     }
-    // The main files library is what people mean by "my files"; fall back to
-    // the first library the server offers for the account.
-    filesBrowserRoot = state.presets.some((preset) => preset.id === 'files') ? 'files' : state.presets[0].id;
     filesBrowserPath = '';
     state.transfer = undefined;
-    const root = document.querySelector<HTMLSelectElement>('#files-root')!;
-    root.value = filesBrowserRoot;
     setFilesFeedback('', '');
     await renderFilesBrowser();
     filesDialog.showModal();
   });
   document.querySelector('#close-files')?.addEventListener('click', () => filesDialog.close());
-  document.querySelector('#files-root')?.addEventListener('change', async (event) => {
-    filesBrowserRoot = (event.target as HTMLSelectElement).value || 'files';
-    filesBrowserPath = '';
-    state.transfer = undefined;
-    setFilesFeedback('', '');
-    await renderFilesBrowser();
-  });
   document.querySelector('#files-up')?.addEventListener('click', async () => {
     filesBrowserPath = parentPath(filesBrowserPath);
     state.transfer = undefined;
@@ -615,12 +627,12 @@ function bindEvents(): void {
       error.textContent = 'A saved pair already uses one of these folders.';
       return;
     }
-    state.pairs = [...state.pairs, { id: crypto.randomUUID(), name, local: selectedFolder, serverRoot: selectedServerRoot, serverFolder: state.presets.find((item) => item.id === selectedServerRoot)?.folder, serverPath, direction, server: state.server, account: state.user, ...currentLimits() }];
+    state.pairs = [...state.pairs, { id: crypto.randomUUID(), name, local: selectedFolder, serverRoot: selectedServerRoot, serverPath, direction, server: state.server, account: state.user, ...currentLimits() }];
     try { await persistPairs(); }
     catch (error) { showError(error); return; }
     selectedFolder = undefined;
     selectedServerPath = '';
-    selectedServerRoot = 'files';
+    selectedServerRoot = HOME_ROOT;
     hasSelectedServerFolder = false;
     state.notice = 'Folder pair saved.';
     state.error = '';
@@ -754,6 +766,7 @@ async function refreshEstimates(): Promise<void> {
   state.estimates = {};
   state.estimatesDone = {};
   for (const pair of state.pairs) updateSpaceUi(pair.id);
+  for (const preset of state.presets) updatePresetSize(preset);
   for (const pair of state.pairs) {
     if (run !== estimateRun) return;
     if (pair.direction === 'two-way') {
@@ -771,6 +784,7 @@ async function refreshEstimates(): Promise<void> {
         direction: typeof raw.direction === 'string' ? raw.direction : pair.direction,
         freeBytes: Number(raw.freeBytes) || 0,
         totalBytes: Number(raw.totalBytes) || 0,
+        remoteTotalBytes: Number(raw.remoteTotalBytes) || 0,
       };
       state.deviceStorage = { freeBytes: Number(raw.freeBytes) || 0, totalBytes: Number(raw.totalBytes) || 0 };
     } catch {
@@ -779,6 +793,9 @@ async function refreshEstimates(): Promise<void> {
     }
     state.estimatesDone[pair.id] = true;
     updateSpaceUi(pair.id);
+    for (const preset of state.presets) {
+      if (pairForPreset(preset)?.id === pair.id) updatePresetSize(preset);
+    }
   }
 }
 
@@ -805,6 +822,23 @@ function updateSpaceUi(pairId: string): void {
   }
   const summary = document.querySelector('#storage-summary');
   if (summary) summary.textContent = storageSummary();
+}
+
+// A suggestion that is set up reports the folder's size in its own row, so the
+// same estimate has to refresh that line too. The line is patched in place for
+// the same reason the paired space line is: a full re-render would drop the
+// Enable button's focus mid-sync.
+function updatePresetSize(preset: SyncPreset): void {
+  const line = document.querySelector(`[data-preset-size-for="${CSS.escape(preset.id)}"]`);
+  const html = presetSizeLine(preset, pairForPreset(preset));
+  if (line) {
+    if (html) line.outerHTML = html;
+    else line.remove();
+    return;
+  }
+  if (!html) return;
+  const row = document.querySelector(`[data-preset-row="${CSS.escape(preset.id)}"]`);
+  row?.querySelector('.suggest-copy')?.insertAdjacentHTML('afterend', html);
 }
 
 function parseProgress(raw: string | null): SyncProgress | undefined {  if (!raw) return undefined;
@@ -936,7 +970,7 @@ async function start(): Promise<void> {
 async function renderServerBrowser(): Promise<void> {
   const location = document.querySelector<HTMLElement>('#server-browser-location');
   const list = document.querySelector<HTMLElement>('#server-browser-list');
-  if (location) location.textContent = `/${state.presets.find((item) => item.id === selectedServerRoot)?.folder ?? selectedServerRoot}${serverBrowserPath ? `/${serverBrowserPath}` : ''}`;
+  if (location) location.textContent = `/${serverBrowserPath}`;
   if (!list || !invoke) return;
   list.textContent = 'Loading folders…';
   try {
@@ -956,8 +990,7 @@ async function renderServerBrowser(): Promise<void> {
 }
 
 function filesLocation(): string {
-  const folder = state.presets.find((preset) => preset.id === filesBrowserRoot)?.folder ?? filesBrowserRoot;
-  return `/${folder}${filesBrowserPath ? `/${filesBrowserPath}` : ''}`;
+  return `/${filesBrowserPath}`;
 }
 
 async function renderFilesBrowser(): Promise<void> {
@@ -970,7 +1003,7 @@ async function renderFilesBrowser(): Promise<void> {
   list.textContent = 'Loading files…';
   let entries: ServerEntry[];
   try {
-    entries = await invoke<ServerEntry[]>('server_tree', { path: filesBrowserPath, root: filesBrowserRoot });
+    entries = await invoke<ServerEntry[]>('server_tree', { path: filesBrowserPath, root: HOME_ROOT });
   } catch (error) {
     list.innerHTML = `<p class="browser-empty">${escapeHtml(error instanceof Error ? error.message : String(error))}</p>`;
     return;
@@ -1027,7 +1060,7 @@ async function runFileAction(name: string, action: FileAction, size: number): Pr
   try {
     const result = await invoke<{ name: string; stored: boolean }>('server_file_action', {
       path: relativePath,
-      root: filesBrowserRoot,
+      root: HOME_ROOT,
       name,
       action,
       size: Number.isFinite(size) && size > 0 ? size : undefined,
