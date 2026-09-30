@@ -28,7 +28,12 @@ done
 mapfile -t commands < <(sed -n '/^[[:space:]]*@Command$/ { n; s/^[[:space:]]*fun \([[:alnum:]_]*\)(.*/\1/p; }' "$plugin")
 test "${#commands[@]}" -gt 0 || { echo "No Android plugin commands found" >&2; exit 1; }
 for command in "${commands[@]}" folderPicked; do
-  if ! rg -Fxq "$command" "$dex_strings"; then
+  # A DEX string carries its own ULEB128 length byte, and `strings` folds a
+  # printable one onto the same line: a nine-character name is prefixed by a
+  # tab. Match the name between non-identifier boundaries instead of demanding
+  # a whole line, so the result depends on the method existing and not on where
+  # the string pool happens to place it.
+  if ! rg -q "(^|[^[:alnum:]_])${command}([^[:alnum:]_]|$)" "$dex_strings"; then
     echo "Android release APK is missing native command or callback: $command" >&2
     exit 1
   fi
