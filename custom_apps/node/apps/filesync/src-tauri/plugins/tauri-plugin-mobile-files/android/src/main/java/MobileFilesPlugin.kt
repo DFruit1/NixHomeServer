@@ -2,16 +2,22 @@ package org.nixhomeserver.filesync.mobilefiles
 
 import android.Manifest
 import android.app.Activity
+import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
 import android.provider.DocumentsContract
+import android.provider.MediaStore
 import android.provider.Settings
+import android.webkit.MimeTypeMap
 import androidx.activity.result.ActivityResult
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import app.tauri.annotation.ActivityCallback
 import app.tauri.annotation.Command
 import app.tauri.annotation.Permission
@@ -299,6 +305,103 @@ class MobileFilesPlugin(private val activity: Activity) : Plugin(activity) {
     }
   }
 
+  @Command
+  fun saveToDownloads(invoke: Invoke) {
+    val stagedPath = invoke.getArgs().getString("stagedPath")
+    val fileName = invoke.getArgs().getString("fileName")
+    val size = invoke.getArgs().optLong("size", 0L)
+    transferExecutor.execute {
+      var created: Uri? = null
+      try {
+        val source = stagedFile(stagedPath)
+        val name = safeFileName(fileName)
+        if (size > 0 && size > SyncEngine.storageStats(activity).freeBytes) {
+          throw IllegalStateException("This device does not have enough free space for the file")
+        }
+        SyncEngine.cleanupStagedFiles(activity)
+        val uri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+          val resolver = activity.contentResolver
+          val values = ContentValues().apply {
+            put(MediaStore.Downloads.DISPLAY_NAME, name)
+            put(MediaStore.Downloads.MIME_TYPE, mimeTypeFor(name))
+            put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+            put(MediaStore.Downloads.IS_PENDING, 1)
+          }
+          val target = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+            ?: throw IllegalStateException("Android could not create a file in Downloads")
+          // Recorded before the copy so a failed transfer still removes the
+          // pending row it just created instead of leaving it invisible in
+          // MediaStore forever.
+          created = target
+          FileInputStream(source).use { input ->
+            resolver.openOutputStream(target).use { output ->
+              requireNotNull(output) { "The Downloads folder could not be opened" }
+              input.copyTo(output)
+            }
+          }
+          values.clear()
+          values.put(MediaStore.Downloads.IS_PENDING, 0)
+          resolver.update(target, values, null, null)
+          target
+        } else {
+          // Before scoped storage, Downloads is a real directory and writing to
+          // it needs the legacy storage grant the app already asks for when
+          // picking a sync folder.
+          require(hasAllFilesAccess()) { "Storage access is required to save into Downloads" }
+          @Suppress("DEPRECATION")
+          val directory = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+          if (!directory.isDirectory && !directory.mkdirs()) {
+            throw IllegalStateException("The Downloads folder is unavailable on this device")
+          }
+          val target = uniqueFile(directory, name)
+          val saved = Uri.fromFile(target)
+          created = saved
+          FileInputStream(source).use { input -> FileOutputStream(target).use { output -> input.copyTo(output) } }
+          saved
+        }
+        // `?:` binds looser than the `to` infix, so the fallback needs its own
+        // parentheses to stay inside the map value.
+        invoke.resolveObject(mapOf("value" to mapOf("uri" to uri.toString(), "name" to (displayNameOf(uri) ?: name))))
+      } catch (error: Exception) {
+        // A half-written file is worse than none: MediaStore entries are
+        // removed through the resolver, pre-scoped-storage files straight off
+        // disk.
+        created?.let { uri ->
+          if (uri.scheme == "file") uri.path?.let { path -> File(path).delete() }
+          else runCatching { activity.contentResolver.delete(uri, null, null) }
+        }
+        invoke.reject("Could not save the file to Downloads", error, null)
+      }
+    }
+  }
+
+  @Command
+  fun shareFile(invoke: Invoke) {
+    try {
+      val source = stagedFile(invoke.getArgs().getString("stagedPath"))
+      val name = safeFileName(invoke.getArgs().getString("fileName"))
+      SyncEngine.cleanupStagedFiles(activity)
+      val uri = FileProvider.getUriForFile(activity, "${activity.packageName}.fileprovider", source)
+      val send = Intent(Intent.ACTION_SEND).apply {
+        type = mimeTypeFor(name)
+        putExtra(Intent.EXTRA_STREAM, uri)
+        putExtra(Intent.EXTRA_TITLE, name)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+      }
+      val chooser = Intent.createChooser(send, null).apply {
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+      }
+      activity.runOnUiThread { activity.startActivity(chooser) }
+      // The app the user picks opens the shared content after the chooser
+      // closes, so the cache copy has to outlive this call. The delay covers a
+      // slow share target; SyncEngine's sweep clears anything left behind.
+      Handler(Looper.getMainLooper()).postDelayed({ source.delete() }, SHARE_FILE_LIFETIME_MS)
+      invoke.resolveObject(mapOf("value" to mapOf("uri" to uri.toString(), "name" to name)))
+    } catch (error: Exception) {
+      invoke.reject("Could not open the Android share sheet", error, null)
+    }
+  }
+
   @ActivityCallback
   fun folderPicked(invoke: Invoke, result: ActivityResult) {
     if (result.resultCode != Activity.RESULT_OK) {
@@ -366,6 +469,47 @@ class MobileFilesPlugin(private val activity: Activity) : Plugin(activity) {
       activity.checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
   }
 
+  private fun stagedFile(value: String): File {
+    val file = File(value)
+    require(file.isFile && file.canonicalPath.startsWith(activity.cacheDir.canonicalPath + File.separator)) {
+      "The transferred file is no longer available"
+    }
+    return file
+  }
+
+  private fun safeFileName(value: String): String {
+    require(value.isNotBlank() && value.length <= 200 && value != "." && value != ".." &&
+      value.none { it == '/' || it == '\\' || it == '\u0000' }) { "Invalid file name" }
+    return value
+  }
+
+  private fun mimeTypeFor(name: String): String {
+    val extension = name.substringAfterLast('.', "")
+    if (extension.isEmpty() || extension.equals(name, ignoreCase = true)) return FALLBACK_MIME_TYPE
+    return MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension.lowercase()) ?: FALLBACK_MIME_TYPE
+  }
+
+  private fun displayNameOf(uri: Uri): String? = runCatching {
+    activity.contentResolver.query(uri, arrayOf(MediaStore.MediaColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+      if (cursor.moveToFirst()) cursor.getString(0) else null
+    }
+  }.getOrNull()
+
+  private fun uniqueFile(directory: File, name: String): File {
+    var candidate = File(directory, name)
+    if (!candidate.exists()) return candidate
+    val stem = name.substringBeforeLast('.', name)
+    val extension = name.substringAfterLast('.', "")
+    var index = 1
+    while (candidate.exists() && index < 1000) {
+      val numbered = if (extension.isEmpty()) "$stem ($index)" else "$stem ($index).$extension"
+      candidate = File(directory, numbered)
+      index += 1
+    }
+    require(!candidate.exists()) { "This device already has too many files named $name" }
+    return candidate
+  }
+
   private fun safeSlot(value: String): String {
     require(value.matches(Regex("[a-z0-9-]{1,48}"))) { "Invalid secure storage slot" }
     return value
@@ -376,6 +520,9 @@ class MobileFilesPlugin(private val activity: Activity) : Plugin(activity) {
     private val lockExecutor = Executors.newSingleThreadExecutor()
     private val configExecutor = Executors.newSingleThreadExecutor()
     private val secretsExecutor = Executors.newSingleThreadExecutor()
+    private val transferExecutor = Executors.newSingleThreadExecutor()
+    private const val FALLBACK_MIME_TYPE = "application/octet-stream"
+    private const val SHARE_FILE_LIFETIME_MS = 60 * 60 * 1000L
   }
 
   private fun walkTree(tree: Uri, parentId: String, prefix: String, result: MutableList<Map<String, Any>>) {

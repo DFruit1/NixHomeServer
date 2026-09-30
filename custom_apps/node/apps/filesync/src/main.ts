@@ -1,16 +1,18 @@
 import './styles.css';
 import { getCurrent, onOpenUrl } from '@tauri-apps/plugin-deep-link';
 import { openUrl } from '@tauri-apps/plugin-opener';
+import { browseOrder, directoriesOnly, entryMeta, fileActionLabel, joinPath, parentPath, type BrowseEntry, type FileAction } from './browse';
 import { parseSavedPairs, type Folder, type SyncDirection, type SyncPair } from './pairs';
 import { DEFAULT_BLOCK_PERCENT, DEFAULT_WARN_PERCENT, clampPercent, evaluateSpace, formatBytes } from './storage';
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 type TauriWindow = Window & { __TAURI__?: { core?: { invoke?: Invoke } } };
 type SyncPreset = { id: string; folder: string; service: string; serviceTitle: string; title: string; description: string; serverPath: string; localSubpath: string; direction: SyncDirection };
-type ServerEntry = { name: string; path: string; kind: string; size: number; modifiedUnixMs: number };
+type ServerEntry = BrowseEntry;
 type SyncProgress = { active: boolean; pair: string; pairs: string[]; direction: string; currentFile: string; transferred: number; skipped: number };
 type SyncEstimate = { pendingBytes: number; pendingCount: number; skipped: number; direction: string; freeBytes: number; totalBytes: number };
 type DeviceStorage = { freeBytes: number; totalBytes: number };
+type FileTransfer = { path: string; action: FileAction };
 
 const invoke = (window as TauriWindow).__TAURI__?.core?.invoke;
 const STORAGE_KEY = 'nixhomeserver.filesync.pairs.v1';
@@ -21,7 +23,7 @@ const SPACE_PREFS_KEY = 'nixhomeserver.filesync.space-limits.v1';
 const DEFAULT_SERVER = import.meta.env.VITE_FILESYNC_DEFAULT_SERVER ?? '';
 const app = document.querySelector<HTMLDivElement>('#app')!;
 
-const state: { pairs: SyncPair[]; presets: SyncPreset[]; syncingPairId?: string; removingPairId?: string; progress?: SyncProgress; server: string; user?: string; offline: boolean; settingsAuthorized: boolean; backgroundStatus?: string; error: string; notice: string; estimates: Record<string, SyncEstimate | undefined>; estimatesDone: Record<string, boolean>; deviceStorage?: DeviceStorage; warnPercent: number; blockPercent: number } = {
+const state: { pairs: SyncPair[]; presets: SyncPreset[]; syncingPairId?: string; removingPairId?: string; progress?: SyncProgress; server: string; user?: string; offline: boolean; settingsAuthorized: boolean; backgroundStatus?: string; error: string; notice: string; estimates: Record<string, SyncEstimate | undefined>; estimatesDone: Record<string, boolean>; deviceStorage?: DeviceStorage; warnPercent: number; blockPercent: number; transfer?: FileTransfer } = {
   pairs: readPairs(),
   presets: [],
   server: localStorage.getItem(SETTINGS_KEY) ?? DEFAULT_SERVER,
@@ -202,7 +204,10 @@ function render(): void {
           </li>`).join('')}</ul>
         ${state.presets.length === 0 ? '<p class="services-empty">No suggested folders are available for this account yet.</p>' : ''}
       ` : ''}
-      <button class="text-button" type="button" id="open-pair-form">Pair your own folders</button>
+      <div class="section-actions">
+        <button class="text-button" type="button" id="open-files">Browse server files</button>
+        <button class="text-button" type="button" id="open-pair-form">Pair your own folders</button>
+      </div>
     </section>` : '';
   const pairRows = state.pairs.map((pair) => {
     const route = routeFor(pair.direction, localLocation(pair), serverLocation(pair));
@@ -296,6 +301,17 @@ function render(): void {
       <div class="dialog-actions"><button class="secondary-button" type="button" id="server-browser-up">Up one level</button><button class="primary-button" type="button" id="choose-server-folder">Use this folder</button></div>
     </dialog>
 
+    <dialog id="files-dialog" class="pair-dialog files-dialog" aria-labelledby="files-heading">
+      <div class="dialog-heading"><h2 id="files-heading">Server files</h2><button class="close-button" type="button" id="close-files" aria-label="Close files">×</button></div>
+      <label class="visually-hidden" for="files-root">Server library</label>
+      <select id="files-root">${state.presets.map((preset) => `<option value="${escapeHtml(preset.id)}">${escapeHtml(preset.serviceTitle)} / ${escapeHtml(preset.folder)}</option>`).join('')}</select>
+      <p class="browser-location" id="files-location">/</p>
+      <div class="browser-list" id="files-list"></div>
+      <p class="form-error" id="files-error" role="alert"></p>
+      <p class="files-status" id="files-status" role="status" aria-live="polite"></p>
+      <div class="dialog-actions"><button class="secondary-button" type="button" id="files-up">Up one level</button></div>
+    </dialog>
+
     <dialog id="permission-dialog" class="pair-dialog" aria-labelledby="permission-heading">
       <div class="dialog-heading"><h2 id="permission-heading">All files access</h2><button class="close-button" type="button" id="cancel-permission-request" aria-label="Close dialog">×</button></div>
       <p id="permission-status"></p>
@@ -336,6 +352,8 @@ let selectedServerPath = '';
 let selectedServerRoot = 'files';
 let hasSelectedServerFolder = false;
 let serverBrowserPath = '';
+let filesBrowserPath = '';
+let filesBrowserRoot = 'files';
 let pendingRemoveId: string | undefined;
 let progressTimer: number | undefined;
 
@@ -510,6 +528,62 @@ function bindEvents(): void {
     const label = document.querySelector<HTMLElement>('#picked-server-folder');
     if (label) label.textContent = `/${state.presets.find((item) => item.id === selectedServerRoot)?.folder ?? selectedServerRoot}${selectedServerPath ? `/${selectedServerPath}` : ''}`;
     browser.close();
+  });
+
+  const filesDialog = document.querySelector<HTMLDialogElement>('#files-dialog')!;
+  document.querySelector('#open-files')?.addEventListener('click', async () => {
+    if (!invoke || !state.user) {
+      state.error = 'Sign in before browsing server files.';
+      render();
+      return;
+    }
+    if (!state.presets.length) {
+      state.error = 'This account has no server libraries to browse yet.';
+      render();
+      return;
+    }
+    // The main files library is what people mean by "my files"; fall back to
+    // the first library the server offers for the account.
+    filesBrowserRoot = state.presets.some((preset) => preset.id === 'files') ? 'files' : state.presets[0].id;
+    filesBrowserPath = '';
+    state.transfer = undefined;
+    const root = document.querySelector<HTMLSelectElement>('#files-root')!;
+    root.value = filesBrowserRoot;
+    setFilesFeedback('', '');
+    await renderFilesBrowser();
+    filesDialog.showModal();
+  });
+  document.querySelector('#close-files')?.addEventListener('click', () => filesDialog.close());
+  document.querySelector('#files-root')?.addEventListener('change', async (event) => {
+    filesBrowserRoot = (event.target as HTMLSelectElement).value || 'files';
+    filesBrowserPath = '';
+    state.transfer = undefined;
+    setFilesFeedback('', '');
+    await renderFilesBrowser();
+  });
+  document.querySelector('#files-up')?.addEventListener('click', async () => {
+    filesBrowserPath = parentPath(filesBrowserPath);
+    state.transfer = undefined;
+    setFilesFeedback('', '');
+    await renderFilesBrowser();
+  });
+  filesDialog.addEventListener('close', () => { state.transfer = undefined; });
+  // The list is re-rendered on every navigation, so one delegated listener on
+  // the container covers folders and both file actions.
+  document.querySelector<HTMLElement>('#files-list')?.addEventListener('click', async (event) => {
+    const target = (event.target as HTMLElement).closest<HTMLElement>('[data-open],[data-share],[data-download]');
+    if (!target) return;
+    const name = target.dataset.open ?? target.dataset.share ?? target.dataset.download;
+    if (!name) return;
+    if (target.dataset.open) {
+      filesBrowserPath = joinPath(filesBrowserPath, name);
+      state.transfer = undefined;
+      setFilesFeedback('', '');
+      await renderFilesBrowser();
+      return;
+    }
+    const action = target.dataset.share ? 'share' : 'download';
+    await runFileAction(name, action as FileAction, Number(target.dataset.size ?? 0));
   });
 
   document.querySelector('#save-pair')?.addEventListener('click', async () => {
@@ -867,7 +941,7 @@ async function renderServerBrowser(): Promise<void> {
   list.textContent = 'Loading folders…';
   try {
     const entries = await invoke<ServerEntry[]>('server_tree', { path: serverBrowserPath, root: selectedServerRoot });
-    const directories = entries.filter((entry) => entry.kind === 'directory');
+    const directories = directoriesOnly(entries);
     list.innerHTML = directories.length
       ? directories.map((entry) => `<button class="browser-entry" type="button" data-enter="${escapeHtml(entry.name)}"><span aria-hidden="true">▰</span>${escapeHtml(entry.name)}</button>`).join('')
       : '<p class="browser-empty">No folders here. You can use this folder as the pair destination.</p>';
@@ -879,6 +953,91 @@ async function renderServerBrowser(): Promise<void> {
   } catch (error) { list.textContent = error instanceof Error ? error.message : String(error); }
   const up = document.querySelector<HTMLButtonElement>('#server-browser-up');
   if (up) up.disabled = !serverBrowserPath;
+}
+
+function filesLocation(): string {
+  const folder = state.presets.find((preset) => preset.id === filesBrowserRoot)?.folder ?? filesBrowserRoot;
+  return `/${folder}${filesBrowserPath ? `/${filesBrowserPath}` : ''}`;
+}
+
+async function renderFilesBrowser(): Promise<void> {
+  const location = document.querySelector<HTMLElement>('#files-location');
+  const list = document.querySelector<HTMLElement>('#files-list');
+  if (location) location.textContent = filesLocation();
+  const up = document.querySelector<HTMLButtonElement>('#files-up');
+  if (up) up.disabled = !filesBrowserPath || Boolean(state.transfer);
+  if (!list || !invoke) return;
+  list.textContent = 'Loading files…';
+  let entries: ServerEntry[];
+  try {
+    entries = await invoke<ServerEntry[]>('server_tree', { path: filesBrowserPath, root: filesBrowserRoot });
+  } catch (error) {
+    list.innerHTML = `<p class="browser-empty">${escapeHtml(error instanceof Error ? error.message : String(error))}</p>`;
+    return;
+  }
+  const ordered = browseOrder(entries);
+  if (!ordered.length) {
+    list.innerHTML = '<p class="browser-empty">This folder is empty.</p>';
+    return;
+  }
+  list.innerHTML = `<ul class="file-list">${ordered.map((entry) => filesRow(entry)).join('')}</ul>`;
+}
+
+function filesRow(entry: ServerEntry): string {
+  const name = escapeHtml(entry.name);
+  const busy = state.transfer?.path === entry.name;
+  if (entry.kind === 'directory') {
+    return `<li class="file-row"><button class="file-entry" type="button" data-open="${name}" ${state.transfer ? 'disabled' : ''}><span class="file-icon" aria-hidden="true">▰</span><span class="file-name">${name}</span></button></li>`;
+  }
+  const meta = escapeHtml(entryMeta(entry));
+  const size = Number.isFinite(entry.size) && entry.size > 0 ? entry.size : 0;
+  const action = (kind: FileAction) => `<button class="text-button" type="button" data-${kind}="${name}" data-size="${size}" ${state.transfer ? 'disabled' : ''}>${fileActionLabel(kind, busy && state.transfer?.action === kind)}</button>`;
+  return `<li class="file-row"><div class="file-copy"><span class="file-name">${name}</span>${meta ? `<span class="file-meta">${meta}</span>` : ''}</div><div class="file-actions">${action('share')}${action('download')}</div></li>`;
+}
+
+function setFilesFeedback(status: string, error: string): void {
+  const statusLine = document.querySelector<HTMLElement>('#files-status');
+  const errorLine = document.querySelector<HTMLElement>('#files-error');
+  if (statusLine) statusLine.textContent = status;
+  if (errorLine) errorLine.textContent = error;
+}
+
+// A transfer only changes button state, so the rows are patched in place. Going
+// back through renderFilesBrowser would blank the list back to "Loading files…"
+// at the exact moment the user is watching a row they just tapped.
+function updateFileActions(name: string): void {
+  const busy = Boolean(state.transfer);
+  document.querySelectorAll<HTMLButtonElement>('#files-list [data-share],#files-list [data-download]').forEach((button) => {
+    const kind: FileAction = button.dataset.share ? 'share' : 'download';
+    const isTarget = (button.dataset.share ?? button.dataset.download) === name;
+    button.disabled = busy;
+    button.textContent = fileActionLabel(kind, isTarget && state.transfer?.action === kind);
+  });
+  document.querySelectorAll<HTMLButtonElement>('#files-list [data-open]').forEach((button) => { button.disabled = busy; });
+  const up = document.querySelector<HTMLButtonElement>('#files-up');
+  if (up) up.disabled = !filesBrowserPath || busy;
+}
+
+async function runFileAction(name: string, action: FileAction, size: number): Promise<void> {
+  if (!invoke || !state.user || state.transfer) return;
+  const relativePath = joinPath(filesBrowserPath, name);
+  state.transfer = { path: name, action };
+  setFilesFeedback(action === 'share' ? 'Sharing…' : 'Downloading…', '');
+  updateFileActions(name);
+  try {
+    const result = await invoke<{ name: string; stored: boolean }>('server_file_action', {
+      path: relativePath,
+      root: filesBrowserRoot,
+      name,
+      action,
+      size: Number.isFinite(size) && size > 0 ? size : undefined,
+    });
+    setFilesFeedback(result.stored ? `Saved to Downloads as ${result.name}.` : `Sharing ${result.name}…`, '');
+  } catch (error) {
+    setFilesFeedback('', error instanceof Error ? error.message : String(error));
+  }
+  state.transfer = undefined;
+  updateFileActions(name);
 }
 
 async function finishCallback(url: string): Promise<void> {

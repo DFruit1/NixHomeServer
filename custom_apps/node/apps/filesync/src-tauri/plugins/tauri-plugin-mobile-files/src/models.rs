@@ -44,9 +44,21 @@ pub struct StorageInfo {
     pub total_bytes: u64,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedFile {
+    pub uri: String,
+    pub name: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SharedFileResponse {
+    pub value: Option<SharedFile>,
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{PickedFolderResponse, StorageInfo, StringResponse};
+    use super::{PickedFolderResponse, SharedFileResponse, StorageInfo, StringResponse};
 
     #[test]
     fn storage_info_deserializes_camel_case_byte_counts() {
@@ -69,8 +81,20 @@ mod tests {
         let cancelled: PickedFolderResponse = serde_json::from_str(r#"{"value":null}"#).unwrap();
         let selected: PickedFolderResponse = serde_json::from_str(
             r#"{"value":{"uri":"content://tree","displayName":"Files"}}"#,
-        ).unwrap();
+        )
+        .unwrap();
         assert!(cancelled.value.is_none());
         assert_eq!(selected.value.unwrap().display_name, "Files");
+    }
+
+    #[test]
+    fn mobile_shared_file_response_keeps_the_saved_name_and_uri() {
+        let saved: SharedFileResponse = serde_json::from_str(
+            r#"{"value":{"uri":"content://downloads/12","name":"song (1).flac"}}"#,
+        )
+        .unwrap();
+        let value = saved.value.expect("a saved file");
+        assert_eq!(value.name, "song (1).flac");
+        assert_eq!(value.uri, "content://downloads/12");
     }
 }

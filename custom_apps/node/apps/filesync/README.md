@@ -15,6 +15,16 @@ first copy. If the copy fails, the pair stays available for a manual retry. The 
 preset copies `_Music` into `_My Music` within the chosen local folder. Manual
 pairs can browse the same server libraries and choose a different folder or
 direction.
+**Browse server files** opens a read-only browser over the same libraries.
+Folders navigate in place; a file row offers **Share**, which hands a private
+cache copy to the Android share sheet through a `FileProvider` URI, and
+**Download**, which copies the file into the device Downloads folder through
+`MediaStore` (a unique name is added if one is already there). Both stream the
+file through private app cache first, and the browser never writes to the
+server. On Linux the same browser can copy a file into `~/Downloads`; sharing
+is Android-only. Sharing a file larger than the phone's free space is refused
+before the transfer starts, and abandoned cache copies are swept by the same
+routine that clears sync staging files.
 Offline Media also offers its configured personal video folders when present.
 Choose the direction when creating a pair, then use **Sync now**. It copies
 files in that direction, creates missing parent folders, replaces same-name

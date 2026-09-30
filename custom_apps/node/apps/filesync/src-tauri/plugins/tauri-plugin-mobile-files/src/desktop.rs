@@ -308,6 +308,64 @@ impl<R: Runtime> MobileFiles<R> {
         }
         Ok(())
     }
+
+    pub fn save_to_downloads(
+        &self,
+        staged_path: String,
+        file_name: String,
+        _size: u64,
+    ) -> crate::Result<SharedFile> {
+        let directory = downloads_directory()?;
+        fs::create_dir_all(&directory)?;
+        let target = unique_path(&directory, &file_name)?;
+        fs::copy(&staged_path, &target)?;
+        Ok(SharedFile {
+            uri: format!("file://{}", target.display()),
+            name: file_name,
+        })
+    }
+
+    pub fn share_file(
+        &self,
+        _staged_path: String,
+        _file_name: String,
+    ) -> crate::Result<SharedFile> {
+        Err(crate::Error::Operation(
+            "Sharing a server file is only available in the Android app.".into(),
+        ))
+    }
+}
+
+fn downloads_directory() -> crate::Result<PathBuf> {
+    std::env::var_os("HOME")
+        .map(|home| PathBuf::from(home).join("Downloads"))
+        .filter(|path| !path.as_os_str().is_empty())
+        .ok_or_else(|| crate::Error::Operation("The Downloads folder could not be located.".into()))
+}
+
+fn unique_path(directory: &Path, file_name: &str) -> crate::Result<PathBuf> {
+    let candidate = directory.join(file_name);
+    if !candidate.exists() {
+        return Ok(candidate);
+    }
+    let stem = Path::new(file_name).file_stem().and_then(|stem| stem.to_str());
+    let extension = Path::new(file_name)
+        .extension()
+        .and_then(|extension| extension.to_str());
+    for index in 1..1000 {
+        let numbered = match (stem, extension) {
+            (Some(stem), Some(extension)) => format!("{stem} ({index}).{extension}"),
+            (Some(stem), None) => format!("{stem} ({index})"),
+            _ => continue,
+        };
+        let next = directory.join(numbered);
+        if !next.exists() {
+            return Ok(next);
+        }
+    }
+    Err(crate::Error::Operation(
+        "Too many files with that name already exist in Downloads.".into(),
+    ))
 }
 
 fn fs_space(path: &Path) -> crate::Result<(u64, u64)> {

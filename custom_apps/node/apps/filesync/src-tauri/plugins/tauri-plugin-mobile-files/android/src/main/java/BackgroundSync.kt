@@ -736,7 +736,7 @@ internal object SyncEngine {
       context.checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
   }
 
-  private fun cleanupStagedFiles(context: Context) {
+  internal fun cleanupStagedFiles(context: Context) {
     val cutoff = System.currentTimeMillis() - TimeUnit.DAYS.toMillis(1)
     context.cacheDir.listFiles()?.filter { file ->
       file.name.startsWith("filesync-") && file.lastModified() < cutoff

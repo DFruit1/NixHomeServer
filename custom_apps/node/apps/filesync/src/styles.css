@@ -87,7 +87,7 @@ input { min-height: 2.75rem; padding: .55rem .75rem; }
 .suggest-copy h3 { margin: 0; font-size: 1.08rem; letter-spacing: -.01em; }
 .suggest-copy p { margin: .1rem 0 0; color: var(--text-secondary); font-size: .92rem; }
 .services-empty { color: var(--text-secondary); }
-.suggest-section > .text-button { margin-top: .35rem; }
+.section-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .15rem .5rem; margin-top: .35rem; }
 .pairs-section { padding-top: 1.9rem; }
 h2 { margin: 0 0 .65rem; font-size: 1.22rem; letter-spacing: -.015em; }
 .text-button { min-height: 2.5rem; border: 0; border-radius: .4rem; padding: .35rem .55rem; background: transparent; color: var(--action); font-weight: 700; text-align: left; }
@@ -142,6 +142,22 @@ legend { padding: 0 .25rem; color: var(--text-secondary); font-weight: 650; }
 .browser-entry:hover { background: var(--surface-muted); }
 .browser-entry span { color: var(--action); }
 .browser-empty { margin: .8rem 0; color: var(--text-secondary); }
+.files-dialog { width: min(38rem, calc(100% - 1.5rem)); }
+.files-dialog select { width: 100%; }
+.file-list { margin: 0; padding: 0; list-style: none; }
+.file-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: .2rem .75rem; padding: .3rem 0; border-bottom: 1px solid var(--border); }
+.file-row:last-child { border-bottom: 0; }
+/* Folders hang their marker in the leading slot so folder markers and file
+   names share one left edge, the way a file manager lines a directory up. */
+.file-entry { display: flex; min-width: 0; min-height: 2.6rem; align-items: center; gap: .6rem; border: 0; border-radius: .4rem; padding: .4rem .6rem .4rem 0; background: transparent; color: var(--text-primary); text-align: left; }
+.file-entry:hover:not(:disabled) { background: var(--surface-muted); }
+.file-icon { color: var(--action); }
+.file-copy { display: grid; min-width: 0; gap: .05rem; padding: .4rem .6rem .4rem 0; }
+.file-name { min-width: 0; overflow-wrap: anywhere; font-weight: 600; }
+.file-meta { color: var(--text-secondary); font-size: .82rem; overflow-wrap: anywhere; }
+.file-actions { display: flex; align-items: center; gap: .1rem; }
+.files-status { margin: 0; color: var(--text-secondary); font-size: .88rem; overflow-wrap: anywhere; }
+.files-status:empty { display: none; }
 
 @media (max-width: 40rem) {
   .shell { width: calc(100% - 2.5rem); padding-top: .5rem; }
@@ -153,6 +169,8 @@ legend { padding: 0 .25rem; color: var(--text-secondary); font-weight: 650; }
   .pair-route { grid-template-columns: minmax(0, 1fr); gap: .55rem; }
   .route-arrow { transform: rotate(90deg); justify-self: start; margin-left: .35rem; }
   .pair-actions { justify-content: flex-start; }
+  .file-row { grid-template-columns: minmax(0, 1fr); }
+  .file-actions { justify-content: flex-start; }
   .picker-row { align-items: flex-start; flex-direction: column; }
   .picker-row .secondary-button { width: 100%; }
   .dialog-actions { flex-direction: column-reverse; }

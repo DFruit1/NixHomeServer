@@ -559,6 +559,108 @@ async fn server_presets<R: Runtime>(app: AppHandle<R>) -> Result<Vec<SyncPreset>
         .map_err(network_error)
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FileActionResult {
+    name: String,
+    stored: bool,
+}
+
+/// Read-only retrieval of one server file: hand it to the Android share sheet or
+/// copy it into the device Downloads folder. Nothing is written back to the
+/// server, and the file is streamed through private cache first.
+#[tauri::command]
+async fn server_file_action<R: Runtime>(
+    app: AppHandle<R>,
+    path: String,
+    root: String,
+    name: String,
+    action: String,
+    size: Option<u64>,
+) -> Result<FileActionResult, String> {
+    let path = safe_sync_path(&path)?;
+    if path.is_empty() {
+        return Err("A server file is required.".into());
+    }
+    let root = safe_root_id(&root)?;
+    let file_name = safe_file_name(&name)?;
+    if !matches!(action.as_str(), "share" | "download") {
+        return Err("Choose either Share or Download for this file.".into());
+    }
+    let session = authenticated_session(&app).await?;
+    let client = http_client()?;
+    let response = client
+        .get(file_url(&session.api_base, &path, &root)?)
+        .bearer_auth(&session.access_token)
+        .send()
+        .await
+        .map_err(network_error)?
+        .error_for_status()
+        .map_err(network_error)?;
+    let staged = app
+        .mobile_files()
+        .create_temp_file()
+        .map_err(|_| "Could not create a temporary transfer file.".to_owned())?;
+    let transferred = match stage_transfer(response, &staged).await {
+        Ok(written) => written,
+        Err(error) => {
+            let _ = tokio::fs::remove_file(&staged).await;
+            return Err(error);
+        }
+    };
+    let outcome = if action == "download" {
+        app.mobile_files().save_to_downloads(
+            staged.clone(),
+            file_name,
+            size.unwrap_or(transferred).max(transferred),
+        )
+    } else {
+        app.mobile_files().share_file(staged.clone(), file_name)
+    };
+    // Saving into Downloads copies the file out of the cache, so the staged copy
+    // can go immediately. A share target reads it after the chooser closes and
+    // Android sweeps it later instead.
+    if action == "download" {
+        let _ = tokio::fs::remove_file(&staged).await;
+    }
+    let stored = outcome.map_err(|error| error.to_string())?;
+    Ok(FileActionResult {
+        name: stored.name,
+        stored: action == "download",
+    })
+}
+
+async fn stage_transfer(response: reqwest::Response, staged: &str) -> Result<u64, String> {
+    let mut options = tokio::fs::OpenOptions::new();
+    options.write(true);
+    #[cfg(target_os = "android")]
+    options.truncate(true);
+    #[cfg(not(target_os = "android"))]
+    options.create_new(true);
+    let mut output = options
+        .open(staged)
+        .await
+        .map_err(|_| "Could not create a temporary transfer file.".to_owned())?;
+    let mut stream = response.bytes_stream();
+    let mut written = 0_u64;
+    while let Some(chunk) = stream.next().await {
+        let bytes = chunk.map_err(network_error)?;
+        if output.write_all(&bytes).await.is_err() {
+            drop(output);
+            let _ = tokio::fs::remove_file(staged).await;
+            return Err("The file transfer could not be written.".into());
+        }
+        written += bytes.len() as u64;
+    }
+    if output.flush().await.is_err() {
+        drop(output);
+        let _ = tokio::fs::remove_file(staged).await;
+        return Err("The file transfer could not be finished.".into());
+    }
+    drop(output);
+    Ok(written)
+}
+
 #[tauri::command]
 async fn sync_pair<R: Runtime>(app: AppHandle<R>, pair: SyncPair) -> Result<SyncResult, String> {
     #[cfg(target_os = "android")]
@@ -1135,6 +1237,20 @@ fn safe_root_id(value: &str) -> Result<String, String> {
     Ok(value.to_owned())
 }
 
+fn safe_file_name(value: &str) -> Result<String, String> {
+    if value.is_empty()
+        || value.len() > 200
+        || value == "."
+        || value == ".."
+        || value.contains('/')
+        || value.contains('\\')
+        || value.contains('\0')
+    {
+        return Err("The server file name is invalid.".into());
+    }
+    Ok(value.to_owned())
+}
+
 fn join_sync_path(base: &str, relative: &str) -> String {
     if base.is_empty() {
         relative.to_owned()
@@ -1473,6 +1589,7 @@ pub fn run() {
              logout,
             server_tree,
             server_presets,
+            server_file_action,
             sync_pair,
             estimate_sync_pair,
             storage_info,
