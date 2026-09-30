@@ -40,8 +40,14 @@ in
         # to verify. Applied via the module so the draft path is passed with -md.
         mtp.enable = true;
         mtp.draftNMax = 4;
+        # Q8_0 KV cache: near-lossless, halves KV bandwidth for long
+        # generations, and frees enough VRAM for two more expert layers on the
+        # Arc Pro B60 (see the n-cpu-moe change below).
+        kvCacheType = "q8_0";
         extraArgs = [
-          "--n-cpu-moe" "42"
+          # 40 keeps only the first 40 of 48 expert layers in system RAM; the
+          # Q8_0 KV cache frees enough VRAM for 8 layers on the GPU (was 6).
+          "--n-cpu-moe" "40"
           # --load-mode none bypasses mmap for the ~51B per-layer-embedding
           # (PLE) table. On qwen4exp mmap over-reads this table and dominates
           # real-text prefill (TTFT), so keep it off. The Arc loader flags also

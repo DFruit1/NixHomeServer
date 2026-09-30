@@ -54,7 +54,7 @@ let
         --min-p 0 \
         --repeat-penalty ${toString cfg.repetitionPenalty} \
         ${lib.optionalString (cfg.imageMaxTokens > 0) "--image-max-tokens ${toString cfg.imageMaxTokens}"} \
-        ${lib.optionalString cfg.quantizeKvCache "--cache-type-k q4_0 --cache-type-v q4_0"} \
+        ${lib.optionalString (cfg.kvCacheType != "f16") "--cache-type-k ${cfg.kvCacheType} --cache-type-v ${cfg.kvCacheType}"} \
         ${lib.escapeShellArgs cfg.extraArgs}
     '';
   };
@@ -169,10 +169,15 @@ in
       description = "Maximum vision tokens per image; zero disables image downscaling.";
     };
 
-    quantizeKvCache = lib.mkOption {
-      type = lib.types.bool;
-      default = false;
-      description = "Use Q4_0 KV caches to reduce long-context RAM at a small quality and speed cost.";
+    kvCacheType = lib.mkOption {
+      type = lib.types.enum [ "f16" "q8_0" "q4_0" ];
+      default = "f16";
+      description = ''
+        KV cache element type. Q8_0 roughly halves KV memory and bandwidth at a
+        negligible quality cost and speeds up longer generations, and the freed
+        VRAM can hold more MoE expert layers on the GPU. Q4_0 is smaller but
+        noticeably lossier; F16 is the unquantized default.
+      '';
     };
 
     extraArgs = lib.mkOption {

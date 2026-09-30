@@ -97,11 +97,14 @@ Set an explicit value up to 262,144 if the host has headroom:
 repo.qwenFlashNext.contextSize = 32768;
 ```
 
-For long contexts, Q4 KV caching reduces memory at a modest quality cost:
+The host uses a Q8_0 KV cache, which roughly halves KV memory and bandwidth at
+a negligible quality cost and speeds up longer generations:
 
 ```nix
-repo.qwenFlashNext.quantizeKvCache = true;
+repo.qwenFlashNext.kvCacheType = "q8_0"; # "f16" (default), "q8_0", or "q4_0"
 ```
+
+Q4_0 is smaller but noticeably lossier; keep Q8_0 or F16 when quality matters.
 
 ## Sampling
 
@@ -141,12 +144,23 @@ engage.
 
 Measured on this host with a short temperature-0 code prompt, MTP-only decode is
 about 11 tok/s warm at ~55% draft acceptance, up from the ~8 tok/s n-gram-only
-baseline, and the Vulkan shader cache now persists across restarts. N-gram
-self-speculation was removed from the host profile: `--spec-type ngram-simple`
-changed nothing once MTP was on, and chaining the stronger `ngram-mod` made
-acceptance fall (0.56 to 0.38) with decode dropping from ~11 to ~6.4 tok/s.
-Prefill remains the bottleneck at roughly 12 tok/s, dominated by the PLE table
-path; that is the next thing worth optimizing.
+baseline. A sweep of the cheap, quality-neutral levers then selected the current
+profile:
+
+- `--cache-type-k/v q8_0` plus `--n-cpu-moe 40`: best decode (about 12 tok/s
+  short-prompt, 13 tok/s on a longer reasoning generation), because the smaller
+  KV frees VRAM for two more expert layers.
+- `--threads-batch 16` (SMT oversubscription): clearly worse, decode fell to
+  ~4-9 tok/s. Threads stay at the 8 physical cores.
+- `--lazy-mode off` and `ngram-mod` chaining: no reliable gain, so left at the
+  default (`auto`) and removed respectively. n-gram self-speculation in general
+  no longer pays once MTP is on.
+- `--reasoning-budget` is available and deliberately left unset to preserve
+  reasoning quality; set a per-request budget only when latency matters more.
+
+The Vulkan shader cache now persists across restarts. Prefill remains the
+bottleneck at roughly 12 tok/s, dominated by the PLE table path; that is the
+next thing worth optimizing.
 
 ## GPU Acceleration (Intel Arc Pro B60)
 
@@ -158,8 +172,9 @@ router, the layer split and loader flags are set directly on the host:
 repo.qwenFlashNext.gpu.enable = true;   # builds llama.cpp with GGML_VULKAN
 repo.qwenFlashNext.gpuLayers = "all";   # offload every non-expert tensor
 repo.qwenFlashNext.cpuMoe = false;      # --n-cpu-moe supersedes --cpu-moe
+repo.qwenFlashNext.kvCacheType = "q8_0"; # frees VRAM for more expert layers
 repo.qwenFlashNext.extraArgs = [
-  "--n-cpu-moe" "42"        # first 42 of 48 expert layers stay in system RAM
+  "--n-cpu-moe" "40"        # first 40 of 48 expert layers stay in system RAM
   "--load-mode" "none"      # bypass mmap for the PLE table (see below)
   "--no-host"
   "--no-op-offload"
@@ -188,13 +203,16 @@ systemd unit gains access to the `render` and `video` groups and `/dev/dri`.
 
 Expectations with a single 24 GB Arc Pro B60 and ~87 GiB of weights:
 
-- `n-gpu-layers = all` plus `n-cpu-moe = 42` sends every dense and attention
-  tensor to the GPU and keeps the last 6 of 48 layers' MoE experts in VRAM
-  while the first 42 layers' experts stay in system RAM. Offloading the whole
+- `n-gpu-layers = all` plus `n-cpu-moe = 40` sends every dense and attention
+  tensor to the GPU and keeps the last 8 of 48 layers' MoE experts in VRAM
+  while the first 40 layers' experts stay in system RAM. Offloading the whole
   expert pool is not possible.
-- Measured on this host, `n-cpu-moe = 42` beats `--cpu-moe` by about 9% decode
-  and 18% prefill. Going to `n-cpu-moe = 38` (10 expert layers on the GPU)
-  overflows the 24 GiB card and decode collapses to roughly half.
+- The Q8_0 KV cache is what makes `n-cpu-moe = 40` fit. With an F16 KV cache
+  the extra expert layers overflow the 24 GiB card; the smaller KV frees enough
+  VRAM for two more layers. KV is allocated at load, so a configuration that
+  starts is stable. Measured on this host, moving 42 to 40 with Q8_0 KV raised
+  warm decode from roughly 11 to 12 tok/s on short prompts and about 8 to 13 on
+  longer reasoning generations.
 - The UI model is stopped before Qwen starts so the card is free; do not run
   both models at once.
 - ReBAR must be enabled in firmware; without it llama.cpp falls back to slow
