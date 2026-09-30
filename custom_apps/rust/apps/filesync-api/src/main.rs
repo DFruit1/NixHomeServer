@@ -1,6 +1,6 @@
 use axum::{
     body::Body,
-    extract::{Query, State},
+    extract::{DefaultBodyLimit, Query, State},
     http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -8,7 +8,11 @@ use axum::{
 };
 use cap_std::{ambient_authority, fs::Dir};
 use futures_util::StreamExt;
-use jsonwebtoken::{decode, decode_header, jwk::JwkSet, Algorithm, DecodingKey, Validation};
+use jsonwebtoken::{
+    decode, decode_header,
+    jwk::{Jwk, JwkSet},
+    Algorithm, DecodingKey, Validation,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -18,9 +22,12 @@ use std::{
     io::{self, Read},
     path::{Component, Path, PathBuf},
     sync::Arc,
-    time::{Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use tokio::{io::AsyncWriteExt, sync::RwLock};
+use tokio::{
+    io::AsyncWriteExt,
+    sync::{Mutex, RwLock},
+};
 use tokio_util::io::ReaderStream;
 use uuid::Uuid;
 
@@ -29,6 +36,13 @@ mod manifest;
 use manifest::{CachedManifest, LocalFile, ManifestKey};
 
 const SERVICE: &str = "filesync-api";
+
+/// One estimate request carries one `(path, size, mtime)` record per device
+/// file, so a large library can exceed axum's 2 MiB default body limit.
+const ESTIMATE_BODY_LIMIT: usize = 64 * 1024 * 1024;
+
+/// Minimum spacing between JWKS refreshes triggered by an unknown `kid`.
+const JWKS_REFRESH_MIN_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Reserved root id that stands for the personal folder itself rather than one
 /// of its library folders. It lets a client start browsing at the top of a
@@ -74,6 +88,11 @@ struct AppState {
     jwks_uri: String,
     userinfo_endpoint: String,
     jwks: RwLock<JwkSet>,
+    /// Serializes JWKS refreshes so a burst of unknown-`kid` requests triggers
+    /// one fetch instead of one per request.
+    jwks_refresh: Mutex<()>,
+    /// When the JWKS was last fetched, to bound outbound refreshes.
+    jwks_refreshed_at: RwLock<Instant>,
     identities: RwLock<HashMap<String, CachedIdentity>>,
     /// Server-side folder manifests, keyed by (username, root id, path).
     /// Holds the recursive walk and any hashes it produced so a repeated
@@ -224,6 +243,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         jwks_uri: metadata.jwks_uri,
         userinfo_endpoint: metadata.userinfo_endpoint,
         jwks: RwLock::new(jwks),
+        jwks_refresh: Mutex::new(()),
+        jwks_refreshed_at: RwLock::new(Instant::now()),
         identities: RwLock::new(HashMap::new()),
         manifests: RwLock::new(HashMap::new()),
     });
@@ -234,7 +255,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/v1/me", get(me))
         .route("/api/v1/presets", get(presets))
         .route("/api/v1/library-sizes", get(library_sizes))
-        .route("/api/v1/estimate", post(estimate))
+        .route(
+            "/api/v1/estimate",
+            post(estimate).layer(DefaultBodyLimit::max(ESTIMATE_BODY_LIMIT)),
+        )
         .route("/api/v1/tree", get(tree))
         .route("/api/v1/file", get(download).put(upload))
         .with_state(state.clone());
@@ -248,7 +272,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 }
 
 async fn shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+
+    // systemd stops the unit with SIGTERM, so drain in-flight transfers on it
+    // too rather than letting the default disposition cut them off.
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut stream) => {
+                stream.recv().await;
+            }
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
 }
 
 async fn fetch_jwks(
@@ -262,6 +307,35 @@ async fn fetch_jwks(
         .error_for_status()?
         .json()
         .await?)
+}
+
+/// Return the decoding key for `kid`, refreshing the JWKS at most once per
+/// `JWKS_REFRESH_MIN_INTERVAL`.
+///
+/// The refresh is serialized and rate-limited: without it an unauthenticated
+/// caller could send a valid-shaped token with an arbitrary `kid` and force an
+/// outbound fetch to Kanidm on every request.
+async fn jwk_for(state: &AppState, kid: &str) -> Result<Option<Jwk>, ()> {
+    if let Some(jwk) = state.jwks.read().await.find(kid).cloned() {
+        return Ok(Some(jwk));
+    }
+    let _guard = state.jwks_refresh.lock().await;
+    // Another task may have refreshed while this one waited for the lock.
+    if let Some(jwk) = state.jwks.read().await.find(kid).cloned() {
+        return Ok(Some(jwk));
+    }
+    if state.jwks_refreshed_at.read().await.elapsed() < JWKS_REFRESH_MIN_INTERVAL {
+        return Ok(None);
+    }
+    match fetch_jwks(&state.http, &state.jwks_uri).await {
+        Ok(fresh) => {
+            let found = fresh.find(kid).cloned();
+            *state.jwks.write().await = fresh;
+            *state.jwks_refreshed_at.write().await = Instant::now();
+            Ok(found)
+        }
+        Err(_) => Err(()),
+    }
 }
 
 async fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<String, Response> {
@@ -304,28 +378,22 @@ async fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<String, R
         ));
     };
 
-    let mut jwk = { state.jwks.read().await.find(kid).cloned() };
-    if jwk.is_none() {
-        match fetch_jwks(&state.http, &state.jwks_uri).await {
-            Ok(fresh) => {
-                *state.jwks.write().await = fresh;
-            }
-            Err(_) => {
-                return Err(api_error(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "IDENTITY_UNAVAILABLE",
-                    "Kanidm signing keys could not be refreshed.",
-                ))
-            }
+    let jwk = match jwk_for(state, kid).await {
+        Ok(Some(jwk)) => jwk,
+        Ok(None) => {
+            return Err(api_error(
+                StatusCode::UNAUTHORIZED,
+                "INVALID_TOKEN",
+                "The access token signing key is unknown.",
+            ))
         }
-        jwk = state.jwks.read().await.find(kid).cloned();
-    }
-    let Some(jwk) = jwk else {
-        return Err(api_error(
-            StatusCode::UNAUTHORIZED,
-            "INVALID_TOKEN",
-            "The access token signing key is unknown.",
-        ));
+        Err(()) => {
+            return Err(api_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "IDENTITY_UNAVAILABLE",
+                "Kanidm signing keys could not be refreshed.",
+            ))
+        }
     };
     let key = DecodingKey::from_jwk(&jwk).map_err(|_| {
         api_error(
@@ -533,7 +601,7 @@ fn home_folders(state: &AppState, username: &str) -> Vec<String> {
         .map(|root| root.folder.clone())
         .collect();
     folders.sort_by_key(|folder| folder.to_lowercase());
-    folders.dedup();
+    folders.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
     folders
 }
 
@@ -951,10 +1019,15 @@ async fn download(
     .await;
     match file {
         Ok(Ok(file)) => {
+            let length = file.metadata().map(|metadata| metadata.len()).ok();
             let file = tokio::fs::File::from_std(file);
-            Response::builder()
+            let mut builder = Response::builder()
                 .status(StatusCode::OK)
-                .header(header::CONTENT_TYPE, "application/octet-stream")
+                .header(header::CONTENT_TYPE, "application/octet-stream");
+            if let Some(length) = length {
+                builder = builder.header(header::CONTENT_LENGTH, length.to_string());
+            }
+            builder
                 .body(Body::from_stream(ReaderStream::new(file)))
                 .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
         }
@@ -1118,6 +1191,11 @@ async fn upload(
             "IO_ERROR",
             "The uploaded file could not be installed.",
         );
+    }
+    // The file contents are synced; fsync the directory so the rename that
+    // installs them is durable too and a crash cannot leave them unreferenced.
+    if let Ok(dir_handle) = dir.open_dir(".") {
+        let _ = dir_handle.into_std_file().sync_all();
     }
     (StatusCode::CREATED, Json(json!({ "size": bytes_written }))).into_response()
 }

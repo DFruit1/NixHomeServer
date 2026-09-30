@@ -72,13 +72,6 @@ impl Manifest {
             .ok()
             .map(|index| &self.entries[index])
     }
-
-    fn find_mut(&mut self, path: &str) -> Option<&mut ManifestEntry> {
-        self.entries
-            .binary_search_by(|entry| entry.path.as_str().cmp(path))
-            .ok()
-            .map(|index| &mut self.entries[index])
-    }
 }
 
 pub type ManifestKey = (String, String, String);
@@ -199,12 +192,34 @@ pub fn reuse_hashes(manifest: &mut Manifest, previous: Option<&Manifest>) {
     }
 }
 
-/// Hash one file and remember the result for the next estimate.
+/// Hash one file by path and remember the result for the next estimate.
 fn hash_entry(manifest: &mut Manifest, root: &Path, path: &str) -> io::Result<Option<String>> {
-    if let Some(existing) = manifest.find(path).and_then(|entry| entry.hash.clone()) {
+    match manifest
+        .entries
+        .binary_search_by(|entry| entry.path.as_str().cmp(path))
+    {
+        Ok(index) => hash_entry_at(manifest, root, index),
+        Err(_) => Ok(None),
+    }
+}
+
+/// Hash the manifest entry at `index` and cache the result on it.
+///
+/// Looking the entry up by index rather than by path lets a caller already
+/// walking the manifest hash it without cloning the path it holds no borrow to.
+fn hash_entry_at(manifest: &mut Manifest, root: &Path, index: usize) -> io::Result<Option<String>> {
+    if let Some(existing) = manifest
+        .entries
+        .get(index)
+        .and_then(|entry| entry.hash.clone())
+    {
         return Ok(Some(existing));
     }
-    let mut file = match std::fs::File::open(root.join(path)) {
+    let path = match manifest.entries.get(index) {
+        Some(entry) => entry.path.clone(),
+        None => return Ok(None),
+    };
+    let mut file = match std::fs::File::open(root.join(&path)) {
         Ok(file) => file,
         // A file that vanished between the walk and the read cannot be
         // compared. Reporting it as unchanged would silently drop it from the
@@ -222,7 +237,7 @@ fn hash_entry(manifest: &mut Manifest, root: &Path, path: &str) -> io::Result<Op
         }
     }
     let hash = format!("{:x}", hasher.finalize());
-    if let Some(entry) = manifest.find_mut(path) {
+    if let Some(entry) = manifest.entries.get_mut(index) {
         entry.hash = Some(hash.clone());
         manifest.hashed += 1;
     }
@@ -301,38 +316,43 @@ pub fn diff(
         return Ok(result);
     }
 
-    // A download is driven by what the server holds, so iterate the manifest.
-    // Paths are collected first because comparing mutates the manifest.
-    let paths: Vec<String> = manifest
-        .entries
+    // A download is driven by what the server holds. Index the device's files
+    // by path once so each remote entry is a single lookup instead of a scan of
+    // the whole device list, and walk the manifest by index so a comparison
+    // that hashes and caches a file can still borrow the manifest mutably.
+    let by_path: HashMap<&str, &LocalFile> = local
         .iter()
-        .map(|entry| entry.path.clone())
+        .map(|file| (file.path.as_str(), file))
         .collect();
-    for path in paths {
-        let Some((remote_size, remote_mtime)) = manifest.get(&path) else {
-            continue;
+    for index in 0..manifest.entries.len() {
+        let (remote_size, remote_mtime) = {
+            let entry = &manifest.entries[index];
+            (entry.size, entry.mtime_unix_ms)
         };
-        let Some(local_file) = local.iter().find(|file| file.path == path) else {
+        let local_file = {
+            let path = manifest.entries[index].path.as_str();
+            by_path.get(path).copied()
+        };
+        let Some(local_file) = local_file else {
             result.pending_bytes = result.pending_bytes.saturating_add(remote_size);
             result.pending_count += 1;
             continue;
         };
-        match compare(
-            manifest,
-            root,
-            &path,
-            remote_size,
-            remote_mtime,
-            local_file,
-            &mut result,
-        )? {
-            Outcome::Same => result.skipped += 1,
-            Outcome::Different => {
+        if remote_size == local_file.size && remote_mtime == local_file.mtime_unix_ms {
+            result.skipped += 1;
+            continue;
+        }
+        let Some(local_hash) = &local_file.hash else {
+            result.needs_hash.push(local_file.path.clone());
+            continue;
+        };
+        match hash_entry_at(manifest, root, index)? {
+            Some(remote_hash) if &remote_hash == local_hash => result.skipped += 1,
+            Some(_) => {
                 result.pending_bytes = result.pending_bytes.saturating_add(remote_size);
                 result.pending_count += 1;
             }
-            Outcome::Unreadable => result.unreadable.push(path.clone()),
-            Outcome::NeedHash => {}
+            None => result.unreadable.push(local_file.path.clone()),
         }
     }
     Ok(result)
