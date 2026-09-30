@@ -3,17 +3,36 @@ import type { AppConfig } from './config.js';
 
 const DEVICE_ID_PATTERN = /^[A-Z2-7]{7}-[A-Z2-7]{7}-[A-Z2-7]{7}-[A-Z2-7]{7}-[A-Z2-7]{7}-[A-Z2-7]{7}-[A-Z2-7]{7}-[A-Z2-7]{7}$/;
 
+// The device ID derives from Syncthing's keypair and cannot change while this
+// process runs, so a successful lookup is kept for the process lifetime
+// instead of spawning sudo on every render. A failed lookup is not retained:
+// the next render retries and surfaces the error again.
+const deviceIdCache = new Map<string, Promise<string>>();
+
 export const getSyncthingDeviceId = async (config: AppConfig): Promise<string | undefined> => {
   if (!config.syncthingDeviceIdCommand) {
     return undefined;
   }
 
-  const output = await runDeviceIdCommand(config);
-  const deviceId = output.trim();
-  if (!DEVICE_ID_PATTERN.test(deviceId)) {
-    throw new Error('Syncthing device ID command returned an invalid device ID');
+  const key = JSON.stringify([config.sudoPath, config.syncthingDeviceIdCommand]);
+  let pending = deviceIdCache.get(key);
+  if (!pending) {
+    pending = runDeviceIdCommand(config).then((output) => {
+      const deviceId = output.trim();
+      if (!DEVICE_ID_PATTERN.test(deviceId)) {
+        throw new Error('Syncthing device ID command returned an invalid device ID');
+      }
+      return deviceId;
+    });
+    deviceIdCache.set(key, pending);
+    const stored = pending;
+    void stored.catch(() => {
+      if (deviceIdCache.get(key) === stored) {
+        deviceIdCache.delete(key);
+      }
+    });
   }
-  return deviceId;
+  return pending;
 };
 
 const runDeviceIdCommand = (config: AppConfig): Promise<string> =>
