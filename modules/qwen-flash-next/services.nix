@@ -253,6 +253,15 @@ in
         ];
         SystemCallArchitectures = "native";
         ReadOnlyPaths = [ cfg.paths.root ];
+        # Under ProtectSystem=strict the Mesa/Vulkan shader cache cannot be
+        # written, so every start recompiles shaders. A writable per-service
+        # cache plus HOME/XDG_CACHE_HOME lets the loader persist it across
+        # restarts. Only needed for the Vulkan backend.
+        CacheDirectory = lib.mkIf cfg.gpu.enable "qwen-flash-next";
+        Environment = lib.mkIf cfg.gpu.enable [
+          "XDG_CACHE_HOME=/var/cache/qwen-flash-next"
+          "HOME=/var/cache/qwen-flash-next"
+        ];
       };
     };
   };

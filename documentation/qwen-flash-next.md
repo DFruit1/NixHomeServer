@@ -139,11 +139,14 @@ memory. Confirm speculative decoding is active by looking for the
 `draft acceptance = ...` line in the journal; if it never appears, MTP did not
 engage.
 
-The host also keeps self-speculative n-gram decoding (`--spec-type
-ngram-simple`), which needs no draft model. On this host it measured roughly
-+27% decode throughput (7.95 vs 6.27 tok/s, 22% draft acceptance) on ordinary
-prose at temperature 0. The two mechanisms chain in llama.cpp; re-measure the
-combination against MTP alone before assuming the n-gram pass still pays.
+Measured on this host with a short temperature-0 code prompt, MTP-only decode is
+about 11 tok/s warm at ~55% draft acceptance, up from the ~8 tok/s n-gram-only
+baseline, and the Vulkan shader cache now persists across restarts. N-gram
+self-speculation was removed from the host profile: `--spec-type ngram-simple`
+changed nothing once MTP was on, and chaining the stronger `ngram-mod` made
+acceptance fall (0.56 to 0.38) with decode dropping from ~11 to ~6.4 tok/s.
+Prefill remains the bottleneck at roughly 12 tok/s, dominated by the PLE table
+path; that is the next thing worth optimizing.
 
 ## GPU Acceleration (Intel Arc Pro B60)
 
@@ -157,7 +160,6 @@ repo.qwenFlashNext.gpuLayers = "all";   # offload every non-expert tensor
 repo.qwenFlashNext.cpuMoe = false;      # --n-cpu-moe supersedes --cpu-moe
 repo.qwenFlashNext.extraArgs = [
   "--n-cpu-moe" "42"        # first 42 of 48 expert layers stay in system RAM
-  "--spec-type" "ngram-simple"
   "--load-mode" "none"      # bypass mmap for the PLE table (see below)
   "--no-host"
   "--no-op-offload"
@@ -174,6 +176,11 @@ prefill; the upstream mmap path over-reads it and dominates real-text prefill,
 so bypassing mmap is a large TTFT win (upstream PR #28136 reports over 2x on
 realistic text). `--ubatch-size 2048` likewise amortizes prompt tokens over
 fewer expert-weight passes on the CPU-bound MoE path.
+
+The unit sets a writable `CacheDirectory` and points `HOME`/`XDG_CACHE_HOME` at
+it. Under `ProtectSystem=strict` the Mesa/Vulkan shader cache was otherwise
+unwritable and recompiled on every start; the module now persists it at
+`/var/cache/qwen-flash-next`.
 
 When enabled, the module activates `hardware.graphics` with the Intel compute
 runtime, media driver, mesa (ANV Vulkan driver), and Vulkan tools, and the

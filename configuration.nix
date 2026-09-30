@@ -42,7 +42,6 @@ in
         mtp.draftNMax = 4;
         extraArgs = [
           "--n-cpu-moe" "42"
-          "--spec-type" "ngram-simple"
           # --load-mode none bypasses mmap for the ~51B per-layer-embedding
           # (PLE) table. On qwen4exp mmap over-reads this table and dominates
           # real-text prefill (TTFT), so keep it off. The Arc loader flags also
