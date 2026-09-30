@@ -24,5 +24,6 @@ app // {
   };
   checks = app.checks // {
     inherit frontendDist;
+    frontend = frontendDist.check;
   };
 }

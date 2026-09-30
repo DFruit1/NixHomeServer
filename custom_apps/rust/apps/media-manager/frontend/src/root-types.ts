@@ -88,6 +88,10 @@ export interface DashboardState {
   session?: Session;
   roots: MediaRoot[];
   items: CatalogItem[];
+  itemCursors?: Record<string, string | null>;
+  itemsSearch?: string;
+  itemsLoading?: boolean;
+  itemsGeneration?: number;
   conversions?: ConversionEnvelope;
   selectedRootId: string;
   selectedCategory: string;
@@ -96,6 +100,7 @@ export interface DashboardState {
   errorDetail: string;
   notice: string;
   selectedItemId: string;
+  selectedItemSnapshot?: CatalogItem;
   editProfile: NamingProfile;
   editTitle: string;
   editYear: string;
@@ -116,6 +121,18 @@ export interface DashboardState {
   miniPlayerTitle: string;
   miniPlayerArtist: string;
   miniPlayerPauseToken: number;
+}
+
+// The open editor can outlive the current catalog page or search results.
+export function selectedCatalogItem(
+  state: DashboardState,
+): CatalogItem | undefined {
+  return (
+    state.items.find((item) => item.id === state.selectedItemId) ??
+    (state.selectedItemSnapshot?.id === state.selectedItemId
+      ? state.selectedItemSnapshot
+      : undefined)
+  );
 }
 
 export type NamingProfile =

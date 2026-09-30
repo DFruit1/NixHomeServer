@@ -99,7 +99,7 @@ export class JobDatabase extends SqliteDatabase {
     alert?: JobAlert;
   }): Promise<void> {
     const status = params.initialStatus ?? 'queued';
-    this.transaction(`
+    await this.transaction(`
       insert into jobs(id, parent_id, created_at, updated_at, created_by, status, request_json, alert_json)
       values (
         ${sqlValue(params.id)},
@@ -135,7 +135,7 @@ export class JobDatabase extends SqliteDatabase {
   }
 
   async setStatus(jobId: string, status: JobStatus, error?: string): Promise<void> {
-    this.transaction(`
+    await this.transaction(`
       update jobs
       set status = ${sqlValue(status)},
           updated_at = datetime('now'),
@@ -148,7 +148,7 @@ export class JobDatabase extends SqliteDatabase {
   }
 
   async setAlert(jobId: string, alert: JobAlert): Promise<void> {
-    this.transaction(`
+    await this.transaction(`
       update jobs
       set status = 'alert',
           updated_at = datetime('now'),
@@ -249,38 +249,8 @@ export class JobDatabase extends SqliteDatabase {
 
   /** Atomically reserves one queued job so concurrent queue pumps cannot start it twice. */
   async claimNextQueuedJob(): Promise<Job | undefined> {
-    const connection = this.getConnection();
-    connection.exec('begin immediate;');
-    try {
-      const row = connection.prepare(`
-        select * from jobs
-        where status = 'queued'
-        order by created_at asc, id asc
-        limit 1;
-      `).get() as JobRow | undefined;
-      if (!row) {
-        connection.exec('commit;');
-        return undefined;
-      }
-      const claimed = connection.prepare(`
-        update jobs
-        set status = 'probing', updated_at = datetime('now'), error = null
-        where id = ? and status = 'queued';
-      `).run(row.id);
-      if (Number(claimed.changes) !== 1) {
-        connection.exec('rollback;');
-        return undefined;
-      }
-      connection.prepare(`
-        insert into job_events(job_id, created_at, event_type, message, data_json)
-        values (?, datetime('now'), 'probing', 'Job claimed by worker', null);
-      `).run(row.id);
-      connection.exec('commit;');
-      return this.getJob(row.id);
-    } catch (error) {
-      connection.exec('rollback;');
-      throw error;
-    }
+    const id = await this.request<string | undefined>('claim');
+    return id ? this.getJob(id) : undefined;
   }
 
   async findCompletedDownload(request: CreateJobRequest, createdBy: string, excludeJobId?: string): Promise<Job | undefined> {
@@ -321,8 +291,7 @@ export class JobDatabase extends SqliteDatabase {
   }
 
   async pruneEvents(retentionDays: number): Promise<number> {
-    const connection = this.getConnection();
-    const statement = connection.prepare(`
+    return this.request<number>('prune', `
       delete from job_events
       where id in (
         select id from job_events
@@ -331,18 +300,7 @@ export class JobDatabase extends SqliteDatabase {
         order by id asc
         limit 10000
       );
-    `);
-    let deleted = 0;
-    for (;;) {
-      const result = statement.run(`-${Math.max(1, retentionDays)} days`);
-      const changes = Number(result.changes);
-      deleted += changes;
-      if (changes < 10000) {
-        break;
-      }
-    }
-    connection.exec('pragma wal_checkpoint(passive); pragma optimize;');
-    return deleted;
+    `, retentionDays);
   }
 
   private async rowToJob(row: JobRow): Promise<Job> {

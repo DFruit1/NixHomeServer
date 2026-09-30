@@ -1,4 +1,4 @@
-{ rustLib, workspaceVersion, workspaceSrc ? null, sharedCargoArtifacts ? null, cargoLock ? null, ... }:
+{ rustLib, workspaceVersion, workspaceSrc ? null, workspaceCheckSrc ? workspaceSrc, sharedCargoArtifacts ? null, cargoLock ? null, ... }:
 
 rustLib.mkRustApp {
   name = "ipfs-alias";
@@ -6,6 +6,6 @@ rustLib.mkRustApp {
   binaryName = "ipfs-alias";
   srcDir = ./.;
   modulePath = ../../../../modules/ipfs;
-  inherit workspaceSrc sharedCargoArtifacts cargoLock;
+  inherit workspaceSrc workspaceCheckSrc sharedCargoArtifacts cargoLock;
   meta.description = "Resolve private distribution aliases to pinned IPFS content.";
 }

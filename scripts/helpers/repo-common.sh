@@ -218,40 +218,33 @@ stage_archive_on_remote() {
   printf '%s\n' "$remote_archive"
 }
 
-nix_eval_with_optional_cache() {
-  local mode="$1"
-  local expr="$2"
-  local cache_dir="${REPO_NIX_EVAL_CACHE_DIR:-}"
-
+# This cache is scoped to one validation invocation: fixture/config mutations
+# must use a separate cache directory. Coalesce concurrent identical requests.
+nix_eval_with_optional_cache() (
+  local eval_output_mode="$1" expr="$2" cache_dir="${REPO_NIX_EVAL_CACHE_DIR:-}"
+  local cache_key cache_file tmp_file lock_fd environment_hash
   if [[ -n "$cache_dir" ]]; then
-    local cache_key cache_file tmp_file
-    cache_key="$(nix_cache_hash "${mode}"$'\n'"${repo_root}"$'\n'"${expr}")" || cache_key=""
+    environment_hash="$(env -0 | LC_ALL=C sort -z | sha256sum)" || return
+    cache_key="$(nix_cache_hash "${eval_output_mode}"$'\n'"${repo_root}"$'\n'"${NIXHOMESERVER_FLAKE_REF_FOR_EVAL:-}"$'\n'"${NIXHOMESERVER_REPO_ROOT_FOR_EVAL:-}"$'\n'"${environment_hash}"$'\n'"${expr}")" || cache_key=""
     if [[ -n "$cache_key" ]]; then
-      mkdir -p "$cache_dir"
-      cache_file="${cache_dir}/${cache_key}.${mode}"
+      mkdir -p "$cache_dir" || return
+      cache_file="${cache_dir}/${cache_key}.${eval_output_mode}"
+      exec {lock_fd}>"${cache_file}.lock"
+      flock "$lock_fd" || return
       if [[ -f "$cache_file" ]]; then
         cat "$cache_file"
-        return 0
+        return
       fi
-
-      tmp_file="${cache_file}.tmp.$$"
-      if [[ "$mode" == "raw" ]]; then
-        nix eval --raw --impure --expr "$expr" >"$tmp_file"
-      else
-        nix eval --json --impure --expr "$expr" >"$tmp_file"
-      fi
-      mv "$tmp_file" "$cache_file"
+      tmp_file="$(mktemp "${cache_file}.tmp.XXXXXX")" || return
+      trap 'rm -f "$tmp_file"' EXIT
+      nix eval "--${eval_output_mode}" --impure --expr "$expr" >"$tmp_file" || return
+      mv "$tmp_file" "$cache_file" || return
       cat "$cache_file"
-      return 0
+      return
     fi
   fi
-
-  if [[ "$mode" == "raw" ]]; then
-    nix eval --raw --impure --expr "$expr"
-  else
-    nix eval --json --impure --expr "$expr"
-  fi
-}
+  nix eval "--${eval_output_mode}" --impure --expr "$expr"
+)
 
 nix_json() {
   local expr="$1"

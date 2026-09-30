@@ -1,6 +1,6 @@
 { lib, pkgs, craneLib }:
 
-{ name, workspaceRoot, workspaceManifests, cargoLock, dependencyPaths ? [ "rust/lib-rs" ] }:
+{ name, workspaceRoot, workspaceManifests, cargoLock, dependencyPaths ? [ "rust/lib-rs" ], excludePrefixes ? [ "tests" ], extraSourcePrefixes ? [ ] }:
 
 let
   memberPaths = [ "rust/apps/${name}" ] ++ dependencyPaths;
@@ -12,11 +12,14 @@ let
         relative = lib.removePrefix "${toString workspaceRoot}/" (toString path);
         generated = lib.elem (builtins.baseNameOf path) [ "target" "node_modules" "dist" "coverage" ];
         member = lib.any (prefix: relative == prefix || lib.hasPrefix "${prefix}/" relative) memberPaths;
+        appRelative = lib.removePrefix "rust/apps/${name}/" relative;
+        excluded = lib.any (prefix: appRelative == prefix || lib.hasPrefix "${prefix}/" appRelative) excludePrefixes;
+        extra = lib.elem appRelative extraSourcePrefixes;
         ancestor = lib.any (prefix: lib.hasPrefix "${relative}/" prefix) memberPaths;
       in
-      !generated && lib.cleanSourceFilter path type
+      !generated && !excluded && lib.cleanSourceFilter path type
       && ((type == "directory" && ancestor)
-      || (member && (craneLib.filterCargoSources path type || lib.hasSuffix ".html" relative)));
+      || (member && (craneLib.filterCargoSources path type || extra)));
   };
   # Cargo still needs valid targets for every workspace member when resolving
   # the shared lockfile. Only manifest-derived stubs represent sibling apps.

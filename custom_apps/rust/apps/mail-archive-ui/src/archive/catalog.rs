@@ -357,15 +357,7 @@ pub(crate) fn refresh_attachment_catalog_for_user(
     }
     Ok(())
 }
-pub(crate) fn load_attachment_catalog_rows_for_account(
-    connection: &Connection,
-    account_id: i64,
-) -> Result<Vec<(AttachmentMessageRecord, AttachmentRecord)>, String> {
-    let mut statement = connection
-        .prepare(
-            r#"
-            SELECT
-                m.account_id,
+pub(crate) const ATTACHMENT_COLUMNS: &str = "m.account_id,
                 m.message_key,
                 m.message_relpath,
                 m.message_mtime,
@@ -391,56 +383,66 @@ pub(crate) fn load_attachment_catalog_rows_for_account(
                 c.last_verified_at,
                 c.created_at,
                 c.updated_at,
-                c.last_seen_at
-            FROM attachment_catalog c
-            INNER JOIN attachment_messages m
-                ON m.account_id = c.account_id
-               AND m.message_key = c.message_key
-            WHERE c.account_id = ?1
-            ORDER BY m.timestamp DESC, c.attachment_index ASC
-            "#,
-        )
-        .map_err(|error| format!("failed to prepare attachment catalog query: {error}"))?;
-    let rows = statement
-        .query_map(params![account_id], |row| {
-            Ok((
-                AttachmentMessageRecord {
-                    account_id: row.get(0)?,
-                    message_key: row.get(1)?,
-                    message_relpath: row.get(2)?,
-                    message_mtime: row.get(3)?,
-                    message_size: row.get(4)?,
-                    subject: row.get(5)?,
-                    from: row.get(6)?,
-                    timestamp: row.get(7)?,
-                    last_scanned_at: row.get(8)?,
-                    has_attachments: row.get::<_, i64>(9)? != 0,
-                },
-                AttachmentRecord {
-                    attachment_key: row.get(10)?,
-                    account_id: row.get(11)?,
-                    message_key: row.get(12)?,
-                    attachment_index: row.get(13)?,
-                    attachment_sha256: row.get(14)?,
-                    original_filename: row.get(15)?,
-                    safe_filename: row.get(16)?,
-                    extension: row.get(17)?,
-                    mime_type: row.get(18)?,
-                    size_bytes: row.get(19)?,
-                    is_inline_artifact: row.get::<_, i64>(20)? != 0,
-                    blob_relpath: row.get(21)?,
-                    source_message_sha256: row.get(22)?,
-                    last_verified_at: row.get(23)?,
-                    created_at: row.get(24)?,
-                    updated_at: row.get(25)?,
-                    last_seen_at: row.get(26)?,
-                },
-            ))
-        })
-        .map_err(|error| format!("failed to query attachment catalog rows: {error}"))?;
+                c.last_seen_at";
 
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("failed to decode attachment catalog rows: {error}"))
+pub(crate) trait AttachmentRow {
+    fn value<T: rusqlite::types::FromSql>(&self, index: usize) -> rusqlite::Result<T>;
+}
+impl AttachmentRow for rusqlite::Row<'_> {
+    fn value<T: rusqlite::types::FromSql>(&self, index: usize) -> rusqlite::Result<T> {
+        self.get(index)
+    }
+}
+impl AttachmentRow for rusqlite::functions::Context<'_> {
+    fn value<T: rusqlite::types::FromSql>(&self, index: usize) -> rusqlite::Result<T> {
+        self.get(index)
+    }
+}
+pub(crate) fn attachment_catalog_row(
+    row: &impl AttachmentRow,
+) -> rusqlite::Result<(AttachmentMessageRecord, AttachmentRecord)> {
+    Ok((
+        AttachmentMessageRecord {
+            account_id: row.value(0)?,
+            message_key: row.value(1)?,
+            message_relpath: row.value(2)?,
+            message_mtime: row.value(3)?,
+            message_size: row.value(4)?,
+            subject: row.value(5)?,
+            from: row.value(6)?,
+            timestamp: row.value(7)?,
+            last_scanned_at: row.value(8)?,
+            has_attachments: row.value::<i64>(9)? != 0,
+        },
+        AttachmentRecord {
+            attachment_key: row.value(10)?,
+            account_id: row.value(11)?,
+            message_key: row.value(12)?,
+            attachment_index: row.value(13)?,
+            attachment_sha256: row.value(14)?,
+            original_filename: row.value(15)?,
+            safe_filename: row.value(16)?,
+            extension: row.value(17)?,
+            mime_type: row.value(18)?,
+            size_bytes: row.value(19)?,
+            is_inline_artifact: row.value::<i64>(20)? != 0,
+            blob_relpath: row.value(21)?,
+            source_message_sha256: row.value(22)?,
+            last_verified_at: row.value(23)?,
+            created_at: row.value(24)?,
+            updated_at: row.value(25)?,
+            last_seen_at: row.value(26)?,
+        },
+    ))
+}
+
+pub(crate) fn load_attachment_catalog_rows_for_account(
+    connection: &Connection,
+    account_id: i64,
+) -> Result<Vec<(AttachmentMessageRecord, AttachmentRecord)>, String> {
+    connection.prepare(&format!("SELECT {ATTACHMENT_COLUMNS} FROM attachment_catalog c JOIN attachment_messages m ON m.account_id=c.account_id AND m.message_key=c.message_key WHERE c.account_id=?1 ORDER BY m.timestamp DESC, c.attachment_index ASC"))
+        .and_then(|mut statement| statement.query_map([account_id], |row| attachment_catalog_row(row))?.collect())
+        .map_err(|error| format!("failed to query attachment catalog: {error}"))
 }
 
 pub(crate) fn load_message_attachment_states_for_account(

@@ -134,6 +134,9 @@ test_scripts=(
   scripts/tests/test-freshness-marker.sh
   scripts/tests/test-rust-workspace-dependencies.sh
   scripts/tests/test-rust-source-isolation.sh
+  scripts/tests/test-frontend-build-isolation.sh
+  scripts/tests/test-nix-eval-cache.sh
+  scripts/tests/test-auth-gateway-compression.sh
   scripts/tests/test-app-registration.sh
   scripts/tests/test-shell-template.sh
   scripts/tests/test-validation-build-checks.sh
@@ -175,6 +178,9 @@ test_scripts=(
   scripts/tests/test-secret-structure.sh
   scripts/tests/test-secret-generation.sh
 )
+
+NIXHOMESERVER_DEFAULT_HOST="$(test_default_host)"
+export NIXHOMESERVER_DEFAULT_HOST
 
 active=0
 max_jobs=$(nproc 2>/dev/null || echo 2)

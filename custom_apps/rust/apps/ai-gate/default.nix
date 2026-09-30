@@ -1,4 +1,4 @@
-{ pkgs, rustLib, workspaceVersion, workspaceSrc ? null, sharedCargoArtifacts ? null, cargoLock ? null, ... }:
+{ pkgs, rustLib, workspaceVersion, workspaceSrc ? null, workspaceCheckSrc ? workspaceSrc, sharedCargoArtifacts ? null, cargoLock ? null, ... }:
 
 let
   app = rustLib.mkRustApp {
@@ -6,7 +6,7 @@ let
     version = workspaceVersion;
     binaryName = "ai-gate";
     srcDir = ./.;
-    inherit workspaceSrc sharedCargoArtifacts cargoLock;
+    inherit workspaceSrc workspaceCheckSrc sharedCargoArtifacts cargoLock;
     modulePath = ../../../modules/bonsai;
     nativeBuildInputs = [ pkgs.pkg-config ];
     shellEnv = {

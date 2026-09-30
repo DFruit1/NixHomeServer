@@ -43,7 +43,7 @@ test_default_host() {
     return
   fi
 
-  nix eval --raw --impure --expr '
+  nix_eval_with_optional_cache raw '
     let
       f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
       lib = f.inputs.nixpkgs.lib;
@@ -107,7 +107,7 @@ require_json_equal() {
 # (drvPath and other single strings) is printed to stdout.
 flake_eval() {
   local body="$1"
-  nix eval --impure --raw --expr "
+  nix_eval_with_optional_cache raw "
     let
       f = builtins.getFlake (builtins.getEnv \"NIXHOMESERVER_FLAKE_REF_FOR_EVAL\");
       lib = f.inputs.nixpkgs.lib;
@@ -118,7 +118,7 @@ flake_eval() {
 # JSON variant of flake_eval.
 flake_eval_json() {
   local body="$1"
-  nix eval --impure --json --expr "
+  nix_eval_with_optional_cache json "
     let
       f = builtins.getFlake (builtins.getEnv \"NIXHOMESERVER_FLAKE_REF_FOR_EVAL\");
       lib = f.inputs.nixpkgs.lib;

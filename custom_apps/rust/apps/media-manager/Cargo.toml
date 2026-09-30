@@ -13,7 +13,7 @@ lofty.workspace = true
 rand.workspace = true
 reqwest.workspace = true
 roxmltree.workspace = true
-rusqlite.workspace = true
+rusqlite = { workspace = true, features = ["functions"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

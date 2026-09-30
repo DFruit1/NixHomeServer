@@ -98,6 +98,7 @@ struct ItemsQuery {
     page_size: Option<usize>,
     #[serde(default)]
     include_video_probes: bool,
+    search: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -628,6 +629,9 @@ async fn items(
         }
     };
     let owner = (root.scope == RootScope::Personal).then_some(identity.username.as_str());
+    let page_size = query.page_size.unwrap_or(200).clamp(1, 500);
+    let cursor = query.cursor;
+    let search = query.search.unwrap_or_default();
     let catalog = match state.catalog.open() {
         Ok(catalog) => catalog,
         Err(error) => {
@@ -667,11 +671,11 @@ async fn items(
             }
         });
     }
-    let page_size = query.page_size.unwrap_or(200).clamp(1, 500);
-    let mut items = match catalog.list_items_after(
+    let mut items = match catalog.list_items_matching_after(
         &root.id,
         owner,
-        query.cursor.as_deref(),
+        cursor.as_deref(),
+        &search,
         page_size.saturating_add(1),
     ) {
         Ok(items) => items,

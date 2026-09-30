@@ -7,9 +7,11 @@ let
 
   workspaceSrcRoot = ../..;
   mkWorkspaceSource = import ../lib/mk-workspace-source.nix { inherit lib pkgs craneLib; };
-  workspaceSource = name: mkWorkspaceSource {
+  workspaceSource = name: checks: mkWorkspaceSource {
     inherit name cargoLock workspaceManifests;
     workspaceRoot = workspaceSrcRoot;
+    excludePrefixes = if checks then [ ] else [ "tests" ] ++ lib.optional (name == "mail-archive-ui") "src/tests.rs";
+    extraSourcePrefixes = lib.optional (name == "search") "src/ui.html";
   };
   # The shared dependency build must depend only on dependency manifests, not
   # on the workspace source. Otherwise any edit to an app .rs file invalidates
@@ -37,47 +39,56 @@ in
   ai-gate = import ./ai-gate/default.nix {
     inherit lib pkgs rustLib;
     inherit workspaceVersion sharedCargoArtifacts cargoLock;
-    workspaceSrc = workspaceSource "ai-gate";
+    workspaceSrc = workspaceSource "ai-gate" false;
+    workspaceCheckSrc = workspaceSource "ai-gate" true;
   };
   browsertrix-downloader = import ./browsertrix-downloader/default.nix {
     inherit lib pkgs rustLib;
     inherit workspaceVersion sharedCargoArtifacts cargoLock;
-    workspaceSrc = workspaceSource "browsertrix-downloader";
+    workspaceSrc = workspaceSource "browsertrix-downloader" false;
+    workspaceCheckSrc = workspaceSource "browsertrix-downloader" true;
   };
   kanidm-canary-bootstrap = import ./kanidm-canary-bootstrap/default.nix {
     inherit rustLib;
     inherit workspaceVersion sharedCargoArtifacts cargoLock;
-    workspaceSrc = workspaceSource "kanidm-canary-bootstrap";
+    workspaceSrc = workspaceSource "kanidm-canary-bootstrap" false;
+    workspaceCheckSrc = workspaceSource "kanidm-canary-bootstrap" true;
   };
   mail-archive-ui = import ./mail-archive-ui/default.nix {
     inherit lib pkgs rustLib;
     inherit workspaceVersion sharedCargoArtifacts cargoLock;
-    workspaceSrc = workspaceSource "mail-archive-ui";
+    workspaceSrc = workspaceSource "mail-archive-ui" false;
+    workspaceCheckSrc = workspaceSource "mail-archive-ui" true;
   };
   filesync-api = import ./filesync-api/default.nix {
     inherit lib pkgs rustLib;
     inherit workspaceVersion sharedCargoArtifacts cargoLock;
-    workspaceSrc = workspaceSource "filesync-api";
+    workspaceSrc = workspaceSource "filesync-api" false;
+    workspaceCheckSrc = workspaceSource "filesync-api" true;
   };
   ipfs-alias = import ./ipfs-alias/default.nix {
     inherit rustLib;
     inherit workspaceVersion sharedCargoArtifacts cargoLock;
-    workspaceSrc = workspaceSource "ipfs-alias";
+    workspaceSrc = workspaceSource "ipfs-alias" false;
+    workspaceCheckSrc = workspaceSource "ipfs-alias" true;
   };
   media-manager = import ./media-manager/default.nix {
     inherit lib pkgs rustLib;
     inherit workspaceVersion sharedCargoArtifacts cargoLock;
-    workspaceSrc = workspaceSource "media-manager";
+    workspaceSrc = workspaceSource "media-manager" false;
+    workspaceCheckSrc = workspaceSource "media-manager" true;
   };
   opencloud-share-gate = import ./opencloud-share-gate/default.nix {
     inherit rustLib;
     inherit workspaceVersion sharedCargoArtifacts cargoLock;
-    workspaceSrc = workspaceSource "opencloud-share-gate";
+    workspaceSrc = workspaceSource "opencloud-share-gate" false;
+    workspaceCheckSrc = workspaceSource "opencloud-share-gate" true;
   };
   search = import ./search/default.nix {
     inherit pkgs rustLib;
     inherit workspaceVersion sharedCargoArtifacts cargoLock;
-    workspaceSrc = workspaceSource "search";
+    workspaceSrc = workspaceSource "search" false;
+    workspaceCheckSrc = workspaceSource "search" true;
   };
   mkvmaker = import ../../mkvmaker/default.nix {
     inherit lib pkgs rustLib;

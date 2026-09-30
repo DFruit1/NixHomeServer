@@ -52,7 +52,7 @@ function libraryFetch(integrations: unknown[]) {
 describe("Media Manager in-view library filter", () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it("filters rendered titles and filenames without a server search", async () => {
+  it("filters rendered titles and filenames and searches the complete library", async () => {
     const fetchMock = libraryFetch([]);
     vi.stubGlobal("fetch", fetchMock);
 
@@ -76,6 +76,15 @@ describe("Media Manager in-view library filter", () => {
     );
     expect(screen.textContent).toContain("Arrival (2016).mkv");
     expect(screen.textContent).toContain("1 match");
+    expect(
+      fetchMock.mock.calls.some(([input]) => {
+        const url = new URL(String(input), "https://media.example");
+        return (
+          url.pathname.endsWith("/items") &&
+          url.searchParams.get("search") === "arrival"
+        );
+      }),
+    ).toBe(true);
     expect(
       fetchMock.mock.calls.some(([input]) =>
         String(input).includes("/items/search"),

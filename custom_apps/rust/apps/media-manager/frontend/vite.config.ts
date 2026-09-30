@@ -1,5 +1,5 @@
 import { qwikVite } from "@builder.io/qwik/optimizer";
-import { defineConfig } from "vitest/config";
+import { defineConfig } from "vite";
 
 export default defineConfig({
   appType: "spa",
@@ -36,12 +36,5 @@ export default defineConfig({
         },
       },
     },
-  },
-  test: {
-    // Nix CI shares a CPU quota with Rust builds. Multi-step DOM workflows need
-    // scheduling headroom; individual waitFor assertions keep their own limits.
-    testTimeout: process.env.CI ? 15_000 : 5_000,
-    environment: "jsdom",
-    exclude: ["dist/**", "node_modules/**"],
   },
 });

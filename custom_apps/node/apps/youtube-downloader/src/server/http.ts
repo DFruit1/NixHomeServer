@@ -36,7 +36,8 @@ export const handleRequest = async (context: ServerContext, request: IncomingMes
     await serveStatic(context.config, response, url.pathname);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    const status = message.includes('authenticated user') ? 401
+    const status = message.includes('Database is busy') ? 503
+      : message.includes('authenticated user') ? 401
       : message.includes('not authorised') ? 403
         : message.includes('content type') ? 415
           : message.includes('too large') ? 413

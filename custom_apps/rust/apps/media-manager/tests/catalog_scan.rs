@@ -9,6 +9,180 @@ use media_manager::{
 };
 
 #[test]
+fn directory_queries_treat_unicode_and_sql_wildcards_as_literal_paths() {
+    let dir = tempfile::tempdir().expect("temporary directory");
+    let mut catalog = Catalog::initialize(&dir.path().join("control.sqlite3")).expect("catalog");
+    let paths = [
+        ("音楽_100%/A.mkv", MediaKind::Video),
+        ("音楽_100%/B.srt", MediaKind::Subtitle),
+        ("音楽_100%/C.jpg", MediaKind::Artwork),
+        ("音楽_100%/Nested/D.mkv", MediaKind::Video),
+        ("音楽_100%/Nested/E.srt", MediaKind::Subtitle),
+        ("音楽X100extra/A.mkv", MediaKind::Video),
+        ("音楽_100%extra/A.srt", MediaKind::Subtitle),
+        ("root.mkv", MediaKind::Video),
+        ("root.srt", MediaKind::Subtitle),
+    ];
+    for owner in [None, Some("alice"), Some("bob")] {
+        let items = paths
+            .iter()
+            .enumerate()
+            .map(|(index, (path, kind))| ScannedItem {
+                id: format!("{}-{index}", owner.unwrap_or("shared")),
+                relative_path: path.to_string(),
+                media_kind: *kind,
+                size_bytes: 1,
+                modified_ns: 1,
+                fingerprint: "1:1".to_string(),
+            })
+            .collect::<Vec<_>>();
+        catalog
+            .reconcile_root("videos", owner, &items)
+            .expect("reconcile owner");
+    }
+    for owner in [None, Some("alice"), Some("bob")] {
+        for (directory, expected_media, expected_subtitle) in [
+            ("音楽_100%", "音楽_100%/A.mkv", "音楽_100%/B.srt"),
+            ("", "root.mkv", "root.srt"),
+        ] {
+            let media = catalog
+                .list_media_in_directory("videos", owner, directory)
+                .unwrap();
+            let subtitles = catalog
+                .list_subtitles_in_directory("videos", owner, directory, 256)
+                .unwrap();
+            assert_eq!(media.len(), 1);
+            assert_eq!(media[0].relative_path, expected_media);
+            assert_eq!(media[0].owner_username.as_deref(), owner);
+            assert_eq!(subtitles.len(), 1);
+            assert_eq!(subtitles[0].relative_path, expected_subtitle);
+            assert_eq!(subtitles[0].owner_username.as_deref(), owner);
+        }
+    }
+    assert!(catalog
+        .list_media_in_directory("other-root", None, "音楽_100%")
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn reconciliation_updates_classification_when_the_file_fingerprint_is_unchanged() {
+    let dir = tempfile::tempdir().expect("temporary directory");
+    let mut catalog = Catalog::initialize(&dir.path().join("control.sqlite3")).expect("catalog");
+    let mut item = ScannedItem {
+        id: "same-file".to_string(),
+        relative_path: "Episode.mp3".to_string(),
+        media_kind: MediaKind::Music,
+        size_bytes: 1,
+        modified_ns: 1,
+        fingerprint: "1:1".to_string(),
+    };
+    catalog
+        .reconcile_root("audio", None, std::slice::from_ref(&item))
+        .unwrap();
+    // Reclassifying a root must update the catalog even when file bytes and mtime stay the same.
+    item.media_kind = MediaKind::Podcast;
+    catalog.reconcile_root("audio", None, &[item]).unwrap();
+    assert_eq!(
+        catalog.list_items("audio", None, 100).unwrap()[0].media_kind,
+        MediaKind::Podcast
+    );
+}
+
+#[test]
+fn root_directory_queries_include_the_highest_unicode_scalar() {
+    let dir = tempfile::tempdir().expect("temporary directory");
+    let mut catalog = Catalog::initialize(&dir.path().join("control.sqlite3")).expect("catalog");
+    let items = [
+        ("video", MediaKind::Video, "\u{10ffff}.mkv"),
+        ("subtitle", MediaKind::Subtitle, "\u{10ffff}.srt"),
+    ]
+    .map(|(id, media_kind, path)| ScannedItem {
+        id: id.to_string(),
+        relative_path: path.to_string(),
+        media_kind,
+        size_bytes: 1,
+        modified_ns: 1,
+        fingerprint: "1:1".to_string(),
+    });
+    catalog.reconcile_root("videos", None, &items).unwrap();
+    assert_eq!(
+        catalog
+            .list_media_in_directory("videos", None, "")
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        catalog
+            .list_subtitles_in_directory("videos", None, "", 256)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn unchanged_reconciliation_preserves_item_timestamp_and_refreshes_root_scan() {
+    let dir = tempfile::tempdir().expect("temporary directory");
+    let database = dir.path().join("control.sqlite3");
+    let mut catalog = Catalog::initialize(&database).expect("catalog");
+    let item = ScannedItem {
+        id: "unchanged".to_string(),
+        relative_path: "Movie.mkv".to_string(),
+        media_kind: MediaKind::Video,
+        size_bytes: 1,
+        modified_ns: 1,
+        fingerprint: "1:1".to_string(),
+    };
+    catalog
+        .reconcile_root("videos", None, std::slice::from_ref(&item))
+        .unwrap();
+    let observer = rusqlite::Connection::open(&database).expect("observer");
+    // A trigger counts actual row updates, including writes which keep the same values.
+    observer
+        .execute_batch(
+            "UPDATE catalog_items SET scanned_at = '2000-01-01 00:00:00';
+         UPDATE catalog_scans SET scanned_at = '2000-01-01 00:00:00';
+         CREATE TABLE observed_item_writes (count INTEGER NOT NULL);
+         INSERT INTO observed_item_writes VALUES (0);
+         CREATE TRIGGER observe_item_update AFTER UPDATE ON catalog_items
+         BEGIN UPDATE observed_item_writes SET count = count + 1; END;",
+        )
+        .unwrap();
+
+    let outcome = catalog.reconcile_root("videos", None, &[item]).unwrap();
+    assert_eq!(outcome.changed, 0);
+    assert_eq!(outcome.removed, 0);
+    let updates: i64 = observer
+        .query_row("SELECT count FROM observed_item_writes", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(
+        updates, 0,
+        "unchanged catalog rows should never be rewritten"
+    );
+    let item_timestamp: String = observer
+        .query_row(
+            "SELECT scanned_at FROM catalog_items WHERE id = 'unchanged'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let root_timestamp: String = observer
+        .query_row(
+            "SELECT scanned_at FROM catalog_scans WHERE root_id = 'videos'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(item_timestamp, "2000-01-01 00:00:00");
+    assert_ne!(root_timestamp, "2000-01-01 00:00:00");
+    assert!(catalog.root_has_been_scanned("videos", None).unwrap());
+}
+
+#[test]
 fn subtitle_inventory_query_is_scoped_to_the_video_directory() {
     let dir = tempfile::tempdir().expect("temporary directory");
     let mut catalog = Catalog::initialize(&dir.path().join("control.sqlite3")).expect("catalog");

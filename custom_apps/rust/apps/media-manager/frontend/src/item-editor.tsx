@@ -1,3 +1,4 @@
+import { selectedCatalogItem } from "./root-types";
 import {
   $,
   component$,
@@ -276,9 +277,7 @@ export const ItemEditor = component$<{
   const cardRef = useSignal<HTMLElement>();
   const subtitlesOpen = useSignal(false);
   const writePortable = useSignal(true);
-  const selectedItem = props.state.items.find(
-    (item) => item.id === props.state.selectedItemId,
-  );
+  const selectedItem = selectedCatalogItem(props.state);
   const selectedRoot = props.state.roots.find(
     (root) => root.id === (props.folder?.rootId ?? selectedItem?.rootId),
   );
@@ -456,11 +455,7 @@ export const ItemEditor = component$<{
       section.value = "basics";
       writePortable.value = true;
     }
-    const item = props.folder
-      ? undefined
-      : props.state.items.find(
-          (candidate) => candidate.id === props.state.selectedItemId,
-        );
+    const item = props.folder ? undefined : selectedCatalogItem(props.state);
     metadata.itemId = selectionKey;
     metadata.isDraft = false;
     if (selectionChanged) {
@@ -1524,9 +1519,7 @@ export const ItemEditor = component$<{
                 <div class="source-accordion-body">
                   <SubtitleView
                     key={props.state.selectedItemId}
-                    item={props.state.items.find(
-                      (item) => item.id === props.state.selectedItemId,
-                    )}
+                    item={selectedCatalogItem(props.state)}
                     roots={props.state.roots}
                     session={props.state.session}
                     status={props.state.status}

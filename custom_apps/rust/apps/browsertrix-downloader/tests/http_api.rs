@@ -420,3 +420,45 @@ async fn mutations_require_same_origin_json() {
         StatusCode::UNSUPPORTED_MEDIA_TYPE
     );
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn sqlite_writer_wait_does_not_stall_the_async_runtime() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let app = test_app(&temp);
+    let config = AppConfig::for_test(temp.path());
+    let database = Database::open(&config.database_path).expect("database");
+    let crawl = CreateJobRequest {
+        url: "https://example.com/".to_owned(),
+        scope: CrawlScope::Page,
+        page_limit: 5,
+        time_limit_minutes: 2,
+        collection: None,
+    };
+    database.create_job("locked", "alice", &crawl).expect("job");
+    let writer = rusqlite::Connection::open(&config.database_path).expect("writer");
+    writer
+        .execute_batch("BEGIN IMMEDIATE")
+        .expect("write reservation");
+    let (release, wait) = std::sync::mpsc::channel();
+    // A watchdog releases the lock even when an unisolated handler blocks the
+    // single-thread runtime, so the regression fails without hanging the suite.
+    let unlock = std::thread::spawn(move || {
+        let _ = wait.recv_timeout(std::time::Duration::from_secs(2));
+        writer.execute_batch("ROLLBACK").expect("release writer");
+    });
+    let started = std::time::Instant::now();
+    let cancelling = tokio::spawn(async move {
+        app.oneshot(mutation("POST", "/api/jobs/locked/cancel", json!({})))
+            .await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    let timer_elapsed = started.elapsed();
+    release.send(()).ok();
+    let response = cancelling.await.expect("handler task").expect("response");
+    unlock.join().expect("unlock thread");
+    assert!(
+        timer_elapsed < std::time::Duration::from_secs(1),
+        "database wait stalled the runtime: {timer_elapsed:?}"
+    );
+    assert_eq!(response.status(), StatusCode::OK);
+}

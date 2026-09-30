@@ -4552,6 +4552,7 @@ dependencies = [
  "chrono",
  "flate2",
  "form_urlencoded",
+ "futures-util",
  "homelab-common",
  "html2text",
  "mailparse",

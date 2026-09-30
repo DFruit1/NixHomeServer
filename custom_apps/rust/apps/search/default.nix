@@ -1,4 +1,4 @@
-{ pkgs, rustLib, workspaceVersion, workspaceSrc ? null, sharedCargoArtifacts ? null, cargoLock ? null, ... }:
+{ pkgs, rustLib, workspaceVersion, workspaceSrc ? null, workspaceCheckSrc ? workspaceSrc, sharedCargoArtifacts ? null, cargoLock ? null, ... }:
 
 let
   app = rustLib.mkRustApp {
@@ -6,7 +6,7 @@ let
     version = workspaceVersion;
     binaryName = "search";
     srcDir = ./.;
-    inherit workspaceSrc sharedCargoArtifacts cargoLock;
+    inherit workspaceSrc workspaceCheckSrc sharedCargoArtifacts cargoLock;
     modulePath = ../../../modules/search;
     extraSourcePrefixes = [ "src/ui.html" ];
     nativeBuildInputs = [ pkgs.pkg-config ];

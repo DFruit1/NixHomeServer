@@ -18,6 +18,7 @@
 , # Optional workspace mode: build against a shared source tree and prebuilt
   # dependency artifacts so common crates (tokio/axum/serde/…) compile once.
   workspaceSrc ? null
+, workspaceCheckSrc ? workspaceSrc
 , sharedCargoArtifacts ? null
 , cargoLock ? null
 ,
@@ -73,7 +74,7 @@ let
     };
 
   packageSrc = if useWorkspace then workspaceSrc else mkSource "${name}-package-src" packageSourceExcludePrefixes;
-  checkSrc = if useWorkspace then workspaceSrc else mkSource "${name}-check-src" [ ];
+  checkSrc = if useWorkspace then workspaceCheckSrc else mkSource "${name}-check-src" [ ];
 
   # In workspace mode, scope every cargo invocation to this package and reuse
   # the shared dependency artifacts. clippy/nextest inherit cargoExtraArgs, so

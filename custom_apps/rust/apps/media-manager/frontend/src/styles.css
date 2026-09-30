@@ -6977,11 +6977,18 @@ a:focus-visible {
 }
 .library-toolbar-trailing {
   display: flex;
+  flex-wrap: wrap;
+  min-width: 0;
   align-items: center;
   gap: 14px;
   margin-left: auto;
 }
+.library-toolbar-trailing .secondary-button {
+  min-height: 44px;
+}
 .library-filter-summary {
+  min-width: 0;
+  overflow-wrap: anywhere;
   color: var(--ink-faint);
   font-family: var(--font-mono);
   font-size: 11px;

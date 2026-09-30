@@ -39,7 +39,7 @@ describe('sqlite state', () => {
     expect(job?.error).toBe('interrupted by service restart');
     const events = await db.query<{ event_type: string }>('select event_type from job_events where job_id = \'job-1\' order by id;');
     expect(events.map((event) => event.event_type)).toEqual(['queued', 'running']);
-    db.close();
+    await db.close();
   });
 
   it('finds completed duplicates by normalized URL and media type', async () => {
@@ -114,7 +114,7 @@ describe('sqlite state', () => {
     await db.clearHistory('alice');
     await expect(db.getJob('alice-job')).resolves.toBeUndefined();
     await expect(db.getJob('bob-job')).resolves.toBeDefined();
-    db.close();
+    await db.close();
   });
 
   it('atomically claims each queued job at most once', async () => {
@@ -126,7 +126,7 @@ describe('sqlite state', () => {
     const claims = await Promise.all([db.claimNextQueuedJob(), db.claimNextQueuedJob(), db.claimNextQueuedJob()]);
     expect(claims.filter(Boolean).map((job) => job?.id).sort()).toEqual(['job-1', 'job-2']);
     await expect(db.queuedJobs()).resolves.toEqual([]);
-    db.close();
+    await db.close();
   });
 
   it('drains terminal event retention backlogs larger than one batch', async () => {
@@ -148,6 +148,6 @@ describe('sqlite state', () => {
     expect(await db.pruneEvents(90)).toBe(10025);
     const oldEvents = await db.query<{ count: number }>("select count(*) as count from job_events where event_type = 'old-event';");
     expect(oldEvents[0]?.count).toBe(0);
-    db.close();
+    await db.close();
   });
 });

@@ -1,5 +1,5 @@
 import { qwikVite } from "@builder.io/qwik/optimizer";
-import { defineConfig } from "vitest/config";
+import { defineConfig } from "vite";
 
 export default defineConfig({
   appType: "custom",
@@ -20,9 +20,5 @@ export default defineConfig({
       host: "127.0.0.1",
       port: 5173,
     },
-  },
-  test: {
-    environment: "jsdom",
-    exclude: ["dist/**", "node_modules/**"],
   },
 });

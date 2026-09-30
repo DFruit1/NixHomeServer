@@ -268,6 +268,10 @@ let
   '';
   mkProtectedProxyConfig = name: app: ''
     ${commonAccessLog}
+    # Compress frontend assets and bounded listing responses. Media streams,
+    # range requests and authentication responses keep their existing path.
+    @compressible path *.js *.mjs *.css *.json /api/v1/items /api/jobs
+    encode @compressible zstd gzip
     route {
       ${stripSpoofableHeaders}
       @logout_${matcherName name} {

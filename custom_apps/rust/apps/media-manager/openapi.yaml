@@ -461,6 +461,11 @@ paths:
           name: includeVideoProbes
           schema:
             type: boolean
+        - in: query
+          name: search
+          description: Unicode case-insensitive literal substring of the full relative path; apply before pagination.
+          schema:
+            type: string
       responses:
         "200":
           description: Catalog items scoped to one visible root.

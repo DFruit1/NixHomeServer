@@ -77,7 +77,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()));
-  db.close();
+  await db.close();
   await rm(tempDir, { recursive: true, force: true });
 });
 

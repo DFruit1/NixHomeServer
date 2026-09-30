@@ -1,4 +1,4 @@
-{ pkgs, rustLib, workspaceVersion, workspaceSrc ? null, sharedCargoArtifacts ? null, cargoLock ? null, ... }:
+{ pkgs, rustLib, workspaceVersion, workspaceSrc ? null, workspaceCheckSrc ? workspaceSrc, sharedCargoArtifacts ? null, cargoLock ? null, ... }:
 
 let
   frontendDependencies = rustLib.mkPnpmDeps {
@@ -23,7 +23,7 @@ let
     binaryName = "media-manager";
     srcDir = ./.;
     modulePath = ../../../../modules/Core_Modules/media-manager;
-    inherit workspaceSrc sharedCargoArtifacts cargoLock;
+    inherit workspaceSrc workspaceCheckSrc sharedCargoArtifacts cargoLock;
     cargoNextestExtraArgs = "--package homelab-common";
     nativeBuildInputs = [ pkgs.pkg-config ];
     buildInputs = [ pkgs.sqlite ];

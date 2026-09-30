@@ -470,7 +470,7 @@ pub async fn prepare_upsert(client: &Client) -> Result<Statement, String> {
 }
 
 pub async fn upsert_document(
-    client: &Client,
+    client: &impl tokio_postgres::GenericClient,
     statement: &Statement,
     source: &SourceConfig,
     doc: &DocumentRecord,

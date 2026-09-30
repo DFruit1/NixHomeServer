@@ -40,7 +40,7 @@ const shutdown = (): void => {
     await queue.stop();
     server.closeAllConnections();
     await serverClosed;
-    db.close();
+    await db.close();
   })().catch((error) => {
     console.error('graceful shutdown failed', error);
     process.exitCode = 1;

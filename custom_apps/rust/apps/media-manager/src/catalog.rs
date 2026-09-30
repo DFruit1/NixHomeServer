@@ -294,6 +294,50 @@ impl Catalog {
         rows
     }
 
+    pub fn list_items_matching_after(
+        &self,
+        root_id: &str,
+        owner_username: Option<&str>,
+        after_relative_path: Option<&str>,
+        search: &str,
+        limit: usize,
+    ) -> rusqlite::Result<Vec<CatalogItem>> {
+        if search.trim().is_empty() {
+            return self.list_items_after(root_id, owner_username, after_relative_path, limit);
+        }
+        // SQLite lower() handles ASCII only; keep the browser's Unicode
+        // case-insensitive literal substring behavior without LIKE wildcards.
+        // https://docs.rs/rusqlite/0.40.1/rusqlite/functions/index.html
+        self.connection.create_scalar_function(
+            "path_matches",
+            1,
+            rusqlite::functions::FunctionFlags::SQLITE_UTF8
+                | rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC,
+            {
+                let needle = search.trim().to_lowercase();
+                move |ctx| Ok(ctx.get::<String>(0)?.to_lowercase().contains(&needle))
+            },
+        )?;
+        self.connection
+            .prepare(
+                "SELECT id, root_id, owner_username, relative_path, media_kind,
+                    size_bytes, modified_ns, fingerprint FROM catalog_items
+             WHERE root_id = ?1 AND owner_username IS ?2 AND relative_path > ?3
+               AND path_matches(relative_path)
+             ORDER BY relative_path LIMIT ?4",
+            )?
+            .query_map(
+                rusqlite::params![
+                    root_id,
+                    owner_username,
+                    after_relative_path.unwrap_or(""),
+                    limit.min(1000) as i64
+                ],
+                catalog_item_from_row,
+            )?
+            .collect()
+    }
+
     pub fn remove_items(&self, ids: &[String]) -> rusqlite::Result<usize> {
         let mut deleted = 0;
         for id in ids {
@@ -351,26 +395,34 @@ impl Catalog {
                     size_bytes, modified_ns, fingerprint
                FROM catalog_items
               WHERE root_id = ?1
-                AND (owner_username IS ?2 OR owner_username = ?2)
-                AND instr(relative_path, ?3) = 1
+                AND owner_username IS ?2
+                AND relative_path >= ?3 AND relative_path < ?4
                 AND substr(relative_path, length(?3) + 1) NOT LIKE '%/%'
                 AND media_kind != 'artwork'
                 AND media_kind != 'subtitle'
               ORDER BY relative_path",
         )?;
         let rows = statement
-            .query_map(rusqlite::params![root_id, owner_username, prefix], |row| {
-                Ok(CatalogItem {
-                    id: row.get(0)?,
-                    root_id: row.get(1)?,
-                    owner_username: row.get(2)?,
-                    relative_path: row.get(3)?,
-                    media_kind: row.get(4)?,
-                    size_bytes: row.get(5)?,
-                    modified_ns: row.get(6)?,
-                    fingerprint: row.get(7)?,
-                })
-            })?
+            .query_map(
+                rusqlite::params![
+                    root_id,
+                    owner_username,
+                    prefix,
+                    directory_upper_bound(directory)
+                ],
+                |row| {
+                    Ok(CatalogItem {
+                        id: row.get(0)?,
+                        root_id: row.get(1)?,
+                        owner_username: row.get(2)?,
+                        relative_path: row.get(3)?,
+                        media_kind: row.get(4)?,
+                        size_bytes: row.get(5)?,
+                        modified_ns: row.get(6)?,
+                        fingerprint: row.get(7)?,
+                    })
+                },
+            )?
             .collect();
         rows
     }
@@ -392,16 +444,22 @@ impl Catalog {
                     size_bytes, modified_ns, fingerprint
                FROM catalog_items
               WHERE root_id = ?1
-                AND (owner_username IS ?2 OR owner_username = ?2)
+                AND owner_username IS ?2
                 AND media_kind = 'subtitle'
-                AND instr(relative_path, ?3) = 1
+                AND relative_path >= ?3 AND relative_path < ?4
                 AND substr(relative_path, length(?3) + 1) NOT LIKE '%/%'
               ORDER BY relative_path
-              LIMIT ?4",
+              LIMIT ?5",
         )?;
         let rows = statement
             .query_map(
-                rusqlite::params![root_id, owner_username, prefix, limit as i64],
+                rusqlite::params![
+                    root_id,
+                    owner_username,
+                    prefix,
+                    directory_upper_bound(directory),
+                    limit as i64
+                ],
                 |row| {
                     Ok(CatalogItem {
                         id: row.get(0)?,
@@ -593,12 +651,21 @@ impl Catalog {
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let existing = {
             let mut statement = transaction.prepare(
-                "SELECT id, fingerprint FROM catalog_items
+                "SELECT id, fingerprint, media_kind, relative_path, size_bytes, modified_ns FROM catalog_items
                   WHERE root_id = ?1
                     AND (owner_username IS ?2 OR owner_username = ?2)",
             )?;
             let rows = statement.query_map(rusqlite::params![root_id, owner_username], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                Ok((
+                    row.get::<_, String>(0)?,
+                    (
+                        row.get::<_, String>(1)?,
+                        row.get::<_, MediaKind>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, i64>(5)?,
+                    ),
+                ))
             })?;
             rows.collect::<rusqlite::Result<std::collections::HashMap<_, _>>>()?
         };
@@ -607,13 +674,8 @@ impl Catalog {
             .map(|item| item.id.as_str())
             .collect::<std::collections::BTreeSet<_>>();
 
-        let mut changed = 0usize;
-        for item in items {
-            if existing.get(&item.id).map(String::as_str) != Some(item.fingerprint.as_str()) {
-                changed += 1;
-            }
-            transaction.execute(
-                "INSERT INTO catalog_items
+        let mut upsert = transaction.prepare(
+            "INSERT INTO catalog_items
                  (id, root_id, owner_username, relative_path, media_kind,
                   size_bytes, modified_ns, fingerprint, scanned_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, CURRENT_TIMESTAMP)
@@ -626,26 +688,42 @@ impl Catalog {
                    modified_ns = excluded.modified_ns,
                    fingerprint = excluded.fingerprint,
                    scanned_at = CURRENT_TIMESTAMP",
-                rusqlite::params![
-                    item.id,
-                    root_id,
-                    owner_username,
-                    item.relative_path,
-                    item.media_kind,
-                    item.size_bytes,
-                    item.modified_ns,
-                    item.fingerprint,
-                ],
-            )?;
+        )?;
+        let mut changed = 0usize;
+        for item in items {
+            if existing.get(&item.id).is_some_and(|previous| {
+                previous.0 == item.fingerprint
+                    && previous.1 == item.media_kind
+                    && previous.2 == item.relative_path
+                    && previous.3 == item.size_bytes
+                    && previous.4 == item.modified_ns
+            }) {
+                continue;
+            }
+            changed += 1;
+            upsert.execute(rusqlite::params![
+                item.id,
+                root_id,
+                owner_username,
+                item.relative_path,
+                item.media_kind,
+                item.size_bytes,
+                item.modified_ns,
+                item.fingerprint,
+            ])?;
         }
+
+        drop(upsert);
 
         let removed_ids = existing
             .keys()
             .filter(|id| !scanned_ids.contains(id.as_str()))
             .collect::<Vec<_>>();
+        let mut delete = transaction.prepare("DELETE FROM catalog_items WHERE id = ?1")?;
         for id in &removed_ids {
-            transaction.execute("DELETE FROM catalog_items WHERE id = ?1", [id.as_str()])?;
+            delete.execute([id.as_str()])?;
         }
+        drop(delete);
         transaction.execute(
             "INSERT INTO catalog_scans (root_id, owner_username, scanned_at)
              VALUES (?1, ?2, CURRENT_TIMESTAMP)
@@ -1233,4 +1311,17 @@ impl CatalogHandle {
 
 fn unsupported_schema(version: i64) -> rusqlite::Error {
     rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_SCHEMA), Some(format!("unsupported Media Manager schema version {version}; initialize the catalog before opening it")))
+}
+
+// A directory prefix ends in '/'. Its exclusive bytewise upper bound ends in
+// '0', the next ASCII character, so Unicode and SQL wildcard characters stay literal.
+fn directory_upper_bound(directory: &str) -> rusqlite::types::Value {
+    if directory.is_empty() {
+        // SQLite orders every TEXT value before BLOB values, including paths
+        // beginning with the highest Unicode scalar. No finite TEXT sentinel
+        // can bound the root directory correctly.
+        rusqlite::types::Value::Blob(Vec::new())
+    } else {
+        rusqlite::types::Value::Text(format!("{directory}0"))
+    }
 }

@@ -63,6 +63,7 @@ import {
   itemFromSearch,
   parseTvEpisodeFilename,
   pathFromSearch,
+  rootFromSearch,
   viewFromSearch,
 } from "./root-routing";
 import {
@@ -92,6 +93,7 @@ import {
   type TvEpisodeFields,
   type View,
   NAV_ITEMS,
+  selectedCatalogItem,
 } from "./root-types";
 
 export type { RootProps, TvEpisodeFields, View, IntegrationRefresh };
@@ -107,24 +109,16 @@ export {
   viewFromSearch,
 } from "./root-routing";
 
-async function loadRootItems(rootId: string): Promise<CatalogItem[]> {
-  const items: CatalogItem[] = [];
-  let cursor: string | null = null;
-  for (let page = 0; page < 200; page += 1) {
-    const params = new URLSearchParams({ rootId });
-    if (cursor) {
-      params.set("pageSize", "500");
-      params.set("cursor", cursor);
-    }
-    const result = await api<{
-      items: CatalogItem[];
-      nextCursor?: string | null;
-    }>(`/items?${params.toString()}`);
-    items.push(...result.items);
-    if (!result.nextCursor) return items;
-    cursor = result.nextCursor;
+async function loadRootItems(rootId: string, search = "", cursor?: string) {
+  const params = new URLSearchParams({ rootId });
+  if (search.trim()) params.set("search", search.trim());
+  if (cursor) {
+    params.set("cursor", cursor);
+    params.set("pageSize", "500");
   }
-  return items;
+  return api<{ items: CatalogItem[]; nextCursor?: string | null }>(
+    `/items?${params}`,
+  );
 }
 
 function beginItemEdit(
@@ -133,6 +127,7 @@ function beginItemEdit(
   item: CatalogItem,
 ) {
   state.selectedItemId = item.id;
+  state.selectedItemSnapshot = item;
   const category = roots.find((root) => root.id === item.rootId)?.category;
   const filename = item.relativePath.split("/").at(-1) ?? item.relativePath;
   const tvEpisode =
@@ -164,6 +159,10 @@ export default component$((props: RootProps) => {
   const state = useStore<DashboardState>({
     roots: [],
     items: [],
+    itemCursors: {},
+    itemsSearch: "",
+    itemsLoading: false,
+    itemsGeneration: 0,
     selectedRootId: "",
     selectedCategory: "",
     loading: true,
@@ -234,27 +233,102 @@ export default component$((props: RootProps) => {
     }),
   );
 
-  const loadCategoryItems = $(async (category: string) => {
-    const changingCategory = category !== state.selectedCategory;
-    if (
-      changingCategory &&
-      !allowMetadataDraftDiscard(state.metadataDraftDirty)
-    )
-      return;
-    if (changingCategory) state.metadataDraftDirty = false;
-    const categoryRoots = state.roots.filter(
-      (root) => root.category === category,
-    );
-    state.selectedCategory = category;
-    state.error = "";
-    try {
-      const results = await Promise.all(
-        categoryRoots.map((root) => loadRootItems(root.id)),
+  const loadCategoryItems = $(
+    async (category: string, search = "", firstPageOnly = false) => {
+      const changingCategory = category !== state.selectedCategory;
+      if (
+        changingCategory &&
+        !allowMetadataDraftDiscard(state.metadataDraftDirty)
+      )
+        return;
+      if (changingCategory) state.metadataDraftDirty = false;
+      const categoryRoots = state.roots.filter(
+        (root) => root.category === category,
       );
-      state.items = results.flat();
+      state.selectedCategory = category;
+      state.itemsSearch = search;
+      state.itemCursors = {};
+      state.error = "";
+      const generation = (state.itemsGeneration ?? 0) + 1;
+      state.itemsGeneration = generation;
+      state.itemsLoading = true;
+      let first = true;
+      try {
+        const requests = categoryRoots.map(async (root) => {
+          const result = await loadRootItems(root.id, search);
+          if (state.itemsGeneration !== generation) return;
+          const selection = result.items.find(
+            (item) => item.id === state.selectedItemId,
+          );
+          if (selection) state.selectedItemSnapshot = selection;
+          if (first) state.items = result.items;
+          else {
+            const merged = new Map(state.items.map((item) => [item.id, item]));
+            for (const item of result.items) merged.set(item.id, item);
+            state.items = [...merged.values()];
+          }
+          if (first) state.loading = false;
+          first = false;
+          state.itemCursors = {
+            ...state.itemCursors,
+            [root.id]: result.nextCursor ?? null,
+          };
+        });
+        const completion = Promise.allSettled(requests).then((results) => {
+          if (state.itemsGeneration !== generation) return;
+          if (first) state.items = [];
+          const failure = results.find(
+            (result) => result.status === "rejected",
+          );
+          if (failure?.status === "rejected") {
+            state.error = readableError(failure.reason);
+            state.errorDetail = errorDetail(failure.reason);
+          }
+          state.itemsLoading = false;
+        });
+        // Initial rendering waits only for the first usable pane. Other roots
+        // continue publishing under the same generation guard.
+        if (firstPageOnly && requests.length > 1) await Promise.any(requests);
+        else await completion;
+      } catch (error) {
+        if (state.itemsGeneration !== generation) return;
+        state.error = readableError(error);
+        state.errorDetail = errorDetail(error);
+      }
+    },
+  );
+
+  const loadMoreCategoryItems = $(async () => {
+    if (state.itemsLoading) return;
+    const generation = state.itemsGeneration;
+    const search = state.itemsSearch ?? "";
+    state.itemsLoading = true;
+    try {
+      await Promise.all(
+        Object.entries(state.itemCursors ?? {}).map(
+          async ([rootId, cursor]) => {
+            if (!cursor) return;
+            const result = await loadRootItems(rootId, search, cursor);
+            if (state.itemsGeneration !== generation) return;
+            const ids = new Set(state.items.map((item) => item.id));
+            state.items = [
+              ...state.items,
+              ...result.items.filter((item) => !ids.has(item.id)),
+            ];
+            state.itemCursors = {
+              ...state.itemCursors,
+              [rootId]: result.nextCursor ?? null,
+            };
+          },
+        ),
+      );
     } catch (error) {
-      state.error = readableError(error);
-      state.errorDetail = errorDetail(error);
+      if (state.itemsGeneration === generation) {
+        state.error = readableError(error);
+        state.errorDetail = errorDetail(error);
+      }
+    } finally {
+      if (state.itemsGeneration === generation) state.itemsLoading = false;
     }
   });
 
@@ -277,7 +351,7 @@ export default component$((props: RootProps) => {
       state.selectedRootId = selectedRoot?.id ?? "";
       state.selectedCategory = selectedRoot?.category ?? "";
       if (view.value === "library" && selectedRoot) {
-        await loadCategoryItems(selectedRoot.category);
+        await loadCategoryItems(selectedRoot.category, "", true);
         let requestedItem = state.items.find(
           (item) =>
             item.id === props.initialItemId && item.rootId === selectedRoot.id,
@@ -507,6 +581,9 @@ export default component$((props: RootProps) => {
             previewRename$={previewRename}
             confirmRename$={confirmRename}
             loadCategoryItems$={loadCategoryItems}
+            loadMoreItems$={loadMoreCategoryItems}
+            initialRootId={props.initialRootId}
+            initialPath={props.initialPath}
           />
         ) : view.value === "health" ? (
           <MetadataHealthView
@@ -1698,13 +1775,18 @@ const LibraryDetailPane = component$<{
     isLibraryKind(props.state.status, props.selectedItem.mediaKind)
       ? props.selectedItem
       : undefined;
+  const artworkItems =
+    props.selectedItem &&
+    !props.state.items.some((item) => item.id === props.selectedItem?.id)
+      ? [...props.state.items, props.selectedItem]
+      : props.state.items;
   const imageId = artworkCandidateId(
     props.state.status,
-    props.state.items,
+    artworkItems,
     props.state.selectedItemId,
     props.activeFolder,
   );
-  const imageItem = props.state.items.find((item) => item.id === imageId);
+  const imageItem = artworkItems.find((item) => item.id === imageId);
   const canEditCover =
     Boolean(selectedMediaItem) &&
     (props.state.session?.canEdit ?? false) &&
@@ -1805,19 +1887,28 @@ const LibraryView = component$<{
   selectItem$: QRL<(item: CatalogItem) => void>;
   previewRename$: QRL<() => Promise<void>>;
   confirmRename$: QRL<() => Promise<void>>;
-  loadCategoryItems$: QRL<(category: string) => Promise<void>>;
+  loadCategoryItems$: QRL<(category: string, search?: string) => Promise<void>>;
+  loadMoreItems$: QRL<() => Promise<void>>;
+  initialRootId?: string;
+  initialPath?: string;
 }>((props) => {
+  const initialRoot = props.state.roots.find(
+    (root) => root.id === props.initialRootId,
+  );
+  const folderRootId = useSignal(props.initialRootId ?? "");
   const personal = useStore({
     expanded: {} as Record<string, boolean>,
     activeByParent: {} as Record<string, string>,
     folderFilter: "",
-    selectedFolder: "",
+    selectedFolder:
+      initialRoot?.scope === "personal" ? (props.initialPath ?? "") : "",
   });
   const shared = useStore({
     expanded: {} as Record<string, boolean>,
     activeByParent: {} as Record<string, string>,
     folderFilter: "",
-    selectedFolder: "",
+    selectedFolder:
+      initialRoot?.scope === "shared" ? (props.initialPath ?? "") : "",
   });
   const previousCategory = useSignal(props.state.selectedCategory);
   const filter = useSignal("");
@@ -1831,6 +1922,7 @@ const LibraryView = component$<{
     props.state.preview = undefined;
     filter.value = "";
   });
+  const filterRevision = useSignal(0);
   const libraryRoots = props.state.roots.filter(
     (root) => root.category !== "iso",
   );
@@ -1869,9 +1961,7 @@ const LibraryView = component$<{
       integration.capabilities.includes("advanced-search") &&
       Boolean(integration.url),
   );
-  const selectedItem = props.state.items.find(
-    (item) => item.id === props.state.selectedItemId,
-  );
+  const selectedItem = selectedCatalogItem(props.state);
   const selectedItemRoot = props.state.roots.find(
     (root) => root.id === selectedItem?.rootId,
   );
@@ -1891,9 +1981,11 @@ const LibraryView = component$<{
   const activeFolderItems = personal.selectedFolder
     ? personalItems
     : sharedItems;
-  const activeFolderRootId = activeFolderItems.find((item) =>
-    item.relativePath.startsWith(`${activeFolder}/`),
-  )?.rootId;
+  const activeFolderRootId =
+    folderRootId.value ||
+    activeFolderItems.find((item) =>
+      item.relativePath.startsWith(`${activeFolder}/`),
+    )?.rootId;
   const selectPersonalFolder$ = $((path: string) => {
     const changingSelection =
       personal.selectedFolder !== path ||
@@ -1905,6 +1997,11 @@ const LibraryView = component$<{
     )
       return;
     if (changingSelection) props.state.metadataDraftDirty = false;
+    folderRootId.value =
+      personalItems.find((item) => item.relativePath.startsWith(`${path}/`))
+        ?.rootId ??
+      personalRoots[0]?.id ??
+      "";
     personal.selectedFolder = path;
     shared.selectedFolder = "";
     props.state.selectedItemId = "";
@@ -1922,6 +2019,11 @@ const LibraryView = component$<{
     )
       return;
     if (changingSelection) props.state.metadataDraftDirty = false;
+    folderRootId.value =
+      sharedItems.find((item) => item.relativePath.startsWith(`${path}/`))
+        ?.rootId ??
+      sharedRoots[0]?.id ??
+      "";
     shared.selectedFolder = path;
     personal.selectedFolder = "";
     props.state.selectedItemId = "";
@@ -2001,19 +2103,46 @@ const LibraryView = component$<{
       `${window.location.pathname}?${params.toString()}`,
     );
   });
+  const historyRevision = useSignal(0);
   useOnWindow(
     "popstate",
-    $(() => {
+    $(async () => {
       if (typeof window === "undefined") return;
+      if (!allowMetadataDraftDiscard(props.state.metadataDraftDirty)) return;
+      const revision = ++historyRevision.value;
       const search = window.location.search;
       if (viewFromSearch(search) !== "library") return;
       const itemId = itemFromSearch(search);
       const folderPath = pathFromSearch(search);
+      const rootId = rootFromSearch(search);
+      const root = props.state.roots.find(
+        (candidate) => candidate.id === rootId,
+      );
+      if (root && root.category !== props.state.selectedCategory) {
+        await props.loadCategoryItems$(root.category);
+        if (historyRevision.value !== revision) return;
+      }
+      if (root) props.state.selectedRootId = root.id;
       if (itemId) {
-        const item = props.state.items.find(
+        let item = props.state.items.find(
           (candidate) => candidate.id === itemId,
         );
-        if (!item) return;
+        if (!item) {
+          try {
+            item = await api<CatalogItem>(
+              `/items/${encodeURIComponent(itemId)}`,
+            );
+            if (historyRevision.value !== revision) return;
+            if (root && item.rootId !== root.id) return;
+            props.state.items = [...props.state.items, item];
+          } catch (error) {
+            if (historyRevision.value !== revision) return;
+            props.state.error = readableError(error);
+            props.state.errorDetail = errorDetail(error);
+            return;
+          }
+        }
+        if (root && item.rootId !== root.id) return;
         personal.selectedFolder = "";
         shared.selectedFolder = "";
         pushedSelection.value = `item:${itemId}`;
@@ -2022,11 +2151,14 @@ const LibraryView = component$<{
         return;
       }
       if (folderPath) {
-        const scope = personalItems.some((item) =>
-          item.relativePath.startsWith(`${folderPath}/`),
-        )
-          ? "personal"
-          : "shared";
+        folderRootId.value = root?.id ?? "";
+        const scope =
+          root?.scope ??
+          (personalItems.some((item) =>
+            item.relativePath.startsWith(`${folderPath}/`),
+          )
+            ? "personal"
+            : "shared");
         if (scope === "personal") {
           personal.selectedFolder = folderPath;
           shared.selectedFolder = "";
@@ -2060,7 +2192,7 @@ const LibraryView = component$<{
           body: JSON.stringify({ rootId: root.id }),
         });
       }
-      await props.loadCategoryItems$(activeCategory);
+      await props.loadCategoryItems$(activeCategory, filter.value);
       props.state.notice = "The library was refreshed from disk.";
     } catch (error) {
       props.state.error = readableError(error);
@@ -2079,20 +2211,44 @@ const LibraryView = component$<{
             value={filter.value}
             placeholder="Filter titles and filenames"
             aria-label="Filter titles and filenames in this library"
-            onInput$={(_, input) => (filter.value = input.value)}
+            onInput$={async (_, input) => {
+              filter.value = input.value;
+              const revision = ++filterRevision.value;
+              await new Promise((resolve) => setTimeout(resolve, 150));
+              if (revision !== filterRevision.value) return;
+              await props.loadCategoryItems$(
+                props.state.selectedCategory,
+                filter.value,
+              );
+            }}
           />
           {filtering && (
             <button
               type="button"
               class="library-filter-clear"
               aria-label="Clear filter"
-              onClick$={() => (filter.value = "")}
+              onClick$={async () => {
+                filterRevision.value += 1;
+                filter.value = "";
+                await props.loadCategoryItems$(props.state.selectedCategory);
+              }}
             >
               ×
             </button>
           )}
         </label>
         <div class="library-toolbar-trailing">
+          {Object.values(props.state.itemCursors ?? {}).some(Boolean) && (
+            <button
+              type="button"
+              class="secondary-button"
+              disabled={props.state.itemsLoading}
+              onClick$={props.loadMoreItems$}
+            >
+              Load more
+            </button>
+          )}
+          {props.state.itemsLoading && <span role="status">Loading…</span>}
           {filtering && (
             <span class="library-filter-summary" role="status">
               {matchCount === 0

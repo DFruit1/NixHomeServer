@@ -1801,6 +1801,67 @@ async fn read_only_mode_blocks_plan_retry_but_allows_abandon() {
 }
 
 #[tokio::test]
+async fn items_search_matches_unicode_literal_paths_before_paginating() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let app = test_app(&temp);
+    let videos = temp.path().join("shared/_Videos");
+    for name in ["a-unrelated.mkv", "b-unrelated.mkv"] {
+        std::fs::write(videos.join(name), b"movie").expect("unrelated movie");
+    }
+    let matching_directory = videos.join("ÉTOILE_100%");
+    std::fs::create_dir_all(&matching_directory).expect("matching directory");
+    for name in ["a.mkv", "b.mkv", "c.mkv"] {
+        std::fs::write(matching_directory.join(name), b"movie").expect("matching movie");
+    }
+    std::fs::create_dir_all(videos.join("ÉTOILEX100extra")).unwrap();
+    std::fs::write(videos.join("ÉTOILEX100extra/d.mkv"), b"movie").unwrap();
+    scan_root(&app, "shared-videos").await;
+
+    let mut cursor: Option<String> = None;
+    let mut paths = Vec::new();
+    for _ in 0..3 {
+        let mut url = reqwest::Url::parse("https://media.example/api/v1/items").unwrap();
+        {
+            let mut params = url.query_pairs_mut();
+            params.append_pair("rootId", "shared-videos");
+            params.append_pair("pageSize", "2");
+            params.append_pair("search", "étoile_100%");
+            if let Some(cursor) = &cursor {
+                params.append_pair("cursor", cursor);
+            }
+        }
+        let uri = format!("{}?{}", url.path(), url.query().unwrap());
+        let response = app.clone().oneshot(editor_get_request(&uri)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+        let page: Value = serde_json::from_slice(&body).unwrap();
+        paths.extend(
+            page["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|item| item["relativePath"].as_str().unwrap().to_string()),
+        );
+        cursor = page["nextCursor"].as_str().map(str::to_string);
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert_eq!(
+        paths,
+        [
+            "ÉTOILE_100%/a.mkv",
+            "ÉTOILE_100%/b.mkv",
+            "ÉTOILE_100%/c.mkv"
+        ]
+    );
+    assert!(
+        cursor.is_none(),
+        "matching results eventually finish pagination"
+    );
+}
+
+#[tokio::test]
 async fn items_paginate_with_cursors() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let app = test_app(&temp);

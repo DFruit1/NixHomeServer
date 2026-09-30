@@ -31,7 +31,7 @@ pub struct AppState {
 }
 
 pub fn router(state: AppState) -> Router {
-    Router::new()
+    let router = Router::new()
         .route("/healthz", get(health))
         .route("/api/me", get(me))
         .route(
@@ -46,7 +46,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/zims/{name}", get(serve_zim))
         .fallback(serve_static)
         .layer(axum::extract::DefaultBodyLimit::max(MAX_JSON_BODY_BYTES))
-        .with_state(state)
+        .with_state(state);
+    homelab_common::work::isolate_handlers(router, 16)
 }
 
 async fn serve_archive(

@@ -332,11 +332,24 @@ async fn push_batch(
         .map(|record| SolrDocument::from_record(source_id, record, &document_owner(record)))
         .collect();
     flush_solr(solr, solr_docs).await?;
-    for record in &records {
-        db::upsert_document(client, upsert, source, record)
-            .await
-            .map_err(|err| format!("failed to persist indexed documents: {err}"))?;
-    }
+    let transaction = client
+        .transaction()
+        .await
+        .map_err(|err| format!("failed to start document batch: {err}"))?;
+    // Poll the bounded Solr-sized batch concurrently to pipeline PostgreSQL
+    // requests; commit once, after every upsert has succeeded.
+    // https://docs.rs/tokio-postgres/0.7.17/tokio_postgres/#pipelining
+    futures_util::future::try_join_all(
+        records
+            .iter()
+            .map(|record| db::upsert_document(&transaction, upsert, source, record)),
+    )
+    .await
+    .map_err(|err| format!("failed to persist indexed documents: {err}"))?;
+    transaction
+        .commit()
+        .await
+        .map_err(|err| format!("failed to commit document batch: {err}"))?;
     Ok(())
 }
 
@@ -630,5 +643,176 @@ mod tests {
         assert_eq!(payload["owner_s"], json!("ACME"));
         // Metadata stays authoritative in Postgres and is not copied to Solr.
         assert!(payload.get("meta_correspondent_s").is_none());
+    }
+
+    /// Opt-in against a disposable PostgreSQL database. A private schema keeps
+    /// the fixture isolated; the HTTP stub exercises the real Solr request path.
+    #[tokio::test]
+    #[ignore = "requires disposable PostgreSQL fixture"]
+    async fn postgres_batch_rolls_back_recovers_and_replays_idempotently() {
+        use axum::{routing::post, Json, Router};
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        let database_url = std::env::var("SEARCH_BATCH_TEST_DATABASE_URL")
+            .expect("SEARCH_BATCH_TEST_DATABASE_URL must point to a disposable PostgreSQL fixture");
+        let mut client = db::connect(&database_url)
+            .await
+            .expect("fixture connection");
+        let schema = format!(
+            "search_batch_test_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        );
+        client
+            .batch_execute(&format!(
+                "CREATE SCHEMA {schema}; SET search_path TO {schema}"
+            ))
+            .await
+            .expect("isolated schema");
+        db::migrate(&mut client).await.expect("migrate");
+        let source = SourceConfig {
+            id: "batch-fixture".into(),
+            display_name: "Batch fixture".into(),
+            source_type: "paperless".into(),
+            app_base: "https://fixture.invalid".into(),
+            settings: Default::default(),
+        };
+        db::register_source(&mut client, &source)
+            .await
+            .expect("register source");
+        client.batch_execute("ALTER TABLE documents ADD CONSTRAINT reject_fixture_title CHECK (title <> 'reject-this-document')")
+            .await.expect("failure constraint");
+        let upsert = db::prepare_upsert(&client).await.expect("prepare upsert");
+        let calls = Arc::new(AtomicUsize::new(0));
+        let stub_calls = calls.clone();
+        let app = Router::new().route(
+            "/fixture/update",
+            post(move |Json(payload): Json<serde_json::Value>| {
+                let calls = stub_calls.clone();
+                async move {
+                    assert_eq!(
+                        payload["add"].as_array().expect("Solr add documents").len(),
+                        200
+                    );
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Json(json!({"responseHeader": {"status": 0}}))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("stub listener");
+        let address = listener.local_addr().expect("stub address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("Solr stub");
+        });
+        let solr = SolrClient::new(&format!("http://{address}"), "fixture");
+        let records = (0..200)
+            .map(|index| DocumentRecord {
+                external_id: format!("document-{index:03}"),
+                kind: "fixture".into(),
+                title: format!("Document {index}"),
+                body_text: "Fixture content".into(),
+                content_type: "text/plain".into(),
+                origin_url: String::new(),
+                app_url: String::new(),
+                file_path: String::new(),
+                size_bytes: 15,
+                checksum: format!("checksum-{index}"),
+                content_created_at: None,
+                content_modified_at: None,
+                metadata: json!({}),
+            })
+            .collect::<Vec<_>>();
+
+        // Fail near the end: all earlier pipelined writes must roll back too.
+        let mut rejected = records.clone();
+        rejected[199].title = "reject-this-document".into();
+        let error = push_batch(
+            &solr,
+            &mut client,
+            &upsert,
+            &source,
+            &source.id,
+            &mut rejected,
+        )
+        .await
+        .expect_err("one bad document must reject the whole batch");
+        assert!(
+            error.contains("failed to persist indexed documents"),
+            "{error}"
+        );
+        assert!(rejected.is_empty());
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "Solr succeeds before PostgreSQL rejects"
+        );
+        let count: i64 = client
+            .query_one("SELECT count(*) FROM documents", &[])
+            .await
+            .expect("same client recovers after rollback")
+            .get(0);
+        assert_eq!(count, 0, "no partial batch may survive");
+
+        let mut recovery = records.clone();
+        push_batch(
+            &solr,
+            &mut client,
+            &upsert,
+            &source,
+            &source.id,
+            &mut recovery,
+        )
+        .await
+        .expect("retry on the same client succeeds");
+        assert!(recovery.is_empty());
+        let count: i64 = client
+            .query_one("SELECT count(*) FROM documents", &[])
+            .await
+            .expect("count recovered documents")
+            .get(0);
+        assert_eq!(count, 200);
+
+        // Replay the same IDs with changed content: upsert updates, never duplicates.
+        let mut replay = records;
+        replay[0].title = "Updated document".into();
+        push_batch(
+            &solr,
+            &mut client,
+            &upsert,
+            &source,
+            &source.id,
+            &mut replay,
+        )
+        .await
+        .expect("idempotent replay succeeds");
+        let count: i64 = client
+            .query_one("SELECT count(*) FROM documents", &[])
+            .await
+            .expect("count replayed documents")
+            .get(0);
+        assert_eq!(count, 200);
+        let title: String = client
+            .query_one(
+                "SELECT title FROM documents WHERE external_id='document-000'",
+                &[],
+            )
+            .await
+            .expect("updated document")
+            .get(0);
+        assert_eq!(title, "Updated document");
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        client
+            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+            .await
+            .expect("fixture cleanup");
+        server.abort();
     }
 }

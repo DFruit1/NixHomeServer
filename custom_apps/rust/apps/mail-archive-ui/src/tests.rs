@@ -3815,3 +3815,318 @@ fn failed_database_migrations_roll_back_schema_changes() {
         .unwrap();
     assert_eq!(version, 0);
 }
+
+// Seed catalog rows directly: pagination tests should not spawn MIME extraction for
+// every entry in a mailbox larger than one page.
+fn seed_attachment_page_account(config: &AppConfig, username: &str) -> i64 {
+    let account_id = seed_account(config, username, "secret");
+    let account = read_account(config, username, account_id);
+    let paths = ensure_account_paths(config, &account).expect("account paths");
+    ensure_notmuch_config(config, &account, &paths).expect("notmuch config");
+    fs::create_dir_all(&paths.notmuch_db_root).expect("index directory");
+    account_id
+}
+
+fn seed_attachment_page_row(
+    connection: &Connection,
+    account_id: i64,
+    key: &str,
+    sender: &str,
+    timestamp: i64,
+    filename: &str,
+) {
+    connection
+        .execute(
+            "INSERT INTO attachment_messages (account_id, message_key, message_relpath,
+         message_mtime, message_size, subject, sender, timestamp, last_scanned_at,
+         has_attachments) VALUES (?1, ?2, ?3, 0, 100, 'Pagination fixture', ?4, ?5, '', 1)",
+            params![
+                account_id,
+                key,
+                format!("Inbox/cur/{key}"),
+                sender,
+                timestamp
+            ],
+        )
+        .expect("seed message");
+    connection
+        .execute(
+            "INSERT INTO attachment_catalog (attachment_key, account_id, message_key,
+         attachment_index, attachment_sha256, original_filename, safe_filename,
+         extension, mime_type, size_bytes, is_inline_artifact, created_at, updated_at,
+         last_seen_at) VALUES (?1, ?2, ?1, 0, ?1, ?3, ?3, 'pdf',
+         'application/pdf', 20, 0, '', '', '')",
+            params![key, account_id, filename],
+        )
+        .expect("seed attachment");
+}
+
+#[test]
+fn attachment_pagination_preserves_priority_order_counts_and_all_matching_downloads() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let config = test_config(&tempdir);
+    prepare_test_layout(&config);
+    let account_id = seed_attachment_page_account(&config, "alice");
+    let other_account = seed_attachment_page_account(&config, "bob");
+    let connection = open_db(&config).expect("db");
+    for index in 0..105 {
+        seed_attachment_page_row(
+            &connection,
+            account_id,
+            &format!("normal-{index:03}"),
+            "Normal <normal@news.example.com>",
+            index,
+            "invoice.pdf",
+        );
+    }
+    seed_attachment_page_row(
+        &connection,
+        account_id,
+        "important",
+        "VIP <vip@example.com>",
+        -1,
+        "invoice.pdf",
+    );
+    seed_attachment_page_row(
+        &connection,
+        account_id,
+        "ignored",
+        "Ignored <low@example.com>",
+        999,
+        "invoice.pdf",
+    );
+    seed_attachment_page_row(
+        &connection,
+        other_account,
+        "other-user",
+        "VIP <vip@example.com>",
+        9999,
+        "invoice.pdf",
+    );
+    upsert_sender_priority_rule(&config, "alice", "domain", "example.com", "low")
+        .expect("domain rule");
+    upsert_sender_priority_rule(&config, "alice", "address", "vip@example.com", "high")
+        .expect("address override");
+
+    let first = load_attachment_page_data(&config, "alice", &AttachmentListParams::default())
+        .expect("first page");
+    assert_eq!(first.items.len(), ATTACHMENTS_PER_PAGE);
+    assert_eq!(first.state.result_count, 107);
+    assert!(!first.state.has_previous_page);
+    assert!(first.state.has_next_page);
+    assert_eq!(first.items[0].attachment.attachment_key, "important");
+    assert_eq!(first.items[1].attachment.attachment_key, "normal-104");
+    let second = load_attachment_page_data(
+        &config,
+        "alice",
+        &AttachmentListParams {
+            page: Some("2".to_string()),
+            ..Default::default()
+        },
+    )
+    .expect("second page");
+    assert_eq!(second.items.len(), 107 - ATTACHMENTS_PER_PAGE);
+    assert_eq!(second.state.result_count, 107);
+    assert!(second.state.has_previous_page);
+    assert!(!second.state.has_next_page);
+    assert_eq!(
+        second.items.last().unwrap().attachment.attachment_key,
+        "ignored"
+    );
+    let expected = first
+        .items
+        .iter()
+        .chain(&second.items)
+        .map(|item| item.attachment.attachment_key.clone())
+        .collect::<Vec<_>>();
+    let keys = download_attachment_keys_for_form(
+        &config,
+        "alice",
+        &AttachmentDownloadForm {
+            selection_scope: Some(ATTACHMENT_SELECTION_ALL_MATCHING.to_string()),
+            ..Default::default()
+        },
+    )
+    .expect("all matching download");
+    assert_eq!(keys, expected);
+    assert_eq!(keys.iter().collect::<HashSet<_>>().len(), 107);
+    let outside = load_attachment_page_data(
+        &config,
+        "alice",
+        &AttachmentListParams {
+            page: Some("3".to_string()),
+            ..Default::default()
+        },
+    )
+    .expect("outside page");
+    assert!(outside.items.is_empty());
+    assert_eq!(outside.state.result_count, 107);
+}
+
+#[test]
+fn attachment_pagination_filters_and_triage_before_page_boundaries() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let config = test_config(&tempdir);
+    prepare_test_layout(&config);
+    let account_id = seed_attachment_page_account(&config, "alice");
+    let connection = open_db(&config).expect("db");
+    for index in 0..105 {
+        let key = format!("file-{index:03}");
+        seed_attachment_page_row(
+            &connection,
+            account_id,
+            &key,
+            "sender@example.com",
+            index,
+            if index < 3 {
+                "needle_100%.pdf"
+            } else {
+                "irrelevant.pdf"
+            },
+        );
+        if index >= 3 {
+            connection
+                .execute(
+                    "INSERT INTO attachment_dismissals VALUES ('alice', ?1, 'now')",
+                    params![key],
+                )
+                .expect("dismiss");
+        }
+    }
+    connection.execute("INSERT INTO attachment_paperless_handoffs VALUES ('alice', 'file-002', 'hash', 'invoice.pdf', 'consume.pdf', 'now')", []).expect("handoff");
+    let browse = load_attachment_page_data(&config, "alice", &AttachmentListParams::default())
+        .expect("browse");
+    assert_eq!(browse.state.result_count, 2);
+    assert_eq!(browse.items.len(), 2);
+    assert_eq!(browse.items[0].attachment.attachment_key, "file-001");
+    assert!(!browse.state.has_next_page);
+    let searched = load_attachment_page_data(
+        &config,
+        "alice",
+        &AttachmentListParams {
+            attachment_name: Some("NEEDLE_100%".to_string()),
+            ..Default::default()
+        },
+    )
+    .expect("literal filename search");
+    assert_eq!(searched.state.result_count, 3);
+    assert_eq!(searched.items.len(), 3);
+    assert!(searched.items[0].paperless_sent_at.is_some());
+    let keys = attachment_keys_for_params(
+        &config,
+        "alice",
+        &AttachmentListParams {
+            attachment_name: Some("needle_100%".to_string()),
+            ..Default::default()
+        },
+        200,
+    )
+    .expect("unfiled keys");
+    assert_eq!(keys, vec!["file-001", "file-000"]);
+}
+
+#[test]
+fn attachment_pagination_combines_notmuch_body_matches_with_literal_general_search() {
+    let mut commands = mail_export_stub_commands();
+    commands[1] = (
+        "notmuch",
+        r#"maildir="$(awk -F= '$1 == "mail_root" { print substr($0, index($0, "=") + 1); exit }' "$NOTMUCH_CONFIG")"
+if [[ "${1:-}" != 'search' ]]; then
+  exit 1
+fi
+printf '%s\n' "$maildir/Inbox/cur/body-hit"
+"#,
+    );
+    with_stubbed_path(&commands, |_| {
+        let tempdir = TempDir::new().expect("tempdir");
+        let config = test_config(&tempdir);
+        prepare_test_layout(&config);
+        let account_id = seed_attachment_page_account(&config, "alice");
+        let connection = open_db(&config).expect("db");
+        for index in 0..105 {
+            seed_attachment_page_row(
+                &connection,
+                account_id,
+                &format!("unmatched-{index}"),
+                "sender@example.com",
+                index,
+                "unrelated.pdf",
+            );
+        }
+        seed_attachment_page_row(
+            &connection,
+            account_id,
+            "body-hit",
+            "sender@example.com",
+            -1,
+            "unrelated.pdf",
+        );
+        seed_attachment_page_row(
+            &connection,
+            account_id,
+            "filename-hit",
+            "sender@example.com",
+            -2,
+            "needle.pdf",
+        );
+        let account = read_account(&config, "alice", account_id);
+        let paths = ensure_account_paths(&config, &account).expect("paths");
+        write_maildir_message(
+            &paths,
+            "Inbox/cur/body-hit",
+            "Subject: Body match\n\nneedle\n",
+        );
+        let general = load_attachment_page_data(
+            &config,
+            "alice",
+            &AttachmentListParams {
+                q: Some("needle".to_string()),
+                ..Default::default()
+            },
+        )
+        .expect("general body OR filename search");
+        assert_eq!(general.state.result_count, 2);
+        assert_eq!(
+            general
+                .items
+                .iter()
+                .map(|item| item.attachment.attachment_key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["body-hit", "filename-hit"]
+        );
+        let account_name_search = load_attachment_page_data(
+            &config,
+            "alice",
+            &AttachmentListParams {
+                q: Some("Personal Gmail".to_string()),
+                ..Default::default()
+            },
+        )
+        .expect("general search includes account display name");
+        assert_eq!(account_name_search.state.result_count, 107);
+        assert_eq!(account_name_search.items.len(), ATTACHMENTS_PER_PAGE);
+        let structured = load_attachment_page_data(
+            &config,
+            "alice",
+            &AttachmentListParams {
+                body_text: Some("needle".to_string()),
+                ..Default::default()
+            },
+        )
+        .expect("structured body-only search");
+        assert_eq!(structured.state.result_count, 1);
+        assert_eq!(structured.items[0].attachment.attachment_key, "body-hit");
+        let combined = load_attachment_page_data(
+            &config,
+            "alice",
+            &AttachmentListParams {
+                body_text: Some("needle".to_string()),
+                attachment_name: Some("needle".to_string()),
+                ..Default::default()
+            },
+        )
+        .expect("structured body AND attachment name search");
+        assert_eq!(combined.state.result_count, 0);
+        assert!(combined.items.is_empty());
+    });
+}

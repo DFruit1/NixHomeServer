@@ -1,4 +1,4 @@
-{ pkgs, rustLib, workspaceVersion, workspaceSrc ? null, sharedCargoArtifacts ? null, cargoLock ? null, ... }:
+{ pkgs, rustLib, workspaceVersion, workspaceSrc ? null, workspaceCheckSrc ? workspaceSrc, sharedCargoArtifacts ? null, cargoLock ? null, ... }:
 
 let
   frontendDependencies = rustLib.mkPnpmDeps {
@@ -23,7 +23,7 @@ let
     version = workspaceVersion;
     binaryName = "browsertrix-downloader";
     srcDir = ./.;
-    inherit workspaceSrc sharedCargoArtifacts cargoLock;
+    inherit workspaceSrc workspaceCheckSrc sharedCargoArtifacts cargoLock;
     modulePath = ../../../../modules/browsertrix-downloader;
     nativeBuildInputs = [ pkgs.pkg-config ];
     buildInputs = [ pkgs.sqlite ];

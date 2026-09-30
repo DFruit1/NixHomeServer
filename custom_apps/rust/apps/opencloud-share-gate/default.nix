@@ -1,4 +1,4 @@
-{ rustLib, workspaceVersion, workspaceSrc ? null, sharedCargoArtifacts ? null, cargoLock ? null, ... }:
+{ rustLib, workspaceVersion, workspaceSrc ? null, workspaceCheckSrc ? workspaceSrc, sharedCargoArtifacts ? null, cargoLock ? null, ... }:
 
 rustLib.mkRustApp {
   name = "opencloud-share-gate";
@@ -6,7 +6,7 @@ rustLib.mkRustApp {
   binaryName = "opencloud-share-gate";
   srcDir = ./.;
   modulePath = ../../../../modules/opencloud;
-  inherit workspaceSrc sharedCargoArtifacts cargoLock;
+  inherit workspaceSrc workspaceCheckSrc sharedCargoArtifacts cargoLock;
   meta = {
     description = "Signed-cookie gate that admits public Cloudflare traffic to OpenCloud and Collabora only after a valid public share link is opened.";
   };

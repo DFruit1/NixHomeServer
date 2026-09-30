@@ -81,7 +81,7 @@ describe('queue alerts', () => {
     await expect(queue.start()).rejects.toThrow(/shutting down/);
     await expect(queue.enqueue(user, request)).rejects.toThrow(/shutting down/);
     await expect(db.queuedJobs()).resolves.toEqual([]);
-    db.close();
+    await db.close();
   });
 
   it('waits for TERM then KILL child exit before shutdown resolves', async () => {
@@ -110,7 +110,7 @@ describe('queue alerts', () => {
       status: 'failed',
       error: 'interrupted by service shutdown',
     });
-    db.close();
+    await db.close();
   });
 
   it('waits for an in-flight queue claim before shutdown completes', async () => {
@@ -172,7 +172,7 @@ describe('queue alerts', () => {
     await expect(readFile(termMarker, 'utf8')).resolves.toBe('term');
     const childPid = Number(await readFile(marker, 'utf8'));
     expect(() => process.kill(childPid, 0)).toThrow();
-    db.close();
+    await db.close();
   });
 
   it('revalidates restored queued jobs before starting yt-dlp', async () => {
@@ -199,7 +199,7 @@ describe('queue alerts', () => {
     await expect(readFile(marker)).rejects.toThrow();
 
     await queue.stop(0);
-    db.close();
+    await db.close();
   });
 
   it('pauses duplicate jobs without queueing a worker-visible job', async () => {
@@ -421,7 +421,7 @@ process.stdout.write('[download] 100% of 1MiB\\n');
     expect([...job.files].sort()).toEqual(['Test Song.flac', 'Test Song.info.json']);
 
     await queue.stop(0);
-    db.close();
+    await db.close();
   });
 
   it('embeds chapter covers but never copies the folder-level cover into the library', async () => {
@@ -478,7 +478,7 @@ process.stdout.write('[download] 100% of 1MiB\\n');
     } finally {
       process.env.PATH = originalPath;
       await queue.stop(0);
-      db.close();
+      await db.close();
     }
   });
 });
