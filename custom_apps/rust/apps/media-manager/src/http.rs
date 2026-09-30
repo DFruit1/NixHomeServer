@@ -43,7 +43,7 @@ mod refresh;
 mod subtitles;
 
 use axum::{
-    body::{to_bytes, Bytes},
+    body::{to_bytes, Body, Bytes},
     extract::{Path, Query, Request, State},
     http::{
         header::{CACHE_CONTROL, CONTENT_TYPE},

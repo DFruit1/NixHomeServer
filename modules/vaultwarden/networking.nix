@@ -9,6 +9,7 @@ in
     logFormat = null;
     useACMEHost = vars.domain;
     extraConfig = ''
+      encode zstd gzip
       reverse_proxy http://${loopback}:${toString vars.networking.ports.vaultwarden} {
         header_up X-Forwarded-Proto https
       }

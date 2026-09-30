@@ -290,6 +290,18 @@ in
     boot.kernel.sysctl = {
       "fs.inotify.max_user_watches" = 524288;
       "fs.inotify.max_user_instances" = 1024;
+      # zram is the only swap device, so bias the kernel toward using it under
+      # pressure instead of letting the OOM killer pick a service.
+      "vm.swappiness" = 150;
+      # Solr, the local LLM and large media processes map many regions.
+      "vm.max_map_count" = 262144;
+      # Let dirty pages accumulate a little more before writeback; the data pool
+      # is HDD-backed and benefits from larger, sequential flushes.
+      "vm.dirty_background_ratio" = 5;
+      "vm.dirty_ratio" = 15;
+      "net.core.somaxconn" = 1024;
+      "fs.file-max" = 2097152;
+      "fs.nr_open" = 1048576;
     };
 
     systemd.services =
@@ -381,8 +393,63 @@ in
     }
     // lib.optionalAttrs (moduleEnabled "prowlarr") {
       prowlarr.serviceConfig = { MemoryHigh = "500M"; MemoryMax = "750M"; };
+    }
+    // lib.optionalAttrs (moduleEnabled "qbittorrent") {
+      qbittorrent.serviceConfig = {
+        MemoryHigh = "4G";
+        MemoryMax = "6G";
+      };
+    }
+    // lib.optionalAttrs (moduleEnabled "forgejo") {
+      forgejo.serviceConfig = {
+        MemoryHigh = "1G";
+        MemoryMax = "2G";
+      };
     };
   }
+
+  # Shared platform database tuning. The PostgreSQL cluster is created by the
+  # Search module and also backs Immich, so both share one set of server
+  # settings decided here rather than in either optional module. With 128 GB of
+  # RAM the stock defaults (shared_buffers 128 MB, effective_cache_size 4 GB)
+  # leave most of the cache budget unused and force avoidable disk reads.
+  (lib.mkIf config.services.postgresql.enable {
+    services.postgresql.settings = {
+      shared_buffers = "4GB";
+      work_mem = "32MB";
+      maintenance_work_mem = "512MB";
+      effective_cache_size = "24GB";
+      max_connections = 200;
+      # The data directory lives on the Btrfs system SSD; random reads are cheap.
+      random_page_cost = 1.1;
+      effective_io_concurrency = 200;
+      wal_compression = "on";
+      checkpoint_completion_target = 0.9;
+      max_wal_size = "4GB";
+      min_wal_size = "1GB";
+      default_statistics_target = 200;
+    };
+  })
+
+  # Bound the cache services. Without maxmemory a Redis/Valkey instance can
+  # grow until it starves the local LLM and ZFS ARC on this shared-memory host.
+  # Gate on the owning app's own option rather than reading the
+  # `services.redis.servers` set we are defining, which would recurse.
+  (lib.mkIf (hasModule "immich" && config.services.immich.redis.enable) {
+    services.redis.servers.immich.settings = {
+      maxmemory = "2gb";
+      maxmemory-policy = "allkeys-lru";
+    };
+  })
+  (lib.mkIf
+    (hasModule "paperless"
+      && !(config.services.paperless.settings ? PAPERLESS_REDIS))
+    {
+      services.redis.servers.paperless.settings = {
+        maxmemory = "512mb";
+        maxmemory-policy = "allkeys-lru";
+      };
+    })
 
   (lib.mkIf power.enable {
     networking.interfaces.${power.wakeOnLan.interface}.wakeOnLan = lib.mkIf power.wakeOnLan.enable {

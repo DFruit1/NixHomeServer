@@ -453,7 +453,14 @@ pub(super) fn open_db(config: &AppConfig) -> Result<Connection, String> {
         .busy_timeout(std::time::Duration::from_secs(30))
         .map_err(|error| format!("failed to configure sqlite busy timeout: {error}"))?;
     connection
-        .execute_batch("PRAGMA foreign_keys = ON;")
+        .execute_batch(
+            "PRAGMA foreign_keys = ON;
+             PRAGMA journal_mode = WAL;
+             PRAGMA synchronous = NORMAL;
+             PRAGMA cache_size = -65536;
+             PRAGMA mmap_size = 268435456;
+             PRAGMA temp_store = MEMORY;",
+        )
         .map_err(|error| format!("failed to configure sqlite connection: {error}"))?;
     Ok(connection)
 }

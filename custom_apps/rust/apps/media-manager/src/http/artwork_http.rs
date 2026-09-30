@@ -466,6 +466,11 @@ pub(super) async fn image_sources(
         Some(root) => root,
         None => return ApiError::internal(request_id).into_response(),
     };
+    let directory = item
+        .relative_path
+        .rsplit_once('/')
+        .map(|(parent, _)| parent)
+        .unwrap_or("");
     let artwork = match catalog.list_artwork(&item.root_id, item.owner_username.as_deref()) {
         Ok(items) => {
             if item.media_kind == MediaKind::Artwork {
@@ -476,11 +481,6 @@ pub(super) async fn image_sources(
         }
         Err(_) => return ApiError::internal(request_id).into_response(),
     };
-    let directory = item
-        .relative_path
-        .rsplit_once('/')
-        .map(|(parent, _)| parent)
-        .unwrap_or("");
     let siblings = match catalog.list_media_in_directory(
         &item.root_id,
         item.owner_username.as_deref(),

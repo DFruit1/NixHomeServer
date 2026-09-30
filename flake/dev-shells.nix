@@ -33,4 +33,18 @@
       stdenv.cc
     ]) ++ rustLib.toolchain;
   };
+
+  # Evaluation-only shell for CI and lightweight `nix-eval-jobs` /
+  # `nix flake check` runs. Omits the Rust toolchain so instantiating this shell
+  # does not pull the compiler into the closure.
+  eval = pkgs.mkShell {
+    name = "eval-dev-shell";
+    packages = (with pkgs; [
+      jq
+      nix-eval-jobs
+      nix-output-monitor
+      nix-tree
+      ripgrep
+    ]);
+  };
 }

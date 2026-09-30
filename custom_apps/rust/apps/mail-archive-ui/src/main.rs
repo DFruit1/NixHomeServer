@@ -2,7 +2,7 @@ use axum::{
     body::{Body, Bytes},
     extract::{Form, Path, Query, State},
     http::{
-        header::{ACCEPT, CONTENT_DISPOSITION, CONTENT_TYPE},
+        header::{ACCEPT, CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_TYPE},
         HeaderMap, HeaderValue, StatusCode,
     },
     response::{Html, IntoResponse, Redirect, Response},

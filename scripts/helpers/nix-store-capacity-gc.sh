@@ -94,18 +94,29 @@ limit_bytes=$((NIX_STORE_MAX_GIB * 1024 * 1024 * 1024))
 trigger_bytes=$((limit_bytes * trigger_percent / 100))
 
 measure_capacity() {
-  store_bytes="$(read_store_bytes)"
+  # Walk the store only when the filesystem signal cannot already decide. The
+  # filesystem is the hard limit; whenever it is under pressure we collect
+  # regardless of the (much more expensive to compute) store size, so the
+  # `du` traversal is skipped entirely in that common case.
   read -r filesystem_total_bytes filesystem_used_bytes \
     < <(read_filesystem_bytes)
   filesystem_used_percent=$((filesystem_used_bytes * 100 / filesystem_total_bytes))
 
-  store_at_capacity=false
-  filesystem_at_capacity=false
-  if ((store_bytes >= trigger_bytes)); then
-    store_at_capacity=true
-  fi
+  store_bytes=""
   if ((filesystem_used_bytes * 100 >= filesystem_total_bytes * trigger_percent)); then
     filesystem_at_capacity=true
+    store_at_capacity=false
+  else
+    filesystem_at_capacity=false
+    store_bytes="$(read_store_bytes)"
+    store_at_capacity=false
+    if ((store_bytes >= trigger_bytes)); then
+      store_at_capacity=true
+    fi
+  fi
+
+  if [[ -z "$store_bytes" ]]; then
+    store_bytes=0
   fi
 
   if [[ "$store_at_capacity" == true && "$filesystem_at_capacity" == true ]]; then

@@ -167,15 +167,38 @@ pub(crate) fn refresh_attachment_catalog(
     let mut seen_relpaths = HashSet::new();
     let mut seen_message_keys = HashSet::new();
 
+    // One transaction for the whole refresh: MIME parsing and hashing dominate
+    // the cost, and a per-message commit forced an fsync for every changed
+    // message. Unchanged messages already return before touching the catalog.
+    let transaction = connection
+        .transaction()
+        .map_err(|error| format!("failed to start attachment refresh transaction: {error}"))?;
+
     for message_path in message_files {
         let relpath = message_relative_path(&account_paths, &message_path)?
             .to_string_lossy()
             .to_string();
+        // `(relpath, mtime, size)` is the change signal. Check it before reading
+        // and hashing the message so an unchanged rescan never pays for MIME
+        // parsing or SHA-256 over the whole mail store.
         let metadata = fs::metadata(&message_path)
             .map_err(|error| format!("failed to inspect {}: {error}", message_path.display()))?;
         let message_mtime = metadata.mtime();
         let message_size = i64::try_from(metadata.size())
             .map_err(|_| format!("message {} is too large to catalog", message_path.display()))?;
+        if existing_by_relpath.get(&relpath).is_some_and(|record| {
+            record.message_mtime == message_mtime && record.message_size == message_size
+        }) {
+            seen_relpaths.insert(relpath.clone());
+            seen_message_keys.insert(
+                existing_by_relpath
+                    .get(&relpath)
+                    .map(|record| record.message_key.clone())
+                    .unwrap_or_default(),
+            );
+            continue;
+        }
+
         let message_metadata = read_message_metadata(&message_path)?;
         let message_key = message_key_from_metadata(&message_metadata)?;
         let source_message_sha256 = sha256_file(&message_path)?;
@@ -184,14 +207,6 @@ pub(crate) fn refresh_attachment_catalog(
             continue;
         }
         seen_relpaths.insert(relpath.clone());
-
-        if existing_by_relpath.get(&relpath).is_some_and(|record| {
-            record.message_key == message_key
-                && record.message_mtime == message_mtime
-                && record.message_size == message_size
-        }) {
-            continue;
-        }
 
         let (_extraction_dir, scanned_attachments) = scan_message_attachments_for_catalog(
             config,
@@ -202,9 +217,6 @@ pub(crate) fn refresh_attachment_catalog(
             &source_message_sha256,
         )?;
         let now = Utc::now().to_rfc3339();
-        let transaction = connection
-            .transaction()
-            .map_err(|error| format!("failed to start attachment refresh transaction: {error}"))?;
 
         if let Some(existing) = existing_by_relpath.get(&relpath) {
             transaction
@@ -303,42 +315,30 @@ pub(crate) fn refresh_attachment_catalog(
                 )
                 .map_err(|error| format!("failed to store attachment catalog row: {error}"))?;
         }
-
-        transaction
-            .commit()
-            .map_err(|error| format!("failed to commit attachment refresh transaction: {error}"))?;
     }
 
     let stale_messages = existing_messages
         .into_iter()
         .filter(|message| !seen_relpaths.contains(&message.message_relpath))
         .collect::<Vec<_>>();
-    if !stale_messages.is_empty() {
-        let transaction = connection
-            .transaction()
-            .map_err(|error| format!("failed to start stale attachment cleanup: {error}"))?;
-        for stale in stale_messages {
-            transaction
-                .execute(
-                    "DELETE FROM attachment_catalog WHERE account_id = ?1 AND message_key = ?2",
-                    params![account.id, stale.message_key],
-                )
-                .map_err(|error| {
-                    format!("failed to delete stale attachment catalog rows: {error}")
-                })?;
-            transaction
-                .execute(
-                    "DELETE FROM attachment_messages WHERE account_id = ?1 AND message_key = ?2",
-                    params![account.id, stale.message_key],
-                )
-                .map_err(|error| {
-                    format!("failed to delete stale attachment message row: {error}")
-                })?;
-        }
+    for stale in stale_messages {
         transaction
-            .commit()
-            .map_err(|error| format!("failed to commit stale attachment cleanup: {error}"))?;
+            .execute(
+                "DELETE FROM attachment_catalog WHERE account_id = ?1 AND message_key = ?2",
+                params![account.id, stale.message_key],
+            )
+            .map_err(|error| format!("failed to delete stale attachment catalog rows: {error}"))?;
+        transaction
+            .execute(
+                "DELETE FROM attachment_messages WHERE account_id = ?1 AND message_key = ?2",
+                params![account.id, stale.message_key],
+            )
+            .map_err(|error| format!("failed to delete stale attachment message row: {error}"))?;
     }
+
+    transaction
+        .commit()
+        .map_err(|error| format!("failed to commit attachment refresh transaction: {error}"))?;
 
     Ok(())
 }

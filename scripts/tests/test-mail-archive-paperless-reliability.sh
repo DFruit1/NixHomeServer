@@ -24,7 +24,7 @@ jq -e '
   and (.taskRequires | index("mail-archive-ui-paperless-db-snapshot.service") != null)
   and (.snapshotScript | contains(".backup"))
   and (.snapshotScript | contains("PRAGMA quick_check"))
-  and (.snapshotTimer.OnUnitActiveSec == "2m")
+  and (.snapshotTimer.OnUnitActiveSec == "15m")
   and ((.groups // []) | index("paperless") == null)
 ' <<<"$integration_json" >/dev/null || {
   echo "❌ Mail Archive does not use a consistent, least-privilege Paperless database snapshot." >&2

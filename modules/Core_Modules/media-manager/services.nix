@@ -250,6 +250,16 @@ in
       Group = "media-manager";
       ExecStart = lib.getExe' cfg.package "media-manager-scanner";
       UMask = "0007";
+      # The 15-minute full reconcile walks the media libraries. Keep it below
+      # interactive work (the API) without starving it, matching the other
+      # maintenance jobs' scheduling discipline.
+      Nice = 10;
+      CPUWeight = 40;
+      IOWeight = 40;
+      IOSchedulingClass = "best-effort";
+      IOSchedulingPriority = 7;
+      MemoryHigh = "1G";
+      MemoryMax = "2G";
       NoNewPrivileges = true;
       PrivateTmp = true;
       PrivateDevices = true;

@@ -749,16 +749,19 @@ fn build_move_actions(
                 "A mutation plan cannot contain the same item more than once.",
             ));
         }
-        let item = catalog
-            .catalog_item(item_id)
-            .map_err(|_| ApiError::internal(String::new()))?
-            .ok_or_else(|| {
-                ApiError::without_request_id(
-                    StatusCode::CONFLICT,
-                    "catalog_item_missing",
-                    "A selected item is no longer present in the catalog.",
-                )
-            })?;
+    }
+    let unique_id_refs: Vec<&str> = unique_ids.iter().copied().collect();
+    let items_by_id = catalog
+        .catalog_items_by_id(&unique_id_refs)
+        .map_err(|_| ApiError::internal(String::new()))?;
+    for item_id in &plan.item_ids {
+        let item = items_by_id.get(item_id).cloned().ok_or_else(|| {
+            ApiError::without_request_id(
+                StatusCode::CONFLICT,
+                "catalog_item_missing",
+                "A selected item is no longer present in the catalog.",
+            )
+        })?;
         let source_root = config
             .resolve_visible_root(identity, &item.root_id)
             .ok_or_else(|| {

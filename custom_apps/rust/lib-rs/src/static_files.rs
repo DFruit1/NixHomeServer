@@ -114,6 +114,42 @@ pub fn content_type_for_extension(extension: &str) -> &'static str {
     }
 }
 
+/// Pick a `Cache-Control` value for a served static file. Content-hashed asset
+/// filenames (Vite/Qwik `name-HASH.ext`) can be cached immutably; HTML must be
+/// revalidated so deployments are picked up; everything else gets a modest TTL.
+pub fn cache_control_for_path(path: &Path) -> &'static str {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default();
+    if extension.eq_ignore_ascii_case("html") {
+        return "no-cache";
+    }
+    if is_content_hashed(file_name) {
+        return "public, max-age=31536000, immutable";
+    }
+    "public, max-age=3600"
+}
+
+fn is_content_hashed(file_name: &str) -> bool {
+    let Some(stem_end) = file_name.rfind('.') else {
+        return false;
+    };
+    let stem = &file_name[..stem_end];
+    let Some(dash) = stem.rfind('-') else {
+        return false;
+    };
+    let hash = &stem[dash + 1..];
+    hash.len() >= 8
+        && hash
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,5 +189,22 @@ mod tests {
         assert!(is_safe_single_component("archive.wacz"));
         assert!(!is_safe_single_component("a/b"));
         assert!(!is_safe_single_component(".."));
+    }
+
+    #[test]
+    fn cache_control_tracks_content_hashing() {
+        assert_eq!(cache_control_for_path(Path::new("index.html")), "no-cache");
+        assert_eq!(
+            cache_control_for_path(Path::new("assets/index-Cm1aYkzp.css")),
+            "public, max-age=31536000, immutable"
+        );
+        assert_eq!(
+            cache_control_for_path(Path::new("build/q-CPFQBCxz.js")),
+            "public, max-age=31536000, immutable"
+        );
+        assert_eq!(
+            cache_control_for_path(Path::new("replay/ui.js")),
+            "public, max-age=3600"
+        );
     }
 }

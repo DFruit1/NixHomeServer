@@ -19,6 +19,7 @@ in
       logFormat = null;
       useACMEHost = vars.domain;
       extraConfig = ''
+        encode zstd gzip
         reverse_proxy http://${loopback}:${toString config.services.immich.port}
       '';
     };
@@ -26,6 +27,7 @@ in
       logFormat = null;
       useACMEHost = vars.domain;
       extraConfig = ''
+        encode zstd gzip
         reverse_proxy http://${loopback}:${toString vars.networking.ports.immichPublicProxy} {
           header_up X-Forwarded-Proto https
         }

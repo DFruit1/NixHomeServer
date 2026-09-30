@@ -13,6 +13,7 @@ in
       logFormat = null;
       useACMEHost = vars.domain;
       extraConfig = ''
+        encode zstd gzip
         @aliases path /published/* /fdroid/repo /fdroid/repo/*
         handle @aliases {
           reverse_proxy http://${loopback}:${toString aliasPort}

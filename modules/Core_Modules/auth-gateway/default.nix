@@ -268,9 +268,11 @@ let
   '';
   mkProtectedProxyConfig = name: app: ''
     ${commonAccessLog}
-    # Compress frontend assets and bounded listing responses. Media streams,
-    # range requests and authentication responses keep their existing path.
-    @compressible path *.js *.mjs *.css *.json /api/v1/items /api/jobs
+    # Compress text responses (HTML, JS, CSS, JSON, SVG, XML, wasm) across
+    # protected hosts. Caddy's own content-type and minimum-size checks skip
+    # already-compressed and binary bodies, so media streams and downloads keep
+    # their existing path. Authentication paths stay unaffected.
+    @compressible path *.js *.mjs *.css *.json *.html *.svg *.xml *.wasm *.map /api/* /api
     encode @compressible zstd gzip
     route {
       ${stripSpoofableHeaders}

@@ -4,18 +4,35 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test-common.sh"
 cd "$TESTS_REPO_ROOT"
 ensure_tools jq nix cargo
 
-# Rust unit tests: queue boundary, settings validation, query encoding.
-target_dir="$(mktemp -d "${TMPDIR:-/tmp}/nixhomeserver-ai-gate-target.XXXXXX")"
-trap 'rm -rf "$target_dir"' EXIT
-cargo_log="$target_dir/cargo-test.log"
-if ! CARGO_TARGET_DIR="$target_dir" nix develop .#ops --command cargo test \
-  --manifest-path custom_apps/Cargo.toml -p ai-gate --locked >"$cargo_log" 2>&1; then
-  cat "$cargo_log" >&2
-  exit 1
-fi
-tail -n 5 "$cargo_log"
-
 host="$(test_default_host)"
+# `ai-gate` is owned by the removable `bonsai` app. Only compile it when bonsai
+# is actually enabled; otherwise this test would build a disabled crate on every
+# lean/full validation. Evaluation of the gate wiring below already short
+# circuits with `skipped = true` in that case.
+bonsai_enabled="$(NIXHOMESERVER_TEST_HOST="$host" nix eval --impure --raw --expr '
+  let
+    f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
+    c = f.nixosConfigurations.${builtins.getEnv "NIXHOMESERVER_TEST_HOST"}.config;
+  in
+    if ((c.nixhomeserver.modules.bonsai or false) && c.repo.bonsai.enable) then "1" else "0"
+' 2>/dev/null || echo 0)"
+
+if [[ "$bonsai_enabled" == "1" ]]; then
+  # Rust unit tests: queue boundary, settings validation, query encoding. Reuse
+  # a persistent, incremental target dir so repeated runs do not recompile the
+  # crate graph from scratch (the ops shell does not set CARGO_BUILD_TARGET_DIR).
+  target_dir="${XDG_CACHE_HOME:-$HOME/.cache}/nixhomeserver-cargo/ai-gate-check"
+  mkdir -p "$target_dir"
+  cargo_log="$(mktemp)"
+  trap 'rm -f "$cargo_log"' EXIT
+  if ! CARGO_TARGET_DIR="$target_dir" CARGO_INCREMENTAL=1 nix develop .#ops --command cargo test \
+    --manifest-path custom_apps/Cargo.toml -p ai-gate --locked >"$cargo_log" 2>&1; then
+    cat "$cargo_log" >&2
+    exit 1
+  fi
+  tail -n 5 "$cargo_log"
+fi
+
 NIXHOMESERVER_TEST_HOST="$host" nix eval --impure --json --expr '
   let
     f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");

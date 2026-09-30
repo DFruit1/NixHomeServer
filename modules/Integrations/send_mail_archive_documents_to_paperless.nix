@@ -40,6 +40,16 @@ in
         serviceConfig = {
           Type = "oneshot";
           UMask = "0077";
+          # `.backup` copies the whole Paperless database and `quick_check`
+          # scans it. It is a background integrity aid for duplicate
+          # detection, so deprioritize it against interactive Paperless use.
+          Nice = 15;
+          CPUWeight = 20;
+          IOWeight = 20;
+          IOSchedulingClass = "best-effort";
+          IOSchedulingPriority = 7;
+          MemoryHigh = "256M";
+          MemoryMax = "512M";
           NoNewPrivileges = true;
           PrivateTmp = true;
           ProtectSystem = "strict";
@@ -82,8 +92,11 @@ in
         wantedBy = [ "timers.target" ];
         timerConfig = {
           OnBootSec = "1m";
-          OnUnitActiveSec = "2m";
-          AccuracySec = "15s";
+          # Duplicate detection tolerates a stale snapshot; a 15-minute refresh
+          # bounds the recurring full-database copy instead of running it every
+          # two minutes forever.
+          OnUnitActiveSec = "15m";
+          AccuracySec = "30s";
           Persistent = true;
         };
       };

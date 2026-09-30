@@ -1,6 +1,8 @@
 use super::*;
 use crate::capabilities::MediaAction;
 use std::process::{Command, Stdio};
+use tokio::io::AsyncReadExt;
+use tokio_util::io::ReaderStream;
 
 static VIDEO_TRANSCODE_LIMIT: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 
@@ -381,25 +383,22 @@ pub(super) async fn item_stream(
         };
         let length = end - start + 1;
 
-        let body = match tokio::task::spawn_blocking({
+        let file = match tokio::task::spawn_blocking({
             let root_path = root_path.clone();
             let relative_path = relative_path.clone();
             move || {
                 use crate::broker::open_regular_file_beneath;
                 let mut file = open_regular_file_beneath(FilePath::new(&root_path), &relative_path)
                     .map_err(|error| error.to_string())?;
-                use std::io::{Read, Seek, SeekFrom};
+                use std::io::{Seek, SeekFrom};
                 file.seek(SeekFrom::Start(start))
                     .map_err(|error| error.to_string())?;
-                let mut buffer = vec![0u8; length as usize];
-                file.read_exact(&mut buffer)
-                    .map_err(|error| error.to_string())?;
-                Ok::<Vec<u8>, String>(buffer)
+                Ok::<std::fs::File, String>(file)
             }
         })
         .await
         {
-            Ok(Ok(data)) => data,
+            Ok(Ok(file)) => file,
             Ok(Err(error)) => {
                 log_event(
                     "audio_read_failed",
@@ -410,6 +409,10 @@ pub(super) async fn item_stream(
             }
             Err(_) => return ApiError::internal(request_id).into_response(),
         };
+
+        let body = Body::from_stream(ReaderStream::new(
+            tokio::fs::File::from_std(file).take(length),
+        ));
 
         return (
             StatusCode::PARTIAL_CONTENT,
@@ -433,23 +436,19 @@ pub(super) async fn item_stream(
             .into_response();
     }
 
-    let body = match tokio::task::spawn_blocking({
+    let file = match tokio::task::spawn_blocking({
         let root_path = root_path.clone();
         let relative_path = relative_path.clone();
         move || {
             use crate::broker::open_regular_file_beneath;
-            let mut file = open_regular_file_beneath(FilePath::new(&root_path), &relative_path)
+            let file = open_regular_file_beneath(FilePath::new(&root_path), &relative_path)
                 .map_err(|error| error.to_string())?;
-            use std::io::Read;
-            let mut buffer = Vec::with_capacity(file_size as usize);
-            file.read_to_end(&mut buffer)
-                .map_err(|error| error.to_string())?;
-            Ok::<Vec<u8>, String>(buffer)
+            Ok::<std::fs::File, String>(file)
         }
     })
     .await
     {
-        Ok(Ok(data)) => data,
+        Ok(Ok(file)) => file,
         Ok(Err(error)) => {
             log_event(
                 "audio_read_failed",
@@ -461,6 +460,8 @@ pub(super) async fn item_stream(
         Err(_) => return ApiError::internal(request_id).into_response(),
     };
 
+    let body = Body::from_stream(ReaderStream::new(tokio::fs::File::from_std(file)));
+
     (
         StatusCode::OK,
         [
@@ -468,6 +469,10 @@ pub(super) async fn item_stream(
             (
                 HeaderName::from_static("accept-ranges"),
                 "bytes".to_string(),
+            ),
+            (
+                HeaderName::from_static("content-length"),
+                file_size.to_string(),
             ),
         ],
         body,

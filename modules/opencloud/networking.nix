@@ -22,6 +22,7 @@ in
       logFormat = null;
       useACMEHost = vars.domain;
       extraConfig = ''
+        encode zstd gzip
         reverse_proxy http://${loopback}:${toString vars.networking.ports.opencloud} {
           header_up X-Forwarded-Proto https
         }
@@ -31,6 +32,7 @@ in
       logFormat = null;
       useACMEHost = vars.domain;
       extraConfig = ''
+        encode zstd gzip
         # Answer the editor root deterministically so the deploy public-route
         # check never depends on Collabora's optional welcome screen.
         @root path /

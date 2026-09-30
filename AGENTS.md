@@ -181,6 +181,29 @@ If a broad search is needed, prefer `rg`/`glob` (they skip gitignored files) ove
 
 ---
 
+## Performance Conventions
+
+* Qwik apps build with the default entry strategy (per-symbol/segment chunking).
+  Do not force `entryStrategy: { type: "single" }`; if a specific app needs it,
+  document the build reason next to the config.
+* Content-hashed static assets ship with immutable caching. Use
+  `homelab_common::cache_control_for_path` (Rust) or `staticCacheControl`
+  (`custom_apps/node/shared/http-protocol.ts`) rather than hardcoding headers.
+  HTML must revalidate (`no-cache`); service workers stay `no-cache`.
+* Services that terminate their own Caddy vhost must add `encode zstd gzip`;
+  protected gateway hosts already compress text and API responses. Media streams
+  keep byte-range semantics because compressible content types exclude them.
+* Shared platform databases and caches are tuned centrally in
+  `system-resources.nix`, gated on the owning app's option. Never read
+  `services.redis.servers` inside a condition that defines it (recursion), and
+  never set `services.postgresql.settings` from an optional module.
+* Long-running or bursty services need `MemoryHigh`/`MemoryMax`, and maintenance
+  jobs need `Nice`/`CPUWeight`/`IOWeight`. Keep expensive periodic work (full
+  database copies, store walks) at the lowest cadence that satisfies its
+  consumer, checked before the expensive operation, not after.
+
+---
+
 ## Test Tiers
 
 ### Lean (default: `validate-repo.sh`)

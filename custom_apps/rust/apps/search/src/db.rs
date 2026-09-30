@@ -92,6 +92,10 @@ pub async fn migrate(client: &mut Client) -> Result<(), String> {
             );
             CREATE UNIQUE INDEX IF NOT EXISTS documents_source_external
                 ON documents (source_id, external_id);
+            -- Batched reads page a single source ordered by id; without this the
+            -- planner scans primary-key order and filters, or sorts the whole set.
+            CREATE INDEX IF NOT EXISTS documents_source_id
+                ON documents (source_id, id);
             ",
         )
         .await
@@ -418,7 +422,13 @@ pub async fn enrich_documents(
 /// titles) can contain them. Strip them at the database boundary so no
 /// extractor's output can fail an insert.
 fn strip_nul_str(value: &str) -> String {
-    value.replace('\0', "")
+    // Postgres rejects NUL bytes in text. Most fields are already clean, so
+    // skip the allocating copy unless a NUL is actually present.
+    if value.contains('\0') {
+        value.replace('\0', "")
+    } else {
+        value.to_string()
+    }
 }
 
 fn strip_nul_json(value: serde_json::Value) -> serde_json::Value {

@@ -3,7 +3,7 @@ import { qwikCity } from '@builder.io/qwik-city/vite';
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig(({ mode }) => ({
-  plugins: mode === 'test' ? [] : [qwikCity({ trailingSlash: false }), qwikVite({ entryStrategy: { type: 'single' } })],
+  plugins: mode === 'test' ? [] : [qwikCity({ trailingSlash: false }), qwikVite()],
   build: {
     outDir: 'dist/client',
     emptyOutDir: true,

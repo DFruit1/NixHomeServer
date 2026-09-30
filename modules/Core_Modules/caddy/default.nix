@@ -171,6 +171,7 @@ in
         useACMEHost = vars.kanidmDomain;
         extraConfig = ''
           ${accessLogConfig}
+          encode zstd gzip
           @edge_http header X-Forwarded-Proto http
           redir @edge_http https://{host}{uri} 308
           @kanidm_override_css path /pkg/override.css

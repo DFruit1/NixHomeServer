@@ -3,7 +3,7 @@ import { defineConfig } from "vite";
 
 export default defineConfig({
   appType: "spa",
-  plugins: [qwikVite({ csr: true, entryStrategy: { type: "single" } })],
+  plugins: [qwikVite({ csr: true })],
   build: {
     manifest: true,
     outDir: "dist",

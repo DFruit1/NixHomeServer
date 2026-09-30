@@ -46,10 +46,82 @@ Expression, output mode, repository/flake references and the exported environmen
 identify a cached result. Tests that mutate a fixture at the same path must use a
 fresh cache directory. The runner evaluates the default host once.
 
-Protected Caddy hosts encode JavaScript, CSS, JSON files and selected listing
-APIs (`/api/v1/items`, `/api/jobs`) with zstd/gzip. Authentication paths and media
-streams retain their existing behavior. Caddy's content-type and minimum-size
-checks still apply; byte-range responses remain uncompressed.
+Protected Caddy hosts compress text responses — JavaScript, CSS, JSON files,
+HTML, SVG, XML, wasm, source maps and API responses (`/api`, `/api/*`) — with
+zstd/gzip. Caddy's content-type and minimum-size checks skip binary and
+already-compressed bodies, so audio/video streams keep byte-range semantics.
+Hosts that terminate their own virtual host (Immich, Jellyfin, Paperless,
+Audiobookshelf, Kavita, Vaultwarden, Forgejo, OpenCloud, IPFS, F-Droid, the
+Kanidm UI, File Sync, the YouTube Downloader API host and the Files share host)
+also enable `encode zstd gzip` locally so they are not left uncompressed.
+Authentication paths retain their existing behavior.
+
+## Frontend delivery
+
+Every Qwik app builds with the default entry strategy (per-symbol/segment
+chunking). No app forces `entryStrategy: { type: "single" }`, which collapsed all
+routes and views into one bundle. Frontend builds validate their required
+outputs but do not assert a specific chunk count, so code splitting can change
+without editing checks.
+
+Static asset responses set `Cache-Control` from the filename: content-hashed
+assets (Vite `name-HASH.ext`, `/assets/*`, `/build/*`) are
+`public, max-age=31536000, immutable`; HTML is `no-cache` so deployments are
+picked up; other files get `public, max-age=3600`. The shared Rust helper
+`homelab_common::cache_control_for_path` and the Node
+`staticCacheControl` in `custom_apps/node/shared/http-protocol.ts` own this
+decision. Service workers remain `no-cache`.
+
+## Shared platform tuning
+
+PostgreSQL server settings are decided centrally in `system-resources.nix`
+(gated on `config.services.postgresql.enable`) because one cluster backs both
+Search and Immich; optional modules must not each set their own. Redis/Valkey
+instances created by Immich and Paperless receive `maxmemory` and
+`maxmemory-policy` bounds in the same file, gated on the owning app's option
+rather than on the `services.redis.servers` set being defined (which would
+recurse). macOS-style `vm.swappiness`, `vm.max_map_count`, dirty-ratio and file
+descriptor sysctls live next to the existing inotify limits.
+
+Long-running or bursty services (qbittorrent, forgejo, the media-manager
+scanner, the Paperless snapshot job) carry `MemoryHigh`/`MemoryMax` and, for
+the maintenance jobs, `Nice`/`CPUWeight`/`IOWeight` scheduling. The Paperless
+database snapshot runs every 15 minutes rather than every 2, because duplicate
+detection tolerates a stale snapshot and the job copies the whole database.
+
+## Deployment and validation efficiency
+
+The workstation `localNixGCMode` default is `capacity`: the deploy helper only
+collects the local Nix store when the main SSD is under pressure, preserving
+Crane/shared dependency build reuse between deploys. Set it to `always` to
+restore the unconditional `nix-store --gc`. The capacity GC script measures the
+filesystem first and skips the full `du` store walk whenever filesystem pressure
+alone already forces a collection.
+
+`scripts/validate-repo.sh` reuses a persistent on-disk Nix evaluation cache
+keyed by the repository content hash (bounded to the most recent generations),
+instead of a temp directory deleted after each run. The AI gate test only
+compiles its crate when the owning `bonsai` app is enabled, reusing a
+persistent incremental target directory. The CI workflow lets its parallel
+`nix-eval-jobs` evaluation satisfy the guarded validation step, which runs with
+`--skip-flake-check`, and uses the toolchain-free `.#eval` shell for
+evaluation-only jobs.
+
+## Backend queries and indexing
+
+Media Manager resolves artwork through the `catalog_items_artwork`
+`(root_id, media_kind, relative_path)` index; item batches and mutation-plan
+action counts use single grouped queries instead of per-row subqueries or point
+lookups. Media playback and ranged responses stream from disk
+(`tokio-util` `ReaderStream`) rather than buffering whole files, and catalog
+connections set `synchronous=NORMAL`, `cache_size`, `mmap_size` and
+`temp_store=MEMORY`. The insert-only `audit_events` table is indexed on
+`created_at` and pruned during the scan run.
+
+Mail Archive checks `(mtime, size)` before parsing MIME or hashing a message and
+runs the whole attachment refresh in one transaction, so an unchanged rescan and
+a large refresh both avoid repeated whole-store hashing and per-message fsyncs.
+Search indexes `documents(source_id, id)` for batched source paging.
 
 ## Validation
 

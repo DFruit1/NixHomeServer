@@ -81,7 +81,7 @@ let
       buildMode = "balanced"; # Build allocation: "local", "remote", "balanced" (2 slots each with 1 requested core/job), or "maximum-effort" (all slots on both).
       nixStoreMaxSizeGiB = 80; # Soft Nix store cap in GiB; collection starts at 90% of this size or 90% usage on the filesystem containing /nix/store.
       nixGcRetentionDays = 45; # Delete profile generations older than this many days, sacrificing older rollback points.
-      localNixGCMode = "always"; # Collect unreachable workstation store paths before each deploy, regardless of build allocation.
+      localNixGCMode = "capacity"; # Collect unreachable workstation store paths before each deploy: "capacity" (only when the main SSD is under pressure; preserves local build reuse) or "always" (full `nix-store --gc` every deploy, discarding cached Rust/Nix build outputs).
       localDiskCleanup = {
         triggerPercent = 85; # Workstation main SSD used percent that triggers conservative nix gc + log/tmpfile cleanup before deploy.
         monitorPaths = [ "/nix" ]; # Main workstation SSD mountpoint(s) to watch for capacity; the Nix store lives here.

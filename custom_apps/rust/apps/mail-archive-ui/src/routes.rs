@@ -1604,5 +1604,9 @@ async fn frontend_asset(State(state): State<AppState>, Path(asset_path): Path<St
         CONTENT_TYPE,
         HeaderValue::from_static(homelab_common::content_type_for_path(&candidate)),
     );
+    response.headers_mut().insert(
+        CACHE_CONTROL,
+        HeaderValue::from_static(homelab_common::cache_control_for_path(&candidate)),
+    );
     harden_response(response)
 }

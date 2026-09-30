@@ -21,7 +21,7 @@ const devProxy = {
 };
 
 export default defineConfig({
-  plugins: [qwikVite({ csr: true, entryStrategy: { type: 'single' } })],
+  plugins: [qwikVite({ csr: true })],
   // Baked into every client build (web and APK) so the profile menu can show
   // the installed version without asking the server.
   define: {

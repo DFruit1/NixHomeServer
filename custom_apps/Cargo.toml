@@ -17,6 +17,13 @@ members = [
 version = "0.1.0"
 edition = "2021"
 
+# Fewer/faster release binaries for the CPU-heavy scanning, probing and parsing
+# paths (ffprobe refresh, hashing, PDF/mail extraction). Thin LTO keeps link
+# time and memory bounded against the shared crane dependency artifacts.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
 [workspace.dependencies]
 homelab-common = { path = "rust/lib-rs" }
 axum = "0.8.6"

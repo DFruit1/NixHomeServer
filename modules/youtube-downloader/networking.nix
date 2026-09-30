@@ -52,6 +52,7 @@ in
     logFormat = null;
     useACMEHost = vars.domain;
     extraConfig = ''
+      encode zstd gzip
       @root path /
       handle @root {
         respond "YouTube Downloader API" 200

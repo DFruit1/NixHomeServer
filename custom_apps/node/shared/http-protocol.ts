@@ -122,6 +122,19 @@ export type StaticAssetOptions = {
   mapRootToIndex?: boolean;
 };
 
+const HASHED_ASSET_PATTERN = /-[A-Za-z0-9_-]{8,}\.[A-Za-z0-9]+$/;
+
+export const staticCacheControl = (requested: string, extension: string): string => {
+  if (extension === '.html') {
+    return 'no-cache';
+  }
+  const file = requested.slice(requested.lastIndexOf('/') + 1);
+  if (HASHED_ASSET_PATTERN.test(file) || requested.startsWith('/assets/') || requested.startsWith('/build/')) {
+    return 'public, max-age=31536000, immutable';
+  }
+  return 'public, max-age=3600';
+};
+
 export const tryServeStaticAsset = async (
   staticDir: string,
   response: ServerResponse,
@@ -145,6 +158,8 @@ export const tryServeStaticAsset = async (
     }
     response.statusCode = 200;
     response.setHeader('content-type', JSON_CONTENT_TYPES[extension] ?? 'application/octet-stream');
+    response.setHeader('cache-control', staticCacheControl(requested, extension));
+    response.setHeader('last-modified', file.mtime.toUTCString());
     createReadStream(candidate).pipe(response);
     return true;
   } catch {
@@ -171,6 +186,7 @@ export const serveStaticWithSpaFallback = async (
     const index = await readFile(path.join(staticDir, 'index.html'));
     response.statusCode = 200;
     response.setHeader('content-type', 'text/html; charset=utf-8');
+    response.setHeader('cache-control', 'no-cache');
     response.end(index);
   } catch {
     throw new Error('static path not found');

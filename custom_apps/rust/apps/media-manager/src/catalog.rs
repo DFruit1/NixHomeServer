@@ -2,6 +2,7 @@ use crate::broker::BrokerAction;
 use crate::media::MediaKind;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior};
 use serde::Serialize;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, Serialize)]
@@ -157,6 +158,14 @@ impl Catalog {
         connection.busy_timeout(std::time::Duration::from_secs(30))?;
         connection.pragma_update(None, "journal_mode", "WAL")?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
+        // WAL with synchronous=NORMAL is durable across process crashes and
+        // only risks the last commit on power loss; it removes the per-commit
+        // fsync that dominated small writes. mmap/cache sizing cut page-cache
+        // overhead on the read-heavy catalog paths.
+        connection.pragma_update(None, "synchronous", "NORMAL")?;
+        connection.pragma_update(None, "cache_size", -65536)?;
+        connection.pragma_update(None, "mmap_size", 268435456i64)?;
+        connection.pragma_update(None, "temp_store", "MEMORY")?;
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
         if !(0..=4).contains(&version) {
             return Err(unsupported_schema(version));
@@ -177,6 +186,8 @@ impl Catalog {
              );
              CREATE INDEX IF NOT EXISTS catalog_items_root
                ON catalog_items(root_id, owner_username, relative_path);
+             CREATE INDEX IF NOT EXISTS catalog_items_artwork
+               ON catalog_items(root_id, media_kind, relative_path);
              CREATE TABLE IF NOT EXISTS catalog_scans (
                root_id TEXT NOT NULL,
                owner_username TEXT NOT NULL DEFAULT '',
@@ -192,6 +203,8 @@ impl Catalog {
                detail_json TEXT NOT NULL,
                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
              );
+             CREATE INDEX IF NOT EXISTS audit_events_created_at
+               ON audit_events(created_at);
              CREATE TABLE IF NOT EXISTS user_preferences (
                username TEXT PRIMARY KEY,
                subtitle_languages_json TEXT NOT NULL DEFAULT '[\"en\"]',
@@ -223,6 +236,10 @@ impl Catalog {
         )?;
         connection.busy_timeout(std::time::Duration::from_secs(30))?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
+        connection.pragma_update(None, "synchronous", "NORMAL")?;
+        connection.pragma_update(None, "cache_size", -65536)?;
+        connection.pragma_update(None, "mmap_size", 268435456i64)?;
+        connection.pragma_update(None, "temp_store", "MEMORY")?;
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
         if version != 4 {
             return Err(unsupported_schema(version));
@@ -307,15 +324,24 @@ impl Catalog {
         }
         // SQLite lower() handles ASCII only; keep the browser's Unicode
         // case-insensitive literal substring behavior without LIKE wildcards.
+        // Registering replaces any previous closure, so the per-row needle
+        // stays bound to the current search.
         // https://docs.rs/rusqlite/0.40.1/rusqlite/functions/index.html
+        let needle = search.trim().to_lowercase();
         self.connection.create_scalar_function(
             "path_matches",
             1,
             rusqlite::functions::FunctionFlags::SQLITE_UTF8
                 | rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC,
-            {
-                let needle = search.trim().to_lowercase();
-                move |ctx| Ok(ctx.get::<String>(0)?.to_lowercase().contains(&needle))
+            move |ctx| {
+                // ASCII paths skip the allocation; only non-ASCII rows are
+                // lowercased before the substring check.
+                let candidate = ctx.get::<String>(0)?;
+                Ok(if candidate.is_ascii() {
+                    candidate.contains(&needle)
+                } else {
+                    candidate.to_lowercase().contains(&needle)
+                })
             },
         )?;
         self.connection
@@ -353,28 +379,23 @@ impl Catalog {
         root_id: &str,
         owner_username: Option<&str>,
     ) -> rusqlite::Result<Vec<CatalogItem>> {
+        // Artwork is resolved by walking from the target folder up through its
+        // ancestors, so the candidate set is the whole root. The
+        // `catalog_items_artwork` index keeps this to the artwork rows only.
         let mut statement = self.connection.prepare(
             "SELECT id, root_id, owner_username, relative_path, media_kind,
                     size_bytes, modified_ns, fingerprint
                FROM catalog_items
               WHERE root_id = ?1
                 AND media_kind = 'artwork'
-                AND (owner_username IS ?2 OR owner_username = ?2)
+                AND (?2 IS NULL OR owner_username = ?2)
               ORDER BY relative_path",
         )?;
         let rows = statement
-            .query_map(rusqlite::params![root_id, owner_username], |row| {
-                Ok(CatalogItem {
-                    id: row.get(0)?,
-                    root_id: row.get(1)?,
-                    owner_username: row.get(2)?,
-                    relative_path: row.get(3)?,
-                    media_kind: row.get(4)?,
-                    size_bytes: row.get(5)?,
-                    modified_ns: row.get(6)?,
-                    fingerprint: row.get(7)?,
-                })
-            })?
+            .query_map(
+                rusqlite::params![root_id, owner_username],
+                catalog_item_from_row,
+            )?
             .collect();
         rows
     }
@@ -636,6 +657,36 @@ impl Catalog {
             .optional()
     }
 
+    /// Fetch many items by primary key in one query. Callers that resolve a
+    /// bounded batch of ids (for example a mutation plan) avoid the per-item
+    /// round trip of `catalog_item`.
+    pub fn catalog_items_by_id(
+        &self,
+        ids: &[&str],
+    ) -> rusqlite::Result<HashMap<String, CatalogItem>> {
+        let mut items = HashMap::with_capacity(ids.len());
+        if ids.is_empty() {
+            return Ok(items);
+        }
+        let placeholders = std::iter::repeat_n("?", ids.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT id, root_id, owner_username, relative_path, media_kind,
+                    size_bytes, modified_ns, fingerprint
+               FROM catalog_items WHERE id IN ({placeholders})"
+        );
+        let mut statement = self.connection.prepare(&sql)?;
+        let rows = statement.query_map(rusqlite::params_from_iter(ids.iter()), |row| {
+            catalog_item_from_row(row)
+        })?;
+        for row in rows {
+            let item = row?;
+            items.insert(item.id.clone(), item);
+        }
+        Ok(items)
+    }
+
     pub fn reconcile_root(
         &mut self,
         root_id: &str,
@@ -759,6 +810,18 @@ impl Catalog {
             ],
         )?;
         Ok(())
+    }
+
+    /// Drop audit rows older than `retention_days`. The audit trail is
+    /// insert-only, so without a bound it grows forever. Pruning keeps the
+    /// table (and its index) proportional to the retention window.
+    pub fn prune_audit_events(&self, retention_days: i64) -> rusqlite::Result<usize> {
+        let retention_days = retention_days.max(1);
+        self.connection.execute(
+            "DELETE FROM audit_events
+              WHERE created_at < datetime('now', ?1)",
+            rusqlite::params![format!("-{retention_days} days")],
+        )
     }
 
     pub fn create_mutation_plan(&mut self, draft: &MutationPlanDraft) -> rusqlite::Result<()> {
@@ -1064,26 +1127,28 @@ impl Catalog {
             "SELECT plan.id, plan.owner_username, plan.state, plan.request_json,
                     plan.created_at, plan.confirmed_at, plan.started_at, plan.finished_at,
                     plan.expires_at, plan.error,
-                    (SELECT count(*) FROM mutation_actions AS action
-                      WHERE action.plan_id = plan.id),
-                    (SELECT count(*) FROM mutation_actions AS action
-                      WHERE action.plan_id = plan.id AND action.state = 'completed')
+                    count(action.ordinal),
+                    sum(CASE WHEN action.state = 'completed' THEN 1 ELSE 0 END)
                FROM mutation_plans AS plan
+          LEFT JOIN mutation_actions AS action ON action.plan_id = plan.id
               WHERE (?1 IS NULL OR plan.owner_username = ?1)
-              ORDER BY plan.created_at DESC, plan.id DESC
+           GROUP BY plan.id
+           ORDER BY plan.created_at DESC, plan.id DESC
               LIMIT ?2",
         )?;
         let rows = statement.query_map(rusqlite::params![owner_username, limit], |row| {
             let request_json: String = row.get(3)?;
             let (operation_kind, item_ids) = plan_request_summary(&request_json);
+            let action_count: i64 = row.get(10)?;
+            let completed_action_count: i64 = row.get::<_, Option<i64>>(11)?.unwrap_or(0);
             Ok(MutationPlanSummary {
                 id: row.get(0)?,
                 owner_username: row.get(1)?,
                 state: row.get(2)?,
                 operation_kind,
                 item_ids,
-                action_count: row.get(10)?,
-                completed_action_count: row.get(11)?,
+                action_count,
+                completed_action_count,
                 created_at: row.get(4)?,
                 confirmed_at: row.get(5)?,
                 started_at: row.get(6)?,

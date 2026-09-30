@@ -32,6 +32,7 @@ let
   # `/api/share` list/upsert/delete, and non-share file or API-key access -- are
   # never reachable from the public origin.
   transfersExtraConfig = ''
+    encode zstd gzip
     # Force active content to download and stop MIME sniffing, mirroring the
     # hardening applied to the authenticated `files.` host.
     @download_html_svg path *.html *.svg

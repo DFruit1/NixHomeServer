@@ -14,7 +14,10 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use homelab_common::{content_type_for_path, decode_relative_path, parse_range, read_static_file};
+use homelab_common::{
+    cache_control_for_path, content_type_for_path, decode_relative_path, parse_range,
+    read_static_file,
+};
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use std::path::{Component, Path as FilePath};
@@ -307,13 +310,18 @@ async fn static_file(
         Err(homelab_common::StaticFileError::Io(error)) => return Err(ApiError::internal(error)),
     };
     let candidate = root.join(&relative);
+    let is_service_worker = replay && relative == FilePath::new("sw.js");
+    let cache_control = if is_service_worker {
+        "no-cache"
+    } else {
+        cache_control_for_path(&candidate)
+    };
     let mut builder = Response::builder()
         .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, content_type_for_path(&candidate));
-    if replay && relative == FilePath::new("sw.js") {
-        builder = builder
-            .header("service-worker-allowed", "/replay/")
-            .header(header::CACHE_CONTROL, "no-cache");
+        .header(header::CONTENT_TYPE, content_type_for_path(&candidate))
+        .header(header::CACHE_CONTROL, cache_control);
+    if is_service_worker {
+        builder = builder.header("service-worker-allowed", "/replay/");
     }
     builder
         .body(Body::from(bytes))

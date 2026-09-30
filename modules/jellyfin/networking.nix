@@ -11,6 +11,7 @@ in
     logFormat = null;
     useACMEHost = vars.domain;
     extraConfig = ''
+      encode zstd gzip
       reverse_proxy http://${loopback}:${toString ports.jellyfin} {
         header_up X-Forwarded-Proto https
       }

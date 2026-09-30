@@ -39,12 +39,15 @@ jobs:
       # Evaluate all flake outputs in parallel (nix-eval-jobs) instead of the
       # single-threaded `nix flake check`. Errors on any evaluation failure
       # without building. `nix-output-monitor` is available in the same shell
-      # for local `nix-eval-jobs --flake . | nom --jobs` build runs.
+      # for local `nix-eval-jobs --flake . | nom --jobs` build runs. This pass
+      # already instantiates every check (including the all-apps set), so the
+      # validate step below builds and policy-checks without re-evaluating the
+      # full host configuration graph.
       - name: Evaluate flake outputs (parallel)
-        run: nix develop .#ops -c nix-eval-jobs --flake .
+        run: nix develop .#eval -c nix-eval-jobs --flake .
 
       - name: Build application checks and validate the catalog
-        run: scripts/validate-repo.sh --build-checks --all-apps
+        run: scripts/validate-repo.sh --build-checks --all-apps --skip-flake-check
 
   full-validation:
     if: github.event_name == 'schedule'

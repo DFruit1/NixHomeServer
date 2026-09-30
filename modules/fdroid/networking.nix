@@ -9,6 +9,7 @@ in
     logFormat = null;
     useACMEHost = vars.domain;
     extraConfig = ''
+      encode zstd gzip
       @repoRoot path /fdroid/repo
       redir @repoRoot /fdroid/repo/ 308
 
