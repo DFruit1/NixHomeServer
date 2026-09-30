@@ -676,15 +676,21 @@ async fn manifest_for(
     key: &ManifestKey,
     base: PathBuf,
 ) -> Result<(manifest::Manifest, PathBuf), Response> {
+    // The cached manifest is used as a hash source regardless of age: a hash is
+    // only carried over when size and mtime still agree, so a stale entry is
+    // still valid. Freshness only governs eviction in `store_manifest`.
     let cached = {
         let manifests = state.manifests.read().await;
-        manifests.get(key).filter(|entry| entry.is_fresh()).cloned()
+        manifests.get(key).cloned()
     };
     let root = base.clone();
     let walk = tokio::task::spawn_blocking(move || {
         let mut fresh =
             manifest::scan(&root).map_err(|_| "The server folder could not be read.".to_owned())?;
-        manifest::reuse_hashes(&mut fresh, cached.as_ref().map(|entry| &entry.manifest));
+        manifest::reuse_hashes(
+            &mut fresh,
+            cached.as_ref().map(|entry| entry.manifest.as_ref()),
+        );
         Ok::<_, String>(fresh)
     });
     match walk.await {
@@ -723,7 +729,7 @@ async fn store_manifest(state: &AppState, key: ManifestKey, manifest: manifest::
     manifests.insert(
         key,
         CachedManifest {
-            manifest,
+            manifest: Arc::new(manifest),
             scanned_at: SystemTime::now(),
         },
     );
@@ -1028,7 +1034,10 @@ async fn download(
                 builder = builder.header(header::CONTENT_LENGTH, length.to_string());
             }
             builder
-                .body(Body::from_stream(ReaderStream::new(file)))
+                .body(Body::from_stream(ReaderStream::with_capacity(
+                    file,
+                    64 * 1024,
+                )))
                 .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
         }
         Ok(Err(error)) if error.kind() == io::ErrorKind::NotFound => api_error(

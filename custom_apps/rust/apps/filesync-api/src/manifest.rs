@@ -22,6 +22,7 @@ use std::{
     collections::HashMap,
     io::{self, Read},
     path::{Path, PathBuf},
+    sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -78,7 +79,9 @@ pub type ManifestKey = (String, String, String);
 
 #[derive(Clone, Debug)]
 pub struct CachedManifest {
-    pub manifest: Manifest,
+    /// Shared so a reader can take the previous manifest for hash reuse
+    /// without deep-copying every entry on each request.
+    pub manifest: Arc<Manifest>,
     pub scanned_at: SystemTime,
 }
 
@@ -169,23 +172,36 @@ pub fn scan(root: &Path) -> io::Result<Manifest> {
 }
 
 /// Carry hashes from the previous manifest onto a fresh scan.
+///
+/// Both lists are sorted by path, so this is a linear merge rather than a map
+/// build: it allocates nothing and never hashes a path.
 pub fn reuse_hashes(manifest: &mut Manifest, previous: Option<&Manifest>) {
     let Some(previous) = previous else {
         return;
     };
-    let index: HashMap<&str, &ManifestEntry> = previous
-        .entries
-        .iter()
-        .map(|entry| (entry.path.as_str(), entry))
-        .collect();
+    let mut previous_entries = previous.entries.iter().peekable();
     for entry in &mut manifest.entries {
-        let Some(cached) = index.get(entry.path.as_str()) else {
-            continue;
+        // Advance the previous cursor to the first path that is not before this
+        // one. Paths are unique within a manifest.
+        while let Some(candidate) = previous_entries.peek() {
+            if candidate.path.as_str() < entry.path.as_str() {
+                previous_entries.next();
+            } else {
+                break;
+            }
+        }
+        let Some(candidate) = previous_entries.peek() else {
+            break;
         };
-        if cached.size != entry.size || cached.mtime_unix_ms != entry.mtime_unix_ms {
+        if candidate.path != entry.path {
             continue;
         }
-        if let Some(hash) = &cached.hash {
+        // Consume the match so it cannot be reused by a later entry.
+        let candidate = previous_entries.next().expect("peeked a candidate");
+        if candidate.size != entry.size || candidate.mtime_unix_ms != entry.mtime_unix_ms {
+            continue;
+        }
+        if let Some(hash) = &candidate.hash {
             entry.hash = Some(hash.clone());
             manifest.reused += 1;
         }
@@ -534,6 +550,36 @@ mod tests {
         let mut touched = manifest_of(vec![("a.flac", 100, 6, None)]);
         reuse_hashes(&mut touched, Some(&previous));
         assert!(touched.entries[0].hash.is_none());
+    }
+
+    #[test]
+    fn hash_reuse_merges_interleaved_paths_linearly() {
+        let previous = manifest_of(vec![
+            ("a.flac", 10, 1, Some("aaa")),
+            ("c.flac", 30, 3, Some("ccc")),
+            ("e.flac", 50, 5, Some("eee")),
+        ]);
+        // Extra entries on both sides, and a path whose size changed, must not
+        // stop later matches from being carried over.
+        let mut fresh = manifest_of(vec![
+            ("a.flac", 10, 1, None),
+            ("b.flac", 20, 2, None),
+            ("c.flac", 31, 3, None),
+            ("d.flac", 40, 4, None),
+            ("e.flac", 50, 5, None),
+        ]);
+        reuse_hashes(&mut fresh, Some(&previous));
+        let hashes: std::collections::HashMap<&str, Option<&str>> = fresh
+            .entries
+            .iter()
+            .map(|entry| (entry.path.as_str(), entry.hash.as_deref()))
+            .collect();
+        assert_eq!(hashes["a.flac"], Some("aaa"));
+        assert_eq!(hashes["b.flac"], None);
+        assert_eq!(hashes["c.flac"], None, "size changed, so the hash is stale");
+        assert_eq!(hashes["d.flac"], None);
+        assert_eq!(hashes["e.flac"], Some("eee"));
+        assert_eq!(fresh.reused, 2);
     }
 
     #[test]
