@@ -142,27 +142,30 @@ memory. Confirm speculative decoding is active by looking for the
 `draft acceptance = ...` line in the journal; if it never appears, MTP did not
 engage.
 
-Measured on this host with a short temperature-0 code prompt, MTP-only decode is
-about 11 tok/s warm at ~55% draft acceptance, up from the ~8 tok/s n-gram-only
-baseline. A sweep of the cheap, quality-neutral levers then selected the current
-profile:
+Measured with a temperature-0 code prompt, MTP-only decode is about 10-11 tok/s
+warm at ~52-55% draft acceptance, up from the ~8 tok/s n-gram-only baseline. On
+the live server a full (uncached) prefill runs at roughly 40-45 tok/s on
+6-8K-token prompts.
 
-- `--cache-type-k/v q8_0`: near-lossless and needed to fit more expert layers.
-- `--n-cpu-moe 40` is the floor for stability. In the sweep, 38 raised 8K-prompt
-  prefill from 89 to 97.7 tok/s, but on the live server 10 GPU expert layers
-  left no VRAM for the prefill compute buffers: a large prompt failed with
-  `ggml_vulkan: Device memory allocation of size 671088640 failed`. The 904 MB
-  projector also no longer fit. Stay at 40.
-- `--lazy-mode on`: matched the `n-cpu-moe 38` prefill gain (97.5 vs 97.7 tok/s
-  on the 8K prompt) with no extra VRAM, so it is the prefill lever that is kept.
-  The default is `auto`; pinning `on` is quality-neutral.
+A sweep of the cheap, quality-neutral levers was run, but its prefill numbers
+(89-97 tok/s) did not reproduce on the running system — they were measured with
+a dedicated server and warm state. Treat the sweep as directional only:
+
+- `--cache-type-k/v q8_0`: near-lossless, keeps decode flat and shrinks KV.
+- `--n-cpu-moe 40` is the stability floor. In the sweep, 38 looked better, but
+  on the live server 10 GPU expert layers left no VRAM for the prefill compute
+  buffers: a large prompt failed with `ggml_vulkan: Device memory allocation of
+  size 671088640 failed`, and the 904 MB projector no longer fit either. Stay at
+  40. Do not lower it without a large-prompt prefill test on the live host.
+- `--lazy-mode on` is quality-neutral and measures the same as `auto` on the
+  live server; it is pinned only because the sweep suggested it. `off` was no
+  better.
 - `--ubatch-size 4096`: fails to allocate compute buffers on this host. Stay at
   2048.
 - `--threads-batch 16` (SMT oversubscription): clearly worse, decode fell to
   ~4-9 tok/s. Threads stay at the 8 physical cores.
-- `--lazy-mode off` and `ngram-mod` chaining: no reliable gain, so left at the
-  default (`auto`) and removed respectively. n-gram self-speculation in general
-  no longer pays once MTP is on.
+- `ngram-mod` chaining: no reliable gain; removed. n-gram self-speculation in
+  general no longer pays once MTP is on.
 - `--reasoning-budget` is available and deliberately left unset to preserve
   reasoning quality; set a per-request budget only when latency matters more.
 
