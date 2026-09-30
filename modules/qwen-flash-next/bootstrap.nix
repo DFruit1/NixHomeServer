@@ -134,6 +134,13 @@ in
         description = "Multimodal projector GGUF for vision input.";
       };
 
+      mtpFile = lib.mkOption {
+        type = lib.types.str;
+        default = "mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf";
+        readOnly = true;
+        description = "Shared Q8_0 multi-token-prediction (NextN) draft head.";
+      };
+
       autoDownload = lib.mkOption {
         type = lib.types.bool;
         default = true;
@@ -175,6 +182,12 @@ in
             file = "mmproj-F16.gguf";
             sha256 = "1f7b7f0b984cf065c604360c29c8098362ed61b290db0ff12c6f360bb1a8a980";
             sizeBytes = 904004000;
+          }
+          {
+            file = "mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf";
+            subdir = "MTP";
+            sha256 = "5ff54097406a905cf3a724c709124ceb0e3e10235ee862298969e91c96fa96e6";
+            sizeBytes = 2786568256;
           }
         ];
         description = "Hash-verified GGUF artifacts that must be present before inference starts.";

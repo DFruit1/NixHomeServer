@@ -26,10 +26,11 @@ The stable API model name is `qwen3.8-flash-next`.
 
 The module pins `unsloth/Qwen3.8-Flash-Next-GGUF` at revision
 `38bb39ee97821de2c9009abb7e93950eec396e66` and downloads the IQ4_XS
-quantization (roughly 94 GB across three shards) plus the F16 multimodal
-projector. Every artifact has a pinned size and SHA-256 hash in the NixOS
-module; a partial download resumes, a completed file must pass its checksum,
-and replacement is atomic.
+quantization (roughly 94 GB across three shards), the F16 multimodal projector,
+and the shared Q8_0 MTP (NextN) draft head (2.6 GiB, `MTP/` subfolder). Every
+artifact has a pinned size and SHA-256 hash in the NixOS module; a partial
+download resumes, a completed file must pass its checksum, and replacement is
+atomic.
 
 Artifacts live under `/mnt/data/qwen-flash-next/models` because the system SSD
 does not have room for them. That directory is on the data pool, is not a Kopia
@@ -44,11 +45,18 @@ sudo journalctl -fu qwen-flash-next-model-prepare.service
 ## Runtime Compatibility Decision
 
 Qwen3.8-Flash-Next uses the new `qwen4exp` architecture, which is newer than
-the llama.cpp revision shipped by the nixpkgs channels this host pins. The
-module therefore pins mainline `ggml-org/llama.cpp` at `b10897` and builds it
-from source with Nix.
+the llama.cpp revision shipped by the nixpkgs channels this host pins, and its
+MTP (NextN) speculative decoding is not in mainline yet. The shared runtime in
+`lib/llama-cpp-runtime.nix` is therefore pinned to
+`danielhanchen/llama.cpp` at
+`6fcaa16f4b360649933a54d1f91ad40ed35c0e11`, the head of the branch behind
+upstream PR #28243 ("models: Qwen3.8-Flash-Next MTP"), which is current master
+plus the NextN/MTP graph and is the route Unsloth documents for the MTP heads.
+It still builds every other architecture (including Bonsai). Revert the URL to
+`ggml-org/llama.cpp` once #28243 merges, and re-verify the MTP canary.
 
-- Upstream llama.cpp: <https://github.com/ggml-org/llama.cpp>
+- MTP pull request: <https://github.com/ggml-org/llama.cpp/pull/28243>
+- Fork source: <https://github.com/danielhanchen/llama.cpp>
 - Model repository: <https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF>
 
 ## Enabling
@@ -112,20 +120,30 @@ Thinking behaviour (`enable_thinking`, `preserve_thinking`, `reasoning_effort`)
 is selected per request through the chat template; `--jinja` is enabled so
 OpenAI-compatible clients can pass `chat_template_kwargs`.
 
-Unsloth ships separate Multi-Token-Prediction (MTP) draft heads for 1.3–1.7×
-faster inference. They are not used here: the heads (`nextn`/`hc_head_*`
-tensors) require the MTP graph from the Unsloth llama.cpp fork or upstream pull
-request #28243, and the pinned mainline `b10897` runtime fails to load them
-with a tensor-name mismatch. Enabling MTP means changing the pinned runtime,
-not just adding a flag.
+Multi-Token-Prediction (MTP) speculative decoding is **enabled**
+(`repo.qwenFlashNext.mtp.enable = true`). The server loads the shared Q8_0
+NextN head with `--model-draft` and runs `--spec-type draft-mtp
+--spec-draft-n-max 4`; the head drafts a few tokens per step and the main model
+verifies them exactly, so the output is unchanged and only the speed differs.
+Published results for this model are roughly 1.3-1.7x decode at low concurrency
+(about 2x on code and structured/tool output, less on free-form prose), which is
+the regime this server's agentic workloads sit in. MTP is single-slot, so it
+stays paired with `--parallel 1`.
 
-The host configuration instead enables self-speculative n-gram decoding
-(`--spec-type ngram-simple`). It needs no draft model — llama.cpp builds a
-lookup table on the host CPU from the accepted context and proposes candidate
-tokens that the main model verifies exactly. On this host it measured roughly
+Two operational details matter. The head lives in the Hugging Face `MTP/`
+subfolder, which llama.cpp sidecar auto-discovery does not search, so `-md` must
+be passed explicitly — the module does this. A `shared-` head also logs one
+`borrow_shared_tensor` error at startup and continues; it is expected, and its
+only consequence is that the automatic memory fit does not count the draft's
+memory. Confirm speculative decoding is active by looking for the
+`draft acceptance = ...` line in the journal; if it never appears, MTP did not
+engage.
+
+The host also keeps self-speculative n-gram decoding (`--spec-type
+ngram-simple`), which needs no draft model. On this host it measured roughly
 +27% decode throughput (7.95 vs 6.27 tok/s, 22% draft acceptance) on ordinary
-prose at temperature 0; the gain is larger on repetitive text and smaller on
-unpredictable output, and it turns off automatically where it does not help.
+prose at temperature 0. The two mechanisms chain in llama.cpp; re-measure the
+combination against MTP alone before assuming the n-gram pass still pays.
 
 ## GPU Acceleration (Intel Arc Pro B60)
 
@@ -140,11 +158,22 @@ repo.qwenFlashNext.cpuMoe = false;      # --n-cpu-moe supersedes --cpu-moe
 repo.qwenFlashNext.extraArgs = [
   "--n-cpu-moe" "42"        # first 42 of 48 expert layers stay in system RAM
   "--spec-type" "ngram-simple"
-  "--load-mode" "none"
+  "--load-mode" "none"      # bypass mmap for the PLE table (see below)
   "--no-host"
   "--no-op-offload"
+  "--batch-size" "2048"
+  "--ubatch-size" "2048"
+  "--threads" "8"
+  "--threads-batch" "8"
 ];
 ```
+
+`--load-mode none` matters more on this model than on a typical GGUF. qwen4exp
+carries a ~51B per-layer-embedding (PLE) n-gram table that is read sparsely at
+prefill; the upstream mmap path over-reads it and dominates real-text prefill,
+so bypassing mmap is a large TTFT win (upstream PR #28136 reports over 2x on
+realistic text). `--ubatch-size 2048` likewise amortizes prompt tokens over
+fewer expert-weight passes on the CPU-bound MoE path.
 
 When enabled, the module activates `hardware.graphics` with the Intel compute
 runtime, media driver, mesa (ANV Vulkan driver), and Vulkan tools, and the

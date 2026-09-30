@@ -26,9 +26,9 @@ in
       # The flags below are the profile previously held by the shared router
       # preset, tuned on this host's single 24 GiB Arc Pro B60: every
       # dense/attention tensor plus the last 6 of 48 MoE expert layers live in
-      # VRAM, the first 42 experts stay in system RAM, and n-gram
-      # self-speculation adds decode throughput. --cpu-moe is left off because
-      # --n-cpu-moe supersedes it.
+      # VRAM, the first 42 experts stay in system RAM, and speculative decoding
+      # adds decode throughput. --cpu-moe is left off because --n-cpu-moe
+      # supersedes it.
       qwenFlashNext = {
         enable = true;
         gpu.enable = true;
@@ -36,12 +36,23 @@ in
         contextSize = 65536;
         gpuLayers = "all";
         cpuMoe = false;
+        # MTP self-speculation: the NextN head drafts tokens for the main model
+        # to verify. Applied via the module so the draft path is passed with -md.
+        mtp.enable = true;
+        mtp.draftNMax = 4;
         extraArgs = [
           "--n-cpu-moe" "42"
           "--spec-type" "ngram-simple"
+          # --load-mode none bypasses mmap for the ~51B per-layer-embedding
+          # (PLE) table. On qwen4exp mmap over-reads this table and dominates
+          # real-text prefill (TTFT), so keep it off. The Arc loader flags also
+          # avoid host-memory staging.
           "--load-mode" "none"
           "--no-host"
           "--no-op-offload"
+          # Larger micro-batches process prompt tokens with fewer weight passes.
+          "--batch-size" "2048"
+          "--ubatch-size" "2048"
           "--threads" "8"
           "--threads-batch" "8"
         ];

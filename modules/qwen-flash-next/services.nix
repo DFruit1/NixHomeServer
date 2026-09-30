@@ -38,6 +38,7 @@ let
         --path ${cfg.runtime.webui} \
         --model ${lib.escapeShellArg cfg.paths.modelFile} \
         --mmproj ${lib.escapeShellArg cfg.paths.projectorFile} \
+        ${lib.optionalString cfg.mtp.enable "--model-draft ${lib.escapeShellArg cfg.paths.mtpFile} --spec-type draft-mtp --spec-draft-n-max ${toString cfg.mtp.draftNMax}"} \
         --alias ${lib.escapeShellArg cfg.modelName} \
         --host ${lib.escapeShellArg cfg.listenAddress} \
         --port ${toString cfg.port} \
@@ -109,6 +110,30 @@ in
       type = lib.types.bool;
       default = true;
       description = "Enable llama.cpp flash attention.";
+    };
+
+    mtp = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = ''
+          Enable Multi-Token-Prediction (NextN) self-speculative decoding. The
+          server loads the shared Q8_0 draft head and drafts a few tokens per
+          step for the main model to verify exactly. Worth roughly 1.3-2x decode
+          on code and tool output, break-even on free-form prose, and is
+          single-slot only. Requires a runtime with the qwen4exp MTP graph.
+        '';
+      };
+
+      draftNMax = lib.mkOption {
+        type = lib.types.ints.positive;
+        default = 4;
+        description = ''
+          Maximum tokens the MTP head drafts per step (--spec-draft-n-max).
+          Higher drafts more but is accepted less often; measured best-all-round
+          on this model is 4.
+        '';
+      };
     };
 
     temperature = lib.mkOption {

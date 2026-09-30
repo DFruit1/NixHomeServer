@@ -34,6 +34,13 @@ in
       readOnly = true;
       description = "Multimodal projector GGUF used for image input.";
     };
+
+    mtpFile = lib.mkOption {
+      type = lib.types.str;
+      default = "${config.repo.qwenFlashNext.paths.models}/${config.repo.qwenFlashNext.model.mtpFile}";
+      readOnly = true;
+      description = "MTP (NextN) draft head GGUF used for self-speculative decoding.";
+    };
   };
 
   config = lib.mkIf cfg.enable {
