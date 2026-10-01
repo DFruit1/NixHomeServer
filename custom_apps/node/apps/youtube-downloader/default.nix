@@ -18,7 +18,8 @@ let
     filter = path: type:
       let
         rel = lib.removePrefix "${sourcePath}/" (toString path);
-        excludedPrefixes = [ "node_modules" "dist" "coverage" "test-results" ];
+        excludedPrefixes =
+          [ "node_modules" "dist" "coverage" "test-results" "src-tauri" ];
         excluded = lib.any
           (prefix: rel == prefix || lib.hasPrefix "${prefix}/" rel)
           excludedPrefixes;
