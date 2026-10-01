@@ -230,6 +230,16 @@ in
         TimeoutStopSec = "2min";
         OOMPolicy = "stop";
         OOMScoreAdjust = 500;
+        # The host swaps to zram with vm.swappiness=150. Letting the ~54 GiB
+        # model be compressed into zram under pressure thrashes the whole box
+        # (observed: multi-second SSH stalls and ~1 tok/s inference). Forbid
+        # swapping this unit so pressure is absorbed by reclaimable cache or,
+        # at worst, an OOM restart of Qwen instead of a system-wide stall. The
+        # generous caps are a runaway guard, well above the measured ~55 GiB
+        # peak, not a working limit.
+        MemorySwapMax = "0";
+        MemoryHigh = "88G";
+        MemoryMax = "96G";
         Nice = 10;
         CPUWeight = 20;
         IOWeight = 20;

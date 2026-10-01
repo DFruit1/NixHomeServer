@@ -106,6 +106,34 @@ repo.qwenFlashNext.kvCacheType = "q8_0"; # "f16" (default), "q8_0", or "q4_0"
 
 Q4_0 is smaller but noticeably lossier; keep Q8_0 or F16 when quality matters.
 
+## Stability And Quality Choices
+
+The host profile is deliberately biased toward stability and output quality over
+peak speed. The choices that matter:
+
+- **Swap is forbidden for this unit** (`MemorySwapMax = "0"`). The host swaps to
+  zram with `vm.swappiness = 150`; if the ~54 GiB model were compressed into
+  zram under pressure, the whole machine would thrash (multi-second SSH stalls,
+  ~1 tok/s inference). With swap off for Qwen, memory pressure is absorbed by
+  reclaimable cache, or at worst an OOM restart of Qwen. `MemoryHigh`/`MemoryMax`
+  (well above the measured ~55 GiB peak) are only a runaway guard.
+- **`--n-cpu-moe 40` is the floor.** 38 leaves no VRAM for the PLE/projector or
+  the prefill compute buffers and OOMs on large prompts. Do not lower it without
+  a large-prompt prefill test.
+- **`--ubatch-size 2048`** is the largest that allocates; 4096 fails.
+- **One model at a time.** A second instance cannot fit and triggers the zram
+  thrash above.
+- **Q8_0 KV cache + flash attention** keep the 64K context near-lossless and
+  cheap enough to fit; step up to F16 only if you lower `n-cpu-moe`/context.
+- **Quality is preserved by construction**: IQ4_XS weights, MTP verification
+  (exact), and thinking/reasoning-preserve left at their template defaults. Do
+  not globally disable thinking (it breaks arithmetic) or turn off
+  reasoning-preserve (it drops multi-turn continuity) if quality matters.
+- **Speed without quality loss**: have clients send per-request
+  `enable_thinking: false` for trivia and `reasoning_effort: low|medium` for
+  normal work; keep the default for hard reasoning. A trivial question is ~1-2 s
+  with thinking off versus ~8 s with it on.
+
 ## Sampling
 
 Server defaults follow the model card's thinking-mode recommendation:
