@@ -143,15 +143,15 @@ async fn list_iso_directory(
         match context {
             "processed" => {
                 let manifest_path = entry.path().with_extension("iso.output.json");
-                if let Ok(content) = tokio::fs::read_to_string(&manifest_path).await {
-                    if let Ok(manifest) = serde_json::from_str::<Value>(&content) {
-                        let output_dir = manifest["outputDir"].as_str().unwrap_or_default();
-                        let relative = output_dir
-                            .strip_prefix(shared_root.to_string_lossy().as_ref())
-                            .unwrap_or(output_dir)
-                            .trim_start_matches('/');
-                        iso_entry["outputDir"] = json!(relative);
-                    }
+                if let Ok(content) = tokio::fs::read_to_string(&manifest_path).await
+                    && let Ok(manifest) = serde_json::from_str::<Value>(&content)
+                {
+                    let output_dir = manifest["outputDir"].as_str().unwrap_or_default();
+                    let relative = output_dir
+                        .strip_prefix(shared_root.to_string_lossy().as_ref())
+                        .unwrap_or(output_dir)
+                        .trim_start_matches('/');
+                    iso_entry["outputDir"] = json!(relative);
                 }
             }
             "failed" => {

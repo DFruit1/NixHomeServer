@@ -220,10 +220,10 @@ async fn share_navigation(
         return StatusCode::NOT_FOUND.into_response();
     };
 
-    if let Some(value) = read_cookie(&headers, &state.settings.cookie_name) {
-        if cookie_is_valid(&state, &value) {
-            return redirect_to(&uri);
-        }
+    if let Some(value) = read_cookie(&headers, &state.settings.cookie_name)
+        && cookie_is_valid(&state, &value)
+    {
+        return redirect_to(&uri);
     }
 
     match validate_share(&state, &token).await {

@@ -3,6 +3,9 @@
 { name
 , srcDir
 , binaryName ? name
+# Cargo package name when it differs from the app name (mkvmaker builds the
+# disc-to-jellyfin package); drives the workspace-scoped cargo invocations.
+, packageName ? name
 , modulePath
 , meta ? { }
 , version ? "0.1.0"
@@ -79,7 +82,7 @@ let
   # In workspace mode, scope every cargo invocation to this package and reuse
   # the shared dependency artifacts. clippy/nextest inherit cargoExtraArgs, so
   # --package is added only here (not in the clippy/nextest extra-args).
-  workspaceCargoExtraArgs = lib.optionalString useWorkspace "--package ${name}";
+  workspaceCargoExtraArgs = lib.optionalString useWorkspace "--package ${packageName}";
   effectiveCargoExtraArgs = lib.trim "${cargoExtraArgs} ${workspaceCargoExtraArgs}";
 
   commonArgs = {
@@ -103,7 +106,7 @@ let
 
   rawChecks = mkRustChecks {
     inherit name packageSrc checkSrc commonArgs cargoLock cargoNextestExtraArgs;
-    cargoFmtExtraArgs = lib.optionalString useWorkspace "--package ${name} --package homelab-common";
+    cargoFmtExtraArgs = lib.optionalString useWorkspace "--package ${packageName} --package homelab-common";
     cargoArtifacts = if sharedCargoArtifacts != null then sharedCargoArtifacts else null;
   };
 

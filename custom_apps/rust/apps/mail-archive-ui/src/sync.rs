@@ -714,10 +714,10 @@ pub(super) fn stored_sync_diagnostic(account: &AccountRecord) -> Option<SyncDiag
         return None;
     }
 
-    if let Some(detail) = account.last_sync_error.as_deref() {
-        if detail == "Mailbox sync was interrupted before completion." {
-            return Some(SyncDiagnostic::interrupted());
-        }
+    if let Some(detail) = account.last_sync_error.as_deref()
+        && detail == "Mailbox sync was interrupted before completion."
+    {
+        return Some(SyncDiagnostic::interrupted());
     }
 
     match (

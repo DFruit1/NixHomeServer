@@ -19,11 +19,11 @@ pub fn log_event(level: &str, service: &str, event: &str, fields: Value) {
         "service": service,
         "event": event,
     });
-    if let Value::Object(entries) = fields {
-        if let Some(target) = value.as_object_mut() {
-            for (key, field) in entries {
-                target.insert(key, field);
-            }
+    if let Value::Object(entries) = fields
+        && let Some(target) = value.as_object_mut()
+    {
+        for (key, field) in entries {
+            target.insert(key, field);
         }
     }
     eprintln!("{value}");

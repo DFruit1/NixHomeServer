@@ -88,20 +88,20 @@ pub(super) async fn scan(
             return ApiError::internal(request_id).into_response();
         }
     };
-    if let Ok(catalog) = state.catalog.open() {
-        if let Err(error) = catalog.insert_audit_event(
+    if let Ok(catalog) = state.catalog.open()
+        && let Err(error) = catalog.insert_audit_event(
             &request_id,
             &identity.username,
             "catalog_root_scanned",
             Some(&request.root_id),
             &serde_json::to_string(&scan_result).unwrap_or_else(|_| "{}".to_string()),
-        ) {
-            log_event(
-                "audit_write_failed",
-                &request_id,
-                json!({ "error": error.to_string() }),
-            );
-        }
+        )
+    {
+        log_event(
+            "audit_write_failed",
+            &request_id,
+            json!({ "error": error.to_string() }),
+        );
     }
     Json(json!({ "rootId": request.root_id, "result": scan_result, "requestId": request_id }))
         .into_response()

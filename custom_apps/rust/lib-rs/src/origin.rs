@@ -22,10 +22,10 @@ impl std::fmt::Display for SameOriginError {
 }
 
 pub fn assert_same_origin(headers: &HeaderMap) -> Result<(), SameOriginError> {
-    if let Some(site) = header_value(headers, "sec-fetch-site") {
-        if site != "same-origin" {
-            return Err(SameOriginError::Mismatch);
-        }
+    if let Some(site) = header_value(headers, "sec-fetch-site")
+        && site != "same-origin"
+    {
+        return Err(SameOriginError::Mismatch);
     }
     let expected_hosts = expected_hosts(headers);
     if expected_hosts.is_empty() {
@@ -42,10 +42,10 @@ pub fn assert_same_origin(headers: &HeaderMap) -> Result<(), SameOriginError> {
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err(SameOriginError::Mismatch);
     }
-    if let Some(proto) = &forwarded_proto {
-        if parsed.scheme() != proto.as_str() {
-            return Err(SameOriginError::Mismatch);
-        }
+    if let Some(proto) = &forwarded_proto
+        && parsed.scheme() != proto.as_str()
+    {
+        return Err(SameOriginError::Mismatch);
     }
     let authority = &parsed[Position::BeforeHost..Position::AfterPort];
     if !expected_hosts
@@ -62,10 +62,10 @@ pub fn assert_same_origin(headers: &HeaderMap) -> Result<(), SameOriginError> {
 
 fn expected_hosts(headers: &HeaderMap) -> Vec<String> {
     let mut hosts = Vec::new();
-    if let Some(forwarded) = header_value(headers, "x-forwarded-host") {
-        if let Some(first) = first_list_value(&forwarded) {
-            hosts.push(first);
-        }
+    if let Some(forwarded) = header_value(headers, "x-forwarded-host")
+        && let Some(first) = first_list_value(&forwarded)
+    {
+        hosts.push(first);
     }
     if let Some(host) = header_value(headers, "host") {
         hosts.push(host);

@@ -129,16 +129,15 @@ async fn index_source(
     // successful pass is skipped outright, avoiding the expensive per-document
     // extraction (pdftotext/zimdump) that otherwise runs on every pass.
     let fingerprint = extract::source_fingerprint(source);
-    if let Some(fingerprint) = &fingerprint {
-        if let Some(previous) = db::source_fingerprint(client, &source.id).await? {
-            if &previous == fingerprint {
-                eprintln!(
-                    "search: source '{}': inputs unchanged since last successful pass; skipping",
-                    source.id
-                );
-                return Ok(());
-            }
-        }
+    if let Some(fingerprint) = &fingerprint
+        && let Some(previous) = db::source_fingerprint(client, &source.id).await?
+        && &previous == fingerprint
+    {
+        eprintln!(
+            "search: source '{}': inputs unchanged since last successful pass; skipping",
+            source.id
+        );
+        return Ok(());
     }
 
     // Serialize with reconcile/reindex and with any overlapping pass for this
@@ -218,13 +217,12 @@ async fn index_source_locked(
         }
         changed_count += 1;
         pending.push(record);
-        if pending.len() >= SOLR_BATCH_SIZE {
-            if let Err(err) =
+        if pending.len() >= SOLR_BATCH_SIZE
+            && let Err(err) =
                 push_batch(solr, client, &upsert, source, &source_id, &mut pending).await
-            {
-                failure = Some(err);
-                break;
-            }
+        {
+            failure = Some(err);
+            break;
         }
     }
 

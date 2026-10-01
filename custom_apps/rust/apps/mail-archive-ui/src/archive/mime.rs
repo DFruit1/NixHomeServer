@@ -4,10 +4,10 @@ pub(crate) fn extract_message_attachments(
     message_path: &FsPath,
     output_dir: &FsPath,
 ) -> Result<Vec<ExtractedAttachment>, String> {
-    if let Ok(extracted) = extract_message_attachments_with_mailparse(message_path, output_dir) {
-        if !extracted.is_empty() {
-            return Ok(extracted);
-        }
+    if let Ok(extracted) = extract_message_attachments_with_mailparse(message_path, output_dir)
+        && !extracted.is_empty()
+    {
+        return Ok(extracted);
     }
 
     run_command(

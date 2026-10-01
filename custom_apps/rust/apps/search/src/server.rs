@@ -449,10 +449,10 @@ async fn federate_runtime_sources(
         }
         // A source filter that names a different source makes this one
         // entirely out of scope.
-        if let Some(filter) = &filters.source {
-            if filter != &source.id {
-                continue;
-            }
+        if let Some(filter) = &filters.source
+            && filter != &source.id
+        {
+            continue;
         }
         match source.source_type.as_str() {
             "kiwix" => {
@@ -542,10 +542,10 @@ async fn paperless_taxonomy(
     let now = now_epoch();
     {
         let cache = state.inner.paperless_taxonomy.lock().unwrap();
-        if let Some((taxonomy, fetched_at)) = cache.get(&key) {
-            if now - *fetched_at < PAPERLESS_TAXONOMY_TTL_SECONDS {
-                return taxonomy.clone();
-            }
+        if let Some((taxonomy, fetched_at)) = cache.get(&key)
+            && now - *fetched_at < PAPERLESS_TAXONOMY_TTL_SECONDS
+        {
+            return taxonomy.clone();
         }
     }
     let taxonomy = paperless_search::load_taxonomy(&state.inner.paperless_http, config).await;
@@ -561,10 +561,10 @@ async fn zim_entries(state: &AppState, config: &ZimSearchConfig) -> Vec<ZimIndex
     let now = now_epoch();
     {
         let cache = state.inner.zim_cache.lock().unwrap();
-        if let Some((entries, fetched_at)) = cache.entries.get(&root) {
-            if now - *fetched_at < ZIM_CACHE_TTL_SECONDS {
-                return entries.clone();
-            }
+        if let Some((entries, fetched_at)) = cache.entries.get(&root)
+            && now - *fetched_at < ZIM_CACHE_TTL_SECONDS
+        {
+            return entries.clone();
         }
     }
     let zimdump = config.zimdump.clone();
@@ -594,12 +594,12 @@ mod tests {
 
     #[test]
     fn env_or_prefers_nonempty() {
-        std::env::set_var("SEARCH_UI_TEST_ENV", "custom");
+        unsafe { std::env::set_var("SEARCH_UI_TEST_ENV", "custom") };
         assert_eq!(env_or("SEARCH_UI_TEST_ENV", "default"), "custom");
-        std::env::set_var("SEARCH_UI_TEST_ENV", "");
+        unsafe { std::env::set_var("SEARCH_UI_TEST_ENV", "") };
         assert_eq!(env_or("SEARCH_UI_TEST_ENV", "default"), "default");
         assert_eq!(env_or("SEARCH_UI_TEST_UNSET", "default"), "default");
-        std::env::remove_var("SEARCH_UI_TEST_ENV");
+        unsafe { std::env::remove_var("SEARCH_UI_TEST_ENV") };
     }
 
     #[test]

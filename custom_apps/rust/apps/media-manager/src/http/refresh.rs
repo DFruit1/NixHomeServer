@@ -73,20 +73,20 @@ pub(super) async fn queue_integration_refresh(
             return ApiError::internal(request_id).into_response();
         }
     }
-    if let Ok(catalog) = state.catalog.open() {
-        if let Err(error) = catalog.insert_audit_event(
+    if let Ok(catalog) = state.catalog.open()
+        && let Err(error) = catalog.insert_audit_event(
             &request_id,
             &identity.username,
             "integration_refresh_queued",
             Some(&integration_id),
             &json!({ "alreadyQueued": already_queued }).to_string(),
-        ) {
-            log_event(
-                "audit_write_failed",
-                &request_id,
-                json!({ "error": error.to_string() }),
-            );
-        }
+        )
+    {
+        log_event(
+            "audit_write_failed",
+            &request_id,
+            json!({ "error": error.to_string() }),
+        );
     }
     (
         StatusCode::ACCEPTED,

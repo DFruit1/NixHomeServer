@@ -224,10 +224,10 @@ impl Database {
                FROM jobs WHERE created_by = ?1
               ORDER BY created_at DESC, id DESC LIMIT ?2",
         )?;
-        let jobs = statement
+
+        statement
             .query_map(params![created_by, limit.clamp(1, 500) as i64], row_to_job)?
-            .collect();
-        jobs
+            .collect()
     }
 
     pub fn job(&self, id: &str) -> rusqlite::Result<Option<Job>> {

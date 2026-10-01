@@ -302,13 +302,13 @@ impl Catalog {
               ORDER BY relative_path
               LIMIT ?3",
         )?;
-        let rows = statement
+
+        statement
             .query_map(
                 rusqlite::params![root_id, owner_username, limit],
                 catalog_item_from_row,
             )?
-            .collect();
-        rows
+            .collect()
     }
 
     pub fn list_items_matching_after(
@@ -391,13 +391,13 @@ impl Catalog {
                 AND (?2 IS NULL OR owner_username = ?2)
               ORDER BY relative_path",
         )?;
-        let rows = statement
+
+        statement
             .query_map(
                 rusqlite::params![root_id, owner_username],
                 catalog_item_from_row,
             )?
-            .collect();
-        rows
+            .collect()
     }
 
     pub fn list_media_in_directory(
@@ -423,7 +423,8 @@ impl Catalog {
                 AND media_kind != 'subtitle'
               ORDER BY relative_path",
         )?;
-        let rows = statement
+
+        statement
             .query_map(
                 rusqlite::params![
                     root_id,
@@ -444,8 +445,7 @@ impl Catalog {
                     })
                 },
             )?
-            .collect();
-        rows
+            .collect()
     }
 
     pub fn list_subtitles_in_directory(
@@ -472,7 +472,8 @@ impl Catalog {
               ORDER BY relative_path
               LIMIT ?5",
         )?;
-        let rows = statement
+
+        statement
             .query_map(
                 rusqlite::params![
                     root_id,
@@ -494,8 +495,7 @@ impl Catalog {
                     })
                 },
             )?
-            .collect();
-        rows
+            .collect()
     }
 
     pub fn get_playback_position(
@@ -1230,10 +1230,10 @@ fn plan_request_summary(request_json: &str) -> (String, Vec<String>) {
                 .collect()
         })
         .unwrap_or_default();
-    if item_ids.is_empty() {
-        if let Some(item_id) = value.get("itemId").and_then(serde_json::Value::as_str) {
-            item_ids.push(item_id.to_string());
-        }
+    if item_ids.is_empty()
+        && let Some(item_id) = value.get("itemId").and_then(serde_json::Value::as_str)
+    {
+        item_ids.push(item_id.to_string());
     }
     (kind, item_ids)
 }

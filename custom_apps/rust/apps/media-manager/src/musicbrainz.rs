@@ -261,10 +261,10 @@ impl MusicBrainzClient {
         let exact_release_ids_exposed = !release_ids.is_empty();
         let mut releases = Vec::new();
         for release_id in release_ids {
-            if let Ok(release) = self.release_lookup(&release_id).await {
-                if release.id == release_id {
-                    releases.push(release);
-                }
+            if let Ok(release) = self.release_lookup(&release_id).await
+                && release.id == release_id
+            {
+                releases.push(release);
             }
         }
         if exact_release_ids_exposed && releases.is_empty() {

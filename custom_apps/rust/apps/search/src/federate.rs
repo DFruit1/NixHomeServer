@@ -68,44 +68,44 @@ impl FederatedHit {
     /// federator has always behaved and keeps federated results consistent with
     /// the Solr facet filtering they sit beside.
     pub fn matches_filters(&self, filters: &SearchFilters) -> bool {
-        if let Some(source) = &filters.source {
-            if source != &self.source {
-                return false;
-            }
+        if let Some(source) = &filters.source
+            && source != &self.source
+        {
+            return false;
         }
-        if let Some(content_type) = &filters.content_type {
-            if content_type != &self.content_type {
-                return false;
-            }
+        if let Some(content_type) = &filters.content_type
+            && content_type != &self.content_type
+        {
+            return false;
         }
-        if let Some(owner) = &filters.owner {
-            if owner != &self.owner {
-                return false;
-            }
+        if let Some(owner) = &filters.owner
+            && owner != &self.owner
+        {
+            return false;
         }
         // Author/tag/series/year filters are applied against the same
         // normalisation the indexed path uses, so a federated hit without the
         // requested value is excluded rather than silently included.
         let derived = crate::facets::extract(&self.metadata, self.created);
-        if let Some(author) = &filters.author {
-            if !derived.authors.iter().any(|value| value == author) {
-                return false;
-            }
+        if let Some(author) = &filters.author
+            && !derived.authors.iter().any(|value| value == author)
+        {
+            return false;
         }
-        if let Some(tag) = &filters.tag {
-            if !derived.tags.iter().any(|value| value == tag) {
-                return false;
-            }
+        if let Some(tag) = &filters.tag
+            && !derived.tags.iter().any(|value| value == tag)
+        {
+            return false;
         }
-        if let Some(series) = &filters.series {
-            if !derived.series.iter().any(|value| value == series) {
-                return false;
-            }
+        if let Some(series) = &filters.series
+            && !derived.series.iter().any(|value| value == series)
+        {
+            return false;
         }
-        if let Some(year) = filters.year {
-            if derived.year != Some(year) {
-                return false;
-            }
+        if let Some(year) = filters.year
+            && derived.year != Some(year)
+        {
+            return false;
         }
         if filters.created_after.is_some() || filters.created_before.is_some() {
             let Some(created) = self.created else {
@@ -115,15 +115,15 @@ impl FederatedHit {
                 .chars()
                 .take(10)
                 .collect();
-            if let Some(after) = &filters.created_after {
-                if date.as_str() < after.as_str() {
-                    return false;
-                }
+            if let Some(after) = &filters.created_after
+                && date.as_str() < after.as_str()
+            {
+                return false;
             }
-            if let Some(before) = &filters.created_before {
-                if date.as_str() > before.as_str() {
-                    return false;
-                }
+            if let Some(before) = &filters.created_before
+                && date.as_str() > before.as_str()
+            {
+                return false;
             }
         }
         true

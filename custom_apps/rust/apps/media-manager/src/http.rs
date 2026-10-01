@@ -810,15 +810,15 @@ async fn items_with_video_probes(
 }
 
 async fn enforce_same_origin(request: Request, next: Next) -> Response {
-    if request.method() == axum::http::Method::POST {
-        if let Err(error) = homelab_common::assert_same_origin(request.headers()) {
-            return ApiError::without_request_id(
-                StatusCode::FORBIDDEN,
-                "same_origin_required",
-                error.to_string(),
-            )
-            .into_response();
-        }
+    if request.method() == axum::http::Method::POST
+        && let Err(error) = homelab_common::assert_same_origin(request.headers())
+    {
+        return ApiError::without_request_id(
+            StatusCode::FORBIDDEN,
+            "same_origin_required",
+            error.to_string(),
+        )
+        .into_response();
     }
     next.run(request).await
 }

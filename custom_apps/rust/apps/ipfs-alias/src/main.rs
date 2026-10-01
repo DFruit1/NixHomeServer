@@ -24,10 +24,10 @@ fn valid_channel(channel: &str) -> bool {
 
 fn alias_path(uri: &Uri) -> Option<(&str, &str)> {
     let path = uri.path();
-    if let Some(suffix) = path.strip_prefix("/fdroid/repo") {
-        if suffix.is_empty() || suffix.starts_with('/') {
-            return Some(("fdroid", suffix));
-        }
+    if let Some(suffix) = path.strip_prefix("/fdroid/repo")
+        && (suffix.is_empty() || suffix.starts_with('/'))
+    {
+        return Some(("fdroid", suffix));
     }
     let remaining = path.strip_prefix("/published/")?;
     let channel = remaining.split('/').next()?;

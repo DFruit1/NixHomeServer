@@ -268,14 +268,12 @@ impl super::Extractor for KiwixExtractor {
                 let title = clean_title_from_path(&entry_path);
                 let mut body = String::new();
                 let mut html_title_value = title.clone();
-                if fulltext {
-                    if let Some(bytes) = dump_entry(&self.zimdump, &zim, &entry_path)? {
-                        let html = String::from_utf8_lossy(&bytes).into_owned();
-                        if let Some(found) = html_title(&html) {
-                            html_title_value = found;
-                        }
-                        body = truncate(&html_to_text(&html), FULLTEXT_BODY_LIMIT);
+                if fulltext && let Some(bytes) = dump_entry(&self.zimdump, &zim, &entry_path)? {
+                    let html = String::from_utf8_lossy(&bytes).into_owned();
+                    if let Some(found) = html_title(&html) {
+                        html_title_value = found;
                     }
+                    body = truncate(&html_to_text(&html), FULLTEXT_BODY_LIMIT);
                 }
                 emit(ExtractedDocument {
                     external_id: crate::timeutil::sha256_hex(&[&file_name, &entry_path]),

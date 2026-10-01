@@ -1,4 +1,4 @@
-{ lib, pkgs, rustLib, ... }:
+{ lib, pkgs, rustLib, workspaceVersion, workspaceSrc ? null, workspaceCheckSrc ? workspaceSrc, sharedCargoArtifacts ? null, cargoLock ? null, ... }:
 
 let
   handbrakeCli = pkgs.handbrake.override { useGtk = false; };
@@ -18,10 +18,12 @@ let
   });
   app = rustLib.mkRustApp {
     name = "mkvmaker";
+    packageName = "disc-to-jellyfin";
     binaryName = "disc-to-jellyfin";
     srcDir = ./.;
     modulePath = ../../modules/mkvmaker;
-    version = "0.3.0";
+    version = workspaceVersion;
+    inherit workspaceSrc workspaceCheckSrc sharedCargoArtifacts cargoLock;
     meta = {
       description = "Automated DVD ISO to Jellyfin-ready MKV converter";
       license = lib.licenses.mit;

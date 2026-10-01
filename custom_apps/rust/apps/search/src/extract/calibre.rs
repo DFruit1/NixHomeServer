@@ -134,12 +134,13 @@ fn load_formats(connection: &Connection) -> Result<HashMap<i64, Vec<FormatFile>>
     for row in rows {
         let (book, format, name) =
             row.map_err(|err| format!("failed to read Calibre formats: {err}"))?;
-        if let (Some(format), Some(name)) = (format, name) {
-            if !format.trim().is_empty() && !name.trim().is_empty() {
-                map.entry(book)
-                    .or_default()
-                    .push(FormatFile { format, name });
-            }
+        if let (Some(format), Some(name)) = (format, name)
+            && !format.trim().is_empty()
+            && !name.trim().is_empty()
+        {
+            map.entry(book)
+                .or_default()
+                .push(FormatFile { format, name });
         }
     }
     Ok(map)
@@ -322,25 +323,23 @@ impl super::Extractor for CalibreExtractor {
             for format in &ordered {
                 let path = format_path(&library_dir, &book, format);
                 total_size += format_file_size(&path);
-                if book_text.is_empty() {
-                    if let Some(text) =
+                if book_text.is_empty()
+                    && let Some(text) =
                         extract_format_text(&path, &format.format, self.pdftotext.as_deref())
-                    {
-                        if !text.trim().is_empty() {
-                            book_text = text;
-                            primary_path = path.display().to_string();
-                            content_type = content_type_for_format(&format.format);
-                        }
-                    }
+                    && !text.trim().is_empty()
+                {
+                    book_text = text;
+                    primary_path = path.display().to_string();
+                    content_type = content_type_for_format(&format.format);
                 }
             }
-            if primary_path.is_empty() {
-                if let Some(first) = ordered.first() {
-                    primary_path = format_path(&library_dir, &book, first)
-                        .display()
-                        .to_string();
-                    content_type = content_type_for_format(&first.format);
-                }
+            if primary_path.is_empty()
+                && let Some(first) = ordered.first()
+            {
+                primary_path = format_path(&library_dir, &book, first)
+                    .display()
+                    .to_string();
+                content_type = content_type_for_format(&first.format);
             }
 
             let mut body = String::new();

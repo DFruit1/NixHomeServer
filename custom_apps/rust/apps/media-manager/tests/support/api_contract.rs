@@ -45,15 +45,15 @@ fn matches(value: &Value, schema: &Value, contract: &Value) -> bool {
             }
         }
     }
-    if let Some(expected) = schema.get("const") {
-        if value != expected {
-            return false;
-        }
+    if let Some(expected) = schema.get("const")
+        && value != expected
+    {
+        return false;
     }
-    if let Some(values) = schema["enum"].as_array() {
-        if !values.contains(value) {
-            return false;
-        }
+    if let Some(values) = schema["enum"].as_array()
+        && !values.contains(value)
+    {
+        return false;
     }
     let kind_matches = |kind: &str| match kind {
         "object" => value.is_object(),
@@ -65,44 +65,42 @@ fn matches(value: &Value, schema: &Value, contract: &Value) -> bool {
         "null" => value.is_null(),
         _ => panic!("unsupported schema type {kind}"),
     };
-    if let Some(kind) = schema["type"].as_str() {
-        if !kind_matches(kind) {
-            return false;
-        }
+    if let Some(kind) = schema["type"].as_str()
+        && !kind_matches(kind)
+    {
+        return false;
     }
-    if let Some(kinds) = schema["type"].as_array() {
-        if !kinds
+    if let Some(kinds) = schema["type"].as_array()
+        && !kinds
             .iter()
             .any(|kind| kind_matches(kind.as_str().unwrap()))
-        {
-            return false;
-        }
+    {
+        return false;
     }
     if let Some(object) = value.as_object() {
-        if let Some(required) = schema["required"].as_array() {
-            if required
+        if let Some(required) = schema["required"].as_array()
+            && required
                 .iter()
                 .any(|key| !object.contains_key(key.as_str().unwrap()))
-            {
-                return false;
-            }
+        {
+            return false;
         }
         for (key, child) in object {
             if let Some(spec) = schema["properties"].get(key) {
                 if !matches(child, spec, contract) {
                     return false;
                 }
-            } else if let Some(spec) = schema.get("additionalProperties") {
-                if !matches(child, spec, contract) {
-                    return false;
-                }
+            } else if let Some(spec) = schema.get("additionalProperties")
+                && !matches(child, spec, contract)
+            {
+                return false;
             }
         }
     }
-    if let (Some(items), Some(spec)) = (value.as_array(), schema.get("items")) {
-        if !items.iter().all(|item| matches(item, spec, contract)) {
-            return false;
-        }
+    if let (Some(items), Some(spec)) = (value.as_array(), schema.get("items"))
+        && !items.iter().all(|item| matches(item, spec, contract))
+    {
+        return false;
     }
     true
 }

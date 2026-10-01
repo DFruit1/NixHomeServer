@@ -124,12 +124,12 @@ pub fn filename_sequence_number(file_name: &str) -> Option<(u64, u64)> {
             .is_some_and(|character| character.is_ascii_digit())
     {
         let tail = &rest[1..];
-        if let Some((number, consumed)) = leading_number(tail) {
-            if (1..=99).contains(&number) {
-                disc = number;
-                explicit_disc = true;
-                rest = tail[consumed..].trim_start_matches([' ', '-', '_', '.']);
-            }
+        if let Some((number, consumed)) = leading_number(tail)
+            && (1..=99).contains(&number)
+        {
+            disc = number;
+            explicit_disc = true;
+            rest = tail[consumed..].trim_start_matches([' ', '-', '_', '.']);
         }
     }
     for word in ["part", "track", "trk"] {
@@ -155,10 +155,10 @@ pub fn filename_sequence_number(file_name: &str) -> Option<(u64, u64)> {
     let mut track = first;
     if explicit_disc {
         let tail = rest[consumed..].trim_start_matches([' ', '-', '_', '.', '/']);
-        if let Some((second, _)) = leading_number(tail) {
-            if second <= 9999 {
-                track = second;
-            }
+        if let Some((second, _)) = leading_number(tail)
+            && second <= 9999
+        {
+            track = second;
         }
     }
     Some((disc, track))

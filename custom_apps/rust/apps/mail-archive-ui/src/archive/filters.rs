@@ -278,10 +278,10 @@ pub(crate) fn parse_message_search_filters(
     };
     let date_from_timestamp = parse_date_start(&filters.date_from, "from")?;
     let date_to_timestamp = parse_date_end(&filters.date_to, "to")?;
-    if let (Some(from), Some(to)) = (date_from_timestamp, date_to_timestamp) {
-        if from > to {
-            return Err("Date from must be before date to.".to_string());
-        }
+    if let (Some(from), Some(to)) = (date_from_timestamp, date_to_timestamp)
+        && from > to
+    {
+        return Err("Date from must be before date to.".to_string());
     }
 
     Ok(ParsedMessageSearchFilters {
@@ -299,22 +299,22 @@ pub(crate) fn parse_attachment_search_filters(
     parse_message_search_filters(filters.message.clone())?;
     let min_size_bytes = parse_optional_nonnegative_i64(Some(&filters.min_size), "minimum size")?;
     let max_size_bytes = parse_optional_nonnegative_i64(Some(&filters.max_size), "maximum size")?;
-    if let (Some(min), Some(max)) = (min_size_bytes, max_size_bytes) {
-        if min > max {
-            return Err("Minimum size must be less than or equal to maximum size.".to_string());
-        }
+    if let (Some(min), Some(max)) = (min_size_bytes, max_size_bytes)
+        && min > max
+    {
+        return Err("Minimum size must be less than or equal to maximum size.".to_string());
     }
     let min_attachment_count =
         parse_optional_usize(Some(&filters.min_attachments), "minimum attachment count")?;
     let max_attachment_count =
         parse_optional_usize(Some(&filters.max_attachments), "maximum attachment count")?;
-    if let (Some(min), Some(max)) = (min_attachment_count, max_attachment_count) {
-        if min > max {
-            return Err(
-                "Minimum attachment count must be less than or equal to maximum attachment count."
-                    .to_string(),
-            );
-        }
+    if let (Some(min), Some(max)) = (min_attachment_count, max_attachment_count)
+        && min > max
+    {
+        return Err(
+            "Minimum attachment count must be less than or equal to maximum attachment count."
+                .to_string(),
+        );
     }
 
     Ok(ParsedAttachmentSearchFilters {
@@ -365,29 +365,27 @@ pub(crate) fn message_matches_filters(
     filters: &ParsedMessageSearchFilters,
     has_attachments: Option<bool>,
 ) -> bool {
-    if let Some(from_timestamp) = filters.date_from_timestamp {
-        if metadata.timestamp < from_timestamp {
-            return false;
-        }
+    if let Some(from_timestamp) = filters.date_from_timestamp
+        && metadata.timestamp < from_timestamp
+    {
+        return false;
     }
-    if let Some(to_timestamp) = filters.date_to_timestamp {
-        if metadata.timestamp > to_timestamp {
-            return false;
-        }
+    if let Some(to_timestamp) = filters.date_to_timestamp
+        && metadata.timestamp > to_timestamp
+    {
+        return false;
     }
-    if let Some(expected) = filters.normalized_sender_address.as_deref() {
-        if sender_identity_from_header(&metadata.from)
+    if let Some(expected) = filters.normalized_sender_address.as_deref()
+        && sender_identity_from_header(&metadata.from)
             .is_none_or(|identity| identity.address != expected)
-        {
-            return false;
-        }
+    {
+        return false;
     }
-    if let Some(expected) = filters.normalized_sender_domain.as_deref() {
-        if sender_identity_from_header(&metadata.from)
+    if let Some(expected) = filters.normalized_sender_domain.as_deref()
+        && sender_identity_from_header(&metadata.from)
             .is_none_or(|identity| identity.domain != expected)
-        {
-            return false;
-        }
+    {
+        return false;
     }
     if !filters.raw.sender_name.trim().is_empty() {
         let needle = filters.raw.sender_name.to_ascii_lowercase();
@@ -406,10 +404,10 @@ pub(crate) fn message_matches_filters(
     {
         return false;
     }
-    if let Some(expected) = filters.raw.has_attachments {
-        if has_attachments != Some(expected) {
-            return false;
-        }
+    if let Some(expected) = filters.raw.has_attachments
+        && has_attachments != Some(expected)
+    {
+        return false;
     }
     true
 }
@@ -440,25 +438,25 @@ pub(crate) fn attachment_matches_filters(
     {
         return false;
     }
-    if let Some(min_size) = filters.min_size_bytes {
-        if item.attachment.size_bytes < min_size {
-            return false;
-        }
+    if let Some(min_size) = filters.min_size_bytes
+        && item.attachment.size_bytes < min_size
+    {
+        return false;
     }
-    if let Some(max_size) = filters.max_size_bytes {
-        if item.attachment.size_bytes > max_size {
-            return false;
-        }
+    if let Some(max_size) = filters.max_size_bytes
+        && item.attachment.size_bytes > max_size
+    {
+        return false;
     }
-    if let Some(min_count) = filters.min_attachment_count {
-        if attachment_count < min_count {
-            return false;
-        }
+    if let Some(min_count) = filters.min_attachment_count
+        && attachment_count < min_count
+    {
+        return false;
     }
-    if let Some(max_count) = filters.max_attachment_count {
-        if attachment_count > max_count {
-            return false;
-        }
+    if let Some(max_count) = filters.max_attachment_count
+        && attachment_count > max_count
+    {
+        return false;
     }
     true
 }

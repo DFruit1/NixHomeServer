@@ -167,14 +167,13 @@ pub async fn process_job(config: &AppConfig, database: &Database, job: &Job) -> 
                         last_progress_write = Instant::now();
                     }
                 }
-                if last_log_write.elapsed() >= Duration::from_secs(10) {
-                    if let Some(text) = log_line_text(&line) {
+                if last_log_write.elapsed() >= Duration::from_secs(10)
+                    && let Some(text) = log_line_text(&line) {
                         database
                             .add_event(&job.id, "log", Some(&text))
                             .map_err(|error| format!("persist crawl log: {error}"))?;
                         last_log_write = Instant::now();
                     }
-                }
             }
             _ = poll.tick() => {
                 if termination.is_none() {

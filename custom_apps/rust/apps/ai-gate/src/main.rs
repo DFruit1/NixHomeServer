@@ -446,9 +446,9 @@ mod tests {
 
     #[test]
     fn rejects_invalid_settings() {
-        std::env::set_var("AI_GATE_MAX_INFLIGHT", "0");
+        unsafe { std::env::set_var("AI_GATE_MAX_INFLIGHT", "0") };
         let result = Settings::from_env();
-        std::env::remove_var("AI_GATE_MAX_INFLIGHT");
+        unsafe { std::env::remove_var("AI_GATE_MAX_INFLIGHT") };
         assert!(result.is_err());
     }
 }

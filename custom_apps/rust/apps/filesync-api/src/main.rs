@@ -440,10 +440,10 @@ async fn identity_for_token(
     token_exp: u64,
 ) -> Result<String, Response> {
     let cache_key = format!("{:x}", Sha256::digest(token.as_bytes()));
-    if let Some(entry) = state.identities.read().await.get(&cache_key) {
-        if entry.exp > unix_now() {
-            return Ok(entry.username.clone());
-        }
+    if let Some(entry) = state.identities.read().await.get(&cache_key)
+        && entry.exp > unix_now()
+    {
+        return Ok(entry.username.clone());
     }
     let response = state
         .http

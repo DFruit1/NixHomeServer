@@ -212,12 +212,12 @@ pub fn discover_candidates(source: &SourceConfig) -> Result<Vec<Candidate>, Stri
 pub fn pdf_urls_in_entry(link: &str, content: &str) -> Vec<String> {
     let mut urls: Vec<String> = Vec::new();
     let mut consider = |raw: &str| {
-        if let Some(candidate) = resolve_url(link, raw) {
-            if let Ok(url) = Url::parse(&candidate) {
-                if url_path_is_pdf(&url) && !urls.iter().any(|existing| existing == &candidate) {
-                    urls.push(candidate);
-                }
-            }
+        if let Some(candidate) = resolve_url(link, raw)
+            && let Ok(url) = Url::parse(&candidate)
+            && url_path_is_pdf(&url)
+            && !urls.iter().any(|existing| existing == &candidate)
+        {
+            urls.push(candidate);
         }
     };
     consider(link);
@@ -382,11 +382,11 @@ pub async fn run() -> Result<(), String> {
         if !seen.insert(key.clone()) {
             continue;
         }
-        if let Some(status) = db::pdf_archive_status(&client, &key).await? {
-            if status == "downloaded" {
-                skipped += 1;
-                continue;
-            }
+        if let Some(status) = db::pdf_archive_status(&client, &key).await?
+            && status == "downloaded"
+        {
+            skipped += 1;
+            continue;
         }
         if considered >= config.max_per_run {
             eprintln!(
@@ -544,12 +544,12 @@ async fn download_pdf(
     if !content_type.starts_with("application/pdf") {
         return Err(format!("not a PDF (content-type '{content_type}')"));
     }
-    if let Some(length) = response.content_length() {
-        if length > max_bytes {
-            return Err(format!(
-                "PDF is {length} bytes, over the {max_bytes}-byte limit"
-            ));
-        }
+    if let Some(length) = response.content_length()
+        && length > max_bytes
+    {
+        return Err(format!(
+            "PDF is {length} bytes, over the {max_bytes}-byte limit"
+        ));
     }
     let bytes = response
         .bytes()

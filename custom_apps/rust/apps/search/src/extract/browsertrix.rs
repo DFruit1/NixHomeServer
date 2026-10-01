@@ -243,25 +243,25 @@ fn parse_wacz(path: &PathBuf) -> Result<CrawlPackage, String> {
         pages: Vec::new(),
     };
 
-    if let Ok(entry) = archive.by_name("datapackage.json") {
-        if let Ok(value) = serde_json::from_reader::<_, Value>(entry) {
-            package.name = value
-                .get("name")
-                .and_then(Value::as_str)
-                .filter(|name| !name.is_empty())
-                .map(str::to_string)
-                .unwrap_or(package.name);
-            package.title = value
-                .get("title")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            package.description = value
-                .get("description")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-        }
+    if let Ok(entry) = archive.by_name("datapackage.json")
+        && let Ok(value) = serde_json::from_reader::<_, Value>(entry)
+    {
+        package.name = value
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|name| !name.is_empty())
+            .map(str::to_string)
+            .unwrap_or(package.name);
+        package.title = value
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        package.description = value
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
     }
 
     let pages_jsonl = archive
@@ -317,13 +317,13 @@ fn parse_wacz(path: &PathBuf) -> Result<CrawlPackage, String> {
     }
 
     for page in &mut package.pages {
-        if page.text.as_ref().map(|text| text.trim().is_empty()) != Some(false) {
-            if let Some((title, text)) = warc_text.get(&page.url) {
-                if page.title.is_none() && !title.is_empty() {
-                    page.title = Some(title.clone());
-                }
-                page.text = Some(text.clone());
+        if page.text.as_ref().map(|text| text.trim().is_empty()) != Some(false)
+            && let Some((title, text)) = warc_text.get(&page.url)
+        {
+            if page.title.is_none() && !title.is_empty() {
+                page.title = Some(title.clone());
             }
+            page.text = Some(text.clone());
         }
     }
 

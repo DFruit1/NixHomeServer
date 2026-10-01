@@ -1,6 +1,6 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use clap::{Parser, ValueEnum};
-use dialoguer::{Confirm, Input, MultiSelect, Select, theme::ColorfulTheme};
+use dialoguer::{theme::ColorfulTheme, Confirm, Input, MultiSelect, Select};
 use fs2::available_space;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -16,8 +16,8 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{
-        Arc, Mutex,
         atomic::{AtomicBool, Ordering as AtomicOrdering},
+        Arc, Mutex,
     },
     thread,
     time::Duration,
@@ -25,7 +25,7 @@ use std::{
 
 mod progress;
 
-use progress::{ProgressContext, relay_progress, write_public_progress};
+use progress::{relay_progress, write_public_progress, ProgressContext};
 
 #[derive(Parser, Debug)]
 #[command(version, about = "Convert DVD ISOs into a Jellyfin-friendly library")]
@@ -2185,14 +2185,12 @@ mod tests {
             None,
         )
         .unwrap();
-        assert!(
-            jobs.iter()
-                .any(|job| job.output.ends_with("Film-disc1.mkv"))
-        );
-        assert!(
-            jobs.iter()
-                .any(|job| job.output.ends_with("Film-disc2.mkv"))
-        );
+        assert!(jobs
+            .iter()
+            .any(|job| job.output.ends_with("Film-disc1.mkv")));
+        assert!(jobs
+            .iter()
+            .any(|job| job.output.ends_with("Film-disc2.mkv")));
         assert_eq!(
             jobs.iter()
                 .filter(|job| job.output.to_string_lossy().contains("/extras/"))
@@ -2222,16 +2220,12 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(
-            jobs[0]
-                .output
-                .ends_with("A Show (2001) [tvdbid-42] S02E05 - The Beginning.mkv")
-        );
-        assert!(
-            jobs[1]
-                .output
-                .ends_with("A Show (2001) [tvdbid-42] S02E06 - A_B_ Story.mkv")
-        );
+        assert!(jobs[0]
+            .output
+            .ends_with("A Show (2001) [tvdbid-42] S02E05 - The Beginning.mkv"));
+        assert!(jobs[1]
+            .output
+            .ends_with("A Show (2001) [tvdbid-42] S02E06 - A_B_ Story.mkv"));
     }
 
     #[test]

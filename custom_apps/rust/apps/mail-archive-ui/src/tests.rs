@@ -16,12 +16,12 @@ where
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let previous = env::var_os(key);
-    env::set_var(key, value);
+    unsafe { env::set_var(key, value) };
     let result = test();
     if let Some(previous) = previous {
-        env::set_var(key, previous);
+        unsafe { env::set_var(key, previous) };
     } else {
-        env::remove_var(key);
+        unsafe { env::remove_var(key) };
     }
     result
 }
@@ -194,9 +194,9 @@ where
     }
 
     let original_path = env::var("PATH").unwrap_or_default();
-    env::set_var("PATH", format!("{}:{}", bin_dir.display(), original_path));
+    unsafe { env::set_var("PATH", format!("{}:{}", bin_dir.display(), original_path)) };
     test(bin_dir);
-    env::set_var("PATH", original_path);
+    unsafe { env::set_var("PATH", original_path) };
 }
 
 fn seed_account(config: &AppConfig, username: &str, secret: &str) -> i64 {
@@ -1011,9 +1011,9 @@ fn health_payload_reports_missing_tools() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let original_path = env::var("PATH").unwrap_or_default();
-    env::set_var("PATH", tempdir.path().join("empty-bin"));
+    unsafe { env::set_var("PATH", tempdir.path().join("empty-bin")) };
     let (status, payload) = health_payload(&config);
-    env::set_var("PATH", original_path);
+    unsafe { env::set_var("PATH", original_path) };
 
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(payload.status, "degraded");
@@ -2226,7 +2226,7 @@ fn sync_applies_visible_mirror_read_acl_to_new_and_existing_hard_links() {
     with_stubbed_path(&mail_export_acl_stub_commands(), |_| {
         let tempdir = TempDir::new().expect("tempdir");
         let log_path = tempdir.path().join("setfacl.log");
-        env::set_var("SETFACL_LOG", &log_path);
+        unsafe { env::set_var("SETFACL_LOG", &log_path) };
         let mut config = test_config(&tempdir);
         config.visible_mirror_read_group = Some(Arc::<str>::from("filestash"));
         prepare_test_layout(&config);
@@ -2258,7 +2258,7 @@ fn sync_applies_visible_mirror_read_acl_to_new_and_existing_hard_links() {
         assert!(log.contains(visible_path.to_string_lossy().as_ref()));
         assert!(log.contains("g:filestash:r-x"));
         assert!(!log.contains(".internal-sync"));
-        env::remove_var("SETFACL_LOG");
+        unsafe { env::remove_var("SETFACL_LOG") };
     });
 }
 
@@ -3751,7 +3751,7 @@ fn canary_mailbox_seeds_messages_and_attachments() {
         let tempdir = TempDir::new().expect("tempdir");
         let config = test_config(&tempdir);
         prepare_test_layout(&config);
-        env::remove_var("MAIL_ARCHIVE_UI_CANARY_USERNAME");
+        unsafe { env::remove_var("MAIL_ARCHIVE_UI_CANARY_USERNAME") };
         canary::seed_canary_mailbox(&config).expect("seed canary mailbox");
 
         assert_eq!(count_message_catalog_rows(&config), 4);

@@ -36,10 +36,10 @@ pub(crate) fn read_artwork_file(
         return Err("artwork exceeds the 32 MiB limit".to_string());
     }
     let mut content_type = artwork_content_type(relative_path).to_string();
-    if content_type == "application/octet-stream" {
-        if let Some(sniffed) = sniff_image_content_type(&bytes) {
-            content_type = sniffed;
-        }
+    if content_type == "application/octet-stream"
+        && let Some(sniffed) = sniff_image_content_type(&bytes)
+    {
+        content_type = sniffed;
     }
     Ok(ArtworkBody {
         bytes,

@@ -9,6 +9,7 @@ ensure_tools cargo jq rg
 workspace_manifest="custom_apps/Cargo.toml"
 nix_workspace="custom_apps/rust/apps/default.nix"
 member_manifests=(
+  custom_apps/mkvmaker/Cargo.toml
   custom_apps/rust/apps/ai-gate/Cargo.toml
   custom_apps/rust/apps/browsertrix-downloader/Cargo.toml
   custom_apps/rust/apps/ipfs-alias/Cargo.toml
@@ -24,7 +25,7 @@ require_fixed "$workspace_manifest" \
   '[workspace.dependencies]' \
   "Rust dependency versions must have one workspace-owned source of truth."
 require_fixed "$workspace_manifest" \
-  'edition = "2021"' \
+  'edition = "2024"' \
   "The Rust edition must be declared once in workspace package metadata."
 
 for manifest in "${member_manifests[@]}"; do
@@ -61,9 +62,9 @@ metadata="$(cargo metadata \
   --format-version 1)"
 
 jq -e '
-  (.packages | length == 10)
+  (.packages | length == 11)
   and ([.packages[].version] | unique | length == 1)
-  and ([.packages[].edition] | unique == ["2021"])
+  and ([.packages[].edition] | unique == ["2024"])
   and (
     [.packages[].dependencies[]]
     | group_by(.name)
@@ -89,6 +90,7 @@ nix_versions="$(flake_eval_json '
     "kanidm-canary-bootstrap"
     "mail-archive-ui"
     "media-manager"
+    "mkvmaker"
     "opencloud-share-gate"
   ];
 in builtins.listToAttrs (map (name: {

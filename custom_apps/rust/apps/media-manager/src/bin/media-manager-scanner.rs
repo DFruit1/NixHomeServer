@@ -69,12 +69,11 @@ fn run() -> Result<(), String> {
         return Err(format!("{roots_failed} root scans failed"));
     }
     // Bound the insert-only audit trail once per scan run.
-    if let Ok(catalog) = Catalog::open(&config.database_path()) {
-        if let Ok(pruned) = catalog.prune_audit_events(90) {
-            if pruned > 0 {
-                log("info", "audit_events_pruned", json!({ "pruned": pruned }));
-            }
-        }
+    if let Ok(catalog) = Catalog::open(&config.database_path())
+        && let Ok(pruned) = catalog.prune_audit_events(90)
+        && pruned > 0
+    {
+        log("info", "audit_events_pruned", json!({ "pruned": pruned }));
     }
     log(
         "info",

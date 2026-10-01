@@ -97,14 +97,14 @@ pub trait MediaTransfer: MediaApplication {
             role: ArtifactRole::Primary,
             sidecar_format: None,
         }];
-        if let Some(MetadataCarrier::Sidecar(_)) = item.media_kind.carrier() {
-            if let Some((path, format)) = crate::metadata::item_sidecar_path(item) {
-                artifacts.push(ExportedArtifact {
-                    relative_path: path,
-                    role: ArtifactRole::Sidecar,
-                    sidecar_format: Some(format),
-                });
-            }
+        if let Some(MetadataCarrier::Sidecar(_)) = item.media_kind.carrier()
+            && let Some((path, format)) = crate::metadata::item_sidecar_path(item)
+        {
+            artifacts.push(ExportedArtifact {
+                relative_path: path,
+                role: ArtifactRole::Sidecar,
+                sidecar_format: Some(format),
+            });
         }
         ExportedMedia {
             media_kind: item.media_kind,

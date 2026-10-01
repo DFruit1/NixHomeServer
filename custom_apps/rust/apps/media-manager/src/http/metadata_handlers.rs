@@ -1510,47 +1510,46 @@ pub(super) async fn folder_metadata(
     // siblings, the playlist sidecar, and the embedded track tags.
     let mut track_order_value = Value::Null;
     let mut track_order_warnings = Vec::new();
-    if folder.category.profile().supports(MediaAction::TrackOrder) {
-        if let Some(root) = root.as_ref() {
-            let root_path = root.resolved_path.clone();
-            let folder_path = folder.relative_path.clone();
-            let category = folder.category;
-            match tokio::task::spawn_blocking(move || {
-                crate::track_order::inspect_folder_track_order(
-                    std::path::Path::new(&root_path),
-                    &folder_path,
-                    category,
-                )
-            })
-            .await
-            {
-                Ok((Some(report), warnings)) => {
-                    track_order_warnings = warnings;
-                    for problem in &report.problems {
-                        health.push(MetadataHealthIssue {
-                            code: problem.code.clone(),
-                            severity: problem.severity.clone(),
-                            field: None,
-                            title: problem.title.clone(),
-                            message: format!(
-                                "{} Fix the order, then rescan the library and refresh the player app.",
-                                problem.message
-                            ),
-                            sources: vec!["track-order".to_string()],
-                            current_value: None,
-                            current_sources: Vec::new(),
-                            proposed_values: Vec::new(),
-                            affected_files: problem.affected_files.clone(),
-                            affected_file_count: Some(problem.affected_file_count),
-                        });
-                    }
-                    track_order_value = json!(report);
+    if folder.category.profile().supports(MediaAction::TrackOrder)
+        && let Some(root) = root.as_ref()
+    {
+        let root_path = root.resolved_path.clone();
+        let folder_path = folder.relative_path.clone();
+        let category = folder.category;
+        match tokio::task::spawn_blocking(move || {
+            crate::track_order::inspect_folder_track_order(
+                std::path::Path::new(&root_path),
+                &folder_path,
+                category,
+            )
+        })
+        .await
+        {
+            Ok((Some(report), warnings)) => {
+                track_order_warnings = warnings;
+                for problem in &report.problems {
+                    health.push(MetadataHealthIssue {
+                        code: problem.code.clone(),
+                        severity: problem.severity.clone(),
+                        field: None,
+                        title: problem.title.clone(),
+                        message: format!(
+                            "{} Fix the order, then rescan the library and refresh the player app.",
+                            problem.message
+                        ),
+                        sources: vec!["track-order".to_string()],
+                        current_value: None,
+                        current_sources: Vec::new(),
+                        proposed_values: Vec::new(),
+                        affected_files: problem.affected_files.clone(),
+                        affected_file_count: Some(problem.affected_file_count),
+                    });
                 }
-                Ok((None, warnings)) => track_order_warnings = warnings,
-                Err(_) => {
-                    track_order_warnings =
-                        vec!["Track-order inspection did not complete.".to_string()]
-                }
+                track_order_value = json!(report);
+            }
+            Ok((None, warnings)) => track_order_warnings = warnings,
+            Err(_) => {
+                track_order_warnings = vec!["Track-order inspection did not complete.".to_string()]
             }
         }
     }
@@ -1761,10 +1760,10 @@ fn split_episode_marker(stem: &str) -> Option<(usize, usize)> {
 fn strip_trailing_year(value: &str) -> (&str, Option<u16>) {
     if value.len() >= 7 && value.ends_with(')') {
         let start = value.len() - 6;
-        if value.as_bytes().get(start) == Some(&b'(') {
-            if let Ok(year) = value[start + 1..value.len() - 1].parse::<u16>() {
-                return (value[..start].trim(), Some(year));
-            }
+        if value.as_bytes().get(start) == Some(&b'(')
+            && let Ok(year) = value[start + 1..value.len() - 1].parse::<u16>()
+        {
+            return (value[..start].trim(), Some(year));
         }
     }
     (value.trim(), None)
@@ -1840,10 +1839,9 @@ fn album_group(item: &CatalogItem) -> Value {
     if matches!(
         item.media_kind,
         MediaKind::Audiobook | MediaKind::Podcast | MediaKind::Music
-    ) {
-        if let Some((parent, _)) = item.relative_path.rsplit_once('/') {
-            return Value::String(parent.to_string());
-        }
+    ) && let Some((parent, _)) = item.relative_path.rsplit_once('/')
+    {
+        return Value::String(parent.to_string());
     }
     Value::Null
 }

@@ -836,10 +836,11 @@ pub(super) fn paperless_consume_filename_with_suffix(filename: &str, suffix: usi
         return filename.to_string();
     }
 
-    if let Some((stem, extension)) = filename.rsplit_once('.') {
-        if !stem.is_empty() && !extension.is_empty() {
-            return format!("{stem} ({suffix}).{extension}");
-        }
+    if let Some((stem, extension)) = filename.rsplit_once('.')
+        && !stem.is_empty()
+        && !extension.is_empty()
+    {
+        return format!("{stem} ({suffix}).{extension}");
     }
     format!("{filename} ({suffix})")
 }

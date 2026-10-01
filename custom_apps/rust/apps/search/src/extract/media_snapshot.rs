@@ -150,10 +150,10 @@ fn build_body(entry: &Value) -> String {
 /// otherwise the publication year is treated as January 1 of that year.
 fn created_at(entry: &Value) -> Option<i64> {
     for key in ["publishedDate", "premiereDate", "releaseDate"] {
-        if let Some(raw) = string_field(entry, key) {
-            if let Some(timestamp) = parse_date(&raw) {
-                return Some(timestamp);
-            }
+        if let Some(raw) = string_field(entry, key)
+            && let Some(timestamp) = parse_date(&raw)
+        {
+            return Some(timestamp);
         }
     }
     number_field(entry, "year").and_then(|year| parse_date(&format!("{year:04}-01-01")))

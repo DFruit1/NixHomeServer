@@ -13,12 +13,27 @@ let
     excludePrefixes = if checks then [ ] else [ "tests" ] ++ lib.optional (name == "mail-archive-ui") "src/tests.rs";
     extraSourcePrefixes = lib.optional (name == "search") "src/ui.html";
   };
+  # mkvmaker is the one workspace member outside rust/apps/, so it names its
+  # member path explicitly.
+  mkvmakerWorkspaceSource = checks: mkWorkspaceSource {
+    name = "mkvmaker";
+    memberPath = "mkvmaker";
+    inherit cargoLock workspaceManifests;
+    workspaceRoot = workspaceSrcRoot;
+    excludePrefixes = if checks then [ ] else [ "tests" ];
+    extraSourcePrefixes = [ ];
+  };
   # The shared dependency build must depend only on dependency manifests, not
   # on the workspace source. Otherwise any edit to an app .rs file invalidates
   # the single buildDepsOnly derivation and recompiles every dependency.
+  # rustfmt.toml rides along so the workspace-wide style_edition pin reaches
+  # the cargoFmt checks.
   workspaceManifests = lib.fileset.toSource {
     root = workspaceSrcRoot;
-    fileset = craneLib.fileset.cargoTomlAndLock workspaceSrcRoot;
+    fileset = lib.fileset.unions [
+      (craneLib.fileset.cargoTomlAndLock workspaceSrcRoot)
+      (lib.fileset.fileFilter (file: file.name == "rustfmt.toml") workspaceSrcRoot)
+    ];
   };
   cargoLock = ../../Cargo.lock;
   # buildDepsOnly checks every workspace member in one derivation, so it must
@@ -91,7 +106,9 @@ in
     workspaceCheckSrc = workspaceSource "search" true;
   };
   mkvmaker = import ../../mkvmaker/default.nix {
-    inherit lib pkgs rustLib;
+    inherit lib pkgs rustLib workspaceVersion sharedCargoArtifacts cargoLock;
+    workspaceSrc = mkvmakerWorkspaceSource false;
+    workspaceCheckSrc = mkvmakerWorkspaceSource true;
   };
   # kanidm-admin is archived in _archive/ and intentionally not packaged in the active app set.
   # Use native `kanidm` CLI commands for identity operations while the archived flow is removed.

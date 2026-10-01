@@ -1,9 +1,9 @@
 { lib, pkgs, craneLib }:
 
-{ name, workspaceRoot, workspaceManifests, cargoLock, dependencyPaths ? [ "rust/lib-rs" ], excludePrefixes ? [ "tests" ], extraSourcePrefixes ? [ ] }:
+{ name, workspaceRoot, workspaceManifests, cargoLock, dependencyPaths ? [ "rust/lib-rs" ], memberPath ? "rust/apps/${name}", excludePrefixes ? [ "tests" ], extraSourcePrefixes ? [ ] }:
 
 let
-  memberPaths = [ "rust/apps/${name}" ] ++ dependencyPaths;
+  memberPaths = [ memberPath ] ++ dependencyPaths;
   ownedSource = lib.cleanSourceWith {
     src = workspaceRoot;
     name = "${name}-owned-source";
@@ -12,7 +12,7 @@ let
         relative = lib.removePrefix "${toString workspaceRoot}/" (toString path);
         generated = lib.elem (builtins.baseNameOf path) [ "target" "node_modules" "dist" "coverage" ];
         member = lib.any (prefix: relative == prefix || lib.hasPrefix "${prefix}/" relative) memberPaths;
-        appRelative = lib.removePrefix "rust/apps/${name}/" relative;
+        appRelative = lib.removePrefix "${memberPath}/" relative;
         excluded = lib.any (prefix: appRelative == prefix || lib.hasPrefix "${prefix}/" appRelative) excludePrefixes;
         extra = lib.elem appRelative extraSourcePrefixes;
         ancestor = lib.any (prefix: lib.hasPrefix "${relative}/" prefix) memberPaths;
