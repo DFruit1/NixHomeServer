@@ -2260,9 +2260,10 @@ journalctl -u atticd.service -n 100 --no-pager
 sudo du -sh /var/lib/atticd/storage
 ```
 
-The server Nix daemon uses a serialized `attic push --no-closure --jobs 1`
-post-build hook with a five-minute timeout. Failures are logged without failing
-the completed Nix build. This avoids the known unbounded memory growth of a
+The server Nix daemon uses a lock-serialized `attic push --no-closure --jobs 2`
+post-build hook with a fifteen-minute timeout. Failures are logged at warning
+priority without failing the completed Nix build. This avoids the known
+unbounded memory growth of a
 long-lived `attic watch-store` process. `atticd` uses conservative glibc
 allocator thresholds and systemd memory/swap limits so upload buffers are
 returned promptly and a cache fault cannot exhaust the host.

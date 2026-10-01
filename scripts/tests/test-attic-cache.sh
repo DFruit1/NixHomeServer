@@ -88,9 +88,10 @@ if ! jq -e '(.enable | not) and (.watchJobs | not)' <<<"$removed_options" >/dev/
 fi
 
 for hook_contract in \
-  'attic push --no-closure --jobs 1' \
+  'attic push --no-closure --jobs 2' \
   'flock -w 300' \
-  'timeout 300' \
+  'timeout 900' \
+  '--priority user.warning' \
   'exit 0'; do
   require_fixed modules/attic/services.nix "$hook_contract" \
     "the bounded Attic post-build hook must remain failure-isolated and serialized"

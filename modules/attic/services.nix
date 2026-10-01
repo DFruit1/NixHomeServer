@@ -23,10 +23,11 @@ let
     fi
 
     read -r -a output_paths <<<"$OUT_PATHS"
-    if ! ${pkgs.coreutils}/bin/timeout 300 \
-      ${pkgs.attic-client}/bin/attic push --no-closure --jobs 1 \
+    if ! ${pkgs.coreutils}/bin/timeout 900 \
+      ${pkgs.attic-client}/bin/attic push --no-closure --jobs 2 \
       ${lib.escapeShellArg cfg.cacheName} "''${output_paths[@]}"; then
-      ${pkgs.util-linux}/bin/logger --tag nixhomeserver-attic-post-build \
+      ${pkgs.util-linux}/bin/logger --priority user.warning \
+        --tag nixhomeserver-attic-post-build \
         "Cache upload failed or timed out; the completed Nix build remains successful"
     fi
 
