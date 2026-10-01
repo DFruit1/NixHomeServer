@@ -34,8 +34,14 @@ require_fixed modules/jellyfin/package.nix \
   '"autoUpdate": false' \
   "Jellyfin OIDC updates must remain Nix-managed"
 require_fixed modules/jellyfin/package.nix \
-  'jellyfinOidcWeb = pkgs.jellyfin-web.overrideAttrs' \
-  "Jellyfin OIDC must use an immutable web package with the login script injected"
+  'services.jellyfin.package = pkgs.jellyfin;' \
+  "Jellyfin OIDC must keep the stock package and patch only index.html"
+require_fixed modules/jellyfin/package.nix \
+  'pkgs.runCommand "jellyfin-web-index-oidc"' \
+  "Jellyfin OIDC must build the login-script index as an immutable shadow derivation"
+require_fixed modules/jellyfin/package.nix \
+  'systemd.services.jellyfin.serviceConfig.BindReadOnlyPaths' \
+  "Jellyfin OIDC must shadow the stock index.html through a read-only bind"
 require_fixed modules/jellyfin/package.nix \
   '<script defer="defer" src="/sso/OIDC/LoginButtons"></script>' \
   "Jellyfin Web must load the OIDC login script outside the sanitized branding disclaimer"
@@ -118,7 +124,9 @@ jq -e '
   and (.bootstrap.script | contains("/sso/OIDC/QuickConnect/kanidm"))
   and (.bootstrap.script | contains("Kanidm password is not a Jellyfin password"))
   and ((.bootstrap.script | contains("/sso/OIDC/LoginButtons")) | not)
-  and (.jellyfin.bindReadOnlyPaths | length == 0)
+  and (.jellyfin.bindReadOnlyPaths | length == 1)
+  and (.jellyfin.bindReadOnlyPaths[0] | contains("jellyfin-web-index-oidc/index.html:"))
+  and (.jellyfin.bindReadOnlyPaths[0] | endswith("/share/jellyfin-web/index.html"))
   and any(.jellyfin.execStartPre[]; contains("jellyfin-oidc-manifest-install"))
   and (.jellyfin.restartTriggers | length > 0)
   and (.libraryBootstrapScript | contains("jellyfin_canary_user="))

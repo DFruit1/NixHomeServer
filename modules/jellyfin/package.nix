@@ -2,16 +2,17 @@
 
 let
   pluginVersion = "1.0.8.0";
-  jellyfinOidcWeb = pkgs.jellyfin-web.overrideAttrs (old: {
-    postInstall = (old.postInstall or "") + ''
-      substituteInPlace "$out/share/jellyfin-web/index.html" \
-        --replace-fail '</head>' \
-        '<script defer="defer" src="/sso/OIDC/LoginButtons"></script></head>'
-    '';
-  });
-  jellyfinWithOidcWeb = pkgs.jellyfin.override {
-    jellyfin-web = jellyfinOidcWeb;
-  };
+  # Stock jellyfin bakes --webdir to pkgs.jellyfin-web at build time, so the
+  # service reads index.html straight from that store path. Shadow only
+  # index.html with the OIDC login-button script at unit start instead of
+  # rebuilding jellyfin-web (and jellyfin with it); --replace-fail keeps the
+  # script tag a build-time requirement.
+  patchedWebIndex = pkgs.runCommand "jellyfin-web-index-oidc" { } ''
+    mkdir -p "$out"
+    substitute ${pkgs.jellyfin-web}/share/jellyfin-web/index.html "$out/index.html" \
+      --replace-fail '</head>' \
+      '<script defer="defer" src="/sso/OIDC/LoginButtons"></script></head>'
+  '';
   localManifest = pkgs.writeText "jellyfin-oidc-meta.json" ''
     {
       "category": "Authentication",
@@ -69,7 +70,13 @@ let
   };
 in
 {
-  services.jellyfin.package = jellyfinWithOidcWeb;
+  services.jellyfin.package = pkgs.jellyfin;
+
+  # Bind the patched index over the stock file inside the service's mount
+  # namespace; everything else in jellyfin-web stays pristine and cached.
+  systemd.services.jellyfin.serviceConfig.BindReadOnlyPaths = [
+    "${patchedWebIndex}/index.html:${pkgs.jellyfin-web}/share/jellyfin-web/index.html"
+  ];
 
   # The runtime facet consumes this package without adding it system-wide.
   _module.args = { inherit jellyfinOidcPlugin; };
