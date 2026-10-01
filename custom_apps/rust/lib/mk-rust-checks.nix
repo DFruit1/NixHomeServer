@@ -22,6 +22,15 @@ let
       craneLib.buildDepsOnly (commonArgs // {
         src = packageSrc;
       });
+
+  # clippy/nextest only link the shared dependency artifacts plus the crate
+  # under test, so release LTO and single-unit codegen buy nothing here: drop
+  # both (cargo profile env config overrides the workspace profile) to keep
+  # the check derivations cheap.
+  checkProfileEnv = {
+    CARGO_PROFILE_RELEASE_LTO = "false";
+    CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16";
+  };
 in
 {
   inherit cargoArtifactsFinal;
@@ -33,13 +42,13 @@ in
     cargoExtraArgs = cargoFmtExtraArgs;
   };
 
-  clippy = craneLib.cargoClippy (commonArgs // {
+  clippy = craneLib.cargoClippy (commonArgs // checkProfileEnv // {
     inherit cargoClippyExtraArgs;
     cargoArtifacts = cargoArtifactsFinal;
     src = checkSrc;
   } // lib.optionalAttrs (cargoLock != null) { inherit cargoLock; });
 
-  test = craneLib.cargoNextest (commonArgs // {
+  test = craneLib.cargoNextest (commonArgs // checkProfileEnv // {
     inherit cargoNextestExtraArgs;
     cargoArtifacts = cargoArtifactsFinal;
     src = checkSrc;

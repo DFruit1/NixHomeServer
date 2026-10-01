@@ -20,8 +20,47 @@ edition = "2021"
 # Fewer/faster release binaries for the CPU-heavy scanning, probing and parsing
 # paths (ffprobe refresh, hashing, PDF/mail extraction). Thin LTO keeps link
 # time and memory bounded against the shared crane dependency artifacts.
+#
+# The dependency graph (~590 crates) is compiled with 16 codegen units so the
+# shared crane buildDepsOnly artifacts build in parallel (measured on 4 cores:
+# 9m29s -> 9m01s wall / 31m51s -> 29m54s CPU for the workspace deps
+# derivation), while the first-party crates below stay pinned to a single unit
+# for maximum runtime speed — same release settings as before this split, so
+# the ffprobe/hashing/extraction binaries are unaffected.
 [profile.release]
 lto = "thin"
+codegen-units = 16
+
+# First-party workspace members: keep the single-unit release codegen.
+# Keep in sync with [workspace.members].
+[profile.release.package.ai-gate]
+codegen-units = 1
+
+[profile.release.package.browsertrix-downloader]
+codegen-units = 1
+
+[profile.release.package.filesync-api]
+codegen-units = 1
+
+[profile.release.package.homelab-common]
+codegen-units = 1
+
+[profile.release.package.ipfs-alias]
+codegen-units = 1
+
+[profile.release.package.kanidm-canary-bootstrap]
+codegen-units = 1
+
+[profile.release.package.mail-archive-ui]
+codegen-units = 1
+
+[profile.release.package.media-manager]
+codegen-units = 1
+
+[profile.release.package.opencloud-share-gate]
+codegen-units = 1
+
+[profile.release.package.search]
 codegen-units = 1
 
 [workspace.dependencies]
