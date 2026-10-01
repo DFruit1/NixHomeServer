@@ -303,7 +303,7 @@ done
 
 host="$(test_default_host)"
 service_json="$(
-  NIXHOMESERVER_TEST_HOST="$host" nix eval --impure --json --expr '
+  NIXHOMESERVER_TEST_HOST="$host" nix_eval_with_optional_cache json '
     let
       flake = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
       host = builtins.getEnv "NIXHOMESERVER_TEST_HOST";

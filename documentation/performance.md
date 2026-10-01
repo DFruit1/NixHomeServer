@@ -40,11 +40,16 @@ SQLite connection on a reusable Node worker. Its queue accepts at most 128 pendi
 database operations, rejects excess work, and drains accepted work at shutdown.
 Transactions and job claims execute as single worker operations.
 
-Repository script tests share a run-scoped Nix evaluation cache. A per-key lock
-coalesces concurrent misses; failed evaluations never become cache entries.
-Expression, output mode, repository/flake references and the exported environment
-identify a cached result. Tests that mutate a fixture at the same path must use a
-fresh cache directory. The runner evaluates the default host once.
+Repository script tests share the Nix evaluation cache of their invoking gate.
+A per-key lock coalesces concurrent misses; failed evaluations never become
+cache entries. Expression, output mode, repository/flake references and the
+exported environment identify a cached result. Directory lifetime is the
+caller's decision: `validate-repo.sh` keys its persistent cache directory by
+the repository content hash, so entries from an older revision become
+unreachable instead of stale (falling back to a run-scoped temp directory when
+Git cannot enumerate the worktree), while a test that mutates a fixture at the
+same path must supply a fresh run-scoped cache directory. The runner evaluates
+the default host once.
 
 Protected Caddy hosts compress text responses with `encode zstd gzip`, relying
 on Caddy's default response matcher: it selects bodies by Content-Type (HTML,
@@ -102,7 +107,10 @@ alone already forces a collection.
 
 `scripts/validate-repo.sh` reuses a persistent on-disk Nix evaluation cache
 keyed by the repository content hash (bounded to the most recent generations),
-instead of a temp directory deleted after each run. The AI gate test only
+instead of a temp directory deleted after each run. Batched test probes combine
+independent expressions into one cached evaluation, and the guarded deploy
+forces the host's full toplevel instantiation and reads the optional Homepage
+canary flag in a single eval instead of two. The AI gate test only
 compiles its crate when the owning `bonsai` app is enabled, reusing a
 persistent incremental target directory. The CI workflow lets its parallel
 `nix-eval-jobs` evaluation satisfy the guarded validation step, which runs with

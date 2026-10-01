@@ -855,11 +855,17 @@ fi
 check_target_free_space
 
 echo "evaluating host ${HOSTNAME_ARG}"
-nix eval --raw ".#nixosConfigurations.${HOSTNAME_ARG}.config.system.build.toplevel.drvPath" >/dev/null
-homepage_canary_enabled="$(
-  nix eval --json ".#nixosConfigurations.${HOSTNAME_ARG}.config.nixhomeserver.modules" \
-    --apply 'modules: modules.homepage or false'
+# One eval forces the full toplevel instantiation (fail-fast before any lock or
+# build) and reports the optional Homepage canary instead of paying for two
+# independent host evals.
+host_meta="$(
+  nix eval --json ".#nixosConfigurations.${HOSTNAME_ARG}.config" \
+    --apply 'cfg: {
+      drvPath = cfg.system.build.toplevel.drvPath;
+      homepage = cfg.nixhomeserver.modules.homepage or false;
+    }'
 )"
+homepage_canary_enabled="$(jq -r '.homepage' <<<"$host_meta")"
 source_hash="$(nix hash path .)"
 deploy_validate_source_hash "$source_hash" || {
   echo "blocked: could not calculate a valid immutable repository hash" >&2

@@ -72,9 +72,10 @@ cleanup_tmpdirs() {
   if [[ -n "$pending_validation_roots_dir" && -d "$pending_validation_roots_dir" ]]; then
     rm -rf "$pending_validation_roots_dir"
   fi
-  # A run-scoped override supplied by the caller (or a tests directory that
-  # mutates fixtures) is the caller's to clean up; only remove the cache we
-  # created ourselves.
+  # Only a run-scoped cache we created ourselves (the no-Git fallback) is ours
+  # to remove. The content-keyed persistent cache must survive the run or it
+  # cannot amortize host-config evals across validations; caller-supplied
+  # directories are the caller's to clean up.
   if [[ "$eval_cache_owned" == "1" && -n "$eval_cache_dir" && -d "$eval_cache_dir" ]]; then
     rm -rf "$eval_cache_dir"
   fi
@@ -131,20 +132,32 @@ if nix_uses_substituter "$local_attic_cache"; then
 fi
 
 if [[ -z "${REPO_NIX_EVAL_CACHE_DIR:-}" ]]; then
-  # A host-config eval is expensive; reuse an on-disk cache across runs keyed by
-  # the repository content hash so repeated validation (~2-3 min each) does not
-  # re-instantiate the full NixOS configuration from scratch every time.
   eval_cache_root="${XDG_CACHE_HOME:-$HOME/.cache}/nixhomeserver/eval-cache"
-  eval_cache_key="$(nix_cache_hash "${repo_root}")"
-  eval_cache_dir="${eval_cache_root}/${eval_cache_key}"
-  eval_cache_owned="1"
-  mkdir -p "$eval_cache_dir"
-  # Bound growth: keep the most recent cache generations only.
-  find "$eval_cache_root" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' 2>/dev/null \
-    | sort -rn | awk 'NR>4 {print $2}' | while IFS= read -r stale; do
-      [[ "$stale" == "$eval_cache_dir" ]] || rm -rf "$stale"
-    done
+  content_hash="$(repo_content_hash || true)"
+  if [[ -n "$content_hash" ]]; then
+    # Persist across runs. Keying the directory by repository content (not
+    # just its path) makes entries from an older revision unreachable instead
+    # of stale, so repeated validation reuses host-config evals safely.
+    eval_cache_key="$(nix_cache_hash "${repo_root}"$'\n'"$content_hash")"
+    eval_cache_dir="${eval_cache_root}/${eval_cache_key}"
+    mkdir -p "$eval_cache_dir"
+    # Bound growth: keep the most recent cache generations only.
+    find "$eval_cache_root" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' 2>/dev/null \
+      | sort -rn | awk 'NR>4 {print $2}' | while IFS= read -r stale; do
+        [[ "$stale" == "$eval_cache_dir" ]] || rm -rf "$stale"
+      done
+  else
+    # Content hashing is unavailable (for example outside a Git worktree): a
+    # path-only key would go stale across edits, so use a throwaway cache that
+    # cleanup_tmpdirs removes on exit.
+    eval_cache_dir="$(mktemp -d "${TMPDIR:-/tmp}/nixhomeserver-eval-cache.XXXXXX")"
+    eval_cache_owned="1"
+  fi
   export REPO_NIX_EVAL_CACHE_DIR="$eval_cache_dir"
+else
+  # A caller-supplied directory is the caller's to manage; remember its path so
+  # commit_validation_roots stages its manifest inside it instead of at "/".
+  eval_cache_dir="$REPO_NIX_EVAL_CACHE_DIR"
 fi
 
 current_system() {
@@ -283,6 +296,7 @@ commit_validation_roots() {
     return 0
   fi
 
+  mkdir -p "$eval_cache_dir"
   : >"$desired_manifest"
 
   while IFS= read -r output_path; do

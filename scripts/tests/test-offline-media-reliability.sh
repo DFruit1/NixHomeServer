@@ -7,7 +7,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test-common.sh"
 cd "$TESTS_REPO_ROOT"
 ensure_tools cmp jq nix rg
 
-behavior_json="$(nix eval --impure --json --expr '
+behavior_json="$(nix_eval_with_optional_cache json '
   let
     f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
     lib = f.inputs.nixpkgs.lib;
@@ -117,7 +117,7 @@ if ! jq -e '
 fi
 
 default_host="$(test_default_host)"
-baseline_homepage_drv="$(NIXHOMESERVER_TEST_HOST="$default_host" nix eval --impure --raw --expr '
+baseline_homepage_drv="$(NIXHOMESERVER_TEST_HOST="$default_host" nix_eval_with_optional_cache raw '
   let
     f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
     hostName = builtins.getEnv "NIXHOMESERVER_TEST_HOST";
@@ -268,7 +268,7 @@ assert_invalid_group() {
 }
 
 assert_invalid_group 'Bad Group' 'offlineMedia.accessGroup must be a valid lowercase Kanidm group name'
-backup_admin_group="$(nix eval --impure --raw --expr '
+backup_admin_group="$(nix_eval_with_optional_cache raw '
   let f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
       lib = f.inputs.nixpkgs.lib;
   in (import ./vars.nix { inherit lib; }).backupAdminGroup

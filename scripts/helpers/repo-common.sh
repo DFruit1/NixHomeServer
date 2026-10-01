@@ -123,6 +123,38 @@ nix_cache_hash() {
   return 1
 }
 
+# Hash the repository file set (tracked plus untracked, excluding gitignored
+# paths) so persistent caches can key on content instead of location: a path-
+# only key would keep serving results from an older revision. Prints nothing
+# and returns non-zero when Git cannot enumerate the worktree, letting callers
+# fall back to a run-scoped cache instead of a stale shared one.
+repo_content_hash() {
+  local digest empty_digest="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+  if ! command -v git >/dev/null 2>&1 ||
+    ! git -C "$repo_root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    return 1
+  fi
+  # Validate enumeration on its own: a swallowed Git failure would otherwise
+  # look like the digest of an empty file set and poison the cache key.
+  git -C "$repo_root" ls-files -z --cached --others --exclude-standard \
+    >/dev/null 2>&1 || return 1
+
+  # sha256sum keeps hashing remaining paths but exits non-zero when a file was
+  # deleted mid-enumeration; disable pipefail inside this subshell only, so a
+  # partial worktree cannot abort callers running under `set -euo pipefail`.
+  digest="$(
+    set +o pipefail
+    git -C "$repo_root" ls-files -z --cached --others --exclude-standard 2>/dev/null |
+      xargs -0 -r sha256sum 2>/dev/null |
+      sha256sum 2>/dev/null |
+      awk '{ print $1 }'
+  )" || digest=""
+
+  [[ -n "$digest" && "$digest" != "$empty_digest" ]] || return 1
+  printf '%s\n' "$digest"
+}
+
 plaintext_staging_is_empty() {
   local staging_dir="$1"
   local first_entry
@@ -218,8 +250,10 @@ stage_archive_on_remote() {
   printf '%s\n' "$remote_archive"
 }
 
-# This cache is scoped to one validation invocation: fixture/config mutations
-# must use a separate cache directory. Coalesce concurrent identical requests.
+# Callers own the cache directory's lifetime and keying: a directory that
+# outlives one invocation must be keyed by repository content (see
+# repo_content_hash) so fixture/config mutations or source edits cannot reuse
+# stale results. Coalesce concurrent identical requests.
 nix_eval_with_optional_cache() (
   local eval_output_mode="$1" expr="$2" cache_dir="${REPO_NIX_EVAL_CACHE_DIR:-}"
   local cache_key cache_file tmp_file lock_fd environment_hash

@@ -10,7 +10,7 @@ host="$(test_default_host)"
 export NIXHOMESERVER_TEST_HOST="$host"
 
 vaultwarden_json="$(
-  nix eval --impure --json --expr '
+  nix_eval_with_optional_cache json '
     let
       flake = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
       host = builtins.getEnv "NIXHOMESERVER_TEST_HOST";

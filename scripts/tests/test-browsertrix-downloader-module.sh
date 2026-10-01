@@ -39,7 +39,7 @@ require_fixed modules/browsertrix-downloader/services.nix 'openssl dgst -sha256 
   "Browsertrix should normalize its encrypted OAuth cookie secret to the 32-byte format required by OAuth2 Proxy."
 
 host="$(test_default_host)"
-result="$(NIXHOMESERVER_TEST_HOST="$host" nix eval --impure --json --expr '
+result="$(NIXHOMESERVER_TEST_HOST="$host" nix_eval_with_optional_cache json '
 let
   flake = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
   hostName = builtins.getEnv "NIXHOMESERVER_TEST_HOST";

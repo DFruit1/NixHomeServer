@@ -345,7 +345,7 @@ if ! rg -q 'rootSubvolume.*read-only|read-only.*rootSubvolume' <<<"$invalid_log"
   printf '%s\n' "$invalid_log" >&2
   exit 1
 fi
-nix eval --raw ".#nixosConfigurations.${host}-bootstrap.config.system.build.toplevel.drvPath" >/dev/null
+flake_eval "in f.nixosConfigurations.\"${host}-bootstrap\".config.system.build.toplevel.drvPath" >/dev/null
 if [[ "${NIXHOMESERVER_SKIP_NESTED_BUILDS:-0}" != "1" ]]; then
   nix build --no-link ".#nixosConfigurations.${host}-bootstrap.config.system.build.diskoScript"
 fi

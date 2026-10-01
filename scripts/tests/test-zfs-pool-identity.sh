@@ -6,7 +6,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test-common.sh"
 cd "$TESTS_REPO_ROOT"
 ensure_tools bash jq mktemp nix rg
 
-guid_validation_json="$(nix eval --impure --json --expr '
+guid_validation_json="$(nix_eval_with_optional_cache json '
 let
   f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
   validation = import ./lib/storage-validation.nix { lib = f.inputs.nixpkgs.lib; };
@@ -177,7 +177,7 @@ if ! rg -Fq 'expectedGuid must be null or a non-empty decimal string' "$output";
   exit 1
 fi
 
-rendered_imports="$(nix eval --impure --json --expr '
+rendered_imports="$(nix_eval_with_optional_cache json '
 let
   f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
   lib = f.inputs.nixpkgs.lib;

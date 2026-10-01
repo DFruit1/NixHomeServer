@@ -6,7 +6,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test-common.sh"
 cd "$TESTS_REPO_ROOT"
 ensure_tools jq nix rg
 
-validation_json="$(nix eval --impure --json --expr '
+validation_json="$(nix_eval_with_optional_cache json '
 let
   f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
   validation = import ./lib/rclone-validation.nix { lib = f.inputs.nixpkgs.lib; };
@@ -83,8 +83,11 @@ for expected_message in \
   fi
 done
 
-runtime_json="$(nix eval --json '.#nixosConfigurations.server.config.systemd.services.rclone-mega-kopia-sync' \
-  --apply 'service: {
+runtime_json="$(nix_eval_with_optional_cache json '
+  let
+    f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
+    service = f.nixosConfigurations.server.config.systemd.services.rclone-mega-kopia-sync;
+  in {
     script = service.script;
     type = service.serviceConfig.Type;
     restart = service.serviceConfig.Restart;
@@ -93,7 +96,8 @@ runtime_json="$(nix eval --json '.#nixosConfigurations.server.config.systemd.ser
     successExitStatus = service.serviceConfig.SuccessExitStatus;
     restartPreventExitStatus = service.serviceConfig.RestartPreventExitStatus;
     startLimit = service.unitConfig.StartLimitIntervalSec;
-  }')"
+  }
+')"
 
 jq -e '
   .type == "exec"
@@ -130,11 +134,15 @@ jq -e '
   exit 1
 }
 
-capacity_json="$(nix eval --json '.#nixosConfigurations.server.config.systemd.services.rclone-mega-capacity-check' \
-  --apply 'service: {
+capacity_json="$(nix_eval_with_optional_cache json '
+  let
+    f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
+    service = f.nixosConfigurations.server.config.systemd.services.rclone-mega-capacity-check;
+  in {
     execStart = service.serviceConfig.ExecStart;
     onFailure = service.unitConfig.OnFailure;
-  }')"
+  }
+')"
 
 jq -e '
   (.execStart | contains("rclone-mega-capacity-check"))
@@ -145,7 +153,7 @@ jq -e '
   exit 1
 }
 
-app_state_json="$(nix eval --impure --json --expr '
+app_state_json="$(nix_eval_with_optional_cache json '
 let
   f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
   pkgs = f.inputs.nixpkgs.legacyPackages.x86_64-linux;

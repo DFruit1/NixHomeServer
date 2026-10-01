@@ -71,7 +71,7 @@ require_fixed custom_apps/node/apps/homepage/public/logos/freshrss.svg '#F97937'
 forbid_match custom_apps/node/apps/homepage/public/logos/freshrss.svg '#0062BE' \
   "The old blue FreshRSS logo must not remain on the Homepage card."
 
-username_json="$(nix eval --impure --json --expr '
+username_json="$(nix_eval_with_optional_cache json '
   let
     username = import ./modules/freshrss/username.nix;
     repeated = count: builtins.concatStringsSep "" (builtins.genList (_: "a") count);

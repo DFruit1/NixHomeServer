@@ -11,12 +11,43 @@ invalid_log="$(mktemp)"
 cleanup() { rm -f "$invalid_log"; }
 trap cleanup EXIT
 
-kanidm_package_version="$(NIXHOMESERVER_TEST_HOST="$host" nix eval --raw --impure --expr '
+# One cached host probe replaces four separate evals of the same
+# nixosConfigurations entry: package version, provision-name validation, and
+# the operator helper's presence and path.
+host_probe_json="$(
+  NIXHOMESERVER_TEST_HOST="$host" nix_eval_with_optional_cache json '
   let
     f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
+    lib = f.inputs.nixpkgs.lib;
     hostName = builtins.getEnv "NIXHOMESERVER_TEST_HOST";
-  in (builtins.getAttr hostName f.nixosConfigurations).config.services.kanidm.package.version
-')"
+    host = builtins.getAttr hostName f.nixosConfigurations;
+    cfg = host.config;
+    vars = import ./vars.nix { inherit lib; };
+    validation = import ./lib/name-validation.nix { inherit lib; };
+    provision = cfg.services.kanidm.provision;
+    personNames = builtins.attrNames provision.persons;
+    groupNames = builtins.attrNames provision.groups;
+    memberships = lib.concatMap
+      (groupName: map (memberName: { inherit groupName memberName; }) (provision.groups.${groupName}.members or [ ]))
+      groupNames;
+    packages = cfg.environment.systemPackages;
+    operatorPackage = lib.findFirst (package: lib.getName package == "kanidm-operator-bootstrap") null packages;
+  in {
+    packageVersion = cfg.services.kanidm.package.version;
+    invalidPersons = builtins.filter (name: !validation.validKanidmUser name) personNames;
+    invalidGroups = builtins.filter (name: !validation.validKanidmGroup name) groupNames;
+    invalidMemberships = builtins.filter
+      (membership: !validation.validKanidmEntryName membership.memberName)
+      memberships;
+    missingMonitoringPersons = builtins.filter
+      (name: !(builtins.hasAttr name provision.persons))
+      (vars.monitoringAccess.users or [ ]);
+    operatorHelperPresent = operatorPackage != null;
+    operatorHelperOutPath = if operatorPackage != null then operatorPackage.outPath else null;
+  }
+'
+)"
+kanidm_package_version="$(jq -r '.packageVersion' <<<"$host_probe_json")"
 if [[ "$kanidm_package_version" != "1.11.1" ]]; then
   echo "❌ Kanidm must use the latest stable version pinned by nixpkgs (expected 1.11.1, got ${kanidm_package_version})."
   exit 1
@@ -32,32 +63,12 @@ if [[ -n "$unexpected_kanidm_package_refs" ]]; then
   exit 1
 fi
 
-identity_json="$(NIXHOMESERVER_TEST_HOST="$host" nix eval --json --impure --expr '
-  let
-    f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
-    lib = f.inputs.nixpkgs.lib;
-    hostName = builtins.getEnv "NIXHOMESERVER_TEST_HOST";
-    host = builtins.getAttr hostName f.nixosConfigurations;
-    cfg = host.config;
-    vars = import ./vars.nix { inherit lib; };
-    validation = import ./lib/name-validation.nix { inherit lib; };
-    provision = cfg.services.kanidm.provision;
-    personNames = builtins.attrNames provision.persons;
-    groupNames = builtins.attrNames provision.groups;
-    memberships = lib.concatMap
-      (groupName: map (memberName: { inherit groupName memberName; }) (provision.groups.${groupName}.members or [ ]))
-      groupNames;
-  in {
-    invalidPersons = builtins.filter (name: !validation.validKanidmUser name) personNames;
-    invalidGroups = builtins.filter (name: !validation.validKanidmGroup name) groupNames;
-    invalidMemberships = builtins.filter
-      (membership: !validation.validKanidmEntryName membership.memberName)
-      memberships;
-    missingMonitoringPersons = builtins.filter
-      (name: !(builtins.hasAttr name provision.persons))
-      (vars.monitoringAccess.users or [ ]);
-  }
-')"
+identity_json="$(jq -c '{
+  invalidPersons,
+  invalidGroups,
+  invalidMemberships,
+  missingMonitoringPersons
+}' <<<"$host_probe_json")"
 jq -e '
   .invalidPersons == []
   and .invalidGroups == []
@@ -72,27 +83,39 @@ jq -e '
 # Use distinct names here so this test catches a future regression even when
 # the real SFTP user also happens to be an ordinary app user. Beszel-owned
 # monitoring users are covered by the all-app authorization tests.
-projected_people="$(nix eval --json --impure --expr '
-  let
-    f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
-    lib = f.inputs.nixpkgs.lib;
-    base = import ./vars.nix { inherit lib; };
-    vars = base // {
-      kanidmAppUsers = [ ];
-      kanidmAppAdminUsers = [ ];
-      filesSftpUsers = [ "sftp-only" ];
-      kanidmAdminUser = "admin-only";
-      kanidmAppUserEmails = { };
-      kanidmAdminMailAddresses = [ ];
-      kanidmAdminEmail = "admin@example.test";
+# Batched into one cached flake eval: projected special-purpose persons plus
+# the entry-name validation truth table.
+special_json="$(flake_eval_json '
+  base = import ./vars.nix { inherit lib; };
+  vars = base // {
+    kanidmAppUsers = [ ];
+    kanidmAppAdminUsers = [ ];
+    filesSftpUsers = [ "sftp-only" ];
+    kanidmAdminUser = "admin-only";
+    kanidmAppUserEmails = { };
+    kanidmAdminMailAddresses = [ ];
+    kanidmAdminEmail = "admin@example.test";
+  };
+  projected = import ./modules/Core_Modules/kanidm/provision.nix {
+    config = { nixhomeserver.modules = { }; };
+    inherit lib vars;
+    pkgs = { };
+  };
+  validation = import ./lib/name-validation.nix { inherit lib; };
+  in {
+    projectedPeople = builtins.attrNames projected.config.services.kanidm.provision.persons;
+    nameValidation = {
+      acceptsPerson = validation.validKanidmUser "valid.person-1";
+      acceptsGroup = validation.validKanidmGroup "valid_group-1";
+      rejectsEmpty = !(validation.validKanidmEntryName "");
+      rejectsUppercase = !(validation.validKanidmEntryName "Invalid");
+      rejectsPath = !(validation.validKanidmEntryName "invalid/name");
+      rejectsOverlong = !(validation.validKanidmEntryName (lib.concatStrings (lib.replicate 65 "a")));
     };
-    projected = import ./modules/Core_Modules/kanidm/provision.nix {
-      config = { nixhomeserver.modules = { }; };
-      inherit lib vars;
-      pkgs = { };
-    };
-  in builtins.attrNames projected.config.services.kanidm.provision.persons
+  }
 ')"
+projected_people="$(jq -c '.projectedPeople' <<<"$special_json")"
+name_validation_json="$(jq -c '.nameValidation' <<<"$special_json")"
 jq -e '
   index("admin-only") != null
   and index("sftp-only") != null
@@ -102,20 +125,6 @@ jq -e '
   exit 1
 }
 
-name_validation_json="$(nix eval --json --impure --expr '
-  let
-    f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
-    lib = f.inputs.nixpkgs.lib;
-    validation = import ./lib/name-validation.nix { inherit lib; };
-  in {
-    acceptsPerson = validation.validKanidmUser "valid.person-1";
-    acceptsGroup = validation.validKanidmGroup "valid_group-1";
-    rejectsEmpty = !(validation.validKanidmEntryName "");
-    rejectsUppercase = !(validation.validKanidmEntryName "Invalid");
-    rejectsPath = !(validation.validKanidmEntryName "invalid/name");
-    rejectsOverlong = !(validation.validKanidmEntryName (lib.concatStrings (lib.replicate 65 "a")));
-  }
-')"
 jq -e '[.[]] | all' <<<"$name_validation_json" >/dev/null || {
   echo "❌ Kanidm entry-name validation accepted an unsafe name or rejected a supported one."
   jq . <<<"$name_validation_json"
@@ -196,15 +205,8 @@ for expected_message in \
   fi
 done
 
-operator_helper_present="$(NIXHOMESERVER_TEST_HOST="$host" nix eval --raw --impure --expr '
-  let
-    f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
-    lib = f.inputs.nixpkgs.lib;
-    hostName = builtins.getEnv "NIXHOMESERVER_TEST_HOST";
-    packages = (builtins.getAttr hostName f.nixosConfigurations).config.environment.systemPackages;
-  in if builtins.any (package: lib.getName package == "kanidm-operator-bootstrap") packages then "yes" else "no"
-')"
-if [[ "$operator_helper_present" != yes ]]; then
+operator_helper_present="$(jq -r '.operatorHelperPresent' <<<"$host_probe_json")"
+if [[ "$operator_helper_present" != true ]]; then
   echo "❌ The installed system does not include the root-only Kanidm operator credential bootstrap helper."
   exit 1
 fi
@@ -217,7 +219,7 @@ operator_helper_expr='
   in builtins.head (builtins.filter (package: lib.getName package == "kanidm-operator-bootstrap") packages)
 '
 NIXHOMESERVER_TEST_HOST="$host" nix build --impure --no-link --expr "$operator_helper_expr"
-operator_helper_path="$(NIXHOMESERVER_TEST_HOST="$host" nix eval --raw --impure --expr "($operator_helper_expr).outPath")"
+operator_helper_path="$(jq -r '.operatorHelperOutPath' <<<"$host_probe_json")"
 operator_help_output="$("$operator_helper_path/bin/kanidm-operator-bootstrap" --help)"
 if ! rg -Fq 'issue [--ttl <seconds>] [--recovery]' <<<"$operator_help_output"; then
   echo "❌ The built Kanidm operator helper does not expose its safe enrollment/recovery workflow."

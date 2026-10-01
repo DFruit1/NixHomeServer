@@ -9,7 +9,7 @@ ensure_tools jq nix
 
 host="$(test_default_host)"
 services_json="$(
-  NIXHOMESERVER_TEST_HOST="$host" nix eval --impure --json --expr '
+  NIXHOMESERVER_TEST_HOST="$host" nix_eval_with_optional_cache json '
     let
       flake = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
       hostName = builtins.getEnv "NIXHOMESERVER_TEST_HOST";

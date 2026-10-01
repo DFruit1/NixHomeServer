@@ -6,12 +6,11 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test-common.sh"
 cd "$TESTS_REPO_ROOT"
 ensure_tools jq nix
 
-validation_json="$(nix eval --impure --json --expr '
-  let
-    f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
-    lib = f.inputs.nixpkgs.lib;
-    paths = import ./lib/storage-validation.nix { inherit lib; };
-  in {
+# Both probes share one flake load: a batched cached eval makes a warm run
+# free and halves cold-start instantiation versus two independent evals.
+result_json="$(flake_eval_json '
+  paths = import ./lib/storage-validation.nix { inherit lib; };
+  validation = {
     acceptsMountComponent = paths.validPathComponent "_Shared";
     acceptsInternalComponent = paths.validPathComponent ".internal-sync";
     rejectsDotComponent = !paths.validPathComponent ".";
@@ -29,86 +28,86 @@ validation_json="$(nix eval --impure --json --expr '
     rejectsAbsoluteTraversal = !paths.validAbsolutePath "/srv/files-sftp/../etc";
     rejectsRepeatedAbsoluteSlash = !paths.validAbsolutePath "/srv//chroots";
     rejectsAbsoluteWhitespace = !paths.validAbsolutePath "/srv/files sftp/chroots";
+  };
+  base = import ./vars.nix { inherit lib; };
+  pkgs = f.inputs.nixpkgs.legacyPackages.${base.hostPlatform};
+  packages = import ./flake/packages.nix {
+    inherit lib pkgs;
+    crane = f.inputs.crane;
+  };
+  messagesFor = vars:
+    let
+      system = import ./flake/system.nix {
+        inputs = f.inputs;
+        inherit lib vars pkgs;
+        system = base.hostPlatform;
+        appPackages = packages.appPackages;
+      };
+      host = system.nixosConfigurations.${vars.hostname};
+    in map (entry: entry.message) (builtins.filter (entry: !entry.assertion) host.config.assertions);
+  baseMessages = messagesFor base;
+  onlyNewFailures = vars: lib.subtractLists baseMessages (messagesFor vars);
+  baseSystem = import ./flake/system.nix {
+    inputs = f.inputs;
+    vars = base;
+    inherit lib pkgs;
+    system = base.hostPlatform;
+    appPackages = packages.appPackages;
+  };
+  invalidInternalHost = baseSystem.nixosConfigurations.${base.hostname}.extendModules {
+    modules = [{
+      repo.storage.userRoots.recursiveReadonlyGrants = [{
+        group = "syncthing";
+        relativePaths = [ "../../etc" ];
+      }];
+    }];
+  };
+  invalidStructuralHost = baseSystem.nixosConfigurations.${base.hostname}.extendModules {
+    modules = [{
+      repo.storage.sharedRoots.structuralSubdirs = [ "_Videos" "_Books;touch-unsafe" ];
+    }];
+  };
+  in {
+    inherit validation;
+    assertion = {
+      sharedMount = onlyNewFailures (base // {
+        fileAccess = base.fileAccess // { sharedMountName = "../escape"; };
+      });
+      usbMount = onlyNewFailures (base // {
+        fileAccess = base.fileAccess // { usbMountName = "USB view"; };
+      });
+      backupMount = onlyNewFailures (base // {
+        backupAccess = base.backupAccess // { storageMountName = "../../persist"; };
+      });
+      sftpRoot = onlyNewFailures (base // {
+        fileAccess = base.fileAccess // { sftpChrootBase = "/etc"; };
+      });
+      offlineFolder = onlyNewFailures (base // {
+        offlineMedia = base.offlineMedia // { musicFolderName = "../../etc"; };
+      });
+      offlineState = onlyNewFailures (base // {
+        offlineMedia = base.offlineMedia // { stateDir = "/persist/appdata/../etc"; };
+      });
+      internalRelative = lib.subtractLists baseMessages (
+        map (entry: entry.message)
+          (builtins.filter (entry: !entry.assertion) invalidInternalHost.config.assertions)
+      );
+      structuralSubdir = lib.subtractLists baseMessages (
+        map (entry: entry.message)
+          (builtins.filter (entry: !entry.assertion) invalidStructuralHost.config.assertions)
+      );
+    };
   }
 ')"
+
+validation_json="$(jq -c '.validation' <<<"$result_json")"
+assertion_json="$(jq -c '.assertion' <<<"$result_json")"
 
 jq -e 'all(.[]; . == true)' <<<"$validation_json" >/dev/null || {
   echo "❌ Storage path validator accepted an unsafe value or rejected a repository path." >&2
   jq . <<<"$validation_json" >&2
   exit 1
 }
-
-assertion_json="$(nix eval --impure --json --expr '
-  let
-    f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
-    lib = f.inputs.nixpkgs.lib;
-    base = import ./vars.nix { inherit lib; };
-    pkgs = f.inputs.nixpkgs.legacyPackages.${base.hostPlatform};
-    packages = import ./flake/packages.nix {
-      inherit lib pkgs;
-      crane = f.inputs.crane;
-    };
-    messagesFor = vars:
-      let
-        system = import ./flake/system.nix {
-          inputs = f.inputs;
-          inherit lib vars pkgs;
-          system = base.hostPlatform;
-          appPackages = packages.appPackages;
-        };
-        host = system.nixosConfigurations.${vars.hostname};
-      in map (entry: entry.message) (builtins.filter (entry: !entry.assertion) host.config.assertions);
-    baseMessages = messagesFor base;
-    onlyNewFailures = vars: lib.subtractLists baseMessages (messagesFor vars);
-    baseSystem = import ./flake/system.nix {
-      inputs = f.inputs;
-      vars = base;
-      inherit lib pkgs;
-      system = base.hostPlatform;
-      appPackages = packages.appPackages;
-    };
-    invalidInternalHost = baseSystem.nixosConfigurations.${base.hostname}.extendModules {
-      modules = [{
-        repo.storage.userRoots.recursiveReadonlyGrants = [{
-          group = "syncthing";
-          relativePaths = [ "../../etc" ];
-        }];
-      }];
-    };
-    invalidStructuralHost = baseSystem.nixosConfigurations.${base.hostname}.extendModules {
-      modules = [{
-        repo.storage.sharedRoots.structuralSubdirs = [ "_Videos" "_Books;touch-unsafe" ];
-      }];
-    };
-  in {
-    sharedMount = onlyNewFailures (base // {
-      fileAccess = base.fileAccess // { sharedMountName = "../escape"; };
-    });
-    usbMount = onlyNewFailures (base // {
-      fileAccess = base.fileAccess // { usbMountName = "USB view"; };
-    });
-    backupMount = onlyNewFailures (base // {
-      backupAccess = base.backupAccess // { storageMountName = "../../persist"; };
-    });
-    sftpRoot = onlyNewFailures (base // {
-      fileAccess = base.fileAccess // { sftpChrootBase = "/etc"; };
-    });
-    offlineFolder = onlyNewFailures (base // {
-      offlineMedia = base.offlineMedia // { musicFolderName = "../../etc"; };
-    });
-    offlineState = onlyNewFailures (base // {
-      offlineMedia = base.offlineMedia // { stateDir = "/persist/appdata/../etc"; };
-    });
-    internalRelative = lib.subtractLists baseMessages (
-      map (entry: entry.message)
-        (builtins.filter (entry: !entry.assertion) invalidInternalHost.config.assertions)
-    );
-    structuralSubdir = lib.subtractLists baseMessages (
-      map (entry: entry.message)
-        (builtins.filter (entry: !entry.assertion) invalidStructuralHost.config.assertions)
-    );
-  }
-')"
 
 jq -e '
   (.sharedMount | any(contains("fileAccess.sharedMountName must be one safe path component")))
