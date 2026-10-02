@@ -117,6 +117,25 @@ persistent incremental target directory. The CI workflow lets its parallel
 `--skip-flake-check`, and uses the toolchain-free `.#eval` shell for
 evaluation-only jobs.
 
+First-party Rust crates keep `codegen-units = 1` in the shared release
+profile while the dependency graph builds with 16 codegen units, and
+clippy/nextest disable release LTO through cargo profile env config:
+the shared dependency derivation loses about half a minute of wall
+time on four cores, and the media-manager nextest build drops from
+9m50s to 5m37s with identical results. mkvmaker is a workspace member
+sharing the crane dependency artifacts and lockfile (workspace edition
+2024, with `style_edition` pinned to 2021 so existing sources do not
+reformat). YouTube Downloader's production source excludes `src-tauri`
+(the desktop wrapper builds from its own source), and Groundwater
+Logger uses the same clean-source filter as its siblings, so
+build-only artifacts cannot churn the pinned pnpm dependencies.
+Jellyfin serves the stock substituted package with only `index.html`
+bind-mounted over it from a shadow derivation, so OIDC login-script
+changes no longer force a full server rebuild. The server's
+post-build Attic push runs for up to fifteen minutes with two upload
+jobs and logs failures at warning priority, so a slow cache reads as
+degraded service instead of a build error.
+
 ## Backend queries and indexing
 
 Media Manager resolves artwork through the `catalog_items_artwork`
@@ -128,9 +147,36 @@ connections set `synchronous=NORMAL`, `cache_size`, `mmap_size` and
 `temp_store=MEMORY`. The insert-only `audit_events` table is indexed on
 `created_at` and pruned during the scan run.
 
-Mail Archive checks `(mtime, size)` before parsing MIME or hashing a message and
-runs the whole attachment refresh in one transaction, so an unchanged rescan and
-a large refresh both avoid repeated whole-store hashing and per-message fsyncs.
+Media Manager serves artwork and metadata from shared in-process
+caches: directory walks hit a 30-second candidate cache with ancestor
+folder covers (name-matched levels win over nearer unmatched files)
+and a short-lived miss cache keyed by item id, folder metadata lookups
+memoize parsed JSON validated by (path, mtime, size), the frontend
+HTML index is built once per process, and provider account lookups
+share a client with a per-identity TTL. Mutation plans batch item
+removals in chunks of 999 parameters.
+
+Mail Archive checks `(mtime, size)` before parsing MIME or hashing a
+message and runs the whole attachment refresh in one transaction, so
+an unchanged rescan and a large refresh both avoid repeated
+whole-store hashing and per-message fsyncs. It also memoizes each
+notmuch search per (store, account, sync stamp, query) with a
+five-minute TTL, so page transitions and filter
+changes reuse one search instead of re-running notmuch and re-reading
+headers; a mailbox sync turns the entry over via the stamp.
+Attachment page previews are cached by (path, mtime, size) with a
+1,000-entry eviction clock, and rendered Vite asset tags are read once
+per process per dist directory.
+
+YouTube Downloader hydrates `job_files` for a page of job rows through
+one grouped query instead of one query per row, and the
+completed-download duplicate lookup scans only the 200 newest jobs
+backed by a `(created_by, status, updated_at)` index (schema migration
+3), so a very long history cannot grow the scan. Groundwater Logger
+caches the `/api/status` database summary for 45 seconds while MQTT
+state stays live and SSE still pushes connection and message events
+immediately.
+
 Search indexes `documents(source_id, id)` for batched source paging.
 
 ## Validation
