@@ -164,22 +164,117 @@ pub(crate) fn sniff_image_content_type(bytes: &[u8]) -> Option<String> {
     None
 }
 
-pub(crate) fn preferred_artwork(items: &[CatalogItem], target_path: &str) -> Option<CatalogItem> {
-    let (target_parent, target_name) = target_path.rsplit_once('/').unwrap_or(("", target_path));
-    let target_stem = target_name
+pub(crate) fn artwork_target_stem(target_path: &str) -> String {
+    let target_name = target_path
+        .rsplit_once('/')
+        .map(|(_, name)| name)
+        .unwrap_or(target_path);
+    target_name
         .rsplit_once('.')
         .map(|(stem, _)| stem)
         .unwrap_or(target_name)
-        .to_ascii_lowercase();
-    let mut candidate_parents = vec![target_parent];
+        .to_ascii_lowercase()
+}
+
+/// The ancestor directories that may hold artwork for `target_path`, nearest
+/// first, mirroring the distance ranking in `preferred_artwork`.
+pub(crate) fn artwork_ancestor_chain(target_path: &str) -> Vec<String> {
+    let (target_parent, _) = target_path.rsplit_once('/').unwrap_or(("", target_path));
+    let mut chain = vec![target_parent.to_string()];
     let mut ancestor = target_parent;
     while let Some((parent, _)) = ancestor.rsplit_once('/') {
         if parent == ancestor {
             break;
         }
-        candidate_parents.push(parent);
+        chain.push(parent.to_string());
         ancestor = parent;
     }
+    chain
+}
+
+/// Priority of an artwork filename for `target_path`. Values below
+/// `usize::MAX` are name-matched: the target stem first (cover/poster/...
+/// suffixes), then the candidate's own folder stem (penalised), then generic
+/// cover-style names. `usize::MAX` means the name matches nothing.
+pub(crate) fn artwork_name_priority(candidate_relative_path: &str, target_stem: &str) -> usize {
+    let (candidate_parent, candidate_name) = candidate_relative_path
+        .rsplit_once('/')
+        .unwrap_or(("", candidate_relative_path));
+    let stem = candidate_name
+        .rsplit_once('.')
+        .map(|(stem, _)| stem)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let suffixes = [
+        "",
+        "-poster",
+        "-cover",
+        "-folder",
+        "-default",
+        "-movie",
+        "-show",
+        "-jacket",
+        "-front",
+        "-thumb",
+        "-landscape",
+        "-banner",
+        "-fanart",
+        "-backdrop",
+        "-background",
+        "-art",
+        "-clearlogo",
+        "-logo",
+    ];
+    let folder_stem = candidate_parent
+        .rsplit('/')
+        .next()
+        .unwrap_or(candidate_parent)
+        .to_ascii_lowercase();
+    let target_priority = suffixes
+        .iter()
+        .position(|suffix| stem == format!("{target_stem}{suffix}"))
+        .or_else(|| {
+            suffixes
+                .iter()
+                .position(|suffix| stem == format!("{folder_stem}{suffix}"))
+                .map(|priority| 50 + priority)
+        });
+    let generic_priority = [
+        "cover",
+        "folder",
+        "poster",
+        "default",
+        "movie",
+        "show",
+        "jacket",
+        "artwork",
+        "front",
+        "thumb",
+        "landscape",
+        "banner",
+        "fanart",
+        "backdrop",
+        "background",
+        "art",
+        "clearlogo",
+        "logo",
+    ]
+    .iter()
+    .position(|preferred| *preferred == stem);
+    target_priority
+        .or_else(|| generic_priority.map(|priority| 100 + priority))
+        .unwrap_or(usize::MAX)
+}
+
+/// Whether `candidate_relative_path`'s name participates in `preferred_artwork`
+/// ranking at all (see `artwork_name_priority`).
+pub(crate) fn artwork_name_matched(candidate_relative_path: &str, target_stem: &str) -> bool {
+    artwork_name_priority(candidate_relative_path, target_stem) != usize::MAX
+}
+
+pub(crate) fn preferred_artwork(items: &[CatalogItem], target_path: &str) -> Option<CatalogItem> {
+    let target_stem = artwork_target_stem(target_path);
+    let candidate_parents = artwork_ancestor_chain(target_path);
 
     items
         .iter()
@@ -187,80 +282,18 @@ pub(crate) fn preferred_artwork(items: &[CatalogItem], target_path: &str) -> Opt
             if candidate.media_kind != MediaKind::Artwork {
                 return None;
             }
-            let (candidate_parent, candidate_name) = candidate
+            let candidate_parent = candidate
                 .relative_path
                 .rsplit_once('/')
-                .unwrap_or(("", &candidate.relative_path));
+                .map(|(parent, _)| parent)
+                .unwrap_or("");
             let distance = candidate_parents
                 .iter()
-                .position(|parent| *parent == candidate_parent)?;
-            Some((candidate, distance, candidate_name, candidate_parent))
+                .position(|parent| parent == candidate_parent)?;
+            Some((candidate, distance))
         })
-        .min_by_key(|(candidate, distance, candidate_name, candidate_parent)| {
-            let stem = candidate_name
-                .rsplit_once('.')
-                .map(|(stem, _)| stem)
-                .unwrap_or_default()
-                .to_ascii_lowercase();
-            let suffixes = [
-                "",
-                "-poster",
-                "-cover",
-                "-folder",
-                "-default",
-                "-movie",
-                "-show",
-                "-jacket",
-                "-front",
-                "-thumb",
-                "-landscape",
-                "-banner",
-                "-fanart",
-                "-backdrop",
-                "-background",
-                "-art",
-                "-clearlogo",
-                "-logo",
-            ];
-            let folder_stem = candidate_parent
-                .rsplit('/')
-                .next()
-                .unwrap_or(candidate_parent)
-                .to_ascii_lowercase();
-            let target_priority = suffixes
-                .iter()
-                .position(|suffix| stem == format!("{target_stem}{suffix}"))
-                .or_else(|| {
-                    suffixes
-                        .iter()
-                        .position(|suffix| stem == format!("{folder_stem}{suffix}"))
-                        .map(|priority| 50 + priority)
-                });
-            let generic_priority = [
-                "cover",
-                "folder",
-                "poster",
-                "default",
-                "movie",
-                "show",
-                "jacket",
-                "artwork",
-                "front",
-                "thumb",
-                "landscape",
-                "banner",
-                "fanart",
-                "backdrop",
-                "background",
-                "art",
-                "clearlogo",
-                "logo",
-            ]
-            .iter()
-            .position(|preferred| *preferred == stem);
-            let name_priority = target_priority
-                .or_else(|| generic_priority.map(|priority| 100 + priority))
-                .unwrap_or(usize::MAX);
+        .min_by_key(|(candidate, distance)| {
+            let name_priority = artwork_name_priority(&candidate.relative_path, &target_stem);
             (
                 usize::from(name_priority == usize::MAX),
                 *distance,
@@ -268,5 +301,5 @@ pub(crate) fn preferred_artwork(items: &[CatalogItem], target_path: &str) -> Opt
                 candidate.relative_path.clone(),
             )
         })
-        .map(|(candidate, _, _, _)| candidate.clone())
+        .map(|(candidate, _)| candidate.clone())
 }

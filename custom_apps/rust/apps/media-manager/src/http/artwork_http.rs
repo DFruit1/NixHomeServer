@@ -4,6 +4,10 @@ use crate::capabilities::MediaAction;
 
 const JELLYFIN_IMAGE_CACHE_TTL: Duration = Duration::from_secs(3600);
 const JELLYFIN_IMAGE_CACHE_MAX_ENTRIES: usize = 2048;
+const ARTWORK_CANDIDATE_CACHE_TTL: Duration = Duration::from_secs(30);
+const ARTWORK_CANDIDATE_CACHE_MAX_ENTRIES: usize = 2048;
+const ARTWORK_MISS_TTL: Duration = Duration::from_secs(60);
+const ARTWORK_MISS_MAX_ENTRIES: usize = 4096;
 
 pub struct JellyfinImageCache {
     entries: Mutex<HashMap<String, CachedJellyfinImage>>,
@@ -55,6 +59,101 @@ impl JellyfinImageCache {
             );
         }
     }
+}
+
+/// Nearest-ancestor artwork candidates per (root, owner, directory). The walk
+/// result only changes when a scan or a confirmed mutation lands, so sibling
+/// requests within the TTL share one short index-backed query sequence.
+type ArtworkCacheKey = (String, Option<String>, String);
+
+pub struct ArtworkCandidateCache {
+    entries: Mutex<HashMap<ArtworkCacheKey, (Instant, Vec<CatalogItem>)>>,
+    misses: Mutex<HashMap<String, Instant>>,
+}
+
+impl Default for ArtworkCandidateCache {
+    fn default() -> Self {
+        Self {
+            entries: Mutex::new(HashMap::new()),
+            misses: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+impl ArtworkCandidateCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn get(&self, key: &ArtworkCacheKey) -> Option<Vec<CatalogItem>> {
+        let entries = self.entries.lock().expect("artwork candidate cache lock");
+        entries
+            .get(key)
+            .filter(|(inserted, _)| inserted.elapsed() < ARTWORK_CANDIDATE_CACHE_TTL)
+            .map(|(_, rows)| rows.clone())
+    }
+
+    fn insert(&self, key: ArtworkCacheKey, rows: Vec<CatalogItem>) {
+        let mut entries = self.entries.lock().expect("artwork candidate cache lock");
+        if entries.len() >= ARTWORK_CANDIDATE_CACHE_MAX_ENTRIES {
+            let now = Instant::now();
+            entries.retain(|_, (inserted, _)| *inserted > now);
+        }
+        entries.insert(key, (Instant::now(), rows));
+    }
+
+    /// Whether this item's full resolution (sidecar, embedded, siblings,
+    /// Jellyfin) already missed recently and can answer without touching the
+    /// filesystem or the fallback.
+    pub fn recent_miss(&self, item_id: &str) -> bool {
+        self.misses
+            .lock()
+            .expect("artwork miss cache lock")
+            .get(item_id)
+            .is_some_and(|recorded| recorded.elapsed() < ARTWORK_MISS_TTL)
+    }
+
+    pub fn record_miss(&self, item_id: &str) {
+        let mut misses = self.misses.lock().expect("artwork miss cache lock");
+        if misses.len() >= ARTWORK_MISS_MAX_ENTRIES {
+            misses.retain(|_, recorded| recorded.elapsed() < ARTWORK_MISS_TTL);
+        }
+        misses.insert(item_id.to_string(), Instant::now());
+    }
+
+    pub fn clear(&self) {
+        self.entries
+            .lock()
+            .expect("artwork candidate cache lock")
+            .clear();
+        self.misses.lock().expect("artwork miss cache lock").clear();
+    }
+}
+
+/// Nearest-ancestor artwork candidates for `item`, served from the shared TTL
+/// cache when fresh and from the per-directory index-backed walk otherwise.
+fn artwork_candidates(
+    state: &AppState,
+    catalog: &Catalog,
+    item: &CatalogItem,
+) -> rusqlite::Result<Vec<CatalogItem>> {
+    let directory = item
+        .relative_path
+        .rsplit_once('/')
+        .map(|(parent, _)| parent)
+        .unwrap_or("")
+        .to_string();
+    let key = (item.root_id.clone(), item.owner_username.clone(), directory);
+    if let Some(rows) = state.artwork_candidate_cache.get(&key) {
+        return Ok(rows);
+    }
+    let rows = catalog.resolve_artwork_candidates(
+        &item.root_id,
+        item.owner_username.as_deref(),
+        &item.relative_path,
+    )?;
+    state.artwork_candidate_cache.insert(key, rows.clone());
+    Ok(rows)
 }
 
 #[derive(Debug, Deserialize)]
@@ -370,7 +469,13 @@ async fn try_jellyfin_image_fallback(
         );
         return None;
     };
-    let Some(entry) = metadata_handlers::cached_application_metadata(cache_file, item, false).await
+    let Some(entry) = metadata_handlers::cached_application_metadata(
+        &state.metadata_memo,
+        cache_file,
+        item,
+        false,
+    )
+    .await
     else {
         log_event(
             "jellyfin_fallback_cache_miss",
@@ -471,15 +576,13 @@ pub(super) async fn image_sources(
         .rsplit_once('/')
         .map(|(parent, _)| parent)
         .unwrap_or("");
-    let artwork = match catalog.list_artwork(&item.root_id, item.owner_username.as_deref()) {
-        Ok(items) => {
-            if item.media_kind == MediaKind::Artwork {
-                Some(item.clone())
-            } else {
-                preferred_artwork(&items, &item.relative_path)
-            }
+    let artwork = if item.media_kind == MediaKind::Artwork {
+        Some(item.clone())
+    } else {
+        match artwork_candidates(&state, &catalog, &item) {
+            Ok(items) => preferred_artwork(&items, &item.relative_path),
+            Err(_) => return ApiError::internal(request_id).into_response(),
         }
-        Err(_) => return ApiError::internal(request_id).into_response(),
     };
     let siblings = match catalog.list_media_in_directory(
         &item.root_id,
@@ -544,6 +647,7 @@ pub(super) async fn image_sources(
             continue;
         };
         let entry = metadata_handlers::cached_application_metadata(
+            &state.metadata_memo,
             cache_file,
             &item,
             source.allow_folder_prefix(),
@@ -603,12 +707,20 @@ pub(super) async fn item_image(
         Ok(item) => item,
         Err(error) => return error.with_request_id(request_id).into_response(),
     };
+    if state.artwork_candidate_cache.recent_miss(&item.id) {
+        return ApiError::new(
+            StatusCode::NOT_FOUND,
+            "artwork_not_found",
+            "No nearby or embedded cover artwork was found for this item.",
+            request_id,
+        )
+        .into_response();
+    }
     let artwork = if item.media_kind == MediaKind::Artwork {
         Some(item.clone())
     } else {
-        let owner = item.owner_username.as_deref();
-        let artwork_items = match catalog.list_artwork(&item.root_id, owner) {
-            Ok(items) => items,
+        match artwork_candidates(&state, &catalog, &item) {
+            Ok(items) => preferred_artwork(&items, &item.relative_path),
             Err(error) => {
                 log_event(
                     "catalog_query_failed",
@@ -617,8 +729,7 @@ pub(super) async fn item_image(
                 );
                 return ApiError::internal(request_id).into_response();
             }
-        };
-        preferred_artwork(&artwork_items, &item.relative_path)
+        }
     };
     let root = match state.config.resolve_visible_root(&identity, &item.root_id) {
         Some(root) => root,
@@ -680,6 +791,7 @@ pub(super) async fn item_image(
             {
                 return jellyfin_response;
             }
+            state.artwork_candidate_cache.record_miss(&item.id);
             return ApiError::new(
                 StatusCode::NOT_FOUND,
                 "artwork_not_found",
@@ -804,21 +916,14 @@ pub(super) async fn preview_artwork_replacement(
             .rsplit_once('/')
             .map(|(parent, _)| parent)
             .unwrap_or("");
-        let same_directory =
-            match catalog.list_artwork(&item.root_id, item.owner_username.as_deref()) {
-                Ok(items) => items
-                    .into_iter()
-                    .filter(|candidate| {
-                        candidate
-                            .relative_path
-                            .rsplit_once('/')
-                            .map(|(candidate_parent, _)| candidate_parent)
-                            .unwrap_or("")
-                            == parent
-                    })
-                    .collect::<Vec<_>>(),
-                Err(_) => return ApiError::internal(request_id).into_response(),
-            };
+        let same_directory = match catalog.artwork_in_directory(
+            &item.root_id,
+            item.owner_username.as_deref(),
+            parent,
+        ) {
+            Ok(items) => items,
+            Err(_) => return ApiError::internal(request_id).into_response(),
+        };
         preferred_artwork(&same_directory, &item.relative_path)
     };
     drop(catalog);

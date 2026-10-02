@@ -6,7 +6,7 @@ use image::ImageEncoder;
 use media_manager::{
     catalog::{Catalog, CatalogHandle},
     config::{AppConfig, IntegrationCapability, MutationMode},
-    http::{router, AppState, JellyfinImageCache},
+    http::{router, AppState, ArtworkCandidateCache, JellyfinImageCache},
 };
 use serde_json::Value;
 use std::{
@@ -71,6 +71,10 @@ fn test_app_with_mode(
             config,
             catalog: CatalogHandle::new(database.clone()),
             jellyfin_image_cache: Arc::new(JellyfinImageCache::new()),
+            artwork_candidate_cache: Arc::new(ArtworkCandidateCache::new()),
+            provider_accounts_cache: Arc::default(),
+            metadata_memo: Arc::default(),
+            frontend_index: Arc::new(tokio::sync::OnceCell::new()),
             tmdb_client: None,
         }),
         database,
@@ -508,6 +512,10 @@ async fn frontend_assets_are_served_only_from_the_packaged_asset_directory() {
         config,
         catalog: CatalogHandle::new(database),
         jellyfin_image_cache: Arc::new(JellyfinImageCache::new()),
+        artwork_candidate_cache: Arc::new(ArtworkCandidateCache::new()),
+        provider_accounts_cache: Arc::default(),
+        metadata_memo: Arc::default(),
+        frontend_index: Arc::new(tokio::sync::OnceCell::new()),
         tmdb_client: None,
     });
 
@@ -991,6 +999,10 @@ async fn items_report_unprobeable_videos_as_null_probes() {
         config,
         catalog: CatalogHandle::new(database),
         jellyfin_image_cache: Arc::new(JellyfinImageCache::new()),
+        artwork_candidate_cache: Arc::new(ArtworkCandidateCache::new()),
+        provider_accounts_cache: Arc::default(),
+        metadata_memo: Arc::default(),
+        frontend_index: Arc::new(tokio::sync::OnceCell::new()),
         tmdb_client: None,
     });
     editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-videos"}"#).await;
@@ -1251,6 +1263,10 @@ async fn metadata_details_merge_filename_fields_with_a_bounded_jellyfin_snapshot
         config,
         catalog: CatalogHandle::new(database),
         jellyfin_image_cache: Arc::new(JellyfinImageCache::new()),
+        artwork_candidate_cache: Arc::new(ArtworkCandidateCache::new()),
+        provider_accounts_cache: Arc::default(),
+        metadata_memo: Arc::default(),
+        frontend_index: Arc::new(tokio::sync::OnceCell::new()),
         tmdb_client: None,
     });
     scan_root(&app, "shared-videos").await;
@@ -1442,6 +1458,10 @@ async fn metadata_health_exposes_current_title_and_real_source_alternatives() {
         config,
         catalog: CatalogHandle::new(database),
         jellyfin_image_cache: Arc::new(JellyfinImageCache::new()),
+        artwork_candidate_cache: Arc::new(ArtworkCandidateCache::new()),
+        provider_accounts_cache: Arc::default(),
+        metadata_memo: Arc::default(),
+        frontend_index: Arc::new(tokio::sync::OnceCell::new()),
         tmdb_client: None,
     });
     scan_root(&app, "shared-videos").await;
@@ -2039,6 +2059,10 @@ async fn metadata_inspection_includes_bounded_audiobookshelf_and_kavita_snapshot
         config,
         catalog: CatalogHandle::new(database),
         jellyfin_image_cache: Arc::new(JellyfinImageCache::new()),
+        artwork_candidate_cache: Arc::new(ArtworkCandidateCache::new()),
+        provider_accounts_cache: Arc::default(),
+        metadata_memo: Arc::default(),
+        frontend_index: Arc::new(tokio::sync::OnceCell::new()),
         tmdb_client: None,
     });
 
@@ -2151,6 +2175,10 @@ async fn authenticated_viewer_can_queue_and_follow_a_registered_refresh() {
         config,
         catalog: CatalogHandle::new(database),
         jellyfin_image_cache: Arc::new(JellyfinImageCache::new()),
+        artwork_candidate_cache: Arc::new(ArtworkCandidateCache::new()),
+        provider_accounts_cache: Arc::default(),
+        metadata_memo: Arc::default(),
+        frontend_index: Arc::new(tokio::sync::OnceCell::new()),
         tmdb_client: None,
     });
     let response = app
@@ -2202,6 +2230,10 @@ async fn authenticated_viewer_can_queue_a_registered_kavita_refresh() {
         config,
         catalog: CatalogHandle::new(database),
         jellyfin_image_cache: Arc::new(JellyfinImageCache::new()),
+        artwork_candidate_cache: Arc::new(ArtworkCandidateCache::new()),
+        provider_accounts_cache: Arc::default(),
+        metadata_memo: Arc::default(),
+        frontend_index: Arc::new(tokio::sync::OnceCell::new()),
         tmdb_client: None,
     });
 
@@ -2258,6 +2290,10 @@ async fn refresh_status_returns_the_durable_terminal_result() {
         config,
         catalog: CatalogHandle::new(database),
         jellyfin_image_cache: Arc::new(JellyfinImageCache::new()),
+        artwork_candidate_cache: Arc::new(ArtworkCandidateCache::new()),
+        provider_accounts_cache: Arc::default(),
+        metadata_memo: Arc::default(),
+        frontend_index: Arc::new(tokio::sync::OnceCell::new()),
         tmdb_client: None,
     });
 
@@ -2423,6 +2459,55 @@ async fn item_image_serves_sibling_cover_artwork() {
             .expect("image body");
         assert_eq!(body.as_ref(), b"jpeg-bytes");
     }
+}
+
+#[tokio::test]
+async fn item_image_serves_ancestor_folder_cover_artwork() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    std::fs::create_dir_all(temp.path().join("shared/_Videos/Show/Season 01"))
+        .expect("season directory");
+    std::fs::write(
+        temp.path()
+            .join("shared/_Videos/Show/Season 01/Episode.mkv"),
+        b"episode",
+    )
+    .expect("episode");
+    std::fs::write(
+        temp.path().join("shared/_Videos/Show/cover.jpg"),
+        b"jpeg-bytes",
+    )
+    .expect("cover");
+    let app = test_app(&temp);
+    scan_root(&app, "shared-videos").await;
+
+    let response = app
+        .clone()
+        .oneshot(viewer_get_request("/api/v1/items?rootId=shared-videos"))
+        .await
+        .expect("items response");
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("items body");
+    let value: Value = serde_json::from_slice(&body).expect("items json");
+    let items = value["items"].as_array().expect("items array");
+    let movie_id = items
+        .iter()
+        .find(|item| item["mediaKind"] == "video")
+        .and_then(|item| item["id"].as_str())
+        .expect("movie item id");
+
+    let response = app
+        .clone()
+        .oneshot(viewer_get_request(&format!(
+            "/api/v1/items/{movie_id}/image"
+        )))
+        .await
+        .expect("image response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("image body");
+    assert_eq!(body.as_ref(), b"jpeg-bytes");
 }
 
 #[tokio::test]
@@ -3430,6 +3515,10 @@ async fn musicbrainz_search_lookup_returns_release_group_candidates() {
         config,
         catalog: CatalogHandle::new(database),
         jellyfin_image_cache: Arc::new(JellyfinImageCache::new()),
+        artwork_candidate_cache: Arc::new(ArtworkCandidateCache::new()),
+        provider_accounts_cache: Arc::default(),
+        metadata_memo: Arc::default(),
+        frontend_index: Arc::new(tokio::sync::OnceCell::new()),
         tmdb_client: None,
     });
     editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-music"}"#).await;
@@ -3525,6 +3614,10 @@ async fn musicbrainz_fingerprint_lookup_runs_fpcalc_and_uses_acoustid() {
         config,
         catalog: CatalogHandle::new(database),
         jellyfin_image_cache: Arc::new(JellyfinImageCache::new()),
+        artwork_candidate_cache: Arc::new(ArtworkCandidateCache::new()),
+        provider_accounts_cache: Arc::default(),
+        metadata_memo: Arc::default(),
+        frontend_index: Arc::new(tokio::sync::OnceCell::new()),
         tmdb_client: None,
     });
     editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-music"}"#).await;
@@ -3568,6 +3661,10 @@ async fn musicbrainz_auto_mode_falls_back_to_search_without_an_api_key() {
         config,
         catalog: CatalogHandle::new(database),
         jellyfin_image_cache: Arc::new(JellyfinImageCache::new()),
+        artwork_candidate_cache: Arc::new(ArtworkCandidateCache::new()),
+        provider_accounts_cache: Arc::default(),
+        metadata_memo: Arc::default(),
+        frontend_index: Arc::new(tokio::sync::OnceCell::new()),
         tmdb_client: None,
     });
     editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-music"}"#).await;
@@ -3605,6 +3702,10 @@ async fn musicbrainz_fingerprint_without_a_key_is_rejected_as_unconfigured() {
         config,
         catalog: CatalogHandle::new(database),
         jellyfin_image_cache: Arc::new(JellyfinImageCache::new()),
+        artwork_candidate_cache: Arc::new(ArtworkCandidateCache::new()),
+        provider_accounts_cache: Arc::default(),
+        metadata_memo: Arc::default(),
+        frontend_index: Arc::new(tokio::sync::OnceCell::new()),
         tmdb_client: None,
     });
     editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-music"}"#).await;

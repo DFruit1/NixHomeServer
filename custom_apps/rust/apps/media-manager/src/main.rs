@@ -2,7 +2,7 @@ use homelab_common::{log_server_started, log_startup_failed, shutdown_signal};
 use media_manager::{
     catalog::{Catalog, CatalogHandle},
     config::AppConfig,
-    http::{router, AppState, JellyfinImageCache},
+    http::{router, AppState, ArtworkCandidateCache, JellyfinImageCache},
     tmdb::{TmdbClient, TmdbClientConfig, TmdbCredentials, TMDB_API_BASE},
 };
 use std::sync::Arc;
@@ -43,6 +43,10 @@ async fn run() -> Result<(), String> {
         catalog: CatalogHandle::new(config.database_path()),
         config,
         jellyfin_image_cache: Arc::new(JellyfinImageCache::new()),
+        artwork_candidate_cache: Arc::new(ArtworkCandidateCache::new()),
+        provider_accounts_cache: Arc::default(),
+        metadata_memo: Arc::default(),
+        frontend_index: Arc::new(tokio::sync::OnceCell::new()),
         tmdb_client,
     };
     let listener = tokio::net::TcpListener::bind(address)

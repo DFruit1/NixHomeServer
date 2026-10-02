@@ -190,7 +190,7 @@ pub(super) async fn lookup_music_metadata(
         Err(error) => return error.into_response(),
     };
     let runtime_acoustid = state.config.provider_broker_base_url.is_some()
-        && provider_account_configured(&state.config, &identity, "acoustid").await;
+        && provider_account_configured(&state, &identity, "acoustid").await;
     if mode == LookupMode::Fingerprint && !client.has_fingerprint() && !runtime_acoustid {
         return ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,

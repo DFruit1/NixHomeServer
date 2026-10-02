@@ -366,22 +366,30 @@ impl Catalog {
 
     pub fn remove_items(&self, ids: &[String]) -> rusqlite::Result<usize> {
         let mut deleted = 0;
-        for id in ids {
-            deleted += self
-                .connection
-                .execute("DELETE FROM catalog_items WHERE id = ?1", [id])?;
+        for chunk in ids.chunks(999) {
+            let placeholders = (1..=chunk.len())
+                .map(|index| format!("?{index}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            deleted += self.connection.execute(
+                &format!("DELETE FROM catalog_items WHERE id IN ({placeholders})"),
+                rusqlite::params_from_iter(chunk),
+            )?;
         }
         Ok(deleted)
     }
 
-    pub fn list_artwork(
+    pub fn artwork_in_directory(
         &self,
         root_id: &str,
         owner_username: Option<&str>,
+        directory: &str,
     ) -> rusqlite::Result<Vec<CatalogItem>> {
-        // Artwork is resolved by walking from the target folder up through its
-        // ancestors, so the candidate set is the whole root. The
-        // `catalog_items_artwork` index keeps this to the artwork rows only.
+        let prefix = if directory.is_empty() {
+            String::new()
+        } else {
+            format!("{directory}/")
+        };
         let mut statement = self.connection.prepare(
             "SELECT id, root_id, owner_username, relative_path, media_kind,
                     size_bytes, modified_ns, fingerprint
@@ -389,15 +397,52 @@ impl Catalog {
               WHERE root_id = ?1
                 AND media_kind = 'artwork'
                 AND (?2 IS NULL OR owner_username = ?2)
+                AND relative_path >= ?3 AND relative_path < ?4
+                AND substr(relative_path, length(?3) + 1) NOT LIKE '%/%'
               ORDER BY relative_path",
         )?;
 
         statement
             .query_map(
-                rusqlite::params![root_id, owner_username],
+                rusqlite::params![
+                    root_id,
+                    owner_username,
+                    prefix,
+                    directory_upper_bound(directory)
+                ],
                 catalog_item_from_row,
             )?
             .collect()
+    }
+
+    /// Nearest-ancestor artwork resolution: walk the target's ancestor chain
+    /// (nearest first) and return the first level that can win
+    /// `preferred_artwork` — a level whose names match the target or its
+    /// folder, or the nearest non-empty level when nothing matches.
+    pub fn resolve_artwork_candidates(
+        &self,
+        root_id: &str,
+        owner_username: Option<&str>,
+        target_path: &str,
+    ) -> rusqlite::Result<Vec<CatalogItem>> {
+        let target_stem = crate::artwork::artwork_target_stem(target_path);
+        let mut fallback: Option<Vec<CatalogItem>> = None;
+        for directory in crate::artwork::artwork_ancestor_chain(target_path) {
+            let rows = self.artwork_in_directory(root_id, owner_username, &directory)?;
+            if rows.is_empty() {
+                continue;
+            }
+            if rows
+                .iter()
+                .any(|row| crate::artwork::artwork_name_matched(&row.relative_path, &target_stem))
+            {
+                return Ok(rows);
+            }
+            if fallback.is_none() {
+                fallback = Some(rows);
+            }
+        }
+        Ok(fallback.unwrap_or_default())
     }
 
     pub fn list_media_in_directory(

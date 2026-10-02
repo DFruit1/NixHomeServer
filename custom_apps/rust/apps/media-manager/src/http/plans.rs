@@ -103,6 +103,7 @@ pub(super) async fn scan(
             json!({ "error": error.to_string() }),
         );
     }
+    state.artwork_candidate_cache.clear();
     Json(json!({ "rootId": request.root_id, "result": scan_result, "requestId": request_id }))
         .into_response()
 }
@@ -222,6 +223,7 @@ pub(super) async fn refresh_root(
             &serde_json::to_string(&scan_result).unwrap_or_else(|_| "{}".to_string()),
         );
     }
+    state.artwork_candidate_cache.clear();
     Json(json!({
         "rootId": request.root_id,
         "result": scan_result,
@@ -404,6 +406,7 @@ pub(super) async fn confirm_plan(
                     json!({ "error": error.to_string() }),
                 );
             }
+            state.artwork_candidate_cache.clear();
             (
                 StatusCode::ACCEPTED,
                 Json(json!({ "id": plan_id, "state": "queued", "requestId": request_id })),

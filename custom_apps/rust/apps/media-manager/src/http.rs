@@ -33,9 +33,10 @@ use crate::{
     video_probe::{probe_video, refresh_root_probes, VideoProbe, VideoProbeCache},
 };
 mod artwork_http;
-pub use artwork_http::JellyfinImageCache;
+pub use artwork_http::{ArtworkCandidateCache, JellyfinImageCache};
 mod conversions;
 mod metadata_handlers;
+pub use metadata_handlers::MetadataCacheMemo;
 mod metadata_lookups;
 mod plans;
 mod playback;
@@ -72,11 +73,62 @@ const MAX_SUBTITLE_BYTES: usize = 10 * 1024 * 1024;
 const MAX_ARTWORK_UPLOAD_BYTES: usize = 32 * 1024 * 1024;
 const MAX_INBOX_ENTRIES: usize = 200;
 
+const PROVIDER_ACCOUNTS_CACHE_TTL: Duration = Duration::from_secs(45);
+const PROVIDER_ACCOUNTS_CACHE_MAX_ENTRIES: usize = 64;
+
+/// Broker provider-account view per identity, plus the shared client that
+/// fetches it, so status and lookup requests stop re-building a client and
+/// re-hitting the provider broker on every call.
+pub struct ProviderAccountsCache {
+    client: reqwest::Client,
+    entries: Mutex<HashMap<String, (Instant, BTreeSet<String>)>>,
+}
+
+impl Default for ProviderAccountsCache {
+    fn default() -> Self {
+        Self {
+            client: reqwest::Client::builder()
+                .connect_timeout(Duration::from_secs(2))
+                .timeout(Duration::from_secs(5))
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .expect("provider broker HTTP client"),
+            entries: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+impl ProviderAccountsCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn get(&self, subject: &str) -> Option<BTreeSet<String>> {
+        let entries = self.entries.lock().expect("provider accounts cache lock");
+        entries
+            .get(subject)
+            .filter(|(inserted, _)| inserted.elapsed() < PROVIDER_ACCOUNTS_CACHE_TTL)
+            .map(|(_, accounts)| accounts.clone())
+    }
+
+    fn insert(&self, subject: &str, accounts: BTreeSet<String>) {
+        let mut entries = self.entries.lock().expect("provider accounts cache lock");
+        if entries.len() >= PROVIDER_ACCOUNTS_CACHE_MAX_ENTRIES {
+            entries.retain(|_, (inserted, _)| inserted.elapsed() < PROVIDER_ACCOUNTS_CACHE_TTL);
+        }
+        entries.insert(subject.to_string(), (Instant::now(), accounts));
+    }
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub config: AppConfig,
     pub catalog: CatalogHandle,
     pub jellyfin_image_cache: Arc<JellyfinImageCache>,
+    pub artwork_candidate_cache: Arc<ArtworkCandidateCache>,
+    pub provider_accounts_cache: Arc<ProviderAccountsCache>,
+    pub metadata_memo: Arc<MetadataCacheMemo>,
+    pub frontend_index: Arc<tokio::sync::OnceCell<Option<String>>>,
     pub tmdb_client: Option<Arc<TmdbClient>>,
 }
 
@@ -352,15 +404,25 @@ pub fn router(state: AppState) -> Router {
 }
 
 async fn index(State(state): State<Arc<AppState>>) -> Response {
-    if let Some(frontend_dir) = &state.config.frontend_dir {
-        match tokio::fs::read_to_string(frontend_dir.join("index.html")).await {
-            Ok(contents) => return Html(contents).into_response(),
-            Err(error) => log_event(
-                "frontend_unavailable",
-                &request_id(),
-                json!({ "errorKind": error.kind().to_string() }),
-            ),
-        }
+    let contents = state
+        .frontend_index
+        .get_or_init(|| async {
+            let frontend_dir = state.config.frontend_dir.clone()?;
+            match tokio::fs::read_to_string(frontend_dir.join("index.html")).await {
+                Ok(contents) => Some(contents),
+                Err(error) => {
+                    log_event(
+                        "frontend_unavailable",
+                        &request_id(),
+                        json!({ "errorKind": error.kind().to_string() }),
+                    );
+                    None
+                }
+            }
+        })
+        .await;
+    if let Some(contents) = contents {
+        return Html(contents.clone()).into_response();
     }
     Html(
         "<!doctype html><html><head><meta charset=utf-8><title>Media Manager</title></head>\
@@ -442,7 +504,7 @@ async fn status(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respo
     };
     let mut integrations = state.config.integrations.clone();
     let runtime_accounts = if state.config.provider_broker_base_url.is_some() {
-        configured_provider_accounts(&state.config, &identity).await
+        configured_provider_accounts(&state, &identity).await
     } else {
         BTreeSet::new()
     };
@@ -502,17 +564,17 @@ async fn status(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respo
 }
 
 async fn provider_account_configured(
-    config: &AppConfig,
+    state: &AppState,
     identity: &Identity,
     provider_id: &str,
 ) -> bool {
-    configured_provider_accounts(config, identity)
+    configured_provider_accounts(state, identity)
         .await
         .contains(provider_id)
 }
 
-async fn configured_provider_accounts(config: &AppConfig, identity: &Identity) -> BTreeSet<String> {
-    let Some(base) = config.provider_broker_base_url.as_deref() else {
+async fn configured_provider_accounts(state: &AppState, identity: &Identity) -> BTreeSet<String> {
+    let Some(base) = state.config.provider_broker_base_url.as_deref() else {
         return BTreeSet::new();
     };
     let Ok(mut url) = reqwest::Url::parse(base) else {
@@ -531,15 +593,24 @@ async fn configured_provider_accounts(config: &AppConfig, identity: &Identity) -
     let Ok(url) = url.join("api/v1/provider-accounts") else {
         return BTreeSet::new();
     };
-    let Ok(client) = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(2))
-        .timeout(Duration::from_secs(5))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-    else {
-        return BTreeSet::new();
-    };
-    let Ok(response) = client
+    if let Some(accounts) = state.provider_accounts_cache.get(&identity.subject) {
+        return accounts;
+    }
+    let accounts = fetch_provider_accounts(state, url, identity).await;
+    state
+        .provider_accounts_cache
+        .insert(&identity.subject, accounts.clone());
+    accounts
+}
+
+async fn fetch_provider_accounts(
+    state: &AppState,
+    url: reqwest::Url,
+    identity: &Identity,
+) -> BTreeSet<String> {
+    let Ok(response) = state
+        .provider_accounts_cache
+        .client
         .get(url)
         .header("x-forwarded-user", &identity.subject)
         .header("x-forwarded-preferred-username", &identity.username)

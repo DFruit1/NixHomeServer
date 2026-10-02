@@ -1179,11 +1179,15 @@ async fn item_metadata_value(
             continue;
         };
         let entry = match application_caches {
-            Some(caches) => caches.get(source.app_id()).and_then(|cache| {
-                cached_application_metadata_entry(cache, item, source.allow_folder_prefix())
-            }),
+            Some(caches) => caches.lookup(source.app_id(), item, source.allow_folder_prefix()),
             None => {
-                cached_application_metadata(cache_file, item, source.allow_folder_prefix()).await
+                cached_application_metadata(
+                    &state.metadata_memo,
+                    cache_file,
+                    item,
+                    source.allow_folder_prefix(),
+                )
+                .await
             }
         };
         if let Some(entry) = entry {
@@ -1340,7 +1344,7 @@ pub(super) async fn metadata_issues(
         .then(|| page.last().map(|item| item.relative_path.clone()))
         .flatten();
 
-    let application_caches = ApplicationMetadataCaches::load(&state.config, &page).await;
+    let application_caches = ApplicationMetadataCaches::load(&state, &page).await;
     let mut results = Vec::new();
     let mut inspected_items = 0usize;
     let mut issue_count = 0usize;
@@ -1769,22 +1773,67 @@ fn strip_trailing_year(value: &str) -> (&str, Option<u16>) {
     (value.trim(), None)
 }
 
+/// Parsed application-metadata caches keyed by file, validated against the
+/// file's pre-read mtime and size so each page of items reuses one parse.
+#[derive(Default)]
+pub struct MetadataCacheMemo {
+    entries: Mutex<HashMap<std::path::PathBuf, MemoEntry>>,
+}
+
+struct MemoEntry {
+    modified: SystemTime,
+    len: u64,
+    value: Arc<Value>,
+}
+
+impl MetadataCacheMemo {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn get(&self, path: &FilePath, modified: SystemTime, len: u64) -> Option<Arc<Value>> {
+        let entries = self.entries.lock().expect("metadata memo lock");
+        entries
+            .get(path)
+            .filter(|entry| entry.modified == modified && entry.len == len)
+            .map(|entry| entry.value.clone())
+    }
+
+    fn insert(&self, path: std::path::PathBuf, modified: SystemTime, len: u64, value: Arc<Value>) {
+        let mut entries = self.entries.lock().expect("metadata memo lock");
+        entries.insert(
+            path,
+            MemoEntry {
+                modified,
+                len,
+                value,
+            },
+        );
+    }
+}
+
 pub(super) async fn cached_application_metadata(
+    memo: &MetadataCacheMemo,
     cache_file: &FilePath,
     item: &CatalogItem,
     allow_folder_prefix: bool,
 ) -> Option<Value> {
-    let cache = load_application_metadata_cache(cache_file).await?;
+    let cache = load_application_metadata_cache(memo, cache_file).await?;
     cached_application_metadata_entry(&cache, item, allow_folder_prefix)
 }
 
+type MetadataPathKey = (String, Option<String>, String);
+type MetadataIndex = HashMap<MetadataPathKey, Vec<usize>>;
+
 struct ApplicationMetadataCaches {
-    caches: HashMap<&'static str, Value>,
+    caches: HashMap<&'static str, Arc<Value>>,
+    indexes: HashMap<&'static str, MetadataIndex>,
 }
 
 impl ApplicationMetadataCaches {
-    async fn load(config: &AppConfig, items: &[CatalogItem]) -> Self {
+    async fn load(state: &AppState, items: &[CatalogItem]) -> Self {
         let mut caches = HashMap::new();
+        let mut indexes = HashMap::new();
         for source in crate::applications::metadata_sources() {
             if !items
                 .iter()
@@ -1792,22 +1841,86 @@ impl ApplicationMetadataCaches {
             {
                 continue;
             }
-            let Some(cache_file) = source.cache_file(config) else {
+            let Some(cache_file) = source.cache_file(&state.config) else {
                 continue;
             };
-            if let Some(cache) = load_application_metadata_cache(cache_file).await {
+            if let Some(cache) =
+                load_application_metadata_cache(&state.metadata_memo, cache_file).await
+            {
+                let index = cache
+                    .get("entries")
+                    .and_then(Value::as_array)
+                    .map(|entries| build_metadata_index(entries.as_slice()))
+                    .unwrap_or_default();
+                indexes.insert(source.app_id(), index);
                 caches.insert(source.app_id(), cache);
             }
         }
-        Self { caches }
+        Self { caches, indexes }
     }
 
-    fn get(&self, app_id: &str) -> Option<&Value> {
-        self.caches.get(app_id)
+    /// Entry lookup by (root, owner, path): exact match first, then the
+    /// nearest folder prefix when the source allows it — mirroring the
+    /// longest-`relativePath` rule of the linear scan it replaces.
+    fn lookup(&self, app_id: &str, item: &CatalogItem, allow_folder_prefix: bool) -> Option<Value> {
+        let cache = self.caches.get(app_id)?;
+        let index = self.indexes.get(app_id)?;
+        let entries = cache.get("entries")?.as_array()?;
+        let exact: MetadataPathKey = (
+            item.root_id.clone(),
+            item.owner_username.clone(),
+            item.relative_path.clone(),
+        );
+        if let Some(&position) = index.get(&exact).and_then(|positions| positions.first()) {
+            return entries.get(position).cloned();
+        }
+        if allow_folder_prefix {
+            let mut prefix = item.relative_path.as_str();
+            while let Some((parent, _)) = prefix.rsplit_once('/') {
+                prefix = parent;
+                if prefix.is_empty() {
+                    break;
+                }
+                let key: MetadataPathKey = (
+                    item.root_id.clone(),
+                    item.owner_username.clone(),
+                    prefix.to_string(),
+                );
+                if let Some(&position) = index.get(&key).and_then(|positions| positions.first()) {
+                    return entries.get(position).cloned();
+                }
+            }
+        }
+        None
     }
 }
 
-async fn load_application_metadata_cache(cache_file: &FilePath) -> Option<Value> {
+fn build_metadata_index(entries: &[Value]) -> MetadataIndex {
+    let mut index = MetadataIndex::default();
+    for (position, entry) in entries.iter().enumerate() {
+        let (Some(root_id), Some(relative_path)) = (
+            entry.get("rootId").and_then(Value::as_str),
+            entry.get("relativePath").and_then(Value::as_str),
+        ) else {
+            continue;
+        };
+        let key: MetadataPathKey = (
+            root_id.to_string(),
+            entry
+                .get("ownerUsername")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            relative_path.to_string(),
+        );
+        index.entry(key).or_default().push(position);
+    }
+    index
+}
+
+async fn load_application_metadata_cache(
+    memo: &MetadataCacheMemo,
+    cache_file: &FilePath,
+) -> Option<Arc<Value>> {
     const MAX_CACHE_BYTES: u64 = 16 * 1024 * 1024;
     const MAX_CACHE_AGE_SECONDS: u64 = 2 * 60 * 60;
     let metadata = tokio::fs::symlink_metadata(cache_file).await.ok()?;
@@ -1815,13 +1928,13 @@ async fn load_application_metadata_cache(cache_file: &FilePath) -> Option<Value>
     {
         return None;
     }
-    if SystemTime::now()
-        .duration_since(metadata.modified().ok()?)
-        .ok()?
-        .as_secs()
-        > MAX_CACHE_AGE_SECONDS
-    {
+    let modified = metadata.modified().ok()?;
+    if SystemTime::now().duration_since(modified).ok()?.as_secs() > MAX_CACHE_AGE_SECONDS {
         return None;
+    }
+    let len = metadata.len();
+    if let Some(cached) = memo.get(cache_file, modified, len) {
+        return Some(cached);
     }
     let bytes = tokio::fs::read(cache_file).await.ok()?;
     let cache: Value = serde_json::from_slice(&bytes).ok()?;
@@ -1829,6 +1942,8 @@ async fn load_application_metadata_cache(cache_file: &FilePath) -> Option<Value>
         return None;
     }
     cache.get("entries")?.as_array()?;
+    let cache = Arc::new(cache);
+    memo.insert(cache_file.to_path_buf(), modified, len, cache.clone());
     Some(cache)
 }
 
