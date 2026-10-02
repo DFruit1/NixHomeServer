@@ -46,6 +46,7 @@ export class JobDatabase extends SqliteDatabase {
 
       create index if not exists jobs_status_created_at_idx on jobs(status, created_at);
       create index if not exists jobs_created_by_created_at_idx on jobs(created_by, created_at);
+      create index if not exists jobs_created_by_status_updated_at_idx on jobs(created_by, status, updated_at);
 
       create table if not exists job_files (
         id integer primary key autoincrement,
@@ -77,6 +78,7 @@ export class JobDatabase extends SqliteDatabase {
     }
 
     await this.exec(`insert or ignore into schema_migrations(version, applied_at) values (2, datetime('now'));`);
+    await this.exec(`insert or ignore into schema_migrations(version, applied_at) values (3, datetime('now'));`);
   }
 
   async markInterrupted(): Promise<void> {
@@ -220,7 +222,7 @@ export class JobDatabase extends SqliteDatabase {
       order by created_at desc
       limit ${Math.max(1, Math.min(limit, 500))};
     `);
-    return Promise.all(rows.map((row) => this.rowToJob(row)));
+    return this.rowsToJobs(rows);
   }
 
   async getJob(id: string): Promise<Job | undefined> {
@@ -244,7 +246,7 @@ export class JobDatabase extends SqliteDatabase {
       where status = 'queued'
       order by created_at asc;
     `);
-    return Promise.all(rows.map((row) => this.rowToJob(row)));
+    return this.rowsToJobs(rows);
   }
 
   /** Atomically reserves one queued job so concurrent queue pumps cannot start it twice. */
@@ -258,7 +260,8 @@ export class JobDatabase extends SqliteDatabase {
       select *
       from jobs
       where status = 'completed' and created_by = ${sqlValue(createdBy)}
-      order by updated_at desc, created_at desc;
+      order by updated_at desc, created_at desc
+      limit 200;
     `);
     const normalizedUrl = normalizeDownloadUrl(request.url);
     for (const row of rows) {
@@ -310,6 +313,31 @@ export class JobDatabase extends SqliteDatabase {
       where job_id = ${sqlValue(row.id)}
       order by id asc;
     `);
+    return this.jobFromRow(row, files.map((file) => file.path));
+  }
+
+  /** Hydrates a page of job rows with one job_files query instead of one per row. */
+  private async rowsToJobs(rows: JobRow[]): Promise<Job[]> {
+    if (rows.length === 0) {
+      return [];
+    }
+    const ids = rows.map((row) => sqlValue(row.id)).join(', ');
+    const fileRows = await this.query<{ job_id: string; path: string }>(`
+      select job_id, path
+      from job_files
+      where job_id in (${ids})
+      order by id asc;
+    `);
+    const filesByJob = new Map<string, string[]>();
+    for (const file of fileRows) {
+      const paths = filesByJob.get(file.job_id) ?? [];
+      paths.push(file.path);
+      filesByJob.set(file.job_id, paths);
+    }
+    return rows.map((row) => this.jobFromRow(row, filesByJob.get(row.id) ?? []));
+  }
+
+  private jobFromRow(row: JobRow, files: string[]): Job {
     return {
       id: row.id,
       parentId: row.parent_id ?? undefined,
@@ -323,7 +351,7 @@ export class JobDatabase extends SqliteDatabase {
       source: row.source_json ? (JSON.parse(row.source_json) as ProbeResponse) : undefined,
       outputRoot: row.output_root ?? undefined,
       outputFolder: row.output_folder ?? undefined,
-      files: files.map((file) => file.path),
+      files,
       error: row.error ?? undefined,
     };
   }
