@@ -22,12 +22,16 @@ export type MqttPublisher = {
 
 type MqttFactory = (url: string, options: IClientOptions) => MqttPublisher;
 
+/** The database summary is the costly part of status(); bound how often it runs. */
+const STATUS_SUMMARY_TTL_MS = 45_000;
+
 export class MqttBridge {
   private client?: MqttPublisher;
   private state: MqttConnectionState = 'offline';
   private lastError?: string;
   private lastMessageAt?: string;
   private readonly events = new EventEmitter();
+  private summaryCache?: { expiresAt: number; value: Awaited<ReturnType<Database['summary']>> };
 
   constructor(
     private readonly config: AppConfig,
@@ -138,9 +142,16 @@ export class MqttBridge {
   }
 
   async status(): Promise<AppStatus> {
+    const now = Date.now();
+    if (!this.summaryCache || this.summaryCache.expiresAt <= now) {
+      this.summaryCache = {
+        expiresAt: now + STATUS_SUMMARY_TTL_MS,
+        value: await this.db.summary(),
+      };
+    }
     return {
       mqtt: this.mqttStatus(),
-      database: await this.db.summary(),
+      database: this.summaryCache.value,
     };
   }
 
