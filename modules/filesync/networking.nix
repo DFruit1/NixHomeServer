@@ -10,6 +10,7 @@ in
     logFormat = null;
     useACMEHost = vars.domain;
     extraConfig = ''
+      encode zstd gzip
       @health path /healthz
       handle @health {
         reverse_proxy http://${loopback}:${toString port}

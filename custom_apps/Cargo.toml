@@ -3,6 +3,7 @@ resolver = "2"
 
 members = [
   "rust/apps/ai-gate",  "rust/apps/browsertrix-downloader",
+  "rust/apps/groundwater-server",
   "rust/apps/kanidm-canary-bootstrap",
   "rust/apps/mail-archive-ui",
   "rust/apps/media-manager",
@@ -41,6 +42,9 @@ codegen-units = 1
 codegen-units = 1
 
 [profile.release.package.filesync-api]
+codegen-units = 1
+
+[profile.release.package.groundwater-server]
 codegen-units = 1
 
 [profile.release.package.homelab-common]
@@ -95,6 +99,12 @@ md-5 = "0.10.6"
 postgres = "0.19.12"
 rand = "0.8.5"
 reqwest = { version = "0.12.24", default-features = false, features = ["json", "rustls-tls"] }
+# MQTT client for the groundwater platform's ingest path. The workspace had no
+# MQTT client before this app; rumqttc is the smallest maintained async client
+# that covers MQTT 3.1.1 QoS 0/1/2 without embedding a broker.
+rumqttc = { version = "0.25.1", default-features = false, features = [
+  "use-rustls",
+] }
 roxmltree = "0.21.1"
 rusqlite = { version = "0.40.1", default-features = false }
 serde = { version = "1.0.228", features = ["derive"] }
