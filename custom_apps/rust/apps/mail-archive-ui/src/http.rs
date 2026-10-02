@@ -19,8 +19,27 @@ pub(super) fn vite_origin_from_env() -> String {
     env::var("MAIL_ARCHIVE_UI_VITE_ORIGIN").unwrap_or_else(|_| DEFAULT_VITE_ORIGIN.to_string())
 }
 
+/// Single-slot memo for rendered asset tags: the dist directory is immutable
+/// for a process lifetime, so every page render reuses one manifest read.
+static FRONTEND_TAG_CACHE: std::sync::LazyLock<std::sync::Mutex<Option<(String, String)>>> =
+    std::sync::LazyLock::new(std::sync::Mutex::default);
+
 pub(super) fn render_frontend_tags() -> String {
-    match frontend_mode() {
+    let key = match frontend_mode() {
+        FrontendMode::Production => format!("production\0{}", frontend_dist_dir_from_env()),
+        FrontendMode::Vite => format!("vite\0{}", vite_origin_from_env()),
+    };
+    {
+        let cached = FRONTEND_TAG_CACHE
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some((cached_key, tags)) = cached.as_ref()
+            && *cached_key == key
+        {
+            return tags.clone();
+        }
+    }
+    let tags = match frontend_mode() {
         FrontendMode::Production => {
             match production_asset_tags(&frontend_dist_dir_from_env(), FRONTEND_ENTRYPOINT) {
                 Ok(tags) => tags,
@@ -31,7 +50,14 @@ pub(super) fn render_frontend_tags() -> String {
             }
         }
         FrontendMode::Vite => vite_asset_tags(&vite_origin_from_env()),
+    };
+    if !tags.starts_with("<!--") {
+        let mut cached = FRONTEND_TAG_CACHE
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        *cached = Some((key, tags.clone()));
     }
+    tags
 }
 
 pub(super) fn production_asset_tags(dist_dir: &str, entrypoint: &str) -> Result<String, String> {

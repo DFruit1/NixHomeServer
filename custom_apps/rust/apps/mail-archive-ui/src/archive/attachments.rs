@@ -1,5 +1,55 @@
 use super::super::*;
 
+const MESSAGE_PREVIEW_CACHE_MAX_ENTRIES: usize = 1000;
+
+/// (path, mtime, size) keyed previews so paging back through the attachment
+/// list reuses parses instead of re-reading messages, and an edited file
+/// misses on its own metadata. The eviction clock approximates LRU.
+type MessagePreviewCacheKey = (PathBuf, std::time::SystemTime, u64);
+type MessagePreviewValue = (Option<String>, bool, Option<String>);
+
+static MESSAGE_PREVIEW_CACHE: std::sync::LazyLock<
+    std::sync::Mutex<HashMap<MessagePreviewCacheKey, (u64, MessagePreviewValue)>>,
+> = std::sync::LazyLock::new(std::sync::Mutex::default);
+static MESSAGE_PREVIEW_CLOCK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn cached_message_context_preview(
+    message_path: &FsPath,
+    limit: usize,
+) -> Option<MessagePreviewValue> {
+    let metadata = fs::metadata(message_path).ok()?;
+    let key: MessagePreviewCacheKey = (
+        message_path.to_path_buf(),
+        metadata.modified().ok()?,
+        metadata.len(),
+    );
+    {
+        let mut cache = MESSAGE_PREVIEW_CACHE
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some((clock, value)) = cache.get_mut(&key) {
+            *clock = MESSAGE_PREVIEW_CLOCK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return Some(value.clone());
+        }
+    }
+    let context = read_message_context_preview(message_path, limit).ok()?;
+    let value: MessagePreviewValue = (context.body, context.truncated, context.cc);
+    let mut cache = MESSAGE_PREVIEW_CACHE
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if cache.len() >= MESSAGE_PREVIEW_CACHE_MAX_ENTRIES
+        && let Some(oldest) = cache
+            .iter()
+            .min_by_key(|(_, (clock, _))| *clock)
+            .map(|(key, _)| key.clone())
+    {
+        cache.remove(&oldest);
+    }
+    let clock = MESSAGE_PREVIEW_CLOCK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    cache.insert(key, (clock, value.clone()));
+    Some(value)
+}
+
 pub(crate) fn load_attachment_page_data(
     config: &AppConfig,
     username: &str,
@@ -281,10 +331,10 @@ pub(crate) fn load_attachment_page_data(
             continue;
         };
         let message_path = account_paths.maildir.join(&item.message.message_relpath);
-        if let Ok(context) = read_message_context_preview(&message_path, 760) {
-            item.message_preview = context.body;
-            item.message_preview_truncated = context.truncated;
-            item.message_cc = context.cc;
+        if let Some((body, truncated, cc)) = cached_message_context_preview(&message_path, 760) {
+            item.message_preview = body;
+            item.message_preview_truncated = truncated;
+            item.message_cc = cc;
         }
     }
     let base_query = build_attachment_base_query(AttachmentBaseQuery {

@@ -1,5 +1,20 @@
 use super::super::*;
 
+const LIVE_MESSAGE_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+const LIVE_MESSAGE_CACHE_MAX_ENTRIES: usize = 256;
+
+/// (store, account, sync stamp, query): a mailbox sync bumps the stamp so
+/// the entry turns over, and the TTL bounds staleness when the notmuch
+/// database changes without an account update. The store scopes the key so
+/// distinct data directories never share an entry.
+type LiveMessageCacheKey = (String, i64, String, String);
+
+type LiveMessageCacheMap =
+    HashMap<LiveMessageCacheKey, (std::time::Instant, Arc<Vec<LiveMessageRecord>>)>;
+
+static LIVE_MESSAGE_CACHE: std::sync::LazyLock<std::sync::Mutex<LiveMessageCacheMap>> =
+    std::sync::LazyLock::new(std::sync::Mutex::default);
+
 pub(crate) fn collect_live_messages_for_account(
     config: &AppConfig,
     account: &AccountRecord,
@@ -54,12 +69,13 @@ pub(crate) fn search_mail(
     {
         let attachment_states =
             load_message_attachment_states_for_account(&connection, account.id)?;
-        for item in collect_live_messages_for_account(config, &account, &query)? {
+        let live_messages = cached_live_messages(config, &account, &query)?;
+        for item in live_messages.iter() {
             let has_attachments = attachment_states
                 .get(&item.message_key)
                 .copied()
                 .unwrap_or(false);
-            if !message_matches_filters(&item, &filters, Some(has_attachments)) {
+            if !message_matches_filters(item, &filters, Some(has_attachments)) {
                 continue;
             }
             let dismissed_at = dismissals
@@ -95,6 +111,43 @@ pub(crate) fn search_mail(
             .then(right.timestamp.cmp(&left.timestamp))
     });
     Ok(results)
+}
+
+/// Notmuch-backed live messages served from the per-sync-stamp cache so a
+/// repeated search skips the notmuch query and the per-message file reads.
+fn cached_live_messages(
+    config: &AppConfig,
+    account: &AccountRecord,
+    query: &str,
+) -> Result<Arc<Vec<LiveMessageRecord>>, String> {
+    let key: LiveMessageCacheKey = (
+        config.store_root.to_string(),
+        account.id,
+        account.last_sync_finished_at.clone().unwrap_or_default(),
+        query.to_string(),
+    );
+    {
+        let cache = LIVE_MESSAGE_CACHE
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some((recorded, messages)) = cache.get(&key)
+            && recorded.elapsed() < LIVE_MESSAGE_CACHE_TTL
+        {
+            return Ok(messages.clone());
+        }
+    }
+    let messages = Arc::new(collect_live_messages_for_account(config, account, query)?);
+    let mut cache = LIVE_MESSAGE_CACHE
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if cache.len() >= LIVE_MESSAGE_CACHE_MAX_ENTRIES {
+        cache.retain(|_, (recorded, _)| recorded.elapsed() < LIVE_MESSAGE_CACHE_TTL);
+        if cache.len() >= LIVE_MESSAGE_CACHE_MAX_ENTRIES {
+            cache.clear();
+        }
+    }
+    cache.insert(key, (std::time::Instant::now(), messages.clone()));
+    Ok(messages)
 }
 
 pub(crate) fn load_account_progress_snapshot(
