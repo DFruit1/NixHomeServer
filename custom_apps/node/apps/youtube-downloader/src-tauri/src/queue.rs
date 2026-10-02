@@ -35,6 +35,8 @@ pub struct PendingJob {
     pub media_type: String,
     #[serde(default, alias = "save_audio_to_audiobooks")]
     pub save_audio_to_audiobooks: bool,
+    #[serde(default, alias = "download_transcript")]
+    pub download_transcript: bool,
     #[serde(default, alias = "last_error")]
     pub last_error: Option<String>,
 }
@@ -105,6 +107,7 @@ fn enqueue_url(
     url: &str,
     media_type: &str,
     save_audio_to_audiobooks: bool,
+    download_transcript: bool,
 ) -> Result<(), String> {
     let media_type = normalise_media_type(media_type);
     let mut jobs = load_queue(app);
@@ -112,6 +115,7 @@ fn enqueue_url(
         job.url == url
             && job.media_type == media_type
             && job.save_audio_to_audiobooks == save_audio_to_audiobooks
+            && job.download_transcript == download_transcript
     }) {
         return Ok(());
     }
@@ -121,6 +125,7 @@ fn enqueue_url(
         added_at: now_seconds(),
         media_type,
         save_audio_to_audiobooks,
+        download_transcript,
         last_error: None,
     });
     save_queue(app, &jobs)
@@ -128,7 +133,7 @@ fn enqueue_url(
 
 /// A shared line is either a JSON object `{url, mediaType}` or a bare URL
 /// (older builds), which is treated as audio.
-fn parse_shared_line(line: &str) -> (String, String, bool) {
+fn parse_shared_line(line: &str) -> (String, String, bool, bool) {
     if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
         let url = value
             .get("url")
@@ -143,14 +148,19 @@ fn parse_shared_line(line: &str) -> (String, String, bool) {
                 .get("saveAudioToAudiobooks")
                 .and_then(|entry| entry.as_bool())
                 .unwrap_or(false);
+            let download_transcript = value
+                .get("downloadTranscript")
+                .and_then(|entry| entry.as_bool())
+                .unwrap_or(false);
             return (
                 url.to_string(),
                 normalise_media_type(media),
                 save_audio_to_audiobooks,
+                download_transcript,
             );
         }
     }
-    (line.to_string(), default_media_type(), false)
+    (line.to_string(), default_media_type(), false, false)
 }
 
 /// URLs shared into the app on Android are dropped into a plain-text file by
@@ -175,9 +185,16 @@ pub fn sync_shared_files(app: &AppHandle) {
             if line.is_empty() {
                 continue;
             }
-            let (url, media_type, save_audio_to_audiobooks) = parse_shared_line(line);
+            let (url, media_type, save_audio_to_audiobooks, download_transcript) =
+                parse_shared_line(line);
             if !url.is_empty() {
-                let _ = enqueue_url(app, &url, &media_type, save_audio_to_audiobooks);
+                let _ = enqueue_url(
+                    app,
+                    &url,
+                    &media_type,
+                    save_audio_to_audiobooks,
+                    download_transcript,
+                );
             }
         }
         let _ = std::fs::remove_file(&candidate);
@@ -188,6 +205,7 @@ fn default_request(
     url: &str,
     media_type: &str,
     save_audio_to_audiobooks: bool,
+    download_transcript: bool,
 ) -> serde_json::Value {
     if media_type == "video" {
         return serde_json::json!({
@@ -199,6 +217,7 @@ fn default_request(
             "splitChapters": true,
             "includeChannel": true,
             "includeDate": true,
+            "downloadTranscript": download_transcript,
             "ytDlpVersion": "packaged",
         });
     }
@@ -213,6 +232,7 @@ fn default_request(
         "embedAudioCoverArt": true,
         "includeChannel": true,
         "includeDate": true,
+        "downloadTranscript": download_transcript,
         "ytDlpVersion": "packaged",
     })
 }
@@ -249,9 +269,20 @@ pub fn queue_list(app: AppHandle) -> Vec<PendingJob> {
 }
 
 #[tauri::command]
-pub fn queue_add(app: AppHandle, url: String, media_type: Option<String>) -> Result<(), String> {
+pub fn queue_add(
+    app: AppHandle,
+    url: String,
+    media_type: Option<String>,
+    download_transcript: Option<bool>,
+) -> Result<(), String> {
     let media = media_type.as_deref().unwrap_or("audio");
-    enqueue_url(&app, url.trim(), media, false)
+    enqueue_url(
+        &app,
+        url.trim(),
+        media,
+        false,
+        download_transcript.unwrap_or(false),
+    )
 }
 
 #[tauri::command]
@@ -335,6 +366,7 @@ pub async fn queue_flush(app: AppHandle) -> Result<FlushOutcome, String> {
                 &job.url,
                 &job.media_type,
                 job.save_audio_to_audiobooks,
+                job.download_transcript,
             ));
         match request.send().await {
             Ok(response) if response.status().is_success() => {

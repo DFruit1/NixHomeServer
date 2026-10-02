@@ -1,7 +1,7 @@
 import { component$, type QRL } from '@builder.io/qwik';
 import type { YtDlpVersion } from '../shared/types.js';
 
-export const OPTION_KEYS = ['splitChapters', 'includeChannel', 'includeDate', 'embedAudioCoverArt', 'saveAudioToAudiobooks', 'autoQueueOnPaste', 'ytDlpVersion'] as const;
+export const OPTION_KEYS = ['splitChapters', 'includeChannel', 'includeDate', 'embedAudioCoverArt', 'saveAudioToAudiobooks', 'downloadTranscript', 'autoQueueOnPaste', 'ytDlpVersion'] as const;
 export type OptionKey = (typeof OPTION_KEYS)[number];
 export type BooleanOptionKey = Exclude<OptionKey, 'ytDlpVersion'>;
 
@@ -14,6 +14,7 @@ type OptionsPanelProps = {
   includeDate: boolean;
   embedAudioCoverArt: boolean;
   saveAudioToAudiobooks: boolean;
+  downloadTranscript: boolean;
   autoQueueOnPaste: boolean;
   ytDlpVersion: YtDlpVersion;
   onBooleanChange: QRL<(key: BooleanOptionKey, value: boolean) => void>;
@@ -68,6 +69,12 @@ export const OptionsPanel = component$<OptionsPanelProps>((props) => {
         <div class="option-row">
           <label><input type="checkbox" checked={props.saveAudioToAudiobooks} onChange$={(_, target) => props.onBooleanChange('saveAudioToAudiobooks', target.checked)} /> Save audio to Audiobooks</label>
           {pinButton('saveAudioToAudiobooks')}
+        </div>
+      )}
+      {visible('downloadTranscript') && (
+        <div class="option-row">
+          <label><input type="checkbox" checked={props.downloadTranscript} onChange$={(_, target) => props.onBooleanChange('downloadTranscript', target.checked)} /> Transcript &amp; subtitles</label>
+          {pinButton('downloadTranscript')}
         </div>
       )}
       {visible('autoQueueOnPaste') && (

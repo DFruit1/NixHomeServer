@@ -1381,6 +1381,35 @@ a sibling `Song.jpg`) and any `cover.jpg` in chapter-split output; do not delete
 covers that were installed deliberately through Media Manager. Request a
 Syncthing rescan from Homepage afterwards.
 
+### Transcript and subtitle downloads
+
+The optional `Transcript & subtitles` setting fetches subtitles alongside the
+audio or video file as `.srt` sidecars, for both media types and on web and
+Android alike. Chapter-split downloads keep them: only the media file is
+relocated into the chapter folder, so the sidecars are copied across
+separately and land next to the chapter files.
+
+Which tracks arrive is deliberate, because the setting says subtitles rather
+than transcripts:
+
+- The video's own-language track, manual or automatically generated, and
+  English. A video with no subtitles of either kind simply gets no sidecar.
+- Any human-authored tracks the uploader or community added. A typical video
+  yields one to three files.
+- Not YouTube's machine translations. Every caption is offered translated into
+  roughly a hundred languages, so requesting all of them would put hundreds of
+  near-empty files in the library per download.
+
+The conversion runs through ffmpeg, which is why the server keeps it on the
+service path. Only WebVTT is converted: ffmpeg cannot read YouTube's `json3`
+and `srv1`/`srv2`/`srv3` subtitle formats, and requesting those would leave the
+raw track in place instead of an `.srt`. Cue text, timings and non-ASCII
+characters survive the conversion, so an automatic transcript is reproduced as
+YouTube produced it, rolling-caption repetitions and all.
+
+Playlist and channel downloads take the first two rules only. Those are probed
+flat, so the server has no per-video subtitle information to work from.
+
 ## Private F-Droid Repository
 
 The server hosts a private F-Droid-compatible repository at:

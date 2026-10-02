@@ -18,11 +18,56 @@ type RawProbe = {
   release_date?: string;
   upload_date?: string;
   chapters?: RawChapter[];
+  subtitles?: Record<string, unknown>;
   entries?: unknown[];
   _type?: string;
 };
 
 const VIDEO_FORMAT_SORT = '+vcodec:avc,+acodec:m4a,res,fps,br';
+
+// --convert-subs runs through ffmpeg, which cannot demux YouTube's json3 or
+// srv1/2/3 formats. The extractor offers WebVTT for every caption track, and
+// the vtt -> srt conversion preserves cue text, timings and unicode, so vtt is
+// requested first and only falls back if a future extractor drops it.
+const TRANSCRIPT_SUB_FORMAT = 'vtt/best';
+
+// yt-dlp matches --sub-langs entries as regular expressions against the track
+// tags the extractor produced, so a tag has to be restricted to characters that
+// cannot change the meaning of the surrounding expression.
+const SUBTITLE_TAG = /^[A-Za-z0-9-]{1,64}$/;
+
+// A request is one YouTube video's worth of manual subtitles in practice; the
+// cap only exists so a surprising track list cannot balloon the download.
+const MAX_MANUAL_SUBTITLE_LANGUAGES = 12;
+
+/**
+ * Build the `--sub-langs` value for the transcript option.
+ *
+ * `.*-orig` matches the track the video was actually made in — the only tag
+ * the extractor invents that means "original", and the one that covers the
+ * automatic transcript without the server having to know the language.
+ * `en` then adds the English track, whether uploaded or auto-translated.
+ *
+ * Everything else on YouTube is a machine translation of a caption into roughly
+ * a hundred languages; `all`, or a loose `en.*`, sweeps those in and turns a
+ * two-file transcript into a dozen near-duplicates. What is left to add is the
+ * human-authored tracks the probe reported, so a video with uploaded subtitles
+ * but no speech recognition still gets them. Playlist and channel jobs are
+ * probed flat and carry no per-video subtitle information, so they fall back to
+ * the transcript and English alone.
+ */
+export const transcriptSubLangs = (source: ProbeResponse): string => {
+  const langs = ['.*-orig', 'en'];
+  for (const lang of source.subtitleLanguages ?? []) {
+    if (langs.length >= MAX_MANUAL_SUBTITLE_LANGUAGES) {
+      break;
+    }
+    if (SUBTITLE_TAG.test(lang) && !langs.includes(lang)) {
+      langs.push(lang);
+    }
+  }
+  return langs.join(',');
+};
 
 const videoSelector = (quality: VideoQuality): string => {
   if (quality === 'best') {
@@ -81,10 +126,18 @@ export const probeUrl = async (
     chapters,
     isPlaylist,
     entries: Array.isArray(raw.entries) ? raw.entries.length : undefined,
+    // Playlist and channel entries are probed flat, so only single videos
+    // report their human-authored subtitle tracks here.
+    subtitleLanguages: isPlaylist ? undefined : Object.keys(raw.subtitles ?? {}),
   };
 };
 
-export const buildDownloadArgs = (request: CreateJobRequest, outputTemplate: string, chapterTemplate: string): string[] => {
+export const buildDownloadArgs = (
+  request: CreateJobRequest,
+  outputTemplate: string,
+  chapterTemplate: string,
+  subLangs: string = '.*-orig,en',
+): string[] => {
   const args = [
     '--no-config',
     '--newline',
@@ -102,6 +155,19 @@ export const buildDownloadArgs = (request: CreateJobRequest, outputTemplate: str
 
   if (request.mediaType !== 'audio' || request.embedAudioCoverArt !== false) {
     args.push('--embed-thumbnail');
+  }
+
+  if (request.downloadTranscript) {
+    args.push(
+      '--write-subs',
+      '--write-auto-subs',
+      '--sub-langs',
+      subLangs,
+      '--sub-format',
+      TRANSCRIPT_SUB_FORMAT,
+      '--convert-subs',
+      'srt',
+    );
   }
 
   if (request.splitChapters && request.mediaType === 'video') {

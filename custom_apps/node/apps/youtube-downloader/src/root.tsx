@@ -61,6 +61,7 @@ export default component$(() => {
   const includeChannel = useSignal(true);
   const includeDate = useSignal(true);
   const saveAudioToAudiobooks = useSignal(false);
+  const downloadTranscript = useSignal(false);
   const autoQueueOnPaste = useSignal(false);
   const ytDlpVersion = useSignal<YtDlpVersion>('packaged');
   const pinnedOptions = useSignal<OptionKey[]>([]);
@@ -310,7 +311,7 @@ export default component$(() => {
   });
 
   const updateBooleanOption = $((key: BooleanOptionKey, value: boolean) => {
-    const signals = { splitChapters, includeChannel, includeDate, embedAudioCoverArt, saveAudioToAudiobooks, autoQueueOnPaste };
+    const signals = { splitChapters, includeChannel, includeDate, embedAudioCoverArt, saveAudioToAudiobooks, downloadTranscript, autoQueueOnPaste };
     signals[key].value = value;
   });
 
@@ -396,6 +397,7 @@ export default component$(() => {
       includeChannel: includeChannel.value,
       includeDate: includeDate.value,
       saveAudioToAudiobooks: mediaType.value === 'audio' ? saveAudioToAudiobooks.value : undefined,
+      downloadTranscript: downloadTranscript.value,
       ytDlpVersion: ytDlpVersion.value,
     };
     try {
@@ -418,7 +420,7 @@ export default component$(() => {
       await returnToSource();
     } catch (caught) {
       if (shouldQueueLocally(caught, isTauriRuntime())) {
-        await addPendingJob(normalizedUrl, mediaType.value);
+        await addPendingJob(normalizedUrl, mediaType.value, downloadTranscript.value);
         pendingNotice.value = signedIn.value === false
           ? 'You are signed out; queued on this device.'
           : 'The server is unreachable; queued on this device.';
@@ -509,6 +511,7 @@ export default component$(() => {
             includeDate={includeDate.value}
             embedAudioCoverArt={embedAudioCoverArt.value}
             saveAudioToAudiobooks={saveAudioToAudiobooks.value}
+            downloadTranscript={downloadTranscript.value}
             autoQueueOnPaste={autoQueueOnPaste.value}
             ytDlpVersion={ytDlpVersion.value}
             onBooleanChange={updateBooleanOption}
@@ -661,6 +664,7 @@ export default component$(() => {
             includeDate={includeDate.value}
             embedAudioCoverArt={embedAudioCoverArt.value}
             saveAudioToAudiobooks={saveAudioToAudiobooks.value}
+            downloadTranscript={downloadTranscript.value}
             autoQueueOnPaste={autoQueueOnPaste.value}
             ytDlpVersion={ytDlpVersion.value}
             onBooleanChange={updateBooleanOption}

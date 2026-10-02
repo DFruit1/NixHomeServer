@@ -96,6 +96,7 @@ export type PendingJob = {
   addedAt: number;
   mediaType?: string | null;
   saveAudioToAudiobooks?: boolean;
+  downloadTranscript?: boolean;
   lastError?: string | null;
 };
 
@@ -140,8 +141,12 @@ export const listPendingJobs = async (): Promise<PendingJob[]> => {
   return (await invoke<PendingJob[]>('queue_list').catch(() => [])) ?? [];
 };
 
-export const addPendingJob = async (url: string, mediaType?: string): Promise<void> => {
-  await tauriInvoke()?.('queue_add', { url, mediaType: mediaType ?? 'audio' }).catch(() => undefined);
+export const addPendingJob = async (url: string, mediaType?: string, downloadTranscript?: boolean): Promise<void> => {
+  await tauriInvoke()?.('queue_add', {
+    url,
+    mediaType: mediaType ?? 'audio',
+    downloadTranscript: downloadTranscript ?? false,
+  }).catch(() => undefined);
 };
 
 export const removePendingJob = async (id: string): Promise<void> => {

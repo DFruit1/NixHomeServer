@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import type { AppConfig } from './config.js';
 import { Database } from './db.js';
 import { assertInside, allocateUniqueFolder, folderNameFor, mediaRootFor, prepareDirectory, sanitizeSegment } from './paths.js';
-import { buildDownloadArgs, parseProgress, probeUrl } from './ytdlp.js';
+import { buildDownloadArgs, parseProgress, probeUrl, transcriptSubLangs } from './ytdlp.js';
 import { normalizeDownloadUrl } from '../shared/url.js';
 import type { CreateJobRequest, CurrentUser, Job, JobAlert, ProbeResponse } from '../shared/types.js';
 import { collectFiles, isMediaFile, splitAudioChapters } from './audio-chapters.js';
@@ -17,7 +17,7 @@ import {
   ytDlpPathFor,
 } from './request-validation.js';
 import { childHasExited, delay, killChildGroup, waitForChildExit } from './process-utils.js';
-import { copyDirectoryContents } from './output-move.js';
+import { copyDirectoryContents, copySubtitleSidecars } from './output-move.js';
 
 export {
   chapterGateFor,
@@ -357,7 +357,7 @@ export class JobQueue {
     const title = sanitizeSegment(source.title, 'Unknown Title');
     const baseTemplate = path.join(tempDir, `${title}.%(ext)s`);
     const chapterTemplate = path.join(tempDir, 'chapters', '%(section_number)02d - %(section_title|Chapter)S.%(ext)s');
-    const args = buildDownloadArgs(request, baseTemplate, chapterTemplate);
+    const args = buildDownloadArgs(request, baseTemplate, chapterTemplate, transcriptSubLangs(source));
     await this.db.setStatus(job.id, 'running');
     try {
       await this.runYtDlp(job.id, ytDlpPath, args);
@@ -403,6 +403,11 @@ export class JobQueue {
     // deliberately left in the temp directory so the synced library contains
     // only media and metadata, keeping per-track artwork authoritative.
     await copyDirectoryContents(sourceDir, outputFolder, { skipArtworkSidecars: true });
+    if (sourceDir !== tempDir) {
+      // Chapter splitting moved the media into the chapter subdirectory but
+      // left subtitle sidecars in the temp root, so bring those across too.
+      await copySubtitleSidecars(tempDir, outputFolder);
+    }
     await this.recordFiles(job.id, outputFolder);
     await rm(tempDir, { recursive: true, force: true });
     await this.db.setProgress(job.id, null);

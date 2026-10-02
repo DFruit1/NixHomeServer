@@ -16,6 +16,9 @@ export const validateRequest = (request: CreateJobRequest): void => {
   if (typeof request.splitChapters !== 'boolean') {
     throw new Error('split chapters flag must be a boolean');
   }
+  if (request.downloadTranscript != null && typeof request.downloadTranscript !== 'boolean') {
+    throw new Error('transcript flag must be a boolean');
+  }
   if (request.ytDlpVersion !== 'packaged') {
     throw new Error('yt-dlp version must be the reproducible packaged build');
   }
@@ -112,6 +115,7 @@ export const normalizeCreateJobRequest = (request: CreateJobRequest): CreateJobR
   ...request,
   ytDlpVersion: 'packaged',
   splitChapters: request.splitChapters ?? true,
+  downloadTranscript: request.downloadTranscript ?? false,
   embedAudioCoverArt: request.mediaType === 'audio' ? (request.embedAudioCoverArt ?? true) : undefined,
 });
 

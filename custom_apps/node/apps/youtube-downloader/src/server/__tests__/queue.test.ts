@@ -11,6 +11,7 @@ import {
   chapterGateFor,
   normalizeCreateJobRequest,
   validateDownloadUrl,
+  validateRequest,
   ytDlpPathFor,
 } from '../queue.js';
 import type { CreateJobRequest, CurrentUser, ProbeResponse } from '../../shared/types.js';
@@ -268,6 +269,16 @@ describe('queue alerts', () => {
     });
   });
 
+  it('defaults the transcript option off and rejects a non-boolean value', () => {
+    expect(normalizeCreateJobRequest({ ...request })).toMatchObject({ downloadTranscript: false });
+    expect(() =>
+      validateRequest({ ...request, ytDlpVersion: 'packaged', downloadTranscript: 'yes' as unknown as boolean }),
+    ).toThrow(/transcript flag must be a boolean/);
+    expect(() =>
+      validateRequest({ ...request, ytDlpVersion: 'packaged', downloadTranscript: true }),
+    ).not.toThrow();
+  });
+
   it('always uses the Nix-packaged yt-dlp', () => {
     const appConfig = config();
     expect(ytDlpPathFor(appConfig, { ...request, ytDlpVersion: 'packaged' })).toBe('yt-dlp');
@@ -475,6 +486,75 @@ process.stdout.write('[download] 100% of 1MiB\\n');
       const names = (await readdir(outputFolder)).sort();
       expect(names).toEqual(['01 - Intro.flac', '02 - Main.flac']);
       expect([...job.files].sort()).toEqual(['01 - Intro.flac', '02 - Main.flac']);
+    } finally {
+      process.env.PATH = originalPath;
+      await queue.stop(0);
+      await db.close();
+    }
+  });
+
+  it('carries transcript sidecars across chapter splitting, which only relocates media', async () => {
+    const chapterProbe = JSON.stringify({
+      id: 'abc123',
+      title: 'Test Song',
+      channel: 'Test Channel',
+      upload_date: '20260101',
+      duration: 60,
+      chapters: [
+        { title: 'Intro', start_time: 0, end_time: 30 },
+        { title: 'Main', start_time: 30, end_time: 60 },
+      ],
+      _type: 'video',
+    });
+    const fake = await writeFakeYtDlp(`
+import { writeFileSync } from 'node:fs';
+const args = process.argv.slice(2);
+if (args.includes('--dump-single-json')) {
+  process.stdout.write(${JSON.stringify(chapterProbe)});
+  process.exit(0);
+}
+if (!args.includes('--write-subs')) {
+  process.stderr.write('expected subtitle flags\\n');
+  process.exit(1);
+}
+const template = args[args.indexOf('-o') + 1];
+const media = template.replace('%(ext)s', 'flac');
+writeFileSync(media, 'audio');
+// Subtitle sidecars are written beside the media in the temp root, exactly as
+// yt-dlp does before its chapter splitter runs.
+writeFileSync(media.replace(/\\.flac$/, '.en-orig.srt'), '1\\n00:00:00,000 --> 00:00:01,000\\ntranscript\\n');
+writeFileSync(media.replace(/\\.flac$/, '.en.srt'), '1\\n00:00:00,000 --> 00:00:01,000\\ntranscript\\n');
+process.stdout.write('[download] 100% of 1MiB\\n');
+`);
+
+    const binDir = path.join(tempDir, 'bin');
+    await mkdir(binDir, { recursive: true });
+    const fakeFfmpeg = path.join(binDir, 'ffmpeg');
+    await writeFile(
+      fakeFfmpeg,
+      `#!${process.execPath}\nimport { writeFileSync } from 'node:fs';\nconst args = process.argv.slice(2);\nwriteFileSync(args[args.length - 1], 'audio');\n`,
+    );
+    await chmod(fakeFfmpeg, 0o755);
+    const originalPath = process.env.PATH;
+    process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ''}`;
+
+    const db = new Database(path.join(tempDir, 'state.sqlite'));
+    await db.migrate();
+    const queue = new JobQueue({ ...config(), concurrency: 1, ytDlpPath: fake }, db);
+    try {
+      await queue.start();
+      const id = await queue.enqueue(user, {
+        ...request,
+        splitChapters: true,
+        chaptersConfirmed: true,
+        downloadTranscript: true,
+      });
+      const job = await waitForJobStatus(db, id, 'completed');
+
+      const outputFolder = job.outputFolder ?? '';
+      const names = (await readdir(outputFolder)).sort();
+      expect(names).toEqual(['01 - Intro.flac', '02 - Main.flac', 'Test Song.en-orig.srt', 'Test Song.en.srt']);
+      expect([...job.files].sort()).toEqual(names);
     } finally {
       process.env.PATH = originalPath;
       await queue.stop(0);

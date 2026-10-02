@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { allocateUniqueDestination, copyDirectoryContents, isArtworkSidecar } from '../output-move.js';
+import { allocateUniqueDestination, copyDirectoryContents, copySubtitleSidecars, isArtworkSidecar, isSubtitleSidecar } from '../output-move.js';
 
 let tempDir = '';
 
@@ -71,6 +71,52 @@ describe('copyDirectoryContents', () => {
 
     const copied = (await readdir(destination)).sort();
     expect(copied).toEqual(['01 - Intro.flac']);
+  });
+});
+
+describe('isSubtitleSidecar', () => {
+  it('matches subtitle extensions case-insensitively', () => {
+    expect(isSubtitleSidecar('Song.en.srt')).toBe(true);
+    expect(isSubtitleSidecar('Song.en.SRT')).toBe(true);
+    expect(isSubtitleSidecar('Song.en.vtt')).toBe(true);
+    expect(isSubtitleSidecar('Song.ass')).toBe(true);
+    expect(isSubtitleSidecar('Song.lrc')).toBe(true);
+  });
+
+  it('ignores media, artwork, and metadata files', () => {
+    expect(isSubtitleSidecar('Song.flac')).toBe(false);
+    expect(isSubtitleSidecar('Song.jpg')).toBe(false);
+    expect(isSubtitleSidecar('Song.info.json')).toBe(false);
+  });
+});
+
+describe('copySubtitleSidecars', () => {
+  it('copies only subtitles from the temp root', async () => {
+    const source = path.join(tempDir, 'source');
+    const destination = path.join(tempDir, 'destination');
+    await mkdir(source, { recursive: true });
+    await mkdir(destination, { recursive: true });
+    await writeFile(path.join(source, 'Talk.en-orig.srt'), 'transcript');
+    await writeFile(path.join(source, 'Talk.en.srt'), 'transcript');
+    await writeFile(path.join(source, 'Talk.jpg'), 'cover');
+    await writeFile(path.join(source, 'Talk.info.json'), '{}');
+
+    await copySubtitleSidecars(source, destination);
+
+    const copied = (await readdir(destination)).sort();
+    expect(copied).toEqual(['Talk.en-orig.srt', 'Talk.en.srt']);
+  });
+
+  it('does not descend into subdirectories', async () => {
+    const source = path.join(tempDir, 'source');
+    const destination = path.join(tempDir, 'destination');
+    await mkdir(path.join(source, 'chapters'), { recursive: true });
+    await mkdir(destination, { recursive: true });
+    await writeFile(path.join(source, 'chapters', '01 - Intro.flac'), 'audio');
+
+    await copySubtitleSidecars(source, destination);
+
+    expect(await readdir(destination)).toEqual([]);
   });
 });
 

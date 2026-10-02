@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { buildDownloadArgs, parseProgress } from '../ytdlp.js';
+import { buildDownloadArgs, parseProgress, transcriptSubLangs } from '../ytdlp.js';
 import { normalizeDownloadUrl } from '../../shared/url.js';
-import type { CreateJobRequest } from '../../shared/types.js';
+import type { CreateJobRequest, ProbeResponse } from '../../shared/types.js';
+
+const probe = (overrides: Partial<ProbeResponse> = {}): ProbeResponse => ({
+  title: 'Example',
+  chapters: [],
+  isPlaylist: false,
+  ...overrides,
+});
 
 const baseRequest = {
   url: 'https://example.test/watch?v=1',
@@ -75,6 +82,56 @@ describe('yt-dlp argv generation', () => {
     expect(args).toContain('--merge-output-format');
   });
 
+  it('does not request subtitles unless the transcript option is set', () => {
+    const args = buildDownloadArgs(baseRequest, '/tmp/out.%(ext)s', '/tmp/ch/%(section_title)s.%(ext)s');
+    expect(args).not.toContain('--write-subs');
+    expect(args).not.toContain('--write-auto-subs');
+    expect(args).not.toContain('--convert-subs');
+  });
+
+  it('requests manual subtitles and the automatic transcript as srt sidecars', () => {
+    const args = buildDownloadArgs(
+      { ...baseRequest, downloadTranscript: true },
+      '/tmp/out.%(ext)s',
+      '/tmp/ch/%(section_title)s.%(ext)s',
+    );
+    expect(args).toContain('--write-subs');
+    expect(args).toContain('--write-auto-subs');
+    // ffmpeg cannot demux YouTube's json3 or srv1/2/3 subtitle formats, so vtt
+    // has to lead the preference list for --convert-subs to work at all.
+    expect(args[args.indexOf('--sub-format') + 1]).toBe('vtt/best');
+    expect(args[args.indexOf('--convert-subs') + 1]).toBe('srt');
+    expect(args.at(-1)).toBe(baseRequest.url);
+  });
+
+  it('requests subtitles for video downloads too', () => {
+    const args = buildDownloadArgs(
+      {
+        ...baseRequest,
+        mediaType: 'video',
+        audioFormat: undefined,
+        videoContainer: 'mkv',
+        videoQuality: '1080p',
+        downloadTranscript: true,
+      },
+      '/tmp/out.%(ext)s',
+      '/tmp/ch/%(section_title)s.%(ext)s',
+    );
+    expect(args).toContain('--write-subs');
+    expect(args[args.indexOf('--convert-subs') + 1]).toBe('srt');
+    expect(args.at(-1)).toBe(baseRequest.url);
+  });
+
+  it('takes the subtitle languages from the caller so the probe can add manual tracks', () => {
+    const args = buildDownloadArgs(
+      { ...baseRequest, downloadTranscript: true },
+      '/tmp/out.%(ext)s',
+      '/tmp/ch/%(section_title)s.%(ext)s',
+      '.*-orig,en,es',
+    );
+    expect(args[args.indexOf('--sub-langs') + 1]).toBe('.*-orig,en,es');
+  });
+
   it('parses yt-dlp progress lines', () => {
     expect(parseProgress('[download]  42.5% of 10.00MiB at 1.00MiB/s ETA 00:05')).toEqual({
       percent: 42.5,
@@ -93,5 +150,32 @@ describe('yt-dlp argv generation', () => {
     expect(normalizeDownloadUrl('https://www.youtube.com/playlist?list=PL123&si=abc&radio-start=1')).toBe(
       'https://www.youtube.com/playlist?list=PL123',
     );
+  });
+});
+
+describe('transcriptSubLangs', () => {
+  it('always asks for the original-language track and English', () => {
+    expect(transcriptSubLangs(probe())).toBe('.*-orig,en');
+  });
+
+  it('adds the human-authored tracks the probe reported', () => {
+    expect(transcriptSubLangs(probe({ subtitleLanguages: ['es', 'ja'] }))).toBe('.*-orig,en,es,ja');
+  });
+
+  it('drops duplicates of the two built-in selectors', () => {
+    expect(transcriptSubLangs(probe({ subtitleLanguages: ['en', 'en-US'] }))).toBe('.*-orig,en,en-US');
+  });
+
+  it('refuses tags that could change the meaning of the surrounding expression', () => {
+    expect(transcriptSubLangs(probe({ subtitleLanguages: ['.*', 'es|ja', '(all)', '', 'a'.repeat(65)] }))).toBe(
+      '.*-orig,en',
+    );
+  });
+
+  it('caps how many manual tracks one download can pull', () => {
+    const many = Array.from({ length: 30 }, (_, index) => `lang${index}`);
+    const langs = transcriptSubLangs(probe({ subtitleLanguages: many })).split(',');
+    expect(langs).toHaveLength(12);
+    expect(langs[2]).toBe('lang0');
   });
 });

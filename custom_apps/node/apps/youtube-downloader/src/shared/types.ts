@@ -49,6 +49,12 @@ export type ProbeResponse = {
   chapters: Chapter[];
   isPlaylist: boolean;
   entries?: number;
+  /**
+   * Language tags of the human-authored subtitle tracks, when the probe
+   * resolved them. Only populated for single videos; playlist and channel
+   * entries are probed flat and carry no per-video subtitle information.
+   */
+  subtitleLanguages?: string[];
 };
 
 export type CreateJobRequest = {
@@ -64,6 +70,11 @@ export type CreateJobRequest = {
   includeChannel: boolean;
   includeDate: boolean;
   saveAudioToAudiobooks?: boolean;
+  /**
+   * Also fetch the manual subtitles and the automatic transcript as `.srt`
+   * sidecars next to the media file. Applies to audio and video alike.
+   */
+  downloadTranscript?: boolean;
   ytDlpVersion?: YtDlpVersion;
   duplicateConfirmed?: boolean;
   chaptersConfirmed?: boolean;
