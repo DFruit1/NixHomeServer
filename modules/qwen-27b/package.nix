@@ -1,12 +1,12 @@
 { config, lib, pkgs, ... }:
 
 let
-  cfg = config.repo.qwenFlashNext;
+  cfg = config.repo.qwen27b;
   inherit (import ../../lib/llama-cpp-runtime.nix { inherit pkgs; useVulkan = cfg.gpu.enable; }) runtime revision webui;
 
 in
 {
-  options.repo.qwenFlashNext = {
+  options.repo.qwen27b = {
     gpu.enable = lib.mkEnableOption ''
       Vulkan GPU offload for the pinned llama.cpp build. Leave this disabled
       until the Intel Arc GPU is physically installed and the NixOS graphics
@@ -18,7 +18,7 @@ in
         type = lib.types.package;
         default = runtime;
         readOnly = true;
-        description = "Pinned mainline llama.cpp build with qwen4exp model support.";
+        description = "Pinned mainline llama.cpp build with Qwen3.8 model support.";
       };
 
       revision = lib.mkOption {

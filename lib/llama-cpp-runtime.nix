@@ -1,11 +1,12 @@
 { pkgs, useVulkan ? false }:
 let
-  # Qwen3.8-Flash-Next (qwen4exp) MTP is not in mainline yet. This pins
-  # danielhanchen/llama.cpp at the head of the branch behind upstream PR #28243
-  # ("models: Qwen3.8-Flash-Next MTP"), rebased on current master and the route
-  # Unsloth documents for the MTP draft heads. It is mainline plus the NextN/MTP
-  # graph, so it still builds every other architecture. Revert the URL to
-  # ggml-org/llama.cpp once #28243 merges.
+  # Qwen3.8 support (the qwen3_5 text/vision graph) and its MTP (NextN) draft
+  # heads are not in the llama.cpp revision shipped by the nixpkgs channels this
+  # host pins. This pins danielhanchen/llama.cpp at the head of the branch
+  # behind upstream PR #28243 ("models: Qwen3.8 MTP"), rebased on current
+  # master and the route Unsloth documents for the MTP draft heads. It is
+  # mainline plus the NextN/MTP graph, so it still builds every other
+  # architecture. Revert the URL to ggml-org/llama.cpp once #28243 merges.
   revision = "6fcaa16f4b360649933a54d1f91ad40ed35c0e11";
   source = pkgs.fetchzip {
     url = "https://github.com/danielhanchen/llama.cpp/archive/${revision}.tar.gz";

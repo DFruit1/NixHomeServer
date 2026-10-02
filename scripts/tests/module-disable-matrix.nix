@@ -80,28 +80,28 @@ let
       guardedServices = [ "ipfs" "ipfs-alias" "fdroid-ipfs-publish" ];
       persistencePaths = [ "/var/lib/ipfs-distribution" ];
     };
-    qwen-flash-next = {
-      modules = [ ../../modules/qwen-flash-next ];
-      disable = { repo.qwenFlashNext.enable = lib.mkForce false; };
-      registryName = "qwen-flash-next";
+    qwen-27b = {
+      modules = [ ../../modules/qwen-27b ];
+      disable = { repo.qwen27b.enable = lib.mkForce false; };
+      registryName = "qwen-27b";
       services = [
-        "qwen-flash-next-storage-layout-v1"
-        "qwen-flash-next-model-prepare"
-        "qwen-flash-next-llama"
+        "qwen-27b-storage-layout-v1"
+        "qwen-27b-model-prepare"
+        "qwen-27b-llama"
       ];
       timers = [ ];
       hosts = [ ];
       gatewayApps = [ ];
       oauthClients = [ ];
       kanidmGroups = [ ];
-      users = [ "qwen-flash-next" ];
-      groups = [ "qwen-flash-next" ];
+      users = [ "qwen-27b" ];
+      groups = [ "qwen-27b" ];
       secrets = [ ];
       backupApps = [ ];
       guardedServices = [
-        "qwen-flash-next-storage-layout-v1"
-        "qwen-flash-next-model-prepare"
-        "qwen-flash-next-llama"
+        "qwen-27b-storage-layout-v1"
+        "qwen-27b-model-prepare"
+        "qwen-27b-llama"
       ];
       persistencePaths = [ ];
     };

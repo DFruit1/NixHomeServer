@@ -11,5 +11,5 @@
     ./backups.nix
   ];
 
-  nixhomeserver.modules.qwen-flash-next = true;
+  nixhomeserver.modules.qwen-27b = true;
 }

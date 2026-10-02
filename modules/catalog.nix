@@ -122,10 +122,10 @@ rec {
       "qbittorrent"
       "media-automation-bootstrap-qbittorrent"
     ];
-    qwen-flash-next = app ./qwen-flash-next "Qwen Flash Next" "automation" [ ] [
-      "qwen-flash-next-storage-layout-v1"
-      "qwen-flash-next-model-prepare"
-      "qwen-flash-next-llama"
+    qwen-27b = app ./qwen-27b "Qwen 3.8 27B" "automation" [ ] [
+      "qwen-27b-storage-layout-v1"
+      "qwen-27b-model-prepare"
+      "qwen-27b-llama"
     ];
     radarr = app ./radarr "Radarr" "media-automation" [
       "radarrOauth2ProxyClientSecret"
@@ -161,7 +161,7 @@ rec {
     { module = ./Integrations/publish_fdroid_to_ipfs.nix; allApps = [ "fdroid" "ipfs" ]; anyApps = [ ]; }
     { module = ./Integrations/publish_filesync_to_fdroid.nix; allApps = [ "fdroid" "filesync" "ipfs" ]; anyApps = [ ]; }
     { module = ./Integrations/publish_youtube_downloader_to_fdroid.nix; allApps = [ "fdroid" "youtube-downloader" ]; anyApps = [ ]; }
-    { module = ./Integrations/reserve_qwen_for_background_jobs.nix; allApps = [ "bonsai" "qwen-flash-next" ]; anyApps = [ ]; }
+    { module = ./Integrations/reserve_qwen_for_background_jobs.nix; allApps = [ "bonsai" "qwen-27b" ]; anyApps = [ ]; }
     { module = ./Integrations/expose_browsertrix_crawls_to_search.nix; allApps = [ "search" "browsertrix-downloader" ]; anyApps = [ ]; }
     { module = ./Integrations/expose_calibre_web_library_to_search.nix; allApps = [ "search" "calibre-web" ]; anyApps = [ ]; }
     { module = ./Integrations/expose_freshrss_entries_to_search.nix; allApps = [ "search" "freshrss" ]; anyApps = [ ]; }

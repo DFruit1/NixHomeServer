@@ -38,7 +38,7 @@ let
         "paperless"
         "prowlarr"
         "qbittorrent"
-        "qwen-flash-next"
+        "qwen-27b"
         "radarr"
         "search"
         "sonarr"

@@ -1,14 +1,18 @@
 { config, lib, pkgs, vars, ... }:
 
 let
-  cfg = config.repo.qwenFlashNext;
+  cfg = config.repo.qwen27b;
+  # The MTP (NextN) draft head is only fetched when self-speculative decoding is
+  # actually enabled, so a text/vision deployment does not download 1.3 GiB it
+  # will never load.
+  requiredArtifacts = lib.filter (artifact: !artifact.optional || cfg.mtp.enable) cfg.model.artifacts;
   artifactUrl = artifact:
     "https://huggingface.co/${cfg.model.repository}/resolve/${cfg.model.revision}/"
     + lib.optionalString (artifact.subdir != "") "${artifact.subdir}/"
     + "${artifact.file}?download=true";
 
   prepareModels = pkgs.writeShellApplication {
-    name = "qwen-flash-next-model-prepare";
+    name = "qwen-27b-model-prepare";
     runtimeInputs = with pkgs; [
       coreutils
       curl
@@ -90,41 +94,41 @@ let
           ${lib.escapeShellArg (artifactUrl artifact)} \
           ${lib.escapeShellArg artifact.sha256} \
           ${toString artifact.sizeBytes}
-      '') cfg.model.artifacts}
+      '') requiredArtifacts}
     '';
   };
 in
 {
-  options.repo.qwenFlashNext = {
+  options.repo.qwen27b = {
     enable = lib.mkOption {
       type = lib.types.bool;
       default = false;
       description = ''
-        Whether to run the local Qwen3.8-Flash-Next inference API. Disabled by
-        default; enable after reviewing documentation/qwen-flash-next.md.
+        Whether to run the local Qwen3.8-27B inference API. Disabled by
+        default; enable after reviewing documentation/qwen-27b.md.
       '';
     };
 
     model = {
       repository = lib.mkOption {
         type = lib.types.str;
-        default = "unsloth/Qwen3.8-Flash-Next-GGUF";
+        default = "unsloth/Qwen3.8-27B-GGUF";
         readOnly = true;
         description = "Authoritative Hugging Face GGUF repository.";
       };
 
       revision = lib.mkOption {
         type = lib.types.str;
-        default = "38bb39ee97821de2c9009abb7e93950eec396e66";
+        default = "4ca720788d1e01f1bff70c033e0d0028fd02e502";
         readOnly = true;
         description = "Pinned Hugging Face repository revision containing the verified artifacts.";
       };
 
       mainFile = lib.mkOption {
         type = lib.types.str;
-        default = "Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf";
+        default = "Qwen3.8-27B-UD-Q4_K_M.gguf";
         readOnly = true;
-        description = "First shard of the IQ4_XS language-model GGUF.";
+        description = "Single-file Q4_K_M language-model GGUF.";
       };
 
       projectorFile = lib.mkOption {
@@ -136,9 +140,9 @@ in
 
       mtpFile = lib.mkOption {
         type = lib.types.str;
-        default = "mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf";
+        default = "mtp-Qwen3.8-27B-Q4_0.gguf";
         readOnly = true;
-        description = "Shared Q8_0 multi-token-prediction (NextN) draft head.";
+        description = "Q4_0 multi-token-prediction (NextN) draft head, only fetched when mtp.enable is set.";
       };
 
       autoDownload = lib.mkOption {
@@ -157,37 +161,34 @@ in
             };
             sha256 = lib.mkOption { type = lib.types.str; };
             sizeBytes = lib.mkOption { type = lib.types.ints.positive; };
+            optional = lib.mkOption {
+              type = lib.types.bool;
+              default = false;
+              description = ''
+                Skip this artifact unless the feature that needs it is enabled.
+                Used for the MTP draft head, which is only loaded when
+                repo.qwen27b.mtp.enable is true.
+              '';
+            };
           };
         });
         default = [
           {
-            file = "Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf";
-            subdir = "UD-IQ4_XS";
-            sha256 = "5ce89370720f8bf90890f439361282104c1aa1482d4013bb9a50923e758e71a4";
-            sizeBytes = 10946624;
-          }
-          {
-            file = "Qwen3.8-Flash-Next-UD-IQ4_XS-00002-of-00003.gguf";
-            subdir = "UD-IQ4_XS";
-            sha256 = "577a38a2392b40ca2193cea502e1d92f60b8cd370675d308e0ec21885d9daaa7";
-            sizeBytes = 49835229856;
-          }
-          {
-            file = "Qwen3.8-Flash-Next-UD-IQ4_XS-00003-of-00003.gguf";
-            subdir = "UD-IQ4_XS";
-            sha256 = "d4634e6d84f0ebb0940be15c90d3790bf6464e3dea3a1cddc567dc0e83ad8833";
-            sizeBytes = 43836407744;
+            file = "Qwen3.8-27B-UD-Q4_K_M.gguf";
+            sha256 = "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482";
+            sizeBytes = 16464440224;
           }
           {
             file = "mmproj-F16.gguf";
-            sha256 = "1f7b7f0b984cf065c604360c29c8098362ed61b290db0ff12c6f360bb1a8a980";
-            sizeBytes = 904004000;
+            sha256 = "cbb841a9ee0636b2ec172f5bb8df2ea8dfeb01e90fe7c6126581d662a0b4e43e";
+            sizeBytes = 927607488;
           }
           {
-            file = "mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf";
+            file = "mtp-Qwen3.8-27B-Q4_0.gguf";
             subdir = "MTP";
-            sha256 = "5ff54097406a905cf3a724c709124ceb0e3e10235ee862298969e91c96fa96e6";
-            sizeBytes = 2786568256;
+            sha256 = "50d9ce5a6da381bbcfb31061cf73df94a90e6faf8efeddee379a9cb8f1501c6e";
+            sizeBytes = 1369590656;
+            optional = true;
           }
         ];
         description = "Hash-verified GGUF artifacts that must be present before inference starts.";
@@ -196,10 +197,10 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    systemd.services.qwen-flash-next-model-prepare = {
-      description = "Download and verify Qwen3.8-Flash-Next model artifacts";
-      wants = [ "network-online.target" "qwen-flash-next-storage-layout-v1.service" ];
-      after = [ "network-online.target" "qwen-flash-next-storage-layout-v1.service" ];
+    systemd.services.qwen-27b-model-prepare = {
+      description = "Download and verify Qwen3.8-27B model artifacts";
+      wants = [ "network-online.target" "qwen-27b-storage-layout-v1.service" ];
+      after = [ "network-online.target" "qwen-27b-storage-layout-v1.service" ];
       unitConfig = {
         RequiresMountsFor = [ vars.dataRoot ];
         StartLimitIntervalSec = "1h";
@@ -207,9 +208,9 @@ in
       };
       serviceConfig = {
         Type = "oneshot";
-        User = "qwen-flash-next";
-        Group = "qwen-flash-next";
-        ExecStart = "${prepareModels}/bin/qwen-flash-next-model-prepare";
+        User = "qwen-27b";
+        Group = "qwen-27b";
+        ExecStart = "${prepareModels}/bin/qwen-27b-model-prepare";
         WorkingDirectory = cfg.paths.models;
         RemainAfterExit = true;
         Restart = "on-failure";

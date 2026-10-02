@@ -11,9 +11,9 @@ home Wi-Fi/LAN or NetBird, protected by the shared Kanidm gateway and the
 `ai-users` group. There is no public Cloudflare route. The UI assets are built
 from the same pinned source as the server and served through its static path.
 The UI is intentionally Bonsai-only: `bonsai-llama.service` loads just the
-Bonsai model, and the larger Qwen model is not present in its model list. Qwen
+Bonsai model, and the Qwen3.8-27B model is not present in its model list. Qwen
 is reserved for background jobs; see
-[Qwen Flash Next](qwen-flash-next.md).
+[Qwen3.8-27B](qwen-27b.md).
 
 The direct API binds only to `127.0.0.1` and has no API authentication.
 Local applications must go through the ai-gate concurrency guard, not the
@@ -48,13 +48,13 @@ model eviction or the large Qwen model load. Qwen has its own separate,
 loopback-only server and never appears in the UI.
 
 The Ryzen 7 5700X / 128 GB / Arc Pro B60 profile runs Bonsai with Vulkan, 8
-inference threads, one slot, and 32,768 context tokens. Qwen keeps most of its
-Mixture-of-Experts weights in system RAM when it runs, so the two models do not
-fit in the 24 GiB card together. The background integration makes starting
-Qwen stop the Bonsai server and restarts Bonsai afterwards, so the UI model and
-the background model take turns on the GPU. ZFS ARC is limited to 8% of RAM
-while the Qwen module is enabled. These are shared-host limits, not a promise
-that every context or vision workload fits.
+inference threads, one slot, and 32,768 context tokens. Qwen3.8-27B at Q4_K_M
+also fits inside the 24 GiB card on its own, but two full models still do not,
+so the background integration keeps the existing arrangement: starting Qwen
+stops the Bonsai server and restarts Bonsai afterwards, and the UI model and
+the background model take turns on the GPU. ZFS ARC is not reduced for either
+model; it uses the standard `zfsArcMaxPercent` ceiling. These are shared-host
+limits, not a promise that every context or vision workload fits.
 
 ## Model Artifacts And Persistence
 
@@ -147,10 +147,10 @@ Measurements on the Ryzen 7 5700X / 128 GB / Arc Pro B60 host:
 - **N-gram self-speculation is not useful here.** `--spec-type ngram-simple`
   generated no drafts on ordinary prose and only about 2% draft acceptance on
   repetitive text, where it *reduced* decode from 29.5 to 27.4 tok/s. This
-  differs from Qwen (see [Qwen Flash Next](qwen-flash-next.md)), where the model
-  is CPU-MoE-bound; Bonsai is fully GPU-resident, so the host-side draft
-  coordination only adds overhead. The option stays available but defaults to
-  `false`; re-measure before enabling it.
+  differs from Qwen3.8-27B (see [Qwen3.8-27B](qwen-27b.md)), which keeps MTP
+  self-speculation available; Bonsai is fully GPU-resident and the host-side
+  draft coordination only adds overhead. The option stays available but defaults
+  to `false`; re-measure before enabling it.
 - **Arc loader flags.** When Vulkan is enabled, `--load-mode none --no-host
   --no-op-offload` (from `repo.bonsai.arcLoaderFlags`) avoid host-memory
   staging and the slow host-tensor op-offload path on Intel Arc. They are

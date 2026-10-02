@@ -319,7 +319,7 @@ in
           };
           script = ''
             total_kb=$(awk '/^MemTotal:/{print $2}' /proc/meminfo)
-            arc_max=$(( total_kb * 1024 * ${toString (if moduleEnabled "qwen-flash-next" then 8 else (vars.zfsArcMaxPercent or 50))} / 100 ))
+            arc_max=$(( total_kb * 1024 * ${toString (vars.zfsArcMaxPercent or 50)} / 100 ))
             echo "$arc_max" > /sys/module/zfs/parameters/zfs_arc_max
           '';
         };

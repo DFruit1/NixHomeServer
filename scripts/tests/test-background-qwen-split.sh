@@ -7,7 +7,7 @@ ensure_tools jq nix
 # The interactive UI is Bonsai-only and Qwen is a separate background server.
 require_fixed modules/bonsai/services.nix '--path ${cfg.runtime.webui}' \
   "Bonsai server must serve the pinned web UI."
-require_fixed modules/qwen-flash-next/services.nix '--path ${cfg.runtime.webui}' \
+require_fixed modules/qwen-27b/services.nix '--path ${cfg.runtime.webui}' \
   "Qwen server must serve the pinned chat UI."
 
 host="$(test_default_host)"
@@ -17,33 +17,33 @@ NIXHOMESERVER_TEST_HOST="$host" nix eval --impure --json --expr '
     base = f.nixosConfigurations.${builtins.getEnv "NIXHOMESERVER_TEST_HOST"};
     c = base.config;
     enabled = (c.nixhomeserver.modules.bonsai or false)
-      && (c.nixhomeserver.modules.qwen-flash-next or false)
-      && c.repo.bonsai.enable && c.repo.qwenFlashNext.enable;
+      && (c.nixhomeserver.modules.qwen-27b or false)
+      && c.repo.bonsai.enable && c.repo.qwen27b.enable;
     withoutBonsai = (base.extendModules { modules = [
       ({ lib, ... }: { repo.bonsai.enable = lib.mkForce false; })
     ]; }).config;
-    qwenUpstream = "http://${c.repo.qwenFlashNext.listenAddress}:${toString c.repo.qwenFlashNext.port}";
+    qwenUpstream = "http://${c.repo.qwen27b.listenAddress}:${toString c.repo.qwen27b.port}";
   in if !enabled then { skipped = true; } else {
     skipped = false;
     bonsaiWebui = c.repo.bonsai.runtime ? webui;
-    qwenWebui = c.repo.qwenFlashNext.runtime ? webui;
+    qwenWebui = c.repo.qwen27b.runtime ? webui;
     bonsaiBoot = builtins.elem "multi-user.target" c.systemd.services.bonsai-llama.wantedBy;
-    bonsaiRequiresQwen = builtins.elem "qwen-flash-next-model-prepare.service" c.systemd.services.bonsai-llama.requires;
-    qwenCommand = c.systemd.services.qwen-flash-next-llama.serviceConfig.ExecStart;
-    qwenBoot = builtins.elem "multi-user.target" c.systemd.services.qwen-flash-next-llama.wantedBy;
-    qwenConflicts = c.systemd.services.qwen-flash-next-llama.conflicts;
-    qwenOnSuccess = c.systemd.services.qwen-flash-next-llama.unitConfig.OnSuccess;
+    bonsaiRequiresQwen = builtins.elem "qwen-27b-model-prepare.service" c.systemd.services.bonsai-llama.requires;
+    qwenCommand = c.systemd.services.qwen-27b-llama.serviceConfig.ExecStart;
+    qwenBoot = builtins.elem "multi-user.target" c.systemd.services.qwen-27b-llama.wantedBy;
+    qwenConflicts = c.systemd.services.qwen-27b-llama.conflicts;
+    qwenOnSuccess = c.systemd.services.qwen-27b-llama.unitConfig.OnSuccess;
     restoreExec = c.systemd.services.bonsai-llama-restore.serviceConfig.ExecStart;
     restoreWantedBy = c.systemd.services.bonsai-llama-restore.wantedBy;
-    qwenPort = c.repo.qwenFlashNext.port;
+    qwenPort = c.repo.qwen27b.port;
     bonsaiPort = c.repo.bonsai.port;
-    qwenListen = c.repo.qwenFlashNext.listenAddress;
+    qwenListen = c.repo.qwen27b.listenAddress;
     uiUpstream = c.repo.authGateway.protectedApps.bonsai.upstream;
     qwenExposed = builtins.any
       (app: (app.upstream or "") == qwenUpstream)
       (builtins.attrValues c.repo.authGateway.protectedApps);
-    withoutBonsaiQwenBoot = builtins.elem "multi-user.target" withoutBonsai.systemd.services.qwen-flash-next-llama.wantedBy;
-    withoutBonsaiQwenConflicts = withoutBonsai.systemd.services.qwen-flash-next-llama.conflicts or [ ];
+    withoutBonsaiQwenBoot = builtins.elem "multi-user.target" withoutBonsai.systemd.services.qwen-27b-llama.wantedBy;
+    withoutBonsaiQwenConflicts = withoutBonsai.systemd.services.qwen-27b-llama.conflicts or [ ];
     withoutBonsaiHasRestore = builtins.hasAttr "bonsai-llama-restore" withoutBonsai.systemd.services;
   }
 ' | jq -e '.skipped or (
@@ -51,7 +51,7 @@ NIXHOMESERVER_TEST_HOST="$host" nix eval --impure --json --expr '
   and .qwenWebui
   and .bonsaiBoot
   and (.bonsaiRequiresQwen | not)
-  and (.qwenCommand | contains("qwen-flash-next-llama-server"))
+  and (.qwenCommand | contains("qwen-27b-llama-server"))
   and (.qwenBoot | not)
   and (.qwenConflicts | index("bonsai-llama.service") != null)
   and (.qwenOnSuccess | index("bonsai-llama-restore.service") != null)
