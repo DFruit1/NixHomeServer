@@ -190,5 +190,7 @@ export type IconName =
   | "repeat"
   | "repeat-one"
   | "timer"
+  | "stop"
+  | "gear"
   | "album"
   | "picture-in-picture";

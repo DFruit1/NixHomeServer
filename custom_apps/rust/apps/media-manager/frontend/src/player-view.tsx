@@ -8,6 +8,20 @@ import {
 } from "@builder.io/qwik";
 import { api, readableError } from "./api";
 import { Icon } from "./icon";
+import { PlaybackSettings } from "./playback-settings";
+import {
+  albumName,
+  buildShuffleOrder,
+  decideAdvance,
+  endActionFrom,
+  endActionSettings,
+  nextShuffleScope,
+  queueStep,
+  randomPoolStart,
+  shuffleOrderFor,
+  SLEEP_CHOICES,
+} from "./playback-queue";
+import type { EndOfTrackAction, ShuffleScope } from "./playback-queue";
 import { findTargetIndex } from "./playback-target";
 import type { CatalogItem, DashboardState } from "./root-types";
 import { EmptyState, LoadingState } from "./view-states";
@@ -18,6 +32,7 @@ export const PlayerView = component$<{
   initialPath?: string;
 }>((props) => {
   const audioRef = useSignal<HTMLAudioElement>();
+  const settingsRef = useSignal<HTMLElement>();
   const lastSavedPosition = useSignal(0);
   const saveTimerRef = useSignal<number | undefined>();
   const initialTargetApplied = useSignal(false);
@@ -31,13 +46,15 @@ export const PlayerView = component$<{
     loading: boolean;
     error: string;
     selectedRootFilter: string;
-    shuffle: boolean;
+    shuffle: ShuffleScope;
+    shuffleOrder: number[];
+    stopAfterCurrent: boolean;
+    settingsOpen: boolean;
     loop: "off" | "one" | "all";
     sleepTimer: number;
     sleepRemaining: number;
     albumView: boolean;
     selectedAlbumDir: string;
-    shuffledIndices: number[];
   }>({
     tracks: [],
     currentIndex: -1,
@@ -48,48 +65,19 @@ export const PlayerView = component$<{
     loading: true,
     error: "",
     selectedRootFilter: "",
-    shuffle: false,
+    shuffle: "off",
+    shuffleOrder: [],
+    stopAfterCurrent: false,
+    settingsOpen: false,
     loop: "off",
     sleepTimer: 0,
     sleepRemaining: 0,
     albumView: true,
     selectedAlbumDir: "",
-    shuffledIndices: [],
   });
   const musicRoots = props.state.roots.filter(
     (root) => root.category === "music" || root.category === "audiobooks",
   );
-
-  const buildShuffled = $(() => {
-    const n = playerState.tracks.length;
-    const order = Array.from({ length: n }, (_, i) => i);
-    const shuffled = [...order];
-    for (let i = shuffled.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-    }
-    playerState.shuffledIndices = shuffled;
-  });
-
-  const resolveNextIndex = (fromIndex: number): number => {
-    const n = playerState.tracks.length;
-    if (n === 0) return -1;
-    if (playerState.shuffle && playerState.shuffledIndices.length === n) {
-      const pos = playerState.shuffledIndices.indexOf(fromIndex);
-      return playerState.shuffledIndices[(pos + 1) % n];
-    }
-    return (fromIndex + 1) % n;
-  };
-
-  const resolvePrevIndex = (fromIndex: number): number => {
-    const n = playerState.tracks.length;
-    if (n === 0) return -1;
-    if (playerState.shuffle && playerState.shuffledIndices.length === n) {
-      const pos = playerState.shuffledIndices.indexOf(fromIndex);
-      return playerState.shuffledIndices[(pos - 1 + n) % n];
-    }
-    return fromIndex <= 0 ? n - 1 : fromIndex - 1;
-  };
 
   const loadTracks = $(async (rootId?: string) => {
     playerState.loading = true;
@@ -112,7 +100,6 @@ export const PlayerView = component$<{
       );
       audioItems.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
       playerState.tracks = audioItems;
-      if (playerState.shuffle) buildShuffled();
       if (playingTrack) {
         const preservedIndex = audioItems.findIndex(
           (t) => t.id === playingTrack.id,
@@ -129,6 +116,12 @@ export const PlayerView = component$<{
       } else {
         playerState.currentIndex = -1;
       }
+      playerState.shuffleOrder = shuffleOrderFor(
+        playerState.tracks,
+        playerState.currentIndex,
+        playerState.shuffle,
+        playerState.shuffleOrder,
+      );
     } catch (error) {
       playerState.error = readableError(error);
     } finally {
@@ -197,6 +190,12 @@ export const PlayerView = component$<{
     playerState.currentIndex = index;
     playerState.currentTime = 0;
     lastSavedPosition.value = 0;
+    playerState.shuffleOrder = shuffleOrderFor(
+      playerState.tracks,
+      index,
+      playerState.shuffle,
+      playerState.shuffleOrder,
+    );
     const track = playerState.tracks[index];
     audio.src = `/api/v1/items/${encodeURIComponent(track.id)}/stream`;
     audio.load();
@@ -273,13 +272,25 @@ export const PlayerView = component$<{
 
   const skipNext = $(() => {
     if (playerState.tracks.length === 0) return;
-    const nextIndex = resolveNextIndex(playerState.currentIndex);
+    const nextIndex = queueStep(
+      playerState.tracks,
+      playerState.shuffleOrder,
+      playerState.currentIndex,
+      playerState.shuffle,
+      1,
+    ).index;
     playTrack(nextIndex);
   });
 
   const skipPrev = $(() => {
     if (playerState.tracks.length === 0) return;
-    const prevIndex = resolvePrevIndex(playerState.currentIndex);
+    const prevIndex = queueStep(
+      playerState.tracks,
+      playerState.shuffleOrder,
+      playerState.currentIndex,
+      playerState.shuffle,
+      -1,
+    ).index;
     playTrack(prevIndex);
   });
 
@@ -298,47 +309,89 @@ export const PlayerView = component$<{
     if (playerState.tracks.length === 0) return;
     playerState.albumView = false;
     playerState.selectedAlbumDir = "";
-    if (playerState.shuffle && playerState.shuffledIndices.length > 0) {
-      playTrack(playerState.shuffledIndices[0]);
-    } else {
+    if (playerState.shuffle === "off") {
       playTrack(0);
+      return;
     }
+    playTrack(
+      randomPoolStart(
+        playerState.tracks,
+        Math.max(playerState.currentIndex, 0),
+        playerState.shuffle,
+      ),
+    );
   });
 
   const playAlbum = $((albumDir: string) => {
     playerState.selectedAlbumDir = albumDir;
     playerState.albumView = false;
-    const firstInAlbum = playerState.tracks.findIndex((t) =>
-      t.relativePath.startsWith(albumDir + "/"),
+    const albumIndexes = playerState.tracks.reduce<number[]>(
+      (indexes, track, index) => {
+        if (track.relativePath.startsWith(albumDir + "/")) indexes.push(index);
+        return indexes;
+      },
+      [],
     );
-    if (firstInAlbum >= 0) {
-      if (playerState.shuffle) buildShuffled();
-      playTrack(firstInAlbum);
-    }
+    if (albumIndexes.length === 0) return;
+    // Playback starts inside the album that was asked for, whichever shuffle
+    // scope is active; only the order after that follows the scope.
+    const start =
+      playerState.shuffle === "off"
+        ? (albumIndexes[0] as number)
+        : (albumIndexes[Math.floor(Math.random() * albumIndexes.length)] ??
+          (albumIndexes[0] as number));
+    playTrack(start);
   });
 
-  const toggleShuffle = $(() => {
-    playerState.shuffle = !playerState.shuffle;
-    if (playerState.shuffle) {
-      buildShuffled();
-    }
+  const setShuffleScope = $((scope: ShuffleScope) => {
+    if (scope === playerState.shuffle) return;
+    playerState.shuffle = scope;
+    // Changing scope reshuffles; re-picking the active one keeps the queue.
+    playerState.shuffleOrder = buildShuffleOrder(
+      playerState.tracks,
+      playerState.currentIndex,
+      scope,
+    );
+  });
+
+  const cycleShuffle = $(() => {
+    setShuffleScope(nextShuffleScope(playerState.shuffle));
+  });
+
+  const setEndAction = $((action: EndOfTrackAction) => {
+    const settings = endActionSettings(action);
+    playerState.stopAfterCurrent = settings.stopAfterCurrent;
+    playerState.loop = settings.loop;
+  });
+
+  const toggleStopAfterCurrent = $(() => {
+    setEndAction(
+      endActionFrom(playerState.stopAfterCurrent, playerState.loop) === "stop"
+        ? "next"
+        : "stop",
+    );
   });
 
   const cycleLoop = $(() => {
     const modes: Array<"off" | "one" | "all"> = ["off", "one", "all"];
     const idx = modes.indexOf(playerState.loop);
-    playerState.loop = modes[(idx + 1) % modes.length];
+    const next = modes[(idx + 1) % modes.length] ?? "off";
+    if (next === "one") {
+      setEndAction("repeat-one");
+      return;
+    }
+    setEndAction(next === "all" ? "repeat-all" : "next");
+  });
+
+  const setSleepMinutes = $((minutes: number) => {
+    playerState.sleepTimer = minutes;
+    playerState.sleepRemaining = minutes > 0 ? minutes * 60 : 0;
   });
 
   const cycleSleepTimer = $(() => {
-    const durations = [0, 15, 30, 45, 60];
-    const idx = durations.indexOf(playerState.sleepTimer);
-    playerState.sleepTimer = durations[(idx + 1) % durations.length];
-    if (playerState.sleepTimer > 0) {
-      playerState.sleepRemaining = playerState.sleepTimer * 60;
-    } else {
-      playerState.sleepRemaining = 0;
-    }
+    const idx = SLEEP_CHOICES.indexOf(playerState.sleepTimer);
+    const next = SLEEP_CHOICES[(idx + 1) % SLEEP_CHOICES.length] ?? 0;
+    setSleepMinutes(next);
   });
 
   useVisibleTask$(({ cleanup }) => {
@@ -368,31 +421,29 @@ export const PlayerView = component$<{
     };
     const onEnded = () => {
       savePlaybackPosition();
-      if (playerState.loop === "one") {
+      const decision = decideAdvance({
+        tracks: playerState.tracks,
+        order: playerState.shuffleOrder,
+        currentIndex: playerState.currentIndex,
+        shuffleScope: playerState.shuffle,
+        stopAfterCurrent: playerState.stopAfterCurrent,
+        loop: playerState.loop,
+      });
+      if (decision.kind === "repeat-one") {
         audio.currentTime = 0;
         audio.play().catch(() => {});
         return;
       }
-      if (playerState.loop !== "all" && playerState.tracks.length > 0) {
-        const nextIndex = resolveNextIndex(playerState.currentIndex);
-        const n = playerState.tracks.length;
-        const shuffled =
-          playerState.shuffle && playerState.shuffledIndices.length === n;
-        const isLast = shuffled
-          ? playerState.shuffledIndices.indexOf(playerState.currentIndex) ===
-            n - 1
-          : playerState.currentIndex === n - 1;
-        if (isLast) {
-          playerState.isPlaying = false;
-          if ("mediaSession" in navigator) {
-            navigator.mediaSession.playbackState = "paused";
-          }
-          return;
+      if (decision.kind === "stop") {
+        // A finished track is already paused, so the pause event never fires
+        // and the player state has to be settled here.
+        playerState.isPlaying = false;
+        if ("mediaSession" in navigator) {
+          navigator.mediaSession.playbackState = "paused";
         }
-        playTrack(nextIndex);
         return;
       }
-      playTrack(resolveNextIndex(playerState.currentIndex));
+      playTrack(decision.index);
     };
     const onVolumeChange = () => {
       playerState.volume = audio.volume;
@@ -502,6 +553,37 @@ export const PlayerView = component$<{
     return formatTime(playerState.sleepRemaining);
   })();
 
+  const endAction = endActionFrom(
+    playerState.stopAfterCurrent,
+    playerState.loop,
+  );
+
+  // The settings panel spells out what the shuffle scopes cover, so it needs
+  // the current track's file type, album and the size of each pool.
+  const kindLabel = currentTrack?.mediaKind ?? "music";
+  const currentAlbum = currentTrack ? albumName(currentTrack) : "";
+  const albumTrackCount = currentTrack
+    ? playerState.tracks.filter(
+        (track) =>
+          track.mediaKind === currentTrack.mediaKind &&
+          albumName(track) === currentAlbum,
+      ).length
+    : 0;
+  const kindTrackCount = playerState.tracks.filter(
+    (track) => track.mediaKind === kindLabel,
+  ).length;
+
+  const shuffleLabel = (() => {
+    switch (playerState.shuffle) {
+      case "album":
+        return "Shuffle album";
+      case "all":
+        return `Shuffle all ${kindLabel} files`;
+      default:
+        return "Shuffle off";
+    }
+  })();
+
   return (
     <section class="player-layout">
       <div class="player-main">
@@ -568,6 +650,16 @@ export const PlayerView = component$<{
                     return "Loop off";
                 }
               })()}
+              title={(() => {
+                switch (playerState.loop) {
+                  case "one":
+                    return "Repeat this track";
+                  case "all":
+                    return "Repeat the queue";
+                  default:
+                    return "Repeat off";
+                }
+              })()}
               onClick$={cycleLoop}
             >
               {playerState.loop === "one" ? (
@@ -576,6 +668,19 @@ export const PlayerView = component$<{
                 <Icon name="repeat" size={16} />
               )}
               {playerState.loop === "one" && <span class="loop-badge">1</span>}
+            </button>
+            <button
+              type="button"
+              class={{
+                "control-button": true,
+                "control-active": playerState.stopAfterCurrent,
+              }}
+              aria-label="Stop after this track"
+              aria-pressed={playerState.stopAfterCurrent}
+              title="Stop after this track"
+              onClick$={toggleStopAfterCurrent}
+            >
+              <Icon name="stop" size={16} />
             </button>
             <button
               type="button"
@@ -612,13 +717,58 @@ export const PlayerView = component$<{
               type="button"
               class={{
                 "control-button": true,
-                "control-active": playerState.shuffle,
+                "control-active": playerState.shuffle !== "off",
               }}
-              aria-label={playerState.shuffle ? "Shuffle on" : "Shuffle off"}
-              onClick$={toggleShuffle}
+              aria-label={shuffleLabel}
+              title={shuffleLabel}
+              onClick$={cycleShuffle}
             >
               <Icon name="shuffle" size={16} />
             </button>
+            <div
+              class="player-settings"
+              ref={settingsRef}
+              document:onClick$={(event: MouseEvent) => {
+                const container = settingsRef.value;
+                const target = event.target as Node | null;
+                if (!container || !target || container.contains(target)) return;
+                playerState.settingsOpen = false;
+              }}
+              document:onKeyDown$={(event: KeyboardEvent) => {
+                if (event.key === "Escape") playerState.settingsOpen = false;
+              }}
+            >
+              <button
+                type="button"
+                class={{
+                  "control-button": true,
+                  "control-active": playerState.settingsOpen,
+                }}
+                aria-label="Playback options"
+                aria-haspopup="menu"
+                aria-expanded={playerState.settingsOpen}
+                title="Playback options"
+                onClick$={() =>
+                  (playerState.settingsOpen = !playerState.settingsOpen)
+                }
+              >
+                <Icon name="gear" size={16} />
+              </button>
+              {playerState.settingsOpen && (
+                <PlaybackSettings
+                  shuffle={playerState.shuffle}
+                  endAction={endAction}
+                  sleepMinutes={playerState.sleepTimer}
+                  kindLabel={kindLabel}
+                  albumLabel={currentAlbum}
+                  albumTrackCount={albumTrackCount}
+                  kindTrackCount={kindTrackCount}
+                  onShuffle$={setShuffleScope}
+                  onEndAction$={setEndAction}
+                  onSleep$={setSleepMinutes}
+                />
+              )}
+            </div>
           </div>
           <div class="player-extras">
             <div class="volume-control">

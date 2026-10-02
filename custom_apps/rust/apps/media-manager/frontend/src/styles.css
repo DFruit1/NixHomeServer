@@ -4200,7 +4200,7 @@ a:focus-visible {
 .player-controls {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 12px;
 }
 
 .control-button {
@@ -4591,6 +4591,130 @@ a:focus-visible {
   justify-content: center;
 }
 
+/* ── Playback options ── */
+.player-settings {
+  position: relative;
+}
+
+.playback-settings {
+  position: absolute;
+  /* The gear sits at the foot of the now-playing card, so the panel opens
+     upwards and stays on screen instead of hanging off the bottom. */
+  bottom: calc(100% + 10px);
+  right: 0;
+  z-index: 20;
+  width: min(320px, calc(100vw - 32px));
+  max-height: min(60vh, 520px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 12px;
+  background: var(--paper-deep);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  box-shadow: 0 10px 28px rgba(33, 29, 21, 0.2);
+}
+
+.playback-settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.playback-settings-label {
+  margin: 0 0 4px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.playback-settings-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 8px;
+  border: none;
+  border-radius: 5px;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.playback-settings-option:hover {
+  background: var(--accent-wash);
+}
+
+.playback-settings-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.playback-settings-name {
+  font-size: 0.82rem;
+  color: var(--ink);
+}
+
+.playback-settings-option.selected .playback-settings-name {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.playback-settings-detail {
+  font-size: 0.72rem;
+  line-height: 1.4;
+  color: var(--ink-soft);
+}
+
+.playback-settings-check {
+  flex: none;
+  width: 14px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent);
+}
+
+.playback-settings-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.playback-settings-choice {
+  padding: 5px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--paper);
+  color: var(--ink-soft);
+  font: inherit;
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.playback-settings-choice:hover {
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
+.playback-settings-choice.selected {
+  border-color: var(--accent-line);
+  background: var(--accent-wash);
+  color: var(--accent);
+  font-weight: 600;
+}
+
 /* ── Player responsive ── */
 @media (max-width: 1000px) {
   .player-layout {
@@ -4725,6 +4849,19 @@ a:focus-visible {
   .volume-control,
   .player-extras {
     max-width: 100%;
+  }
+  .player-controls {
+    gap: 4px;
+  }
+  /* On a phone the gear sits mid-screen, so an upward panel would open off the
+     top of the viewport; the same panel becomes a sheet above the bottom nav. */
+  .playback-settings {
+    position: fixed;
+    left: 12px;
+    right: 12px;
+    bottom: 84px;
+    width: auto;
+    max-height: min(66vh, 520px);
   }
   .video-screen {
     max-height: none;
