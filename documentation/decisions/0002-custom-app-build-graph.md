@@ -90,8 +90,31 @@ Independent clippy and nextest derivations remain independently schedulable.
 Chaining was rejected because aggregate Nix scheduling already runs them in
 parallel and no repeatable 10% full-check improvement was demonstrated.
 
+### Superseded: headless HandBrake and a narrow mkvpropedit
+
+The following measurements justified the two hand-rolled tool derivations that
+were removed by the current decision below. They are kept as history only; they
+describe a configuration the repository no longer builds, and are retained so
+the reversal can be judged against the original numbers.
+
+Headless HandBrake was retained at the time. Its cold build phase completed in
+54s versus 79s for the GTK build, a 31.6% reduction. `HandBrakeCLI --version`
+and a basic Matroska conversion passed, and removing the GUI did not grow the
+Mkvmaker closure.
+
+The narrow `mkvpropedit` package was also retained at the time. The pinned
+upstream Rake build exposes the stable `apps:mkvpropedit` target; that target
+completed in 684s. A warmed full CLI build was still compiling unrelated merge
+and input targets when stopped at 779.26s, establishing a conservative
+improvement of at least 12.2%. The narrow binary changed a copied Matroska title
+and `ffprobe` read the expected value. The final assembled Mkvmaker closure was
+1.5 GiB, down from the 1.6 GiB baseline — note that the assembled closure is now
+1.6 GiB again, since the stock packages are larger than the narrow ones.
+
+### Current decision: unmodified Nixpkgs tool packages
+
 HandBrake and mkvtoolnix are now consumed as unmodified Nixpkgs packages. This
-supersedes the earlier narrow-derivation decision in this record.
+supersedes the narrow-derivation decision recorded above.
 
 Stock `handbrake` and `mkvtoolnix-cli` already ship every executable Mkvmaker
 drives: `HandBrakeCLI`, the HandBrake-patched `ffmpeg-hb` ffprobe, and
@@ -112,12 +135,13 @@ Measured on the pinned Nixpkgs (`nixos-26.05`, rev
 
 The narrow `mkvpropedit` was the only one of the four that had to be compiled:
 the Rake `apps:mkvpropedit` target still needs a local build, reproduced here at
-roughly seven minutes. Accepting the GTK build adds 18.7 MiB of shared-library
-closure (gst-plugins-good, gst-libav, taglib, libshout, aalib) that the headless
-build avoids; the previous record's 31.6% cold-build-phase saving applied only
-when the derivation was compiled at all. Substituting a 684s local rebuild for a
-cache hit was not a defensible trade, so the stock packages win despite the
-slightly larger closure.
+roughly seven minutes. Accepting the GTK build adds 18,717,776 bytes of
+shared-library closure — 17.85 MiB (18.7 MB) over the headless build, from
+gst-plugins-good, gst-libav, taglib, libshout, and aalib. The superseded
+headless measurement's 31.6% cold-build-phase saving applied only when the
+derivation was compiled at all. Substituting a 684s local rebuild for a cache hit
+was not a defensible trade, so the stock packages win despite the slightly larger
+closure.
 
 `mkvmaker --doctor`-equivalent behavior is unchanged: the same
 `DISC_TO_JELLYFIN_HANDBRAKE`, `DISC_TO_JELLYFIN_FFPROBE`, and
@@ -126,9 +150,6 @@ flags. The owning test additionally performs the operations Mkvmaker performs �
 an `mkvpropedit` container date deletion, a container title edit read back
 through the resolved ffprobe, a `HandBrakeCLI --scan` title enumeration, and a
 full x264 encode verified to retain both streams — against disposable fixtures.
-
-The earlier build-time measurements that justified the two overrides are retained
-above as history; they no longer describe the current configuration.
 
 The selected personal build mode is recorded after the allocation benchmark
 below; the generic example remains `remote`.
