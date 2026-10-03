@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
-# Re-establish the hermes board-health and durability wiring on this machine.
+# Re-establish the hermes board-health, retry-breaker and durability wiring on
+# this machine.
 #
 # Why this exists
 # ---------------
-# The durable half of the board-health and durability arrangement is two scripts
-# and a test, all tracked in this repository. The live half is not: the hermes
-# cron jobs, the copied scripts under ~/.hermes/scripts/, the planner's
-# "Board health" section in its SOUL.md, and one key in ~/.hermes/config.yaml.
-# All of that lives under ~/.hermes, which is not tracked and not backed up --
-# Kopia only snapshots the *server's* /persist. So a rebuilt workstation, a
-# wiped profile, or a fresh hermes upgrade silently removes the wiring while the
-# tracked scripts sit in the checkout looking fine.
+# The durable half of the board-health and durability arrangement is three
+# scripts and two tests, all tracked in this repository. The live half is not:
+# the hermes cron jobs, the copied scripts under ~/.hermes/scripts/, the
+# planner's "Board health" section in its SOUL.md, and one key in
+# ~/.hermes/config.yaml. All of that lives under ~/.hermes, which is not
+# tracked and not backed up -- Kopia only snapshots the *server's* /persist. So a
+# rebuilt workstation, a wiped profile, or a fresh hermes upgrade silently
+# removes the wiring while the tracked scripts sit in the checkout looking fine.
 #
 # This script puts it back, idempotently. Run it after a hermes upgrade, after
 # restoring a profile, or on a new machine. It is safe to re-run: existing cron
@@ -57,24 +58,39 @@ note "▶ hermes board wiring ($HERMES_ROOT)"
 # the tracked script is the source of truth and this is a deployment step, so
 # re-run this after editing the scripts.
 
+# The shared `$HERMES_ROOT/scripts/` comes first because it is the directory the
+# cron engine actually executes from: a `--script` job resolves its path there
+# and fails with "Script file not found: .../scripts/<name>" otherwise. The
+# per-profile copies are for profile-scoped invocation. Checking only the
+# per-profile copies is how this arrangement drifted for a day: both reported
+# current while the shared copy the cron job ran was missing the PROFILE_OVER_CAP
+# detector the planner's own rules depend on.
+install_targets=("$HERMES_ROOT/scripts")
 for profile in default planner; do
-  dest_dir="$HERMES_ROOT/profiles/$profile/scripts"
-  [[ -d "$HERMES_ROOT/profiles/$profile" ]] || { skip "profile $profile not present"; continue; }
+  if [[ -d "$HERMES_ROOT/profiles/$profile" ]]; then
+    install_targets+=("$HERMES_ROOT/profiles/$profile/scripts")
+  else
+    skip "profile $profile not present; only the shared scripts dir will be installed"
+  fi
+done
+
+for dest_dir in "${install_targets[@]}"; do
   mkdir -p "$dest_dir"
-  for script in kanban-board-health.sh kanban-durability-sync.sh; do
+  rel="${dest_dir#"$HERMES_ROOT/"}"
+  for script in kanban-board-health.sh kanban-durability-sync.sh kanban-retry-breaker.sh; do
     src="$REPO_ROOT/scripts/hermes/$script"
     dest="$dest_dir/$script"
     [[ -f "$src" ]] || { note "  MISSING SOURCE: $src"; drift=$((drift + 1)); continue; }
     if [[ -f "$dest" ]] && cmp -s "$src" "$dest"; then
-      ok "$profile/scripts/$script current"
+      ok "$rel/$script current"
       continue
     fi
     if [[ "$check_only" == true ]]; then
-      changed "$profile/scripts/$script differs from the tracked script"
+      changed "$rel/$script differs from the tracked script"
       continue
     fi
     install -m 0755 "$src" "$dest"
-    changed "installed $profile/scripts/$script"
+    changed "installed $rel/$script"
   done
 done
 
@@ -139,6 +155,14 @@ else
   fi
 fi
 
+# The breaker is mechanical, so the planner's job is narrower than for the other
+# findings: recognise a card the breaker parked, and never re-create the loop by
+# reassigning it. Without this rule the planner reads a parked quota-wall card as
+# an undispatchable lane and moves it, which restarts the streak from zero.
+if [[ -f "$PLANNER_SOUL" ]] && ! grep -q 'kanban-retry-breaker.sh' "$PLANNER_SOUL"; then
+  changed "planner SOUL.md does not mention kanban-retry-breaker.sh"
+fi
+
 # ---------------------------------------------------------------------------
 # 4. Cron jobs
 # ---------------------------------------------------------------------------
@@ -157,6 +181,8 @@ existing_health="$(hermes -p planner cron list 2>/dev/null |
   grep -c 'kanban board health' || true)"
 existing_durability="$(hermes -p default cron list 2>/dev/null |
   grep -c 'kanban durability sync' || true)"
+existing_breaker="$(hermes -p default cron list 2>/dev/null |
+  grep -c 'kanban retry breaker' || true)"
 
 if [[ "${existing_health:-0}" -gt 0 ]]; then
   ok "cron 'kanban board health' present (planner)"
@@ -187,6 +213,28 @@ else
   changed "created cron 'kanban durability sync' (default, every 15m)"
 fi
 
+# Same reasoning for the breaker, and the reason it cannot be a --monitor-script
+# job at all: the whole problem is that every requeue changes board state, which
+# changes the board-health hash, which wakes the planner. A monitor-suppressed
+# job is the wrong shape for a job whose output must be acted on every time.
+#
+# It is --no-agent for the same reason it is not the planner's: a card stuck
+# behind a quota wall is exactly the situation where no agent lane is healthy
+# enough to be trusted with the fix, and the fix is a counter, not a judgement.
+if [[ "${existing_breaker:-0}" -gt 0 ]]; then
+  ok "cron 'kanban retry breaker' present (default)"
+elif [[ "$check_only" == true ]]; then
+  changed "cron 'kanban retry breaker' missing from the default profile"
+else
+  hermes -p default cron create "every 15m" \
+    --name "kanban retry breaker" \
+    --script kanban-retry-breaker.sh \
+    --no-agent \
+    --workdir "$REPO_ROOT" \
+    --failure-deliver local >/dev/null
+  changed "created cron 'kanban retry breaker' (default, every 15m)"
+fi
+
 # ---------------------------------------------------------------------------
 
 if [[ "$check_only" == true ]]; then
@@ -200,5 +248,6 @@ fi
 
 note "wiring applied ($drift item(s) changed)"
 note "verify detection:   $REPO_ROOT/scripts/hermes/kanban-board-health.sh"
+note "verify breaker:     $REPO_ROOT/scripts/hermes/kanban-retry-breaker.sh --check"
 note "verify durability:  $REPO_ROOT/scripts/hermes/kanban-durability-sync.sh --check"
 exit 0
