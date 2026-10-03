@@ -44,14 +44,22 @@ let
   patternToRegex = pattern:
     "^" + lib.concatStringsSep ".*" (map lib.escapeRegex (lib.splitString "*" pattern)) + "$";
 
+  # The leading literal prefix of a pattern, i.e. everything before the first
+  # segment containing a wildcard. `crates/*/sub` yields `crates`: the prefix
+  # stops at the first wildcard instead of skipping it and continuing, which
+  # would produce the nonexistent base `crates/sub`.
   patternBaseDir = pattern:
     let
       static = builtins.foldl'
         (
-          acc: segment: if acc.done || lib.hasInfix "*" segment then acc else {
-            inherit (acc) done;
-            parts = acc.parts ++ [ segment ];
-          }
+          acc: segment:
+            if acc.done || lib.hasInfix "*" segment then {
+              done = true;
+              inherit (acc) parts;
+            } else {
+              done = false;
+              parts = acc.parts ++ [ segment ];
+            }
         )
         { done = false; parts = [ ]; }
         (lib.splitString "/" pattern);
@@ -75,6 +83,10 @@ let
     in
     lib.concatMap (name: if entries.${name} == null then [ ] else [ (child name) ] ++ descend name) names;
 
+  # Cargo's glob matches exactly the pattern, so `crates/*` must not also pick up
+  # `crates/one/sub`. `walkDirectories` returns `base` itself plus `depth`
+  # directory levels below it, so the pattern's own depth minus one is the depth
+  # that stops exactly at the deepest match.
   resolvePattern = pattern:
     let
       # A literal (non-glob) member names its own directory, which sits above
@@ -82,18 +94,31 @@ let
       literal = lib.removeSuffix "/" pattern;
       regex = patternToRegex literal;
       base = patternBaseDir literal;
-      # At most one wildcard per path segment, plus one level for a nested match.
-      depth = lib.length (lib.splitString "/" literal) + 1;
+      baseDepth = if base == null then 0 else lib.length (lib.splitString "/" base);
+      depth = lib.max 0 ((lib.length (lib.splitString "/" literal) - baseDepth) - 1);
       candidates = walkDirectories base depth ++ [ literal ];
-      matches =
-        builtins.filter (candidate: lib.match regex candidate != null && exists "${candidate}/Cargo.toml") candidates;
     in
-    if matches == [ ] then
-      throw "workspace-manifests: workspace member pattern '${pattern}' resolved to no directory containing a Cargo.toml under ${rootString}"
-    else
-      matches;
+    builtins.filter (candidate: lib.match regex candidate != null && exists "${candidate}/Cargo.toml") candidates;
 
-  resolvePatterns = patterns: lib.unique (lib.concatMap resolvePattern patterns);
+  # A `members` pattern that matches nothing is a broken workspace declaration
+  # and must fail loudly. Cargo rejects it too.
+  resolveMembers = patterns:
+    let
+      resolve = pattern:
+        let
+          matches = resolvePattern pattern;
+        in
+        if matches == [ ] then
+          throw "workspace-manifests: workspace member pattern '${pattern}' resolved to no directory containing a Cargo.toml under ${rootString}"
+        else
+          matches;
+    in
+    lib.unique (lib.concatMap resolve patterns);
+
+  # Cargo accepts an `exclude` pattern that matches nothing; that is the normal
+  # way to keep an archived or removed path excluded, so an empty match set is
+  # not an error.
+  resolveExcludes = patterns: lib.unique (lib.concatMap resolvePattern patterns);
 
   # Cargo resolves local `path` dependencies relative to the manifest that names
   # them, so normalise them to workspace-root-relative paths.
@@ -124,8 +149,8 @@ let
     else
       collectManifests (visited ++ next) (builtins.concatMap pathDependencies next);
 
-  declaredMembers = resolvePatterns members;
-  resolvedExcludes = resolvePatterns excludes;
+  declaredMembers = resolveMembers members;
+  resolvedExcludes = resolveExcludes excludes;
   activeMembers = builtins.filter (member: !(lib.elem member resolvedExcludes)) declaredMembers;
 
   manifestPaths = collectManifests [ ] (map (member: "${member}/Cargo.toml") activeMembers);

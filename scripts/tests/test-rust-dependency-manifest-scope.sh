@@ -116,6 +116,82 @@ jq -e '
 ' <<<"$identity" >/dev/null
 echo '✅ Shared dependency identity ignores unrelated manifests, locks and .rs edits but tracks member manifest, root lock and config edits.'
 
+# Cargo's glob handling must be matched exactly: a wildcard may sit in any
+# segment (`crates/*/sub`), a pattern must not over-match into deeper nested
+# packages (`crates/*` is not `crates/one/sub`), and an `exclude` pattern that
+# matches nothing is legal — that is how a removed or archived path stays
+# excluded. Only an unresolvable `members` pattern is an error.
+write_crate() {
+  local root="$1" member="$2"
+  mkdir -p "$root/$member/src"
+  printf '[package]\nname = "%s"\nversion = "0.1.0"\nedition = "2021"\n' "${member//\//-}" >"$root/$member/Cargo.toml"
+  printf 'fn main() {}\n' >"$root/$member/src/main.rs"
+}
+
+write_workspace_root() {
+  local root="$1"
+  printf 'version = 4\n' >"$root/Cargo.lock"
+}
+
+active_members() {
+  flake_eval_json "
+    mk = import ./custom_apps/rust/lib/workspace-manifests.nix { inherit lib; };
+    root = /. + (builtins.getEnv \"MANIFEST_FIXTURE\" + \"/$1\");
+  in (mk { workspaceRoot = root; }).activeMembers
+  "
+}
+
+nested="$test_root/nested"
+mkdir -p "$nested"
+cat >"$nested/Cargo.toml" <<'EOF'
+[workspace]
+resolver = "2"
+members = ["crates/*/sub"]
+exclude = ["crates/absent-*", "crates/never-built-dir", "vendor/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+EOF
+write_workspace_root "$nested"
+write_crate "$nested" crates/one/sub
+write_crate "$nested" crates/two/sub
+write_crate "$nested" crates/two/plain
+
+jq -e 'sort == ["crates/one/sub", "crates/two/sub"]' <<<"$(active_members nested)" >/dev/null
+echo '✅ A wildcard in any pattern segment resolves and non-matching excludes are legal.'
+
+# A single-segment glob must not pick up a nested package below a matched member.
+shallow="$test_root/shallow"
+mkdir -p "$shallow"
+cat >"$shallow/Cargo.toml" <<'EOF'
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+EOF
+write_workspace_root "$shallow"
+write_crate "$shallow" crates/one
+write_crate "$shallow" crates/one/sub
+
+jq -e 'sort == ["crates/one"]' <<<"$(active_members shallow)" >/dev/null
+echo '✅ A glob does not over-match into nested packages below a matched member.'
+
+# An unresolvable `members` pattern must still fail loudly, exactly as cargo does.
+missing_members="$test_root/nested-missing-members"
+mkdir -p "$missing_members"
+cat >"$missing_members/Cargo.toml" <<'EOF'
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+EOF
+write_workspace_root "$missing_members"
+eval_fails_with "resolved to no directory containing a Cargo.toml" "
+  mk = import ./custom_apps/rust/lib/workspace-manifests.nix { inherit lib; };
+  root = /. + (builtins.getEnv \"MANIFEST_FIXTURE\" + \"/nested-missing-members\");
+in (mk { workspaceRoot = root; }).activeMembers
+" >/dev/null
+echo '✅ An unresolvable workspace member pattern still fails loudly.'
+
 # The real workspace: membership must match Cargo.toml exactly, including
 # groundwater-server, and must not reach the Tauri manifests.
 real="$(flake_eval_json '
