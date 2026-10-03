@@ -23,14 +23,21 @@ The stable API model name is `qwen3.8-27b-q4_km`.
 
 ## Model Artifacts
 
-The module pins `unsloth/Qwen3.8-27B-GGUF` at revision
-`4ca720788d1e01f1bff70c033e0d0028fd02e502` and downloads the Q4_K_M
-quantization (about 16.5 GB in a single file) and the F16 multimodal projector
-(885 MiB). The Q4_0 MTP (NextN) draft head (1.3 GiB, `MTP/` subfolder) is also
-in the pinned manifest but is only fetched when `repo.qwen27b.mtp.enable` is
-true, so this host does not download it. Every artifact has a pinned size and
-SHA-256 hash in the NixOS module; a partial download resumes, a completed file
-must pass its checksum, and replacement is atomic.
+The module pins `ukisai/Swift-1.5-Qwen3.8-27B-GGUF` at revision
+`14bfe4b42be4a925d98816db830155f476c605e7` and downloads the Q4_K_M
+quantization (about 16.2 GiB in a single file) and Swift's own F16 multimodal
+projector (885 MiB). This repository publishes no MTP draft head, so
+`repo.qwen27b.model.mtpFile` is empty and `mtp.enable` must stay false; an
+assertion enforces that. Every artifact has a pinned size and SHA-256 hash in
+the NixOS module; a partial download resumes, a completed file must pass its
+checksum, and replacement is atomic.
+
+Swift 1.5 is UkisAI's reasoning-efficient post-training of
+`Qwen/Qwen3.8-27B`. Measured on this host against the foundation Q4_K_M with
+identical flags, it decodes at about 17.45 tok/s versus 13.15, a 33% gain
+reproduced with the run order reversed to rule out a warm-GPU artifact. Prefill
+is within noise. The accuracy claims on the model card were not independently
+verified here; the speed difference was.
 
 Artifacts live under `/mnt/data/qwen-27b/models` because the system SSD does not
 have room for them. That directory is on the data pool, is not a Kopia snapshot
@@ -68,7 +75,8 @@ Revert the URL to `ggml-org/llama.cpp` once #28243 merges.
 
 - MTP pull request: <https://github.com/ggml-org/llama.cpp/pull/28243>
 - Fork source: <https://github.com/danielhanchen/llama.cpp>
-- Model repository: <https://huggingface.co/unsloth/Qwen3.8-27B-GGUF>
+- Foundation weights: <https://huggingface.co/unsloth/Qwen3.8-27B-GGUF>
+- Model repository: <https://huggingface.co/ukisai/Swift-1.5-Qwen3.8-27B-GGUF>
 
 ## Enabling
 
@@ -142,9 +150,19 @@ peak speed. The choices that matter:
   and VRAM is dedicated to the language model and the KV cache. Image and video
   input keep working; image encoding costs CPU and a little latency instead of
   VRAM.
-- **No MTP.** `mtp.enable = false`. The draft head would add 1.3 GiB of VRAM for
-  a decode speed-up that this workload does not need. Enable it only after a
-  decode measurement on the real workload.
+- **Video is sampled at half rate.** `videoFps = 2.0` rather than llama.cpp's
+  4.0. The vision encoder allocates activations per sampled frame, so halving
+  the rate shrinks the largest allocation the process can make. It costs
+  temporal detail on video question answering.
+- **Restart resistance, not just stability.** `StartLimitBurst = 10` in a
+  15-minute window, up from the systemd default of 3. A device-local VRAM
+  allocation failure is not survivable in-process: ggml-vulkan returns
+  nullptr rather than spilling the tensor to system RAM, so recovery means
+  restarting the unit. With a burst of 3, three oversized vision requests would
+  latch the unit off and take the AI server down until someone intervened.
+- **No MTP.** `mtp.enable = false`, and this pin has no draft head. Measured
+  15-21% *slower* than plain decode on this host at 43% draft acceptance, so
+  this is a measured decision rather than an untested default.
 - **One model at a time.** The Q4_K_M weights fit the 24 GiB card, but they do
   not fit alongside Bonsai's weights. The background integration still stops the
   UI model before starting Qwen.
@@ -175,15 +193,12 @@ Thinking behaviour (`enable_thinking`, `preserve_thinking`, `reasoning_effort`)
 is selected per request through the chat template; `--jinja` is enabled so
 OpenAI-compatible clients can pass `chat_template_kwargs`.
 
-Multi-Token-Prediction (MTP) speculative decoding is **disabled** on this host.
-When enabled, the server loads the Q4_0 NextN head with `--model-draft` and runs
-`--spec-type draft-mtp --spec-draft-n-max 4`; the head drafts a few tokens per
-step and the main model verifies them exactly, so the output is unchanged and
-only the speed differs. MTP is single-slot, so it stays paired with
-`--parallel 1`. If you enable it, the head lives in the Hugging Face `MTP/`
-subfolder, which llama.cpp sidecar auto-discovery does not search, so `-md` must
-be passed explicitly — the module does this. Confirm speculative decoding is
-active by looking for the `draft acceptance = ...` line in the journal.
+Multi-Token-Prediction (MTP) speculative decoding is **disabled** and
+unavailable for this pin. Measured on the foundation weights, the Q4_0 NextN
+head at `--spec-type draft-mtp --spec-draft-n-max 4` ran at 10.6-11.6 tok/s
+against 13.4 for plain decode, with 43% draft acceptance and a mean draft
+length of 2.5. The draft forward pass costs more than the accepted tokens save.
+The Swift repository also publishes no MTP head.
 
 ## GPU Acceleration (Intel Arc Pro B60)
 

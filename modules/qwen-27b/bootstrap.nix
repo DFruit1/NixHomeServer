@@ -112,37 +112,50 @@ in
     model = {
       repository = lib.mkOption {
         type = lib.types.str;
-        default = "unsloth/Qwen3.8-27B-GGUF";
+        default = "ukisai/Swift-1.5-Qwen3.8-27B-GGUF";
         readOnly = true;
-        description = "Authoritative Hugging Face GGUF repository.";
+        description = ''
+          Authoritative Hugging Face GGUF repository. Swift 1.5 is UkisAI's
+          reasoning-efficient post-training of Qwen/Qwen3.8-27B, quantised by
+          llama.cpp. Measured 33% faster decode than the foundation Q4_K_M on
+          this host. Reverting to the foundation weights means changing this,
+          revision, mainFile, projectorFile and artifacts together.
+        '';
       };
 
       revision = lib.mkOption {
         type = lib.types.str;
-        default = "4ca720788d1e01f1bff70c033e0d0028fd02e502";
+        default = "14bfe4b42be4a925d98816db830155f476c605e7";
         readOnly = true;
         description = "Pinned Hugging Face repository revision containing the verified artifacts.";
       };
 
       mainFile = lib.mkOption {
         type = lib.types.str;
-        default = "Qwen3.8-27B-UD-Q4_K_M.gguf";
+        default = "Swift-1.5-Qwen3.8-27B-Q4_K_M.gguf";
         readOnly = true;
         description = "Single-file Q4_K_M language-model GGUF.";
       };
 
       projectorFile = lib.mkOption {
         type = lib.types.str;
-        default = "mmproj-F16.gguf";
+        default = "mmproj-Swift-1.5-Qwen3.8-27B-F16.gguf";
         readOnly = true;
-        description = "Multimodal projector GGUF for vision input.";
+        description = ''
+          Multimodal projector GGUF for vision input. Swift publishes its own
+          projector rather than reusing the foundation model's, so this must be
+          changed together with mainFile.
+        '';
       };
 
       mtpFile = lib.mkOption {
         type = lib.types.str;
-        default = "mtp-Qwen3.8-27B-Q4_0.gguf";
+        default = "";
         readOnly = true;
-        description = "Q4_0 multi-token-prediction (NextN) draft head, only fetched when mtp.enable is set.";
+        description = ''
+          MTP (NextN) draft head GGUF. Empty because this repository publishes
+          no MTP head, so mtp.enable has nothing to load and must stay false.
+        '';
       };
 
       autoDownload = lib.mkOption {
@@ -174,21 +187,14 @@ in
         });
         default = [
           {
-            file = "Qwen3.8-27B-UD-Q4_K_M.gguf";
-            sha256 = "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482";
-            sizeBytes = 16464440224;
+            file = "Swift-1.5-Qwen3.8-27B-Q4_K_M.gguf";
+            sha256 = "2ebba0ff1e63c1ac3fadd4e83efcea189f47f33ec72c91877af94de6ebe30590";
+            sizeBytes = 17442399936;
           }
           {
-            file = "mmproj-F16.gguf";
-            sha256 = "cbb841a9ee0636b2ec172f5bb8df2ea8dfeb01e90fe7c6126581d662a0b4e43e";
-            sizeBytes = 927607488;
-          }
-          {
-            file = "mtp-Qwen3.8-27B-Q4_0.gguf";
-            subdir = "MTP";
-            sha256 = "50d9ce5a6da381bbcfb31061cf73df94a90e6faf8efeddee379a9cb8f1501c6e";
-            sizeBytes = 1369590656;
-            optional = true;
+            file = "mmproj-Swift-1.5-Qwen3.8-27B-F16.gguf";
+            sha256 = "10a24dc46eb801ad794886ef27ea1e43634d35388dfaf2e2374b7a8b67faf526";
+            sizeBytes = 927606912;
           }
         ];
         description = "Hash-verified GGUF artifacts that must be present before inference starts.";

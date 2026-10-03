@@ -38,11 +38,18 @@ in
         # the CPU and --cpu-moe / --n-cpu-moe have nothing to do.
         cpuMoe = false;
         # Vision on the CPU (--no-mmproj-offload): image and video input keep
-        # working while VRAM stays dedicated to weights and KV cache.
+        # working while VRAM stays dedicated to weights and KV cache. It also
+        # moves the failure mode: vision activation buffers land in host RAM
+        # against MemoryMax instead of in VRAM, which has plenty of room here.
         projectorOnCpu = true;
-        # No MTP self-speculation. The Q4_K_M weights fit comfortably, and the
-        # draft head would cost 1.3 GiB of VRAM for a speed gain this workload
-        # does not need.
+        # Sample video at half llama.cpp's default rate. The vision encoder
+        # allocates activations per sampled frame, so this shrinks the largest
+        # allocation the process can make and keeps a long video from pushing
+        # it into a restart. Costs temporal detail on video QA.
+        videoFps = 2.0;
+        # No MTP self-speculation. Measured 15-21% slower than plain decode on
+        # this host, with only 43% draft acceptance, and this pin ships no MTP
+        # head for the Swift weights.
         mtp.enable = false;
         # Q8_0 KV cache: near-lossless, halves KV bandwidth for long
         # generations, and keeps the 64K context inside the card.

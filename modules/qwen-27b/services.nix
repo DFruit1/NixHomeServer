@@ -55,6 +55,7 @@ let
         --min-p 0 \
         --repeat-penalty ${toString cfg.repetitionPenalty} \
         ${lib.optionalString (cfg.imageMaxTokens > 0) "--image-max-tokens ${toString cfg.imageMaxTokens}"} \
+        ${lib.optionalString (cfg.videoFps != null) "--video-fps ${toString cfg.videoFps}"} \
         ${lib.optionalString (cfg.kvCacheType != "f16") "--cache-type-k ${cfg.kvCacheType} --cache-type-v ${cfg.kvCacheType}"} \
         ${lib.escapeShellArgs cfg.extraArgs}
     '';
@@ -182,6 +183,24 @@ in
       description = "Maximum vision tokens per image; zero disables image downscaling.";
     };
 
+    videoFps = lib.mkOption {
+      type = lib.types.nullOr lib.types.float;
+      default = null;
+      description = ''
+        Target sampling rate for video input, passed as --video-fps. Null
+        leaves the flag off and lets llama.cpp use its own default (4.0).
+
+        This is a resource guard, not a quality knob. Vision encoding allocates
+        activation buffers sized to the frames it samples, and with
+        projectorOnCpu those land in host RAM against the unit's MemoryMax
+        rather than in VRAM. Lowering the rate shrinks that spike and reduces
+        how often a long video pushes the process into a restart. The cost is
+        real: fewer sampled frames means less temporal detail, so video
+        question answering degrades. Raise it back to 4.0 if video fidelity
+        matters more than restart resistance.
+      '';
+    };
+
     kvCacheType = lib.mkOption {
       type = lib.types.enum [ "f16" "q8_0" "q4_0" ];
       default = "f16";
@@ -214,6 +233,10 @@ in
         assertion = cfg.parallel == 1;
         message = "repo.qwen27b.parallel is currently limited to 1 so that the KV cache budget is not split across slots.";
       }
+      {
+        assertion = !cfg.mtp.enable || cfg.model.mtpFile != "";
+        message = "repo.qwen27b.mtp.enable is true but repo.qwen27b.model.mtpFile is empty; this model pin publishes no MTP draft head.";
+      }
     ];
 
     environment.systemPackages = [ cfg.runtime.package ];
@@ -227,7 +250,16 @@ in
       unitConfig = {
         RequiresMountsFor = [ vars.dataRoot ];
         StartLimitIntervalSec = "15min";
-        StartLimitBurst = 3;
+        # A device-local VRAM allocation failure is not survivable in-process:
+        # ggml-vulkan returns nullptr rather than spilling the tensor to system
+        # RAM, so the reserve either throws or logs and carries on believing it
+        # succeeded. Recovery therefore means restarting the unit. With the
+        # systemd default burst of 3, three oversized vision requests inside
+        # 15 minutes would latch the unit off and leave the AI server down
+        # until someone intervened. A burst of 10 turns that class of failure
+        # into a 30-second blip; a genuinely broken configuration is still
+        # caught by the failure-alert OnFailure handler.
+        StartLimitBurst = "10";
         OnFailure = [ config.repo.monitoring.failureAlerts.targetUnit ];
         OnFailureJobMode = "replace-irreversibly";
       };
