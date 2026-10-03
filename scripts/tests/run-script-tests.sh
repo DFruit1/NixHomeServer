@@ -172,6 +172,7 @@ test_scripts=(
   scripts/tests/test-smart-sweep-runtime.sh
   scripts/tests/test-storage-path-validation.sh
   scripts/tests/test-unbound-adblock.sh
+  scripts/tests/test-edge-flood-protection.sh
   scripts/tests/test-vaultwarden-version.sh
   scripts/tests/test-zfs-pool-identity.sh
   scripts/tests/test-zfs-snapshot-freshness.sh
