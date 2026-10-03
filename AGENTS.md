@@ -129,49 +129,141 @@ this is the single home for the board's card conventions. Any profile may create
 a card — the dispatcher appends the kanban lifecycle tools to every worker, not
 just the orchestrator — so these rules bind all of them.
 
-The first reader of a card is a human deciding whether to approve it, in a column
-view, usually mid-review of something else. Write for that reader.
+The first reader of a card is a human deciding whether to approve it, in a
+column view, usually mid-review of something else. Write for that reader.
 
-* **Title** — imperative, under 60 characters, names the outcome. It is the
-  card's label in every column and must be distinguishable at a glance from its
-  siblings. `Fix: expire orphaned deploy archives in a private staging dir`, not
-  `Address M6 from audit t_d05010f1`.
-* **Body** — lead with the ask, in one line, so a reader who stops after line
-  one still knows what you want:
+### Budget
 
-  ```
-  Goal: <one sentence — the concrete change or decision>
-  ```
+**Title** — imperative, under 60 characters, names the outcome. It is the
+card's label in every column, so it must be distinguishable at a glance from its
+siblings. `Fix: expire orphaned deploy archives in a private staging dir`, not
+`Address M6 from audit t_d05010f1`.
 
-  Then at most three bullets: what changes, where (`file:line`), how it is
-  verified. Then a `Constraints:` block, one item per line. Nothing else.
-* **Never open with provenance.** `Decision t_258bbbce from audit t_d05010f1:`
-  costs a line and says nothing the `blocked by` field does not already show.
-* **Never restate the audit's reasoning.** It lives in the audit report. One
-  clause, then move on.
-* **Never inline a call-site dump.** `sudo call sites: :324, :327, :491, :533,
-  :551…` is unreadable at a glance and redundant with grep. Name the file and
-  say how many.
-* **Approval gates are the worst case**, because a human is being asked to
-  authorise something irreversible. Put the question first, with options:
+**Body** — at most **15 lines and 1000 characters**. Fixed slots, in this order,
+so the eye lands in the same place on every card:
 
-  ```
-  Decision needed: <the question, as a choice>
-  Options:
-    A) <option> — <consequence in a few words>
-    B) <option> — <consequence in a few words>
-  If neither: <what you would need to design the third>
-  Context: <one or two sentences, with file:line>
-  Constraints: <what must not change>
-  ```
+```
+Goal: <one line, under 90 chars — the concrete change or decision>
+Change: <file:line> — <what changes>
+Verify: <exact command> — <expected exit code>
+Constraints:
+- <one per line, under 90 chars>
+Notes:
+- <hash, count, or figure the ask itself does not need>
+```
 
-  Do not bury the question under the evidence that produced it.
+`Notes:` is optional. Drop it rather than pad it.
 
-**Answering a gate.** A comment does not change card status. Record the decision
-as a comment, then unblock — the dispatcher only claims `ready` cards, so an
-unanswered `blocked` card never runs, and a commented-but-still-blocked card
-never runs either. A `running` card needs only the comment: the dispatcher
-live-steers new operator comments into the worker.
+### If it does not fit, split it
+
+A card that overruns the budget is two cards. Split it with `parents=` and let
+the dependency do the waiting — never compress prose to fit. Bundling is the
+defect, not verbosity: if the `Goal` line needs the word "and", it is two asks.
+
+### Prose hygiene
+
+* **Code and figures never sit inside a sentence.** A path, hash, count, file
+  mode, or command gets its own line or a `Notes:` bullet. Woven into a clause,
+  the reader has to parse it back out before they can act on the sentence.
+* **One idea per line.** "Do A, and B, but never C" is three lines, not one
+  200-character sentence.
+* **Keep lines under 90 characters** so they wrap in a narrow detail pane instead
+  of running off it.
+* **Say it once.** A constraint restated in `Constraints:` and again in a
+  paragraph means the paragraph is deletable.
+
+### Never in a body
+
+* Provenance — `Decision t_258bbbce from audit t_d05010f1:` says nothing the
+  `blocked by` field does not already show.
+* The audit's reasoning — it lives in the audit report. One clause, then move on.
+* Call-site dumps — `sudo call sites: :324, :327, :491, :533…` is unreadable at a
+  glance and redundant with grep. Name the file and say how many.
+* Commit-hash lists or dependency prose — `git log` knows the hashes, and the
+  board renders parents and `blocked by` on its own.
+* Rules already in this file — the commit and push gate, the test tiers, and
+  workspace discipline are injected into every agent regardless.
+* An acceptance checklist that restates the body. The `Verify:` line plus at most
+  four `Constraints:` lines are the whole definition of done.
+
+### Card shape per lane
+
+| Lane | Shape |
+|---|---|
+| `planner` | Implementation cards use the slots above. An audit card states the **question**, not a proposed solution, plus the evidence already in hand. |
+| `feature-auditor`, `audit-nixos` | The body is a question: name the slice and the single question to answer. No solution, no fix plan. |
+| `bulk-go`, `local-impl`, `astra` | A follow-up card is a one-line `Goal:` plus the single acceptance criterion the new work must satisfy. The parent card already holds the context. |
+| `reviewer` | `Goal:` is the verdict you owe; the exact commits under review go in `Notes:`. Review against the parent cards' criteria, do not restate them. |
+| any lane, human gate | Use the template below. |
+
+### Approval gates
+
+A gate is the worst case, because a human is being asked to authorise something
+irreversible. Put the question first, with options:
+
+```
+Decision needed: <the question, as a choice>
+Options:
+  A) <option> — <consequence in a few words>
+  B) <option> — <consequence in a few words>
+If neither: <what you would need to design the third>
+Context: <one or two sentences, with file:line>
+Constraints: <what must not change>
+```
+
+Do not bury the question under the evidence that produced it.
+
+### Worked example
+
+A real 4,364-character card opened like this:
+
+> **Design and scope** — Use exactly /var/lib/nixhomeserver-deploy-archives as
+> the dedicated sibling archive directory, outside root-only
+> /var/lib/nixhomeserver-deploy. Preserve root:root 0700 transaction/stamp
+> ancestry and root-only stamp files. Archive directory remains 0700 owned by
+> configured localAdminUser; staged archives remain 0600. Keep independent
+> systemd-tmpfiles mM:48h expiry, immediate constrained cleanup and fail-closed
+> no-fallback behavior. Do not widen sudo, add ACLs, chmod/chown existing
+> deploy-state, switch SSH to root, or add raw rebuild workarounds.
+>
+> **Baseline** — Current tested composition on wt/t_75be1a28 is base efee182
+> plus 5e1a9672fca556aba47f552d01816a4360e74865, 0c25462a…, 37c2f008…,
+> d0994df5…, e9310b3a…
+
+Four sentences of chained imperatives, six inline negatives, five hashes, and a
+whole section of hashes `git log` already knows. The same card:
+
+```
+Goal: Move deploy archives out of root-only state into a sibling namespace.
+Change: modules/Core_Modules/deploy/default.nix:412 — namespace + tmpfiles mM:48h
+Verify: bash scripts/tests/test-deploy-archive-permissions.sh — 0
+Constraints:
+- Archive dir 0700 localAdminUser; staged archives 0600
+- Root:root 0700 transaction/stamp ancestry unchanged
+- No sudo widening, ACLs, chown of existing state, or root SSH
+- Fail closed; no /tmp fallback
+Notes:
+- Baseline on wt/t_75be1a28: efee182 5e1a967 0c25462 37c2f00 d0994df e9310b3
+- New path needs rollout; offline tests do not establish live safety
+```
+
+Eleven lines. Every constraint survived; the prose did not.
+
+### Answering a gate
+
+A comment does not change card status. Record the decision as a comment, then
+unblock — the dispatcher only claims `ready` cards, so an unanswered `blocked`
+card never runs, and a commented-but-still-blocked card never runs either. A
+`running` card needs only the comment: the dispatcher live-steals new operator
+comments into the worker.
+
+### Triage auto-decompose is off
+
+The gateway can write cards from a hardcoded prompt inside the upstream hermes
+clone, which cannot read this file. That path is disabled with
+`kanban.auto_decompose: false` in `~/.hermes/config.yaml`, so every card on the
+board is written by an agent that has read this section. Leave it off; the
+`hermes kanban specify` and `decompose` verbs have the same blind spot.
 
 ---
 
