@@ -405,6 +405,73 @@ in
         MemoryHigh = "1G";
         MemoryMax = "2G";
       };
+    }
+    # Containment for the long-running network-facing services that were still
+    # uncapped. Every value below comes from read-only observation on this host
+    # (systemctl show <unit> -p MemoryCurrent -p MemoryPeak; 125 GiB MemTotal)
+    # plus the sizing options already present in the configuration, never from
+    # guesswork. MemoryHigh is the soft-pressure point and MemoryMax leaves
+    # roughly twice the observed peak for the burst each service is expected to
+    # absorb before a leak becomes a cgroup OOM instead of a host OOM.
+    #
+    # ipfs (peak 137M): libp2p connection churn and a blockstore GC walk.
+    # opencloud (peak 962M): large uploads and desktop-sync sessions.
+    # search-solr (peak 2.4G): the solrMaxHeap option in
+    # modules/search/services.nix is 2g, so the cap must leave room for JVM
+    # native and metaspace overhead outside the -m heap.
+    # cloudflared (peak 845M): the single edge into the server, capped
+    # generously so a reconnect burst cannot cascade into an unreachable host.
+    # caddy / kanidm / homepage / syncthing: small steady-state daemons.
+    #
+    # Caddy, cloudflared and Kanidm are Core_Modules, so their units exist on
+    # every host this configuration builds. The optional apps above are gated on
+    # their own enable so removing a module can never leave a cap pointing at a
+    # unit that no longer exists. Jellyfin keeps the caps it already had:
+    # transcoding is the one workload here whose burst MemoryPeak does not
+    # represent. Short-lived bootstrap and oneshot units stay uncapped.
+    // lib.optionalAttrs (moduleEnabled "ipfs") {
+      ipfs.serviceConfig = {
+        MemoryHigh = "512M";
+        MemoryMax = "1G";
+      };
+    }
+    // lib.optionalAttrs (hasModule "opencloud") {
+      opencloud.serviceConfig = {
+        MemoryHigh = "2G";
+        MemoryMax = "4G";
+      };
+    }
+    // lib.optionalAttrs (moduleEnabled "search") {
+      search-solr.serviceConfig = {
+        MemoryHigh = "4G";
+        MemoryMax = "6G";
+      };
+    }
+    // lib.optionalAttrs (moduleEnabled "offline-music" && (vars.offlineMedia.enable or false)) {
+      syncthing.serviceConfig = {
+        MemoryHigh = "512M";
+        MemoryMax = "1G";
+      };
+    }
+    // lib.optionalAttrs (hasModule "homepage") {
+      homepage.serviceConfig = {
+        MemoryHigh = "256M";
+        MemoryMax = "512M";
+      };
+    }
+    // {
+      caddy.serviceConfig = {
+        MemoryHigh = "512M";
+        MemoryMax = "1G";
+      };
+      "cloudflared-tunnel-${vars.cloudflareTunnelName}".serviceConfig = {
+        MemoryHigh = "1G";
+        MemoryMax = "2G";
+      };
+      kanidm.serviceConfig = {
+        MemoryHigh = "512M";
+        MemoryMax = "1G";
+      };
     };
   }
 

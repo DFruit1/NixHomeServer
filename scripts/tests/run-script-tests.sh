@@ -104,6 +104,7 @@ test_scripts=(
   scripts/tests/test-deploy-cli.sh
   scripts/tests/test-deploy-transaction-runtime.sh
   scripts/tests/test-evaluated-service-hardening.sh
+  scripts/tests/test-central-memory-containment.sh
   scripts/tests/test-data-pool-consumers.sh
   scripts/tests/test-public-route-check.sh
   scripts/tests/test-cloudflare-dns-sync.sh
