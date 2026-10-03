@@ -397,13 +397,23 @@ set -euo pipefail
 # found the archive is left for the 48h namespace expiry to reclaim; deleting an
 # unvalidated path would be the worse failure.
 cleanup_archive() {
-  if [[ -f ./scripts/helpers/deploy-archive-cleanup.sh ]]; then
-    bash ./scripts/helpers/deploy-archive-cleanup.sh remove "$REMOTE_ARCHIVE" || true
+  if [[ -f "$tmpdir/scripts/helpers/deploy-archive-cleanup.sh" ]]; then
+    bash "$tmpdir/scripts/helpers/deploy-archive-cleanup.sh" remove "$REMOTE_ARCHIVE" || true
   fi
 }
 
+cleanup_remote() {
+  local status=$?
+  # The constrained helper lives in the extracted tree: use it before removing
+  # that tree, even when extraction failed before the cd. Preserve executor or
+  # tar failure status regardless of best-effort cleanup results.
+  cleanup_archive
+  rm -rf "$tmpdir" || true
+  exit "$status"
+}
+
 tmpdir="$(mktemp -d)"
-trap 'rm -rf "$tmpdir"; cleanup_archive' EXIT
+trap cleanup_remote EXIT
 tar -C "$tmpdir" -xf "$REMOTE_ARCHIVE"
 cd "$tmpdir"
 
