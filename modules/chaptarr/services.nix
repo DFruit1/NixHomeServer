@@ -30,6 +30,27 @@ in
   config = lib.mkIf cfg.enable {
     repo.storage.dataPool.guardedServices = [ "chaptarr" ];
 
+    # The preStart rewrite sets AuthenticationRequired=DisabledForLocalAddresses,
+    # which bypasses Chaptarr's UI auth for any loopback peer. That is only
+    # acceptable while the listener itself is loopback-bound, so neither the
+    # firewall nor a published port mapping may widen the surface: the gateway's
+    # loopback upstream has to stay the only route in.
+    assertions =
+      let
+        chaptarrPort = vars.networking.ports.chaptarr;
+        firewallPortLists = [
+          config.networking.firewall.allowedTCPPorts
+          (config.networking.firewall.interfaces.${vars.networking.interfaces.lan}.allowedTCPPorts or [ ])
+          (config.networking.firewall.interfaces.${vars.networking.interfaces.netbird}.allowedTCPPorts or [ ])
+        ];
+      in
+      [
+        {
+          assertion = !(builtins.elem chaptarrPort (lib.concatLists firewallPortLists));
+          message = "Chaptarr must not be opened in the host firewall; the loopback-bound auth gateway upstream is its only route.";
+        }
+      ];
+
     systemd.tmpfiles.rules = [
       "d ${paths.stateDir} 0750 chaptarr chaptarr - -"
     ];
@@ -43,6 +64,18 @@ in
       environment = {
         TZ = vars.timeZone;
         UMASK = "002";
+        # Chaptarr's Kestrel listener honours Chaptarr__Server__BindAddress
+        # (src/NzbDrone.Host/Bootstrap.cs, Chaptarr:Server section). Pinning it
+        # to loopback makes the host-network listener unreachable from the LAN
+        # and NetBird, so the auth gateway's Caddy upstream stays the only route
+        # in and the NixOS firewall is no longer the sole boundary. A published
+        # `ports` mapping cannot be used here: bridge networking would hide the
+        # loopback qBittorrent WebUI that Chaptarr's download client and the
+        # remote-path mapping test depend on (qBittorrent binds 127.0.0.1 with
+        # AuthSubnetWhitelist=127.0.0.1/32).
+        Chaptarr__Server__BindAddress = vars.networking.loopbackIPv4;
+        # The image's entrypoint drops privileges to PUID/PGID; do not set
+        # `user`, which upstream documents as bypassing that setup.
       };
       environmentFiles = [ containerEnvironmentFile ];
       volumes = [
@@ -67,6 +100,14 @@ in
 
         config_xml=${lib.escapeShellArg "${paths.stateDir}/config.xml"}
         if [[ -f "$config_xml" ]]; then
+          # Chaptarr honours DisabledForLocalAddresses (TrustedNetworkPolicy:
+          # UI auth is bypassed when the peer address is loopback), which is what
+          # lets the auth gateway front it without a second interactive login.
+          # That relaxation is only safe while the listener is loopback-bound,
+          # because then every request the gateway proxies originates from
+          # 127.0.0.1 and nothing on the LAN can reach the bypass at all. Keep
+          # this rewrite and the bind address in the same declaration so the two
+          # cannot drift apart; removing the relaxation would break SSO.
           ${pkgs.xmlstarlet}/bin/xmlstarlet ed -L \
             -u '/Config/AuthenticationMethod' -v 'Forms' \
             -u '/Config/AuthenticationRequired' -v 'DisabledForLocalAddresses' \

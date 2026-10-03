@@ -269,11 +269,27 @@ that separate cleanup workflow.
 
 Chaptarr is available at `https://chaptarr.<domain>` to members of
 `media-automation-users`. The module follows Chaptarr's supported Docker
-runtime contract, binds its web/API listener through the host network, and
-keeps the host firewall closed on port 8789. The shared authentication gateway
-is the only browser-facing route. Chaptarr is beta software, so preserve tested
-backups and review the upstream warning before trusting it with irreplaceable
-media: <https://github.com/Chaptarr/chaptarr#getting-started>.
+runtime contract: the container keeps the host network so it can reach the
+loopback qBittorrent WebUI, and the listener is pinned to `127.0.0.1` via
+`Chaptarr__Server__BindAddress`. The listener is therefore unreachable from the
+LAN and NetBird regardless of firewall state, and the host firewall stays closed
+on port 8789. The shared authentication gateway is the only browser-facing
+route. Chaptarr is beta software, so preserve tested backups and review the
+upstream warning before trusting it with irreplaceable media:
+<https://github.com/Chaptarr/chaptarr#getting-started>.
+
+The gateway's authentication is what authorizes access, so the module also sets
+`AuthenticationRequired=DisabledForLocalAddresses` in `config.xml`: Chaptarr
+bypasses its own UI login for loopback peers, which is what lets the gateway
+front it without a second interactive login. That relaxation is only safe
+because of the loopback bind, so the two are declared together and an assertion
+rejects any configuration that opens port 8789 in the firewall. If you change
+the bind address, remove the relaxation and re-authenticate through the gateway,
+or Chaptarr's login bypass becomes reachable from the LAN.
+
+The container still runs its supported privilege model: the image entrypoint
+drops to the `chaptarr` user and group through `PUID`/`PGID`. Do not set the
+launcher's `user`, which upstream documents as bypassing that entrypoint setup.
 
 On the first visit, complete Chaptarr's local setup, then configure the policy
 for both media types:
