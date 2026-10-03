@@ -141,6 +141,7 @@ test_scripts=(
   scripts/tests/test-shell-template.sh
   scripts/tests/test-validation-build-checks.sh
   scripts/tests/test-frontend-package-independence.sh
+  scripts/tests/test-node-pnpm-deps-scoping.sh
   scripts/tests/test-homepage-guidance.sh
   scripts/tests/test-homepage-vault.sh
   scripts/tests/test-portal-landing.sh
