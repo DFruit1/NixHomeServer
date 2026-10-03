@@ -134,6 +134,7 @@ test_scripts=(
   scripts/tests/test-freshness-marker.sh
   scripts/tests/test-rust-workspace-dependencies.sh
   scripts/tests/test-rust-source-isolation.sh
+  scripts/tests/test-rust-dependency-manifest-scope.sh
   scripts/tests/test-frontend-build-isolation.sh
   scripts/tests/test-nix-eval-cache.sh
   scripts/tests/test-auth-gateway-compression.sh
