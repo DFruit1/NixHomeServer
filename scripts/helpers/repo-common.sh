@@ -2,6 +2,17 @@
 
 _repo_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# The archive namespace contract is sourced rather than duplicated: the same
+# functions decide on both ends what may be created and removed.
+# shellcheck source=scripts/helpers/deploy-archive-cleanup.sh
+source "$_repo_lib_dir/deploy-archive-cleanup.sh"
+
+# Resolve the helper's own path here, at source time, where BASH_SOURCE is
+# unambiguously this file. Recomputing it from inside a function is unreliable:
+# BASH_SOURCE inside a function reports the *caller's* file, so the lookup would
+# silently resolve against whatever sourced repo-common.sh.
+deploy_archive_helper_path="$_repo_lib_dir/deploy-archive-cleanup.sh"
+
 init_repo_root() {
   local override_var="${1:-}"
   local requested_root git_root
@@ -298,11 +309,36 @@ stage_archive_on_remote() {
   local archive_path="$1"
   local remote_host="$2"
   local archive_label="$3"
+  local helper_path="$deploy_archive_helper_path"
   local remote_archive
 
-  remote_archive="$(ssh "$remote_host" "mktemp /tmp/${archive_label}.XXXXXX.tar")"
-  if ! ssh "$remote_host" "cat > $(printf '%q' "$remote_archive")" <"$archive_path"; then
-    ssh "$remote_host" "rm -f $(printf '%q' "$remote_archive")" || true
+  if [[ ! -r "$helper_path" ]]; then
+    echo "blocked: deploy archive staging helper is missing: $helper_path" >&2
+    return 1
+  fi
+
+  # The namespace contract lives in a standalone helper so the same code decides
+  # on both ends what may be created and removed. Upload it through the
+  # ordinary SSH channel first, then use it on the remote host to claim a slot.
+  # If any step fails, everything this function created is removed through the
+  # same constrained path rather than an unvalidated one.
+  # The helper payload redirect belongs *inside* the command substitution.
+  # As `x="$(ssh ...)" <file` it attaches to the assignment statement instead,
+  # and the substitution's ssh receives an empty stdin.
+  remote_archive="$(ssh -T "$remote_host" \
+    "set -e; helper=\$(mktemp); trap 'rm -f \"\$helper\"' EXIT; cat >\"\$helper\"; chmod 0700 \"\$helper\"; bash \"\$helper\" stage $(printf '%q' "$archive_label")" \
+    <"$helper_path")" || return 1
+
+  # The helper prints exactly one absolute path; a remote diagnostic on stdout,
+  # a wrapped error, or a blank line is not a usable archive path.
+  if [[ ! "$remote_archive" == /* ]] || [[ "$remote_archive" == *$'\n'* ]]; then
+    echo "blocked: remote deploy archive staging did not return a usable path" >&2
+    return 1
+  fi
+
+  if ! ssh -T "$remote_host" "cat > $(printf '%q' "$remote_archive")" \
+      <"$archive_path"; then
+    remove_remote_archive "$remote_host" "$remote_archive"
     return 1
   fi
   printf '%s\n' "$remote_archive"

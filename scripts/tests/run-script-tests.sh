@@ -102,6 +102,7 @@ test_scripts=(
   scripts/tests/test-opencloud-module.sh
   scripts/tests/test-opencloud-public-access.sh
   scripts/tests/test-deploy-cli.sh
+  scripts/tests/test-deploy-archive-staging.sh
   scripts/tests/test-deploy-debug-attestation.sh
   scripts/tests/test-deploy-transaction-runtime.sh
   scripts/tests/test-evaluated-service-hardening.sh
