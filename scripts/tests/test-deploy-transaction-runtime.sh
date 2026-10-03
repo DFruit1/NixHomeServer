@@ -110,6 +110,55 @@ if ! rg -Fq 'max-jobs = 2' <<<"$NIX_CONFIG" \
   exit 1
 fi
 
+# The builder record's fifth field is Nix's speed factor (a builder-selection
+# bias), NOT a per-derivation core count. Balanced core width reaches the server
+# through the advisory `cores` setting exported in NIX_CONFIG, which Nix forwards
+# in the SetOptions handshake. If this field were ever "fixed" to carry the core
+# budget, the server would only become 4x more attractive to the scheduler while
+# every derivation it built still asked for a single core.
+balanced_builder_fields="$(
+  rg -N -o 'ssh-ng://\S+ \S+ \S+ \S+ \S+' <<<"$NIX_CONFIG" \
+    | awk '{print $4, $5}'
+)"
+require_json_equal "$balanced_builder_fields" "2 1" \
+  "Balanced allocation must set two remote slots with a neutral speed factor of 1, not a core count."
+
+# A one-shot balanced override still reaches the exported NIX_CONFIG unchanged,
+# including the remote half of the budget that the workstation cannot consume.
+NIX_CONFIG="$base_nix_config"
+BUILD_MODE="balanced"
+LOCAL_BUILD_SLOTS="3"
+REMOTE_BUILD_SLOTS="1"
+LOCAL_BUILD_CORES="2"
+REMOTE_BUILD_CORES="6"
+configure_nix_build_allocation >/dev/null
+if ! rg -Fxq 'max-jobs = 3' <<<"$NIX_CONFIG" \
+  || ! rg -Fxq 'cores = 2' <<<"$NIX_CONFIG" \
+  || ! rg -Fq "ssh-ng://admin@test.invalid x86_64-linux $TESTS_REPO_ROOT/scripts/tests/test-deploy-transaction-runtime.sh 1 1 benchmark,big-parallel,nixos-test - $test_remote_host_key_encoded" <<<"$NIX_CONFIG"; then
+  echo "❌ An explicit balanced slot/core override did not reach the emitted NIX_CONFIG."
+  echo "$NIX_CONFIG"
+  exit 1
+fi
+
+# A malformed core budget must block the deploy rather than emit a builder
+# record or NIX_CONFIG line that Nix would reject later.
+NIX_CONFIG="$base_nix_config"
+BUILD_MODE="balanced"
+LOCAL_BUILD_SLOTS="2"
+REMOTE_BUILD_SLOTS="2"
+LOCAL_BUILD_CORES="many"
+REMOTE_BUILD_CORES="4"
+if core_error="$(configure_nix_build_allocation 2>&1)"; then
+  echo "❌ A non-numeric coordinator core budget was accepted."
+  echo "$core_error"
+  exit 1
+fi
+if ! rg -Fq 'blocked: invalid coordinator build-core value many' <<<"$core_error"; then
+  echo "❌ A malformed core budget did not produce an actionable error."
+  echo "$core_error"
+  exit 1
+fi
+
 NIX_CONFIG="$base_nix_config"
 BUILD_MODE="maximum-effort"
 LOCAL_BUILD_SLOTS="auto"

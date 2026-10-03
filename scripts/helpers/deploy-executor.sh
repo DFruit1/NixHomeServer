@@ -227,6 +227,14 @@ configure_nix_build_allocation() {
       # Multi-user Nix opens this connection as the local daemon's root user,
       # so both an explicit identity and host-key pin must be in the builder
       # record instead of relying on the invoking user's SSH defaults.
+      # The builder record's five fields are store URI, system types, SSH
+      # identity file, max parallel jobs, and the speed factor that biases
+      # builder selection. Field five is NOT a core count: per-derivation core
+      # width is the advisory `cores` setting exported below, which Nix sends to
+      # the server daemon in the SetOptions handshake
+      # (RemoteStore::setOptions -> WorkerProto::Op::SetOptions.buildCores).
+      # The speed factor stays 1 so the server is neither favoured nor disfavoured
+      # relative to the workstation daemon.
       # Source: https://nix.dev/manual/nix/2.33/command-ref/conf-file#conf-builders
       builders_setting="ssh-ng://${TARGET_HOST} ${HOST_PLATFORM} ${builder_ssh_identity} ${remote_slots} 1 ${remote_features_csv} - ${remote_builder_host_key}"
       ;;

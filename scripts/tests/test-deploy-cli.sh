@@ -220,6 +220,34 @@ if ! rg -Fq 'mode=maximum-effort' <<<"$maximum_output" \
   exit 1
 fi
 
+remote_output="$(DEPLOY_DRY_RUN=1 bash scripts/deploy.sh --build-mode remote --action test)"
+if ! rg -Fq 'mode=remote' <<<"$remote_output" \
+  || ! rg -Fq 'build_slots=local:0,remote:auto' <<<"$remote_output" \
+  || ! rg -Fq 'build_cores=local:0,remote:0' <<<"$remote_output" \
+  || ! rg -Fq "build_host=${expected_target}" <<<"$remote_output" \
+  || rg -Fq 'build_host=local+' <<<"$remote_output"; then
+  echo "❌ Remote mode should allocate all slots to the server and none to the workstation."
+  echo "$remote_output"
+  exit 1
+fi
+
+# A one-shot mode override carries its own native Nix slot and core mapping
+# rather than inheriting the slots derived from the committed vars.nix mode, so
+# each host gets the balanced budget even when vars.nix selects another mode.
+override_dry_run_allocations="$(for override_mode in local remote balanced maximum-effort; do
+  DEPLOY_DRY_RUN=1 bash scripts/deploy.sh --build-mode "$override_mode" --action test
+done | rg -o 'build_(slots|cores)=[^[:space:]]+')"
+require_json_equal "$override_dry_run_allocations" \
+"build_slots=local:auto,remote:0
+build_cores=local:0,remote:0
+build_slots=local:0,remote:auto
+build_cores=local:0,remote:0
+build_slots=local:2,remote:2
+build_cores=local:4,remote:4
+build_slots=local:auto,remote:auto
+build_cores=local:0,remote:0" \
+  "A one-shot build-mode override no longer emits the documented slot/core mapping."
+
 if conflict_output="$(DEPLOY_DRY_RUN=1 bash scripts/deploy.sh --build-locally --build-host "$expected_target" 2>&1)"; then
   echo "❌ Conflicting deploy build modes returned success."
   exit 1
