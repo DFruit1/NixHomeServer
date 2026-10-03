@@ -21,6 +21,7 @@ fixture_files=(
   scripts/admin/seed-install-repository.sh
   scripts/generate-all-secrets.sh
   scripts/helpers/repo-common.sh
+  scripts/helpers/deploy-archive-cleanup.sh
   scripts/helpers/secrets-common.sh
   scripts/helpers/generate-managed-secrets.sh
   scripts/helpers/encrypt-staged-external-secrets.sh
