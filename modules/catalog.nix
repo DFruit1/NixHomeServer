@@ -122,6 +122,9 @@ rec {
       "qbittorrent"
       "media-automation-bootstrap-qbittorrent"
     ];
+    ai-tools = app ./ai-tools "AI Tools" "automation" [ ] [
+      "searxng"
+    ];
     qwen-27b = app ./qwen-27b "Qwen 3.8 27B" "automation" [ ] [
       "qwen-27b-storage-layout-v1"
       "qwen-27b-model-prepare"
@@ -133,6 +136,9 @@ rec {
     ] [
       "radarr"
       "media-automation-bootstrap-radarr"
+    ];
+    searxng = app ./searxng "SearXNG" "automation" [ ] [
+      "searxng"
     ];
     search = app ./search "Search" "knowledge" [ ] [
       "search-solr"

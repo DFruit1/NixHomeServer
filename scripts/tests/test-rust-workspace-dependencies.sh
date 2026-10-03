@@ -62,7 +62,7 @@ metadata="$(cargo metadata \
   --format-version 1)"
 
 jq -e '
-  (.packages | length == 12)
+  (.packages | length == 13)
   and ([.packages[].version] | unique | length == 1)
   and ([.packages[].edition] | unique == ["2024"])
   and (

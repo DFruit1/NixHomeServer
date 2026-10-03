@@ -12,7 +12,7 @@
       category = "knowledge";
       description = "Private chat with the server's local Qwen3.8-27B model.";
       loginNotes = "Sign in with Kanidm; access is granted to ai-users.";
-      logoUrl = "";
+      logoUrl = "/logos/qwen-27b.svg";
       appName = "qwen-27b";
       uploadNotes = "Prompts and attachments are processed by the server's local model.";
       requiredAnyGroups = [ "ai-users" ];

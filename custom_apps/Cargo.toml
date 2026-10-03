@@ -2,7 +2,7 @@
 resolver = "2"
 
 members = [
-  "rust/apps/ai-gate",  "rust/apps/browsertrix-downloader",
+  "rust/apps/ai-gate",  "rust/apps/ai-tools",  "rust/apps/browsertrix-downloader",
   "rust/apps/groundwater-server",
   "rust/apps/kanidm-canary-bootstrap",
   "rust/apps/mail-archive-ui",
@@ -36,6 +36,9 @@ codegen-units = 16
 # First-party workspace members: keep the single-unit release codegen.
 # Keep in sync with [workspace.members].
 [profile.release.package.ai-gate]
+codegen-units = 1
+
+[profile.release.package.ai-tools]
 codegen-units = 1
 
 [profile.release.package.browsertrix-downloader]

@@ -57,6 +57,12 @@ in
     workspaceSrc = workspaceSource "ai-gate" false;
     workspaceCheckSrc = workspaceSource "ai-gate" true;
   };
+  ai-tools = import ./ai-tools/default.nix {
+    inherit lib pkgs rustLib;
+    inherit workspaceVersion sharedCargoArtifacts cargoLock;
+    workspaceSrc = workspaceSource "ai-tools" false;
+    workspaceCheckSrc = workspaceSource "ai-tools" true;
+  };
   browsertrix-downloader = import ./browsertrix-downloader/default.nix {
     inherit lib pkgs rustLib;
     inherit workspaceVersion sharedCargoArtifacts cargoLock;

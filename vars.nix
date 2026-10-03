@@ -16,6 +16,7 @@ let
       # Applications are opt-in. Repository modules omitted here are neither
       # imported into this host nor included in its normal build/test worklist.
       enabled = [
+        "ai-tools"
         "attic"
         "audiobookshelf"
         "browsertrix-downloader"
@@ -40,6 +41,7 @@ let
         "qbittorrent"
         "qwen-27b"
         "radarr"
+        "searxng"
         "search"
         "sonarr"
         "vaultwarden"

@@ -16,3 +16,5 @@ The Homepage vendors these application logos so cards do not depend on third-par
 - `archives.svg`: repository-local Web Archives attribution mark drawn for this project (blue square with an archive-box glyph).
 - `search.svg`: repository-local Search attribution mark drawn for this project (teal square with a magnifier glyph).
 - `bonsai.svg`: repository-local Bonsai attribution mark drawn for this project (green square with a stylised bonsai glyph).
+- `ai-tools.svg`: repository-local AI Tools attribution mark drawn for this project (indigo square with a plug glyph).
+- `qwen-27b.svg`: repository-local Local AI attribution mark drawn for this project (amber square with a neural-node glyph).

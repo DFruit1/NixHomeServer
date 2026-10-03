@@ -18,8 +18,22 @@ in
   # Node and FFmpeg. NixOS needs nix-ld to run those in the dsaw user profile.
   programs.nix-ld.enable = true;
 
-  repo =
-    lib.optionalAttrs (builtins.elem "qwen-27b" vars.enabledApps) {
+  repo = { }
+  // lib.optionalAttrs (builtins.elem "ai-tools" vars.enabledApps) {
+      # Read-only MCP tools for the llama.cpp web UI, attached per client so
+      # the shared inference endpoint stays tool-free for other consumers.
+      #
+      # Every app-scoped `repo.<app>` block is wrapped in optionalAttrs rather
+      # than assigned unconditionally. The per-app evaluation harnesses import
+      # exactly one app's module, and assigning `repo.<app>.enable` at all --
+      # even to `false` -- references an option that module never declared,
+      # which fails evaluation rather than reading as "off".
+      aiTools.enable = true;
+    }
+  // lib.optionalAttrs (builtins.elem "searxng" vars.enabledApps) {
+      searxng.enable = true;
+    }
+  // lib.optionalAttrs (builtins.elem "qwen-27b" vars.enabledApps) {
       # Qwen is the server's primary local inference endpoint. It starts at
       # boot and serves Hermes and other local clients over loopback.
       #
