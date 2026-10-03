@@ -332,34 +332,130 @@ if [[ ! "$build_line" =~ ^[0-9]+$ || ! "$test_timer_line" =~ ^[0-9]+$ || ! "$tes
   exit 1
 fi
 
+# Debug validation must run exactly once, on the test action only, and its
+# completion must be what stamps the transaction debug-validated. Both facts are
+# asserted against the real executor source rather than a rewritten copy,
+# because a mocked-out validator would make the count meaningless.
+debug_validation_gate=$'  if [[ "$DEBUG_MODE" != "true" || "$ACTION" != "test" ]]; then\n    return 0\n  fi'
+if ! rg -FqU -- "$debug_validation_gate" scripts/helpers/deploy-executor.sh; then
+  echo "❌ Full debug validation must run on --action test only, never on switch."
+  exit 1
+fi
+if [[ "$(rg -FcU -- "$debug_validation_gate" scripts/helpers/deploy-executor.sh)" != "1" ]]; then
+  echo "❌ Full debug validation must be guarded by a single test-only gate."
+  exit 1
+fi
+if [[ "$(rg -Fc -- 'validate-repo.sh --full' scripts/helpers/deploy-executor.sh)" != "1" ]]; then
+  echo "❌ The full repository validator must have exactly one invocation site."
+  exit 1
+fi
+debug_validation_line="$(rg -n '^run_debug_full_validation$' scripts/helpers/deploy-executor.sh | cut -d: -f1)"
+deploy_lock_line="$(rg -n '^acquire_deploy_lock$' scripts/helpers/deploy-executor.sh | cut -d: -f1)"
+if [[ ! "$debug_validation_line" =~ ^[0-9]+$ || ! "$deploy_lock_line" =~ ^[0-9]+$ ]] \
+  || ((debug_validation_line >= deploy_lock_line)); then
+  echo "❌ Debug validation must run before the transaction mutates any target state."
+  exit 1
+fi
+for forbidden_debug_block in \
+  'if [[ "$DEBUG_MODE" == "true" ]]; then
+  echo "running debug validation"' \
+  'if [[ "$ACTION" == "switch" && "$DEBUG_MODE" == "true" ]]'; do
+  if rg -FqU -- "$forbidden_debug_block" scripts/helpers/deploy-executor.sh; then
+    echo "❌ Full debug validation can still run outside the test-only gate."
+    exit 1
+  fi
+done
+require_fixed scripts/helpers/deploy-executor.sh 'debug_full_validation_passed=true' \
+  "The debug attestation must be derived from a completed full validation."
+require_fixed scripts/helpers/deploy-executor.sh 'refusing to record a debug attestation' \
+  "A failed debug validation must never leave a usable true attestation."
+require_fixed scripts/helpers/deploy-executor.sh 'assert_debug_switch_attestation' \
+  "A --debug switch must prove the assurance from the recorded attestation."
+require_fixed scripts/helpers/deploy-executor.sh 'rerun --debug --action test' \
+  "A --debug switch without the attestation must fail closed with an actionable retest instruction."
+require_fixed scripts/helpers/deploy-transaction.sh 'version=2' \
+  "Stamps must carry the debug attestation in the version=2 format."
+
 source scripts/helpers/deploy-transaction.sh
 valid_hash='sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='
 valid_toplevel='/nix/store/00000000000000000000000000000000-nixos-system-test-1'
 stamp_path="$archive_test_dir/tested.stamp"
-deploy_render_test_stamp "$valid_hash" "$valid_toplevel" >"$stamp_path"
+deploy_render_test_stamp "$valid_hash" "$valid_toplevel" false >"$stamp_path"
 parsed_hash=""
 parsed_toplevel=""
-deploy_read_test_stamp "$stamp_path" parsed_hash parsed_toplevel
-if [[ "$parsed_hash" != "$valid_hash" || "$parsed_toplevel" != "$valid_toplevel" ]]; then
+parsed_debug_validated=""
+deploy_read_test_stamp "$stamp_path" parsed_hash parsed_toplevel parsed_debug_validated
+if [[ "$parsed_hash" != "$valid_hash" || "$parsed_toplevel" != "$valid_toplevel" \
+  || "$parsed_debug_validated" != "false" ]]; then
   echo "❌ Tested deployment stamp did not round-trip exactly."
   exit 1
 fi
 
-if deploy_render_test_stamp 'not-a-hash' "$valid_toplevel" >/dev/null 2>&1 \
-  || deploy_render_test_stamp "$valid_hash" '/tmp/not-a-store-path' >/dev/null 2>&1; then
-  echo "❌ Deployment stamp accepted an unsafe hash or closure path."
+# An attested stamp must round-trip the true attestation verbatim, because a
+# --debug switch trusts exactly that field.
+deploy_render_test_stamp "$valid_hash" "$valid_toplevel" true >"$stamp_path"
+parsed_debug_validated=""
+deploy_read_test_stamp "$stamp_path" parsed_hash parsed_toplevel parsed_debug_validated
+if [[ "$parsed_debug_validated" != "true" ]]; then
+  echo "❌ A debug-validated deployment stamp lost its attestation."
   exit 1
 fi
 
-printf 'version=1\nsource_hash=%s\ntoplevel=%s\nunknown=value\n' \
+if deploy_render_test_stamp 'not-a-hash' "$valid_toplevel" false >/dev/null 2>&1 \
+  || deploy_render_test_stamp "$valid_hash" '/tmp/not-a-store-path' false >/dev/null 2>&1 \
+  || deploy_render_test_stamp "$valid_hash" "$valid_toplevel" >/dev/null 2>&1 \
+  || deploy_render_test_stamp "$valid_hash" "$valid_toplevel" maybe >/dev/null 2>&1; then
+  echo "❌ Deployment stamp accepted an unsafe hash, closure path, or attestation."
+  exit 1
+fi
+
+printf 'version=2\nsource_hash=%s\ntoplevel=%s\ndebug_validated=false\nunknown=value\n' \
   "$valid_hash" "$valid_toplevel" >"$archive_test_dir/unknown.stamp"
-if deploy_read_test_stamp "$archive_test_dir/unknown.stamp" parsed_hash parsed_toplevel >/dev/null 2>&1; then
+if deploy_read_test_stamp "$archive_test_dir/unknown.stamp" parsed_hash parsed_toplevel parsed_debug_validated >/dev/null 2>&1; then
   echo "❌ Deployment stamp accepted an unknown field."
   exit 1
 fi
 
+# A duplicated attestation must be rejected rather than resolved by last-wins.
+printf 'version=2\nsource_hash=%s\ntoplevel=%s\ndebug_validated=false\ndebug_validated=true\n' \
+  "$valid_hash" "$valid_toplevel" >"$archive_test_dir/duplicate.stamp"
+if deploy_read_test_stamp "$archive_test_dir/duplicate.stamp" parsed_hash parsed_toplevel parsed_debug_validated >/dev/null 2>&1; then
+  echo "❌ Deployment stamp accepted a duplicated debug attestation."
+  exit 1
+fi
+
+# A malformed attestation is not a usable attestation.
+for bad_attestation in absent maybe 1 True; do
+  if [[ "$bad_attestation" == "absent" ]]; then
+    printf 'version=2\nsource_hash=%s\ntoplevel=%s\n' \
+      "$valid_hash" "$valid_toplevel" >"$archive_test_dir/attestation.stamp"
+  else
+    printf 'version=2\nsource_hash=%s\ntoplevel=%s\ndebug_validated=%s\n' \
+      "$valid_hash" "$valid_toplevel" "$bad_attestation" >"$archive_test_dir/attestation.stamp"
+  fi
+  if deploy_read_test_stamp "$archive_test_dir/attestation.stamp" parsed_hash parsed_toplevel parsed_debug_validated >/dev/null 2>&1; then
+    echo "❌ Deployment stamp accepted a ${bad_attestation} debug attestation."
+    exit 1
+  fi
+done
+
+# A version=1 stamp predates the attestation and must fail closed instead of
+# being silently upgraded to an unproven assumption.
+printf 'version=1\nsource_hash=%s\ntoplevel=%s\n' \
+  "$valid_hash" "$valid_toplevel" >"$archive_test_dir/v1.stamp"
+if v1_output="$(deploy_read_test_stamp "$archive_test_dir/v1.stamp" parsed_hash parsed_toplevel parsed_debug_validated 2>&1)"; then
+  echo "❌ Deployment stamp parser accepted a version=1 stamp."
+  exit 1
+fi
+if ! rg -Fq 'version is unsupported' <<<"$v1_output" \
+  || ! rg -Fq 'rerun --action test' <<<"$v1_output"; then
+  echo "❌ A version=1 stamp did not fail closed with an actionable retest instruction."
+  echo "$v1_output"
+  exit 1
+fi
+
 ln -s "$stamp_path" "$archive_test_dir/symlink.stamp"
-if deploy_read_test_stamp "$archive_test_dir/symlink.stamp" parsed_hash parsed_toplevel >/dev/null 2>&1; then
+if deploy_read_test_stamp "$archive_test_dir/symlink.stamp" parsed_hash parsed_toplevel parsed_debug_validated >/dev/null 2>&1; then
   echo "❌ Deployment stamp parser followed a symlink."
   exit 1
 fi
