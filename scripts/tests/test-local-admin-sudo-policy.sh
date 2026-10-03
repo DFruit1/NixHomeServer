@@ -748,19 +748,22 @@ fi
 # Transaction-level coverage for the console route. The routing probe above only
 # shows that console mode resolves the target to this machine; it cannot show
 # that the resulting transaction survives the privilege change its own
-# activation causes. This runs the real deploy executor's --action test
-# transaction inside a private user+mount namespace with only the external
-# operations mocked:
+# activation causes. This runs the real deploy executor's --action test AND the
+# following --action switch transaction inside a private user+mount namespace
+# with only the external operations mocked:
 #
 #   * the mock sudo records every privileged call with the policy in force at
 #     that moment and refuses non-root authentication once the grant is gone;
-#   * the mock systemctl drops the passwordless grant when the guarded
-#     activation starts, so authorization really does change mid-transaction;
+#   * the mock systemctl executes a detached activation unit's ExecStart and
+#     then drops the passwordless grant, so the generation change really happens
+#     and authorization really does change mid-transaction;
+#   * the mock nix-env honours `--profile ... --set ...`, so the boot commit is
+#     observed from the resulting profile link, not from the command line;
 #   * the mock ssh fails loudly, so any privileged step routed over SSH — the
 #     round-3 defect — breaks the transaction instead of passing quietly.
 #
 # No real activation, credentials or sudo are involved: the namespace owns its
-# own /nix and /run, and the caller's identity is a mock.
+# own /nix, /run and /var/lib, and the caller's identity is a mock.
 console_fixture="scripts/tests/fixtures/console-deploy-transaction.sh"
 ensure_tools unshare
 console_work_root="$guard_ssh_dir/console-transaction"
@@ -860,6 +863,128 @@ if ! rg -Fq 'source_hash=sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' "$
   exit 1
 fi
 
+# The switch phase must consume the stamp the test phase wrote. A test-only
+# fixture that stops after --action test proves nothing about the boot commit,
+# so both transactions have to have run and both have to have succeeded.
+if ! rg -Fq 'FIRST_PHASE=test' <<<"$console_transaction_output" \
+  || ! rg -Fq 'LAST_PHASE=switch' <<<"$console_transaction_output" \
+  || ! rg -Fq 'PHASE=test EXECUTOR_STATUS=0 LOCK_PRESENT=no STAMP_PRESENT=yes' <<<"$console_transaction_output" \
+  || ! rg -Fq 'PHASE=switch EXECUTOR_STATUS=0 LOCK_PRESENT=no STAMP_PRESENT=yes' <<<"$console_transaction_output"; then
+  echo "❌ The console fixture did not complete a real test transaction followed by a real switch transaction."
+  printf '%s\n' "$console_transaction_output"
+  exit 1
+fi
+
+console_switch_events="$console_work_root/events-switch"
+console_switch_toplevel="/nix/store/00000000000000000000000000000000-console-fixture"
+console_previous_toplevel="/nix/store/22222222222222222222222222222222-previous-generation-fixture"
+
+# The switch transaction must really load and validate the tested stamp. Its
+# activation has to re-activate the stamped closure — proving the stamp's
+# closure, not the freshly built one, is what gets activated — and must not
+# rebuild anything.
+if ! rg -q "systemctl-unit-exec nixos-detached-tested-switch-.* ${console_switch_toplevel}/bin/switch-to-configuration test uid=0" "$console_switch_events" \
+  || ! rg -Fq 'switch-to-configuration test uid=0' "$console_switch_events" \
+  || rg -Fq 'nixos-rebuild' "$console_switch_events"; then
+  echo "❌ The console switch transaction did not activate the exact closure the test phase stamped, or rebuilt instead of reusing it."
+  cat "$console_switch_events"
+  exit 1
+fi
+
+# The boot commit is the point of the switch phase, so assert it as an observed
+# state change and not as a restated command: the boot profile must start on the
+# previous generation, be repointed at the tested closure through
+# `nix-env --profile ... --set`, and end on the tested closure after
+# switch-to-configuration boot.
+console_switch_test_boot_profile="$(
+  sed -n 's/^PHASE=test BOOT_PROFILE=//p' <<<"$console_transaction_output"
+)"
+console_switch_final_boot_profile="$(
+  sed -n 's/^PHASE=switch BOOT_PROFILE=//p' <<<"$console_transaction_output"
+)"
+if [[ "$console_switch_test_boot_profile" != "$console_previous_toplevel" ]] \
+  || [[ "$console_switch_final_boot_profile" != "$console_switch_toplevel" ]] \
+  || ! rg -Fq "nix-env --profile /nix/var/nix/profiles/system --set ${console_switch_toplevel} uid=0" "$console_switch_events" \
+  || ! rg -Fq "nix-env-profile=${console_switch_toplevel}" "$console_switch_events" \
+  || ! rg -Fq "switch-to-configuration boot uid=0" "$console_switch_events" \
+  || ! rg -Fq "boot-profile=${console_switch_toplevel}" "$console_switch_events"; then
+  echo "❌ The console switch transaction did not commit the tested closure as the boot default through nix-env --set and switch-to-configuration boot."
+  printf 'boot profile after test: %s\n' "$console_switch_test_boot_profile"
+  printf 'boot profile after switch: %s\n' "$console_switch_final_boot_profile"
+  cat "$console_switch_events"
+  exit 1
+fi
+
+# The whole transition under test is the restricted policy, so the switch phase
+# must begin and finish with the grant already dropped: it is the second guarded
+# deploy on an already-hardened host, and none of its privileged work may depend
+# on a passwordless grant.
+console_switch_grant_line="$(rg -n 'grant-dropped' "$console_switch_events" | head -n1 | cut -d: -f1)"
+if [[ -z "$console_switch_grant_line" ]]; then
+  echo "❌ The console switch phase never activated, so its post-activation privileges were not exercised."
+  cat "$console_switch_events"
+  exit 1
+fi
+console_switch_post_activation="$(awk -v cut="$console_switch_grant_line" 'NR > cut' "$console_switch_events")"
+
+# Every privileged step after the switch's own activation, including the boot
+# commit itself, must be root through the retained local route.
+if ! awk -v cut="$console_switch_grant_line" '
+  NR > cut && /^sudo / {
+    total++
+    if ($0 !~ /uid=0 policy=password-authenticated/) wrong++
+  }
+  END { exit !(total > 0 && wrong == 0) }
+' "$console_switch_events"; then
+  echo "❌ A privileged step of the console switch transaction was not authorized by the retained console root route."
+  cat "$console_switch_events"
+  exit 1
+fi
+
+# The switch transaction must finish its own cleanup the same way the test
+# transaction did: health gates, the authenticated canary, rollback cancellation
+# and lock release all after the grant is gone, with the boot commit among them.
+for required_step in \
+  'systemctl --failed' \
+  'canary-assert uid=0' \
+  'systemctl start homepage-canary.service' \
+  'systemctl stop nixhomeserver-deploy-rollback-' \
+  'systemctl stop nixhomeserver-deploy-unlock-'; do
+  if ! rg -Fq "$required_step" <<<"$console_switch_post_activation"; then
+    echo "❌ The console switch transaction did not complete a required post-activation step: ${required_step}"
+    printf '%s\n' "$console_switch_post_activation"
+    exit 1
+  fi
+done
+
+if rg -Fq 'ssh hop used in console mode' "$console_switch_events"; then
+  echo "❌ The console switch transaction opened an SSH connection to the target; the route is only valid when it stays on this host."
+  cat "$console_switch_events"
+  exit 1
+fi
+
+# Negative check: the switch must validate the stamp, not merely read it. With
+# the repository hash changed after the test phase, the switch has to refuse
+# before activating or committing anything.
+stale_switch_work="$guard_ssh_dir/console-transaction-stale"
+mkdir -p "$stale_switch_work"
+stale_switch_output="$(
+  CONSOLE_FIXTURE_SOURCE_HASH_switch="sha256-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=" \
+    unshare --map-root-user --mount --propagation private \
+      bash "$console_fixture" 0 "$stale_switch_work" 2>&1
+)" && stale_switch_status=0 || stale_switch_status=$?
+if [[ "$stale_switch_status" -eq 0 ]] \
+  || ! rg -Fq 'PHASE=switch EXECUTOR_STATUS=1' <<<"$stale_switch_output" \
+  || ! rg -Fq 'repository contents differ from the last passing test' <<<"$stale_switch_output" \
+  || rg -Fq 'nixos-rebuild' "$stale_switch_work/events-switch" \
+  || rg -Fq 'nix-env --profile' "$stale_switch_work/events-switch" \
+  || rg -Fq 'switch-to-configuration' "$stale_switch_work/events-switch"; then
+  echo "❌ A console switch was not refused for repository contents that differ from the last passing test."
+  printf '%s\n' "$stale_switch_output"
+  cat "$stale_switch_work/events-switch" 2>/dev/null || true
+  exit 1
+fi
+
 # A console deploy that is not actually root must be refused by the executor
 # itself, before any transaction step runs. Without this, "console mode runs as
 # root" would be an assertion rather than an enforced precondition.
@@ -873,7 +998,8 @@ if [[ "$nonroot_console_status" -eq 0 ]] \
   || ! rg -Fq "blocked: --console deploys to this host as root" <<<"$nonroot_console_output" \
   || ! rg -Fq 'EXECUTOR_STATUS=1' <<<"$nonroot_console_output" \
   || ! rg -Fq 'LOCK_PRESENT=no' <<<"$nonroot_console_output" \
-  || [[ -s "$nonroot_console_work/events" ]]; then
+  || [[ -s "$nonroot_console_work/events" ]] \
+  || [[ -s "$nonroot_console_work/events-test" ]]; then
   echo "❌ A console deploy was accepted without running as root on this host."
   printf '%s\n' "$nonroot_console_output"
   exit 1
