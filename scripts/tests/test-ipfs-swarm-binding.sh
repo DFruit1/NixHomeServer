@@ -35,6 +35,11 @@ in {
     ++ [ cfg.services.kubo.settings.Addresses.Gateway ];
   ipfsWants = cfg.systemd.services.ipfs.wants;
   ipfsAfter = cfg.systemd.services.ipfs.after;
+  # The generated unit text is what systemd actually runs, so the restart
+  # policy and ordering are asserted there rather than only in the source.
+  ipfsUnit = cfg.systemd.units."ipfs.service".text or "";
+  netbirdVerifyRequires =
+    cfg.systemd.services.netbird-address-verify.requires;
   gatewayListenStreams = cfg.systemd.sockets.ipfs-gateway.socketConfig.ListenStream;
   apiListenStreams = cfg.systemd.sockets.ipfs-api.socketConfig.ListenStream;
   netbirdFirewallPorts =
@@ -87,12 +92,29 @@ jq -e --argjson swarmPort "$swarm_port" '
   # Publication path and private DNS/Caddy surfaces are untouched.
   and .caddyIpfsHost == true
   and .privateIpfsHost == true
-  # Address availability: the daemon is ordered after the overlay that assigns
-  # the bound address, as a soft dependency.
-  and (.ipfsWants | index("netbird-main.service") != null)
-  and (.ipfsAfter | index("netbird-main.service") != null)
+  # Address availability: the daemon waits for the unit that actually proves
+  # the overlay address exists (it requires both the client and the enrollment
+  # helper, then polls nb0 until it matches vars.nix), not merely for the
+  # client daemon. `wants`/`after` keep it a soft dependency, so a broken
+  # overlay delays the gateway rather than blocking it permanently.
+  and (.netbirdVerifyRequires | index("netbird-main-login.service") != null)
+  and (.netbirdVerifyRequires | index("netbird-main.service") != null)
+  and (.ipfsWants | index("netbird-address-verify.service") != null)
+  and (.ipfsAfter | index("netbird-address-verify.service") != null)
+  # Asserted against the generated unit, because that is what systemd runs:
+  # a source-level restart policy that never reaches the unit would leave
+  # Kubo permanently failed whenever the bind loses the race with NetBird.
+  and (.ipfsUnit | test("(?m)^Restart=on-failure$"))
+  and (.ipfsUnit | test("(?m)^RestartSec=[0-9]+s$"))
+  # Unbounded start retries: a late address must not exhaust the burst limit.
+  and (.ipfsUnit | test("(?m)^StartLimitIntervalSec=0$"))
+  # The retry must not have clobbered how the daemon is actually launched.
+  and (.ipfsUnit | test("(?m)^ExecStart=.*ipfs daemon"))
+  and (.ipfsUnit | test("(?m)^ExecStartPre="))
+  and (.ipfsUnit | test("(?m)^Sockets=ipfs-gateway[.]socket$"))
+  and (.ipfsUnit | test("(?m)^Sockets=ipfs-api[.]socket$"))
 ' <<<"$kubo_json" >/dev/null || {
-  echo "❌ Kubo swarm binding, listeners, firewall scoping, or NetBird ordering regressed." >&2
+  echo "❌ Kubo swarm binding, listeners, firewall scoping, NetBird ordering, or the bind retry policy regressed." >&2
   jq . <<<"$kubo_json" >&2
   exit 1
 }

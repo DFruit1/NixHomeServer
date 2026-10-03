@@ -1476,12 +1476,19 @@ Unix socket. Its TCP peer port (4001) is bound to this server's NetBird
 address — the same multiaddr it announces to peers — and that port is open only
 on the NetBird interface, with public bootstrap and content routing disabled.
 Because the listener depends on the NetBird address existing, `ipfs.service` is
-ordered after `netbird-main.service`; if NetBird has not yet assigned the
-address, the unit retries until it can bind. Verify the listener with:
+ordered after `netbird-address-verify.service` — the unit that `requires` the
+NetBird client and its enrollment helper and then polls the interface until it
+carries the address from `vars.nix`. That dependency is a `wants`, not a
+`requires`, and the daemon also carries `Restart=on-failure` with start-rate
+limiting disabled: if the address is still absent when Kubo first starts (NetBird
+re-enrolling, or a verify unit that has not been started in this transaction),
+`ipfs.service` retries every 10 seconds until it can bind, instead of wedging the
+gateway and publication paths. Verify the listener and the ordering with:
 
 ```sh
 sudo -u ipfs env IPFS_PATH=/mnt/data/ipfs ipfs config Addresses.Swarm
 sudo ss -lntp 'sport = :4001'
+systemctl show ipfs.service -p After -p Restart -p RestartUSec -p StartLimitIntervalUSec
 ```
 
 The gateway serves only content that this server has pinned. An IPFS CID
