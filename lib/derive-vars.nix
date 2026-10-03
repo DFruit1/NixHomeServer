@@ -207,10 +207,15 @@ rec {
   kanidmAdminEmail = identity.adminEmail;
   serverSSHPubKey = identity.sshPublicKey;
   localAdminUser = identity.localAdminUser;
-  localAdminSudo = identity.localAdminSudo;
+  # vars.nix is merge=ours and never updated from upstream, so an existing
+  # host's file predates identity.localAdminSudo. Default to the pre-change
+  # behaviour (NOPASSWD ALL) rather than failing with a bare missing-attribute
+  # error: existing installations must keep evaluating unchanged, and
+  # validate-host-settings.nix still rejects any value outside the two modes.
+  localAdminSudo = identity.localAdminSudo or "bootstrap-nopasswd";
   localAdminSudoPolicy = (import ./local-admin-sudo.nix {
     localAdminUser = identity.localAdminUser;
-    policy = identity.localAdminSudo;
+    policy = identity.localAdminSudo or "bootstrap-nopasswd";
   });
 
   networking = rec {

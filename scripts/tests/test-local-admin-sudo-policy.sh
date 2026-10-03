@@ -182,6 +182,65 @@ require_json_equal "$legacy_guard_output" "local admin sudo policy=unknown" \
 require_fixed scripts/deploy.sh 'enforce_local_admin_sudo_policy' \
   "deploy.sh must apply the local-admin sudo guard."
 
+# The policy fields must not be gated behind the resolved target: with an
+# explicit --target the target attrs are omitted, and a restricted policy would
+# otherwise be invisible to the guard, which defaults to needs_passwordless and
+# would let the host be staged only to fail midway on non-interactive sudo.
+# Require the fields to sit inside the always-emitted attrsets, outside any
+# NIXHOMESERVER_DEPLOY_NEED_TARGET block.
+deploy_policy_block="$(awk '
+  /^  nix_flake_json/ { in_block = 1 }
+  in_block && /^'"'"'\)/ { in_block = 0 }
+  in_block { print }
+' scripts/deploy.sh)"
+for policy_field in \
+  'localAdminSudo = vars.localAdminSudo;' \
+  'localAdminSudoDeployRequiresPasswordlessSudo = vars.localAdminSudoPolicy.deployRequiresPasswordlessSudo;' \
+  'localAdminSudoDeployBlockedReason = vars.localAdminSudoPolicy.deployBlockedReason;'; do
+  if [[ "$(grep -Fxc "    $policy_field" <<<"$deploy_policy_block")" -ne 1 ]]; then
+    echo "❌ The deploy config must emit the local-admin sudo policy unconditionally, not only when the target is resolved: ${policy_field}"
+    printf '%s\n' "$deploy_policy_block"
+    exit 1
+  fi
+done
+
+# Behavioural check: an explicit --target run must still carry the policy
+# through to the guard.
+target_guard_output="$(
+  DEPLOY_DRY_RUN=1 bash scripts/deploy.sh --target "local-admin@127.0.0.1" --action test 2>&1
+)" && target_guard_status=0 || target_guard_status=$?
+if [[ "$target_guard_status" -ne 0 ]] \
+  || ! rg -Fq "local admin sudo policy=bootstrap-nopasswd" <<<"$target_guard_output"; then
+  echo "❌ An explicit --target deploy did not evaluate and report the sudo policy."
+  printf '%s\n' "$target_guard_output"
+  exit 1
+fi
+
+# vars.nix is merge=ours and never updated from upstream, so an existing host's
+# file predates identity.localAdminSudo. It must still evaluate, defaulting to
+# the pre-change behaviour, rather than failing with a bare missing-attribute.
+legacy_vars_json="$(nix eval --json --impure --expr "
+  let
+    lib = (import <nixpkgs> {}).lib;
+    base = import ./vars.nix { inherit lib; };
+    legacyIdentity = builtins.removeAttrs base.identity [ \"localAdminSudo\" ];
+    legacy = base // { identity = legacyIdentity; };
+  in
+    (import ./lib/derive-vars.nix {
+      inherit lib;
+      settings = legacy;
+    }).localAdminSudoPolicy
+" 2>/dev/null || true)"
+if ! jq -e '
+  .policy == "bootstrap-nopasswd"
+  and .deployRequiresPasswordlessSudo
+  and .recoveryViaConsoleCredential
+' <<<"$legacy_vars_json" >/dev/null 2>&1; then
+  echo "❌ A vars.nix without identity.localAdminSudo must still evaluate with the pre-change policy."
+  printf '%s\n' "$legacy_vars_json"
+  exit 1
+fi
+
 require_fixed modules/Core_Modules/homepage/services.nix \
   'Bypasses every guarded deploy check and changes the boot profile' \
   "The emergency rollback guide must state that it bypasses guarded deploy checks."

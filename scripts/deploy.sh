@@ -136,15 +136,19 @@ deploy_config_json="$(NIXHOMESERVER_DEPLOY_NEED_HOSTNAME="$([[ -z "$hostname" ]]
     buildCores = vars.buildCores;
     hostPlatform = vars.hostPlatform;
     serverSSHPubKey = vars.serverSSHPubKey;
+    # The sudo policy is a property of this configuration, not of the resolved
+    # target, so it is always emitted: with --target set the guard must still
+    # see a restricted policy and refuse before staging, instead of falling
+    # back to "unknown" and failing midway on non-interactive sudo.
+    localAdminSudo = vars.localAdminSudo;
+    localAdminSudoDeployRequiresPasswordlessSudo = vars.localAdminSudoPolicy.deployRequiresPasswordlessSudo;
+    localAdminSudoDeployBlockedReason = vars.localAdminSudoPolicy.deployBlockedReason;
   }
   // lib.optionalAttrs (builtins.getEnv "NIXHOMESERVER_DEPLOY_NEED_HOSTNAME" == "1") {
     hostname = vars.hostname;
   }
   // lib.optionalAttrs (builtins.getEnv "NIXHOMESERVER_DEPLOY_NEED_TARGET" == "1") {
     localAdminUser = if vars ? localAdminUser then vars.localAdminUser else vars.identity.localAdminUser;
-    localAdminSudo = vars.localAdminSudo;
-    localAdminSudoDeployRequiresPasswordlessSudo = vars.localAdminSudoPolicy.deployRequiresPasswordlessSudo;
-    localAdminSudoDeployBlockedReason = vars.localAdminSudoPolicy.deployBlockedReason;
     serverLanIP = vars.serverLanIP;
   }
 ')"
