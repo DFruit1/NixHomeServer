@@ -191,8 +191,8 @@ defect, not verbosity: if the `Goal` line needs the word "and", it is two asks.
 | Lane | Shape |
 |---|---|
 | `planner` | Implementation cards use the slots above. An audit card states the **question**, not a proposed solution, plus the evidence already in hand. |
-| `feature-auditor`, `audit-nixos` | The body is a question: name the slice and the single question to answer. No solution, no fix plan. |
-| `bulk-go`, `local-impl`, `astra` | A follow-up card is a one-line `Goal:` plus the single acceptance criterion the new work must satisfy. The parent card already holds the context. |
+| `feature-auditor` | The body is a question: name the slice and the single question to answer. No solution, no fix plan. |
+| `bulk-go`, `local-impl` | A follow-up card is a one-line `Goal:` plus the single acceptance criterion the new work must satisfy. The parent card already holds the context. |
 | `reviewer` | `Goal:` is the verdict you owe; the exact commits under review go in `Notes:`. Review against the parent cards' criteria, do not restate them. |
 | any lane, human gate | Use the template below. |
 
