@@ -561,10 +561,78 @@ else
   fi
 fi
 
-# --- The deploy script's own cleanup path ----------------------------------
+# --- Execute the actual production remote heredoc --------------------------
+# Only the executor is stubbed: extraction, EXIT trap and helper are real.
+ensure_tools python3 tar
+python3 - "$deploy_script" "$helper" "$test_root" <<'PY'
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tarfile
+
+source, helper, root = map(Path, sys.argv[1:])
+text = source.read_text()
+marker = 'ssh -T "$build_host" "$remote_command" <<\'EOF\'\n'
+assert text.count(marker) == 1, "remote wrapper marker is not unique"
+wrapper = text.split(marker, 1)[1].split('\nEOF\n', 1)[0]
+fixture = root / 'wrapper-fixture'
+(fixture / 'scripts/helpers').mkdir(parents=True)
+(fixture / 'scripts/helpers/deploy-archive-cleanup.sh').write_bytes(helper.read_bytes())
+executor = fixture / 'scripts/helpers/deploy-executor.sh'
+executor.write_text('exit "$STUB_EXECUTOR_STATUS"\n')
+namespace = root / 'wrapper-staging'
+namespace.mkdir(mode=0o700)
+work = root / 'wrapper-work'
+work.mkdir()
+for status in (0, 17):
+    archive = namespace / f'nixhomeserver-deploy.EXIT00{status:02d}.tar'
+    with tarfile.open(archive, 'w') as tar:
+        tar.add(fixture / 'scripts', arcname='scripts')
+    archive.chmod(0o600)
+    env = dict(os.environ, REMOTE_ARCHIVE=str(archive),
+               NIXHOMESERVER_DEPLOY_ARCHIVE_NAMESPACE=str(namespace),
+               STUB_EXECUTOR_STATUS=str(status), TMPDIR=str(work))
+    result = subprocess.run(['bash', '-s'], input=wrapper, text=True,
+                            env=env, cwd=root, capture_output=True)
+    assert result.returncode == status, (result.returncode, result.stderr)
+    assert not archive.exists(), f'exit {status}: archive survived EXIT cleanup'
+    assert not list(work.iterdir()), f'exit {status}: extracted tree survived'
+    print(f'  ok: actual remote wrapper exit {status}, immediate archive/tree removal')
+
+# Corrupt tar never supplies a trusted helper. Leave it for expiry, not bare rm.
+archive = namespace / 'nixhomeserver-deploy.BADTAR00.tar'
+archive.write_text('not a tar archive')
+result = subprocess.run(['bash', '-s'], input=wrapper, text=True,
+                        env=dict(env, REMOTE_ARCHIVE=str(archive)),
+                        cwd=root, capture_output=True)
+assert result.returncode != 0, 'corrupt tar unexpectedly succeeded'
+assert archive.exists(), 'extraction failure used an unsafe removal fallback'
+assert not list(work.iterdir()), 'extraction failure leaked working directory'
+print('  ok: extraction failure retains archive for expiry without unsafe deletion')
+
+# A tar error after the helper was extracted must still use it before cd.
+archive = namespace / 'nixhomeserver-deploy.PARTIAL0.tar'
+with tarfile.open(archive, 'w') as tar:
+    tar.add(fixture / 'scripts/helpers/deploy-archive-cleanup.sh',
+            arcname='scripts/helpers/deploy-archive-cleanup.sh')
+    tar.add(executor, arcname='scripts/helpers/deploy-executor.sh')
+# Force a real read error in a later member, after the complete helper member.
+with tarfile.open(archive) as tar:
+    last = tar.getmember('scripts/helpers/deploy-executor.sh')
+    cut_at = last.offset_data
+archive.write_bytes(archive.read_bytes()[:cut_at])
+result = subprocess.run(['bash', '-s'], input=wrapper, text=True,
+                        env=dict(env, REMOTE_ARCHIVE=str(archive)),
+                        cwd=root, capture_output=True)
+assert result.returncode != 0, 'truncated tar unexpectedly succeeded'
+assert not archive.exists(), 'partial extraction lost access to available helper'
+assert not list(work.iterdir()), 'partial extraction leaked working directory'
+print('  ok: partial extraction failure uses available constrained helper before cd')
+PY
 
 require_match "$deploy_script" \
-  'bash \./scripts/helpers/deploy-archive-cleanup\.sh remove "\$REMOTE_ARCHIVE"' \
+  'bash "\$tmpdir/scripts/helpers/deploy-archive-cleanup\.sh" remove "\$REMOTE_ARCHIVE"' \
   "deploy.sh must remove the staged archive through the namespace helper"
 forbid_match "$deploy_script" \
   'rm -rf "\$tmpdir" "\$REMOTE_ARCHIVE"' \

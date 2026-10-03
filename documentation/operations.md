@@ -409,6 +409,59 @@ command arguments, or shell history.
 - External USB media auto-mount root: `/mnt/external-usb/` (drives mount on insertion; shared `_USB` view at `/mnt/usb-access-view` is gated to `usb-access`)
 - Guarded server shutdown from the desktop: `scripts/admin/desktop-server-shutdown.sh`
 
+## Deploy Archive Staging Rollout (human-gated)
+
+Remote archive upload requires
+`/var/lib/nixhomeserver-deploy/archive-staging` on every selected build host,
+not only the activation target. `base-system` declares this directory as
+`0700 <localAdminUser>:<localAdminUser>` with `mM:48h` tmpfiles expiry. Archive
+files are `0600`; immediate completion/transfer-failure cleanup uses the
+validated namespace helper. A disconnected session or extraction failure
+without a usable helper leaves an archive for independent 48-hour expiry.
+Missing, symlinked, non-private or inaccessible staging fails closed; do not
+fall back to `/tmp` or delete caller-supplied paths manually.
+
+There is an unresolved traversal prerequisite, not merely an installation
+step. The stamp writer installs `/var/lib/nixhomeserver-deploy` as root-owned
+`0700` on each successful guarded test. A non-root SSH user cannot traverse
+that parent even when it owns the `0700` child. Creating the child with tmpfiles
+alone does not fix this. The offline proof
+`bash scripts/tests/test-deploy-archive-permissions.sh` uses isolated user
+namespace uid mappings: the SSH-user stand-in successfully stages in a
+reachable owner-only control directory, but cannot stage below the root-only
+parent or read a root-only stamp. This proof needs `unshare`, `setpriv` and
+subordinate uid/gid mappings; failure to obtain them is an evidence gap, not
+permission to change host policy.
+
+Before rollout, a human must approve a compatible namespace/traversal design
+for the non-root build-host SSH user while retaining root-only stamp and
+transaction access. Do not chmod/chown the deploy-state parent, add an ACL,
+switch SSH to root, widen sudo, or override the namespace to work around this
+blocker. Any approved design must also survive the stamp writer reasserting
+parent mode `0700`; a one-time manual permission change is not a rollout plan.
+
+Once that policy/design is resolved and validated, install its declarative
+staging and expiry configuration through an explicitly approved guarded
+`test` then `switch`, never an ordinary raw `nixos-rebuild`. For a target that
+lacks staging, an approved guarded local-build test/switch
+(`./scripts/deploy.sh --build-locally --action test`, then the same with
+`--action switch`) avoids the remote archive-upload bootstrap dependency.
+This is a one-time rollout exception to dashboard-selected allocation, not a
+new routine default, and it does not itself resolve parent traversal. An
+independent build host needs its own approved configuration rollout; activating
+the target alone cannot provision another machine.
+
+Before resuming remote allocation, verify as the actual non-root SSH user on
+each build host that the real helper's `namespace` check succeeds, the staging
+directory is non-symlinked and mode `0700` with the intended owner, and a test
+archive is created `0600` and removed through the helper. Separately verify
+that the declarative 48-hour rule and periodic `systemd-tmpfiles-clean.timer`
+are installed and active, and that root-only stamps/transaction state remain
+inaccessible to that user. Run the approved guarded test before switch to
+refresh the source-bound v2 stamp. Offline cleanup tests are not evidence of
+live rollout safety, and this runbook does not authorize deployment or change
+emergency rollback policy.
+
 ## Guarded Server Shutdown
 
 The server ships `nixhomeserver-shutdown-guard`, a guarded, non-sudo shutdown
