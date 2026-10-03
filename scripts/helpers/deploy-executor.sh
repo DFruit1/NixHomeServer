@@ -25,6 +25,12 @@ accept-flake-config = true}"
 : "${HOSTNAME_ARG:?missing HOSTNAME_ARG}"
 : "${DEBUG_MODE:=false}"
 : "${BUILD_LOCALLY:=false}"
+# Console mode runs the guarded deploy as this machine's root identity and
+# opens no SSH connection to the target, so every non-interactive sudo the
+# flow needs is already root. It is the implemented route for a host whose
+# vars.identity.localAdminSudo policy is "password-authenticated", where the
+# local admin has no passwordless grant for the unattended flow to rely on.
+: "${CONSOLE_MODE:=false}"
 : "${BUILD_MODE:?missing BUILD_MODE}"
 : "${LOCAL_BUILD_SLOTS:?missing LOCAL_BUILD_SLOTS}"
 : "${REMOTE_BUILD_SLOTS:?missing REMOTE_BUILD_SLOTS}"
@@ -73,6 +79,14 @@ human_bytes() {
 }
 
 target_is_local() {
+  # Console mode is a local-root deploy by construction: deploy.sh refuses it
+  # together with --target/--build-host, so the target is this machine and no
+  # SSH hop exists. Every target_command therefore runs here, as root, which is
+  # what makes the restricted sudo policy deployable without a passwordless
+  # grant.
+  if [[ "$CONSOLE_MODE" == "true" ]]; then
+    return 0
+  fi
   [[ "$BUILD_LOCALLY" != "true" && "$TARGET_HOST" == "$BUILD_HOST" ]]
 }
 
@@ -845,6 +859,15 @@ local built_toplevel=""
 local -a cmd=()
 
 arm_deploy_transaction_traps
+
+# Console mode claims every target step runs as this machine's root identity.
+# Refuse that claim when it is false rather than letting sudo prompts or
+# failed checks surface later: the restricted-policy route depends on it.
+if [[ "$CONSOLE_MODE" == "true" && "$(id -u)" != "0" ]]; then
+  echo "blocked: --console deploys to this host as root; run 'sudo ./scripts/deploy.sh --console ...'" >&2
+  return 1
+fi
+
 configure_nix_build_allocation_for_action
 
 if [[ "$ACTION" == "test" ]]; then
@@ -888,7 +911,7 @@ capture_previous_state
 case "$ACTION" in
   test)
     build_nixos_rebuild_command cmd \
-      build "$HOSTNAME_ARG" "$BUILD_LOCALLY" "$TARGET_HOST" "$BUILD_HOST"
+      build "$HOSTNAME_ARG" "$BUILD_LOCALLY" "$TARGET_HOST" "$BUILD_HOST" "$CONSOLE_MODE"
     echo "building and copying the NixOS closure without activating it"
     built_toplevel="$("${cmd[@]}")"
     deploy_validate_toplevel_path "$built_toplevel" || {

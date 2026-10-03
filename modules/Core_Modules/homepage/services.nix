@@ -470,8 +470,8 @@ let
     }
     {
       title = "Console deploy (restricted sudo)";
-      command = "sudo ./scripts/deploy.sh --action test";
-      detail = "Run guarded deploys from the server console as the local admin while vars.identity.localAdminSudo = \"password-authenticated\". One interactive sudo prompt covers the whole deploy. Then run --action switch. See operations.md for the full transition and restore procedure.";
+      command = "sudo ./scripts/deploy.sh --console --action test";
+      detail = "The deploy route for a host running vars.identity.localAdminSudo = \"password-authenticated\", and the only way to transition onto that policy: --console runs the whole guarded flow as this machine's root identity with no SSH hop, so every downstream sudo is already root. Run it from the server console as the local admin; one interactive sudo prompt covers the deploy. Then run the same command with --action switch. It builds locally, because the restricted policy leaves the local admin unable to write the Nix store over SSH. See operations.md for the full transition and restore procedure.";
     }
     {
       title = "Failed services";

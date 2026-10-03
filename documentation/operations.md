@@ -410,8 +410,8 @@ The restricted policy is not a mechanical containment boundary. Even a sudoers
 rule limited to `nixos-rebuild` can activate an arbitrary caller-chosen closure
 and so obtain root, and any deployment tool runs as the local admin. What the
 restricted policy does is remove a passwordless, unattended, root-equivalent
-grant from a network-reachable SSH account — at the cost of requiring console
-access (or an interactive password prompt) for privileged operations.
+grant from a network-reachable SSH account — at the cost of running deploys from
+the server console.
 
 Nix daemon trust is gated by the same policy because `nix.settings.trusted-users`
 is root-equivalent on its own: the official nix.conf manual describes trusted
@@ -422,55 +422,58 @@ change system profiles without sudo.
 
 ### Hardening the local admin (the supported transition)
 
-Each step is run from the workstation unless it says otherwise. The guard asks
-the target host which policy it is running (`/etc/nixhomeserver/local-admin-sudo-policy`,
-written by each activation), so the change deploys from the workstation while the
-host is still on the bootstrap grant; the grant only disappears once that
-activation lands.
+The transition is a **console deploy**, not a workstation deploy. This is not a
+convenience: `--action test` activates the closure, so the very activation that
+removes the passwordless grant also removes the authorization the post-activation
+health gates, stamp write, rollback cancellation and lock release need. A remote
+transition therefore cannot finish its own transaction — the deploy guard refuses
+it before staging rather than letting it break halfway.
 
-1. Confirm SSH key access as the local admin still works, that the repository and
-   the private age identity are available, and that `nixos-rebuild`/`kanidm`/
-   passkey setup no longer needs console work.
-2. Set `identity.localAdminSudo = "password-authenticated";` in `vars.nix`.
-3. Deploy that change **from the workstation** — this is the transition deploy
-   and is expected to be allowed:
-   `./scripts/deploy.sh --action test` then `./scripts/deploy.sh --action switch`.
-   The preflight reports `target still runs bootstrap-nopasswd; this activation
-   removes unattended passwordless sudo from …`.
-4. After that activation the host no longer accepts non-interactive sudo, so the
-   workstation deploy is refused with the console route in the message. That is
-   expected. Later deploys run **at the server console** as the local admin:
+1. Confirm console access to the server as the local admin with the reconciled
+   local-console password, that the repository checkout the console will use is
+   present and current (the install phase persists one at
+   `/mnt/persist/etc/nixos`; keep it current with `git fetch`/`git pull`), and
+   that `kanidm`/passkey setup no longer needs an unattended deploy.
+2. Set `identity.localAdminSudo = "password-authenticated";` in `vars.nix` on the
+   console checkout.
+3. Deploy it **from the server console** as the local admin:
 
    ```bash
-   sudo ./scripts/deploy.sh --action test
-   sudo ./scripts/deploy.sh --action switch
+   sudo ./scripts/deploy.sh --console --action test
+   sudo ./scripts/deploy.sh --console --action switch
    ```
 
-   Both enter the reconciled local-console password once at the sudo prompt; the
-   whole guarded deploy then runs under that one cached sudo credential, so its
-   non-interactive `sudo` calls still work. `sudo -v` refreshes the cached
-   credential mid-session if it lapses. The console needs a checkout of this
-   repository, which the install phase already persists at
-   `/mnt/persist/etc/nixos`; run deploys from there and keep it current with git.
-   Do not pass `--target`: at the console the target is the local machine.
+   `--console` is the implemented route, not advice: it runs the whole guarded
+   flow as this machine's root identity with no SSH connection to the target, so
+   every non-interactive `sudo` the executor needs is already root. It builds
+   locally (`--build-mode local` is the only accepted mode, because a remote or
+   distributed build would run over SSH as the local admin, who under this policy
+   is no longer a trusted Nix user and cannot write the store). Both commands
+   enter the reconciled local-console password once at the sudo prompt.
+   The preflight reports `console deploy running as root on this host; downstream
+   sudo needs no grant`.
 
-   Console caveat: `sudo` may reset `HOME`, and the `balanced` and
-   `maximum-effort` build modes discover your SSH identity from `~/.ssh/config`
-   for the distributed-builder record. If the console deploy cannot resolve it,
-   build with `--build-mode local` or `--build-mode remote` instead, or run
-   `sudo --preserve-env=HOME ./scripts/deploy.sh --action test`.
+4. Later deploys under the restricted policy also run at the console with the
+   same two commands. A workstation deploy is refused up front, naming this
+   route, because it would reach the host over SSH as an account with no
+   passwordless grant. A workstation deploy that still *asks* for the
+   `bootstrap-nopasswd` policy is refused too, if the host has already activated
+   `password-authenticated`, for the same reason.
+
+Console caveat: `sudo` may reset `HOME`, which `git` and the repository paths
+use. If the console deploy cannot find its checkout, run
+`sudo --preserve-env=HOME ./scripts/deploy.sh --console --action test`, or log in
+as root and pass `--console` without a further `sudo`.
 
 ### Restoring unattended deploys
 
 At the console, set `identity.localAdminSudo = "bootstrap-nopasswd"` in
-`vars.nix`, then run `sudo ./scripts/deploy.sh --action test` and
-`sudo ./scripts/deploy.sh --action switch`. Once that activation lands, the
-workstation deploy path works again with no further action.
+`vars.nix`, then run `sudo ./scripts/deploy.sh --console --action test` and
+`sudo ./scripts/deploy.sh --console --action switch`. Once that activation lands,
+the workstation deploy path works again with no further action.
 
-The console deploy only needs *one* interactive prompt, because the guarded flow
-then runs as root: every downstream `sudo` in the executor succeeds without a
-grant. `scripts/deploy.sh` detects this and reports
-`deploy is running as root on …; downstream sudo needs no grant`.
+`--console` needs *one* interactive prompt, because the guarded flow then runs as
+root: every downstream `sudo` in the executor succeeds without a grant.
 
 ### Emergency recovery under the restricted policy
 

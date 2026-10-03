@@ -12,7 +12,7 @@ ensure_default_nix_config
 
 usage() {
   cat <<'EOF'
-Usage: scripts/deploy.sh [--target <user@host>] [--build-mode local|remote|balanced|maximum-effort] [--build-host <user@host>] [--build-locally] [--action test|switch] [--hostname <flake-hostname>] [--debug]
+Usage: scripts/deploy.sh [--target <user@host>] [--build-mode local|remote|balanced|maximum-effort] [--build-host <user@host>] [--build-locally] [--console] [--action test|switch] [--hostname <flake-hostname>] [--debug]
 
 Stage the current repo and run a NixOS rebuild.
 
@@ -31,6 +31,13 @@ Fast mode performs high-value checks: host evaluation, build and target
 free-space checks, a live test activation, failed-unit and route checks, and the
 authenticated Homepage canary when enabled.
 
+`--console` runs the guarded deploy as this machine's root identity instead of
+reaching the target over SSH. It is the implemented route for a host whose
+vars.identity.localAdminSudo policy is "password-authenticated": run it from the
+server console as the local admin, and every non-interactive sudo the deploy
+needs is already root. It must not be combined with --target or --build-host,
+because it makes no remote connection.
+
 `--action test` records the exact repository hash and NixOS closure only after
 all gates pass. `--action switch` refuses changed source and commits that exact
 tested closure as the boot default. A failed or interrupted activation is rolled
@@ -46,6 +53,8 @@ target_host=""
 build_host=""
 build_locally=false
 build_mode_override=""
+consult_dashboard_build_mode=true
+console=false
 action="test"
 hostname=""
 debug=false
@@ -71,6 +80,10 @@ while (($# > 0)); do
       ;;
     --build-locally)
       build_locally=true
+      shift
+      ;;
+    --console)
+      console=true
       shift
       ;;
     --action)
@@ -109,6 +122,16 @@ if [[ "$build_locally" == "true" && -n "$build_host" ]]; then
 fi
 if [[ "$build_locally" == "true" && -n "$build_mode_override" ]]; then
   echo "blocked: --build-locally cannot be combined with --build-mode" >&2
+  exit 1
+fi
+# Console mode is the local-root route: it opens no SSH connection to the
+# target, so it cannot be combined with any option that names a remote host.
+if [[ "$console" == "true" && -n "$target_host" ]]; then
+  echo "blocked: --console cannot be combined with --target; it deploys to this host" >&2
+  exit 1
+fi
+if [[ "$console" == "true" && -n "$build_host" ]]; then
+  echo "blocked: --console cannot be combined with --build-host; it makes no remote connection" >&2
   exit 1
 fi
 
@@ -178,23 +201,47 @@ if [[ ! "$hostname" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ ]]; then
   exit 1
 fi
 
-if [[ -z "$target_host" ]]; then
+if [[ "$console" == "true" ]]; then
+  # Console mode deploys to this machine and keeps no SSH hop to the target, so
+  # the executor's local path runs every privileged step as this root identity.
+  # The name is only used for messages and for refusing an accidental --target
+  # above.
+  target_host="console"
+elif [[ -z "$target_host" ]]; then
   local_admin_user="$(jq -er '.localAdminUser' <<<"$deploy_config_json")"
   target_address="$(jq -er '.serverLanIP' <<<"$deploy_config_json")"
   target_host="${local_admin_user}@${target_address}"
 fi
+console_mode="$console"
 
-# Refuse early when the *target host* cannot authenticate this host's
-# non-interactive sudo contract, instead of failing midway through a staged
-# deploy. The guard asks the target which policy it is running, so the
-# bootstrap-to-restricted transition deploy is still authorized (the grant only
-# disappears when that activation lands) while an already-restricted host is
-# refused up front with the console route in the message. A passwordless deploy
-# sudo grant remains the operator's explicit choice in
-# vars.identity.localAdminSudo; this only reports the consequence of choosing
-# otherwise.
+# Refuse early when this deploy cannot authenticate the target's non-interactive
+# sudo contract, instead of failing midway through a staged deploy. A
+# restricted policy has exactly one route: the --console deploy run as root at
+# the server console, which is also the only supported way to transition onto
+# that policy, because the activation that removes the grant also removes the
+# authorization its own post-activation steps need. A passwordless deploy sudo
+# grant remains the operator's explicit choice in vars.identity.localAdminSudo;
+# this only reports the consequence of choosing otherwise.
 source "$script_dir/helpers/local-admin-sudo-guard.sh"
 enforce_local_admin_sudo_policy
+
+if [[ "$console" == "true" ]]; then
+  # Console mode is the local-root route for a host whose sudo policy is
+  # "password-authenticated". It also builds here: the restricted policy drops
+  # the local admin from nix.settings.trusted-users, so a distributed or remote
+  # build driven over SSH as that account could not write the Nix store. Local
+  # mode uses every slot this machine has, which is the full server allocation.
+  if [[ -n "$build_mode_override" && "$build_mode_override" != "local" ]]; then
+    echo "blocked: --console only builds with --build-mode local; remote and distributed builds run over SSH as the local admin, which the restricted policy leaves unable to write the Nix store" >&2
+    exit 1
+  fi
+  build_mode="local"
+  build_locally=true
+  build_host=""
+  # No SSH hop exists, so the dashboard-selected allocation on the target is
+  # not this deploy's to read.
+  consult_dashboard_build_mode=false
+fi
 
 if [[ -n "$build_mode_override" ]]; then
   build_mode="$build_mode_override"
@@ -204,7 +251,7 @@ elif [[ -n "$build_host" ]]; then
   build_mode="remote"
 else
   build_mode="$configured_build_mode"
-  if [[ "${DEPLOY_DRY_RUN:-}" != "1" ]]; then
+  if [[ "${DEPLOY_DRY_RUN:-}" != "1" && "$consult_dashboard_build_mode" == "true" ]]; then
     if dashboard_build_mode="$(read_dashboard_build_mode "$target_host")"; then
       echo "build mode: using dashboard-selected '${dashboard_build_mode}' (vars.nix default '${configured_build_mode}')"
       build_mode="$dashboard_build_mode"
@@ -295,6 +342,7 @@ if [[ "${DEPLOY_DRY_RUN:-}" == "1" ]]; then
   fi
   echo "hostname=${hostname}"
   echo "action=${action}"
+  echo "console=${console_mode}"
   echo "debug=${debug}"
   case "$local_nix_gc_mode" in
     capacity)
@@ -307,7 +355,7 @@ if [[ "${DEPLOY_DRY_RUN:-}" == "1" ]]; then
   if [[ "$action" == "test" ]]; then
     dry_run_rebuild_command=()
     build_nixos_rebuild_command dry_run_rebuild_command \
-      build "$hostname" "$build_locally" "$target_host" "$build_host"
+      build "$hostname" "$build_locally" "$target_host" "$build_host" "$console_mode"
     echo -n "rebuild_command="
     print_quoted_command "${dry_run_rebuild_command[@]}"
     echo "activation_command=activate the returned closure through the guarded target-side test unit"
@@ -372,6 +420,7 @@ if [[ "$build_locally" == "true" ]]; then
     HOSTNAME_ARG="$hostname" \
     DEBUG_MODE="$debug" \
     BUILD_LOCALLY="$build_locally" \
+    CONSOLE_MODE="$console_mode" \
     BUILD_MODE="$build_mode" \
     LOCAL_BUILD_SLOTS="$local_build_slots" \
     REMOTE_BUILD_SLOTS="$remote_build_slots" \
