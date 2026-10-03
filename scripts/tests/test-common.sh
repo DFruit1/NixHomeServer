@@ -4,6 +4,7 @@ set -euo pipefail
 
 TESTS_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$TESTS_REPO_ROOT/scripts/helpers/repo-common.sh"
+source "$TESTS_REPO_ROOT/scripts/helpers/remote-eval.sh"
 init_repo_root
 ensure_default_nix_config
 

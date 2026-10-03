@@ -122,6 +122,59 @@ a workaround without first confirming the DNS and LAN path.
 
 ---
 
+## Kanban Card Authoring
+
+Hermes injects this file into every agent working in a checkout or worktree, so
+this is the single home for the board's card conventions. Any profile may create
+a card — the dispatcher appends the kanban lifecycle tools to every worker, not
+just the orchestrator — so these rules bind all of them.
+
+The first reader of a card is a human deciding whether to approve it, in a column
+view, usually mid-review of something else. Write for that reader.
+
+* **Title** — imperative, under 60 characters, names the outcome. It is the
+  card's label in every column and must be distinguishable at a glance from its
+  siblings. `Fix: expire orphaned deploy archives in a private staging dir`, not
+  `Address M6 from audit t_d05010f1`.
+* **Body** — lead with the ask, in one line, so a reader who stops after line
+  one still knows what you want:
+
+  ```
+  Goal: <one sentence — the concrete change or decision>
+  ```
+
+  Then at most three bullets: what changes, where (`file:line`), how it is
+  verified. Then a `Constraints:` block, one item per line. Nothing else.
+* **Never open with provenance.** `Decision t_258bbbce from audit t_d05010f1:`
+  costs a line and says nothing the `blocked by` field does not already show.
+* **Never restate the audit's reasoning.** It lives in the audit report. One
+  clause, then move on.
+* **Never inline a call-site dump.** `sudo call sites: :324, :327, :491, :533,
+  :551…` is unreadable at a glance and redundant with grep. Name the file and
+  say how many.
+* **Approval gates are the worst case**, because a human is being asked to
+  authorise something irreversible. Put the question first, with options:
+
+  ```
+  Decision needed: <the question, as a choice>
+  Options:
+    A) <option> — <consequence in a few words>
+    B) <option> — <consequence in a few words>
+  If neither: <what you would need to design the third>
+  Context: <one or two sentences, with file:line>
+  Constraints: <what must not change>
+  ```
+
+  Do not bury the question under the evidence that produced it.
+
+**Answering a gate.** A comment does not change card status. Record the decision
+as a comment, then unblock — the dispatcher only claims `ready` cards, so an
+unanswered `blocked` card never runs, and a commented-but-still-blocked card
+never runs either. A `running` card needs only the comment: the dispatcher
+live-steers new operator comments into the worker.
+
+---
+
 ## Repo Map (read this before exploring)
 
 * `modules/catalog.nix` — single source of truth for apps, integrations, owned secrets, and guarded services. Start here for any app change.

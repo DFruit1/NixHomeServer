@@ -20,6 +20,12 @@
 /custom_apps/node/apps/*/test-results/
 /custom_apps/node/apps/*/playwright-report/
 
+# Hermes kanban worktrees. `hermes kanban create --workspace worktree` anchors
+# each card's git worktree here, one directory per task id. Without this the
+# directories show up as untracked non-ignored files and create_deploy_repo_archive
+# (scripts/helpers/repo-common.sh) refuses to stage a deploy.
+/.worktrees/
+
 # impeccable-ignore-start
 # Ephemeral output, runtime state, and per-dev overrides (unanchored on purpose).
 # Shared artifacts stay tracked: .impeccable/config.json, .impeccable/design.json,

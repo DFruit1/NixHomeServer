@@ -136,6 +136,7 @@ test_scripts=(
   scripts/tests/test-rust-source-isolation.sh
   scripts/tests/test-frontend-build-isolation.sh
   scripts/tests/test-nix-eval-cache.sh
+  scripts/tests/test-remote-eval-helper.sh
   scripts/tests/test-auth-gateway-compression.sh
   scripts/tests/test-app-registration.sh
   scripts/tests/test-shell-template.sh
