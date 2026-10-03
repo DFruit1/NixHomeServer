@@ -24,6 +24,9 @@ accept-flake-config = true}"
 : "${ACTION:?missing ACTION}"
 : "${HOSTNAME_ARG:?missing HOSTNAME_ARG}"
 : "${DEBUG_MODE:=false}"
+# Only set to true by this transaction after a completed full repository
+# validation; the stamp attestation is derived from it.
+debug_full_validation_passed=false
 : "${BUILD_LOCALLY:=false}"
 : "${BUILD_MODE:?missing BUILD_MODE}"
 : "${LOCAL_BUILD_SLOTS:?missing LOCAL_BUILD_SLOTS}"
@@ -780,18 +783,30 @@ clear_deploy_transaction_traps() {
 
 write_test_stamp() {
   local toplevel="$1"
+  local debug_validated="false"
   local gcroot_dir_quoted gcroot_path_quoted recovery_marker source_hash_quoted stamp_path_quoted toplevel_quoted write_script
 
   assert_deploy_lock_owned
   recovery_marker="$(deploy_recovery_marker_path)"
-  deploy_render_test_stamp "$source_hash" "$toplevel" >/dev/null
+  # The attestation is only ever true when this very transaction ran the full
+  # repository validation, so a validator failure can never leave a usable
+  # true attestation behind.
+  if [[ "$DEBUG_MODE" == "true" ]]; then
+    [[ "$debug_full_validation_passed" == "true" ]] || {
+      echo "blocked: debug validation did not complete successfully; refusing to record a debug attestation" >&2
+      return 1
+    }
+    debug_validated=true
+  fi
+  deploy_render_test_stamp "$source_hash" "$toplevel" "$debug_validated" >/dev/null
   source_hash_quoted="$(printf '%q' "$source_hash")"
   stamp_path_quoted="$(printf '%q' "$test_stamp_path")"
   gcroot_dir_quoted="$(printf '%q' "$test_gcroot_dir")"
   gcroot_path_quoted="$(printf '%q' "$test_gcroot_path")"
   toplevel_quoted="$(printf '%q' "$toplevel")"
+  debug_validated_quoted="$(printf '%q' "$debug_validated")"
 
-  write_script="set -e; test -f ${deploy_lock_dir}/owner && test \"\$(cat ${deploy_lock_dir}/owner)\" = ${deploy_lock_token} && ! test -e ${recovery_marker} && ! test -e $(deploy_recovery_complete_marker_path); install -d -m 0700 $(printf '%q' "$deploy_state_dir"); install -d $gcroot_dir_quoted; if test -e $gcroot_path_quoted && ! test -L $gcroot_path_quoted; then echo 'blocked: tested closure GC root is not a symlink' >&2; exit 1; fi; ln -sfn $toplevel_quoted $gcroot_path_quoted; tmp=\$(mktemp ${stamp_path_quoted}.tmp.XXXXXX); trap 'rm -f \"\$tmp\"' EXIT; printf 'version=1\\nsource_hash=%s\\ntoplevel=%s\\n' $source_hash_quoted $toplevel_quoted >\"\$tmp\"; chmod 0600 \"\$tmp\"; chown root:root \"\$tmp\"; mv -f \"\$tmp\" $stamp_path_quoted; trap - EXIT"
+  write_script="set -e; test -f ${deploy_lock_dir}/owner && test \"\$(cat ${deploy_lock_dir}/owner)\" = ${deploy_lock_token} && ! test -e ${recovery_marker} && ! test -e $(deploy_recovery_complete_marker_path); install -d -m 0700 $(printf '%q' "$deploy_state_dir"); install -d $gcroot_dir_quoted; if test -e $gcroot_path_quoted && ! test -L $gcroot_path_quoted; then echo 'blocked: tested closure GC root is not a symlink' >&2; exit 1; fi; ln -sfn $toplevel_quoted $gcroot_path_quoted; tmp=\$(mktemp ${stamp_path_quoted}.tmp.XXXXXX); trap 'rm -f \"\$tmp\"' EXIT; printf 'version=2\\nsource_hash=%s\\ntoplevel=%s\\ndebug_validated=%s\\n' $source_hash_quoted $toplevel_quoted $debug_validated_quoted >\"\$tmp\"; chmod 0600 \"\$tmp\"; chown root:root \"\$tmp\"; mv -f \"\$tmp\" $stamp_path_quoted; trap - EXIT"
   target_command "sudo /bin/sh -c $(printf '%q' "$write_script")"
 }
 
@@ -802,11 +817,26 @@ load_test_stamp() {
   stamp_tmp="$(mktemp)"
   chmod 0600 "$stamp_tmp"
   printf '%s\n' "$stamp_content" >"$stamp_tmp"
-  if ! deploy_read_test_stamp "$stamp_tmp" stamped_source_hash stamped_toplevel; then
+  if ! deploy_read_test_stamp "$stamp_tmp" stamped_source_hash stamped_toplevel stamped_debug_validated; then
     rm -f "$stamp_tmp"
     return 1
   fi
   rm -f "$stamp_tmp"
+}
+
+# --debug is an explicit request for the extra assurance that only a completed
+# full repository validation can provide. Switch never reruns that validation -
+# it reuses the exact closure and source hash the passing test recorded - so the
+# attestation written by that test is what proves the assurance instead.
+assert_debug_switch_attestation() {
+  if [[ "$DEBUG_MODE" != "true" ]]; then
+    return 0
+  fi
+
+  if [[ "$stamped_debug_validated" != "true" ]]; then
+    echo "blocked: --debug switch requires a matching-source stamp that records a completed full debug validation; rerun --debug --action test" >&2
+    return 1
+  fi
 }
 
 run_health_gates() {
@@ -838,6 +868,32 @@ commit_boot_generation() {
   recovery_marker="$(deploy_recovery_marker_path)"
   boot_commit_started=true
   target_command "sudo /bin/sh -c $(printf '%q' "test -f ${deploy_lock_dir}/owner && test \"\$(cat ${deploy_lock_dir}/owner)\" = ${deploy_lock_token} && ! test -e ${recovery_marker} && ! test -e ${recovery_complete_marker} && $(printf '%q' "$target_nix_env") --profile /nix/var/nix/profiles/system --set $(printf '%q' "$toplevel") && $(printf '%q' "$toplevel/bin/switch-to-configuration") boot")"
+}
+
+# The full repository validation is expensive (10-15 minutes) and belongs to
+# the test action, where a successful validation is what makes the resulting
+# stamp worth recording. Switch reuses that same validated source and exact
+# closure, so rerunning it there would only burn the production coordinator's
+# time before an activation that adds no new assurance. Note that --debug test
+# still runs it on whichever host coordinates the deploy.
+run_debug_full_validation() {
+  if [[ "$DEBUG_MODE" != "true" || "$ACTION" != "test" ]]; then
+    return 0
+  fi
+
+  echo "running debug validation"
+  debug_full_validation_passed=false
+  # The status is returned explicitly rather than left to `set -e`, because a
+  # caller may invoke this from a condition, where errexit is not inherited.
+  if ! nix shell --inputs-from . \
+    nixpkgs#age nixpkgs#cargo nixpkgs#gawk nixpkgs#gitMinimal nixpkgs#gnugrep \
+    nixpkgs#gnused nixpkgs#gnutar nixpkgs#jq nixpkgs#nodejs \
+    nixpkgs#openssl nixpkgs#python3 nixpkgs#ripgrep nixpkgs#sqlite \
+    nixpkgs#util-linux \
+    -c bash ./scripts/validate-repo.sh --full; then
+    return 1
+  fi
+  debug_full_validation_passed=true
 }
 
 deploy_main() {
@@ -872,15 +928,7 @@ deploy_validate_source_hash "$source_hash" || {
   false
 }
 
-if [[ "$DEBUG_MODE" == "true" ]]; then
-  echo "running debug validation"
-  nix shell --inputs-from . \
-    nixpkgs#age nixpkgs#cargo nixpkgs#gawk nixpkgs#gitMinimal nixpkgs#gnugrep \
-    nixpkgs#gnused nixpkgs#gnutar nixpkgs#jq nixpkgs#nodejs \
-    nixpkgs#openssl nixpkgs#python3 nixpkgs#ripgrep nixpkgs#sqlite \
-    nixpkgs#util-linux \
-    -c bash ./scripts/validate-repo.sh --full
-fi
+run_debug_full_validation
 
 acquire_deploy_lock
 capture_previous_state
@@ -916,11 +964,13 @@ case "$ACTION" in
   switch)
     stamped_source_hash=""
     stamped_toplevel=""
+    stamped_debug_validated=""
     load_test_stamp
     if [[ "$source_hash" != "$stamped_source_hash" ]]; then
       echo "blocked: repository contents differ from the last passing test; run --action test again" >&2
       false
     fi
+    assert_debug_switch_attestation
     target_command "test -x $(printf '%q' "$stamped_toplevel/bin/switch-to-configuration")"
     schedule_rollback "45m"
     activation_started=true
