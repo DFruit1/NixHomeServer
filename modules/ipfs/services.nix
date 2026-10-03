@@ -9,6 +9,12 @@ let
   gatewayPort = vars.networking.ports.ipfsGateway;
   aliasPort = vars.networking.ports.ipfsAlias;
   swarmPort = vars.networking.ports.ipfsSwarm;
+  netbirdIp = vars.networking.netbird.ip;
+  # The swarm listener and the announced address are deliberately the same
+  # NetBird multiaddr: Kubo only ever has to be reachable by the NetBird peers
+  # this server invites, and the NetBird interface is the only one the firewall
+  # opens for the peer port anyway.
+  swarmAddr = "/ip4/${netbirdIp}/tcp/${toString swarmPort}";
   publish = pkgs.writeShellApplication {
     name = "ipfs-publish";
     runtimeInputs = [ pkgs.coreutils pkgs.systemd pkgs.util-linux config.services.kubo.package ];
@@ -83,8 +89,8 @@ in
         Addresses = {
           API = [ ];
           Gateway = "/ip4/${loopback}/tcp/${toString gatewayPort}";
-          Swarm = [ "/ip4/0.0.0.0/tcp/${toString swarmPort}" ];
-          Announce = [ "/ip4/${vars.networking.netbird.ip}/tcp/${toString swarmPort}" ];
+          Swarm = [ swarmAddr ];
+          Announce = [ swarmAddr ];
         };
         Gateway = {
           NoFetch = true;
@@ -105,6 +111,16 @@ in
     ];
 
     environment.systemPackages = [ publish ];
+
+    # The swarm listener is bound to the NetBird address, so the daemon must
+    # start after NetBird has had a chance to assign it. Ordering is a soft
+    # dependency: `wants` (not `requires`) keeps an un-enrolled overlay from
+    # taking the gateway and publication path down with it, and the upstream
+    # `Restart=on-failure` unit retries the bind until the address appears.
+    systemd.services.ipfs = {
+      wants = [ "netbird-main.service" ];
+      after = [ "netbird-main.service" ];
+    };
 
     systemd.services.ipfs-alias = {
       description = "Resolve admin distribution names to pinned IPFS content";

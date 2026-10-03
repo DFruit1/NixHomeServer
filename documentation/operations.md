@@ -1472,11 +1472,22 @@ install permission or confirmation.
 The server runs Kubo with a private HTTPS gateway at
 `https://ipfs.<server-domain>`. Its DNS name works on the home LAN and over
 NetBird; it is not a public Cloudflare route. Kubo's control API uses a local
-Unix socket. Its TCP peer port (4001) is open only on the NetBird interface,
-with public bootstrap and content routing disabled. The gateway serves only
-content that this server has pinned. An IPFS CID identifies content; it is not
-an access token or encryption. Only publish files that the intended NetBird
-peers may read, and remember that peers can retain their own copies.
+Unix socket. Its TCP peer port (4001) is bound to this server's NetBird
+address — the same multiaddr it announces to peers — and that port is open only
+on the NetBird interface, with public bootstrap and content routing disabled.
+Because the listener depends on the NetBird address existing, `ipfs.service` is
+ordered after `netbird-main.service`; if NetBird has not yet assigned the
+address, the unit retries until it can bind. Verify the listener with:
+
+```sh
+sudo -u ipfs env IPFS_PATH=/mnt/data/ipfs ipfs config Addresses.Swarm
+sudo ss -lntp 'sport = :4001'
+```
+
+The gateway serves only content that this server has pinned. An IPFS CID
+identifies content; it is not an access token or encryption. Only publish
+files that the intended NetBird peers may read, and remember that peers can
+retain their own copies.
 
 Publish a file or directory with a stable channel name:
 

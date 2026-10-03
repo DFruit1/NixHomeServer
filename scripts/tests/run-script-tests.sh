@@ -95,6 +95,7 @@ test_scripts=(
   scripts/tests/test-module-removal-evaluation.sh
   scripts/tests/test-module-disable-evaluation.sh
   scripts/tests/test-netbird-login-convergence.sh
+  scripts/tests/test-ipfs-swarm-binding.sh
   scripts/tests/test-nix-store-capacity-gc.sh
   scripts/tests/test-disk-space-cleanup.sh
   scripts/tests/test-shutdown-guard.sh
