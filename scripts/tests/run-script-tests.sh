@@ -123,6 +123,7 @@ test_scripts=(
   scripts/tests/test-browsertrix-downloader-module.sh
   scripts/tests/test-search-module.sh
   scripts/tests/test-core-runtime-safety.sh
+  scripts/tests/test-local-admin-sudo-policy.sh
   scripts/tests/test-config-input-validation.sh
   scripts/tests/test-opinionated-vars.sh
   scripts/tests/test-decrypt-age-secrets.sh

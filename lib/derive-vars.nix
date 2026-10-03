@@ -207,6 +207,11 @@ rec {
   kanidmAdminEmail = identity.adminEmail;
   serverSSHPubKey = identity.sshPublicKey;
   localAdminUser = identity.localAdminUser;
+  localAdminSudo = identity.localAdminSudo;
+  localAdminSudoPolicy = (import ./local-admin-sudo.nix {
+    localAdminUser = identity.localAdminUser;
+    policy = identity.localAdminSudo;
+  });
 
   networking = rec {
     loopbackIPv4 = advanced.loopbackIPv4;

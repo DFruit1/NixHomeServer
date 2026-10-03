@@ -175,21 +175,11 @@ in
     '';
   };
 
-  security.sudo.extraRules = [
-    {
-      users = [ localAdminUser ];
-      commands = [
-        {
-          # Guarded deploy and bootstrap scripts still invoke ordinary sudo
-          # for nixos-rebuild, systemd status, and detached switch activation.
-          # This broad deploy contract is tracked separately from identity tooling
-          # while local admin hardening is handled in deploy flow policy.
-          command = "ALL";
-          options = [ "NOPASSWD" ];
-        }
-      ];
-    }
-  ];
+  # Selected by vars.identity.localAdminSudo; see lib/local-admin-sudo.nix for
+  # the policy contract and the recovery trade-off each mode carries.
+  security.sudo.wheelNeedsPassword = vars.localAdminSudoPolicy.wheelNeedsPassword;
+
+  security.sudo.extraRules = vars.localAdminSudoPolicy.extraRules;
 
   environment.systemPackages = systemPackages;
 

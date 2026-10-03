@@ -29,6 +29,7 @@ let
       adminEmail = "admin@example.test"; # Single contact address used for both ACME and the Kanidm admin account.
       sshPublicKey = "ssh-ed25519 CHANGE_ME example-admin-key"; # Public key authorized for the local Unix administrator.
       localAdminUser = "admin"; # Local Unix SSH/sudo account for bootstrap and operations.
+      localAdminSudo = "bootstrap-nopasswd"; # Sudo policy for that account: "bootstrap-nopasswd" grants NOPASSWD ALL (the only mode the unattended deploy flow supports); "password-authenticated" removes that grant and keeps sudo behind the reconciled local-console password.
       authSessionExpirySeconds = 7776000; # Maximum Kanidm authentication-session lifetime in seconds (90 days). Also caps native-app silent refresh.
     };
 

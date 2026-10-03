@@ -28,6 +28,7 @@ fixture_files=(
   vars.example.nix
   secrets/manifest.nix
   lib/derive-vars.nix
+  lib/local-admin-sudo.nix
   lib/merge-ports.nix
   modules/catalog.nix
   lib/authorization-groups.nix

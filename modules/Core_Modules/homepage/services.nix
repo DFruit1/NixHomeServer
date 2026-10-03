@@ -466,7 +466,7 @@ let
     {
       title = "Emergency rollback";
       command = "sudo nixos-rebuild switch --rollback";
-      detail = "Server-console recovery. Bypasses deploy health checks and changes the boot profile.";
+      detail = "Server-console recovery. Bypasses every guarded deploy check and changes the boot profile. Under vars.identity.localAdminSudo = \"password-authenticated\" sudo prompts for the reconciled local-console password, so this only works from the console; SSH password login stays disabled.";
     }
     {
       title = "Failed services";

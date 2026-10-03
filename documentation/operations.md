@@ -385,6 +385,49 @@ On the running server, root can read the same value from
 unavoidable. Treat the output as a password: do not paste it into chat, tickets,
 command arguments, or shell history.
 
+This recovery credential is what makes the `password-authenticated` sudo policy
+safe to adopt: with no passwordless grant, the local admin still regains sudo by
+logging in at the console with this password. Nothing else changes — SSH
+password and keyboard-interactive authentication remain disabled in both sudo
+policies, so this credential never becomes a network-accessible path.
+
+## Local-Admin Sudo Policy
+
+`vars.identity.localAdminSudo` selects one of two declarative policies for
+`vars.identity.localAdminUser`:
+
+- `bootstrap-nopasswd` (default): the local admin is a root-equivalent
+  operator — `NOPASSWD ALL`, wheel passwordless. The guarded deploy performs
+  non-interactive `sudo` on the target host (`sudo systemctl`,
+  `sudo /bin/sh -c ...` for activation, `nix --profile ... switch-to-configuration`),
+  so this is the only policy the unattended deploy flow supports.
+- `password-authenticated`: no sudo rule is granted for the local admin and the
+  wheel group no longer carries a passwordless `ALL` grant. The local admin keeps
+  sudo, but only by presenting the reconciled local-console password above.
+
+The restricted policy is not a mechanical containment boundary. Even a sudoers
+rule limited to `nixos-rebuild` can activate an arbitrary caller-chosen closure
+and so obtain root, and any deployment tool runs as the local admin. What the
+restricted policy does is remove a passwordless, unattended, root-equivalent
+grant from a network-reachable SSH account — at the cost of requiring console
+access (or an interactive password prompt) for privileged operations.
+
+Consequence for deploys: `./scripts/deploy.sh` reads the configured policy and
+refuses to stage anything when it selects `password-authenticated`, because the
+target host cannot authenticate the deploy's non-interactive sudo. To hard:
+
+1. Confirm SSH key access as the local admin still works, and that
+   `nixos-rebuild`/`kanidm`/passkey setup no longer needs console work.
+2. Set `identity.localAdminSudo = "password-authenticated";` in `vars.nix`.
+3. Deploy that change first *before* disabling anything else — a
+   `password-authenticated` host cannot be deployed from the workstation.
+4. Later deploys must run from the server console as the local admin, with the
+   recovery password entered interactively, or the policy must be restored to
+   `bootstrap-nopasswd` at that console.
+
+To restore unattended deploys, set `identity.localAdminSudo =
+"bootstrap-nopasswd"` at the console and deploy from there.
+
 ## Common Commands
 
 - Remote validation gate: `./scripts/deploy.sh --debug --action test`

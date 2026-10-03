@@ -142,6 +142,9 @@ deploy_config_json="$(NIXHOMESERVER_DEPLOY_NEED_HOSTNAME="$([[ -z "$hostname" ]]
   }
   // lib.optionalAttrs (builtins.getEnv "NIXHOMESERVER_DEPLOY_NEED_TARGET" == "1") {
     localAdminUser = if vars ? localAdminUser then vars.localAdminUser else vars.identity.localAdminUser;
+    localAdminSudo = vars.localAdminSudo;
+    localAdminSudoDeployRequiresPasswordlessSudo = vars.localAdminSudoPolicy.deployRequiresPasswordlessSudo;
+    localAdminSudoDeployBlockedReason = vars.localAdminSudoPolicy.deployBlockedReason;
     serverLanIP = vars.serverLanIP;
   }
 ')"
@@ -176,6 +179,14 @@ if [[ -z "$target_host" ]]; then
   target_address="$(jq -er '.serverLanIP' <<<"$deploy_config_json")"
   target_host="${local_admin_user}@${target_address}"
 fi
+
+# Refuse early when the configured local-admin sudo policy cannot authenticate
+# this host's non-interactive sudo contract, instead of failing midway through
+# a staged deploy. A passwordless deploy sudo grant remains the operator's
+# explicit choice in vars.identity.localAdminSudo; this only reports the
+# consequence of choosing otherwise.
+source "$script_dir/helpers/local-admin-sudo-guard.sh"
+enforce_local_admin_sudo_policy
 
 if [[ -n "$build_mode_override" ]]; then
   build_mode="$build_mode_override"
