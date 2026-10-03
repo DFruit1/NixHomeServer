@@ -13,8 +13,9 @@
 # root manifest, the root lockfile, workspace-level Cargo config, the
 # format/toolchain config, and the manifests of every declared workspace member
 # (including members reached through a glob) plus any local `path` dependency
-# those manifests pull in. Manifests and lockfiles of projects outside the
-# workspace are excluded by construction.
+# those manifests and the root `[workspace.dependencies]` table pull in.
+# Manifests and lockfiles of projects outside the workspace are excluded by
+# construction.
 
 { lib }:
 
@@ -135,23 +136,42 @@ let
 
   # Cargo resolves local `path` dependencies relative to the manifest that names
   # them, so normalise them to workspace-root-relative paths.
+  #
+  # `[workspace.dependencies]` is read too: a crate named there with a local
+  # `path` is a real build input even when no member manifest spells out a
+  # `path =` entry for it (members pull it in with `workspace = true`), and
+  # cargo promotes it to a workspace member because it sits inside the
+  # workspace directory.
   pathDependencies =
     manifestPath:
     let
       manifest = readManifest manifestPath;
       dir = builtins.dirOf manifestPath;
-      tables = lib.filter (name: builtins.hasAttr name manifest) [
-        "dependencies"
-        "dev-dependencies"
-        "build-dependencies"
-      ];
-      entries = lib.concatMap (name: builtins.attrValues manifest.${name}) tables;
-      local = builtins.filter (entry: entry ? path && lib.isString entry.path) entries;
+      tables = lib.map (name: manifest.${name})
+        (lib.filter (name: builtins.hasAttr name manifest) [
+          "dependencies"
+          "dev-dependencies"
+          "build-dependencies"
+        ]) ++ lib.optional
+        (
+          manifest ? workspace && manifest.workspace ? dependencies
+        )
+        manifest.workspace.dependencies;
+      entries = lib.concatMap builtins.attrValues tables;
+      # A bare `serde = "1"` string entry is not a table at all, so keep only
+      # entries that actually name a local path.
+      local = lib.map (entry: entry.path) (lib.filter
+        (
+          entry: lib.isAttrs entry && entry ? path && lib.isString entry.path
+        )
+        entries);
     in
     lib.unique (map (entry: if dir == "." then entry else "${dir}/${entry}") local);
 
-  # Breadth-first closure over member manifests and their local path
-  # dependencies; `visited` also terminates cycles between local crates.
+  # Breadth-first closure over manifest paths and the local crates their
+  # `path` dependencies pull in; `visited` also terminates cycles between local
+  # crates. `pathDependencies` yields crate directories, so each is turned into
+  # its manifest before being queued.
   collectManifests =
     visited: pending:
     let
@@ -160,7 +180,11 @@ let
     if next == [ ] then
       visited
     else
-      collectManifests (visited ++ next) (builtins.concatMap pathDependencies next);
+      collectManifests
+        (
+          visited ++ next
+        )
+        (lib.concatMap (crate: [ "${crate}/Cargo.toml" ]) (builtins.concatMap pathDependencies next));
 
   declaredMembers = resolveMembers members;
 
@@ -173,7 +197,11 @@ let
 
   activeMembers = builtins.filter (member: !(lib.elem member globExpanded) || !isExcluded member) declaredMembers;
 
-  manifestPaths = collectManifests [ ] (map (member: "${member}/Cargo.toml") activeMembers);
+  # The root manifest is a closure seed in its own right: its `path` entries in
+  # `[workspace.dependencies]` resolve workspace-root-relative (its `dirOf` is
+  # `.`), so seeding it tracks crates that reach the build only through that
+  # table. It is added to `trackedPaths` below regardless.
+  manifestPaths = collectManifests [ ] ([ "Cargo.toml" ] ++ map (member: "${member}/Cargo.toml") activeMembers);
 
   # Workspace-level build configuration Cargo reads while resolving and building
   # dependencies, so a future config change is never silently ignored.
@@ -184,7 +212,7 @@ let
 
   stylePaths = lib.filter exists [ "rustfmt.toml" ];
 
-  trackedPaths = manifestPaths ++ configPaths ++ stylePaths ++ [ "Cargo.toml" "Cargo.lock" ];
+  trackedPaths = lib.unique (manifestPaths ++ configPaths ++ stylePaths ++ [ "Cargo.lock" ]);
 in
 
 {

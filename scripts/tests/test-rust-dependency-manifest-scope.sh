@@ -303,6 +303,43 @@ in (mk { workspaceRoot = root; }).activeMembers
 " >/dev/null
 echo '✅ An unresolvable workspace member pattern still fails loudly.'
 
+# A crate reached only through the root `[workspace.dependencies]` table must be
+# tracked even though no member manifest names it with a `path =` entry.
+root_dep="$test_root/root-dependency-table"
+mkdir -p "$root_dep"
+cat >"$root_dep/Cargo.toml" <<'EOF'
+[workspace]
+resolver = "2"
+members = ["crates/app"]
+
+[workspace.dependencies]
+helper = { path = "tools/helper" }
+EOF
+write_workspace_root "$root_dep"
+write_crate "$root_dep" crates/app
+write_crate "$root_dep" tools/helper
+cat >"$root_dep/crates/app/Cargo.toml" <<'EOF'
+[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+helper = { workspace = true }
+EOF
+
+tracked_root_dep="$(flake_eval_json "
+  mk = import ./custom_apps/rust/lib/workspace-manifests.nix { inherit lib; };
+  root = /. + (builtins.getEnv \"MANIFEST_FIXTURE\" + \"/root-dependency-table\");
+in (mk { workspaceRoot = root; }).trackedPaths
+")"
+jq -e '
+  (index("tools/helper/Cargo.toml") != null)
+  and (index("crates/app/Cargo.toml") != null)
+  and (index("Cargo.toml") != null)
+' <<<"$tracked_root_dep" >/dev/null
+echo '✅ A crate reached through the root workspace dependency table is tracked.'
+
 # The real workspace: membership must match Cargo.toml exactly, including
 # groundwater-server, and must not reach the Tauri manifests.
 real="$(flake_eval_json '
