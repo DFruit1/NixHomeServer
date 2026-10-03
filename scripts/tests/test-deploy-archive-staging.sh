@@ -49,6 +49,9 @@ test_root="$(mktemp -d)"
 cleanup() { rm -rf "$test_root"; }
 trap cleanup EXIT
 
+[[ "$(env -u NIXHOMESERVER_DEPLOY_ARCHIVE_NAMESPACE bash "$helper" namespace 2>&1 || true)" == *'/var/lib/nixhomeserver-deploy-archives'* ]] ||
+  note_failure "production helper must use the approved sibling namespace"
+
 namespace="$test_root/archive-staging"
 mkdir -p "$namespace"
 chmod 0700 "$namespace"
@@ -461,9 +464,9 @@ echo "  ok: unusable host replies are all rejected"
 # executor's cleanup trap can run. Nothing removes it in-session, so only the
 # declared expiry can reclaim it.
 orphan_root="$test_root/orphan-root"
-mkdir -p "$orphan_root/archive-staging" "$orphan_root/outside"
-chmod 0700 "$orphan_root/archive-staging"
-orphan_archive="$orphan_root/archive-staging/nixhomeserver-deploy.ORPHANED.tar"
+mkdir -p "$orphan_root/var/lib/nixhomeserver-deploy-archives" "$orphan_root/outside"
+chmod 0700 "$orphan_root/var/lib/nixhomeserver-deploy-archives"
+orphan_archive="$orphan_root/var/lib/nixhomeserver-deploy-archives/nixhomeserver-deploy.ORPHANED.tar"
 printf 'orphaned-payload\n' >"$orphan_archive"
 printf 'still-here\n' >"$orphan_root/outside/victim.txt"
 
@@ -488,10 +491,20 @@ else
     host = builtins.getEnv "NIXHOMESERVER_TEST_HOST";
     cfg = (builtins.getAttr host f.nixosConfigurations).config;
     matching = builtins.filter
-      (rule: builtins.match ".*archive-staging.*" rule != null)
+      (rule: builtins.match "d /var/lib/nixhomeserver-deploy-archives .*" rule != null)
       cfg.systemd.tmpfiles.rules;
-  in { rules = matching; dir = cfg.repo.deploy.archiveStagingDir; }' |
-    jq -er '.rules | if length == 1 then .[0] else error("expected exactly one archive staging tmpfiles rule") end')"; then
+  in {
+    rules = matching;
+    dir = cfg.repo.deploy.archiveStagingDir;
+    contract = builtins.map
+      (path: (builtins.getAttr host f.nixosConfigurations).options.repo.deploy.archiveStagingDir.type.check path)
+      [ "/var/lib/nixhomeserver-deploy-archives"
+        "/var/lib/nixhomeserver-deploy/archive-staging"
+        "/var/lib/other" "/var/lib/nixhomeserver-deploy-archives/../other" ];
+  }' |
+    jq -er 'if .dir == "/var/lib/nixhomeserver-deploy-archives" and .contract == [true,false,false,false]
+      then .rules | if length == 1 then .[0] else error("expected exactly one archive staging tmpfiles rule") end
+      else error("archive namespace contract is not restricted to the approved sibling") end')"; then
     note_failure "could not read the archive staging tmpfiles rule from the configuration"
   else
     [[ "$declared_rule" == *" 0700 "* ]] ||
@@ -508,7 +521,7 @@ else
       "the expiry rule must survive a refactor of the deploy module"
 
     mkdir -p "$orphan_root/etc/tmpfiles.d"
-    printf 'd /archive-staging 0700 %s %s mM:48h -\n' "$(id -u)" "$(id -g)" \
+    printf 'd /var/lib/nixhomeserver-deploy-archives 0700 %s %s mM:48h -\n' "$(id -u)" "$(id -g)" \
       >"$orphan_root/etc/tmpfiles.d/deploy.conf"
 
     "$tmpfiles_bin" --root="$orphan_root" --clean >/dev/null 2>&1
@@ -530,7 +543,7 @@ else
     # a plain `touch` follows the link and ages the target instead, which would
     # leave the link itself fresh and prove nothing.
     touch -m -d '72 hours ago' "$orphan_root/outside/victim.txt"
-    expiry_link="$orphan_root/archive-staging/nixhomeserver-deploy.LINKED02.tar"
+    expiry_link="$orphan_root/var/lib/nixhomeserver-deploy-archives/nixhomeserver-deploy.LINKED02.tar"
     ln -s "$orphan_root/outside/victim.txt" "$expiry_link"
     touch -h -m -d '72 hours ago' "$expiry_link"
     "$tmpfiles_bin" --root="$orphan_root" --clean >/dev/null 2>&1
@@ -543,7 +556,7 @@ else
     # Expiry must not recurse through a directory symlink either.
     mkdir -p "$orphan_root/decoy"
     printf 'decoy\n' >"$orphan_root/decoy/keep.txt"
-    decoy_link="$orphan_root/archive-staging/nixhomeserver-deploy.LINKED04.tar"
+    decoy_link="$orphan_root/var/lib/nixhomeserver-deploy-archives/nixhomeserver-deploy.LINKED04.tar"
     ln -s "$orphan_root/decoy" "$decoy_link"
     touch -h -m -d '72 hours ago' "$decoy_link"
     "$tmpfiles_bin" --root="$orphan_root" --clean >/dev/null 2>&1
@@ -552,10 +565,10 @@ else
     echo "  ok: expiry did not recurse through a symlinked directory"
 
     # Expiry must never collect a fresh neighbour it was not asked to remove.
-    printf 'fresh-neighbour\n' >"$orphan_root/archive-staging/nixhomeserver-deploy.FRESH000.tar"
-    touch -m -d '72 hours ago' "$orphan_root/archive-staging"
+    printf 'fresh-neighbour\n' >"$orphan_root/var/lib/nixhomeserver-deploy-archives/nixhomeserver-deploy.FRESH000.tar"
+    touch -m -d '72 hours ago' "$orphan_root/var/lib/nixhomeserver-deploy-archives"
     "$tmpfiles_bin" --root="$orphan_root" --clean >/dev/null 2>&1
-    [[ -f "$orphan_root/archive-staging/nixhomeserver-deploy.FRESH000.tar" ]] ||
+    [[ -f "$orphan_root/var/lib/nixhomeserver-deploy-archives/nixhomeserver-deploy.FRESH000.tar" ]] ||
       note_failure "expiry removed a fresh archive it should have retained"
     echo "  ok: expiry retained a fresh neighbour"
   fi

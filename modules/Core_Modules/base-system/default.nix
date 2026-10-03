@@ -221,7 +221,9 @@ in
   nix.optimise.automatic = false;
 
   systemd.tmpfiles.rules = [
-    # Deployment archives are staged in a dedicated, owner-only namespace and
+    # Deployment archives use the fixed sibling /var/lib/nixhomeserver-deploy-archives,
+    # never the root-only deploy-state ancestry reasserted by the stamp writer.
+    # They are staged in a dedicated, owner-only namespace and
     # removed immediately by the deploy helper on both the normal and failure
     # paths. A successful upload can still be orphaned when the SSH session
     # drops before that cleanup runs, so the namespace expires contents

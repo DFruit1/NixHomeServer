@@ -412,7 +412,7 @@ command arguments, or shell history.
 ## Deploy Archive Staging Rollout (human-gated)
 
 Remote archive upload requires
-`/var/lib/nixhomeserver-deploy/archive-staging` on every selected build host,
+`/var/lib/nixhomeserver-deploy-archives` on every selected build host,
 not only the activation target. `base-system` declares this directory as
 `0700 <localAdminUser>:<localAdminUser>` with `mM:48h` tmpfiles expiry. Archive
 files are `0600`; immediate completion/transfer-failure cleanup uses the
@@ -421,35 +421,33 @@ without a usable helper leaves an archive for independent 48-hour expiry.
 Missing, symlinked, non-private or inaccessible staging fails closed; do not
 fall back to `/tmp` or delete caller-supplied paths manually.
 
-There is an unresolved traversal prerequisite, not merely an installation
-step. The stamp writer installs `/var/lib/nixhomeserver-deploy` as root-owned
-`0700` on each successful guarded test. A non-root SSH user cannot traverse
-that parent even when it owns the `0700` child. Creating the child with tmpfiles
-alone does not fix this. The offline proof
-`bash scripts/tests/test-deploy-archive-permissions.sh` uses isolated user
-namespace uid mappings: the SSH-user stand-in successfully stages in a
-reachable owner-only control directory, but cannot stage below the root-only
-parent or read a root-only stamp. This proof needs `unshare`, `setpriv` and
-subordinate uid/gid mappings; failure to obtain them is an evidence gap, not
-permission to change host policy.
+The approved fixed sibling namespace is outside `/var/lib/nixhomeserver-deploy`.
+The stamp writer keeps that state directory root-owned `0700` and stamps
+root-owned `0600`; neither access policy is widened. `repo.deploy.archiveStagingDir`
+accepts only this exact sibling path, not arbitrary `/var/lib` directories.
+The helper's environment override is for isolated regression fixtures only;
+it is not a supported production configuration or rollout workaround.
+The offline proof `bash scripts/tests/test-deploy-archive-permissions.sh` uses
+isolated user/mount namespaces and mapped uid/gid pairs: the non-root SSH-user
+stand-in stages and removes owned `0600` archives through the real helper in
+the production sibling path, while root-only state/stamps remain inaccessible,
+both before and after the real stamp writer reasserts state permissions.
+The old child layout remains only a failing negative control. This proof needs
+`unshare`, `mount`, `setpriv` and subordinate uid/gid mappings; failure to obtain
+them is an evidence gap, not permission to change host policy. Do not chmod/chown
+the deploy-state parent, add ACLs, switch SSH to root or widen sudo.
 
-Before rollout, a human must approve a compatible namespace/traversal design
-for the non-root build-host SSH user while retaining root-only stamp and
-transaction access. Do not chmod/chown the deploy-state parent, add an ACL,
-switch SSH to root, widen sudo, or override the namespace to work around this
-blocker. Any approved design must also survive the stamp writer reasserting
-parent mode `0700`; a one-time manual permission change is not a rollout plan.
-
-Once that policy/design is resolved and validated, install its declarative
-staging and expiry configuration through an explicitly approved guarded
-`test` then `switch`, never an ordinary raw `nixos-rebuild`. For a target that
-lacks staging, an approved guarded local-build test/switch
-(`./scripts/deploy.sh --build-locally --action test`, then the same with
-`--action switch`) avoids the remote archive-upload bootstrap dependency.
-This is a one-time rollout exception to dashboard-selected allocation, not a
-new routine default, and it does not itself resolve parent traversal. An
-independent build host needs its own approved configuration rollout; activating
-the target alone cannot provision another machine.
+The new path still requires rollout on every selected build host. Install its
+declarative staging and expiry configuration only through a separately approved
+guarded `test` then `switch`, never an ordinary raw `nixos-rebuild`. A target
+without the prerequisite cannot bootstrap via remote archive upload: that upload
+fails closed before the new configuration can activate. A separately approved
+guarded local-build test/switch can avoid this upload dependency, but this
+runbook and the namespace design approval do not authorize a local-allocation
+override or any deployment. Keep dashboard-selected allocation unless that
+specific bootstrap exception is approved. An independent build host needs its
+own approved configuration rollout; activating the target cannot provision it.
+No automatic migration, old-state cleanup or permission change is performed.
 
 Before resuming remote allocation, verify as the actual non-root SSH user on
 each build host that the real helper's `namespace` check succeeds, the staging

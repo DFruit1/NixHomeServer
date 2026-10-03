@@ -7,25 +7,12 @@
 # this path; scripts/helpers/deploy-archive-cleanup.sh enforces the same path,
 # owner-only mode, and entry-name shape on both ends of the transfer.
 
-{ config, lib, ... }:
+{ lib, ... }:
 
 {
-  options.repo.deploy = {
-    archiveStagingDir = lib.mkOption {
-      type = lib.types.str;
-      default = "/var/lib/nixhomeserver-deploy/archive-staging";
-      description = "Owner-only directory that deploy archives are staged in on the build/target host. Its contents are expired declaratively by systemd-tmpfiles so a successful upload orphaned by a lost SSH session cannot accumulate indefinitely.";
-    };
-  };
-
-  config = lib.mkIf (
-    config.repo.deploy.archiveStagingDir != "/var/lib/nixhomeserver-deploy/archive-staging"
-  ) {
-    assertions = [
-      {
-        assertion = builtins.match "/var/lib/nixhomeserver-deploy/[A-Za-z0-9][A-Za-z0-9._-]*" config.repo.deploy.archiveStagingDir != null;
-        message = "nixhomeserver: repo.deploy.archiveStagingDir must be a single directory directly under /var/lib/nixhomeserver-deploy so expiry can never reach outside the deploy state directory: ${config.repo.deploy.archiveStagingDir}";
-      }
-    ];
+  options.repo.deploy.archiveStagingDir = lib.mkOption {
+    type = lib.types.enum [ "/var/lib/nixhomeserver-deploy-archives" ];
+    default = "/var/lib/nixhomeserver-deploy-archives";
+    description = "Fixed owner-only archive namespace on every build host, outside root-only deploy transaction/stamp ancestry. Only this dedicated sibling is supported by the helper and the 48h systemd-tmpfiles expiry contract; arbitrary paths are not configurable.";
   };
 }
