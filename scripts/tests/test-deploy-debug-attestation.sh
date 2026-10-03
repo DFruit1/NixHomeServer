@@ -254,4 +254,76 @@ if [[ "$(cat "$test_stamp_path")" != "$(printf 'version=2\nsource_hash=%s\ntople
   exit 1
 fi
 
+# Exercise malformed fields through both the real parser and the switch's
+# stamp-loading gate. Presence must not be inferred from an empty value, and
+# a final line without a newline must not be silently skipped.
+valid_stamp="$(deploy_render_test_stamp "$source_hash" "$stamped_toplevel" true)"
+assert_malformed_stamp_rejected() {
+  local label="$1"
+  local parsed_hash="unchanged" parsed_toplevel="unchanged" parsed_debug="unchanged"
+  if deploy_read_test_stamp "$test_stamp_path" parsed_hash parsed_toplevel parsed_debug \
+    >"$test_dir/parser-rejection.log" 2>&1; then
+    echo "❌ Parser accepted malformed stamp: $label"
+    exit 1
+  fi
+  if [[ "$parsed_hash" != unchanged || "$parsed_toplevel" != unchanged || "$parsed_debug" != unchanged ]]; then
+    echo "❌ Rejected stamp modified parser outputs: $label"
+    exit 1
+  fi
+  if (load_test_stamp && assert_debug_switch_attestation) \
+    >"$test_dir/switch-rejection.log" 2>&1; then
+    echo "❌ Debug switch gate accepted malformed stamp: $label"
+    exit 1
+  fi
+}
+
+for field in version source_hash toplevel debug_validated; do
+  # Put the empty occurrence before the otherwise complete valid stamp.
+  printf '%s=\n%s\n' "$field" "$valid_stamp" >"$test_stamp_path"
+  assert_malformed_stamp_rejected "empty-then-valid $field"
+  printf '%s\n%s=\n' "$valid_stamp" "$field" >"$test_stamp_path"
+  assert_malformed_stamp_rejected "valid-then-empty $field"
+  # Both nonempty and empty trailing duplicates must be read even at EOF.
+  case "$field" in
+    version) field_value=2 ;;
+    source_hash) field_value="$source_hash" ;;
+    toplevel) field_value="$stamped_toplevel" ;;
+    debug_validated) field_value=true ;;
+  esac
+  printf '%s\n%s=%s' "$valid_stamp" "$field" "$field_value" >"$test_stamp_path"
+  assert_malformed_stamp_rejected "unterminated duplicate $field"
+  printf '%s\n%s=' "$valid_stamp" "$field" >"$test_stamp_path"
+  assert_malformed_stamp_rejected "unterminated empty duplicate $field"
+  # Also reject a single empty or missing required field.
+  empty_stamp=""
+  missing_stamp=""
+  while IFS= read -r stamp_line; do
+    if [[ "$stamp_line" == "$field="* ]]; then
+      empty_stamp+="$field="$'\n'
+    else
+      empty_stamp+="$stamp_line"$'\n'
+      missing_stamp+="$stamp_line"$'\n'
+    fi
+  done <<<"$valid_stamp"
+  printf '%s' "$empty_stamp" >"$test_stamp_path"
+  assert_malformed_stamp_rejected "single empty $field"
+  printf '%s' "$missing_stamp" >"$test_stamp_path"
+  assert_malformed_stamp_rejected "missing $field"
+done
+
+for invalid_line in '=value' '=' 'unknown=value' 'unknown=' 'malformed'; do
+  for terminator in '' $'\n'; do
+    printf '%s\n%s%s' "$valid_stamp" "$invalid_line" "$terminator" >"$test_stamp_path"
+    assert_malformed_stamp_rejected "invalid trailing field [$invalid_line]"
+  done
+done
+
+# A well-formed final field needs no newline, but it must still be validated.
+printf '%s' "$valid_stamp" >"$test_stamp_path"
+parsed_hash="" parsed_toplevel="" parsed_debug=""
+deploy_read_test_stamp "$test_stamp_path" parsed_hash parsed_toplevel parsed_debug
+[[ "$parsed_hash" == "$source_hash" && "$parsed_toplevel" == "$stamped_toplevel" && "$parsed_debug" == true ]]
+load_test_stamp
+assert_debug_switch_attestation
+
 echo "✅ Deploy debug attestation tests passed."

@@ -51,42 +51,42 @@ deploy_read_test_stamp() {
   local -n output_toplevel="$3"
   local -n output_debug_validated="$4"
   local version="" source_hash="" toplevel="" debug_validated="" line key value
+  local -A seen_fields=()
 
   [[ -f "$stamp_file" && ! -L "$stamp_file" ]] || {
     echo "blocked: tested deployment stamp is missing or unsafe" >&2
     return 1
   }
 
-  while IFS= read -r line; do
+  while IFS= read -r line || [[ -n "$line" ]]; do
     [[ "$line" == *=* ]] || {
       echo "blocked: tested deployment stamp contains a malformed line" >&2
       return 1
     }
     key="${line%%=*}"
     value="${line#*=}"
+    # Validate the key before using it as an associative-array subscript.
     case "$key" in
-      version)
-        [[ -z "$version" ]] || return 1
-        version="$value"
-        ;;
-      source_hash)
-        [[ -z "$source_hash" ]] || return 1
-        source_hash="$value"
-        ;;
-      toplevel)
-        [[ -z "$toplevel" ]] || return 1
-        toplevel="$value"
-        ;;
-      debug_validated)
-        [[ -z "$debug_validated" ]] || return 1
-        debug_validated="$value"
-        ;;
-      "")
-        ;;
+      version | source_hash | toplevel | debug_validated) ;;
       *)
         echo "blocked: tested deployment stamp contains an unknown field" >&2
         return 1
         ;;
+    esac
+    [[ -z "${seen_fields[$key]:-}" ]] || {
+      echo "blocked: tested deployment stamp contains a duplicate field" >&2
+      return 1
+    }
+    seen_fields[$key]=true
+    [[ -n "$value" ]] || {
+      echo "blocked: tested deployment stamp contains an empty value" >&2
+      return 1
+    }
+    case "$key" in
+      version) version="$value" ;;
+      source_hash) source_hash="$value" ;;
+      toplevel) toplevel="$value" ;;
+      debug_validated) debug_validated="$value" ;;
     esac
   done <"$stamp_file"
 
