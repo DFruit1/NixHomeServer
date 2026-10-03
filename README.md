@@ -87,7 +87,7 @@ second settings import there when managing another host from the same flake.
 
 `system.buildMode` controls guarded-deploy build allocation: `local` uses all
 workstation slots, `remote` uses all server slots, `balanced` uses two slots on
-each with a best-effort one-core-per-job hint, and `maximum-effort` uses every
+each with a bounded four-cores-per-job hint, and `maximum-effort` uses every
 available slot on both. See
 [Build Allocation](documentation/operations.md#build-allocation) for the native
 Nix settings and one-shot overrides.

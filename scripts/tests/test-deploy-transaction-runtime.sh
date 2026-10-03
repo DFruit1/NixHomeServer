@@ -100,13 +100,13 @@ NIX_CONFIG="$base_nix_config"
 BUILD_MODE="balanced"
 LOCAL_BUILD_SLOTS="2"
 REMOTE_BUILD_SLOTS="2"
-LOCAL_BUILD_CORES="1"
-REMOTE_BUILD_CORES="1"
+LOCAL_BUILD_CORES="4"
+REMOTE_BUILD_CORES="4"
 configure_nix_build_allocation >/dev/null
 if ! rg -Fq 'max-jobs = 2' <<<"$NIX_CONFIG" \
-  || ! rg -Fq 'cores = 1' <<<"$NIX_CONFIG" \
+  || ! rg -Fq 'cores = 4' <<<"$NIX_CONFIG" \
   || ! rg -Fq "ssh-ng://admin@test.invalid x86_64-linux $TESTS_REPO_ROOT/scripts/tests/test-deploy-transaction-runtime.sh 2 1 benchmark,big-parallel,nixos-test - $test_remote_host_key_encoded" <<<"$NIX_CONFIG"; then
-  echo "❌ Balanced allocation did not configure two native Nix slots on each builder."
+  echo "❌ Balanced allocation did not configure two native Nix slots of four cores on each builder."
   exit 1
 fi
 

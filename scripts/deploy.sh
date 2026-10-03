@@ -22,10 +22,11 @@ rejected because they do not provide a safe tracked-file deployment manifest.
 By default, the target is vars.localAdminUser@vars.serverLanIP and the build
 allocation comes from vars.system.buildMode, overridden by the build mode saved
 in the Homepage dashboard when one is set. Local and remote use all available
-slots on one machine, balanced uses two slots on each, and maximum-effort uses
-all available slots on both. --build-mode overrides both for one invocation.
---build-locally remains an alias for --build-mode local. Dry-runs report the
-configured vars.nix allocation and do not consult the dashboard.
+slots on one machine, balanced uses two slots of four requested cores on each,
+and maximum-effort uses all available slots on both. --build-mode overrides both
+for one invocation. --build-locally remains an alias for --build-mode local.
+Dry-runs report the configured vars.nix allocation and do not consult the
+dashboard.
 
 Fast mode performs high-value checks: host evaluation, build and target
 free-space checks, a live test activation, failed-unit and route checks, and the
@@ -242,8 +243,8 @@ case "$build_mode" in
   balanced)
     local_build_slots="2"
     remote_build_slots="2"
-    local_build_cores="1"
-    remote_build_cores="1"
+    local_build_cores="4"
+    remote_build_cores="4"
     ;;
   maximum-effort)
     local_build_slots="auto"

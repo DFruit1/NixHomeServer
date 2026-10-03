@@ -202,10 +202,10 @@ fi
 balanced_output="$(DEPLOY_DRY_RUN=1 bash scripts/deploy.sh --build-mode balanced --action test)"
 if ! rg -Fq 'mode=balanced' <<<"$balanced_output" \
   || ! rg -Fq 'build_slots=local:2,remote:2' <<<"$balanced_output" \
-  || ! rg -Fq 'build_cores=local:1,remote:1' <<<"$balanced_output" \
+  || ! rg -Fq 'build_cores=local:4,remote:4' <<<"$balanced_output" \
   || ! rg -Fq "build_host=local+${expected_target}" <<<"$balanced_output" \
   || ! rg -Fq -- "--target-host ${expected_target}" <<<"$balanced_output"; then
-  echo "❌ Balanced mode should allocate two slots to the workstation and server."
+  echo "❌ Balanced mode should allocate two slots of four cores to the workstation and server."
   echo "$balanced_output"
   exit 1
 fi

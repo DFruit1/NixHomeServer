@@ -169,10 +169,12 @@ rec {
       else 0;
   };
   buildCores = {
-    # NIX_BUILD_CORES is advisory. Cooperative builders stay near two busy
-    # cores per host in balanced mode, while other modes retain all-core jobs.
-    local = if buildMode == "balanced" then 1 else 0;
-    remote = if buildMode == "balanced" then 1 else 0;
+    # NIX_BUILD_CORES is advisory. Balanced mode bounds each derivation at four
+    # requested cores so Crane's CARGO_BUILD_JOBS can actually use a few cores,
+    # while the two-slot limit keeps the total per host near eight. Other modes
+    # keep 0, which asks every builder for all available cores.
+    local = if buildMode == "balanced" then 4 else 0;
+    remote = if buildMode == "balanced" then 4 else 0;
   };
   kanidmAdminUser = identity.adminUser;
   kanidmCanaryUser = identity.canaryUser;

@@ -78,7 +78,7 @@ let
       cpuVendor = "auto"; # Microcode vendor: "auto" trusts the generated hardware module, or force "intel"/"amd".
       timeZone = "Australia/Sydney"; # IANA time zone for timers, logs, and local maintenance windows.
       hostId = "84e8c12a"; # Stable 8-character hexadecimal host ID required by ZFS.
-      buildMode = "balanced"; # Build allocation: "local", "remote", "balanced" (2 slots each with 1 requested core/job), or "maximum-effort" (all slots on both).
+      buildMode = "balanced"; # Build allocation: "local", "remote", "balanced" (2 slots each with 4 requested cores/job), or "maximum-effort" (all slots on both).
       nixStoreMaxSizeGiB = 80; # Soft Nix store cap in GiB; collection starts at 90% of this size or 90% usage on the filesystem containing /nix/store.
       nixGcRetentionDays = 45; # Delete profile generations older than this many days, sacrificing older rollback points.
       localNixGCMode = "capacity"; # Collect unreachable workstation store paths before each deploy: "capacity" (only when the main SSD is under pressure; preserves local build reuse) or "always" (full `nix-store --gc` every deploy, discarding cached Rust/Nix build outputs).

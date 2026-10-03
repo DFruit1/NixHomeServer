@@ -11,7 +11,7 @@ const BUILD_MODES: readonly BuildMode[] = ['local', 'remote', 'balanced', 'maxim
 const BUILD_MODE_DESCRIPTIONS: Record<BuildMode, string> = {
   local: 'Build entirely on this workstation; copy the closure to the server.',
   remote: 'Build entirely on the server.',
-  balanced: 'Two slots on each machine, one requested core per job.',
+  balanced: 'Two slots on each machine, up to four requested cores per job.',
   'maximum-effort': 'All available slots on both machines.',
 };
 const UPDATED_AT_MAX_LENGTH = 40;

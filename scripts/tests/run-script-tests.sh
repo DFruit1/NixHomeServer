@@ -103,6 +103,7 @@ test_scripts=(
   scripts/tests/test-opencloud-public-access.sh
   scripts/tests/test-deploy-cli.sh
   scripts/tests/test-deploy-transaction-runtime.sh
+  scripts/tests/test-build-allocation-policy.sh
   scripts/tests/test-evaluated-service-hardening.sh
   scripts/tests/test-data-pool-consumers.sh
   scripts/tests/test-public-route-check.sh

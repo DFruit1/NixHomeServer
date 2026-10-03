@@ -2108,10 +2108,11 @@ passphrase-protected identities cannot be used by the daemon; the helper fails
 before building with an actionable diagnostic instead of silently falling back
 to one host.
 
-`balanced` sets Nix's advisory `cores = 1` hint as well as limiting each host to
+`balanced` sets Nix's advisory `cores = 4` hint as well as limiting each host to
 two simultaneous jobs. Nixpkgs builders that honor `NIX_BUILD_CORES` therefore
-stay near two busy cores per host; derivations that ignore the hint may still
-use more CPU.
+stay near eight busy cores per host, and Crane-backed Rust builds see
+`CARGO_BUILD_JOBS=4` instead of a single job; derivations that ignore the hint
+may still use more CPU.
 
 Preview a configured allocation without building:
 
