@@ -2,10 +2,10 @@
 , stdenvNoCC
 , nodejs
 , pnpm
-, fetchPnpmDeps
 , pnpmConfigHook
 , makeWrapper
 , sqlite
+, pkgs
 ,
 }:
 
@@ -24,6 +24,9 @@ let
       in
       lib.cleanSourceFilter path type && !excluded;
   };
+  # pnpmDeps is keyed only on package.json + pnpm-lock.yaml, so editing app
+  # source does not invalidate the dependency fetch.
+  mkPnpmDeps = import ../../../rust/lib/mk-pnpm-deps.nix { inherit lib pkgs; };
 in
 stdenvNoCC.mkDerivation (finalAttrs: {
   pname = "groundwater-logger";
@@ -36,9 +39,10 @@ stdenvNoCC.mkDerivation (finalAttrs: {
     cp -r ${../../shared}/. src/shared/node-common/
   '';
 
-  pnpmDeps = fetchPnpmDeps {
-    inherit (finalAttrs) pname version src;
-    fetcherVersion = 3;
+  pnpmDeps = mkPnpmDeps {
+    name = finalAttrs.pname;
+    srcDir = ./.;
+    version = finalAttrs.version;
     hash = "sha256-/XxrK+IDjACUNW09m4r36uR/XCA94+0CmjygLuuLC+o=";
   };
 

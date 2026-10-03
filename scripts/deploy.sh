@@ -12,7 +12,7 @@ ensure_default_nix_config
 
 usage() {
   cat <<'EOF'
-Usage: scripts/deploy.sh [--target <user@host>] [--build-mode local|remote|balanced|maximum-effort] [--build-host <user@host>] [--build-locally] [--action test|switch] [--hostname <flake-hostname>] [--debug]
+Usage: scripts/deploy.sh [--target <user@host>] [--build-mode local|remote|balanced|maximum-effort] [--build-host <user@host>] [--build-locally] [--console] [--action test|switch] [--hostname <flake-hostname>] [--debug]
 
 Stage the current repo and run a NixOS rebuild.
 
@@ -22,14 +22,22 @@ rejected because they do not provide a safe tracked-file deployment manifest.
 By default, the target is vars.localAdminUser@vars.serverLanIP and the build
 allocation comes from vars.system.buildMode, overridden by the build mode saved
 in the Homepage dashboard when one is set. Local and remote use all available
-slots on one machine, balanced uses two slots on each, and maximum-effort uses
-all available slots on both. --build-mode overrides both for one invocation.
---build-locally remains an alias for --build-mode local. Dry-runs report the
-configured vars.nix allocation and do not consult the dashboard.
+slots on one machine, balanced uses two slots of four requested cores on each,
+and maximum-effort uses all available slots on both. --build-mode overrides both
+for one invocation. --build-locally remains an alias for --build-mode local.
+Dry-runs report the configured vars.nix allocation and do not consult the
+dashboard.
 
 Fast mode performs high-value checks: host evaluation, build and target
 free-space checks, a live test activation, failed-unit and route checks, and the
 authenticated Homepage canary when enabled.
+
+`--console` runs the guarded deploy as this machine's root identity instead of
+reaching the target over SSH. It is the implemented route for a host whose
+vars.identity.localAdminSudo policy is "password-authenticated": run it from the
+server console as the local admin, and every non-interactive sudo the deploy
+needs is already root. It must not be combined with --target or --build-host,
+because it makes no remote connection.
 
 `--action test` records the exact repository hash and NixOS closure only after
 all gates pass. `--action switch` refuses changed source and commits that exact
@@ -46,6 +54,8 @@ target_host=""
 build_host=""
 build_locally=false
 build_mode_override=""
+consult_dashboard_build_mode=true
+console=false
 action="test"
 hostname=""
 debug=false
@@ -71,6 +81,10 @@ while (($# > 0)); do
       ;;
     --build-locally)
       build_locally=true
+      shift
+      ;;
+    --console)
+      console=true
       shift
       ;;
     --action)
@@ -111,18 +125,21 @@ if [[ "$build_locally" == "true" && -n "$build_mode_override" ]]; then
   echo "blocked: --build-locally cannot be combined with --build-mode" >&2
   exit 1
 fi
+# Console mode is the local-root route: it opens no SSH connection to the
+# target, so it cannot be combined with any option that names a remote host.
+if [[ "$console" == "true" && -n "$target_host" ]]; then
+  echo "blocked: --console cannot be combined with --target; it deploys to this host" >&2
+  exit 1
+fi
+if [[ "$console" == "true" && -n "$build_host" ]]; then
+  echo "blocked: --console cannot be combined with --build-host; it makes no remote connection" >&2
+  exit 1
+fi
 
 need nix
 need jq
 
 local_attic_cache="http://127.0.0.1:8080/nixhomeserver"
-if [[ "${DEPLOY_DRY_RUN:-}" != "1" ]] && nix_uses_substituter "$local_attic_cache"; then
-  need curl nohup
-  ensure_local_attic_tunnel \
-    "$local_attic_cache/nix-cache-info" \
-    "${NIXHOMESERVER_ATTIC_TUNNEL_SCRIPT:-$HOME/.local/bin/nixhomeserver-attic-tunnel}" \
-    "${XDG_CACHE_HOME:-$HOME/.cache}/nixhomeserver-attic-tunnel.log"
-fi
 
 deploy_config_json="$(NIXHOMESERVER_DEPLOY_NEED_HOSTNAME="$([[ -z "$hostname" ]] && echo 1 || echo 0)" \
   NIXHOMESERVER_DEPLOY_NEED_TARGET="$([[ -z "$target_host" ]] && echo 1 || echo 0)" \
@@ -136,6 +153,13 @@ deploy_config_json="$(NIXHOMESERVER_DEPLOY_NEED_HOSTNAME="$([[ -z "$hostname" ]]
     buildCores = vars.buildCores;
     hostPlatform = vars.hostPlatform;
     serverSSHPubKey = vars.serverSSHPubKey;
+    # The sudo policy is a property of this configuration, not of the resolved
+    # target, so it is always emitted: with --target set the guard must still
+    # see a restricted policy and refuse before staging, instead of falling
+    # back to "unknown" and failing midway on non-interactive sudo.
+    localAdminSudo = vars.localAdminSudo;
+    localAdminSudoDeployRequiresPasswordlessSudo = vars.localAdminSudoPolicy.deployRequiresPasswordlessSudo;
+    localAdminSudoDeployBlockedReason = vars.localAdminSudoPolicy.deployBlockedReason;
   }
   // lib.optionalAttrs (builtins.getEnv "NIXHOMESERVER_DEPLOY_NEED_HOSTNAME" == "1") {
     hostname = vars.hostname;
@@ -171,10 +195,46 @@ if [[ ! "$hostname" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ ]]; then
   exit 1
 fi
 
-if [[ -z "$target_host" ]]; then
+if [[ "$console" == "true" ]]; then
+  # Console mode deploys to this machine and keeps no SSH hop to the target, so
+  # the executor's local path runs every privileged step as this root identity.
+  # The name is only used for messages and for refusing an accidental --target
+  # above.
+  target_host="console"
+elif [[ -z "$target_host" ]]; then
   local_admin_user="$(jq -er '.localAdminUser' <<<"$deploy_config_json")"
   target_address="$(jq -er '.serverLanIP' <<<"$deploy_config_json")"
   target_host="${local_admin_user}@${target_address}"
+fi
+console_mode="$console"
+
+# Refuse early when this deploy cannot authenticate the target's non-interactive
+# sudo contract, instead of failing midway through a staged deploy. A
+# restricted policy has exactly one route: the --console deploy run as root at
+# the server console, which is also the only supported way to transition onto
+# that policy, because the activation that removes the grant also removes the
+# authorization its own post-activation steps need. A passwordless deploy sudo
+# grant remains the operator's explicit choice in vars.identity.localAdminSudo;
+# this only reports the consequence of choosing otherwise.
+source "$script_dir/helpers/local-admin-sudo-guard.sh"
+enforce_local_admin_sudo_policy
+
+if [[ "$console" == "true" ]]; then
+  # Console mode is the local-root route for a host whose sudo policy is
+  # "password-authenticated". It also builds here: the restricted policy drops
+  # the local admin from nix.settings.trusted-users, so a distributed or remote
+  # build driven over SSH as that account could not write the Nix store. Local
+  # mode uses every slot this machine has, which is the full server allocation.
+  if [[ -n "$build_mode_override" && "$build_mode_override" != "local" ]]; then
+    echo "blocked: --console only builds with --build-mode local; remote and distributed builds run over SSH as the local admin, which the restricted policy leaves unable to write the Nix store" >&2
+    exit 1
+  fi
+  build_mode="local"
+  build_locally=true
+  build_host=""
+  # No SSH hop exists, so the dashboard-selected allocation on the target is
+  # not this deploy's to read.
+  consult_dashboard_build_mode=false
 fi
 
 if [[ -n "$build_mode_override" ]]; then
@@ -185,7 +245,7 @@ elif [[ -n "$build_host" ]]; then
   build_mode="remote"
 else
   build_mode="$configured_build_mode"
-  if [[ "${DEPLOY_DRY_RUN:-}" != "1" ]]; then
+  if [[ "${DEPLOY_DRY_RUN:-}" != "1" && "$consult_dashboard_build_mode" == "true" ]]; then
     if dashboard_build_mode="$(read_dashboard_build_mode "$target_host")"; then
       echo "build mode: using dashboard-selected '${dashboard_build_mode}' (vars.nix default '${configured_build_mode}')"
       build_mode="$dashboard_build_mode"
@@ -242,8 +302,8 @@ case "$build_mode" in
   balanced)
     local_build_slots="2"
     remote_build_slots="2"
-    local_build_cores="1"
-    remote_build_cores="1"
+    local_build_cores="4"
+    remote_build_cores="4"
     ;;
   maximum-effort)
     local_build_slots="auto"
@@ -256,6 +316,17 @@ esac
 if [[ "$build_locally" != "true" && -z "$build_host" ]]; then
   build_host="$target_host"
 fi
+
+# The workstation Attic cache is only worth recovering once the resolved
+# allocation is known: only a workstation build consumes it through the local
+# substituter, and a purely remote or server-side build must not be blocked by
+# a cache that cannot help it. Recovery is best effort because Nix keeps its
+# public caches either way.
+recover_local_attic_tunnel_if_needed \
+  "$build_locally" \
+  "$local_attic_cache" \
+  "${NIXHOMESERVER_ATTIC_TUNNEL_SCRIPT:-$HOME/.local/bin/nixhomeserver-attic-tunnel}" \
+  "${XDG_CACHE_HOME:-$HOME/.cache}/nixhomeserver-attic-tunnel.log"
 
 print_quoted_command() {
   local command=("$@")
@@ -276,6 +347,7 @@ if [[ "${DEPLOY_DRY_RUN:-}" == "1" ]]; then
   fi
   echo "hostname=${hostname}"
   echo "action=${action}"
+  echo "console=${console_mode}"
   echo "debug=${debug}"
   case "$local_nix_gc_mode" in
     capacity)
@@ -288,7 +360,7 @@ if [[ "${DEPLOY_DRY_RUN:-}" == "1" ]]; then
   if [[ "$action" == "test" ]]; then
     dry_run_rebuild_command=()
     build_nixos_rebuild_command dry_run_rebuild_command \
-      build "$hostname" "$build_locally" "$target_host" "$build_host"
+      build "$hostname" "$build_locally" "$target_host" "$build_host" "$console_mode"
     echo -n "rebuild_command="
     print_quoted_command "${dry_run_rebuild_command[@]}"
     echo "activation_command=activate the returned closure through the guarded target-side test unit"
@@ -353,6 +425,7 @@ if [[ "$build_locally" == "true" ]]; then
     HOSTNAME_ARG="$hostname" \
     DEBUG_MODE="$debug" \
     BUILD_LOCALLY="$build_locally" \
+    CONSOLE_MODE="$console_mode" \
     BUILD_MODE="$build_mode" \
     LOCAL_BUILD_SLOTS="$local_build_slots" \
     REMOTE_BUILD_SLOTS="$remote_build_slots" \
@@ -388,8 +461,28 @@ remote_command="$(printf '%s ' "${remote_env[@]}")bash -s"
 ssh -T "$build_host" "$remote_command" <<'EOF'
 set -euo pipefail
 
+# Remove the staged archive through the namespace contract rather than a bare
+# `rm`, so a crafted path cannot redirect the cleanup. If the helper cannot be
+# found the archive is left for the 48h namespace expiry to reclaim; deleting an
+# unvalidated path would be the worse failure.
+cleanup_archive() {
+  if [[ -f "$tmpdir/scripts/helpers/deploy-archive-cleanup.sh" ]]; then
+    bash "$tmpdir/scripts/helpers/deploy-archive-cleanup.sh" remove "$REMOTE_ARCHIVE" || true
+  fi
+}
+
+cleanup_remote() {
+  local status=$?
+  # The constrained helper lives in the extracted tree: use it before removing
+  # that tree, even when extraction failed before the cd. Preserve executor or
+  # tar failure status regardless of best-effort cleanup results.
+  cleanup_archive
+  rm -rf "$tmpdir" || true
+  exit "$status"
+}
+
 tmpdir="$(mktemp -d)"
-trap 'rm -rf "$tmpdir" "$REMOTE_ARCHIVE"' EXIT
+trap cleanup_remote EXIT
 tar -C "$tmpdir" -xf "$REMOTE_ARCHIVE"
 cd "$tmpdir"
 

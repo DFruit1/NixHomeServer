@@ -96,6 +96,20 @@ the maintenance jobs, `Nice`/`CPUWeight`/`IOWeight` scheduling. The Paperless
 database snapshot runs every 15 minutes rather than every 2, because duplicate
 detection tolerates a stale snapshot and the job copies the whole database.
 
+Long-running network-facing services that were previously uncapped are bounded
+in the same central block: `ipfs` (512M/1G), `opencloud` (2G/4G), `search-solr`
+(4G/6G), `cloudflared-tunnel-*` (1G/2G), `syncthing` (512M/1G), `caddy`
+(512M/1G), `homepage` (256M/512M) and `kanidm` (512M/1G). Each value comes from
+read-only observation on this host (`systemctl show <unit> -p MemoryCurrent -p
+MemoryPeak`) plus the sizing options already in the configuration; `MemoryMax`
+is roughly twice the observed peak so an expected burst never becomes an
+OOM-kill. `search-solr` must keep headroom above the module's 2g `solrMaxHeap`
+for JVM native and metaspace overhead. Jellyfin keeps its existing 1G/2G caps
+because transcoding is the one workload whose burst does not appear in
+`MemoryPeak`. Short-lived bootstrap and oneshot units stay uncapped, and
+optional apps are gated on their own enable so a removed module never leaves a
+cap behind.
+
 ## Deployment and validation efficiency
 
 The workstation `localNixGCMode` default is `capacity`: the deploy helper only

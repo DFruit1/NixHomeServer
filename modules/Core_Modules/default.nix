@@ -9,6 +9,7 @@
     ./caddy
     ./cloudflared
     ./data-disks
+    ./deploy
     ./disk-cleanup
     ./impermanence
     ./kanidm

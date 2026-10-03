@@ -9,6 +9,12 @@ let
   gatewayPort = vars.networking.ports.ipfsGateway;
   aliasPort = vars.networking.ports.ipfsAlias;
   swarmPort = vars.networking.ports.ipfsSwarm;
+  netbirdIp = vars.networking.netbird.ip;
+  # The swarm listener and the announced address are deliberately the same
+  # NetBird multiaddr: Kubo only ever has to be reachable by the NetBird peers
+  # this server invites, and the NetBird interface is the only one the firewall
+  # opens for the peer port anyway.
+  swarmAddr = "/ip4/${netbirdIp}/tcp/${toString swarmPort}";
   publish = pkgs.writeShellApplication {
     name = "ipfs-publish";
     runtimeInputs = [ pkgs.coreutils pkgs.systemd pkgs.util-linux config.services.kubo.package ];
@@ -83,8 +89,8 @@ in
         Addresses = {
           API = [ ];
           Gateway = "/ip4/${loopback}/tcp/${toString gatewayPort}";
-          Swarm = [ "/ip4/0.0.0.0/tcp/${toString swarmPort}" ];
-          Announce = [ "/ip4/${vars.networking.netbird.ip}/tcp/${toString swarmPort}" ];
+          Swarm = [ swarmAddr ];
+          Announce = [ swarmAddr ];
         };
         Gateway = {
           NoFetch = true;
@@ -105,6 +111,35 @@ in
     ];
 
     environment.systemPackages = [ publish ];
+
+    # The swarm listener is bound to the NetBird address, so the daemon cannot
+    # start until that address exists. Two safeguards cover that, because either
+    # one alone leaves a window where Kubo never comes up:
+    #
+    #   * `netbird-address-verify.service` is the unit that actually guarantees
+    #     the address: it `requires` both the client and the enrollment helper
+    #     and then polls the interface until it matches vars.nix. Ordering after
+    #     it means the bind normally happens on the first attempt.
+    #   * The bind can still lose that race (NetBird re-enrolling under us, a
+    #     verify unit that has not been started in this transaction), and the
+    #     evaluated Kubo unit ships no restart policy of its own. So the retry is
+    #     set explicitly here, and start-rate limiting is disabled so a late
+    #     address cannot exhaust the default burst limit. Plain assignment
+    #     (not `mkForce`, which would discard the upstream `ExecStart`,
+    #     `ExecStartPre` and socket activations) so both sets survive.
+    #
+    # `wants` rather than `requires` throughout: an un-enrolled or failing
+    # overlay must not permanently block the gateway and publication path, it
+    # should only delay them until the address turns up.
+    systemd.services.ipfs = {
+      wants = [ "netbird-address-verify.service" ];
+      after = [ "netbird-address-verify.service" ];
+      unitConfig.StartLimitIntervalSec = 0;
+      serviceConfig = {
+        Restart = "on-failure";
+        RestartSec = "10s";
+      };
+    };
 
     systemd.services.ipfs-alias = {
       description = "Resolve admin distribution names to pinned IPFS content";

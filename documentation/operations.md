@@ -2,6 +2,14 @@
 
 Use this as the maintained day-2 operations guide for validation, guarded deploys, rollback, service health, SMART monitoring, and first-response troubleshooting.
 
+Routine rebuilds and deployment tests use only the guarded helper: run
+`nix run .#deploy -- --action test` before the matching `--action switch` from
+unchanged reviewed source, with dashboard-selected allocation and no overrides.
+Do not use raw `nixos-rebuild` to bypass staging, canary, stamp or rollback
+checks; the emergency console rollback below is a separate explicit bypass.
+The current reviewed-change integration manifest and live prerequisites are in
+[deployment composition t_0fa78113](deploy-composition-t_0fa78113.md).
+
 ## Keys & Secrets Vault
 
 The Homepage "Keys & Secrets" page (`/keys`) is the single self-service place
@@ -269,11 +277,27 @@ that separate cleanup workflow.
 
 Chaptarr is available at `https://chaptarr.<domain>` to members of
 `media-automation-users`. The module follows Chaptarr's supported Docker
-runtime contract, binds its web/API listener through the host network, and
-keeps the host firewall closed on port 8789. The shared authentication gateway
-is the only browser-facing route. Chaptarr is beta software, so preserve tested
-backups and review the upstream warning before trusting it with irreplaceable
-media: <https://github.com/Chaptarr/chaptarr#getting-started>.
+runtime contract: the container keeps the host network so it can reach the
+loopback qBittorrent WebUI, and the listener is pinned to `127.0.0.1` via
+`Chaptarr__Server__BindAddress`. The listener is therefore unreachable from the
+LAN and NetBird regardless of firewall state, and the host firewall stays closed
+on port 8789. The shared authentication gateway is the only browser-facing
+route. Chaptarr is beta software, so preserve tested backups and review the
+upstream warning before trusting it with irreplaceable media:
+<https://github.com/Chaptarr/chaptarr#getting-started>.
+
+The gateway's authentication is what authorizes access, so the module also sets
+`AuthenticationRequired=DisabledForLocalAddresses` in `config.xml`: Chaptarr
+bypasses its own UI login for loopback peers, which is what lets the gateway
+front it without a second interactive login. That relaxation is only safe
+because of the loopback bind, so the two are declared together and an assertion
+rejects any configuration that opens port 8789 in the firewall. If you change
+the bind address, remove the relaxation and re-authenticate through the gateway,
+or Chaptarr's login bypass becomes reachable from the LAN.
+
+The container still runs its supported privilege model: the image entrypoint
+drops to the `chaptarr` user and group through `PUID`/`PGID`. Do not set the
+launcher's `user`, which upstream documents as bypassing that entrypoint setup.
 
 On the first visit, complete Chaptarr's local setup, then configure the policy
 for both media types:
@@ -385,6 +409,112 @@ On the running server, root can read the same value from
 unavoidable. Treat the output as a password: do not paste it into chat, tickets,
 command arguments, or shell history.
 
+This recovery credential is what makes the `password-authenticated` sudo policy
+safe to adopt: with no passwordless grant, the local admin still regains sudo by
+logging in at the console with this password. Nothing else changes — SSH
+password and keyboard-interactive authentication remain disabled in both sudo
+policies, so this credential never becomes a network-accessible path.
+
+## Local-Admin Sudo Policy
+
+`vars.identity.localAdminSudo` selects one of two declarative policies for
+`vars.identity.localAdminUser`:
+
+- `bootstrap-nopasswd` (default): the local admin is a root-equivalent
+  operator — `NOPASSWD ALL`, wheel passwordless. The guarded deploy performs
+  non-interactive `sudo` on the target host (`sudo systemctl`,
+  `sudo /bin/sh -c ...` for activation, `nix --profile ... switch-to-configuration`),
+  so this is the only policy the unattended deploy flow supports.
+- `password-authenticated`: no sudo rule is granted for the local admin, the
+  wheel group no longer carries a passwordless `ALL` grant, and the local admin
+  is dropped from `nix.settings.trusted-users`. The local admin keeps sudo, but
+  only by presenting the reconciled local-console password above.
+
+The restricted policy is not a mechanical containment boundary. Even a sudoers
+rule limited to `nixos-rebuild` can activate an arbitrary caller-chosen closure
+and so obtain root, and any deployment tool runs as the local admin. What the
+restricted policy does is remove a passwordless, unattended, root-equivalent
+grant from a network-reachable SSH account — at the cost of running deploys from
+the server console.
+
+Nix daemon trust is gated by the same policy because `nix.settings.trusted-users`
+is root-equivalent on its own: the official nix.conf manual describes trusted
+users as able to act on the store and import unsigned NARs. Leaving the local
+admin trusted while gating sudo would have kept an unattended root-equivalent
+path open. Removing it means the local admin can no longer write the store or
+change system profiles without sudo.
+
+### Hardening the local admin (the supported transition)
+
+The transition is a **console deploy**, not a workstation deploy. This is not a
+convenience: `--action test` activates the closure, so the very activation that
+removes the passwordless grant also removes the authorization the post-activation
+health gates, stamp write, rollback cancellation and lock release need. A remote
+transition therefore cannot finish its own transaction — the deploy guard refuses
+it before staging rather than letting it break halfway.
+
+1. Confirm console access to the server as the local admin with the reconciled
+   local-console password, that the repository checkout the console will use is
+   present and current (the install phase persists one at
+   `/mnt/persist/etc/nixos`; keep it current with `git fetch`/`git pull`), and
+   that `kanidm`/passkey setup no longer needs an unattended deploy.
+2. Set `identity.localAdminSudo = "password-authenticated";` in `vars.nix` on the
+   console checkout.
+3. Deploy it **from the server console** as the local admin:
+
+   ```bash
+   sudo ./scripts/deploy.sh --console --action test
+   sudo ./scripts/deploy.sh --console --action switch
+   ```
+
+   `--console` is the implemented route, not advice: it runs the whole guarded
+   flow as this machine's root identity with no SSH connection to the target, so
+   every non-interactive `sudo` the executor needs is already root. It builds
+   locally (`--build-mode local` is the only accepted mode, because a remote or
+   distributed build would run over SSH as the local admin, who under this policy
+   is no longer a trusted Nix user and cannot write the store). Both commands
+   enter the reconciled local-console password once at the sudo prompt.
+   The preflight reports `console deploy running as root on this host; downstream
+   sudo needs no grant`.
+
+4. Later deploys under the restricted policy also run at the console with the
+   same two commands. A workstation deploy is refused up front, naming this
+   route, because it would reach the host over SSH as an account with no
+   passwordless grant. A workstation deploy that still *asks* for the
+   `bootstrap-nopasswd` policy is refused too, if the host has already activated
+   `password-authenticated`, for the same reason.
+
+Console caveat: `sudo` may reset `HOME`, which `git` and the repository paths
+use. If the console deploy cannot find its checkout, run
+`sudo --preserve-env=HOME ./scripts/deploy.sh --console --action test`, or log in
+as root and pass `--console` without a further `sudo`.
+
+### Restoring unattended deploys
+
+At the console, set `identity.localAdminSudo = "bootstrap-nopasswd"` in
+`vars.nix`, then run `sudo ./scripts/deploy.sh --console --action test` and
+`sudo ./scripts/deploy.sh --console --action switch`. Once that activation lands,
+the workstation deploy path works again with no further action.
+
+`--console` needs *one* interactive prompt, because the guarded flow then runs as
+root: every downstream `sudo` in the executor succeeds without a grant.
+
+### Emergency recovery under the restricted policy
+
+The guarded deploy needs no passwordless grant to recover the host itself. At
+the console, as the local admin:
+
+```bash
+sudo nixos-rebuild switch --rollback
+```
+
+This is the same authorized manual bypass documented on the Homepage admin
+guide: it bypasses every guarded deploy check, changes the boot profile, and
+needs only the local-console password. If sudo itself is unavailable, log in at
+the console with the reconciled local-console password from
+[Local-Console Administrator Recovery](#local-console-administrator-recovery)
+and then run the rollback command.
+
 ## Common Commands
 
 - Remote validation gate: `./scripts/deploy.sh --debug --action test`
@@ -408,6 +538,57 @@ command arguments, or shell history.
 - Local encrypted backup repository: `/mnt/data/backups/kopia`
 - External USB media auto-mount root: `/mnt/external-usb/` (drives mount on insertion; shared `_USB` view at `/mnt/usb-access-view` is gated to `usb-access`)
 - Guarded server shutdown from the desktop: `scripts/admin/desktop-server-shutdown.sh`
+
+## Deploy Archive Staging Rollout (human-gated)
+
+Remote archive upload requires
+`/var/lib/nixhomeserver-deploy-archives` on every selected build host,
+not only the activation target. `base-system` declares this directory as
+`0700 <localAdminUser>:<localAdminUser>` with `mM:48h` tmpfiles expiry. Archive
+files are `0600`; immediate completion/transfer-failure cleanup uses the
+validated namespace helper. A disconnected session or extraction failure
+without a usable helper leaves an archive for independent 48-hour expiry.
+Missing, symlinked, non-private or inaccessible staging fails closed; do not
+fall back to `/tmp` or delete caller-supplied paths manually.
+
+The approved fixed sibling namespace is outside `/var/lib/nixhomeserver-deploy`.
+The stamp writer keeps that state directory root-owned `0700` and stamps
+root-owned `0600`; neither access policy is widened. `repo.deploy.archiveStagingDir`
+accepts only this exact sibling path, not arbitrary `/var/lib` directories.
+The helper's environment override is for isolated regression fixtures only;
+it is not a supported production configuration or rollout workaround.
+The offline proof `bash scripts/tests/test-deploy-archive-permissions.sh` uses
+isolated user/mount namespaces and mapped uid/gid pairs: the non-root SSH-user
+stand-in stages and removes owned `0600` archives through the real helper in
+the production sibling path, while root-only state/stamps remain inaccessible,
+both before and after the real stamp writer reasserts state permissions.
+The old child layout remains only a failing negative control. This proof needs
+`unshare`, `mount`, `setpriv` and subordinate uid/gid mappings; failure to obtain
+them is an evidence gap, not permission to change host policy. Do not chmod/chown
+the deploy-state parent, add ACLs, switch SSH to root or widen sudo.
+
+The new path still requires rollout on every selected build host. Install its
+declarative staging and expiry configuration only through a separately approved
+guarded `test` then `switch`, never an ordinary raw `nixos-rebuild`. A target
+without the prerequisite cannot bootstrap via remote archive upload: that upload
+fails closed before the new configuration can activate. A separately approved
+guarded local-build test/switch can avoid this upload dependency, but this
+runbook and the namespace design approval do not authorize a local-allocation
+override or any deployment. Keep dashboard-selected allocation unless that
+specific bootstrap exception is approved. An independent build host needs its
+own approved configuration rollout; activating the target cannot provision it.
+No automatic migration, old-state cleanup or permission change is performed.
+
+Before resuming remote allocation, verify as the actual non-root SSH user on
+each build host that the real helper's `namespace` check succeeds, the staging
+directory is non-symlinked and mode `0700` with the intended owner, and a test
+archive is created `0600` and removed through the helper. Separately verify
+that the declarative 48-hour rule and periodic `systemd-tmpfiles-clean.timer`
+are installed and active, and that root-only stamps/transaction state remain
+inaccessible to that user. Run the approved guarded test before switch to
+refresh the source-bound v2 stamp. Offline cleanup tests are not evidence of
+live rollout safety, and this runbook does not authorize deployment or change
+emergency rollback policy.
 
 ## Guarded Server Shutdown
 
@@ -1472,11 +1653,29 @@ install permission or confirmation.
 The server runs Kubo with a private HTTPS gateway at
 `https://ipfs.<server-domain>`. Its DNS name works on the home LAN and over
 NetBird; it is not a public Cloudflare route. Kubo's control API uses a local
-Unix socket. Its TCP peer port (4001) is open only on the NetBird interface,
-with public bootstrap and content routing disabled. The gateway serves only
-content that this server has pinned. An IPFS CID identifies content; it is not
-an access token or encryption. Only publish files that the intended NetBird
-peers may read, and remember that peers can retain their own copies.
+Unix socket. Its TCP peer port (4001) is bound to this server's NetBird
+address — the same multiaddr it announces to peers — and that port is open only
+on the NetBird interface, with public bootstrap and content routing disabled.
+Because the listener depends on the NetBird address existing, `ipfs.service` is
+ordered after `netbird-address-verify.service` — the unit that `requires` the
+NetBird client and its enrollment helper and then polls the interface until it
+carries the address from `vars.nix`. That dependency is a `wants`, not a
+`requires`, and the daemon also carries `Restart=on-failure` with start-rate
+limiting disabled: if the address is still absent when Kubo first starts (NetBird
+re-enrolling, or a verify unit that has not been started in this transaction),
+`ipfs.service` retries every 10 seconds until it can bind, instead of wedging the
+gateway and publication paths. Verify the listener and the ordering with:
+
+```sh
+sudo -u ipfs env IPFS_PATH=/mnt/data/ipfs ipfs config Addresses.Swarm
+sudo ss -lntp 'sport = :4001'
+systemctl show ipfs.service -p After -p Restart -p RestartUSec -p StartLimitIntervalUSec
+```
+
+The gateway serves only content that this server has pinned. An IPFS CID
+identifies content; it is not an access token or encryption. Only publish
+files that the intended NetBird peers may read, and remember that peers can
+retain their own copies.
 
 Publish a file or directory with a stable channel name:
 
@@ -2063,7 +2262,38 @@ For the slower full validation gate:
 
 `--debug` keeps the transactional deploy ordering but adds the full repository
 validation gate before rebuilding. Use it for broad changes or suspicious
-failures; routine deploys can use the focused fast path.
+failures; routine deploys can use the focused fast path. The full gate is
+expensive (roughly 10-15 minutes) and runs on whichever host coordinates the
+deploy, so on the default remote allocation it runs on the production
+coordinator rather than on your workstation.
+
+`--debug` applies to `--action test` only. Switch never reruns the full
+validation, because it already refuses to continue unless the repository is
+byte-identical to the source the passing test validated, and it activates that
+test's exact closure. Instead, the test records whether the full validation
+actually ran and passed into its stamp:
+
+- A `--action test --debug` run records `debug_validated=true`, and
+  `--action switch --debug` accepts that stamp.
+- An ordinary `--action test` run records `debug_validated=false`. A
+  `--action switch --debug` then fails closed and asks you to rerun
+  `--debug --action test`, because it cannot offer the extra assurance.
+- If the full validation fails, no attestation is recorded at all rather than
+  a `false` one that could later be mistaken for a completed validation.
+
+To switch with the debug assurance, use the matching pair:
+
+```bash
+./scripts/deploy.sh --action test --debug
+./scripts/deploy.sh --action switch --debug
+```
+
+The recorded stamp is a root-only `version=2` file at
+`/var/lib/nixhomeserver-deploy/last-tested-<hostname>.stamp`. Older
+`version=1` stamps predate the attestation field and are rejected outright,
+with an instruction to rerun `--action test`; they are never silently upgraded
+or assumed to have been debug-validated. Run `./scripts/deploy.sh --action test`
+once after upgrading to record a new stamp before switching.
 
 The regular deploy path stays intentionally focused. It evaluates the target,
 checks build and target capacity, uses the build allocation selected in
@@ -2108,10 +2338,11 @@ passphrase-protected identities cannot be used by the daemon; the helper fails
 before building with an actionable diagnostic instead of silently falling back
 to one host.
 
-`balanced` sets Nix's advisory `cores = 1` hint as well as limiting each host to
+`balanced` sets Nix's advisory `cores = 4` hint as well as limiting each host to
 two simultaneous jobs. Nixpkgs builders that honor `NIX_BUILD_CORES` therefore
-stay near two busy cores per host; derivations that ignore the hint may still
-use more CPU.
+stay near eight busy cores per host, and Crane-backed Rust builds see
+`CARGO_BUILD_JOBS=4` instead of a single job; derivations that ignore the hint
+may still use more CPU.
 
 Preview a configured allocation without building:
 

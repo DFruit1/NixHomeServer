@@ -24,7 +24,16 @@ accept-flake-config = true}"
 : "${ACTION:?missing ACTION}"
 : "${HOSTNAME_ARG:?missing HOSTNAME_ARG}"
 : "${DEBUG_MODE:=false}"
+# Only set to true by this transaction after a completed full repository
+# validation; the stamp attestation is derived from it.
+debug_full_validation_passed=false
 : "${BUILD_LOCALLY:=false}"
+# Console mode runs the guarded deploy as this machine's root identity and
+# opens no SSH connection to the target, so every non-interactive sudo the
+# flow needs is already root. It is the implemented route for a host whose
+# vars.identity.localAdminSudo policy is "password-authenticated", where the
+# local admin has no passwordless grant for the unattended flow to rely on.
+: "${CONSOLE_MODE:=false}"
 : "${BUILD_MODE:?missing BUILD_MODE}"
 : "${LOCAL_BUILD_SLOTS:?missing LOCAL_BUILD_SLOTS}"
 : "${REMOTE_BUILD_SLOTS:?missing REMOTE_BUILD_SLOTS}"
@@ -73,6 +82,14 @@ human_bytes() {
 }
 
 target_is_local() {
+  # Console mode is a local-root deploy by construction: deploy.sh refuses it
+  # together with --target/--build-host, so the target is this machine and no
+  # SSH hop exists. Every target_command therefore runs here, as root, which is
+  # what makes the restricted sudo policy deployable without a passwordless
+  # grant.
+  if [[ "$CONSOLE_MODE" == "true" ]]; then
+    return 0
+  fi
   [[ "$BUILD_LOCALLY" != "true" && "$TARGET_HOST" == "$BUILD_HOST" ]]
 }
 
@@ -224,6 +241,14 @@ configure_nix_build_allocation() {
       # Multi-user Nix opens this connection as the local daemon's root user,
       # so both an explicit identity and host-key pin must be in the builder
       # record instead of relying on the invoking user's SSH defaults.
+      # The builder record's five fields are store URI, system types, SSH
+      # identity file, max parallel jobs, and the speed factor that biases
+      # builder selection. Field five is NOT a core count: per-derivation core
+      # width is the advisory `cores` setting exported below, which Nix sends to
+      # the server daemon in the SetOptions handshake
+      # (RemoteStore::setOptions -> WorkerProto::Op::SetOptions.buildCores).
+      # The speed factor stays 1 so the server is neither favoured nor disfavoured
+      # relative to the workstation daemon.
       # Source: https://nix.dev/manual/nix/2.33/command-ref/conf-file#conf-builders
       builders_setting="ssh-ng://${TARGET_HOST} ${HOST_PLATFORM} ${builder_ssh_identity} ${remote_slots} 1 ${remote_features_csv} - ${remote_builder_host_key}"
       ;;
@@ -780,18 +805,30 @@ clear_deploy_transaction_traps() {
 
 write_test_stamp() {
   local toplevel="$1"
+  local debug_validated="false"
   local gcroot_dir_quoted gcroot_path_quoted recovery_marker source_hash_quoted stamp_path_quoted toplevel_quoted write_script
 
   assert_deploy_lock_owned
   recovery_marker="$(deploy_recovery_marker_path)"
-  deploy_render_test_stamp "$source_hash" "$toplevel" >/dev/null
+  # The attestation is only ever true when this very transaction ran the full
+  # repository validation, so a validator failure can never leave a usable
+  # true attestation behind.
+  if [[ "$DEBUG_MODE" == "true" ]]; then
+    [[ "$debug_full_validation_passed" == "true" ]] || {
+      echo "blocked: debug validation did not complete successfully; refusing to record a debug attestation" >&2
+      return 1
+    }
+    debug_validated=true
+  fi
+  deploy_render_test_stamp "$source_hash" "$toplevel" "$debug_validated" >/dev/null
   source_hash_quoted="$(printf '%q' "$source_hash")"
   stamp_path_quoted="$(printf '%q' "$test_stamp_path")"
   gcroot_dir_quoted="$(printf '%q' "$test_gcroot_dir")"
   gcroot_path_quoted="$(printf '%q' "$test_gcroot_path")"
   toplevel_quoted="$(printf '%q' "$toplevel")"
+  debug_validated_quoted="$(printf '%q' "$debug_validated")"
 
-  write_script="set -e; test -f ${deploy_lock_dir}/owner && test \"\$(cat ${deploy_lock_dir}/owner)\" = ${deploy_lock_token} && ! test -e ${recovery_marker} && ! test -e $(deploy_recovery_complete_marker_path); install -d -m 0700 $(printf '%q' "$deploy_state_dir"); install -d $gcroot_dir_quoted; if test -e $gcroot_path_quoted && ! test -L $gcroot_path_quoted; then echo 'blocked: tested closure GC root is not a symlink' >&2; exit 1; fi; ln -sfn $toplevel_quoted $gcroot_path_quoted; tmp=\$(mktemp ${stamp_path_quoted}.tmp.XXXXXX); trap 'rm -f \"\$tmp\"' EXIT; printf 'version=1\\nsource_hash=%s\\ntoplevel=%s\\n' $source_hash_quoted $toplevel_quoted >\"\$tmp\"; chmod 0600 \"\$tmp\"; chown root:root \"\$tmp\"; mv -f \"\$tmp\" $stamp_path_quoted; trap - EXIT"
+  write_script="set -e; test -f ${deploy_lock_dir}/owner && test \"\$(cat ${deploy_lock_dir}/owner)\" = ${deploy_lock_token} && ! test -e ${recovery_marker} && ! test -e $(deploy_recovery_complete_marker_path); install -d -m 0700 $(printf '%q' "$deploy_state_dir"); install -d $gcroot_dir_quoted; if test -e $gcroot_path_quoted && ! test -L $gcroot_path_quoted; then echo 'blocked: tested closure GC root is not a symlink' >&2; exit 1; fi; ln -sfn $toplevel_quoted $gcroot_path_quoted; tmp=\$(mktemp ${stamp_path_quoted}.tmp.XXXXXX); trap 'rm -f \"\$tmp\"' EXIT; printf 'version=2\\nsource_hash=%s\\ntoplevel=%s\\ndebug_validated=%s\\n' $source_hash_quoted $toplevel_quoted $debug_validated_quoted >\"\$tmp\"; chmod 0600 \"\$tmp\"; chown root:root \"\$tmp\"; mv -f \"\$tmp\" $stamp_path_quoted; trap - EXIT"
   target_command "sudo /bin/sh -c $(printf '%q' "$write_script")"
 }
 
@@ -802,11 +839,26 @@ load_test_stamp() {
   stamp_tmp="$(mktemp)"
   chmod 0600 "$stamp_tmp"
   printf '%s\n' "$stamp_content" >"$stamp_tmp"
-  if ! deploy_read_test_stamp "$stamp_tmp" stamped_source_hash stamped_toplevel; then
+  if ! deploy_read_test_stamp "$stamp_tmp" stamped_source_hash stamped_toplevel stamped_debug_validated; then
     rm -f "$stamp_tmp"
     return 1
   fi
   rm -f "$stamp_tmp"
+}
+
+# --debug is an explicit request for the extra assurance that only a completed
+# full repository validation can provide. Switch never reruns that validation -
+# it reuses the exact closure and source hash the passing test recorded - so the
+# attestation written by that test is what proves the assurance instead.
+assert_debug_switch_attestation() {
+  if [[ "$DEBUG_MODE" != "true" ]]; then
+    return 0
+  fi
+
+  if [[ "$stamped_debug_validated" != "true" ]]; then
+    echo "blocked: --debug switch requires a matching-source stamp that records a completed full debug validation; rerun --debug --action test" >&2
+    return 1
+  fi
 }
 
 run_health_gates() {
@@ -840,11 +892,46 @@ commit_boot_generation() {
   target_command "sudo /bin/sh -c $(printf '%q' "test -f ${deploy_lock_dir}/owner && test \"\$(cat ${deploy_lock_dir}/owner)\" = ${deploy_lock_token} && ! test -e ${recovery_marker} && ! test -e ${recovery_complete_marker} && $(printf '%q' "$target_nix_env") --profile /nix/var/nix/profiles/system --set $(printf '%q' "$toplevel") && $(printf '%q' "$toplevel/bin/switch-to-configuration") boot")"
 }
 
+# The full repository validation is expensive (10-15 minutes) and belongs to
+# the test action, where a successful validation is what makes the resulting
+# stamp worth recording. Switch reuses that same validated source and exact
+# closure, so rerunning it there would only burn the production coordinator's
+# time before an activation that adds no new assurance. Note that --debug test
+# still runs it on whichever host coordinates the deploy.
+run_debug_full_validation() {
+  if [[ "$DEBUG_MODE" != "true" || "$ACTION" != "test" ]]; then
+    return 0
+  fi
+
+  echo "running debug validation"
+  debug_full_validation_passed=false
+  # The status is returned explicitly rather than left to `set -e`, because a
+  # caller may invoke this from a condition, where errexit is not inherited.
+  if ! nix shell --inputs-from . \
+    nixpkgs#age nixpkgs#cargo nixpkgs#gawk nixpkgs#gitMinimal nixpkgs#gnugrep \
+    nixpkgs#gnused nixpkgs#gnutar nixpkgs#jq nixpkgs#nodejs \
+    nixpkgs#openssl nixpkgs#python3 nixpkgs#ripgrep nixpkgs#sqlite \
+    nixpkgs#util-linux \
+    -c bash ./scripts/validate-repo.sh --full; then
+    return 1
+  fi
+  debug_full_validation_passed=true
+}
+
 deploy_main() {
 local built_toplevel=""
 local -a cmd=()
 
 arm_deploy_transaction_traps
+
+# Console mode claims every target step runs as this machine's root identity.
+# Refuse that claim when it is false rather than letting sudo prompts or
+# failed checks surface later: the restricted-policy route depends on it.
+if [[ "$CONSOLE_MODE" == "true" && "$(id -u)" != "0" ]]; then
+  echo "blocked: --console deploys to this host as root; run 'sudo ./scripts/deploy.sh --console ...'" >&2
+  return 1
+fi
+
 configure_nix_build_allocation_for_action
 
 if [[ "$ACTION" == "test" ]]; then
@@ -872,15 +959,7 @@ deploy_validate_source_hash "$source_hash" || {
   false
 }
 
-if [[ "$DEBUG_MODE" == "true" ]]; then
-  echo "running debug validation"
-  nix shell --inputs-from . \
-    nixpkgs#age nixpkgs#cargo nixpkgs#gawk nixpkgs#gitMinimal nixpkgs#gnugrep \
-    nixpkgs#gnused nixpkgs#gnutar nixpkgs#jq nixpkgs#nodejs \
-    nixpkgs#openssl nixpkgs#python3 nixpkgs#ripgrep nixpkgs#sqlite \
-    nixpkgs#util-linux \
-    -c bash ./scripts/validate-repo.sh --full
-fi
+run_debug_full_validation
 
 acquire_deploy_lock
 capture_previous_state
@@ -888,7 +967,7 @@ capture_previous_state
 case "$ACTION" in
   test)
     build_nixos_rebuild_command cmd \
-      build "$HOSTNAME_ARG" "$BUILD_LOCALLY" "$TARGET_HOST" "$BUILD_HOST"
+      build "$HOSTNAME_ARG" "$BUILD_LOCALLY" "$TARGET_HOST" "$BUILD_HOST" "$CONSOLE_MODE"
     echo "building and copying the NixOS closure without activating it"
     built_toplevel="$("${cmd[@]}")"
     deploy_validate_toplevel_path "$built_toplevel" || {
@@ -916,11 +995,13 @@ case "$ACTION" in
   switch)
     stamped_source_hash=""
     stamped_toplevel=""
+    stamped_debug_validated=""
     load_test_stamp
     if [[ "$source_hash" != "$stamped_source_hash" ]]; then
       echo "blocked: repository contents differ from the last passing test; run --action test again" >&2
       false
     fi
+    assert_debug_switch_attestation
     target_command "test -x $(printf '%q' "$stamped_toplevel/bin/switch-to-configuration")"
     schedule_rollback "45m"
     activation_started=true

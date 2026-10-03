@@ -21,6 +21,7 @@ fixture_files=(
   scripts/admin/seed-install-repository.sh
   scripts/generate-all-secrets.sh
   scripts/helpers/repo-common.sh
+  scripts/helpers/deploy-archive-cleanup.sh
   scripts/helpers/secrets-common.sh
   scripts/helpers/generate-managed-secrets.sh
   scripts/helpers/encrypt-staged-external-secrets.sh
@@ -28,6 +29,7 @@ fixture_files=(
   vars.example.nix
   secrets/manifest.nix
   lib/derive-vars.nix
+  lib/local-admin-sudo.nix
   lib/merge-ports.nix
   modules/catalog.nix
   lib/authorization-groups.nix

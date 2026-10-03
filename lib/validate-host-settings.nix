@@ -111,6 +111,13 @@ let
       message = "identity app user lists must contain only strings";
     }
     {
+      valid = builtins.elem settings.localAdminSudo [
+        "bootstrap-nopasswd"
+        "password-authenticated"
+      ];
+      message = "identity.localAdminSudo must be \"bootstrap-nopasswd\" or \"password-authenticated\"";
+    }
+    {
       valid = builtins.isInt settings.kanidmAuthSessionExpirySeconds
         && settings.kanidmAuthSessionExpirySeconds >= 1;
       message = "identity.authSessionExpirySeconds must be a positive integer number of seconds";

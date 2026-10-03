@@ -90,18 +90,66 @@ Independent clippy and nextest derivations remain independently schedulable.
 Chaining was rejected because aggregate Nix scheduling already runs them in
 parallel and no repeatable 10% full-check improvement was demonstrated.
 
-Headless HandBrake was retained. Its cold build phase completed in 54s versus
-79s for the GTK build, a 31.6% reduction. `HandBrakeCLI --version` and a basic
-Matroska conversion passed, and removing the GUI did not grow the Mkvmaker
+### Superseded: headless HandBrake and a narrow mkvpropedit
+
+The following measurements justified the two hand-rolled tool derivations that
+were removed by the current decision below. They are kept as history only; they
+describe a configuration the repository no longer builds, and are retained so
+the reversal can be judged against the original numbers.
+
+Headless HandBrake was retained at the time. Its cold build phase completed in
+54s versus 79s for the GTK build, a 31.6% reduction. `HandBrakeCLI --version`
+and a basic Matroska conversion passed, and removing the GUI did not grow the
+Mkvmaker closure.
+
+The narrow `mkvpropedit` package was also retained at the time. The pinned
+upstream Rake build exposes the stable `apps:mkvpropedit` target; that target
+completed in 684s. A warmed full CLI build was still compiling unrelated merge
+and input targets when stopped at 779.26s, establishing a conservative
+improvement of at least 12.2%. The narrow binary changed a copied Matroska title
+and `ffprobe` read the expected value. The final assembled Mkvmaker closure was
+1.5 GiB, down from the 1.6 GiB baseline — note that the assembled closure is now
+1.6 GiB again, since the stock packages are larger than the narrow ones.
+
+### Current decision: unmodified Nixpkgs tool packages
+
+HandBrake and mkvtoolnix are now consumed as unmodified Nixpkgs packages. This
+supersedes the narrow-derivation decision recorded above.
+
+Stock `handbrake` and `mkvtoolnix-cli` already ship every executable Mkvmaker
+drives: `HandBrakeCLI`, the HandBrake-patched `ffmpeg-hb` ffprobe, and
+`mkvpropedit`. The two hand-rolled derivations were replaced by direct
+references, and `scripts/tests/test-mkvmaker-tool-resolution.sh` pins the
+resolved store paths to the stock package outputs so an override cannot return
+unnoticed.
+
+Measured on the pinned Nixpkgs (`nixos-26.05`, rev
+`c5c4a43b0e8056328ec4529f735cabdb8f1942bb`):
+
+| Derivation | Closure | cache.nixos.org | Attic |
+| --- | --- | --- | --- |
+| stock `mkvtoolnix-cli` | 560.7 MiB | substitutable | miss |
+| stock `handbrake` (GTK) | 1.4 GiB | substitutable | miss |
+| `handbrake.override { useGtk = false; }` | 1.4 GiB | miss | substitutable |
+| narrow `mkvpropedit` | 531.7 MiB | miss | miss |
+
+The narrow `mkvpropedit` was the only one of the four that had to be compiled:
+the Rake `apps:mkvpropedit` target still needs a local build, reproduced here at
+roughly seven minutes. Accepting the GTK build adds 18,717,776 bytes of
+shared-library closure — 17.85 MiB (18.7 MB) over the headless build, from
+gst-plugins-good, gst-libav, taglib, libshout, and aalib. The superseded
+headless measurement's 31.6% cold-build-phase saving applied only when the
+derivation was compiled at all. Substituting a 684s local rebuild for a cache hit
+was not a defensible trade, so the stock packages win despite the slightly larger
 closure.
 
-The narrow `mkvpropedit` package was also retained. The pinned upstream Rake
-build exposes the stable `apps:mkvpropedit` target; that target completed in
-684s. A warmed full CLI build was still compiling unrelated merge and input
-targets when stopped at 779.26s, establishing a conservative improvement of at
-least 12.2%. The narrow binary changed a copied Matroska title and `ffprobe`
-read the expected value. The final assembled Mkvmaker closure is 1.5 GiB,
-down from the 1.6 GiB baseline.
+`mkvmaker --doctor`-equivalent behavior is unchanged: the same
+`DISC_TO_JELLYFIN_HANDBRAKE`, `DISC_TO_JELLYFIN_FFPROBE`, and
+`DISC_TO_JELLYFIN_MKVPROPEDIT` defaults, the same executable names, and the same
+flags. The owning test additionally performs the operations Mkvmaker performs —
+an `mkvpropedit` container date deletion, a container title edit read back
+through the resolved ffprobe, a `HandBrakeCLI --scan` title enumeration, and a
+full x264 encode verified to retain both streams — against disposable fixtures.
 
 The selected personal build mode is recorded after the allocation benchmark
 below; the generic example remains `remote`.

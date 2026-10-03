@@ -2,6 +2,17 @@
 
 _repo_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# The archive namespace contract is sourced rather than duplicated: the same
+# functions decide on both ends what may be created and removed.
+# shellcheck source=scripts/helpers/deploy-archive-cleanup.sh
+source "$_repo_lib_dir/deploy-archive-cleanup.sh"
+
+# Resolve the helper's own path here, at source time, where BASH_SOURCE is
+# unambiguously this file. Recomputing it from inside a function is unreliable:
+# BASH_SOURCE inside a function reports the *caller's* file, so the lookup would
+# silently resolve against whatever sourced repo-common.sh.
+deploy_archive_helper_path="$_repo_lib_dir/deploy-archive-cleanup.sh"
+
 init_repo_root() {
   local override_var="${1:-}"
   local requested_root git_root
@@ -68,15 +79,28 @@ nix_uses_substituter() {
   [[ " $substituters " == *" $expected "* ]]
 }
 
+# $4 selects the failure contract: "required" (default) keeps the fail-closed
+# behaviour callers such as repository validation depend on, "optional" only
+# downgrades the diagnosis to a warning for best-effort preflight callers.
 ensure_local_attic_tunnel() {
   local health_endpoint="$1"
   local tunnel_script="$2"
   local log_file="$3"
+  local requirement="${4:-required}"
+  local prefix="blocked"
   # The persistent tunnel retries SSH after a 15-second backoff. Allow one
   # complete retry window so a transient disconnect cannot race a rebuild.
   local wait_attempts="${NIXHOMESERVER_ATTIC_WAIT_ATTEMPTS:-40}"
   local wait_delay="${NIXHOMESERVER_ATTIC_WAIT_DELAY:-0.5}"
   local attempt
+
+  if [[ "$requirement" != "required" && "$requirement" != "optional" ]]; then
+    echo "blocked: Attic tunnel requirement must be required or optional" >&2
+    return 1
+  fi
+  if [[ "$requirement" == "optional" ]]; then
+    prefix="warning"
+  fi
 
   if curl --fail --silent --show-error --max-time 2 \
     --output /dev/null "$health_endpoint"; then
@@ -84,7 +108,7 @@ ensure_local_attic_tunnel() {
   fi
 
   if [[ ! -x "$tunnel_script" ]]; then
-    echo "blocked: local Attic cache is configured but its tunnel is unavailable" >&2
+    echo "$prefix: local Attic cache is configured but its tunnel is unavailable" >&2
     echo "   Missing executable tunnel helper: $tunnel_script" >&2
     return 1
   fi
@@ -102,9 +126,54 @@ ensure_local_attic_tunnel() {
     fi
   done
 
-  echo "blocked: local Attic cache tunnel did not become ready at $health_endpoint" >&2
+  echo "$prefix: local Attic cache tunnel did not become ready at $health_endpoint" >&2
   echo "   Inspect: $log_file" >&2
   return 1
+}
+
+# Decide whether this deploy needs the workstation's loopback Attic cache at
+# all. Only a workstation build consumes the cache through the local
+# substituter, so the resolved allocation - not the requested mode name -
+# decides. Recovery itself is best effort: an unreachable cache costs build
+# throughput, never correctness, because Nix keeps its public caches. Callers
+# run this after the allocation is resolved and before staging and building.
+local_attic_cache_recovery_needed() {
+  local build_locally="$1"
+  local cache_url="$2"
+
+  [[ "$build_locally" == "true" ]] || return 1
+  nix_uses_substituter "$cache_url" || return 1
+  return 0
+}
+
+recover_local_attic_tunnel_if_needed() {
+  local build_locally="$1"
+  local cache_url="$2"
+  local tunnel_script="$3"
+  local log_file="$4"
+
+  [[ "${DEPLOY_DRY_RUN:-}" != "1" ]] || return 0
+
+  if ! local_attic_cache_recovery_needed "$build_locally" "$cache_url"; then
+    return 0
+  fi
+
+  if ! command -v curl >/dev/null 2>&1 || ! command -v nohup >/dev/null 2>&1; then
+    echo "warning: local Attic cache tunnel needs curl and nohup; continuing with the public caches" >&2
+    return 0
+  fi
+
+  # Never fatal: without this cache the deploy simply builds from the official
+  # and community caches.
+  if ! ensure_local_attic_tunnel \
+    "$cache_url/nix-cache-info" \
+    "$tunnel_script" \
+    "$log_file" \
+    optional; then
+    echo "warning: continuing without the local Attic cache; Nix falls back to the official and community caches" >&2
+    return 0
+  fi
+  return 0
 }
 
 nix_cache_hash() {
@@ -240,11 +309,36 @@ stage_archive_on_remote() {
   local archive_path="$1"
   local remote_host="$2"
   local archive_label="$3"
+  local helper_path="$deploy_archive_helper_path"
   local remote_archive
 
-  remote_archive="$(ssh "$remote_host" "mktemp /tmp/${archive_label}.XXXXXX.tar")"
-  if ! ssh "$remote_host" "cat > $(printf '%q' "$remote_archive")" <"$archive_path"; then
-    ssh "$remote_host" "rm -f $(printf '%q' "$remote_archive")" || true
+  if [[ ! -r "$helper_path" ]]; then
+    echo "blocked: deploy archive staging helper is missing: $helper_path" >&2
+    return 1
+  fi
+
+  # The namespace contract lives in a standalone helper so the same code decides
+  # on both ends what may be created and removed. Upload it through the
+  # ordinary SSH channel first, then use it on the remote host to claim a slot.
+  # If any step fails, everything this function created is removed through the
+  # same constrained path rather than an unvalidated one.
+  # The helper payload redirect belongs *inside* the command substitution.
+  # As `x="$(ssh ...)" <file` it attaches to the assignment statement instead,
+  # and the substitution's ssh receives an empty stdin.
+  remote_archive="$(ssh -T "$remote_host" \
+    "set -e; helper=\$(mktemp); trap 'rm -f \"\$helper\"' EXIT; cat >\"\$helper\"; chmod 0700 \"\$helper\"; bash \"\$helper\" stage $(printf '%q' "$archive_label")" \
+    <"$helper_path")" || return 1
+
+  # The helper prints exactly one absolute path; a remote diagnostic on stdout,
+  # a wrapped error, or a blank line is not a usable archive path.
+  if [[ ! "$remote_archive" == /* ]] || [[ "$remote_archive" == *$'\n'* ]]; then
+    echo "blocked: remote deploy archive staging did not return a usable path" >&2
+    return 1
+  fi
+
+  if ! ssh -T "$remote_host" "cat > $(printf '%q' "$remote_archive")" \
+      <"$archive_path"; then
+    remove_remote_archive "$remote_host" "$remote_archive"
     return 1
   fi
   printf '%s\n' "$remote_archive"

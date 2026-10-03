@@ -29,6 +29,7 @@ let
       adminEmail = "admin@example.test"; # Single contact address used for both ACME and the Kanidm admin account.
       sshPublicKey = "ssh-ed25519 CHANGE_ME example-admin-key"; # Public key authorized for the local Unix administrator.
       localAdminUser = "admin"; # Local Unix SSH/sudo account for bootstrap and operations.
+      localAdminSudo = "bootstrap-nopasswd"; # Sudo policy for that account: "bootstrap-nopasswd" grants NOPASSWD ALL (the only mode the unattended deploy flow supports); "password-authenticated" removes that grant and keeps sudo behind the reconciled local-console password.
       authSessionExpirySeconds = 7776000; # Maximum Kanidm authentication-session lifetime in seconds (90 days). Also caps native-app silent refresh.
     };
 
@@ -50,7 +51,7 @@ let
       cpuVendor = "auto"; # Microcode vendor: "auto" trusts the generated hardware module, or force "intel"/"amd".
       timeZone = "Etc/UTC"; # IANA time zone for timers, logs, and local maintenance windows.
       hostId = "00000000"; # Replace with a stable 8-character hexadecimal host ID for zfs-mirror.
-      buildMode = "balanced"; # Build allocation: "local", "remote", "balanced" (2 slots each with 1 requested core/job), or "maximum-effort" (all slots on both).
+      buildMode = "balanced"; # Build allocation: "local", "remote", "balanced" (2 slots each with 4 requested cores/job), or "maximum-effort" (all slots on both).
       nixStoreMaxSizeGiB = 80; # Soft Nix store cap in GiB; collection starts at 90% of this size or 90% usage on the filesystem containing /nix/store.
       nixGcRetentionDays = 45; # Delete profile generations older than this many days, sacrificing older rollback points.
       localNixGCMode = "capacity"; # "never", capacity-triggered collection, or unconditional "always" before deploy.

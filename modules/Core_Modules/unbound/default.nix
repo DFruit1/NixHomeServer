@@ -3,6 +3,7 @@
 let
   privateHosts = config.services.unbound.privateHosts;
   adblockCfg = config.repo.unbound.adblock;
+  floodCfg = config.repo.unbound.floodProtection;
   adblockAllowlistFile = pkgs.writeText "unbound-adblock-allowlist.txt" (
     lib.concatStringsSep "\n" adblockCfg.allowlist
   );
@@ -102,6 +103,30 @@ let
   lanLocalZones =
     [ "${vars.domain} transparent" "${lanDnsDomain} static" ]
     ++ map (zone: "${zone} static") lanReverseZones;
+  # Per-client resolver flood bounds. ip-ratelimit sheds queries from a single
+  # address that exceeds its allowance, and tcp-connection-limit bounds TCP
+  # connection floods, which the query limit cannot see because a connection is
+  # not a query. Both key on the real socket peer address, so unlike an
+  # HTTP-layer control they cannot be sidestepped by spoofing an
+  # X-Forwarded-For or CF-Connecting-IP header. The netblocks are exactly the
+  # client networks this resolver serves; loopback and the NetBird overlay get
+  # their own entries so cloudflared and NetBird peers stay bounded rather than
+  # falling outside the scoped access-control lists.
+  floodSettings = {
+    "ip-ratelimit" = floodCfg.ipRateLimit;
+    "ip-ratelimit-factor" = floodCfg.ipRateLimitFactor;
+    "ip-ratelimit-cookie" = floodCfg.ipRateLimitCookie;
+    "tcp-connection-limit" = [
+      "${lanCidr} ${toString floodCfg.tcpConnectionLimit}"
+      "${netbirdCidr} ${toString floodCfg.tcpConnectionLimit}"
+      "${loopbackCidr} ${toString floodCfg.tcpConnectionLimit}"
+    ];
+    "incoming-num-tcp" = floodCfg.incomingNumTcp;
+    "outgoing-num-tcp" = floodCfg.outgoingNumTcp;
+    # 0x20 QNAME case randomisation makes off-path cache poisoning require
+    # guessing the encoded casing of the question.
+    "use-caps-for-id" = floodCfg.useCapsForId;
+  };
 in
 {
   options.services.unbound.privateHosts = lib.mkOption {
@@ -166,6 +191,88 @@ in
         readOnly = true;
         default = "/var/lib/unbound/adblock.conf";
         description = "Generated include fragment consumed by Unbound.";
+      };
+    };
+
+    floodProtection = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = ''
+          Bound how much resolver work a single client address can force.
+          Unbound reads the real socket peer address, so these limits key on
+          a network-layer identity that cannot be forged with an HTTP header,
+          which makes them safe to apply on the LAN and NetBird listeners as
+          well as loopback.
+        '';
+      };
+
+      ipRateLimit = lib.mkOption {
+        type = lib.types.int;
+        default = 300;
+        description = ''
+          Queries per second allowed from one client address before Unbound
+          starts shedding. Above any realistic resolver client (browsers and
+          phones issue single digits; the busiest household device bursts
+          into the low tens) and far below an amplification flood.
+        '';
+      };
+
+      ipRateLimitFactor = lib.mkOption {
+        type = lib.types.int;
+        default = 10;
+        description = ''
+          Fraction of a client's allowance that Unbound drops once the limit
+          is exceeded, so a flooder loses most of its budget instead of
+          retaining a partial trickle.
+        '';
+      };
+
+      ipRateLimitCookie = lib.mkOption {
+        type = lib.types.int;
+        default = 60;
+        description = ''
+          Per-query allowance for clients presenting a valid DNS cookie.
+          Cookies are cryptographically tied to the client address, so this
+          cannot be borrowed by a spoofing source.
+        '';
+      };
+
+      tcpConnectionLimit = lib.mkOption {
+        type = lib.types.int;
+        default = 32;
+        description = ''
+          Simultaneous TCP resolver connections allowed per client netblock.
+          Bounds TCP connection floods, which the per-query rate limit does
+          not see because a connection is not a query.
+        '';
+      };
+
+      incomingNumTcp = lib.mkOption {
+        type = lib.types.int;
+        default = 16;
+        description = ''
+          Incoming TCP buffers per thread, bounding how many TCP client
+          connections the server can track at once.
+        '';
+      };
+
+      outgoingNumTcp = lib.mkOption {
+        type = lib.types.int;
+        default = 16;
+        description = ''
+          Outgoing TCP buffers per thread, bounding simultaneous TCP
+          recursion toward authoritative servers.
+        '';
+      };
+
+      useCapsForId = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = ''
+          Randomise the 0x20 encoding of outbound QNAMEs so off-path
+          attackers cannot poison the resolver cache by spoofing replies.
+        '';
       };
     };
   };
@@ -271,6 +378,7 @@ in
               # startup deadlock while the firewall still limits access.
               ip-freebind = true;
             }
+            // lib.optionalAttrs floodCfg.enable floodSettings
             // (
               if splitDnsMode then
                 {
@@ -339,6 +447,24 @@ in
             && lib.hasInfix "." domain)
           adblockCfg.allowlist;
         message = "repo.unbound.adblock.allowlist entries must be bare domain names (no scheme, wildcard, port, path, empty label, or single-label hostname).";
+      }
+      {
+        # Unbound treats these as literal counts, so a zero silently removes
+        # the control instead of failing. Catch the mistake in evaluation.
+        assertion = !floodCfg.enable || floodCfg.ipRateLimit > 0;
+        message = "repo.unbound.floodProtection.ipRateLimit must be greater than zero when flood protection is enabled.";
+      }
+      {
+        assertion = !floodCfg.enable || (floodCfg.ipRateLimitFactor > 0 && floodCfg.ipRateLimitFactor <= 100);
+        message = "repo.unbound.floodProtection.ipRateLimitFactor is a percentage and must be between 1 and 100 when flood protection is enabled.";
+      }
+      {
+        assertion = !floodCfg.enable || floodCfg.tcpConnectionLimit > 0;
+        message = "repo.unbound.floodProtection.tcpConnectionLimit must be greater than zero when flood protection is enabled.";
+      }
+      {
+        assertion = !floodCfg.enable || (floodCfg.incomingNumTcp > 0 && floodCfg.outgoingNumTcp > 0);
+        message = "repo.unbound.floodProtection.incomingNumTcp and outgoingNumTcp must be greater than zero when flood protection is enabled.";
       }
     ];
 

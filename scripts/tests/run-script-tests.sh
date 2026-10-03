@@ -95,6 +95,7 @@ test_scripts=(
   scripts/tests/test-module-removal-evaluation.sh
   scripts/tests/test-module-disable-evaluation.sh
   scripts/tests/test-netbird-login-convergence.sh
+  scripts/tests/test-ipfs-swarm-binding.sh
   scripts/tests/test-nix-store-capacity-gc.sh
   scripts/tests/test-disk-space-cleanup.sh
   scripts/tests/test-shutdown-guard.sh
@@ -102,8 +103,12 @@ test_scripts=(
   scripts/tests/test-opencloud-module.sh
   scripts/tests/test-opencloud-public-access.sh
   scripts/tests/test-deploy-cli.sh
+  scripts/tests/test-deploy-archive-staging.sh
+  scripts/tests/test-deploy-debug-attestation.sh
   scripts/tests/test-deploy-transaction-runtime.sh
+  scripts/tests/test-build-allocation-policy.sh
   scripts/tests/test-evaluated-service-hardening.sh
+  scripts/tests/test-central-memory-containment.sh
   scripts/tests/test-data-pool-consumers.sh
   scripts/tests/test-public-route-check.sh
   scripts/tests/test-cloudflare-dns-sync.sh
@@ -123,6 +128,7 @@ test_scripts=(
   scripts/tests/test-browsertrix-downloader-module.sh
   scripts/tests/test-search-module.sh
   scripts/tests/test-core-runtime-safety.sh
+  scripts/tests/test-local-admin-sudo-policy.sh
   scripts/tests/test-config-input-validation.sh
   scripts/tests/test-opinionated-vars.sh
   scripts/tests/test-decrypt-age-secrets.sh
@@ -134,6 +140,7 @@ test_scripts=(
   scripts/tests/test-freshness-marker.sh
   scripts/tests/test-rust-workspace-dependencies.sh
   scripts/tests/test-rust-source-isolation.sh
+  scripts/tests/test-rust-dependency-manifest-scope.sh
   scripts/tests/test-frontend-build-isolation.sh
   scripts/tests/test-nix-eval-cache.sh
   scripts/tests/test-remote-eval-helper.sh
@@ -143,6 +150,7 @@ test_scripts=(
   scripts/tests/test-shell-template.sh
   scripts/tests/test-validation-build-checks.sh
   scripts/tests/test-frontend-package-independence.sh
+  scripts/tests/test-node-pnpm-deps-scoping.sh
   scripts/tests/test-homepage-guidance.sh
   scripts/tests/test-homepage-vault.sh
   scripts/tests/test-portal-landing.sh
@@ -164,6 +172,7 @@ test_scripts=(
   scripts/tests/test-gpu-power-limit.sh
   scripts/tests/test-background-qwen-split.sh
   scripts/tests/test-mkvmaker-automation.sh
+  scripts/tests/test-mkvmaker-tool-resolution.sh
   scripts/tests/test-platform-storage-profiles.sh
   scripts/tests/test-runtime-reliability.sh
   scripts/tests/test-rclone-safety.sh
@@ -174,6 +183,7 @@ test_scripts=(
   scripts/tests/test-smart-sweep-runtime.sh
   scripts/tests/test-storage-path-validation.sh
   scripts/tests/test-unbound-adblock.sh
+  scripts/tests/test-edge-flood-protection.sh
   scripts/tests/test-vaultwarden-version.sh
   scripts/tests/test-zfs-pool-identity.sh
   scripts/tests/test-zfs-snapshot-freshness.sh
