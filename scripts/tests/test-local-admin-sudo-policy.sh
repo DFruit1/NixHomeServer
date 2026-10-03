@@ -474,7 +474,8 @@ for policy_field in \
 done
 
 # Behavioural check: an explicit --target run must still carry the policy
-# through to the guard.
+# through to the guard. Keep the bootstrap control case: the restricted policy
+# is refused below, and this proves the refusal is the policy, not the target.
 target_guard_output="$(
   DEPLOY_DRY_RUN=1 bash scripts/deploy.sh --target "local-admin@127.0.0.1" --action test 2>&1
 )" && target_guard_status=0 || target_guard_status=$?
@@ -482,6 +483,85 @@ if [[ "$target_guard_status" -ne 0 ]] \
   || ! rg -Fq "local admin sudo policy=bootstrap-nopasswd" <<<"$target_guard_output"; then
   echo "❌ An explicit --target deploy did not evaluate and report the sudo policy."
   printf '%s\n' "$target_guard_output"
+  exit 1
+fi
+
+# Behavioural check for the restricted policy on the same --target path: the
+# guard must refuse it up front and name the console route. The helper-level
+# cases above exercise the guard directly with hand-written JSON; this runs the
+# real scripts/deploy.sh so the Nix-config-to-guard wiring is covered too. If the
+# policy fields were ever hidden behind the resolved target again, this run
+# would read "policy=unknown", stage nothing but succeed, and fail here.
+#
+# The fixture is a copy of this checkout with vars.nix switched to the
+# restricted policy, so the repository's own bootstrap vars.nix is untouched.
+# It needs its own Git worktree for init_repo_root to accept it, and the copy is
+# manifest-filtered the same way a real deployment archive is.
+restricted_policy_repo_root="$guard_ssh_dir/restricted-policy-repo"
+mkdir -p "$restricted_policy_repo_root"
+git -C "$restricted_policy_repo_root" init -q
+git -C "$restricted_policy_repo_root" config user.email policy-test@example.test
+git -C "$restricted_policy_repo_root" config user.name "Local-Admin Sudo Policy Test"
+create_deploy_repo_archive "$guard_ssh_dir/restricted-policy.tar"
+tar -xf "$guard_ssh_dir/restricted-policy.tar" -C "$restricted_policy_repo_root"
+python3 - "$restricted_policy_repo_root/vars.nix" <<'RESTRICTED_POLICY_VARS'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+source = path.read_text()
+needle = 'localAdminSudo = "bootstrap-nopasswd";'
+if needle not in source:
+    raise SystemExit("vars.nix fixture no longer selects the bootstrap sudo policy")
+path.write_text(source.replace(needle, 'localAdminSudo = "password-authenticated";'))
+RESTRICTED_POLICY_VARS
+# The fixture must be a clean worktree in its own right: a real deploy refuses
+# to stage a tree with untracked, non-ignored files, and must be a Git worktree
+# for init_repo_root to accept it at all.
+git -C "$restricted_policy_repo_root" add -A
+git -C "$restricted_policy_repo_root" commit -q -m "restricted-policy deploy fixture"
+
+# A real deploy would probe the target's running policy before staging anything
+# under the restricted policy. The refusal happens before that probe is needed,
+# so a stub ssh that fails loudly proves no target connection is required (and
+# that no archive staging or executor launch happened).
+restricted_policy_ssh_dir="$guard_ssh_dir/restricted-policy-ssh"
+mkdir -p "$restricted_policy_ssh_dir"
+cat >"$restricted_policy_ssh_dir/ssh" <<'RESTRICTED_POLICY_SSH'
+#!/usr/bin/env bash
+printf 'ssh was used by a refused restricted-policy deploy: %s\n' "$*" >&2
+exit 97
+RESTRICTED_POLICY_SSH
+make_test_executable "$restricted_policy_ssh_dir/ssh"
+
+restricted_repo="$restricted_policy_repo_root"
+restricted_output="$(
+  cd "$restricted_repo" \
+    && DEPLOY_DRY_RUN=1 PATH="$restricted_policy_ssh_dir:$PATH" \
+      bash scripts/deploy.sh --target "local-admin@198.51.100.7" --action test 2>&1
+)" && restricted_status=0 || restricted_status=$?
+if [[ "$restricted_status" -eq 0 ]] \
+  || ! rg -Fq "blocked:" <<<"$restricted_output" \
+  || ! rg -Fq "password-authenticated" <<<"$restricted_output" \
+  || ! rg -Fq "sudo ./scripts/deploy.sh --console --action test" <<<"$restricted_output"; then
+  echo "❌ An explicit --target deploy of the restricted policy was not refused with the console route."
+  printf '%s\n' "$restricted_output"
+  exit 1
+fi
+
+# The refusal must happen before anything is staged or launched: a dry run
+# stages nothing anyway, so also assert the real (non-dry-run) path fails at the
+# preflight rather than after creating an archive or contacting the target.
+restricted_real_output="$(
+  cd "$restricted_repo" \
+    && PATH="$restricted_policy_ssh_dir:$PATH" \
+      bash scripts/deploy.sh --target "local-admin@198.51.100.7" --action test 2>&1
+)" && restricted_real_status=0 || restricted_real_status=$?
+if [[ "$restricted_real_status" -eq 0 ]] \
+  || ! rg -Fq "blocked:" <<<"$restricted_real_output" \
+  || ! rg -Fq "sudo ./scripts/deploy.sh --console --action test" <<<"$restricted_real_output"; then
+  echo "❌ A real --target deploy of the restricted policy was not refused before staging."
+  printf '%s\n' "$restricted_real_output"
   exit 1
 fi
 
@@ -572,10 +652,9 @@ require_fixed modules/Core_Modules/homepage/services.nix \
   'sudo ./scripts/deploy.sh --console --action test' \
   "The homepage admin guide must offer the implemented console route."
 
-# Transaction-level coverage: the point of --console is that a deploy whose
-# activation drops the passwordless grant can still finish, because every
-# target step runs as root with no SSH hop. Exercise the executor's routing
-# directly with a mocked target rather than asserting on the source shape.
+# Unit routing coverage: whether console mode resolves the target to this
+# machine. This is a predicate probe against the real executor, not a
+# transaction — the transaction itself is exercised below.
 executor_routing_dir="$(mktemp -d)"
 mkdir -p "$executor_routing_dir/ssh" "$executor_routing_dir/root-id"
 cat >"$executor_routing_dir/ssh/ssh" <<'EOF'
@@ -663,6 +742,140 @@ build_nixos_rebuild_command workstation_rebuild_command \
 if ! printf '%s\n' "${workstation_rebuild_command[*]}" | rg -q -- '--target-host local-admin@198\.51\.100\.7'; then
   echo "❌ A non-console rebuild lost its --target-host, so an ordinary workstation deploy would build on the wrong machine."
   printf '%s\n' "${workstation_rebuild_command[*]}"
+  exit 1
+fi
+
+# Transaction-level coverage for the console route. The routing probe above only
+# shows that console mode resolves the target to this machine; it cannot show
+# that the resulting transaction survives the privilege change its own
+# activation causes. This runs the real deploy executor's --action test
+# transaction inside a private user+mount namespace with only the external
+# operations mocked:
+#
+#   * the mock sudo records every privileged call with the policy in force at
+#     that moment and refuses non-root authentication once the grant is gone;
+#   * the mock systemctl drops the passwordless grant when the guarded
+#     activation starts, so authorization really does change mid-transaction;
+#   * the mock ssh fails loudly, so any privileged step routed over SSH — the
+#     round-3 defect — breaks the transaction instead of passing quietly.
+#
+# No real activation, credentials or sudo are involved: the namespace owns its
+# own /nix and /run, and the caller's identity is a mock.
+console_fixture="scripts/tests/fixtures/console-deploy-transaction.sh"
+ensure_tools unshare
+console_work_root="$guard_ssh_dir/console-transaction"
+mkdir -p "$console_work_root"
+
+console_transaction_output="$(
+  unshare --map-root-user --mount --propagation private \
+    bash "$console_fixture" 0 "$console_work_root" 2>&1
+)" && console_transaction_status=0 || console_transaction_status=$?
+
+if [[ "$console_transaction_status" -ne 0 ]] \
+  || ! rg -Fq 'EXECUTOR_STATUS=0' <<<"$console_transaction_output" \
+  || ! rg -Fq 'LOCK_PRESENT=no' <<<"$console_transaction_output" \
+  || ! rg -Fq 'STAMP_PRESENT=yes' <<<"$console_transaction_output"; then
+  echo "❌ A console deploy could not finish its own transaction after activation dropped the passwordless grant."
+  printf '%s\n' "$console_transaction_output"
+  exit 1
+fi
+
+console_events="$console_work_root/events"
+
+# The transaction must have passed through a state change: the grant has to be
+# dropped while it is still running, or the mock sudo never proves anything.
+if ! rg -Fq 'grant-dropped' "$console_events"; then
+  echo "❌ The console transaction fixture never activated, so it proved nothing about post-activation privileges."
+  cat "$console_events"
+  exit 1
+fi
+
+# Every mocked operation appends to one ordered log, so the line after which the
+# grant is gone is the point every post-activation assertion refers to.
+grant_dropped_line="$(rg -n 'grant-dropped' "$console_events" | head -n1 | cut -d: -f1)"
+console_post_activation="$(awk -v cut="$grant_dropped_line" 'NR > cut' "$console_events")"
+
+# Effective authorization really changed mid-transaction: privileged calls ran
+# under the bootstrap grant before the activation and under the restricted
+# policy after it. Without both, the fixture is not exercising the transition.
+privileged_before="$(
+  awk -v cut="$grant_dropped_line" 'NR < cut && /^sudo / && /uid=0 policy=bootstrap-nopasswd/ { count++ } END { print count + 0 }' \
+    "$console_events"
+)"
+privileged_after="$(
+  awk -v cut="$grant_dropped_line" 'NR > cut && /^sudo / && /uid=0 policy=password-authenticated/ { count++ } END { print count + 0 }' \
+    "$console_events"
+)"
+if [[ "$privileged_before" -lt 1 ]] || [[ "$privileged_after" -lt 1 ]]; then
+  echo "❌ The console transaction did not exercise both the passwordless and the restricted sudo contract."
+  cat "$console_events"
+  exit 1
+fi
+
+# Each post-activation privileged step must have been executed by root through
+# the retained local route, not authenticated by any grant. Only the mock sudo
+# lines carry the privilege decision; the other lines record the operation a
+# privileged call then performed.
+if ! awk -v cut="$grant_dropped_line" '
+  NR > cut && /^sudo / {
+    total++
+    if ($0 !~ /uid=0 policy=password-authenticated/) wrong++
+  }
+  END { exit !(total > 0 && wrong == 0) }
+' "$console_events"; then
+  echo "❌ A privileged step after activation was not authorized by the retained console root route."
+  cat "$console_events"
+  exit 1
+fi
+
+# Post-activation completion must be real, not merely unblocked: the health
+# gates, the authenticated canary, the stamp write, the rollback cancellation
+# and the lock release all have to appear after the grant was dropped.
+for required_step in \
+  'systemctl --failed' \
+  'canary-assert uid=0' \
+  'systemctl start homepage-canary.service' \
+  'systemctl stop nixhomeserver-deploy-rollback-' \
+  'systemctl stop nixhomeserver-deploy-unlock-'; do
+  if ! rg -Fq "$required_step" <<<"$console_post_activation"; then
+    echo "❌ The console transaction did not complete a required post-activation step: ${required_step}"
+    printf '%s\n' "$console_post_activation"
+    exit 1
+  fi
+done
+
+if rg -Fq 'ssh hop used in console mode' <<<"$console_post_activation"; then
+  echo "❌ A console deploy opened an SSH connection to the target; the route is only valid when it stays on this host."
+  cat "$console_events"
+  exit 1
+fi
+
+# The stamp the transaction wrote must name the exact closure and source hash,
+# otherwise the switch step it enables would refuse the very next deploy.
+console_stamp="$console_work_root/deploy-state/last-tested-console-fixture.stamp"
+if ! rg -Fq 'source_hash=sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' "$console_stamp" \
+  || ! rg -Fq 'toplevel=/nix/store/00000000000000000000000000000000-console-fixture' "$console_stamp"; then
+  echo "❌ The console transaction did not record the exact tested source hash and closure."
+  cat "$console_stamp"
+  exit 1
+fi
+
+# A console deploy that is not actually root must be refused by the executor
+# itself, before any transaction step runs. Without this, "console mode runs as
+# root" would be an assertion rather than an enforced precondition.
+nonroot_console_work="$guard_ssh_dir/console-transaction-nonroot"
+mkdir -p "$nonroot_console_work"
+nonroot_console_output="$(
+  unshare --map-root-user --mount --propagation private \
+    bash "$console_fixture" 1000 "$nonroot_console_work" 2>&1
+)" && nonroot_console_status=0 || nonroot_console_status=$?
+if [[ "$nonroot_console_status" -eq 0 ]] \
+  || ! rg -Fq "blocked: --console deploys to this host as root" <<<"$nonroot_console_output" \
+  || ! rg -Fq 'EXECUTOR_STATUS=1' <<<"$nonroot_console_output" \
+  || ! rg -Fq 'LOCK_PRESENT=no' <<<"$nonroot_console_output" \
+  || [[ -s "$nonroot_console_work/events" ]]; then
+  echo "❌ A console deploy was accepted without running as root on this host."
+  printf '%s\n' "$nonroot_console_output"
   exit 1
 fi
 
