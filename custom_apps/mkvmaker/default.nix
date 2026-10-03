@@ -1,21 +1,15 @@
 { lib, pkgs, rustLib, workspaceVersion, workspaceSrc ? null, workspaceCheckSrc ? workspaceSrc, sharedCargoArtifacts ? null, cargoLock ? null, ... }:
 
 let
-  handbrakeCli = pkgs.handbrake.override { useGtk = false; };
-  mkvpropedit = pkgs.mkvtoolnix-cli.overrideAttrs (_old: {
-    pname = "mkvpropedit";
-    buildPhase = ''
-      runHook preBuild
-      rake apps:mkvpropedit
-      runHook postBuild
-    '';
-    installPhase = ''
-      runHook preInstall
-      install -Dm755 src/mkvpropedit "$out/bin/mkvpropedit"
-      runHook postInstall
-    '';
-    doCheck = false;
-  });
+  # The stock, unmodified nixpkgs tool packages already ship every executable
+  # mkvmaker drives: HandBrakeCLI (with its HandBrake-patched ffprobe under
+  # `ffmpeg-hb`) and mkvpropedit. Consuming them directly keeps the app on
+  # substitutable upstream outputs instead of bespoke derivations that must be
+  # compiled on every machine that lacks them in a local cache. The GTK GUI that
+  # ships with stock `handbrake` is never invoked headlessly; see ADR 0002 for
+  # the measured closure cost of accepting it.
+  handbrakeCli = pkgs.handbrake;
+  mkvpropedit = pkgs.mkvtoolnix-cli;
   app = rustLib.mkRustApp {
     name = "mkvmaker";
     packageName = "disc-to-jellyfin";
@@ -32,6 +26,12 @@ let
 in
 app // {
   backendPackage = app.package;
+  # Exposed so tests (and operators reading `nix eval`) can assert exactly which
+  # tool executables this app resolves to without rebuilding the Rust app.
+  tools = {
+    inherit handbrakeCli mkvpropedit;
+    ffprobe = handbrakeCli.ffmpeg-hb;
+  };
   package = rustLib.assembleRuntimePackage {
     name = "mkvmaker";
     backendPackage = app.package;
