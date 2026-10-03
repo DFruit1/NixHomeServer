@@ -117,13 +117,6 @@ need nix
 need jq
 
 local_attic_cache="http://127.0.0.1:8080/nixhomeserver"
-if [[ "${DEPLOY_DRY_RUN:-}" != "1" ]] && nix_uses_substituter "$local_attic_cache"; then
-  need curl nohup
-  ensure_local_attic_tunnel \
-    "$local_attic_cache/nix-cache-info" \
-    "${NIXHOMESERVER_ATTIC_TUNNEL_SCRIPT:-$HOME/.local/bin/nixhomeserver-attic-tunnel}" \
-    "${XDG_CACHE_HOME:-$HOME/.cache}/nixhomeserver-attic-tunnel.log"
-fi
 
 deploy_config_json="$(NIXHOMESERVER_DEPLOY_NEED_HOSTNAME="$([[ -z "$hostname" ]] && echo 1 || echo 0)" \
   NIXHOMESERVER_DEPLOY_NEED_TARGET="$([[ -z "$target_host" ]] && echo 1 || echo 0)" \
@@ -258,6 +251,17 @@ if [[ "$build_locally" != "true" && -z "$build_host" ]]; then
   build_host="$target_host"
 fi
 
+# The workstation Attic cache is only worth recovering once the resolved
+# allocation is known: only a workstation build consumes it through the local
+# substituter, and a purely remote or server-side build must not be blocked by
+# a cache that cannot help it. Recovery is best effort because Nix keeps its
+# public caches either way.
+recover_local_attic_tunnel_if_needed \
+  "$build_locally" \
+  "$local_attic_cache" \
+  "${NIXHOMESERVER_ATTIC_TUNNEL_SCRIPT:-$HOME/.local/bin/nixhomeserver-attic-tunnel}" \
+  "${XDG_CACHE_HOME:-$HOME/.cache}/nixhomeserver-attic-tunnel.log"
+
 print_quoted_command() {
   local command=("$@")
   printf '%q' "${command[0]}"
@@ -389,8 +393,18 @@ remote_command="$(printf '%s ' "${remote_env[@]}")bash -s"
 ssh -T "$build_host" "$remote_command" <<'EOF'
 set -euo pipefail
 
+# Remove the staged archive through the namespace contract rather than a bare
+# `rm`, so a crafted path cannot redirect the cleanup. If the helper cannot be
+# found the archive is left for the 48h namespace expiry to reclaim; deleting an
+# unvalidated path would be the worse failure.
+cleanup_archive() {
+  if [[ -f ./scripts/helpers/deploy-archive-cleanup.sh ]]; then
+    bash ./scripts/helpers/deploy-archive-cleanup.sh remove "$REMOTE_ARCHIVE" || true
+  fi
+}
+
 tmpdir="$(mktemp -d)"
-trap 'rm -rf "$tmpdir" "$REMOTE_ARCHIVE"' EXIT
+trap 'rm -rf "$tmpdir"; cleanup_archive' EXIT
 tar -C "$tmpdir" -xf "$REMOTE_ARCHIVE"
 cd "$tmpdir"
 

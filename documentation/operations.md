@@ -2063,7 +2063,38 @@ For the slower full validation gate:
 
 `--debug` keeps the transactional deploy ordering but adds the full repository
 validation gate before rebuilding. Use it for broad changes or suspicious
-failures; routine deploys can use the focused fast path.
+failures; routine deploys can use the focused fast path. The full gate is
+expensive (roughly 10-15 minutes) and runs on whichever host coordinates the
+deploy, so on the default remote allocation it runs on the production
+coordinator rather than on your workstation.
+
+`--debug` applies to `--action test` only. Switch never reruns the full
+validation, because it already refuses to continue unless the repository is
+byte-identical to the source the passing test validated, and it activates that
+test's exact closure. Instead, the test records whether the full validation
+actually ran and passed into its stamp:
+
+- A `--action test --debug` run records `debug_validated=true`, and
+  `--action switch --debug` accepts that stamp.
+- An ordinary `--action test` run records `debug_validated=false`. A
+  `--action switch --debug` then fails closed and asks you to rerun
+  `--debug --action test`, because it cannot offer the extra assurance.
+- If the full validation fails, no attestation is recorded at all rather than
+  a `false` one that could later be mistaken for a completed validation.
+
+To switch with the debug assurance, use the matching pair:
+
+```bash
+./scripts/deploy.sh --action test --debug
+./scripts/deploy.sh --action switch --debug
+```
+
+The recorded stamp is a root-only `version=2` file at
+`/var/lib/nixhomeserver-deploy/last-tested-<hostname>.stamp`. Older
+`version=1` stamps predate the attestation field and are rejected outright,
+with an instruction to rerun `--action test`; they are never silently upgraded
+or assumed to have been debug-validated. Run `./scripts/deploy.sh --action test`
+once after upgrading to record a new stamp before switching.
 
 The regular deploy path stays intentionally focused. It evaluates the target,
 checks build and target capacity, uses the build allocation selected in

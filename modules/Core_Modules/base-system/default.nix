@@ -220,6 +220,22 @@ in
   nix.gc.automatic = false;
   nix.optimise.automatic = false;
 
+  systemd.tmpfiles.rules = [
+    # Deployment archives are staged in a dedicated, owner-only namespace and
+    # removed immediately by the deploy helper on both the normal and failure
+    # paths. A successful upload can still be orphaned when the SSH session
+    # drops before that cleanup runs, so the namespace expires contents
+    # declaratively here. 48h is longer than the 26h transaction lock lifetime,
+    # so an in-flight deploy is never reaped out from under its own executor.
+    #
+    # The age is mtime-only (`mM`) on purpose: with the default age-by, a
+    # fresh parent directory keeps an aged archive alive indefinitely, because
+    # cleaning is refused while any contained entry is recent. mtime alone still
+    # reclaims an orphan, and entries systemd does not remove are unlinked
+    # rather than followed, so a planted symlink cannot reach outside.
+    "d ${config.repo.deploy.archiveStagingDir} 0700 ${vars.localAdminUser} ${vars.localAdminUser} mM:48h -"
+  ];
+
   systemd.services.nixhomeserver-nix-gc = {
     description = "Capacity-triggered Nix store garbage collection";
     environment = {
