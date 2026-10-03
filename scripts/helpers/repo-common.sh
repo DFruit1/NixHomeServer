@@ -68,15 +68,28 @@ nix_uses_substituter() {
   [[ " $substituters " == *" $expected "* ]]
 }
 
+# $4 selects the failure contract: "required" (default) keeps the fail-closed
+# behaviour callers such as repository validation depend on, "optional" only
+# downgrades the diagnosis to a warning for best-effort preflight callers.
 ensure_local_attic_tunnel() {
   local health_endpoint="$1"
   local tunnel_script="$2"
   local log_file="$3"
+  local requirement="${4:-required}"
+  local prefix="blocked"
   # The persistent tunnel retries SSH after a 15-second backoff. Allow one
   # complete retry window so a transient disconnect cannot race a rebuild.
   local wait_attempts="${NIXHOMESERVER_ATTIC_WAIT_ATTEMPTS:-40}"
   local wait_delay="${NIXHOMESERVER_ATTIC_WAIT_DELAY:-0.5}"
   local attempt
+
+  if [[ "$requirement" != "required" && "$requirement" != "optional" ]]; then
+    echo "blocked: Attic tunnel requirement must be required or optional" >&2
+    return 1
+  fi
+  if [[ "$requirement" == "optional" ]]; then
+    prefix="warning"
+  fi
 
   if curl --fail --silent --show-error --max-time 2 \
     --output /dev/null "$health_endpoint"; then
@@ -84,7 +97,7 @@ ensure_local_attic_tunnel() {
   fi
 
   if [[ ! -x "$tunnel_script" ]]; then
-    echo "blocked: local Attic cache is configured but its tunnel is unavailable" >&2
+    echo "$prefix: local Attic cache is configured but its tunnel is unavailable" >&2
     echo "   Missing executable tunnel helper: $tunnel_script" >&2
     return 1
   fi
@@ -102,9 +115,54 @@ ensure_local_attic_tunnel() {
     fi
   done
 
-  echo "blocked: local Attic cache tunnel did not become ready at $health_endpoint" >&2
+  echo "$prefix: local Attic cache tunnel did not become ready at $health_endpoint" >&2
   echo "   Inspect: $log_file" >&2
   return 1
+}
+
+# Decide whether this deploy needs the workstation's loopback Attic cache at
+# all. Only a workstation build consumes the cache through the local
+# substituter, so the resolved allocation - not the requested mode name -
+# decides. Recovery itself is best effort: an unreachable cache costs build
+# throughput, never correctness, because Nix keeps its public caches. Callers
+# run this after the allocation is resolved and before staging and building.
+local_attic_cache_recovery_needed() {
+  local build_locally="$1"
+  local cache_url="$2"
+
+  [[ "$build_locally" == "true" ]] || return 1
+  nix_uses_substituter "$cache_url" || return 1
+  return 0
+}
+
+recover_local_attic_tunnel_if_needed() {
+  local build_locally="$1"
+  local cache_url="$2"
+  local tunnel_script="$3"
+  local log_file="$4"
+
+  [[ "${DEPLOY_DRY_RUN:-}" != "1" ]] || return 0
+
+  if ! local_attic_cache_recovery_needed "$build_locally" "$cache_url"; then
+    return 0
+  fi
+
+  if ! command -v curl >/dev/null 2>&1 || ! command -v nohup >/dev/null 2>&1; then
+    echo "warning: local Attic cache tunnel needs curl and nohup; continuing with the public caches" >&2
+    return 0
+  fi
+
+  # Never fatal: without this cache the deploy simply builds from the official
+  # and community caches.
+  if ! ensure_local_attic_tunnel \
+    "$cache_url/nix-cache-info" \
+    "$tunnel_script" \
+    "$log_file" \
+    optional; then
+    echo "warning: continuing without the local Attic cache; Nix falls back to the official and community caches" >&2
+    return 0
+  fi
+  return 0
 }
 
 nix_cache_hash() {

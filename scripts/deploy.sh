@@ -116,13 +116,6 @@ need nix
 need jq
 
 local_attic_cache="http://127.0.0.1:8080/nixhomeserver"
-if [[ "${DEPLOY_DRY_RUN:-}" != "1" ]] && nix_uses_substituter "$local_attic_cache"; then
-  need curl nohup
-  ensure_local_attic_tunnel \
-    "$local_attic_cache/nix-cache-info" \
-    "${NIXHOMESERVER_ATTIC_TUNNEL_SCRIPT:-$HOME/.local/bin/nixhomeserver-attic-tunnel}" \
-    "${XDG_CACHE_HOME:-$HOME/.cache}/nixhomeserver-attic-tunnel.log"
-fi
 
 deploy_config_json="$(NIXHOMESERVER_DEPLOY_NEED_HOSTNAME="$([[ -z "$hostname" ]] && echo 1 || echo 0)" \
   NIXHOMESERVER_DEPLOY_NEED_TARGET="$([[ -z "$target_host" ]] && echo 1 || echo 0)" \
@@ -256,6 +249,17 @@ esac
 if [[ "$build_locally" != "true" && -z "$build_host" ]]; then
   build_host="$target_host"
 fi
+
+# The workstation Attic cache is only worth recovering once the resolved
+# allocation is known: only a workstation build consumes it through the local
+# substituter, and a purely remote or server-side build must not be blocked by
+# a cache that cannot help it. Recovery is best effort because Nix keeps its
+# public caches either way.
+recover_local_attic_tunnel_if_needed \
+  "$build_locally" \
+  "$local_attic_cache" \
+  "${NIXHOMESERVER_ATTIC_TUNNEL_SCRIPT:-$HOME/.local/bin/nixhomeserver-attic-tunnel}" \
+  "${XDG_CACHE_HOME:-$HOME/.cache}/nixhomeserver-attic-tunnel.log"
 
 print_quoted_command() {
   local command=("$@")

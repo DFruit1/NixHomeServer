@@ -254,8 +254,8 @@ require_fixed scripts/helpers/deploy-executor.sh 'skipping authenticated service
   "Guarded deploy must succeed when Homepage is removed."
 require_fixed scripts/deploy.sh 'source "$script_dir/helpers/deploy-command.sh"' \
   "Deploy dry-runs and real execution must share command construction."
-require_fixed scripts/deploy.sh 'ensure_local_attic_tunnel' \
-  "Real deploys must recover the workstation Attic tunnel before evaluating or building."
+require_fixed scripts/deploy.sh 'recover_local_attic_tunnel_if_needed' \
+  "Real deploys must recover the optional workstation Attic tunnel before staging and building."
 require_fixed scripts/deploy.sh 'nix-store --gc' \
   "Always-mode workstation GC must run a real Nix garbage collection before staging the deploy."
 require_fixed scripts/deploy.sh 'disk-space-cleanup.sh' \
@@ -307,13 +307,26 @@ require_fixed modules/Core_Modules/base-system/default.nix 'if vars.buildSlots.r
 forbid_match scripts/helpers/deploy-executor.sh 'nixos-rebuild boot' \
   "Deploy must not commit a boot generation before the health gates."
 
-attic_preflight_line="$(rg -n '^  ensure_local_attic_tunnel' scripts/deploy.sh | cut -d: -f1)"
-first_eval_line="$(rg -n '^configured_build_mode=' scripts/deploy.sh | cut -d: -f1)"
-if [[ ! "$attic_preflight_line" =~ ^[0-9]+$ || ! "$first_eval_line" =~ ^[0-9]+$ ]] \
-  || ((attic_preflight_line >= first_eval_line)); then
-  echo "❌ Deploy must recover its local Attic tunnel before the first Nix evaluation."
+# The Attic preflight is optional and allocation-aware, so it must now sit
+# after the allocation is resolved - it may only run when the resolved
+# allocation builds on the workstation - and still before any staging or
+# build work so a recovered cache still serves the build.
+attic_preflight_line="$(rg -n '^recover_local_attic_tunnel_if_needed' scripts/deploy.sh | cut -d: -f1)"
+allocation_line="$(rg -n '^local_build_slots="\$\(jq' scripts/deploy.sh | cut -d: -f1)"
+staging_line="$(rg -n '^repo_archive="\$\(mktemp' scripts/deploy.sh | cut -d: -f1)"
+if [[ ! "$attic_preflight_line" =~ ^[0-9]+$ || ! "$allocation_line" =~ ^[0-9]+$ || ! "$staging_line" =~ ^[0-9]+$ ]] \
+  || ((allocation_line >= attic_preflight_line || attic_preflight_line >= staging_line)); then
+  echo "❌ Deploy must resolve the allocation, then recover the optional local Attic tunnel, before staging."
   exit 1
 fi
+require_fixed scripts/deploy.sh 'recover_local_attic_tunnel_if_needed \' \
+  "Real deploys must recover the optional workstation Attic tunnel once the allocation is known."
+require_fixed scripts/helpers/repo-common.sh 'local_attic_cache_recovery_needed' \
+  "Attic tunnel recovery must be decided from actual workstation participation."
+require_fixed scripts/helpers/repo-common.sh 'continuing without the local Attic cache' \
+  "An unavailable optional Attic cache must warn and continue with the public caches."
+require_fixed scripts/helpers/repo-common.sh 'required' \
+  "Callers such as repository validation must keep the fail-closed tunnel contract."
 
 acquire_line="$(rg -n '^acquire_deploy_lock$' scripts/helpers/deploy-executor.sh | cut -d: -f1)"
 capture_line="$(rg -n '^capture_previous_state$' scripts/helpers/deploy-executor.sh | cut -d: -f1)"
@@ -502,6 +515,357 @@ PATH="$attic_mock_bin:$PATH" ensure_local_attic_tunnel \
   "$attic_log"
 if [[ ! -e "$attic_started_marker" || ! -e "$attic_ready_marker" ]]; then
   echo "❌ Deploy preflight did not recover the unavailable Attic tunnel."
+  exit 1
+fi
+
+# The required contract must stay fail-closed for callers such as repository
+# validation: a permanently unreachable tunnel is an error, not a warning.
+cat >"$attic_mock_bin/curl" <<'EOF'
+#!/usr/bin/env bash
+[[ -f "$ATTIC_TEST_NEVER_READY_MARKER" ]]
+EOF
+cat >"$attic_test_dir/never-ready-tunnel" <<'EOF'
+#!/usr/bin/env bash
+touch "$ATTIC_TEST_STARTED_MARKER"
+EOF
+make_test_executable "$attic_mock_bin/curl" "$attic_test_dir/never-ready-tunnel"
+export ATTIC_TEST_NEVER_READY_MARKER="$attic_test_dir/never-ready"
+rm -f "$attic_started_marker"
+touch "$attic_test_dir/never-ready-tunnel.log"
+if required_output="$(PATH="$attic_mock_bin:$PATH" ensure_local_attic_tunnel \
+  'http://127.0.0.1:8080/nixhomeserver/nix-cache-info' \
+  "$attic_test_dir/never-ready-tunnel" \
+  "$attic_test_dir/never-ready-tunnel.log" 2>&1)"; then
+  echo "❌ A required Attic tunnel accepted a permanently unreachable cache."
+  exit 1
+fi
+if ! rg -Fq 'blocked: local Attic cache tunnel did not become ready' <<<"$required_output"; then
+  echo "❌ A required Attic tunnel must still fail closed with its blocked diagnosis."
+  echo "$required_output"
+  exit 1
+fi
+if rg -Fq 'warning:' <<<"$required_output"; then
+  echo "❌ A required Attic tunnel must not downgrade its diagnosis to a warning."
+  echo "$required_output"
+  exit 1
+fi
+
+# The optional contract downgrades the same diagnosis but still reports it.
+if optional_output="$(PATH="$attic_mock_bin:$PATH" ensure_local_attic_tunnel \
+  'http://127.0.0.1:8080/nixhomeserver/nix-cache-info' \
+  "$attic_test_dir/never-ready-tunnel" \
+  "$attic_test_dir/never-ready-tunnel.log" optional 2>&1)"; then
+  echo "❌ An optional Attic tunnel reported success for an unreachable cache."
+  exit 1
+fi
+if ! rg -Fq 'warning: local Attic cache tunnel did not become ready' <<<"$optional_output"; then
+  echo "❌ An optional Attic tunnel must warn instead of blocking."
+  echo "$optional_output"
+  exit 1
+fi
+
+if ensure_local_attic_tunnel \
+  'http://127.0.0.1:8080/nixhomeserver/nix-cache-info' \
+  "$attic_test_dir/tunnel" \
+  "$attic_log" maybe >/dev/null 2>&1; then
+  echo "❌ An unknown Attic tunnel requirement was accepted."
+  exit 1
+fi
+
+# Allocation awareness: recovery is decided from actual workstation
+# participation, never from a mode name. `nix` is mocked to report whether the
+# loopback Attic cache is a configured substituter so no real Nix state, cache
+# or network is touched.
+attic_nix_dir="$attic_test_dir/nix-bin"
+mkdir -p "$attic_nix_dir"
+cat >"$attic_nix_dir/nix" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "config" ]]; then
+  if [[ -f "$ATTIC_TEST_SUBSTITUTER_MARKER" ]]; then
+    printf 'substituters = https://cache.nixos.org http://127.0.0.1:8080/nixhomeserver\n'
+  else
+    printf 'substituters = https://cache.nixos.org\n'
+  fi
+  exit 0
+fi
+exit 0
+EOF
+make_test_executable "$attic_nix_dir/nix"
+export ATTIC_TEST_SUBSTITUTER_MARKER="$attic_test_dir/substituter-configured"
+
+for build_locally in true false; do
+  for marker_state in configured absent; do
+    if [[ "$marker_state" == "configured" ]]; then
+      touch "$ATTIC_TEST_SUBSTITUTER_MARKER"
+    else
+      rm -f "$ATTIC_TEST_SUBSTITUTER_MARKER"
+    fi
+    if PATH="$attic_nix_dir:$PATH" local_attic_cache_recovery_needed \
+      "$build_locally" 'http://127.0.0.1:8080/nixhomeserver'; then
+      need_recovery=true
+    else
+      need_recovery=false
+    fi
+    if [[ "$build_locally" == "true" && "$marker_state" == "configured" ]]; then
+      expected_recovery=true
+    else
+      expected_recovery=false
+    fi
+    if [[ "$need_recovery" != "$expected_recovery" ]]; then
+      echo "❌ Attic recovery decision ignored workstation participation or cache configuration."
+      echo "   build_locally=${build_locally} substituter=${marker_state} -> ${need_recovery}"
+      exit 1
+    fi
+  done
+done
+
+# A remote-only deployment must not invoke the tunnel helper at all.
+tunnel_invocation_marker="$attic_test_dir/tunnel-invoked"
+cat >"$attic_test_dir/invoked-tunnel" <<EOF
+#!/usr/bin/env bash
+touch "$tunnel_invocation_marker"
+EOF
+make_test_executable "$attic_test_dir/invoked-tunnel"
+touch "$ATTIC_TEST_SUBSTITUTER_MARKER"
+rm -f "$tunnel_invocation_marker"
+PATH="$attic_nix_dir:$attic_mock_bin:$PATH" recover_local_attic_tunnel_if_needed \
+  false \
+  'http://127.0.0.1:8080/nixhomeserver' \
+  "$attic_test_dir/invoked-tunnel" \
+  "$attic_log"
+if [[ -e "$tunnel_invocation_marker" ]]; then
+  echo "❌ Deploy started the workstation Attic tunnel for a non-workstation allocation."
+  exit 1
+fi
+
+# A dry-run resolves the allocation and reports it without touching the cache.
+rm -f "$tunnel_invocation_marker"
+DEPLOY_DRY_RUN=1 PATH="$attic_nix_dir:$attic_mock_bin:$PATH" recover_local_attic_tunnel_if_needed \
+  true \
+  'http://127.0.0.1:8080/nixhomeserver' \
+  "$attic_test_dir/invoked-tunnel" \
+  "$attic_log"
+if [[ -e "$tunnel_invocation_marker" ]]; then
+  echo "❌ A deploy dry-run started the workstation Attic tunnel."
+  exit 1
+fi
+
+# A workstation build with an unavailable optional tunnel warns and continues.
+rm -f "$tunnel_invocation_marker"
+if unavailable_output="$(PATH="$attic_nix_dir:$attic_mock_bin:$PATH" recover_local_attic_tunnel_if_needed \
+  true \
+  'http://127.0.0.1:8080/nixhomeserver' \
+  "$attic_test_dir/missing-tunnel-helper" \
+  "$attic_log" 2>&1)"; then
+  :
+else
+  echo "❌ An unavailable optional Attic tunnel aborted the deploy."
+  echo "$unavailable_output"
+  exit 1
+fi
+if ! rg -Fq 'warning: local Attic cache is configured but its tunnel is unavailable' <<<"$unavailable_output" \
+  || ! rg -Fq 'warning: continuing without the local Attic cache' <<<"$unavailable_output"; then
+  echo "❌ An unavailable optional Attic tunnel must warn and continue with the public caches."
+  echo "$unavailable_output"
+  exit 1
+fi
+
+# End-to-end through deploy.sh for all four allocation modes, with `nix`,
+# `curl`, `nix-store` and the tunnel helper all mocked: nothing touches the real
+# Nix configuration, cache, network, or server. `nix eval` returns a fixture so
+# the allocation resolves deterministically, and the mocked `nix-store --gc`
+# aborts the run immediately after the optional preflight, before any staging,
+# SSH, or build work.
+attic_e2e_dir="$attic_test_dir/e2e"
+mkdir -p "$attic_e2e_dir/bin"
+cat >"$attic_e2e_dir/bin/nix" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "config" && "${2:-}" == "show" && "${3:-}" == "substituters" ]]; then
+  if [[ -f "$ATTIC_E2E_SUBSTITUTER_MARKER" ]]; then
+    printf 'substituters = https://cache.nixos.org http://127.0.0.1:8080/nixhomeserver\n'
+  else
+    printf 'substituters = https://cache.nixos.org\n'
+  fi
+  exit 0
+fi
+if [[ "${1:-}" == "eval" ]]; then
+  cat <<'JSON'
+{
+  "localNixGCMode": "always",
+  "nixGcRetentionDays": 30,
+  "localDiskCleanup": { "triggerPercent": 80, "monitorPaths": [ "/var" ], "journalVacuumTime": "1day" },
+  "buildMode": "remote",
+  "buildSlots": { "local": 0, "remote": "auto" },
+  "buildCores": { "local": 0, "remote": 0 },
+  "hostPlatform": "x86_64-linux",
+  "serverSSHPubKey": "ssh-ed25519 AAAA",
+  "hostname": "fixture-host",
+  "localAdminUser": "admin",
+  "serverLanIP": "127.0.0.1"
+}
+JSON
+  exit 0
+fi
+exit 0
+EOF
+cat >"$attic_e2e_dir/bin/nix-store" <<'EOF'
+#!/usr/bin/env bash
+# Stops the fixture deploy at the first post-preflight step so the suite never
+# stages an archive, contacts SSH, or builds anything.
+echo 'mock nix-store --gc: stopping the fixture deploy' >&2
+exit 1
+EOF
+cat >"$attic_e2e_dir/bin/curl" <<'EOF'
+#!/usr/bin/env bash
+[[ -f "$ATTIC_E2E_READY_MARKER" ]]
+EOF
+cat >"$attic_e2e_dir/bin/tunnel" <<'EOF'
+#!/usr/bin/env bash
+touch "$ATTIC_E2E_TUNNEL_MARKER" "$ATTIC_E2E_READY_MARKER"
+EOF
+make_test_executable "$attic_e2e_dir/bin/nix" "$attic_e2e_dir/bin/nix-store" \
+  "$attic_e2e_dir/bin/curl" "$attic_e2e_dir/bin/tunnel"
+export ATTIC_E2E_SUBSTITUTER_MARKER="$attic_e2e_dir/substituter-configured"
+export ATTIC_E2E_TUNNEL_MARKER="$attic_e2e_dir/tunnel-invoked"
+export ATTIC_E2E_READY_MARKER="$attic_e2e_dir/tunnel-ready"
+touch "$ATTIC_E2E_SUBSTITUTER_MARKER"
+export NIXHOMESERVER_ATTIC_TUNNEL_SCRIPT="$attic_e2e_dir/bin/tunnel"
+export XDG_CACHE_HOME="$attic_e2e_dir/cache"
+
+run_attic_e2e_deploy() {
+  local e2e_log="$1"
+  shift
+  PATH="$attic_e2e_dir/bin:$PATH" \
+    bash scripts/deploy.sh "$@" --action test >"$e2e_log" 2>&1 || true
+}
+
+# Only allocations that actually build on the workstation may recover the
+# cache, and an unavailable cache must never abort such a deploy.
+for mode in local balanced maximum-effort; do
+  rm -f "$ATTIC_E2E_TUNNEL_MARKER" "$ATTIC_E2E_READY_MARKER"
+  run_attic_e2e_deploy "$attic_e2e_dir/${mode}.log" --build-mode "$mode"
+  if [[ ! -e "$ATTIC_E2E_TUNNEL_MARKER" ]]; then
+    echo "❌ A ${mode} allocation builds on the workstation but never recovered its Attic cache."
+    cat "$attic_e2e_dir/${mode}.log"
+    exit 1
+  fi
+  if ! rg -Fq 'mock nix-store --gc: stopping the fixture deploy' "$attic_e2e_dir/${mode}.log"; then
+    echo "❌ The ${mode} fixture deploy never reached its post-preflight stage."
+    cat "$attic_e2e_dir/${mode}.log"
+    exit 1
+  fi
+done
+
+rm -f "$ATTIC_E2E_TUNNEL_MARKER" "$ATTIC_E2E_READY_MARKER"
+run_attic_e2e_deploy "$attic_e2e_dir/remote.log" --build-mode remote
+if ! rg -Fq 'mock nix-store --gc: stopping the fixture deploy' "$attic_e2e_dir/remote.log"; then
+  echo "❌ The remote fixture deploy never reached its post-preflight stage."
+  cat "$attic_e2e_dir/remote.log"
+  exit 1
+fi
+if [[ -e "$ATTIC_E2E_TUNNEL_MARKER" ]]; then
+  echo "❌ A remote-only allocation recovered a workstation-only Attic cache."
+  cat "$attic_e2e_dir/remote.log"
+  exit 1
+fi
+
+# Explicit overrides must reach the same decision: --build-locally is a
+# workstation allocation, --build-host a remote one.
+rm -f "$ATTIC_E2E_TUNNEL_MARKER" "$ATTIC_E2E_READY_MARKER"
+run_attic_e2e_deploy "$attic_e2e_dir/build-locally.log" --build-locally
+if ! rg -Fq 'mock nix-store --gc: stopping the fixture deploy' "$attic_e2e_dir/build-locally.log"; then
+  echo "❌ The --build-locally fixture deploy never reached its post-preflight stage."
+  cat "$attic_e2e_dir/build-locally.log"
+  exit 1
+fi
+if [[ ! -e "$ATTIC_E2E_TUNNEL_MARKER" ]]; then
+  echo "❌ --build-locally must recover the workstation Attic cache."
+  cat "$attic_e2e_dir/build-locally.log"
+  exit 1
+fi
+
+rm -f "$ATTIC_E2E_TUNNEL_MARKER" "$ATTIC_E2E_READY_MARKER"
+run_attic_e2e_deploy "$attic_e2e_dir/build-host.log" --build-host admin@127.0.0.1
+if ! rg -Fq 'mock nix-store --gc: stopping the fixture deploy' "$attic_e2e_dir/build-host.log"; then
+  echo "❌ The --build-host fixture deploy never reached its post-preflight stage."
+  cat "$attic_e2e_dir/build-host.log"
+  exit 1
+fi
+if [[ -e "$ATTIC_E2E_TUNNEL_MARKER" ]]; then
+  echo "❌ --build-host must not recover a workstation-only Attic cache."
+  cat "$attic_e2e_dir/build-host.log"
+  exit 1
+fi
+
+# A workstation deploy whose cache stays unreachable warns and keeps going.
+rm -f "$ATTIC_E2E_TUNNEL_MARKER" "$ATTIC_E2E_READY_MARKER"
+unreachable_log="$attic_e2e_dir/unreachable.log"
+ATTIC_E2E_READY_MARKER="$attic_e2e_dir/never-ready" \
+  PATH="$attic_e2e_dir/bin:$PATH" \
+  NIXHOMESERVER_ATTIC_TUNNEL_SCRIPT="$attic_e2e_dir/bin/curl" \
+  NIXHOMESERVER_ATTIC_WAIT_ATTEMPTS=2 \
+  NIXHOMESERVER_ATTIC_WAIT_DELAY=0.01 \
+  bash scripts/deploy.sh --build-mode local --action test >"$unreachable_log" 2>&1 || true
+if ! rg -Fq 'warning: local Attic cache tunnel did not become ready' "$unreachable_log" \
+  || ! rg -Fq 'warning: continuing without the local Attic cache' "$unreachable_log"; then
+  echo "❌ An unreachable optional Attic cache must warn and continue the workstation deploy."
+  cat "$unreachable_log"
+  exit 1
+fi
+if ! rg -Fq 'mock nix-store --gc: stopping the fixture deploy' "$unreachable_log"; then
+  echo "❌ An unavailable optional Attic cache aborted a workstation deploy."
+  cat "$unreachable_log"
+  exit 1
+fi
+
+# A dashboard-selected default that is remote-only must still skip the
+# workstation cache; a dashboard-selected local allocation must recover it.
+# `ssh` is mocked so the dashboard read succeeds without a server.
+dashboard_remote_dir="$attic_e2e_dir/dash-remote"
+mkdir -p "$dashboard_remote_dir"
+cat >"$dashboard_remote_dir/ssh" <<'EOF'
+#!/usr/bin/env bash
+printf '{"schemaVersion":1,"buildMode":"remote","updatedAt":"2026-09-08T20:00:00Z"}\n'
+EOF
+cat >"$dashboard_remote_dir/ssh-local" <<'EOF'
+#!/usr/bin/env bash
+printf '{"schemaVersion":1,"buildMode":"local","updatedAt":"2026-09-08T20:00:00Z"}\n'
+EOF
+make_test_executable "$dashboard_remote_dir/ssh" "$dashboard_remote_dir/ssh-local"
+
+mkdir -p "$dashboard_remote_dir/local"
+cp "$dashboard_remote_dir/ssh-local" "$dashboard_remote_dir/local/ssh"
+
+rm -f "$ATTIC_E2E_TUNNEL_MARKER" "$ATTIC_E2E_READY_MARKER"
+PATH="$dashboard_remote_dir:$attic_e2e_dir/bin:$PATH" \
+  bash scripts/deploy.sh --action test >"$attic_e2e_dir/dash-remote.log" 2>&1 || true
+if ! rg -Fq "build mode: using dashboard-selected 'remote'" "$attic_e2e_dir/dash-remote.log"; then
+  echo "❌ Deploy stopped adopting the dashboard-selected default allocation."
+  cat "$attic_e2e_dir/dash-remote.log"
+  exit 1
+fi
+if ! rg -Fq 'mock nix-store --gc: stopping the fixture deploy' "$attic_e2e_dir/dash-remote.log"; then
+  echo "❌ The dashboard-selected remote fixture deploy never reached its post-preflight stage."
+  cat "$attic_e2e_dir/dash-remote.log"
+  exit 1
+fi
+if [[ -e "$ATTIC_E2E_TUNNEL_MARKER" ]]; then
+  echo "❌ A dashboard-selected remote allocation recovered a workstation-only Attic cache."
+  cat "$attic_e2e_dir/dash-remote.log"
+  exit 1
+fi
+
+rm -f "$ATTIC_E2E_TUNNEL_MARKER" "$ATTIC_E2E_READY_MARKER"
+PATH="$dashboard_remote_dir/local:$attic_e2e_dir/bin:$PATH" \
+  bash scripts/deploy.sh --action test >"$attic_e2e_dir/dash-local.log" 2>&1 || true
+if ! rg -Fq "build mode: using dashboard-selected 'local'" "$attic_e2e_dir/dash-local.log"; then
+  echo "❌ Deploy stopped adopting a dashboard-selected workstation allocation."
+  cat "$attic_e2e_dir/dash-local.log"
+  exit 1
+fi
+if [[ ! -e "$ATTIC_E2E_TUNNEL_MARKER" ]]; then
+  echo "❌ A dashboard-selected workstation allocation must recover its Attic cache."
+  cat "$attic_e2e_dir/dash-local.log"
   exit 1
 fi
 
