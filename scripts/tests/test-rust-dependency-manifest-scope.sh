@@ -176,6 +176,117 @@ write_crate "$shallow" crates/one/sub
 jq -e 'sort == ["crates/one"]' <<<"$(active_members shallow)" >/dev/null
 echo '✅ A glob does not over-match into nested packages below a matched member.'
 
+# Cargo applies `exclude` only to glob-expanded members: a path listed literally
+# in `members` is always a member, even when an exclude entry points at it or at
+# one of its ancestors.
+literal="$test_root/literal-excluded"
+mkdir -p "$literal"
+cat >"$literal/Cargo.toml" <<'EOF'
+[workspace]
+resolver = "2"
+members = ["crates/one", "crates/two"]
+exclude = ["crates/one", "crates"]
+EOF
+write_workspace_root "$literal"
+write_crate "$literal" crates/one
+write_crate "$literal" crates/two
+
+jq -e 'sort == ["crates/one", "crates/two"]' <<<"$(active_members literal-excluded)" >/dev/null
+echo '✅ A literal member is never pruned by a matching exclude entry.'
+
+# `exclude` entries are plain paths, not globs: a glob entry excludes nothing.
+# This matches cargo, which compares exclude entries literally against a member.
+glob_excluded="$test_root/glob-excluded"
+mkdir -p "$glob_excluded"
+cat >"$glob_excluded/Cargo.toml" <<'EOF'
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+exclude = ["crates/*", "crates/**"]
+EOF
+write_workspace_root "$glob_excluded"
+write_crate "$glob_excluded" crates/one
+write_crate "$glob_excluded" crates/two
+
+jq -e 'sort == ["crates/one", "crates/two"]' <<<"$(active_members glob-excluded)" >/dev/null
+echo '✅ A glob entry in exclude excludes nothing, exactly as cargo does.'
+
+# A plain exclude entry prunes a glob-expanded member at that path (with or
+# without a trailing slash) or below it, while a deeper subpath of the member is
+# not an exclusion of the member itself.
+ancestor="$test_root/exclude-ancestor"
+mkdir -p "$ancestor"
+cat >"$ancestor/Cargo.toml" <<'EOF'
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+exclude = ["crates/two/"]
+EOF
+write_workspace_root "$ancestor"
+write_crate "$ancestor" crates/one
+write_crate "$ancestor" crates/two
+
+jq -e 'sort == ["crates/one"]' <<<"$(active_members exclude-ancestor)" >/dev/null
+
+deeper="$test_root/exclude-deeper"
+mkdir -p "$deeper"
+cat >"$deeper/Cargo.toml" <<'EOF'
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+exclude = ["crates/one/deeper"]
+EOF
+write_workspace_root "$deeper"
+write_crate "$deeper" crates/one
+
+jq -e 'sort == ["crates/one"]' <<<"$(active_members exclude-deeper)" >/dev/null
+
+nested_excluded="$test_root/exclude-nested-member"
+mkdir -p "$nested_excluded"
+cat >"$nested_excluded/Cargo.toml" <<'EOF'
+[workspace]
+resolver = "2"
+members = ["crates/*/sub"]
+exclude = ["crates/two"]
+EOF
+write_workspace_root "$nested_excluded"
+write_crate "$nested_excluded" crates/one/sub
+write_crate "$nested_excluded" crates/two/sub
+
+jq -e 'sort == ["crates/one/sub"]' <<<"$(active_members exclude-nested-member)" >/dev/null
+echo '✅ An exclude prunes a glob member at or below its path, but not the member from a deeper subpath.'
+
+# An exclude that matches nothing is legal (that is how a removed path stays
+# excluded), and the workspace root itself can be excluded.
+unmatched="$test_root/exclude-unmatched"
+mkdir -p "$unmatched"
+cat >"$unmatched/Cargo.toml" <<'EOF'
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+exclude = ["archived/removed-app", "crates/never-built"]
+EOF
+write_workspace_root "$unmatched"
+write_crate "$unmatched" crates/one
+write_crate "$unmatched" crates/two
+
+jq -e 'sort == ["crates/one", "crates/two"]' <<<"$(active_members exclude-unmatched)" >/dev/null
+
+root_excluded="$test_root/exclude-root"
+mkdir -p "$root_excluded"
+cat >"$root_excluded/Cargo.toml" <<'EOF'
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+exclude = ["."]
+EOF
+write_workspace_root "$root_excluded"
+write_crate "$root_excluded" crates/one
+write_crate "$root_excluded" crates/two
+
+jq -e 'length == 0' <<<"$(active_members exclude-root)" >/dev/null
+echo '✅ Unmatched excludes are legal and excluding the workspace root drops every member.'
+
 # An unresolvable `members` pattern must still fail loudly, exactly as cargo does.
 missing_members="$test_root/nested-missing-members"
 mkdir -p "$missing_members"

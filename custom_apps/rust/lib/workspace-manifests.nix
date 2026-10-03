@@ -115,10 +115,23 @@ let
     in
     lib.unique (lib.concatMap resolve patterns);
 
-  # Cargo accepts an `exclude` pattern that matches nothing; that is the normal
-  # way to keep an archived or removed path excluded, so an empty match set is
-  # not an error.
-  resolveExcludes = patterns: lib.unique (lib.concatMap resolvePattern patterns);
+  # `exclude` entries are not globs. Cargo compares each entry against a
+  # glob-expanded member as a plain path: `crates/*` and `crates/**` exclude
+  # nothing (verified against cargo 1.97 `cargo metadata`), while `crates/one/`,
+  # `crates/two` and `.` exclude by exact path or ancestry. An entry that matches
+  # nothing is legal — that is how a removed or archived path stays excluded.
+  normaliseExclude = entry:
+    let
+      trimmed = lib.removeSuffix "/" (lib.removeSuffix "/" entry);
+    in
+    if trimmed == "." || trimmed == "" then "" else trimmed;
+
+  excludePrefixes = lib.unique (map normaliseExclude excludes);
+
+  # A member is pruned when an exclude is that exact path or one of its
+  # ancestors; a deeper subpath of the member does not exclude the member.
+  isExcluded = member:
+    lib.any (excluded: excluded == "" || member == excluded || lib.hasPrefix "${excluded}/" member) excludePrefixes;
 
   # Cargo resolves local `path` dependencies relative to the manifest that names
   # them, so normalise them to workspace-root-relative paths.
@@ -150,8 +163,15 @@ let
       collectManifests (visited ++ next) (builtins.concatMap pathDependencies next);
 
   declaredMembers = resolveMembers members;
-  resolvedExcludes = resolveExcludes excludes;
-  activeMembers = builtins.filter (member: !(lib.elem member resolvedExcludes)) declaredMembers;
+
+  # Cargo applies `exclude` only to glob-expanded members: a path named
+  # literally in `members` is always a member, so it cannot be excluded by an
+  # entry that happens to point at it.
+  globExpanded = lib.unique (
+    lib.concatMap (pattern: if lib.hasInfix "*" pattern then resolvePattern pattern else [ ]) members
+  );
+
+  activeMembers = builtins.filter (member: !(lib.elem member globExpanded) || !isExcluded member) declaredMembers;
 
   manifestPaths = collectManifests [ ] (map (member: "${member}/Cargo.toml") activeMembers);
 
