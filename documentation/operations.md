@@ -401,9 +401,10 @@ policies, so this credential never becomes a network-accessible path.
   non-interactive `sudo` on the target host (`sudo systemctl`,
   `sudo /bin/sh -c ...` for activation, `nix --profile ... switch-to-configuration`),
   so this is the only policy the unattended deploy flow supports.
-- `password-authenticated`: no sudo rule is granted for the local admin and the
-  wheel group no longer carries a passwordless `ALL` grant. The local admin keeps
-  sudo, but only by presenting the reconciled local-console password above.
+- `password-authenticated`: no sudo rule is granted for the local admin, the
+  wheel group no longer carries a passwordless `ALL` grant, and the local admin
+  is dropped from `nix.settings.trusted-users`. The local admin keeps sudo, but
+  only by presenting the reconciled local-console password above.
 
 The restricted policy is not a mechanical containment boundary. Even a sudoers
 rule limited to `nixos-rebuild` can activate an arbitrary caller-chosen closure
@@ -412,21 +413,80 @@ restricted policy does is remove a passwordless, unattended, root-equivalent
 grant from a network-reachable SSH account — at the cost of requiring console
 access (or an interactive password prompt) for privileged operations.
 
-Consequence for deploys: `./scripts/deploy.sh` reads the configured policy and
-refuses to stage anything when it selects `password-authenticated`, because the
-target host cannot authenticate the deploy's non-interactive sudo. To hard:
+Nix daemon trust is gated by the same policy because `nix.settings.trusted-users`
+is root-equivalent on its own: the official nix.conf manual describes trusted
+users as able to act on the store and import unsigned NARs. Leaving the local
+admin trusted while gating sudo would have kept an unattended root-equivalent
+path open. Removing it means the local admin can no longer write the store or
+change system profiles without sudo.
 
-1. Confirm SSH key access as the local admin still works, and that
-   `nixos-rebuild`/`kanidm`/passkey setup no longer needs console work.
+### Hardening the local admin (the supported transition)
+
+Each step is run from the workstation unless it says otherwise. The guard asks
+the target host which policy it is running (`/etc/nixhomeserver/local-admin-sudo-policy`,
+written by each activation), so the change deploys from the workstation while the
+host is still on the bootstrap grant; the grant only disappears once that
+activation lands.
+
+1. Confirm SSH key access as the local admin still works, that the repository and
+   the private age identity are available, and that `nixos-rebuild`/`kanidm`/
+   passkey setup no longer needs console work.
 2. Set `identity.localAdminSudo = "password-authenticated";` in `vars.nix`.
-3. Deploy that change first *before* disabling anything else — a
-   `password-authenticated` host cannot be deployed from the workstation.
-4. Later deploys must run from the server console as the local admin, with the
-   recovery password entered interactively, or the policy must be restored to
-   `bootstrap-nopasswd` at that console.
+3. Deploy that change **from the workstation** — this is the transition deploy
+   and is expected to be allowed:
+   `./scripts/deploy.sh --action test` then `./scripts/deploy.sh --action switch`.
+   The preflight reports `target still runs bootstrap-nopasswd; this activation
+   removes unattended passwordless sudo from …`.
+4. After that activation the host no longer accepts non-interactive sudo, so the
+   workstation deploy is refused with the console route in the message. That is
+   expected. Later deploys run **at the server console** as the local admin:
 
-To restore unattended deploys, set `identity.localAdminSudo =
-"bootstrap-nopasswd"` at the console and deploy from there.
+   ```bash
+   sudo ./scripts/deploy.sh --action test
+   sudo ./scripts/deploy.sh --action switch
+   ```
+
+   Both enter the reconciled local-console password once at the sudo prompt; the
+   whole guarded deploy then runs under that one cached sudo credential, so its
+   non-interactive `sudo` calls still work. `sudo -v` refreshes the cached
+   credential mid-session if it lapses. The console needs a checkout of this
+   repository, which the install phase already persists at
+   `/mnt/persist/etc/nixos`; run deploys from there and keep it current with git.
+   Do not pass `--target`: at the console the target is the local machine.
+
+   Console caveat: `sudo` may reset `HOME`, and the `balanced` and
+   `maximum-effort` build modes discover your SSH identity from `~/.ssh/config`
+   for the distributed-builder record. If the console deploy cannot resolve it,
+   build with `--build-mode local` or `--build-mode remote` instead, or run
+   `sudo --preserve-env=HOME ./scripts/deploy.sh --action test`.
+
+### Restoring unattended deploys
+
+At the console, set `identity.localAdminSudo = "bootstrap-nopasswd"` in
+`vars.nix`, then run `sudo ./scripts/deploy.sh --action test` and
+`sudo ./scripts/deploy.sh --action switch`. Once that activation lands, the
+workstation deploy path works again with no further action.
+
+The console deploy only needs *one* interactive prompt, because the guarded flow
+then runs as root: every downstream `sudo` in the executor succeeds without a
+grant. `scripts/deploy.sh` detects this and reports
+`deploy is running as root on …; downstream sudo needs no grant`.
+
+### Emergency recovery under the restricted policy
+
+The guarded deploy needs no passwordless grant to recover the host itself. At
+the console, as the local admin:
+
+```bash
+sudo nixos-rebuild switch --rollback
+```
+
+This is the same authorized manual bypass documented on the Homepage admin
+guide: it bypasses every guarded deploy check, changes the boot profile, and
+needs only the local-console password. If sudo itself is unavailable, log in at
+the console with the reconciled local-console password from
+[Local-Console Administrator Recovery](#local-console-administrator-recovery)
+and then run the rollback command.
 
 ## Common Commands
 

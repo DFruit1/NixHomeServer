@@ -12,11 +12,14 @@
 #                           the only mode the unattended deploy flow supports.
 #   "password-authenticated" Post-bootstrap hardening: the local admin keeps
 #                           sudo but must present the reconciled local-console
-#                           password, and the wheel group no longer carries
-#                           NOPASSWD. Recovery stays available at the physical
-#                           or virtual console only, because SSH password and
-#                           keyboard-interactive authentication stay disabled.
-#                           Deploying then requires console-driven operation.
+#                           password, the wheel group no longer carries
+#                           NOPASSWD, and the local admin is no longer a
+#                           trusted Nix user. Recovery stays available at the
+#                           physical or virtual console only, because SSH
+#                           password and keyboard-interactive authentication
+#                           stay disabled. Deploying then requires console-
+#                           driven operation, and after the transition even
+#                           store and profile writes require root.
 { localAdminUser, policy }:
 
 let
@@ -54,6 +57,12 @@ else if policy == "bootstrap-nopasswd" then
     # authenticated recovery path in both modes.
     recoveryViaConsoleCredential = true;
     deployBlockedReason = null;
+    # Trusted Nix daemon membership is root-equivalent in its own right: the
+    # official nix.conf manual states that trusted users may import unsigned
+    # NARs and act on the store, which is essentially root access. The local
+    # admin needs it for unattended deploys and store maintenance, so the
+    # bootstrap contract keeps it and the restricted policy removes it.
+    trustLocalAdmin = true;
   }
 else
   {
@@ -65,5 +74,8 @@ else
     deployRequiresPasswordlessSudo = false;
     sudoUsesRecoveryCredential = true;
     recoveryViaConsoleCredential = true;
-    deployBlockedReason = "vars.identity.localAdminSudo is \"${policy}\", so the local admin has no passwordless sudo. The guarded deploy performs non-interactive sudo on this host and cannot authenticate under this policy. Restore \"bootstrap-nopasswd\", or run deploys from the server console as the local admin.";
+    # Drop the equivalent daemon trust rather than leaving the account a
+    # passwordless root-equivalent path to the Nix store after sudo is gated.
+    trustLocalAdmin = false;
+    deployBlockedReason = "vars.identity.localAdminSudo is \"${policy}\", so the local admin has no passwordless sudo. The guarded deploy performs non-interactive sudo on this host and cannot authenticate under this policy. Restore \"bootstrap-nopasswd\" in vars.nix and redeploy from the workstation (the currently running host still holds the bootstrap grant until the activation lands), or keep this policy and run deploys from the server console as the local admin with the recovery password entered interactively: sudo ./scripts/deploy.sh --action test, then sudo ./scripts/deploy.sh --action switch. Both console commands enter the reconciled local-console password once at the sudo prompt and then serve sudo non-interactively for the whole deploy.";
   }

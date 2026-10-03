@@ -181,6 +181,16 @@ in
 
   security.sudo.extraRules = vars.localAdminSudoPolicy.extraRules;
 
+  # The policy this generation is running under, readable without privilege so
+  # scripts/deploy.sh can tell a bootstrap host that may still accept
+  # non-interactive sudo from one that is already restricted. It is written by
+  # the activation, so it always describes the running system rather than the
+  # checkout being deployed.
+  environment.etc."nixhomeserver/local-admin-sudo-policy" = {
+    mode = "0444";
+    text = vars.localAdminSudoPolicy.policy + "\n";
+  };
+
   environment.systemPackages = systemPackages;
 
   nix = {
@@ -194,7 +204,14 @@ in
       trusted-public-keys = [
         "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
       ];
-      trusted-users = [ "root" localAdminUser ];
+      # Trusted Nix daemon membership is root-equivalent in its own right
+      # (trusted users may import unsigned NARs and act on the store), so the
+      # selected sudo policy gates it: gating sudo alone would leave the
+      # account a passwordless root-equivalent path to the Nix store. Only the
+      # bootstrap contract, which is root-equivalent by design, keeps the local
+      # admin trusted.
+      trusted-users =
+        [ "root" ] ++ lib.optional vars.localAdminSudoPolicy.trustLocalAdmin localAdminUser;
       auto-optimise-store = false;
       builders-use-substitutes = true;
       # Keep the daemon capable of accepting a later one-shot or newly selected

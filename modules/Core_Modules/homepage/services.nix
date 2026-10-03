@@ -466,7 +466,12 @@ let
     {
       title = "Emergency rollback";
       command = "sudo nixos-rebuild switch --rollback";
-      detail = "Server-console recovery. Bypasses every guarded deploy check and changes the boot profile. Under vars.identity.localAdminSudo = \"password-authenticated\" sudo prompts for the reconciled local-console password, so this only works from the console; SSH password login stays disabled.";
+      detail = "Server-console recovery. Bypasses every guarded deploy check and changes the boot profile. Works under either vars.identity.localAdminSudo policy: under \"password-authenticated\" sudo prompts for the reconciled local-console password, so this only works from the console; SSH password login stays disabled.";
+    }
+    {
+      title = "Console deploy (restricted sudo)";
+      command = "sudo ./scripts/deploy.sh --action test";
+      detail = "Run guarded deploys from the server console as the local admin while vars.identity.localAdminSudo = \"password-authenticated\". One interactive sudo prompt covers the whole deploy. Then run --action switch. See operations.md for the full transition and restore procedure.";
     }
     {
       title = "Failed services";

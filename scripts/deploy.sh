@@ -184,11 +184,15 @@ if [[ -z "$target_host" ]]; then
   target_host="${local_admin_user}@${target_address}"
 fi
 
-# Refuse early when the configured local-admin sudo policy cannot authenticate
-# this host's non-interactive sudo contract, instead of failing midway through
-# a staged deploy. A passwordless deploy sudo grant remains the operator's
-# explicit choice in vars.identity.localAdminSudo; this only reports the
-# consequence of choosing otherwise.
+# Refuse early when the *target host* cannot authenticate this host's
+# non-interactive sudo contract, instead of failing midway through a staged
+# deploy. The guard asks the target which policy it is running, so the
+# bootstrap-to-restricted transition deploy is still authorized (the grant only
+# disappears when that activation lands) while an already-restricted host is
+# refused up front with the console route in the message. A passwordless deploy
+# sudo grant remains the operator's explicit choice in
+# vars.identity.localAdminSudo; this only reports the consequence of choosing
+# otherwise.
 source "$script_dir/helpers/local-admin-sudo-guard.sh"
 enforce_local_admin_sudo_policy
 
