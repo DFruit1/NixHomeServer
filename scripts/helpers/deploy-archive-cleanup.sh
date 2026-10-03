@@ -17,11 +17,13 @@
 #
 # NIXHOMESERVER_DEPLOY_ARCHIVE_NAMESPACE overrides the namespace path so the
 # regression suite can exercise this logic against temporary local directories.
-# The remote host does not set it, so a hostile environment cannot redirect the
-# staging path over a real deploy.
+# It is a test seam, not supported production configurability. Production uses
+# exactly the dedicated sibling below, matching the single-value Nix option;
+# never place archives below the root-only transaction/stamp directory.
+# The remote deploy payload does not set an override.
 
 deploy_archive_namespace_path() {
-  printf '%s\n' "${NIXHOMESERVER_DEPLOY_ARCHIVE_NAMESPACE:-/var/lib/nixhomeserver-deploy/archive-staging}"
+  printf '%s\n' "${NIXHOMESERVER_DEPLOY_ARCHIVE_NAMESPACE:-/var/lib/nixhomeserver-deploy-archives}"
 }
 
 # Print a usable namespace path, or explain why the namespace cannot be used.
