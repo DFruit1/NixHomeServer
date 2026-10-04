@@ -202,7 +202,8 @@ the ask, never above it and never inside the question.
 * **Code and figures get their own line.** A path, hash, count, mode, or command
   never sits inside a sentence.
 * **Say it once.** A constraint restated in prose and in `Constraints:` means the
-  prose is deletable.
+  prose is deletable. A specification path belongs on the parent card; a child
+  names its parent instead of repeating the path on every card in the graph.
 
 ### Never in a body
 
@@ -223,10 +224,32 @@ the ask, never above it and never inside the question.
 |---|---|
 | `head-coordinator` | Work body. An audit card is the **question** + evidence, never a proposed solution. A plan card: `Goal:` is the plan's outcome, its absolute path in `Notes:`. A decision card: the verdict first, routing rules below. |
 | `feature-reviewer` | One question: the slice and the single thing to answer. No solution, no fix plan. |
-| `project-auditor` | Diff review: verdict in `Goal:`, commits in `Notes:`. Question card: `Goal:` is the question, `Notes:` the evidence and what it changes. |
+| `project-auditor` | Diff review: verdict in `Goal:`, commits in `Notes:`. `Change:` names a revision, range or `file:line` — never "the revision the parent reported". Question card: `Goal:` is the question, `Notes:` the evidence and what it changes. |
 | `standard-implementer`, `local-implementer` | One-line `Goal:` plus the single acceptance criterion. The parent card holds the context. |
 | `principal-consultant` | Never assign. Its handoff goes **to** `head-coordinator` with the plan attached; `Change:` names the plan path, never re-derives it. |
 | any lane, gate | The gate body above. |
+
+### Delegating implementation cards
+
+Concurrency caps are not a throughput lever. `max_in_progress_per_profile` bounds
+how many workers a lane may hold at once; it does not make dependent cards
+independent. Board peaks run at one or two workers, so the host-wide cap is a
+memory backstop, not a queue to fill.
+
+Before cutting implementer cards, decide serial or parallel per slice:
+
+* **Chain** when two slices touch the same crate, module or test file, or when
+  the second needs the first's type, option or commit to exist. Each child bases
+  on its parent's commit and says so.
+* **Fan out** when slices own disjoint files. Make them siblings under one
+  parent rather than a chain, and state each card's file ownership so a parallel
+  worker stays out of its sibling's way.
+* **Compose last.** A card that merges parallel branches is the one place the
+  conflicts surface; it names the branches and runs the full gate.
+
+A chain of cards that each touch one app is the right shape, not a defect. Do
+not serialise independent work to look tidy, and do not parallelise work that
+shares a file to look busy.
 
 ### Deploy gate
 
@@ -394,6 +417,15 @@ Complete validation including heavy Nix evaluation, deploy transaction tests,
 first-boot convergence, secret generation flows, Kopia wrapper validation, and
 Playwright e2e. Runs in 10-15 min. Run before merging significant changes or when
 diagnosing persistent integration issues.
+
+Extend the guarded shutdown timer before starting this tier, and while it runs:
+
+```bash
+sudo nixhomeserver-shutdown-guard extend --minutes 30 --reason "validate-repo.sh --full"
+```
+
+A run cut short by the shutdown timer is not a pass. Report it as interrupted,
+never as green.
 
 ### VM (`validate-repo.sh --run-vm-tests`)
 Integration tests requiring VM boot (failure-alert, jellyfin-oidc).
