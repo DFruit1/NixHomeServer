@@ -37,7 +37,7 @@ in
       type = lib.types.package;
       default = pkgs.searxng;
       readOnly = true;
-      description = "SearXNG package providing the loopback webapp.";
+      description = "SearXNG package providing the loopback searxng-run entry point.";
     };
 
     settingsFile = lib.mkOption {

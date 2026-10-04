@@ -56,7 +56,14 @@ let
   appService = {
     requires = deps;
     after = deps;
-    serviceConfig = { Restart = "on-failure"; RestartSec = "10s"; TimeoutStartSec = lib.mkForce "10min"; MemoryHigh = "3G"; MemoryMax = "4G"; };
+    # The readiness loop below waits on two endpoints, up to 90 attempts each at
+    # 3s plus 2s of sleep, so its worst case is 900s. The container module
+    # defaults this to 0, which would let a container that never becomes ready
+    # hang forever instead; the previous 10min sat under that worst case, so
+    # systemd could kill the unit while the loop was still legitimately waiting
+    # on a cold ClickHouse or MinIO, which reads as a crash loop rather than a
+    # slow start.
+    serviceConfig = { Restart = "on-failure"; RestartSec = "10s"; TimeoutStartSec = lib.mkForce "25min"; MemoryHigh = "3G"; MemoryMax = "4G"; };
     unitConfig = {
       StartLimitIntervalSec = "10min";
       StartLimitBurst = 5;

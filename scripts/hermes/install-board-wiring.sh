@@ -399,6 +399,16 @@ check_cron_wiring() {
   local got_script="${CRON_FIELD[$name/$kind]:-}"
   local got_workdir="${CRON_FIELD[$name/Workdir]:-}"
 
+  # A monitored job's Monitor field carries the script name followed by a
+  # human description of when the agent is invoked, for example
+  # "kanban-board-health.sh (agent runs only on output change)". Comparing that
+  # whole string against the bare script name reports drift on a correctly
+  # wired job and sends the operator to re-apply a repair that is already in
+  # place, forever.
+  if [[ "$kind" == Monitor ]]; then
+    got_script="${got_script%% *}"
+  fi
+
   if [[ "$got_schedule" != "$schedule" ]]; then
     unrepaired "cron '$name' schedule is '${got_schedule:-<unset>}', want '$schedule': $edit_cmd --schedule '$schedule'"
   fi

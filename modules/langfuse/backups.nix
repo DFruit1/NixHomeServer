@@ -28,7 +28,10 @@
           local backup_name="langfuse-$(date --utc +%Y%m%dT%H%M%SZ)-$$.zip"
           local archive="/var/lib/langfuse/clickhouse-backups/$backup_name"
 
-          if ! ${pkgs.clickhouse}/bin/clickhouse-client --config-file /run/langfuse/clickhouse-client.xml \
+          # The client must come from the same package as the server, or a
+          # future switch to a different ClickHouse build silently breaks
+          # BACKUP/RESTORE compatibility with the archive format it writes.
+          if ! ${config.services.clickhouse.package}/bin/clickhouse-client --config-file /run/langfuse/clickhouse-client.xml \
             --query "BACKUP DATABASE default TO Disk('backups', '$backup_name')"; then
             echo "Langfuse ClickHouse archive failed; continuing without it" >&2
             rm -f -- "$archive"

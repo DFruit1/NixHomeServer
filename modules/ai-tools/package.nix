@@ -39,6 +39,16 @@ in
         Loopback Collabora Online base URL used by convert_document. This is the
         same instance OpenCloud already runs, reached over loopback, so no
         Collabora setting needs to change.
+
+        The port is read through an `or` fallback, so disabling OpenCloud does
+        not fail evaluation here: it leaves convert_document pointing at a port
+        nothing listens on, and every call is refused at runtime. A cross-app
+        assertion cannot close that gap either, because the per-app evaluation
+        harnesses import one app's module at a time and would fail on an absent
+        option.
+
+        Collabora's per_document.max_concurrency budget is shared with real
+        editing sessions, so conversion returns 503 while Collabora is busy.
       '';
     };
 
