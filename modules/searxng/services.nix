@@ -14,7 +14,7 @@ in
         Type = "simple";
         User = "searxng";
         Group = "searxng";
-        ExecStart = "${pkgs.searxng}/bin/webapp";
+        ExecStart = "${pkgs.searxng}/bin/searxng-run";
         WorkingDirectory = cfg.stateDir;
         Environment = [
           "SEARXNG_SETTINGS_PATH=${cfg.settingsFile}"

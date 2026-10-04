@@ -1,5 +1,13 @@
 {
-  ports = { langfuse = 3040; langfuseS3 = 9040; langfuseRedis = 6384; };
+  ports = {
+    langfuse = 3040;
+    langfuseWorker = 3041;
+    langfuseS3 = 9040;
+    langfuseS3Console = 9041;
+    langfuseRedis = 6384;
+    langfuseClickhouseHttp = 18140;
+    langfuseClickhouseTcp = 19140;
+  };
   homepage = { config, vars }: [ {
     order = 30;
     id = "langfuse";

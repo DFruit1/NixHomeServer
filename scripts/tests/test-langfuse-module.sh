@@ -17,6 +17,8 @@ in {
   database = builtins.elem \"langfuse\" cfg.services.postgresql.ensureDatabases;
   redis = cfg.services.redis.servers.langfuse;
   clickhouse = cfg.services.clickhouse.serverConfig;
+  bootstrapAfter = cfg.systemd.services.langfuse-db-bootstrap.after;
+  bootstrapRequires = cfg.systemd.services.langfuse-db-bootstrap.requires;
   minioArgs = containers.langfuse-minio.cmd;
   nativeAuthPaths = app.nativeAuthPaths;
   allowedGroups = app.allowedGroups;
@@ -35,6 +37,9 @@ jq -e '
   and .redis.settings["maxmemory-policy"] == "noeviction"
   and .redis.appendOnly and .redis.requirePassFile == "/run/langfuse-redis/password"
   and .clickhouse.listen_host == "127.0.0.1"
+  and .clickhouse.tcp_port == 19140 and .clickhouse.http_port == 18140
+  and (.bootstrapAfter | index("postgresql-setup.service")) != null
+  and (.bootstrapRequires | index("postgresql-setup.service")) != null
   and (.minioArgs | index("127.0.0.1:9040")) != null
   and .nativeAuthPaths == ["/api/public/*"]
   and .allowedGroups == ["langfuse-users"]

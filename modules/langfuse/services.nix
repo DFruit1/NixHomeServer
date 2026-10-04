@@ -8,8 +8,8 @@ let
   commonEnvironment = {
     NEXTAUTH_URL = "https://langfuse.${vars.domain}";
     TELEMETRY_ENABLED = "false";
-    CLICKHOUSE_MIGRATION_URL = "clickhouse://${loopback}:9140";
-    CLICKHOUSE_URL = "http://${loopback}:8140";
+    CLICKHOUSE_MIGRATION_URL = "clickhouse://${loopback}:${toString vars.networking.ports.langfuseClickhouseTcp}";
+    CLICKHOUSE_URL = "http://${loopback}:${toString vars.networking.ports.langfuseClickhouseHttp}";
     CLICKHOUSE_USER = "langfuse";
     CLICKHOUSE_CLUSTER_ENABLED = "false";
     REDIS_HOST = loopback;
@@ -43,7 +43,7 @@ let
     path = [ pkgs.curl pkgs.coreutils ];
     preStart = lib.mkBefore ''
       # OCI startup ordering alone does not imply database readiness.
-      for endpoint in http://${loopback}:8140/ping http://${loopback}:${s3Port}/minio/health/live; do
+      for endpoint in http://${loopback}:${toString vars.networking.ports.langfuseClickhouseHttp}/ping http://${loopback}:${s3Port}/minio/health/live; do
         ready=0
         for _attempt in $(seq 1 90); do
           if curl --fail --silent --max-time 3 "$endpoint" >/dev/null; then ready=1; break; fi
@@ -83,8 +83,8 @@ in {
       enable = true;
       serverConfig = {
         listen_host = loopback;
-        http_port = 8140;
-        tcp_port = 9140;
+        http_port = vars.networking.ports.langfuseClickhouseHttp;
+        tcp_port = vars.networking.ports.langfuseClickhouseTcp;
         max_server_memory_usage = 4294967296;
         storage_configuration.disks.backups = { type = "local"; path = "/var/lib/langfuse/clickhouse-backups/"; };
         backups.allowed_disk = "backups";
@@ -117,7 +117,7 @@ in {
         networks = [ "host" ];
         environmentFiles = [ "/run/langfuse/minio.env" ];
         volumes = [ "/var/lib/langfuse/minio:/data" ];
-        cmd = [ "server" "--address" "${loopback}:${s3Port}" "--console-address" "${loopback}:9041" "/data" ];
+        cmd = [ "server" "--address" "${loopback}:${s3Port}" "--console-address" "${loopback}:${toString vars.networking.ports.langfuseS3Console}" "/data" ];
         extraOptions = [ "--memory=2g" "--memory-reservation=1g" "--security-opt=no-new-privileges" ];
       };
       langfuse-web = (container "docker.langfuse.com/langfuse/langfuse@sha256:3d2ae888a0e6edb41fdba6e7d5baca5e4baede3a870dac7970dadd9d925b018e" "4g") // {
@@ -137,7 +137,7 @@ in {
       };
       langfuse-worker = (container "docker.langfuse.com/langfuse/langfuse-worker@sha256:52f7fd41ded2f1a6acab13ff7cb1832d36dfe2cbf44adea402b7a09cfa4ce800" "4g") // {
         serviceName = "langfuse-worker";
-        environment = commonEnvironment // { PORT = "3041"; HOSTNAME = loopback; };
+        environment = commonEnvironment // { PORT = toString vars.networking.ports.langfuseWorker; HOSTNAME = loopback; };
       };
     };
     systemd.services.langfuse-minio = {

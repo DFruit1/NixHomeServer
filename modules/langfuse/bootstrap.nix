@@ -1,4 +1,4 @@
-{ config, lib, pkgs, ... }:
+{ config, lib, pkgs, vars, ... }:
 let cfg = config.repo.langfuse;
 in {
   config = lib.mkIf cfg.enable {
@@ -9,8 +9,8 @@ in {
     };
     systemd.services.langfuse-db-bootstrap = {
       description = "Set the Langfuse role password in the shared PostgreSQL cluster";
-      requires = [ "postgresql.service" "langfuse-prepare.service" ];
-      after = [ "postgresql.service" "langfuse-prepare.service" ];
+      requires = [ "postgresql.service" "postgresql-setup.service" "langfuse-prepare.service" ];
+      after = [ "postgresql.service" "postgresql-setup.service" "langfuse-prepare.service" ];
       path = [ pkgs.coreutils pkgs.gnused pkgs.util-linux config.services.postgresql.package ];
       serviceConfig = { Type = "oneshot"; RemainAfterExit = true; UMask = "0077"; Nice = 10; CPUWeight = 20; IOWeight = 20; MemoryHigh = "128M"; MemoryMax = "256M"; };
       script = ''
@@ -64,7 +64,7 @@ in {
         grep -E '^(NEXTAUTH_SECRET|LANGFUSE_INIT_)' "$source_file" > /run/langfuse/web.env
         clickhouse_password="$(sed -n 's/^CLICKHOUSE_PASSWORD=//p' "$source_file")"
         [[ "$clickhouse_password" =~ ^[a-f0-9]{64}$ ]]
-        printf '<config><host>127.0.0.1</host><port>9140</port><user>langfuse</user><password>%s</password></config>\n' \
+        printf '<config><host>127.0.0.1</host><port>${toString vars.networking.ports.langfuseClickhouseTcp}</port><user>langfuse</user><password>%s</password></config>\n' \
           "$clickhouse_password" > /run/langfuse/clickhouse-client.xml
         chmod 0600 /run/langfuse/*.env /run/langfuse/clickhouse-client.xml
       '';
