@@ -131,132 +131,118 @@ a workaround without first confirming the DNS and LAN path.
 
 ## Kanban Card Authoring
 
-Hermes injects this file into every agent working in a checkout or worktree, so
-this is the single home for the board's card conventions. Any profile may create
-a card — the dispatcher appends the kanban lifecycle tools to every worker, not
-just the orchestrator — so these rules bind all of them.
+Hermes injects this file into every agent, so this is the board's only home for
+card conventions. Every profile writes cards, so these rules bind every worker.
 
-The first reader of a card is a human deciding whether to approve it, in a
-column view, usually mid-review of something else. Write for that reader.
+The reader is a human in a narrow column, mid-review of something else. A card
+must answer two questions from its first lines:
 
-### Budget
+1. **Does it need me?** — from the title and the first line.
+2. **What exactly do I do?** — from the first three lines.
 
-**Title** — imperative, under 60 characters, names the outcome. It is the
-card's label in every column, so it must be distinguishable at a glance from its
-siblings. `Fix: expire orphaned deploy archives in a private staging dir`, not
+Write for that reader, not for the agent who executes the card.
+
+### First line
+
+| The card | First line |
+|---|---|
+| needs the owner to decide (a gate) | `ASK: <the decision, as a choice>` |
+| is work an agent executes | `Goal: <outcome in one line, <90 chars>` |
+| asks an agent one question | `Goal: <the question>` |
+
+**Title** — imperative, under 60 characters, names the outcome. It is the card's
+label in every column, so make it distinguishable at a glance:
+`Fix: expire orphaned deploy archives in a private staging dir`, not
 `Address M6 from audit t_d05010f1`.
 
-**Body** — at most **15 lines and 1000 characters**. Fixed slots, in this order,
-so the eye lands in the same place on every card:
+### Work body
+
+**At most 15 lines and 1000 characters.** Over budget means split the card with
+`parents=`, never compress prose to fit. If the `Goal:` needs "and", it is two
+cards. Slots, always in this order:
 
 ```
-Goal: <one line, under 90 chars — the concrete change or decision>
+Goal: <outcome in one line, <90 chars>
 Change: <file:line> — <what changes>
 Verify: <exact command> — <expected exit code>
 Constraints:
-- <one per line, under 90 chars>
-Notes:
-- <hash, count, or figure the ask itself does not need>
+- <one per line, <90 chars>
+Notes:  (optional — drop rather than pad)
+- <a supporting fact, never reasoning or a second ask>
 ```
 
-`Notes:` is optional. Drop it rather than pad it.
+### Gate body
 
-### If it does not fit, split it
+A gate asks the owner to authorise something, so the ask is the first thing on
+the card. Always this shape:
 
-A card that overruns the budget is two cards. Split it with `parents=` and let
-the dependency do the waiting — never compress prose to fit. Bundling is the
-defect, not verbosity: if the `Goal` line needs the word "and", it is two asks.
+```
+ASK: <the one decision, as a choice>
+  A) <option> — <consequence in a few words>
+  B) <option> — <consequence in a few words>
+NEEDED FROM YOU: <approve / choose / confirm>
+IF UNANSWERED: <what stays blocked>
+Context: <one or two sentences, file:line>
+Must not change: <the guardrail>
+```
 
-### Prose hygiene
+The owner must be able to answer from the first three lines. Evidence goes below
+the ask, never above it and never inside the question.
 
-* **Code and figures never sit inside a sentence.** A path, hash, count, file
-  mode, or command gets its own line or a `Notes:` bullet. Woven into a clause,
-  the reader has to parse it back out before they can act on the sentence.
+### Hard limits
+
 * **One idea per line.** "Do A, and B, but never C" is three lines, not one
   200-character sentence.
-* **Keep lines under 90 characters** so they wrap in a narrow detail pane instead
-  of running off it.
-* **Say it once.** A constraint restated in `Constraints:` and again in a
-  paragraph means the paragraph is deletable.
+* **Under 90 characters per line**, or it runs off the narrow detail pane.
+* **Code and figures get their own line.** A path, hash, count, mode, or command
+  never sits inside a sentence.
+* **Say it once.** A constraint restated in prose and in `Constraints:` means the
+  prose is deletable.
 
 ### Never in a body
 
 * Provenance — `Decision t_258bbbce from audit t_d05010f1:` says nothing the
   `blocked by` field does not already show.
-* The audit's reasoning — it lives in the audit report. One clause, then move on.
-* Call-site dumps — `sudo call sites: :324, :327, :491, :533…` is unreadable at a
-  glance and redundant with grep. Name the file and say how many.
+* The audit's reasoning — it lives in the audit report. One clause, then stop.
+* Call-site dumps — name the file and say how many, not `:324, :327, :491, :533…`.
 * Commit-hash lists or dependency prose — `git log` knows the hashes, and the
   board renders parents and `blocked by` on its own.
-* Rules already in this file — the commit gate, the local-only publication
-  rule, the test tiers, and workspace discipline are injected into every agent
-  regardless.
-* An acceptance checklist that restates the body. The `Verify:` line plus at most
-  four `Constraints:` lines are the whole definition of done.
+* Rules already in this file — the commit gate, local-only publication, the test
+  tiers, and workspace discipline are injected into every agent anyway.
+* A restated acceptance checklist. `Verify:` plus at most four `Constraints:`
+  lines are the whole definition of done.
 
 ### Card shape per lane
 
 | Lane | Shape |
 |---|---|
-| `head-coordinator` | Implementation cards use the slots above. An audit card states the **question**, not a proposed solution, plus the evidence already in hand. A card carrying an attached `principal-consultant` plan is implemented from that plan: the `Goal:` is the plan's outcome and `Notes:` carries its `REVIEWER:` / `HUMAN:` questions, never a re-derivation. |
-| `feature-reviewer` | The body is a question: name the slice and the single question to answer. No solution, no fix plan. |
-| `project-auditor` | A diff review puts the verdict in `Goal:` and the commits in `Notes:`. A **question card** is one bounded question instead: `Goal:` is the question, `Notes:` is the evidence and what the answer changes. Same slot order either way. |
-| `standard-implementer`, `local-implementer` | A follow-up card is a one-line `Goal:` plus the single acceptance criterion the new work must satisfy. The parent card already holds the context. |
-| `principal-consultant` | Never assign a card to it; it runs by hand in a conversation. Its one handoff card goes **to** `head-coordinator` and carries the plan as an attachment, so `Change:` names the attached plan rather than inlining it. |
-| any lane, human gate | Use the template below. |
-
-### Approval gates
-
-A gate is the worst case, because a human is being asked to authorise something
-irreversible. Put the question first, with options:
-
-```
-Decision needed: <the question, as a choice>
-Options:
-  A) <option> — <consequence in a few words>
-  B) <option> — <consequence in a few words>
-If neither: <what you would need to design the third>
-Context: <one or two sentences, with file:line>
-Constraints: <what must not change>
-```
-
-Do not bury the question under the evidence that produced it.
+| `head-coordinator` | Work body. An audit card is the **question** + evidence, never a proposed solution. A plan card: `Goal:` is the plan's outcome, its absolute path in `Notes:`. A decision card: the verdict first, routing rules below. |
+| `feature-reviewer` | One question: the slice and the single thing to answer. No solution, no fix plan. |
+| `project-auditor` | Diff review: verdict in `Goal:`, commits in `Notes:`. Question card: `Goal:` is the question, `Notes:` the evidence and what it changes. |
+| `standard-implementer`, `local-implementer` | One-line `Goal:` plus the single acceptance criterion. The parent card holds the context. |
+| `principal-consultant` | Never assign. Its handoff goes **to** `head-coordinator` with the plan attached; `Change:` names the plan path, never re-derives it. |
+| any lane, gate | The gate body above. |
 
 ### Worked example
 
-A real 4,364-character card opened like this:
-
-> **Design and scope** — Use exactly /var/lib/nixhomeserver-deploy-archives as
-> the dedicated sibling archive directory, outside root-only
-> /var/lib/nixhomeserver-deploy. Preserve root:root 0700 transaction/stamp
-> ancestry and root-only stamp files. Archive directory remains 0700 owned by
-> configured localAdminUser; staged archives remain 0600. Keep independent
-> systemd-tmpfiles mM:48h expiry, immediate constrained cleanup and fail-closed
-> no-fallback behavior. Do not widen sudo, add ACLs, chmod/chown existing
-> deploy-state, switch SSH to root, or add raw rebuild workarounds.
->
-> **Baseline** — Current tested composition on wt/t_75be1a28 is base efee182
-> plus 5e1a9672fca556aba47f552d01816a4360e74865, 0c25462a…, 37c2f008…,
-> d0994df5…, e9310b3a…
-
-Four sentences of chained imperatives, six inline negatives, five hashes, and a
-whole section of hashes `git log` already knows. The same card:
+A real gate was one 470-word paragraph opening `HUMAN APPROVAL GATE; do not
+implement…`, mixing the question, the evidence, six constraints, and the
+follow-up plan into a wall. Same content, rewritten:
 
 ```
-Goal: Move deploy archives out of root-only state into a sibling namespace.
-Change: modules/Core_Modules/deploy/default.nix:412 — namespace + tmpfiles mM:48h
-Verify: bash scripts/tests/test-deploy-archive-permissions.sh — 0
-Constraints:
-- Archive dir 0700 localAdminUser; staged archives 0600
-- Root:root 0700 transaction/stamp ancestry unchanged
-- No sudo widening, ACLs, chown of existing state, or root SSH
-- Fail closed; no /tmp fallback
-Notes:
-- Baseline on wt/t_75be1a28: efee182 5e1a967 0c25462 37c2f00 d0994df e9310b3
-- New path needs rollout; offline tests do not establish live safety
+ASK: Is localAdminUser intentionally root-equivalent, or must a separate
+  deploy principal be stopped from reaching arbitrary root?
+  A) Keep it fully trusted — accept and document the exposure
+  B) Add a restricted principal — keep an authenticated recovery path
+NEEDED FROM YOU: pick A or B, and say which emergency recovery stays allowed
+IF UNANSWERED: no sudo-policy change is made
+Context: modules/Core_Modules/base-system/default.nix:178-192 grants
+  localAdminUser NOPASSWD ALL; deploy-executor.sh calls sudo at 12 sites.
+Must not change: no plaintext secrets; no stamp wrapper; no live deploy
 ```
 
-Eleven lines. Every constraint survived; the prose did not.
+The decision is answerable from line 1; the evidence sits below it. Nothing was
+dropped — only the prose was.
 
 ### Answering a gate
 
@@ -265,6 +251,12 @@ unblock — the dispatcher only claims `ready` cards, so an unanswered `blocked`
 card never runs, and a commented-but-still-blocked card never runs either. A
 `running` card needs only the comment: the dispatcher live-steals new operator
 comments into the worker.
+
+### Pre-flight check
+
+Title ≤ 60 chars and names the outcome. First line is the ask, goal, or question.
+Body ≤ 15 lines, ≤ 1000 chars, ≤ 90 chars per line. A gate gives options and says
+what stays blocked.
 
 ### Triage auto-decompose is off
 
