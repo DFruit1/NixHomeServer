@@ -14,6 +14,7 @@ test_repo="$tmpdir/repo"
 mkdir -p "$test_repo/scripts/helpers" "$test_repo/secrets/unencrypted" "$test_repo/secrets/pubkeys"
 cp scripts/generate-all-secrets.sh "$test_repo/scripts/generate-all-secrets.sh"
 cp scripts/helpers/secrets-common.sh scripts/helpers/generate-managed-secrets.sh \
+  scripts/helpers/generate-langfuse-env.sh \
   scripts/helpers/encrypt-staged-external-secrets.sh "$test_repo/scripts/helpers/"
 cp secrets/manifest.nix "$test_repo/secrets/manifest.nix"
 touch "$test_repo/.gitignore"

@@ -451,6 +451,14 @@ in
       };
     })
 
+  (lib.mkIf (hasModule "langfuse" && config.repo.langfuse.enable) {
+    services.redis.servers.langfuse.settings = {
+      maxmemory = "512mb";
+      # BullMQ requires queue entries to survive memory pressure.
+      maxmemory-policy = "noeviction";
+    };
+  })
+
   (lib.mkIf power.enable {
     networking.interfaces.${power.wakeOnLan.interface}.wakeOnLan = lib.mkIf power.wakeOnLan.enable {
       enable = true;

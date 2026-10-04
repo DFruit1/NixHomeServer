@@ -51,6 +51,7 @@ fixture_scripts=(
   scripts/generate-all-secrets.sh
   scripts/helpers/secrets-common.sh
   scripts/helpers/generate-managed-secrets.sh
+  scripts/helpers/generate-langfuse-env.sh
   scripts/helpers/encrypt-staged-external-secrets.sh
 )
 

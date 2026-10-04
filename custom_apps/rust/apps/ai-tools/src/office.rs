@@ -67,9 +67,7 @@ pub const FORMATS: &[Format] = &[
 
 pub fn format_for(path: &Path) -> Option<&'static Format> {
     let extension = path.extension()?.to_str()?.to_ascii_lowercase();
-    FORMATS
-        .iter()
-        .find(|format| format.extension == extension)
+    FORMATS.iter().find(|format| format.extension == extension)
 }
 
 /// Resolve a caller-supplied relative path inside the shared root.
@@ -96,7 +94,9 @@ pub fn resolve_within(root: &Path, requested: &str) -> Result<PathBuf, String> {
     for component in Path::new(trimmed).components() {
         match component {
             std::path::Component::Normal(part) => {
-                let name = part.to_str().ok_or_else(|| "path is not valid UTF-8".to_string())?;
+                let name = part
+                    .to_str()
+                    .ok_or_else(|| "path is not valid UTF-8".to_string())?;
                 if name.starts_with('.') {
                     return Err("path must not contain hidden entries".to_string());
                 }
@@ -231,7 +231,10 @@ mod tests {
 
     #[test]
     fn maps_supported_extensions_only() {
-        assert_eq!(format_for(Path::new("a/b/report.docx")).unwrap().target, "txt");
+        assert_eq!(
+            format_for(Path::new("a/b/report.docx")).unwrap().target,
+            "txt"
+        );
         assert_eq!(format_for(Path::new("report.XLSX")).unwrap().target, "csv");
         assert_eq!(format_for(Path::new("deck.odp")).unwrap().target, "txt");
         assert!(format_for(Path::new("photo.png")).is_none());

@@ -90,6 +90,8 @@ lean_skip_test() {
 
 test_scripts=(
   scripts/tests/test-module-structure.sh
+  scripts/tests/test-langfuse-secrets.sh
+  scripts/tests/test-langfuse-module.sh
   scripts/tests/test-attic-cache.sh
   scripts/tests/test-kanidm-group-owned-access.sh
   scripts/tests/test-module-removal-evaluation.sh

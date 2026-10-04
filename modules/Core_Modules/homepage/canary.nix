@@ -39,6 +39,7 @@ let
     (mkTarget { id = "downloads"; name = "YouTube Downloads"; host = "ytdownload.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "YouTube|Downloads"; })
     (mkTarget { id = "passwords"; name = "Passwords"; host = "passwords.${vars.domain}"; coverageMode = "local-boundary"; expectedPattern = "Vaultwarden|Bitwarden|Passwords"; })
     (mkTarget { id = "git"; name = "Git"; host = "git.${vars.domain}"; coverageMode = "native-oidc"; expectedPattern = "Forgejo|Dashboard|Repositories"; })
+    (mkTarget { id = "langfuse"; name = "Agent Traces"; host = "langfuse.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "Langfuse|Sign in"; })
     (mkTarget { id = "search"; name = "Search"; host = "search.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "Search"; })
     (mkTarget { id = "ai"; name = "Local AI"; host = "ai.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "llama-ui|Type a message"; })
     (mkTarget { id = "backups"; name = "Local Backups"; host = vars.kopiaDomain; coverageMode = "gateway-boundary"; expectedPattern = "Kopia|Backups"; expectAccessDenied = true; })

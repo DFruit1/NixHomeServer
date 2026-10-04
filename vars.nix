@@ -32,6 +32,7 @@ let
         "jellyfin"
         "kavita"
         "kiwix"
+        "langfuse"
         "mail-archive-ui"
         "mkvmaker"
         "offline-music"

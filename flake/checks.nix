@@ -36,6 +36,7 @@ let
   hasApp = name: builtins.elem name enabledApps;
   rustAppOwners = {
     ai-gate = "bonsai";
+    ai-tools = "ai-tools";
     browsertrix-downloader = "browsertrix-downloader";
     kanidm-canary-bootstrap = null;
     mail-archive-ui = "mail-archive-ui";

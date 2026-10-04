@@ -23,6 +23,7 @@ fixture_files=(
   scripts/helpers/repo-common.sh
   scripts/helpers/secrets-common.sh
   scripts/helpers/generate-managed-secrets.sh
+  scripts/helpers/generate-langfuse-env.sh
   scripts/helpers/encrypt-staged-external-secrets.sh
   scripts/helpers/verify-zfs-pool-identity.sh
   vars.example.nix

@@ -11,10 +11,10 @@ use rmcp::{
         CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, InitializeResult,
         JsonObject, ListToolsResult, PaginatedRequestParams, ServerCapabilities, Tool,
     },
+    service::RequestContext,
     transport::streamable_http_server::{
         session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
     },
-    service::RequestContext,
     ErrorData, RoleServer, ServerHandler,
 };
 mod office;
@@ -144,11 +144,9 @@ async fn searxng_search(
         .build()
         .map_err(|error| format!("could not build SearXNG client: {error}"))?;
 
-    let mut request = client.get(format!("{}/search", config.searxng_base)).query(&[
-        ("q", query),
-        ("format", "json"),
-        ("safesearch", "1"),
-    ]);
+    let mut request = client
+        .get(format!("{}/search", config.searxng_base))
+        .query(&[("q", query), ("format", "json"), ("safesearch", "1")]);
     if let Some(categories) = categories {
         request = request.query(&[("categories", categories)]);
     }
@@ -284,13 +282,11 @@ impl Server {
 
 impl ServerHandler for Server {
     fn get_info(&self) -> InitializeResult {
-        InitializeResult::new(
-            ServerCapabilities::builder().enable_tools().build(),
-        )
-        .with_instructions(
-            "Read-only tools for this home server. web_search queries the local SearXNG \
+        InitializeResult::new(ServerCapabilities::builder().enable_tools().build())
+            .with_instructions(
+                "Read-only tools for this home server. web_search queries the local SearXNG \
              instance. Prefer the user's own files and context for questions about their data.",
-        )
+            )
     }
 
     async fn list_tools(
@@ -358,7 +354,8 @@ fn parse_env() -> Result<Config, String> {
     let collabora_timeout = Duration::from_secs(90);
 
     let shared_root = PathBuf::from(
-        env::var("AI_TOOLS_SHARED_ROOT").map_err(|_| "AI_TOOLS_SHARED_ROOT is not set".to_string())?,
+        env::var("AI_TOOLS_SHARED_ROOT")
+            .map_err(|_| "AI_TOOLS_SHARED_ROOT is not set".to_string())?,
     );
 
     Ok(Config {
@@ -375,7 +372,10 @@ fn parse_env() -> Result<Config, String> {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listen = env::var("AI_TOOLS_LISTEN")?;
     let config = Arc::new(parse_env()?);
-    let converter = Arc::new(Converter::new(&config.collabora_base, config.collabora_timeout)?);
+    let converter = Arc::new(Converter::new(
+        &config.collabora_base,
+        config.collabora_timeout,
+    )?);
     let server = Server {
         config: Arc::clone(&config),
         converter,
@@ -425,7 +425,9 @@ mod tests {
     async fn rejects_an_empty_query() {
         let server = Server {
             config: Arc::new(test_config()),
-            converter: Arc::new(Converter::new("http://127.0.0.1:9980", Duration::from_secs(5)).unwrap()),
+            converter: Arc::new(
+                Converter::new("http://127.0.0.1:9980", Duration::from_secs(5)).unwrap(),
+            ),
         };
         let mut arguments = JsonObject::new();
         arguments.insert("query".to_string(), serde_json::json!("   "));
@@ -437,9 +439,14 @@ mod tests {
     async fn rejects_a_missing_query() {
         let server = Server {
             config: Arc::new(test_config()),
-            converter: Arc::new(Converter::new("http://127.0.0.1:9980", Duration::from_secs(5)).unwrap()),
+            converter: Arc::new(
+                Converter::new("http://127.0.0.1:9980", Duration::from_secs(5)).unwrap(),
+            ),
         };
-        assert!(server.run_web_search(Some(JsonObject::new())).await.is_err());
+        assert!(server
+            .run_web_search(Some(JsonObject::new()))
+            .await
+            .is_err());
         assert!(server.run_web_search(None).await.is_err());
     }
 
@@ -447,7 +454,10 @@ mod tests {
     fn schema_declares_query_as_required() {
         let schema = web_search_schema();
         assert_eq!(schema.get("type").and_then(|v| v.as_str()), Some("object"));
-        assert!(schema.get("properties").and_then(|v| v.as_object()).is_some());
+        assert!(schema
+            .get("properties")
+            .and_then(|v| v.as_object())
+            .is_some());
         assert_eq!(
             schema
                 .get("required")

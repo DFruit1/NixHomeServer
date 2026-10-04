@@ -139,6 +139,23 @@ let
       ];
       persistencePaths = [ ];
     };
+    langfuse = {
+      disable = { repo.langfuse.enable = lib.mkForce false; };
+      registryName = "langfuse";
+      services = [ "langfuse-prepare" "langfuse-db-bootstrap" "langfuse-web" "langfuse-worker" "redis-langfuse" "clickhouse" "langfuse-minio" ];
+      containers = [ "langfuse-web" "langfuse-worker" "langfuse-minio" ];
+      timers = [ ];
+      hosts = [ "langfuse" ];
+      gatewayApps = [ "langfuse" ];
+      oauthClients = [ ];
+      kanidmGroups = [ "langfuse-users" ];
+      users = [ "langfuse" "redis-langfuse" "clickhouse" ];
+      groups = [ "langfuse" "redis-langfuse" "clickhouse" ];
+      secrets = [ "langfuseServerEnv" ];
+      backupApps = [ "langfuse" ];
+      guardedServices = [ ];
+      persistencePaths = [ "/var/lib/langfuse" "/var/lib/clickhouse" "/var/lib/redis-langfuse" ];
+    };
     chaptarr = {
       disable = { repo.chaptarr.enable = lib.mkForce false; };
       registryName = "chaptarr";
