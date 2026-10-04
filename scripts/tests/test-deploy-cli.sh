@@ -347,8 +347,6 @@ if [[ ! "$attic_preflight_line" =~ ^[0-9]+$ || ! "$allocation_line" =~ ^[0-9]+$ 
   echo "❌ Deploy must resolve the allocation, then recover the optional local Attic tunnel, before staging."
   exit 1
 fi
-require_fixed scripts/deploy.sh 'recover_local_attic_tunnel_if_needed \' \
-  "Real deploys must recover the optional workstation Attic tunnel once the allocation is known."
 require_fixed scripts/helpers/repo-common.sh 'local_attic_cache_recovery_needed' \
   "Attic tunnel recovery must be decided from actual workstation participation."
 require_fixed scripts/helpers/repo-common.sh 'continuing without the local Attic cache' \

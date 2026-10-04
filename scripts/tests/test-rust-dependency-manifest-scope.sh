@@ -14,7 +14,8 @@ trap 'rm -rf "$test_root"' EXIT
 export MANIFEST_FIXTURE="$test_root"
 
 build_fixture() {
-  local variant="$1" root="$test_root/$variant"
+  local variant="$1"
+  local root="$test_root/$variant"
   mkdir -p "$root/crates/one/src" "$root/crates/two/src" "$root/libs/shared/src" "$root/vendor/other/src-tauri/plugins/plugin"
   cat >"$root/Cargo.toml" <<'EOF'
 [workspace]

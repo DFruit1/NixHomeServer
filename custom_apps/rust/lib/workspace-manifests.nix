@@ -35,7 +35,7 @@ let
   optionalFile = relative: lib.fileset.maybeMissing (resolvePath relative);
 
   rootManifest = readManifest "Cargo.toml";
-  workspaceTable = if rootManifest ? workspace then rootManifest.workspace else { };
+  workspaceTable = rootManifest.workspace or { };
 
   members = workspaceTable.members or [ ];
   excludes = workspaceTable.exclude or [ ];

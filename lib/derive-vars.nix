@@ -215,10 +215,10 @@ rec {
   # error: existing installations must keep evaluating unchanged, and
   # validate-host-settings.nix still rejects any value outside the two modes.
   localAdminSudo = identity.localAdminSudo or "bootstrap-nopasswd";
-  localAdminSudoPolicy = (import ./local-admin-sudo.nix {
+  localAdminSudoPolicy = import ./local-admin-sudo.nix {
     localAdminUser = identity.localAdminUser;
     policy = identity.localAdminSudo or "bootstrap-nopasswd";
-  });
+  };
 
   networking = rec {
     loopbackIPv4 = advanced.loopbackIPv4;

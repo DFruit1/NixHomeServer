@@ -186,7 +186,6 @@ source_hash='sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='
 
 # An ordinary test stamps debug_validated=false and nothing more.
 DEBUG_MODE="false"
-source_hash="$source_hash"
 write_test_stamp "$stamped_toplevel"
 if ! rg -Fxq 'version=2' "$test_stamp_path" \
   || ! rg -Fxq 'debug_validated=false' "$test_stamp_path"; then
@@ -216,8 +215,7 @@ assert_debug_switch_attestation >/dev/null 2>&1 && {
   exit 1
 }
 DEBUG_MODE="false"
-assert_debug_switch_attestation
-if [[ "$?" != "0" ]]; then
+if ! assert_debug_switch_attestation; then
   echo "❌ An ordinary switch rejected a version=2 stamp."
   exit 1
 fi

@@ -177,7 +177,7 @@ pass "rejects an unvalidated STALE_TIMEOUT_SEC without touching config.yaml"
 run_installer >/dev/null 2>&1
 rm -f "$HERMES_FIXTURE/config.yaml"
 write_config
-STALE_TIMEOUT_SEC= run_installer >/dev/null 2>&1
+STALE_TIMEOUT_SEC='' run_installer >/dev/null 2>&1
 grep -qx '  dispatch_stale_timeout_seconds: 5400' "$HERMES_FIXTURE/config.yaml" ||
   fail "an empty STALE_TIMEOUT_SEC did not fall back to the default:
 $(grep dispatch_stale_timeout "$HERMES_FIXTURE/config.yaml" || echo '<key absent>')"
@@ -276,9 +276,6 @@ PATH="$fixture/bin-missing:$PATH" HERMES_ROOT="$HERMES_FIXTURE" "$INSTALLER" \
   >"$fixture/create.log" 2>&1
 grep -q 'created cron' "$fixture/create.log" ||
   fail "an absent cron job was not created: $(cat "$fixture/create.log")"
-for name in 'kanban board health' 'kanban durability sync' 'kanban retry breaker'; do
-  grep -q "cron create" "$FAKE_HERMES_LOG" && break
-done
 created="$(grep -c 'cron create' "$FAKE_HERMES_LOG" || true)"
 [[ "$created" == 3 ]] ||
   fail "expected three cron jobs to be created, the log shows $created:
