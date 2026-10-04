@@ -5,21 +5,22 @@
 # ---
 # The dispatcher is deliberately conservative: it never invents an assignee and
 # it never decides that a card is waiting on a human. Both of those are routing
-# judgements, and the only role that owns routing judgements is the planner.
+# judgements, and the only role that owns routing judgements is the
+# head-coordinator.
 # So a card whose worker lane is broken (dead worker, saturated profile,
 # mis-assigned lane) sits in `ready` indefinitely and burns a `stuck:` warning
 # in the gateway log while nobody with the authority to fix it wakes up.
 #
 # This script is the detection half of that gap. It is read-only, cheap, and
-# prints one line per finding. The planner is the decision half; see the
-# "Board health" section of profiles/planner/SOUL.md.
+# prints one line per finding. The head-coordinator is the decision half; see
+# the "Board health" section of profiles/head-coordinator/SOUL.md.
 #
 # It is wired as a hermes cron `--monitor-script`, which hashes the output
 # byte-for-byte and suppresses the agent run while the hash is unchanged. The
 # output is therefore sorted and free of timestamps, ages are reported as
 # coarse buckets rather than exact seconds, and nothing volatile (pids,
 # absolute paths, free disk) may appear in it. A finding that flickers between
-# two spellings would wake the planner on every tick.
+# two spellings would wake the head-coordinator on every tick.
 #
 # Usage
 # -----
@@ -71,7 +72,7 @@ kanban_config_scalar() {
 MAX_PER_PROFILE="$(kanban_config_scalar max_in_progress_per_profile 2)"
 
 # Age buckets, not exact ages: exact seconds change every run, which would make
-# the monitor hash unstable and wake the planner on every single tick.
+# the monitor hash unstable and wake the head-coordinator on every single tick.
 bucket() {
   local secs="$1"
   if   ((secs < 300));  then printf 'lt5m'
@@ -136,7 +137,8 @@ done < <(sqlite3 "$DB" "
 
 # A profile at its concurrency cap cannot spawn, so its `ready` cards starve
 # behind long-running siblings. This is what turned a human-decision card into
-# a five-hour wait: both local-impl slots were held by cards awaiting an owner.
+# a five-hour wait: both local-implementer slots were held by cards awaiting an
+# owner.
 while IFS='|' read -r assignee ready_n running_n; do
   [[ -n "$assignee" ]] || continue
   ((ready_n > 0)) || continue
@@ -173,11 +175,12 @@ done < <(sqlite3 -separator '|' "$DB" "
 
 # Cards the block-loop detector gave up on. `block_recurrences` hits the limit
 # and the card is auto-routed to triage, where nothing dispatches it. Only the
-# planner can decide whether to re-route, re-scope, or escalate to the owner.
+# head-coordinator can decide whether to re-route, re-scope, or escalate to the
+# owner.
 while IFS='|' read -r id assignee recurs; do
   [[ -n "$id" ]] || continue
   ((recurs >= TRIAGE_RECURRENCES)) || continue
-  emit "TRIAGE_EXHAUSTED $id ${assignee:-unassigned} blocks=$recurs needs=planner-or-owner"
+  emit "TRIAGE_EXHAUSTED $id ${assignee:-unassigned} blocks=$recurs needs=head-coordinator-or-owner"
 done < <(sqlite3 -separator '|' "$DB" "
   SELECT id, COALESCE(assignee, ''), COALESCE(block_recurrences, 0)
     FROM tasks

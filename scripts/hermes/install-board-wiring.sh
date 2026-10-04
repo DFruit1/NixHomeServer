@@ -7,7 +7,7 @@
 # The durable half of the board-health and durability arrangement is three
 # scripts and two tests, all tracked in this repository. The live half is not:
 # the hermes cron jobs, the copied scripts under ~/.hermes/scripts/, the
-# planner's "Board health" section in its SOUL.md, and one key in
+# head-coordinator's "Board health" section in its SOUL.md, and one key in
 # ~/.hermes/config.yaml. All of that lives under ~/.hermes, which is not
 # tracked and not backed up -- Kopia only snapshots the *server's* /persist. So a
 # rebuilt workstation, a wiped profile, or a fresh hermes upgrade silently
@@ -28,7 +28,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HERMES_ROOT="${HERMES_ROOT:-$HOME/.hermes}"
 HERMES_BOARD="${HERMES_BOARD:-nixhomeserver}"
-PLANNER_SOUL="$HERMES_ROOT/profiles/planner/SOUL.md"
+COORDINATOR_SOUL="$HERMES_ROOT/profiles/head-coordinator/SOUL.md"
 CONFIG="$HERMES_ROOT/config.yaml"
 
 # Stale detection is off by default upstream (0), which means a worker that is
@@ -64,9 +64,9 @@ note "▶ hermes board wiring ($HERMES_ROOT)"
 # per-profile copies are for profile-scoped invocation. Checking only the
 # per-profile copies is how this arrangement drifted for a day: both reported
 # current while the shared copy the cron job ran was missing the PROFILE_OVER_CAP
-# detector the planner's own rules depend on.
+# detector the head-coordinator's own rules depend on.
 install_targets=("$HERMES_ROOT/scripts")
-for profile in default planner; do
+for profile in default head-coordinator; do
   if [[ -d "$HERMES_ROOT/profiles/$profile" ]]; then
     install_targets+=("$HERMES_ROOT/profiles/$profile/scripts")
   else
@@ -133,21 +133,22 @@ fi
 # 3. Planner board-health duty
 # ---------------------------------------------------------------------------
 #
-# The cron job prompts the planner to follow its SOUL.md. Without that section
-# the planner has the findings and no policy for them, and the most likely
+# The cron job prompts the head-coordinator to follow its SOUL.md. Without
+# that section the head-coordinator has the findings and no policy for them,
+# and the most likely
 # outcome is that it re-runs the detection itself or asks a human what to do --
 # which is the behaviour this wiring exists to replace.
 
-if [[ ! -f "$PLANNER_SOUL" ]]; then
-  note "  MISSING: $PLANNER_SOUL"
+if [[ ! -f "$COORDINATOR_SOUL" ]]; then
+  note "  MISSING: $COORDINATOR_SOUL"
   drift=$((drift + 1))
-elif grep -q '^## Board health' "$PLANNER_SOUL"; then
-  ok "planner SOUL.md has the Board health section"
+elif grep -q '^## Board health' "$COORDINATOR_SOUL"; then
+  ok "head-coordinator SOUL.md has the Board health section"
 else
   if [[ "$check_only" == true ]]; then
-    changed "planner SOUL.md is missing the '## Board health' section"
+    changed "head-coordinator SOUL.md is missing the '## Board health' section"
   else
-    note "  ACTION: add the '## Board health' section to $PLANNER_SOUL by hand."
+    note "  ACTION: add the '## Board health' section to $COORDINATOR_SOUL by hand."
     note "  It is prose policy rather than code, so it is not installed from here;"
     note "  the decision rules it must contain are documented in the header of"
     note "  scripts/hermes/kanban-board-health.sh and in the cron job prompt."
@@ -155,12 +156,13 @@ else
   fi
 fi
 
-# The breaker is mechanical, so the planner's job is narrower than for the other
-# findings: recognise a card the breaker parked, and never re-create the loop by
-# reassigning it. Without this rule the planner reads a parked quota-wall card as
-# an undispatchable lane and moves it, which restarts the streak from zero.
-if [[ -f "$PLANNER_SOUL" ]] && ! grep -q 'kanban-retry-breaker.sh' "$PLANNER_SOUL"; then
-  changed "planner SOUL.md does not mention kanban-retry-breaker.sh"
+# The breaker is mechanical, so the head-coordinator's job is narrower than for
+# the other findings: recognise a card the breaker parked, and never re-create
+# the loop by reassigning it. Without this rule the head-coordinator reads a
+# parked quota-wall card as an undispatchable lane and moves it, which restarts
+# the streak from zero.
+if [[ -f "$COORDINATOR_SOUL" ]] && ! grep -q 'kanban-retry-breaker.sh' "$COORDINATOR_SOUL"; then
+  changed "head-coordinator SOUL.md does not mention kanban-retry-breaker.sh"
 fi
 
 # ---------------------------------------------------------------------------
@@ -177,7 +179,7 @@ Work through every finding using the 'Board health' section of your SOUL.md. For
 
 Do not implement anything yourself and do not re-audit. Report in prose what you changed and what still needs the owner."
 
-existing_health="$(hermes -p planner cron list 2>/dev/null |
+existing_health="$(hermes -p head-coordinator cron list 2>/dev/null |
   grep -c 'kanban board health' || true)"
 existing_durability="$(hermes -p default cron list 2>/dev/null |
   grep -c 'kanban durability sync' || true)"
@@ -185,20 +187,20 @@ existing_breaker="$(hermes -p default cron list 2>/dev/null |
   grep -c 'kanban retry breaker' || true)"
 
 if [[ "${existing_health:-0}" -gt 0 ]]; then
-  ok "cron 'kanban board health' present (planner)"
+  ok "cron 'kanban board health' present (head-coordinator)"
 elif [[ "$check_only" == true ]]; then
-  changed "cron 'kanban board health' missing from the planner profile"
+  changed "cron 'kanban board health' missing from the head-coordinator profile"
 else
-  hermes -p planner cron create "every 30m" "$board_health_prompt" \
+  hermes -p head-coordinator cron create "every 30m" "$board_health_prompt" \
     --name "kanban board health" \
     --monitor-script kanban-board-health.sh \
     --workdir "$REPO_ROOT" >/dev/null
-  changed "created cron 'kanban board health' (planner, every 30m)"
+  changed "created cron 'kanban board health' (head-coordinator, every 30m)"
 fi
 
-# The durability job runs in the default profile, not the planner: it is
-# infrastructure, and tying it to the planner lane would make the safety net
-# depend on the very lane it exists to protect.
+# The durability job runs in the default profile, not the head-coordinator's:
+# it is infrastructure, and tying it to the head-coordinator lane would make
+# the safety net depend on the very lane it exists to protect.
 if [[ "${existing_durability:-0}" -gt 0 ]]; then
   ok "cron 'kanban durability sync' present (default)"
 elif [[ "$check_only" == true ]]; then
@@ -215,10 +217,11 @@ fi
 
 # Same reasoning for the breaker, and the reason it cannot be a --monitor-script
 # job at all: the whole problem is that every requeue changes board state, which
-# changes the board-health hash, which wakes the planner. A monitor-suppressed
-# job is the wrong shape for a job whose output must be acted on every time.
+# changes the board-health hash, which wakes the head-coordinator. A
+# monitor-suppressed job is the wrong shape for a job whose output must be
+# acted on every time.
 #
-# It is --no-agent for the same reason it is not the planner's: a card stuck
+# It is --no-agent for the same reason it is not the head-coordinator's: a card stuck
 # behind a quota wall is exactly the situation where no agent lane is healthy
 # enough to be trusted with the fix, and the fix is a counter, not a judgement.
 if [[ "${existing_breaker:-0}" -gt 0 ]]; then

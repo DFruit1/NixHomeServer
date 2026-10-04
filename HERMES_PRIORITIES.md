@@ -1,8 +1,8 @@
 # Hermes Project Priorities
 
-This file is the **audited contract** for this project. `project-auditor` reads
+This file is the **audited contract** for this project. `principal-consultant` reads
 it to answer one question per priority: *is this feature set stable, correct,
-and efficient?* `feature-auditor` reads it to know which subsystem it was asked
+and efficient?* `feature-reviewer` reads it to know which subsystem it was asked
 to audit and what "done" means for it.
 
 Rules for this file:

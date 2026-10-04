@@ -10,16 +10,17 @@
 # forever (spaced by the cooldown) until quota returns or a real run
 # supersedes it". Nothing in that path can ever converge on its own.
 #
-# On this machine it did not. Two local-impl cards each accumulated 23+ runs in
-# about fifteen hours, virtually every one of them ending `rate_limited`, with no
-# attempt ever getting far enough to leave a handoff. Two costs, and the second
-# is the expensive one:
+# On this machine it did not. Two local-implementer cards each accumulated 23+
+# runs in about fifteen hours, virtually every one of them ending
+# `rate_limited`, with no attempt ever getting far enough to leave a handoff.
+# Two costs, and the second is the expensive one:
 #
 #   * Every cycle burns provider quota and a worker slot on work that cannot
 #     start.
 #   * Each requeue mutates the board, so the board-health monitor's output
 #     changes, so its hash changes, so the cron monitor cannot suppress the
-#     planner. The planner woke on a 30-minute cadence to post another comment
+#     head-coordinator. The head-coordinator woke on a 30-minute cadence to post
+#     another comment
 #     saying the same thing. Three near-identical comments on t_ffbf4279 in 90
 #     minutes is the signature.
 #
@@ -45,7 +46,8 @@
 # budget of attempts rather than having it re-parked after one more try -- and if
 # the card genuinely cannot get through even then, hermes's own
 # BLOCK_RECURRENCE_LIMIT escalates the second capability block to `triage`,
-# where the board-health monitor reports it to the planner. The ladder is
+# where the board-health monitor reports it to the head-coordinator. The ladder
+# is
 # park, then escalate, so the breaker cannot be looped by unblock-and-retry
 # either.
 #
@@ -66,7 +68,8 @@
 # It is wired as a hermes cron `--script` in the default profile with
 # `--no-agent`, like the durability sync: this is a mechanical circuit breaker,
 # and it must not depend on an agent lane being healthy to fire. The reason text
-# it posts is what the operator and the planner read, so it names the streak,
+# it posts is what the operator and the head-coordinator read, so it names the
+# streak,
 # the cause and the exact command to resume.
 #
 # Environment

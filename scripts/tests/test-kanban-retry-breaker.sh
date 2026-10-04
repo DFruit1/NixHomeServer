@@ -9,7 +9,7 @@
 #   * A false negative. The dispatcher's respawn guard retries a rate-limited
 #     card forever by design, so a breaker that stops noticing is the same as no
 #     breaker. The loop then runs for as long as the quota wall does, waking the
-#     planner on every board-health hash change.
+#     head-coordinator on every board-health hash change.
 #   * A false positive. Parking a card that was about to make progress strands
 #     real work behind a human, on a board where the operator already has two
 #     approval gates waiting.
@@ -57,7 +57,7 @@ now="$(date +%s)"
 # requires, then drive its status directly. Using the CLI for creation keeps the
 # fixture honest about NOT NULL columns and defaults.
 new_card() {
-  "$HERMES_BIN" kanban --board testboard create "$1" --assignee "${2:-local-impl}" 2>/dev/null |
+  "$HERMES_BIN" kanban --board testboard create "$1" --assignee "${2:-local-implementer}" 2>/dev/null |
     grep -oE 't_[0-9a-f]+' | head -1
 }
 
@@ -67,7 +67,7 @@ add_run_at() {
   local id="$1" outcome="$2" ended="$3"
   sqlite3 "$DB" "INSERT INTO task_runs
     (task_id, profile, status, started_at, ended_at, outcome)
-    VALUES ('$id','local-impl','done',$((ended - 10)),$ended,'$outcome');"
+    VALUES ('$id','local-implementer','done',$((ended - 10)),$ended,'$outcome');"
 }
 
 # A streak of `n` quota-wall runs one second apart, oldest first, the newest
@@ -105,7 +105,7 @@ loop_card="$(new_card 'quota wall loop')"
 quota_streak "$loop_card" 6
 
 out="$(run_breaker --check)"
-grep -q "^RATE_LIMIT_LOOP $loop_card local-impl streak=6 threshold=6 would-park" <<<"$out" ||
+grep -q "^RATE_LIMIT_LOOP $loop_card local-implementer streak=6 threshold=6 would-park" <<<"$out" ||
   fail "did not report the card with six consecutive quota-wall runs"
 pass "reports a card whose every recent run hit the quota wall"
 
@@ -211,7 +211,7 @@ pass "leaves a card holding a claim lock alone"
 inflight_card="$(new_card 'in flight')"
 quota_streak "$inflight_card" 6
 sqlite3 "$DB" "INSERT INTO task_runs (task_id, profile, status, started_at, ended_at, outcome)
-  VALUES ('$inflight_card','local-impl','running',$now,NULL,NULL);"
+  VALUES ('$inflight_card','local-implementer','running',$now,NULL,NULL);"
 
 run_breaker >/dev/null
 [[ "$(status_of "$inflight_card")" == "blocked" ]] ||
@@ -222,7 +222,7 @@ pass "an in-flight run neither extends nor breaks the streak"
 overlap_card="$(new_card 'streak plus in flight')"
 quota_streak "$overlap_card" 6
 sqlite3 "$DB" "INSERT INTO task_runs (task_id, profile, status, started_at, ended_at, outcome)
-  VALUES ('$overlap_card','local-impl','running',$now,NULL,NULL);"
+  VALUES ('$overlap_card','local-implementer','running',$now,NULL,NULL);"
 run_breaker >/dev/null
 [[ "$(status_of "$overlap_card")" == "blocked" ]] ||
   fail "an in-flight run shielded a card from the breaker"
@@ -318,7 +318,7 @@ pass "reports a missing board instead of failing"
 missing_cli="$(mktemp -d)"
 trap 'rm -rf "$fixture" "$missing_cli"' EXIT
 sqlite3 "$DB" "INSERT INTO tasks (id,title,assignee,status,created_at)
-  VALUES ('t_nocli','no cli','local-impl','ready',$now);"
+  VALUES ('t_nocli','no cli','local-implementer','ready',$now);"
 quota_streak t_nocli 6
 if HERMES_BIN="$missing_cli/hermes" run_breaker >/dev/null 2>&1; then
   fail "exited 0 with no hermes CLI available; it cannot have parked anything"

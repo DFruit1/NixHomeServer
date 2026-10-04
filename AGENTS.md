@@ -190,11 +190,11 @@ defect, not verbosity: if the `Goal` line needs the word "and", it is two asks.
 
 | Lane | Shape |
 |---|---|
-| `planner` | Implementation cards use the slots above. An audit card states the **question**, not a proposed solution, plus the evidence already in hand. A card carrying an attached `project-review` plan is implemented from that plan: the `Goal:` is the plan's outcome and `Notes:` carries its `REVIEWER:` / `HUMAN:` questions, never a re-derivation. |
-| `feature-auditor` | The body is a question: name the slice and the single question to answer. No solution, no fix plan. |
-| `reviewer` | A diff review puts the verdict in `Goal:` and the commits in `Notes:`. A **question card** is one bounded question instead: `Goal:` is the question, `Notes:` is the evidence and what the answer changes. Same slot order either way. |
-| `bulk-go`, `local-impl` | A follow-up card is a one-line `Goal:` plus the single acceptance criterion the new work must satisfy. The parent card already holds the context. |
-| `project-review` | Never assign a card to it; it runs by hand in a conversation. Its one handoff card goes **to** `planner` and carries the plan as an attachment, so `Change:` names the attached plan rather than inlining it. |
+| `head-coordinator` | Implementation cards use the slots above. An audit card states the **question**, not a proposed solution, plus the evidence already in hand. A card carrying an attached `principal-consultant` plan is implemented from that plan: the `Goal:` is the plan's outcome and `Notes:` carries its `REVIEWER:` / `HUMAN:` questions, never a re-derivation. |
+| `feature-reviewer` | The body is a question: name the slice and the single question to answer. No solution, no fix plan. |
+| `project-auditor` | A diff review puts the verdict in `Goal:` and the commits in `Notes:`. A **question card** is one bounded question instead: `Goal:` is the question, `Notes:` is the evidence and what the answer changes. Same slot order either way. |
+| `standard-implementer`, `local-implementer` | A follow-up card is a one-line `Goal:` plus the single acceptance criterion the new work must satisfy. The parent card already holds the context. |
+| `principal-consultant` | Never assign a card to it; it runs by hand in a conversation. Its one handoff card goes **to** `head-coordinator` and carries the plan as an attachment, so `Change:` names the attached plan rather than inlining it. |
 | any lane, human gate | Use the template below. |
 
 ### Approval gates
