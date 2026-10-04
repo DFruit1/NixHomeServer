@@ -13,7 +13,7 @@ in {
       after = [ "postgresql.service" "postgresql-setup.service" "langfuse-prepare.service" ];
       # This oneshot runs once per boot. Without a trigger, a rotated
       # agenix secret leaves the role password stale until the next reboot.
-      restartTriggers = [ config.age.secrets.langfuseServerEnv.path ];
+      restartTriggers = [ config.age.secrets.langfuseServerEnv.file ];
       unitConfig = {
         OnFailure = [ config.repo.monitoring.failureAlerts.targetUnit ];
         OnFailureJobMode = "replace-irreversibly";
@@ -35,7 +35,7 @@ in {
       before = [ "langfuse-db-bootstrap.service" "redis-langfuse.service" "clickhouse.service" "langfuse-minio.service" ];
       # Same one-shot rotation problem as the role password above: a rotated
       # secret must regenerate /run state without waiting for a reboot.
-      restartTriggers = [ config.age.secrets.langfuseServerEnv.path ];
+      restartTriggers = [ config.age.secrets.langfuseServerEnv.file ];
       unitConfig = {
         OnFailure = [ config.repo.monitoring.failureAlerts.targetUnit ];
         OnFailureJobMode = "replace-irreversibly";
