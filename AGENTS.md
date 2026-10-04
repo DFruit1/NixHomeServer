@@ -139,6 +139,13 @@ a workaround without first confirming the DNS and LAN path.
 Hermes injects this file into every agent, so this is the board's only home for
 card conventions. Every profile writes cards, so these rules bind every worker.
 
+**When the owner says "planner", they mean `head-coordinator`.** There is no
+`planner` profile on this install; `head-coordinator` is the senior lane that owns
+routing, decomposition and the deploy gate. `bulk-go` and `feature-auditor` appear
+on older cards but are likewise not live lanes — treat any card assigned to one of
+those as mis-assigned and re-route it to a profile that exists under
+`~/.hermes/profiles/`.
+
 The reader is a human in a narrow column, mid-review of something else. A card
 must answer two questions from its first lines:
 

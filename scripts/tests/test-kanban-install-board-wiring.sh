@@ -64,6 +64,8 @@ printf '## Board health\n\nSee scripts/hermes/kanban-board-health.sh.\n' \
 printf '## Deploy gate\n\nnix run .#deploy\n' >>"$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md"
 printf 'scripts/hermes/kanban-retry-breaker.sh parks a card; do not move it.\n' \
   >>"$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md"
+printf '8. **WORKER_FAILED_BLOCKED** - re-scope the card and re-dispatch it.\n' \
+  >>"$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md"
 printf '## Whole-change-set deploy review\n' \
   >"$HERMES_FIXTURE/profiles/project-auditor/SOUL.md"
 
@@ -253,6 +255,31 @@ monitor_out="$(FAKE_H_MONITOR=kanban-board-health.sh.bak run_installer --check)"
 grep -q -- "--monitor-script 'kanban-board-health.sh'" <<<"$monitor_out" ||
   fail "the repair line for the monitor job names the wrong flag: $monitor_out"
 pass "names --monitor-script for the monitored job"
+
+# The board-health detector and the policy that tells the head-coordinator what
+# to do about it live in two different files, one in the repo and one in the
+# profile directory. Nothing connects them at runtime, so if the policy is lost
+# the finding still fires and the coordinator has no rule to follow -- which is
+# the same gap as a missing cron job: the work happens and nothing is acted on.
+# Pin the drift check so the two cannot be edited apart.
+cp "$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md" "$fixture/soul.bak"
+grep -v 'WORKER_FAILED_BLOCKED' "$fixture/soul.bak" \
+  >"$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md"
+soul_out="$(run_installer --check)"
+grep -q 'would change: head-coordinator SOUL.md has no policy for WORKER_FAILED_BLOCKED' <<<"$soul_out" ||
+  fail "a SOUL.md with no policy for the finding was not reported: $soul_out"
+pass "reports a missing policy for the board-health finding"
+
+# It is prose, not code: apply mode must tell the operator to add it rather than
+# implying it installed something, and must not rewrite the file itself.
+apply_out="$(run_installer)"
+grep -q 'ACTION: add a WORKER_FAILED_BLOCKED rule' <<<"$apply_out" ||
+  fail "apply mode did not tell the operator to add the prose policy by hand: $apply_out"
+grep -q 'WORKER_FAILED_BLOCKED' "$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md" &&
+  fail "apply mode rewrote SOUL.md, which is prose policy rather than installed code"
+pass "apply mode asks for the prose policy instead of pretending to install it"
+
+cp "$fixture/soul.bak" "$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md"
 
 # --- a missing cron job is still created in apply mode -----------------------
 

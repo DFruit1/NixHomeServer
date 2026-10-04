@@ -101,7 +101,8 @@ fi
 # probe names the columns the detectors actually read, so a schema change is
 # reported as the schema error it is rather than as an empty finding list.
 probe_sql="SELECT id, assignee, status, created_at, started_at, claim_lock,
-                  worker_pid, last_heartbeat_at, block_recurrences
+                  worker_pid, last_heartbeat_at, block_recurrences,
+                  block_kind, consecutive_failures
              FROM tasks LIMIT 0;"
 
 if ! probe_err="$(sqlite3 "$DB" "$probe_sql" 2>&1)"; then
@@ -283,6 +284,111 @@ while IFS='|' read -r id assignee recurs; do
   ((recurs >= TRIAGE_RECURRENCES)) || continue
   emit "TRIAGE_EXHAUSTED $id ${assignee:-unassigned} blocks=$recurs needs=head-coordinator-or-owner"
 done <<<"$triage_rows"
+
+# A worker-lane card the dispatcher gave up on, blocked, and nobody has looked
+# at since. This is the detector that was missing.
+#
+# On this board it cost an entire feature chain. `t_bed911e9` (the Qwen/llama.cpp
+# office-tools bridge) burned two runs into the iteration ceiling, was recorded
+# `gave_up`, and landed in `blocked` with `block_kind` empty -- a worker failure,
+# not a question and not a quota wall. Five cards sat in `dependency_wait`
+# behind it. Nothing surfaced it: `ready` detectors do not match a blocked row,
+# `TRIAGE_EXHAUSTED` needs `triage`, and the retry breaker only parks
+# `rate_limited` cards as `capability`. The cron tick that ran nine minutes
+# after the give-up logged `no_change (agent run suppressed)`, because an
+# unchanged report is exactly what a blind spot looks like from the monitor's
+# side. The card was invisible to every lane for the rest of the night.
+#
+# Two exclusions keep this from stealing another detector's job:
+#
+#   * `needs_input` is the owner's gate. A card waiting on a human is not
+#     undispatchable and must not be reported as though it were.
+#   * `capability` is the retry breaker's parking state, already covered by the
+#     breaker's own escalation to triage after a second park.
+#
+# `rate_limited` is excluded as a cause for the same reason: the breaker exists
+# precisely to give that class a terminating condition, and a second detector
+# reporting it would wake the head-coordinator on the churn the breaker was
+# built to stop.
+#
+# Why consecutive_failures > 0 is the discriminator
+# --------------------------------------------------
+# `blocked` alone is too broad to act on: it is also how an owner-waiting card
+# and a breaker-parked card are spelled. `consecutive_failures` is hermes's own
+# unified counter for spawn failure, timeout and crash, and it is only non-zero
+# when a worker actually failed. So a card that is blocked *and* carries worker
+# failures *and* is not a gate *and* is not breaker-parked is unambiguously a
+# lane that lost its worker -- which is precisely the case with no owner.
+#
+# Why the acknowledgement guard exists
+# -----------------------------------
+# The report is a cron `--monitor-script`: hermes hashes stdout and skips the
+# agent while the hash is unchanged. A detector that kept reporting a card the
+# head-coordinator had already ruled on would therefore wake it every 30 minutes
+# forever, which is the exact loop that produced three near-identical comments on
+# one card in 90 minutes (see kanban-retry-breaker.sh). So a block with a comment
+# at or after the blocking event is considered handled and drops out of the
+# report. The behaviour is self-limiting: the first tick reports it, the
+# coordinator comments, the next tick goes quiet and the hash settles.
+#
+# Why the report carries no worktree state
+# ---------------------------------------
+# An earlier draft of this detector also reported whether the worker's worktree
+# had uncommitted changes, because a dirty tree is the cheapest possible recovery
+# and knowing it up front saves the coordinator a command. It was cut for two
+# reasons. Many cards run in the board's shared default_workdir rather than a
+# dedicated worktree, so on those `git status` reports the *operator's*
+# unrelated work and the flag would flip on any edit anywhere in the tree --
+# a hash that changes for reasons that have nothing to do with this card. And
+# the coordinator can answer it itself with one command, once, at the moment it
+# is already awake. Signal that only exists to be stable belongs in the report;
+# judgement belongs in the agent.
+failed_block_rows="$(sql "
+  SELECT t.id,
+         COALESCE(t.assignee, ''),
+         COALESCE(t.consecutive_failures, 0),
+         COALESCE(r.outcome, ''),
+         COALESCE(
+           (SELECT MAX(e.created_at) FROM task_events e
+             WHERE e.task_id = t.id
+               AND e.kind IN ('blocked', 'gave_up', 'crashed', 'timed_out')),
+           t.started_at, t.created_at) AS since_ts,
+         (SELECT MAX(e.created_at) FROM task_events e
+            WHERE e.task_id = t.id
+              AND e.kind IN ('blocked', 'gave_up', 'crashed', 'timed_out')) AS block_ts,
+         (SELECT MAX(c.created_at) FROM task_comments c
+            WHERE c.task_id = t.id) AS comment_ts,
+         (SELECT COUNT(*) FROM task_links l WHERE l.parent_id = t.id) AS children
+    FROM tasks t
+    LEFT JOIN task_runs r ON r.id = (
+          SELECT r2.id FROM task_runs r2
+           WHERE r2.task_id = t.id AND r2.outcome IS NOT NULL
+           ORDER BY r2.id DESC LIMIT 1)
+   WHERE t.status = 'blocked'
+     AND COALESCE(t.consecutive_failures, 0) > 0
+     AND COALESCE(t.block_kind, '') NOT IN ('needs_input', 'capability')
+     AND COALESCE(r.outcome, '') NOT IN ('rate_limited', 'blocked')
+   ORDER BY since_ts, t.id;")"
+
+while IFS='|' read -r id assignee failures outcome since_ts block_ts comment_ts children; do
+  [[ -n "$id" ]] || continue
+  # Handled: somebody wrote on the card after it was blocked. Keep the
+  # comparison inside the loop because block_ts is optional (a card blocked
+  # without a matching terminal event) and an absent bound must not suppress.
+  if [[ "$block_ts" =~ ^[0-9]+$ && "$comment_ts" =~ ^[0-9]+$ ]] && ((comment_ts >= block_ts)); then
+    continue
+  fi
+  # The outcome reaches the report through a fixed vocabulary, so an unexpected
+  # value degrades to `unknown` instead of putting attacker- or version-shaped
+  # text into a byte-hashed line.
+  case "$outcome" in
+    timed_out) cause="timed_out" ;;
+    gave_up)   cause="gave_up" ;;
+    crashed)   cause="crashed" ;;
+    *)         cause="unknown" ;;
+  esac
+  emit "WORKER_FAILED_BLOCKED $id ${assignee:-unassigned} cause=$cause failures=$failures age=$(age_of "$((NOW - since_ts))") children=$children needs=rescope-and-redispatch"
+done <<<"$failed_block_rows"
 
 # ---------------------------------------------------------------------------
 # Durability findings

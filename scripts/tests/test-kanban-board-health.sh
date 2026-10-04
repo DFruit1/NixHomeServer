@@ -58,9 +58,14 @@ CREATE TABLE tasks (
   claim_lock TEXT,
   worker_pid INTEGER,
   last_heartbeat_at INTEGER,
-  block_recurrences INTEGER DEFAULT 0
+  block_recurrences INTEGER DEFAULT 0,
+  block_kind TEXT,
+  consecutive_failures INTEGER DEFAULT 0
 );
-CREATE TABLE task_comments (id INTEGER PRIMARY KEY, task_id TEXT, body TEXT);
+CREATE TABLE task_comments (id INTEGER PRIMARY KEY, task_id TEXT, body TEXT, created_at INTEGER);
+CREATE TABLE task_events (id INTEGER PRIMARY KEY, task_id TEXT, kind TEXT, created_at INTEGER);
+CREATE TABLE task_runs (id INTEGER PRIMARY KEY, task_id TEXT, outcome TEXT, started_at INTEGER, ended_at INTEGER);
+CREATE TABLE task_links (parent_id TEXT, child_id TEXT, PRIMARY KEY (parent_id, child_id));
 SQL
 
 now="$(date +%s)"
@@ -68,43 +73,108 @@ now="$(date +%s)"
 # A card the dispatcher cannot spawn into: ready, unclaimed, stale past the
 # threshold. This is the exact shape of the bug that went unnoticed for hours.
 sqlite3 "$DB" "INSERT INTO tasks VALUES
-  ('t_stale','stale ready card','local-implementer','ready',$now-7200,$now-7200,NULL,NULL,$now-7200,0);"
+  ('t_stale','stale ready card','local-implementer','ready',$now-7200,$now-7200,NULL,NULL,$now-7200,0,'',0);"
 
 # A card a worker is actively heartbeating. Must never be reported. Its worker
 # pid is this test's own shell, which is definitionally alive.
 sqlite3 "$DB" "INSERT INTO tasks VALUES
-  ('t_active','running and healthy','standard-implementer','running',$now-600,$now-600,'dsaw:1',$$,$now-30,0);"
+  ('t_active','running and healthy','standard-implementer','running',$now-600,$now-600,'dsaw:1',$$,$now-30,0,'',0);"
 
 # A row left in running by a worker that no longer exists (reboot or hard kill).
 sqlite3 "$DB" "INSERT INTO tasks VALUES
-  ('t_dead','running, worker gone','standard-implementer','running',$now-600,$now-600,'dsaw:1',99998,$now-400,0);"
+  ('t_dead','running, worker gone','standard-implementer','running',$now-600,$now-600,'dsaw:1',99998,$now-400,0,'',0);"
 
 # A lane at its concurrency cap with work queued behind it: two project-auditor
 # cards
 # running, one ready, cap 2. Both running workers are this test's own shell.
 sqlite3 "$DB" "INSERT INTO tasks VALUES
-  ('t_sat1','saturated lane a','project-auditor','running',$now-600,$now-600,'dsaw:1',$$,$now-30,0);
+  ('t_sat1','saturated lane a','project-auditor','running',$now-600,$now-600,'dsaw:1',$$,$now-30,0,'',0);
 INSERT INTO tasks VALUES
-  ('t_sat3','saturated lane c','project-auditor','running',$now-600,$now-600,'dsaw:2',$$,$now-30,0);
+  ('t_sat3','saturated lane c','project-auditor','running',$now-600,$now-600,'dsaw:2',$$,$now-30,0,'',0);
 INSERT INTO tasks VALUES
-  ('t_sat2','saturated lane b','project-auditor','ready',$now-600,$now-600,NULL,NULL,$now-30,0);"
+  ('t_sat2','saturated lane b','project-auditor','ready',$now-600,$now-600,NULL,NULL,$now-30,0,'',0);"
 
 # Auto-routed out of the block loop; nothing dispatches triage.
 sqlite3 "$DB" "INSERT INTO tasks VALUES
-  ('t_triage','gave up','project-auditor','triage',$now-600,$now-600,NULL,NULL,$now-600,3);"
+  ('t_triage','gave up','project-auditor','triage',$now-600,$now-600,NULL,NULL,$now-600,3,'',2);"
 
 # Already-completed work must never surface.
 sqlite3 "$DB" "INSERT INTO tasks VALUES
-  ('t_done','finished long ago','standard-implementer','done',$now-999999,$now-999999,NULL,NULL,$now-999999,0);"
+  ('t_done','finished long ago','standard-implementer','done',$now-999999,$now-999999,NULL,NULL,$now-999999,0,'',0);"
 
 # A lane holding more live workers than its cap allows, with nothing queued
 # behind it: the cap guard is not holding.
 sqlite3 "$DB" "INSERT INTO tasks VALUES
-  ('t_over1','over cap a','feature-reviewer','running',$now-600,$now-600,'dsaw:3',$$,$now-30,0);
+  ('t_over1','over cap a','feature-reviewer','running',$now-600,$now-600,'dsaw:3',$$,$now-30,0,'',0);
 INSERT INTO tasks VALUES
-  ('t_over2','over cap b','feature-reviewer','running',$now-600,$now-600,'dsaw:4',$$,$now-30,0);
+  ('t_over2','over cap b','feature-reviewer','running',$now-600,$now-600,'dsaw:4',$$,$now-30,0,'',0);
 INSERT INTO tasks VALUES
-  ('t_over3','over cap c','feature-reviewer','running',$now-600,$now-600,'dsaw:5',$$,$now-30,0);"
+  ('t_over3','over cap c','feature-reviewer','running',$now-600,$now-600,'dsaw:5',$$,$now-30,0,'',0);"
+
+# --- the lost worker ----------------------------------------------------------
+#
+# These cards are all `blocked`, and that is the whole difficulty: the column
+# alone means nothing. Only one of them is a worker failure that nobody owns,
+# which is the finding that was missing when the Qwen office-tools bridge
+# (t_bed911e9) sat blocked and invisible for a night behind two
+# iteration-budget timeouts, with five cards waiting on it.
+#
+# The one that must be reported: gave up, no block_kind, worker failures on
+# record, two cards depending on it.
+sqlite3 "$DB" "INSERT INTO tasks VALUES
+  ('t_gaveup','worker ran out of budget','standard-implementer','blocked',$now-7200,$now-7200,NULL,NULL,$now-7200,0,'',2);
+INSERT INTO task_runs VALUES (163,'t_gaveup','timed_out',$now-7200,$now-3600);
+INSERT INTO task_runs VALUES (164,'t_gaveup','gave_up',$now-3600,$now-1800);
+INSERT INTO task_events VALUES (1,'t_gaveup','timed_out',$now-3600);
+INSERT INTO task_events VALUES (2,'t_gaveup','gave_up',$now-1800);
+INSERT INTO task_links VALUES ('t_gaveup','t_dep1'),('t_gaveup','t_dep2');"
+
+# A crash with no `blocked` event: the cause still has to surface, keyed on the
+# run outcome rather than on the presence of an event.
+sqlite3 "$DB" "INSERT INTO tasks VALUES
+  ('t_crash','worker crashed','local-implementer','blocked',$now-3600,$now-3600,NULL,NULL,$now-3600,0,'',1);
+INSERT INTO task_runs VALUES (165,'t_crash','crashed',$now-3600,$now-3000);"
+
+# Must NOT be reported: a card waiting on the owner. That is a question, not a
+# broken lane, and reporting it would send the coordinator to unblock a gate.
+sqlite3 "$DB" "INSERT INTO tasks VALUES
+  ('t_gate','waiting on the owner','standard-implementer','blocked',$now-3600,$now-3600,NULL,NULL,$now-3600,0,'needs_input',3);
+INSERT INTO task_runs VALUES (166,'t_gate','timed_out',$now-3600,$now-3000);
+INSERT INTO task_events VALUES (3,'t_gate','blocked',$now-3000);"
+
+# Must NOT be reported: parked by the retry breaker, which owns this class and
+# escalates to triage itself after a second park.
+sqlite3 "$DB" "INSERT INTO tasks VALUES
+  ('t_parked','breaker-parked quota wall','local-implementer','blocked',$now-3600,$now-3600,NULL,NULL,$now-3600,1,'capability',4);
+INSERT INTO task_runs VALUES (167,'t_parked','rate_limited',$now-3600,$now-3000);
+INSERT INTO task_events VALUES (4,'t_parked','blocked',$now-3000);"
+
+# Must NOT be reported: blocked *and* rate-limited, not yet parked. The breaker
+# is the component that gives this class a stopping condition, so a second
+# detector reporting it would wake the coordinator on exactly the churn the
+# breaker exists to end.
+sqlite3 "$DB" "INSERT INTO tasks VALUES
+  ('t_quota','quota wall before the breaker parks it','standard-implementer','blocked',$now-3600,$now-3600,NULL,NULL,$now-3600,0,'',5);
+INSERT INTO task_runs VALUES (168,'t_quota','rate_limited',$now-3600,$now-3000);
+INSERT INTO task_events VALUES (5,'t_quota','blocked',$now-3000);"
+
+# Must NOT be reported: a blocked worker failure somebody has already ruled on.
+# Without this guard the monitor would wake the head-coordinator every 30 minutes
+# forever, which is the loop that produced three identical comments on one card
+# in 90 minutes.
+sqlite3 "$DB" "INSERT INTO tasks VALUES
+  ('t_handled','already ruled on','standard-implementer','blocked',$now-7200,$now-7200,NULL,NULL,$now-7200,0,'',2);
+INSERT INTO task_runs VALUES (169,'t_handled','gave_up',$now-7200,$now-3600);
+INSERT INTO task_events VALUES (6,'t_handled','gave_up',$now-3600);
+INSERT INTO task_comments VALUES (1,'t_handled','re-scoped, re-dispatching',$now-1800);"
+
+# Must be reported: a comment *before* the block does not count as handling it.
+# The decision predates the failure and cannot have been about it.
+sqlite3 "$DB" "INSERT INTO tasks VALUES
+  ('t_stale_comment','comment predates the block','standard-implementer','blocked',$now-7200,$now-7200,NULL,NULL,$now-7200,0,'',2);
+INSERT INTO task_runs VALUES (170,'t_stale_comment','gave_up',$now-7200,$now-3600);
+INSERT INTO task_events VALUES (7,'t_stale_comment','gave_up',$now-3600);
+INSERT INTO task_comments VALUES (2,'t_stale_comment','starting on this now',$now-7000);"
 
 cat >"$fixture/hermes/config.yaml" <<'YAML'
 kanban:
@@ -163,6 +233,46 @@ pass "does not call an over-cap lane saturated when nothing is queued"
 grep -q 't_done' <<<"$out" && fail "reported a completed card"
 grep -q 't_sat1' <<<"$out" && fail "reported a lane member that is merely running"
 pass "ignores done cards and non-saturated lanes"
+
+# --- a blocked worker lane that nobody owns ----------------------------------
+#
+# The finding that was absent when t_bed911e9 stranded the Qwen office-tools
+# chain. Each exclusion is pinned separately, because every one of them is a card
+# some other rule already owns, and a detector that double-reports sends the
+# head-coordinator to unblock a gate or to re-create a breaker loop.
+
+grep -q '^WORKER_FAILED_BLOCKED t_gaveup standard-implementer cause=gave_up failures=2 ' <<<"$out" ||
+  fail "did not report the blocked card whose worker ran out of budget"
+pass "reports a blocked worker failure with its cause and failure count"
+
+grep -q '^WORKER_FAILED_BLOCKED t_gaveup .*children=2 ' <<<"$out" ||
+  fail "did not report how many cards wait behind the blocked one"
+pass "reports the blast radius, so the coordinator knows the cost of ignoring it"
+
+grep -q '^WORKER_FAILED_BLOCKED t_crash local-implementer cause=crashed ' <<<"$out" ||
+  fail "a crash with no blocked event should still surface, keyed on the run outcome"
+pass "reports a crash that left no blocked event behind"
+
+grep -q '^WORKER_FAILED_BLOCKED t_stale_comment ' <<<"$out" ||
+  fail "a comment predating the block must not count as having handled it"
+pass "reports a block whose only comment predates the failure"
+
+grep -q 't_gate' <<<"$out" && fail "reported a needs_input gate as a broken worker lane"
+grep -q 't_parked' <<<"$out" && fail "reported a breaker-parked card, which the breaker owns"
+grep -q 't_quota' <<<"$out" && fail "reported a quota wall, which is the breaker's class"
+grep -q 't_handled' <<<"$out" &&
+  fail "reported a block somebody already ruled on; the monitor would never go quiet"
+pass "leaves gates, breaker-parked cards and already-handled blocks alone"
+
+# An outcome outside the known vocabulary must not put arbitrary text into a
+# byte-hashed line.
+sqlite3 "$DB" "INSERT INTO task_runs VALUES (171,'t_crash','Crashed (pid 12345)',$now-3000,$now-2900);"
+weird="$(run_health)"
+grep -q '^WORKER_FAILED_BLOCKED t_crash .*cause=unknown ' <<<"$weird" ||
+  fail "an unexpected run outcome must degrade to the known vocabulary"
+grep -q '12345' <<<"$weird" && fail "leaked raw run-outcome text into the report"
+pass "degrades an unknown run outcome instead of leaking it"
+sqlite3 "$DB" "DELETE FROM task_runs WHERE id=171;"
 
 # --- the cap must come from config, and the boundary is inclusive ------------
 #
