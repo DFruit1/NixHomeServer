@@ -33,6 +33,12 @@ in
   // lib.optionalAttrs (builtins.elem "searxng" vars.enabledApps) {
       searxng.enable = true;
     }
+  // lib.optionalAttrs (builtins.elem "ntfy" vars.enabledApps) {
+      # Private ntfy push notification server. Reachable on the LAN and over
+      # NetBird only; topics are unauthenticated by owner decision, and the
+      # module asserts that no Cloudflare ingress route ever appears.
+      ntfy.enable = true;
+    }
   // lib.optionalAttrs (builtins.elem "qwen-27b" vars.enabledApps) {
       # Qwen is the server's primary local inference endpoint. It starts at
       # boot and serves Hermes and other local clients over loopback.

@@ -93,6 +93,7 @@ test_scripts=(
   scripts/tests/test-langfuse-secrets.sh
   scripts/tests/test-langfuse-module.sh
   scripts/tests/test-searxng-module.sh
+  scripts/tests/test-ntfy-module.sh
   scripts/tests/test-attic-cache.sh
   scripts/tests/test-kanidm-group-owned-access.sh
   scripts/tests/test-module-removal-evaluation.sh

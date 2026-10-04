@@ -114,6 +114,25 @@ let
       guardedServices = [ ];
       persistencePaths = [ "var/lib/searxng" ];
     };
+    ntfy = {
+      modules = [ ../../modules/ntfy ];
+      disable = { repo.ntfy.enable = lib.mkForce false; };
+      registryName = "ntfy";
+      services = [ "ntfy" ];
+      timers = [ ];
+      hosts = [ "ntfy.${vars.domain}" ];
+      gatewayApps = [ ];
+      oauthClients = [ ];
+      kanidmGroups = [ ];
+      users = [ "ntfy" ];
+      groups = [ "ntfy" ];
+      secrets = [ ];
+      backupApps = [ ];
+      # ntfy reads no shared storage, so it is deliberately not a data-pool
+      # consumer and must not acquire a mountpoint dependency when removed.
+      guardedServices = [ ];
+      persistencePaths = [ "/var/lib/ntfy" ];
+    };
     qwen-27b = {
       modules = [ ../../modules/qwen-27b ];
       disable = { repo.qwen27b.enable = lib.mkForce false; };
