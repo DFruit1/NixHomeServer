@@ -31,6 +31,26 @@ in {
   persistence = cfg.repo.impermanence.inventory.persistenceDirectories;
   dump = builtins.filter (item: item.database == \"langfuse\") cfg.repo.backups.postgresqlDumps;
   clickhouseBackup = builtins.hasAttr \"langfuse\" cfg.repo.backups.prepareFragments;
+  restart = cfg.systemd.services.clickhouse.serviceConfig.Restart;
+  restartSec = cfg.systemd.services.clickhouse.serviceConfig.RestartSec;
+  interval = cfg.systemd.services.clickhouse.unitConfig.StartLimitIntervalSec;
+  burst = cfg.systemd.services.clickhouse.unitConfig.StartLimitBurst;
+  onFailure = cfg.systemd.services.clickhouse.unitConfig.OnFailure;
+  redisRestart = cfg.systemd.services.redis-langfuse.serviceConfig.Restart;
+  redisRestartSec = cfg.systemd.services.redis-langfuse.serviceConfig.RestartSec;
+  redisInterval = cfg.systemd.services.redis-langfuse.unitConfig.StartLimitIntervalSec;
+  redisBurst = cfg.systemd.services.redis-langfuse.unitConfig.StartLimitBurst;
+  redisOnFailure = cfg.systemd.services.redis-langfuse.unitConfig.OnFailure;
+  unitOnFailure = map (name: cfg.systemd.services.\${name}.unitConfig.OnFailure)
+    [ \"langfuse-prepare\" \"langfuse-db-bootstrap\" \"langfuse-web\" \"langfuse-worker\" \"langfuse-minio\" ];
+  prepareTriggers = cfg.systemd.services.langfuse-prepare.restartTriggers;
+  bootstrapTriggers = cfg.systemd.services.langfuse-db-bootstrap.restartTriggers;
+  containerOptions = map (name: containers.\${name}.extraOptions)
+    [ \"langfuse-web\" \"langfuse-worker\" \"langfuse-minio\" ];
+  postgresTimezone = cfg.services.postgresql.settings.timezone or null;
+  rebuildable = cfg.repo.backups.rebuildableSnapshotPaths;
+  fragment = cfg.repo.backups.prepareFragments.langfuse or \"\";
+  seedScript = cfg.system.activationScripts.seedCorePersistence.text;
 }")"
 jq -e '
   (.drvPath | startswith("/nix/store/")) and .database and .redis.enable and .redis.bind == "127.0.0.1"
@@ -49,6 +69,24 @@ jq -e '
   and .networks == [["host"],["host"]]
   and .secretMode == "0400" and (.ownerEmail | contains("@"))
   and (.dump | length) == 1 and .clickhouseBackup
+  and .restart == "on-failure" and (.restartSec | length > 0)
+  and (.interval | length > 0) and (.burst | length > 0)
+  and .redisRestart == "on-failure" and (.redisRestartSec | length > 0)
+  and (.redisInterval | length > 0) and (.redisBurst | length > 0)
+  and (.onFailure | length) == 1 and (.redisOnFailure | length) == 1
+  and all(.unitOnFailure[]; length == 1)
+  and (.prepareTriggers | length) == 1 and (.bootstrapTriggers | length) == 1
+  and all(.containerOptions[]; index("--cap-drop=ALL") != null)
+  and .postgresTimezone == "UTC"
+  and (.rebuildable | index("var/lib/clickhouse") != null)
+  and (.rebuildable | index("var/lib/langfuse/minio") != null)
+  and (.fragment | contains("langfuse_clickhouse_backup"))
+  and (.fragment | contains("if ! /nix/store/"))
+  and (.fragment | contains("BACKUP DATABASE default TO Disk("))
+  and (.fragment | contains("return 0"))
+  and (.seedScript | contains("seed_directory /var/lib/clickhouse"))
+  and (.seedScript | contains("seed_directory /var/lib/langfuse"))
+  and (.seedScript | contains("seed_directory /var/lib/redis-langfuse"))
 ' <<<"$value" >/dev/null
 # Persistence entries can be either a path string or a directory record.
 for path in /var/lib/langfuse /var/lib/clickhouse /var/lib/redis-langfuse; do

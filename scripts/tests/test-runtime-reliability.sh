@@ -100,7 +100,7 @@ jq -e '
   and (.snapshotRoots | index($paperless) != null)
   and (.snapshotRoots | length == (unique | length))
   and (.snapshotRoots | all(startswith("/")))
-  and (.bonsaiPresent as $bonsai | .rebuildableSnapshotPaths | sort == (["var/lib/atticd/storage"] + (if $bonsai then ["var/lib/bonsai/models"] else [] end)))
+  and (.bonsaiPresent as $bonsai | .rebuildableSnapshotPaths | sort == (["var/lib/atticd/storage", "var/lib/clickhouse", "var/lib/langfuse/minio"] + (if $bonsai then ["var/lib/bonsai/models"] else [] end)))
   and (.kopiaBootstrapScript | contains("policy set") | not)
   and (.kopiaPolicyReconcile != null)
   and (.kopiaPolicyReconcile.remainAfterExit == true)
