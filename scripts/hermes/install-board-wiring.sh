@@ -28,6 +28,14 @@
 # identity, which belongs to the workstation whose operator messages it and
 # cannot be regenerated if lost.
 #
+# It also installs the blocker-gate policy into the head-coordinator's SOUL.md,
+# from scripts/hermes/head-coordinator-blocker-gate.md. A notification
+# subscription in hermes is per card, so a gate nobody bound notifies nobody and
+# the card sits in `blocked` -- a column nothing dispatches -- in silence. That
+# policy is prose rather than code, but it is prose an agent reads at the exact
+# moment it needs it, so it is tracked here and replaced on every run instead of
+# living only in a script header.
+#
 # What it does *not* do is repair an existing cron job. Presence is detected by
 # name, so a job that exists with the wrong schedule, script or workdir is
 # reported as needing repair -- with the exact `hermes cron edit` line to run --
@@ -132,7 +140,8 @@ fi
 for dest_dir in "${install_targets[@]}"; do
   mkdir -p "$dest_dir"
   rel="${dest_dir#"$HERMES_ROOT/"}"
-  for script in kanban-board-health.sh kanban-durability-sync.sh kanban-retry-breaker.sh; do
+  for script in kanban-board-health.sh kanban-durability-sync.sh kanban-retry-breaker.sh \
+               kanban-blocker-notify.sh; do
     src="$REPO_ROOT/scripts/hermes/$script"
     dest="$dest_dir/$script"
     [[ -f "$src" ]] || { note "  MISSING SOURCE: $src"; drift=$((drift + 1)); continue; }
@@ -338,6 +347,70 @@ check_deploy_section "$AUDITOR_SOUL" '## Whole-change-set deploy review' "projec
 
 if [[ -f "$COORDINATOR_SOUL" ]] && ! grep -q 'nix run .#deploy' "$COORDINATOR_SOUL"; then
   changed "head-coordinator SOUL.md does not name the guarded deploy command"
+fi
+
+# ---------------------------------------------------------------------------
+# 3c. Blocker delivery over SimpleX, and reply-to-unblock
+# ---------------------------------------------------------------------------
+#
+# A gate the head-coordinator blocks on is only a question until the owner is
+# told, and a notification subscription in hermes is PER CARD -- there is no
+# board-wide binding. So a head-coordinator that blocks without binding produces
+# a silently stuck card, which is the same class of fault as the deploy-gate
+# sections above: policy the lane must follow, that nothing re-establishes after
+# a profile reset.
+#
+# Unlike the deploy-gate sections, this one IS prose in a tracked file, so it is
+# installed rather than only checked. Otherwise the whole loop would live only in
+# this script's header, which no agent reads at the moment it needs to block.
+# Editing the section is the supported way to change the wording: re-run this
+# installer and the local SOUL.md copy is replaced.
+
+GATE_SECTION_HEADING='## Blocker delivery and reply-to-unblock (SimpleX)'
+GATE_SECTION_SRC="$REPO_ROOT/scripts/hermes/head-coordinator-blocker-gate.md"
+
+if [[ ! -f "$GATE_SECTION_SRC" ]]; then
+  note "  MISSING SOURCE: $GATE_SECTION_SRC"
+  drift=$((drift + 1))
+elif [[ ! -f "$COORDINATOR_SOUL" ]]; then
+  note "  MISSING: $COORDINATOR_SOUL"
+  drift=$((drift + 1))
+elif grep -qF "$GATE_SECTION_HEADING" "$COORDINATOR_SOUL" &&
+     awk -v heading="$GATE_SECTION_HEADING" '
+       $0 == heading { found = 1; print; next }
+       found && /^## / { exit }
+       found { print }
+     ' "$COORDINATOR_SOUL" | cmp -s - "$GATE_SECTION_SRC"; then
+  ok "head-coordinator SOUL.md carries the blocker-gate section as tracked"
+elif [[ "$check_only" == true ]]; then
+  changed "head-coordinator SOUL.md is missing or has drifted from the '$GATE_SECTION_HEADING' section"
+else
+  # Replace the section in place. Awk rewrites the file only when the section is
+  # actually there to replace; a missing one is appended instead of duplicating,
+  # so re-running can never leave two copies that drift apart.
+  #
+  # The tracked file carries its own heading and is emitted verbatim, so the
+  # section in SOUL.md is byte-identical to the file and the check above is a
+  # real comparison rather than a shape match.
+  tmp_soul="$(mktemp)"
+  if awk -v heading="$GATE_SECTION_HEADING" -v src="$GATE_SECTION_SRC" '
+        $0 == heading {
+          found = 1
+          while ((getline line < src) > 0) print line
+          close(src)
+          next
+        }
+        found && /^## / { found = 0 }
+        !found { print }
+      ' "$COORDINATOR_SOUL" >"$tmp_soul" && grep -qF "$GATE_SECTION_HEADING" "$tmp_soul"; then
+    install -m 0644 "$tmp_soul" "$COORDINATOR_SOUL"
+    changed "replaced the blocker-gate section in head-coordinator SOUL.md"
+  else
+    printf '\n' >>"$COORDINATOR_SOUL"
+    cat "$GATE_SECTION_SRC" >>"$COORDINATOR_SOUL"
+    changed "appended the blocker-gate section to head-coordinator SOUL.md"
+  fi
+  rm -f "$tmp_soul"
 fi
 
 # ---------------------------------------------------------------------------
@@ -684,4 +757,5 @@ note "wiring applied ($drift item(s) changed)"
 note "verify detection:   $REPO_ROOT/scripts/hermes/kanban-board-health.sh"
 note "verify breaker:     $REPO_ROOT/scripts/hermes/kanban-retry-breaker.sh --check"
 note "verify durability:  $REPO_ROOT/scripts/hermes/kanban-durability-sync.sh --check"
+note "verify blocker bind: $REPO_ROOT/scripts/hermes/kanban-blocker-notify.sh --check --all"
 exit 0
