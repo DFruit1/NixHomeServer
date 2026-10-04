@@ -317,6 +317,9 @@ in
         seed_directory /home/${lib.escapeShellArg vars.localAdminUser}
         seed_directory /var/lib/nixhomeserver-deploy
         seed_directory /var/lib/postgresql
+        seed_directory /var/lib/clickhouse
+        seed_directory /var/lib/langfuse
+        seed_directory /var/lib/redis-langfuse
         seed_directory /var/log/caddy
         seed_file /etc/machine-id
         seed_file /var/lib/systemd/random-seed

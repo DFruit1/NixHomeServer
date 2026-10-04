@@ -11,6 +11,13 @@ in {
       description = "Set the Langfuse role password in the shared PostgreSQL cluster";
       requires = [ "postgresql.service" "postgresql-setup.service" "langfuse-prepare.service" ];
       after = [ "postgresql.service" "postgresql-setup.service" "langfuse-prepare.service" ];
+      # This oneshot runs once per boot. Without a trigger, a rotated
+      # agenix secret leaves the role password stale until the next reboot.
+      restartTriggers = [ config.age.secrets.langfuseServerEnv.path ];
+      unitConfig = {
+        OnFailure = [ config.repo.monitoring.failureAlerts.targetUnit ];
+        OnFailureJobMode = "replace-irreversibly";
+      };
       path = [ pkgs.coreutils pkgs.gnused pkgs.util-linux config.services.postgresql.package ];
       serviceConfig = { Type = "oneshot"; RemainAfterExit = true; UMask = "0077"; Nice = 10; CPUWeight = 20; IOWeight = 20; MemoryHigh = "128M"; MemoryMax = "256M"; };
       script = ''
@@ -26,6 +33,13 @@ in {
       wantedBy = [ "multi-user.target" ];
       after = [ "local-fs.target" ];
       before = [ "langfuse-db-bootstrap.service" "redis-langfuse.service" "clickhouse.service" "langfuse-minio.service" ];
+      # Same one-shot rotation problem as the role password above: a rotated
+      # secret must regenerate /run state without waiting for a reboot.
+      restartTriggers = [ config.age.secrets.langfuseServerEnv.path ];
+      unitConfig = {
+        OnFailure = [ config.repo.monitoring.failureAlerts.targetUnit ];
+        OnFailureJobMode = "replace-irreversibly";
+      };
       path = [ pkgs.coreutils pkgs.gnugrep pkgs.gnused ];
       serviceConfig = {
         Type = "oneshot";

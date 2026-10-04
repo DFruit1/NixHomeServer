@@ -34,12 +34,35 @@ let
     networks = [ "host" ];
     environment = commonEnvironment;
     environmentFiles = [ "/run/langfuse/app.env" ];
-    extraOptions = [ "--memory=${memory}" "--memory-reservation=1g" "--security-opt=no-new-privileges" ];
+    # Neither image needs Linux capabilities: minio and the Langfuse runtime
+    # both run as an unprivileged user against their own bind-mounted state.
+    extraOptions = [ "--memory=${memory}" "--memory-reservation=1g" "--security-opt=no-new-privileges" "--cap-drop=ALL" ];
+  };
+  # A data-store restart must not stay silent: bounded retries, then an alert.
+  dataStoreUnit = overrides: {
+    serviceConfig = overrides.serviceConfig // {
+      Restart = lib.mkForce "on-failure";
+      RestartSec = lib.mkForce "15s";
+    };
+    unitConfig = {
+      # Enough headroom for a transient port or disk stall, low enough that a
+      # permanently broken store alerts instead of looping indefinitely.
+      StartLimitIntervalSec = "10min";
+      StartLimitBurst = 5;
+      OnFailure = [ config.repo.monitoring.failureAlerts.targetUnit ];
+      OnFailureJobMode = "replace-irreversibly";
+    };
   };
   appService = {
     requires = deps;
     after = deps;
     serviceConfig = { Restart = "on-failure"; RestartSec = "10s"; TimeoutStartSec = lib.mkForce "10min"; MemoryHigh = "3G"; MemoryMax = "4G"; };
+    unitConfig = {
+      StartLimitIntervalSec = "10min";
+      StartLimitBurst = 5;
+      OnFailure = [ config.repo.monitoring.failureAlerts.targetUnit ];
+      OnFailureJobMode = "replace-irreversibly";
+    };
     path = [ pkgs.curl pkgs.coreutils ];
     preStart = lib.mkBefore ''
       # OCI startup ordering alone does not imply database readiness.
@@ -77,6 +100,7 @@ in {
     systemd.services.redis-langfuse = {
       requires = [ "langfuse-prepare.service" ];
       after = [ "langfuse-prepare.service" ];
+    } // dataStoreUnit {
       serviceConfig = { MemoryHigh = "768M"; MemoryMax = "1G"; };
     };
     services.clickhouse = {
@@ -106,6 +130,7 @@ in {
     systemd.services.clickhouse = {
       requires = [ "langfuse-prepare.service" ];
       after = [ "langfuse-prepare.service" ];
+    } // dataStoreUnit {
       serviceConfig = { EnvironmentFile = "/run/langfuse/clickhouse.env"; MemoryHigh = "4G"; MemoryMax = "5G"; };
     };
     # Application images follow the upstream runtime contract. PostgreSQL,
@@ -120,7 +145,7 @@ in {
         environmentFiles = [ "/run/langfuse/minio.env" ];
         volumes = [ "/var/lib/langfuse/minio:/data" ];
         cmd = [ "server" "--address" "${loopback}:${s3Port}" "--console-address" "${loopback}:${toString vars.networking.ports.langfuseS3Console}" "/data" ];
-        extraOptions = [ "--memory=2g" "--memory-reservation=1g" "--security-opt=no-new-privileges" ];
+        extraOptions = [ "--memory=2g" "--memory-reservation=1g" "--security-opt=no-new-privileges" "--cap-drop=ALL" ];
       };
       langfuse-web = (container "docker.langfuse.com/langfuse/langfuse@sha256:3d2ae888a0e6edb41fdba6e7d5baca5e4baede3a870dac7970dadd9d925b018e" "4g") // {
         serviceName = "langfuse-web";
@@ -145,6 +170,7 @@ in {
     systemd.services.langfuse-minio = {
       requires = [ "langfuse-prepare.service" ];
       after = [ "langfuse-prepare.service" ];
+    } // dataStoreUnit {
       serviceConfig = { MemoryHigh = "1G"; MemoryMax = "2G"; };
     };
     systemd.services.langfuse-web = appService;

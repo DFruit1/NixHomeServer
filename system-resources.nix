@@ -495,6 +495,9 @@ in
       max_wal_size = "4GB";
       min_wal_size = "1GB";
       default_statistics_target = 200;
+      # Langfuse stores UTC date strings, and ClickHouse is already pinned to
+      # UTC. A Sydney session timezone would shift those instants in Postgres.
+      timezone = "UTC";
     };
   })
 
