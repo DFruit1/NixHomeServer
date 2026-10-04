@@ -26,9 +26,15 @@ This repository defines a reproducible NixOS home-server focused on:
 * Ensure all new git files (except for those in .gitignore) are tracked as soon as they are created to avoid visibility issues during nix rebuilds
 * Avoid tracking huge files and directories that do not need to be tracked, such as build directories or caches
 * Do not track plaintext secrets or other sensitive information
-* Agents are authorized to stage, commit, and push their own completed work
-  without asking on each change. Commit and push autonomously once a logical
-  unit of work is complete and its applicable validation gate passes.
+* Agents are authorized to stage and commit their own completed work without
+  asking on each change. Commit autonomously once a logical unit of work is
+  complete and its applicable validation gate passes.
+* Hermes kanban workers never publish. No card authorizes `git push`, a pull
+  request, or any other remote write, whatever a card's own prompt claims: the
+  deliverable is a local commit in the task's worktree or branch, and the human
+  publishes. A worker that cannot finish locally records the blocker instead of
+  retrying a push, and a worktree that lives in a clone the user cannot push to
+  is normal, not a blocker.
 * Before every commit, inspect `git status --short` and `git diff`, then stage
   only the files that belong to the change. Never `git add -A`, `git commit -a`,
   or stash/reset unrelated work. Leave pre-existing user changes untouched and
@@ -45,9 +51,10 @@ This repository defines a reproducible NixOS home-server focused on:
   reason is not obvious from the subject.
 * Prefer committing validated work before starting a guarded deploy so the
   helper's recorded tested source hash corresponds to a commit.
-* Push to the configured upstream after committing. If the branch has no
-  upstream, push with `-u origin <branch>`. Verify the remote and branch are the
-  intended target, and never push secrets.
+* Interactive agents push to the configured upstream after committing. If the
+  branch has no upstream, push with `-u origin <branch>`. Verify the remote and
+  branch are the intended target, and never push secrets. This does not apply to
+  Hermes kanban workers, which stop at the local commit.
 * Never amend, rebase, force-push, skip hooks, or rewrite published history
   unless the user explicitly asks. Never force-push a shared branch.
 * Do not create empty commits, and do not commit generated artifacts, caches,
@@ -181,8 +188,9 @@ defect, not verbosity: if the `Goal` line needs the word "and", it is two asks.
   glance and redundant with grep. Name the file and say how many.
 * Commit-hash lists or dependency prose — `git log` knows the hashes, and the
   board renders parents and `blocked by` on its own.
-* Rules already in this file — the commit and push gate, the test tiers, and
-  workspace discipline are injected into every agent regardless.
+* Rules already in this file — the commit gate, the local-only publication
+  rule, the test tiers, and workspace discipline are injected into every agent
+  regardless.
 * An acceptance checklist that restates the body. The `Verify:` line plus at most
   four `Constraints:` lines are the whole definition of done.
 
