@@ -37,6 +37,7 @@ jq -e '
   and .redis.settings["maxmemory-policy"] == "noeviction"
   and .redis.appendOnly and .redis.requirePassFile == "/run/langfuse-redis/password"
   and .clickhouse.listen_host == "127.0.0.1"
+  and .clickhouse.timezone == "UTC"
   and .clickhouse.tcp_port == 19140 and .clickhouse.http_port == 18140
   and (.bootstrapAfter | index("postgresql-setup.service")) != null
   and (.bootstrapRequires | index("postgresql-setup.service")) != null

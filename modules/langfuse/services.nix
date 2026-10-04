@@ -83,6 +83,8 @@ in {
       enable = true;
       serverConfig = {
         listen_host = loopback;
+        # Langfuse writes UTC date strings; a local timezone shifts stored instants.
+        timezone = "UTC";
         http_port = vars.networking.ports.langfuseClickhouseHttp;
         tcp_port = vars.networking.ports.langfuseClickhouseTcp;
         max_server_memory_usage = 4294967296;

@@ -70,6 +70,10 @@ Send a harmless Hermes request, then confirm its trace is present in the Hermes
 Langfuse project. A successful process start or SDK authentication check alone
 is not proof that ingestion reached ClickHouse.
 
+ClickHouse is pinned to UTC because Langfuse writes UTC date strings. Verify a
+fresh generation through `/api/public/v2/observations` with a bounded UTC time
+range; the legacy traces API is unavailable on this Langfuse version.
+
 ## Persistence and restore
 
 Central impermanence retains `/var/lib/langfuse`, `/var/lib/clickhouse`, and
