@@ -297,6 +297,34 @@ if [[ -f "$COORDINATOR_SOUL" ]] && ! grep -q 'kanban-retry-breaker.sh' "$COORDIN
   changed "head-coordinator SOUL.md does not mention kanban-retry-breaker.sh"
 fi
 
+# The same reasoning applies to a worker lane that lost its card. The detector
+# exists in kanban-board-health.sh and reports WORKER_FAILED_BLOCKED, but a
+# finding with no policy behind it is the exact gap this wiring was written to
+# close: the head-coordinator would have the finding and no rule telling it to
+# re-scope rather than comment, and commenting does not move a card out of
+# `blocked`. Pin the finding name so the policy and the detector cannot drift
+# apart silently -- one can be renamed or deleted without the other.
+#
+# Shaped like the Board health section check above rather than like the
+# breaker reminder, because this one is prose: there is nothing to install, so
+# apply mode tells the operator what to add instead of implying a fix.
+if [[ ! -f "$COORDINATOR_SOUL" ]]; then
+  :
+elif grep -q 'WORKER_FAILED_BLOCKED' "$COORDINATOR_SOUL"; then
+  ok "head-coordinator SOUL.md has a policy for WORKER_FAILED_BLOCKED"
+else
+  if [[ "$check_only" == true ]]; then
+    changed "head-coordinator SOUL.md has no policy for WORKER_FAILED_BLOCKED; a blocked worker lane would be reported and then ignored"
+  else
+    note "  ACTION: add a WORKER_FAILED_BLOCKED rule to $COORDINATOR_SOUL by hand."
+    note "  It is prose policy rather than code, so it is not installed from here."
+    note "  Without it the board-health monitor reports a card whose worker died"
+    note "  and the head-coordinator has no rule telling it to re-scope and"
+    note "  re-dispatch, so the card and everything behind it stay stopped."
+    drift=$((drift + 1))
+  fi
+fi
+
 # ---------------------------------------------------------------------------
 # 3b. Deploy gate policy
 # ---------------------------------------------------------------------------
