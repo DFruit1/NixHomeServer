@@ -79,6 +79,14 @@ in
       description = ''
         Context tokens per request. Zero selects a conservative physical-RAM
         tier automatically; the model supports up to 262144.
+
+        The KV cache grows linearly with this value, and when
+        `gpuLayers = "all"` it is resident VRAM, not host RAM. On the qwen35
+        27B that is 34,816 B/token at Q8_0 (16 full-attention layers, four KV
+        heads of 256, at 34 B per 32 elements), so each doubling of this
+        option costs another 2.13 GiB of card on top of the weights.
+        ggml-vulkan does not spill a failed allocation to host RAM, so an
+        oversized value takes the unit down instead of degrading.
       '';
     };
 
@@ -116,7 +124,7 @@ in
         Run the multimodal projector and vision encoder on the CPU
         (--no-mmproj-offload) instead of the GPU. Image and video input still
         works; only image encoding moves off the card, which keeps VRAM free for
-        language-model layers and the 64K Q8_0 KV cache.
+        language-model layers and the 128K Q8_0 KV cache.
       '';
     };
 
@@ -207,7 +215,7 @@ in
       description = ''
         KV cache element type. Q8_0 roughly halves KV memory and bandwidth at a
         negligible quality cost and speeds up longer generations, which is what
-        lets a 64K context sit in VRAM alongside the Q4_K_M weights. Q4_0 is
+        lets a 128K context sit in VRAM alongside the Q4_K_M weights. Q4_0 is
         smaller but noticeably lossier; F16 is the unquantized default.
       '';
     };

@@ -109,17 +109,18 @@ blindly asking for the full training context:
 | 36–71 GiB | 65,536 |
 | 72 GiB or more | 131,072 |
 
-This host pins an explicit 64K, which is what Hermes Agent recommends for tool
-workflows:
+This host pins an explicit 128K, which is double the minimum Hermes Agent
+recommends for tool workflows:
 
 ```nix
-repo.qwen27b.contextSize = 65536;
+repo.qwen27b.contextSize = 131072;
 ```
 
-Set an explicit value up to 262,144 if the host has VRAM headroom.
+Set an explicit value up to 262,144 if the host has VRAM headroom. This host has
+just enough for 128K, and 262,144 would not fit — see the VRAM budget below.
 
 The host uses a Q8_0 KV cache, which roughly halves KV memory and bandwidth at a
-negligible quality cost and is what keeps the 64K context inside the card:
+negligible quality cost and is what keeps the 128K context inside the card:
 
 ```nix
 repo.qwen27b.kvCacheType = "q8_0"; # "f16" (default), "q8_0", or "q4_0"
@@ -166,7 +167,7 @@ peak speed. The choices that matter:
 - **One model at a time.** The Q4_K_M weights fit the 24 GiB card, but they do
   not fit alongside Bonsai's weights. The background integration still stops the
   UI model before starting Qwen.
-- **Q8_0 KV cache + flash attention** keep the 64K context near-lossless and
+- **Q8_0 KV cache + flash attention** keep the 128K context near-lossless and
   cheap enough to fit; step up to F16 only if you raise the context.
 - **Quality is preserved by construction**: Q4_K_M weights and
   thinking/reasoning-preserve left at their template defaults. Do not globally
@@ -209,7 +210,7 @@ Resizable BAR is enabled. The flags on the host are:
 repo.qwen27b.gpu.enable = true;      # builds llama.cpp with GGML_VULKAN
 repo.qwen27b.gpuLayers = "all";      # offload every tensor
 repo.qwen27b.projectorOnCpu = true;  # --no-mmproj-offload
-repo.qwen27b.kvCacheType = "q8_0";   # keeps the 64K context in VRAM
+repo.qwen27b.kvCacheType = "q8_0";   # keeps the 128K context in VRAM
 repo.qwen27b.extraArgs = [
   "--batch-size" "2048"
   "--ubatch-size" "2048"
@@ -237,7 +238,7 @@ systemd unit gains access to the `render` and `video` groups and `/dev/dri`.
 Expectations with a single 24 GiB Arc Pro B60:
 
 - `n-gpu-layers = all` puts the whole 16.5 GB model on the card. With the
-  projector on the CPU and a Q8_0 64K KV cache there is still room for the
+  projector on the CPU and a Q8_0 128K KV cache there is still room for the
   prefill compute buffers; a long-context prefill is the first thing to watch if
   memory ever gets tight.
 - The UI model is stopped before Qwen starts so the card is free; do not run both
@@ -247,6 +248,59 @@ Expectations with a single 24 GiB Arc Pro B60:
 - Vulkan support for this architecture is less mature than the CPU path. If the
   Vulkan build fails to serve, fall back to CPU inference
   (`repo.qwen27b.gpu.enable = false`) and report the failure upstream.
+
+### VRAM Budget For The Context Setting
+
+Raising `repo.qwen27b.contextSize` spends card memory, not host memory, because
+the KV cache is allocated in VRAM whenever `gpuLayers = "all"`. ggml-vulkan does
+not spill a failed allocation to system RAM: it returns `nullptr` and the unit
+restarts. So the budget is a hard ceiling, and it is worth checking before
+raising the value rather than after.
+
+The KV cost is derivable from the GGUF header alone. This model is `qwen35` with
+64 blocks, `full_attention_interval = 4` (so 16 full-attention layers keep a KV
+cache; the other 48 are gated-delta-net layers with a fixed-size recurrent state),
+`head_count_kv = 4`, and key/value length 256. That is 4 x 256 = 1,024 elements
+per tensor per token per layer, or 2,048 for K and V together. Q8_0 costs 34 bytes
+per 32 elements, so:
+
+```text
+34,816 bytes/token = 16 layers x 2 tensors x 1,024 elements x (34/32)
+64K context  ->  2.13 GiB KV
+128K context ->  4.25 GiB KV
+262K context ->  8.50 GiB KV
+```
+
+The budget for 128K, measured on this card by loading exactly the configuration
+above and reading `/sys/kernel/debug/dri/*/vram0_mm`:
+
+| Component | Size |
+| --- | ---: |
+| Q4_K_M weights, less the unused `blk.64` MTP tensors | 15.98 GiB |
+| KV cache at 131072 tokens, Q8_0 | 4.25 GiB |
+| Compute buffers, SSM state, Vulkan bookkeeping | 0.86 GiB |
+| **Total, measured** | **21.09 GiB of 23.91 GiB** |
+| Free after the load | 2.82 GiB |
+
+That total was read after serving a 12,223-token prompt, so it covers the
+worst-case full 2048-token ubatch rather than an idle server. Prefill held 259
+tokens/s. To reproduce it, stop `qwen-27b-llama.service`, start `llama-server`
+with the flags from this document plus `--ctx-size 131072`, read the counter,
+and start the unit again.
+
+262,144 does not fit: 8.50 GiB of KV cache alone would put the total near 25 GiB
+against 23.91 GiB of card. If that context is ever needed, the levers in order of
+preference are dropping to `kvCacheType = "q4_0"` (halves the KV again but is
+noticeably lossier), keeping the projector on the CPU, or moving to a larger
+card.
+
+One trap worth knowing: with the card already mostly full, `llama-server` logs
+`common_fit_params: failed to fit params to free device memory: n_gpu_layers
+already set by user to -2, abort` and then starts anyway with the weights split
+between card and host. It does not fail cleanly, and it serves requests at a
+fraction of the speed. Treat that warning as a real out-of-memory signal rather
+than noise, and check that no other workload is holding VRAM before reading a
+slow inference run as a model problem.
 
 ## Service Operations
 
