@@ -512,6 +512,66 @@ grep -q 'no board resolved to a git checkout' "$fixture/no-repo.log" ||
 pass "fails loudly when no board resolves to a git checkout"
 rm -rf "$HERMES_FIXTURE/kanban/boards/nowhere"
 
+# --- a rejected push is a failure, not a log line --------------------------
+#
+# The failure this pins: a branch push the remote refuses was logged and the run
+# still exited 0, so a cron tick that silently kept every commit inside this one
+# clone looked identical to a tick where everything was safe. The board mirror
+# must still happen -- the data is what matters -- but the exit status has to
+# disagree with a success that did not occur.
+new_remote_root rejected
+
+# A dedicated checkout whose origin refuses every push, so the rejection is the
+# remote's decision and not a typo. Still a local bare repo: nothing leaves the
+# machine.
+git -c init.defaultBranch=master init --quiet "$fixture/repo-c"
+git --git-dir="$fixture/origin-repo-c" init --quiet --bare
+git -C "$fixture/repo-c" remote add origin "$fixture/origin-repo-c"
+printf 'base\n' >"$fixture/repo-c/README"
+git -C "$fixture/repo-c" add -A
+git -C "$fixture/repo-c" commit --quiet -m initial
+git -C "$fixture/repo-c" push --quiet origin master
+# A pre-receive hook is how a real remote refuses a push: the client's push
+# command exits non-zero and no ref moves.
+printf '#!/bin/sh\nexit 1\n' >"$fixture/origin-repo-c/hooks/pre-receive"
+chmod +x "$fixture/origin-repo-c/hooks/pre-receive"
+
+mkdir -p "$HERMES_FIXTURE/kanban/boards/rejectboard"
+printf '{"slug":"rejectboard","default_workdir":"%s","archived":false}\n' \
+  "$fixture/repo-c" >"$HERMES_FIXTURE/kanban/boards/rejectboard/board.json"
+sqlite3 "$HERMES_FIXTURE/kanban/boards/rejectboard/kanban.db" \
+  "CREATE TABLE tasks (id TEXT PRIMARY KEY, title TEXT, status TEXT);
+   CREATE TABLE task_comments (id INTEGER PRIMARY KEY, task_id TEXT, body TEXT);
+   INSERT INTO tasks VALUES ('t_reject_1','card 1','done');"
+
+# One rejected branch and one rejected master, so both push sites are covered by
+# a single run.
+git -C "$fixture/repo-c" checkout --quiet -b wt/beta
+printf 'work\n' >"$fixture/repo-c/only-here.txt"
+git -C "$fixture/repo-c" add -A
+git -C "$fixture/repo-c" commit --quiet -m "branch commit only this clone holds"
+git -C "$fixture/repo-c" checkout --quiet master
+printf 'more\n' >>"$fixture/repo-c/README"
+git -C "$fixture/repo-c" add -A
+git -C "$fixture/repo-c" commit --quiet -m "master commit only this clone holds"
+
+if out="$(cd "$elsewhere" && HERMES_BOARD=rejectboard "$SYNC" 2>&1)"; then
+  fail "exited 0 although every push was rejected; the commits exist nowhere else"
+fi
+grep -q 'push FAILED for wt/beta' <<<"$out" ||
+  fail "did not report the rejected branch push: $out"
+grep -q 'push FAILED for master' <<<"$out" ||
+  fail "did not report the rejected master push: $out"
+[[ "$(git --git-dir="$fixture/origin-repo-c" rev-parse --verify --quiet refs/heads/wt/beta || printf 'absent')" == absent ]] ||
+  fail "the fixture's origin accepted a push it was told to refuse"
+# The data protection still runs: a failed push must not abort the mirror.
+replay_last_ssh
+mirror_has rejectboard/current/kanban.db ||
+  fail "a rejected push stopped the board from being mirrored; the board copy is the data"
+[[ "$(mirror_rows rejectboard)" == 1 ]] ||
+  fail "the mirrored rejectboard database does not read back its rows"
+pass "reports a rejected push as a failure while still mirroring the board"
+
 # --- check mode changes nothing ---------------------------------------------
 
 new_remote_root check-mode

@@ -250,7 +250,12 @@ push_branches() {
       log "pushed $refname ($ahead commit(s))"
       pushed=$((pushed + 1))
     else
-      log "push FAILED for $refname; left untouched for the operator"
+      # Counted, not merely logged. A rejected push means commits this clone is
+      # the only holder of were not written anywhere, which is the whole reason
+      # this job exists; reporting success for it is the same silent false
+      # negative as the other failure paths above. The mirror still runs, so the
+      # board data is protected either way.
+      fail "push FAILED for $refname; $ahead commit(s) exist only in this clone"
     fi
   done < <(git -C "$work_repo" for-each-ref \
              --format='%(refname:short) %(objectname)' \
@@ -272,7 +277,7 @@ push_branches() {
         log "pushed master ($ahead commit(s) ahead of origin/master)"
         pushed=$((pushed + 1))
       else
-        log "push FAILED for master; left untouched for the operator"
+        fail "push FAILED for master; $ahead commit(s) ahead of origin/master exist only in this clone"
       fi
     fi
   fi
