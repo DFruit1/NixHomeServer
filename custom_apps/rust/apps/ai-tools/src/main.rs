@@ -37,6 +37,7 @@ struct Config {
     collabora_base: String,
     collabora_timeout: Duration,
     shared_root: PathBuf,
+    public_host: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -365,7 +366,72 @@ fn parse_env() -> Result<Config, String> {
         collabora_base,
         collabora_timeout,
         shared_root,
+        public_host: parse_public_host(env::var("AI_TOOLS_PUBLIC_HOST").ok())?,
     })
+}
+
+/// Hostname the gateway publishes this service under, or `None` to stay
+/// loopback-only.
+///
+/// A value that is not a bare hostname is rejected rather than ignored: an
+/// entry that matches no inbound request would leave the published endpoint
+/// answering 403 with nothing in the logs to explain it.
+fn parse_public_host(raw: Option<String>) -> Result<Option<String>, String> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let host = raw.trim().to_ascii_lowercase();
+    if host.is_empty() {
+        return Ok(None);
+    }
+    if !host
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || matches!(character, '.' | '-'))
+    {
+        return Err("AI_TOOLS_PUBLIC_HOST must be a bare hostname".to_string());
+    }
+    Ok(Some(host))
+}
+
+/// Transport policy for the Streamable HTTP service.
+///
+/// Caddy proxies to loopback but preserves the client's Host header, so rmcp's
+/// loopback-only default rejects the published hostname. Loopback stays allowed
+/// either way so local MCP clients and the host policy tests keep working.
+fn streamable_http_config(public_host: Option<&str>) -> StreamableHttpServerConfig {
+    let config = StreamableHttpServerConfig::default()
+        // Plain JSON responses rather than an open SSE stream. The gateway
+        // terminates TLS and proxies through oauth2-proxy, and a long-lived
+        // event stream is the part most likely to be buffered or cut there.
+        // Single-response JSON is the interoperable choice behind a proxy.
+        .with_json_response(true)
+        .with_sse_keep_alive(Some(Duration::from_secs(15)));
+
+    let Some(public_host) = public_host else {
+        return config;
+    };
+
+    config
+        .with_allowed_hosts([
+            "localhost".to_string(),
+            "127.0.0.1".to_string(),
+            "::1".to_string(),
+            public_host.to_string(),
+        ])
+        .with_allowed_origins([format!("https://{public_host}")])
+        .enforce_origin_validation()
+}
+
+fn router(server: Server, public_host: Option<&str>) -> Router {
+    let mcp = StreamableHttpService::new(
+        move || Ok(server.clone()),
+        Arc::new(LocalSessionManager::default()),
+        streamable_http_config(public_host),
+    );
+
+    Router::new()
+        .route("/healthz", get(|| async { "ok" }))
+        .fallback_service(mcp)
 }
 
 #[tokio::main]
@@ -381,26 +447,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         converter,
     };
 
-    let mcp = StreamableHttpService::new(
-        move || Ok(server.clone()),
-        Arc::new(LocalSessionManager::default()),
-        // Plain JSON responses rather than an open SSE stream. The gateway
-        // terminates TLS and proxies through oauth2-proxy, and a long-lived
-        // event stream is the part most likely to be buffered or cut there.
-        // Single-response JSON is the interoperable choice behind a proxy.
-        StreamableHttpServerConfig::default()
-            .with_json_response(true)
-            .with_sse_keep_alive(Some(Duration::from_secs(15))),
-    );
-
-    let app = Router::new()
-        .route("/healthz", get(|| async { "ok" }))
-        .fallback_service(mcp);
+    let app = router(server, config.public_host.as_deref());
 
     let listener = tokio::net::TcpListener::bind(&listen).await?;
     eprintln!(
-        "ai-tools listening on {listen}, searxng at {}",
-        config.searxng_base
+        "ai-tools listening on {listen}, searxng at {}, public host {}",
+        config.searxng_base,
+        config.public_host.as_deref().unwrap_or("unset")
     );
     axum::serve(listener, app).await?;
     Ok(())
@@ -409,6 +462,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{
+        body::Body,
+        http::{header::HOST, HeaderMap, HeaderValue, Request, StatusCode},
+    };
+    use tower::ServiceExt;
 
     fn test_config() -> Config {
         Config {
@@ -418,6 +476,7 @@ mod tests {
             collabora_base: "http://127.0.0.1:9980".to_string(),
             collabora_timeout: Duration::from_secs(5),
             shared_root: std::env::temp_dir(),
+            public_host: None,
         }
     }
 
@@ -480,5 +539,134 @@ mod tests {
             return Err("AI_TOOLS_SEARXNG_URL must be an http(s) URL".to_string());
         }
         Ok(())
+    }
+
+    const PUBLIC_HOST: &str = "tools.example.org";
+
+    /// Status of a real MCP handshake sent the way the gateway forwards it: the
+    /// published Host, plus an Origin when a browser would send one.
+    async fn initialize_status(
+        public_host: Option<&str>,
+        host: &str,
+        origin: Option<&str>,
+    ) -> StatusCode {
+        let server = Server {
+            config: Arc::new(test_config()),
+            converter: Arc::new(
+                Converter::new("http://127.0.0.1:9980", Duration::from_secs(5)).unwrap(),
+            ),
+        };
+
+        let mut headers = HeaderMap::new();
+        headers.insert(HOST, HeaderValue::from_str(host).expect("host header"));
+        headers.insert("content-type", HeaderValue::from_static("application/json"));
+        headers.insert(
+            "accept",
+            HeaderValue::from_static("application/json, text/event-stream"),
+        );
+        if let Some(origin) = origin {
+            headers.insert("origin", HeaderValue::from_str(origin).expect("origin"));
+        }
+
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/")
+            .body(Body::from(
+                r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"host-policy-test","version":"0.0.0"}}}"#,
+            ))
+            .expect("build initialize request");
+        request.headers_mut().extend(headers);
+
+        router(server, public_host)
+            .oneshot(request)
+            .await
+            .expect("router response")
+            .status()
+    }
+
+    #[tokio::test]
+    async fn accepts_the_configured_public_host() {
+        assert_eq!(
+            initialize_status(Some(PUBLIC_HOST), PUBLIC_HOST, None).await,
+            StatusCode::OK
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_an_unknown_host() {
+        assert_eq!(
+            initialize_status(Some(PUBLIC_HOST), "evil.example.org", None).await,
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    #[tokio::test]
+    async fn origin_must_match_the_configured_public_host() {
+        assert_eq!(
+            initialize_status(
+                Some(PUBLIC_HOST),
+                PUBLIC_HOST,
+                Some("https://evil.example.org")
+            )
+            .await,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            initialize_status(
+                Some(PUBLIC_HOST),
+                PUBLIC_HOST,
+                Some(&format!("https://{PUBLIC_HOST}"))
+            )
+            .await,
+            StatusCode::OK
+        );
+    }
+
+    #[tokio::test]
+    async fn stays_loopback_only_without_a_public_host() {
+        assert_eq!(
+            initialize_status(None, PUBLIC_HOST, None).await,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            initialize_status(None, "127.0.0.1:8097", None).await,
+            StatusCode::OK
+        );
+    }
+
+    #[test]
+    fn public_host_is_normalised_or_rejected() {
+        assert_eq!(parse_public_host(None).unwrap(), None);
+        assert_eq!(parse_public_host(Some(String::new())).unwrap(), None);
+        assert_eq!(parse_public_host(Some("  ".to_string())).unwrap(), None);
+        assert_eq!(
+            parse_public_host(Some(format!("  {PUBLIC_HOST} "))).unwrap(),
+            Some(PUBLIC_HOST.to_string())
+        );
+        for hostile in [
+            "https://tools.example.org",
+            "tools.example.org/mcp",
+            "tools.example.org:443",
+            "tools example org",
+            "tools.example.org?x=1",
+        ] {
+            assert!(
+                parse_public_host(Some(hostile.to_string())).is_err(),
+                "should have rejected {hostile:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn transport_policy_keeps_loopback_next_to_the_public_host() {
+        let config = streamable_http_config(Some(PUBLIC_HOST));
+        assert_eq!(
+            config.allowed_hosts,
+            vec!["localhost", "127.0.0.1", "::1", PUBLIC_HOST]
+        );
+        assert_eq!(
+            config.allowed_origins,
+            vec![format!("https://{PUBLIC_HOST}")]
+        );
     }
 }

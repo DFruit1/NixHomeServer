@@ -46,6 +46,10 @@ in
         assertion = cfg.listenAddress == vars.networking.loopbackIPv4;
         message = "repo.aiTools.listenAddress must stay on IPv4 loopback; the gateway is the only client.";
       }
+      {
+        assertion = config.repo.authGateway.enable && config.repo.authGateway.mode == "gateway";
+        message = "The AI Tools MCP endpoint requires the shared authentication gateway.";
+      }
     ];
   };
 }

@@ -8,11 +8,17 @@
 
 use serde_json::{json, Value};
 use std::{path::Path, path::PathBuf, time::Duration};
+use tokio::io::AsyncReadExt;
 
 /// Longest converted document returned to the model, in bytes. Collabora will
 /// happily convert a 100 MiB spreadsheet; the model cannot use the result and
 /// it would blow the tool payload.
 pub const MAX_OUTPUT_BYTES: usize = 256 * 1024;
+
+/// Largest document loaded into memory for conversion, in bytes. The shared
+/// root is writable by the user and the unit has a hard MemoryMax, so an
+/// oversized file is refused before its bytes are read.
+pub const MAX_INPUT_BYTES: u64 = 32 * 1024 * 1024;
 
 #[derive(Clone, Copy)]
 pub struct Format {
@@ -123,6 +129,83 @@ pub fn resolve_within(root: &Path, requested: &str) -> Result<PathBuf, String> {
     Ok(canonical)
 }
 
+/// Open a validated document once and check its size on the open handle.
+///
+/// The caller reads from the returned handle, so the file that was size-checked
+/// is the file that gets uploaded even though the shared root is writable
+/// between the caller's containment check and this read.
+pub async fn open_document(path: &Path, limit: u64) -> Result<tokio::fs::File, String> {
+    let file = tokio::fs::File::open(path)
+        .await
+        .map_err(|error| format!("document is not readable: {error}"))?;
+    let declared = file
+        .metadata()
+        .await
+        .map_err(|error| format!("document is not readable: {error}"))?
+        .len();
+    if declared > limit {
+        return Err(format!(
+            "document is too large: {declared} bytes exceeds the {limit} byte limit"
+        ));
+    }
+    Ok(file)
+}
+
+/// Read a whole document, refusing anything over `limit`.
+pub async fn read_document(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
+    let mut file = open_document(path, limit).await?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .await
+        .map_err(|error| format!("document is not readable: {error}"))?;
+    // A writable path can grow between the size check and the read, so the
+    // bytes that actually arrived are bounded too.
+    if bytes.len() as u64 > limit {
+        return Err(format!(
+            "document grew past the {limit} byte limit while it was read"
+        ));
+    }
+    Ok(bytes)
+}
+
+/// Filename for the Collabora upload part.
+///
+/// The name comes from a user-writable directory and is interpolated into a
+/// multipart header, so anything outside a conservative character set becomes
+/// an underscore instead of being escaped.
+fn upload_name(path: &Path) -> String {
+    let raw = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("document");
+    let sanitized: String = raw
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if sanitized.is_empty() || sanitized.chars().all(|character| character == '.') {
+        return "document".to_string();
+    }
+    sanitized
+}
+
+/// Clamp converted output to `MAX_OUTPUT_BYTES` without splitting a character.
+fn clamp_output(text: &str) -> (String, bool) {
+    if text.len() <= MAX_OUTPUT_BYTES {
+        return (text.to_string(), false);
+    }
+    let mut boundary = MAX_OUTPUT_BYTES;
+    while !text.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    (text[..boundary].to_string(), true)
+}
+
 pub struct Converter {
     client: reqwest::Client,
     base: String,
@@ -147,16 +230,9 @@ impl Converter {
                 .to_string()
         })?;
 
-        let bytes = tokio::fs::read(path)
-            .await
-            .map_err(|error| format!("document is not readable: {error}"))?;
+        let bytes = read_document(path, MAX_INPUT_BYTES).await?;
         let part = reqwest::multipart::Part::bytes(bytes)
-            .file_name(
-                path.file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or("document")
-                    .to_string(),
-            )
+            .file_name(upload_name(path))
             .mime_str(format.mime)
             .map_err(|error| format!("could not build request part: {error}"))?;
 
@@ -181,12 +257,7 @@ impl Converter {
             .await
             .map_err(|error| format!("Collabora response was not text: {error}"))?;
         let text = text.trim_start_matches('\u{feff}').to_string();
-        let truncated = text.len() > MAX_OUTPUT_BYTES;
-        let body = if truncated {
-            text[..MAX_OUTPUT_BYTES].to_string()
-        } else {
-            text
-        };
+        let (body, truncated) = clamp_output(&text);
 
         Ok(json!({
             "path": path.display().to_string(),
@@ -202,6 +273,33 @@ impl Converter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct ScratchDir(PathBuf);
+
+    impl ScratchDir {
+        fn new(label: &str) -> Self {
+            static NEXT: AtomicUsize = AtomicUsize::new(0);
+            let dir = std::env::temp_dir().join(format!(
+                "ai-tools-{label}-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("create scratch directory");
+            Self(dir)
+        }
+
+        fn join(&self, name: &str) -> PathBuf {
+            self.0.join(name)
+        }
+    }
+
+    impl Drop for ScratchDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
 
     #[test]
     fn rejects_paths_that_try_to_escape_the_root() {
@@ -249,5 +347,88 @@ mod tests {
             assert!(format.target == "txt" || format.target == "csv");
             assert!(format.mime.contains('/'));
         }
+    }
+
+    #[test]
+    fn clamps_multi_byte_output_on_a_character_boundary() {
+        let three_byte = "a".repeat(MAX_OUTPUT_BYTES - 1);
+        let (body, truncated) = clamp_output(&format!("{three_byte}\u{20ac}{}", "b".repeat(8)));
+        assert!(truncated);
+        assert_eq!(body, three_byte);
+
+        let four_byte = "a".repeat(MAX_OUTPUT_BYTES - 2);
+        let (body, truncated) = clamp_output(&format!("{four_byte}\u{1f9ea}tail"));
+        assert!(truncated);
+        assert_eq!(body, four_byte);
+    }
+
+    #[test]
+    fn leaves_output_at_or_below_the_limit_untouched() {
+        let exact = "a".repeat(MAX_OUTPUT_BYTES);
+        let (body, truncated) = clamp_output(&exact);
+        assert!(!truncated);
+        assert_eq!(body, exact);
+
+        let (body, truncated) = clamp_output("h\u{e9}llo");
+        assert!(!truncated);
+        assert_eq!(body, "h\u{e9}llo");
+    }
+
+    #[tokio::test]
+    async fn refuses_a_document_over_the_input_limit() {
+        let dir = ScratchDir::new("oversize");
+        let path = dir.join("big.docx");
+        std::fs::File::create(&path)
+            .expect("create sparse document")
+            .set_len(MAX_INPUT_BYTES + 1)
+            .expect("size sparse document");
+        let error = read_document(&path, MAX_INPUT_BYTES).await.unwrap_err();
+        assert!(error.contains("too large"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn reads_a_document_at_the_input_limit() {
+        let dir = ScratchDir::new("atlimit");
+        let path = dir.join("exact.docx");
+        std::fs::write(&path, b"01234567").expect("write document");
+        let bytes = read_document(&path, 8).await.expect("read document");
+        assert_eq!(bytes, b"01234567");
+        assert!(read_document(&path, 7).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn reads_the_opened_handle_rather_than_reopening_the_path() {
+        let dir = ScratchDir::new("toctou");
+        let path = dir.join("swapped.docx");
+        std::fs::write(&path, b"original").expect("write document");
+        let mut file = open_document(&path, 64).await.expect("open document");
+        std::fs::remove_file(&path).expect("remove document");
+        std::fs::write(&path, b"swapped").expect("replace document");
+
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).await.expect("read handle");
+        assert_eq!(bytes, b"original");
+    }
+
+    #[test]
+    fn sanitizes_upload_filenames() {
+        assert_eq!(
+            upload_name(Path::new("/srv/shared/report.docx")),
+            "report.docx"
+        );
+        assert_eq!(
+            upload_name(Path::new("/srv/shared/my report (final).docx")),
+            "my_report__final_.docx"
+        );
+        assert_eq!(
+            upload_name(Path::new("/srv/shared/a\"b\r\nc;d.docx")),
+            "a_b__c_d.docx"
+        );
+        assert_eq!(
+            upload_name(Path::new("/srv/shared/na\u{ef}ve.docx")),
+            "na_ve.docx"
+        );
+        assert_eq!(upload_name(Path::new("/srv/shared/..")), "document");
+        assert_eq!(upload_name(Path::new("/")), "document");
     }
 }

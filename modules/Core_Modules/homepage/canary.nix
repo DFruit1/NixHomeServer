@@ -115,8 +115,9 @@ in
         "ipfs.${vars.domain}"
         # Bearer-token-only sync API; the native File Sync client owns the UI.
         "filesync-api.${vars.domain}"
-        # MCP Streamable HTTP endpoint consumed by the llama.cpp web UI client.
-        # API-only: it serves JSON-RPC over SSE and no browser page.
+        # MCP Streamable HTTP endpoint consumed by the local model client.
+        # API-only: it answers JSON-RPC and serves no browser page. Being exempt
+        # is why it needs its own handshake check in the ai-tools module test.
         "tools.${vars.domain}"
         "www.${vars.domain}"
         vars.domain

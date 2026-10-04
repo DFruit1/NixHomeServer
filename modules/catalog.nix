@@ -127,7 +127,8 @@ rec {
       "media-automation-bootstrap-qbittorrent"
     ];
     ai-tools = app ./ai-tools "AI Tools" "automation" [ ] [
-      "searxng"
+      "ai-tools-shared-access"
+      "ai-tools"
     ];
     qwen-27b = app ./qwen-27b "Qwen 3.8 27B" "automation" [ ] [
       "qwen-27b-storage-layout-v1"

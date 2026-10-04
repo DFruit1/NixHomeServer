@@ -172,6 +172,7 @@ test_scripts=(
   scripts/tests/test-media-manager-core.sh
   scripts/tests/test-paperless-v3-readiness.sh
   scripts/tests/test-ai-gate.sh
+  scripts/tests/test-ai-tools-module.sh
   scripts/tests/test-gpu-power-limit.sh
   scripts/tests/test-background-qwen-split.sh
   scripts/tests/test-mkvmaker-automation.sh
