@@ -7,11 +7,13 @@
 # The durable half of the board-health and durability arrangement is three
 # scripts and two tests, all tracked in this repository. The live half is not:
 # the hermes cron jobs, the copied scripts under ~/.hermes/scripts/, the
-# head-coordinator's "Board health" section in its SOUL.md, and one key in
-# ~/.hermes/config.yaml. All of that lives under ~/.hermes, which is not
-# tracked and not backed up -- Kopia only snapshots the *server's* /persist. So a
-# rebuilt workstation, a wiped profile, or a fresh hermes upgrade silently
-# removes the wiring while the tracked scripts sit in the checkout looking fine.
+# head-coordinator's "Board health" and "Deploy gate" sections and the
+# project-auditor's "Whole-change-set deploy review" section in their SOUL.md
+# files, and one key in ~/.hermes/config.yaml. All of that lives under ~/.hermes,
+# which is not tracked and not backed up -- Kopia only snapshots the *server's*
+# /persist. So a rebuilt workstation, a wiped profile, or a fresh hermes upgrade
+# silently removes the wiring while the tracked scripts sit in the checkout
+# looking fine.
 #
 # This script puts it back, idempotently. Run it after a hermes upgrade, after
 # restoring a profile, or on a new machine. It is safe to re-run: existing cron
@@ -29,6 +31,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HERMES_ROOT="${HERMES_ROOT:-$HOME/.hermes}"
 HERMES_BOARD="${HERMES_BOARD:-nixhomeserver}"
 COORDINATOR_SOUL="$HERMES_ROOT/profiles/head-coordinator/SOUL.md"
+AUDITOR_SOUL="$HERMES_ROOT/profiles/project-auditor/SOUL.md"
 CONFIG="$HERMES_ROOT/config.yaml"
 
 # Stale detection is off by default upstream (0), which means a worker that is
@@ -163,6 +166,42 @@ fi
 # the streak from zero.
 if [[ -f "$COORDINATOR_SOUL" ]] && ! grep -q 'kanban-retry-breaker.sh' "$COORDINATOR_SOUL"; then
   changed "head-coordinator SOUL.md does not mention kanban-retry-breaker.sh"
+fi
+
+# ---------------------------------------------------------------------------
+# 3b. Deploy gate policy
+# ---------------------------------------------------------------------------
+#
+# The guarded-deploy gate is a card workflow, not a cron job: head-coordinator
+# creates ONE whole-change-set review card for project-auditor plus the paired
+# decision card assigned to itself, then on a clean review runs the guarded test
+# and switch itself. Neither section is code, so it is not installed from here;
+# the canonical wording is the "### Deploy gate" subsection of the "Kanban Card
+# Authoring" section in AGENTS.md. These checks exist so a wiped profile or a
+# hermes upgrade that drops the sections is caught, instead of the fleet quietly
+# reverting to deploying on the sum of per-card audits.
+
+check_deploy_section() {
+  local soul="$1" heading="$2" label="$3"
+  if [[ ! -f "$soul" ]]; then
+    note "  MISSING: $soul"
+    drift=$((drift + 1))
+  elif grep -qF "$heading" "$soul"; then
+    ok "$label has the '$heading' section"
+  elif [[ "$check_only" == true ]]; then
+    changed "$label is missing the '$heading' section"
+  else
+    note "  ACTION: add the '$heading' section to $soul by hand."
+    note "  Canonical wording: '### Deploy gate' in AGENTS.md (repo)."
+    drift=$((drift + 1))
+  fi
+}
+
+check_deploy_section "$COORDINATOR_SOUL" '## Deploy gate' "head-coordinator SOUL.md"
+check_deploy_section "$AUDITOR_SOUL" '## Whole-change-set deploy review' "project-auditor SOUL.md"
+
+if [[ -f "$COORDINATOR_SOUL" ]] && ! grep -q 'nix run .#deploy' "$COORDINATOR_SOUL"; then
+  changed "head-coordinator SOUL.md does not name the guarded deploy command"
 fi
 
 # ---------------------------------------------------------------------------

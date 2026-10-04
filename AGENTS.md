@@ -223,6 +223,25 @@ the ask, never above it and never inside the question.
 | `principal-consultant` | Never assign. Its handoff goes **to** `head-coordinator` with the plan attached; `Change:` names the plan path, never re-derives it. |
 | any lane, gate | The gate body above. |
 
+### Deploy gate
+
+A deploy applies a whole change set, so it is reviewed as a whole and carried
+out by `head-coordinator`, never by the reviewer.
+
+```
+Review: <range>          assignee project-auditor, workspace worktree
+Decide: deploy <range>   assignee head-coordinator, parents=[review]
+```
+
+* The review body names the revision range (`<last deployed hash>`..`HEAD`) and
+  the intended action; the review covers the whole range at once.
+* Clean review -> `head-coordinator` runs the guarded test then switch itself.
+  Rejected -> it routes fixes and opens a fresh review of the new range.
+* A human gate is only for a dangerous or architecturally/functionally
+  unintended change; a green test is otherwise authority to switch.
+* The guarded deploy is the one action `head-coordinator` performs; it never
+  implements. Reviewers never run the test or switch.
+
 ### Worked example
 
 A real gate was one 470-word paragraph opening `HUMAN APPROVAL GATE; do not
