@@ -35,6 +35,7 @@ let
     "/var/lib/bonsai"
     "/var/lib/browsertrix-downloader"
     "/var/lib/calibre-web"
+    "/var/lib/searxng"
     "/var/lib/chaptarr"
     "/var/lib/cool"
     "/var/lib/filestash"

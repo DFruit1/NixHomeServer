@@ -17,14 +17,26 @@ use rmcp::{
     service::RequestContext,
     ErrorData, RoleServer, ServerHandler,
 };
+mod office;
+
+use office::Converter;
 use serde::{Deserialize, Serialize};
-use std::{env, sync::Arc, time::Duration};
+use std::{env, path::PathBuf, sync::Arc, time::Duration};
+
+#[derive(Debug, Deserialize)]
+struct ConvertDocumentParams {
+    #[serde(default)]
+    path: String,
+}
 
 #[derive(Clone)]
 struct Config {
     searxng_base: String,
     searxng_timeout: Duration,
     max_results: usize,
+    collabora_base: String,
+    collabora_timeout: Duration,
+    shared_root: PathBuf,
 }
 
 #[derive(Debug, Deserialize)]
@@ -51,6 +63,32 @@ const WEB_SEARCH_DESCRIPTION: &str = "Search the web through this host's self-ho
 instance. Returns ranked results with titles, URLs and snippets. Use it for current events, \
 for facts you are unsure about, or for anything that needs a source. Prefer the user's own files \
 and context when the question is about them.";
+
+const CONVERT_DOCUMENT_DESCRIPTION: &str = "Convert an office document to text so it can be \
+read. Accepts a path relative to the shared directory and supports docx, odt, rtf, doc, xlsx, \
+ods, pptx and odp. Spreadsheets come back as CSV, everything else as plain text. Use this instead \
+of guessing at the contents of a file the user mentions.";
+
+fn convert_document_schema() -> Arc<JsonObject> {
+    let mut properties = serde_json::Map::new();
+    properties.insert(
+        "path".to_string(),
+        serde_json::json!({
+            "type": "string",
+            "description": "Path to the document, relative to the shared directory. Absolute paths and parent traversal are rejected."
+        }),
+    );
+    Arc::new(
+        serde_json::json!({
+            "type": "object",
+            "properties": properties,
+            "required": ["path"],
+        })
+        .as_object()
+        .cloned()
+        .expect("schema literal is an object"),
+    )
+}
 
 fn web_search_schema() -> Arc<JsonObject> {
     let mut properties = serde_json::Map::new();
@@ -173,9 +211,33 @@ async fn searxng_search(
 #[derive(Clone)]
 struct Server {
     config: Arc<Config>,
+    converter: Arc<Converter>,
 }
 
 impl Server {
+    async fn run_convert_document(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> Result<CallToolResponse, ErrorData> {
+        let raw = arguments
+            .map(serde_json::Value::Object)
+            .unwrap_or(serde_json::Value::Object(Default::default()));
+        let params: ConvertDocumentParams = serde_json::from_value(raw)
+            .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
+
+        let resolved = office::resolve_within(&self.config.shared_root, &params.path)
+            .map_err(|message| ErrorData::invalid_params(message, None))?;
+
+        let payload = self
+            .converter
+            .convert(&resolved)
+            .await
+            .map_err(|message| ErrorData::internal_error(message, None))?;
+
+        let content = ContentBlock::json(payload)?;
+        Ok(CallToolResult::success(vec![content]).into())
+    }
+
     async fn run_web_search(
         &self,
         arguments: Option<JsonObject>,
@@ -236,11 +298,14 @@ impl ServerHandler for Server {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
-        Ok(ListToolsResult::with_all_items(vec![Tool::new(
-            "web_search",
-            WEB_SEARCH_DESCRIPTION,
-            web_search_schema(),
-        )]))
+        Ok(ListToolsResult::with_all_items(vec![
+            Tool::new("web_search", WEB_SEARCH_DESCRIPTION, web_search_schema()),
+            Tool::new(
+                "convert_document",
+                CONVERT_DOCUMENT_DESCRIPTION,
+                convert_document_schema(),
+            ),
+        ]))
     }
 
     async fn call_tool(
@@ -250,6 +315,7 @@ impl ServerHandler for Server {
     ) -> Result<CallToolResponse, ErrorData> {
         match request.name.as_ref() {
             "web_search" => self.run_web_search(request.arguments).await,
+            "convert_document" => self.run_convert_document(request.arguments).await,
             other => Err(ErrorData::invalid_params(
                 format!("unknown tool: {other}"),
                 None,
@@ -282,10 +348,26 @@ fn parse_env() -> Result<Config, String> {
         Err(_) => 8,
     };
 
+    let collabora_base = env::var("AI_TOOLS_COLLABORA_URL")
+        .map_err(|_| "AI_TOOLS_COLLABORA_URL is not set".to_string())?
+        .trim_end_matches('/')
+        .to_string();
+    if !(collabora_base.starts_with("http://") || collabora_base.starts_with("https://")) {
+        return Err("AI_TOOLS_COLLABORA_URL must be an http(s) URL".to_string());
+    }
+    let collabora_timeout = Duration::from_secs(90);
+
+    let shared_root = PathBuf::from(
+        env::var("AI_TOOLS_SHARED_ROOT").map_err(|_| "AI_TOOLS_SHARED_ROOT is not set".to_string())?,
+    );
+
     Ok(Config {
         searxng_base,
         searxng_timeout,
         max_results: max_results.clamp(1, 25),
+        collabora_base,
+        collabora_timeout,
+        shared_root,
     })
 }
 
@@ -293,8 +375,10 @@ fn parse_env() -> Result<Config, String> {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listen = env::var("AI_TOOLS_LISTEN")?;
     let config = Arc::new(parse_env()?);
+    let converter = Arc::new(Converter::new(&config.collabora_base, config.collabora_timeout)?);
     let server = Server {
         config: Arc::clone(&config),
+        converter,
     };
 
     let mcp = StreamableHttpService::new(
@@ -331,6 +415,9 @@ mod tests {
             searxng_base: "http://127.0.0.1:8080".to_string(),
             searxng_timeout: Duration::from_secs(5),
             max_results: 8,
+            collabora_base: "http://127.0.0.1:9980".to_string(),
+            collabora_timeout: Duration::from_secs(5),
+            shared_root: std::env::temp_dir(),
         }
     }
 
@@ -338,6 +425,7 @@ mod tests {
     async fn rejects_an_empty_query() {
         let server = Server {
             config: Arc::new(test_config()),
+            converter: Arc::new(Converter::new("http://127.0.0.1:9980", Duration::from_secs(5)).unwrap()),
         };
         let mut arguments = JsonObject::new();
         arguments.insert("query".to_string(), serde_json::json!("   "));
@@ -349,6 +437,7 @@ mod tests {
     async fn rejects_a_missing_query() {
         let server = Server {
             config: Arc::new(test_config()),
+            converter: Arc::new(Converter::new("http://127.0.0.1:9980", Duration::from_secs(5)).unwrap()),
         };
         assert!(server.run_web_search(Some(JsonObject::new())).await.is_err());
         assert!(server.run_web_search(None).await.is_err());

@@ -80,6 +80,40 @@ let
       guardedServices = [ "ipfs" "ipfs-alias" "fdroid-ipfs-publish" ];
       persistencePaths = [ "/var/lib/ipfs-distribution" ];
     };
+    ai-tools = {
+      modules = [ ../../modules/ai-tools ];
+      disable = { repo.aiTools.enable = lib.mkForce false; };
+      registryName = "ai-tools";
+      services = [ "ai-tools" ];
+      timers = [ ];
+      hosts = [ ];
+      gatewayApps = [ ];
+      oauthClients = [ ];
+      kanidmGroups = [ ];
+      users = [ "ai-tools" ];
+      groups = [ "ai-tools" ];
+      secrets = [ ];
+      backupApps = [ ];
+      guardedServices = [ ];
+      persistencePaths = [ ];
+    };
+    searxng = {
+      modules = [ ../../modules/searxng ];
+      disable = { repo.searxng.enable = lib.mkForce false; };
+      registryName = "searxng";
+      services = [ "searxng" ];
+      timers = [ ];
+      hosts = [ ];
+      gatewayApps = [ ];
+      oauthClients = [ ];
+      kanidmGroups = [ ];
+      users = [ "searxng" ];
+      groups = [ "searxng" ];
+      secrets = [ ];
+      backupApps = [ ];
+      guardedServices = [ ];
+      persistencePaths = [ "var/lib/searxng" ];
+    };
     qwen-27b = {
       modules = [ ../../modules/qwen-27b ];
       disable = { repo.qwen27b.enable = lib.mkForce false; };

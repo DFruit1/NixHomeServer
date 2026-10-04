@@ -32,10 +32,15 @@ in
           "AI_TOOLS_SEARXNG_URL=${cfg.searxngUrl}"
           "AI_TOOLS_SEARXNG_TIMEOUT_SECS=${toString cfg.searxngTimeoutSecs}"
           "AI_TOOLS_MAX_RESULTS=${toString cfg.maxResults}"
+          "AI_TOOLS_COLLABORA_URL=${cfg.collaboraUrl}"
+          "AI_TOOLS_SHARED_ROOT=${cfg.sharedRoot}"
         ];
         NoNewPrivileges = true;
         PrivateTmp = true;
         ProtectSystem = "strict";
+        # convert_document reads documents from the shared root only. The unit
+        # stays read-only so nothing it converts can be modified.
+        ReadOnlyPaths = [ cfg.sharedRoot ];
         ProtectHome = true;
         ProtectClock = true;
         ProtectControlGroups = true;
@@ -52,8 +57,8 @@ in
           "AF_UNIX"
         ];
         SystemCallArchitectures = "native";
-        MemoryHigh = "256M";
-        MemoryMax = "512M";
+        MemoryHigh = "512M";
+        MemoryMax = "1G";
         MemorySwapMax = "0";
         Nice = 10;
         CPUWeight = 20;
