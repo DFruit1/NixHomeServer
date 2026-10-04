@@ -82,13 +82,26 @@ shared persistent cluster. MinIO stores events/media; Redis persists pending
 queue work with AOF and uses `noeviction` centrally to preserve that work.
 
 Backup preparation contributes `dumps/langfuse.pgdump` and a consistent
-`dumps/langfuse-clickhouse.zip` using ClickHouse's BACKUP command. Object
-storage and queue state remain within the existing `/persist` Kopia snapshot.
-Restore logical database backups rather than treating a live ClickHouse parts
-copy as a consistent backup. Database snapshots are separate transactions;
-quiesce web/worker ingestion when an exact coordinated restore point is needed.
-Retain the encrypted secret: its salt, encryption key, and project credentials
-must agree with the restored databases.
+`dumps/langfuse-clickhouse.zip` using ClickHouse's BACKUP command. MinIO
+objects are not reconstructible from the databases, so they stay in the
+`/persist` Kopia snapshot and only ClickHouse's parts directory is excluded
+from it. Restore logical database backups rather than treating a live
+ClickHouse parts copy as a consistent backup. Database snapshots are separate
+transactions; quiesce web/worker ingestion when an exact coordinated restore
+point is needed. Retain the encrypted secret: its salt, encryption key, and
+project credentials must agree with the restored databases.
+
+A failed ClickHouse backup does not abort the run: the PostgreSQL dump is
+still published. It also does not silently lose ClickHouse coverage.
+Successful generations are pruned to a fixed count, so a bare generation would
+eventually evict the last restorable archive. Instead the previous successful
+generation's archive is carried forward after its recorded `SHA256SUMS` line
+verifies, and the generation gains
+`metadata/degraded-langfuse-clickhouse.json` naming the reason. If there is no
+previous generation, or its archive fails verification, nothing is carried
+forward and the marker records that too. A restorable Langfuse restore needs
+`dumps/langfuse-clickhouse.zip` present in the chosen generation; if the
+marker is present, that archive is older than the generation that recorded it.
 
 Removing `langfuse` from `applications.enabled` removes its runtime, routes,
 identity registration, and secret materialization without deleting retained
