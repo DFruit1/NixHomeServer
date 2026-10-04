@@ -2,9 +2,9 @@
 , stdenvNoCC
 , nodejs
 , pnpm
-, fetchPnpmDeps
 , pnpmConfigHook
 , makeWrapper
+, pkgs
 ,
 }:
 
@@ -26,6 +26,9 @@ let
       in
       lib.cleanSourceFilter path type && !excluded;
   };
+  # pnpmDeps is keyed only on package.json + pnpm-lock.yaml, so editing app
+  # source (or src-tauri) does not invalidate the dependency fetch.
+  mkPnpmDeps = import ../../../rust/lib/mk-pnpm-deps.nix { inherit lib pkgs; };
 in
 stdenvNoCC.mkDerivation (finalAttrs: {
   pname = "youtube-downloader";
@@ -38,9 +41,10 @@ stdenvNoCC.mkDerivation (finalAttrs: {
 
   inherit src;
 
-  pnpmDeps = fetchPnpmDeps {
-    inherit (finalAttrs) pname version src;
-    fetcherVersion = 3;
+  pnpmDeps = mkPnpmDeps {
+    name = finalAttrs.pname;
+    srcDir = ./.;
+    version = finalAttrs.version;
     hash = "sha256-cjG6fSRnbfEQS1Wklweur9g148U0SRiEL8hfYKvAcTA=";
   };
 

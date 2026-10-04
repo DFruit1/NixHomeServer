@@ -26,15 +26,15 @@ let
   # The shared dependency build must depend only on dependency manifests, not
   # on the workspace source. Otherwise any edit to an app .rs file invalidates
   # the single buildDepsOnly derivation and recompiles every dependency.
-  # rustfmt.toml rides along so the workspace-wide style_edition pin reaches
-  # the cargoFmt checks.
-  workspaceManifests = lib.fileset.toSource {
-    root = workspaceSrcRoot;
-    fileset = lib.fileset.unions [
-      (craneLib.fileset.cargoTomlAndLock workspaceSrcRoot)
-      (lib.fileset.fileFilter (file: file.name == "rustfmt.toml") workspaceSrcRoot)
-    ];
-  };
+  #
+  # Membership is derived from the workspace declaration in custom_apps/Cargo.toml
+  # so it can never drift from what Cargo resolves, and so manifests belonging to
+  # unrelated projects (the Tauri apps under node/apps/*/src-tauri carry their own
+  # Cargo.lock) are excluded: editing one of those must not invalidate this
+  # derivation. rustfmt.toml rides along so the workspace-wide style_edition pin
+  # reaches the cargoFmt checks.
+  manifests = import ../lib/workspace-manifests.nix { inherit lib; } { workspaceRoot = workspaceSrcRoot; };
+  workspaceManifests = manifests.source;
   cargoLock = ../../Cargo.lock;
   # buildDepsOnly checks every workspace member in one derivation, so it must
   # carry the union of the per-app build inputs (rusqlite links system sqlite).

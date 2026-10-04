@@ -33,6 +33,12 @@ in {
   ports = container.ports;
   volumes = container.volumes;
   environment = container.environment;
+  containerUser = container.user;
+  preStart = service.preStart;
+  firewallPorts = [ cfg.networking.firewall.allowedTCPPorts ]
+    ++ map (iface: cfg.networking.firewall.interfaces.${iface}.allowedTCPPorts or [ ])
+      [ f.lib.nixhomeserverSettings.${host}.networking.interfaces.lan
+        f.lib.nixhomeserverSettings.${host}.networking.interfaces.netbird ];
   serviceWants = service.wants;
   serviceAfter = service.after;
   serviceRestart = service.serviceConfig.Restart;
@@ -76,6 +82,12 @@ jq -e '
   and (.serviceName == "chaptarr")
   and (.networks == ["host"])
   and (.ports == [])
+  and (.environment.Chaptarr__Server__BindAddress == "127.0.0.1")
+  and (.chaptarrPort as $p | (.firewallPorts | flatten | index($p)) == null)
+  and (.preStart | contains("DisabledForLocalAddresses"))
+  and (.preStart | contains("PUID=%s"))
+  and (.preStart | contains("PGID=%s"))
+  and ((.containerUser // null) == null)
   and (.volumes | any(endswith(":/config")))
   and (.volumes | any(endswith(":/audiobooks")))
   and (.volumes | any(endswith(":/ebooks")))
@@ -152,6 +164,44 @@ jq -e '
 ' <<<"$chaptarr_json" >/dev/null || {
   echo "❌ Chaptarr is missing a pinned container, private route, durable state, dual-format storage, or media-automation bootstrap."
   jq . <<<"$chaptarr_json"
+  exit 1
+}
+
+# The loopback bind and the firewall assertion are only meaningful together:
+# prove the assertion rejects a real LAN bypass and tolerates unrelated ports
+# owned by other apps.
+chaptarr_assertion_json="$(NIXHOMESERVER_TEST_HOST="$host" flake_eval_json '
+  host = builtins.getEnv "NIXHOMESERVER_TEST_HOST";
+  base = builtins.getAttr host f.nixosConfigurations;
+  settings = f.lib.nixhomeserverSettings.${host};
+  flatten = lists: builtins.foldl'"'"' (acc: xs: acc ++ xs) [ ] lists;
+  check = config: let
+    chaptarrPort = settings.networking.ports.chaptarr;
+    firewallPortLists = [
+      config.networking.firewall.allowedTCPPorts
+      (config.networking.firewall.interfaces.${settings.networking.interfaces.lan}.allowedTCPPorts or [ ])
+      (config.networking.firewall.interfaces.${settings.networking.interfaces.netbird}.allowedTCPPorts or [ ])
+    ];
+  in !(builtins.elem chaptarrPort (flatten firewallPortLists));
+  mk = extra: (base.extendModules { modules = [ extra ]; }).config;
+in {
+  baseline = check (mk { });
+  lanOpen = check (mk { networking.firewall.interfaces.${settings.networking.interfaces.lan}.allowedTCPPorts = [ settings.networking.ports.chaptarr ]; });
+  globalOpen = check (mk { networking.firewall.allowedTCPPorts = [ settings.networking.ports.chaptarr ]; });
+  netbirdOpen = check (mk { networking.firewall.interfaces.${settings.networking.interfaces.netbird}.allowedTCPPorts = [ settings.networking.ports.chaptarr ]; });
+  unrelatedAppPorts = check (mk { networking.firewall.allowedTCPPorts = [ 22 8096 ]; });
+}
+')"
+
+jq -e '
+  .baseline
+  and (.lanOpen | not)
+  and (.globalOpen | not)
+  and (.netbirdOpen | not)
+  and .unrelatedAppPorts
+' <<<"$chaptarr_assertion_json" >/dev/null || {
+  echo "❌ Chaptarr's firewall assertion does not reject a LAN auth bypass, or rejects ports owned by other apps."
+  jq . <<<"$chaptarr_assertion_json"
   exit 1
 }
 

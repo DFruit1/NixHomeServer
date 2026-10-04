@@ -2,10 +2,10 @@
 , stdenvNoCC
 , nodejs
 , pnpm
-, fetchPnpmDeps
 , pnpmConfigHook
 , makeWrapper
 , jq
+, pkgs
 ,
 }:
 
@@ -31,6 +31,9 @@ let
       in
       lib.cleanSourceFilter path type && !excluded;
   };
+  # pnpmDeps is keyed only on package.json + pnpm-lock.yaml, so editing app
+  # source does not invalidate the dependency fetch.
+  mkPnpmDeps = import ../../../rust/lib/mk-pnpm-deps.nix { inherit lib pkgs; };
 in
 stdenvNoCC.mkDerivation (finalAttrs: {
   pname = "homepage";
@@ -43,9 +46,10 @@ stdenvNoCC.mkDerivation (finalAttrs: {
 
   inherit src;
 
-  pnpmDeps = fetchPnpmDeps {
-    inherit (finalAttrs) pname version src;
-    fetcherVersion = 3;
+  pnpmDeps = mkPnpmDeps {
+    name = finalAttrs.pname;
+    srcDir = ./.;
+    version = finalAttrs.version;
     hash = "sha256-SP2WZUkRAj32GBjwXgnhjfKD1t+qr3XXAsDiZaAviaU=";
   };
 

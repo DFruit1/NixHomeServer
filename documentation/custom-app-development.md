@@ -103,13 +103,17 @@ which `build-android.sh` injects for the build and restores afterwards.
 ## Package Manager
 
 Use `pnpm` for custom frontend apps. The repo already packages
-`youtube-downloader` with `fetchPnpmDeps`, and `mail-archive-ui` follows that
-same reproducible path.
+`youtube-downloader` and `mail-archive-ui` with the shared
+`custom_apps/rust/lib/mk-pnpm-deps.nix` helper, which keys the dependency fetch
+on `package.json` and `pnpm-lock.yaml` only.
 
 For NixOS 26.05 and newer, do not use `node2nix`, `pkgs.nodePackages`, or
 Corepack-dependent builds for new custom apps. Package pnpm projects with
-top-level `fetchPnpmDeps`, `pnpmConfigHook`, and an explicit `pnpm` entry in
-`nativeBuildInputs`. The default `nodejs` package is Node 24 LTS, so pin a
-specific `nodejs_*` only when upstream cannot run on Node 24.
+`mkPnpmDeps`, `pnpmConfigHook`, and an explicit `pnpm` entry in
+`nativeBuildInputs`. Pass `srcDir = ./.` and keep the full application source on
+the derivation's `src`; the helper narrows the dependency source itself so
+application-only edits do not invalidate the dependency fetch. The default
+`nodejs` package is Node 24 LTS, so pin a specific `nodejs_*` only when upstream
+cannot run on Node 24.
 
 Do not add Bun unless a future app has a specific Bun-only requirement.

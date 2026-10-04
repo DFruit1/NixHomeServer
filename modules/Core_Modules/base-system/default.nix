@@ -175,21 +175,21 @@ in
     '';
   };
 
-  security.sudo.extraRules = [
-    {
-      users = [ localAdminUser ];
-      commands = [
-        {
-          # Guarded deploy and bootstrap scripts still invoke ordinary sudo
-          # for nixos-rebuild, systemd status, and detached switch activation.
-          # This broad deploy contract is tracked separately from identity tooling
-          # while local admin hardening is handled in deploy flow policy.
-          command = "ALL";
-          options = [ "NOPASSWD" ];
-        }
-      ];
-    }
-  ];
+  # Selected by vars.identity.localAdminSudo; see lib/local-admin-sudo.nix for
+  # the policy contract and the recovery trade-off each mode carries.
+  security.sudo.wheelNeedsPassword = vars.localAdminSudoPolicy.wheelNeedsPassword;
+
+  security.sudo.extraRules = vars.localAdminSudoPolicy.extraRules;
+
+  # The policy this generation is running under, readable without privilege so
+  # scripts/deploy.sh can tell a bootstrap host that may still accept
+  # non-interactive sudo from one that is already restricted. It is written by
+  # the activation, so it always describes the running system rather than the
+  # checkout being deployed.
+  environment.etc."nixhomeserver/local-admin-sudo-policy" = {
+    mode = "0444";
+    text = vars.localAdminSudoPolicy.policy + "\n";
+  };
 
   environment.systemPackages = systemPackages;
 
@@ -204,7 +204,14 @@ in
       trusted-public-keys = [
         "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
       ];
-      trusted-users = [ "root" localAdminUser ];
+      # Trusted Nix daemon membership is root-equivalent in its own right
+      # (trusted users may import unsigned NARs and act on the store), so the
+      # selected sudo policy gates it: gating sudo alone would leave the
+      # account a passwordless root-equivalent path to the Nix store. Only the
+      # bootstrap contract, which is root-equivalent by design, keeps the local
+      # admin trusted.
+      trusted-users =
+        [ "root" ] ++ lib.optional vars.localAdminSudoPolicy.trustLocalAdmin localAdminUser;
       auto-optimise-store = false;
       builders-use-substitutes = true;
       # Keep the daemon capable of accepting a later one-shot or newly selected
@@ -219,6 +226,24 @@ in
 
   nix.gc.automatic = false;
   nix.optimise.automatic = false;
+
+  systemd.tmpfiles.rules = [
+    # Deployment archives use the fixed sibling /var/lib/nixhomeserver-deploy-archives,
+    # never the root-only deploy-state ancestry reasserted by the stamp writer.
+    # They are staged in a dedicated, owner-only namespace and
+    # removed immediately by the deploy helper on both the normal and failure
+    # paths. A successful upload can still be orphaned when the SSH session
+    # drops before that cleanup runs, so the namespace expires contents
+    # declaratively here. 48h is longer than the 26h transaction lock lifetime,
+    # so an in-flight deploy is never reaped out from under its own executor.
+    #
+    # The age is mtime-only (`mM`) on purpose: with the default age-by, a
+    # fresh parent directory keeps an aged archive alive indefinitely, because
+    # cleaning is refused while any contained entry is recent. mtime alone still
+    # reclaims an orphan, and entries systemd does not remove are unlinked
+    # rather than followed, so a planted symlink cannot reach outside.
+    "d ${config.repo.deploy.archiveStagingDir} 0700 ${vars.localAdminUser} ${vars.localAdminUser} mM:48h -"
+  ];
 
   systemd.services.nixhomeserver-nix-gc = {
     description = "Capacity-triggered Nix store garbage collection";
