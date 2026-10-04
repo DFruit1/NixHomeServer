@@ -1,7 +1,6 @@
 {
   ports = {
     aiTools = 8097;
-    searxng = 8098;
   };
   homepage = { config, vars }: [
     {
