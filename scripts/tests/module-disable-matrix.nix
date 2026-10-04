@@ -112,7 +112,7 @@ let
       secrets = [ ];
       backupApps = [ ];
       guardedServices = [ ];
-      persistencePaths = [ "var/lib/searxng" ];
+      persistencePaths = [ "/var/lib/searxng" ];
     };
     qwen-27b = {
       modules = [ ../../modules/qwen-27b ];
