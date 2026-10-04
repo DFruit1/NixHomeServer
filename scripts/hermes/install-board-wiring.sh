@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Re-establish the hermes board-health, retry-breaker and durability wiring on
-# this machine.
+# Re-establish the hermes board-health, retry-breaker, durability and SimpleX
+# daemon wiring on this machine.
 #
 # Why this exists
 # ---------------
@@ -20,6 +20,13 @@
 # re-copied only when it differs from the tracked one, a configuration file is
 # edited rather than rewritten, and a cron job that is already present is left
 # alone rather than duplicated.
+#
+# It also installs the SimpleX Chat daemon the messaging adapter talks to: the
+# content-hashed binary from scripts/hermes/simplex-chat.nix, the supervisor
+# script, and the XDG autostart entry that starts it at login. That daemon runs
+# here rather than on the NixOS server because it holds the bot's own chat
+# identity, which belongs to the workstation whose operator messages it and
+# cannot be regenerated if lost.
 #
 # What it does *not* do is repair an existing cron job. Presence is detected by
 # name, so a job that exists with the wrong schedule, script or workdir is
@@ -487,6 +494,176 @@ else
       --failure-deliver local >/dev/null
     changed "created cron 'kanban retry breaker' (default, every 15m)"
   fi
+fi
+
+# ---------------------------------------------------------------------------
+# 5. The SimpleX Chat daemon the messaging adapter talks to
+# ---------------------------------------------------------------------------
+#
+# The adapter is only a WebSocket client, so nothing in hermes starts or
+# supervises the daemon. On this host (Void Linux, no systemd) the wiring is a
+# content-hashed binary plus a flock-guarded restart loop, launched from an XDG
+# autostart entry -- the same arrangement `hermes-qwen-tunnel` already uses, and
+# the reason that script exists.
+#
+# The daemon state deliberately lives outside ~/.hermes: it is a chat identity,
+# not configuration, and it must survive a hermes profile reset. It is also the
+# one piece here that cannot be regenerated, so this installer does not create it.
+# The supervisor script seeds the profile on first run and the daemon seeds it
+# from --user-display-name, because an empty database makes simplex-chat ask for
+# a display name on stdin and exit -- a half-seeded profile looks wired while the
+# adapter fails to connect.
+
+SIMPLEX_BIN_LINK="$HERMES_ROOT/simplex-chat"
+SIMPLEX_AUTOSTART_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/autostart"
+SIMPLEX_AUTOSTART_ENTRY="$SIMPLEX_AUTOSTART_DIR/hermes-simplex-chat.desktop"
+# ~/.local/bin, not the checkout: this autostart entry outlives every worktree, and
+# a worker deletes its worktree on completion. Same place hermes-gateway-start and
+# hermes-qwen-tunnel live.
+SIMPLEX_DAEMON_PATH="${HERMES_BIN_DIR:-$HOME/.local/bin}/hermes-simplex-chat"
+SIMPLEX_DAEMON_SRC="$REPO_ROOT/scripts/hermes/simplex-chat-daemon.sh"
+# Overridable so the wiring test can assert the build happens without running one.
+SIMPLEX_NIX_BUILD="${SIMPLEX_NIX_BUILD:-nix-build}"
+SIMPLEX_NIX_EXPR="${SIMPLEX_NIX_EXPR:-$REPO_ROOT/scripts/hermes/simplex-chat.nix}"
+
+write_simplex_autostart() {
+  cat >"$SIMPLEX_AUTOSTART_ENTRY" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Name=Hermes SimpleX Chat daemon
+Comment=Local simplex-chat daemon for the Hermes SimpleX messaging adapter (127.0.0.1:5225)
+Exec=$SIMPLEX_DAEMON_PATH
+Terminal=false
+X-GNOME-Autostart-enabled=true
+DESKTOP
+}
+
+# The binary: a nix derivation pinned by content hash, not a download at install
+# time. Building it is slow the first time and free afterwards, so a failure here
+# is reported rather than fatal -- this daemon is one messaging platform, and it
+# must not take the board's cron wiring down with it when the network is down.
+if [[ ! -x "$SIMPLEX_BIN_LINK/bin/simplex-chat" ]]; then
+  if [[ "$check_only" == true ]]; then
+    changed "SimpleX daemon binary not installed at $SIMPLEX_BIN_LINK"
+  elif ! "$SIMPLEX_NIX_BUILD" "$SIMPLEX_NIX_EXPR" \
+      --out-link "$SIMPLEX_BIN_LINK" >/dev/null 2>&1; then
+    unrepaired "could not build $SIMPLEX_NIX_EXPR; the SimpleX adapter will fail to connect"
+  else
+    changed "built the pinned SimpleX daemon at $SIMPLEX_BIN_LINK"
+  fi
+else
+  ok "SimpleX daemon binary $SIMPLEX_BIN_LINK ($(readlink -f "$SIMPLEX_BIN_LINK/bin/simplex-chat"))"
+fi
+
+if [[ -f "$SIMPLEX_DAEMON_PATH" ]] && cmp -s "$SIMPLEX_DAEMON_SRC" "$SIMPLEX_DAEMON_PATH"; then
+  ok "SimpleX daemon supervisor current at $SIMPLEX_DAEMON_PATH"
+else
+  if [[ "$check_only" == true ]]; then
+    changed "$SIMPLEX_DAEMON_PATH is absent or differs from the tracked supervisor"
+  else
+    install -m 0755 "$SIMPLEX_DAEMON_SRC" "$SIMPLEX_DAEMON_PATH"
+    changed "installed the SimpleX daemon supervisor to $SIMPLEX_DAEMON_PATH"
+  fi
+fi
+
+if [[ -f "$SIMPLEX_AUTOSTART_ENTRY" ]] && grep -qF "Exec=$SIMPLEX_DAEMON_PATH" "$SIMPLEX_AUTOSTART_ENTRY"; then
+  ok "XDG autostart entry starts the SimpleX daemon at login"
+else
+  if [[ "$check_only" == true ]]; then
+    changed "XDG autostart entry $SIMPLEX_AUTOSTART_ENTRY is absent or points elsewhere"
+  else
+    mkdir -p "$SIMPLEX_AUTOSTART_DIR"
+    write_simplex_autostart
+    changed "installed XDG autostart entry $SIMPLEX_AUTOSTART_ENTRY"
+  fi
+fi
+
+# The adapter needs SIMPLEX_WS_URL in every profile's .env, and two values that
+# are specific to this machine's SimpleX identity and cannot live in git:
+#
+#   SIMPLEX_ALLOWED_USERS  numeric contactId of the operator. Matched on the
+#                          generated ID, never on the display name, because a
+#                          contact chooses their own name.
+#   SIMPLEX_HOME_CHANNEL   where cron and notification delivery lands. Without it
+#                          a blocker notification has no target and silently goes
+#                          nowhere.
+#
+# Both are read from the environment rather than hardcoded, and their absence is
+# drift rather than a silent skip: an adapter with no allowlist denies every
+# contact, which looks exactly like a broken daemon from the outside.
+#
+# SIMPLEX_ALLOW_ALL_USERS is deliberately not wired. It disables the allowlist,
+# and an unauthenticated bot on a channel that is supposed to be authenticated
+# is worse than no bot at all.
+SIMPLEX_ALLOWED_USERS="${SIMPLEX_ALLOWED_USERS:-}"
+SIMPLEX_HOME_CHANNEL="${SIMPLEX_HOME_CHANNEL:-}"
+
+write_simplex_env() {
+  local profile_dir="$1" env_file="$1/.env" want_allow="$2" want_home="$3"
+  local tmp
+  tmp="$(mktemp)"
+  # Drop any prior SIMPLEX_* block this installer wrote, then re-emit it, so a
+  # changed contactId replaces the old one instead of both being read.
+  grep -v '^SIMPLEX_' "$env_file" >"$tmp" 2>/dev/null || true
+  {
+    printf '\n# SimpleX Chat (Hermes messaging adapter). Written by\n'
+    printf '# scripts/hermes/install-board-wiring.sh; edit there, not here.\n'
+    printf 'SIMPLEX_WS_URL=ws://127.0.0.1:%s\n' "${SIMPLEX_PORT:-5225}"
+    [[ -n "$want_allow" ]] && printf 'SIMPLEX_ALLOWED_USERS=%s\n' "$want_allow"
+    [[ -n "$want_home" ]] && printf 'SIMPLEX_HOME_CHANNEL=%s\n' "$want_home"
+    printf 'SIMPLEX_HOME_CHANNEL_NAME=%s\n' "${SIMPLEX_HOME_CHANNEL_NAME:-Home}"
+  } >>"$tmp"
+  install -m 0600 "$tmp" "$env_file"
+  rm -f "$tmp"
+}
+
+check_simplex_env() {
+  local env_file="$1" label="$2" want_allow="$3" want_home="$4"
+  local have_allow have_home
+  have_allow="$(grep -oE '^SIMPLEX_ALLOWED_USERS=.*' "$env_file" 2>/dev/null || true)"
+  have_home="$(grep -oE '^SIMPLEX_HOME_CHANNEL=[0-9]+' "$env_file" 2>/dev/null || true)"
+  if [[ "$have_allow" != "SIMPLEX_ALLOWED_USERS=$want_allow" || "$have_home" != "SIMPLEX_HOME_CHANNEL=$want_home" ]]; then
+    changed "$label .env has SIMPLEX_ALLOWED_USERS='${have_allow#SIMPLEX_ALLOWED_USERS=}' SIMPLEX_HOME_CHANNEL='${have_home#SIMPLEX_HOME_CHANNEL=}'; want '${want_allow}' / '${want_home}'"
+    return 1
+  fi
+  ok "$label .env carries the SimpleX allowlist and home channel"
+  return 0
+}
+
+if [[ -n "$SIMPLEX_ALLOWED_USERS" || -n "$SIMPLEX_HOME_CHANNEL" ]]; then
+  for profile_dir in "$HERMES_ROOT"/profiles/*/; do
+    [[ -d "$profile_dir" ]] || continue
+    profile="${profile_dir%/}"; profile="${profile##*/}"
+    env_file="$profile_dir/.env"
+    [[ -f "$env_file" ]] || : >"$env_file"
+    if [[ "$check_only" == true ]]; then
+      check_simplex_env "$env_file" "$profile" "$SIMPLEX_ALLOWED_USERS" "$SIMPLEX_HOME_CHANNEL"
+    else
+      write_simplex_env "$profile_dir" "$SIMPLEX_ALLOWED_USERS" "$SIMPLEX_HOME_CHANNEL"
+      changed "wrote the SimpleX env block into $profile_dir/.env"
+    fi
+  done
+else
+  # No contact ID on this machine yet. That is a real gap -- the adapter denies
+  # every contact without SIMPLEX_ALLOWED_USERS -- so it is reported, once, and
+  # the SIMPLEX_WS_URL alone is still written so the daemon is reachable.
+  for profile_dir in "$HERMES_ROOT"/profiles/*/; do
+    [[ -d "$profile_dir" ]] || continue
+    profile="${profile_dir%/}"; profile="${profile##*/}"
+    env_file="$profile_dir/.env"
+    if grep -q '^SIMPLEX_WS_URL=' "$env_file" 2>/dev/null; then
+      ok "$profile .env points at the local SimpleX daemon"
+    else
+      if [[ "$check_only" == true ]]; then
+        changed "$profile .env has no SIMPLEX_WS_URL"
+      else
+        [[ -f "$env_file" ]] || : >"$env_file"
+        write_simplex_env "$profile_dir" "" ""
+        changed "wrote SIMPLEX_WS_URL into $profile_dir/.env"
+      fi
+    fi
+  done
+  unrepaired "SIMPLEX_ALLOWED_USERS and SIMPLEX_HOME_CHANNEL are unset, so every contact is denied and notifications have no target; run this installer with SIMPLEX_ALLOWED_USERS=<contactId> SIMPLEX_HOME_CHANNEL=<contactId>"
 fi
 
 # ---------------------------------------------------------------------------
