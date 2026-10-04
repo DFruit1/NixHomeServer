@@ -119,6 +119,13 @@ in
         # API-only: it answers JSON-RPC and serves no browser page. Being exempt
         # is why it needs its own handshake check in the ai-tools module test.
         "tools.${vars.domain}"
+        # Deliberately unauthenticated: ntfy topics are read-write for anyone who
+        # can reach the host, so there is no Kanidm login path for the canary to
+        # drive. The exemption is the safety control as much as the coverage
+        # exemption -- if this host were ever given credentials or a Cloudflare
+        # ingress, the exemption becomes wrong and must be removed so a real
+        # target is written for it.
+        "ntfy.${vars.domain}"
         "www.${vars.domain}"
         vars.domain
       ];

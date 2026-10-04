@@ -95,6 +95,7 @@ rec {
       "mkvmaker-import"
       "mkvmaker-import-worker"
     ];
+    ntfy = app ./ntfy "ntfy" "automation" [ ] [ ];
     offline-music = app ./offline-music "Offline Music" "media" [ ] [
       "offline-media-reconcile"
     ];
