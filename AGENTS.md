@@ -34,7 +34,12 @@ This repository defines a reproducible NixOS home-server focused on:
   deliverable is a local commit in the task's worktree or branch, and the human
   publishes. A worker that cannot finish locally records the blocker instead of
   retrying a push, and a worktree that lives in a clone the user cannot push to
-  is normal, not a blocker.
+  is normal, not a blocker. The one unattended exception is the durability sync
+  cron (`scripts/hermes/kanban-durability-sync.sh`), which mirrors board
+  databases plus `wt/*` and `master` to the configured remote as a disk-loss
+  backstop. It publishes nothing a worker authored beyond what is already a local
+  commit, but it is still a remote write and belongs in this list rather than
+  being implicit.
 * Before every commit, inspect `git status --short` and `git diff`, then stage
   only the files that belong to the change. Never `git add -A`, `git commit -a`,
   or stash/reset unrelated work. Leave pre-existing user changes untouched and
@@ -227,6 +232,11 @@ the ask, never above it and never inside the question.
 
 A deploy applies a whole change set, so it is reviewed as a whole and carried
 out by `head-coordinator`, never by the reviewer.
+
+This gate is a convention, not a mechanical check: nothing in `deploy.sh`,
+`validate-repo.sh` or `flake/checks.nix` verifies that a review card exists or
+that it covered the range being switched. `head-coordinator` is what makes it
+real, by reading the range before switching and refusing an unreviewed one.
 
 ```
 Review: <range>          assignee project-auditor, workspace worktree

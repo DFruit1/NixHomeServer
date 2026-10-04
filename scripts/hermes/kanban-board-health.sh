@@ -26,6 +26,14 @@
 # -----
 #   scripts/hermes/kanban-board-health.sh            # human/agent readable report
 #
+# An empty report means a healthy board, so anything that makes the report
+# impossible to produce has to fail loudly instead of printing nothing:
+#   0  the board was read and the findings are on stdout (possibly none)
+#   2  BOARD_HEALTH_BAD_KNOB: an environment knob is not a non-negative integer
+#   3  BOARD_HEALTH_DB_ERROR: the board database would not open, or the schema
+#      does not have the columns these detectors read
+#   4  BOARD_HEALTH_QUERY_ERROR: a detector's query failed at runtime
+#
 # Environment
 # -----------
 #   HERMES_ROOT            hermes state dir   (default: ~/.hermes)
@@ -47,9 +55,62 @@ DB="$HERMES_ROOT/kanban/boards/$HERMES_BOARD/kanban.db"
 CONFIG="$HERMES_ROOT/config.yaml"
 NOW="$(date +%s)"
 
+# Every knob below is interpolated straight into SQL, and SQL does not accept a
+# blank or a stray quote. Validate them the way the retry breaker validates its
+# threshold, and refuse the whole report rather than run a query that is about to
+# fail: a report that cannot be produced is not a report of a healthy board.
+#
+# Positive integers only, matching the breaker. Zero is refused rather than
+# honoured because these are suppression thresholds -- a 0 would make every
+# `ready` card and every `triage` card a finding on every tick, which is exactly
+# the "wakes the head-coordinator forever" failure this script is shaped to avoid.
+require_positive_int() {
+  local label="$1" value="$2"
+  [[ "$value" =~ ^[1-9][0-9]*$ ]] || {
+    echo "BOARD_HEALTH_BAD_KNOB $label='$value' (want a positive integer)" >&2
+    exit 2
+  }
+}
+
+require_positive_int BOARD_HEALTH_READY_STALE_SEC "$READY_STALE_SEC"
+require_positive_int BOARD_HEALTH_READY_OLD_SEC "$READY_OLD_SEC"
+require_positive_int BOARD_HEALTH_TRIAGE_RECURRENCES "$TRIAGE_RECURRENCES"
+
 if [[ ! -f "$DB" ]]; then
   echo "BOARD_MISSING $HERMES_BOARD (no kanban.db under $HERMES_ROOT)"
   exit 0
+fi
+
+# Why the schema is probed before it is queried
+# -------------------------------------------
+# This script is a monitor. hermes suppresses the head-coordinator's run by
+# hashing this script's stdout byte-for-byte and skipping the agent while the
+# hash is unchanged, so the *absence* of output is read as "nothing has changed",
+# and an empty report is indistinguishable from a healthy board.
+#
+# That is exactly what a broken query produces. Every query below ran inside a
+# `while ... done < <(sqlite3 ...)` loop, and a failed process substitution is
+# never reported to the caller: the loop body does not run, the loop exits zero,
+# and the script exits zero having printed nothing. A renamed column, a missing
+# table or a corrupt database therefore produced a byte-stable, empty, entirely
+# fictional report -- and byte-stability is the property the cron monitor rewards
+# most. The head-coordinator was told the board was clean, every tick, for as
+# long as the schema stayed broken.
+#
+# So the schema is probed first and every result set is captured explicitly. The
+# probe names the columns the detectors actually read, so a schema change is
+# reported as the schema error it is rather than as an empty finding list.
+probe_sql="SELECT id, assignee, status, created_at, started_at, claim_lock,
+                  worker_pid, last_heartbeat_at, block_recurrences
+             FROM tasks LIMIT 0;"
+
+if ! probe_err="$(sqlite3 "$DB" "$probe_sql" 2>&1)"; then
+  # Marker on stderr, one line, non-zero exit: a cron log grepped for
+  # BOARD_HEALTH_ surfaces it, and the monitor's empty stdout cannot be mistaken
+  # for a clean board because the job itself failed.
+  printf 'BOARD_HEALTH_DB_ERROR board=%s db=%s %s\n' \
+    "$HERMES_BOARD" "$DB" "${probe_err//$'\n'/ }" >&2
+  exit 3
 fi
 
 # Read a scalar nested under the top-level `kanban:` block of config.yaml.
@@ -70,6 +131,18 @@ kanban_config_scalar() {
 }
 
 MAX_PER_PROFILE="$(kanban_config_scalar max_in_progress_per_profile 2)"
+
+# The cap is compared with `(( ))`, so a non-integer here is arithmetic on the
+# empty string rather than an error: every comparison goes false and the
+# saturation detectors go quiet, which reads as a healthy board. Unlike the
+# environment knobs above, this one comes from a config file this script does not
+# own and must not refuse to run over, so degrade to the conservative default.
+# The default is 2 because that is what a fresh install gets and the number only
+# ever appears in output.
+[[ "$MAX_PER_PROFILE" =~ ^[0-9]+$ ]] || {
+  echo "board-health: max_in_progress_per_profile '$MAX_PER_PROFILE' is not an integer; using 2" >&2
+  MAX_PER_PROFILE=2
+}
 
 # Age buckets, not exact ages: exact seconds change every run, which would make
 # the monitor hash unstable and wake the head-coordinator on every single tick.
@@ -95,20 +168,26 @@ age_of() {
 
 emit() { printf '%s\n' "$*"; }
 
+# Capture a result set before iterating it. A `< <(sqlite3 ...)` loop cannot
+# report the query's exit status, and every detector here runs in one, so a
+# renamed column silently emptied the whole report (see above). `sql` is a
+# wrapper so every capture in this script fails the same loud way.
+sql() {
+  local out
+  if ! out="$(sqlite3 -separator '|' "$DB" "$1")"; then
+    printf 'BOARD_HEALTH_QUERY_ERROR board=%s db=%s\n' "$HERMES_BOARD" "$DB" >&2
+    exit 4
+  fi
+  printf '%s' "$out"
+}
+
 # ---------------------------------------------------------------------------
 # Board findings
 # ---------------------------------------------------------------------------
 
 # `ready` cards nobody has claimed. The dispatcher skips a lane it cannot spawn
 # into, so these accumulate silently rather than failing loudly.
-while IFS='|' read -r id assignee age; do
-  [[ -n "$id" ]] || continue
-  if ((age >= READY_OLD_SEC)); then
-    emit "READY_NO_WORKER $id ${assignee:-unassigned} age=$(age_of "$age") hard=yes"
-  else
-    emit "READY_NO_WORKER $id ${assignee:-unassigned} age=$(age_of "$age") hard=no"
-  fi
-done < <(sqlite3 -separator '|' "$DB" "
+ready_rows="$(sql "
   SELECT id,
          COALESCE(assignee, ''),
          $NOW - COALESCE(last_heartbeat_at, started_at, created_at) AS idle
@@ -116,44 +195,58 @@ done < <(sqlite3 -separator '|' "$DB" "
    WHERE status = 'ready'
      AND claim_lock IS NULL
      AND $NOW - COALESCE(last_heartbeat_at, started_at, created_at) >= $READY_STALE_SEC
-   ORDER BY idle DESC, id;")
+   ORDER BY idle DESC, id;")"
+
+while IFS='|' read -r id assignee age; do
+  [[ -n "$id" ]] || continue
+  if ((age >= READY_OLD_SEC)); then
+    emit "READY_NO_WORKER $id ${assignee:-unassigned} age=$(age_of "$age") hard=yes"
+  else
+    emit "READY_NO_WORKER $id ${assignee:-unassigned} age=$(age_of "$age") hard=no"
+  fi
+done <<<"$ready_rows"
 
 # `running` cards whose worker process is gone. After a reboot or a hard kill
 # the row survives but the pid does not; hermes reaps these itself, so this is
 # a prompt to re-dispatch rather than a data-loss alarm.
+pid_rows="$(sql "
+  SELECT DISTINCT worker_pid FROM tasks
+   WHERE status = 'running' AND worker_pid IS NOT NULL ORDER BY worker_pid;")"
+
 while read -r pid; do
   [[ "$pid" =~ ^[0-9]+$ ]] || continue
   ((pid > 1)) || continue
   kill -0 "$pid" 2>/dev/null && continue
+  dead_rows="$(sql "
+    SELECT id, COALESCE(assignee, '') FROM tasks
+     WHERE status = 'running' AND worker_pid = $pid ORDER BY id;")"
   while IFS='|' read -r id assignee; do
     [[ -n "$id" ]] || continue
     emit "DEAD_WORKER $id ${assignee:-unassigned} needs=re-dispatch"
-  done < <(sqlite3 -separator '|' "$DB" "
-    SELECT id, COALESCE(assignee, '') FROM tasks
-     WHERE status = 'running' AND worker_pid = $pid ORDER BY id;")
-done < <(sqlite3 "$DB" "
-  SELECT DISTINCT worker_pid FROM tasks
-   WHERE status = 'running' AND worker_pid IS NOT NULL ORDER BY worker_pid;")
+  done <<<"$dead_rows"
+done <<<"$pid_rows"
 
 # A profile at its concurrency cap cannot spawn, so its `ready` cards starve
 # behind long-running siblings. This is what turned a human-decision card into
 # a five-hour wait: both local-implementer slots were held by cards awaiting an
 # owner.
-while IFS='|' read -r assignee ready_n running_n; do
-  [[ -n "$assignee" ]] || continue
-  ((ready_n > 0)) || continue
-  if ((running_n >= MAX_PER_PROFILE)); then
-    emit "PROFILE_SATURATED $assignee ready=$ready_n running=$running_n cap=$MAX_PER_PROFILE"
-  fi
-done < <(sqlite3 -separator '|' "$DB" "
+saturated_rows="$(sql "
   SELECT assignee,
          SUM(CASE WHEN status = 'ready'   THEN 1 ELSE 0 END),
          SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END)
     FROM tasks
    WHERE assignee IS NOT NULL AND status IN ('ready', 'running')
    GROUP BY assignee
-   HAVING SUM(CASE WHEN status = 'ready' THEN 1 ELSE 0 END) > 0
-   ORDER BY assignee;")
+  HAVING SUM(CASE WHEN status = 'ready' THEN 1 ELSE 0 END) > 0
+   ORDER BY assignee;")"
+
+while IFS='|' read -r assignee ready_n running_n; do
+  [[ -n "$assignee" ]] || continue
+  ((ready_n > 0)) || continue
+  if ((running_n >= MAX_PER_PROFILE)); then
+    emit "PROFILE_SATURATED $assignee ready=$ready_n running=$running_n cap=$MAX_PER_PROFILE"
+  fi
+done <<<"$saturated_rows"
 
 # A lane holding more live workers than its cap allows. The dispatcher is
 # supposed to refuse the spawn that would cross the cap, so this means the
@@ -161,31 +254,35 @@ done < <(sqlite3 -separator '|' "$DB" "
 # the rate-limit path and respawned faster than the running count reflected.
 # It matters independently of queueing: several workers sharing one local model
 # endpoint is the mechanism behind the "quota wall" rate-limit churn.
-while IFS='|' read -r assignee running_n; do
-  [[ -n "$assignee" ]] || continue
-  ((running_n > MAX_PER_PROFILE)) || continue
-  emit "PROFILE_OVER_CAP $assignee running=$running_n cap=$MAX_PER_PROFILE needs=reduce-inflight"
-done < <(sqlite3 -separator '|' "$DB" "
+overcap_rows="$(sql "
   SELECT assignee, COUNT(*)
     FROM tasks
    WHERE status = 'running' AND assignee IS NOT NULL
    GROUP BY assignee
-   HAVING COUNT(*) > $MAX_PER_PROFILE
-   ORDER BY assignee;")
+  HAVING COUNT(*) > $MAX_PER_PROFILE
+   ORDER BY assignee;")"
+
+while IFS='|' read -r assignee running_n; do
+  [[ -n "$assignee" ]] || continue
+  ((running_n > MAX_PER_PROFILE)) || continue
+  emit "PROFILE_OVER_CAP $assignee running=$running_n cap=$MAX_PER_PROFILE needs=reduce-inflight"
+done <<<"$overcap_rows"
 
 # Cards the block-loop detector gave up on. `block_recurrences` hits the limit
 # and the card is auto-routed to triage, where nothing dispatches it. Only the
 # head-coordinator can decide whether to re-route, re-scope, or escalate to the
 # owner.
+triage_rows="$(sql "
+  SELECT id, COALESCE(assignee, ''), COALESCE(block_recurrences, 0)
+    FROM tasks
+   WHERE status = 'triage'
+   ORDER BY id;")"
+
 while IFS='|' read -r id assignee recurs; do
   [[ -n "$id" ]] || continue
   ((recurs >= TRIAGE_RECURRENCES)) || continue
   emit "TRIAGE_EXHAUSTED $id ${assignee:-unassigned} blocks=$recurs needs=head-coordinator-or-owner"
-done < <(sqlite3 -separator '|' "$DB" "
-  SELECT id, COALESCE(assignee, ''), COALESCE(block_recurrences, 0)
-    FROM tasks
-   WHERE status = 'triage'
-   ORDER BY id;")
+done <<<"$triage_rows"
 
 # ---------------------------------------------------------------------------
 # Durability findings

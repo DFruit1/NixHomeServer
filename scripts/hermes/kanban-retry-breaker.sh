@@ -65,6 +65,18 @@
 #   scripts/hermes/kanban-retry-breaker.sh            # apply (parks cards)
 #   scripts/hermes/kanban-retry-breaker.sh --check    # report only, change nothing
 #
+# Exit status is part of the contract, because this runs unattended from cron
+# where "printed nothing" and "could not look" are otherwise the same event:
+#   0  a real board was inspected (parked, would-park, or clear)
+#   2  RETRY_BREAKER_THRESHOLD is not a positive integer
+#   3  the hermes CLI is unavailable, so no card could be parked
+#   4  RETRY_BREAKER_DB_ERROR: the board database is missing a table, has a
+#      renamed column, or will not open
+#   5  RETRY_BREAKER_QUERY_ERROR: the candidate query itself failed
+#   6  RETRY_BREAKER_ROW_MALFORMED: a result row could not be parsed
+# Only 4, 5 and 6 are new in the sense of mattering: a sqlite3 error here used
+# to be swallowed by a process substitution and reported as a clear board.
+#
 # It is wired as a hermes cron `--script` in the default profile with
 # `--no-agent`, like the durability sync: this is a mechanical circuit breaker,
 # and it must not depend on an agent lane being healthy to fire. The reason text
@@ -118,6 +130,34 @@ if [[ ! -x "$HERMES_BIN" ]]; then
   exit 3
 fi
 
+# Why the schema is probed before it is queried
+# -------------------------------------------
+# The loop this script closes is the one where a card keeps getting respawned and
+# nobody notices. Anything that makes this script *stop looking* puts the loop
+# back, so a failure to read the board must be as loud as a finding.
+#
+# That rules out the obvious `while read ... done < <(sqlite3 ...)`. A failed
+# process substitution is not reported to the caller: the loop body never runs,
+# the loop exits zero, and the script reports `RETRY_BREAKER_CLEAR` on a board it
+# never inspected. A renamed column, a missing table or a corrupt file therefore
+# reads exactly like a healthy board -- and the quiet tick is indistinguishable
+# from the good news it is faking.
+#
+# So: probe first, capture the rows explicitly, and fail with a marker. Both
+# steps below, and the probe list, cover the columns the query itself uses, so a
+# schema change is caught as such rather than as an empty candidate set.
+
+probe_sql="SELECT id, assignee, claim_lock, status FROM tasks LIMIT 0;
+SELECT id, task_id, outcome, ended_at FROM task_runs LIMIT 0;"
+
+if ! probe_err="$(sqlite3 "$DB" "$probe_sql" 2>&1)"; then
+  # One line, marker first: a cron log grepped for RETRY_BREAKER_ should surface
+  # this, and `errexit` must not swallow it.
+  printf 'RETRY_BREAKER_DB_ERROR board=%s db=%s %s\n' \
+    "$HERMES_BOARD" "$DB" "${probe_err//$'\n'/ }" >&2
+  exit 4
+fi
+
 # The candidate query. `ranked` numbers each card's ended runs newest-first over
 # *all* outcomes, so a run with an unknown outcome consumes a rank and breaks the
 # streak rather than being invisible to it. `streaked` then keeps only the cards
@@ -153,10 +193,33 @@ SELECT t.id, COALESCE(t.assignee, ''), s.streak
 SQL
 )"
 
+# Capture the candidates before iterating rather than feeding a process
+# substitution to the loop. `sqlite3` exits non-zero on a parse error, a missing
+# table or an unreadable file, and `|| exit` is the only way that reaches the
+# script's exit status; a `< <(...)` loop cannot report it (see above). The rows
+# are small -- one line per card the breaker would act on -- so holding them in a
+# variable costs nothing.
+if ! candidate_rows="$(sqlite3 -separator '|' "$DB" "$candidates_sql")"; then
+  printf 'RETRY_BREAKER_QUERY_ERROR board=%s db=%s\n' "$HERMES_BOARD" "$DB" >&2
+  exit 5
+fi
+
 parked=0
 would_park=0
-while IFS='|' read -r id assignee streak; do
-  [[ -n "$id" ]] || continue
+while IFS= read -r row; do
+  [[ -n "$row" ]] || continue
+
+  # Split on the first and last separator only, never with `IFS='|' read`, so a
+  # field containing a separator cannot be torn into extra columns. A row this
+  # parser cannot make sense of means the query and the parser have disagreed, and
+  # the id is what a card gets parked by, so it is fatal rather than skipped: that
+  # is the same silent-miss class as an unreadable database.
+  id="${row%%|*}"
+  streak="${row##*|}"
+  middle="${row#*|}"
+  assignee="${middle%|*}"
+  [[ "$id" =~ ^[A-Za-z0-9_.:-]+$ ]] || { printf 'RETRY_BREAKER_ROW_MALFORMED %s\n' "$row" >&2; exit 6; }
+  [[ "$streak" =~ ^[0-9]+$ ]] || { printf 'RETRY_BREAKER_ROW_MALFORMED %s\n' "$row" >&2; exit 6; }
 
   reason="Rate-limit retry breaker: $streak consecutive runs of this card ended 'rate_limited' (provider quota wall) with no successful run in between, so the dispatcher has been respawning it indefinitely. Parking it instead of letting the loop continue. This is a lane capacity condition, not a defect in the card: the worktree, branch and partial commits are intact and nothing is lost. Resume with 'hermes kanban --board $HERMES_BOARD unblock $id' once endpoint capacity returns; each unblock grants a fresh budget of $streak attempts. If this card keeps hitting the wall, pin a working model for it with 'hermes kanban --board $HERMES_BOARD set-model $id <model> --provider <provider>' rather than reassigning it to dodge the quota."
 
@@ -166,16 +229,19 @@ while IFS='|' read -r id assignee streak; do
     continue
   fi
 
-  # A block is refused if the dispatcher claimed the card in the window between
-  # the query and here. That refusal is the correct outcome, not an error: it
-  # means the card got a real attempt instead of being parked.
+  # The dispatcher may have claimed the card in the window between the query and
+  # here. Whatever the CLI reports for a block it refuses -- a non-zero exit --
+  # is taken as "somebody else got to it first", which is the correct outcome and
+  # not a failure: the card got a real attempt instead of being parked, and one
+  # such card is not a broken breaker. So it is reported on stderr and the tick
+  # still succeeds, rather than parking a card mid-turn or retrying into a lock.
   if "$HERMES_BIN" kanban --board "$HERMES_BOARD" block "$id" --kind capability "$reason" >/dev/null; then
     echo "PARKED $id ${assignee:-unassigned} streak=$streak threshold=$THRESHOLD kind=capability"
     parked=$((parked + 1))
   else
     echo "SKIPPED $id ${assignee:-unassigned} reason=claim-raced threshold=$THRESHOLD" >&2
   fi
-done < <(sqlite3 -separator '|' "$DB" "$candidates_sql")
+done <<<"$candidate_rows"
 
 if [[ "$check_only" == true ]]; then
   [[ "$would_park" -eq 0 ]] || echo "RETRY_BREAKER_WOULD_PARK $would_park card(s)"

@@ -148,6 +148,8 @@ test_scripts=(
   scripts/tests/test-remote-eval-helper.sh
   scripts/tests/test-kanban-board-health.sh
   scripts/tests/test-kanban-retry-breaker.sh
+  scripts/tests/test-kanban-durability-sync.sh
+  scripts/tests/test-kanban-install-board-wiring.sh
   scripts/tests/test-auth-gateway-compression.sh
   scripts/tests/test-app-registration.sh
   scripts/tests/test-shell-template.sh

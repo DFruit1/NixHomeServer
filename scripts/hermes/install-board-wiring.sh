@@ -16,9 +16,19 @@
 # looking fine.
 #
 # This script puts it back, idempotently. Run it after a hermes upgrade, after
-# restoring a profile, or on a new machine. It is safe to re-run: existing cron
-# jobs are updated in place rather than duplicated, and configuration files are
-# edited rather than rewritten.
+# restoring a profile, or on a new machine. It is safe to re-run: a script is
+# re-copied only when it differs from the tracked one, a configuration file is
+# edited rather than rewritten, and a cron job that is already present is left
+# alone rather than duplicated.
+#
+# What it does *not* do is repair an existing cron job. Presence is detected by
+# name, so a job that exists with the wrong schedule, script or workdir is
+# reported as needing repair -- with the exact `hermes cron edit` line to run --
+# and is not edited here. That was the honest choice: editing requires the job id
+# parsed out of `hermes cron list`, whose renderer this repo does not control, and
+# a parser that silently drifts with that renderer would edit the wrong job on a
+# machine nobody is watching. Detecting and naming the repair is the safe half,
+# and it is what `--check` is for.
 #
 # Usage
 # -----
@@ -40,6 +50,15 @@ CONFIG="$HERMES_ROOT/config.yaml"
 # observed worker heartbeats every 60s, and heavy cards run for tens of minutes.
 STALE_TIMEOUT_SEC="${STALE_TIMEOUT_SEC:-5400}"
 
+# Profile directories that must not appear in the dispatcher's claim allowlist,
+# with the reason each is absent. `default` runs cron jobs and infrastructure and
+# is never a card worker; principal-consultant is invoked by a human in a
+# conversation and must never be spawned. Everything else that exists as a
+# profile directory and is missing from the allowlist is drift, because a card
+# assigned to such a lane is skipped as nonspawnable and starves in `ready` in
+# silence -- which is the whole failure the lane rename had to be careful about.
+DISPATCH_EXCLUDED_PROFILES="${DISPATCH_EXCLUDED_PROFILES:-default principal-consultant}"
+
 check_only=false
 [[ "${1:-}" == "--check" ]] && check_only=true
 
@@ -48,6 +67,22 @@ note() { printf '%s\n' "$*"; }
 changed() { drift=$((drift + 1)); note "  would change: $*"; }
 ok() { note "  ok: $*"; }
 skip() { note "  skip: $*"; }
+# Drift this script refuses to repair on its own. Counted, because a lane that
+# cannot claim and a cron job pointing at the wrong script are both real faults;
+# worded differently, because nothing was changed.
+unrepaired() { drift=$((drift + 1)); note "  needs manual repair: $*"; }
+
+# Validated before it reaches a sed replacement. `STALE_TIMEOUT_SEC` is
+# interpolated into a `s/.../$STALE_TIMEOUT_SEC/` replacement, where a `/`
+# terminates the expression and aborts the edit, and `&` expands to the matched
+# text -- so an unvalidated value did not merely fail, it could write a
+# completely different number into the live config.yaml while the script reported
+# success. A knob that rewrites a live config file gets the same treatment as
+# every knob in the cron scripts beside it.
+[[ "$STALE_TIMEOUT_SEC" =~ ^[1-9][0-9]*$ ]] || {
+  note "STALE_TIMEOUT_SEC must be a positive integer, got '$STALE_TIMEOUT_SEC'"
+  exit 2
+}
 
 note "▶ hermes board wiring ($HERMES_ROOT)"
 
@@ -60,7 +95,7 @@ note "▶ hermes board wiring ($HERMES_ROOT)"
 # with "Script path escapes the scripts directory via traversal". A copy means
 # the tracked script is the source of truth and this is a deployment step, so
 # re-run this after editing the scripts.
-
+#
 # The shared `$HERMES_ROOT/scripts/` comes first because it is the directory the
 # cron engine actually executes from: a `--script` job resolves its path there
 # and fails with "Script file not found: .../scripts/<name>" otherwise. The
@@ -68,14 +103,24 @@ note "▶ hermes board wiring ($HERMES_ROOT)"
 # per-profile copies is how this arrangement drifted for a day: both reported
 # current while the shared copy the cron job ran was missing the PROFILE_OVER_CAP
 # detector the head-coordinator's own rules depend on.
+#
+# Targets come from the profile directories that actually exist, not a hardcoded
+# pair. Six lane profiles had been added by the rename commit while the installs
+# still covered only `default` and `head-coordinator`, so a profile-scoped
+# invocation of any other lane would have found no script at all.
 install_targets=("$HERMES_ROOT/scripts")
-for profile in default head-coordinator; do
-  if [[ -d "$HERMES_ROOT/profiles/$profile" ]]; then
-    install_targets+=("$HERMES_ROOT/profiles/$profile/scripts")
-  else
-    skip "profile $profile not present; only the shared scripts dir will be installed"
-  fi
+profile_count=0
+for profile_dir in "$HERMES_ROOT"/profiles/*/; do
+  [[ -d "$profile_dir" ]] || continue
+  profile="${profile_dir%/}"
+  profile="${profile##*/}"
+  install_targets+=("${profile_dir%/}/scripts")
+  profile_count=$((profile_count + 1))
 done
+
+if ((profile_count == 0)); then
+  skip "no profile directories under $HERMES_ROOT/profiles; only the shared scripts dir will be installed"
+fi
 
 for dest_dir in "${install_targets[@]}"; do
   mkdir -p "$dest_dir"
@@ -129,6 +174,90 @@ else
       note "  no top-level 'kanban:' block found; add dispatch_stale_timeout_seconds by hand"
       drift=$((drift + 1))
     fi
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# 2b. The dispatcher's claim allowlist must name every lane profile
+# ---------------------------------------------------------------------------
+#
+# Why this check exists
+# ---------------------
+# The lane rename (six slugs) is the change most likely to have broken the fleet
+# quietly, because the failure mode of a lane missing from
+# `kanban.dispatch_profiles` is silence: the dispatcher skips the profile, the
+# card is never claimed, it sits in `ready` burning a `stuck:` warning, and
+# nothing raises. Nothing in this script checked the allowlist, and nothing
+# checked the profile directories either, so a half-finished rename -- a profile
+# directory with no allowlist entry, or an allowlist entry with no profile -- was
+# reported as "wiring is up to date".
+#
+# Both directions are checked, and both are drift:
+#   * a profile directory with no allowlist entry cannot claim anything;
+#   * an allowlist entry with no profile directory is a typo, and the lane it
+#     names will never spawn.
+#
+# `default` and `principal-consultant` are excluded by design; see
+# DISPATCH_EXCLUDED_PROFILES above. The list is not edited here: the allowlist is
+# read live on every dispatcher tick and its curation is a routing decision, not
+# a wiring repair.
+
+# Read the YAML sequence under `dispatch_profiles:`. Block form only, which is
+# what hermes's own config uses; anything else is reported as unreadable rather
+# than assumed empty, because an unreadable allowlist must not look like a
+# correct one.
+read_dispatch_profiles() {
+  [[ -r "$CONFIG" ]] || return 0
+  awk '
+    /^[[:space:]]*dispatch_profiles:[[:space:]]*$/ { inlist = 1; next }
+    inlist && /^[[:space:]]*-[[:space:]]*/ {
+      sub(/^[[:space:]]*-[[:space:]]*/, "")
+      gsub(/[[:space:]]*$/, "")
+      if ($0 != "") print
+      next
+    }
+    inlist && /^[[:space:]]*$/ { next }
+    inlist { inlist = 0 }
+  ' "$CONFIG" 2>/dev/null || true
+}
+
+if [[ ! -f "$CONFIG" ]]; then
+  note "  MISSING: $CONFIG; cannot verify the dispatcher claim allowlist"
+  drift=$((drift + 1))
+else
+  dispatch_profiles="$(read_dispatch_profiles)"
+  if grep -qE '^[[:space:]]*dispatch_profiles:' "$CONFIG" && [[ -z "$dispatch_profiles" ]]; then
+    note "  could not read kanban.dispatch_profiles as a lane list; verify it by hand"
+    drift=$((drift + 1))
+  else
+    for profile_dir in "$HERMES_ROOT"/profiles/*/; do
+      [[ -d "$profile_dir" ]] || continue
+      profile="${profile_dir%/}"
+      profile="${profile##*/}"
+      listed=false
+      for lane in $dispatch_profiles; do
+        [[ "$lane" == "$profile" ]] && listed=true
+      done
+      if [[ "$listed" == true ]]; then
+        ok "dispatch_profiles claims $profile"
+        continue
+      fi
+      excluded=false
+      for lane in $DISPATCH_EXCLUDED_PROFILES; do
+        [[ "$lane" == "$profile" ]] && excluded=true
+      done
+      if [[ "$excluded" == true ]]; then
+        skip "$profile is not a card lane; absent from dispatch_profiles by design"
+        continue
+      fi
+      unrepaired "profile $profile exists but kanban.dispatch_profiles does not claim it; cards assigned to it will be skipped as nonspawnable"
+    done
+
+    for lane in $dispatch_profiles; do
+      if [[ ! -d "$HERMES_ROOT/profiles/$lane" ]]; then
+        unrepaired "kanban.dispatch_profiles claims $lane but $HERMES_ROOT/profiles/$lane does not exist; that lane can never spawn"
+      fi
+    done
   fi
 fi
 
@@ -208,9 +337,16 @@ fi
 # 4. Cron jobs
 # ---------------------------------------------------------------------------
 #
-# Both jobs are addressed by name. `cron edit` on a missing job would fail, so
-# an absent job is created instead, which keeps this re-runnable after a profile
-# reset as well as after a hermes upgrade that changed job ids.
+# All three jobs are addressed by name. `cron edit` on a missing job would fail,
+# so an absent job is created instead, which keeps this re-runnable after a
+# profile reset as well as after a hermes upgrade that changed job ids.
+#
+# A job that exists is then compared field by field against what this installer
+# would have created. That check used to be a bare `grep -c` on the name, which
+# reported `ok` for a job whose cadence, script or workdir had drifted -- so a
+# durability job pointed at a deleted script, or a board-health monitor on the
+# wrong interval, was invisible to `--check`. It is reported, not repaired; see
+# the header for why.
 
 board_health_prompt="Board health check. Run 'hermes kanban --board $HERMES_BOARD list' and 'hermes kanban --board $HERMES_BOARD diagnostics' to see current state. The attached MONITOR CHANGE DETECTED block lists findings from scripts/hermes/kanban-board-health.sh.
 
@@ -218,40 +354,104 @@ Work through every finding using the 'Board health' section of your SOUL.md. For
 
 Do not implement anything yourself and do not re-audit. Report in prose what you changed and what still needs the owner."
 
-existing_health="$(hermes -p head-coordinator cron list 2>/dev/null |
-  grep -c 'kanban board health' || true)"
-existing_durability="$(hermes -p default cron list 2>/dev/null |
-  grep -c 'kanban durability sync' || true)"
-existing_breaker="$(hermes -p default cron list 2>/dev/null |
-  grep -c 'kanban retry breaker' || true)"
+# One `cron list` per profile, parsed once. hermes renders a boxed table whose
+# payload is a set of `Label:  value` lines under a job id line; only those lines
+# are read, so a change to the box drawing does not change this script's verdict.
+declare -A CRON_JOB_ID=()
+declare -A CRON_FIELD=()
 
-if [[ "${existing_health:-0}" -gt 0 ]]; then
+scan_cron_jobs() {
+  local profile="$1" line job='' id='' out
+  CRON_JOB_ID=()
+  CRON_FIELD=()
+  out="$(hermes -p "$profile" cron list 2>/dev/null || true)"
+  while IFS= read -r line; do
+    if [[ "$line" =~ ^[[:space:]]+([0-9a-f]{8,})[[:space:]]+\[ ]]; then
+      id="${BASH_REMATCH[1]}"
+      job=''
+      continue
+    fi
+    if [[ "$line" =~ ^[[:space:]]+(Name|Schedule|Script|Monitor|Workdir):[[:space:]]*(.*)$ ]]; then
+      case "${BASH_REMATCH[1]}" in
+        Name)
+          job="${BASH_REMATCH[2]}"
+          CRON_JOB_ID["$job"]="$id"
+          ;;
+        *)
+          [[ -n "$job" ]] && CRON_FIELD["$job/${BASH_REMATCH[1]}"]="${BASH_REMATCH[2]}"
+          ;;
+      esac
+    fi
+  done <<<"$out"
+}
+
+cron_has_job() { [[ -n "${CRON_JOB_ID[$1]:-}" ]]; }
+
+# Report the fields a present job got wrong, with the command that fixes them.
+check_cron_wiring() {
+  local profile="$1" name="$2" schedule="$3" kind="$4" script="$5"
+  local job_id="${CRON_JOB_ID[$name]}" edit_cmd
+  edit_cmd="hermes -p $profile cron edit $job_id"
+  # Unquoted array subscripts on purpose: the alternative, ${A["$k"]} inside a
+  # double-quoted assignment, is an odd number of quotes on the line and bash
+  # reads the result as an unterminated string.
+  local got_schedule="${CRON_FIELD[$name/Schedule]:-}"
+  local got_script="${CRON_FIELD[$name/$kind]:-}"
+  local got_workdir="${CRON_FIELD[$name/Workdir]:-}"
+
+  if [[ "$got_schedule" != "$schedule" ]]; then
+    unrepaired "cron '$name' schedule is '${got_schedule:-<unset>}', want '$schedule': $edit_cmd --schedule '$schedule'"
+  fi
+  if [[ "$got_script" != "$script" ]]; then
+    # hermes spells the flag --script for a --no-agent job and --monitor-script
+    # for a monitored one; naming the wrong flag in the repair line would send an
+    # operator to a command that errors out.
+    script_flag=script
+    [[ "$kind" == Monitor ]] && script_flag=monitor-script
+    unrepaired "cron '$name' runs ${got_script:-<unset>} instead of '$script': $edit_cmd --$script_flag '$script'"
+  fi
+  if [[ "$got_workdir" != "$REPO_ROOT" ]]; then
+    unrepaired "cron '$name' workdir is '${got_workdir:-<unset>}', want '$REPO_ROOT': $edit_cmd --workdir '$REPO_ROOT'"
+  fi
+  if [[ "$got_schedule" == "$schedule" ]] && [[ "$got_script" == "$script" ]] &&
+     [[ "$got_workdir" == "$REPO_ROOT" ]]; then
+    ok "cron '$name' wired as intended ($schedule, $script, $REPO_ROOT)"
+  fi
+}
+
+scan_cron_jobs head-coordinator
+if cron_has_job "kanban board health"; then
   ok "cron 'kanban board health' present (head-coordinator)"
-elif [[ "$check_only" == true ]]; then
-  changed "cron 'kanban board health' missing from the head-coordinator profile"
+  check_cron_wiring head-coordinator "kanban board health" "every 30m" Monitor kanban-board-health.sh
 else
-  hermes -p head-coordinator cron create "every 30m" "$board_health_prompt" \
-    --name "kanban board health" \
-    --monitor-script kanban-board-health.sh \
-    --workdir "$REPO_ROOT" >/dev/null
-  changed "created cron 'kanban board health' (head-coordinator, every 30m)"
+  changed "cron 'kanban board health' missing from the head-coordinator profile"
+  if [[ "$check_only" != true ]]; then
+    hermes -p head-coordinator cron create "every 30m" "$board_health_prompt" \
+      --name "kanban board health" \
+      --monitor-script kanban-board-health.sh \
+      --workdir "$REPO_ROOT" >/dev/null
+    changed "created cron 'kanban board health' (head-coordinator, every 30m)"
+  fi
 fi
 
 # The durability job runs in the default profile, not the head-coordinator's:
 # it is infrastructure, and tying it to the head-coordinator lane would make
 # the safety net depend on the very lane it exists to protect.
-if [[ "${existing_durability:-0}" -gt 0 ]]; then
+scan_cron_jobs default
+if cron_has_job "kanban durability sync"; then
   ok "cron 'kanban durability sync' present (default)"
-elif [[ "$check_only" == true ]]; then
-  changed "cron 'kanban durability sync' missing from the default profile"
+  check_cron_wiring default "kanban durability sync" "every 15m" Script kanban-durability-sync.sh
 else
-  hermes -p default cron create "every 15m" \
-    --name "kanban durability sync" \
-    --script kanban-durability-sync.sh \
-    --no-agent \
-    --workdir "$REPO_ROOT" \
-    --failure-deliver local >/dev/null
-  changed "created cron 'kanban durability sync' (default, every 15m)"
+  changed "cron 'kanban durability sync' missing from the default profile"
+  if [[ "$check_only" != true ]]; then
+    hermes -p default cron create "every 15m" \
+      --name "kanban durability sync" \
+      --script kanban-durability-sync.sh \
+      --no-agent \
+      --workdir "$REPO_ROOT" \
+      --failure-deliver local >/dev/null
+    changed "created cron 'kanban durability sync' (default, every 15m)"
+  fi
 fi
 
 # Same reasoning for the breaker, and the reason it cannot be a --monitor-script
@@ -263,18 +463,20 @@ fi
 # It is --no-agent for the same reason it is not the head-coordinator's: a card stuck
 # behind a quota wall is exactly the situation where no agent lane is healthy
 # enough to be trusted with the fix, and the fix is a counter, not a judgement.
-if [[ "${existing_breaker:-0}" -gt 0 ]]; then
+if cron_has_job "kanban retry breaker"; then
   ok "cron 'kanban retry breaker' present (default)"
-elif [[ "$check_only" == true ]]; then
-  changed "cron 'kanban retry breaker' missing from the default profile"
+  check_cron_wiring default "kanban retry breaker" "every 15m" Script kanban-retry-breaker.sh
 else
-  hermes -p default cron create "every 15m" \
-    --name "kanban retry breaker" \
-    --script kanban-retry-breaker.sh \
-    --no-agent \
-    --workdir "$REPO_ROOT" \
-    --failure-deliver local >/dev/null
-  changed "created cron 'kanban retry breaker' (default, every 15m)"
+  changed "cron 'kanban retry breaker' missing from the default profile"
+  if [[ "$check_only" != true ]]; then
+    hermes -p default cron create "every 15m" \
+      --name "kanban retry breaker" \
+      --script kanban-retry-breaker.sh \
+      --no-agent \
+      --workdir "$REPO_ROOT" \
+      --failure-deliver local >/dev/null
+    changed "created cron 'kanban retry breaker' (default, every 15m)"
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -283,7 +485,10 @@ if [[ "$check_only" == true ]]; then
   if ((drift == 0)); then
     note "wiring is up to date"
   else
-    note "$drift item(s) would change; re-run without --check to apply"
+    # "item(s) need attention" rather than "would change": some of these are
+    # reported for repair rather than applied, and a summary that says every item
+    # would be fixed by re-running is the same overclaim the header used to make.
+    note "$drift item(s) need attention; re-run without --check to apply the ones this script can"
   fi
   exit 0
 fi
