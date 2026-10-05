@@ -28,6 +28,14 @@
 # a present cron job is inspected field by field and reported for repair, never
 # edited. Detection without mutation is the safe half, and it is what --check is.
 #
+# The SimpleX section pins one more thing, and it is the reason the daemon's
+# identity survives at all: the daemon state directory must never live under
+# $HERMES_ROOT. This installer is the only thing that recreates ~/.hermes after a
+# profile reset, so a chat identity stored there is deleted by the same routine
+# that restores the board wiring -- silently, because ~/.hermes is not in git and
+# not backed up. The autostart Exec must also point outside the checkout, since a
+# worker deletes its worktree on completion.
+#
 # Hermetic: a fixture HERMES_ROOT, a fake hermes on PATH that records what it was
 # asked to do, and no network, no real profile and no real cron job anywhere.
 
@@ -49,9 +57,15 @@ fixture="$(mktemp -d)"
 trap 'rm -rf "$fixture"' EXIT
 
 HERMES_FIXTURE="$fixture/hermes"
+# The daemon supervisor and its autostart entry live outside both the checkout and
+# $HERMES_ROOT, so the fixture needs a stand-in for ~/.local/bin and for the
+# XDG autostart dir too. Nothing here may touch the real $HOME.
+HERMES_BIN_FIXTURE="$fixture/bin-home"
+XDG_CONFIG_HOME="$fixture/config"
+SIMPLEX_STATE_DIR="$fixture/simplex-state"
 LANES=(default head-coordinator feature-reviewer standard-implementer project-auditor
        local-implementer principal-consultant)
-mkdir -p "$HERMES_FIXTURE"
+mkdir -p "$HERMES_FIXTURE" "$HERMES_BIN_FIXTURE" "$XDG_CONFIG_HOME" "$SIMPLEX_STATE_DIR"
 
 for lane in "${LANES[@]}"; do
   mkdir -p "$HERMES_FIXTURE/profiles/$lane"
@@ -134,10 +148,36 @@ exit 0
 SH
 chmod +x "$fixture/bin/hermes"
 
+# A fake nix-build that materialises the daemon "binary" the installer expects,
+# and records that it was asked. Running a real nix-build here would pull ~100 MB
+# from the network on every test run and depend on the attic cache being up.
+cat >"$fixture/bin/nix-build" <<'SH'
+#!/usr/bin/env bash
+set -uo pipefail
+printf '%s\n' "$*" >>"$FAKE_NIX_BUILD_LOG"
+out_link=""
+prev=""
+for arg in "$@"; do
+  [[ "$prev" == "--out-link" ]] && out_link="$arg"
+  prev="$arg"
+done
+[[ -n "$out_link" ]] || exit 2
+mkdir -p "$out_link/bin"
+printf '#!/bin/sh\necho "fake simplex-chat"\n' >"$out_link/bin/simplex-chat"
+chmod +x "$out_link/bin/simplex-chat"
+exit 0
+SH
+chmod +x "$fixture/bin/nix-build"
+
 export PATH="$fixture/bin:$PATH"
 export FAKE_HERMES_LOG="$fixture/hermes.log"
+export FAKE_NIX_BUILD_LOG="$fixture/nix-build.log"
 : >"$FAKE_HERMES_LOG"
+: >"$FAKE_NIX_BUILD_LOG"
 
+# SIMPLEX_ALLOWED_USERS/SIMPLEX_HOME_CHANNEL get a contactId by default, so the
+# fixture is a fully wired machine and the "second --check is clean" assertion
+# below is meaningful. The unset case is exercised explicitly at the end.
 run_installer() {
   FAKE_H_WORKDIR="${FAKE_H_WORKDIR:-$TESTS_REPO_ROOT}" \
     FAKE_H_SCHEDULE="${FAKE_H_SCHEDULE:-every 30m}" \
@@ -148,8 +188,16 @@ run_installer() {
     FAKE_B_WORKDIR="${FAKE_B_WORKDIR:-$TESTS_REPO_ROOT}" \
     FAKE_B_SCHEDULE="${FAKE_B_SCHEDULE:-every 15m}" \
     FAKE_B_SCRIPT="${FAKE_B_SCRIPT:-kanban-retry-breaker.sh}" \
-    HERMES_ROOT="$HERMES_FIXTURE" "$INSTALLER" "$@"
+    SIMPLEX_ALLOWED_USERS="${SIMPLEX_ALLOWED_USERS_OVERRIDE-7}" \
+    SIMPLEX_HOME_CHANNEL="${SIMPLEX_HOME_CHANNEL_OVERRIDE-7}" \
+    HERMES_ROOT="$HERMES_FIXTURE" \
+    HERMES_BIN_DIR="$HERMES_BIN_FIXTURE" \
+    XDG_CONFIG_HOME="$XDG_CONFIG_HOME" \
+    "$INSTALLER" "$@"
 }
+
+# The fixture profiles start with no .env, so the installer creates them.
+simplex_profile() { printf '%s' "$HERMES_FIXTURE/profiles/$1/.env"; }
 
 echo "▶ hermes board wiring installer contract"
 
@@ -357,5 +405,108 @@ unreadable_out="$(run_installer --check)"
 grep -q 'could not read kanban.dispatch_profiles as a lane list' <<<"$unreadable_out" ||
   fail "an allowlist in an unexpected form was silently accepted: $unreadable_out"
 pass "reports an allowlist it cannot read rather than assuming it is correct"
+
+# --- the SimpleX daemon wiring ------------------------------------------------
+#
+# Three failure modes, each of which leaves the board looking healthy while the
+# messaging channel is dead:
+#
+#   * the daemon binary is never built, so the adapter's `connect()` fails and
+#     nothing on the board says why;
+#   * the supervisor is installed but the autostart Exec points into a checkout
+#     or worktree, which a kanban worker deletes on completion -- the daemon then
+#     survives until the next logout and never comes back;
+#   * the daemon state lives under $HERMES_ROOT, so the very routine that
+#     restores the board wiring also destroys the bot's chat identity.
+
+grep -q 'simplex-chat.nix' "$FAKE_NIX_BUILD_LOG" ||
+  fail "the pinned SimpleX daemon derivation was never built; the adapter would have nothing to talk to"
+[[ -x "$HERMES_FIXTURE/simplex-chat/bin/simplex-chat" ]] ||
+  fail "the daemon binary is not where the supervisor looks for it"
+pass "builds the pinned SimpleX daemon and installs the supervisor"
+
+supervisor="$HERMES_BIN_FIXTURE/hermes-simplex-chat"
+[[ -x "$supervisor" ]] ||
+  fail "no supervisor installed at $supervisor"
+cmp -s "$TESTS_REPO_ROOT/scripts/hermes/simplex-chat-daemon.sh" "$supervisor" ||
+  fail "the installed supervisor differs from the tracked one"
+autostart="$XDG_CONFIG_HOME/autostart/hermes-simplex-chat.desktop"
+[[ -f "$autostart" ]] ||
+  fail "no autostart entry: the daemon would not survive a logout"
+grep -qF "Exec=$supervisor" "$autostart" ||
+  fail "the autostart entry does not exec the installed supervisor: $(cat "$autostart")"
+grep -qE "Exec=.*$TESTS_REPO_ROOT" "$autostart" &&
+  fail "the autostart Exec points into the checkout, which a worker deletes"
+pass "autostart points at the installed supervisor, outside the checkout"
+
+# The identity must live somewhere the board-wiring installer does not own.
+state_line="$(grep -oE 'SIMPLEX_STATE_DIR="\$\{SIMPLEX_STATE_DIR:-[^}]*\}"' \
+  "$TESTS_REPO_ROOT/scripts/hermes/simplex-chat-daemon.sh" || true)"
+[[ -n "$state_line" ]] ||
+  fail "the supervisor no longer declares a SIMPLEX_STATE_DIR default"
+case "$state_line" in
+  *'$HOME/.hermes'*)
+    fail "the daemon state defaults under \$HOME/.hermes; this installer deletes that tree"
+    ;;
+esac
+case "$state_line" in
+  *'$HOME/.local/state'*) ;;
+  *) fail "SIMPLEX_STATE_DIR no longer defaults outside \$HERMES_ROOT: $state_line" ;;
+esac
+pass "keeps the daemon identity outside ~/.hermes, the tree the installer rewrites"
+
+# --check must still be read-only with respect to the daemon: it builds nothing.
+: >"$FAKE_NIX_BUILD_LOG"
+run_installer --check >/dev/null 2>&1
+[[ ! -s "$FAKE_NIX_BUILD_LOG" ]] ||
+  fail "--check ran a nix-build: $(cat "$FAKE_NIX_BUILD_LOG")"
+pass "--check builds no daemon binary"
+
+# --- the adapter env block --------------------------------------------------
+#
+# Two things here are security properties, not conveniences:
+#
+#   * SIMPLEX_ALLOW_ALL_USERS must never be written. It disables the allowlist,
+#     so a mistyped config would turn a contact-scoped bot into an open one, and
+#     nothing else in this arrangement would notice.
+#   * an unset allowlist must be reported, not skipped. Without it the adapter
+#     denies every contact, which from the outside is indistinguishable from a
+#     dead daemon -- the exact failure a card author would chase on the wrong
+#     host.
+
+SIMPLEX_ALLOWED_USERS_OVERRIDE=7 SIMPLEX_HOME_CHANNEL_OVERRIDE=7 run_installer >/dev/null 2>&1
+for lane in "${LANES[@]}"; do
+  env_file="$(simplex_profile "$lane")"
+  grep -qx 'SIMPLEX_WS_URL=ws://127.0.0.1:5225' "$env_file" ||
+    fail "$lane .env does not point at the local daemon: $(cat "$env_file")"
+  grep -qx 'SIMPLEX_ALLOWED_USERS=7' "$env_file" ||
+    fail "$lane .env has no contact allowlist: $(cat "$env_file")"
+  grep -qx 'SIMPLEX_HOME_CHANNEL=7' "$env_file" ||
+    fail "$lane .env has no home channel: $(cat "$env_file")"
+  grep -q 'SIMPLEX_ALLOW_ALL' "$env_file" &&
+    fail "$lane .env enables SIMPLEX_ALLOW_ALL_USERS; the allowlist is the control here"
+  grep -q 'SIMPLEX_GROUP_ALLOWED' "$env_file" &&
+    fail "$lane .env enables SIMPLEX_GROUP_ALLOWED; group traffic stays ignored"
+  [[ "$(stat -c %a "$env_file")" == 600 ]] ||
+    fail "$lane .env is mode $(stat -c %a "$env_file"), want 600"
+done
+pass "writes the allowlist, home channel and loopback URL into every profile .env"
+
+# Re-running must replace the block, not accumulate it: a changed contactId left
+# behind next to the new one would be read as a two-entry allowlist.
+SIMPLEX_ALLOWED_USERS_OVERRIDE=9 SIMPLEX_HOME_CHANNEL_OVERRIDE=9 run_installer >/dev/null 2>&1
+env_file="$(simplex_profile default)"
+[[ "$(grep -c '^SIMPLEX_ALLOWED_USERS=' "$env_file")" == 1 ]] ||
+  fail "re-running left more than one SIMPLEX_ALLOWED_USERS line: $(cat "$env_file")"
+grep -qx 'SIMPLEX_ALLOWED_USERS=9' "$env_file" ||
+  fail "a changed contactId did not replace the old one: $(cat "$env_file")"
+pass "a re-run replaces the block rather than appending to it"
+
+# An unset allowlist is reported, not silently accepted.
+rm -f "$HERMES_FIXTURE"/profiles/*/.env
+SIMPLEX_ALLOWED_USERS_OVERRIDE='' SIMPLEX_HOME_CHANNEL_OVERRIDE='' run_installer --check >"$fixture/noallow.log" 2>&1
+grep -q 'SIMPLEX_ALLOWED_USERS and SIMPLEX_HOME_CHANNEL are unset' "$fixture/noallow.log" ||
+  fail "a missing allowlist was not reported: $(cat "$fixture/noallow.log")"
+pass "reports an unset allowlist instead of assuming the channel is closed"
 
 echo "▶ hermes board wiring installer: all checks passed"
