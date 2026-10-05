@@ -147,6 +147,7 @@ test_scripts=(
   scripts/tests/test-frontend-build-isolation.sh
   scripts/tests/test-nix-eval-cache.sh
   scripts/tests/test-remote-eval-helper.sh
+  scripts/tests/test-remote-exec-helper.sh
   scripts/tests/test-kanban-board-health.sh
   scripts/tests/test-kanban-retry-breaker.sh
   scripts/tests/test-kanban-durability-sync.sh

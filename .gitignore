@@ -56,3 +56,8 @@
 # Shared Node server plumbing is copied into each app's tree by postPatch /
 # the sync-shared script; the source of truth lives in custom_apps/node/shared.
 custom_apps/node/apps/*/src/shared/node-common/
+
+# Default landing directory for scripts/helpers/remote-exec.sh artifacts pulled
+# back from a bounded server job. Local run output, never part of the source
+# tree -- same reason as the build trees above.
+remote-exec-results/
