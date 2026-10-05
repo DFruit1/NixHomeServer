@@ -38,6 +38,11 @@
 #   simplex-chat-daemon.sh              # supervise in the foreground (autostart)
 #   simplex-chat-daemon.sh --check      # report wiring state, change nothing
 #   simplex-chat-daemon.sh --once       # run the daemon in the foreground once
+#   simplex-chat-daemon.sh --once -- -y # ...forwarding extra arguments to the binary
+#
+# Anything after a bare `--` is passed straight through to the simplex-chat
+# binary, so an operator can reach a flag this supervisor does not wrap (for
+# example `-y`/`--yes-migrate` on an unattended schema bump) without editing it.
 
 set -uo pipefail
 
@@ -56,15 +61,25 @@ LOCK_FILE="${XDG_RUNTIME_DIR:-/tmp}/hermes-simplex-daemon.lock"
 
 check_only=false
 once=false
-case "${1:-}" in
-  --check) check_only=true ;;
-  --once) once=true ;;
-  "") ;;
-  *)
-    echo "usage: ${BASH_SOURCE[0]} [--check|--once]" >&2
-    exit 2
-    ;;
-esac
+PASSTHRU=()
+while (( $# > 0 )); do
+  case "$1" in
+    --check) check_only=true ;;
+    --once) once=true ;;
+    --)
+      # Everything after `--` belongs to the simplex-chat binary. Consume it
+      # here so the wrapper flags still parse and the rest is forwarded verbatim.
+      shift
+      PASSTHRU=("$@")
+      break
+      ;;
+    *)
+      echo "usage: ${BASH_SOURCE[0]} [--check|--once] [-- <binary args...>]" >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
 
 fail() { echo "❌ $*" >&2; exit 1; }
 note() { printf '%s\n' "$*"; }
@@ -115,29 +130,80 @@ mkdir -p "$SIMPLEX_STATE_DIR"
 # 0700: this directory holds the bot's private identity.
 chmod 0700 "$SIMPLEX_STATE_DIR"
 
+# The binary's argument list, in one place, so the supervised run, the --once
+# run and the seed run cannot drift apart.
+daemon_argv() {
+  local argv=(
+    "$BIN_LINK"
+    -d "$SIMPLEX_STATE_DIR/simplex_v1"
+    -p "$SIMPLEX_PORT"
+    --user-display-name "$SIMPLEX_DISPLAY_NAME"
+  )
+  # Operator-supplied arguments (after `--`) come last so they can override a
+  # default this wrapper chose, which is what a migration flag needs.
+  if (( ${#PASSTHRU[@]} )); then
+    argv+=("${PASSTHRU[@]}")
+  fi
+  printf '%s\0' "${argv[@]}"
+  return 0
+}
+
 run_daemon() {
   # stdin from /dev/null matters: without it the daemon treats the terminal as
   # an interactive chat client and never finishes startup. stdin closed also
   # makes the first-run prompt non-interactive, which is why the profile is
   # seeded below instead.
-  "$BIN_LINK" \
-    -d "$SIMPLEX_STATE_DIR/simplex_v1" \
-    -p "$SIMPLEX_PORT" \
-    --user-display-name "$SIMPLEX_DISPLAY_NAME" \
+  #
+  # This is a function, so it is called rather than exec'd: `exec run_daemon`
+  # cannot work, because exec only takes a program, not a shell function.
+  # Per-call arguments are appended by the caller rather than taken as
+  # parameters, so there is no silent-drop path for a flag like -y again.
+  local argv=()
+  mapfile -d '' -t argv < <(daemon_argv)
+  "${argv[@]}" \
     < /dev/null >>"$LOG_FILE" 2>&1
 }
 
+# ---------------------------------------------------------------------------
+# Single instance
+# ---------------------------------------------------------------------------
+
+# Two daemons on one database is a corruption risk, and autostart plus a manual
+# invocation is the normal way to get there -- but the exposure is widest on a
+# virgin state directory, where the seed launch and the supervised launch would
+# otherwise both create the profile concurrently. So the lock is taken before
+# ANY launch, seeding included, and it is taken on the --once path too.
+exec 9>"$LOCK_FILE" || fail "cannot open the lock file $LOCK_FILE"
+if ! flock -n 9; then
+  if [[ "$once" == true ]]; then
+    # An explicit request that cannot be honoured should say so, not look like
+    # a successful no-op.
+    fail "a simplex daemon already holds $LOCK_FILE; --once refused"
+  fi
+  note "a simplex daemon is already supervised (lock $LOCK_FILE)"
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
 # Seed the profile before supervising it.
+# ---------------------------------------------------------------------------
 #
 # A virgin database makes simplex-chat ask for a display name on stdin and exit
 # when stdin is not a terminal, so the daemon would crash-loop forever on a
-# fresh machine. --user-display-name answers that question up front, and
-# --yes-migrate lets a future schema bump apply unattended rather than waiting
+# fresh machine. --user-display-name answers that question up front, and -y
+# (--yes-migrate) lets a future schema bump apply unattended rather than waiting
 # on a prompt nobody can see. Both are cheap to run against an existing profile:
 # the display name is ignored when a profile already exists.
+#
+# The binary is launched directly rather than through run_daemon so $! is the
+# daemon's own pid and the kill below cannot leave an orphaned daemon holding
+# the database.
 if [[ ! -f "$SIMPLEX_STATE_DIR/simplex_v1_chat.db" ]]; then
   note "seeding a new SimpleX profile in $SIMPLEX_STATE_DIR"
-  run_daemon -y &
+  seed_argv=()
+  mapfile -d '' -t seed_argv < <(daemon_argv)
+  "${seed_argv[@]}" -y \
+    < /dev/null >>"$LOG_FILE" 2>&1 &
   seed_pid=$!
   # The daemon only opens its chat server port once the database is created, so
   # wait on the database rather than on the process exiting.
@@ -153,14 +219,12 @@ if [[ ! -f "$SIMPLEX_STATE_DIR/simplex_v1_chat.db" ]]; then
   note "profile seeded"
 fi
 
+# --once runs a single foreground daemon and returns its exit status. It holds
+# the lock for the duration, and releases it on exit.
 if [[ "$once" == true ]]; then
-  exec run_daemon
+  run_daemon
+  exit $?
 fi
-
-# Single instance. Two daemons on one database is a corruption risk, and autostart
-# plus a manual invocation is the normal way to get there.
-exec 9>"$LOCK_FILE"
-flock -n 9 || { note "a simplex daemon is already supervised (lock $LOCK_FILE)"; exit 0; }
 
 note "supervising simplex-chat on 127.0.0.1:$SIMPLEX_PORT -> $LOG_FILE"
 while true; do
