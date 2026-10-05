@@ -15,7 +15,7 @@ in
 {
   config = lib.mkIf cfg.enable {
     systemd.services.ai-tools = {
-      description = "Read-only MCP tools for the llama.cpp web UI";
+      description = "MCP tools for the llama.cpp web UI, writing only to the shared AI workspace";
       wantedBy = [ "multi-user.target" ];
       after = [ "network-online.target" "searxng.service" "ai-tools-shared-access.service" ];
       wants = [ "network-online.target" "ai-tools-shared-access.service" ];
@@ -32,6 +32,10 @@ in
         AI_TOOLS_MAX_RESULTS = toString cfg.maxResults;
         AI_TOOLS_COLLABORA_URL = cfg.collaboraUrl;
         AI_TOOLS_SHARED_ROOT = cfg.sharedRoot;
+        # Writes are confined here. The Rust side re-checks every write path
+        # against this prefix; the sandbox below is what makes the refusal real
+        # even if a future tool forgets to.
+        AI_TOOLS_WORKSPACE_ROOT = cfg.workspaceRoot;
         # rmcp rejects any Host the transport was not configured with, and Caddy
         # forwards the client's Host unchanged, so the service has to be told
         # the name the gateway publishes. Without this it starts loopback-only
@@ -49,11 +53,20 @@ in
         NoNewPrivileges = true;
         PrivateTmp = true;
         ProtectSystem = "strict";
-        # convert_document reads documents from the shared root only. The unit
-        # stays read-only so nothing it converts can be modified. The catalog
-        # guards this unit on the data pool, so the path exists by exec time.
+        # Reads stay over the whole shared root; convert_document is allowed to
+        # be built from anything the owner has already shared. Writes are
+        # confined to the workspace: systemd applies the more specific
+        # ReadWritePaths entry last, so the workspace stays writable inside the
+        # read-only shared root, and nothing else under the root becomes
+        # writable even though the ACL grants the account the permission. The
+        # catalog guards this unit on the data pool, so both paths exist by exec
+        # time.
         ReadOnlyPaths = [ cfg.sharedRoot ];
-        RequiresMountsFor = [ cfg.sharedRoot ];
+        ReadWritePaths = [ cfg.workspaceRoot ];
+        RequiresMountsFor = [
+          cfg.sharedRoot
+          cfg.workspaceRoot
+        ];
         ProtectHome = true;
         ProtectClock = true;
         ProtectControlGroups = true;

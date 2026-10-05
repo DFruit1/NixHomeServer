@@ -6,9 +6,10 @@ in
 {
   options.repo.aiTools = {
     enable = lib.mkEnableOption ''
-      Read-only MCP tool server for the llama.cpp web UI. Tools are attached
-      per client, so the shared inference endpoint keeps serving other
-      consumers with their own tool choices.
+      MCP tool server for the llama.cpp web UI. Tools are attached per client,
+      so the shared inference endpoint keeps serving other consumers with their
+      own tool choices. Reads span the whole shared root; writes are confined to
+      the shared ai-workspace directory.
     '';
 
     runtime = {
@@ -60,6 +61,35 @@ in
         resolves against. Absolute paths, parent traversal and hidden entries
         are rejected, and the canonical result is re-checked against the root so
         a symlink cannot escape.
+
+        Reads stay over the whole shared root: a generated document is allowed
+        to be built from anything the owner has already shared.
+      '';
+    };
+
+    workspaceDirName = lib.mkOption {
+      type = lib.types.str;
+      default = "ai-workspace";
+      readOnly = true;
+      description = ''
+        Top-level shared content subdirectory ai-tools may write to. Declared
+        through repo.storage.sharedRoots.contentSubdirs so the data-pool layout
+        provisions it with the right mode before either unit runs.
+
+        It must be a single safe directory name, because the storage layout
+        rejects contentSubdirs entries that are not.
+      '';
+    };
+
+    workspaceRoot = lib.mkOption {
+      type = lib.types.str;
+      default = "${vars.sharedRoot}/${cfg.workspaceDirName}";
+      readOnly = true;
+      description = ''
+        The only directory ai-tools may write to, and the only path prefix its
+        write tools resolve against. Reads remain available over the whole
+        sharedRoot; the sandbox in services.nix is what confines writes, so the
+        unit stays read-only everywhere else.
       '';
     };
   };

@@ -50,6 +50,27 @@ in
         assertion = config.repo.authGateway.enable && config.repo.authGateway.mode == "gateway";
         message = "The AI Tools MCP endpoint requires the shared authentication gateway.";
       }
+      {
+        # The workspace is a child of the shared root by construction, and the
+        # sandbox only produces the intended confinement if that holds. A
+        # workspace outside the shared root would leave it uncovered by
+        # ReadOnlyPaths, and one equal to the shared root would make every read
+        # path writable.
+        assertion = lib.hasPrefix "${cfg.sharedRoot}/" cfg.workspaceRoot
+          && cfg.workspaceRoot != cfg.sharedRoot;
+        message = "repo.aiTools.workspaceRoot must be a subdirectory of repo.aiTools.sharedRoot, so the read-only root and the writable workspace do not overlap.";
+      }
+      {
+        # The workspace is deliberately unbacked-up, which holds because it is
+        # on the data pool and no snapshot root covers that pool. If a future
+        # module widened a snapshot root to reach it, this would silently start
+        # backing up scratch output, so the claim is asserted rather than
+        # assumed.
+        assertion = !lib.any
+          (root: cfg.workspaceRoot == root || lib.hasPrefix "${root}/" cfg.workspaceRoot)
+          config.repo.backups.snapshotRoots;
+        message = "repo.aiTools.workspaceRoot must stay outside every repo.backups.snapshotRoots entry; the workspace is deliberately not backed up.";
+      }
     ];
   };
 }

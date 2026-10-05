@@ -20,8 +20,9 @@ in
 
   repo = { }
   // lib.optionalAttrs (builtins.elem "ai-tools" vars.enabledApps) {
-      # Read-only MCP tools for the llama.cpp web UI, attached per client so
-      # the shared inference endpoint stays tool-free for other consumers.
+      # MCP tools for the llama.cpp web UI, attached per client so the shared
+      # inference endpoint stays tool-free for other consumers. Reads span the
+      # shared root; writes are confined to the shared ai-workspace directory.
       #
       # Every app-scoped `repo.<app>` block is wrapped in optionalAttrs rather
       # than assigned unconditionally. The per-app evaluation harnesses import
