@@ -4,6 +4,11 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$script_dir/helpers/repo-common.sh"
+# remote-eval.sh decides where the flake check worklist is evaluated. It is
+# sourced here so this gate can batch its queries instead of paying a local
+# module-system instantiation on the workstation's four cores.
+# shellcheck source=scripts/helpers/remote-eval.sh
+source "$script_dir/helpers/remote-eval.sh"
 init_repo_root
 cd_repo_root
 ensure_default_nix_config
@@ -47,6 +52,15 @@ Sandbox-excluded checks (the class, stated once, enforced below):
 Reporting:
   - --print-sandbox-exclusions prints the exclusion table as name|direct-path
     lines and exits, so the policy surface is reviewable as a diff
+
+Where the check worklist is evaluated:
+  - the worklist is built with one batched query, so the system name and the
+    check names cost a single evaluation instead of two
+  - by default that query runs on the build server and the gate reports which
+    host evaluated it; `nix build` still runs through the normal builders
+  - REMOTE_EVAL=0 forces the evaluation onto this workstation
+  - an unreachable server or a malformed payload stops the gate, never silently
+    reduces the check set
 
 VM tests (--run-vm-tests):
   - runs integration tests requiring VM boot (failure-alert, jellyfin-oidc)
@@ -232,19 +246,115 @@ sandbox_exclusion_direct_path() {
   return 1
 }
 
+# Evaluate the flake check worklist in one batched evaluation instead of paying a
+# local module-system instantiation for it.
+#
+# Why batch: Nix shares nothing between separate `nix eval` processes, and this
+# gate needs two answers from the same flake (the host system, and the check
+# names for that system). One remote_eval_batch_json call carries both, and by
+# default runs them on the build server rather than the four-core workstation.
+# The `nix build` below is deliberately untouched: only evaluation moves.
+#
+# Why fail closed on shape: a transport or payload problem must never read as an
+# empty (or silently narrower) worklist, because the gate would then report
+# success without having checked anything. Every field is validated here, and a
+# malformed payload stops the gate instead of being retried locally, so a broken
+# offload can never quietly shrink the check set.
+#
+# Sets eval_batch_system and CHECK_WORKLIST_NAMES.
+evaluate_check_worklist() {
+  local all_apps_flag="$1" batch system names name_count names_inline remote_stderr
+  local fell_back=1 eval_receipt_host batch_expr
+
+  remote_stderr="$(mktemp "${TMPDIR:-/tmp}/nixhomeserver-worklist-stderr.XXXXXX")" || {
+    echo "❌ Could not create a worklist diagnostic file." >&2
+    exit 1
+  }
+
+  # ${all_apps_flag} is a Nix boolean literal and both sides are named with
+  # `f.` rather than `builtins.getFlake .#`, so one expression is valid whether
+  # or not the repository-wide attr exists on this revision.
+  if [[ "$all_apps_flag" == "true" ]]; then
+    batch_expr='builtins.attrNames f.legacyPackages.${builtins.currentSystem}.nixhomeserverAllChecks'
+  else
+    batch_expr='builtins.attrNames f.checks.${builtins.currentSystem}'
+  fi
+
+  if ! batch="$(
+    remote_eval_batch_json \
+      'batchSystem=builtins.currentSystem' \
+      "batchNames=${batch_expr}" \
+      2>"$remote_stderr"
+  )"; then
+    cat "$remote_stderr" >&2
+    rm -f "$remote_stderr"
+    echo "❌ Could not evaluate the flake check worklist." >&2
+    exit 1
+  fi
+
+  # The helper's diagnostics belong on this gate's stderr; a caller watching the
+  # log must see whether the evaluation actually went remote.
+  cat "$remote_stderr" >&2
+
+  # An explicit REMOTE_EVAL=0 is a deliberate local run and prints no fallback
+  # warning, so the opt-out itself decides the receipt, not the absence of one.
+  if [[ "${REMOTE_EVAL:-1}" == "0" ]]; then
+    fell_back=0
+  elif grep -q '^remote-eval: falling back to local evaluation' "$remote_stderr"; then
+    fell_back=0
+  fi
+  rm -f "$remote_stderr"
+
+  if ! jq -e '
+    type == "object"
+    and (.batchSystem | type == "string" and test("^[A-Za-z0-9_]+-[A-Za-z0-9_]+$"))
+    and (.batchNames | type == "array" and length > 0)
+    and all(.batchNames[]; type == "string" and length > 0)
+  ' <<<"$batch" >/dev/null 2>&1; then
+    echo "❌ The check worklist evaluation returned a malformed payload: ${batch}" >&2
+    exit 1
+  fi
+
+  system="$(jq -r '.batchSystem' <<<"$batch")"
+  names="$(jq -r '.batchNames | sort | .[]' <<<"$batch")"
+
+  # The helper runs inside a command substitution, so the host it cached is gone
+  # by the time it returns. Re-resolve it here, through the same resolver, and
+  # say "unknown" rather than guessing when even that fails.
+  eval_receipt_host="$(_remote_eval_resolve_host 2>/dev/null || true)"
+  eval_receipt_host="${eval_receipt_host:-an unknown host}"
+
+  # ${#names} is a character count, not a check count. Counting lines is what
+  # makes the receipt a truthful one.
+  name_count="$(grep -c . <<<"$names")"
+  names_inline="${names//$'\n'/, }"
+
+  if ((fell_back == 1)); then
+    # Receipt: naming the build server that ran the evaluation is what makes an
+    # offloaded gate auditable, instead of a claim nobody can check. The host is
+    # resolved through the helper's own resolver, the same one it uses to open
+    # the connection, so the receipt cannot name a host it did not reach.
+    echo "ℹ️ Evaluated the check worklist on ${eval_receipt_host}" \
+      "(${names_inline}); ${name_count} checks, in one batched query."
+  else
+    echo "ℹ️ Evaluated the check worklist on this workstation" \
+      "(${names_inline}); ${name_count} checks."
+  fi
+
+  eval_batch_system="$system"
+  CHECK_WORKLIST_NAMES="$names"
+}
+
 build_derivation_attr() {
   local attr="$1" system="$2" check_name check_names output_path root_path direct_path
   local -a check_targets=()
   local new_outputs
 
-  if ! check_names="$(
-    nix eval --json ".#${attr}" --apply 'checks: builtins.attrNames checks' \
-      | jq -r '.[]' \
-      | sort
-  )" || [[ -z "$check_names" ]]; then
+  if [[ -z "${CHECK_WORKLIST_NAMES:-}" ]]; then
     echo "❌ Could not evaluate a non-empty flake check worklist for ${attr}." >&2
     exit 1
   fi
+  check_names="$CHECK_WORKLIST_NAMES"
 
   while IFS= read -r check_name; do
     [[ -n "$check_name" ]] || continue
@@ -309,7 +419,15 @@ run_derivation_checks() {
     return 0
   fi
 
-  system="$(current_system)"
+  if [[ "$all_apps" == true ]]; then
+    evaluate_check_worklist true
+  else
+    evaluate_check_worklist false
+  fi
+  # The system that reported the worklist names it, so the build targets and the
+  # worklist cannot drift apart through two independent local evals.
+  system="$eval_batch_system"
+
   if [[ "$all_apps" == true ]]; then
     check_attr="legacyPackages.${system}.nixhomeserverAllChecks"
   else
