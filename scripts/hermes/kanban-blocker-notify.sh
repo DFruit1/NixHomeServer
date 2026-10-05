@@ -255,18 +255,25 @@ for id in "${want_ids[@]}"; do
       --delivery-mode notify >"$bind_log" 2>&1; then
     ok "$id subscribed to simplex:$home_channel (notifier=$NOTIFIER_PROFILE, mode=notify)"
   else
-    # Retry once with the delivery context cleared: a worker inherits
-    # HERMES_DELEGATED_CHILD_CONTEXT, and the CLI refuses kanban mutations under
-    # it even though this subscription is not one. Report the real error.
-    if env -u HERMES_DELEGATED_CHILD_CONTEXT hermes kanban --board "$HERMES_BOARD" \
-        notify-subscribe "$id" --platform simplex --chat-id "$home_channel" \
-        --chat-type dm --notifier-profile "$NOTIFIER_PROFILE" \
-        --delivery-mode notify >>"$bind_log" 2>&1; then
-      ok "$id subscribed (retried without the delegated-child context)"
-    else
-      gap "$id could not be subscribed: $(tr '\n' ' ' <"$bind_log")"
-      unbound+=("$id")
+    # A refusal stays a refusal. The CLI fences kanban mutations from a delegated
+    # child so a worker cannot reshape the board it is running inside; this script
+    # is not more privileged than whatever invoked it, so a denied subscribe is
+    # NOT retried with HERMES_DELEGATED_CHILD_CONTEXT cleared. Unsetting the marker
+    # here would make the notifier a standing bypass of that fence, and the binding
+    # would be obtained by defeating the control rather than by being authorised.
+    # Report the refusal and name the path that can actually bind: the gate that
+    # owns the card subscribes it from outside the fence, or an operator does.
+    gap "$id could not be subscribed: $(tr '\n' ' ' <"$bind_log")"
+    if grep -q 'HERMES_DELEGATED_CHILD_CONTEXT\|delegated child\|worker fence\|may not mutate' "$bind_log"; then
+      gap "  the CLI refused this mutation from inside the worker fence. The fence is"
+      gap "  kept: a worker may not mutate the board it runs inside, and the notifier"
+      gap "  has no more authority than its caller. Bind $id from outside the fence:"
+      gap "    the head-coordinator that owns the gate, outside a delegated worker"
+      gap "    context, or the operator directly:"
+      gap "      $0 --check $id"
+      gap "  Run this script unsandboxed once; do not strip the marker to get past it."
     fi
+    unbound+=("$id")
   fi
   : >"$bind_log"
 done
