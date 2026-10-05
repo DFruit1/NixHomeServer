@@ -6,6 +6,7 @@
 //! The convert-to endpoint is reached over loopback, which is the same client
 //! class Collabora already permits for OpenCloud.
 
+use base64::Engine as _;
 use serde_json::{json, Value};
 use std::{path::Path, path::PathBuf, time::Duration};
 use tokio::io::AsyncReadExt;
@@ -229,6 +230,28 @@ impl Converter {
             "unsupported document type; supported: docx, odt, rtf, doc, xlsx, ods, pptx, odp"
                 .to_string()
         })?;
+        self.convert_to(path, format.target).await
+    }
+
+    /// Convert a document to an arbitrary Collabora target.
+    ///
+    /// `convert_to` is also the ODF half of every office write: no native ODF
+    /// writer exists in Rust or Python, so an `ods` or `odt` is produced by
+    /// handing Collabora the native document and asking it to convert. Binary
+    /// targets come back base64-encoded in `content`, because an xlsx or docx is
+    /// a zip archive and cannot survive a trip through a UTF-8 string.
+    pub async fn convert_to(&self, path: &Path, target: &str) -> Result<Value, String> {
+        if !target
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric())
+            || target.is_empty()
+        {
+            return Err(format!("unsupported conversion target: {target:?}"));
+        }
+        let format = format_for(path).ok_or_else(|| {
+            "unsupported document type; supported: docx, odt, rtf, doc, xlsx, ods, pptx, odp"
+                .to_string()
+        })?;
 
         let bytes = read_document(path, MAX_INPUT_BYTES).await?;
         let part = reqwest::multipart::Part::bytes(bytes)
@@ -237,7 +260,7 @@ impl Converter {
             .map_err(|error| format!("could not build request part: {error}"))?;
 
         let form = reqwest::multipart::Form::new().part("file", part);
-        let url = format!("{}/cool/convert-to/{}", self.base, format.target);
+        let url = format!("{}/cool/convert-to/{target}", self.base);
 
         let response = self
             .client
@@ -252,22 +275,43 @@ impl Converter {
             return Err(format!("Collabora returned HTTP {status}"));
         }
 
-        let text = response
-            .text()
+        let envelope = response
+            .bytes()
             .await
-            .map_err(|error| format!("Collabora response was not text: {error}"))?;
-        let text = text.trim_start_matches('\u{feff}').to_string();
-        let (body, truncated) = clamp_output(&text);
+            .map_err(|error| format!("Collabora response was not readable: {error}"))?;
+        let raw = &envelope;
+        let (body, truncated) = if is_binary_target(target) {
+            if raw.len() as u64 > MAX_OUTPUT_BYTES as u64 * 4 {
+                return Err(format!(
+                    "converted document exceeds the {MAX_OUTPUT_BYTES} byte limit"
+                ));
+            }
+            (base64::engine::general_purpose::STANDARD.encode(raw), false)
+        } else {
+            let text = String::from_utf8_lossy(raw)
+                .trim_start_matches('\u{feff}')
+                .to_string();
+            clamp_output(&text)
+        };
 
         Ok(json!({
             "path": path.display().to_string(),
             "source_format": format.extension,
-            "converted_to": format.target,
-            "bytes": body.len(),
+            "converted_to": target,
+            "bytes": raw.len(),
             "truncated": truncated,
             "content": body,
         }))
     }
+}
+
+/// Whether a convert-to target is a binary container rather than text.
+///
+/// xlsx and docx are zip archives. Handing them to the caller as a UTF-8 string
+/// would corrupt them, so the binary targets are base64-encoded in the envelope
+/// while `txt` and `csv` stay plain text for readability.
+fn is_binary_target(target: &str) -> bool {
+    matches!(target, "xlsx" | "docx" | "ods" | "odt" | "pptx" | "odp")
 }
 
 #[cfg(test)]

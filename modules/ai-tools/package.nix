@@ -1,4 +1,4 @@
-{ config, lib, vars, appPackages, ... }:
+{ config, lib, vars, pkgs, appPackages, ... }:
 
 let
   cfg = config.repo.aiTools;
@@ -57,13 +57,15 @@ in
       type = lib.types.str;
       default = "${vars.sharedRoot}";
       description = ''
-        Directory convert_document may read from, and the only path prefix it
-        resolves against. Absolute paths, parent traversal and hidden entries
-        are rejected, and the canonical result is re-checked against the root so
-        a symlink cannot escape.
+        Directory convert_document and the office read tools may read from, and
+        the only path prefix they resolve against. Python helpers cannot read a
+        native document with the Rust side's path validation, so reads through
+        the helper go through resolve_read instead. Absolute paths, parent
+        traversal and hidden entries are rejected, and the canonical result is
+        re-checked against the root so a symlink cannot escape.
 
-        Reads stay over the whole shared root: a generated document is allowed
-        to be built from anything the owner has already shared.
+        Reads stay over the helpers' resolved read paths. Writes resolve against
+        workspaceRoot instead, never against this.
       '';
     };
 
@@ -88,8 +90,29 @@ in
       description = ''
         The only directory ai-tools may write to, and the only path prefix its
         write tools resolve against. Reads remain available over the whole
-        sharedRoot; the sandbox in services.nix is what confines writes, so the
-        unit stays read-only everywhere else.
+        sharedRoot; the sandbox in services.nix is what confines writes, so
+        the unit stays read-only everywhere else.
+      '';
+    };
+
+    officeHelper = lib.mkOption {
+      type = lib.types.package;
+      default = pkgs.callPackage ../../custom_apps/rust/apps/ai-tools/helper-package.nix { };
+      defaultText = lib.literalExpression ''
+        pkgs.callPackage ../../custom_apps/rust/apps/ai-tools/helper-package.nix { }
+      '';
+      readOnly = true;
+      description = ''
+        Pinned native xlsx/docx helper the office write tools shell out to.
+
+        It is the deliberate Python exception AGENTS.md requires be recorded:
+        neither native Microsoft format has a mature Rust pairing, because the
+        `docx` crate is unmaintained since 2020 and `docx-rs` only writes. See
+        the comment at the head of helper-package.nix.
+
+        The helper holds no grant of its own. It runs as part of ai-tools,
+        receives only absolute paths the Rust side has already validated, and
+        never opens a document itself: reads arrive as bytes on stdin.
       '';
     };
   };

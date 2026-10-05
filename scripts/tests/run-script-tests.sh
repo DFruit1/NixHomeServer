@@ -176,8 +176,10 @@ test_scripts=(
   scripts/tests/test-paperless-v3-readiness.sh
   scripts/tests/test-ai-gate.sh
   scripts/tests/test-ai-tools-module.sh
+  scripts/tests/test-ai-tools-office-helper.sh
   scripts/tests/test-gpu-power-limit.sh
   scripts/tests/test-background-qwen-split.sh
+  scripts/tests/test-qwen-ai-tools-mcp-bridge.sh
   scripts/tests/test-mkvmaker-automation.sh
   scripts/tests/test-mkvmaker-tool-resolution.sh
   scripts/tests/test-platform-storage-profiles.sh

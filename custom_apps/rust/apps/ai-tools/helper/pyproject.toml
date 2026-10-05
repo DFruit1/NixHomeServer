@@ -1,0 +1,15 @@
+[build-system]
+requires = [ "setuptools" ]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ai-tools-office-helper"
+version = "1.0.0"
+description = "Native xlsx/docx editing helper for the ai-tools MCP server"
+requires-python = ">=3.11"
+# Pinned by the Nix closure rather than by a range here: an unpinned dependency
+# in a home server closure would resolve to whatever was current at build time.
+dependencies = [ "openpyxl", "python-docx" ]
+
+[tool.setuptools]
+packages = [ "ai_tools_office" ]

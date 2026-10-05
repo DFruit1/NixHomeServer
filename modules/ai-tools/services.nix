@@ -36,6 +36,9 @@ in
         # against this prefix; the sandbox below is what makes the refusal real
         # even if a future tool forgets to.
         AI_TOOLS_WORKSPACE_ROOT = cfg.workspaceRoot;
+        # The pinned native xlsx/docx helper. It holds no grant of its own and
+        # runs as part of this unit, in this sandbox, as this account.
+        AI_TOOLS_OFFICE_HELPER = "${cfg.officeHelper}/bin/ai-tools-office-helper";
         # rmcp rejects any Host the transport was not configured with, and Caddy
         # forwards the client's Host unchanged, so the service has to be told
         # the name the gateway publishes. Without this it starts loopback-only
