@@ -54,16 +54,69 @@ if ! run_gate --build-checks --all-apps; then
   cat "$test_root/output"
   exit 1
 fi
+# Every exclusion must be announced with the class it belongs to and the direct
+# path that keeps its coverage, so a reviewer sees a relocation rather than a
+# silent skip.
+require_match "$test_root/output" \
+  'Building repo-policy is excluded.*PATH into the invoking user' \
+  'Every sandbox exclusion must state the class it belongs to.'
+require_fixed "$test_root/output" \
+  'It runs directly here via scripts/tests/run-script-tests.sh' \
+  'Every sandbox exclusion must name the direct path that keeps its coverage.'
 require_fixed "$VALIDATION_TEST_LOG" \
   '.#legacyPackages.x86_64-linux.nixhomeserverAllChecks.media-manager-test' \
-  'Catalog validation must build Rust tests.'
+  'Excluding one check must not disturb the rest of the selected set.'
 require_fixed "$VALIDATION_TEST_LOG" \
   '.#legacyPackages.x86_64-linux.nixhomeserverAllChecks.media-manager-frontendDist' \
-  'Catalog validation must build frontend checks.'
+  'Excluding one check must not disturb the rest of the selected set.'
 require_match "$VALIDATION_TEST_LOG" '^scripts --all-apps$' \
   'Build checks must retain the lean all-app script suite.'
 forbid_match "$VALIDATION_TEST_LOG" 'repo-policy|hydraJobs|--full|flake check' \
   'Build checks must not recursively build repo-policy or opt into heavier suites.'
+
+# The default exclusion table is the entire policy surface. Compare the checks
+# the gate builds against the evaluated worklist minus that table, so widening
+# the table is a visible diff rather than a silent loss of coverage.
+exclusions_default="$(bash "$TESTS_REPO_ROOT/scripts/validate-repo.sh" \
+  --print-sandbox-exclusions)"
+[[ "$exclusions_default" == 'repo-policy|scripts/tests/run-script-tests.sh' ]]
+excluded_names="$(cut -d'|' -f1 <<<"$exclusions_default" | sort)"
+expected_names="$(comm -23 \
+  <(printf '%s\n' media-manager-frontendDist media-manager-test repo-policy | sort) \
+  <(printf '%s\n' "$excluded_names"))"
+[[ "$expected_names" == $'media-manager-frontendDist\nmedia-manager-test' ]]
+for name in $(printf '%s\n' "$expected_names"); do
+  require_fixed "$VALIDATION_TEST_LOG" \
+    ".#legacyPackages.x86_64-linux.nixhomeserverAllChecks.${name}" \
+    "Every non-excluded check (${name}) must still be built."
+done
+
+# An exclusion that cannot name a working direct validation path is not a
+# relocation, it is a skip: the gate must fail rather than drop the coverage.
+printf '%s\n' 'repo-policy|scripts/tests/does-not-exist.sh' \
+  >"$test_root/exclusions-broken"
+export VALIDATE_REPO_SANDBOX_EXCLUSIONS="$test_root/exclusions-broken"
+if run_gate --build-checks; then
+  echo 'An exclusion without a working direct validation path must fail validation.' >&2
+  exit 1
+fi
+require_match "$test_root/output" 'direct validation path is missing or not executable' \
+  'A broken exclusion must name the direct path it could not find.'
+forbid_match "$VALIDATION_TEST_LOG" '^scripts ' \
+  'A broken exclusion must stop the gate, not fall through to the script suite.'
+forbid_match "$VALIDATION_TEST_LOG" '^nix build ' \
+  'A broken exclusion must stop before building anything.'
+
+# An exclusion entry with no direct path at all is equally a silent skip.
+printf '%s\n' 'repo-policy' >"$test_root/exclusions-empty"
+export VALIDATE_REPO_SANDBOX_EXCLUSIONS="$test_root/exclusions-empty"
+if run_gate --build-checks; then
+  echo 'An exclusion without a direct validation path must fail validation.' >&2
+  exit 1
+fi
+require_match "$test_root/output" 'direct validation path is missing or not executable' \
+  'An exclusion with no path must be rejected rather than accepted.'
+unset VALIDATE_REPO_SANDBOX_EXCLUSIONS
 
 run_gate --build-checks
 require_match "$VALIDATION_TEST_LOG" '^nix build .* --keep-going ' \

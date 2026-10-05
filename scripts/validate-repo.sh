@@ -10,7 +10,7 @@ ensure_default_nix_config
 
 usage() {
   cat <<'EOF'
-Usage: scripts/validate-repo.sh [--full] [--build-checks] [--all-apps] [--run-flake-check] [--skip-flake-check] [--run-vm-tests]
+Usage: scripts/validate-repo.sh [--full] [--build-checks] [--all-apps] [--run-flake-check] [--skip-flake-check] [--run-vm-tests] [--print-sandbox-exclusions]
 
 Run the local repository validation gate.
 
@@ -24,15 +24,29 @@ Default mode (lean):
 
 Build checks (--build-checks):
   - builds flake check derivations, including Rust tests and frontend checks
-  - excludes repo-policy, which the script suite runs directly
+  - skips the sandbox-excluded checks listed below and runs them directly
   - retains lean script selection; full runtime and E2E checks require --full
   - does not replace the GC roots retained by a passing full validation
 
 Full mode (--full):
   - runs `nix flake check --no-build` unless --skip-flake-check is used
   - runs the full script suite through scripts/tests/run-script-tests.sh --full
-  - builds flake check derivations except repo-policy, which is run directly
+  - builds flake check derivations except the sandbox-excluded checks below
   - runs the pinned Homepage Playwright end-to-end suite
+
+Sandbox-excluded checks (the class, stated once, enforced below):
+  - a derivation that shells out to the invoking user's tools (cargo, hermes,
+    systemd-tmpfiles, ~/.local/bin) fails inside a remote builder's sandbox,
+    which has no PATH into those tools, and passes on the workstation
+  - each excluded check therefore runs directly on the workstation instead,
+    and the gate refuses to run if that direct path cannot be named
+  - an entry may only be added with that check's own failure evidence from a
+    remote build; a shared cause across other failures must never be assumed
+  - see documentation/operations.md, "Builds", for the measured evidence
+
+Reporting:
+  - --print-sandbox-exclusions prints the exclusion table as name|direct-path
+    lines and exits, so the policy surface is reviewable as a diff
 
 VM tests (--run-vm-tests):
   - runs integration tests requiring VM boot (failure-alert, jellyfin-oidc)
@@ -53,6 +67,7 @@ Examples:
   scripts/validate-repo.sh --full --skip-flake-check
   scripts/validate-repo.sh --run-vm-tests
   scripts/validate-repo.sh --run-vm-tests --all-apps
+  scripts/validate-repo.sh --print-sandbox-exclusions
 EOF
 }
 
@@ -62,6 +77,7 @@ all_apps=false
 run_flake_check=false
 skip_flake_check=false
 run_vm_tests=false
+print_sandbox_exclusions=false
 tests_dir="${VALIDATE_REPO_TESTS_DIR:-$repo_root/scripts/tests}"
   eval_cache_dir=""
   eval_cache_owned=""
@@ -107,6 +123,10 @@ while (($# > 0)); do
       ;;
     --run-vm-tests)
       run_vm_tests=true
+      shift
+      ;;
+    --print-sandbox-exclusions)
+      print_sandbox_exclusions=true
       shift
       ;;
     -h|--help)
@@ -164,8 +184,56 @@ current_system() {
   nix eval --impure --raw --expr 'builtins.currentSystem'
 }
 
+# Checks that must never be built inside a Nix derivation sandbox, with the
+# direct workstation path that keeps their coverage instead.
+#
+# The class: a derivation that shells out to the invoking user's tools. A remote
+# builder's sandbox has no PATH into cargo, hermes, systemd-tmpfiles or
+# ~/.local/bin, so such a check fails on the server and passes on the
+# workstation. Measured evidence and the numbers behind it are in
+# documentation/operations.md, "Builds".
+#
+# Rule for changing this table: add an entry only with that check's own failure
+# output from a remote build. A shared cause across a group of failing checks is
+# a hypothesis, not evidence, and must never be used to exclude a check whose
+# own failure was not sampled. Never exclude a check to make the gate green.
+sandbox_excluded_checks() {
+  # A caller-supplied table exists so the focused regression can prove the
+  # fail-closed behaviour. It is a table of explicit name|direct-path pairs, so
+  # it can relocate a check but can never drop one silently.
+  if [[ -n "${VALIDATE_REPO_SANDBOX_EXCLUSIONS:-}" ]]; then
+    cat "${VALIDATE_REPO_SANDBOX_EXCLUSIONS}"
+    return 0
+  fi
+  cat <<'EOF'
+repo-policy|scripts/tests/run-script-tests.sh
+EOF
+}
+
+# Print the direct validation path for a sandbox-excluded check. Returns 1 when
+# the check is not excluded, and fails the gate (exit 2 to the caller) when an
+# exclusion cannot name a working direct path: an exclusion that silently drops
+# coverage is worse than the remote failure it avoids.
+sandbox_exclusion_direct_path() {
+  local check_name="$1" entry direct_path
+  while IFS='|' read -r entry direct_path; do
+    [[ -n "$entry" ]] || continue
+    if [[ "$entry" != "$check_name" ]]; then
+      continue
+    fi
+    if [[ -z "$direct_path" || ! -x "$repo_root/$direct_path" ]]; then
+      echo "❌ ${check_name} is excluded from derivation builds but its direct" \
+        "validation path is missing or not executable: ${direct_path:-<unset>}" >&2
+      return 2
+    fi
+    printf '%s\n' "$direct_path"
+    return 0
+  done < <(sandbox_excluded_checks)
+  return 1
+}
+
 build_derivation_attr() {
-  local attr="$1" system="$2" check_name check_names output_path root_path
+  local attr="$1" system="$2" check_name check_names output_path root_path direct_path
   local -a check_targets=()
   local new_outputs
 
@@ -180,7 +248,19 @@ build_derivation_attr() {
 
   while IFS= read -r check_name; do
     [[ -n "$check_name" ]] || continue
-    [[ "$check_name" != "repo-policy" ]] || continue
+    local exclusion_status=0
+    direct_path="$(sandbox_exclusion_direct_path "$check_name")" || exclusion_status=$?
+    if ((exclusion_status == 2)); then
+      # Never a skip: an exclusion with no working direct path fails the gate.
+      exit 1
+    fi
+    if ((exclusion_status == 0)); then
+      # Coverage is preserved by running it directly on this host, so the
+      # exclusion is only ever a relocation, never a skip.
+      echo "ℹ️ Building ${check_name} is excluded: a derivation sandbox has no" \
+        "PATH into the invoking user's tools. It runs directly here via ${direct_path}."
+      continue
+    fi
     if [[ "$check_name" =~ ^(failure-alert|jellyfin-oidc)$ && ! -c /dev/kvm ]]; then
       echo "ℹ️ Skipping ${check_name} VM execution because /dev/kvm is unavailable; flake evaluation still checks the test definition."
       continue
@@ -349,6 +429,16 @@ run_full_e2e_checks() {
   echo "ℹ️ Running Homepage Playwright end-to-end tests…"
   "$repo_root/scripts/test-homepage-ui.sh"
 }
+
+if [[ "$print_sandbox_exclusions" == true ]]; then
+  # Report the policy surface itself, so a change to the table is reviewable as
+  # a diff without running the gate.
+  while IFS='|' read -r entry direct_path; do
+    [[ -n "$entry" ]] || continue
+    printf '%s|%s\n' "$entry" "$direct_path"
+  done < <(sandbox_excluded_checks)
+  exit 0
+fi
 
 if [[ "$skip_flake_check" == false ]]; then
   if [[ "$full_mode" == true || "$run_flake_check" == true ]]; then
