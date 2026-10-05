@@ -61,10 +61,14 @@ done
 # looks for, so a clean fixture is genuinely clean.
 printf '## Board health\n\nSee scripts/hermes/kanban-board-health.sh.\n' \
   >"$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md"
-printf '## Deploy gate\n\nnix run .#deploy\n' >>"$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md"
-printf 'scripts/hermes/kanban-retry-breaker.sh parks a card; do not move it.\n' \
-  >>"$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md"
-printf '8. **WORKER_FAILED_BLOCKED** - re-scope the card and re-dispatch it.\n' \
+# One grouped append: the retry-breaker rule and the WORKER_FAILED_BLOCKED policy
+# the drift check below looks for.
+printf '%s\n' \
+  '## Deploy gate' \
+  '' \
+  'nix run .#deploy' \
+  'scripts/hermes/kanban-retry-breaker.sh parks a card; do not move it.' \
+  '8. **WORKER_FAILED_BLOCKED** - re-scope the card and re-dispatch it.' \
   >>"$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md"
 printf '## Whole-change-set deploy review\n' \
   >"$HERMES_FIXTURE/profiles/project-auditor/SOUL.md"
