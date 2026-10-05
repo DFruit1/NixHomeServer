@@ -931,8 +931,10 @@ impl ServerHandler for Server {
     fn get_info(&self) -> InitializeResult {
         InitializeResult::new(ServerCapabilities::builder().enable_tools().build())
             .with_instructions(
-                "Read-only tools for this home server. web_search queries the local SearXNG \
-             instance. Prefer the user's own files and context for questions about their data.",
+                "Tools for this home server. web_search queries the local SearXNG instance, and \
+                 convert_document turns an office file into text. The office tools read across the \
+                 whole shared directory and write only into the AI workspace folder. Prefer the \
+                 user's own files and context for questions about their data.",
             )
     }
 
@@ -1389,5 +1391,34 @@ mod tests {
             config.allowed_origins,
             vec![format!("https://{PUBLIC_HOST}")]
         );
+    }
+
+    /// The instructions a client reads at handshake are the model's first
+    /// description of this surface, so a stale claim here is a real defect: when
+    /// the office write tools landed, the handshake still said "read-only" and
+    /// told the model nothing about where a write could land.
+    #[test]
+    fn the_handshake_describes_the_write_surface_and_where_it_lands() {
+        let server = Server {
+            config: Arc::new(test_config()),
+            converter: Arc::new(
+                Converter::new("http://127.0.0.1:9980", Duration::from_secs(5)).unwrap(),
+            ),
+        };
+        let instructions = server
+            .get_info()
+            .instructions
+            .unwrap_or_default()
+            .to_lowercase();
+        assert!(
+            !instructions.contains("read-only"),
+            "the handshake must not claim a read-only surface: {instructions}"
+        );
+        for expected in ["convert_document", "workspace"] {
+            assert!(
+                instructions.contains(expected),
+                "the handshake should mention {expected}: {instructions}"
+            );
+        }
     }
 }

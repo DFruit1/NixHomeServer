@@ -291,9 +291,11 @@ impl ServerHandler for StdioBridge {
         InitializeResult::new(ServerCapabilities::builder().enable_tools().build())
             .with_instructions(
                 "Tools from this host's ai-tools MCP endpoint: web_search over the local \
-                 SearXNG instance, and document conversion. They are forwarded to that endpoint, \
-                 which owns the file access policy. Prefer the user's own files and context for \
-                 questions about their data.",
+                 SearXNG instance, convert_document for office files, spreadsheet_read and \
+                 spreadsheet_write for whole workbooks, and word_document for Word files. They \
+                 read across the shared directory and write only into the AI workspace folder. \
+                 Every call is forwarded to that endpoint, which owns the file access policy. \
+                 Prefer the user's own files and context for questions about their data.",
             )
     }
 
@@ -437,6 +439,29 @@ mod tests {
     #[test]
     fn the_bridge_serves_only_the_revision_llama_speaks() {
         assert_eq!(STDIO_PROTOCOL_VERSION.as_str(), "2024-11-05");
+    }
+
+    /// What the bridge says about itself at handshake is the model's first
+    /// description of the surface. It forwarded the whole office tool set while
+    /// still claiming only "web_search and document conversion", so the model
+    /// was never told where a write could land.
+    #[test]
+    fn the_handshake_names_the_office_tools_and_the_workspace() {
+        let instructions = StdioBridge { bridge: bridge() }
+            .get_info()
+            .instructions
+            .unwrap_or_default()
+            .to_lowercase();
+        assert!(
+            instructions.contains("workspace"),
+            "the bridge handshake should name the workspace: {instructions}"
+        );
+        for tool in ["web_search", "convert_document", "spreadsheet", "word"] {
+            assert!(
+                instructions.contains(tool),
+                "the bridge handshake should mention {tool}: {instructions}"
+            );
+        }
     }
 
     #[test]
