@@ -2353,6 +2353,78 @@ DEPLOY_DRY_RUN=1 ./scripts/deploy.sh --action test
 Use `--build-mode <value>` for a one-shot override. The older
 `--build-locally` flag remains an alias for `--build-mode local`.
 
+## Compute Offload (workstation and server)
+
+Both offload paths already exist and are verified against this server. Neither
+is new infrastructure, and nothing here changes the guarded allocation defaults
+in `vars.nix`: a guarded deploy still uses the dashboard-selected build mode and
+still exports its own `NIX_CONFIG`, which overrides any ambient user config.
+
+| Workload | Where to run it | Why |
+| --- | --- | --- |
+| Full `nixosConfigurations` evaluation | server, batched | 74 s local → 19 s remote, identical drvPath |
+| Settings-level `nix eval` | workstation | already served from the local eval cache; the SSH round trip costs more than the eval |
+| Rust / frontend compilations | server, as a Nix `builders` target | 16 cores, sandboxed, RAM headroom; the workstation stays at `max-jobs = 1` |
+| `scripts/tests/*` shell suite | workstation | a remote sandbox has no `PATH` into the invoking user's tools |
+| Reproducible Nix derivation builds | either | the Attic cache serves both ends over the `127.0.0.1:8080` forward |
+
+### Evaluation
+
+`scripts/helpers/remote-eval.sh` provides `remote_eval_batch_json`. It stages
+the *tracked* tree with `create_deploy_repo_archive`, transfers it, evaluates on
+the server against `path:<staged dir>`, and removes the staged directory through
+a remote `trap … EXIT`. Query bodies travel on stdin, never interpolated into
+the remote command line, and only ciphertext crosses the wire because the
+archive builder refuses `secrets/unencrypted`.
+
+It fails closed: a staging, transfer or remote-evaluation failure returns
+non-zero with no payload and prints
+`remote-eval: falling back to local evaluation (…)` on stderr. A transport
+error can never be read as an empty result. Set `REMOTE_EVAL=0` to force local
+evaluation.
+
+**Batch every evaluation query into one `remote_eval_batch_json` call.** Nix
+shares nothing between separate `nix eval` processes, so a script asking three
+thin questions pays three full module-system instantiations; one batch pays one.
+Batching matters more than offloading. `scripts/tests/test-common.sh` sources
+the helper, so a test that needs several config values should use the batch
+helper rather than calling `flake_eval_json` repeatedly.
+
+### Builds
+
+`~/.config/nix/nix.conf` on the workstation already declares the server as an
+`ssh-ng://` builder with a pinned identity and host key, so an ordinary
+`nix build` of a reproducible derivation already offloads without any flag.
+
+Two limits belong with that statement:
+
+* **The sandbox has no user `PATH`.** A derivation that shells out to `cargo`,
+  `hermes`, `systemd-tmpfiles`, `jq`-adjacent workstation tooling or anything
+  in `~/.local/bin` fails on the server and passes on the workstation. This is
+  why `scripts/validate-repo.sh` excludes `repo-policy` from `--build-checks`
+  and runs the script suite directly. Do not widen that exclusion list from
+  this note; the broader sandbox-`PATH` rule is a separate decision.
+* **The server's own `max-jobs = 2` is the real ceiling.** The workstation's
+  16-slot `builders` request is a request, not a grant, and the server truncates
+  it. Raising the deployed limit is a policy change, not a documentation change.
+
+### What these numbers are and are not
+
+The 3.9x evaluation ratio was measured with a sibling card holding a 48-check
+build, so both hosts were loaded. The evaluation ratio is large enough to be
+directional, but the `max-jobs` 1-vs-2 numbers and any load-average reading
+from that window are **not throughput benchmarks** and must not be quoted as
+capacity headroom. Re-measure on an idle pair before drawing a scaling
+conclusion.
+
+### What offload does not cover
+
+The Hermes kanban board is single-host by design and its crash detection
+assumes host-local PIDs, so kanban workers do not run remotely. The SSH
+terminal backend is a global per-profile flip that would also move the guarded
+deploy helpers; it is not the offload mechanism. Tool jobs stay local; the
+auditable path is the `remote-eval.sh` pattern described above.
+
 ## Upstream Sync
 
 Installations that track a shared upstream repository (a friend's server
