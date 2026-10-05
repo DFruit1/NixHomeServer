@@ -84,6 +84,33 @@ prompt is unavoidable, refer to that secret rather than relying on memory.
 
 ---
 
+## Compute Offload
+
+* Both offload paths already exist and are verified. The full table, the evidence and the failure modes are in `documentation/operations.md` ("Compute Offload
+(workstation and server)").
+* Full `nixosConfigurations` evaluation runs on the server, batched.
+* Settings-level `nix eval` stays local: the local cache already serves it, and
+  the SSH round trip costs more than the eval.
+* Rust and frontend compilations build on the server as a Nix `builders` target.
+* `scripts/tests/*` runs on the workstation. A remote sandbox has no `PATH` into
+  the invoking user's tools, so a script that shells out to `cargo`, `hermes` or
+  `~/.local/bin` fails on the server and passes here.
+* Reproducible Nix derivation builds may run on either end; the Attic cache
+  serves both.
+* Batch every evaluation query into one `remote_eval_batch_json` call from
+  `scripts/helpers/remote-eval.sh`, already sourced by
+  `scripts/tests/test-common.sh`. Nix shares nothing between separate `nix eval`
+  processes, so batching matters more than offloading. Set `REMOTE_EVAL=0` to
+  force local evaluation.
+* Do not change the guarded allocation defaults from here: no backend flip, no
+  `max-jobs` change, no widening of the `repo-policy` sandbox exclusion, no
+  credential transfer. Those are separate, owner-gated decisions.
+* The 3.9x evaluation ratio and every `max-jobs` or load-average number behind
+  it were taken under load. They are directional only and are not throughput
+  benchmarks; re-measure on an idle pair before drawing a scaling conclusion.
+
+---
+
 ## Android Releases
 
 * After validating a release build of any Android APK, publish it to the private
