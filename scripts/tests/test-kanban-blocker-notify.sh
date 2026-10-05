@@ -107,8 +107,24 @@ export PATH="$fixture/bin:$PATH"
 export FAKE_HERMES_LOG="$fixture/hermes.log"
 : >"$FAKE_HERMES_LOG"
 
+# The harness runs unfenced by default: an ordinary apply is not a refusal case,
+# and inheriting whatever fence the surrounding shell happens to have would make
+# these assertions depend on who launched the suite. The refusal cases below use
+# run_binder_fenced, which pins the marker explicitly in both directions.
 run_binder() {
-  HERMES_ROOT="$HERMES_FIXTURE" \
+  env -u HERMES_DELEGATED_CHILD_CONTEXT \
+    HERMES_ROOT="$HERMES_FIXTURE" \
+    HERMES_BOARD=fixture \
+    HERMES_KANBAN_DB="$DB" \
+    "$BINDER" "$@"
+}
+
+# Pin the worker fence on (marker=1) or explicitly off (marker=), so the refusal
+# path is exercised the same way whether or not the caller was already fenced.
+run_binder_fenced() {
+  local marker="$1"; shift
+  HERMES_DELEGATED_CHILD_CONTEXT="$marker" \
+    HERMES_ROOT="$HERMES_FIXTURE" \
     HERMES_BOARD=fixture \
     HERMES_KANBAN_DB="$DB" \
     "$BINDER" "$@"
@@ -211,6 +227,88 @@ grep -q -- '--chat-type dm' "$FAKE_HERMES_LOG" ||
 grep -q -- '--notifier-profile head-coordinator' "$FAKE_HERMES_LOG" ||
   fail "the subscribe did not stamp the owning profile: $(cat "$FAKE_HERMES_LOG")"
 pass "subscribes the card to the home channel, DM, notify, profile-stamped"
+
+# --- a denied subscribe stays denied ---------------------------------------
+#
+# The CLI refuses kanban mutations from a delegated child so a worker cannot
+# reshape the board it is running inside. The notifier used to work around that by
+# retrying with HERMES_DELEGATED_CHILD_CONTEXT stripped from the environment, which
+# made it a standing bypass: the binding was obtained by defeating the control, not
+# by being authorised, and the fence could not have been relied on anywhere the
+# notifier ran. The retry is gone; a refusal is reported and the card stays unbound.
+#
+# The fake hermes below therefore models the real fence rather than always
+# succeeding: it refuses every kanban mutation while the marker is exported, and
+# succeeds without it. It also records whether each attempt saw the marker, so a
+# silent strip is caught even if a retry were reintroduced on a success path.
+
+cat >"$fixture/bin/hermes" <<'SH'
+#!/usr/bin/env bash
+set -uo pipefail
+printf 'MARKER=%s ARGS=%s\n' "${HERMES_DELEGATED_CHILD_CONTEXT-<unset>}" "$*" \
+  >>"$FAKE_HERMES_LOG"
+if [[ "${HERMES_DELEGATED_CHILD_CONTEXT-}" != "" ]] && [[ "$*" == *notify-subscribe* ]]; then
+  echo "refused: a delegated child may not mutate the board it runs inside" >&2
+  echo "HERMES_DELEGATED_CHILD_CONTEXT is set" >&2
+  exit 1
+fi
+exit 0
+SH
+chmod +x "$fixture/bin/hermes"
+
+seed_card t_eeee0005 'A gate the worker may not bind' blocked none
+: >"$FAKE_HERMES_LOG"
+denied_out="$(run_binder_fenced 1 t_eeee0005 2>&1)"
+grep -q 'could not be subscribed' <<<"$denied_out" ||
+  fail "a refused subscribe was not reported: $denied_out"
+grep -q 'still unbound' <<<"$denied_out" ||
+  fail "the refused card was not left unbound: $denied_out"
+if grep -q 'subscribed to simplex' <<<"$denied_out"; then
+  fail "a denied subscribe reported success: $denied_out"
+fi
+pass "a subscribe refused by the fence is reported, never retried past it"
+
+# The refusal must name the fence, so an operator knows the binding is refused and
+# not broken -- and is told to bind from outside rather than to strip the marker.
+grep -q 'worker fence' <<<"$denied_out" ||
+  fail "the refusal does not name the worker fence: $denied_out"
+grep -q 'do not strip the marker' <<<"$denied_out" ||
+  fail "the report does not tell the operator to keep the fence: $denied_out"
+pass "the refusal names the fence and directs the bind outside it"
+
+# Every attempt the binder made saw the marker: nothing was retried with it
+# removed behind the caller's back.
+attempts="$(grep -c 'notify-subscribe' "$FAKE_HERMES_LOG")"
+[[ "$attempts" == 1 ]] ||
+  fail "the refused subscribe was attempted $attempts times, want exactly 1 (no retry)"
+if grep 'notify-subscribe' "$FAKE_HERMES_LOG" | grep -qv '^MARKER=1 '; then
+  fail "a subscribe attempt ran without the fence marker: $(cat "$FAKE_HERMES_LOG")"
+fi
+pass "exactly one subscribe attempt, and it kept the fence marker"
+
+# The same card binds normally outside the fence -- so the refusal above is the
+# fence refusing, not the notifier being broken for this card.
+: >"$FAKE_HERMES_LOG"
+bound_out="$(run_binder t_eeee0005 2>&1)"
+grep -q 't_eeee0005 subscribed to simplex:7' <<<"$bound_out" ||
+  fail "the card did not bind outside the fence: $bound_out"
+pass "the same card binds normally from outside the fence"
+
+# The read-only path is unaffected by the fence: a worker can still be told what
+# is unbound, which is what lets it escalate rather than silently fail.
+check_denied="$(run_binder_fenced 1 --check t_eeee0005 2>&1)"
+grep -q 'not bound to simplex' <<<"$check_denied" ||
+  fail "--check did not report binding state inside the fence: $check_denied"
+pass "--check still reports binding state from inside the fence"
+
+# Restore the permissive fake for the remaining checks.
+cat >"$fixture/bin/hermes" <<'SH'
+#!/usr/bin/env bash
+set -uo pipefail
+printf '%s\n' "$*" >>"$FAKE_HERMES_LOG"
+exit 0
+SH
+chmod +x "$fixture/bin/hermes"
 
 # --- the inheritance property, which is the subtle one ---------------------
 #
