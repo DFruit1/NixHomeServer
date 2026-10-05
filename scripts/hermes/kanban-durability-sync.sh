@@ -357,13 +357,16 @@ trap 'rm -rf "$incoming"' EXIT
 # an unattended job and hides real failures.
 tar -xzf - -C "$incoming" --warning=no-timestamp
 
-# Inventory the generations already on disk, oldest first. Two orderings, because
+# Inventory the generations already on disk, newest first. Two orderings, because
 # one of them is not always available: the modification time, at nanosecond
 # precision when stat supports it, and the slot the generation already occupies.
 # The tie-break is not decoration -- two mirrors inside one second is exactly
-# what a retry after a failed run looks like, and a lexicographic tie-break there
-# keeps the *oldest* copy and discards the newest, which is the copy that is
-# wanted.
+# what a retry after a failed run looks like, and slot order is the only thing
+# that still says which copy is newer: slot 0 is `current`, slot 1 `previous`,
+# slot N `previous.N`, so ascending slot is newest first. An ascending-slot
+# tie-break on an ascending-mtime list is also what made retention pick the wrong
+# copies: with tied mtimes the list ended up oldest-in-slot-order and `tail`
+# then deleted the *newest* predecessor, which is the copy most wanted.
 inventory="$incoming/.generations"
 : >"$inventory"
 for dir in "$remotedir"/current "$remotedir"/previous "$remotedir"/previous.*; do
@@ -380,14 +383,18 @@ for dir in "$remotedir"/current "$remotedir"/previous "$remotedir"/previous.*; d
   esac
   printf '%s %s %s\n' "$mtime" "$slot" "$dir" >>"$inventory"
 done
-sort -k1,1n -k2,2n -k3 "$inventory" >"$inventory.sorted"
+# `-k1,1nr` reverses the mtime key alone. A global `-r` would reverse the slot
+# key as well and reintroduce the oldest-first order this list must not have.
+sort -k1,1nr -k2,2n "$inventory" >"$inventory.sorted"
 
 # `current` is always replaced by the incoming copy, so the slots behind it
-# compete for the generations that are not it.
+# compete for the generations that are not it. The list is newest-first, so the
+# survivors are the *first* `survivors` entries and the deletion pass at the end
+# only sees what fell off the end.
 survivors=$((keep - 2))
 [ "$survivors" -lt 0 ] && survivors=0
 awk -v cur="$remotedir/current" '$3 != cur' "$inventory.sorted" >"$inventory.older"
-tail -n "$survivors" "$inventory.older" >"$inventory.keep"
+head -n "$survivors" "$inventory.older" >"$inventory.keep"
 
 # Stage the survivors under names that cannot collide with the slot they are
 # about to occupy. Renaming straight into place would let `previous.3` overwrite

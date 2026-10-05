@@ -321,7 +321,8 @@ pass "a named board that does not exist fails loudly"
 # interleave this phase's five mirrors with the earlier phases' writes to the same
 # database and the same board.json, and the generation marker is only meaningful
 # while nothing else is touching it.
-for spec in "rotboard:0:repo-b" "depthboard:0:repo-b" "truncboard:0:repo-b"; do
+for spec in "rotboard:0:repo-b" "depthboard:0:repo-b" "truncboard:0:repo-b" \
+            "deepboard:0:repo-b" "tieboard:0:repo-b"; do
   slug="${spec%%:*}"
   rest="${spec#*:}"
   cards="${rest%%:*}"
@@ -374,6 +375,90 @@ done
 [[ "$(remote_paths depthboard)" == "current" ]] ||
   fail "DURABILITY_GENERATIONS=1 kept extra generations: '$(remote_paths depthboard)'"
 pass "honours an explicit retention depth"
+
+# --- retention picks the newest predecessors, in slot order ------------------
+#
+# Two defects the depth-3 rotation above cannot see, both in the same aggregate:
+#
+#   * Under tied mtimes the old sort produced an oldest-first list and `tail`
+#     kept from the wrong end, so the newest predecessor was deleted. Two mirrors
+#     inside one second is what a retry after a failed run actually looks like,
+#     so tied mtimes are the common case, not an exotic one.
+#   * Survivors were assigned slots oldest-first, so at a depth above 3 the
+#     ordering of `previous.2`, `previous.3` and `previous.4` was arbitrary.
+#
+# Every rotation below runs the *recorded and replayed* remote body, so the `rm
+# -rf` really happens inside this process against a fixture tree. The mtimes are
+# pinned equal on purpose for the tie phases; nothing else in the rotation reads
+# them, so pinning is exact rather than approximate.
+
+# Depth 5 over eight rotations. Slots run past `previous.2`, which is where
+# oldest-first slot assignment first shows, and eight rotations leave three
+# generations genuinely due for deletion.
+new_remote_root depth5
+for generation in 1 2 3 4 5 6 7 8; do
+  mark_generation deepboard "$generation"
+  DURABILITY_GENERATIONS=5 HERMES_BOARD=deepboard run_sync >/dev/null 2>&1 ||
+    fail "depth-5 generation $generation failed to mirror"
+  replay_last_ssh
+done
+[[ "$(remote_paths deepboard)" == "current previous previous.2 previous.3 previous.4" ]] ||
+  fail "expected 5 generations at depth 5, got: '$(remote_paths deepboard)'"
+# Newest-first in every numbered slot, not just the first two.
+for pair in "previous:gen7" "previous.2:gen6" "previous.3:gen5" "previous.4:gen4"; do
+  slot="${pair%%:*}"
+  want="${pair##*:}"
+  [[ "$(mirror_file "deepboard/$slot/board.json")" == *"\"generation\":\"$want\""* ]] ||
+    fail "depth 5: $slot holds the wrong generation, expected $want"
+done
+pass "a depth of 5 keeps the four newest predecessors, newest-first in every slot"
+
+# Tied mtimes at the default depth. Without the slot tie-break the survivors come
+# out oldest-first and the newest predecessor is the one that gets deleted.
+new_remote_root ties
+tie_mtime=1700000000
+for generation in 1 2 3 4; do
+  mark_generation tieboard "$generation"
+  DURABILITY_GENERATIONS=3 HERMES_BOARD=tieboard run_sync >/dev/null 2>&1 ||
+    fail "tied-mtime generation $generation failed to mirror"
+  replay_last_ssh
+  # Rewind every generation's mtime to the same instant before the next run, so
+  # the next inventory sees a full tie rather than merely close times.
+  for slot_dir in "$REMOTE_DIR/tieboard"/current "$REMOTE_DIR/tieboard"/previous \
+                  "$REMOTE_DIR/tieboard"/previous.*; do
+    [ -d "$slot_dir" ] || continue
+    touch -m -d "@$tie_mtime" "$slot_dir"
+  done
+done
+[[ "$(remote_paths tieboard)" == "current previous previous.2" ]] ||
+  fail "tied mtimes changed the number of generations kept: '$(remote_paths tieboard)'"
+[[ "$(mirror_file tieboard/previous/board.json)" == *'"generation":"gen3"'* ]] ||
+  fail "tied mtimes: previous does not hold the newest predecessor (gen3); the newest copy is the one wanted"
+[[ "$(mirror_file tieboard/previous.2/board.json)" == *'"generation":"gen2"'* ]] ||
+  fail "tied mtimes: previous.2 does not hold gen2; the newest survivor was deleted instead"
+pass "tied mtimes retain the newest predecessor rather than the oldest"
+
+# The tie case again across several rotations at depth 5, so a tie cannot be
+# right once and wrong the next time as the slot set grows.
+new_remote_root ties-deep
+for generation in 1 2 3 4 5 6 7 8; do
+  mark_generation tieboard "$generation"
+  DURABILITY_GENERATIONS=5 HERMES_BOARD=tieboard run_sync >/dev/null 2>&1 ||
+    fail "tied-mtime depth-5 generation $generation failed to mirror"
+  replay_last_ssh
+  for slot_dir in "$REMOTE_DIR/tieboard"/current "$REMOTE_DIR/tieboard"/previous \
+                  "$REMOTE_DIR/tieboard"/previous.*; do
+    [ -d "$slot_dir" ] || continue
+    touch -m -d "@$tie_mtime" "$slot_dir"
+  done
+done
+for pair in "previous:gen7" "previous.2:gen6" "previous.3:gen5" "previous.4:gen4"; do
+  slot="${pair%%:*}"
+  want="${pair##*:}"
+  [[ "$(mirror_file "tieboard/$slot/board.json")" == *"\"generation\":\"$want\""* ]] ||
+    fail "tied mtimes at depth 5: $slot holds the wrong generation, expected $want"
+done
+pass "tied mtimes across repeated depth-5 rotations keep every slot newest-first"
 
 # A truncated incoming snapshot must not be able to destroy what is on the
 # server: the integrity gate rejects it before anything is deleted.
