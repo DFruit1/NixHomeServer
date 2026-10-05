@@ -75,10 +75,14 @@ done
 # looks for, so a clean fixture is genuinely clean.
 printf '## Board health\n\nSee scripts/hermes/kanban-board-health.sh.\n' \
   >"$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md"
-printf '## Deploy gate\n\nnix run .#deploy\n' >>"$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md"
-printf 'scripts/hermes/kanban-retry-breaker.sh parks a card; do not move it.\n' \
-  >>"$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md"
-printf '8. **WORKER_FAILED_BLOCKED** - re-scope the card and re-dispatch it.\n' \
+# One grouped append: the retry-breaker rule and the WORKER_FAILED_BLOCKED policy
+# the drift check below looks for.
+printf '%s\n' \
+  '## Deploy gate' \
+  '' \
+  'nix run .#deploy' \
+  'scripts/hermes/kanban-retry-breaker.sh parks a card; do not move it.' \
+  '8. **WORKER_FAILED_BLOCKED** - re-scope the card and re-dispatch it.' \
   >>"$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md"
 printf '## Whole-change-set deploy review\n' \
   >"$HERMES_FIXTURE/profiles/project-auditor/SOUL.md"
@@ -508,5 +512,120 @@ SIMPLEX_ALLOWED_USERS_OVERRIDE='' SIMPLEX_HOME_CHANNEL_OVERRIDE='' run_installer
 grep -q 'SIMPLEX_ALLOWED_USERS and SIMPLEX_HOME_CHANNEL are unset' "$fixture/noallow.log" ||
   fail "a missing allowlist was not reported: $(cat "$fixture/noallow.log")"
 pass "reports an unset allowlist instead of assuming the channel is closed"
+
+# --- a reinstall must not preserve an open bot ------------------------------
+#
+# These are the two ways this installer used to make the arrangement WORSE on a
+# re-run, both reported by the review as ok:
+#
+#   * the no-contact branch accepted any SIMPLEX_WS_URL line, so an .env pointing
+#     at another endpoint was called correctly wired;
+#   * SIMPLEX_ALLOW_ALL_USERS / SIMPLEX_GROUP_ALLOWED were never written but were
+#     also never removed, because a rewrite only strips what the installer itself
+#     would re-emit. A restore from an older profile, or a hand edit, therefore
+#     survived every reinstall -- so the routine the operator runs to fix things
+#     was what cemented the unsafe flags.
+#
+# Fail-closed means --check reports them and apply removes them, on both the
+# contact-scoped and the no-contact path.
+
+# Poison every profile .env the way a stale restore would: wrong port, bot open
+# to everyone, and answering group traffic.
+for lane in "${LANES[@]}"; do
+  cat >"$(simplex_profile "$lane")" <<'ENV'
+SIMPLEX_WS_URL=ws://127.0.0.1:5999
+SIMPLEX_ALLOWED_USERS=4
+SIMPLEX_HOME_CHANNEL=4
+SIMPLEX_ALLOW_ALL_USERS=true
+SIMPLEX_GROUP_ALLOWED=*
+ENV
+done
+
+# Captured rather than assigned directly: under `set -e` a non-zero installer
+# inside `$(...)` kills this test with no message, and a silent exit 1 is exactly
+# what the pre-fix installer produced here -- it aborted on the first profile
+# whose allowlist did not match, so the assertions below never ran and the
+# failure looked like an unrelated flake.
+open_check_rc=0
+open_check="$(SIMPLEX_ALLOWED_USERS_OVERRIDE=7 SIMPLEX_HOME_CHANNEL_OVERRIDE=7 \
+  run_installer --check 2>&1)" || open_check_rc=$?
+[[ "$open_check_rc" == 0 ]] ||
+  fail "--check exited $open_check_rc instead of reporting every profile's .env: $open_check"
+grep -q "SIMPLEX_WS_URL is 'ws://127.0.0.1:5999', want 'ws://127.0.0.1:5225'" <<<"$open_check" ||
+  fail "--check accepted a .env pointing at the wrong SimpleX endpoint: $open_check"
+grep -q 'SIMPLEX_ALLOW_ALL_USERS is set' <<<"$open_check" ||
+  fail "--check did not report SIMPLEX_ALLOW_ALL_USERS: $open_check"
+grep -q 'SIMPLEX_GROUP_ALLOWED is set' <<<"$open_check" ||
+  fail "--check did not report SIMPLEX_GROUP_ALLOWED: $open_check"
+grep -q 'SIMPLEX_ALLOW_ALL_USERS is set; a re-run removes it' <<<"$open_check" ||
+  fail "--check did not say a re-run removes the flag, so an operator cannot tell the repair: $open_check"
+pass "--check reports a wrong endpoint and both forbidden flags"
+
+# Apply must remove them rather than preserve them, and --check must be clean
+# afterwards. Checked on both paths: with a contactId supplied, and without.
+SIMPLEX_ALLOWED_USERS_OVERRIDE=7 SIMPLEX_HOME_CHANNEL_OVERRIDE=7 run_installer >"$fixture/open-apply.log" 2>&1
+grep -q 'SIMPLEX_ALLOW_ALL_USERS is set; removed' "$fixture/open-apply.log" ||
+  fail "apply did not name the flag it removed: $(cat "$fixture/open-apply.log")"
+for lane in "${LANES[@]}"; do
+  env_file="$(simplex_profile "$lane")"
+  grep -q 'SIMPLEX_ALLOW_ALL' "$env_file" &&
+    fail "$lane .env still enables SIMPLEX_ALLOW_ALL_USERS after a reinstall: $(cat "$env_file")"
+  grep -q 'SIMPLEX_GROUP_ALLOWED' "$env_file" &&
+    fail "$lane .env still enables SIMPLEX_GROUP_ALLOWED after a reinstall: $(cat "$env_file")"
+  grep -qx 'SIMPLEX_WS_URL=ws://127.0.0.1:5225' "$env_file" ||
+    fail "$lane .env kept the wrong SimpleX endpoint after a reinstall: $(cat "$env_file")"
+  [[ "$(stat -c %a "$env_file")" == 600 ]] ||
+    fail "$lane .env is mode $(stat -c %a "$env_file") after the reinstall, want 600"
+done
+pass "a reinstall removes the forbidden flags and corrects the endpoint"
+
+# The no-contact path is the one an operator hits on an ordinary re-apply, so it
+# gets the same enforcement.
+for lane in "${LANES[@]}"; do
+  cat >"$(simplex_profile "$lane")" <<'ENV'
+SIMPLEX_WS_URL=ws://127.0.0.1:5999
+SIMPLEX_ALLOWED_USERS=4
+SIMPLEX_HOME_CHANNEL=4
+SIMPLEX_ALLOW_ALL_USERS=true
+SIMPLEX_GROUP_ALLOWED=*
+ENV
+done
+SIMPLEX_ALLOWED_USERS_OVERRIDE='' SIMPLEX_HOME_CHANNEL_OVERRIDE='' \
+  run_installer >"$fixture/open-noid.log" 2>&1
+for lane in "${LANES[@]}"; do
+  env_file="$(simplex_profile "$lane")"
+  grep -q 'SIMPLEX_ALLOW_ALL' "$env_file" &&
+    fail "$lane .env kept SIMPLEX_ALLOW_ALL_USERS on a no-contact reinstall: $(cat "$env_file")"
+  grep -q 'SIMPLEX_GROUP_ALLOWED' "$env_file" &&
+    fail "$lane .env kept SIMPLEX_GROUP_ALLOWED on a no-contact reinstall: $(cat "$env_file")"
+  grep -qx 'SIMPLEX_WS_URL=ws://127.0.0.1:5225' "$env_file" ||
+    fail "$lane .env kept the wrong endpoint on a no-contact reinstall: $(cat "$env_file")"
+done
+pass "the no-contact path is fail-closed too"
+
+# ...and it must not do that by wiping a valid pairing. Enforcing fail-closed and
+# preserving the pairing are separate properties; this asserts the second, because
+# the obvious repair for the first (always emit empty values) silently revokes
+# the owner's access to the bot, which from the outside is a bot that stopped
+# answering and no error anywhere.
+env_file="$(simplex_profile default)"
+grep -qx 'SIMPLEX_ALLOWED_USERS=4' "$env_file" ||
+  fail "a no-contact reinstall discarded the installed pairing: $(cat "$env_file")"
+grep -qx 'SIMPLEX_HOME_CHANNEL=4' "$env_file" ||
+  fail "a no-contact reinstall discarded the installed home channel: $(cat "$env_file")"
+grep -q 'keeps the pairing already installed' "$fixture/open-noid.log" ||
+  fail "the no-contact path did not report that it kept the pairing: $(cat "$fixture/open-noid.log")"
+pass "a no-contact reinstall keeps a valid pairing while removing the flags"
+
+# A file with no pairing at all still gets a correct, closed endpoint rather than
+# being skipped: this is the fresh-machine path.
+rm -f "$HERMES_FIXTURE"/profiles/*/.env
+SIMPLEX_ALLOWED_USERS_OVERRIDE='' SIMPLEX_HOME_CHANNEL_OVERRIDE='' run_installer >/dev/null 2>&1
+env_file="$(simplex_profile default)"
+grep -qx 'SIMPLEX_WS_URL=ws://127.0.0.1:5225' "$env_file" ||
+  fail "a no-contact apply on a fresh profile did not write the loopback endpoint: $(cat "$env_file")"
+grep -q '^SIMPLEX_ALLOWED_USERS=' "$env_file" &&
+  fail "a fresh profile was given an allowlist out of thin air: $(cat "$env_file")"
+pass "writes the loopback endpoint on a fresh profile and invents no allowlist"
 
 echo "▶ hermes board wiring installer: all checks passed"

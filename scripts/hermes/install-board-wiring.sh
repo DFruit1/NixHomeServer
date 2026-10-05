@@ -693,36 +693,92 @@ fi
 # drift rather than a silent skip: an adapter with no allowlist denies every
 # contact, which looks exactly like a broken daemon from the outside.
 #
-# SIMPLEX_ALLOW_ALL_USERS is deliberately not wired. It disables the allowlist,
-# and an unauthenticated bot on a channel that is supposed to be authenticated
-# is worse than no bot at all.
+# SIMPLEX_ALLOW_ALL_USERS and SIMPLEX_GROUP_ALLOWED are never written, and
+# their presence in a profile .env is reported and removed rather than
+# preserved: they disable the allowlist and widen the bot to group traffic, and
+# an unauthenticated bot on a channel that is supposed to be authenticated is
+# worse than no bot at all. The endpoint is likewise checked for exact equality
+# rather than presence.
 SIMPLEX_ALLOWED_USERS="${SIMPLEX_ALLOWED_USERS:-}"
 SIMPLEX_HOME_CHANNEL="${SIMPLEX_HOME_CHANNEL:-}"
 
+# The one endpoint the adapter is allowed to talk to. It is a loopback URL and
+# not a knob, because the daemon in this arrangement is the local one started by
+# the autostart entry; an .env pointing anywhere else is either a leftover from
+# a different arrangement or a mistyped port, and both look identical from the
+# outside -- the adapter refuses to connect and the board says nothing.
+SIMPLEX_WANT_WS_URL="ws://127.0.0.1:${SIMPLEX_PORT:-5225}"
+
+# Switches that turn a contact-scoped bot into an open one, or widen it to group
+# traffic. This installer never writes them, so any occurrence in a profile .env
+# came from a hand edit, a restore of an older profile, or another tool -- and
+# the previous version of this script preserved them on every reinstall, which
+# made a reinstall the thing that cemented the mistake. They are removed here
+# and named in the report, so the operator learns which line was dropped instead
+# of finding a bot that stopped answering the owner with no explanation.
+SIMPLEX_FORBIDDEN_KEYS="SIMPLEX_ALLOW_ALL_USERS SIMPLEX_GROUP_ALLOWED"
+
 write_simplex_env() {
   local profile_dir="$1" env_file="$1/.env" want_allow="$2" want_home="$3"
+  local want_home_name="${4:-${SIMPLEX_HOME_CHANNEL_NAME:-Home}}"
   local tmp
   tmp="$(mktemp)"
   # Drop any prior SIMPLEX_* block this installer wrote, then re-emit it, so a
-  # changed contactId replaces the old one instead of both being read.
+  # changed contactId replaces the old one instead of both being read. This is
+  # also what removes the forbidden keys: they match the SIMPLEX_ prefix, so
+  # they cannot survive a rewrite.
   grep -v '^SIMPLEX_' "$env_file" >"$tmp" 2>/dev/null || true
   {
     printf '\n# SimpleX Chat (Hermes messaging adapter). Written by\n'
     printf '# scripts/hermes/install-board-wiring.sh; edit there, not here.\n'
-    printf 'SIMPLEX_WS_URL=ws://127.0.0.1:%s\n' "${SIMPLEX_PORT:-5225}"
+    printf 'SIMPLEX_WS_URL=%s\n' "$SIMPLEX_WANT_WS_URL"
     [[ -n "$want_allow" ]] && printf 'SIMPLEX_ALLOWED_USERS=%s\n' "$want_allow"
     [[ -n "$want_home" ]] && printf 'SIMPLEX_HOME_CHANNEL=%s\n' "$want_home"
-    printf 'SIMPLEX_HOME_CHANNEL_NAME=%s\n' "${SIMPLEX_HOME_CHANNEL_NAME:-Home}"
+    printf 'SIMPLEX_HOME_CHANNEL_NAME=%s\n' "$want_home_name"
   } >>"$tmp"
   install -m 0600 "$tmp" "$env_file"
   rm -f "$tmp"
 }
 
+# Every way a profile .env fails closed-open, one violation per line, empty when
+# the file is correct. Checked on the check path AND before every rewrite, so a
+# reinstall reports the flags it is about to remove rather than silently
+# deleting them -- and so --check cannot report "ok" for an .env that would
+# leave the adapter open to any contact or to group traffic.
+simplex_env_violations() {
+  local env_file="$1" have_url key out=''
+  have_url="$(grep -oE '^[[:space:]]*SIMPLEX_WS_URL=.*' "$env_file" 2>/dev/null || true)"
+  if [[ "$have_url" != "SIMPLEX_WS_URL=$SIMPLEX_WANT_WS_URL" ]]; then
+    out+="SIMPLEX_WS_URL is '${have_url#*SIMPLEX_WS_URL=}', want '$SIMPLEX_WANT_WS_URL';"$'\n'
+  fi
+  for key in $SIMPLEX_FORBIDDEN_KEYS; do
+    if grep -qE "^[[:space:]]*$key=" "$env_file" 2>/dev/null; then
+      out+="$key is set;"$'\n'
+    fi
+  done
+  printf '%s' "$out"
+}
+
+# Report each violation on its own line, worded by mode: apply mode names what it
+# removed, --check names what a re-run would remove.
+report_simplex_violations() {
+  local label="$1" env_file="$2" violations="$3" line
+  [[ -n "$violations" ]] || return 0
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    if [[ "$check_only" == true ]]; then
+      changed "$label .env: ${line%;}; a re-run removes it"
+    else
+      changed "$label .env: ${line%;}; removed"
+    fi
+  done <<<"$violations"
+}
+
 check_simplex_env() {
   local env_file="$1" label="$2" want_allow="$3" want_home="$4"
   local have_allow have_home
-  have_allow="$(grep -oE '^SIMPLEX_ALLOWED_USERS=.*' "$env_file" 2>/dev/null || true)"
-  have_home="$(grep -oE '^SIMPLEX_HOME_CHANNEL=[0-9]+' "$env_file" 2>/dev/null || true)"
+  have_allow="$(grep -oE '^[[:space:]]*SIMPLEX_ALLOWED_USERS=.*' "$env_file" 2>/dev/null || true)"
+  have_home="$(grep -oE '^[[:space:]]*SIMPLEX_HOME_CHANNEL=[0-9]+' "$env_file" 2>/dev/null || true)"
   if [[ "$have_allow" != "SIMPLEX_ALLOWED_USERS=$want_allow" || "$have_home" != "SIMPLEX_HOME_CHANNEL=$want_home" ]]; then
     changed "$label .env has SIMPLEX_ALLOWED_USERS='${have_allow#SIMPLEX_ALLOWED_USERS=}' SIMPLEX_HOME_CHANNEL='${have_home#SIMPLEX_HOME_CHANNEL=}'; want '${want_allow}' / '${want_home}'"
     return 1
@@ -731,40 +787,74 @@ check_simplex_env() {
   return 0
 }
 
+# Read the allowlist and home channel already in an .env. Used on the no-contact
+# path so a reinstall does not silently destroy a pairing that is already
+# installed: the operator's contactId is not something this script can derive,
+# so the only source for it is the file it is about to rewrite.
+read_simplex_pairing() {
+  local env_file="$1"
+  SIMPLEX_HAVE_ALLOW="$(grep -oE '^[[:space:]]*SIMPLEX_ALLOWED_USERS=.*' "$env_file" 2>/dev/null |
+    head -1 | sed -e 's/^[[:space:]]*SIMPLEX_ALLOWED_USERS=//' || true)"
+  SIMPLEX_HAVE_HOME="$(grep -oE '^[[:space:]]*SIMPLEX_HOME_CHANNEL=[0-9]+' "$env_file" 2>/dev/null |
+    head -1 | sed -e 's/^[[:space:]]*SIMPLEX_HOME_CHANNEL=//' || true)"
+}
+
 if [[ -n "$SIMPLEX_ALLOWED_USERS" || -n "$SIMPLEX_HOME_CHANNEL" ]]; then
   for profile_dir in "$HERMES_ROOT"/profiles/*/; do
     [[ -d "$profile_dir" ]] || continue
     profile="${profile_dir%/}"; profile="${profile##*/}"
     env_file="$profile_dir/.env"
     [[ -f "$env_file" ]] || : >"$env_file"
+    # Named before anything is rewritten, so a forbidden flag is reported even
+    # when apply mode goes on to remove it a line later.
+    report_simplex_violations "$profile" "$env_file" "$(simplex_env_violations "$env_file")"
     if [[ "$check_only" == true ]]; then
-      check_simplex_env "$env_file" "$profile" "$SIMPLEX_ALLOWED_USERS" "$SIMPLEX_HOME_CHANNEL"
+      # Non-zero from check_simplex_env means "this .env has no allowlist", and
+      # drift is already counted. Tolerated here or `set -e` would abort the
+      # script on the first mismatched profile and never inspect the rest.
+      check_simplex_env "$env_file" "$profile" "$SIMPLEX_ALLOWED_USERS" "$SIMPLEX_HOME_CHANNEL" || true
     else
       write_simplex_env "$profile_dir" "$SIMPLEX_ALLOWED_USERS" "$SIMPLEX_HOME_CHANNEL"
       changed "wrote the SimpleX env block into $profile_dir/.env"
     fi
   done
 else
-  # No contact ID on this machine yet. That is a real gap -- the adapter denies
-  # every contact without SIMPLEX_ALLOWED_USERS -- so it is reported, once, and
-  # the SIMPLEX_WS_URL alone is still written so the daemon is reachable.
+  # No contact ID supplied on this run. Two things follow, and they pull in
+  # opposite directions, so both are stated:
+  #
+  #   * the allowlist is still a real gap -- the adapter denies every contact
+  #     without it -- so it is reported once, below;
+  #   * an existing pairing is NOT overwritten with blanks. Re-running the
+  #     installer without the contactId is the ordinary way an operator
+  #     re-applies it after an upgrade, and a version that re-emitted empty
+  #     values there would silently revoke the owner's access to the bot.
+  #
+  # So the file is read for the values it already holds, and only the endpoint
+  # and the forbidden flags are enforced. The URL is validated exactly rather
+  # than by presence: this branch used to accept any SIMPLEX_WS_URL line, so an
+  # .env pointing at another port was reported as correctly wired, and an apply
+  # that did rewrite the file kept that wrong endpoint and both unsafe flags.
   for profile_dir in "$HERMES_ROOT"/profiles/*/; do
     [[ -d "$profile_dir" ]] || continue
     profile="${profile_dir%/}"; profile="${profile##*/}"
     env_file="$profile_dir/.env"
-    if grep -q '^SIMPLEX_WS_URL=' "$env_file" 2>/dev/null; then
+    read_simplex_pairing "$env_file"
+    violations="$(simplex_env_violations "$env_file")"
+    report_simplex_violations "$profile" "$env_file" "$violations"
+    if [[ -n "$violations" && "$check_only" != true ]]; then
+      # Keep the pairing, correct the endpoint, drop the forbidden keys.
+      write_simplex_env "$profile_dir" "$SIMPLEX_HAVE_ALLOW" "$SIMPLEX_HAVE_HOME" \
+        "${SIMPLEX_HOME_CHANNEL_NAME:-Home}"
+      changed "rewrote the SimpleX env block in $profile_dir/.env"
+    fi
+    if [[ -z "$violations" ]]; then
       ok "$profile .env points at the local SimpleX daemon"
-    else
-      if [[ "$check_only" == true ]]; then
-        changed "$profile .env has no SIMPLEX_WS_URL"
-      else
-        [[ -f "$env_file" ]] || : >"$env_file"
-        write_simplex_env "$profile_dir" "" ""
-        changed "wrote SIMPLEX_WS_URL into $profile_dir/.env"
-      fi
+    fi
+    if [[ -n "$SIMPLEX_HAVE_ALLOW" && -n "$SIMPLEX_HAVE_HOME" ]]; then
+      ok "$profile .env keeps the pairing already installed (allowlist ${SIMPLEX_HAVE_ALLOW})"
     fi
   done
-  unrepaired "SIMPLEX_ALLOWED_USERS and SIMPLEX_HOME_CHANNEL are unset, so every contact is denied and notifications have no target; run this installer with SIMPLEX_ALLOWED_USERS=<contactId> SIMPLEX_HOME_CHANNEL=<contactId>"
+  unrepaired "SIMPLEX_ALLOWED_USERS and SIMPLEX_HOME_CHANNEL are unset on this run, so a profile with no pairing still denies every contact and notifications have no target; run this installer with SIMPLEX_ALLOWED_USERS=<contactId> SIMPLEX_HOME_CHANNEL=<contactId>"
 fi
 
 # ---------------------------------------------------------------------------
