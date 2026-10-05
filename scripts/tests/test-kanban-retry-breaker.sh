@@ -42,11 +42,120 @@ pass() { echo "  ✅ $1"; }
 [[ -x "$BREAKER" ]] || fail "kanban-retry-breaker.sh is not executable"
 [[ -x "$HERMES_BIN" ]] || fail "hermes CLI not found (set HERMES_BIN)"
 
-fixture="$(mktemp -d)"
+# --- worker-fence-safe fixture setup ---------------------------------------
+#
+# This test runs in three contexts: an operator shell, a cron tick, and a
+# dispatcher worker (which is how the repo's own lean and full gates reach it).
+# In a worker the hermes CLI refuses to mutate any board whose path lies inside
+# the fenced root `HERMES_DELEGATED_CHILD_CONTEXT` carries -- the descendant
+# fence that stops a worker writing to the board it was not given. That is
+# correct behaviour, and this test does not touch it. Two separate pins make
+# the naive fixture fail, and both are setup, not policy:
+#
+#   1. Location. The fence covers $TMPDIR on this profile (the profile's
+#      scratch dir lives under the hermes root), so a `mktemp -d` fixture is
+#      inside the fence and every CLI call is refused.
+#   2. Resolution. The dispatcher injects HERMES_KANBAN_DB and friends, and a
+#      pinned path outranks an explicit `--board`, so `--board testboard` would
+#      resolve to the LIVE board rather than the fixture even if a write were
+#      allowed. That direction is the dangerous one, so the fixture must not
+#      depend on it resolving the right way.
+#
+# The fix is therefore: put the fixture outside the fenced root, and drop the
+# dispatcher's LOCATION pins so board resolution reaches the fixture.
+#
+# The marker itself is never unset, weakened or bypassed, and dropping
+# HERMES_KANBAN_DB does not narrow the fence: the live board is still under the
+# marker's root, so it is still denied. `live board is still fenced` below
+# asserts exactly that in every run, so a future change that traded the
+# fixture for the live board fails here rather than in production.
+
+# The total-fence marker ("1", set when the fenced root cannot be resolved)
+# denies every board, so there is no safe location for a fixture and no
+# legitimate way to make one. Fail loudly rather than reaching for the marker.
+FENCE_MARKER="${HERMES_DELEGATED_CHILD_CONTEXT:-}"
+if [[ "$FENCE_MARKER" == "1" ]]; then
+  fail "HERMES_DELEGATED_CHILD_CONTEXT=1 fences every board; cannot build a fixture"
+fi
+
+# True when $1 lies under the fenced root this process carries.
+under_fence() {
+  local resolved root
+  [[ -n "$FENCE_MARKER" ]] || return 1
+  resolved="$(cd -P -- "$1" 2>/dev/null && pwd -P)" || return 1
+  root="$(cd -P -- "$FENCE_MARKER" 2>/dev/null && pwd -P)" || return 1
+  [[ "$resolved" == "$root" || "$resolved" == "$root"/* ]]
+}
+
+# First writable fixture parent that is not under the fence. The scratch and
+# runtime dirs come first so an ordinary operator run keeps its fixture in a
+# temp dir; the repo root is a last resort for a box with no usable temp dir,
+# and it is only reached when nothing else is writable.
+fixture_parent() {
+  local candidate
+  for candidate in \
+      "${RETRY_BREAKER_FIXTURE_TMPDIR:-}" \
+      "${XDG_RUNTIME_DIR:-}" \
+      "${TMPDIR:-}" \
+      /tmp \
+      /var/tmp \
+      "$TESTS_REPO_ROOT"; do
+    [[ -n "$candidate" && -d "$candidate" && -w "$candidate" ]] || continue
+    under_fence "$candidate" && continue
+    printf '%s\n' "$candidate"
+    return 0
+  done
+  return 1
+}
+
+fixture_parent_dir="$(fixture_parent)" ||
+  fail "no writable directory outside the fenced root ($FENCE_MARKER) for a fixture"
+fixture="$(mktemp -d --tmpdir="$fixture_parent_dir" kanban-retry-breaker.XXXXXXXX)"
 trap 'rm -rf "$fixture"' EXIT
 
 export HERMES_KANBAN_HOME="$fixture/hermes"
 mkdir -p "$HERMES_KANBAN_HOME"
+
+# The breaker's own board location and profile identity are untouched -- only
+# the dispatcher's board LOCATION pins go, so `--board testboard` resolves
+# into the fixture above. This is hermes's own descendant scrub
+# (agent/delegation_context.scrub_kanban_env) minus the marker: TASK, so a
+# fixture card is never mistaken for this process's own card, and the DB /
+# workspaces / board-slug pins, so resolution follows HERMES_KANBAN_HOME.
+unset HERMES_KANBAN_DB HERMES_KANBAN_WORKSPACES_ROOT HERMES_KANBAN_BOARD HERMES_KANBAN_TASK
+
+# The fence must survive the fixture's existence: pointed back at the real
+# hermes root, with this same environment, a mutation must still be refused BY
+# THE FENCE. The refusal text is matched rather than the exit status, because a
+# bare non-zero would also mean "no such task" -- and the task id below does not
+# exist, so even a fence that had somehow regressed could only fail to find it,
+# never write to a real card. It fails this assertion instead.
+#
+# The probe board is configurable only so it can be pointed at the board that
+# exists on this host. A root with no such board has nothing to protect, so the
+# probe reports "skipped" and this assertion does not run rather than failing
+# for a board that was never there.
+fence_probe_result=skipped
+live_board_is_still_fenced() {
+  local out board="${RETRY_BREAKER_FENCE_PROBE_BOARD:-nixhomeserver}"
+  fence_probe_result=checked
+  out="$(HERMES_KANBAN_HOME="$FENCE_MARKER" "$HERMES_BIN" kanban --board "$board" \
+    block t_00000000 --kind capability "fixture isolation probe; must be refused" 2>&1)"
+  if [[ "$out" == *"does not exist"* ]]; then
+    fence_probe_result=skipped
+    return 0
+  fi
+  [[ "$out" == *"cannot mutate Kanban tasks via the CLI"* ]]
+}
+
+if [[ -n "$FENCE_MARKER" ]]; then
+  if ! live_board_is_still_fenced; then
+    fail "the worker mutation fence no longer denies the live board; the fixture is not isolated"
+  fi
+  [[ "$fence_probe_result" == "skipped" ]] ||
+    pass "the worker mutation fence still denies the live board"
+fi
+
 "$HERMES_BIN" kanban boards create testboard >/dev/null
 DB="$HERMES_KANBAN_HOME/kanban/boards/testboard/kanban.db"
 [[ -f "$DB" ]] || fail "fixture board database was not created at $DB"
