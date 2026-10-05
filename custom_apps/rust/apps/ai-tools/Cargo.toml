@@ -6,6 +6,10 @@ publish = false
 
 [dependencies]
 axum = { workspace = true, features = ["http1", "tokio"] }
+# A workbook handed to the Python office helper is a zip archive and has to
+# travel as a JSON string, so the standard alphabet encode is needed on the read
+# path. It is already in the workspace closure for other apps.
+base64 = { workspace = true }
 # The bridge's HTTP client must be the same reqwest rmcp implements its
 # Streamable HTTP client for (0.13), so the workspace pin is 0.13 and this app
 # adds no second copy. The "stream" feature is rmcp's requirement, not ours.
@@ -25,5 +29,5 @@ rmcp = { version = "3.5.0", default-features = false, features = [
 ]}
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "time"] }
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "time"] }
 tower = { workspace = true, features = ["util"] }

@@ -18,7 +18,6 @@
 use std::{borrow::Cow, sync::Arc, time::Duration};
 
 use rmcp::{
-    ClientServiceExt, ErrorData, RoleClient, RoleServer, ServerHandler, ServiceExt,
     model::{
         CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, InitializeResult,
         JsonObject, ListToolsResult, PaginatedRequestParams, ProtocolVersion, ServerCapabilities,
@@ -26,9 +25,10 @@ use rmcp::{
     },
     service::RequestContext,
     transport::{
-        StreamableHttpClientTransport, streamable_http_client::StreamableHttpClientTransportConfig,
-        stdio,
+        stdio, streamable_http_client::StreamableHttpClientTransportConfig,
+        StreamableHttpClientTransport,
     },
+    ClientServiceExt, ErrorData, RoleClient, RoleServer, ServerHandler, ServiceExt,
 };
 
 /// MCP revision the pinned llama.cpp build names in its stdio handshake, and the
@@ -63,17 +63,14 @@ fn parse_upstream_url(raw: &str) -> Result<String, String> {
         .strip_prefix("http://")
         .or_else(|| url.strip_prefix("https://"))
         .ok_or_else(|| "AI_TOOLS_BRIDGE_UPSTREAM_URL must be an http(s) URL".to_string())?;
-    let host = authority
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or(authority);
+    let host = authority.split(['/', '?', '#']).next().unwrap_or(authority);
     // Drop an optional port; an IPv6 literal keeps its brackets.
     let host = match host.rsplit_once(':') {
         Some((name, port)) if port.chars().all(|c| c.is_ascii_digit()) => name,
         _ => host,
     };
-    let is_loopback = matches!(host, "127.0.0.1" | "localhost" | "::1" | "[::1]")
-        || host.starts_with("127.");
+    let is_loopback =
+        matches!(host, "127.0.0.1" | "localhost" | "::1" | "[::1]") || host.starts_with("127.");
     if !is_loopback {
         return Err(format!(
             "AI_TOOLS_BRIDGE_UPSTREAM_URL must stay on loopback, got {host:?}"
@@ -90,7 +87,9 @@ fn upstream_url_from_env() -> Result<String, String> {
         Err(_) => match std::env::var("AI_TOOLS_LISTEN") {
             Ok(listen) if !listen.trim().is_empty() => {
                 let listen = listen.trim();
-                if !(listen.starts_with("127.") || listen.starts_with("localhost") || listen.starts_with("[::1]"))
+                if !(listen.starts_with("127.")
+                    || listen.starts_with("localhost")
+                    || listen.starts_with("[::1]"))
                 {
                     return Err(format!(
                         "AI_TOOLS_LISTEN must stay on loopback, got {listen:?}"
@@ -170,10 +169,8 @@ impl Bridge {
             .await
             .map_err(|_| "timed out waiting for the bridge session lock".to_string())?;
 
-        if let Some(session) = guard.as_ref() {
-            if !session.is_closed() {
-                return Ok(Arc::clone(session));
-            }
+        if let Some(session) = guard.as_ref().filter(|session| !session.is_closed()) {
+            return Ok(Arc::clone(session));
         }
 
         let transport = StreamableHttpClientTransport::with_client(
@@ -239,11 +236,17 @@ impl Bridge {
 /// The pinned llama.cpp build reads only `content[].text` back from an MCP tool:
 /// it concatenates text parts and errors on `isError`. A tool that answers with
 /// `structuredContent` alone would therefore reach the model as an empty string,
-/// so structured content is rendered as JSON here. Both current ai-tools tools
-/// return exactly that, which is why this is not a theoretical path.
+/// so structured content is rendered as JSON here.
+///
+/// Test-only: the forwarding path renders the same envelope itself, so this
+/// exists to pin the rendering rule independently of the transport. It is
+/// compiled out of the binary rather than left dead, which is the only thing that
+/// makes the crate's `--deny warnings` clippy check pass.
+#[cfg(test)]
 fn flatten(result: CallToolResult) -> CallToolResult {
     if let Some(structured) = result.structured_content.clone() {
-        let rendered = serde_json::to_string(&structured).unwrap_or_else(|_| structured.to_string());
+        let rendered =
+            serde_json::to_string(&structured).unwrap_or_else(|_| structured.to_string());
         if result.is_error == Some(true) {
             return CallToolResult::error(vec![ContentBlock::text(rendered)]);
         }
@@ -373,18 +376,12 @@ mod tests {
     #[test]
     fn tool_names_carry_the_prefix_llama_expects() {
         assert_eq!(wire_name("web_search"), "ai_tools_web_search");
-        assert_eq!(
-            wire_name("convert_document"),
-            "ai_tools_convert_document"
-        );
+        assert_eq!(wire_name("convert_document"), "ai_tools_convert_document");
     }
 
     #[test]
     fn only_prefixed_non_empty_names_are_forwarded() {
-        assert_eq!(
-            bare_tool_name("ai_tools_web_search"),
-            Some("web_search")
-        );
+        assert_eq!(bare_tool_name("ai_tools_web_search"), Some("web_search"));
         assert_eq!(bare_tool_name("ai_tools_"), None);
         assert_eq!(bare_tool_name("web_search"), None);
         assert_eq!(
@@ -449,12 +446,9 @@ mod tests {
         )
         .unwrap()]));
         assert_eq!(flattened.is_error, Some(false));
-        assert!(
-            flattened
-                .content
-                .iter()
-                .any(|block| matches!(block, ContentBlock::Text(text) if text.text.contains("returned")))
-        );
+        assert!(flattened.content.iter().any(
+            |block| matches!(block, ContentBlock::Text(text) if text.text.contains("returned"))
+        ));
     }
 
     #[test]

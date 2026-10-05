@@ -56,3 +56,8 @@
 # Shared Node server plumbing is copied into each app's tree by postPatch /
 # the sync-shared script; the source of truth lives in custom_apps/node/shared.
 custom_apps/node/apps/*/src/shared/node-common/
+
+# Python bytecode from the ai-tools office helper: it is built into the Nix
+# store closure, never run from the checkout.
+__pycache__/
+*.pyc
