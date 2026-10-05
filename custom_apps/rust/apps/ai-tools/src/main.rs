@@ -4,6 +4,11 @@
 //! shared inference endpoint keeps serving other consumers (Hermes, Paperless)
 //! with their own tool choices. This process speaks MCP over Streamable HTTP on
 //! loopback and is published through the shared authentication gateway.
+//!
+//! It also carries the stdio bridge in [`bridge`], which is how llama.cpp itself
+//! reaches the same tools: it can only spawn MCP servers as child processes, so
+//! `ai-tools --transport stdio` re-serves this tool set over stdio and forwards
+//! to the loopback endpoint rather than reimplementing it.
 
 use axum::{routing::get, Router};
 use rmcp::{
@@ -17,6 +22,7 @@ use rmcp::{
     },
     ErrorData, RoleServer, ServerHandler,
 };
+mod bridge;
 mod office;
 
 use office::Converter;
@@ -434,8 +440,37 @@ fn router(server: Server, public_host: Option<&str>) -> Router {
         .fallback_service(mcp)
 }
 
+/// Which MCP transport this process serves.
+///
+/// The default is Streamable HTTP on loopback, which is what the gateway
+/// publishes and what every loopback client uses. `stdio` is what llama.cpp
+/// spawns: it speaks the same tool set over a child process's stdin and stdout.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Transport {
+    StreamableHttp,
+    Stdio,
+}
+
+fn parse_transport(raw: &str) -> Result<Transport, String> {
+    match raw {
+        "http" | "streamable-http" => Ok(Transport::StreamableHttp),
+        "stdio" => Ok(Transport::Stdio),
+        other => Err(format!(
+            "unknown transport {other:?}; expected \"streamable-http\" or \"stdio\""
+        )),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let transport = match env::var("AI_TOOLS_TRANSPORT") {
+        Ok(raw) => parse_transport(&raw)?,
+        Err(_) => Transport::StreamableHttp,
+    };
+    if transport == Transport::Stdio {
+        return bridge::serve_stdio().await;
+    }
+
     let listen = env::var("AI_TOOLS_LISTEN")?;
     let config = Arc::new(parse_env()?);
     let converter = Arc::new(Converter::new(

@@ -21,6 +21,19 @@ let
       fi
     fi
   '';
+  # Cursor-compatible JSON passed straight to llama-server. Built here rather
+  # than in an Integrations module so the process owns the transport it was
+  # given: an integration only decides which servers to declare, never the
+  # command line that consumes them.
+  mcpServersJson = pkgs.writeText "qwen-27b-mcp-servers.json" (builtins.toJSON {
+    mcpServers = lib.listToAttrs (map (server: {
+      name = server.name;
+      value = {
+        inherit (server) command args env;
+        timeout_ms = server.timeoutMs;
+      };
+    }) cfg.mcpServers);
+  });
   server = pkgs.writeShellApplication {
     name = "qwen-27b-llama-server";
     runtimeInputs = with pkgs; [
@@ -49,6 +62,8 @@ let
         ${lib.optionalString cfg.cpuMoe "--cpu-moe"} \
         --flash-attn ${if cfg.flashAttention then "on" else "off"} \
         --jinja \
+        ${lib.optionalString (cfg.mcpServers != [ ]) "--mcp-servers-config ${mcpServersJson}"} \
+        --cors-origins ${lib.escapeShellArg cfg.corsOrigins} \
         --temp ${toString cfg.temperature} \
         --top-p ${toString cfg.topP} \
         --top-k 20 \
@@ -217,6 +232,81 @@ in
         negligible quality cost and speeds up longer generations, which is what
         lets a 128K context sit in VRAM alongside the Q4_K_M weights. Q4_0 is
         smaller but noticeably lossier; F16 is the unquantized default.
+      '';
+    };
+
+    mcpServers = lib.mkOption {
+      type = lib.types.listOf (lib.types.submodule ({ ... }: {
+        options = {
+          name = lib.mkOption {
+            type = lib.types.str;
+            description = ''
+              Key this server is declared under. llama-server exposes that
+              server's tools as `<name>_<tool>`, so the name is part of the tool
+              surface every client of the inference endpoint sees.
+            '';
+          };
+
+          command = lib.mkOption {
+            type = lib.types.str;
+            description = "Executable to spawn for this MCP server.";
+          };
+
+          args = lib.mkOption {
+            type = lib.types.listOf lib.types.str;
+            default = [ ];
+            description = "Arguments passed to the spawned command.";
+          };
+
+          env = lib.mkOption {
+            type = lib.types.attrsOf lib.types.str;
+            default = { };
+            description = "Environment entries merged over llama-server's own.";
+          };
+
+          timeoutMs = lib.mkOption {
+            type = lib.types.ints.positive;
+            default = 30000;
+            description = ''
+              Per-tool-call timeout upstream applies to this server. A tool that
+              exceeds it is abandoned and the child killed, so a document
+              conversion that legitimately takes longer needs this raised
+              rather than the timeout left to interrupt it.
+            '';
+          };
+        };
+      }));
+      default = [ ];
+      description = ''
+        MCP servers llama-server spawns as child processes and exposes as
+        tools. Only the stdio transport is supported upstream, so every entry
+        must be a command that speaks newline-delimited JSON-RPC on stdin and
+        stdout. The child runs with llama-server's own privileges, so only
+        declare commands that are trusted as much as the model server itself.
+      '';
+    };
+
+    # Exposed so the wiring can be asserted from the file llama-server actually
+    # parses rather than from the option list that produced it.
+    mcpServersConfigFile = lib.mkOption {
+      type = lib.types.nullOr lib.types.path;
+      default = if cfg.mcpServers == [ ] then null else mcpServersJson;
+      readOnly = true;
+      description = "Generated Cursor-compatible MCP server config, or null when none are declared.";
+    };
+
+    corsOrigins = lib.mkOption {
+      type = lib.types.str;
+      default = "localhost";
+      description = ''
+        Value passed to --cors-origins, always explicitly.
+
+        llama-server defaults this to `*`, and narrows it to `localhost` on its
+        own whenever tools or MCP servers are enabled. Enabling an integration
+        should therefore never be able to change the answer to this question
+        by side effect, and the upstream `*` default is a browser reaching an
+        unauthenticated inference API, which is the reason the endpoint is
+        loopback-only and gateway-published in the first place.
       '';
     };
 
