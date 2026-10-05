@@ -10,7 +10,7 @@
       url = "https://tools.${vars.domain}";
       enabled = builtins.hasAttr "tools.${vars.domain}" config.services.caddy.virtualHosts;
       category = "automation";
-      description = "MCP tool endpoint (web search, document conversion).";
+      description = "MCP tool endpoint: web search, document conversion, and spreadsheet and Word tools that write only to the AI workspace.";
       loginNotes = "Sign in with Kanidm; access is granted to ai-users. This host is an MCP endpoint for the local model, not a web interface.";
       logoUrl = "/logos/ai-tools.svg";
       appName = "ai-tools";

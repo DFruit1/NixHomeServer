@@ -302,6 +302,195 @@ fraction of the speed. Treat that warning as a real out-of-memory signal rather
 than noise, and check that no other workload is holding VRAM before reading a
 slow inference run as a model problem.
 
+## Tools: The Office Workflow
+
+The `ai-tools` module serves an MCP tool endpoint that llama-server reaches as
+its own tool set. Qwen therefore does not answer from the model's weights alone:
+it can search the web, read a document you have shared, and write a spreadsheet
+or a Word file back into a workspace folder. This section is the operator view
+of that surface. The inference host is the entry point in `ai.<domain>`.
+
+### How the tools reach the model
+
+The pinned llama.cpp build can only reach an MCP server by spawning it as a
+child process and speaking newline-delimited JSON-RPC over stdin. `ai-tools`
+speaks MCP over Streamable HTTP on loopback instead, so it runs a second time as
+a **stdio bridge**: `AI_TOOLS_TRANSPORT=stdio` makes the same binary speak the
+framing llama.cpp drives and forward to the loopback endpoint every other client
+uses.
+
+```text
+browser / MCP client ──HTTPS──▶ tools.<domain> ──▶ ai-tools.service (policy owner)
+                                                            ▲
+llama-server ──stdio child──▶ ai-tools (stdio bridge) ──loopback──┘
+```
+
+This is deliberate. `ai-tools` keeps sole ownership of the shared-root grant,
+its service account and its sandbox. The child llama-server spawns holds no
+grant of its own, reaches nothing but loopback, and re-validates nothing itself:
+every path a tool receives is resolved by `ai-tools` against its configured root
+before anything is opened. Disabling either app removes its half cleanly — with
+`repo.aiTools.enable = false` the MCP server list is empty and no unit depends
+on `ai-tools.service`.
+
+llama-server prefixes every tool with the name its MCP config declared, so the
+model sees `ai_tools_spreadsheet_read` rather than `spreadsheet_read`. That
+prefix is what makes the tools visible to *every* client of the shared inference
+endpoint, not just this one. The bridge restores the prefix on the way out and
+strips it on the way in, and refuses any name outside it — a call for
+`exec_shell_command` is refused as `unknown tool`, without an upstream call.
+
+One ordering edge matters: `qwen-27b-llama` `wants=` and `after=`
+`ai-tools.service`, because llama-server discovers MCP tools at startup and
+would otherwise publish none.
+
+### The tool surface
+
+| Tool | Does | Formats | Access |
+| --- | --- | --- | --- |
+| `web_search` | Ranked results from the local SearXNG | — | loopback only |
+| `convert_document` | Office file to text; spreadsheets become CSV | docx, odt, rtf, doc, xlsx, ods, pptx, odp | reads shared root |
+| `spreadsheet_read` | **Every sheet**, each as an array of rows | xlsx, ods | reads shared root |
+| `spreadsheet_write` | New workbook from sheets you supply | xlsx, ods | **writes workspace only** |
+| `word_document` | Read or write a Word document | docx, odt | read root / **write workspace only** |
+
+`spreadsheet_read` exists because `convert_document` returns only the *first*
+sheet — Collabora's convert-to cannot do better, which is the whole reason the
+native helper exists.
+
+The read tools return a `not_retained` list on **every** response, naming
+exactly what the round trip loses. Nothing is lost silently:
+
+- **Spreadsheets**: cell formatting (fonts, fills, borders, number formats,
+  column widths), merged ranges, conditional formatting, data validation, named
+  ranges, charts, images, pivot tables and their caches, comments, hyperlinks,
+  and the cached *result* of a formula (formula text comes back instead). Hidden
+  rows and columns are returned but not marked as hidden, and a bare date reads
+  back as midnight.
+- **Word**: tracked changes, comments, footnotes and endnotes, headers and
+  footers, embedded objects (images, charts, equations, OLE), never-calculated
+  fields, section properties beyond the final section, and document metadata.
+  Numbering resolves to rendered text only.
+
+A written document keeps paragraphs, runs (bold and italic) and tables, in
+document order. A value xlsx genuinely cannot store — `NaN`, `Infinity` — is
+refused before anything is written, naming the sheet, rather than being written
+as an empty cell and lost.
+
+### Reads are broad; writes are confined
+
+This asymmetry is the design, and it is enforced at three independent layers.
+
+**Reads** resolve against the whole shared root: a generated answer may be built
+from anything you have already shared. A read refuses an absolute path, a parent
+traversal, a NUL byte, a hidden entry, and any path whose canonical result
+escapes the root — so a symlink cannot get out.
+
+**Writes** resolve against one directory only:
+
+```text
+<sharedRoot>/ai-workspace
+```
+
+The caller supplies a *name*, never a path. The extension comes from the format
+and the directory comes from the workspace, so the only free input is a relative
+name. A write additionally refuses:
+
+- a final path component that is itself a symlink (it would land wherever the
+  link points);
+- a parent directory that does not already exist, so a write can never create a
+  structure outside the workspace;
+- replacing an existing file unless `overwrite` is explicitly `true`.
+
+The systemd unit makes the refusal real rather than advisory. `ProtectSystem=strict`
+plus `ReadOnlyPaths=[sharedRoot]` and a nested
+`ReadWritePaths=[workspaceRoot]` means the whole shared root is read-only to the
+service and only the workspace is writable, *even if a future tool forgets to
+check*. The ACL unit grants `g:ai-tools` read over the shared root and `rwx` on
+the workspace only, and `qwen-27b-llama` is asserted to hold no reference to the
+workspace at all, so the inference account cannot write it either.
+
+### The workspace is deliberately not backed up
+
+`<sharedRoot>/ai-workspace` sits on the data pool but **outside every Kopia
+snapshot root**, and an assertion fails the build if a snapshot root ever comes
+to cover it. That is intentional: it holds generated output, not your documents,
+and it must not grow a backup policy by accident.
+
+The consequence for you is real and worth stating plainly: **anything the model
+writes there can be lost.** Move anything you want to keep out of the workspace
+into the right library — see `documentation/content-placement.md` for which one
+that is. The same warning is carried on the Homepage card for the app.
+
+### Format limits worth knowing before you rely on this
+
+- **ODF output goes through Collabora.** There is no native ODF writer in Rust
+  or Python, so an `ods` or `odt` is produced by handing Collabora the native
+  document and asking it to convert. That instance is shared with OpenCloud's
+  editing sessions, so **conversion returns 503 while Collabora is busy**, and
+  its concurrency budget is contended. A native `xlsx` or `docx` write does not
+  touch Collabora at all.
+- **An `ods` or `odt` read also goes through Collabora**, because the helper has
+  no native ODF reader. The converted document is held in memory between the two
+  steps and never written to the shared root, so a read leaves no temporary file.
+- **Input ceiling**: 32 MiB per document, refused before the bytes are read.
+  **Write ceiling**: 64 MiB. **Output ceiling**: 512 KiB of JSON from the helper.
+  All three report the loss rather than truncating silently.
+- **Spreadsheet ceilings**: 31 characters per sheet name (Excel's own limit), 256
+  sheets, 2000 rows per sheet, and 64 cells per row. Rows, columns and sheets over a
+  ceiling are clamped with the clamp **declared** in the response rather than
+  dropped quietly.
+- **A formula cell returns formula text, not its last calculated value.**
+
+### Python, deliberately
+
+Native `xlsx` and `docx` handling is the one documented exception to this
+repository's Rust preference, and the reason is a library gap rather than a
+choice: the `docx` crate has been unmaintained since 2020, so there is no Word
+reader at all, and `docx-rs` only writes. `openpyxl` and `python-docx` are the
+mature components for exactly these two formats. The reasoning sits at the head
+of `custom_apps/rust/apps/ai-tools/helper-package.nix`.
+
+The helper holds no grant of its own. It runs as part of `ai-tools`, as the same
+account, inside the same sandbox, and receives only absolute paths the Rust side
+has already validated. **Reads never hand it a path**: the document arrives as
+bytes on stdin, so there is nothing for it to open and no path for a
+prompt-injected call to redirect. Writes pass the validated path with the request
+over stdin rather than on argv, so no path appears in a process listing, and the
+child is spawned with `env_clear` so no `PYTHONPATH` from the parent reaches it.
+
+### Verifying it
+
+```bash
+# the tool set and the confinement, evaluated rather than deployed
+bash scripts/tests/test-ai-tools-module.sh
+bash scripts/tests/test-qwen-ai-tools-mcp-bridge.sh
+
+# the helper's own round-trip tests, on the pinned interpreter
+bash scripts/tests/test-ai-tools-office-helper.sh
+
+# the Rust path validation either side of the helper
+cd custom_apps && cargo test -p ai-tools
+```
+
+After a deploy, confirm the tools are actually attached to the model and that
+the endpoint answers through the gateway:
+
+```bash
+sudo systemctl status ai-tools.service qwen-27b-llama.service
+curl --fail-with-body http://127.0.0.1:8097/ \
+  --header 'content-type: application/json' \
+  --header 'accept: application/json, text/event-stream' \
+  --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"probe","version":"0"}}}'
+```
+
+A green deploy is not proof that the tools are wired: `ai-tools.service` refuses
+any `Host` it was not configured with, so if `AI_TOOLS_PUBLIC_HOST` does not
+match the published name every request through the gateway is a 403 with nothing
+in the logs to explain it. The authenticated Homepage canary covers the route
+(`modules/Core_Modules/homepage/canary.nix`); `tools.<domain>` is its target for
+this app.
+
 ## Service Operations
 
 When Bonsai and Qwen are both enabled, Qwen does not start at boot. Verify the
