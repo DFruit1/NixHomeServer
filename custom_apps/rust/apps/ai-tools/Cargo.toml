@@ -6,13 +6,23 @@ publish = false
 
 [dependencies]
 axum = { workspace = true, features = ["http1", "tokio"] }
-reqwest = { workspace = true, default-features = false, features = ["json", "multipart", "rustls-tls"] }
+# The bridge's HTTP client must be the same reqwest rmcp implements its
+# Streamable HTTP client for (0.13), so the workspace pin is 0.13 and this app
+# adds no second copy. The "stream" feature is rmcp's requirement, not ours.
+reqwest = { workspace = true, default-features = false, features = ["json", "multipart", "query", "rustls", "stream"] }
 rmcp = { version = "3.5.0", default-features = false, features = [
+  "client",
   "macros",
   "server",
   "tower",
+  # The stdio bridge drives ai-tools' own loopback endpoint as an MCP client
+  # over the same Streamable HTTP transport it serves, so the server-only
+  # feature set cannot build it.
+  "transport-io",
+  "transport-streamable-http-client",
+  "transport-streamable-http-client-reqwest",
   "transport-streamable-http-server",
-] }
+]}
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "time"] }

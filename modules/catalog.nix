@@ -173,6 +173,7 @@ rec {
     { module = ./Integrations/publish_filesync_to_fdroid.nix; allApps = [ "fdroid" "filesync" "ipfs" ]; anyApps = [ ]; }
     { module = ./Integrations/publish_youtube_downloader_to_fdroid.nix; allApps = [ "fdroid" "youtube-downloader" ]; anyApps = [ ]; }
     { module = ./Integrations/reserve_qwen_for_background_jobs.nix; allApps = [ "bonsai" "qwen-27b" ]; anyApps = [ ]; }
+    { module = ./Integrations/serve_ai_tools_through_qwen.nix; allApps = [ "ai-tools" "qwen-27b" ]; anyApps = [ ]; }
     { module = ./Integrations/expose_browsertrix_crawls_to_search.nix; allApps = [ "search" "browsertrix-downloader" ]; anyApps = [ ]; }
     { module = ./Integrations/expose_calibre_web_library_to_search.nix; allApps = [ "search" "calibre-web" ]; anyApps = [ ]; }
     { module = ./Integrations/expose_freshrss_entries_to_search.nix; allApps = [ "search" "freshrss" ]; anyApps = [ ]; }
