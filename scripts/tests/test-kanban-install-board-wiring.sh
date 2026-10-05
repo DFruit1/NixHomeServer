@@ -628,4 +628,112 @@ grep -q '^SIMPLEX_ALLOWED_USERS=' "$env_file" &&
   fail "a fresh profile was given an allowlist out of thin air: $(cat "$env_file")"
 pass "writes the loopback endpoint on a fresh profile and invents no allowlist"
 
+# --- an indented assignment is still an assignment --------------------------
+#
+# The detection grammar and the removal grammar disagreed. Violations were
+# detected with a leading-whitespace-tolerant pattern, but the rewrite stripped
+# only column-zero `SIMPLEX_` lines, so an .env carrying
+#
+#     "  SIMPLEX_ALLOW_ALL_USERS=true"
+#
+# was reported as removed and kept the flag. That is the worse of the two
+# outcomes: the report is what an operator trusts, and the reverse reading -- a
+# restore or a hand edit that leaves a leading tab or two spaces -- is exactly
+# how a dotenv file acquires one. Indented pairing values were mismatched too,
+# for the same reason, so a correct .env was reported as drifted.
+
+# printf rather than a heredoc: the tab-indented line has to be a real tab, and a
+# literal one in a heredoc body is easy to lose to a reformat or an editor.
+for lane in "${LANES[@]}"; do
+  printf '%s\n' \
+    'SIMPLEX_WS_URL=ws://127.0.0.1:5225' \
+    '  SIMPLEX_ALLOWED_USERS=4' \
+    'SIMPLEX_HOME_CHANNEL=4' \
+    '  SIMPLEX_ALLOW_ALL_USERS=true' \
+    "$(printf '	SIMPLEX_GROUP_ALLOWED=*')" \
+    'HERMES_OTHER_SETTING=keep-me' \
+    >"$(simplex_profile "$lane")"
+done
+
+indent_check_rc=0
+indent_check="$(SIMPLEX_ALLOWED_USERS_OVERRIDE=4 SIMPLEX_HOME_CHANNEL_OVERRIDE=4 \
+  run_installer --check 2>&1)" || indent_check_rc=$?
+[[ "$indent_check_rc" == 0 ]] ||
+  fail "--check exited $indent_check_rc on an indented .env: $indent_check"
+grep -q 'SIMPLEX_ALLOW_ALL_USERS is set; a re-run removes it' <<<"$indent_check" ||
+  fail "--check did not report the indented SIMPLEX_ALLOW_ALL_USERS: $indent_check"
+grep -q 'SIMPLEX_GROUP_ALLOWED is set; a re-run removes it' <<<"$indent_check" ||
+  fail "--check did not report the tab-indented SIMPLEX_GROUP_ALLOWED: $indent_check"
+# Indented pairing values that already equal the wanted ones are not drift: the
+# value is the allowlist, not the whitespace in front of its key.
+grep -qE '\.env has SIMPLEX_ALLOWED_USERS' <<<"$indent_check" &&
+  fail "--check reported an indented allowlist as mismatched: $indent_check"
+# ...and a genuinely different value is still reported, with the indentation
+# stripped out of the reported value rather than quoted back at the operator.
+mismatch_check="$(SIMPLEX_ALLOWED_USERS_OVERRIDE=9 SIMPLEX_HOME_CHANNEL_OVERRIDE=9 \
+  run_installer --check 2>&1)"
+grep -q "default .env has SIMPLEX_ALLOWED_USERS='4' SIMPLEX_HOME_CHANNEL='4'; want '9' / '9'" \
+  <<<"$mismatch_check" ||
+  fail "--check did not report the real pairing mismatch cleanly: $mismatch_check"
+pass "--check detects indented forbidden keys and reads indented pairing"
+
+SIMPLEX_ALLOWED_USERS_OVERRIDE=7 SIMPLEX_HOME_CHANNEL_OVERRIDE=7 \
+  run_installer >"$fixture/indent-apply.log" 2>&1
+grep -q 'SIMPLEX_ALLOW_ALL_USERS is set; removed' "$fixture/indent-apply.log" ||
+  fail "apply did not name the indented flag it removed: $(cat "$fixture/indent-apply.log")"
+for lane in "${LANES[@]}"; do
+  env_file="$(simplex_profile "$lane")"
+  grep -qE '^[[:space:]]*SIMPLEX_ALLOW_ALL_USERS=' "$env_file" &&
+    fail "$lane .env kept the indented SIMPLEX_ALLOW_ALL_USERS: $(cat "$env_file")"
+  grep -qE '^[[:space:]]*SIMPLEX_GROUP_ALLOWED=' "$env_file" &&
+    fail "$lane .env kept the indented SIMPLEX_GROUP_ALLOWED: $(cat "$env_file")"
+  grep -qx 'HERMES_OTHER_SETTING=keep-me' "$env_file" ||
+    fail "$lane .env lost an unrelated setting to the SimpleX rewrite: $(cat "$env_file")"
+  [[ "$(stat -c %a "$env_file")" == 600 ]] ||
+    fail "$lane .env is mode $(stat -c %a "$env_file") after the rewrite, want 600"
+done
+
+# The rewritten .env must satisfy --check, or the flag is only removed from the
+# report and not from the file the next run reads.
+indent_recheck_rc=0
+indent_recheck="$(SIMPLEX_ALLOWED_USERS_OVERRIDE=7 SIMPLEX_HOME_CHANNEL_OVERRIDE=7 \
+  run_installer --check 2>&1)" || indent_recheck_rc=$?
+[[ "$indent_recheck_rc" == 0 ]] ||
+  fail "--check exited $indent_recheck_rc after the rewrite: $indent_recheck"
+grep -qE 'SIMPLEX_(ALLOW_ALL_USERS|GROUP_ALLOWED) is set' <<<"$indent_recheck" &&
+  fail "--check still reports a forbidden key after the apply removed it: $indent_recheck"
+pass "apply removes indented forbidden keys and --check is clean afterwards"
+
+# Same enforcement on the no-contact path, which is the ordinary re-apply.
+for lane in "${LANES[@]}"; do
+  printf '%s\n' \
+    'SIMPLEX_WS_URL=ws://127.0.0.1:5225' \
+    '  SIMPLEX_ALLOWED_USERS=4' \
+    'SIMPLEX_HOME_CHANNEL=4' \
+    '  SIMPLEX_ALLOW_ALL_USERS=true' \
+    "$(printf '	SIMPLEX_GROUP_ALLOWED=*')" \
+    'HERMES_OTHER_SETTING=keep-me' \
+    >"$(simplex_profile "$lane")"
+done
+SIMPLEX_ALLOWED_USERS_OVERRIDE='' SIMPLEX_HOME_CHANNEL_OVERRIDE='' \
+  run_installer >"$fixture/indent-noid.log" 2>&1
+grep -q 'SIMPLEX_ALLOW_ALL_USERS is set; removed' "$fixture/indent-noid.log" ||
+  fail "the no-contact path did not report the removed flag: $(cat "$fixture/indent-noid.log")"
+for lane in "${LANES[@]}"; do
+  env_file="$(simplex_profile "$lane")"
+  grep -qE '^[[:space:]]*SIMPLEX_ALLOW_ALL_USERS=' "$env_file" &&
+    fail "$lane .env kept the indented SIMPLEX_ALLOW_ALL_USERS on a no-contact reinstall: $(cat "$env_file")"
+  grep -qE '^[[:space:]]*SIMPLEX_GROUP_ALLOWED=' "$env_file" &&
+    fail "$lane .env kept the indented SIMPLEX_GROUP_ALLOWED on a no-contact reinstall: $(cat "$env_file")"
+  grep -qx 'HERMES_OTHER_SETTING=keep-me' "$env_file" ||
+    fail "$lane .env lost an unrelated setting on the no-contact path: $(cat "$env_file")"
+  grep -qx 'SIMPLEX_ALLOWED_USERS=4' "$env_file" ||
+    fail "$lane .env discarded the pairing read from an indented line: $(cat "$env_file")"
+  grep -qx 'SIMPLEX_HOME_CHANNEL=4' "$env_file" ||
+    fail "$lane .env discarded the home channel read from the file: $(cat "$env_file")"
+  [[ "$(stat -c %a "$env_file")" == 600 ]] ||
+    fail "$lane .env is mode $(stat -c %a "$env_file") after the no-contact rewrite, want 600"
+done
+pass "the no-contact path removes indented keys and keeps the pairing"
+
 echo "▶ hermes board wiring installer: all checks passed"

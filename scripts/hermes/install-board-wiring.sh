@@ -727,7 +727,13 @@ write_simplex_env() {
   # changed contactId replaces the old one instead of both being read. This is
   # also what removes the forbidden keys: they match the SIMPLEX_ prefix, so
   # they cannot survive a rewrite.
-  grep -v '^SIMPLEX_' "$env_file" >"$tmp" 2>/dev/null || true
+  #
+  # Leading whitespace is part of the key, not part of the line. A dotenv file
+  # picks up indentation from a hand edit or a restored profile, and this
+  # grammar must be the same one simplex_env_violations detects with -- otherwise
+  # the report says a forbidden key was removed and the file still carries it,
+  # which is the failure mode this whole section exists to prevent.
+  grep -vE '^[[:space:]]*SIMPLEX_' "$env_file" >"$tmp" 2>/dev/null || true
   {
     printf '\n# SimpleX Chat (Hermes messaging adapter). Written by\n'
     printf '# scripts/hermes/install-board-wiring.sh; edit there, not here.\n'
@@ -740,6 +746,19 @@ write_simplex_env() {
   rm -f "$tmp"
 }
 
+# One assignment's value, with any leading whitespace stripped.
+#
+# `grep -oE '^[[:space:]]*KEY=.*'` matches an indented assignment but hands
+# back the indentation as part of the text, so the result compares unequal to
+# the plain `KEY=value` this installer emits -- a correct .env reported as
+# drifted. Every reader below goes through here so detection, comparison and
+# removal all speak the same grammar.
+simplex_env_value() {
+  local env_file="$1" key="$2" pattern="${3:-.*}"
+  grep -oE "^[[:space:]]*${key}=${pattern}" "$env_file" 2>/dev/null |
+    head -1 | sed -e "s/^[[:space:]]*${key}=//" || true
+}
+
 # Every way a profile .env fails closed-open, one violation per line, empty when
 # the file is correct. Checked on the check path AND before every rewrite, so a
 # reinstall reports the flags it is about to remove rather than silently
@@ -747,9 +766,9 @@ write_simplex_env() {
 # leave the adapter open to any contact or to group traffic.
 simplex_env_violations() {
   local env_file="$1" have_url key out=''
-  have_url="$(grep -oE '^[[:space:]]*SIMPLEX_WS_URL=.*' "$env_file" 2>/dev/null || true)"
-  if [[ "$have_url" != "SIMPLEX_WS_URL=$SIMPLEX_WANT_WS_URL" ]]; then
-    out+="SIMPLEX_WS_URL is '${have_url#*SIMPLEX_WS_URL=}', want '$SIMPLEX_WANT_WS_URL';"$'\n'
+  have_url="$(simplex_env_value "$env_file" SIMPLEX_WS_URL)"
+  if [[ "$have_url" != "$SIMPLEX_WANT_WS_URL" ]]; then
+    out+="SIMPLEX_WS_URL is '$have_url', want '$SIMPLEX_WANT_WS_URL';"$'\n'
   fi
   for key in $SIMPLEX_FORBIDDEN_KEYS; do
     if grep -qE "^[[:space:]]*$key=" "$env_file" 2>/dev/null; then
@@ -777,10 +796,10 @@ report_simplex_violations() {
 check_simplex_env() {
   local env_file="$1" label="$2" want_allow="$3" want_home="$4"
   local have_allow have_home
-  have_allow="$(grep -oE '^[[:space:]]*SIMPLEX_ALLOWED_USERS=.*' "$env_file" 2>/dev/null || true)"
-  have_home="$(grep -oE '^[[:space:]]*SIMPLEX_HOME_CHANNEL=[0-9]+' "$env_file" 2>/dev/null || true)"
-  if [[ "$have_allow" != "SIMPLEX_ALLOWED_USERS=$want_allow" || "$have_home" != "SIMPLEX_HOME_CHANNEL=$want_home" ]]; then
-    changed "$label .env has SIMPLEX_ALLOWED_USERS='${have_allow#SIMPLEX_ALLOWED_USERS=}' SIMPLEX_HOME_CHANNEL='${have_home#SIMPLEX_HOME_CHANNEL=}'; want '${want_allow}' / '${want_home}'"
+  have_allow="$(simplex_env_value "$env_file" SIMPLEX_ALLOWED_USERS)"
+  have_home="$(simplex_env_value "$env_file" SIMPLEX_HOME_CHANNEL '[0-9]+')"
+  if [[ "$have_allow" != "$want_allow" || "$have_home" != "$want_home" ]]; then
+    changed "$label .env has SIMPLEX_ALLOWED_USERS='$have_allow' SIMPLEX_HOME_CHANNEL='$have_home'; want '$want_allow' / '$want_home'"
     return 1
   fi
   ok "$label .env carries the SimpleX allowlist and home channel"
@@ -793,10 +812,8 @@ check_simplex_env() {
 # so the only source for it is the file it is about to rewrite.
 read_simplex_pairing() {
   local env_file="$1"
-  SIMPLEX_HAVE_ALLOW="$(grep -oE '^[[:space:]]*SIMPLEX_ALLOWED_USERS=.*' "$env_file" 2>/dev/null |
-    head -1 | sed -e 's/^[[:space:]]*SIMPLEX_ALLOWED_USERS=//' || true)"
-  SIMPLEX_HAVE_HOME="$(grep -oE '^[[:space:]]*SIMPLEX_HOME_CHANNEL=[0-9]+' "$env_file" 2>/dev/null |
-    head -1 | sed -e 's/^[[:space:]]*SIMPLEX_HOME_CHANNEL=//' || true)"
+  SIMPLEX_HAVE_ALLOW="$(simplex_env_value "$env_file" SIMPLEX_ALLOWED_USERS)"
+  SIMPLEX_HAVE_HOME="$(simplex_env_value "$env_file" SIMPLEX_HOME_CHANNEL '[0-9]+')"
 }
 
 if [[ -n "$SIMPLEX_ALLOWED_USERS" || -n "$SIMPLEX_HOME_CHANNEL" ]]; then
