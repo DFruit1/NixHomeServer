@@ -109,7 +109,9 @@ the reviewer's dependent closure card to verify results and update FINDINGS.md.
 Do not create a cycle by making those implementation cards depend on the handoff.
 
 Workers discover active cards through the helper because Hermes hides
-`kanban_list` from dispatcher workers:
+`kanban_list` from dispatcher workers. Inventory reads use SQLite read-only
+connections to the explicitly requested board; they neither promote cards nor
+remove inherited delegated-worker write fences. Board mutations still use Hermes:
 
 ```bash
 python3 ~/.hermes/scripts/review-taskforce.py --board nixhomeserver status

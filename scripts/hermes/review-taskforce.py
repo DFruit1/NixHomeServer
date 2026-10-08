@@ -5,13 +5,14 @@ No service/backend or new dependency is introduced. Board writes use the Hermes
 CLI; locked, atomic file writes protect the reviewer's persisted documents.
 """
 import argparse
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 import fcntl
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -83,13 +84,30 @@ def hermes(board, *args):
     return json.loads(result.stdout)
 
 
+def board_tasks(root, board):
+    """Read durable task state without CLI initialization or readiness promotion.
+
+    Hermes CLI reads may enter a write transaction, which delegated terminal
+    subprocesses correctly reject. A SQLite mode=ro connection preserves that
+    write fence and reads the requested board regardless of inherited DB pins.
+    Missing databases fail closed; never create or migrate them here.
+    """
+    database = review_dir(root, board).parent / 'kanban.db'
+    with closing(sqlite3.connect(database.resolve().as_uri() + '?mode=ro', uri=True,
+                                   timeout=10)) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute('PRAGMA query_only = ON')
+        return [dict(row) for row in connection.execute(
+            'SELECT id, title, body, assignee, status, tenant, created_by FROM tasks')]
+
+
 def tick(root, now=None):
     now = int(time.time()) if now is None else now
     errors = []
     for board_file in sorted((root / 'kanban/boards').glob('*/board.json')):
         try:
             tick_board(root, board_file, now)
-        except (ValueError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        except (ValueError, OSError, RuntimeError, sqlite3.Error, subprocess.SubprocessError) as exc:
             errors.append(f'{board_file.parent.name}: {exc}')
     if errors:
         raise RuntimeError('; '.join(errors))
@@ -114,7 +132,7 @@ def tick_board(root, board_file, now):
         state = json.loads(state_file.read_text()) if state_file.exists() else {}
         if now - state.get('last_created_at', 0) < hours * 3600:
             return
-        tasks = hermes(board, 'list')
+        tasks = board_tasks(root, board)
         if any(t.get('tenant') == TENANT and (t.get('title') == OPPORTUNITY_TITLE
                or t.get('created_by') == 'review-taskforce-scheduler')
                and t['status'] not in {'done', 'archived'} for t in tasks):
@@ -161,7 +179,7 @@ def scope_conflicts(root, board, paths):
         info = json.loads(board_file.read_text())
         if other != board and (not project or info.get('default_workdir') != project):
             continue
-        for task in hermes(other, 'list'):
+        for task in board_tasks(root, other):
             if task['status'] != 'running' or task.get('assignee') not in IMPLEMENTERS:
                 continue
             text = task.get('body') or ''
@@ -207,7 +225,7 @@ def board_status(root, board):
                       {'cadence': 'off', 'interval_hours': 0},
             'findings_sha256': digest(findings) if findings.exists() else 'missing',
             'tasks': [{key: task.get(key) for key in ('id', 'title', 'status', 'assignee', 'tenant')}
-                      for task in hermes(board, 'list') if task['status'] not in {'done', 'archived'}]}
+                      for task in board_tasks(root, board) if task['status'] not in {'done', 'archived'}]}
 
 
 def main():
@@ -247,6 +265,6 @@ def main():
 if __name__ == '__main__':
     try:
         sys.exit(main())
-    except (ValueError, PermissionError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
+    except (ValueError, PermissionError, OSError, RuntimeError, sqlite3.Error, subprocess.SubprocessError) as exc:
         print(f'taskforce: {exc}', file=sys.stderr)
         sys.exit(2)

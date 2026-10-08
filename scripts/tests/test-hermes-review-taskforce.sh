@@ -2,10 +2,12 @@
 set -euo pipefail
 TESTS_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 python3 -B - "$TESTS_REPO_ROOT" <<'PY'
+from contextlib import closing
 import hashlib
 import importlib.util
 import json
 import os
+import sqlite3
 from pathlib import Path
 import tempfile
 import unittest
@@ -36,12 +38,44 @@ class TaskforceTest(unittest.TestCase):
         self.api = patch.object(tf, 'hermes', self.fake_hermes)
         self.api.start()
         self.addCleanup(self.api.stop)
+        self.inventory = patch.object(tf, "board_tasks", lambda root, board: self.tasks)
+        self.inventory.start()
+        self.addCleanup(self.inventory.stop)
 
     def fake_hermes(self, board, *args):
         self.calls.append((board, args))
         if args[0] == 'list':
             return self.tasks
         return {'id': 't_opportunity', 'assignee': 'project-auditor'}
+
+    def test_read_only_inventory_under_delegated_worker_fence(self):
+        self.inventory.stop()
+        fields = 'id TEXT, title TEXT, body TEXT, assignee TEXT, status TEXT, tenant TEXT, created_by TEXT'
+        for board, task_id in [('daily', 't_daily'), ('weekly', 't_weekly'), ('off', None)]:
+            path = self.root / 'kanban/boards' / board / 'kanban.db'
+            with closing(sqlite3.connect(path)) as db:
+                db.execute('CREATE TABLE tasks (' + fields + ')')
+                if task_id is None:
+                    continue
+                db.execute('INSERT INTO tasks VALUES (?, ?, ?, ?, ?, ?, ?)',
+                           (task_id, 'Active implementation', 'Change: modules/immich/default.nix',
+                            'standard-implementer', 'running', 'normal', 'user'))
+                db.commit()
+        fence = {'HERMES_DELEGATED_CHILD_CONTEXT': str(self.root / 'kanban/boards/daily'),
+                 'HERMES_KANBAN_DB': str(self.root / 'kanban/boards/daily/kanban.db')}
+        before = {p: p.read_bytes() for p in self.root.glob('kanban/boards/*/kanban.db')}
+        with patch.dict(os.environ, fence), patch.object(tf, 'hermes', side_effect=AssertionError('CLI read')):
+            status = tf.board_status(self.root, 'daily')
+            self.assertEqual(['t_daily'], [t['id'] for t in status['tasks']])
+            conflicts = tf.scope_conflicts(self.root, 'daily', ['modules/immich/'])
+            self.assertEqual({'t_daily', 't_weekly'}, {t['task_id'] for t in conflicts})
+            self.assertEqual(fence['HERMES_DELEGATED_CHILD_CONTEXT'],
+                             os.environ['HERMES_DELEGATED_CHILD_CONTEXT'])
+        self.assertEqual(before, {p: p.read_bytes() for p in before})
+        (self.root / 'kanban/boards/off/kanban.db').unlink()
+        with self.assertRaises(sqlite3.OperationalError):
+            tf.board_tasks(self.root, 'off')
+        self.assertFalse((self.root / 'kanban/boards/off/kanban.db').exists())
 
     def test_cadence_and_on_demand_disabled(self):
         tf.tick(self.root, self.now)
