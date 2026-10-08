@@ -97,8 +97,20 @@ clamp_cases=(
   "runtime:REMOTE_EXEC_TIMEOUT_SEC:3600:900"
   "runtime:REMOTE_EXEC_TIMEOUT_SEC:60:60"
   "runtime:REMOTE_EXEC_TIMEOUT_SEC::900"
-  "nice:REMOTE_EXEC_NICE:0:0"
-  "nice:REMOTE_EXEC_NICE:19:10"
+  # Nice is inverted: everything below the authorized 10 is a *higher* CPU
+  # priority and must be raised to 10, while a lower-priority (larger) request
+  # is honored up to systemd's own maximum of 19.
+  "nice:REMOTE_EXEC_NICE:0:10"
+  "nice:REMOTE_EXEC_NICE:5:10"
+  "nice:REMOTE_EXEC_NICE:9:10"
+  "nice:REMOTE_EXEC_NICE:10:10"
+  "nice:REMOTE_EXEC_NICE:15:15"
+  "nice:REMOTE_EXEC_NICE:19:19"
+  "nice:REMOTE_EXEC_NICE:20:19"
+  "nice:REMOTE_EXEC_NICE:99:19"
+  "nice:REMOTE_EXEC_NICE:notanumber:10"
+  "nice:REMOTE_EXEC_NICE::10"
+  "nice:REMOTE_EXEC_NICE:18446744073709551617:19"
   "io:REMOTE_EXEC_IO_WEIGHT:100:10"
   "io:REMOTE_EXEC_IO_WEIGHT:1:1"
   "mem:REMOTE_EXEC_MEMORY_MAX:32G:4G"
@@ -106,6 +118,25 @@ clamp_cases=(
   "mem:REMOTE_EXEC_MEMORY_MAX:4G:4G"
   "mem:REMOTE_EXEC_MEMORY_MAX:1T:4G"
   "mem:REMOTE_EXEC_MEMORY_MAX:garbage:4G"
+  # Every accepted suffix, at and around the boundary.
+  "mem:REMOTE_EXEC_MEMORY_MAX:1024K:1024K"
+  "mem:REMOTE_EXEC_MEMORY_MAX:4096M:4096M"
+  "mem:REMOTE_EXEC_MEMORY_MAX:4097M:4G"
+  "mem:REMOTE_EXEC_MEMORY_MAX:1G:1G"
+  "mem:REMOTE_EXEC_MEMORY_MAX:5G:4G"
+  # Suffixes above the ceiling can never be narrower for any mantissa >= 1.
+  "mem:REMOTE_EXEC_MEMORY_MAX:1P:4G"
+  "mem:REMOTE_EXEC_MEMORY_MAX:1T:4G"
+  # Overflow-sized inputs that used to wrap into the accepted range.
+  "mem:REMOTE_EXEC_MEMORY_MAX:17179869184G:4G"
+  "mem:REMOTE_EXEC_MEMORY_MAX:18446744073709551617:4G"
+  "mem:REMOTE_EXEC_MEMORY_MAX:99999999999999999999K:4G"
+  "mem:REMOTE_EXEC_MEMORY_MAX:4294967296:4294967296"
+  "mem:REMOTE_EXEC_MEMORY_MAX:4294967297:4G"
+  "mem:REMOTE_EXEC_MEMORY_MAX:0:4G"
+  "mem:REMOTE_EXEC_MEMORY_MAX:-1G:4G"
+  "mem:REMOTE_EXEC_MEMORY_MAX:4g:4G"
+  "mem:REMOTE_EXEC_MEMORY_MAX:1.5G:4G"
   "artifacts:REMOTE_EXEC_MAX_ARTIFACT_BYTES:999999999999:67108864"
   "artifacts:REMOTE_EXEC_MAX_ARTIFACT_BYTES:1024:1024"
 )

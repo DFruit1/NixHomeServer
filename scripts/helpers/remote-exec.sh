@@ -71,7 +71,12 @@ _remote_exec_max_cpu_percent=200
 _remote_exec_max_memory_max="4G"
 _remote_exec_max_memory_max_bytes=$((4 * 1024 * 1024 * 1024))
 _remote_exec_max_runtime_sec=900
+# Nice is inverted, so the authorized value is a floor: anything *lower* is a
+# *higher* priority and would widen the owner's envelope.
 _remote_exec_nice=10
+# systemd's own upper bound for Nice. A lower-priority request is narrowed to
+# this rather than passed through as a value systemd would refuse to load.
+_remote_exec_nice_max=19
 _remote_exec_io_weight=10
 _remote_exec_max_artifact_bytes=$((64 * 1024 * 1024))
 
@@ -83,26 +88,68 @@ _remote_exec_effective_cpu_percent() {
     printf '%s\n' "$requested" || printf '%s\n' "$_remote_exec_max_cpu_percent"
 }
 
-# MemoryMax is a systemd size string. There is no numeric comparison to clamp a
-# larger string safely, so the knob is validated against the authorized value and
-# anything unrecognized falls back to the ceiling rather than being trusted.
+# Compare two plain non-negative decimal strings without any arithmetic on
+# either: a length check followed by a digit-by-digit check is exact for any
+# size, while bash arithmetic is 64-bit and silently wraps (so `$((x * mult))`
+# would turn an enormous request into a passing small one). Returns 0 when
+# $1 <= $2. Neither operand may carry a sign or a leading zero.
+_remote_exec_decimal_le() {
+  local a="$1" b="$2" i da db
+  if ((${#a} < ${#b})); then
+    return 0
+  fi
+  if ((${#a} > ${#b})); then
+    return 1
+  fi
+  for ((i = 0; i < ${#a}; i++)); do
+    da="${a:i:1}"
+    db="${b:i:1}"
+    if ((da < db)); then
+      return 0
+    fi
+    if ((da > db)); then
+      return 1
+    fi
+  done
+  return 0
+}
+
+# MemoryMax is a systemd size string. The knob is validated against the
+# authorized value and anything unrecognized falls back to the ceiling rather
+# than being trusted.
 _remote_exec_effective_memory_max() {
   local requested="${REMOTE_EXEC_MEMORY_MAX:-$_remote_exec_max_memory_max}"
-  if [[ "$requested" =~ ^[1-9][0-9]*[KMGTP]?$ ]]; then
-    # Only ever narrower: compare in bytes against the 4 GiB ceiling.
-    local bytes="${requested%[KMGTP]}"
-    local suffix="${requested#"$bytes"}"
-    local mult=1
+  # A systemd MemoryMax string: a positive integer with an optional single
+  # K/M/G/T/P binary suffix, and nothing else. A leading zero, a sign, a
+  # decimal, B/E or an IEC suffix is not this shape and is refused below.
+  if [[ "$requested" =~ ^[1-9][0-9]*([KMGTP])?$ ]]; then
+    local digits="${requested%[KMGTP]}"
+    local suffix="${requested#"$digits"}"
+    local exponent=0
     case "$suffix" in
-      K) mult=1024 ;;
-      M) mult=$((1024 * 1024)) ;;
-      G) mult=$((1024 * 1024 * 1024)) ;;
-      T) mult=$((1024 * 1024 * 1024 * 1024)) ;;
+      "") exponent=0 ;;
+      K) exponent=1 ;;
+      M) exponent=2 ;;
+      G) exponent=3 ;;
+      T) exponent=4 ;;
+      P) exponent=5 ;;
     esac
-    ((bytes * mult < _remote_exec_max_memory_max_bytes)) && {
-      printf '%s\n' "$requested"
-      return 0
-    }
+    # The ceiling is 4 * 1024^3 bytes and is expressed as a suffix string, so
+    # only a request in the same unit needs a numeric compare; every larger
+    # suffix (T, P) is above the ceiling for any mantissa >= 1, and every
+    # smaller suffix is compared against the mantissa bound for its own unit.
+    local limit_str
+    if ((exponent <= 3)); then
+      # 4 GiB in this request's unit. The divisor is exact (4 GiB divides
+      # cleanly by every power of 1024 up to G) and the result is at most
+      # 4294967296, so it is safe in shell arithmetic; the mantissa, which may
+      # be arbitrarily long, is compared as a string against it instead.
+      limit_str="$((_remote_exec_max_memory_max_bytes / 1024 ** exponent))"
+      if _remote_exec_decimal_le "$digits" "$limit_str"; then
+        printf '%s\n' "$requested"
+        return 0
+      fi
+    fi
   fi
   printf '%s\n' "$_remote_exec_max_memory_max"
 }
@@ -117,9 +164,22 @@ _remote_exec_effective_runtime_sec() {
 
 _remote_exec_effective_nice() {
   local requested="${REMOTE_EXEC_NICE:-$_remote_exec_nice}"
+  # Nice is inverted: a *lower* number is a *higher* CPU priority. The
+  # authorized 10 is therefore a floor, not a ceiling -- a request below it
+  # would make the job more privileged than the decision that authorized it, so
+  # it is raised to 10. A request above systemd's own maximum 19 would be
+  # refused by the manager, so it is narrowed to 19.
   [[ "$requested" =~ ^[0-9]+$ ]] || requested="$_remote_exec_nice"
-  ((requested < _remote_exec_nice)) && printf '%s\n' "$requested" ||
-    printf '%s\n' "$_remote_exec_nice"
+  # Guard the comparison against a value too long for a 64-bit shell integer:
+  # bash would wrap it and could land inside the accepted range.
+  if ((${#requested} > 2)); then
+    requested="$_remote_exec_nice_max"
+  elif ((requested < _remote_exec_nice)); then
+    requested="$_remote_exec_nice"
+  elif ((requested > _remote_exec_nice_max)); then
+    requested="$_remote_exec_nice_max"
+  fi
+  printf '%s\n' "$requested"
 }
 
 _remote_exec_effective_io_weight() {
