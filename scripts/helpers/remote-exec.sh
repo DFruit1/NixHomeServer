@@ -399,13 +399,22 @@ REMOTE_EOF
   # plain SSH, so a deliverable never "just arrives".
   results_dir="${REMOTE_EXEC_RESULTS_DIR:-$repo_root/remote-exec-results}"
   artifact_cap="$(_remote_exec_effective_artifact_cap)"
+  # The artifact set is measured on the server by summing the real byte counts
+  # of the tree, and the cap is applied here. Two details are load-bearing:
+  #
+  #   * the awk rule runs per input line, never in BEGIN. A BEGIN-block rule
+  #     evaluates before any input exists, so $1 is empty and every job reported
+  #     0 bytes -- which silently skipped the transfer and never enforced the
+  #     cap, so a deliverable never arrived and an oversized set was accepted;
+  #   * du and awk share the pipe under `set -o pipefail`, so a job whose
+  #     results directory has gone missing fails here rather than reporting a
+  #     plausible-looking 0.
   artifact_size="$(ssh -T -o BatchMode=yes -o ConnectTimeout=10 "$remote_exec_host" \
-    bash -s -- "$remote_dir" "$artifact_cap" <<'REMOTE_EOF'
+    bash -s -- "$remote_dir" <<'REMOTE_EOF'
 set -euo pipefail
 remote_dir="$1"
-artifact_cap="$2"
-du -sb "$remote_dir/results" 2>/dev/null | awk -v cap="$artifact_cap" '
-  BEGIN { print ( $1 > cap ) ? cap + 1 : $1 + 0 }'
+du -sb "$remote_dir/results" 2>/dev/null |
+  awk '{ total += $1 } END { print total + 0 }'
 REMOTE_EOF
   )" || {
     echo "remote-exec: could not size the remote artifact set" >&2
@@ -420,7 +429,7 @@ REMOTE_EOF
     return 1
   fi
   if ((artifact_size > artifact_cap)); then
-    echo "remote-exec: artifacts exceed the ${artifact_cap}-byte cap; refusing to transfer" >&2
+    echo "remote-exec: artifacts are ${artifact_size} bytes, over the ${artifact_cap}-byte cap; refusing to transfer" >&2
     reap_job_dir
     return 1
   fi

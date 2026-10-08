@@ -233,7 +233,6 @@ cat >"$mock_bin/ssh" <<'MOCK_SSH'
 set -uo pipefail
 args="$*"
 mock_dir="${MOCK_CTL:?}"
-mock_artifact_size_file="${MOCK_CTL}/artifact_size"
 
 # Consuming stdin must never fail the shim: several callers pipe a heredoc that
 # the matching branch never reads.
@@ -247,22 +246,34 @@ case "$args" in
   #
   # The `du` and the `systemd-run` live in the stdin heredoc, not the argument
   # list, so the two `bash -s --` sites are told apart by how many operands
-  # follow `--`: the runner passes 8, the sizing call passes 2. Counted from the
-  # first `--` so ssh's own options are not counted.
+  # follow `--`: the runner passes 8, the sizing call passes at most 2. Counted
+  # from the first `--` so ssh's own options are not counted.
   *"bash -s --"*)
     consume_stdin
     seen_sep=0
-    argc=0
+    operands=()
     for operand in "$@"; do
       if ((seen_sep)); then
-        argc=$((argc + 1))
+        operands+=("$operand")
       elif [[ "$operand" == "--" ]]; then
         seen_sep=1
       fi
     done
-    if ((argc <= 2)); then
-      cat "$mock_artifact_size_file"
-      exit 0
+    if ((${#operands[@]} <= 2)); then
+      # The sizing call. This is the whole point of the offline regression:
+      # the helper's own sizing heredoc, extracted verbatim from the shipped
+      # source, is executed here against real files on disk. A shim that
+      # invented a byte count out of a fixture file would hide a sizing bug --
+      # which is exactly how a BEGIN-rule typo that reported 0 bytes for every
+      # job passed this suite while it shipped.
+      if [[ ! -r "${MOCK_SIZING:?}" ]]; then
+        echo "mock ssh: no extracted sizing script" >&2
+        exit 1
+      fi
+      # The operand list is passed through unchanged, so the extracted script
+      # sees exactly the positional arguments the helper would send over ssh.
+      bash "$MOCK_SIZING" "${operands[@]}" | tee "$mock_dir/sizing_log"
+      exit "${PIPESTATUS[0]}"
     fi
     if [[ -f "/tmp/nixhomeserver-remote-exec.${mock_dir##*/}/job.sh" ]]; then
       # The remote runner creates source/ and results/ before running the job,
@@ -346,7 +357,27 @@ mkdir -p "$mock_dir"
 rm -rf "/tmp/nixhomeserver-remote-exec.${mock_dir##*/}"
 mock_job_glob="/tmp/nixhomeserver-remote-exec.${mock_dir##*/}"
 export MOCK_CTL="$mock_dir"
-printf '0\n' >"$MOCK_CTL/artifact_size"
+
+# Extract the sizing heredoc from the shipped source and run it for real, so the
+# offline regression exercises the code that actually sizes a job's artifacts.
+# The call site is located by the assignment it feeds rather than by its exact
+# operand list, so the check survives a change in how the cap is passed and only
+# fails when the sizing code itself is moved or renamed.
+sizing_script="$mock_dir/sizing.sh"
+if ! awk '/artifact_size=/ { seen = 1 }
+         seen && /^REMOTE_EOF$/ { exit }
+         seen && /bash -s --/ { body = 1; next }
+         body { print }' "$runner_source" >"$sizing_script"; then
+  echo "❌ could not read the sizing heredoc from ${runner_source}" >&2
+  exit 1
+fi
+if [[ ! -s "$sizing_script" ]] || ! grep -q 'du -sb' "$sizing_script"; then
+  echo "❌ extracted sizing script is missing its du/awk body:" >&2
+  cat "$sizing_script" >&2
+  exit 1
+fi
+chmod +x "$sizing_script"
+export MOCK_SIZING="$sizing_script"
 
 mock_orig_path="$PATH"
 export PATH="$mock_bin:$PATH"
@@ -381,7 +412,6 @@ remote_exec_run 't_artifacts' \
   note_failure "an artifact-producing job did not succeed: $(cat "$test_root/art.err")"
 
 results_dir="$test_root/results"
-printf '42\n' >"$MOCK_CTL/artifact_size"
 rm -rf "$results_dir"
 REMOTE_EXEC_RESULTS_DIR="$results_dir" remote_exec_run 't_fetch' \
   'printf "artifact-body\n" > "$NIXHOMESERVER_REMOTE_EXEC_RESULTS_DIR/report.txt"' \
@@ -394,6 +424,37 @@ if [[ ! -f "$results_dir/report.txt" ]]; then
   note_failure "the job's artifact did not arrive in ${results_dir}: $(ls -A "$results_dir" 2>&1)"
 elif [[ "$(cat "$results_dir/report.txt")" != "artifact-body" ]]; then
   note_failure "the returned artifact has the wrong contents: $(cat "$results_dir/report.txt")"
+fi
+
+# The sizing call must report the size of the tree it actually measured. A run
+# that returned 0 here would skip the transfer and leave nothing behind, which
+# is the defect these assertions exist to catch.
+expected_size="$(du -sb "$results_dir" | awk '{ print $1 + 0 }')"
+if ((expected_size == 0)); then
+  note_failure "the fetched artifact set is unexpectedly empty"
+elif [[ ! -f "$MOCK_CTL/sizing_log" ]]; then
+  note_failure "the mocked transport never recorded a sizing call"
+elif ! grep -qx "$expected_size" "$MOCK_CTL/sizing_log"; then
+  note_failure "the sizing heredoc reported '${expected_size}'-less output: $(cat "$MOCK_CTL/sizing_log")"
+fi
+
+# An empty results tree sizes as 0 bytes, and the transport must not be asked for
+# an empty archive: 0 must reach the cap comparison rather than a failure. The
+# tree is cleaned first so it is genuinely empty and not left over from an
+# earlier job in this suite.
+mkdir -p "$mock_job_glob/results"
+find "$mock_job_glob/results" -mindepth 1 -delete
+"$MOCK_SIZING" "$mock_job_glob" >"$mock_dir/empty.size" 2>"$mock_dir/empty.err" ||
+  note_failure "the sizing heredoc failed on an empty results dir: $(cat "$mock_dir/empty.err")"
+if [[ "$(cat "$mock_dir/empty.size")" != "0" ]]; then
+  note_failure "an empty artifact set did not size as 0: $(cat "$mock_dir/empty.size")"
+fi
+
+# And it must fail, not report a plausible zero, when the results tree is gone --
+# du and awk share a pipe under pipefail, so a missing directory is a failure.
+if "$MOCK_SIZING" "$mock_dir/no-such-job" >"$mock_dir/missing.out" \
+  2>"$mock_dir/missing.err"; then
+  note_failure "the sizing heredoc accepted a missing results directory"
 fi
 
 echo "  ✅ a job's declared artifacts come back to the workstation"
@@ -416,19 +477,44 @@ rm -f "$MOCK_CTL/reaped"
 
 echo "  ✅ the remote job directory is reaped on both the success and failure paths"
 
-printf "$((_remote_exec_max_artifact_bytes + 1))\n" >"$MOCK_CTL/artifact_size"
-if REMOTE_EXEC_RESULTS_DIR="$test_root/toobig" remote_exec_run 't_toobig' 'echo x' \
+# An oversized artifact set must be refused against a real tree, not a fixture
+# count. The job writes just over the cap, and the helper's own sizing code
+# measures it.
+oversize_cap=1024
+remote_exec_run 't_toobigseed' \
+  "printf 'x%.0s' {1..$((oversize_cap + 1))} > \"\$NIXHOMESERVER_REMOTE_EXEC_RESULTS_DIR/big.bin\"" \
+  >/dev/null 2>"$test_root/seed.err" ||
+  note_failure "could not stage an oversized artifact set: $(cat "$test_root/seed.err")"
+
+big_size="$(du -sb "$mock_job_glob/results" | awk '{ print $1 + 0 }')"
+if ((big_size <= oversize_cap)); then
+  note_failure "the staged oversized tree is only ${big_size} bytes, not over ${oversize_cap}"
+fi
+rm -f "$MOCK_CTL/sizing_log" "$MOCK_CTL/reaped"
+if REMOTE_EXEC_MAX_ARTIFACT_BYTES="$oversize_cap" \
+  REMOTE_EXEC_RESULTS_DIR="$test_root/toobig" \
+  remote_exec_run 't_toobig' 'echo x' \
   >"$test_root/big.out" 2>"$test_root/big.err"; then
   note_failure "an oversized artifact set was accepted"
 fi
-grep -q "exceed" "$test_root/big.err" ||
+grep -q "refusing to transfer" "$test_root/big.err" ||
   note_failure "an oversized artifact set did not say why: $(cat "$test_root/big.err")"
+grep -q "over the ${oversize_cap}-byte cap" "$test_root/big.err" ||
+  note_failure "the refusal did not name the cap it used: $(cat "$test_root/big.err")"
+grep -qx "$big_size" "$MOCK_CTL/sizing_log" ||
+  note_failure "the cap check ran against a supplied count, not the measured ${big_size}: $(cat "$MOCK_CTL/sizing_log" 2>&1)"
+if [[ -e "$test_root/toobig" ]]; then
+  note_failure "an oversized artifact set was still transferred: $(ls -A "$test_root/toobig" 2>&1)"
+fi
+if [[ ! -f "$MOCK_CTL/reaped" ]]; then
+  note_failure "a refused oversized artifact set did not reap its job directory"
+fi
 
 echo "  ✅ an oversized artifact set is refused rather than transferred"
 
 # Restore PATH before the EXIT trap runs rm, or cleanup cannot find it.
 export PATH="${mock_orig_path}"
-unset MOCK_CTL
+unset MOCK_CTL MOCK_SIZING
 rm -rf "$mock_dir"
 
 # --- summary -----------------------------------------------------------------
