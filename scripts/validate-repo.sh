@@ -45,13 +45,17 @@ Sandbox-excluded checks (the class, stated once, enforced below):
     which has no PATH into those tools, and passes on the workstation
   - each excluded check therefore runs directly on the workstation instead,
     and the gate refuses to run if that direct path cannot be named
+  - only the known rows below may be excluded: an unlisted check, or a direct
+    path that is not that check's known one, is rejected before any worklist
+    evaluation, build or script runs
   - an entry may only be added with that check's own failure evidence from a
     remote build; a shared cause across other failures must never be assumed
   - see documentation/operations.md, "Builds", for the measured evidence
 
 Reporting:
-  - --print-sandbox-exclusions prints the exclusion table as name|direct-path
-    lines and exits, so the policy surface is reviewable as a diff
+  - --print-sandbox-exclusions prints the known exclusion table as
+    name|direct-path lines and exits, so the policy surface is reviewable as a
+    diff
 
 Where the check worklist is evaluated:
   - the worklist is built with one batched query, so the system name and the
@@ -207,43 +211,95 @@ current_system() {
 # workstation. Measured evidence and the numbers behind it are in
 # documentation/operations.md, "Builds".
 #
-# Rule for changing this table: add an entry only with that check's own failure
+# Every row is a known coverage-preserving relocation: the check on the left,
+# and the one direct path on the right that runs that check's own coverage.
+#
+# Rule for changing this table: add a row only with that check's own failure
 # output from a remote build. A shared cause across a group of failing checks is
 # a hypothesis, not evidence, and must never be used to exclude a check whose
 # own failure was not sampled. Never exclude a check to make the gate green.
-sandbox_excluded_checks() {
-  # A caller-supplied table exists so the focused regression can prove the
-  # fail-closed behaviour. It is a table of explicit name|direct-path pairs, so
-  # it can relocate a check but can never drop one silently.
-  if [[ -n "${VALIDATE_REPO_SANDBOX_EXCLUSIONS:-}" ]]; then
-    cat "${VALIDATE_REPO_SANDBOX_EXCLUSIONS}"
-    return 0
-  fi
+sandbox_exclusion_table() {
   cat <<'EOF'
 repo-policy|scripts/tests/run-script-tests.sh
 EOF
 }
 
-# Print the direct validation path for a sandbox-excluded check. Returns 1 when
-# the check is not excluded, and fails the gate (exit 2 to the caller) when an
-# exclusion cannot name a working direct path: an exclusion that silently drops
-# coverage is worse than the remote failure it avoids.
-sandbox_exclusion_direct_path() {
+# The effective table. A caller-supplied table is the regression seam, not a
+# policy switch: it may only select rows from the known table above, and every
+# row it names must be a relocation the gate can prove preserves coverage.
+# Without that restriction any executable in the tree could stand in for a
+# check's validation path, drop its coverage, and still let the gate report a
+# pass.
+sandbox_excluded_checks() {
+  if [[ -n "${VALIDATE_REPO_SANDBOX_EXCLUSIONS:-}" ]]; then
+    cat "${VALIDATE_REPO_SANDBOX_EXCLUSIONS}"
+    return 0
+  fi
+  sandbox_exclusion_table
+}
+
+# Print the one direct path known to preserve $1's coverage; return 1 for a
+# check the table does not know how to relocate.
+sandbox_exclusion_known_path() {
   local check_name="$1" entry direct_path
+  while IFS='|' read -r entry direct_path; do
+    [[ "$entry" == "$check_name" ]] || continue
+    printf '%s\n' "$direct_path"
+    return 0
+  done < <(sandbox_exclusion_table)
+  return 1
+}
+
+# Print the direct validation path for a sandbox-excluded check. Returns 1 when
+# the check is not excluded, and fails the gate (exit 2 to the caller) whenever
+# the exclusion cannot preserve the check's coverage:
+#   - an entry naming a check the table does not know,
+#   - a direct path that is not that check's known path (any other executable,
+#     however plausible, does not run this check's coverage), or
+#   - a known direct path that is missing or not executable.
+# An exclusion that silently drops coverage is worse than the remote failure it
+# avoids, so none of these is ever a skip.
+sandbox_exclusion_direct_path() {
+  local check_name="$1" entry direct_path known_path
   while IFS='|' read -r entry direct_path; do
     [[ -n "$entry" ]] || continue
     if [[ "$entry" != "$check_name" ]]; then
       continue
+    fi
+    if ! known_path="$(sandbox_exclusion_known_path "$check_name")"; then
+      echo "❌ ${check_name} is excluded from derivation builds but is not a" \
+        "known sandbox-excluded check; an exclusion needs that check's own" \
+        "remote-build failure evidence." >&2
+      return 2
     fi
     if [[ -z "$direct_path" || ! -x "$repo_root/$direct_path" ]]; then
       echo "❌ ${check_name} is excluded from derivation builds but its direct" \
         "validation path is missing or not executable: ${direct_path:-<unset>}" >&2
       return 2
     fi
+    if [[ "$direct_path" != "$known_path" ]]; then
+      echo "❌ ${check_name} is excluded from derivation builds onto an unrelated" \
+        "direct path: ${direct_path}. Its coverage-preserving path is ${known_path}." >&2
+      return 2
+    fi
     printf '%s\n' "$direct_path"
     return 0
   done < <(sandbox_excluded_checks)
   return 1
+}
+
+# Reject an unusable exclusion table before the gate spends a worklist
+# evaluation or a build on it. The helper above names the specific reason; the
+# exit here is what keeps the gate from reaching a narrowed run it would then
+# report as a pass.
+validate_sandbox_exclusion_table() {
+  local entry_name _direct_path status
+  while IFS='|' read -r entry_name _direct_path; do
+    [[ -n "$entry_name" ]] || continue
+    status=0
+    sandbox_exclusion_direct_path "$entry_name" >/dev/null || status=$?
+    ((status == 0)) || exit 1
+  done < <(sandbox_excluded_checks)
 }
 
 # Evaluate the flake check worklist in one batched evaluation instead of paying a
@@ -419,6 +475,11 @@ run_derivation_checks() {
     return 0
   fi
 
+  # Fail closed before the worklist evaluation or any build: an exclusion that
+  # cannot preserve its check's coverage must not survive to the point where the
+  # gate reports a narrowed run as a pass.
+  validate_sandbox_exclusion_table
+
   if [[ "$all_apps" == true ]]; then
     evaluate_check_worklist true
   else
@@ -549,12 +610,10 @@ run_full_e2e_checks() {
 }
 
 if [[ "$print_sandbox_exclusions" == true ]]; then
-  # Report the policy surface itself, so a change to the table is reviewable as
-  # a diff without running the gate.
-  while IFS='|' read -r entry direct_path; do
-    [[ -n "$entry" ]] || continue
-    printf '%s|%s\n' "$entry" "$direct_path"
-  done < <(sandbox_excluded_checks)
+  # Report the known policy surface itself -- not a caller-supplied selection
+  # from it -- so a change to what may be excluded is reviewable as a diff
+  # without running the gate.
+  sandbox_exclusion_table
   exit 0
 fi
 

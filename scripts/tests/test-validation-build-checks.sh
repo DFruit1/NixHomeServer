@@ -171,6 +171,8 @@ forbid_match "$VALIDATION_TEST_LOG" '^scripts ' \
   'A broken exclusion must stop the gate, not fall through to the script suite.'
 forbid_match "$VALIDATION_TEST_LOG" '^nix build ' \
   'A broken exclusion must stop before building anything.'
+forbid_match "$VALIDATION_TEST_LOG" ' bash -s -- ' \
+  'A broken exclusion must stop before the worklist is even evaluated.'
 
 # An exclusion entry with no direct path at all is equally a silent skip.
 printf '%s\n' 'repo-policy' >"$test_root/exclusions-empty"
@@ -181,6 +183,60 @@ if run_gate --build-checks; then
 fi
 require_match "$test_root/output" 'direct validation path is missing or not executable' \
   'An exclusion with no path must be rejected rather than accepted.'
+forbid_match "$VALIDATION_TEST_LOG" ' bash -s -- ' \
+  'An exclusion with no path must stop before the worklist is evaluated.'
+unset VALIDATE_REPO_SANDBOX_EXCLUSIONS
+
+# --- an exclusion may only relocate a known check onto its known path --------
+#
+# An executable file is not a validation path. Anything in the tree satisfies
+# `-x`, and the gate's own success message would be the only thing that changed:
+# the check's coverage is dropped while the run still reports a pass.
+probe_exclusion_rejection() {
+  local label="$1" row="$2"
+  printf '%s\n' "$row" >"$test_root/exclusions-unrelated"
+  export VALIDATE_REPO_SANDBOX_EXCLUSIONS="$test_root/exclusions-unrelated"
+  if run_gate --build-checks; then
+    echo "❌ An exclusion that cannot preserve coverage must fail validation: ${label}" >&2
+    cat "$test_root/output" >&2
+    exit 1
+  fi
+  require_match "$test_root/output" 'is excluded from derivation builds' \
+    "The rejection must name the exclusion it refused (${label})."
+  forbid_match "$VALIDATION_TEST_LOG" '^nix build ' \
+    "A rejected exclusion must stop before building anything (${label})."
+  forbid_match "$VALIDATION_TEST_LOG" '^scripts ' \
+    "A rejected exclusion must stop before the script suite (${label})."
+  forbid_match "$VALIDATION_TEST_LOG" ' bash -s -- ' \
+    "A rejected exclusion must stop before the worklist is evaluated (${label})."
+}
+
+# An unrelated executable named for a known check is the closest resemblance of
+# the real relocation, and must still be refused.
+probe_exclusion_rejection 'helper-as-known-path' \
+  'repo-policy|scripts/tests/test-common.sh'
+require_match "$test_root/output" \
+  'repo-policy is excluded from derivation builds onto an unrelated direct path.*test-common.sh' \
+  'A known check excluded onto an unrelated executable must name the rejection.'
+require_fixed "$test_root/output" \
+  'Its coverage-preserving path is scripts/tests/run-script-tests.sh' \
+  'The rejection must name the path that would preserve coverage.'
+
+# A check with no place in the table cannot be excluded at all: only a check
+# with its own remote-build failure evidence may be relocated.
+probe_exclusion_rejection 'unknown-check-with-helper' \
+  'media-manager-test|scripts/tests/test-common.sh'
+require_match "$test_root/output" \
+  'media-manager-test is excluded from derivation builds but is not a known sandbox-excluded check' \
+  'An unlisted check must be rejected as unknown, not accepted.'
+
+# Reusing a known path for an unrelated check is the same silent skip: the path
+# preserves coverage for the check it was proven for, not for any check.
+probe_exclusion_rejection 'known-path-for-unrelated-check' \
+  'media-manager-test|scripts/tests/run-script-tests.sh'
+require_match "$test_root/output" \
+  'media-manager-test is excluded from derivation builds but is not a known sandbox-excluded check' \
+  'A known path must not authorize an unrelated check.'
 unset VALIDATE_REPO_SANDBOX_EXCLUSIONS
 
 run_gate --build-checks
