@@ -98,6 +98,13 @@ case "$args" in
 esac
 EOF
 make_test_executable "$test_root/bin/ssh"
+
+# The transport mode belongs to this fixture, not to the invoking shell. Every
+# run below starts from the default remote path, and the one deliberate local
+# probe re-assigns it at its own call site, where the opt-out is visible as the
+# thing under test. Without this isolation an ambient `REMOTE_EVAL=0` silently
+# rewrites every assertion about the remote receipt into a local one.
+export REMOTE_EVAL=1
 export VALIDATION_TEST_BATCH_PAYLOAD='{"batchSystem":"x86_64-linux","batchNames":["repo-policy","media-manager-frontendDist","media-manager-test"]}'
 export PATH="$test_root/bin:$PATH"
 
