@@ -146,6 +146,59 @@ on older cards but are likewise not live lanes — treat any card assigned to on
 those as mis-assigned and re-route it to a profile that exists under
 `~/.hermes/profiles/`.
 
+### Continuous improvement taskforce
+
+`project-auditor` manages `feature-reviewer`; only the reviewer commissions
+feature audits. `head-coordinator` sends audit requests to the reviewer and
+receives approved implementation plans for decomposition into implementer cards.
+Audits may cover any existing feature, even without a reported defect.
+HERMES_PRIORITIES.md guides selection rather than limiting eligible features.
+Each audit names one feature, one question, explicit file scope and a stopping
+condition. Avoid active implementation and review/rework cycles; defer conflicts
+rather than interrupting implementers. Do not repeat unchanged clean coverage
+or duplicate audits/fixes. Require concrete benefit beyond cosmetic churn.
+
+One persisted findings document per board lives at:
+`~/.hermes/kanban/boards/<slug>/review-taskforce/FINDINGS.md`.
+Only `project-auditor` changes it through the installed taskforce helper.
+Auditors report on their own cards; coordinators and implementers report
+outcomes without editing the document. Preserve evidence, revision, decisions,
+coverage, unknowns and implementation/verification status. Approved plans live
+beside it in `plans/`, are immutable and carry stable finding IDs.
+The board durability mirror includes this state. The shared Unix account means
+ownership is a workflow rule, not an OS security boundary.
+
+Routine worthwhile batches proceed automatically. Urgent credible security or
+regression findings are assessed and handed off immediately. Implementation
+plans require explicit owner approval before dispatch when they include:
+
+* Architectural changes, including boundaries, topology, data contracts,
+  trust boundaries or persistence/deployment strategy.
+* Adding, removing or replacing software-stack components: dependencies,
+  frameworks, runtimes, databases, identity providers or build/deployment tools.
+  Routine version bumps proceed automatically unless they present significant
+  security or regression risk.
+* Frontend changes beyond minimal controls required for an already-authorised
+  new feature, such as adding a button or toggle in the existing design.
+* Complex changes with significant security or regression risk.
+* Existing owner-gated operations: irreversible data/credential changes,
+  priority trades or unrequested user-visible behaviour.
+
+The reviewer prepares a concrete immutable plan and records the approval
+classification, exact triggers and evidence. Required approvals use a blocked
+owner gate before an implementation handoff becomes dispatchable. Urgency never
+bypasses this gate. Existing explicit approval for the exact scope remains valid;
+new scope/risk requires a new decision. Implementers stop if a new trigger appears.
+The full rules are tracked in `scripts/hermes/taskforce/approval-policy.md` and
+installed at `~/.hermes/scripts/review-taskforce-approval.md`.
+
+Per-board cadence is off, daily, weekly or a custom interval in hours; off only
+disables scheduled opportunity checks. On-demand commissioning remains allowed.
+The reviewer creates a dependent assessment for each audit and a closure for
+each coordinator handoff. The coordinator dependency-blocks its handoff until
+implementation/review/composition complete, so closure verifies landed work.
+Never gate implementation children behind their own unfinished handoff.
+
 The reader is a human in a narrow column, mid-review of something else. A card
 must answer two questions from its first lines:
 

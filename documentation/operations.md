@@ -2,6 +2,9 @@
 
 Use this as the maintained day-2 operations guide for validation, guarded deploys, rollback, service health, SMART monitoring, and first-response troubleshooting.
 
+For workstation agents, see the [Hermes review taskforce](hermes-review-taskforce.md)
+for audit ownership, project cadence, persisted findings and owner approval rules.
+
 Routine rebuilds and deployment tests use only the guarded helper: run
 `nix run .#deploy -- --action test` before the matching `--action switch` from
 unchanged reviewed source, with dashboard-selected allocation and no overrides.

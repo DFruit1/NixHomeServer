@@ -2,8 +2,11 @@
 
 This file is the **audited contract** for this project. `principal-consultant` reads
 it to answer one question per priority: *is this feature set stable, correct,
-and efficient?* `feature-reviewer` reads it to know which subsystem it was asked
-to audit and what "done" means for it.
+and efficient?* The `project-auditor` taskforce uses it to guide selection and
+expectations. `feature-reviewer` may audit any existing feature, including ones
+not listed here, for a focused question about correctness, regressions,
+integration, efficiency, security or simpler implementation with a concrete
+benefit. This file guides audits; it is not a feature allowlist.
 
 Rules for this file:
 
@@ -17,7 +20,8 @@ Rules for this file:
   reporting on it.
 - Do not add a priority the project has not agreed to own.
 
-Auditors report against this file. If reality and this file disagree, that
+Auditors report relevant priorities or identify the feature as unlisted.
+If reality and this file disagree, that
 disagreement is itself a finding — report it rather than silently reinterpreting
 the priority.
 
@@ -80,10 +84,12 @@ access.
 Explicitly **not** audited. Reporting on these is noise.
 
 - Documentation wording and prose style.
-- Aesthetic or refactor-only changes with no correctness, reliability or
-  performance effect.
-- Adding features not listed above.
-- Upstream dependency version bumps with no behavioural change.
+- Cosmetic changes with no correctness, reliability, performance, security or
+  demonstrated reduction in implementation complexity.
+- Proposing new features as part of an existing-feature audit.
+- Proposing upstream dependency bumps with no demonstrated audit benefit.
+  Routine version bumps otherwise require no owner approval unless they pose
+  significant security or regression risk.
 
 ---
 

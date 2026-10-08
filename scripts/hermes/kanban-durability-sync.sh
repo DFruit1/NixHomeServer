@@ -465,6 +465,16 @@ stage_board() {
     cp "$board_dir/board.json" "$stage_dir/board.json"
   fi
 
+  # The reviewer's findings and immutable plans are board state too. Share its
+  # file lock so a cadence/ledger write cannot tear this filesystem snapshot.
+  if [[ -d "$board_dir/review-taskforce" ]]; then
+    if ! flock -w 30 -s "$board_dir/review-taskforce/.lock" \
+      cp -a "$board_dir/review-taskforce" "$stage_dir/"; then
+      fail "board $board: taskforce snapshot failed; not mirrored"
+      return 1
+    fi
+  fi
+
   # Integrity gate: a snapshot that will not read back is worse than none,
   # because it looks like a backup until the day it is needed.
   if ! sqlite3 "$stage_dir/kanban.db" 'PRAGMA integrity_check;' 2>/dev/null | grep -qx ok; then

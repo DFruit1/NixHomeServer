@@ -264,9 +264,18 @@ pass "enumerates every live board when HERMES_BOARD is unset"
 # --- each board lands under its own directory ------------------------------
 
 new_remote_root nixhomeserver
+mkdir -p "$HERMES_FIXTURE/kanban/boards/nixhomeserver/review-taskforce/plans"
+printf '# Accepted findings\n' >"$HERMES_FIXTURE/kanban/boards/nixhomeserver/review-taskforce/FINDINGS.md"
+printf '{"cadence":"daily","interval_hours":24}\n' >"$HERMES_FIXTURE/kanban/boards/nixhomeserver/review-taskforce/config.json"
+printf '# Immutable plan\n' >"$HERMES_FIXTURE/kanban/boards/nixhomeserver/review-taskforce/plans/batch-1.md"
 mirror_board nixhomeserver
 mirror_has nixhomeserver/current/kanban.db ||
   fail "the nixhomeserver board was not mirrored"
+[[ "$(mirror_file nixhomeserver/current/review-taskforce/FINDINGS.md)" == '# Accepted findings' ]] ||
+  fail "the reviewer's persisted findings were not mirrored"
+[[ "$(mirror_file nixhomeserver/current/review-taskforce/plans/batch-1.md)" == '# Immutable plan' ]] ||
+  fail "the approved implementation plan was not mirrored"
+pass "mirrors taskforce findings, cadence and immutable plans with the board"
 [[ "$(mirror_file nixhomeserver/current/MANIFEST)" == *"board=nixhomeserver"* ]] ||
   fail "the nixhomeserver manifest names the wrong board"
 [[ "$(mirror_file nixhomeserver/current/MANIFEST)" == *"tasks=3"* ]] ||
