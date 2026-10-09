@@ -736,4 +736,189 @@ for lane in "${LANES[@]}"; do
 done
 pass "the no-contact path removes indented keys and keeps the pairing"
 
+# --- the blocker-gate section must not compete with the compact policy --------
+#
+# The composed line is two installers that both write blocker-delivery policy
+# into the same SOUL.md. A review reproduced the conflict an isolated probe of
+# this whole installer: install the board wiring first, then the compact
+# owner-alert policy, and the lane ends up with both instructions -- one telling
+# it to bind each gate card manually, the other telling it never to add a manual
+# subscription at all. Re-running the board installer afterwards kept both.
+#
+# So the installer must not install its section next to the compact policy, and
+# must remove a section that is already there once the compact policy arrives.
+# Both properties are asserted for both orders, because either installer can be
+# the one that runs second.
+#
+# The compact installer is the production script, run against the fixture root,
+# and its cron call is satisfied by a pre-seeded jobs.json so nothing real is
+# created. See fixture setup above.
+
+COORDINATOR_SOUL="$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md"
+GATE_HEADING='## Blocker delivery and reply-to-unblock (SimpleX)'
+mkdir -p "$fixture/home"
+
+# The production installer of the compact policy. It reads its own source next
+# to this repo, writes the profile script, rewrites the SOUL.md section between
+# its markers and checks the cron job -- all inside the fixture root.
+#
+# HERMES_ROOT and HOME are both pinned. The installer defaults HERMES_ROOT to
+# ~/.hermes, so a missing pin would run a real installation against the live
+# profile from inside a regression test: it would rewrite the live SOUL.md and
+# the live scripts copy, and the assertions below would then pass or fail
+# against the operator's machine rather than the fixture.
+run_compact_install() {
+  PYTHONDONTWRITEBYTECODE=1 \
+    HERMES_ROOT="$HERMES_FIXTURE" HOME="$fixture/home" \
+    python3 -B "$TESTS_REPO_ROOT/scripts/hermes/kanban-owner-alerts.py" --install \
+    >"$fixture/compact-install.log" 2>&1
+}
+
+# The compact installer validates the head-coordinator's .env before it touches
+# anything, so the fixture must carry the same pairing the board installer
+# writes. Without it the run fails on a missing file and the assertions below
+# would pass against an uninstalled policy -- a green test for the wrong reason.
+compact_profile_env() {
+  printf 'SIMPLEX_WS_URL=ws://127.0.0.1:5225\nSIMPLEX_ALLOWED_USERS=7\nSIMPLEX_HOME_CHANNEL=7\n' \
+    >"$HERMES_FIXTURE/profiles/head-coordinator/.env"
+}
+
+# Assert no instruction that contradicts the compact policy survives. The manual
+# binder is what the compact policy supersedes, so its presence here is the
+# defect; the compact policy's own wording is what must remain.
+assert_no_competing_blocker_policy() {
+  local soul="$1" label="$2"
+  grep -q 'kanban-blocker-notify.sh' "$soul" &&
+    fail "$label still instructs the manual per-card binder: $(grep -n 'kanban-blocker-notify.sh' "$soul")"
+  grep -q 'Run it \*\*before\*\*' "$soul" &&
+    fail "$label still instructs binding before blocking: $(grep -n 'Run it' "$soul")"
+  grep -q '/kanban unblock <task-id>' "$soul" &&
+    fail "$label still instructs an unconditional unblock: $(grep -n 'kanban unblock' "$soul")"
+  grep -q 'subscribed this conversation' "$soul" && fail "$label carries a stale manual-subscription rule"
+  # The compact policy must still be there and still be the authority.
+  grep -q '<!-- kanban-owner-alerts -->' "$soul" ||
+    fail "$label lost the compact owner-alert policy: $(cat "$soul")"
+  grep -q 'Do not add manual SimpleX' "$soul" ||
+    fail "$label lost the compact policy's manual-subscription ban: $(cat "$soul")"
+  grep -q 'Before any labelled action, resolve' "$soul" ||
+    fail "$label lost the compact policy's resolve-before-acting rule: $(cat "$soul")"
+  grep -q 'implementer for the rejected change' "$soul" ||
+    fail "$label lost the compact policy's justified-unblock rule: $(cat "$soul")"
+  grep -q 'No reply itself authorises deployment' "$soul" ||
+    fail "$label lost the compact policy's deploy denial: $(cat "$soul")"
+}
+
+# Order A: the board wiring is applied first, so its section is installed, then
+# the compact installer runs and must replace the whole loop, not augment it.
+cat >"$COORDINATOR_SOUL" <<'SOUL'
+## Board health
+
+See scripts/hermes/kanban-board-health.sh.
+
+## Deploy gate
+
+nix run .#deploy
+SOUL
+mkdir -p "$HERMES_FIXTURE/cron"
+cat >"$HERMES_FIXTURE/cron/jobs.json" <<JSON
+{"jobs": [{"name": "kanban owner blocker alerts", "script": "kanban-owner-alerts.py",
+           "no_agent": true, "schedule": {"minutes": 1}}]}
+JSON
+board_first="$(run_installer 2>&1)"
+grep -qF "$GATE_HEADING" "$COORDINATOR_SOUL" ||
+  fail "the board installer did not install its section into a SOUL.md with no compact policy: $board_first"
+compact_profile_env
+run_compact_install ||
+  fail "the compact owner-alert installer failed against the fixture: $(cat "$fixture/compact-install.log")"
+# The compact installer appends its own section and replaces nothing else, so at
+# this point both policies are present. That is the state the review reproduced,
+# and the property under test is what the BOARD installer does about it next:
+# a re-apply must remove its own superseded section rather than leave it.
+grep -q '<!-- kanban-owner-alerts -->' "$COORDINATOR_SOUL" ||
+  fail "the compact policy was not installed: $(cat "$COORDINATOR_SOUL")"
+reapply="$(run_installer 2>&1)"
+grep -q 'removed the superseded blocker-gate section' <<<"$reapply" ||
+  fail "a board re-apply did not remove its superseded section: $reapply"
+assert_no_competing_blocker_policy "$COORDINATOR_SOUL" "board-then-compact-then-board"
+# The deploy safeguard the board installer checks for must survive.
+grep -q '## Deploy gate' "$COORDINATOR_SOUL" ||
+  fail "removing the superseded section dropped the deploy-gate section: $(cat "$COORDINATOR_SOUL")"
+grep -q '## Board health' "$COORDINATOR_SOUL" ||
+  fail "removing the superseded section dropped the board-health policy: $(cat "$COORDINATOR_SOUL")"
+pass "board-then-compact leaves one compact-only blocker policy and keeps the deploy gate"
+
+# Repeated applies in either order must not resurrect the superseded section.
+run_installer >/dev/null 2>&1
+run_installer >/dev/null 2>&1
+assert_no_competing_blocker_policy "$COORDINATOR_SOUL" "after a board reinstall"
+run_compact_install ||
+  fail "a second compact install failed: $(cat "$fixture/compact-install.log")"
+assert_no_competing_blocker_policy "$COORDINATOR_SOUL" "after a second compact install"
+grep -qF "$GATE_HEADING" "$COORDINATOR_SOUL" &&
+  fail "a re-run resurrected the superseded blocker-gate section"
+pass "repeated applies in either order keep one compact-only blocker policy"
+
+# A machine that ends up with both -- however it got there -- must be named by
+# --check and repaired by apply. Build that exact state by hand: append the
+# tracked section to a SOUL.md the compact policy already owns. This is the
+# state the review reproduced, and the un-repaired state is the defect.
+printf '\n' >>"$COORDINATOR_SOUL"
+cat "$TESTS_REPO_ROOT/scripts/hermes/head-coordinator-blocker-gate.md" >>"$COORDINATOR_SOUL"
+grep -qF "$GATE_HEADING" "$COORDINATOR_SOUL" ||
+  fail "the dual-policy fixture did not build"
+before="$(sha256sum <"$COORDINATOR_SOUL")"
+superseded_out="$(run_installer --check 2>&1)"
+after="$(sha256sum <"$COORDINATOR_SOUL")"
+[[ "$before" == "$after" ]] || fail "--check rewrote SOUL.md"
+grep -q 'carries the superseded' <<<"$superseded_out" ||
+  fail "--check did not report the superseded section next to the compact policy: $superseded_out"
+pass "--check reports the superseded section and changes nothing"
+
+# Apply removes it, and a later --check is then clean.
+run_installer >/dev/null 2>&1
+grep -qF "$GATE_HEADING" "$COORDINATOR_SOUL" &&
+  fail "apply did not remove the superseded section: $(grep -n -A3 'SimpleX' "$COORDINATOR_SOUL")"
+assert_no_competing_blocker_policy "$COORDINATOR_SOUL" "after the superseded section was removed"
+grep -qF '<!-- /kanban-owner-alerts -->' "$COORDINATOR_SOUL" ||
+  fail "removing the superseded section dropped the compact policy's closing marker: $(cat "$COORDINATOR_SOUL")"
+clean_after="$(run_installer --check 2>&1)"
+grep -qF 'served by the compact owner-alert policy' <<<"$clean_after" ||
+  fail "--check still reported blocker-gate drift after the compact policy took over: $clean_after"
+pass "apply removes the superseded section, keeping the compact policy intact"
+
+# Order B: the compact policy is installed first, so the board installer must
+# never install its section next to it in the first place.
+cat >"$COORDINATOR_SOUL" <<'SOUL'
+## Board health
+
+See scripts/hermes/kanban-board-health.sh.
+
+## Deploy gate
+
+nix run .#deploy
+SOUL
+compact_profile_env
+run_compact_install ||
+  fail "the compact installer failed on a fresh SOUL.md: $(cat "$fixture/compact-install.log")"
+compact_first="$(run_installer 2>&1)"
+grep -qF "$GATE_HEADING" "$COORDINATOR_SOUL" &&
+  fail "compact-then-board installed a competing blocker-gate section: $(grep -n -A3 'SimpleX' "$COORDINATOR_SOUL")"
+assert_no_competing_blocker_policy "$COORDINATOR_SOUL" "compact-then-board"
+grep -q 'appended the blocker-gate section' <<<"$compact_first" &&
+  fail "the board installer claimed to install the blocker-gate section next to the compact policy: $compact_first"
+pass "compact-then-board installs no separate blocker-gate section"
+
+# ...and a compact-then-board machine reports clean, not drift, forever.
+compact_then_board_check="$(run_installer --check 2>&1)"
+grep -q 'is missing or has drifted' <<<"$compact_then_board_check" &&
+  fail "a compact-served SOUL.md was reported as blocker-gate drift: $compact_then_board_check"
+pass "a compact-served SOUL.md reports no blocker-gate drift"
+
+# Unrelated SOUL content survives both orders: this is a live profile document.
+grep -q '## Board health' "$COORDINATOR_SOUL" ||
+  fail "the board-health policy was lost: $(cat "$COORDINATOR_SOUL")"
+grep -q '## Deploy gate' "$COORDINATOR_SOUL" ||
+  fail "the deploy-gate section was lost: $(cat "$COORDINATOR_SOUL")"
+pass "unrelated SOUL.md sections survive both installer orders"
+
 echo "▶ hermes board wiring installer: all checks passed"

@@ -29,12 +29,15 @@
 # cannot be regenerated if lost.
 #
 # It also installs the blocker-gate policy into the head-coordinator's SOUL.md,
-# from scripts/hermes/head-coordinator-blocker-gate.md. A notification
-# subscription in hermes is per card, so a gate nobody bound notifies nobody and
-# the card sits in `blocked` -- a column nothing dispatches -- in silence. That
-# policy is prose rather than code, but it is prose an agent reads at the exact
-# moment it needs it, so it is tracked here and replaced on every run instead of
-# living only in a script header.
+# from scripts/hermes/head-coordinator-blocker-gate.md, but only while the
+# compact owner-alert policy from scripts/hermes/kanban-owner-alerts.py is not
+# already installed there. That sender owns blocker delivery end to end, so a
+# second, separately maintained section in the same file is the conflict a
+# review reproduced in the composed line: two policies side by side, one of them
+# instructing the manual per-card binding the compact policy supersedes. So an
+# existing superseded section is removed rather than left to drift, and the
+# manual binder is never installed as required wiring or advertised in the
+# closing verification notes.
 #
 # What it does *not* do is repair an existing cron job. Presence is detected by
 # name, so a job that exists with the wrong schedule, script or workdir is
@@ -140,8 +143,7 @@ fi
 for dest_dir in "${install_targets[@]}"; do
   mkdir -p "$dest_dir"
   rel="${dest_dir#"$HERMES_ROOT/"}"
-  for script in kanban-board-health.sh kanban-durability-sync.sh kanban-retry-breaker.sh \
-               kanban-blocker-notify.sh; do
+  for script in kanban-board-health.sh kanban-durability-sync.sh kanban-retry-breaker.sh; do
     src="$REPO_ROOT/scripts/hermes/$script"
     dest="$dest_dir/$script"
     [[ -f "$src" ]] || { note "  MISSING SOURCE: $src"; drift=$((drift + 1)); continue; }
@@ -381,21 +383,71 @@ fi
 # 3c. Blocker delivery over SimpleX, and reply-to-unblock
 # ---------------------------------------------------------------------------
 #
-# A gate the head-coordinator blocks on is only a question until the owner is
-# told, and a notification subscription in hermes is PER CARD -- there is no
-# board-wide binding. So a head-coordinator that blocks without binding produces
-# a silently stuck card, which is the same class of fault as the deploy-gate
-# sections above: policy the lane must follow, that nothing re-establishes after
-# a profile reset.
+# The compact owner-alert sender (scripts/hermes/kanban-owner-alerts.py) owns
+# blocker delivery end to end: it reads every board each minute, sends the
+# labelled decision and technical entries to the authenticated owner channel,
+# and installs its own reply policy into this same SOUL.md. A second, separately
+# maintained blocker-gate section in the same file contradicts it -- the review
+# that rejected the composed line reproduced exactly that, and the manual
+# per-card binding it instructed is superseded, not complementary.
 #
-# Unlike the deploy-gate sections, this one IS prose in a tracked file, so it is
-# installed rather than only checked. Otherwise the whole loop would live only in
-# this script's header, which no agent reads at the moment it needs to block.
-# Editing the section is the supported way to change the wording: re-run this
-# installer and the local SOUL.md copy is replaced.
+# So this section is installed only where the compact policy is not already
+# installed, and it is REMOVED from a SOUL.md that has since gained the compact
+# policy. Both halves matter: installing it next to the compact sender gives the
+# lane two instructions for one loop, and leaving a stale section behind after
+# the compact policy arrives leaves the superseded manual-bind instructions in
+# force -- which is what a reinstall of the old wiring did.
+#
+# Removing is a plain section delete, not a rewrite of SOUL.md. The tracked file
+# is still emitted verbatim on the installing path, so the check below remains a
+# real byte comparison rather than a shape match, and the deploy-gate and
+# board-health checks above still own their own sections.
 
 GATE_SECTION_HEADING='## Blocker delivery and reply-to-unblock (SimpleX)'
 GATE_SECTION_SRC="$REPO_ROOT/scripts/hermes/head-coordinator-blocker-gate.md"
+# The compact policy's own opener, which kanban-owner-alerts.py writes around
+# its section. Matched, not duplicated: that script owns its own wording.
+COMPACT_POLICY_MARKER='<!-- kanban-owner-alerts -->'
+
+gate_has_section() {
+  local soul="$1"
+  [[ -f "$soul" ]] && grep -qF -- "$GATE_SECTION_HEADING" "$soul"
+}
+
+soul_has_compact_policy() {
+  local soul="$1"
+  [[ -f "$soul" ]] && grep -qF -- "$COMPACT_POLICY_MARKER" "$soul"
+}
+
+# The tracked section's body, extracted the way the installer installs it.
+# `found` swallows every line up to the next `## ` heading, so a drifted section
+# and a tracked one differ, and neither is mistaken for a shape match.
+extract_gate_section() {
+  local heading="$1" soul="$2"
+  awk -v heading="$heading" '
+    $0 == heading { found = 1; print; next }
+    found && /^## / { exit }
+    found { print }
+  ' "$soul"
+}
+
+# Delete one section from a file, leaving every other byte in place. Written to
+# $1 and installed back only when the removal actually happened, so a section
+# that was not there is reported rather than silently "cleaned".
+#
+# The scan stops at the next `## ` heading OR at the compact policy's own marker,
+# because the marker sits on its own line immediately above the compact section
+# and is not itself a heading. Without the second stop the marker is swallowed
+# with the removed section, and the compact installer then no longer recognises
+# its own block -- it would re-append a second copy and the two would drift.
+remove_section_from_soul() {
+  local heading="$1" soul="$2" dest="$3"
+  awk -v heading="$heading" -v marker="$COMPACT_POLICY_MARKER" '
+    $0 == heading { found = 1; next }
+    found && (/^## / || $0 == marker) { found = 0 }
+    !found { print }
+  ' "$soul" >"$dest"
+}
 
 if [[ ! -f "$GATE_SECTION_SRC" ]]; then
   note "  MISSING SOURCE: $GATE_SECTION_SRC"
@@ -403,42 +455,67 @@ if [[ ! -f "$GATE_SECTION_SRC" ]]; then
 elif [[ ! -f "$COORDINATOR_SOUL" ]]; then
   note "  MISSING: $COORDINATOR_SOUL"
   drift=$((drift + 1))
-elif grep -qF "$GATE_SECTION_HEADING" "$COORDINATOR_SOUL" &&
-     awk -v heading="$GATE_SECTION_HEADING" '
-       $0 == heading { found = 1; print; next }
-       found && /^## / { exit }
-       found { print }
-     ' "$COORDINATOR_SOUL" | cmp -s - "$GATE_SECTION_SRC"; then
-  ok "head-coordinator SOUL.md carries the blocker-gate section as tracked"
-elif [[ "$check_only" == true ]]; then
-  changed "head-coordinator SOUL.md is missing or has drifted from the '$GATE_SECTION_HEADING' section"
 else
-  # Replace the section in place. Awk rewrites the file only when the section is
-  # actually there to replace; a missing one is appended instead of duplicating,
-  # so re-running can never leave two copies that drift apart.
-  #
-  # The tracked file carries its own heading and is emitted verbatim, so the
-  # section in SOUL.md is byte-identical to the file and the check above is a
-  # real comparison rather than a shape match.
-  tmp_soul="$(mktemp)"
-  if awk -v heading="$GATE_SECTION_HEADING" -v src="$GATE_SECTION_SRC" '
-        $0 == heading {
-          found = 1
-          while ((getline line < src) > 0) print line
-          close(src)
-          next
-        }
-        found && /^## / { found = 0 }
-        !found { print }
-      ' "$COORDINATOR_SOUL" >"$tmp_soul" && grep -qF "$GATE_SECTION_HEADING" "$tmp_soul"; then
-    install -m 0644 "$tmp_soul" "$COORDINATOR_SOUL"
-    changed "replaced the blocker-gate section in head-coordinator SOUL.md"
+  have_gate=0; gate_has_section "$COORDINATOR_SOUL" && have_gate=1
+  have_compact=0; soul_has_compact_policy "$COORDINATOR_SOUL" && have_compact=1
+
+  if ((have_compact && have_gate)); then
+    # The compact policy owns the loop, so this section competes with it. It is
+    # removed on the apply path and named on --check: the review that rejected
+    # the composed line reproduced both policies side by side, one of them
+    # instructing the per-card binding the sender supersedes.
+    if [[ "$check_only" == true ]]; then
+      changed "head-coordinator SOUL.md carries the superseded '$GATE_SECTION_HEADING' section next to the compact owner-alert policy; a re-run removes it"
+    else
+      tmp_soul="$(mktemp)"
+      remove_section_from_soul "$GATE_SECTION_HEADING" "$COORDINATOR_SOUL" "$tmp_soul"
+      if gate_has_section "$tmp_soul"; then
+        note "  ACTION: remove the superseded '$GATE_SECTION_HEADING' section from $COORDINATOR_SOUL by hand."
+        note "  It contradicts the compact owner-alert policy already installed there."
+        note "  Two blocker-delivery policies in one SOUL.md is the conflict this installer exists to prevent."
+        drift=$((drift + 1))
+      else
+        install -m 0644 "$tmp_soul" "$COORDINATOR_SOUL"
+        changed "removed the superseded blocker-gate section from head-coordinator SOUL.md; the compact owner-alert policy owns the loop"
+      fi
+      rm -f "$tmp_soul"
+    fi
+  elif ((have_compact)); then
+    ok "head-coordinator SOUL.md is served by the compact owner-alert policy; no separate blocker-gate section"
+  elif ((have_gate)) &&
+       [[ $(extract_gate_section "$GATE_SECTION_HEADING" "$COORDINATOR_SOUL" |
+             cmp -s - "$GATE_SECTION_SRC"; echo $?) == 0 ]]; then
+    ok "head-coordinator SOUL.md carries the blocker-gate section as tracked"
+  elif [[ "$check_only" == true ]]; then
+    changed "head-coordinator SOUL.md is missing or has drifted from the '$GATE_SECTION_HEADING' section"
   else
-    printf '\n' >>"$COORDINATOR_SOUL"
-    cat "$GATE_SECTION_SRC" >>"$COORDINATOR_SOUL"
-    changed "appended the blocker-gate section to head-coordinator SOUL.md"
+    # Replace the section in place. Awk rewrites the file only when the section
+    # is actually there to replace; a missing one is appended instead of
+    # duplicating, so re-running can never leave two copies that drift apart.
+    #
+    # The tracked file carries its own heading and is emitted verbatim, so the
+    # section in SOUL.md is byte-identical to the file and the check above is a
+    # real comparison rather than a shape match.
+    tmp_soul="$(mktemp)"
+    if awk -v heading="$GATE_SECTION_HEADING" -v src="$GATE_SECTION_SRC" '
+          $0 == heading {
+            found = 1
+            while ((getline line < src) > 0) print line
+            close(src)
+            next
+          }
+          found && /^## / { found = 0 }
+          !found { print }
+        ' "$COORDINATOR_SOUL" >"$tmp_soul" && grep -qF "$GATE_SECTION_HEADING" "$tmp_soul"; then
+      install -m 0644 "$tmp_soul" "$COORDINATOR_SOUL"
+      changed "replaced the blocker-gate section in head-coordinator SOUL.md"
+    else
+      printf '\n' >>"$COORDINATOR_SOUL"
+      cat "$GATE_SECTION_SRC" >>"$COORDINATOR_SOUL"
+      changed "appended the blocker-gate section to head-coordinator SOUL.md"
+    fi
+    rm -f "$tmp_soul"
   fi
-  rm -f "$tmp_soul"
 fi
 
 # ---------------------------------------------------------------------------
@@ -892,5 +969,5 @@ note "wiring applied ($drift item(s) changed)"
 note "verify detection:   $REPO_ROOT/scripts/hermes/kanban-board-health.sh"
 note "verify breaker:     $REPO_ROOT/scripts/hermes/kanban-retry-breaker.sh --check"
 note "verify durability:  $REPO_ROOT/scripts/hermes/kanban-durability-sync.sh --check"
-note "verify blocker bind: $REPO_ROOT/scripts/hermes/kanban-blocker-notify.sh --check --all"
+note "verify owner alerts: $REPO_ROOT/scripts/hermes/kanban-owner-alerts.py --details blockers"
 exit 0

@@ -371,6 +371,12 @@ pass "a subscription on another platform does not count"
 # A SimpleX reply is an operator comment plus an unblock. It is not, and cannot
 # be, approval to deploy: the deploy gate is the authority for that, and a reply
 # that reads like "go ahead and deploy" is still only the gate's question answered.
+#
+# The section is compact-only: the no-agent owner-alert sender owns blocker
+# delivery, so the section must NOT reintroduce a manual per-card subscription
+# or a bind-before-block ordering. That superseded policy is the conflict this
+# section exists to avoid, and a lane told to bind each card would duplicate the
+# sender on the same authenticated channel.
 
 gate_md="$(cat "$GATE_SRC")"
 grep -qi 'unblock' <<<"$gate_md" ||
@@ -383,13 +389,15 @@ grep -q 'SIMPLEX_GROUP_ALLOWED' <<<"$gate_md" ||
   fail "the gate section does not record that group traffic stays ignored"
 grep -q 'SIMPLEX_ALLOW_ALL_USERS' <<<"$gate_md" ||
   fail "the gate section does not record that the open-bot switch stays off"
-# Subscribe-before-block is the ordering the lane gets wrong otherwise: a
-# subscription created after the block still notifies, but the agent must know
-# there is no board-wide binding it can rely on.
-grep -qi 'per card' <<<"$gate_md" ||
-  fail "the gate section does not say a subscription is per card"
-grep -qi 'before' <<<"$gate_md" ||
-  fail "the gate section does not state the bind-before-block order"
+# The compact sender owns delivery: no manual subscription and no per-card bind
+# order. Asserting the absence keeps the superseded policy from creeping back in.
+grep -qi 'kanban owner blocker alerts' <<<"$gate_md" ||
+  fail "the gate section does not name the compact sender that owns delivery"
+grep -qi 'manual' <<<"$gate_md" ||
+  fail "the gate section does not say manual subscriptions are superseded"
+if grep -qi 'per card' <<<"$gate_md"; then
+  fail "the gate section still says a subscription is per card (superseded manual bind)"
+fi
 pass "the gate section states the reply loop, the deploy denial and the switches"
 
 # --- the section must survive a profile reset ------------------------------
