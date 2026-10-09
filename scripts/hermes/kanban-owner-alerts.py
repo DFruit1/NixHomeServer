@@ -3,6 +3,14 @@
 
 This is operations glue, not a new backend or dependency. No board mutation,
 approval, subscription or unblock is performed by the unattended job.
+
+The delivery contract is deliberately narrow. The owner's phone receives one
+class of message unprompted: a blocked card whose body carries a standalone
+`Urgency: security` or `Urgency: regression` line, meaning progress has actually
+stopped and needs the owner now. Every other blocked card -- decisions awaiting
+input, missing evidence, worker/model failures, dependency waits, routine
+operator cleanups -- is not pushed; it stays on the board and is pulled on demand
+with `--details`, `--resolve`, `--send-blockers` or `--send-decisions`.
 """
 import argparse
 from collections import Counter
@@ -23,7 +31,6 @@ PROFILE = 'head-coordinator'
 JOB = 'kanban owner blocker alerts'
 MARKER = '<!-- kanban-owner-alerts -->'
 END_MARKER = '<!-- /kanban-owner-alerts -->'
-SUMMARY_INTERVAL = 3600
 MESSAGE_LIMIT = 1600
 
 
@@ -142,11 +149,18 @@ def resolve(root, label):
     decision = records[label]
     tasks = snapshot(root / 'kanban/boards' / decision['board'] / 'board.json', decision['task_id'])
     current = tasks[0] if tasks else None
+    # A decision is answerable whenever the ask is still live and unchanged: the
+    # owner is authenticated and reaches decisions from the board, so an
+    # undelivered label is the normal case rather than a staleness signal. A
+    # technical label still needs evidence the owner actually saw that card,
+    # because recovery instructions there are authority to unblock.
     return {'label': label, **decision, 'kind': 'technical' if technical else 'decision', 'current': current,
             'can_reply': bool(current and current['status'] == 'blocked'
-                              and ((current['block_kind'] != 'needs_input') if technical else
-                                   (current['block_kind'] == 'needs_input' and token(current) == decision['token']))
-                              and target_config(root) in decision['delivered'])}
+                              and ((current['block_kind'] != 'needs_input'
+                                    and target_config(root) in decision['delivered'])
+                                   if technical else
+                                   (current['block_kind'] == 'needs_input'
+                                    and token(current) == decision['token'])))}
 
 
 def details(root, label):
@@ -230,22 +244,89 @@ def technical_text(label, board, task):
     return f'{label} · {board}\n' + ' '.join(task['title'].split())[:80] + '\nBlocked: ' + causes[technical_category(task)]
 
 
+def batches_for(shown, order, heading=0):
+    """Split a label sequence into messages that fit a phone screen."""
+    batches, batch, size = [], [], heading
+    for label in order:
+        if batch and size + len(shown[label]) + 2 > MESSAGE_LIMIT - 120:
+            batches.append(batch)
+            batch, size = [], heading
+        batch.append(label)
+        size += len(shown[label]) + 2
+    if batch:
+        batches.append(batch)
+    return batches
+
+
+def decision_messages(labels, state):
+    """Batch the current decision set, used only for an explicit owner request."""
+    order = [labels[key] for key in sorted(labels)]
+    shown = {label: state['decisions'][label]['shown'] for label in order}
+    heading = 'Decision inbox\n'
+    # An empty set answers the request rather than staying silent: the owner
+    # asked, so "nothing waiting" is the reply.
+    batches = batches_for(shown, order, len(heading)) or [[]]
+    return [(heading + '\n' + '\n\n'.join(shown[label] for label in batch)
+             + (f'\n\nReply: {batch[0]} <choice or answer>. Details: {batch[0]} details'
+                if batch else '\nNo decisions are waiting.'), batch)
+            for batch in batches]
+
+
 def technical_messages(tasks, labels, state):
     heading = technical_summary(tasks)
-    batches, batch = [], []
-    for board, task in tasks:
-        label = labels[(board, task['id'])]
-        if batch and len(heading) + sum(len(state['blockers'][v]['shown']) + 2 for v in batch + [label]) > MESSAGE_LIMIT - 120:
-            batches.append(batch)
-            batch = []
-        batch.append(label)
-    batches.append(batch)  # Also emit a short all-clear when the list becomes empty.
-    return [(heading + '\n\n' + '\n\n'.join(state['blockers'][v]['shown'] for v in batch)
+    order = [labels[(board, task['id'])] for board, task in tasks]
+    shown = {label: state['blockers'][label]['shown'] for label in order}
+    # Also emit a short all-clear when the list becomes empty.
+    batches = batches_for(shown, order, len(heading)) or [[]]
+    return [(heading + '\n\n' + '\n\n'.join(shown[label] for label in batch)
              + (f'\n\nReply: {batch[0]} <recovery instructions>. Details: {batch[0]} details' if batch else '\nNo technical blockers remain.'), batch)
             for batch in batches]
 
 
-def tick(root, dry_run=False, now=None, force_blockers=False):
+def collect(root, state, errors):
+    """Read every active board and refresh labels and their snapshots.
+
+    Read-only against the boards; only the local inbox state changes. Returns
+    the technical cards, their labels, the decision labels and whether any board
+    could not be read, because a partial read must never be delivered as a
+    complete answer.
+    """
+    technical, technical_labels, decision_labels = [], {}, {}
+    snapshot_failed = False
+    for board in sorted((root / 'kanban/boards').glob('*/board.json')):
+        if board.parent.name.startswith('_'):
+            continue
+        try:
+            for task in snapshot(board):
+                if task['block_kind'] != 'needs_input':
+                    technical.append((board.parent.name, task))
+                    label = next((label for label, record in state['blockers'].items()
+                                  if (record['board'], record['task_id']) == (board.parent.name, task['id'])), None)
+                    if label is None:
+                        label = f'B{state["next_blocker"]}'
+                        state['next_blocker'] += 1
+                        state['blockers'][label] = {'board': board.parent.name, 'task_id': task['id'],
+                                                   'compact_complete': False, 'delivered': []}
+                    state['blockers'][label].update(token=token(task), shown=technical_text(label, board.parent.name, task))
+                    technical_labels[(board.parent.name, task['id'])] = label
+                    continue
+                revision = token(task)
+                label = next((label for label, d in state['decisions'].items()
+                              if (d['board'], d['task_id'], d['token']) == (board.parent.name, task['id'], revision)), None)
+                if label is None:
+                    label = f'D{state["next_label"]}'
+                    state['next_label'] += 1
+                    shown, complete = decision_text(label, board.parent.name, task)
+                    state['decisions'][label] = {'board': board.parent.name, 'task_id': task['id'],
+                        'token': revision, 'shown': shown, 'compact_complete': complete, 'delivered': []}
+                decision_labels[(board.parent.name, task['id'])] = label
+        except (ValueError, OSError, sqlite3.Error) as exc:
+            errors.append(f'{board.parent.name}: {exc}')
+            snapshot_failed = True
+    return technical, technical_labels, decision_labels, snapshot_failed
+
+
+def tick(root, dry_run=False, now=None, force_blockers=False, force_decisions=False):
     target = target_config(root)
     if not dry_run and (os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT') or os.environ.get('HERMES_KANBAN_TASK')):
         raise PermissionError('Owner alerts run only from the operator or no-agent cron')
@@ -253,7 +334,6 @@ def tick(root, dry_run=False, now=None, force_blockers=False):
     if not dry_run:
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     errors = []
-    snapshot_failed = False
     now = time.time() if now is None else now
     # Preview creates neither a state directory nor a lock file.
     with ((directory / '.lock').open('a') if not dry_run else nullcontext()) as lock:
@@ -261,40 +341,8 @@ def tick(root, dry_run=False, now=None, force_blockers=False):
             fcntl.flock(lock, fcntl.LOCK_EX)
         path = directory / 'inbox.json'
         state = load_inbox(root)
-        pending, technical = [], []
-        technical_labels = {}
         delivery = state['delivery'].setdefault(target, {'technical_token': '', 'technical_at': None, 'urgent': {}})
-        for board in sorted((root / 'kanban/boards').glob('*/board.json')):
-            if board.parent.name.startswith('_'):
-                continue
-            try:
-                for task in snapshot(board):
-                    if task['block_kind'] != 'needs_input':
-                        technical.append((board.parent.name, task))
-                        label = next((label for label, record in state['blockers'].items()
-                                      if (record['board'], record['task_id']) == (board.parent.name, task['id'])), None)
-                        if label is None:
-                            label = f'B{state["next_blocker"]}'
-                            state['next_blocker'] += 1
-                            state['blockers'][label] = {'board': board.parent.name, 'task_id': task['id'],
-                                                       'compact_complete': False, 'delivered': []}
-                        state['blockers'][label].update(token=token(task), shown=technical_text(label, board.parent.name, task))
-                        technical_labels[(board.parent.name, task['id'])] = label
-                        continue
-                    revision = token(task)
-                    label = next((label for label, d in state['decisions'].items()
-                                  if (d['board'], d['task_id'], d['token']) == (board.parent.name, task['id'], revision)), None)
-                    if label is None:
-                        label = f'D{state["next_label"]}'
-                        state['next_label'] += 1
-                        shown, complete = decision_text(label, board.parent.name, task)
-                        state['decisions'][label] = {'board': board.parent.name, 'task_id': task['id'],
-                            'token': revision, 'shown': shown, 'compact_complete': complete, 'delivered': []}
-                    if target not in state['decisions'][label]['delivered']:
-                        pending.append(label)
-            except (ValueError, OSError, sqlite3.Error) as exc:
-                errors.append(f'{board.parent.name}: {exc}')
-                snapshot_failed = True
+        technical, technical_labels, decision_labels, snapshot_failed = collect(root, state, errors)
         if not dry_run:
             save(path, state)  # Labels survive a failed send or a process restart.
 
@@ -309,22 +357,19 @@ def tick(root, dry_run=False, now=None, force_blockers=False):
                 errors.append(f'Delivery: {exc}')
                 return False
 
-        # Bound each decision inbox while batching independent questions.
-        batches, batch = [], []
-        for label in pending:
-            if batch and sum(len(state['decisions'][v]['shown']) + 2 for v in batch + [label]) > MESSAGE_LIMIT - 120:
-                batches.append(batch)
-                batch = []
-            batch.append(label)
-        if batch:
-            batches.append(batch)
-        for batch in batches:
-            text = 'Decision inbox\n\n' + '\n\n'.join(state['decisions'][v]['shown'] for v in batch)
-            text += f'\n\nReply: {batch[0]} <choice or answer>. Details: {batch[0]} details'
-            if deliver(text) and not dry_run:
-                for label in batch:
-                    state['decisions'][label]['delivered'].append(target)
+        def delivered(records, labels):
+            if not dry_run:
+                for label in labels:
+                    if target not in records[label]['delivered']:
+                        records[label]['delivered'].append(target)
                 save(path, state)
+
+        # Only a card whose body carries a standalone `Urgency:` line reaches the
+        # owner unprompted. Decisions, missing evidence, worker/model failures,
+        # dependencies and operator cleanups stay on the board: they are cleared
+        # at the owner's pace, so pushing them is noise the owner asked not to
+        # receive. They remain fully readable through --details, --resolve, the
+        # board itself, and the explicit pulls below.
         for board, task in technical:
             urgency = re.search(r'^Urgency:\s*(security|regression)\s*$', task['body'] or '', re.M | re.I)
             if not urgency:
@@ -339,23 +384,23 @@ def tick(root, dry_run=False, now=None, force_blockers=False):
                     if target not in state['blockers'][label]['delivered']:
                         state['blockers'][label]['delivered'].append(target)
                     save(path, state)
-        # Retry churn does not change the technical fingerprint. Changed sets
-        # wait at most an hour; unchanged sets never generate reminders.
-        summary_token = token([(board, t['id'], state['blockers'][technical_labels[(board, t['id'])]]['shown']) for board, t in technical])
-        upgrade = delivery.get('technical_format', 0) < 2
-        if (not snapshot_failed and (force_blockers or upgrade or summary_token != delivery['technical_token'])
-                and (technical or delivery['technical_token'] or force_blockers)
-                and (force_blockers or upgrade or delivery['technical_at'] is None or now - delivery['technical_at'] >= SUMMARY_INTERVAL)):
+
+        # Explicit pulls. A failed board read omits cards, so an incomplete list
+        # is never sent as if it were the whole board.
+        if force_decisions and not snapshot_failed:
+            for text, batch in decision_messages(decision_labels, state):
+                if not deliver(text):
+                    continue
+                if batch:
+                    delivered(state['decisions'], batch)
+        if force_blockers and not snapshot_failed:
             complete = True
+            summary_token = token([(board, t['id'], state['blockers'][technical_labels[(board, t['id'])]]['shown']) for board, t in technical])
             for text, batch in technical_messages(technical, technical_labels, state):
                 if not deliver(text):
                     complete = False
                     continue
-                if not dry_run:
-                    for label in batch:
-                        if target not in state['blockers'][label]['delivered']:
-                            state['blockers'][label]['delivered'].append(target)
-                    save(path, state)
+                delivered(state['blockers'], batch)
             if complete and not dry_run:
                 delivery.update(technical_token=summary_token, technical_at=now, technical_format=2)
                 save(path, state)
@@ -412,6 +457,7 @@ if __name__ == '__main__':
     actions.add_argument('--dry-run', action='store_true')
     actions.add_argument('--install', action='store_true')
     actions.add_argument('--send-blockers', action='store_true', help='Send the current compact technical list now')
+    actions.add_argument('--send-decisions', action='store_true', help='Send the current decision questions now')
     actions.add_argument('--resolve', metavar='D1|B1', help='Read exact label mapping and current validity as JSON')
     actions.add_argument('--details', metavar='D1|B1|blockers|board:card', help='Read requested diagnostics without sending or mutating')
     args = parser.parse_args()
@@ -424,7 +470,8 @@ if __name__ == '__main__':
         elif args.install:
             install(root)
         else:
-            tick(root, args.dry_run, force_blockers=args.send_blockers)
+            tick(root, args.dry_run, force_blockers=args.send_blockers,
+                 force_decisions=args.send_decisions)
     except (ValueError, OSError, RuntimeError, sqlite3.Error, subprocess.SubprocessError) as exc:
         print(f'owner alerts: {exc}', file=sys.stderr)
         sys.exit(2)
