@@ -26,6 +26,10 @@
 # (scripts/helpers/repo-common.sh) refuses to stage a deploy.
 /.worktrees/
 
+# Agent scratch space. Temporary files for a task live under .tmp/<task>/ so
+# deploy archive staging never sees them and cleanup is a targeted rm -rf.
+/.tmp/
+
 # impeccable-ignore-start
 # Ephemeral output, runtime state, and per-dev overrides (unanchored on purpose).
 # Shared artifacts stay tracked: .impeccable/config.json, .impeccable/design.json,

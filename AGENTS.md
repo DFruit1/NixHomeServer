@@ -21,6 +21,27 @@ This repository defines a reproducible NixOS home-server focused on:
 
 ---
 
+## Temp Files and Scratch Space
+
+* Put every temporary file (scratch, logs, dumps, fixtures, downloads) in a
+  dedicated temp directory. Never scatter files at the repo root, inside
+  `modules/`, inside an app tree, or in `$HOME`.
+* In the OS: one `mktemp -d` directory per task, with a task-named prefix and
+  an `EXIT` trap, for example
+  `scratch="$(mktemp -d /tmp/nixhomeserver-<task>.XXXXXX)"; trap 'rm -rf "$scratch"' EXIT`.
+* In the repo, only when a file must live in the working tree: put it under
+  `.tmp/<task>/...`. The directory is gitignored, so rebuilds and deploy archive
+  staging never see it.
+* Name the directory after the task so cleanup is targeted:
+  `rm -rf .tmp/<task>` or `rm -rf /tmp/nixhomeserver-*`, never a hunt.
+* Delete the temp directory when the task finishes, whether it succeeded or
+  failed.
+* Never write plaintext secrets into a temp directory. Follow the `secrets/`
+  rules: encrypted `.age` only, and never read or print
+  `secrets/unencrypted/`.
+
+---
+
 ## Git Tracking and Committing
 
 * Ensure all new git files (except for those in .gitignore) are tracked as soon as they are created to avoid visibility issues during nix rebuilds
