@@ -19,6 +19,11 @@ verification commands, file ownership and integration/dependency order.
 Place the absolute plan path on the parent handoff; children reference that
 parent rather than duplicating the specification. Do not re-derive or silently
 widen the plan. Route contradictions or missing evidence back to project-auditor.
+Before decomposing, confirm the handoff records the plan's approval
+classification and, when any approval rule fired, the helper's `classify`
+evidence plus the owner decision. A plan citing "Approval: automatic" without a
+recorded classify run, or citing scope the decision does not cover, goes back to
+`project-auditor`; you cannot approve on the owner's behalf.
 
 The handoff must not finish merely because children were created. Create the
 implementation, review and final composition/verification children, then use

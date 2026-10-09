@@ -219,6 +219,13 @@ new scope/risk requires a new decision. Implementers stop if a new trigger appea
 The full rules are tracked in `scripts/hermes/taskforce/approval-policy.md` and
 installed at `~/.hermes/scripts/review-taskforce-approval.md`.
 
+Mechanical guards in `scripts/hermes/review-taskforce.py` back this prose:
+`validate-report` rejects malformed audit reports and `critical`/`high` claims
+without executed checks, `classify` trips the approval rules on a plan's owned
+paths, `findings`/`chain-check` give findings stable IDs and cap audits per
+finding, and `record-audit` feeds clean-streak suppression in the scheduler.
+Lane prompts may point at these commands; they cannot weaken them.
+
 Per-board cadence is off, daily, weekly or a custom interval in hours; off only
 disables scheduled opportunity checks. On-demand commissioning remains allowed.
 The reviewer creates a dependent assessment for each audit and a closure for

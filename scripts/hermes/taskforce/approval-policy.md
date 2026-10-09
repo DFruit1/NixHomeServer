@@ -26,6 +26,15 @@ owner's explicit approval BEFORE implementation cards become dispatchable:
 
 `project-auditor` classifies each plan. It states either `Approval: automatic`
 with a concrete reason or `Approval: required` with the exact trigger(s).
+Before classifying, run the tripwire on the plan's owned paths and record its
+output in FINDINGS.md beside the plan:
+
+```
+python3 ~/.hermes/scripts/review-taskforce.py --board <slug> classify <owned paths...>
+```
+
+A hit is not a verdict: it requires the plan to either cite an existing explicit
+approval covering this exact scope, or state why the fired rule does not apply.
 An existing explicit approval is sufficient only when its recorded scope covers
 this exact proposal. Quote/link that decision in the plan; do not ask again.
 New scope or a materially changed risk requires a new decision.
@@ -41,8 +50,9 @@ On approval, record the decision and forward the approved plan to
 `head-coordinator`. On rejection, retain the finding and verdict without
 implementation. A revision needing approval gets a new plan and gate.
 
-`head-coordinator` checks the approval classification and evidence before
-creating implementation cards. It returns an unapproved gated plan to the
-reviewer and keeps its handoff blocked; it cannot approve on the owner's behalf.
-Implementers preserve approved scope and stop on newly discovered gate triggers.
-The reviewer retains plan/gate IDs and approvals in FINDINGS.md.
+`head-coordinator` checks the approval classification and its `classify`
+evidence before creating implementation cards. It returns an unapproved gated
+plan to the reviewer and keeps its handoff blocked; it cannot approve on the
+owner's behalf. Implementers preserve approved scope and stop on newly
+discovered gate triggers. The reviewer retains plan/gate IDs, approvals and
+classify evidence in FINDINGS.md.

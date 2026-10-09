@@ -179,6 +179,144 @@ class TaskforceTest(unittest.TestCase):
                 tf.tick(self.root, self.now)
         self.assertTrue(any(c[0] == 'weekly' and c[1][0] == 'create' for c in self.calls))
 
+    def good_report(self, **overrides):
+        report = {
+            'slice': 'homepage canary', 'question': 'Does an interrupted run certify a pass?',
+            'scope_paths': ['modules/Core_Modules/homepage/canary.nix'],
+            'revision': 'a' * 40, 'outcome': 'findings', 'priority_served': 'P3',
+            'findings': [{
+                'file': 'modules/Core_Modules/homepage/canary.nix', 'line': 78,
+                'severity': 'medium', 'axis': 'correctness',
+                'evidence': 'assert reads latest.json only', 'suggested_fix': 'invalidate',
+                'benefit': 'no stale pass', 'tradeoffs': 'state model work',
+                'verification': 'bash scripts/tests/test-canary-render-check.sh', 'confidence': 'verified',
+            }],
+            'checked_and_clean': ['trigger exit-75 overlap guard'],
+            'unknowns': ['systemd stop ordering'],
+            'checks': [{'command': 'true', 'exit_code': 0}],
+        }
+        report.update(overrides)
+        return report
+
+    def test_validate_report_accepts_and_rejects(self):
+        self.assertEqual([], tf.validate_report(self.good_report()))
+        self.assertIn('revision must be a non-empty string', tf.validate_report(self.good_report(revision=None)))
+        self.assertIn('outcome must be one of', tf.validate_report(self.good_report(outcome='audit'))[0])
+        findings = self.good_report()['findings'][0]
+        findings['severity'] = 'high'
+        self.assertTrue(any('severity high requires an executed check' in v
+                            for v in tf.validate_report(self.good_report(findings=[findings], checks=[]))))
+        findings['confidence'] = 'inferred'
+        self.assertIn('findings[0] severity high requires confidence verified',
+                      tf.validate_report(self.good_report(findings=[findings])))
+        self.assertTrue(any('scope_paths entry is not project-relative' in v
+                            for v in tf.validate_report(self.good_report(scope_paths=['/etc/passwd']))))
+        self.assertIn('outcome findings requires at least one finding',
+                      tf.validate_report(self.good_report(findings=[])))
+        self.assertTrue(any('checks[0] needs an integer exit_code' in v
+                            for v in tf.validate_report(self.good_report(checks=[{'command': 'true'}]))))
+        leaked = self.good_report()['findings'][0]
+        leaked['evidence'] = '-----BEGIN OPENSSH PRIVATE KEY-----'
+        self.assertTrue(any('possible secret material' in v
+                            for v in tf.validate_report(self.good_report(findings=[leaked]))))
+        self.assertEqual([], tf.validate_report(self.good_report(outcome='clean', findings=[])))
+
+    def test_reports_namespace_roles_and_immutability(self):
+        with patch.dict(os.environ, {'HERMES_PROFILE': 'feature-reviewer'}):
+            tf.write_document(self.root, 'daily', 'reports/t_1-canary.md', '# Report\n', None)
+            tf.write_document(self.root, 'daily', 'reports/t_1-canary.md', '# Report\n', None)
+            with self.assertRaises(ValueError):
+                tf.write_document(self.root, 'daily', 'reports/t_1-canary.md', '# Rewrite\n', None)
+            with self.assertRaises(PermissionError):
+                tf.write_document(self.root, 'daily', 'plans/batch-1.md', '# Plan\n', None)
+        with self.assertRaises(ValueError):
+            tf.write_document(self.root, 'daily', 'audits/t_1.md', '# Anywhere\n', None)
+        self.assertEqual('# Report\n',
+                         (tf.review_dir(self.root, 'daily') / 'reports/t_1-canary.md').read_text())
+
+    def test_classify_trips_approval_rules(self):
+        hits = tf.classify_paths(self.root, 'daily', ['custom_apps/rust/apps/media-manager/Cargo.toml'])
+        self.assertEqual(['2'], [hit['rule'] for hit in hits])
+        hits = tf.classify_paths(self.root, 'daily', ['modules/Core_Modules/homepage/canary.nix',
+                                                     'custom_apps/node/apps/homepage/src/client/styles.css',
+                                                     'modules/immich/default.nix'])
+        self.assertEqual({'1', '3'}, {hit['rule'] for hit in hits})
+        self.assertEqual([], tf.classify_paths(self.root, 'daily', ['modules/immich/default.nix']))
+        with self.assertRaises(ValueError):
+            tf.classify_paths(self.root, 'daily', ['/etc'])
+        override = tf.review_dir(self.root, 'daily') / 'classify.json'
+        override.write_text(json.dumps({'rules': {'5': {'label': 'docs', 'paths': ('documentation',)}}}))
+        self.assertEqual([{'rule': '5', 'label': 'docs', 'path': 'documentation/operations.md',
+                           'reasons': ['under documentation/']}],
+                         tf.classify_paths(self.root, 'daily', ['documentation/operations.md']))
+
+    def test_findings_index_links_and_chain_cap(self):
+        with patch.dict(os.environ, {'HERMES_PROFILE': 'standard-implementer'}):
+            with self.assertRaises(PermissionError):
+                tf.findings_mint(self.root, 'daily')
+        with patch.dict(os.environ, {'HERMES_PROFILE': 'project-auditor'}):
+            self.assertEqual('CI-001', tf.findings_mint(self.root, 'daily')['id'])
+            tf.findings_mint(self.root, 'daily', 'CI-COV-002', feature='canary')
+            with self.assertRaises(ValueError):
+                tf.findings_mint(self.root, 'daily', 'CI-COV-002')
+            tf.findings_link(self.root, 'daily', 'CI-COV-002', 't_audit1', 'audit')
+            tf.findings_link(self.root, 'daily', 'CI-COV-002', 't_audit1', 'audit')
+            tf.findings_link(self.root, 'daily', 'CI-COV-002', 't_assess1', 'assessment')
+            tf.findings_set_status(self.root, 'daily', 'CI-COV-002', 'deferred')
+            with self.assertRaises(ValueError):
+                tf.findings_link(self.root, 'daily', 'CI-NOPE', 't_x', 'audit')
+        self.assertEqual(['CI-001', 'CI-COV-002'], [e['id'] for e in tf.findings_load(self.root, 'daily')])
+        entry = tf.finding_entry(self.root, 'daily', 'CI-COV-002')
+        self.assertEqual({('t_audit1', 'audit'), ('t_assess1', 'assessment')},
+                         {(t['task_id'], t['role']) for t in entry['tasks']})
+        self.assertEqual('deferred', entry['status'])
+        self.tasks = [{'id': 't_audit2', 'assignee': tf.REVIEWER, 'tenant': tf.TENANT,
+                       'status': 'done', 'body': 'Notes:\n- Read CI-COV-002 in FINDINGS.md.', 'title': 'Audit'}]
+        audits = tf.finding_audit_count(self.root, 'daily', 'CI-COV-002')
+        self.assertEqual({'t_audit1', 't_audit2'}, audits)
+        with patch.dict(os.environ, {'HERMES_PROFILE': 'project-auditor'}):
+            tf.configure(self.root, 'daily', 'daily', max_audits_per_finding=2)
+        self.assertFalse(tf.chain_check(self.root, 'daily', 'CI-COV-002'))
+        tf.configure(self.root, 'daily', 'daily', max_audits_per_finding=3)
+        self.assertTrue(tf.chain_check(self.root, 'daily', 'CI-COV-002'))
+
+    def test_record_audit_feeds_state_and_suppression(self):
+        path = tf.review_dir(self.root, 'daily') / 'report-metadata.json'
+        path.write_text(json.dumps(self.good_report()))
+        with patch.dict(os.environ, {'HERMES_PROFILE': 'feature-reviewer'}):
+            tf.record_audit(self.root, 'daily', 't_audit1', metadata=str(path), duration_seconds=900)
+        metrics = tf.read_jsonl(tf.metrics_index(self.root, 'daily'))
+        self.assertEqual(1, len(metrics))
+        self.assertEqual('findings', metrics[0]['outcome'])
+        self.assertEqual(1, metrics[0]['findings'])
+        self.assertEqual(900, metrics[0]['duration_seconds'])
+        tf.tick(self.root, self.now)
+        body = [c[1][c[1].index('--body') + 1] for c in self.calls if c[1][0] == 'create' and c[0] == 'daily'][0]
+        self.assertIn('State: 0 open findings; last audit t_audit1: findings (1 finding).', body)
+        self.assertLessEqual(len(body.splitlines()), 15)
+        self.assertLessEqual(len(body), 1000)
+        self.assertTrue(all(len(line) < 90 for line in body.splitlines()))
+        for index in range(3):
+            with patch.dict(os.environ, {'HERMES_PROFILE': 'feature-reviewer'}):
+                tf.record_audit(self.root, 'daily', f't_clean{index}', outcome='clean')
+        self.calls.clear()
+        tf.tick(self.root, self.now + 86400)
+        self.assertFalse(any(c[1][0] == 'create' for c in self.calls))
+        with patch.dict(os.environ, {'HERMES_PROFILE': 'feature-reviewer'}):
+            tf.record_audit(self.root, 'daily', 't_defer', outcome='deferred_active_work')
+        tf.tick(self.root, self.now + 2 * 86400)
+        self.assertTrue(any(c[0] == 'daily' and c[1][0] == 'create' for c in self.calls))
+
+    def test_pending_implementer_work_warns_without_blocking(self):
+        self.tasks = [{'id': 't_queued', 'assignee': 'standard-implementer', 'status': 'ready',
+                       'body': 'Change: modules/immich/default.nix — adjust limits', 'title': 'Fix Immich'}]
+        self.assertFalse(tf.scope_conflicts(self.root, 'daily', ['modules/immich/']))
+        pending = tf.pending_overlaps(self.root, 'daily', ['modules/immich/'])
+        self.assertEqual(['t_queued'], [task['task_id'] for task in pending])
+        self.tasks = [{'id': 't_running', 'assignee': 'local-implementer', 'status': 'running',
+                       'body': 'Scope: modules/immich/\nNotes:\n- unrelated', 'title': 'Fix Immich'}]
+        self.assertEqual(['t_running'], [t['task_id'] for t in tf.scope_conflicts(self.root, 'daily', ['modules/immich/'])])
+
     def test_installer_preserves_unrelated_policies_and_is_idempotent(self):
         head = ('# head-coordinator\n\n## Tiers\n'
                 '| `feature-reviewer` | One named feature/module/subsystem needs a focused correctness/reliability/performance audit. Cheap, runs often. |\n'

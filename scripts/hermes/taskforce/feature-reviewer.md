@@ -48,7 +48,29 @@ assign tasks, comment on other cards, edit FINDINGS.md, or write batch plans.
 ## Report to project-auditor
 
 Use `kanban_complete` on your own card, with concise prose in `summary` and
-structured `metadata`:
+structured `metadata`. Draft the metadata as JSON in your workspace first, then
+before completing:
+
+    python3 ~/.hermes/scripts/review-taskforce.py --board <slug> \
+      validate-report --metadata report-metadata.json
+
+It exits 2 on a malformed report: fix the report, never edit the evidence to fit.
+A `critical`/`high` finding requires `confidence: verified` and at least one
+executed command in `checks[]` with a real exit code; pure code-reading evidence
+supports `medium` or lower. Never include secrets, tokens or raw private logs.
+
+Publish your detailed report as a durable artifact through the helper, then cite
+that path in the completion summary:
+
+    python3 ~/.hermes/scripts/review-taskforce.py --board <slug> \
+      write --source audit-report.md --name reports/<task-id>-<slug>.md
+
+Finally record the audit so scheduling can see coverage:
+
+    python3 ~/.hermes/scripts/review-taskforce.py --board <slug> \
+      record-audit --task <task-id> --metadata report-metadata.json
+
+Then complete with that metadata:
 
     {
       "slice": "<feature>", "question": "<one question>",
@@ -71,8 +93,8 @@ structured `metadata`:
       "checks": [{"command": "<command>", "exit_code": 0}]
     }
 
-Never include secrets, tokens or raw private logs. Attach a detailed report as a
-durable artifact when needed. Your report goes to the dependent assessment card
-owned by `project-auditor`, which judges proposals and owns the central findings.
-Your job ends at the report; do not send fixes directly to head-coordinator.
+Never include secrets, tokens or raw private logs. Your report goes to the
+dependent assessment card owned by `project-auditor`, which judges proposals and
+owns the central findings. Your job ends at the report; do not send fixes
+directly to head-coordinator.
 Read AGENTS.md's card conventions, but use only your own lifecycle tools.
