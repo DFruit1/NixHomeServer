@@ -321,6 +321,18 @@ case "$args" in
       # NIXHOMESERVER_REMOTE_EXEC_RESULTS_DIR behaves as it would remotely.
       job_root="/tmp/nixhomeserver-remote-exec.${mock_dir##*/}"
       mkdir -p "$job_root/source" "$job_root/results"
+      # Model a client deadline that fires while the remote unit runs on. The
+      # unit is a separate, surviving process -- setsid gives it its own session
+      # the way a transient unit outlives its launcher -- that keeps the job
+      # tree as its working directory; the ssh client returns timeout's expiry
+      # status instead of the unit's. A job whose first line is the marker picks
+      # this instead of running to completion.
+      if [[ "$(head -n1 "$job_root/job.sh" 2>/dev/null || true)" == "# MOCK-CANCEL" ]]; then
+        setsid bash -c 'cd "$1" && printf ready > "$2" && sleep 120' _ \
+          "$job_root/source" "$mock_dir/unit.ready" >/dev/null 2>&1 &
+        echo $! >"$mock_dir/unit.pid"
+        exit "${MOCK_CANCEL_STATUS:-124}"
+      fi
       (
         cd "$job_root/source"
         NIXHOMESERVER_REMOTE_EXEC_JOB_DIR="$job_root"
@@ -565,6 +577,110 @@ if [[ ! -f "$MOCK_CTL/reaped" ]]; then
 fi
 
 echo "  ✅ an oversized artifact set is refused rather than transferred"
+
+# --- a strict set -e caller still gets cleanup and the original status --------
+#
+# Every run above is launched from an if/|| context, which suspends errexit for
+# the whole function body and hides the call shape that broke in production: an
+# ordinary `set -e` caller invokes remote_exec_run bare, and as a bare
+# `output=$(...)` assignment a non-zero remote status made bash exit inside the
+# function -- before stderr-temp removal, the diagnostic and the reap. The
+# driver below is a separate bash process with real errexit and no conditional
+# context, so it reproduces that call shape exactly.
+
+bash_bin="$(type -P bash)"
+strict_driver="$test_root/strict-caller.sh"
+cat >"$strict_driver" <<DRIVER_EOF
+#!${bash_bin}
+set -euo pipefail
+source "${TESTS_REPO_ROOT}/scripts/helpers/repo-common.sh"
+source "${runner_source}"
+remote_exec_run 't_driver' "\$MOCK_DRIVER_JOB"
+printf 'UNREACHABLE-STRICT-CALLER-CONTINUED\n'
+DRIVER_EOF
+chmod +x "$strict_driver"
+
+count_err_temps() {
+  local -a files=()
+  local f
+  for f in /tmp/nixhomeserver-remote-exec-err.*; do
+    [[ -e "$f" ]] && files+=("$f")
+  done
+  printf '%s\n' "${#files[@]}"
+}
+
+export REMOTE_EXEC_HOST="dsaw@192.0.2.1"
+err_temps_before="$(count_err_temps)"
+
+rm -f "$MOCK_CTL/reaped"
+export MOCK_DRIVER_JOB='echo strict-out; exit 42'
+strict_status=0
+"$strict_driver" >"$test_root/strict.out" 2>"$test_root/strict.err" ||
+  strict_status=$?
+
+((strict_status == 42)) ||
+  note_failure "a strict set -e caller exited ${strict_status}, not the remote job's 42"
+if grep -q 'UNREACHABLE-STRICT-CALLER-CONTINUED' "$test_root/strict.out"; then
+  note_failure "a strict set -e caller continued past a failed run"
+fi
+grep -q 'strict-out' "$test_root/strict.out" ||
+  note_failure "a strict set -e caller lost the job's stdout: $(cat "$test_root/strict.out")"
+grep -q 'exited 42' "$test_root/strict.err" ||
+  note_failure "a strict set -e caller got no failure diagnostic: $(cat "$test_root/strict.err")"
+if [[ ! -f "$MOCK_CTL/reaped" ]]; then
+  note_failure "a strict set -e caller bypassed cleanup: the job directory was never reaped"
+fi
+if (($(count_err_temps) > err_temps_before)); then
+  note_failure "a strict set -e caller leaked its stderr tempfile"
+fi
+
+echo "  ✅ a failed run cleans up and keeps its status under a strict caller"
+
+# --- a client deadline does not delete a surviving unit's tree ----------------
+#
+# The `timeout` that wraps the launch reports its own expiry as 124 (SIGTERM) or
+# 137 (SIGKILL after -k). On those the ssh client stopped waiting, not the
+# remote unit, which survives its launcher by design and may still own the job
+# tree -- so the helper must propagate the status without reaping a directory a
+# running unit is still using. The shim models the survivor as a real process
+# holding the tree, and the driver is a strict set -e caller.
+
+kill_cancel_survivor() {
+  local pid
+  pid="$(cat "$MOCK_CTL/unit.pid" 2>/dev/null || true)"
+  if [[ -n "$pid" ]]; then
+    kill -KILL -- "-${pid}" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
+  fi
+  rm -f "$MOCK_CTL/unit.pid" "$MOCK_CTL/unit.ready"
+}
+
+cancel_case() {
+  local status="$1" when="$2"
+  local driver_status=0 pid
+  rm -f "$MOCK_CTL/reaped" "$MOCK_CTL/unit.ready" "$MOCK_CTL/unit.pid"
+  MOCK_CANCEL_STATUS="$status" MOCK_DRIVER_JOB=$'# MOCK-CANCEL\nexit 0' \
+    "$strict_driver" >"$test_root/cancel.out" 2>"$test_root/cancel.err" ||
+    driver_status=$?
+  ((driver_status == status)) ||
+    note_failure "a client deadline (${status}, ${when}) was reported as ${driver_status}"
+  if [[ -f "$MOCK_CTL/reaped" ]]; then
+    note_failure "a client deadline (${status}, ${when}) deleted a surviving unit's tree"
+  fi
+  pid="$(cat "$MOCK_CTL/unit.pid" 2>/dev/null || true)"
+  if [[ -z "$pid" ]] || ! kill -0 "$pid" 2>/dev/null; then
+    note_failure "the modelled surviving unit did not outlive the client deadline (${status}, ${when})"
+  fi
+  grep -q 'client deadline reached' "$test_root/cancel.err" ||
+    note_failure "the client-deadline path (${status}, ${when}) did not explain itself: $(cat "$test_root/cancel.err")"
+  kill_cancel_survivor
+}
+
+cancel_case 124 "timeout expiry"
+cancel_case 137 "kill after -k"
+
+unset MOCK_CANCEL_STATUS MOCK_DRIVER_JOB REMOTE_EXEC_HOST
+
+echo "  ✅ a client deadline leaves a surviving unit's tree in place"
 
 # Restore PATH before the EXIT trap runs rm, or cleanup cannot find it.
 export PATH="${mock_orig_path}"

@@ -262,6 +262,17 @@ _remote_exec_stage_job_script() {
       "chmod 0500 $(printf '%q' "$remote_dir/job.sh")"
 }
 
+# True when a non-zero runner status means the *client* gave up rather than the
+# remote unit finishing. The only client-side deadline is the `timeout` that
+# wraps the launch: GNU timeout reports its own expiry as 124 when it signalled
+# the command and 137 when the command ignored SIGTERM and had to be SIGKILLed
+# after -k. On either, the transient unit it launched may still be alive --
+# units outlive their launcher by design -- so the job directory may still
+# belong to a running unit and must not be deleted.
+_remote_exec_launcher_interrupted() {
+  (( $1 == 124 || $1 == 137 ))
+}
+
 # remote_exec_run <job-id> <job-script>
 #
 # Runs <job-script> on the server inside the enforced envelope, prints its
@@ -368,9 +379,18 @@ remote_exec_run() {
 
   # The runner is a fixed, quoted heredoc: every variable arrives as a positional
   # argument and every knob is clamped locally before it is passed.
-  # `output=$(...)` as its own statement so $? is the ssh/remote status, not the
-  # status of an enclosing `if !` (which would invert it).
-  output="$(timeout -k 10 "$client_timeout_sec" ssh -T -o BatchMode=yes -o ConnectTimeout=10 \
+  #
+  # `output=$(...)` is guarded by an `if` so the capture never depends on the
+  # caller's shell options. As a bare assignment under a `set -e` caller, a
+  # non-zero remote status makes bash exit at the assignment -- before
+  # remote_status is captured, before the stderr tempfile is removed and before
+  # reap_job_dir runs -- so an ordinary strict-shell caller leaked its job
+  # directory and skipped the diagnostic. Inside `if` the assignment is exempt
+  # from errexit in every caller context, and the else branch still records the
+  # exact status, so the run's original status is preserved and cleanup below is
+  # always reached. Tests that call this from an if/|| context cannot see the
+  # difference; the strict-caller regression calls it bare under set -e.
+  if output="$(timeout -k 10 "$client_timeout_sec" ssh -T -o BatchMode=yes -o ConnectTimeout=10 \
     "$remote_exec_host" \
     bash -s -- \
       "$remote_job_dir" "$remote_archive" "$unit_name" \
@@ -466,8 +486,11 @@ systemd-run --user --quiet --wait --pipe --collect \
   --unit="$unit_name" \
   "$bash_path" "$remote_dir/slot.sh" "$bash_path" "$remote_dir/job.sh"
 REMOTE_EOF
-  )"
-  remote_status=$?
+  )"; then
+    remote_status=0
+  else
+    remote_status=$?
+  fi
   printf '%s\n' "$output"
   rm -f "$remote_err"
   if ((remote_status != 0)); then
@@ -478,7 +501,15 @@ REMOTE_EOF
       echo "remote-exec: another job already holds the server slot" >&2
     fi
     echo "remote-exec: remote job '${job_id}' exited ${remote_status} on ${remote_exec_host}" >&2
-    reap_job_dir
+    if _remote_exec_launcher_interrupted "$remote_status"; then
+      # A client deadline ended the launch, not the unit: the unit survives its
+      # launcher and may still own $remote_job_dir. Deleting the tree here would
+      # pull it out from under a job that is still running, so leave it for the
+      # unit's own RuntimeMaxSec and the server's /tmp expiry to reclaim.
+      echo "remote-exec: client deadline reached; leaving the remote job directory for the surviving unit" >&2
+    else
+      reap_job_dir
+    fi
     return "$remote_status"
   fi
 
