@@ -151,6 +151,8 @@ test_scripts=(
   scripts/tests/test-kanban-retry-breaker.sh
   scripts/tests/test-kanban-durability-sync.sh
   scripts/tests/test-kanban-install-board-wiring.sh
+  scripts/tests/test-kanban-blocker-notify.sh
+  scripts/tests/test-simplex-chat-daemon.sh
   scripts/tests/test-hermes-review-taskforce.sh
   scripts/tests/test-kanban-owner-alerts.sh
   scripts/tests/test-auth-gateway-compression.sh

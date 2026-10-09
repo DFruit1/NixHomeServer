@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Re-establish the hermes board-health, retry-breaker and durability wiring on
-# this machine.
+# Re-establish the hermes board-health, retry-breaker, durability and SimpleX
+# daemon wiring on this machine.
 #
 # Why this exists
 # ---------------
@@ -20,6 +20,21 @@
 # re-copied only when it differs from the tracked one, a configuration file is
 # edited rather than rewritten, and a cron job that is already present is left
 # alone rather than duplicated.
+#
+# It also installs the SimpleX Chat daemon the messaging adapter talks to: the
+# content-hashed binary from scripts/hermes/simplex-chat.nix, the supervisor
+# script, and the XDG autostart entry that starts it at login. That daemon runs
+# here rather than on the NixOS server because it holds the bot's own chat
+# identity, which belongs to the workstation whose operator messages it and
+# cannot be regenerated if lost.
+#
+# It also installs the blocker-gate policy into the head-coordinator's SOUL.md,
+# from scripts/hermes/head-coordinator-blocker-gate.md. A notification
+# subscription in hermes is per card, so a gate nobody bound notifies nobody and
+# the card sits in `blocked` -- a column nothing dispatches -- in silence. That
+# policy is prose rather than code, but it is prose an agent reads at the exact
+# moment it needs it, so it is tracked here and replaced on every run instead of
+# living only in a script header.
 #
 # What it does *not* do is repair an existing cron job. Presence is detected by
 # name, so a job that exists with the wrong schedule, script or workdir is
@@ -125,7 +140,8 @@ fi
 for dest_dir in "${install_targets[@]}"; do
   mkdir -p "$dest_dir"
   rel="${dest_dir#"$HERMES_ROOT/"}"
-  for script in kanban-board-health.sh kanban-durability-sync.sh kanban-retry-breaker.sh; do
+  for script in kanban-board-health.sh kanban-durability-sync.sh kanban-retry-breaker.sh \
+               kanban-blocker-notify.sh; do
     src="$REPO_ROOT/scripts/hermes/$script"
     dest="$dest_dir/$script"
     [[ -f "$src" ]] || { note "  MISSING SOURCE: $src"; drift=$((drift + 1)); continue; }
@@ -362,6 +378,70 @@ if [[ -f "$COORDINATOR_SOUL" ]] && ! grep -q 'nix run .#deploy' "$COORDINATOR_SO
 fi
 
 # ---------------------------------------------------------------------------
+# 3c. Blocker delivery over SimpleX, and reply-to-unblock
+# ---------------------------------------------------------------------------
+#
+# A gate the head-coordinator blocks on is only a question until the owner is
+# told, and a notification subscription in hermes is PER CARD -- there is no
+# board-wide binding. So a head-coordinator that blocks without binding produces
+# a silently stuck card, which is the same class of fault as the deploy-gate
+# sections above: policy the lane must follow, that nothing re-establishes after
+# a profile reset.
+#
+# Unlike the deploy-gate sections, this one IS prose in a tracked file, so it is
+# installed rather than only checked. Otherwise the whole loop would live only in
+# this script's header, which no agent reads at the moment it needs to block.
+# Editing the section is the supported way to change the wording: re-run this
+# installer and the local SOUL.md copy is replaced.
+
+GATE_SECTION_HEADING='## Blocker delivery and reply-to-unblock (SimpleX)'
+GATE_SECTION_SRC="$REPO_ROOT/scripts/hermes/head-coordinator-blocker-gate.md"
+
+if [[ ! -f "$GATE_SECTION_SRC" ]]; then
+  note "  MISSING SOURCE: $GATE_SECTION_SRC"
+  drift=$((drift + 1))
+elif [[ ! -f "$COORDINATOR_SOUL" ]]; then
+  note "  MISSING: $COORDINATOR_SOUL"
+  drift=$((drift + 1))
+elif grep -qF "$GATE_SECTION_HEADING" "$COORDINATOR_SOUL" &&
+     awk -v heading="$GATE_SECTION_HEADING" '
+       $0 == heading { found = 1; print; next }
+       found && /^## / { exit }
+       found { print }
+     ' "$COORDINATOR_SOUL" | cmp -s - "$GATE_SECTION_SRC"; then
+  ok "head-coordinator SOUL.md carries the blocker-gate section as tracked"
+elif [[ "$check_only" == true ]]; then
+  changed "head-coordinator SOUL.md is missing or has drifted from the '$GATE_SECTION_HEADING' section"
+else
+  # Replace the section in place. Awk rewrites the file only when the section is
+  # actually there to replace; a missing one is appended instead of duplicating,
+  # so re-running can never leave two copies that drift apart.
+  #
+  # The tracked file carries its own heading and is emitted verbatim, so the
+  # section in SOUL.md is byte-identical to the file and the check above is a
+  # real comparison rather than a shape match.
+  tmp_soul="$(mktemp)"
+  if awk -v heading="$GATE_SECTION_HEADING" -v src="$GATE_SECTION_SRC" '
+        $0 == heading {
+          found = 1
+          while ((getline line < src) > 0) print line
+          close(src)
+          next
+        }
+        found && /^## / { found = 0 }
+        !found { print }
+      ' "$COORDINATOR_SOUL" >"$tmp_soul" && grep -qF "$GATE_SECTION_HEADING" "$tmp_soul"; then
+    install -m 0644 "$tmp_soul" "$COORDINATOR_SOUL"
+    changed "replaced the blocker-gate section in head-coordinator SOUL.md"
+  else
+    printf '\n' >>"$COORDINATOR_SOUL"
+    cat "$GATE_SECTION_SRC" >>"$COORDINATOR_SOUL"
+    changed "appended the blocker-gate section to head-coordinator SOUL.md"
+  fi
+  rm -f "$tmp_soul"
+fi
+
+# ---------------------------------------------------------------------------
 # 4. Cron jobs
 # ---------------------------------------------------------------------------
 #
@@ -518,6 +598,283 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 5. The SimpleX Chat daemon the messaging adapter talks to
+# ---------------------------------------------------------------------------
+#
+# The adapter is only a WebSocket client, so nothing in hermes starts or
+# supervises the daemon. On this host (Void Linux, no systemd) the wiring is a
+# content-hashed binary plus a flock-guarded restart loop, launched from an XDG
+# autostart entry -- the same arrangement `hermes-qwen-tunnel` already uses, and
+# the reason that script exists.
+#
+# The daemon state deliberately lives outside ~/.hermes: it is a chat identity,
+# not configuration, and it must survive a hermes profile reset. It is also the
+# one piece here that cannot be regenerated, so this installer does not create it.
+# The supervisor script seeds the profile on first run and the daemon seeds it
+# from --user-display-name, because an empty database makes simplex-chat ask for
+# a display name on stdin and exit -- a half-seeded profile looks wired while the
+# adapter fails to connect.
+
+SIMPLEX_BIN_LINK="$HERMES_ROOT/simplex-chat"
+SIMPLEX_AUTOSTART_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/autostart"
+SIMPLEX_AUTOSTART_ENTRY="$SIMPLEX_AUTOSTART_DIR/hermes-simplex-chat.desktop"
+# ~/.local/bin, not the checkout: this autostart entry outlives every worktree, and
+# a worker deletes its worktree on completion. Same place hermes-gateway-start and
+# hermes-qwen-tunnel live.
+SIMPLEX_DAEMON_PATH="${HERMES_BIN_DIR:-$HOME/.local/bin}/hermes-simplex-chat"
+SIMPLEX_DAEMON_SRC="$REPO_ROOT/scripts/hermes/simplex-chat-daemon.sh"
+# Overridable so the wiring test can assert the build happens without running one.
+SIMPLEX_NIX_BUILD="${SIMPLEX_NIX_BUILD:-nix-build}"
+SIMPLEX_NIX_EXPR="${SIMPLEX_NIX_EXPR:-$REPO_ROOT/scripts/hermes/simplex-chat.nix}"
+
+write_simplex_autostart() {
+  cat >"$SIMPLEX_AUTOSTART_ENTRY" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Name=Hermes SimpleX Chat daemon
+Comment=Local simplex-chat daemon for the Hermes SimpleX messaging adapter (127.0.0.1:5225)
+Exec=$SIMPLEX_DAEMON_PATH
+Terminal=false
+X-GNOME-Autostart-enabled=true
+DESKTOP
+}
+
+# The binary: a nix derivation pinned by content hash, not a download at install
+# time. Building it is slow the first time and free afterwards, so a failure here
+# is reported rather than fatal -- this daemon is one messaging platform, and it
+# must not take the board's cron wiring down with it when the network is down.
+if [[ ! -x "$SIMPLEX_BIN_LINK/bin/simplex-chat" ]]; then
+  if [[ "$check_only" == true ]]; then
+    changed "SimpleX daemon binary not installed at $SIMPLEX_BIN_LINK"
+  elif ! "$SIMPLEX_NIX_BUILD" "$SIMPLEX_NIX_EXPR" \
+      --out-link "$SIMPLEX_BIN_LINK" >/dev/null 2>&1; then
+    unrepaired "could not build $SIMPLEX_NIX_EXPR; the SimpleX adapter will fail to connect"
+  else
+    changed "built the pinned SimpleX daemon at $SIMPLEX_BIN_LINK"
+  fi
+else
+  ok "SimpleX daemon binary $SIMPLEX_BIN_LINK ($(readlink -f "$SIMPLEX_BIN_LINK/bin/simplex-chat"))"
+fi
+
+if [[ -f "$SIMPLEX_DAEMON_PATH" ]] && cmp -s "$SIMPLEX_DAEMON_SRC" "$SIMPLEX_DAEMON_PATH"; then
+  ok "SimpleX daemon supervisor current at $SIMPLEX_DAEMON_PATH"
+else
+  if [[ "$check_only" == true ]]; then
+    changed "$SIMPLEX_DAEMON_PATH is absent or differs from the tracked supervisor"
+  else
+    install -m 0755 "$SIMPLEX_DAEMON_SRC" "$SIMPLEX_DAEMON_PATH"
+    changed "installed the SimpleX daemon supervisor to $SIMPLEX_DAEMON_PATH"
+  fi
+fi
+
+if [[ -f "$SIMPLEX_AUTOSTART_ENTRY" ]] && grep -qF "Exec=$SIMPLEX_DAEMON_PATH" "$SIMPLEX_AUTOSTART_ENTRY"; then
+  ok "XDG autostart entry starts the SimpleX daemon at login"
+else
+  if [[ "$check_only" == true ]]; then
+    changed "XDG autostart entry $SIMPLEX_AUTOSTART_ENTRY is absent or points elsewhere"
+  else
+    mkdir -p "$SIMPLEX_AUTOSTART_DIR"
+    write_simplex_autostart
+    changed "installed XDG autostart entry $SIMPLEX_AUTOSTART_ENTRY"
+  fi
+fi
+
+# The adapter needs SIMPLEX_WS_URL in every profile's .env, and two values that
+# are specific to this machine's SimpleX identity and cannot live in git:
+#
+#   SIMPLEX_ALLOWED_USERS  numeric contactId of the operator. Matched on the
+#                          generated ID, never on the display name, because a
+#                          contact chooses their own name.
+#   SIMPLEX_HOME_CHANNEL   where cron and notification delivery lands. Without it
+#                          a blocker notification has no target and silently goes
+#                          nowhere.
+#
+# Both are read from the environment rather than hardcoded, and their absence is
+# drift rather than a silent skip: an adapter with no allowlist denies every
+# contact, which looks exactly like a broken daemon from the outside.
+#
+# SIMPLEX_ALLOW_ALL_USERS and SIMPLEX_GROUP_ALLOWED are never written, and
+# their presence in a profile .env is reported and removed rather than
+# preserved: they disable the allowlist and widen the bot to group traffic, and
+# an unauthenticated bot on a channel that is supposed to be authenticated is
+# worse than no bot at all. The endpoint is likewise checked for exact equality
+# rather than presence.
+SIMPLEX_ALLOWED_USERS="${SIMPLEX_ALLOWED_USERS:-}"
+SIMPLEX_HOME_CHANNEL="${SIMPLEX_HOME_CHANNEL:-}"
+
+# The one endpoint the adapter is allowed to talk to. It is a loopback URL and
+# not a knob, because the daemon in this arrangement is the local one started by
+# the autostart entry; an .env pointing anywhere else is either a leftover from
+# a different arrangement or a mistyped port, and both look identical from the
+# outside -- the adapter refuses to connect and the board says nothing.
+SIMPLEX_WANT_WS_URL="ws://127.0.0.1:${SIMPLEX_PORT:-5225}"
+
+# Switches that turn a contact-scoped bot into an open one, or widen it to group
+# traffic. This installer never writes them, so any occurrence in a profile .env
+# came from a hand edit, a restore of an older profile, or another tool -- and
+# the previous version of this script preserved them on every reinstall, which
+# made a reinstall the thing that cemented the mistake. They are removed here
+# and named in the report, so the operator learns which line was dropped instead
+# of finding a bot that stopped answering the owner with no explanation.
+SIMPLEX_FORBIDDEN_KEYS="SIMPLEX_ALLOW_ALL_USERS SIMPLEX_GROUP_ALLOWED"
+
+write_simplex_env() {
+  local profile_dir="$1" env_file="$1/.env" want_allow="$2" want_home="$3"
+  local want_home_name="${4:-${SIMPLEX_HOME_CHANNEL_NAME:-Home}}"
+  local tmp
+  tmp="$(mktemp)"
+  # Drop any prior SIMPLEX_* block this installer wrote, then re-emit it, so a
+  # changed contactId replaces the old one instead of both being read. This is
+  # also what removes the forbidden keys: they match the SIMPLEX_ prefix, so
+  # they cannot survive a rewrite.
+  #
+  # Leading whitespace is part of the key, not part of the line. A dotenv file
+  # picks up indentation from a hand edit or a restored profile, and this
+  # grammar must be the same one simplex_env_violations detects with -- otherwise
+  # the report says a forbidden key was removed and the file still carries it,
+  # which is the failure mode this whole section exists to prevent.
+  grep -vE '^[[:space:]]*SIMPLEX_' "$env_file" >"$tmp" 2>/dev/null || true
+  {
+    printf '\n# SimpleX Chat (Hermes messaging adapter). Written by\n'
+    printf '# scripts/hermes/install-board-wiring.sh; edit there, not here.\n'
+    printf 'SIMPLEX_WS_URL=%s\n' "$SIMPLEX_WANT_WS_URL"
+    [[ -n "$want_allow" ]] && printf 'SIMPLEX_ALLOWED_USERS=%s\n' "$want_allow"
+    [[ -n "$want_home" ]] && printf 'SIMPLEX_HOME_CHANNEL=%s\n' "$want_home"
+    printf 'SIMPLEX_HOME_CHANNEL_NAME=%s\n' "$want_home_name"
+  } >>"$tmp"
+  install -m 0600 "$tmp" "$env_file"
+  rm -f "$tmp"
+}
+
+# One assignment's value, with any leading whitespace stripped.
+#
+# `grep -oE '^[[:space:]]*KEY=.*'` matches an indented assignment but hands
+# back the indentation as part of the text, so the result compares unequal to
+# the plain `KEY=value` this installer emits -- a correct .env reported as
+# drifted. Every reader below goes through here so detection, comparison and
+# removal all speak the same grammar.
+simplex_env_value() {
+  local env_file="$1" key="$2" pattern="${3:-.*}"
+  grep -oE "^[[:space:]]*${key}=${pattern}" "$env_file" 2>/dev/null |
+    head -1 | sed -e "s/^[[:space:]]*${key}=//" || true
+}
+
+# Every way a profile .env fails closed-open, one violation per line, empty when
+# the file is correct. Checked on the check path AND before every rewrite, so a
+# reinstall reports the flags it is about to remove rather than silently
+# deleting them -- and so --check cannot report "ok" for an .env that would
+# leave the adapter open to any contact or to group traffic.
+simplex_env_violations() {
+  local env_file="$1" have_url key out=''
+  have_url="$(simplex_env_value "$env_file" SIMPLEX_WS_URL)"
+  if [[ "$have_url" != "$SIMPLEX_WANT_WS_URL" ]]; then
+    out+="SIMPLEX_WS_URL is '$have_url', want '$SIMPLEX_WANT_WS_URL';"$'\n'
+  fi
+  for key in $SIMPLEX_FORBIDDEN_KEYS; do
+    if grep -qE "^[[:space:]]*$key=" "$env_file" 2>/dev/null; then
+      out+="$key is set;"$'\n'
+    fi
+  done
+  printf '%s' "$out"
+}
+
+# Report each violation on its own line, worded by mode: apply mode names what it
+# removed, --check names what a re-run would remove.
+report_simplex_violations() {
+  local label="$1" env_file="$2" violations="$3" line
+  [[ -n "$violations" ]] || return 0
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    if [[ "$check_only" == true ]]; then
+      changed "$label .env: ${line%;}; a re-run removes it"
+    else
+      changed "$label .env: ${line%;}; removed"
+    fi
+  done <<<"$violations"
+}
+
+check_simplex_env() {
+  local env_file="$1" label="$2" want_allow="$3" want_home="$4"
+  local have_allow have_home
+  have_allow="$(simplex_env_value "$env_file" SIMPLEX_ALLOWED_USERS)"
+  have_home="$(simplex_env_value "$env_file" SIMPLEX_HOME_CHANNEL '[0-9]+')"
+  if [[ "$have_allow" != "$want_allow" || "$have_home" != "$want_home" ]]; then
+    changed "$label .env has SIMPLEX_ALLOWED_USERS='$have_allow' SIMPLEX_HOME_CHANNEL='$have_home'; want '$want_allow' / '$want_home'"
+    return 1
+  fi
+  ok "$label .env carries the SimpleX allowlist and home channel"
+  return 0
+}
+
+# Read the allowlist and home channel already in an .env. Used on the no-contact
+# path so a reinstall does not silently destroy a pairing that is already
+# installed: the operator's contactId is not something this script can derive,
+# so the only source for it is the file it is about to rewrite.
+read_simplex_pairing() {
+  local env_file="$1"
+  SIMPLEX_HAVE_ALLOW="$(simplex_env_value "$env_file" SIMPLEX_ALLOWED_USERS)"
+  SIMPLEX_HAVE_HOME="$(simplex_env_value "$env_file" SIMPLEX_HOME_CHANNEL '[0-9]+')"
+}
+
+if [[ -n "$SIMPLEX_ALLOWED_USERS" || -n "$SIMPLEX_HOME_CHANNEL" ]]; then
+  for profile_dir in "$HERMES_ROOT"/profiles/*/; do
+    [[ -d "$profile_dir" ]] || continue
+    profile="${profile_dir%/}"; profile="${profile##*/}"
+    env_file="$profile_dir/.env"
+    [[ -f "$env_file" ]] || : >"$env_file"
+    # Named before anything is rewritten, so a forbidden flag is reported even
+    # when apply mode goes on to remove it a line later.
+    report_simplex_violations "$profile" "$env_file" "$(simplex_env_violations "$env_file")"
+    if [[ "$check_only" == true ]]; then
+      # Non-zero from check_simplex_env means "this .env has no allowlist", and
+      # drift is already counted. Tolerated here or `set -e` would abort the
+      # script on the first mismatched profile and never inspect the rest.
+      check_simplex_env "$env_file" "$profile" "$SIMPLEX_ALLOWED_USERS" "$SIMPLEX_HOME_CHANNEL" || true
+    else
+      write_simplex_env "$profile_dir" "$SIMPLEX_ALLOWED_USERS" "$SIMPLEX_HOME_CHANNEL"
+      changed "wrote the SimpleX env block into $profile_dir/.env"
+    fi
+  done
+else
+  # No contact ID supplied on this run. Two things follow, and they pull in
+  # opposite directions, so both are stated:
+  #
+  #   * the allowlist is still a real gap -- the adapter denies every contact
+  #     without it -- so it is reported once, below;
+  #   * an existing pairing is NOT overwritten with blanks. Re-running the
+  #     installer without the contactId is the ordinary way an operator
+  #     re-applies it after an upgrade, and a version that re-emitted empty
+  #     values there would silently revoke the owner's access to the bot.
+  #
+  # So the file is read for the values it already holds, and only the endpoint
+  # and the forbidden flags are enforced. The URL is validated exactly rather
+  # than by presence: this branch used to accept any SIMPLEX_WS_URL line, so an
+  # .env pointing at another port was reported as correctly wired, and an apply
+  # that did rewrite the file kept that wrong endpoint and both unsafe flags.
+  for profile_dir in "$HERMES_ROOT"/profiles/*/; do
+    [[ -d "$profile_dir" ]] || continue
+    profile="${profile_dir%/}"; profile="${profile##*/}"
+    env_file="$profile_dir/.env"
+    read_simplex_pairing "$env_file"
+    violations="$(simplex_env_violations "$env_file")"
+    report_simplex_violations "$profile" "$env_file" "$violations"
+    if [[ -n "$violations" && "$check_only" != true ]]; then
+      # Keep the pairing, correct the endpoint, drop the forbidden keys.
+      write_simplex_env "$profile_dir" "$SIMPLEX_HAVE_ALLOW" "$SIMPLEX_HAVE_HOME" \
+        "${SIMPLEX_HOME_CHANNEL_NAME:-Home}"
+      changed "rewrote the SimpleX env block in $profile_dir/.env"
+    fi
+    if [[ -z "$violations" ]]; then
+      ok "$profile .env points at the local SimpleX daemon"
+    fi
+    if [[ -n "$SIMPLEX_HAVE_ALLOW" && -n "$SIMPLEX_HAVE_HOME" ]]; then
+      ok "$profile .env keeps the pairing already installed (allowlist ${SIMPLEX_HAVE_ALLOW})"
+    fi
+  done
+  unrepaired "SIMPLEX_ALLOWED_USERS and SIMPLEX_HOME_CHANNEL are unset on this run, so a profile with no pairing still denies every contact and notifications have no target; run this installer with SIMPLEX_ALLOWED_USERS=<contactId> SIMPLEX_HOME_CHANNEL=<contactId>"
+fi
+
+# ---------------------------------------------------------------------------
 
 if [[ "$check_only" == true ]]; then
   if ((drift == 0)); then
@@ -535,4 +892,5 @@ note "wiring applied ($drift item(s) changed)"
 note "verify detection:   $REPO_ROOT/scripts/hermes/kanban-board-health.sh"
 note "verify breaker:     $REPO_ROOT/scripts/hermes/kanban-retry-breaker.sh --check"
 note "verify durability:  $REPO_ROOT/scripts/hermes/kanban-durability-sync.sh --check"
+note "verify blocker bind: $REPO_ROOT/scripts/hermes/kanban-blocker-notify.sh --check --all"
 exit 0
