@@ -275,8 +275,9 @@ _remote_exec_launcher_interrupted() {
 
 # remote_exec_run <job-id> <job-script>
 #
-# Runs <job-script> on the server inside the enforced envelope, prints its
-# combined output on stdout, and copies everything the script wrote into
+# Runs <job-script> on the server inside the enforced envelope, prints the job's
+# stdout on stdout and its stderr -- together with any systemd-run launch
+# diagnostic -- on stderr, and copies everything the script wrote into
 # REMOTE_EXEC_RESULTS_DIR (default: ./remote-exec-results) on this workstation.
 # Exit status is the remote job's exit status; a transport or staging failure is
 # non-zero with no stdout.
@@ -492,14 +493,20 @@ REMOTE_EOF
     remote_status=$?
   fi
   printf '%s\n' "$output"
+  # --pipe connects the unit's two streams to this ssh client's two streams:
+  # the job's stdout is captured in $output above, and its stderr lands in
+  # $remote_err. That stderr is real output, not scratch -- it carries the job's
+  # own error text and systemd-run's launch diagnostics, including the slot
+  # wrapper's EX_TEMPFAIL message -- so forward it unchanged before the tempfile
+  # is removed. It must go to the caller's stderr, not stdout: merging it into
+  # stdout would put a transport failure's message on the caller's stdout and
+  # break the "non-zero with no stdout" contract, and it would erase the
+  # job's stdout/stderr distinction.
+  if [[ -s "$remote_err" ]]; then
+    cat "$remote_err" >&2
+  fi
   rm -f "$remote_err"
   if ((remote_status != 0)); then
-    # The unit owns the slot and reports a conflict as EX_TEMPFAIL. Its own
-    # message goes to the unit's stderr, which --pipe routes to $remote_err and
-    # this path discards, so name the cause here where the caller can see it.
-    if ((remote_status == 75)); then
-      echo "remote-exec: another job already holds the server slot" >&2
-    fi
     echo "remote-exec: remote job '${job_id}' exited ${remote_status} on ${remote_exec_host}" >&2
     if _remote_exec_launcher_interrupted "$remote_status"; then
       # A client deadline ended the launch, not the unit: the unit survives its

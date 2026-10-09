@@ -340,7 +340,12 @@ case "$args" in
         NIXHOMESERVER_REMOTE_EXEC_SOURCE_DIR="$job_root/source"
         export NIXHOMESERVER_REMOTE_EXEC_JOB_DIR \
           NIXHOMESERVER_REMOTE_EXEC_RESULTS_DIR NIXHOMESERVER_REMOTE_EXEC_SOURCE_DIR
-        bash "$job_root/job.sh" 2>&1
+        # stdout and stderr stay on their own streams, exactly as --pipe routes
+        # the real unit's: this shim's stdout becomes the helper's $output and
+        # its stderr becomes $remote_err. Merging them here with 2>&1 is what
+        # hid whether the helper preserves a job's stderr -- the regression this
+        # fixture must be able to see.
+        bash "$job_root/job.sh"
       )
       exit $?
     fi
@@ -443,28 +448,57 @@ grep -q "hello-remote" <<<"$output" ||
 
 echo "  ✅ a successful job returns its output"
 
+# A job's stderr is its own stream and must survive on the success path too, not
+# only when the job fails. This job writes to both streams so the fixture models
+# the real split plumbing: stdout to the caller's stdout, stderr to its stderr.
+if ! remote_exec_run 't_mockstderr' 'echo out-line; echo err-line >&2' \
+  >"$test_root/streams.out" 2>"$test_root/streams.err"; then
+  note_failure "a job that wrote to stderr was reported as a failure: $(cat "$test_root/streams.err")"
+fi
+grep -q "out-line" "$test_root/streams.out" ||
+  note_failure "a job's stdout did not reach the caller's stdout: $(cat "$test_root/streams.out")"
+grep -q "err-line" "$test_root/streams.err" ||
+  note_failure "a successful job's stderr was discarded: $(cat "$test_root/streams.err")"
+if grep -q "err-line" "$test_root/streams.out"; then
+  note_failure "a job's stderr was merged into stdout: $(cat "$test_root/streams.out")"
+fi
+
+echo "  ✅ a job's stdout and stderr stay on distinct streams"
+
 # The remote job's own exit status must survive: a caller that saw 0 for a failed
 # job would treat a broken command as a passing one.
-if remote_exec_run 't_mockfail' 'echo on-stdout; exit 42' \
+if remote_exec_run 't_mockfail' 'echo on-stdout; echo on-stderr >&2; exit 42' \
   >"$test_root/fail.out" 2>"$test_root/fail.err"; then
   note_failure "a job that exited 42 was reported as success"
 fi
 grep -q "on-stdout" "$test_root/fail.out" ||
   note_failure "a failing job's stdout was swallowed: $(cat "$test_root/fail.out")"
+# A failing job's stderr is a distinct stream: it must reach the caller and must
+# not be merged into stdout. This is the discarded-stderr regression the fixture
+# exists to pin -- the shim no longer folds the two streams together, so a helper
+# that drops $remote_err fails here.
+grep -q "on-stderr" "$test_root/fail.err" ||
+  note_failure "a failing job's stderr was discarded: $(cat "$test_root/fail.err")"
+if grep -q "on-stderr" "$test_root/fail.out"; then
+  note_failure "a failing job's stderr was merged into stdout: $(cat "$test_root/fail.out")"
+fi
 grep -q "exited 42" "$test_root/fail.err" ||
   note_failure "the failing job's exit status was not reported: $(cat "$test_root/fail.err")"
 
 echo "  ✅ a failing job propagates its remote exit status"
 
-# EX_TEMPFAIL (75) is how the unit reports a busy slot. The unit's own stderr is
-# discarded by the runner, so the helper itself must name the cause and must not
-# report the run as a success.
-if remote_exec_run 't_slotbusy' 'exit 75' \
+# EX_TEMPFAIL (75) is how the unit reports a busy slot. The unit's slot wrapper
+# writes the cause to its stderr, which --pipe carries back to the caller; the
+# fixture makes the job emit exactly that message on stderr, the way slot.sh
+# does, so this pins that the helper preserves the unit's own diagnosis instead
+# of discarding it and re-guessing. The run must still be non-zero.
+if remote_exec_run 't_slotbusy' \
+  'echo "remote-exec: another job already holds the server slot" >&2; exit 75' \
   >"$test_root/slotbusy.out" 2>"$test_root/slotbusy.err"; then
   note_failure "a job that exited 75 was reported as success"
 fi
 grep -q "another job already holds the server slot" "$test_root/slotbusy.err" ||
-  note_failure "the helper did not name the busy slot for an EX_TEMPFAIL run: $(cat "$test_root/slotbusy.err")"
+  note_failure "the unit's busy-slot stderr did not reach the caller: $(cat "$test_root/slotbusy.err")"
 grep -q "exited 75" "$test_root/slotbusy.err" ||
   note_failure "the helper did not report the EX_TEMPFAIL status: $(cat "$test_root/slotbusy.err")"
 
@@ -613,7 +647,7 @@ export REMOTE_EXEC_HOST="dsaw@192.0.2.1"
 err_temps_before="$(count_err_temps)"
 
 rm -f "$MOCK_CTL/reaped"
-export MOCK_DRIVER_JOB='echo strict-out; exit 42'
+export MOCK_DRIVER_JOB='echo strict-out; echo strict-err >&2; exit 42'
 strict_status=0
 "$strict_driver" >"$test_root/strict.out" 2>"$test_root/strict.err" ||
   strict_status=$?
@@ -625,6 +659,8 @@ if grep -q 'UNREACHABLE-STRICT-CALLER-CONTINUED' "$test_root/strict.out"; then
 fi
 grep -q 'strict-out' "$test_root/strict.out" ||
   note_failure "a strict set -e caller lost the job's stdout: $(cat "$test_root/strict.out")"
+grep -q 'strict-err' "$test_root/strict.err" ||
+  note_failure "a strict set -e caller lost the job's stderr: $(cat "$test_root/strict.err")"
 grep -q 'exited 42' "$test_root/strict.err" ||
   note_failure "a strict set -e caller got no failure diagnostic: $(cat "$test_root/strict.err")"
 if [[ ! -f "$MOCK_CTL/reaped" ]]; then
