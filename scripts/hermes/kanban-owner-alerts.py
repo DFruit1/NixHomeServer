@@ -5,7 +5,8 @@ This is operations glue, not a new backend or dependency. No board mutation,
 approval, subscription or unblock is performed by the unattended job.
 """
 import argparse
-from contextlib import closing
+from collections import Counter
+from contextlib import closing, nullcontext
 import fcntl
 import hashlib
 import json
@@ -16,11 +17,14 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 
 PROFILE = 'head-coordinator'
 JOB = 'kanban owner blocker alerts'
 MARKER = '<!-- kanban-owner-alerts -->'
 END_MARKER = '<!-- /kanban-owner-alerts -->'
+SUMMARY_INTERVAL = 3600
+MESSAGE_LIMIT = 1600
 
 
 def target_config(root):
@@ -40,33 +44,121 @@ def target_config(root):
     return f'simplex:{home}'
 
 
-def snapshot(board_file):
+def snapshot(board_file, task_id=None):
     with closing(sqlite3.connect((board_file.parent / 'kanban.db').resolve().as_uri() + '?mode=ro', uri=True)) as db:
         db.row_factory = sqlite3.Row
         db.execute('PRAGMA query_only=ON')
-        tasks = [dict(r) for r in db.execute("SELECT id,title,body,block_kind FROM tasks WHERE status='blocked' ORDER BY id")]
+        failure_column = 'last_failure_error' if 'last_failure_error' in [r[1] for r in db.execute('PRAGMA table_info(tasks)')] else 'NULL'
+        query = f'SELECT id,title,body,block_kind,status,{failure_column} AS failure FROM tasks WHERE '
+        tasks = [dict(r) for r in db.execute(query + ('id=?' if task_id else "status='blocked' ORDER BY id"), (task_id,) if task_id else ())]
         for task in tasks:
             event = db.execute("SELECT id,payload FROM task_events WHERE task_id=? AND (kind='blocked' OR (kind='status' AND json_extract(payload,'$.status')='blocked')) ORDER BY id DESC LIMIT 1", (task['id'],)).fetchone()
             task['event_id'] = event['id'] if event else 0
             task['reason'] = (json.loads(event['payload'] or '{}').get('reason') or '') if event else ''
+            failure = task.pop('failure')
+            if failure and task['reason'] in ('', 'initial_status'):
+                task['reason'] = failure
         return tasks
 
 
-def message(board, task):
-    heading = 'Owner decision' if task['block_kind'] == 'needs_input' else 'Technical blocker'
-    text = f"{heading}: {board} {task['id']}\n{task['title']}\n\n"
-    body = (task.get('body') or '').strip()
-    reason = (task.get('reason') or '').strip()
-    text += (body[:1100] + ('\n[Card body shortened]' if len(body) > 1100 else ''))
-    if reason and reason not in body:
-        text += '\n\nBlock reason: ' + reason[:1100]
-    if heading == 'Technical blocker':
-        text += f"\n\nReply: {board} {task['id']} — provide information or recovery instructions."
-        text += '\nThis reports an execution problem; replying does not approve a code or policy change.'
-    else:
-        text += f"\n\nReply: {board} {task['id']} — approve, reject, or provide the requested information."
-    text += '\nYour reply must be recorded on this exact card before any justified unblock. No deployment is authorised.'
-    return text
+def token(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+
+
+def load_inbox(root):
+    path = root / 'kanban/owner-alerts/inbox.json'
+    if not path.exists():
+        return {'version': 1, 'next_label': 1, 'decisions': {}, 'delivery': {}}
+    state = json.loads(path.read_text())
+    if (not isinstance(state, dict) or state.get('version') != 1
+            or type(state.get('next_label')) is not int or state['next_label'] < 1
+            or not isinstance(state.get('decisions'), dict) or not isinstance(state.get('delivery'), dict)):
+        raise ValueError('Invalid inbox state; restore it instead of reusing decision labels')
+    for label, decision in state['decisions'].items():
+        if (not isinstance(decision, dict) or not re.fullmatch(r'D[1-9][0-9]*', label) or int(label[1:]) >= state['next_label']
+                or not all(k in decision for k in ('board', 'task_id', 'token', 'shown', 'compact_complete', 'delivered'))):
+            raise ValueError('Invalid decision mapping; restore inbox state')
+        if (not isinstance(decision['board'], str) or not re.fullmatch(r'[a-zA-Z0-9_-]+', decision['board'])
+                or not isinstance(decision['task_id'], str) or not re.fullmatch(r't_[a-zA-Z0-9_]+', decision['task_id'])
+                or not isinstance(decision['delivered'], list) or not isinstance(decision['shown'], str)
+                or not isinstance(decision['compact_complete'], bool) or not isinstance(decision['token'], str)):
+            raise ValueError('Invalid decision record; restore inbox state')
+    for delivery in state['delivery'].values():
+        if (not isinstance(delivery, dict) or not isinstance(delivery.get('technical_token'), str)
+                or not isinstance(delivery.get('urgent'), dict) or 'technical_at' not in delivery
+                or (delivery['technical_at'] is not None and not isinstance(delivery['technical_at'], (int, float)))):
+            raise ValueError('Invalid delivery record; restore inbox state')
+    return state
+
+
+def inline_options(reason):
+    matches = list(re.finditer(r'\b([A-Z])\)\s*', reason))
+    options = []
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(reason)
+        choice = reason[match.end():end]
+        choice = re.split(r'\.\s+(?:Details|Context|Evidence)\b', choice)[0]
+        choice = re.sub(r'[,;\s]+(?:or|and)\s*$', '', choice).rstrip(' ,;.')
+        options.append((match[1], choice))
+    return options
+
+
+def decision_text(label, board, task):
+    body, reason = task.get('body') or '', task.get('reason') or ''
+    end = r'(?=^\s*[A-Z]\)|^NEEDED FROM YOU:|^IF UNANSWERED:|^Context:|^Must not change:|\Z)'
+    ask = re.search(r'^ASK:[ \t]*(.*?)' + end, body, re.M | re.S)
+    options = re.findall(r'^\s*([A-Z])\)[ \t]*(.*?)' + end, body, re.M | re.S)
+    question = ' '.join(ask[1].split()) if ask else 'Choose:'
+    # Older worker blockers sometimes put the choices inline in the reason.
+    reason_options = inline_options(reason)
+    conflicting = bool(ask and reason_options and
+                       [(k, ' '.join(v.split()).rstrip(' ,;.')) for k, v in options] != reason_options)
+    if not ask:
+        options = reason_options or options
+    heading = f'{label} · {board}\n' + ' '.join(task['title'].split())[:80]
+    lines = [question] + [f'{letter}) {" ".join(text.split())}' for letter, text in options]
+    # Never hide scope or consequences behind a truncated approval choice.
+    complete = not conflicting and bool(options or ask) and len({v[0] for v in options}) == len(options) and all(len(line) <= 180 for line in lines) and len('\n'.join(lines)) <= 650
+    if not complete:
+        return heading + f'\nDetails required before deciding: {label} details', False
+    return heading + '\n' + '\n'.join(lines), True
+
+
+def resolve(root, label):
+    state = load_inbox(root)
+    label = label.upper()
+    if label not in state['decisions']:
+        raise ValueError(f'Unknown decision {label}; do not guess its card')
+    decision = state['decisions'][label]
+    tasks = snapshot(root / 'kanban/boards' / decision['board'] / 'board.json', decision['task_id'])
+    current = tasks[0] if tasks else None
+    return {'label': label, **decision, 'current': current,
+            'can_reply': bool(current and current['status'] == 'blocked'
+                              and current['block_kind'] == 'needs_input'
+                              and token(current) == decision['token']
+                              and target_config(root) in decision['delivered'])}
+
+
+def details(root, label):
+    if label.lower() == 'blockers':
+        entries = []
+        for board in sorted((root / 'kanban/boards').glob('*/board.json')):
+            if not board.parent.name.startswith('_'):
+                entries += [(board.parent.name, t) for t in snapshot(board) if t['block_kind'] != 'needs_input']
+        return '\n\n'.join(f"{board}:{t['id']} · {t['title']}\nBlock reason: {t['reason']}" for board, t in entries) or 'No technical blockers.'
+    if re.fullmatch(r'[a-zA-Z0-9_-]+:t_[a-zA-Z0-9_]+', label):
+        board, task_id = label.split(':')
+        tasks = snapshot(root / 'kanban/boards' / board / 'board.json', task_id)
+        if not tasks:
+            raise ValueError('Unknown board/card')
+        task = tasks[0]
+        return f"{label} · {task['status']} · {task['title']}\n{task['body'] or ''}\nBlock reason: {task['reason']}"
+    decision = resolve(root, label)
+    current = decision['current']
+    return (f"{decision['label']} · {decision['board']} {decision['task_id']}\n"
+            + ('Current question.' if decision['can_reply'] else 'Stale, closed or undelivered question; do not act on this label.')
+            + f"\nShown:\n{decision['shown']}\nCurrent card:\n"
+            + (f"{current['status']} · {current['title']}\n{current['body'] or ''}\nBlock reason: {current['reason']}" if current else 'Card no longer exists.'))
 
 
 def send(root, target, text):
@@ -92,38 +184,116 @@ def save(path, state):
             os.unlink(temporary)
 
 
-def tick(root, dry_run=False):
+def technical_category(task):
+    reason = task['reason'].lower()
+    if re.search(r'model|unresponsive|provider|rate.limit', reason):
+        return 'worker failures'
+    if re.search(r'evidence|artifact|receipt|worktree', reason):
+        return 'missing evidence'
+    if re.search(r'operator|cleanup|credential|permission', reason):
+        return 'operator action'
+    return 'execution problems'
+
+
+def technical_summary(tasks):
+    counts = Counter(board for board, _ in tasks)
+    categories = Counter(technical_category(task) for _, task in tasks)
+    return (f'Technical blockers: {len(tasks)}\n'
+            + ', '.join(f'{board} {count}' for board, count in counts.items())[:500]
+            + '\n' + ', '.join(f'{count} {category}' for category, count in categories.items())
+            + '\nDetails: blockers')
+
+
+def tick(root, dry_run=False, now=None):
     target = target_config(root)
     if not dry_run and (os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT') or os.environ.get('HERMES_KANBAN_TASK')):
         raise PermissionError('Owner alerts run only from the operator or no-agent cron')
     directory = root / 'kanban/owner-alerts'
-    if dry_run:
-        for board in sorted((root / 'kanban/boards').glob('*/board.json')):
-            for task in snapshot(board):
-                print(message(board.parent.name, task))
-        return
-    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if not dry_run:
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     errors = []
-    with (directory / '.lock').open('a') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        path = directory / 'state.json'
-        state = json.loads(path.read_text()) if path.exists() else {}
+    snapshot_failed = False
+    now = time.time() if now is None else now
+    # Preview creates neither a state directory nor a lock file.
+    with ((directory / '.lock').open('a') if not dry_run else nullcontext()) as lock:
+        if lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+        path = directory / 'inbox.json'
+        state = load_inbox(root)
+        pending, technical = [], []
+        delivery = state['delivery'].setdefault(target, {'technical_token': '', 'technical_at': None, 'urgent': {}})
         for board in sorted((root / 'kanban/boards').glob('*/board.json')):
+            if board.parent.name.startswith('_'):
+                continue
             try:
                 for task in snapshot(board):
-                    key = f'{target}:{board.parent.name}:{task["id"]}'
-                    token = hashlib.sha256(json.dumps(task, sort_keys=True).encode()).hexdigest()
-                    if state.get(key) == token:
+                    if task['block_kind'] != 'needs_input':
+                        technical.append((board.parent.name, task))
                         continue
-                    try:
-                        send(root, target, message(board.parent.name, task))
-                        state[key] = token
-                        save(path, state)  # Advance only after successful delivery.
-                        print(f'Sent {board.parent.name} {task["id"]} block={task["event_id"]}')
-                    except (ValueError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
-                        errors.append(f'{board.parent.name} {task["id"]}: {exc}')
+                    revision = token(task)
+                    label = next((label for label, d in state['decisions'].items()
+                                  if (d['board'], d['task_id'], d['token']) == (board.parent.name, task['id'], revision)), None)
+                    if label is None:
+                        label = f'D{state["next_label"]}'
+                        state['next_label'] += 1
+                        shown, complete = decision_text(label, board.parent.name, task)
+                        state['decisions'][label] = {'board': board.parent.name, 'task_id': task['id'],
+                            'token': revision, 'shown': shown, 'compact_complete': complete, 'delivered': []}
+                    if target not in state['decisions'][label]['delivered']:
+                        pending.append(label)
             except (ValueError, OSError, sqlite3.Error) as exc:
                 errors.append(f'{board.parent.name}: {exc}')
+                snapshot_failed = True
+        if not dry_run:
+            save(path, state)  # Labels survive a failed send or a process restart.
+
+        def deliver(text):
+            if dry_run:
+                print(text)
+                return True
+            try:
+                send(root, target, text)
+                return True
+            except (ValueError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
+                errors.append(f'Delivery: {exc}')
+                return False
+
+        # Bound each decision inbox while batching independent questions.
+        batches, batch = [], []
+        for label in pending:
+            if batch and sum(len(state['decisions'][v]['shown']) + 2 for v in batch + [label]) > MESSAGE_LIMIT - 120:
+                batches.append(batch)
+                batch = []
+            batch.append(label)
+        if batch:
+            batches.append(batch)
+        for batch in batches:
+            text = 'Decision inbox\n\n' + '\n\n'.join(state['decisions'][v]['shown'] for v in batch)
+            text += f'\n\nReply: {batch[0]} <choice or answer>. Details: {batch[0]} details'
+            if deliver(text) and not dry_run:
+                for label in batch:
+                    state['decisions'][label]['delivered'].append(target)
+                save(path, state)
+        for board, task in technical:
+            urgency = re.search(r'^Urgency:\s*(security|regression)\s*$', task['body'] or '', re.M | re.I)
+            if not urgency:
+                continue
+            key = f'{board}:{task["id"]}'
+            revision = token({k: v for k, v in task.items() if k != 'event_id'})
+            if delivery['urgent'].get(key) != revision:
+                text = f'Urgent {urgency[1].lower()} · {board}\n' + task['title'][:100] + '\nDetails: blockers'
+                if deliver(text) and not dry_run:
+                    delivery['urgent'][key] = revision
+                    save(path, state)
+        # Retry churn does not change the technical fingerprint. Changed sets
+        # wait at most an hour; unchanged sets never generate reminders.
+        summary_token = token([(board, t['id']) for board, t in technical])
+        if (not snapshot_failed and summary_token != delivery['technical_token']
+                and (technical or delivery['technical_token'])
+                and (delivery['technical_at'] is None or now - delivery['technical_at'] >= SUMMARY_INTERVAL)):
+            if deliver(technical_summary(technical)) and not dry_run:
+                delivery.update(technical_token=summary_token, technical_at=now)
+                save(path, state)
     if errors:
         raise RuntimeError('; '.join(errors))
 
@@ -173,12 +343,22 @@ def install(root):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--dry-run', action='store_true')
-    parser.add_argument('--install', action='store_true')
+    actions = parser.add_mutually_exclusive_group()
+    actions.add_argument('--dry-run', action='store_true')
+    actions.add_argument('--install', action='store_true')
+    actions.add_argument('--resolve', metavar='D1', help='Read exact decision mapping and current validity as JSON')
+    actions.add_argument('--details', metavar='D1|blockers|board:card', help='Read requested diagnostics without sending or mutating')
     args = parser.parse_args()
     root = Path(os.environ.get('HERMES_ROOT', str(Path.home() / '.hermes')))
     try:
-        install(root) if args.install else tick(root, args.dry_run)
+        if args.resolve:
+            print(json.dumps(resolve(root, args.resolve)))
+        elif args.details:
+            print(details(root, args.details))
+        elif args.install:
+            install(root)
+        else:
+            tick(root, args.dry_run)
     except (ValueError, OSError, RuntimeError, sqlite3.Error, subprocess.SubprocessError) as exc:
         print(f'owner alerts: {exc}', file=sys.stderr)
         sys.exit(2)
