@@ -28,6 +28,12 @@
 # identity, which belongs to the workstation whose operator messages it and
 # cannot be regenerated if lost.
 #
+# Exactly one profile is wired to that daemon -- head-coordinator, the owner the
+# operator talks to (ownership gate t_e0cd9b45). Every profile whose .env carries
+# SIMPLEX_WS_URL opens its own adapter on the one loopback socket, and nothing
+# arbitrates between them, so the installer disables the endpoint in every other
+# profile while preserving the contactId pairing it finds there.
+#
 # It also installs the blocker-gate policy into the head-coordinator's SOUL.md,
 # from scripts/hermes/head-coordinator-blocker-gate.md, but only while the
 # compact owner-alert policy from scripts/hermes/kanban-owner-alerts.py is not
@@ -756,8 +762,16 @@ else
   fi
 fi
 
-# The adapter needs SIMPLEX_WS_URL in every profile's .env, and two values that
-# are specific to this machine's SimpleX identity and cannot live in git:
+# The adapter is enabled from a profile's .env, and exactly ONE profile is wired
+# to it: head-coordinator, the lane the owner talks to. That is the owner's
+# recorded choice on the ownership gate t_e0cd9b45 (reply "D3 A"), and it is a
+# constant rather than a knob -- every profile that carries SIMPLEX_WS_URL opens
+# its own socket to the one loopback daemon, the adapter keeps no inbound
+# deduplicator, and nothing arbitrates between the lanes, so the owner's message
+# is answered by whichever lane connected first.
+#
+# Two values are specific to this machine's SimpleX identity and cannot live in
+# git:
 #
 #   SIMPLEX_ALLOWED_USERS  numeric contactId of the operator. Matched on the
 #                          generated ID, never on the display name, because a
@@ -774,10 +788,25 @@ fi
 # their presence in a profile .env is reported and removed rather than
 # preserved: they disable the allowlist and widen the bot to group traffic, and
 # an unauthenticated bot on a channel that is supposed to be authenticated is
-# worse than no bot at all. The endpoint is likewise checked for exact equality
-# rather than presence.
+# worse than no bot at all.
+#
+# The endpoint is checked by exact equality rather than presence, because it is
+# also the key that switches the platform on: the plugin's
+# adapter._env_enablement() returns None without SIMPLEX_WS_URL, so a profile
+# that does not carry it constructs no adapter at all. That is what makes the
+# non-owner cleanup bounded -- see strip_simplex_lane below.
+#
+# A profile that is NOT the owner keeps whatever pairing it already stores. The
+# cleanup removes only what would enable or widen a lane in it, never the
+# contactId: the pairing is the owner's credential, not this script's to delete,
+# and with the endpoint gone there is no adapter to compete with the owner lane.
 SIMPLEX_ALLOWED_USERS="${SIMPLEX_ALLOWED_USERS:-}"
 SIMPLEX_HOME_CHANNEL="${SIMPLEX_HOME_CHANNEL:-}"
+
+# The one profile that answers the SimpleX channel. Not an env knob: the
+# ownership decision is recorded, and a mistyped override would install the
+# pairing into no profile at all while reporting success.
+SIMPLEX_OWNER_PROFILE='head-coordinator'
 
 # The one endpoint the adapter is allowed to talk to. It is a loopback URL and
 # not a knob, because the daemon in this arrangement is the local one started by
@@ -819,6 +848,62 @@ write_simplex_env() {
     [[ -n "$want_home" ]] && printf 'SIMPLEX_HOME_CHANNEL=%s\n' "$want_home"
     printf 'SIMPLEX_HOME_CHANNEL_NAME=%s\n' "$want_home_name"
   } >>"$tmp"
+  install -m 0600 "$tmp" "$env_file"
+  rm -f "$tmp"
+}
+
+# Every way a NON-owner .env still carries a SimpleX lane: the endpoint, which
+# is the key the platform is enabled from, and the two switches that drop the
+# allowlist or admit group traffic. One violation per line, empty when the file
+# is clear.
+#
+# The pairing keys are deliberately absent from this list: a non-owner is
+# allowed to keep the contactId it already stores, so reporting it as drift or
+# deleting it would be the credential destruction this cleanup must not do. What
+# must not survive there is the ability to open an adapter.
+simplex_lane_key_violations() {
+  local env_file="$1" key out=''
+  if grep -qE '^[[:space:]]*SIMPLEX_WS_URL=' "$env_file" 2>/dev/null; then
+    out+="SIMPLEX_WS_URL is set;"$'\n'
+  fi
+  for key in $SIMPLEX_FORBIDDEN_KEYS; do
+    if grep -qE "^[[:space:]]*$key=" "$env_file" 2>/dev/null; then
+      out+="$key is set;"$'\n'
+    fi
+  done
+  printf '%s' "$out"
+}
+
+# Disable the SimpleX lane in a profile that must not own the channel -- and
+# only that. The endpoint goes, so adapter._env_enablement() returns None and no
+# adapter is constructed to compete with the owner; the two open-bot switches
+# go; every other line, including the contactId pairing and any unrelated
+# credential the operator keeps there, is left exactly as it was. Nothing is
+# created either way: a profile with no .env is not this channel's business.
+#
+# Rewritten only when a lane key was actually present, so a clean .env keeps its
+# inode and timestamp, and a check-then-apply pair on a machine that is already
+# correct touches nothing at all.
+strip_simplex_lane() {
+  local env_file="$1" tmp
+  [[ -f "$env_file" ]] || return 0
+  [[ -n "$(simplex_lane_key_violations "$env_file")" ]] || return 0
+  tmp="$(mktemp)"
+  grep -vE "^[[:space:]]*(SIMPLEX_WS_URL|${SIMPLEX_FORBIDDEN_KEYS// /|})=" \
+    "$env_file" >"$tmp" 2>/dev/null || true
+  # When those keys were the whole block, the installer's own two-line
+  # provenance header would be left describing assignments that are no longer
+  # there. It is removed too, but only then, and matched line-for-line so an
+  # operator's own comment can never be caught by it.
+  if ! grep -qE '^[[:space:]]*SIMPLEX_' "$tmp" 2>/dev/null; then
+    awk -v c1='# SimpleX Chat (Hermes messaging adapter). Written by' \
+        -v c2='# scripts/hermes/install-board-wiring.sh; edit there, not here.' '
+      $0 == c1 || $0 == c2 { next }
+      prev == "" && $0 == "" { next }
+      { prev = $0; print }
+    ' "$tmp" >"${tmp}.2"
+    mv "${tmp}.2" "$tmp"
+  fi
   install -m 0600 "$tmp" "$env_file"
   rm -f "$tmp"
 }
@@ -894,24 +979,47 @@ read_simplex_pairing() {
 }
 
 if [[ -n "$SIMPLEX_ALLOWED_USERS" || -n "$SIMPLEX_HOME_CHANNEL" ]]; then
-  for profile_dir in "$HERMES_ROOT"/profiles/*/; do
-    [[ -d "$profile_dir" ]] || continue
-    profile="${profile_dir%/}"; profile="${profile##*/}"
-    env_file="$profile_dir/.env"
-    [[ -f "$env_file" ]] || : >"$env_file"
-    # Named before anything is rewritten, so a forbidden flag is reported even
-    # when apply mode goes on to remove it a line later.
-    report_simplex_violations "$profile" "$env_file" "$(simplex_env_violations "$env_file")"
-    if [[ "$check_only" == true ]]; then
-      # Non-zero from check_simplex_env means "this .env has no allowlist", and
-      # drift is already counted. Tolerated here or `set -e` would abort the
-      # script on the first mismatched profile and never inspect the rest.
-      check_simplex_env "$env_file" "$profile" "$SIMPLEX_ALLOWED_USERS" "$SIMPLEX_HOME_CHANNEL" || true
-    else
-      write_simplex_env "$profile_dir" "$SIMPLEX_ALLOWED_USERS" "$SIMPLEX_HOME_CHANNEL"
-      changed "wrote the SimpleX env block into $profile_dir/.env"
-    fi
-  done
+  if [[ ! -d "$HERMES_ROOT/profiles/$SIMPLEX_OWNER_PROFILE" ]]; then
+    # Named, never silently substituted: on a machine whose owner profile is
+    # missing (a profile reset, a renamed lane) a fallback would install the
+    # pairing into no profile at all while reporting success, and the operator
+    # would find out from a chat that never answers.
+    unrepaired "SIMPLEX_OWNER_PROFILE '$SIMPLEX_OWNER_PROFILE' is not a profile directory under $HERMES_ROOT/profiles, so the SimpleX block was written nowhere"
+  else
+    for profile_dir in "$HERMES_ROOT"/profiles/*/; do
+      [[ -d "$profile_dir" ]] || continue
+      profile="${profile_dir%/}"; profile="${profile##*/}"
+      env_file="$profile_dir/.env"
+      if [[ "$profile" != "$SIMPLEX_OWNER_PROFILE" ]]; then
+        # A non-owner only ever gets its lane disabled. Its .env is not created:
+        # an unrelated profile has nothing to do with this channel, so a
+        # reinstall must not add a file to it.
+        [[ -f "$env_file" ]] || continue
+        violations="$(simplex_lane_key_violations "$env_file")"
+        report_simplex_violations "$profile" "$env_file" "$violations"
+        if [[ -n "$violations" && "$check_only" != true ]]; then
+          strip_simplex_lane "$env_file"
+          changed "disabled the SimpleX lane in $profile .env; only $SIMPLEX_OWNER_PROFILE answers this channel"
+        elif [[ -z "$violations" && -n "$(simplex_env_value "$env_file" SIMPLEX_ALLOWED_USERS)" ]]; then
+          ok "$profile .env carries no SimpleX lane and keeps its stored pairing"
+        fi
+        continue
+      fi
+      [[ -f "$env_file" ]] || : >"$env_file"
+      # Named before anything is rewritten, so a forbidden flag is reported even
+      # when apply mode goes on to remove it a line later.
+      report_simplex_violations "$profile" "$env_file" "$(simplex_env_violations "$env_file")"
+      if [[ "$check_only" == true ]]; then
+        # Non-zero from check_simplex_env means "this .env has no allowlist", and
+        # drift is already counted. Tolerated here or `set -e` would abort the
+        # script on the first mismatched profile and never inspect the rest.
+        check_simplex_env "$env_file" "$profile" "$SIMPLEX_ALLOWED_USERS" "$SIMPLEX_HOME_CHANNEL" || true
+      else
+        write_simplex_env "$profile_dir" "$SIMPLEX_ALLOWED_USERS" "$SIMPLEX_HOME_CHANNEL"
+        changed "wrote the SimpleX env block into $profile_dir/.env"
+      fi
+    done
+  fi
 else
   # No contact ID supplied on this run. Two things follow, and they pull in
   # opposite directions, so both are stated:
@@ -932,6 +1040,21 @@ else
     [[ -d "$profile_dir" ]] || continue
     profile="${profile_dir%/}"; profile="${profile##*/}"
     env_file="$profile_dir/.env"
+    if [[ "$profile" != "$SIMPLEX_OWNER_PROFILE" ]]; then
+      # The same bounded cleanup, and the same scope on this path: a lane that
+      # only this installer's earlier version could have created is disabled,
+      # and the pairing it stores is left for the owner of that profile.
+      [[ -f "$env_file" ]] || continue
+      violations="$(simplex_lane_key_violations "$env_file")"
+      report_simplex_violations "$profile" "$env_file" "$violations"
+      if [[ -n "$violations" && "$check_only" != true ]]; then
+        strip_simplex_lane "$env_file"
+        changed "disabled the SimpleX lane in $profile .env; only $SIMPLEX_OWNER_PROFILE answers this channel"
+      elif [[ -z "$violations" && -n "$(simplex_env_value "$env_file" SIMPLEX_ALLOWED_USERS)" ]]; then
+        ok "$profile .env carries no SimpleX lane and keeps its stored pairing"
+      fi
+      continue
+    fi
     read_simplex_pairing "$env_file"
     violations="$(simplex_env_violations "$env_file")"
     report_simplex_violations "$profile" "$env_file" "$violations"
@@ -948,7 +1071,7 @@ else
       ok "$profile .env keeps the pairing already installed (allowlist ${SIMPLEX_HAVE_ALLOW})"
     fi
   done
-  unrepaired "SIMPLEX_ALLOWED_USERS and SIMPLEX_HOME_CHANNEL are unset on this run, so a profile with no pairing still denies every contact and notifications have no target; run this installer with SIMPLEX_ALLOWED_USERS=<contactId> SIMPLEX_HOME_CHANNEL=<contactId>"
+  unrepaired "SIMPLEX_ALLOWED_USERS and SIMPLEX_HOME_CHANNEL are unset on this run, so $SIMPLEX_OWNER_PROFILE with no pairing still denies every contact and notifications have no target; run this installer with SIMPLEX_ALLOWED_USERS=<contactId> SIMPLEX_HOME_CHANNEL=<contactId>"
 fi
 
 # ---------------------------------------------------------------------------

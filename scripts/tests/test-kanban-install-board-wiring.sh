@@ -36,6 +36,13 @@
 # not backed up. The autostart Exec must also point outside the checkout, since a
 # worker deletes its worktree on completion.
 #
+# It also pins the adapter-owner scope: only the owner lane may carry the
+# endpoint, every other lane is reported and then disabled rather than wired,
+# and the pairing plus the unrelated credentials those lanes already store must
+# survive both apply orders. A second lane on the same loopback socket answers
+# the same owner message, which is a defect no source test could see before
+# these fixtures existed.
+#
 # Hermetic: a fixture HERMES_ROOT, a fake hermes on PATH that records what it was
 # asked to do, and no network, no real profile and no real cron job anywhere.
 
@@ -65,6 +72,9 @@ XDG_CONFIG_HOME="$fixture/config"
 SIMPLEX_STATE_DIR="$fixture/simplex-state"
 LANES=(default head-coordinator feature-reviewer standard-implementer project-auditor
        local-implementer principal-consultant)
+# The one profile the SimpleX adapter is wired into (ownership gate t_e0cd9b45).
+# Every other lane in this fixture stands in for a profile that must NOT be.
+OWNER_LANE=head-coordinator
 mkdir -p "$HERMES_FIXTURE" "$HERMES_BIN_FIXTURE" "$XDG_CONFIG_HOME" "$SIMPLEX_STATE_DIR"
 
 for lane in "${LANES[@]}"; do
@@ -468,7 +478,9 @@ pass "--check builds no daemon binary"
 
 # --- the adapter env block --------------------------------------------------
 #
-# Two things here are security properties, not conveniences:
+# The SimpleX adapter is enabled from a profile's .env, and exactly one profile
+# may carry that enablement. Two things beyond that are security properties, not
+# conveniences:
 #
 #   * SIMPLEX_ALLOW_ALL_USERS must never be written. It disables the allowlist,
 #     so a mistyped config would turn a contact-scoped bot into an open one, and
@@ -477,33 +489,41 @@ pass "--check builds no daemon binary"
 #     denies every contact, which from the outside is indistinguishable from a
 #     dead daemon -- the exact failure a card author would chase on the wrong
 #     host.
+#
+# A second profile carrying SIMPLEX_WS_URL is not duplicate configuration, it is
+# a second adapter on the same loopback socket answering the same owner message,
+# so these assertions are as much about the profiles that must NOT be wired as
+# about the one that must.
 
+rm -f "$HERMES_FIXTURE"/profiles/*/.env
 SIMPLEX_ALLOWED_USERS_OVERRIDE=7 SIMPLEX_HOME_CHANNEL_OVERRIDE=7 run_installer >/dev/null 2>&1
+owner_env="$(simplex_profile "$OWNER_LANE")"
+grep -qx 'SIMPLEX_WS_URL=ws://127.0.0.1:5225' "$owner_env" ||
+  fail "the owner .env does not point at the local daemon: $(cat "$owner_env")"
+grep -qx 'SIMPLEX_ALLOWED_USERS=7' "$owner_env" ||
+  fail "the owner .env has no contact allowlist: $(cat "$owner_env")"
+grep -qx 'SIMPLEX_HOME_CHANNEL=7' "$owner_env" ||
+  fail "the owner .env has no home channel: $(cat "$owner_env")"
+grep -q 'SIMPLEX_ALLOW_ALL' "$owner_env" &&
+  fail "the owner .env enables SIMPLEX_ALLOW_ALL_USERS; the allowlist is the control here"
+grep -q 'SIMPLEX_GROUP_ALLOWED' "$owner_env" &&
+  fail "the owner .env enables SIMPLEX_GROUP_ALLOWED; group traffic stays ignored"
+[[ "$(stat -c %a "$owner_env")" == 600 ]] ||
+  fail "the owner .env is mode $(stat -c %a "$owner_env"), want 600"
 for lane in "${LANES[@]}"; do
-  env_file="$(simplex_profile "$lane")"
-  grep -qx 'SIMPLEX_WS_URL=ws://127.0.0.1:5225' "$env_file" ||
-    fail "$lane .env does not point at the local daemon: $(cat "$env_file")"
-  grep -qx 'SIMPLEX_ALLOWED_USERS=7' "$env_file" ||
-    fail "$lane .env has no contact allowlist: $(cat "$env_file")"
-  grep -qx 'SIMPLEX_HOME_CHANNEL=7' "$env_file" ||
-    fail "$lane .env has no home channel: $(cat "$env_file")"
-  grep -q 'SIMPLEX_ALLOW_ALL' "$env_file" &&
-    fail "$lane .env enables SIMPLEX_ALLOW_ALL_USERS; the allowlist is the control here"
-  grep -q 'SIMPLEX_GROUP_ALLOWED' "$env_file" &&
-    fail "$lane .env enables SIMPLEX_GROUP_ALLOWED; group traffic stays ignored"
-  [[ "$(stat -c %a "$env_file")" == 600 ]] ||
-    fail "$lane .env is mode $(stat -c %a "$env_file"), want 600"
+  [[ "$lane" == "$OWNER_LANE" ]] && continue
+  [[ -e "$(simplex_profile "$lane")" ]] &&
+    fail "$lane .env was created; only $OWNER_LANE owns the SimpleX adapter"
 done
-pass "writes the allowlist, home channel and loopback URL into every profile .env"
+pass "writes the allowlist, home channel and loopback URL into the owner .env only"
 
 # Re-running must replace the block, not accumulate it: a changed contactId left
 # behind next to the new one would be read as a two-entry allowlist.
 SIMPLEX_ALLOWED_USERS_OVERRIDE=9 SIMPLEX_HOME_CHANNEL_OVERRIDE=9 run_installer >/dev/null 2>&1
-env_file="$(simplex_profile default)"
-[[ "$(grep -c '^SIMPLEX_ALLOWED_USERS=' "$env_file")" == 1 ]] ||
-  fail "re-running left more than one SIMPLEX_ALLOWED_USERS line: $(cat "$env_file")"
-grep -qx 'SIMPLEX_ALLOWED_USERS=9' "$env_file" ||
-  fail "a changed contactId did not replace the old one: $(cat "$env_file")"
+[[ "$(grep -c '^SIMPLEX_ALLOWED_USERS=' "$owner_env")" == 1 ]] ||
+  fail "re-running left more than one SIMPLEX_ALLOWED_USERS line: $(cat "$owner_env")"
+grep -qx 'SIMPLEX_ALLOWED_USERS=9' "$owner_env" ||
+  fail "a changed contactId did not replace the old one: $(cat "$owner_env")"
 pass "a re-run replaces the block rather than appending to it"
 
 # An unset allowlist is reported, not silently accepted.
@@ -528,18 +548,39 @@ pass "reports an unset allowlist instead of assuming the channel is closed"
 #
 # Fail-closed means --check reports them and apply removes them, on both the
 # contact-scoped and the no-contact path.
+#
+# A non-owner lane is poisoned with MORE than the owner's: a credential of its
+# own, and the pairing the superseded installer wrote into every lane. The
+# disable is bounded to the keys that change behaviour, so all three must come
+# out the other side.
 
-# Poison every profile .env the way a stale restore would: wrong port, bot open
-# to everyone, and answering group traffic.
-for lane in "${LANES[@]}"; do
-  cat >"$(simplex_profile "$lane")" <<'ENV'
+# A superseded run left this block in a lane it should not have.
+poison_owner_env() {
+  cat >"$(simplex_profile "$OWNER_LANE")" <<'ENV'
 SIMPLEX_WS_URL=ws://127.0.0.1:5999
 SIMPLEX_ALLOWED_USERS=4
 SIMPLEX_HOME_CHANNEL=4
 SIMPLEX_ALLOW_ALL_USERS=true
 SIMPLEX_GROUP_ALLOWED=*
 ENV
-done
+}
+
+poison_non_owner_envs() {
+  for lane in "${LANES[@]}"; do
+    [[ "$lane" == "$OWNER_LANE" ]] && continue
+    cat >"$(simplex_profile "$lane")" <<'ENV'
+SIMPLEX_WS_URL=ws://127.0.0.1:5999
+SIMPLEX_ALLOWED_USERS=4
+SIMPLEX_HOME_CHANNEL=4
+SIMPLEX_ALLOW_ALL_USERS=true
+SIMPLEX_GROUP_ALLOWED=*
+TELEGRAM_BOT_TOKEN=keep-me
+ENV
+  done
+}
+
+poison_owner_env
+poison_non_owner_envs
 
 # Captured rather than assigned directly: under `set -e` a non-zero installer
 # inside `$(...)` kills this test with no message, and a silent exit 1 is exactly
@@ -552,81 +593,109 @@ open_check="$(SIMPLEX_ALLOWED_USERS_OVERRIDE=7 SIMPLEX_HOME_CHANNEL_OVERRIDE=7 \
 [[ "$open_check_rc" == 0 ]] ||
   fail "--check exited $open_check_rc instead of reporting every profile's .env: $open_check"
 grep -q "SIMPLEX_WS_URL is 'ws://127.0.0.1:5999', want 'ws://127.0.0.1:5225'" <<<"$open_check" ||
-  fail "--check accepted a .env pointing at the wrong SimpleX endpoint: $open_check"
+  fail "--check accepted an owner .env pointing at the wrong SimpleX endpoint: $open_check"
 grep -q 'SIMPLEX_ALLOW_ALL_USERS is set' <<<"$open_check" ||
   fail "--check did not report SIMPLEX_ALLOW_ALL_USERS: $open_check"
 grep -q 'SIMPLEX_GROUP_ALLOWED is set' <<<"$open_check" ||
   fail "--check did not report SIMPLEX_GROUP_ALLOWED: $open_check"
 grep -q 'SIMPLEX_ALLOW_ALL_USERS is set; a re-run removes it' <<<"$open_check" ||
   fail "--check did not say a re-run removes the flag, so an operator cannot tell the repair: $open_check"
+# The non-owner is reported as a LANE, not as a pairing mismatch: its contactId
+# is allowed to stay, its endpoint is not.
+grep -qE 'feature-reviewer \.env: SIMPLEX_WS_URL is set; a re-run removes it' <<<"$open_check" ||
+  fail "--check did not report a non-owner lane by its endpoint: $open_check"
+# ...and --check changed nothing anywhere.
+before="$(sha256sum <"$(simplex_profile feature-reviewer)")"
+SIMPLEX_ALLOWED_USERS_OVERRIDE=7 SIMPLEX_HOME_CHANNEL_OVERRIDE=7 run_installer --check >/dev/null 2>&1
+after="$(sha256sum <"$(simplex_profile feature-reviewer)")"
+[[ "$before" == "$after" ]] || fail "--check rewrote a non-owner .env"
 pass "--check reports a wrong endpoint and both forbidden flags"
 
-# Apply must remove them rather than preserve them, and --check must be clean
-# afterwards. Checked on both paths: with a contactId supplied, and without.
+# Apply must remove them rather than preserve them.
 SIMPLEX_ALLOWED_USERS_OVERRIDE=7 SIMPLEX_HOME_CHANNEL_OVERRIDE=7 run_installer >"$fixture/open-apply.log" 2>&1
 grep -q 'SIMPLEX_ALLOW_ALL_USERS is set; removed' "$fixture/open-apply.log" ||
   fail "apply did not name the flag it removed: $(cat "$fixture/open-apply.log")"
+grep -qx 'SIMPLEX_WS_URL=ws://127.0.0.1:5225' "$owner_env" ||
+  fail "the owner .env kept the wrong SimpleX endpoint after a reinstall: $(cat "$owner_env")"
+grep -q 'SIMPLEX_ALLOW_ALL' "$owner_env" &&
+  fail "the owner .env still enables SIMPLEX_ALLOW_ALL_USERS after a reinstall: $(cat "$owner_env")"
+grep -q 'SIMPLEX_GROUP_ALLOWED' "$owner_env" &&
+  fail "the owner .env still enables SIMPLEX_GROUP_ALLOWED after a reinstall: $(cat "$owner_env")"
+[[ "$(stat -c %a "$owner_env")" == 600 ]] ||
+  fail "the owner .env is mode $(stat -c %a "$owner_env") after the reinstall, want 600"
+grep -q "disabled the SimpleX lane in feature-reviewer .env" "$fixture/open-apply.log" ||
+  fail "apply did not report disabling a non-owner lane: $(cat "$fixture/open-apply.log")"
 for lane in "${LANES[@]}"; do
+  [[ "$lane" == "$OWNER_LANE" ]] && continue
   env_file="$(simplex_profile "$lane")"
-  grep -q 'SIMPLEX_ALLOW_ALL' "$env_file" &&
-    fail "$lane .env still enables SIMPLEX_ALLOW_ALL_USERS after a reinstall: $(cat "$env_file")"
-  grep -q 'SIMPLEX_GROUP_ALLOWED' "$env_file" &&
-    fail "$lane .env still enables SIMPLEX_GROUP_ALLOWED after a reinstall: $(cat "$env_file")"
-  grep -qx 'SIMPLEX_WS_URL=ws://127.0.0.1:5225' "$env_file" ||
-    fail "$lane .env kept the wrong SimpleX endpoint after a reinstall: $(cat "$env_file")"
+  grep -qE '^[[:space:]]*SIMPLEX_WS_URL=' "$env_file" &&
+    fail "$lane .env still opens its own adapter after a reinstall: $(cat "$env_file")"
+  grep -qE '^[[:space:]]*SIMPLEX_(ALLOW_ALL_USERS|GROUP_ALLOWED)=' "$env_file" &&
+    fail "$lane .env still carries an open-bot switch after a reinstall: $(cat "$env_file")"
+  grep -qx 'TELEGRAM_BOT_TOKEN=keep-me' "$env_file" ||
+    fail "$lane .env lost an unrelated credential to the SimpleX cleanup: $(cat "$env_file")"
+  grep -qx 'SIMPLEX_ALLOWED_USERS=4' "$env_file" ||
+    fail "$lane .env lost the pairing it already stored: $(cat "$env_file")"
+  grep -qx 'SIMPLEX_HOME_CHANNEL=4' "$env_file" ||
+    fail "$lane .env lost the home channel it already stored: $(cat "$env_file")"
   [[ "$(stat -c %a "$env_file")" == 600 ]] ||
-    fail "$lane .env is mode $(stat -c %a "$env_file") after the reinstall, want 600"
+    fail "$lane .env is mode $(stat -c %a "$env_file") after the cleanup, want 600"
 done
-pass "a reinstall removes the forbidden flags and corrects the endpoint"
+pass "a reinstall disables only the non-owner lane and keeps its credentials and pairing"
 
 # The no-contact path is the one an operator hits on an ordinary re-apply, so it
-# gets the same enforcement.
-for lane in "${LANES[@]}"; do
-  cat >"$(simplex_profile "$lane")" <<'ENV'
-SIMPLEX_WS_URL=ws://127.0.0.1:5999
-SIMPLEX_ALLOWED_USERS=4
-SIMPLEX_HOME_CHANNEL=4
-SIMPLEX_ALLOW_ALL_USERS=true
-SIMPLEX_GROUP_ALLOWED=*
-ENV
-done
+# gets the same enforcement, and the same bound.
+poison_owner_env
+poison_non_owner_envs
 SIMPLEX_ALLOWED_USERS_OVERRIDE='' SIMPLEX_HOME_CHANNEL_OVERRIDE='' \
   run_installer >"$fixture/open-noid.log" 2>&1
+grep -qx 'SIMPLEX_WS_URL=ws://127.0.0.1:5225' "$owner_env" ||
+  fail "the owner .env kept the wrong endpoint on a no-contact reinstall: $(cat "$owner_env")"
+grep -q 'SIMPLEX_ALLOW_ALL' "$owner_env" &&
+  fail "the owner .env kept SIMPLEX_ALLOW_ALL_USERS on a no-contact reinstall: $(cat "$owner_env")"
+grep -q 'SIMPLEX_GROUP_ALLOWED' "$owner_env" &&
+  fail "the owner .env kept SIMPLEX_GROUP_ALLOWED on a no-contact reinstall: $(cat "$owner_env")"
+grep -q 'keeps the pairing already installed' "$fixture/open-noid.log" ||
+  fail "the no-contact path did not report that it kept the pairing: $(cat "$fixture/open-noid.log")"
 for lane in "${LANES[@]}"; do
+  [[ "$lane" == "$OWNER_LANE" ]] && continue
   env_file="$(simplex_profile "$lane")"
-  grep -q 'SIMPLEX_ALLOW_ALL' "$env_file" &&
-    fail "$lane .env kept SIMPLEX_ALLOW_ALL_USERS on a no-contact reinstall: $(cat "$env_file")"
-  grep -q 'SIMPLEX_GROUP_ALLOWED' "$env_file" &&
-    fail "$lane .env kept SIMPLEX_GROUP_ALLOWED on a no-contact reinstall: $(cat "$env_file")"
-  grep -qx 'SIMPLEX_WS_URL=ws://127.0.0.1:5225' "$env_file" ||
-    fail "$lane .env kept the wrong endpoint on a no-contact reinstall: $(cat "$env_file")"
+  grep -qE '^[[:space:]]*SIMPLEX_WS_URL=' "$env_file" &&
+    fail "$lane .env was re-enabled on a no-contact reinstall: $(cat "$env_file")"
+  grep -qE '^[[:space:]]*SIMPLEX_(ALLOW_ALL_USERS|GROUP_ALLOWED)=' "$env_file" &&
+    fail "$lane .env kept an open-bot switch on a no-contact reinstall: $(cat "$env_file")"
+  grep -qx 'TELEGRAM_BOT_TOKEN=keep-me' "$env_file" ||
+    fail "$lane .env lost an unrelated credential on the no-contact path: $(cat "$env_file")"
+  grep -qx 'SIMPLEX_ALLOWED_USERS=4' "$env_file" ||
+    fail "$lane .env lost its pairing on the no-contact path: $(cat "$env_file")"
 done
-pass "the no-contact path is fail-closed too"
+pass "the no-contact path is fail-closed for the lane and bounded for everything else"
 
 # ...and it must not do that by wiping a valid pairing. Enforcing fail-closed and
 # preserving the pairing are separate properties; this asserts the second, because
 # the obvious repair for the first (always emit empty values) silently revokes
 # the owner's access to the bot, which from the outside is a bot that stopped
 # answering and no error anywhere.
-env_file="$(simplex_profile default)"
-grep -qx 'SIMPLEX_ALLOWED_USERS=4' "$env_file" ||
-  fail "a no-contact reinstall discarded the installed pairing: $(cat "$env_file")"
-grep -qx 'SIMPLEX_HOME_CHANNEL=4' "$env_file" ||
-  fail "a no-contact reinstall discarded the installed home channel: $(cat "$env_file")"
-grep -q 'keeps the pairing already installed' "$fixture/open-noid.log" ||
-  fail "the no-contact path did not report that it kept the pairing: $(cat "$fixture/open-noid.log")"
+grep -qx 'SIMPLEX_ALLOWED_USERS=4' "$owner_env" ||
+  fail "a no-contact reinstall discarded the installed pairing: $(cat "$owner_env")"
+grep -qx 'SIMPLEX_HOME_CHANNEL=4' "$owner_env" ||
+  fail "a no-contact reinstall discarded the installed home channel: $(cat "$owner_env")"
 pass "a no-contact reinstall keeps a valid pairing while removing the flags"
 
 # A file with no pairing at all still gets a correct, closed endpoint rather than
 # being skipped: this is the fresh-machine path.
 rm -f "$HERMES_FIXTURE"/profiles/*/.env
 SIMPLEX_ALLOWED_USERS_OVERRIDE='' SIMPLEX_HOME_CHANNEL_OVERRIDE='' run_installer >/dev/null 2>&1
-env_file="$(simplex_profile default)"
-grep -qx 'SIMPLEX_WS_URL=ws://127.0.0.1:5225' "$env_file" ||
-  fail "a no-contact apply on a fresh profile did not write the loopback endpoint: $(cat "$env_file")"
-grep -q '^SIMPLEX_ALLOWED_USERS=' "$env_file" &&
-  fail "a fresh profile was given an allowlist out of thin air: $(cat "$env_file")"
-pass "writes the loopback endpoint on a fresh profile and invents no allowlist"
+grep -qx 'SIMPLEX_WS_URL=ws://127.0.0.1:5225' "$owner_env" ||
+  fail "a no-contact apply on a fresh profile did not write the loopback endpoint: $(cat "$owner_env")"
+grep -q '^SIMPLEX_ALLOWED_USERS=' "$owner_env" &&
+  fail "a fresh profile was given an allowlist out of thin air: $(cat "$owner_env")"
+for lane in "${LANES[@]}"; do
+  [[ "$lane" == "$OWNER_LANE" ]] && continue
+  [[ -e "$(simplex_profile "$lane")" ]] &&
+    fail "a no-contact apply created $lane/.env; only $OWNER_LANE owns the adapter"
+done
+pass "writes the loopback endpoint on a fresh owner profile and invents no allowlist"
 
 # --- an indented assignment is still an assignment --------------------------
 #
@@ -644,16 +713,14 @@ pass "writes the loopback endpoint on a fresh profile and invents no allowlist"
 
 # printf rather than a heredoc: the tab-indented line has to be a real tab, and a
 # literal one in a heredoc body is easy to lose to a reformat or an editor.
-for lane in "${LANES[@]}"; do
-  printf '%s\n' \
-    'SIMPLEX_WS_URL=ws://127.0.0.1:5225' \
-    '  SIMPLEX_ALLOWED_USERS=4' \
-    'SIMPLEX_HOME_CHANNEL=4' \
-    '  SIMPLEX_ALLOW_ALL_USERS=true' \
-    "$(printf '	SIMPLEX_GROUP_ALLOWED=*')" \
-    'HERMES_OTHER_SETTING=keep-me' \
-    >"$(simplex_profile "$lane")"
-done
+printf '%s\n' \
+  'SIMPLEX_WS_URL=ws://127.0.0.1:5225' \
+  '  SIMPLEX_ALLOWED_USERS=4' \
+  'SIMPLEX_HOME_CHANNEL=4' \
+  '  SIMPLEX_ALLOW_ALL_USERS=true' \
+  "$(printf '	SIMPLEX_GROUP_ALLOWED=*')" \
+  'HERMES_OTHER_SETTING=keep-me' \
+  >"$owner_env"
 
 indent_check_rc=0
 indent_check="$(SIMPLEX_ALLOWED_USERS_OVERRIDE=4 SIMPLEX_HOME_CHANNEL_OVERRIDE=4 \
@@ -672,7 +739,7 @@ grep -qE '\.env has SIMPLEX_ALLOWED_USERS' <<<"$indent_check" &&
 # stripped out of the reported value rather than quoted back at the operator.
 mismatch_check="$(SIMPLEX_ALLOWED_USERS_OVERRIDE=9 SIMPLEX_HOME_CHANNEL_OVERRIDE=9 \
   run_installer --check 2>&1)"
-grep -q "default .env has SIMPLEX_ALLOWED_USERS='4' SIMPLEX_HOME_CHANNEL='4'; want '9' / '9'" \
+grep -q "$OWNER_LANE .env has SIMPLEX_ALLOWED_USERS='4' SIMPLEX_HOME_CHANNEL='4'; want '9' / '9'" \
   <<<"$mismatch_check" ||
   fail "--check did not report the real pairing mismatch cleanly: $mismatch_check"
 pass "--check detects indented forbidden keys and reads indented pairing"
@@ -681,17 +748,14 @@ SIMPLEX_ALLOWED_USERS_OVERRIDE=7 SIMPLEX_HOME_CHANNEL_OVERRIDE=7 \
   run_installer >"$fixture/indent-apply.log" 2>&1
 grep -q 'SIMPLEX_ALLOW_ALL_USERS is set; removed' "$fixture/indent-apply.log" ||
   fail "apply did not name the indented flag it removed: $(cat "$fixture/indent-apply.log")"
-for lane in "${LANES[@]}"; do
-  env_file="$(simplex_profile "$lane")"
-  grep -qE '^[[:space:]]*SIMPLEX_ALLOW_ALL_USERS=' "$env_file" &&
-    fail "$lane .env kept the indented SIMPLEX_ALLOW_ALL_USERS: $(cat "$env_file")"
-  grep -qE '^[[:space:]]*SIMPLEX_GROUP_ALLOWED=' "$env_file" &&
-    fail "$lane .env kept the indented SIMPLEX_GROUP_ALLOWED: $(cat "$env_file")"
-  grep -qx 'HERMES_OTHER_SETTING=keep-me' "$env_file" ||
-    fail "$lane .env lost an unrelated setting to the SimpleX rewrite: $(cat "$env_file")"
-  [[ "$(stat -c %a "$env_file")" == 600 ]] ||
-    fail "$lane .env is mode $(stat -c %a "$env_file") after the rewrite, want 600"
-done
+grep -qE '^[[:space:]]*SIMPLEX_ALLOW_ALL_USERS=' "$owner_env" &&
+  fail "the owner .env kept the indented SIMPLEX_ALLOW_ALL_USERS: $(cat "$owner_env")"
+grep -qE '^[[:space:]]*SIMPLEX_GROUP_ALLOWED=' "$owner_env" &&
+  fail "the owner .env kept the indented SIMPLEX_GROUP_ALLOWED: $(cat "$owner_env")"
+grep -qx 'HERMES_OTHER_SETTING=keep-me' "$owner_env" ||
+  fail "the owner .env lost an unrelated setting to the SimpleX rewrite: $(cat "$owner_env")"
+[[ "$(stat -c %a "$owner_env")" == 600 ]] ||
+  fail "the owner .env is mode $(stat -c %a "$owner_env") after the rewrite, want 600"
 
 # The rewritten .env must satisfy --check, or the flag is only removed from the
 # report and not from the file the next run reads.
@@ -704,13 +768,67 @@ grep -qE 'SIMPLEX_(ALLOW_ALL_USERS|GROUP_ALLOWED) is set' <<<"$indent_recheck" &
   fail "--check still reports a forbidden key after the apply removed it: $indent_recheck"
 pass "apply removes indented forbidden keys and --check is clean afterwards"
 
-# Same enforcement on the no-contact path, which is the ordinary re-apply.
+# An indented endpoint in a non-owner lane is still a lane, so the same
+# whitespace grammar has to drive detection and the strip. Otherwise a restore
+# that left two spaces in front of SIMPLEX_WS_URL would be reported as disabled
+# and kept -- an open adapter with a clean-looking report.
 for lane in "${LANES[@]}"; do
+  [[ "$lane" == "$OWNER_LANE" ]] && continue
   printf '%s\n' \
-    'SIMPLEX_WS_URL=ws://127.0.0.1:5225' \
+    '  SIMPLEX_WS_URL=ws://127.0.0.1:5999' \
     '  SIMPLEX_ALLOWED_USERS=4' \
     'SIMPLEX_HOME_CHANNEL=4' \
-    '  SIMPLEX_ALLOW_ALL_USERS=true' \
+    "$(printf '	SIMPLEX_GROUP_ALLOWED=*')" \
+    'HERMES_OTHER_SETTING=keep-me' \
+    >"$(simplex_profile "$lane")"
+done
+SIMPLEX_ALLOWED_USERS_OVERRIDE=7 SIMPLEX_HOME_CHANNEL_OVERRIDE=7 run_installer >/dev/null 2>&1
+for lane in "${LANES[@]}"; do
+  [[ "$lane" == "$OWNER_LANE" ]] && continue
+  env_file="$(simplex_profile "$lane")"
+  grep -qE '^[[:space:]]*SIMPLEX_WS_URL=' "$env_file" &&
+    fail "$lane .env kept an indented endpoint after the cleanup: $(cat "$env_file")"
+  grep -qE '^[[:space:]]*SIMPLEX_(ALLOW_ALL_USERS|GROUP_ALLOWED)=' "$env_file" &&
+    fail "$lane .env kept an indented open-bot switch: $(cat "$env_file")"
+  grep -qx 'HERMES_OTHER_SETTING=keep-me' "$env_file" ||
+    fail "$lane .env lost an unrelated setting to the SimpleX cleanup: $(cat "$env_file")"
+  # The pairing is preserved as it was found, indentation and all: the cleanup
+  # removes lane keys, it does not reformat the line it leaves behind.
+  grep -qE '^[[:space:]]*SIMPLEX_ALLOWED_USERS=4$' "$env_file" ||
+    fail "$lane .env lost the pairing stored on an indented line: $(cat "$env_file")"
+  grep -qE '^[[:space:]]*SIMPLEX_HOME_CHANNEL=4$' "$env_file" ||
+    fail "$lane .env lost the home channel it stored: $(cat "$env_file")"
+  [[ "$(stat -c %a "$env_file")" == 600 ]] ||
+    fail "$lane .env is mode $(stat -c %a "$env_file") after the cleanup, want 600"
+done
+pass "a non-owner lane is disabled even when its endpoint is indented"
+
+# A lane-only block -- the whole of what the superseded installer wrote there --
+# leaves no orphaned provenance header behind. The header claims this installer
+# wrote assignments into the file, so it stops being true the moment the last
+# one goes.
+printf '\n# SimpleX Chat (Hermes messaging adapter). Written by\n# scripts/hermes/install-board-wiring.sh; edit there, not here.\nSIMPLEX_WS_URL=ws://127.0.0.1:5225\nSIMPLEX_ALLOW_ALL_USERS=true\n' \
+  >"$(simplex_profile default)"
+SIMPLEX_ALLOWED_USERS_OVERRIDE=7 SIMPLEX_HOME_CHANNEL_OVERRIDE=7 run_installer >/dev/null 2>&1
+[[ ! -s "$(simplex_profile default)" ]] ||
+  fail "a lane-only block left content behind: $(cat "$(simplex_profile default)")"
+pass "a lane-only non-owner block is removed entire, header included"
+
+# Same enforcement on the no-contact path, which is the ordinary re-apply.
+printf '%s\n' \
+  'SIMPLEX_WS_URL=ws://127.0.0.1:5225' \
+  '  SIMPLEX_ALLOWED_USERS=4' \
+  'SIMPLEX_HOME_CHANNEL=4' \
+  '  SIMPLEX_ALLOW_ALL_USERS=true' \
+  "$(printf '	SIMPLEX_GROUP_ALLOWED=*')" \
+  'HERMES_OTHER_SETTING=keep-me' \
+  >"$owner_env"
+for lane in "${LANES[@]}"; do
+  [[ "$lane" == "$OWNER_LANE" ]] && continue
+  printf '%s\n' \
+    'SIMPLEX_WS_URL=ws://127.0.0.1:5999' \
+    'SIMPLEX_ALLOWED_USERS=4' \
+    'SIMPLEX_HOME_CHANNEL=4' \
     "$(printf '	SIMPLEX_GROUP_ALLOWED=*')" \
     'HERMES_OTHER_SETTING=keep-me' \
     >"$(simplex_profile "$lane")"
@@ -719,22 +837,56 @@ SIMPLEX_ALLOWED_USERS_OVERRIDE='' SIMPLEX_HOME_CHANNEL_OVERRIDE='' \
   run_installer >"$fixture/indent-noid.log" 2>&1
 grep -q 'SIMPLEX_ALLOW_ALL_USERS is set; removed' "$fixture/indent-noid.log" ||
   fail "the no-contact path did not report the removed flag: $(cat "$fixture/indent-noid.log")"
+grep -qE '^[[:space:]]*SIMPLEX_ALLOW_ALL_USERS=' "$owner_env" &&
+  fail "the owner .env kept the indented SIMPLEX_ALLOW_ALL_USERS on a no-contact reinstall: $(cat "$owner_env")"
+grep -qx 'HERMES_OTHER_SETTING=keep-me' "$owner_env" ||
+  fail "the owner .env lost an unrelated setting on the no-contact path: $(cat "$owner_env")"
+grep -qx 'SIMPLEX_ALLOWED_USERS=4' "$owner_env" ||
+  fail "the owner .env discarded the pairing read from an indented line: $(cat "$owner_env")"
+grep -qx 'SIMPLEX_HOME_CHANNEL=4' "$owner_env" ||
+  fail "the owner .env discarded the home channel read from the file: $(cat "$owner_env")"
+[[ "$(stat -c %a "$owner_env")" == 600 ]] ||
+  fail "the owner .env is mode $(stat -c %a "$owner_env") after the no-contact rewrite, want 600"
 for lane in "${LANES[@]}"; do
+  [[ "$lane" == "$OWNER_LANE" ]] && continue
   env_file="$(simplex_profile "$lane")"
-  grep -qE '^[[:space:]]*SIMPLEX_ALLOW_ALL_USERS=' "$env_file" &&
-    fail "$lane .env kept the indented SIMPLEX_ALLOW_ALL_USERS on a no-contact reinstall: $(cat "$env_file")"
-  grep -qE '^[[:space:]]*SIMPLEX_GROUP_ALLOWED=' "$env_file" &&
-    fail "$lane .env kept the indented SIMPLEX_GROUP_ALLOWED on a no-contact reinstall: $(cat "$env_file")"
+  grep -qE '^[[:space:]]*SIMPLEX_(WS_URL|ALLOW_ALL_USERS|GROUP_ALLOWED)=' "$env_file" &&
+    fail "$lane .env kept a SimpleX lane key on a no-contact reinstall: $(cat "$env_file")"
   grep -qx 'HERMES_OTHER_SETTING=keep-me' "$env_file" ||
     fail "$lane .env lost an unrelated setting on the no-contact path: $(cat "$env_file")"
   grep -qx 'SIMPLEX_ALLOWED_USERS=4' "$env_file" ||
-    fail "$lane .env discarded the pairing read from an indented line: $(cat "$env_file")"
-  grep -qx 'SIMPLEX_HOME_CHANNEL=4' "$env_file" ||
-    fail "$lane .env discarded the home channel read from the file: $(cat "$env_file")"
-  [[ "$(stat -c %a "$env_file")" == 600 ]] ||
-    fail "$lane .env is mode $(stat -c %a "$env_file") after the no-contact rewrite, want 600"
+    fail "$lane .env discarded the pairing stored in the file: $(cat "$env_file")"
 done
-pass "the no-contact path removes indented keys and keeps the pairing"
+pass "the no-contact path removes indented keys, keeps the owner pairing and disables non-owner lanes"
+
+# --- repeated applies must never re-enable a competing lane ------------------
+#
+# The correction is worth only what it is stable: the ordinary operator action is
+# to re-run the installer, with and without a contactId, and every run has to
+# leave exactly one enabled lane and no stored credential destroyed.
+poison_owner_env
+poison_non_owner_envs
+for _ in 1 2; do
+  SIMPLEX_ALLOWED_USERS_OVERRIDE=7 SIMPLEX_HOME_CHANNEL_OVERRIDE=7 run_installer >/dev/null 2>&1
+  SIMPLEX_ALLOWED_USERS_OVERRIDE='' SIMPLEX_HOME_CHANNEL_OVERRIDE='' run_installer >/dev/null 2>&1
+done
+[[ "$(grep -c '^SIMPLEX_WS_URL=ws://127.0.0.1:5225$' "$owner_env")" == 1 ]] ||
+  fail "the owner .env does not carry exactly one loopback endpoint: $(cat "$owner_env")"
+grep -qx 'SIMPLEX_ALLOWED_USERS=7' "$owner_env" ||
+  fail "a contact apply did not take effect on the owner .env: $(cat "$owner_env")"
+for lane in "${LANES[@]}"; do
+  [[ "$lane" == "$OWNER_LANE" ]] && continue
+  env_file="$(simplex_profile "$lane")"
+  grep -qE '^[[:space:]]*SIMPLEX_WS_URL=' "$env_file" &&
+    fail "$lane .env was re-enabled by a repeated apply: $(cat "$env_file")"
+  grep -qE '^[[:space:]]*SIMPLEX_(ALLOW_ALL_USERS|GROUP_ALLOWED)=' "$env_file" &&
+    fail "$lane .env was re-opened by a repeated apply: $(cat "$env_file")"
+  grep -qx 'TELEGRAM_BOT_TOKEN=keep-me' "$env_file" ||
+    fail "$lane .env lost an unrelated credential to a repeated apply: $(cat "$env_file")"
+  grep -qx 'SIMPLEX_ALLOWED_USERS=4' "$env_file" ||
+    fail "$lane .env lost its stored pairing to a repeated apply: $(cat "$env_file")"
+done
+pass "repeated contact and no-contact applies never re-enable a second lane"
 
 # --- the blocker-gate section must not compete with the compact policy --------
 #
@@ -920,5 +1072,25 @@ grep -q '## Board health' "$COORDINATOR_SOUL" ||
 grep -q '## Deploy gate' "$COORDINATOR_SOUL" ||
   fail "the deploy-gate section was lost: $(cat "$COORDINATOR_SOUL")"
 pass "unrelated SOUL.md sections survive both installer orders"
+
+# --- a missing owner profile is named, never silently substituted ------------
+#
+# The owner is a constant, so a machine that no longer has that profile -- a
+# reset, a rename -- must fail loudly rather than wire the pairing into whichever
+# lane the glob reaches first. A fallback would report success and behave like a
+# competing adapter, which is the whole fault this installer now prevents.
+rm -f "$HERMES_FIXTURE"/profiles/*/.env
+mv "$HERMES_FIXTURE/profiles/$OWNER_LANE" "$HERMES_FIXTURE/profiles/$OWNER_LANE.absent"
+missing_owner_out="$(SIMPLEX_ALLOWED_USERS_OVERRIDE=7 SIMPLEX_HOME_CHANNEL_OVERRIDE=7 \
+  run_installer 2>&1)"
+mv "$HERMES_FIXTURE/profiles/$OWNER_LANE.absent" "$HERMES_FIXTURE/profiles/$OWNER_LANE"
+grep -q "SIMPLEX_OWNER_PROFILE '$OWNER_LANE' is not a profile directory" <<<"$missing_owner_out" ||
+  fail "a missing owner profile was not reported: $missing_owner_out"
+for lane in "${LANES[@]}"; do
+  [[ "$lane" == "$OWNER_LANE" ]] && continue
+  [[ -e "$(simplex_profile "$lane")" ]] &&
+    fail "$lane .env was created while the owner profile was missing: $(cat "$(simplex_profile "$lane")")"
+done
+pass "a missing owner profile is reported and nothing is wired elsewhere"
 
 echo "▶ hermes board wiring installer: all checks passed"

@@ -4,6 +4,14 @@ The `head-coordinator` SimpleX adapter receives owner replies on the existing
 numeric contact allowlist. Its daemon and gateway must be running. The no-agent
 sender reads every active board without changing cards or assuming approval.
 
+Only `head-coordinator` is wired to that daemon, per the ownership gate
+t_e0cd9b45. The adapter identifies the bot by the daemon's loopback WebSocket and
+not by a per-profile token, so a second profile carrying `SIMPLEX_WS_URL` opens
+its own socket and answers the same owner message. The board wiring installer
+enables the endpoint in the owner profile only, and disables it in every other
+profile while preserving the contactId pairing and unrelated credentials it
+already stores there.
+
 A typical message is:
 
 ```text
