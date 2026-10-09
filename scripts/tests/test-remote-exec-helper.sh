@@ -728,14 +728,17 @@ fi
 
 echo "  ✅ a failed run cleans up and keeps its status under a strict caller"
 
-# --- a client deadline does not delete a surviving unit's tree ----------------
+# --- transport loss does not delete a possibly surviving unit's tree ----------
 #
+# A drop in contact with the remote manager does not mean the unit finished.
 # The `timeout` that wraps the launch reports its own expiry as 124 (SIGTERM) or
-# 137 (SIGKILL after -k). On those the ssh client stopped waiting, not the
-# remote unit, which survives its launcher by design and may still own the job
-# tree -- so the helper must propagate the status without reaping a directory a
-# running unit is still using. The shim models the survivor as a real process
-# holding the tree, and the driver is a strict set -e caller.
+# 137 (SIGKILL after -k), and `ssh` reserves 255 for its own transport failures
+# while the remote command's own status is 1..254. On every one of those the ssh
+# client stopped waiting without learning the unit's fate, and the unit survives
+# its launcher by design -- so it may still own the job tree, and the helper must
+# propagate the status without reaping a directory a running unit is still using.
+# The shim models the survivor as a real process holding the tree, and the driver
+# is a strict set -e caller.
 
 kill_cancel_survivor() {
   local pid
@@ -747,32 +750,34 @@ kill_cancel_survivor() {
 }
 
 cancel_case() {
-  local status="$1" when="$2"
+  local status="$1" when="$2" expect="$3"
   local driver_status=0 pid
   rm -f "$MOCK_CTL/reaped" "$MOCK_CTL/unit.ready" "$MOCK_CTL/unit.pid"
   MOCK_CANCEL_STATUS="$status" MOCK_DRIVER_JOB=$'# MOCK-CANCEL\nexit 0' \
     "$strict_driver" >"$test_root/cancel.out" 2>"$test_root/cancel.err" ||
     driver_status=$?
   ((driver_status == status)) ||
-    note_failure "a client deadline (${status}, ${when}) was reported as ${driver_status}"
+    note_failure "a lost connection (${status}, ${when}) was reported as ${driver_status}"
   if [[ -f "$MOCK_CTL/reaped" ]]; then
-    note_failure "a client deadline (${status}, ${when}) deleted a surviving unit's tree"
+    note_failure "a lost connection (${status}, ${when}) deleted a possibly surviving unit's tree"
   fi
   pid="$(cat "$MOCK_CTL/unit.pid" 2>/dev/null || true)"
   if [[ -z "$pid" ]] || ! kill -0 "$pid" 2>/dev/null; then
-    note_failure "the modelled surviving unit did not outlive the client deadline (${status}, ${when})"
+    note_failure "the modelled surviving unit did not outlive the lost connection (${status}, ${when})"
   fi
-  grep -q 'client deadline reached' "$test_root/cancel.err" ||
-    note_failure "the client-deadline path (${status}, ${when}) did not explain itself: $(cat "$test_root/cancel.err")"
+  grep -q "$expect" "$test_root/cancel.err" ||
+    note_failure "the transport-loss path (${status}, ${when}) did not explain itself: $(cat "$test_root/cancel.err")"
   kill_cancel_survivor
 }
 
-cancel_case 124 "timeout expiry"
-cancel_case 137 "kill after -k"
+# 124/137 are the client deadlock statuses, 255 is ssh's own transport failure.
+cancel_case 124 "timeout expiry" 'client deadline reached'
+cancel_case 137 "kill after -k" 'client deadline reached'
+cancel_case 255 "ssh transport failure" 'ssh transport failure'
 
 unset MOCK_CANCEL_STATUS MOCK_DRIVER_JOB REMOTE_EXEC_HOST
 
-echo "  ✅ a client deadline leaves a surviving unit's tree in place"
+echo "  ✅ a lost connection leaves a possibly surviving unit's tree in place"
 
 # Restore PATH before the EXIT trap runs rm, or cleanup cannot find it.
 export PATH="${mock_orig_path}"
