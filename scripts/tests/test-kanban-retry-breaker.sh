@@ -32,6 +32,38 @@ BREAKER="$TESTS_REPO_ROOT/scripts/hermes/kanban-retry-breaker.sh"
 HERMES_BIN="${HERMES_BIN:-$(command -v hermes 2>/dev/null || true)}"
 [[ -n "$HERMES_BIN" ]] || HERMES_BIN="$HOME/.local/bin/hermes"
 
+# Detach from any inherited dispatcher worker identity.
+#
+# This test drives the real `hermes kanban` CLI, and the CLI reads four ambient
+# variables the dispatcher injects into every worker it spawns. Two of them
+# decide whether this test's fixture board is even reachable:
+#
+#   * HERMES_DELEGATED_CHILD_CONTEXT carries the write fence. Any kanban mutation
+#     from a process holding it is refused outright ("delegate_task child
+#     contexts cannot mutate Kanban tasks via the CLI"), so every CLI call below
+#     dies on its first line and the test reports a fence-probe failure with no
+#     clue why. Confirmed reproducible: three standalone runs inside a worker
+#     all failed on that one message, and the test passed the moment the marker
+#     was removed.
+#   * HERMES_KANBAN_TASK + HERMES_KANBAN_DB mark a *pinned* resolution. With both
+#     set, an explicit `--board testboard` deliberately stops outranking the pin
+#     (kanban_db._explicit_board_intent_pinned), so the fixture home built below
+#     is bypassed and the CLI resolves the pinned database instead. Under the
+#     full gate that pin points at the live operator board, which is the hazard
+#     this line exists to prevent: a test that creates, parks and unblocks cards
+#     must never be one export away from doing that to real work.
+#
+# HERMES_KANBAN_BOARD goes for the same reason: it is a resolution input ahead of
+# the `current` pointer, so a stale slug inherited from the ambient worker
+# environment can silently select a board other than the fixture.
+#
+# These are worker *identity* pins, not credentials or locations, so dropping
+# them cannot reach anything but this test's own mktemp fixture: the board path
+# is then derived solely from HERMES_KANBAN_HOME, and the fixture-home assertion
+# immediately after board creation proves it did.
+unset HERMES_DELEGATED_CHILD_CONTEXT HERMES_KANBAN_TASK HERMES_KANBAN_DB \
+  HERMES_KANBAN_BOARD
+
 fail() {
   echo "❌ $1" >&2
   exit 1
@@ -50,6 +82,19 @@ mkdir -p "$HERMES_KANBAN_HOME"
 "$HERMES_BIN" kanban boards create testboard >/dev/null
 DB="$HERMES_KANBAN_HOME/kanban/boards/testboard/kanban.db"
 [[ -f "$DB" ]] || fail "fixture board database was not created at $DB"
+
+# State the invariant this test now depends on, rather than letting a re-added
+# pin show up later as an unexplained fence or an off-fixture board. Both failure
+# modes above are silent from the call sites that trip them: the marker aborts
+# every CLI call identically, and a stale HERMES_KANBAN_DB simply resolves the
+# board somewhere else and leaves this file asserting against an untouched path.
+for pin in HERMES_DELEGATED_CHILD_CONTEXT HERMES_KANBAN_TASK HERMES_KANBAN_DB \
+  HERMES_KANBAN_BOARD; do
+  [[ -z "${!pin:-}" ]] ||
+    fail "$pin is set; the fixture board is unreachable from a pinned worker context"
+done
+[[ "$HERMES_KANBAN_HOME" == "$fixture/hermes" ]] ||
+  fail "HERMES_KANBAN_HOME does not point into this test's own fixture"
 
 now="$(date +%s)"
 
