@@ -2428,6 +2428,33 @@ terminal backend is a global per-profile flip that would also move the guarded
 deploy helpers; it is not the offload mechanism. Tool jobs stay local; the
 auditable path is the `remote-eval.sh` pattern described above.
 
+## Manual Hermes Kanban Dispatch
+
+The gateway dispatcher runs as `hermes -p default gateway run` and enforces the
+`kanban.max_in_progress_per_profile` caps in the default profile's configuration
+(`~/.hermes/config.yaml`). A manual `hermes kanban dispatch` must name that
+profile explicitly:
+
+```bash
+hermes -p default kanban dispatch
+```
+
+A bare `hermes kanban dispatch`, or one run under a worker profile, resolves the
+*sticky active* profile's own configuration instead. Every per-profile config
+has a `kanban:` block with no caps, so such a pass is uncapped and will spawn
+past the `local-implementer: 1` limit, breaking the serialized local lane.
+Always select the default profile; `--profile` is the long form of `-p`.
+
+`--dry-run` is not read-only. It still runs the reclaim phase and can write (a
+dead running PID produces a `protocol_violation` event), so probe only against a
+*copied* board database, never the live board.
+
+A manual pass spawns workers only and changes none of the surrounding policy:
+local work stays local-only, the serialized owner-alert (SimpleX-first) local
+capacity dependencies are untouched, and the separate guarded test/switch deploy
+gates remain unchanged. Treat this as an operational mitigation for the
+config-source divergence, not a repair of it.
+
 ## Upstream Sync
 
 Installations that track a shared upstream repository (a friend's server
