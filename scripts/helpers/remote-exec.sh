@@ -80,12 +80,44 @@ _remote_exec_nice_max=19
 _remote_exec_io_weight=10
 _remote_exec_max_artifact_bytes=$((64 * 1024 * 1024))
 
+# Canonicalize a caller-supplied non-negative decimal string to the digits the
+# caller actually meant, so it can be compared and emitted without bash ever
+# reading it as octal or overflowing.
+#
+# Bash arithmetic treats a leading-zero constant as *octal*: `((08))` is an
+# error and `((0300))` is 192. A raw pass-through therefore both compared and
+# emitted a value different from the decimal string the caller wrote --
+# CPUQuota=0300 reached systemd as 300% (above the authorized 200) and a bare
+# "08" slipped past the authorized Nice floor of 10. Stripping the leading zeros
+# before any comparison or emission removes the octal reading entirely and gives
+# every later check one canonical form to compare.
+#
+# Prints the canonical decimal and returns 0, or prints nothing and returns 1
+# for anything that is not a plain run of ASCII digits (an empty string, a sign,
+# a decimal point, a systemd size suffix).
+_remote_exec_canonical_decimal() {
+  local value="$1"
+  [[ "$value" =~ ^[0-9]+$ ]] || return 1
+  # Drop the leading-zero run; an all-zero value reduces to "" and is emitted as
+  # the single "0".
+  value="${value#"${value%%[!0]*}"}"
+  printf '%s\n' "${value:-0}"
+}
+
 _remote_exec_effective_cpu_percent() {
   local requested="${REMOTE_EXEC_CPU_PERCENT:-$_remote_exec_max_cpu_percent}"
-  [[ "$requested" =~ ^[0-9]+$ ]] || requested="$_remote_exec_max_cpu_percent"
-  ((requested > 0)) || requested=1
-  ((requested < _remote_exec_max_cpu_percent)) &&
-    printf '%s\n' "$requested" || printf '%s\n' "$_remote_exec_max_cpu_percent"
+  if ! requested="$(_remote_exec_canonical_decimal "$requested")"; then
+    requested="$_remote_exec_max_cpu_percent"
+  fi
+  # CPUQuota must be at least 1%; a canonical 0 is the only value in that gap.
+  if [[ "$requested" == 0 ]]; then
+    requested=1
+  fi
+  if _remote_exec_decimal_le "$requested" "$_remote_exec_max_cpu_percent"; then
+    printf '%s\n' "$requested"
+  else
+    printf '%s\n' "$_remote_exec_max_cpu_percent"
+  fi
 }
 
 # Compare two plain non-negative decimal strings without any arithmetic on
@@ -156,27 +188,38 @@ _remote_exec_effective_memory_max() {
 
 _remote_exec_effective_runtime_sec() {
   local requested="${REMOTE_EXEC_TIMEOUT_SEC:-$_remote_exec_max_runtime_sec}"
-  [[ "$requested" =~ ^[0-9]+$ ]] || requested="$_remote_exec_max_runtime_sec"
-  ((requested > 0)) || requested=1
-  ((requested < _remote_exec_max_runtime_sec)) &&
-    printf '%s\n' "$requested" || printf '%s\n' "$_remote_exec_max_runtime_sec"
+  if ! requested="$(_remote_exec_canonical_decimal "$requested")"; then
+    requested="$_remote_exec_max_runtime_sec"
+  fi
+  # RuntimeMaxSec must be at least 1s, and 0 would mean "no limit" to a caller
+  # but an unbounded unit to systemd, so a canonical 0 is raised to 1.
+  if [[ "$requested" == 0 ]]; then
+    requested=1
+  fi
+  if _remote_exec_decimal_le "$requested" "$_remote_exec_max_runtime_sec"; then
+    printf '%s\n' "$requested"
+  else
+    printf '%s\n' "$_remote_exec_max_runtime_sec"
+  fi
 }
 
 _remote_exec_effective_nice() {
   local requested="${REMOTE_EXEC_NICE:-$_remote_exec_nice}"
+  if ! requested="$(_remote_exec_canonical_decimal "$requested")"; then
+    requested="$_remote_exec_nice"
+  fi
   # Nice is inverted: a *lower* number is a *higher* CPU priority. The
   # authorized 10 is therefore a floor, not a ceiling -- a request below it
   # would make the job more privileged than the decision that authorized it, so
   # it is raised to 10. A request above systemd's own maximum 19 would be
   # refused by the manager, so it is narrowed to 19.
-  [[ "$requested" =~ ^[0-9]+$ ]] || requested="$_remote_exec_nice"
-  # Guard the comparison against a value too long for a 64-bit shell integer:
-  # bash would wrap it and could land inside the accepted range.
-  if ((${#requested} > 2)); then
-    requested="$_remote_exec_nice_max"
-  elif ((requested < _remote_exec_nice)); then
+  #
+  # Both decisions go through the string comparison: it is exact for any size,
+  # where bash arithmetic would read "08" as an octal error and wrap a long
+  # string into the accepted range.
+  if ! _remote_exec_decimal_le "$_remote_exec_nice" "$requested"; then
     requested="$_remote_exec_nice"
-  elif ((requested > _remote_exec_nice_max)); then
+  elif ! _remote_exec_decimal_le "$requested" "$_remote_exec_nice_max"; then
     requested="$_remote_exec_nice_max"
   fi
   printf '%s\n' "$requested"
@@ -184,16 +227,34 @@ _remote_exec_effective_nice() {
 
 _remote_exec_effective_io_weight() {
   local requested="${REMOTE_EXEC_IO_WEIGHT:-$_remote_exec_io_weight}"
-  [[ "$requested" =~ ^[0-9]+$ ]] || requested="$_remote_exec_io_weight"
-  ((requested < _remote_exec_io_weight)) && printf '%s\n' "$requested" ||
+  if ! requested="$(_remote_exec_canonical_decimal "$requested")"; then
+    requested="$_remote_exec_io_weight"
+  fi
+  # Any weight at or below the authorized 10 is a *narrower* I/O share and is
+  # honored. systemd's own IOWeight floor is 1, so a canonical 0 -- which the
+  # manager would refuse to load -- is raised to 1 rather than passed through.
+  if [[ "$requested" == 0 ]]; then
+    requested=1
+  fi
+  if _remote_exec_decimal_le "$requested" "$_remote_exec_io_weight"; then
+    printf '%s\n' "$requested"
+  else
     printf '%s\n' "$_remote_exec_io_weight"
+  fi
 }
 
 _remote_exec_effective_artifact_cap() {
   local requested="${REMOTE_EXEC_MAX_ARTIFACT_BYTES:-$_remote_exec_max_artifact_bytes}"
-  [[ "$requested" =~ ^[0-9]+$ ]] || requested="$_remote_exec_max_artifact_bytes"
-  ((requested < _remote_exec_max_artifact_bytes)) &&
-    printf '%s\n' "$requested" || printf '%s\n' "$_remote_exec_max_artifact_bytes"
+  if ! requested="$(_remote_exec_canonical_decimal "$requested")"; then
+    requested="$_remote_exec_max_artifact_bytes"
+  fi
+  # A cap of 0 is meaningful here ("no artifacts"), so this knob has no floor;
+  # anything above the authorized ceiling is pulled back to it.
+  if _remote_exec_decimal_le "$requested" "$_remote_exec_max_artifact_bytes"; then
+    printf '%s\n' "$requested"
+  else
+    printf '%s\n' "$_remote_exec_max_artifact_bytes"
+  fi
 }
 
 _remote_exec_resolve_host() {

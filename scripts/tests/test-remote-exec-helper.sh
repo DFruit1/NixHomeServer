@@ -149,6 +149,62 @@ clamp_cases=(
   "mem:REMOTE_EXEC_MEMORY_MAX:1.5G:4G"
   "artifacts:REMOTE_EXEC_MAX_ARTIFACT_BYTES:999999999999:67108864"
   "artifacts:REMOTE_EXEC_MAX_ARTIFACT_BYTES:1024:1024"
+  # Canonical decimal handling for every numeric knob.
+  #
+  # Bash reads a leading-zero constant as *octal*, so a raw pass-through both
+  # compared and emitted a different value from the decimal the caller wrote:
+  # CPUQuota=0300 reached systemd as 300% (above the authorized 200) and a bare
+  # "08" slipped past the authorized Nice floor of 10. The huge entries pin the
+  # other half of the same defect: 64-bit shell arithmetic wraps a long string
+  # into a passing small number, so `$((...))` comparisons cannot certify an
+  # arbitrarily large request. Each knob is checked at its boundary, on a
+  # zero-padded in-range value, on a zero-padded out-of-range value, on 08/09,
+  # and on an overflow-sized string.
+  "cpu:REMOTE_EXEC_CPU_PERCENT::200"
+  "cpu:REMOTE_EXEC_CPU_PERCENT:0:1"
+  "cpu:REMOTE_EXEC_CPU_PERCENT:1:1"
+  "cpu:REMOTE_EXEC_CPU_PERCENT:200:200"
+  "cpu:REMOTE_EXEC_CPU_PERCENT:201:200"
+  "cpu:REMOTE_EXEC_CPU_PERCENT:020:20"
+  "cpu:REMOTE_EXEC_CPU_PERCENT:0200:200"
+  "cpu:REMOTE_EXEC_CPU_PERCENT:0300:200"
+  "cpu:REMOTE_EXEC_CPU_PERCENT:08:8"
+  "cpu:REMOTE_EXEC_CPU_PERCENT:09:9"
+  "cpu:REMOTE_EXEC_CPU_PERCENT:18446744073709551617:200"
+  "cpu:REMOTE_EXEC_CPU_PERCENT:99999999999999999999999999:200"
+  "runtime:REMOTE_EXEC_TIMEOUT_SEC:0:1"
+  "runtime:REMOTE_EXEC_TIMEOUT_SEC:1:1"
+  "runtime:REMOTE_EXEC_TIMEOUT_SEC:900:900"
+  "runtime:REMOTE_EXEC_TIMEOUT_SEC:901:900"
+  "runtime:REMOTE_EXEC_TIMEOUT_SEC:060:60"
+  "runtime:REMOTE_EXEC_TIMEOUT_SEC:0900:900"
+  "runtime:REMOTE_EXEC_TIMEOUT_SEC:01000:900"
+  "runtime:REMOTE_EXEC_TIMEOUT_SEC:08:8"
+  "runtime:REMOTE_EXEC_TIMEOUT_SEC:18446744073709551617:900"
+  "nice:REMOTE_EXEC_NICE:08:10"
+  "nice:REMOTE_EXEC_NICE:09:10"
+  "nice:REMOTE_EXEC_NICE:010:10"
+  "nice:REMOTE_EXEC_NICE:018:18"
+  "nice:REMOTE_EXEC_NICE:019:19"
+  "nice:REMOTE_EXEC_NICE:020:19"
+  "nice:REMOTE_EXEC_NICE:000000000000000000000019:19"
+  # systemd's IOWeight floor is 1, so a canonical 0 is narrowed to 1 rather
+  # than emitted as a property the manager would refuse.
+  "io:REMOTE_EXEC_IO_WEIGHT:0:1"
+  "io:REMOTE_EXEC_IO_WEIGHT:005:5"
+  "io:REMOTE_EXEC_IO_WEIGHT:08:8"
+  "io:REMOTE_EXEC_IO_WEIGHT:010:10"
+  "io:REMOTE_EXEC_IO_WEIGHT:11:10"
+  "io:REMOTE_EXEC_IO_WEIGHT:notanumber:10"
+  "io:REMOTE_EXEC_IO_WEIGHT:18446744073709551617:10"
+  "artifacts:REMOTE_EXEC_MAX_ARTIFACT_BYTES:0:0"
+  "artifacts:REMOTE_EXEC_MAX_ARTIFACT_BYTES:08:8"
+  "artifacts:REMOTE_EXEC_MAX_ARTIFACT_BYTES:067108864:67108864"
+  "artifacts:REMOTE_EXEC_MAX_ARTIFACT_BYTES:67108864:67108864"
+  "artifacts:REMOTE_EXEC_MAX_ARTIFACT_BYTES:67108865:67108864"
+  "artifacts:REMOTE_EXEC_MAX_ARTIFACT_BYTES:999999999999999999999:67108864"
+  "mem:REMOTE_EXEC_MEMORY_MAX:04G:4G"
+  "mem:REMOTE_EXEC_MEMORY_MAX:0004G:4G"
 )
 
 for case_spec in "${clamp_cases[@]}"; do
