@@ -1,35 +1,65 @@
-# Hermes owner alerts: urgent blockers only
+# Hermes owner alerts: Hard Blockers only
 
 The `head-coordinator` SimpleX adapter receives owner replies on the existing
 numeric contact allowlist. Its daemon and gateway must be running. The no-agent
 sender reads every board without changing cards or assuming approval.
 
-## What reaches the phone
+## What a Hard Blocker is
 
-One thing: a blocked card whose body carries a standalone line —
-`Urgency: security` or `Urgency: regression` — meaning progress has stopped and
-the owner is needed now.
+The owner's phone receives one message class, called a **Hard Blocker**: a
+blocked card whose owner action is the only way forward.
+
+A card qualifies in one of two ways:
+
+1. It is a decision — blocked with `--kind needs_input`, awaiting an answer only
+   the owner can give.
+2. It carries a standalone `Hard Blocker` line in its body, which an agent adds
+   when the criteria are the owner instead of the board:
+   - a secret, credential or authorization only the owner holds;
+   - a physical action only the owner can take (a device, a signature, a scan);
+   - a card hard-stuck with no agent-side recovery.
+
+The line must be its own line; prose that merely mentions it does not count.
+It is not a priority hint. A regression that the board can act on is not a Hard
+Blocker.
 
 ```text
-Urgent security · nixhomeserver
+Hard Blocker
+
+D1 · nixhomeserver
+Choose a recovery mechanism
+Restore the worker, or pause until capacity returns?
+A) Restore the worker with existing credentials
+B) Pause work until capacity returns
+
+Reply: D1 <choice or answer>. Details: D1 details
+```
+
+An agent-asserted technical Hard Blocker looks like:
+
+```text
+Hard Blocker · nixhomeserver
 B4 · nixhomeserver
 Harden: root SFTP key helper authorization
-Blocked: Worker/model unavailable
+Blocked: Operator recovery needed
 Details: B4 details
 ```
 
-The line must stand alone in the body; prose that merely mentions urgency does
-not qualify, and no other value does. An unchanged card is sent once, and only
-a changed revision sends again.
+A decision pushes when it appears and again only when the ask changes. An
+agent-asserted card pushes once per content revision.
 
-## What does not reach the phone
+## Urgent regressions
+
+An urgent security or availability regression is not an owner alert. Fix it, or
+roll the system back to the previous NixOS generation, without paging the owner.
+Escalate it as a Hard Blocker only if no agent-side action is possible.
+
+## What is never pushed
 
 Everything else stays board-local, because it can be cleared at the owner's
-pace: decisions awaiting input, missing evidence or receipts, worker/model
-failures, dependency waits, and routine operator cleanups. Nothing schedules a
-reminder for them — there is no inbox digest and no hourly technical summary.
-
-They remain fully reachable on demand:
+pace: missing evidence or receipts, worker/model failures, dependency waits and
+routine operator cleanups. Nothing schedules a reminder for them — there is no
+inbox digest and no hourly summary. They remain fully reachable on demand:
 
 ```text
 blockers                      one short line per technical blocker
@@ -53,18 +83,14 @@ what makes recovery instructions through it valid.
 
 ## Replies
 
-Reply `B4 <recovery instructions>` to address one exact card, or
-`<board> <task-id> <answer>` to address a card directly. A B label identifies a
-card across retries; it never serves as an implementation approval. The
-coordinator reads the current cause, records the reply and verifies a concrete
-recovery before any unblock. Closed cards, or cards now requiring a decision,
-cannot be released through their old B label. A targeted technical lookup also
-accepts `board:card`, as does `hermes --profile default kanban --board pcops show
-<task-id>`.
-
-Decisions are answered where they live: on the board, or by naming the card.
-Their labels persist for `--details`/`--resolve`, so an owner can still ask for
-the question and reply by card.
+Reply `B4 <recovery instructions>` to address one exact technical card, or
+`D1 A` / `D1 <answer>` to answer one exact decision revision. A B label
+identifies a card across retries; it never serves as an implementation approval.
+The coordinator reads the current cause, records the reply and verifies a
+concrete recovery before any unblock. Closed cards, or cards now requiring a
+decision, cannot be released through their old B label. A targeted technical
+lookup also accepts `board:card`, and `hermes --profile default kanban --board
+pcops show <task-id>` reads a card directly.
 
 The coordinator resolves the label to the exact board, card and question
 revision. It records the verbatim reply with native `kanban_comment`, verifies
@@ -93,13 +119,14 @@ when idle. Do not interrupt workers to refresh chat instructions.
 
 Labels and acknowledgments persist in
 `~/.hermes/kanban/owner-alerts/inbox.json`; a lock serialises ticks and atomic
-private writes prevent partial state. Each technical card gets a permanent B
-label; each distinct decision revision gets a D label. Labels are never
+private writes prevent partial state. Each decision revision gets a D label;
+each agent-asserted technical card gets a permanent B label. Labels are never
 reassigned. Existing count-only state upgrades once to individual entries,
 without resending delivered questions. Allocation survives failed delivery, and
-delivery is recorded only after Hermes acknowledges success. Corrupt state
-fails closed. Back up/restore this file with the boards; do not reset it while
-old messages exist. The legacy `state.json` remains untouched for rollback.
+delivery is recorded only after Hermes acknowledges success. State written
+under the earlier `Urgency:` scheme migrates in place. Corrupt state fails
+closed. Back up/restore this file with the boards; do not reset it while old
+messages exist. The legacy `state.json` remains untouched for rollback.
 Reinstalling preserves labels and delivery state. A crash after transport
 acknowledgment but before saving can duplicate a message. Acknowledgment does
 not prove phone display.

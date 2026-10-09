@@ -5,12 +5,16 @@ This is operations glue, not a new backend or dependency. No board mutation,
 approval, subscription or unblock is performed by the unattended job.
 
 The delivery contract is deliberately narrow. The owner's phone receives one
-class of message unprompted: a blocked card whose body carries a standalone
-`Urgency: security` or `Urgency: regression` line, meaning progress has actually
-stopped and needs the owner now. Every other blocked card -- decisions awaiting
-input, missing evidence, worker/model failures, dependency waits, routine
-operator cleanups -- is not pushed; it stays on the board and is pulled on demand
-with `--details`, `--resolve`, `--send-blockers` or `--send-decisions`.
+class of message unprompted: a Hard Blocker. A blocked card is a Hard Blocker
+when the owner's action is the only way forward -- a decision only the owner can
+make, or the other criteria an agent asserts with a standalone `Hard Blocker`
+line (a secret/credential/authorization only the owner holds, a physical action
+only the owner can take, or a card hard-stuck with no agent-side recovery).
+Every other blocked card -- missing evidence, worker/model failures, dependency
+waits, routine operator cleanups -- is not pushed; it stays on the board and is
+pulled on demand with `--details`, `--resolve`, `--send-blockers` or
+`--send-decisions`. An urgent security or availability regression is not an
+owner alert: fix it, or roll the system back, without paging the owner.
 """
 import argparse
 from collections import Counter
@@ -32,6 +36,9 @@ JOB = 'kanban owner blocker alerts'
 MARKER = '<!-- kanban-owner-alerts -->'
 END_MARKER = '<!-- /kanban-owner-alerts -->'
 MESSAGE_LIMIT = 1600
+# A standalone line an agent adds to assert a Hard Blocker it did not set as a
+# decision. Case-insensitive and its own line; prose mentioning it does not count.
+HARD_BLOCKER = re.compile(r'^Hard Blocker\b[^\n]*$', re.M | re.I)
 
 
 def target_config(root):
@@ -97,8 +104,14 @@ def load_inbox(root):
                     or not isinstance(record['compact_complete'], bool) or not isinstance(record['token'], str)):
                 raise ValueError('Invalid label record; restore inbox state')
     for delivery in state['delivery'].values():
-        if (not isinstance(delivery, dict) or not isinstance(delivery.get('technical_token'), str)
-                or not isinstance(delivery.get('urgent'), dict) or 'technical_at' not in delivery
+        if not isinstance(delivery, dict):
+            raise ValueError('Invalid delivery record; restore inbox state')
+        # State written before the single Hard Blocker category keyed this map as
+        # 'urgent'; carry it forward rather than fail closed on old state.
+        if 'hard_blocker' not in delivery:
+            delivery['hard_blocker'] = delivery.pop('urgent', {})
+        if (not isinstance(delivery.get('technical_token'), str)
+                or not isinstance(delivery.get('hard_blocker'), dict) or 'technical_at' not in delivery
                 or (delivery['technical_at'] is not None and not isinstance(delivery['technical_at'], (int, float)))):
             raise ValueError('Invalid delivery record; restore inbox state')
         if 'technical_format' in delivery and (type(delivery['technical_format']) is not int or delivery['technical_format'] < 0):
@@ -260,9 +273,9 @@ def batches_for(shown, order, heading=0):
 
 def decision_messages(labels, state):
     """Batch the current decision set, used only for an explicit owner request."""
-    order = [labels[key] for key in sorted(labels)]
+    order = sorted(labels)
     shown = {label: state['decisions'][label]['shown'] for label in order}
-    heading = 'Decision inbox\n'
+    heading = 'Hard Blocker\n'
     # An empty set answers the request rather than staying silent: the owner
     # asked, so "nothing waiting" is the reply.
     batches = batches_for(shown, order, len(heading)) or [[]]
@@ -287,11 +300,11 @@ def collect(root, state, errors):
     """Read every active board and refresh labels and their snapshots.
 
     Read-only against the boards; only the local inbox state changes. Returns
-    the technical cards, their labels, the decision labels and whether any board
-    could not be read, because a partial read must never be delivered as a
-    complete answer.
+    the technical cards, their labels, the decision labels, the decision cards
+    and whether any board could not be read, because a partial read must never
+    be delivered as a complete answer.
     """
-    technical, technical_labels, decision_labels = [], {}, {}
+    technical, technical_labels, decision_labels, decisions = [], {}, {}, []
     snapshot_failed = False
     for board in sorted((root / 'kanban/boards').glob('*/board.json')):
         if board.parent.name.startswith('_'):
@@ -310,6 +323,7 @@ def collect(root, state, errors):
                     state['blockers'][label].update(token=token(task), shown=technical_text(label, board.parent.name, task))
                     technical_labels[(board.parent.name, task['id'])] = label
                     continue
+                decisions.append((board.parent.name, task))
                 revision = token(task)
                 label = next((label for label, d in state['decisions'].items()
                               if (d['board'], d['task_id'], d['token']) == (board.parent.name, task['id'], revision)), None)
@@ -323,7 +337,7 @@ def collect(root, state, errors):
         except (ValueError, OSError, sqlite3.Error) as exc:
             errors.append(f'{board.parent.name}: {exc}')
             snapshot_failed = True
-    return technical, technical_labels, decision_labels, snapshot_failed
+    return technical, technical_labels, decision_labels, decisions, snapshot_failed
 
 
 def tick(root, dry_run=False, now=None, force_blockers=False, force_decisions=False):
@@ -341,8 +355,8 @@ def tick(root, dry_run=False, now=None, force_blockers=False, force_decisions=Fa
             fcntl.flock(lock, fcntl.LOCK_EX)
         path = directory / 'inbox.json'
         state = load_inbox(root)
-        delivery = state['delivery'].setdefault(target, {'technical_token': '', 'technical_at': None, 'urgent': {}})
-        technical, technical_labels, decision_labels, snapshot_failed = collect(root, state, errors)
+        delivery = state['delivery'].setdefault(target, {'technical_token': '', 'technical_at': None, 'hard_blocker': {}})
+        technical, technical_labels, decision_labels, decisions, snapshot_failed = collect(root, state, errors)
         if not dry_run:
             save(path, state)  # Labels survive a failed send or a process restart.
 
@@ -364,31 +378,39 @@ def tick(root, dry_run=False, now=None, force_blockers=False, force_decisions=Fa
                         records[label]['delivered'].append(target)
                 save(path, state)
 
-        # Only a card whose body carries a standalone `Urgency:` line reaches the
-        # owner unprompted. Decisions, missing evidence, worker/model failures,
-        # dependencies and operator cleanups stay on the board: they are cleared
-        # at the owner's pace, so pushing them is noise the owner asked not to
-        # receive. They remain fully readable through --details, --resolve, the
-        # board itself, and the explicit pulls below.
+        # The one owner-facing category: a Hard Blocker, which needs the owner to
+        # act. A card qualifies when it is a decision (`needs_input`) or when an
+        # agent marked it with a standalone `Hard Blocker` line. Everything else
+        # stays board-local and is pulled on demand.
+        pending = [decision_labels[(board, task['id'])] for board, task in decisions
+                   if target not in state['decisions'][decision_labels[(board, task['id'])]]['delivered']]
+        if pending:
+            heading = 'Hard Blocker\n'
+            shown = {label: state['decisions'][label]['shown'] for label in pending}
+            for batch in batches_for(shown, pending, len(heading)):
+                text = (heading + '\n' + '\n\n'.join(shown[label] for label in batch)
+                        + f'\n\nReply: {batch[0]} <choice or answer>. Details: {batch[0]} details')
+                if deliver(text):
+                    delivered(state['decisions'], batch)
         for board, task in technical:
-            urgency = re.search(r'^Urgency:\s*(security|regression)\s*$', task['body'] or '', re.M | re.I)
-            if not urgency:
+            if not HARD_BLOCKER.search(task['body'] or ''):
                 continue
             key = f'{board}:{task["id"]}'
             revision = token({k: v for k, v in task.items() if k != 'event_id'})
-            if delivery['urgent'].get(key) != revision:
-                label = technical_labels[(board, task['id'])]
-                text = f'Urgent {urgency[1].lower()} · {board}\n' + state['blockers'][label]['shown'] + f'\nDetails: {label} details'
-                if deliver(text) and not dry_run:
-                    delivery['urgent'][key] = revision
-                    if target not in state['blockers'][label]['delivered']:
-                        state['blockers'][label]['delivered'].append(target)
-                    save(path, state)
+            if delivery['hard_blocker'].get(key) == revision:
+                continue
+            label = technical_labels[(board, task['id'])]
+            text = f'Hard Blocker · {board}\n' + state['blockers'][label]['shown'] + f'\nDetails: {label} details'
+            if deliver(text) and not dry_run:
+                delivery['hard_blocker'][key] = revision
+                if target not in state['blockers'][label]['delivered']:
+                    state['blockers'][label]['delivered'].append(target)
+                save(path, state)
 
         # Explicit pulls. A failed board read omits cards, so an incomplete list
         # is never sent as if it were the whole board.
         if force_decisions and not snapshot_failed:
-            for text, batch in decision_messages(decision_labels, state):
+            for text, batch in decision_messages(decision_labels.values(), state):
                 if not deliver(text):
                     continue
                 if batch:

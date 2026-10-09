@@ -421,19 +421,24 @@ comments into the worker.
 
 ### Reaching the owner
 
-The owner's phone gets exactly one unprompted message class: a blocked card
-whose body carries a standalone `Urgency: security` or `Urgency: regression`
-line. It must be its own line; prose mentioning urgency does not count, and no
-other value does. Everything else — decisions awaiting input, missing evidence,
-worker/model failures, dependency waits, routine cleanups — is board-local and
-never pushed; the owner pulls it with `B1 details`, `blockers`,
-`--send-blockers`, `--send-decisions`, or the board
+The owner's phone gets exactly one unprompted message class: a **Hard Blocker**.
+A blocked card is a Hard Blocker when the owner's action is the only way
+forward — the owner's decision (a blocked `needs_input` gate), or other
+owner-only needs an agent asserts with a standalone `Hard Blocker` line in the
+card body: a secret/credential/authorization only the owner holds, a physical
+action only the owner can take, or a card hard-stuck with no agent-side
+recovery. It must be its own line; prose mentioning it does not count, and the
+retired `Urgency:` vocabulary does nothing.
+
+Everything else — missing evidence, worker/model failures, dependency waits,
+routine cleanups — is board-local and never pushed; the owner pulls it with
+`B1 details`, `blockers`, `--send-blockers`, `--send-decisions`, or the board
 (`scripts/hermes/kanban-owner-alerts.py`).
 
-Mark a card urgent only when nothing on the board can proceed until the owner
-acts. It is a claim that progress has stopped, not a priority hint: a card that
-merely needs a decision is the owner's input, not the owner's interruption.
-Docs: `documentation/hermes-owner-alerts.md`.
+A Hard Blocker is a claim that the owner is the only way forward, not a priority
+hint. An urgent security or availability regression is not a Hard Blocker: fix
+it, or roll the system back, without paging the owner. Docs:
+`documentation/hermes-owner-alerts.md`.
 
 ### Pre-flight check
 
