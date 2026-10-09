@@ -68,26 +68,34 @@ def token(value):
 def load_inbox(root):
     path = root / 'kanban/owner-alerts/inbox.json'
     if not path.exists():
-        return {'version': 1, 'next_label': 1, 'decisions': {}, 'delivery': {}}
+        return {'version': 1, 'next_label': 1, 'decisions': {}, 'next_blocker': 1, 'blockers': {}, 'delivery': {}}
     state = json.loads(path.read_text())
     if (not isinstance(state, dict) or state.get('version') != 1
             or type(state.get('next_label')) is not int or state['next_label'] < 1
             or not isinstance(state.get('decisions'), dict) or not isinstance(state.get('delivery'), dict)):
         raise ValueError('Invalid inbox state; restore it instead of reusing decision labels')
-    for label, decision in state['decisions'].items():
-        if (not isinstance(decision, dict) or not re.fullmatch(r'D[1-9][0-9]*', label) or int(label[1:]) >= state['next_label']
-                or not all(k in decision for k in ('board', 'task_id', 'token', 'shown', 'compact_complete', 'delivered'))):
-            raise ValueError('Invalid decision mapping; restore inbox state')
-        if (not isinstance(decision['board'], str) or not re.fullmatch(r'[a-zA-Z0-9_-]+', decision['board'])
-                or not isinstance(decision['task_id'], str) or not re.fullmatch(r't_[a-zA-Z0-9_]+', decision['task_id'])
-                or not isinstance(decision['delivered'], list) or not isinstance(decision['shown'], str)
-                or not isinstance(decision['compact_complete'], bool) or not isinstance(decision['token'], str)):
-            raise ValueError('Invalid decision record; restore inbox state')
+    # Add technical labels without changing existing decision IDs or receipts.
+    state.setdefault('next_blocker', 1)
+    state.setdefault('blockers', {})
+    if type(state['next_blocker']) is not int or state['next_blocker'] < 1 or not isinstance(state['blockers'], dict):
+        raise ValueError('Invalid blocker mapping; restore inbox state')
+    for prefix, records, counter in [('D', state['decisions'], state['next_label']), ('B', state['blockers'], state['next_blocker'])]:
+        for label, record in records.items():
+            if (not isinstance(record, dict) or not re.fullmatch(prefix + r'[1-9][0-9]*', label) or int(label[1:]) >= counter
+                    or not all(k in record for k in ('board', 'task_id', 'token', 'shown', 'compact_complete', 'delivered'))):
+                raise ValueError('Invalid label mapping; restore inbox state')
+            if (not isinstance(record['board'], str) or not re.fullmatch(r'[a-zA-Z0-9_-]+', record['board'])
+                    or not isinstance(record['task_id'], str) or not re.fullmatch(r't_[a-zA-Z0-9_]+', record['task_id'])
+                    or not isinstance(record['delivered'], list) or not isinstance(record['shown'], str)
+                    or not isinstance(record['compact_complete'], bool) or not isinstance(record['token'], str)):
+                raise ValueError('Invalid label record; restore inbox state')
     for delivery in state['delivery'].values():
         if (not isinstance(delivery, dict) or not isinstance(delivery.get('technical_token'), str)
                 or not isinstance(delivery.get('urgent'), dict) or 'technical_at' not in delivery
                 or (delivery['technical_at'] is not None and not isinstance(delivery['technical_at'], (int, float)))):
             raise ValueError('Invalid delivery record; restore inbox state')
+        if 'technical_format' in delivery and (type(delivery['technical_format']) is not int or delivery['technical_format'] < 0):
+            raise ValueError('Invalid technical delivery format; restore inbox state')
     return state
 
 
@@ -127,25 +135,33 @@ def decision_text(label, board, task):
 def resolve(root, label):
     state = load_inbox(root)
     label = label.upper()
-    if label not in state['decisions']:
-        raise ValueError(f'Unknown decision {label}; do not guess its card')
-    decision = state['decisions'][label]
+    technical = label.startswith('B')
+    records = state['blockers'] if technical else state['decisions']
+    if label not in records:
+        raise ValueError(f'Unknown label {label}; do not guess its card')
+    decision = records[label]
     tasks = snapshot(root / 'kanban/boards' / decision['board'] / 'board.json', decision['task_id'])
     current = tasks[0] if tasks else None
-    return {'label': label, **decision, 'current': current,
+    return {'label': label, **decision, 'kind': 'technical' if technical else 'decision', 'current': current,
             'can_reply': bool(current and current['status'] == 'blocked'
-                              and current['block_kind'] == 'needs_input'
-                              and token(current) == decision['token']
+                              and ((current['block_kind'] != 'needs_input') if technical else
+                                   (current['block_kind'] == 'needs_input' and token(current) == decision['token']))
                               and target_config(root) in decision['delivered'])}
 
 
 def details(root, label):
     if label.lower() == 'blockers':
         entries = []
+        state = load_inbox(root)
         for board in sorted((root / 'kanban/boards').glob('*/board.json')):
             if not board.parent.name.startswith('_'):
-                entries += [(board.parent.name, t) for t in snapshot(board) if t['block_kind'] != 'needs_input']
-        return '\n\n'.join(f"{board}:{t['id']} · {t['title']}\nBlock reason: {t['reason']}" for board, t in entries) or 'No technical blockers.'
+                for task in snapshot(board):
+                    if task['block_kind'] == 'needs_input':
+                        continue
+                    alias = next((alias for alias, record in state['blockers'].items()
+                                  if (record['board'], record['task_id']) == (board.parent.name, task['id'])), 'Unlabelled')
+                    entries.append(f"{alias} · {board.parent.name}:{task['id']} · {task['title']}\nBlock reason: {task['reason']}")
+        return '\n\n'.join(entries) or 'No technical blockers.'
     if re.fullmatch(r'[a-zA-Z0-9_-]+:t_[a-zA-Z0-9_]+', label):
         board, task_id = label.split(':')
         tasks = snapshot(root / 'kanban/boards' / board / 'board.json', task_id)
@@ -156,7 +172,8 @@ def details(root, label):
     decision = resolve(root, label)
     current = decision['current']
     return (f"{decision['label']} · {decision['board']} {decision['task_id']}\n"
-            + ('Current question.' if decision['can_reply'] else 'Stale, closed or undelivered question; do not act on this label.')
+            + (('Technical blocker; recovery instructions are not approval.' if decision['kind'] == 'technical' else 'Current question.')
+               if decision['can_reply'] else 'Stale, closed or undelivered item; do not act on this label.')
             + f"\nShown:\n{decision['shown']}\nCurrent card:\n"
             + (f"{current['status']} · {current['title']}\n{current['body'] or ''}\nBlock reason: {current['reason']}" if current else 'Card no longer exists.'))
 
@@ -186,6 +203,10 @@ def save(path, state):
 
 def technical_category(task):
     reason = task['reason'].lower()
+    if reason in ('', 'initial_status'):
+        reason = (task['body'] or '').lower()
+        if re.search(r'operator.only|operator cleanup', reason):
+            return 'operator action'
     if re.search(r'model|unresponsive|provider|rate.limit', reason):
         return 'worker failures'
     if re.search(r'evidence|artifact|receipt|worktree', reason):
@@ -200,11 +221,31 @@ def technical_summary(tasks):
     categories = Counter(technical_category(task) for _, task in tasks)
     return (f'Technical blockers: {len(tasks)}\n'
             + ', '.join(f'{board} {count}' for board, count in counts.items())[:500]
-            + '\n' + ', '.join(f'{count} {category}' for category, count in categories.items())
-            + '\nDetails: blockers')
+            + '\n' + ', '.join(f'{count} {category}' for category, count in categories.items()))
 
 
-def tick(root, dry_run=False, now=None):
+def technical_text(label, board, task):
+    causes = {'worker failures': 'Worker/model unavailable', 'missing evidence': 'Missing evidence',
+              'operator action': 'Operator recovery needed', 'execution problems': 'Execution problem; inspect details'}
+    return f'{label} · {board}\n' + ' '.join(task['title'].split())[:80] + '\nBlocked: ' + causes[technical_category(task)]
+
+
+def technical_messages(tasks, labels, state):
+    heading = technical_summary(tasks)
+    batches, batch = [], []
+    for board, task in tasks:
+        label = labels[(board, task['id'])]
+        if batch and len(heading) + sum(len(state['blockers'][v]['shown']) + 2 for v in batch + [label]) > MESSAGE_LIMIT - 120:
+            batches.append(batch)
+            batch = []
+        batch.append(label)
+    batches.append(batch)  # Also emit a short all-clear when the list becomes empty.
+    return [(heading + '\n\n' + '\n\n'.join(state['blockers'][v]['shown'] for v in batch)
+             + (f'\n\nReply: {batch[0]} <recovery instructions>. Details: {batch[0]} details' if batch else '\nNo technical blockers remain.'), batch)
+            for batch in batches]
+
+
+def tick(root, dry_run=False, now=None, force_blockers=False):
     target = target_config(root)
     if not dry_run and (os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT') or os.environ.get('HERMES_KANBAN_TASK')):
         raise PermissionError('Owner alerts run only from the operator or no-agent cron')
@@ -221,6 +262,7 @@ def tick(root, dry_run=False, now=None):
         path = directory / 'inbox.json'
         state = load_inbox(root)
         pending, technical = [], []
+        technical_labels = {}
         delivery = state['delivery'].setdefault(target, {'technical_token': '', 'technical_at': None, 'urgent': {}})
         for board in sorted((root / 'kanban/boards').glob('*/board.json')):
             if board.parent.name.startswith('_'):
@@ -229,6 +271,15 @@ def tick(root, dry_run=False, now=None):
                 for task in snapshot(board):
                     if task['block_kind'] != 'needs_input':
                         technical.append((board.parent.name, task))
+                        label = next((label for label, record in state['blockers'].items()
+                                      if (record['board'], record['task_id']) == (board.parent.name, task['id'])), None)
+                        if label is None:
+                            label = f'B{state["next_blocker"]}'
+                            state['next_blocker'] += 1
+                            state['blockers'][label] = {'board': board.parent.name, 'task_id': task['id'],
+                                                       'compact_complete': False, 'delivered': []}
+                        state['blockers'][label].update(token=token(task), shown=technical_text(label, board.parent.name, task))
+                        technical_labels[(board.parent.name, task['id'])] = label
                         continue
                     revision = token(task)
                     label = next((label for label, d in state['decisions'].items()
@@ -281,18 +332,32 @@ def tick(root, dry_run=False, now=None):
             key = f'{board}:{task["id"]}'
             revision = token({k: v for k, v in task.items() if k != 'event_id'})
             if delivery['urgent'].get(key) != revision:
-                text = f'Urgent {urgency[1].lower()} · {board}\n' + task['title'][:100] + '\nDetails: blockers'
+                label = technical_labels[(board, task['id'])]
+                text = f'Urgent {urgency[1].lower()} · {board}\n' + state['blockers'][label]['shown'] + f'\nDetails: {label} details'
                 if deliver(text) and not dry_run:
                     delivery['urgent'][key] = revision
+                    if target not in state['blockers'][label]['delivered']:
+                        state['blockers'][label]['delivered'].append(target)
                     save(path, state)
         # Retry churn does not change the technical fingerprint. Changed sets
         # wait at most an hour; unchanged sets never generate reminders.
-        summary_token = token([(board, t['id']) for board, t in technical])
-        if (not snapshot_failed and summary_token != delivery['technical_token']
-                and (technical or delivery['technical_token'])
-                and (delivery['technical_at'] is None or now - delivery['technical_at'] >= SUMMARY_INTERVAL)):
-            if deliver(technical_summary(technical)) and not dry_run:
-                delivery.update(technical_token=summary_token, technical_at=now)
+        summary_token = token([(board, t['id'], state['blockers'][technical_labels[(board, t['id'])]]['shown']) for board, t in technical])
+        upgrade = delivery.get('technical_format', 0) < 2
+        if (not snapshot_failed and (force_blockers or upgrade or summary_token != delivery['technical_token'])
+                and (technical or delivery['technical_token'] or force_blockers)
+                and (force_blockers or upgrade or delivery['technical_at'] is None or now - delivery['technical_at'] >= SUMMARY_INTERVAL)):
+            complete = True
+            for text, batch in technical_messages(technical, technical_labels, state):
+                if not deliver(text):
+                    complete = False
+                    continue
+                if not dry_run:
+                    for label in batch:
+                        if target not in state['blockers'][label]['delivered']:
+                            state['blockers'][label]['delivered'].append(target)
+                    save(path, state)
+            if complete and not dry_run:
+                delivery.update(technical_token=summary_token, technical_at=now, technical_format=2)
                 save(path, state)
     if errors:
         raise RuntimeError('; '.join(errors))
@@ -346,8 +411,9 @@ if __name__ == '__main__':
     actions = parser.add_mutually_exclusive_group()
     actions.add_argument('--dry-run', action='store_true')
     actions.add_argument('--install', action='store_true')
-    actions.add_argument('--resolve', metavar='D1', help='Read exact decision mapping and current validity as JSON')
-    actions.add_argument('--details', metavar='D1|blockers|board:card', help='Read requested diagnostics without sending or mutating')
+    actions.add_argument('--send-blockers', action='store_true', help='Send the current compact technical list now')
+    actions.add_argument('--resolve', metavar='D1|B1', help='Read exact label mapping and current validity as JSON')
+    actions.add_argument('--details', metavar='D1|B1|blockers|board:card', help='Read requested diagnostics without sending or mutating')
     args = parser.parse_args()
     root = Path(os.environ.get('HERMES_ROOT', str(Path.home() / '.hermes')))
     try:
@@ -358,7 +424,7 @@ if __name__ == '__main__':
         elif args.install:
             install(root)
         else:
-            tick(root, args.dry_run)
+            tick(root, args.dry_run, force_blockers=args.send_blockers)
     except (ValueError, OSError, RuntimeError, sqlite3.Error, subprocess.SubprocessError) as exc:
         print(f'owner alerts: {exc}', file=sys.stderr)
         sys.exit(2)

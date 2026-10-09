@@ -24,16 +24,30 @@ Wrapped questions/options are joined; an oversized or unclear ask requires
 `D1 details` before deciding, rather than silently cutting approval scope.
 Older cards with inline lettered choices in the block reason are supported.
 
-Ordinary technical blockers produce a count summary, with counts by board and
-broad cause. A changed set is reported at most hourly; an unchanged set or a
-worker retry causes no reminder. An empty summary signals that the previous
+Ordinary technical blockers include individual compact entries as well as counts
+by board and broad cause. Each has a stable `B` label, title and short cause:
+
+```text
+B1 · nixhomeserver
+Assess remote helper receipts
+Blocked: Missing evidence
+```
+
+All active technical cards appear in messages bounded to 1600 characters.
+A changed list/title/cause is reported at most hourly; an unchanged set or a
+worker retry causes no reminder. An empty list signals that the previous
 technical blockers cleared. Explicit `Urgency: security` or `Urgency: regression`
 on a technical card causes an immediate short alert; historical audit severity
 inside a body does not turn an unrelated worker failure into an urgent incident.
 
 Reply `D1 A` (or `D1A`), `D1 <answer>`, or `D1 A, D2 B`. Ask `D1 details` for
-context and consequences, or `blockers` for a short technical list. A targeted
-technical lookup uses `board:card`. Full `<board> <task-id>` replies and explicit
+context and consequences, or `blockers` for a short technical list. Use
+`B1 details` for one technical blocker and `B1 <recovery instructions>` to
+address it. A B label identifies a card across retries; it never serves as an
+implementation approval. The coordinator reads the current cause, records the
+reply and verifies a concrete recovery before any unblock. Closed cards or
+cards now requiring a decision cannot be released through their old B label.
+A targeted technical lookup also accepts `board:card`. Full `<board> <task-id>` replies and explicit
 `/kanban --board pcops show <task-id>` remain available.
 
 The coordinator resolves the label to the exact board, card and question
@@ -50,8 +64,10 @@ python3 scripts/hermes/kanban-owner-alerts.py --install
 python3 ~/.hermes/scripts/kanban-owner-alerts.py
 python3 ~/.hermes/scripts/kanban-owner-alerts.py --resolve D1
 python3 ~/.hermes/scripts/kanban-owner-alerts.py --details D1
+python3 ~/.hermes/scripts/kanban-owner-alerts.py --details B1
 python3 ~/.hermes/scripts/kanban-owner-alerts.py --details blockers
 python3 ~/.hermes/scripts/kanban-owner-alerts.py --details pcops:t_051011f5
+python3 ~/.hermes/scripts/kanban-owner-alerts.py --send-blockers
 hermes --profile default cron list
 ```
 
@@ -65,13 +81,18 @@ when idle. Do not interrupt workers to refresh chat instructions.
 Labels and acknowledgments persist in
 `~/.hermes/kanban/owner-alerts/inbox.json`; a lock serialises ticks and atomic
 private writes prevent partial state. Each distinct decision revision receives
-a new label; labels are never reassigned. Allocation survives failed delivery,
+a new D label; each technical card gets a permanent B label. Labels are never
+reassigned. Existing count-only state upgrades once to individual entries,
+without resending delivered decision questions. Allocation survives failed delivery,
 and delivery is recorded only after Hermes acknowledges success. Corrupt state
 fails closed. Back up/restore this file with the boards; do not reset it while
 old messages exist. The legacy `state.json` remains untouched for rollback;
 first compact activation sends the current inbox once. Reinstalling preserves
 labels and delivery state. A crash after transport acknowledgment but before
-saving can duplicate a message. Acknowledgment does not prove phone display.
+saving can duplicate a message. Retrying a partially delivered multi-message
+technical list can repeat successful batches. Acknowledgment does not prove
+phone display. `--send-blockers` explicitly resends the current list immediately
+using the same labels; the scheduled job retains its normal deduplication.
 
 The sender owns blocker alerts; do not add manual SimpleX subscriptions.
 Existing unrelated subscriptions are untouched and may still send their native

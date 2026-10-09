@@ -50,6 +50,9 @@ class AlertsTest(unittest.TestCase):
         self.assertEqual(2, len(self.sent))
         self.assertIn('D1 · one', self.sent[0])
         self.assertIn('Technical blockers: 1', self.sent[1])
+        self.assertIn('B1 · two', self.sent[1])
+        self.assertIn('Decide repair', self.sent[1])
+        self.assertIn('Missing evidence', self.sent[1])
         self.assertNotIn('approve, reject', self.sent[1])
         self.assertNotIn('t_12345678', self.sent[0])
         self.assertLess(len(self.sent[0]), 500)
@@ -146,6 +149,15 @@ class AlertsTest(unittest.TestCase):
         self.assertIn('1 worker failures', self.sent[-1])
         self.assertIn('model endpoint unavailable', alerts.details(self.root, 'blockers'))
 
+    def test_operator_only_cleanup_is_not_reported_as_missing_evidence(self):
+        with closing(sqlite3.connect(self.root / 'kanban/boards/two/kanban.db')) as db:
+            db.execute("UPDATE tasks SET title='Record cleanup', body='Operator-only: cleanup requires stat receipts from the worktree.'")
+            db.execute('UPDATE task_events SET payload=?', (json.dumps({'reason': 'initial_status'}),))
+            db.commit()
+        alerts.tick(self.root)
+        self.assertIn('Blocked: Operator recovery needed', self.sent[-1])
+        self.assertNotIn('Missing evidence', self.sent[-1])
+
     def test_decisions_batch_and_technical_retries_are_quiet(self):
         with closing(sqlite3.connect(self.root / 'kanban/boards/two/kanban.db')) as db:
             db.execute("UPDATE tasks SET block_kind='needs_input'")
@@ -191,10 +203,74 @@ class AlertsTest(unittest.TestCase):
         with patch.dict(os.environ, {'HERMES_DELEGATED_CHILD_CONTEXT': '1'}):
             self.assertIn('ASK: Approve repair?', alerts.details(self.root, 'D1'))
             self.assertIn('Evidence unavailable', alerts.details(self.root, 'blockers'))
+            self.assertIn('B1 · two:t_12345678', alerts.details(self.root, 'blockers'))
             self.assertTrue(alerts.resolve(self.root, 'D1')['can_reply'])
+            self.assertEqual('technical', alerts.resolve(self.root, 'B1')['kind'])
+            self.assertTrue(alerts.resolve(self.root, 'B1')['can_reply'])
+            self.assertIn('Evidence unavailable', alerts.details(self.root, 'B1'))
         self.assertEqual(before, {p: p.read_bytes() for p in paths})
         with self.assertRaises(ValueError):
             alerts.resolve(self.root, 'D999')
+
+    def test_old_count_only_state_gets_blocker_entries_without_repeating_decisions(self):
+        alerts.tick(self.root, now=1000)
+        path = self.root / 'kanban/owner-alerts/inbox.json'
+        old = json.loads(path.read_text())
+        old.pop('blockers', None)
+        old.pop('next_blocker', None)
+        old['delivery']['simplex:3'].pop('technical_format', None)
+        path.write_text(json.dumps(old))
+        alerts.tick(self.root, now=1001)
+        self.assertEqual(3, len(self.sent))
+        self.assertIn('B1 · two', self.sent[-1])
+        self.assertNotIn('D1 · one', self.sent[-1])
+        alerts.tick(self.root, now=1002)
+        self.assertEqual(3, len(self.sent))
+
+    def test_blocker_labels_survive_retries_and_identify_closed_or_reclassified_cards(self):
+        alerts.tick(self.root, now=1000)
+        first = alerts.resolve(self.root, 'B1')
+        self.assertEqual(('two', 't_12345678'), (first['board'], first['task_id']))
+        with closing(sqlite3.connect(self.root / 'kanban/boards/two/kanban.db')) as db:
+            db.execute('INSERT INTO task_events VALUES (3, ?, ?, ?)', ('t_12345678', 'blocked', '{"reason":"Evidence still unavailable"}'))
+            db.commit()
+        alerts.tick(self.root, now=1001)
+        self.assertEqual(2, len(self.sent))
+        self.assertIn('Evidence still unavailable', alerts.details(self.root, 'B1'))
+        self.assertTrue(alerts.resolve(self.root, 'B1')['can_reply'])
+        with closing(sqlite3.connect(self.root / 'kanban/boards/two/kanban.db')) as db:
+            db.execute("UPDATE tasks SET block_kind='needs_input'")
+            db.commit()
+        self.assertFalse(alerts.resolve(self.root, 'B1')['can_reply'])
+        alerts.tick(self.root, now=1002)
+        self.assertEqual('two', alerts.resolve(self.root, 'D2')['board'])
+        with closing(sqlite3.connect(self.root / 'kanban/boards/two/kanban.db')) as db:
+            db.execute("UPDATE tasks SET status='done'")
+            db.commit()
+        self.assertFalse(alerts.resolve(self.root, 'B1')['can_reply'])
+        self.assertIn('done', alerts.details(self.root, 'B1'))
+
+    def test_all_blockers_are_batched_and_manual_delivery_keeps_their_labels(self):
+        with closing(sqlite3.connect(self.root / 'kanban/boards/two/kanban.db')) as db:
+            for number in range(20):
+                db.execute('INSERT INTO tasks VALUES (?, ?, ?, ?, ?)', (f't_extra_{number}', f'Recover worker {number}', '', 'blocked', 'capability'))
+            db.commit()
+        alerts.tick(self.root, now=1000)
+        technical = [m for m in self.sent if m.startswith('Technical blockers:')]
+        self.assertGreater(len(technical), 1)
+        self.assertTrue(all(len(m) <= 1600 for m in technical))
+        for number in range(1, 22):
+            self.assertIn(f'B{number} · two', '\n'.join(technical))
+            self.assertTrue(alerts.resolve(self.root, f'B{number}')['can_reply'])
+        sent = len(self.sent)
+        alerts.tick(self.root, now=1001)
+        self.assertEqual(sent, len(self.sent))
+        alerts.tick(self.root, now=1002, force_blockers=True)
+        self.assertEqual(sent + len(technical), len(self.sent))
+        self.assertEqual('t_12345678', alerts.resolve(self.root, 'B1')['task_id'])
+        with patch.dict(os.environ, {'HERMES_KANBAN_TASK': 't_worker'}):
+            with self.assertRaises(PermissionError):
+                alerts.tick(self.root, force_blockers=True)
 
     def test_corrupt_label_state_fails_closed(self):
         alerts.tick(self.root)
@@ -232,8 +308,14 @@ class AlertsTest(unittest.TestCase):
         result = subprocess.run([sys.executable, '-B', alerts.__file__, '--resolve', 'D1'], env=environment, text=True, capture_output=True, check=True)
         self.assertEqual('one', json.loads(result.stdout)['board'])
         self.assertTrue(json.loads(result.stdout)['can_reply'])
+        result = subprocess.run([sys.executable, '-B', alerts.__file__, '--resolve', 'B1'], env=environment, text=True, capture_output=True, check=True)
+        self.assertEqual('technical', json.loads(result.stdout)['kind'])
+        self.assertTrue(json.loads(result.stdout)['can_reply'])
         result = subprocess.run([sys.executable, '-B', alerts.__file__, '--details', 'two:t_12345678'], env=environment, text=True, capture_output=True, check=True)
         self.assertIn('Evidence unavailable', result.stdout)
+        result = subprocess.run([sys.executable, '-B', alerts.__file__, '--send-blockers'], env=environment, text=True, capture_output=True)
+        self.assertEqual(2, result.returncode)
+        self.assertIn('only from the operator or no-agent cron', result.stderr)
         self.assertEqual(2, len(self.sent))
 
     def test_dry_run_and_fenced_workers_do_not_send(self):
