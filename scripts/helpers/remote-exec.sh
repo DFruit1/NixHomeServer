@@ -27,7 +27,7 @@
 # The envelope below is the owner's, and it is enforced by the remote systemd
 # user manager rather than by convention:
 #
-#   one job at a time   flock -n on a per-identity lock file
+#   one job at a time   flock -n, held by the job's own unit for its lifetime
 #   2 CPU               CPUQuota=200%
 #   4 GiB RAM           MemoryMax=4G
 #   15 min              RuntimeMaxSec=900, plus a client-side timeout
@@ -403,16 +403,19 @@ cleanup_archive() {
   rm -f "$remote_archive"
 }
 trap cleanup_archive EXIT
-mkdir -p "$remote_dir/source" "$remote_dir/results"
-tar -C "$remote_dir/source" -xf "$remote_archive"
 
-# flock -n over a per-identity file: the owner's "one job at a time". A second
-# concurrent job fails fast here rather than queueing behind an unknown one.
-exec 9>/tmp/nixhomeserver-remote-exec.lock
-if ! flock -n 9; then
+# A quick probe so an obviously-busy slot is refused before this job stages its
+# source tree. It is deliberately NOT the lock the slot depends on: it takes and
+# releases the lock in the same instant, so it can only ever miss a job that
+# starts inside the race window below. The unit's own lock -- slot.sh, run as the
+# unit's main process -- is what actually holds the slot for a job's lifetime.
+if ! flock -n /tmp/nixhomeserver-remote-exec.lock true; then
   echo "remote-exec: another job already holds the server slot" >&2
   exit 75
 fi
+
+mkdir -p "$remote_dir/source" "$remote_dir/results"
+tar -C "$remote_dir/source" -xf "$remote_archive"
 
 # path:, not git+file:// -- the staged tree is a plain directory with no .git.
 # Safe here precisely because create_deploy_repo_archive already reduced it to
@@ -427,6 +430,24 @@ cd "$remote_dir/source"
 # the caller's cwd, so without it the job ran in $HOME on the server and found no
 # flake.nix even though the staged tree was right there.
 #
+# The slot belongs to the unit, not to this launcher. A transient unit does not
+# inherit this shell's descriptors, so a lock held here would be released the
+# moment the launcher's ssh session ends -- while the unit it started keeps
+# running and a second job becomes free to overlap it. slot.sh takes the lock
+# itself and, run as the unit's main process, stays alive for the job's whole
+# lifetime: RuntimeMaxSec, a dropped connection and a client-side timeout all
+# release the slot at the same instant the job itself goes away.
+cat > "$remote_dir/slot.sh" <<'SLOT_EOF'
+set -euo pipefail
+exec 9>/tmp/nixhomeserver-remote-exec.lock
+if ! flock -n 9; then
+  echo "remote-exec: another job already holds the server slot" >&2
+  exit 75
+fi
+"$@"
+SLOT_EOF
+chmod 0500 "$remote_dir/slot.sh"
+
 # The job's paths are passed with explicit --setenv, not by exporting them here.
 # systemd-run builds the unit's environment from the manager's environment, not
 # from this shell's, so a plain `export` is silently dropped -- which is how the
@@ -443,13 +464,19 @@ systemd-run --user --quiet --wait --pipe --collect \
   --property=IOWeight="$io_weight" \
   --property=RuntimeMaxSec="$runtime_sec" \
   --unit="$unit_name" \
-  "$bash_path" "$remote_dir/job.sh"
+  "$bash_path" "$remote_dir/slot.sh" "$bash_path" "$remote_dir/job.sh"
 REMOTE_EOF
   )"
   remote_status=$?
   printf '%s\n' "$output"
   rm -f "$remote_err"
   if ((remote_status != 0)); then
+    # The unit owns the slot and reports a conflict as EX_TEMPFAIL. Its own
+    # message goes to the unit's stderr, which --pipe routes to $remote_err and
+    # this path discards, so name the cause here where the caller can see it.
+    if ((remote_status == 75)); then
+      echo "remote-exec: another job already holds the server slot" >&2
+    fi
     echo "remote-exec: remote job '${job_id}' exited ${remote_status} on ${remote_exec_host}" >&2
     reap_job_dir
     return "$remote_status"

@@ -28,7 +28,17 @@ note_failure() {
 
 test_root="$(mktemp -d)"
 mock_job_glob=""
+# PIDs for the slot-lifetime section; empty until that section runs, so the EXIT
+# trap is safe on every earlier failure path.
+launcher_pid=""
+unit_pid=""
 cleanup() {
+  if [[ -n "$launcher_pid" ]]; then
+    kill -KILL "$launcher_pid" 2>/dev/null || true
+  fi
+  if [[ -n "$unit_pid" ]]; then
+    kill -KILL -- "-${unit_pid}" 2>/dev/null || true
+  fi
   rm -rf "$test_root"
   [[ -n "$mock_job_glob" ]] && rm -rf "$mock_job_glob"
   return 0
@@ -193,8 +203,7 @@ for required in \
   '--property=Nice=' \
   '--property=IOWeight=' \
   '--property=Type=exec' \
-  '--unit=' \
-  'flock -n 9'; do
+  '--unit='; do
   rg -qF -- "$required" "$runner_source" ||
     note_failure "the remote runner does not request ${required}"
 done
@@ -435,6 +444,20 @@ grep -q "exited 42" "$test_root/fail.err" ||
 
 echo "  ✅ a failing job propagates its remote exit status"
 
+# EX_TEMPFAIL (75) is how the unit reports a busy slot. The unit's own stderr is
+# discarded by the runner, so the helper itself must name the cause and must not
+# report the run as a success.
+if remote_exec_run 't_slotbusy' 'exit 75' \
+  >"$test_root/slotbusy.out" 2>"$test_root/slotbusy.err"; then
+  note_failure "a job that exited 75 was reported as success"
+fi
+grep -q "another job already holds the server slot" "$test_root/slotbusy.err" ||
+  note_failure "the helper did not name the busy slot for an EX_TEMPFAIL run: $(cat "$test_root/slotbusy.err")"
+grep -q "exited 75" "$test_root/slotbusy.err" ||
+  note_failure "the helper did not report the EX_TEMPFAIL status: $(cat "$test_root/slotbusy.err")"
+
+echo "  ✅ EX_TEMPFAIL from the unit is reported as a busy slot"
+
 # --- artifacts come back, and the cap refuses to transfer ----------------------
 
 remote_exec_run 't_artifacts' \
@@ -547,6 +570,167 @@ echo "  ✅ an oversized artifact set is refused rather than transferred"
 export PATH="${mock_orig_path}"
 unset MOCK_CTL MOCK_SIZING
 rm -rf "$mock_dir"
+
+# --- the single-job slot is owned by the unit, not the launcher ----------------
+#
+# The slot lock used to live in the ssh runner, which holds it only while it
+# waits on systemd-run. A transient unit does not inherit the runner's
+# descriptors, so a dropped connection or a client-side timeout released the
+# slot while the unit it had started kept running -- and the next job could
+# overlap the first inside its 900 s allowance. The lock must belong to a
+# process whose lifetime is the job's.
+#
+# The wrapper below is extracted verbatim from the shipped runner and driven
+# against real processes and real flock, so this is a lifecycle test of the
+# shipped mechanism rather than of a mock. Only its lock path is redirected to a
+# per-test file, because this suite runs in parallel with other tests and the
+# shipped path is a fixed global; the shipped path itself is pinned by an
+# assertion below.
+
+slot_lock="$test_root/slot.lock"
+slot_script="$test_root/slot.sh"
+if ! awk "/<<'SLOT_EOF'/{body=1;next} body && /^SLOT_EOF\$/{exit} body{print}" \
+  "$runner_source" >"$slot_script"; then
+  echo "❌ could not read the unit slot wrapper from ${runner_source}" >&2
+  exit 1
+fi
+if [[ ! -s "$slot_script" ]] || ! grep -q 'flock -n 9' "$slot_script"; then
+  echo "❌ the unit slot wrapper is missing its lock acquisition:" >&2
+  cat "$slot_script" >&2
+  exit 1
+fi
+grep -q 'another job already holds the server slot' "$slot_script" ||
+  note_failure "the unit slot wrapper no longer names the refused slot"
+sed -i "s#/tmp/nixhomeserver-remote-exec.lock#${slot_lock}#g" "$slot_script"
+chmod +x "$slot_script"
+
+# The unit, not the runner, must hold the slot: the wrapper must exist, the unit
+# must be launched through it, the shipped lock path must be the wrapper's, and
+# the slot fd must be opened exactly once -- in the wrapper, never in the runner.
+rg -qF "<<'SLOT_EOF'" "$runner_source" ||
+  note_failure "the runner no longer stages a unit-owned slot wrapper"
+rg -qF '"$bash_path" "$remote_dir/slot.sh" "$bash_path" "$remote_dir/job.sh"' "$runner_source" ||
+  note_failure "the unit is not launched through the slot wrapper"
+rg -qF 'exec 9>/tmp/nixhomeserver-remote-exec.lock' "$runner_source" ||
+  note_failure "the slot wrapper does not open the shipped lock path"
+slot_fd_opens="$(rg -c 'exec 9>' "$runner_source" 2>/dev/null || true)"
+[[ "$slot_fd_opens" == "1" ]] ||
+  note_failure "the slot lock fd is opened ${slot_fd_opens:-0} time(s); it must live only in the unit wrapper"
+
+if [[ ! -s "$slot_script" ]] || ! rg -qF "$slot_lock" "$slot_script"; then
+  echo "❌ the extracted slot wrapper was not redirected to a per-test lock" >&2
+  exit 1
+fi
+
+bash_bin="$(type -P bash)"
+unit_pid_file="$test_root/unit.pid"
+unit_ready="$test_root/unit.ready"
+launcher_script="$test_root/launcher.sh"
+
+# The launcher stands in for the ssh runner: it starts the unit and then waits,
+# exactly as the real launcher blocks in systemd-run --wait. The unit's job
+# writes $unit_ready only after slot.sh has taken the lock, so the marker proves
+# the slot is held without this test ever racing the unit for the lock file.
+cat >"$launcher_script" <<LAUNCH_EOF
+#!${bash_bin}
+set -uo pipefail
+setsid "${bash_bin}" "${slot_script}" "${bash_bin}" -c \
+  'printf started > "\$1"; sleep 120' _ "${unit_ready}" &
+echo \$! >"${unit_pid_file}"
+wait
+LAUNCH_EOF
+chmod +x "$launcher_script"
+
+slot_held() { ! flock -n "$slot_lock" true 2>/dev/null; }
+wait_for_unit() {
+  local i
+  for ((i = 0; i < 250; i++)); do
+    [[ -f "$unit_ready" ]] && return 0
+    sleep 0.02
+  done
+  return 1
+}
+wait_slot_free() {
+  local i
+  for ((i = 0; i < 250; i++)); do
+    if flock -n "$slot_lock" true 2>/dev/null; then return 0; fi
+    sleep 0.02
+  done
+  return 1
+}
+
+# A second job must be refused with EX_TEMPFAIL and the busy-slot message.
+deny_check() {
+  local when="$1" status
+  if "${bash_bin}" "$slot_script" true >/dev/null 2>"$test_root/deny.err"; then
+    note_failure "a second job was admitted ${when}"
+  else
+    status=$?
+    ((status == 75)) ||
+      note_failure "a refused job exited ${status} ${when}, want 75"
+  fi
+  grep -q 'another job already holds the server slot' "$test_root/deny.err" ||
+    note_failure "the refusal ${when} did not name the busy slot"
+}
+
+start_unit() {
+  rm -f "$unit_ready" "$unit_pid_file"
+  "$launcher_script" &
+  launcher_pid=$!
+  wait_for_unit || note_failure "a started unit never reached its job"
+  unit_pid="$(cat "$unit_pid_file" 2>/dev/null || true)"
+  slot_held || note_failure "the unit's job ran without the slot held"
+}
+
+stop_unit() {
+  if [[ -n "$unit_pid" ]]; then
+    kill -KILL -- "-${unit_pid}" 2>/dev/null || true
+  fi
+  if [[ -n "$launcher_pid" ]]; then
+    kill -KILL "$launcher_pid" 2>/dev/null || true
+  fi
+  unit_pid=""
+  launcher_pid=""
+  wait 2>/dev/null || true
+  wait_slot_free || note_failure "the slot was not released after the unit ended"
+}
+
+# Round 1: the ordinary connected run, then launcher loss. The unit must still
+# hold the slot after the launcher is gone.
+start_unit
+deny_check "while a unit held the slot"
+kill -KILL "$launcher_pid" 2>/dev/null || true
+wait "$launcher_pid" 2>/dev/null || true
+launcher_pid=""
+sleep 0.1
+kill -0 "$unit_pid" 2>/dev/null ||
+  note_failure "the unit did not survive its launcher"
+slot_held || note_failure "the slot was released when the launcher died"
+deny_check "after the launcher died but the unit still ran"
+stop_unit
+
+# Round 2: client timeout. The helper wraps the launcher in `timeout`, so a
+# wall-clock expiry kills the launcher while the unit runs on; --foreground
+# keeps timeout from signalling anything but the launcher itself.
+rm -f "$unit_ready" "$unit_pid_file"
+timeout --foreground -s KILL 1 "$launcher_script" >/dev/null 2>&1 &
+launcher_pid=$!
+wait_for_unit || note_failure "a unit started under timeout never reached its job"
+unit_pid="$(cat "$unit_pid_file" 2>/dev/null || true)"
+slot_held || note_failure "the unit ran without the slot held (timeout round)"
+for ((i = 0; i < 250; i++)); do
+  kill -0 "$launcher_pid" 2>/dev/null || break
+  sleep 0.02
+done
+wait "$launcher_pid" 2>/dev/null || true
+launcher_pid=""
+kill -0 "$unit_pid" 2>/dev/null ||
+  note_failure "the unit did not survive the client timeout"
+slot_held || note_failure "the slot was released when the client timeout fired"
+deny_check "after the client timeout killed the launcher"
+stop_unit
+
+echo "  ✅ the single-job slot is owned by the unit, not the launcher"
 
 # --- summary -----------------------------------------------------------------
 
