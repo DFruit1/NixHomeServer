@@ -317,6 +317,13 @@ validate_sandbox_exclusion_table() {
 # malformed payload stops the gate instead of being retried locally, so a broken
 # offload can never quietly shrink the check set.
 #
+# A check name is one attr path on one line: the names are serialized
+# newline-delimited below and each becomes `.#<attr>.<name>`. A name carrying a
+# line separator would split into extra "names", and a line that read exactly
+# like an excluded check would then match the exclusion table -- the real check
+# is never built while the gate reports its relocation as covered. So a
+# newline-bearing name is rejected here, before any serialization or build.
+#
 # Sets eval_batch_system and CHECK_WORKLIST_NAMES.
 evaluate_check_worklist() {
   local all_apps_flag="$1" batch system names name_count names_inline remote_stderr
@@ -365,7 +372,10 @@ evaluate_check_worklist() {
     type == "object"
     and (.batchSystem | type == "string" and test("^[A-Za-z0-9_]+-[A-Za-z0-9_]+$"))
     and (.batchNames | type == "array" and length > 0)
-    and all(.batchNames[]; type == "string" and length > 0)
+    and all(.batchNames[];
+      type == "string"
+      and length > 0
+      and ((contains("\n") or contains("\r")) | not))
   ' <<<"$batch" >/dev/null 2>&1; then
     echo "❌ The check worklist evaluation returned a malformed payload: ${batch}" >&2
     exit 1

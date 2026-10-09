@@ -358,6 +358,34 @@ for bad_payload in \
 done
 export VALIDATION_TEST_BATCH_PAYLOAD="$good_payload"
 
+# --- a check name is one attr path on one line -------------------------------
+#
+# The worklist is serialized newline-delimited and each name becomes
+# `.#<attr>.<name>`. A name that smuggled a newline would split into extra
+# lines, and a line reading exactly `repo-policy` would match the exclusion
+# table: the real check is never built, the exclusion is announced as a covered
+# relocation, and the run reports a pass. A newline-bearing name must therefore
+# be rejected as a malformed payload before any build or script.
+for wrapped_name in $'\nrepo-policy' $'repo-policy\n' $'repo-policy\nmedia-manager-test'; do
+  wrapped_payload="$(jq -cn --arg wrapped "$wrapped_name" \
+    '{batchSystem:"x86_64-linux",batchNames:["media-manager-frontendDist",$wrapped,"media-manager-test"]}')"
+  export VALIDATION_TEST_BATCH_PAYLOAD="$wrapped_payload"
+  if run_gate --build-checks; then
+    printf '❌ A newline-bearing check name must fail validation: %q\n' "$wrapped_name" >&2
+    cat "$test_root/output" >&2
+    exit 1
+  fi
+  require_match "$test_root/output" 'malformed payload' \
+    'A newline-bearing check name must be reported as a malformed payload.'
+  forbid_match "$test_root/output" 'Building repo-policy is excluded' \
+    'A wrapped name must never be accepted as the excluded check.'
+  forbid_match "$VALIDATION_TEST_LOG" '^nix build ' \
+    'A newline-bearing check name must stop before building anything.'
+  forbid_match "$VALIDATION_TEST_LOG" '^scripts ' \
+    'A newline-bearing check name must stop before the script suite.'
+done
+export VALIDATION_TEST_BATCH_PAYLOAD="$good_payload"
+
 # A remote evaluation that fails outright is not a worklist either. The helper
 # falls back to a local evaluation, so the gate must still finish the build —
 # but it must report the failure and must never claim a remote receipt.
