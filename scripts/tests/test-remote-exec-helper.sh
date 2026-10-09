@@ -389,6 +389,17 @@ case "$args" in
         echo $! >"$mock_dir/unit.pid"
         exit "${MOCK_CANCEL_STATUS:-124}"
       fi
+      # Model a CONNECTED cancellation: the manager stops the unit while the job
+      # is still running, so the unit's slot wrapper dies before it can record
+      # the job's completion -- yet the launcher's wait returns success (0). The
+      # job's partial output and partial artifact set are all the caller would
+      # otherwise receive, and the job is never seen to finish.
+      if [[ "$(head -n1 "$job_root/job.sh" 2>/dev/null || true)" == "# MOCK-STOPPED" ]]; then
+        printf 'stopped-job-started\n'
+        printf 'partial\n' >"$job_root/results/partial.txt"
+        rm -f "$job_root/job-status"
+        exit 0
+      fi
       (
         cd "$job_root/source"
         NIXHOMESERVER_REMOTE_EXEC_JOB_DIR="$job_root"
@@ -403,7 +414,13 @@ case "$args" in
         # fixture must be able to see.
         bash "$job_root/job.sh"
       )
-      exit $?
+      job_status=$?
+      # The unit's slot wrapper records the job's own exit status after the job
+      # returns, and the helper reads that record back as its completion proof.
+      # Modelling the record here is what lets the suite see the difference
+      # between a job that finished and a unit that was merely stopped.
+      printf '%s\n' "$job_status" >"$job_root/job-status"
+      exit "$job_status"
     fi
     exit 0
     ;;
@@ -427,6 +444,17 @@ case "$args" in
     # Must match the helper's containment guard, which refuses anything outside
     # /tmp/nixhomeserver-remote-exec.* -- that guard is part of the contract.
     printf '/tmp/nixhomeserver-remote-exec.%s\n' "${mock_dir##*/}"
+    exit 0
+    ;;
+  # The completion-record read: the unit's slot wrapper writes the job's own
+  # exit status here once the job returns, and the helper reads it back as its
+  # completion proof. A stopped unit leaves it absent, which is not a transport
+  # error -- the absence itself is the signal.
+  *"cat /tmp/nixhomeserver-remote-exec.${mock_dir##*/}/job-status"*)
+    consume_stdin
+    if [[ -f "/tmp/nixhomeserver-remote-exec.${mock_dir##*/}/job-status" ]]; then
+      cat "/tmp/nixhomeserver-remote-exec.${mock_dir##*/}/job-status"
+    fi
     exit 0
     ;;
   # The job script write: this is the script the job will run.
@@ -775,9 +803,52 @@ cancel_case 124 "timeout expiry" 'client deadline reached'
 cancel_case 137 "kill after -k" 'client deadline reached'
 cancel_case 255 "ssh transport failure" 'ssh transport failure'
 
-unset MOCK_CANCEL_STATUS MOCK_DRIVER_JOB REMOTE_EXEC_HOST
+unset MOCK_CANCEL_STATUS MOCK_DRIVER_JOB
 
 echo "  ✅ a lost connection leaves a possibly surviving unit's tree in place"
+
+# The mirror image of transport loss, and the case that was wrong live: a
+# CONNECTED cancellation. The caller is still connected, the manager stops the
+# unit mid-run, and the launcher's wait returns success -- while the job never
+# reached its own end. A zero launcher status must not be read as a completed
+# job, or the caller gets the job's partial output, its partial artifact set and
+# status 0. The unit's slot wrapper records the job's own exit status once the
+# job returns; the shim models a stopped unit by leaving that record absent while
+# still exiting 0, exactly as the recorded live probe behaved.
+#
+# The target is re-exported because the transport-loss section above cleared the
+# override; without it the helper would try to resolve the real target from
+# vars.nix and reach the network.
+export REMOTE_EXEC_HOST="dsaw@192.0.2.1"
+rm -f "$MOCK_CTL/reaped" "$MOCK_CTL/unit.ready" "$MOCK_CTL/unit.pid"
+stopped_results="$test_root/stopped-results"
+rm -rf "$stopped_results"
+stopped_status=0
+REMOTE_EXEC_RESULTS_DIR="$stopped_results" \
+  MOCK_DRIVER_JOB=$'# MOCK-STOPPED\necho stopped-partial' \
+  "$strict_driver" >"$test_root/stopped.out" 2>"$test_root/stopped.err" ||
+  stopped_status=$?
+
+((stopped_status != 0)) ||
+  note_failure "a unit stopped before its job completed was reported as success"
+if grep -q 'UNREACHABLE-STRICT-CALLER-CONTINUED' "$test_root/stopped.out"; then
+  note_failure "a strict caller continued past an interrupted run"
+fi
+grep -q 'stopped-job-started' "$test_root/stopped.out" ||
+  note_failure "the interrupted job's own output was lost: $(cat "$test_root/stopped.out")"
+grep -q 'did not report completion' "$test_root/stopped.err" ||
+  note_failure "an interrupted run did not name the missing completion record: $(cat "$test_root/stopped.err")"
+# The partial artifact set must not be handed back as a completed job's result.
+if [[ -n "$(ls -A "$stopped_results" 2>/dev/null)" ]]; then
+  note_failure "an interrupted run transferred a partial artifact set: $(ls -A "$stopped_results")"
+fi
+if [[ ! -f "$MOCK_CTL/reaped" ]]; then
+  note_failure "an interrupted connected run did not reap its owned job directory"
+fi
+
+unset REMOTE_EXEC_HOST
+
+echo "  ✅ a unit stopped before the job completed is a failed run, not a success"
 
 # Restore PATH before the EXIT trap runs rm, or cleanup cannot find it.
 export PATH="${mock_orig_path}"
@@ -944,6 +1015,34 @@ deny_check "after the client timeout killed the launcher"
 stop_unit
 
 echo "  ✅ the single-job slot is owned by the unit, not the launcher"
+
+# --- the unit records the job's status as the caller's completion proof -------
+#
+# That record is what distinguishes a stopped unit from a completed job, because
+# the launcher's status does not: remote_exec_run now refuses to call a run
+# successful without it. It must therefore hold the job's own status -- a
+# non-zero one included -- and be written only after the job returns. The
+# wrapper is the shipped one extracted and run above, with its lock already
+# redirected to this suite's private path.
+
+record_dir="$(mktemp -d "$test_root/record.XXXXXX")"
+NIXHOMESERVER_REMOTE_EXEC_JOB_DIR="$record_dir" "${bash_bin}" "$slot_script" true ||
+  note_failure "the unit slot wrapper failed a job that exited 0"
+[[ "$(cat "$record_dir/job-status" 2>/dev/null)" == "0" ]] ||
+  note_failure "the unit recorded '$(cat "$record_dir/job-status" 2>/dev/null)' for a job that exited 0"
+NIXHOMESERVER_REMOTE_EXEC_JOB_DIR="$record_dir" "${bash_bin}" "$slot_script" false \
+  >/dev/null 2>&1 || true
+[[ "$(cat "$record_dir/job-status" 2>/dev/null)" == "1" ]] ||
+  note_failure "the unit recorded '$(cat "$record_dir/job-status" 2>/dev/null)' for a job that exited 1"
+# The record belongs to the unit, not to the job: with no job directory to write
+# into, the wrapper still runs the job and simply records nothing.
+rm -f "$record_dir/job-status"
+"${bash_bin}" "$slot_script" true ||
+  note_failure "the unit slot wrapper failed with no job directory exported"
+[[ ! -e "$record_dir/job-status" ]] ||
+  note_failure "the wrapper recorded a completion status with no job directory"
+
+echo "  ✅ the unit records the job's own status as the completion proof"
 
 # --- summary -----------------------------------------------------------------
 

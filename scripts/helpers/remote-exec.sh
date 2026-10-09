@@ -48,6 +48,15 @@
 # remote_exec_cancel exists: cancellation targets the remote unit by name, not a
 # client-side PID.
 #
+# Neither status the caller can naively trust proves the job completed. A
+# transient unit that the manager stops mid-run reports the same clean
+# `systemd-run --wait` success as one whose job finished, so a connected
+# cancellation used to hand back a partial artifact set as a completed run. The
+# unit's slot wrapper therefore records the job's own exit status in the job
+# directory once the job returns, and remote_exec_run reads that record back as
+# its completion proof: no record means the unit was stopped or interrupted
+# before the job reached its own end, which is a failed run, not a success.
+#
 # The job script travels on stdin and is never interpolated into a remote
 # command line, where operator- or agent-supplied text would be re-parsed by the
 # remote shell. The shipped source archive comes from create_deploy_repo_archive,
@@ -346,6 +355,23 @@ _remote_exec_unit_maybe_surviving() {
   (( $1 == 124 || $1 == 137 || $1 == 255 ))
 }
 
+# Read back the job's own exit status from the unit's completion record.
+#
+# Prints the canonical status and returns 0 when the job's slot wrapper recorded
+# one -- the record is written by the unit's own main process after the job
+# returns, so it exists exactly when the job reached its own end. Prints nothing
+# and returns 1 for a missing record, a partial read, or a value that is not a
+# real exit status (0..255): none of those is completion proof, and a value
+# outside the range cannot have come from the wrapper.
+_remote_exec_completion_status() {
+  local dir="$1" record
+  record="$(ssh -T -o BatchMode=yes -o ConnectTimeout=10 "$remote_exec_host" \
+    "cat $(printf '%q' "$dir/job-status")" 2>/dev/null)" || record=""
+  record="$(_remote_exec_canonical_decimal "$record")" || return 1
+  _remote_exec_decimal_le "$record" 255 || return 1
+  printf '%s\n' "$record"
+}
+
 # remote_exec_run <job-id> <job-script>
 #
 # Runs <job-script> on the server inside the enforced envelope, prints the job's
@@ -353,7 +379,9 @@ _remote_exec_unit_maybe_surviving() {
 # diagnostic -- on stderr, and copies everything the script wrote into
 # REMOTE_EXEC_RESULTS_DIR (default: ./remote-exec-results) on this workstation.
 # Exit status is the remote job's exit status; a transport or staging failure is
-# non-zero with no stdout.
+# non-zero with no stdout. A run whose unit was stopped before the job reported
+# completion is non-zero too, with a diagnostic naming the missing completion
+# record -- a clean systemd stop is not job completion.
 remote_exec_run() {
   if (($# < 2)); then
     echo "remote-exec: usage: remote_exec_run <job-id> <job-script>" >&2
@@ -362,6 +390,7 @@ remote_exec_run() {
   local job_id="$1" job_script="$2"
   local repo_root archive remote_archive remote_dir remote_job_dir unit_name
   local results_dir output remote_err artifact_cap artifact_size remote_status
+  local job_status_record
   local client_timeout_sec
   # Client-side wall clock slightly longer than the remote RuntimeMaxSec, so the
   # remote limit is what normally ends a job and the local timeout is a backstop
@@ -538,7 +567,20 @@ if ! flock -n 9; then
   echo "remote-exec: another job already holds the server slot" >&2
   exit 75
 fi
-"$@"
+# Record the job's own exit status once the job returns.
+#
+# This is the caller's completion proof, and the launcher's status is not it: a
+# unit the manager stops while the job is still running reports the same clean
+# success as one whose job finished. The record is written here, by the unit's
+# own main process, so it exists exactly when the job reached its own end and
+# never when the unit was stopped out from under it. `&& ... ||` rather than a
+# bare command, because this wrapper also runs under `set -e` and a non-zero job
+# status is a status to record, not a reason to abort before recording it.
+"$@" && job_status=0 || job_status=$?
+if [[ -n "${NIXHOMESERVER_REMOTE_EXEC_JOB_DIR:-}" ]]; then
+  printf '%s\n' "$job_status" >"${NIXHOMESERVER_REMOTE_EXEC_JOB_DIR}/job-status"
+fi
+exit "$job_status"
 SLOT_EOF
 chmod 0500 "$remote_dir/slot.sh"
 
@@ -596,6 +638,34 @@ REMOTE_EOF
       reap_job_dir
     fi
     return "$remote_status"
+  fi
+
+  # A zero status from the launcher is not proof that the job completed.
+  #
+  # When a connected caller cancels the unit, the manager stops it and
+  # `systemd-run --wait` still returns success -- the job never reached its own
+  # end, yet the run used to fall straight through to the artifact fetch and reap
+  # and hand the caller a partial result with status 0. The unit's slot wrapper
+  # records the job's own exit status in the job directory once the job returns,
+  # so the record exists exactly when the job finished, including a job that
+  # failed: that status is what the caller must see. A missing record means the
+  # unit was stopped or interrupted before the job returned, so the run fails
+  # closed with a diagnostic instead of succeeding with whatever the job had
+  # written so far.
+  #
+  # Reaping on this path is safe: the launcher returned while the connection was
+  # up, so the unit is already gone and cannot still own $remote_job_dir.
+  if ((remote_status == 0)); then
+    if ! job_status_record="$(_remote_exec_completion_status "$remote_dir")"; then
+      echo "remote-exec: remote job '${job_id}' did not report completion on ${remote_exec_host}; the unit was stopped before the job finished" >&2
+      reap_job_dir
+      return 1
+    fi
+    if [[ "$job_status_record" != 0 ]]; then
+      echo "remote-exec: remote job '${job_id}' exited ${job_status_record} on ${remote_exec_host}" >&2
+      reap_job_dir
+      return "$job_status_record"
+    fi
   fi
 
   # Artifacts come back explicitly. Nothing syncs a working tree in or out over
