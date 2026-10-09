@@ -960,6 +960,18 @@ assert_no_competing_blocker_policy() {
     fail "$label lost the compact policy's deploy denial: $(cat "$soul")"
 }
 
+# Two installers write blocker-delivery policy into this one file, so "one
+# policy" is a count rather than a grep for a phrase. The defect the review
+# reproduced was exactly two policies after an exact two-apply order, and a
+# three-apply assertion hid it, so this is asserted immediately after the second
+# apply in every order below.
+assert_one_blocker_policy() {
+  local soul="$1" label="$2" count
+  count="$(grep -cE '^## (Blocker delivery|Compact owner inbox)' "$soul")"
+  [[ "$count" == 1 ]] ||
+    fail "$label carries $count blocker-delivery policies, expected one: $(grep -nE '^## (Blocker delivery|Compact owner inbox)' "$soul")"
+}
+
 # Order A: the board wiring is applied first, so its section is installed, then
 # the compact installer runs and must replace the whole loop, not augment it.
 cat >"$COORDINATOR_SOUL" <<'SOUL'
@@ -982,29 +994,31 @@ grep -qF "$GATE_HEADING" "$COORDINATOR_SOUL" ||
 compact_profile_env
 run_compact_install ||
   fail "the compact owner-alert installer failed against the fixture: $(cat "$fixture/compact-install.log")"
-# The compact installer appends its own section and replaces nothing else, so at
-# this point both policies are present. That is the state the review reproduced,
-# and the property under test is what the BOARD installer does about it next:
-# a re-apply must remove its own superseded section rather than leave it.
+# The exact two-apply order is board, then compact. Uniqueness is asserted HERE,
+# after the second installer and before any third apply: the defect the review
+# reproduced was two policies at precisely this point, and an assertion only after
+# a third apply hides it.
+assert_one_blocker_policy "$COORDINATOR_SOUL" "board-then-compact"
 grep -q '<!-- kanban-owner-alerts -->' "$COORDINATOR_SOUL" ||
   fail "the compact policy was not installed: $(cat "$COORDINATOR_SOUL")"
-reapply="$(run_installer 2>&1)"
-grep -q 'removed the superseded blocker-gate section' <<<"$reapply" ||
-  fail "a board re-apply did not remove its superseded section: $reapply"
-assert_no_competing_blocker_policy "$COORDINATOR_SOUL" "board-then-compact-then-board"
+assert_no_competing_blocker_policy "$COORDINATOR_SOUL" "board-then-compact"
 # The deploy safeguard the board installer checks for must survive.
 grep -q '## Deploy gate' "$COORDINATOR_SOUL" ||
-  fail "removing the superseded section dropped the deploy-gate section: $(cat "$COORDINATOR_SOUL")"
+  fail "the compact installer dropped the deploy-gate section: $(cat "$COORDINATOR_SOUL")"
 grep -q '## Board health' "$COORDINATOR_SOUL" ||
-  fail "removing the superseded section dropped the board-health policy: $(cat "$COORDINATOR_SOUL")"
+  fail "the compact installer dropped the board-health policy: $(cat "$COORDINATOR_SOUL")"
 pass "board-then-compact leaves one compact-only blocker policy and keeps the deploy gate"
 
 # Repeated applies in either order must not resurrect the superseded section.
+# Each step is checked immediately, so a third apply cannot hide what two left.
 run_installer >/dev/null 2>&1
-run_installer >/dev/null 2>&1
+assert_one_blocker_policy "$COORDINATOR_SOUL" "after a board reinstall"
 assert_no_competing_blocker_policy "$COORDINATOR_SOUL" "after a board reinstall"
+run_installer >/dev/null 2>&1
+assert_one_blocker_policy "$COORDINATOR_SOUL" "after two more board installs"
 run_compact_install ||
   fail "a second compact install failed: $(cat "$fixture/compact-install.log")"
+assert_one_blocker_policy "$COORDINATOR_SOUL" "after a second compact install"
 assert_no_competing_blocker_policy "$COORDINATOR_SOUL" "after a second compact install"
 grep -qF "$GATE_HEADING" "$COORDINATOR_SOUL" &&
   fail "a re-run resurrected the superseded blocker-gate section"
@@ -1026,10 +1040,15 @@ grep -q 'carries the superseded' <<<"$superseded_out" ||
   fail "--check did not report the superseded section next to the compact policy: $superseded_out"
 pass "--check reports the superseded section and changes nothing"
 
-# Apply removes it, and a later --check is then clean.
-run_installer >/dev/null 2>&1
+# Apply removes it, and a later --check is then clean. The removal is reported
+# to the operator as well as performed, because a silent SOUL.md rewrite is the
+# same failure mode as the drift it repairs.
+apply_out="$(run_installer 2>&1)"
+grep -q 'removed the superseded blocker-gate section' <<<"$apply_out" ||
+  fail "apply removed the section without reporting it: $apply_out"
 grep -qF "$GATE_HEADING" "$COORDINATOR_SOUL" &&
   fail "apply did not remove the superseded section: $(grep -n -A3 'SimpleX' "$COORDINATOR_SOUL")"
+assert_one_blocker_policy "$COORDINATOR_SOUL" "after the superseded section was removed"
 assert_no_competing_blocker_policy "$COORDINATOR_SOUL" "after the superseded section was removed"
 grep -qF '<!-- /kanban-owner-alerts -->' "$COORDINATOR_SOUL" ||
   fail "removing the superseded section dropped the compact policy's closing marker: $(cat "$COORDINATOR_SOUL")"
@@ -1052,7 +1071,10 @@ SOUL
 compact_profile_env
 run_compact_install ||
   fail "the compact installer failed on a fresh SOUL.md: $(cat "$fixture/compact-install.log")"
+# The exact two-apply order is compact, then board. Asserted here, after the
+# second installer, before anything is applied a third time.
 compact_first="$(run_installer 2>&1)"
+assert_one_blocker_policy "$COORDINATOR_SOUL" "compact-then-board"
 grep -qF "$GATE_HEADING" "$COORDINATOR_SOUL" &&
   fail "compact-then-board installed a competing blocker-gate section: $(grep -n -A3 'SimpleX' "$COORDINATOR_SOUL")"
 assert_no_competing_blocker_policy "$COORDINATOR_SOUL" "compact-then-board"

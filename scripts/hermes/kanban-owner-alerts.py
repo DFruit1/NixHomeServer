@@ -25,6 +25,13 @@ MARKER = '<!-- kanban-owner-alerts -->'
 END_MARKER = '<!-- /kanban-owner-alerts -->'
 SUMMARY_INTERVAL = 3600
 MESSAGE_LIMIT = 1600
+# The blocker-gate section scripts/hermes/install-board-wiring.sh uses to write
+# into this same SOUL.md. This installer owns delivery end to end, so that
+# section is superseded prose that competes with the policy below. Matched by
+# heading and deleted, not merely allowed to coexist: leaving it in place gives
+# the lane two instructions for one loop, and the one it leaves behind tells it
+# to bind each gate card by hand -- exactly what the compact policy replaces.
+SUPERSEDED_HEADING = '## Blocker delivery and reply-to-unblock (SimpleX)'
 
 
 def target_config(root):
@@ -363,6 +370,28 @@ def tick(root, dry_run=False, now=None, force_blockers=False):
         raise RuntimeError('; '.join(errors))
 
 
+def drop_superseded(text):
+    """Remove the superseded section, leaving every other byte in place.
+
+    The section runs from its heading to the next `## ` heading, to the compact
+    policy's own marker, or to end of file, whichever comes first. Stopping at
+    the marker matters: the marker sits on its own line immediately above the
+    compact section and is not itself a heading, so swallowing it here would make
+    this installer stop recognising its own block.
+    """
+    kept = []
+    skipping = False
+    for line in text.splitlines(True):
+        if not skipping and line.rstrip('\n') == SUPERSEDED_HEADING:
+            skipping = True
+            continue
+        if skipping and (line.startswith('## ') or line.rstrip('\n') == MARKER):
+            skipping = False
+        if not skipping:
+            kept.append(line)
+    return ''.join(kept)
+
+
 def install(root):
     source = Path(__file__).resolve().parent
     target_config(root)
@@ -373,6 +402,12 @@ def install(root):
     policy = (source / 'taskforce/owner-alert-replies.md').read_text()
     soul = root / 'profiles' / PROFILE / 'SOUL.md'
     existing = soul.read_text()
+    # Whichever installer runs second must leave exactly one policy. The board
+    # wiring removes its own section on a later apply, but a machine that ran
+    # board first and then this installer would keep both until the board wiring
+    # was applied a third time, so this side removes the superseded section too.
+    # Either order converges on the compact policy as the only one.
+    existing = drop_superseded(existing)
     block = MARKER + '\n' + policy + END_MARKER + '\n'
     if MARKER not in existing:
         wanted = existing.rstrip() + '\n\n' + block
@@ -385,6 +420,8 @@ def install(root):
         wanted = existing[:-len(MARKER + '\n' + policy)] + block
     else:
         raise ValueError('Unrecognised owner alert policy; preserve and reconcile it')
+    if wanted.count(SUPERSEDED_HEADING) or wanted.count(MARKER) != 1:
+        raise ValueError('Owner alert policy must be the only blocker-delivery policy')
     if soul.read_text() != wanted:
         backup = root / 'backups/owner-alerts'
         backup.mkdir(parents=True, exist_ok=True, mode=0o700)
