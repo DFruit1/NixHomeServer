@@ -6,10 +6,9 @@ sender reads every board without changing cards or assuming approval.
 
 ## What a Hard Blocker is
 
-The owner's phone receives one message class, called a **Hard Blocker**: a
-blocked card whose owner action is the only way forward.
-
-A card qualifies in one of two ways:
+The owner's phone receives one unprompted message class, called a **Hard
+Blocker**: a blocked card whose owner action is the only way forward, and which
+cannot clear itself without the owner. A card qualifies in one of two ways:
 
 1. It is a decision — blocked with `--kind needs_input`, awaiting an answer only
    the owner can give.
@@ -20,33 +19,46 @@ A card qualifies in one of two ways:
    - a card hard-stuck with no agent-side recovery.
 
 The line must be its own line; prose that merely mentions it does not count.
-It is not a priority hint. A regression that the board can act on is not a Hard
-Blocker.
+It is not a priority hint: a card the board can clear on its own is not a Hard
+Blocker. Prefer `--kind needs_input` so the block is sticky and cannot self-clear;
+the `Hard Blocker` line is the marker for an owner-only block that is not a
+`needs_input` choice.
+
+Both shapes are the decision (D) category and are the only cards pushed. Every
+other blocked card is a technical (B) blocker and is never pushed.
+
+Each message shows the decision, a short plain-language description, then the
+recommended choice (A) and the alternatives. Emphasis uses SimpleX markup
+(`*bold*`, `_italic_`, `~strike~`); GitHub-style `**bold**` is converted before
+send:
 
 ```text
-Hard Blocker
+*Hard Blocker*
 
 D1 · nixhomeserver
 Choose a recovery mechanism
-Restore the worker, or pause until capacity returns?
-A) Restore the worker with existing credentials
+Choose a recovery mechanism for this host?
+The worker is down and queued work is stuck.
+Recommended: A) Restore the worker with existing credentials
+Alternatives:
 B) Pause work until capacity returns
 
 Reply: D1 <choice or answer>. Details: D1 details
 ```
 
-An agent-asserted technical Hard Blocker looks like:
+An agent-asserted Hard Blocker with no choices shows its owner-only reason:
 
 ```text
-Hard Blocker · nixhomeserver
-B4 · nixhomeserver
+*Hard Blocker*
+
+D2 · nixhomeserver
 Harden: root SFTP key helper authorization
-Blocked: Operator recovery needed
-Details: B4 details
+needs the owner key
+
+Reply: D2 <answer>. Details: D2 details
 ```
 
-A decision pushes when it appears and again only when the ask changes. An
-agent-asserted card pushes once per content revision.
+A decision pushes when it appears and again only when the ask changes.
 
 ## Urgent regressions
 
@@ -56,56 +68,53 @@ Escalate it as a Hard Blocker only if no agent-side action is possible.
 
 ## What is never pushed
 
-Everything else stays board-local, because it can be cleared at the owner's
-pace: missing evidence or receipts, worker/model failures, dependency waits and
-routine operator cleanups. Nothing schedules a reminder for them — there is no
-inbox digest and no hourly summary. They remain fully reachable on demand:
+Everything else is a technical blocker that stays board-local, because it can be
+cleared at the owner's pace: missing evidence or receipts, worker/model
+failures, dependency waits and routine operator cleanups. Nothing pushes it —
+there is no inbox digest and no hourly summary. It remains fully reachable on
+demand:
 
 ```text
-blockers                      one short line per technical blocker
-B4 details                    one blocker's reason and current state
+blockers                      one short line per technical (B) blocker
+B4 details                    one technical blocker's reason and current state
 D1 details                    one decision question in full
 pcops:t_051011f5              a card's body and block reason
 ```
 
 ```bash
 python3 ~/.hermes/scripts/kanban-owner-alerts.py --details blockers
-python3 ~/.hermes/scripts/kanban-owner-alerts.py --send-blockers
 python3 ~/.hermes/scripts/kanban-owner-alerts.py --send-decisions
 python3 ~/.hermes/scripts/kanban-owner-alerts.py --details D1
 python3 ~/.hermes/scripts/kanban-owner-alerts.py --resolve B4
 ```
 
-`--send-blockers` and `--send-decisions` send the current technical or decision
-set immediately, in phone-sized batches, using the stable labels. A technical
-label is replyable only once its card has actually been delivered, so a pull is
-what makes recovery instructions through it valid.
+`--send-decisions` sends the current hard-blocker set immediately, in
+phone-sized batches, using the stable D labels. B labels are terminal
+diagnostics for technical cards: they are never delivered, never replyable and
+never appear on the phone. `--resolve` and `--details` are read-only and allowed
+in delegated terminals.
 
 ## Replies
 
-Reply `B4 <recovery instructions>` to address one exact technical card, or
-`D1 A` / `D1 <answer>` to answer one exact decision revision. A B label
-identifies a card across retries; it never serves as an implementation approval.
-The coordinator reads the current cause, records the reply and verifies a
-concrete recovery before any unblock. Closed cards, or cards now requiring a
-decision, cannot be released through their old B label. A targeted technical
-lookup also accepts `board:card`, and `hermes --profile default kanban --board
-pcops show <task-id>` reads a card directly.
+Reply `D1 A` or `D1 <answer>` to answer one exact decision revision; `D1 A,
+D2 B` addresses decisions independently. A D label identifies an exact question
+revision and stays answerable while the ask is unchanged. Closed cards, or cards
+re-blocked for a different reason, cannot be released through an old label. A
+targeted lookup also accepts `board:card`, and `hermes --profile default kanban
+--board pcops show <task-id>` reads a card directly.
 
 The coordinator resolves the label to the exact board, card and question
 revision. It records the verbatim reply with native `kanban_comment`, verifies
 the comment and current ask with `kanban_show`, and unblocks only justified
 work. An old label cannot approve revised scope. Rejection never dispatches an
-implementer for the rejected change. Unclear replies or unresolved technical
-failures keep work blocked. Confirmations are one short line per decision and
-name the actual status. Existing owner approval and whole-set deploy gates
-still apply.
+implementer for the rejected change. Unclear replies keep work blocked.
+Confirmations are one short line per decision and name the actual status.
+Existing owner approval and whole-set deploy gates still apply.
 
 ```bash
 python3 scripts/hermes/kanban-owner-alerts.py --dry-run
 python3 scripts/hermes/kanban-owner-alerts.py --install
 python3 ~/.hermes/scripts/kanban-owner-alerts.py
-python3 ~/.hermes/scripts/kanban-owner-alerts.py --send-blockers
 python3 ~/.hermes/scripts/kanban-owner-alerts.py --send-decisions
 hermes --profile default cron list
 ```
@@ -119,17 +128,16 @@ when idle. Do not interrupt workers to refresh chat instructions.
 
 Labels and acknowledgments persist in
 `~/.hermes/kanban/owner-alerts/inbox.json`; a lock serialises ticks and atomic
-private writes prevent partial state. Each decision revision gets a D label;
-each agent-asserted technical card gets a permanent B label. Labels are never
+private writes prevent partial state. Each hard-blocker revision gets a D label;
+each technical card gets a permanent B label for diagnostics. Labels are never
 reassigned. Existing count-only state upgrades once to individual entries,
 without resending delivered questions. Allocation survives failed delivery, and
-delivery is recorded only after Hermes acknowledges success. State written
-under the earlier `Urgency:` scheme migrates in place. Corrupt state fails
-closed. Back up/restore this file with the boards; do not reset it while old
-messages exist. The legacy `state.json` remains untouched for rollback.
-Reinstalling preserves labels and delivery state. A crash after transport
-acknowledgment but before saving can duplicate a message. Acknowledgment does
-not prove phone display.
+delivery is recorded only after Hermes acknowledges success. State written under
+the earlier `Urgency:` scheme migrates in place. Corrupt state fails closed. Back
+up/restore this file with the boards; do not reset it while old messages exist.
+The legacy `state.json` remains untouched for rollback. Reinstalling preserves
+labels and delivery state. A crash after transport acknowledgment but before
+saving can duplicate a message. Acknowledgment does not prove phone display.
 
 The sender owns blocker alerts; do not add manual SimpleX subscriptions.
 Existing unrelated subscriptions are untouched and may still send their native

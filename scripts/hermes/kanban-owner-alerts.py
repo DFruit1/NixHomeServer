@@ -6,18 +6,17 @@ approval, subscription or unblock is performed by the unattended job.
 
 The delivery contract is deliberately narrow. The owner's phone receives one
 class of message unprompted: a Hard Blocker. A blocked card is a Hard Blocker
-when the owner's action is the only way forward -- a decision only the owner can
-make, or the other criteria an agent asserts with a standalone `Hard Blocker`
-line (a secret/credential/authorization only the owner holds, a physical action
-only the owner can take, or a card hard-stuck with no agent-side recovery).
-Every other blocked card -- missing evidence, worker/model failures, dependency
-waits, routine operator cleanups -- is not pushed; it stays on the board and is
-pulled on demand with `--details`, `--resolve`, `--send-blockers` or
-`--send-decisions`. An urgent security or availability regression is not an
-owner alert: fix it, or roll the system back, without paging the owner.
+when the owner's action is the only way forward -- a card blocked with
+`needs_input`, or a card an agent marks with a standalone `Hard Blocker` line
+for an owner-only secret, a physical action, or a hard-stuck card with no
+agent-side recovery. Both are decisions and cannot clear themselves without the
+owner. Every other blocked card (missing evidence, worker/model failures,
+dependency waits, routine operator cleanups) is board-local, is never pushed and
+is read on demand with `--details blockers`, `--resolve` or the board. An urgent
+security or availability regression is not an owner alert: fix it, or roll the
+system back, without paging the owner.
 """
 import argparse
-from collections import Counter
 from contextlib import closing, nullcontext
 import fcntl
 import hashlib
@@ -29,16 +28,27 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
-import time
 
 PROFILE = 'head-coordinator'
 JOB = 'kanban owner blocker alerts'
 MARKER = '<!-- kanban-owner-alerts -->'
 END_MARKER = '<!-- /kanban-owner-alerts -->'
 MESSAGE_LIMIT = 1600
-# A standalone line an agent adds to assert a Hard Blocker it did not set as a
-# decision. Case-insensitive and its own line; prose mentioning it does not count.
+# A standalone line an agent adds to mark a card it did not block as a decision.
+# Case-insensitive and its own line; prose mentioning it does not count. A card
+# carrying it is a Hard Blocker and belongs to the decision (D) category.
 HARD_BLOCKER = re.compile(r'^Hard Blocker\b[^\n]*$', re.M | re.I)
+
+
+def is_hard_blocker(task):
+    return task['block_kind'] == 'needs_input' or bool(HARD_BLOCKER.search(task['body'] or ''))
+
+
+def hard_blocker_detail(body):
+    match = HARD_BLOCKER.search(body or '')
+    if not match:
+        return ''
+    return re.sub(r'^Hard Blocker\b[ \t:–-]*', '', match.group(0), flags=re.I).strip()
 
 
 def target_config(root):
@@ -131,12 +141,29 @@ def inline_options(reason):
     return options
 
 
+def first_sentences(text, count=2):
+    return re.split(r'(?<=[.!?])\s+', ' '.join(text.split()))[:count]
+
+
+def simplex_markdown(text):
+    """Render emphasis the way SimpleX parses it.
+
+    SimpleX Chat uses *bold*, _italic_ and ~strike~; GitHub's **bold**, __italic__
+    and ~~strike~~ reach the phone as literal marker characters.
+    """
+    text = re.sub(r'\*\*(.+?)\*\*', r'*\1*', text, flags=re.S)
+    text = re.sub(r'__(.+?)__', r'_\1_', text, flags=re.S)
+    text = re.sub(r'~~(.+?)~~', r'~\1~', text, flags=re.S)
+    return text
+
+
 def decision_text(label, board, task):
     body, reason = task.get('body') or '', task.get('reason') or ''
-    end = r'(?=^\s*[A-Z]\)|^NEEDED FROM YOU:|^IF UNANSWERED:|^Context:|^Must not change:|\Z)'
+    end = r'(?=^\s*[A-Z]\)|^NEEDED FROM YOU:|^IF UNANSWERED:|^Context:|^Must not change:|^Notes?:|\Z)'
     ask = re.search(r'^ASK:[ \t]*(.*?)' + end, body, re.M | re.S)
     options = re.findall(r'^\s*([A-Z])\)[ \t]*(.*?)' + end, body, re.M | re.S)
-    question = ' '.join(ask[1].split()) if ask else 'Choose:'
+    context = re.search(r'^Context:[ \t]*(.*?)' + end, body, re.M | re.S)
+    marker = HARD_BLOCKER.search(body)
     # Older worker blockers sometimes put the choices inline in the reason.
     reason_options = inline_options(reason)
     conflicting = bool(ask and reason_options and
@@ -144,9 +171,31 @@ def decision_text(label, board, task):
     if not ask:
         options = reason_options or options
     heading = f'{label} · {board}\n' + ' '.join(task['title'].split())[:80]
-    lines = [question] + [f'{letter}) {" ".join(text.split())}' for letter, text in options]
+    # A short plain-language description, one sentence per line: the decision
+    # (or owner-only reason), then the situation that forces it.
+    if ask:
+        description = [' '.join(ask[1].split())]
+        if context:
+            description += first_sentences(context[1], 2)
+    elif marker:
+        goal = re.search(r'^Goal:[ \t]*(.*?)' + end, body, re.M | re.S)
+        detail = (hard_blocker_detail(body)
+                  or (' '.join(goal[1].split()) if goal else '')
+                  or (' '.join(reason.split()) if reason not in ('', 'initial_status') else ''))
+        description = first_sentences(detail, 2)
+    else:
+        description = ['Choose:']
+    # The first choice is presented as the recommendation; the rest are alternatives.
+    lines = [line for line in description if line.strip()]
+    if options:
+        lines.append(f'Recommended: {options[0][0]}) {" ".join(options[0][1].split())}')
+        if len(options) > 1:
+            lines.append('Alternatives:')
+            lines += [f'{letter}) {" ".join(text.split())}' for letter, text in options[1:]]
     # Never hide scope or consequences behind a truncated approval choice.
-    complete = not conflicting and bool(options or ask) and len({v[0] for v in options}) == len(options) and all(len(line) <= 180 for line in lines) and len('\n'.join(lines)) <= 650
+    complete = (not conflicting and bool(lines) and (bool(options or ask) or bool(marker))
+                and len({v[0] for v in options}) == len(options)
+                and all(len(line) <= 180 for line in lines) and len('\n'.join(lines)) <= 650)
     if not complete:
         return heading + f'\nDetails required before deciding: {label} details', False
     return heading + '\n' + '\n'.join(lines), True
@@ -172,7 +221,7 @@ def resolve(root, label):
                               and ((current['block_kind'] != 'needs_input'
                                     and target_config(root) in decision['delivered'])
                                    if technical else
-                                   (current['block_kind'] == 'needs_input'
+                                   (is_hard_blocker(current)
                                     and token(current) == decision['token'])))}
 
 
@@ -183,7 +232,7 @@ def details(root, label):
         for board in sorted((root / 'kanban/boards').glob('*/board.json')):
             if not board.parent.name.startswith('_'):
                 for task in snapshot(board):
-                    if task['block_kind'] == 'needs_input':
+                    if is_hard_blocker(task):
                         continue
                     alias = next((alias for alias, record in state['blockers'].items()
                                   if (record['board'], record['task_id']) == (board.parent.name, task['id'])), 'Unlabelled')
@@ -243,14 +292,6 @@ def technical_category(task):
     return 'execution problems'
 
 
-def technical_summary(tasks):
-    counts = Counter(board for board, _ in tasks)
-    categories = Counter(technical_category(task) for _, task in tasks)
-    return (f'Technical blockers: {len(tasks)}\n'
-            + ', '.join(f'{board} {count}' for board, count in counts.items())[:500]
-            + '\n' + ', '.join(f'{count} {category}' for category, count in categories.items()))
-
-
 def technical_text(label, board, task):
     causes = {'worker failures': 'Worker/model unavailable', 'missing evidence': 'Missing evidence',
               'operator action': 'Operator recovery needed', 'execution problems': 'Execution problem; inspect details'}
@@ -275,24 +316,13 @@ def decision_messages(labels, state):
     """Batch the current decision set, used only for an explicit owner request."""
     order = sorted(labels)
     shown = {label: state['decisions'][label]['shown'] for label in order}
-    heading = 'Hard Blocker\n'
+    heading = '*Hard Blocker*\n'
     # An empty set answers the request rather than staying silent: the owner
     # asked, so "nothing waiting" is the reply.
     batches = batches_for(shown, order, len(heading)) or [[]]
     return [(heading + '\n' + '\n\n'.join(shown[label] for label in batch)
              + (f'\n\nReply: {batch[0]} <choice or answer>. Details: {batch[0]} details'
                 if batch else '\nNo decisions are waiting.'), batch)
-            for batch in batches]
-
-
-def technical_messages(tasks, labels, state):
-    heading = technical_summary(tasks)
-    order = [labels[(board, task['id'])] for board, task in tasks]
-    shown = {label: state['blockers'][label]['shown'] for label in order}
-    # Also emit a short all-clear when the list becomes empty.
-    batches = batches_for(shown, order, len(heading)) or [[]]
-    return [(heading + '\n\n' + '\n\n'.join(shown[label] for label in batch)
-             + (f'\n\nReply: {batch[0]} <recovery instructions>. Details: {batch[0]} details' if batch else '\nNo technical blockers remain.'), batch)
             for batch in batches]
 
 
@@ -311,7 +341,7 @@ def collect(root, state, errors):
             continue
         try:
             for task in snapshot(board):
-                if task['block_kind'] != 'needs_input':
+                if not is_hard_blocker(task):
                     technical.append((board.parent.name, task))
                     label = next((label for label, record in state['blockers'].items()
                                   if (record['board'], record['task_id']) == (board.parent.name, task['id'])), None)
@@ -340,7 +370,7 @@ def collect(root, state, errors):
     return technical, technical_labels, decision_labels, decisions, snapshot_failed
 
 
-def tick(root, dry_run=False, now=None, force_blockers=False, force_decisions=False):
+def tick(root, dry_run=False, now=None, force_decisions=False):
     target = target_config(root)
     if not dry_run and (os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT') or os.environ.get('HERMES_KANBAN_TASK')):
         raise PermissionError('Owner alerts run only from the operator or no-agent cron')
@@ -348,19 +378,19 @@ def tick(root, dry_run=False, now=None, force_blockers=False, force_decisions=Fa
     if not dry_run:
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     errors = []
-    now = time.time() if now is None else now
     # Preview creates neither a state directory nor a lock file.
     with ((directory / '.lock').open('a') if not dry_run else nullcontext()) as lock:
         if lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
         path = directory / 'inbox.json'
         state = load_inbox(root)
-        delivery = state['delivery'].setdefault(target, {'technical_token': '', 'technical_at': None, 'hard_blocker': {}})
-        technical, technical_labels, decision_labels, decisions, snapshot_failed = collect(root, state, errors)
+        state['delivery'].setdefault(target, {'technical_token': '', 'technical_at': None, 'hard_blocker': {}})
+        _, _, decision_labels, decisions, snapshot_failed = collect(root, state, errors)
         if not dry_run:
             save(path, state)  # Labels survive a failed send or a process restart.
 
         def deliver(text):
+            text = simplex_markdown(text)
             if dry_run:
                 print(text)
                 return True
@@ -378,54 +408,29 @@ def tick(root, dry_run=False, now=None, force_blockers=False, force_decisions=Fa
                         records[label]['delivered'].append(target)
                 save(path, state)
 
-        # The one owner-facing category: a Hard Blocker, which needs the owner to
-        # act. A card qualifies when it is a decision (`needs_input`) or when an
-        # agent marked it with a standalone `Hard Blocker` line. Everything else
-        # stays board-local and is pulled on demand.
+        # The one owner-facing category is a decision gate: a card blocked with
+        # `needs_input`, which only the owner can clear and which the board will
+        # not unblock on its own. A technical blocker can clear itself, so it is
+        # never sent; it stays board-local and is read with `--details blockers`.
         pending = [decision_labels[(board, task['id'])] for board, task in decisions
                    if target not in state['decisions'][decision_labels[(board, task['id'])]]['delivered']]
         if pending:
-            heading = 'Hard Blocker\n'
+            heading = '*Hard Blocker*\n'
             shown = {label: state['decisions'][label]['shown'] for label in pending}
             for batch in batches_for(shown, pending, len(heading)):
                 text = (heading + '\n' + '\n\n'.join(shown[label] for label in batch)
                         + f'\n\nReply: {batch[0]} <choice or answer>. Details: {batch[0]} details')
                 if deliver(text):
                     delivered(state['decisions'], batch)
-        for board, task in technical:
-            if not HARD_BLOCKER.search(task['body'] or ''):
-                continue
-            key = f'{board}:{task["id"]}'
-            revision = token({k: v for k, v in task.items() if k != 'event_id'})
-            if delivery['hard_blocker'].get(key) == revision:
-                continue
-            label = technical_labels[(board, task['id'])]
-            text = f'Hard Blocker · {board}\n' + state['blockers'][label]['shown'] + f'\nDetails: {label} details'
-            if deliver(text) and not dry_run:
-                delivery['hard_blocker'][key] = revision
-                if target not in state['blockers'][label]['delivered']:
-                    state['blockers'][label]['delivered'].append(target)
-                save(path, state)
 
-        # Explicit pulls. A failed board read omits cards, so an incomplete list
-        # is never sent as if it were the whole board.
+        # Explicit pull of the decision set only. A failed board read omits
+        # cards, so an incomplete list is never sent as if it were whole.
         if force_decisions and not snapshot_failed:
             for text, batch in decision_messages(decision_labels.values(), state):
                 if not deliver(text):
                     continue
                 if batch:
                     delivered(state['decisions'], batch)
-        if force_blockers and not snapshot_failed:
-            complete = True
-            summary_token = token([(board, t['id'], state['blockers'][technical_labels[(board, t['id'])]]['shown']) for board, t in technical])
-            for text, batch in technical_messages(technical, technical_labels, state):
-                if not deliver(text):
-                    complete = False
-                    continue
-                delivered(state['blockers'], batch)
-            if complete and not dry_run:
-                delivery.update(technical_token=summary_token, technical_at=now, technical_format=2)
-                save(path, state)
     if errors:
         raise RuntimeError('; '.join(errors))
 
@@ -478,7 +483,6 @@ if __name__ == '__main__':
     actions = parser.add_mutually_exclusive_group()
     actions.add_argument('--dry-run', action='store_true')
     actions.add_argument('--install', action='store_true')
-    actions.add_argument('--send-blockers', action='store_true', help='Send the current compact technical list now')
     actions.add_argument('--send-decisions', action='store_true', help='Send the current decision questions now')
     actions.add_argument('--resolve', metavar='D1|B1', help='Read exact label mapping and current validity as JSON')
     actions.add_argument('--details', metavar='D1|B1|blockers|board:card', help='Read requested diagnostics without sending or mutating')
@@ -492,8 +496,7 @@ if __name__ == '__main__':
         elif args.install:
             install(root)
         else:
-            tick(root, args.dry_run, force_blockers=args.send_blockers,
-                 force_decisions=args.send_decisions)
+            tick(root, args.dry_run, force_decisions=args.send_decisions)
     except (ValueError, OSError, RuntimeError, sqlite3.Error, subprocess.SubprocessError) as exc:
         print(f'owner alerts: {exc}', file=sys.stderr)
         sys.exit(2)

@@ -56,7 +56,7 @@ class AlertsTest(unittest.TestCase):
     def test_only_hard_blockers_reach_the_owner(self):
         alerts.tick(self.root, now=1000)
         self.assertEqual(1, len(self.sent))
-        self.assertTrue(self.sent[0].startswith('Hard Blocker\n'))
+        self.assertTrue(self.sent[0].startswith('*Hard Blocker*\n'))
         self.assertIn('D1 · one', self.sent[0])
         self.assertIn('Approve repair?', self.sent[0])
         self.assertNotIn('two', self.sent[0])
@@ -70,20 +70,51 @@ class AlertsTest(unittest.TestCase):
         self.mark('two', 'Urgency: security\nGoal: Contain exposure.')
         alerts.tick(self.root, now=1003)
         self.assertEqual(1, len(self.sent))
-        # A standalone marker is a Hard Blocker.
-        self.mark('two', 'Hard Blocker: needs the owner key\nGoal: Sign.')
+        self.assertFalse(alerts.resolve(self.root, 'B1')['can_reply'])
+        # A standalone marker makes the card a Hard Blocker: it joins the D
+        # category and reaches the owner.
+        self.mark('two', 'Hard Blocker: needs the owner key\nGoal: Sign the release.')
         alerts.tick(self.root, now=1004)
         self.assertEqual(2, len(self.sent))
-        self.assertIn('Hard Blocker · two', self.sent[1])
-        self.assertIn('B1 · two', self.sent[1])
-        self.assertIn('Missing evidence', self.sent[1])
-        self.assertTrue(alerts.resolve(self.root, 'B1')['can_reply'])
-        alerts.tick(self.root, now=1005)
-        self.assertEqual(2, len(self.sent))
-        # The marker line is case-insensitive.
-        self.mark('two', 'hard blocker\nGoal: Sign.')
+        self.assertIn('*Hard Blocker*\n', self.sent[1])
+        self.assertIn('D2 · two', self.sent[1])
+        self.assertIn('needs the owner key', self.sent[1])
+        self.assertTrue(alerts.resolve(self.root, 'D2')['can_reply'])
+        # The marker line is case-insensitive; a revision repushes as a new D.
+        self.mark('two', 'hard blocker\nGoal: Sign the release.')
         alerts.tick(self.root, now=1006)
         self.assertEqual(3, len(self.sent))
+        self.assertIn('D3 · two', self.sent[-1])
+
+    def test_format_shows_description_and_recommendation(self):
+        with closing(sqlite3.connect(self.boards['one'])) as db:
+            db.execute("UPDATE tasks SET body=?",
+                       ('ASK: Which owner profile should own the adapter?\n'
+                        ' A) head-coordinator — route replies through the coordinator only\n'
+                        ' B) gateway — **keep** the existing profile as owner\n'
+                        'NEEDED FROM YOU: choose A or B\n'
+                        'IF UNANSWERED: adapter rollout stays blocked\n'
+                        'Context: Two lanes share the same paired endpoint. This splits '
+                        'handling of authenticated owner traffic.',))
+            db.commit()
+        alerts.tick(self.root, now=1000)
+        message = self.sent[0]
+        self.assertIn('D1 · one', message)
+        self.assertIn('Which owner profile should own the adapter?', message)
+        self.assertIn('Two lanes share the same paired endpoint.', message)
+        self.assertNotIn('Context:', message)
+        self.assertIn('Recommended: A) head-coordinator — route replies through the coordinator only', message)
+        self.assertIn('Alternatives:', message)
+        # GitHub emphasis is converted to the markup SimpleX actually renders.
+        self.assertIn('B) gateway — *keep* the existing profile as owner', message)
+        self.assertNotIn('**keep**', message)
+
+    def test_simplex_markdown_matches_the_messenger(self):
+        self.assertEqual('*bold*', alerts.simplex_markdown('**bold**'))
+        self.assertEqual('_italic_', alerts.simplex_markdown('__italic__'))
+        self.assertEqual('~strike~', alerts.simplex_markdown('~~strike~~'))
+        self.assertEqual('a *b* and _c_', alerts.simplex_markdown('a **b** and __c__'))
+        self.assertEqual('*Hard Blocker*', alerts.simplex_markdown('**Hard Blocker**'))
 
     def test_decision_hard_blockers_repush_on_revision_and_stay_replyable(self):
         alerts.tick(self.root, now=1000)
@@ -105,30 +136,33 @@ class AlertsTest(unittest.TestCase):
         self.assertEqual(2, len(self.sent))
         self.assertFalse(alerts.resolve(self.root, 'D2')['can_reply'])
 
-    def test_failed_hard_blocker_delivery_retries(self):
+    def test_failed_decision_delivery_retries(self):
+        attempts = []
+
         def fail_once(root, target, message):
-            if 'Hard Blocker · two' in message:
+            attempts.append(message)
+            if len(attempts) == 1:
                 raise RuntimeError('offline')
             self.sent.append(message)
-        self.mark('two', 'Hard Blocker\nGoal: Sign.')
         with patch.object(alerts, 'send', fail_once):
             with self.assertRaises(RuntimeError):
                 alerts.tick(self.root, now=1000)
+            self.assertFalse(self.sent)
+            alerts.tick(self.root, now=1001)
         self.assertEqual(1, len(self.sent))
         self.assertIn('D1 · one', self.sent[0])
-        self.assertFalse(alerts.resolve(self.root, 'B1')['can_reply'])
-        alerts.tick(self.root, now=1001)
-        self.assertEqual(2, len(self.sent))
-        self.assertIn('Hard Blocker · two', self.sent[-1])
-        self.assertTrue(alerts.resolve(self.root, 'B1')['can_reply'])
+        self.assertTrue(alerts.resolve(self.root, 'D1')['can_reply'])
 
-    def test_technical_labels_need_delivery_before_recovery_instructions(self):
+    def test_technical_labels_are_terminal_diagnostics_only(self):
         alerts.tick(self.root, now=1000)
         self.assertFalse(alerts.resolve(self.root, 'B1')['can_reply'])
-        self.assertIn('Evidence unavailable', alerts.details(self.root, 'B1'))
-        alerts.tick(self.root, now=1001, force_blockers=True)
-        self.assertIn('Technical blockers: 1', self.sent[-1])
-        self.assertTrue(alerts.resolve(self.root, 'B1')['can_reply'])
+        listed = alerts.details(self.root, 'blockers')
+        self.assertIn('B1 · two:t_12345678', listed)
+        self.assertIn('Evidence unavailable', listed)
+        # A technical label never becomes replyable and never reaches the phone.
+        alerts.tick(self.root, now=1001)
+        self.assertEqual(1, len(self.sent))
+        self.assertFalse(alerts.resolve(self.root, 'B1')['can_reply'])
         self.assertIn('Evidence unavailable', alerts.details(self.root, 'B1'))
         with closing(sqlite3.connect(self.boards['two'])) as db:
             db.execute("UPDATE tasks SET block_kind='needs_input'")
@@ -177,8 +211,6 @@ class AlertsTest(unittest.TestCase):
             db.execute("UPDATE tasks SET last_failure_error='model endpoint unavailable'")
             db.execute('DELETE FROM task_events')
             db.commit()
-        alerts.tick(self.root, now=1000, force_blockers=True)
-        self.assertIn('1 worker failures', self.sent[-1])
         self.assertIn('model endpoint unavailable', alerts.details(self.root, 'blockers'))
 
     def test_operator_only_cleanup_is_not_reported_as_missing_evidence(self):
@@ -186,9 +218,10 @@ class AlertsTest(unittest.TestCase):
             db.execute("UPDATE tasks SET title='Record cleanup', body='Operator-only: cleanup requires stat receipts from the worktree.'")
             db.execute('UPDATE task_events SET payload=?', (json.dumps({'reason': 'initial_status'}),))
             db.commit()
-        alerts.tick(self.root, now=1000, force_blockers=True)
-        self.assertIn('Blocked: Operator recovery needed', self.sent[-1])
-        self.assertNotIn('Missing evidence', self.sent[-1])
+        alerts.tick(self.root, now=1000)
+        shown = alerts.details(self.root, 'B1')
+        self.assertIn('Blocked: Operator recovery needed', shown)
+        self.assertNotIn('Missing evidence', shown)
 
     def test_reclassifying_a_card_moves_it_between_the_two_labels(self):
         alerts.tick(self.root, now=1000)
@@ -205,29 +238,23 @@ class AlertsTest(unittest.TestCase):
         self.assertEqual('two', alerts.resolve(self.root, 'B1')['board'])
         self.assertFalse(alerts.resolve(self.root, 'D2')['can_reply'])
 
-    def test_pulls_batch_every_blocker_and_keep_their_labels(self):
+    def test_technical_labels_persist_but_never_send(self):
         with closing(sqlite3.connect(self.boards['two'])) as db:
             for number in range(20):
                 db.execute('INSERT INTO tasks VALUES (?, ?, ?, ?, ?)', (f't_extra_{number}', f'Recover worker {number}', '', 'blocked', 'capability'))
             db.commit()
         alerts.tick(self.root, now=1000)
         self.assertEqual(1, len(self.sent))  # only the decision
-        alerts.tick(self.root, now=1001, force_blockers=True)
-        technical = [m for m in self.sent if m.startswith('Technical blockers:')]
-        self.assertGreater(len(technical), 1)
-        self.assertTrue(all(len(m) <= 1600 for m in technical))
+        listed = alerts.details(self.root, 'blockers')
         for number in range(1, 22):
-            self.assertIn(f'B{number} · two', '\n'.join(technical))
-            self.assertTrue(alerts.resolve(self.root, f'B{number}')['can_reply'])
-        sent = len(self.sent)
-        alerts.tick(self.root, now=1002)
-        self.assertEqual(sent, len(self.sent))
-        alerts.tick(self.root, now=1003, force_blockers=True)
-        self.assertEqual(sent + len(technical), len(self.sent))
+            self.assertIn(f'B{number} · two:t_', listed)
+            self.assertFalse(alerts.resolve(self.root, f'B{number}')['can_reply'])
         self.assertEqual('t_12345678', alerts.resolve(self.root, 'B1')['task_id'])
+        alerts.tick(self.root, now=1001)
+        self.assertEqual(1, len(self.sent))
         with patch.dict(os.environ, {'HERMES_KANBAN_TASK': 't_worker'}):
             with self.assertRaises(PermissionError):
-                alerts.tick(self.root, force_blockers=True)
+                alerts.tick(self.root)
         with patch.dict(os.environ, {'HERMES_DELEGATED_CHILD_CONTEXT': '1'}):
             with self.assertRaises(PermissionError):
                 alerts.tick(self.root, force_decisions=True)
@@ -236,18 +263,20 @@ class AlertsTest(unittest.TestCase):
         body = ('ASK: Choose a recovery mechanism\n for this host?\n'
                 ' A) Restore the worker\n  with existing credentials\n'
                 ' B) Pause work\n  until capacity returns\n'
-                'NEEDED FROM YOU: choose A or B\nContext: excluded from the compact ask')
+                'NEEDED FROM YOU: choose A or B\nContext: The worker is down and queued work is stuck.')
         with closing(sqlite3.connect(self.boards['one'])) as db:
             db.execute('UPDATE tasks SET body=?', (body,))
             for number in range(12):
                 db.execute('INSERT INTO tasks VALUES (?, ?, ?, ?, ?)', (f't_new_{number}', 'Recover worker', body, 'blocked', 'needs_input'))
             db.commit()
         alerts.tick(self.root, now=1000)
-        decisions = [m for m in self.sent if m.startswith('Hard Blocker')]
+        decisions = [m for m in self.sent if m.startswith('*Hard Blocker*')]
         self.assertGreater(len(decisions), 1)
         self.assertTrue(all(len(m) <= 1600 for m in decisions))
         self.assertIn('Choose a recovery mechanism for this host?', decisions[0])
-        self.assertIn('A) Restore the worker with existing credentials', decisions[0])
+        self.assertIn('The worker is down and queued work is stuck.', decisions[0])
+        self.assertIn('Recommended: A) Restore the worker with existing credentials', decisions[0])
+        self.assertIn('Alternatives:', decisions[0])
         self.assertIn('B) Pause work until capacity returns', decisions[0])
         self.assertNotIn('Context:', decisions[0])
         # An explicit pull with nothing waiting answers instead of going quiet.
@@ -301,9 +330,7 @@ class AlertsTest(unittest.TestCase):
             self.assertEqual(1, len(self.sent))
             self.assertIn('D1 · one', self.sent[0])
             with self.assertRaises(RuntimeError):
-                alerts.tick(self.root, now=1001, force_blockers=True)
-            with self.assertRaises(RuntimeError):
-                alerts.tick(self.root, now=1002, force_decisions=True)
+                alerts.tick(self.root, now=1001, force_decisions=True)
         self.assertEqual(1, len(self.sent))
 
     def test_delivery_state_migrates_the_retired_urgent_key(self):
@@ -341,10 +368,13 @@ class AlertsTest(unittest.TestCase):
         self.assertFalse(json.loads(result.stdout)['can_reply'])
         result = subprocess.run([sys.executable, '-B', alerts.__file__, '--details', 'two:t_12345678'], env=environment, text=True, capture_output=True, check=True)
         self.assertIn('Evidence unavailable', result.stdout)
-        for flag in ['--send-blockers', '--send-decisions']:
+        for flag in ['--send-decisions']:
             result = subprocess.run([sys.executable, '-B', alerts.__file__, flag], env=environment, text=True, capture_output=True)
             self.assertEqual(2, result.returncode)
             self.assertIn('only from the operator or no-agent cron', result.stderr)
+        result = subprocess.run([sys.executable, '-B', alerts.__file__, '--send-blockers'], env=environment, text=True, capture_output=True)
+        self.assertEqual(2, result.returncode)
+        self.assertIn('unrecognized arguments', result.stderr)
         self.assertEqual(1, len(self.sent))
 
     def test_dry_run_and_fenced_workers_do_not_send(self):
@@ -353,6 +383,7 @@ class AlertsTest(unittest.TestCase):
             alerts.tick(self.root, dry_run=True)
         self.assertIn('Hard Blocker', preview.getvalue())
         self.assertIn('D1 · one', preview.getvalue())
+        self.assertIn('D2 · two', preview.getvalue())
         self.assertFalse(self.sent)
         self.assertFalse((self.root / 'kanban/owner-alerts').exists())
         with patch.dict(os.environ, {'HERMES_DELEGATED_CHILD_CONTEXT': '1'}):

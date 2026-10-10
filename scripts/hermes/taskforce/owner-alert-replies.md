@@ -1,8 +1,13 @@
 ## Hard Blocker inbox and authenticated replies
 
+Reply in SimpleX markup: `*bold*`, `_italic_`, `~strike~`. Do not use GitHub's
+`**bold**` or `__italic__`; SimpleX shows the asterisks literally (the adapter
+converts them, but plain markup is clearer).
+
 The no-agent `kanban owner blocker alerts` cron reads every board each minute
-and pushes one message class to the owner's phone: a **Hard Blocker**. A blocked
-card is a Hard Blocker when the owner's action is the only way forward:
+and pushes one message class to the owner's phone: a *Hard Blocker*. A blocked
+card is a Hard Blocker when the owner's action is the only way forward and it
+cannot clear itself without the owner:
 
 - a decision only the owner can make (a `needs_input` gate), or
 - an agent asserting one of the other criteria with a standalone `Hard Blocker`
@@ -10,35 +15,32 @@ card is a Hard Blocker when the owner's action is the only way forward:
   a physical action only the owner can take; or a card hard-stuck with no
   agent-side recovery.
 
-The line must be its own line; prose mentioning it does not count. Nothing else
-is pushed — missing evidence, worker/model failures, dependency waits and
-routine cleanups stay board-local and are pulled with `B1 details`, `blockers`,
-`--send-blockers`, `--send-decisions` or the board. Do not add manual SimpleX
-subscriptions or duplicate alerts. An urgent security or availability regression
-is not a Hard Blocker: fix it, or roll the system back, without paging the owner.
+The line must be its own line; prose mentioning it does not count. Prefer
+`needs_input` so the block is sticky. Both shapes are decision (D) labels and
+are pushed. Nothing else is pushed — missing evidence, worker/model failures,
+dependency waits and routine cleanups are technical (B) labels that stay
+board-local, are never delivered and are pulled with `B1 details`, `blockers`,
+`--send-decisions` or the board. Do not add manual SimpleX subscriptions or
+duplicate alerts. An urgent security or availability regression is not a Hard
+Blocker: fix it, or roll the system back, without paging the owner.
 
 In the allowlisted owner SimpleX conversation:
 - `D1 A`, `D1A`, or `D1 <answer>` addresses one exact decision revision.
 - `D1 A, D2 B` addresses decisions independently; never apply one to another.
-- `B1 <recovery instructions>` addresses one exact technical card, not approval.
-- `D1 details` or `B1 details` requests context only; `blockers` requests the list.
+- `D1 details` requests context only; `blockers` requests the technical list.
 - Full `<board> <task-id> <answer>` still works; read that explicit card.
 
 Before any labelled action, resolve it with this read-only terminal helper:
-`python3 ~/.hermes/scripts/kanban-owner-alerts.py --resolve B1`
+`python3 ~/.hermes/scripts/kanban-owner-alerts.py --resolve D1`
 Use the returned `board`, `task_id`, `kind`, `current`, `shown` and `can_reply`.
 Never guess or rely on a remembered mapping. If `can_reply` is false, report a
 closed, reclassified or never-delivered card's current status briefly, or
 clarify a changed item; do not unblock. D labels identify exact question
-revisions and stay answerable while the ask is unchanged. B labels persist for
-the same card across retries, always require reading its current cause, and are
-replyable only once that card has actually been delivered to the owner. For
-`kind=decision`, if `compact_complete` is false, obtain full details and
-explicit approval of the exact scope first; a bare letter is insufficient. For
-`kind=technical`, record the recovery instructions and route a concrete remedy;
-bare approval, acknowledgment or a details request cannot unblock it. Check that
-the failure is resolved before unblocking. Recovery scope remains subject to
-every existing owner, security, implementation and deploy gate.
+revisions and stay answerable while the ask is unchanged. For `kind=decision`,
+if `compact_complete` is false, obtain full details and explicit approval of the
+exact scope first; a bare letter is insufficient. B labels are terminal
+diagnostics: they are never delivered and never replyable, so a `B1 <…>` reply
+cannot unblock anything — record the request only and keep the card blocked.
 
 Read details using `--details D1`, `--details B1`, `--details blockers` or
 `--details board:card`. These commands are read-only and allowed in delegated
@@ -55,11 +57,9 @@ board-scoped `kanban_unblock` only when justified:
 - Rejection may resume a decision/reviewer to record disposition; never release
   an implementer for the rejected change. Keep that work blocked and route it.
 - Information unblocks only a resolved question; otherwise clarify what remains.
-- Technical replies do not fix models, evidence or permissions by themselves.
 
-Confirm in one short line per item: `D1: A recorded; queued.` or
-`B1: recovery instructions recorded; still blocked.` Report actual status;
-queued is not started. Report tool failures without claiming success. Avoid
-internal narration, repeated context, raw IDs and approval boilerplate. Never
-infer approval from a connectivity test, silence or an unrelated reply. No reply
-itself authorises deployment or changes an unrelated card.
+Confirm in one short line per item: `D1: A recorded; queued.` Report actual
+status; queued is not started. Report tool failures without claiming success.
+Avoid internal narration, repeated context, raw IDs and approval boilerplate.
+Never infer approval from a connectivity test, silence or an unrelated reply. No
+reply itself authorises deployment or changes an unrelated card.
