@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# Offline regression for the Langfuse complete-backup contract (CI-LFBS-001 and
-# CI-LFBS-002).
+# Offline regression for the Langfuse complete-backup contract (CI-LFBS-001,
+# CI-LFBS-002 and CI-LFBS-003).
 #
 # It executes the *evaluated* backup-preparation shell. The script text is read
 # out of the NixOS configuration and only store/tool paths and state roots are
@@ -9,6 +9,10 @@
 # here: checksum recording, checksum verification, manifest writing, the
 # current-generation symlink and retention all run exactly as production
 # generates them.
+#
+# The facts query is guarded on enabledApps, so an optional Langfuse removal skips
+# explicitly instead of failing on a forced empty appStateEntries. `--test-disabled-host`
+# pins that with a synthetic disabled fixture; every enabled run executes it too.
 #
 # The sandbox supplies deterministic doubles for the external commands this
 # workstation cannot run (the ClickHouse BACKUP client, runuser, pg_dump,
@@ -23,29 +27,189 @@ ensure_tools bash jq nix sha256sum cp rm mktemp flock date find sort cut install
 
 export NIXHOMESERVER_TEST_HOST="${NIXHOMESERVER_DEFAULT_HOST:-$(test_default_host)}"
 
-facts="$(flake_eval_json '
+# --- facts query -------------------------------------------------------------
+#
+# CI-LFBS-003: `enabledApps` is the same effective predicate the skip below uses.
+# The disabled branch returns only `enabled`, so a host without the Langfuse
+# module never forces appStateEntries (`builtins.head` on the empty list), the
+# preparation shell or the ClickHouse package. Those stay lazy inside the enabled
+# branch, so an enabled host still fails loudly on a missing attribute instead of
+# quietly taking the skip.
+#
+# The enabled run and the disabled-host regression below both evaluate this exact
+# query text; only the resolved configuration and settings differ, so the
+# regression cannot pass against a rewritten or hand-built facts object.
+langfuse_facts_query() {
+  local host_expr="$1" settings_expr="$2" config_expr="$3"
+  cat <<NIX
+  host = ${host_expr};
+  settings = ${settings_expr};
+  enabled = builtins.elem "langfuse" settings.enabledApps;
+in
+  if !enabled then
+    { inherit enabled; }
+  else
+    let
+      cfg = ${config_expr};
+      langfuseState = builtins.head (builtins.filter (e: e.app == "langfuse") cfg.repo.backups.appStateEntries);
+    in {
+      inherit enabled;
+      prepareScript = cfg.systemd.services.backup-prepare.script;
+      clickhouseClient = "\${toString cfg.services.clickhouse.package}/bin/clickhouse-client";
+      sqliteSources = map (d: d.source) cfg.repo.backups.sqliteDumps;
+      sqliteCount = builtins.length cfg.repo.backups.sqliteDumps;
+      postgresqlDbs = map (d: d.database) cfg.repo.backups.postgresqlDumps;
+      retained = cfg.repo.backups.retainedSuccessfulGenerations;
+      rebuildable = cfg.repo.backups.rebuildableSnapshotPaths;
+      policyEnabled = cfg.systemd.services ? kopia-policy-reconcile;
+      policyScript = if cfg.systemd.services ? kopia-policy-reconcile then cfg.systemd.services.kopia-policy-reconcile.script else "";
+      persistence = cfg.repo.impermanence.inventory.persistenceDirectories;
+      stateNotes = langfuseState.notes;
+      statePayloadRoots = langfuseState.payloadRoots;
+    }
+NIX
+}
+
+# --- disabled-host regression ------------------------------------------------
+#
+# The plan warns that the main repair risk is a self-certifying disabled fixture.
+# So this mode does three things against a synthetic host whose Langfuse module is
+# switched off with extendModules and whose effective enabledApps excludes it:
+#   1. proves the fixture is genuinely disabled while the enabled control is not;
+#   2. proves the pre-repair forced lookup fails on that fixture, i.e. the fixture
+#      really triggers CI-LFBS-003;
+#   3. runs this script as a subprocess against the fixture and requires the real
+#      enabledApps skip path to emit its diagnostic and exit 0, without entering
+#      any enabled preparation phase.
+
+disabled_host_fixture_query() {
+  cat <<'NIX'
   host = builtins.getEnv "NIXHOMESERVER_TEST_HOST";
-  cfg = (builtins.getAttr host f.nixosConfigurations).config;
-  langfuseState = builtins.head (builtins.filter (e: e.app == "langfuse") cfg.repo.backups.appStateEntries);
+  baseConfig = builtins.getAttr host f.nixosConfigurations;
+  baseSettings = builtins.getAttr host f.lib.nixhomeserverSettings;
+  syntheticSettings = baseSettings // {
+    enabledApps = builtins.filter (name: name != "langfuse") baseSettings.enabledApps;
+  };
+  syntheticConfig = (baseConfig.extendModules {
+    modules = [ { repo.langfuse.enable = lib.mkForce false; } ];
+  }).config;
 in {
-  enabled = builtins.elem "langfuse" (builtins.getAttr host f.lib.nixhomeserverSettings).enabledApps;
-  prepareScript = cfg.systemd.services.backup-prepare.script;
-  clickhouseClient = "${toString cfg.services.clickhouse.package}/bin/clickhouse-client";
-  sqliteSources = map (d: d.source) cfg.repo.backups.sqliteDumps;
-  sqliteCount = builtins.length cfg.repo.backups.sqliteDumps;
-  postgresqlDbs = map (d: d.database) cfg.repo.backups.postgresqlDumps;
-  retained = cfg.repo.backups.retainedSuccessfulGenerations;
-  rebuildable = cfg.repo.backups.rebuildableSnapshotPaths;
-  policyEnabled = cfg.systemd.services ? kopia-policy-reconcile;
-  policyScript = if cfg.systemd.services ? kopia-policy-reconcile then cfg.systemd.services.kopia-policy-reconcile.script else "";
-  persistence = cfg.repo.impermanence.inventory.persistenceDirectories;
-  stateNotes = langfuseState.notes;
-  statePayloadRoots = langfuseState.payloadRoots;
-}')"
+  baseEnabledAppsHasLangfuse = builtins.elem "langfuse" baseSettings.enabledApps;
+  baseHasLangfuseState = builtins.any (e: e.app == "langfuse") baseConfig.config.repo.backups.appStateEntries;
+  baseHasLangfusePrepareFragment = builtins.hasAttr "langfuse" baseConfig.config.repo.backups.prepareFragments;
+  syntheticEnabledAppsHasLangfuse = builtins.elem "langfuse" syntheticSettings.enabledApps;
+  syntheticHasLangfuseState = builtins.any (e: e.app == "langfuse") syntheticConfig.repo.backups.appStateEntries;
+  syntheticHasLangfusePrepareFragment = builtins.hasAttr "langfuse" syntheticConfig.repo.backups.prepareFragments;
+}
+NIX
+}
+
+# The exact pre-repair lookup, still forced on the synthetic fixture. It must fail:
+# a fixture that somehow kept Langfuse state would let the guarded query succeed
+# for the wrong reason and the regression would certify nothing.
+disabled_host_unguarded_query() {
+  cat <<'NIX'
+  host = builtins.getEnv "NIXHOMESERVER_TEST_HOST";
+  syntheticConfig = ((builtins.getAttr host f.nixosConfigurations).extendModules {
+    modules = [ { repo.langfuse.enable = lib.mkForce false; } ];
+  }).config;
+  langfuseState = builtins.head (builtins.filter (e: e.app == "langfuse") syntheticConfig.repo.backups.appStateEntries);
+in { notes = langfuseState.notes; }
+NIX
+}
+
+run_disabled_host_regression() (
+  local host sandbox fixture problem="" child_status=0 unguarded_status=0
+  host="$NIXHOMESERVER_TEST_HOST"
+
+  sandbox="$(mktemp -d "${TMPDIR:-/tmp}/nixhomeserver-langfuse-disabled.XXXXXX")"
+  trap 'rm -rf "$sandbox"' EXIT
+
+  fixture="$(flake_eval_json "$(disabled_host_fixture_query)")"
+  if [[ "$(jq -r '.baseEnabledAppsHasLangfuse' <<<"$fixture")" != true ]]; then
+    problem="the enabled control host no longer enables Langfuse"
+  elif [[ "$(jq -r '.baseHasLangfuseState' <<<"$fixture")" != true ]]; then
+    problem="the enabled control host has no Langfuse app state to remove"
+  elif [[ "$(jq -r '.baseHasLangfusePrepareFragment' <<<"$fixture")" != true ]]; then
+    problem="the enabled control host has no Langfuse preparation fragment to remove"
+  elif [[ "$(jq -r '.syntheticEnabledAppsHasLangfuse' <<<"$fixture")" != false ]]; then
+    problem="the synthetic host still lists Langfuse in its effective enabledApps"
+  elif [[ "$(jq -r '.syntheticHasLangfuseState' <<<"$fixture")" != false ]]; then
+    problem="the synthetic disabled host still exposes Langfuse app state"
+  elif [[ "$(jq -r '.syntheticHasLangfusePrepareFragment' <<<"$fixture")" != false ]]; then
+    problem="the synthetic disabled host still exposes a Langfuse preparation fragment"
+  fi
+  if [[ -n "$problem" ]]; then
+    echo "❌ [disabled-host] $problem" >&2
+    exit 1
+  fi
+
+  flake_eval_json "$(disabled_host_unguarded_query)" >"$sandbox/unguarded.log" 2>&1 || unguarded_status=$?
+  if ((unguarded_status == 0)); then
+    echo "❌ [disabled-host] the unguarded lookup succeeded on the fixture; it no longer proves anything." >&2
+    exit 1
+  fi
+
+  NIXHOMESERVER_DEFAULT_HOST="$host" \
+  LFBS_SYNTHETIC_DISABLED=1 \
+  LFBS_SKIP_DISABLED_REGRESSION=1 \
+    bash "${BASH_SOURCE[0]}" >"$sandbox/disabled.log" 2>&1 || child_status=$?
+  if ((child_status != 0)); then
+    echo "❌ [disabled-host] the disabled run exited $child_status; it must skip successfully." >&2
+    sed 's/^/   /' "$sandbox/disabled.log" >&2
+    exit 1
+  fi
+  if ! grep -Fq 'Langfuse is disabled; the offline backup-safety fixtures need its preparation fragment.' \
+    "$sandbox/disabled.log"; then
+    echo "❌ [disabled-host] the disabled run did not emit the skip diagnostic." >&2
+    sed 's/^/   /' "$sandbox/disabled.log" >&2
+    exit 1
+  fi
+  if grep -Fq 'Langfuse backup failure safety' "$sandbox/disabled.log"; then
+    echo "❌ [disabled-host] the disabled run entered the enabled preparation phase." >&2
+    exit 1
+  fi
+
+  echo "  ✅ [disabled-host] fixture has no Langfuse state; unguarded lookup fails; guarded lookup skips and exits 0"
+)
+
+case "${1:-}" in
+  --test-disabled-host)
+    run_disabled_host_regression
+    exit 0
+    ;;
+  "") ;;
+  *)
+    echo "usage: $0 [--test-disabled-host]" >&2
+    exit 2
+    ;;
+esac
+
+# --- enabled facts -----------------------------------------------------------
+#
+# LFBS_SYNTHETIC_DISABLED is set only by the regression subprocess above, which
+# must observe the same query resolving a disabled host. Never set it by hand.
+if [[ "${LFBS_SYNTHETIC_DISABLED:-0}" == 1 ]]; then
+  settings_expr='(builtins.getAttr host f.lib.nixhomeserverSettings) // { enabledApps = builtins.filter (name: name != "langfuse") (builtins.getAttr host f.lib.nixhomeserverSettings).enabledApps; }'
+  config_expr='((builtins.getAttr host f.nixosConfigurations).extendModules { modules = [ { repo.langfuse.enable = lib.mkForce false; } ]; }).config'
+else
+  settings_expr='builtins.getAttr host f.lib.nixhomeserverSettings'
+  config_expr='(builtins.getAttr host f.nixosConfigurations).config'
+fi
+
+facts="$(flake_eval_json "$(langfuse_facts_query \
+  'builtins.getEnv "NIXHOMESERVER_TEST_HOST"' "$settings_expr" "$config_expr")")"
 
 if [[ "$(jq -r '.enabled' <<<"$facts")" != true ]]; then
   echo "Langfuse is disabled; the offline backup-safety fixtures need its preparation fragment."
   exit 0
+fi
+
+# Every enabled run carries the optional-removal guarantee, so the module test and
+# the lean/full script runner enforce it without changes of their own. The
+# regression's own subprocess sets the guard to stay non-recursive.
+if [[ "${LFBS_SKIP_DISABLED_REGRESSION:-0}" != 1 ]]; then
+  bash "${BASH_SOURCE[0]}" --test-disabled-host
 fi
 
 # --- evaluated coverage and policy assertions --------------------------------
