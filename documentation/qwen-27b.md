@@ -292,10 +292,10 @@ gives each slot 96K, and the KV allocation is for 192K — the same as a single
 192K slot. What grows with `parallel` is the compute scratch and this hybrid
 model's per-sequence gated-delta-net state, not the KV cache.
 
-The only *measured* budget here is the earlier single-slot Q4_K_M 128K load, read
-from `/sys/kernel/debug/dri/*/vram0_mm` after serving a 12,223-token prompt (so
-it covers the worst-case full 2048-token ubatch, not an idle server; prefill held
-259 tokens/s):
+Before this change the only *measured* budget was the earlier single-slot Q4_K_M
+128K load, read from `/sys/kernel/debug/dri/*/vram0_mm` after serving a
+12,223-token prompt (so it covers the worst-case full 2048-token ubatch, not an
+idle server; prefill held 259 tokens/s):
 
 | Component | Size |
 | --- | ---: |
@@ -305,22 +305,21 @@ it covers the worst-case full 2048-token ubatch, not an idle server; prefill hel
 | **Total, measured** | **21.09 GiB of 23.91 GiB** |
 | Free after the load | 2.82 GiB |
 
-The current configuration (IQ4_XS, 192K total = 2 x 96K, `parallel = 2`) is
-scaled from that anchor and was **not yet measured** when this was written; treat
-it as a prediction to verify:
+The current configuration (IQ4_XS, 192K total = 2 x 96K, `parallel = 2`) was
+confirmed on 2026-10-11 by loading exactly that configuration and reading the
+same counter. The driver reports a single aggregate, so this is a total rather
+than a breakdown:
 
-| Component | Size |
+| Measurement | Value |
 | --- | ---: |
-| IQ4_XS weights (15.48 GB file, less the unused `blk.64`) | ~14.2 GiB |
-| KV cache at 196608 tokens, Q8_0 | 6.38 GiB |
-| Compute buffers, SSM state (x2 slots), Vulkan bookkeeping | ~0.9–1.2 GiB |
-| **Estimated total** | **~21.5–21.8 GiB of 23.91 GiB** |
-| Estimated free | **~2.1–2.4 GiB** |
+| Card size | 23.91 GiB |
+| Used, freshly loaded (idle) | 21.37 GiB |
+| Free, freshly loaded | 2.54 GiB |
+| Free after the deploy canary and a smoke generation | 2.21 GiB |
 
-To confirm, stop `qwen-27b-llama.service`, start `llama-server` with the flags
-from this document plus `--ctx-size 196608 --parallel 2`, read the counter, and
-start the unit again. If it does not fit, the levers in order of preference are
-dropping `parallel` back to 1, lowering the total context, dropping to
+Budget the steady state nearer the lower figure; the live free counter is the
+authority. If it does not fit, the levers in order of preference are dropping
+`parallel` back to 1, lowering the total context, dropping to
 `kvCacheType = "q4_0"` (halves the KV again but is noticeably lossier), or moving
 to a larger card.
 
