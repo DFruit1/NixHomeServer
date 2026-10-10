@@ -7,7 +7,8 @@
 #   * creates the daily 08:00 cron job under the board-steward profile (idempotent).
 #
 # What this does NOT do (operator steps, one time):
-#   * create the board-steward profile and give it gpt-6-luna;
+#   * create the board-steward profile and give it the opencode-go tier
+#     (deepseek-v4.1-flash, fallback gpt-6-luna, both on opencode-go);
 #   * create the SimpleX group channel and bind it in the profile .env.
 #   See documentation/hermes-daily-steward.md for the exact steps.
 set -eu

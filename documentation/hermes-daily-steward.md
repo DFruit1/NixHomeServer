@@ -2,7 +2,9 @@
 
 An independent, daily watchdog over every Hermes kanban board. It runs outside
 the normal agent workflow: it is a cron job on the dedicated `board-steward`
-profile (model `gpt-6-luna`), not a kanban lane, and it claims no cards.
+profile (model `deepseek-v4.1-flash` on the opencode-go endpoint, falling back
+to `gpt-6-luna` on the same endpoint), not a kanban lane, and it claims no
+cards. It deliberately stays off OpenAI Codex.
 
 Each run it:
 
@@ -47,10 +49,12 @@ gateway restart is required.
 
 ## Operator steps (one time)
 
-1. Create the profile and keep the luna-6 model:
+1. Create the profile and point it at the opencode-go tier:
    `hermes profile create board-steward --clone-from default`
-   then set `model.default: gpt-6-luna` in
-   `~/.hermes/profiles/board-steward/config.yaml` and add `kanban` to
+   then set `model.default: deepseek-v4.1-flash` and
+   `model.provider: custom:opencode-go` in
+   `~/.hermes/profiles/board-steward/config.yaml`, add a `fallback_providers`
+   entry of `custom:opencode-go` / `gpt-6-luna`, and add `kanban` to
    `platform_toolsets.cli`.
 2. Overwrite its SOUL with the steward identity (see the installed
    `~/.hermes/profiles/board-steward/SOUL.md`).
@@ -61,6 +65,7 @@ gateway restart is required.
    SIMPLEX_GROUP_ALLOWED=1
    SIMPLEX_HOME_CHANNEL=1
    SIMPLEX_HOME_CHANNEL_NAME=hermes-daily-steward
+   OPENCODE_API_KEY=<same Zen key as the other profiles>
    ```
 4. Install and schedule: `scripts/hermes/install-daily-steward.sh`.
 
