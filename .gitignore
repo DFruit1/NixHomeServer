@@ -34,6 +34,10 @@
 # profile cache/scratch here (seen once); it must never be tracked or staged.
 /.hermes/
 
+# Python bytecode caches from ad-hoc agent/test imports.
+__pycache__/
+*.pyc
+
 # impeccable-ignore-start
 # Ephemeral output, runtime state, and per-dev overrides (unanchored on purpose).
 # Shared artifacts stay tracked: .impeccable/config.json, .impeccable/design.json,

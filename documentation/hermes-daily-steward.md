@@ -14,17 +14,22 @@ Each run it:
    blocker is clearly gone (finished dependency, restored capacity/provider,
    evidence now present) — never an owner gate (`needs_input`, a `Hard Blocker`
    line, a pending decision) or a genuinely absent capability;
-3. sends a short report to the owner's dedicated SimpleX channel: what landed,
-   what is stuck and why, anything the agents are doing wrong, and concrete
-   suggested behaviour changes.
+3. looks for small, conservative, repo-grounded cleanups and files at most two
+   of them as low-priority cards for the otherwise-idle `local-implementer`
+   (see "Opportunity cleanup");
+4. sends a short report to the owner's dedicated SimpleX channel: what landed,
+   what is stuck and why, which cleanup cards it filed, anything the agents are
+   doing wrong, and concrete suggested behaviour changes.
 
 ## Pieces
 
 | Piece | Location |
 |---|---|
 | Collector (board snapshot) | `scripts/hermes/kanban-daily-steward.py` |
+| Opportunity scanner (monitor source) | `scripts/hermes/steward-opportunity-scan.py` |
 | SimpleX group sender (outbound) | `scripts/hermes/simplex-send-group.sh`, `scripts/hermes/simplex_send_group.py` |
-| Cron prompt | `scripts/hermes/daily-steward-prompt.txt` |
+| Daily cron prompt | `scripts/hermes/daily-steward-prompt.txt` |
+| Opportunity cron prompt | `scripts/hermes/steward-opportunity-prompt.txt` |
 | Installer | `scripts/hermes/install-daily-steward.sh` |
 
 The collector is installed to the profile's script dir
@@ -32,6 +37,40 @@ The collector is installed to the profile's script dir
 resolved relative to that home; the sender stays in the shared root
 (`~/.hermes/scripts/`) because it needs the bundled Python and the SimpleX
 credentials, which live there, not in a profile home.
+
+## Opportunity cleanup
+
+The second cron job, `steward opportunity scan` (every 2h), keeps the
+`local-implementer` busy with easy, safe work without stealing its slot from
+urgent or sensitive tasks. Its monitor script
+(`scripts/hermes/steward-opportunity-scan.py`) prints one stable
+`CANDIDATE <id> <TAG> :: <detail>` line per repo cleanup it finds, and the cron
+engine hashes that output byte-for-byte, so the steward model only runs when the
+candidate set actually changes.
+
+The checks are deliberately mechanical and git-backed: a script that fails
+`sh -n`/`bash -n`/`py_compile` under `scripts/`, an empty tracked file, or an
+untracked top-level artifact. A candidate already covered by an open
+`steward-cleanup` card is omitted, so a filed finding stops appearing and does
+not re-wake the agent.
+
+For each qualifying candidate the steward files one card on the
+`nixhomeserver` board:
+
+* assignee `local-implementer`, tenant `steward-cleanup`, `--priority -10`
+  (`-10` is below the default `0`, so any urgent or sensitive local card always
+  runs first on the single local slot);
+* `--workspace worktree`, body in the AGENTS.md slot format with a concrete
+  `Verify:` command;
+* `--idempotency-key steward-cleanup:<id>`, reusing the scanner's `<id>` so the
+  next tick suppresses the duplicate.
+
+Scope is the repository only. The steward never edits or files work against the
+running Hermes config under `~/.hermes`; config drift is reported to the owner
+in the daily report and never auto-fixed. It files nothing that needs owner
+approval — no architecture, dependency/framework/runtime change, secrets,
+frontend, or user-visible behaviour change.
+
 
 ## Channel separation
 
@@ -73,8 +112,12 @@ gateway restart is required.
 
 ```sh
 python3 ~/.hermes/scripts/kanban-daily-steward.py            # snapshot renders
+~/.hermes/scripts/steward-opportunity-scan.py               # candidate lines, or empty when clean
 printf 'test\n' | ~/.hermes/scripts/simplex-send-group.sh 1  # exit 0, group gets it
-hermes --profile board-steward cron list                     # job present, daily 08:00
+hermes --profile board-steward cron list                     # daily 08:00 + 2-hourly monitor job
 ```
+
+The scanner prints nothing when the repo is clean, which is the healthy state:
+the monitor then suppresses the agent run every tick.
 
 A green send is not proof the owner sees it; confirm the group on the phone.
