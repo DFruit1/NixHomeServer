@@ -1,12 +1,11 @@
 { config, lib, ... }:
 {
   config = lib.mkIf config.repo.langfuse.enable {
-    # Both stores hold reproducible artifacts, not user data: ClickHouse is
-    # restored from the logical archive and MinIO objects are re-uploaded by
-    # the ingestion path. Excluding them keeps Kopia off the growth curve.
+    # ClickHouse is restored from the logical archive, so its raw store is
+    # reproducible and stays excluded. MinIO events/media are unique object
+    # data with no replay contract: they stay in the /persist snapshot.
     repo.backups.rebuildableSnapshotPaths = [
       "var/lib/clickhouse"
-      "var/lib/langfuse/minio"
     ];
     systemd.services.backup-prepare.requires = [ "clickhouse.service" ];
     systemd.services.backup-prepare.after = [ "clickhouse.service" ];
@@ -21,9 +20,10 @@
       prepareFragments.langfuse = ''
         # BACKUP writes a consistent ClickHouse archive. Copy only that archive
         # into the central successful generation, never a live parts directory.
-        # The whole step is guarded: a ClickHouse outage must still publish the
-        # PostgreSQL dump collected earlier this run, and must not leave a stale
-        # archive or a checksum line for a file this generation does not have.
+        # Raw ClickHouse is excluded from the snapshot, so a failed or partial
+        # archive must abort the whole preparation: the central step would
+        # otherwise verify present checksums, publish this generation and prune
+        # the last complete archive.
         langfuse_clickhouse_backup() {
           local backup_name="langfuse-$(date --utc +%Y%m%dT%H%M%SZ)-$$.zip"
           local archive="/var/lib/langfuse/clickhouse-backups/$backup_name"
@@ -33,19 +33,36 @@
           # BACKUP/RESTORE compatibility with the archive format it writes.
           if ! ${config.services.clickhouse.package}/bin/clickhouse-client --config-file /run/langfuse/clickhouse-client.xml \
             --query "BACKUP DATABASE default TO Disk('backups', '$backup_name')"; then
-            echo "Langfuse ClickHouse archive failed; continuing without it" >&2
+            echo "Langfuse ClickHouse archive failed; aborting the backup preparation" >&2
             rm -f -- "$archive"
-            return 0
+            return 1
+          fi
+          if [[ ! -s "$archive" ]]; then
+            echo "Langfuse ClickHouse archive is missing or empty: $archive" >&2
+            rm -f -- "$archive"
+            return 1
           fi
           if ! cp -- "$archive" "$work/dumps/langfuse-clickhouse.zip"; then
-            echo "Langfuse ClickHouse archive copy failed; continuing without it" >&2
+            echo "Langfuse ClickHouse archive copy failed; aborting the backup preparation" >&2
             rm -f -- "$archive" "$work/dumps/langfuse-clickhouse.zip"
-            return 0
+            return 1
           fi
           rm -f -- "$archive"
-          (cd "$work"; sha256sum dumps/langfuse-clickhouse.zip) >> "$work/metadata/SHA256SUMS"
+          if [[ ! -s "$work/dumps/langfuse-clickhouse.zip" ]]; then
+            echo "Copied Langfuse ClickHouse archive is missing or empty" >&2
+            rm -f -- "$work/dumps/langfuse-clickhouse.zip"
+            return 1
+          fi
+          if ! (cd "$work"; sha256sum dumps/langfuse-clickhouse.zip) >> "$work/metadata/SHA256SUMS"; then
+            echo "Langfuse ClickHouse archive checksum failed" >&2
+            rm -f -- "$work/dumps/langfuse-clickhouse.zip"
+            return 1
+          fi
         }
-        langfuse_clickhouse_backup
+        # Propagate explicitly instead of relying on errexit: this fragment is
+        # generated shell, and errexit is suppressed for any command run in a
+        # conditional or boolean context.
+        langfuse_clickhouse_backup || exit 1
       '';
     };
   };

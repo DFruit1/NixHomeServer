@@ -81,14 +81,35 @@ Central impermanence retains `/var/lib/langfuse`, `/var/lib/clickhouse`, and
 shared persistent cluster. MinIO stores events/media; Redis persists pending
 queue work with AOF and uses `noeviction` centrally to preserve that work.
 
-Backup preparation contributes `dumps/langfuse.pgdump` and a consistent
-`dumps/langfuse-clickhouse.zip` using ClickHouse's BACKUP command. Object
-storage and queue state remain within the existing `/persist` Kopia snapshot.
+Restore responsibilities are split across two stores that are backed up
+separately, not atomically.
+
+Logical backups covered by the generation in
+`/persist/appdata/backup-metadata/generations/`, reached through the `current`
+symlink:
+
+- PostgreSQL: `dumps/langfuse.pgdump`, restored with `pg_restore`.
+- ClickHouse: `dumps/langfuse-clickhouse.zip`, written by ClickHouse's `BACKUP`
+  command and restored from the `backups` disk path. Raw ClickHouse parts are
+  never snapshotted as a substitute.
+
+Object and queue state covered by the `/persist` Kopia snapshot:
+
+- MinIO events/media objects under `var/lib/langfuse/minio`.
+- Redis AOF queue state under `var/lib/redis-langfuse`.
+
 Restore logical database backups rather than treating a live ClickHouse parts
 copy as a consistent backup. Database snapshots are separate transactions;
-quiesce web/worker ingestion when an exact coordinated restore point is needed.
-Retain the encrypted secret: its salt, encryption key, and project credentials
-must agree with the restored databases.
+quiesce web/worker ingestion when an exact coordinated restore point is needed,
+so that neither store keeps moving while the other is rewound. Retain the
+encrypted secret: its salt, encryption key, and project credentials must agree
+with the restored databases.
+
+A failed ClickHouse BACKUP or archive copy aborts the whole preparation
+nonzero and cleans only this attempt's archive. Previously published
+generations, their checksums and the `current` symlink stay untouched, so a
+failure costs the new run and not the last complete backup. Retention keeps the
+`repo.backups.retainedSuccessfulGenerations` most recent complete generations.
 
 Removing `langfuse` from `applications.enabled` removes its runtime, routes,
 identity registration, and secret materialization without deleting retained

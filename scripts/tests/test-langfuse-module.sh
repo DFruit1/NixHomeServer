@@ -3,6 +3,10 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test-common.sh"
 ensure_tools jq nix
 host="$(test_default_host)"
+# The offline backup-safety regression executes the evaluated preparation shell,
+# so it must run before the enabled-app skip: a disabled or unreachable host must
+# not silently drop the complete-generation guarantees.
+NIXHOMESERVER_DEFAULT_HOST="$host" bash "$TESTS_REPO_ROOT/scripts/tests/test-langfuse-backup-safety.sh"
 if [[ "$(flake_eval_json "in builtins.elem \"langfuse\" (builtins.getAttr \"$host\" f.lib.nixhomeserverSettings).enabledApps")" != true ]]; then
   echo 'Langfuse is disabled; skipping its enabled-module contract.'
   exit 0
@@ -79,11 +83,14 @@ jq -e '
   and all(.containerOptions[]; index("--cap-drop=ALL") != null)
   and .postgresTimezone == "UTC"
   and (.rebuildable | index("var/lib/clickhouse") != null)
-  and (.rebuildable | index("var/lib/langfuse/minio") != null)
+  and (.rebuildable | index("var/lib/langfuse/minio") == null)
+  and (.rebuildable | map(select(startswith("var/lib/langfuse"))) | length == 0)
   and (.fragment | contains("langfuse_clickhouse_backup"))
   and (.fragment | contains("if ! /nix/store/"))
   and (.fragment | contains("BACKUP DATABASE default TO Disk("))
-  and (.fragment | contains("return 0"))
+  and (.fragment | contains("langfuse_clickhouse_backup || exit 1"))
+  and (.fragment | contains("return 0") | not)
+  and (.fragment | contains("return 1"))
   and (.seedScript | contains("seed_directory /var/lib/clickhouse"))
   and (.seedScript | contains("seed_directory /var/lib/langfuse"))
   and (.seedScript | contains("seed_directory /var/lib/redis-langfuse"))
