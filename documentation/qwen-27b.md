@@ -19,25 +19,34 @@ Local clients use the loopback OpenAI-compatible API:
 http://127.0.0.1:8093/v1
 ```
 
-The stable API model name is `qwen3.8-27b-q4_km`.
+The stable API model name is `qwen3.8-27b-iq4_xs`.
 
 ## Model Artifacts
 
 The module pins `ukisai/Swift-1.5-Qwen3.8-27B-GGUF` at revision
-`14bfe4b42be4a925d98816db830155f476c605e7` and downloads the Q4_K_M
-quantization (about 16.2 GiB in a single file) and Swift's own F16 multimodal
-projector (885 MiB). This repository publishes no MTP draft head, so
+`14bfe4b42be4a925d98816db830155f476c605e7` and downloads the IQ4_XS
+quantization (about 14.4 GiB in a single file) and Swift's own F16 multimodal
+projector (885 MiB). IQ4_XS is one step below Q4_K_M in quality but about 2 GiB
+smaller, which is what leaves room for the second parallel slot's KV cache and
+recurrent state. This repository publishes no MTP draft head, so
 `repo.qwen27b.model.mtpFile` is empty and `mtp.enable` must stay false; an
 assertion enforces that. Every artifact has a pinned size and SHA-256 hash in
 the NixOS module; a partial download resumes, a completed file must pass its
 checksum, and replacement is atomic.
 
+The superseded Q4_K_M weights are left in place at
+`/mnt/data/qwen-27b/models/Swift-1.5-Qwen3.8-27B-Q4_K_M.gguf`; the prepare
+service does not delete them, so reverting to the previous quant is a
+configuration change rather than another 16 GiB download. Delete the file by
+hand to reclaim the space.
+
 Swift 1.5 is UkisAI's reasoning-efficient post-training of
-`Qwen/Qwen3.8-27B`. Measured on this host against the foundation Q4_K_M with
-identical flags, it decodes at about 17.45 tok/s versus 13.15, a 33% gain
-reproduced with the run order reversed to rule out a warm-GPU artifact. Prefill
-is within noise. The accuracy claims on the model card were not independently
-verified here; the speed difference was.
+`Qwen/Qwen3.8-27B`. Measured on this host against the foundation weights in
+Q4_K_M with identical flags, it decoded at about 17.45 tok/s versus 13.15, a 33%
+gain reproduced with the run order reversed to rule out a warm-GPU artifact.
+That comparison ran on Q4_K_M; Swift is now served at IQ4_XS, so expect a small
+decode-speed and quality shift. Prefill is within noise. The accuracy claims on
+the model card were not independently verified here; the speed difference was.
 
 Artifacts live under `/mnt/data/qwen-27b/models` because the system SSD does not
 have room for them. That directory is on the data pool, is not a Kopia snapshot
@@ -96,10 +105,11 @@ with `sudo systemctl stop qwen-27b-llama.service`.
 
 ## Memory And Context
 
-The Q4_K_M weights are about 16.5 GB and offload entirely to the GPU, so the
+The IQ4_XS weights are about 14.4 GiB and offload entirely to the GPU, so the
 model no longer competes with ZFS ARC for system RAM. `repo.qwen27b.contextSize
 = 0` still selects a conservative tier from physical RAM at startup rather than
-blindly asking for the full training context:
+blindly asking for the full training context. The auto tiers assume a single
+slot; with `parallel > 1` the chosen total is simply split across the slots:
 
 | Physical RAM | Context |
 | --- | ---: |
@@ -109,18 +119,21 @@ blindly asking for the full training context:
 | 36–71 GiB | 65,536 |
 | 72 GiB or more | 131,072 |
 
-This host pins an explicit 128K, which is double the minimum Hermes Agent
-recommends for tool workflows:
+This host pins an explicit 192K total split across two parallel slots, so each
+session gets 96K — above the 64K minimum Hermes Agent recommends for tool
+workflows:
 
 ```nix
-repo.qwen27b.contextSize = 131072;
+repo.qwen27b.contextSize = 196608;  # total across all slots
+repo.qwen27b.parallel = 2;          # -> 98304 tokens per slot
 ```
 
-Set an explicit value up to 262,144 if the host has VRAM headroom. This host has
-just enough for 128K, and 262,144 would not fit — see the VRAM budget below.
+Set an explicit total up to 262,144 if the host has VRAM headroom. A 262,144
+total would need 8.50 GiB of KV cache and does not fit — see the VRAM budget
+below.
 
 The host uses a Q8_0 KV cache, which roughly halves KV memory and bandwidth at a
-negligible quality cost and is what keeps the 128K context inside the card:
+negligible quality cost and is what keeps the 192K total inside the card:
 
 ```nix
 repo.qwen27b.kvCacheType = "q8_0"; # "f16" (default), "q8_0", or "q4_0"
@@ -164,12 +177,12 @@ peak speed. The choices that matter:
 - **No MTP.** `mtp.enable = false`, and this pin has no draft head. Measured
   15-21% *slower* than plain decode on this host at 43% draft acceptance, so
   this is a measured decision rather than an untested default.
-- **One model at a time.** The Q4_K_M weights fit the 24 GiB card, but they do
+- **One model at a time.** The IQ4_XS weights fit the 24 GiB card, but they do
   not fit alongside Bonsai's weights. The background integration still stops the
   UI model before starting Qwen.
-- **Q8_0 KV cache + flash attention** keep the 128K context near-lossless and
-  cheap enough to fit; step up to F16 only if you raise the context.
-- **Quality is preserved by construction**: Q4_K_M weights and
+- **Q8_0 KV cache + flash attention** keep the 192K total context near-lossless
+  and cheap enough to fit; step up to F16 only if you raise the context.
+- **Quality is preserved by construction**: IQ4_XS weights and
   thinking/reasoning-preserve left at their template defaults. Do not globally
   disable thinking (it breaks arithmetic) or turn off reasoning-preserve (it
   drops multi-turn continuity) if quality matters.
@@ -210,7 +223,8 @@ Resizable BAR is enabled. The flags on the host are:
 repo.qwen27b.gpu.enable = true;      # builds llama.cpp with GGML_VULKAN
 repo.qwen27b.gpuLayers = "all";      # offload every tensor
 repo.qwen27b.projectorOnCpu = true;  # --no-mmproj-offload
-repo.qwen27b.kvCacheType = "q8_0";   # keeps the 128K context in VRAM
+repo.qwen27b.kvCacheType = "q8_0";   # keeps the 192K total context in VRAM
+repo.qwen27b.parallel = 2;           # two 96K slots
 repo.qwen27b.extraArgs = [
   "--batch-size" "2048"
   "--ubatch-size" "2048"
@@ -221,7 +235,7 @@ repo.qwen27b.extraArgs = [
 
 The Arc-specific loader workarounds used for Flash-Next are gone. `--n-cpu-moe`,
 `--lazy-mode on`, `--load-mode none`, `--no-host` and `--no-op-offload` all
-existed to squeeze a 94 GB mixture-of-experts model into a 24 GiB card; a 16.5 GB
+existed to squeeze a 94 GB mixture-of-experts model into a 24 GiB card; a 14.4 GB
 dense model has none of those constraints. If VRAM allocation ever fails with
 `ggml_vulkan: Device memory allocation of size ... failed`, re-add `--no-host`
 first — it bypasses the host-visible buffer and allows extra device buffers.
@@ -237,10 +251,10 @@ systemd unit gains access to the `render` and `video` groups and `/dev/dri`.
 
 Expectations with a single 24 GiB Arc Pro B60:
 
-- `n-gpu-layers = all` puts the whole 16.5 GB model on the card. With the
-  projector on the CPU and a Q8_0 128K KV cache there is still room for the
-  prefill compute buffers; a long-context prefill is the first thing to watch if
-  memory ever gets tight.
+- `n-gpu-layers = all` puts the whole ~14.4 GiB model on the card. With the
+  projector on the CPU, a Q8_0 192K-total KV cache and two parallel slots there
+  is still room for the prefill compute buffers; a long-context prefill is the
+  first thing to watch if memory ever gets tight.
 - The UI model is stopped before Qwen starts so the card is free; do not run both
   models at once.
 - ReBAR must be enabled in firmware; without it llama.cpp falls back to slow
@@ -249,13 +263,14 @@ Expectations with a single 24 GiB Arc Pro B60:
   Vulkan build fails to serve, fall back to CPU inference
   (`repo.qwen27b.gpu.enable = false`) and report the failure upstream.
 
-### VRAM Budget For The Context Setting
+### VRAM Budget For The Context And Parallel Settings
 
-Raising `repo.qwen27b.contextSize` spends card memory, not host memory, because
-the KV cache is allocated in VRAM whenever `gpuLayers = "all"`. ggml-vulkan does
-not spill a failed allocation to system RAM: it returns `nullptr` and the unit
-restarts. So the budget is a hard ceiling, and it is worth checking before
-raising the value rather than after.
+Raising `repo.qwen27b.contextSize` or `repo.qwen27b.parallel` spends card memory,
+not host memory, because the KV cache and the per-sequence recurrent state are
+allocated in VRAM whenever `gpuLayers = "all"`. ggml-vulkan does not spill a
+failed allocation to system RAM: it returns `nullptr` and the unit restarts. So
+the budget is a hard ceiling, and it is worth checking before raising a value
+rather than after.
 
 The KV cost is derivable from the GGUF header alone. This model is `qwen35` with
 64 blocks, `full_attention_interval = 4` (so 16 full-attention layers keep a KV
@@ -266,13 +281,21 @@ per 32 elements, so:
 
 ```text
 34,816 bytes/token = 16 layers x 2 tensors x 1,024 elements x (34/32)
-64K context  ->  2.13 GiB KV
-128K context ->  4.25 GiB KV
-262K context ->  8.50 GiB KV
+ 64K total  ->  2.13 GiB KV
+128K total  ->  4.25 GiB KV
+192K total  ->  6.38 GiB KV
+262K total  ->  8.50 GiB KV
 ```
 
-The budget for 128K, measured on this card by loading exactly the configuration
-above and reading `/sys/kernel/debug/dri/*/vram0_mm`:
+`--ctx-size` is the total across all slots, so `parallel = 2` with a 192K total
+gives each slot 96K, and the KV allocation is for 192K — the same as a single
+192K slot. What grows with `parallel` is the compute scratch and this hybrid
+model's per-sequence gated-delta-net state, not the KV cache.
+
+The only *measured* budget here is the earlier single-slot Q4_K_M 128K load, read
+from `/sys/kernel/debug/dri/*/vram0_mm` after serving a 12,223-token prompt (so
+it covers the worst-case full 2048-token ubatch, not an idle server; prefill held
+259 tokens/s):
 
 | Component | Size |
 | --- | ---: |
@@ -282,17 +305,28 @@ above and reading `/sys/kernel/debug/dri/*/vram0_mm`:
 | **Total, measured** | **21.09 GiB of 23.91 GiB** |
 | Free after the load | 2.82 GiB |
 
-That total was read after serving a 12,223-token prompt, so it covers the
-worst-case full 2048-token ubatch rather than an idle server. Prefill held 259
-tokens/s. To reproduce it, stop `qwen-27b-llama.service`, start `llama-server`
-with the flags from this document plus `--ctx-size 131072`, read the counter,
-and start the unit again.
+The current configuration (IQ4_XS, 192K total = 2 x 96K, `parallel = 2`) is
+scaled from that anchor and was **not yet measured** when this was written; treat
+it as a prediction to verify:
 
-262,144 does not fit: 8.50 GiB of KV cache alone would put the total near 25 GiB
-against 23.91 GiB of card. If that context is ever needed, the levers in order of
-preference are dropping to `kvCacheType = "q4_0"` (halves the KV again but is
-noticeably lossier), keeping the projector on the CPU, or moving to a larger
-card.
+| Component | Size |
+| --- | ---: |
+| IQ4_XS weights (15.48 GB file, less the unused `blk.64`) | ~14.2 GiB |
+| KV cache at 196608 tokens, Q8_0 | 6.38 GiB |
+| Compute buffers, SSM state (x2 slots), Vulkan bookkeeping | ~0.9–1.2 GiB |
+| **Estimated total** | **~21.5–21.8 GiB of 23.91 GiB** |
+| Estimated free | **~2.1–2.4 GiB** |
+
+To confirm, stop `qwen-27b-llama.service`, start `llama-server` with the flags
+from this document plus `--ctx-size 196608 --parallel 2`, read the counter, and
+start the unit again. If it does not fit, the levers in order of preference are
+dropping `parallel` back to 1, lowering the total context, dropping to
+`kvCacheType = "q4_0"` (halves the KV again but is noticeably lossier), or moving
+to a larger card.
+
+A 262,144-token total does not fit: 8.50 GiB of KV cache alone would put the
+single-slot total near 25 GiB against 23.91 GiB of card, and a second slot adds
+its recurrent state on top.
 
 One trap worth knowing: with the card already mostly full, `llama-server` logs
 `common_fit_params: failed to fit params to free device memory: n_gpu_layers
@@ -321,7 +355,7 @@ Text request:
 curl --fail-with-body http://127.0.0.1:8093/v1/chat/completions \
   --header 'Content-Type: application/json' \
   --data '{
-    "model": "qwen3.8-27b-q4_km",
+    "model": "qwen3.8-27b-iq4_xs",
     "messages": [
       {"role": "user", "content": "Summarise this title in three categories: Water bore inspection report"}
     ]

@@ -132,9 +132,13 @@ in
 
       mainFile = lib.mkOption {
         type = lib.types.str;
-        default = "Swift-1.5-Qwen3.8-27B-Q4_K_M.gguf";
+        default = "Swift-1.5-Qwen3.8-27B-IQ4_XS.gguf";
         readOnly = true;
-        description = "Single-file Q4_K_M language-model GGUF.";
+        description = ''
+          Single-file IQ4_XS language-model GGUF. One step below Q4_K_M in
+          quality but ~2 GiB smaller, which is what leaves room for the second
+          parallel slot's KV cache and recurrent state.
+        '';
       };
 
       projectorFile = lib.mkOption {
@@ -187,9 +191,9 @@ in
         });
         default = [
           {
-            file = "Swift-1.5-Qwen3.8-27B-Q4_K_M.gguf";
-            sha256 = "2ebba0ff1e63c1ac3fadd4e83efcea189f47f33ec72c91877af94de6ebe30590";
-            sizeBytes = 17442399936;
+            file = "Swift-1.5-Qwen3.8-27B-IQ4_XS.gguf";
+            sha256 = "e3b59faa312a6202d7ac0a2400123956104bc720e77f6ff21c754aec5c3740df";
+            sizeBytes = 15475951296;
           }
           {
             file = "mmproj-Swift-1.5-Qwen3.8-27B-F16.gguf";

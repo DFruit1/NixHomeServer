@@ -48,7 +48,7 @@ model eviction or the large Qwen model load. Qwen has its own separate,
 loopback-only server and never appears in the UI.
 
 The Ryzen 7 5700X / 128 GB / Arc Pro B60 profile runs Bonsai with Vulkan, 8
-inference threads, one slot, and 32,768 context tokens. Qwen3.8-27B at Q4_K_M
+inference threads, one slot, and 32,768 context tokens. Qwen3.8-27B at IQ4_XS
 also fits inside the 24 GiB card on its own, but two full models still do not,
 so the background integration keeps the existing arrangement: starting Qwen
 stops the Bonsai server and restarts Bonsai afterwards, and the UI model and

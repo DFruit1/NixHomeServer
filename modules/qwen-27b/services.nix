@@ -93,7 +93,13 @@ in
     parallel = lib.mkOption {
       type = lib.types.ints.positive;
       default = 1;
-      description = "Number of concurrent inference slots.";
+      description = ''
+        Number of concurrent inference slots. llama.cpp splits the total
+        `--ctx-size` across the slots, so each slot gets
+        `contextSize / parallel` tokens. Two slots double the per-sequence
+        recurrent state of this hybrid model, which is why the quant was
+        dropped to IQ4_XS before raising this to 2.
+      '';
     };
 
     gpuLayers = lib.mkOption {
@@ -101,7 +107,7 @@ in
       default = if cfg.gpu.enable then "auto" else "0";
       description = ''
         Value passed to --n-gpu-layers. "auto" lets llama.cpp offload as many
-        layers as fit in VRAM; "0" is CPU-only. The Q4_K_M 27B weights fit
+        layers as fit in VRAM; "0" is CPU-only. The IQ4_XS 27B weights fit
         entirely in the 24 GiB Arc Pro B60, so "all" is the expected value.
       '';
     };
@@ -215,8 +221,8 @@ in
       description = ''
         KV cache element type. Q8_0 roughly halves KV memory and bandwidth at a
         negligible quality cost and speeds up longer generations, which is what
-        lets a 128K context sit in VRAM alongside the Q4_K_M weights. Q4_0 is
-        smaller but noticeably lossier; F16 is the unquantized default.
+        lets the 192K total context sit in VRAM alongside the IQ4_XS weights.
+        Q4_0 is smaller but noticeably lossier; F16 is the unquantized default.
       '';
     };
 
@@ -238,8 +244,8 @@ in
         message = "repo.qwen27b.imageMaxTokens cannot exceed the model's approximate 4096 vision-token limit.";
       }
       {
-        assertion = cfg.parallel == 1;
-        message = "repo.qwen27b.parallel is currently limited to 1 so that the KV cache budget is not split across slots.";
+        assertion = cfg.parallel >= 1 && cfg.parallel <= 2;
+        message = "repo.qwen27b.parallel is limited to 2; each additional slot doubles the per-sequence recurrent state and splits the KV budget.";
       }
       {
         assertion = !cfg.mtp.enable || cfg.model.mtpFile != "";
@@ -289,7 +295,7 @@ in
         # swapping this unit so pressure is absorbed by reclaimable page cache
         # or, at worst, an OOM restart of Qwen instead of a system-wide stall.
         #
-        # The caps are a runaway guard, not a working limit. The Q4_K_M weights
+        # The caps are a runaway guard, not a working limit. The IQ4_XS weights
         # live in VRAM, so host RAM holds the mmap'd file cache, the Vulkan
         # staging and compute buffers, and the CPU-side vision encoder; measured
         # well under 32 GiB. Keeping the ceiling at 48 GiB leaves the 64 GiB ZFS

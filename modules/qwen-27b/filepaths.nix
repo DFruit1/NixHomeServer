@@ -10,8 +10,8 @@ in
       default = "${vars.dataRoot}/qwen-27b";
       description = ''
         Data-pool root for Qwen3.8-27B state and downloaded artifacts. The
-        Q4_K_M weights are roughly 16 GiB, so they live on the data pool rather
-        than the system SSD.
+        IQ4_XS weights are roughly 14.4 GiB, so they live on the data pool
+        rather than the system SSD.
       '';
     };
 

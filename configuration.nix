@@ -38,36 +38,45 @@ in
       # boot and serves Hermes and other local clients over loopback.
       #
       # The profile is tuned on this host's single 24 GiB Arc Pro B60: the
-      # 16.5 GB Q4_K_M weights and the 128K Q8_0 KV cache both fit in VRAM, so
-      # every layer is offloaded and nothing is left behind in system RAM for
-      # the language model. Vision is the exception - the projector runs on the
-      # CPU to keep the card free for weights and cache.
+      # IQ4_XS 27B weights, a 192K-token Q8_0 KV cache and two parallel slots
+      # all fit in VRAM, so every layer is offloaded and nothing is left behind
+      # in system RAM for the language model. Vision is the exception - the
+      # projector runs on the CPU to keep the card free for weights and cache.
       qwen27b = {
         enable = true;
         gpu.enable = true;
-        # Hermes Agent recommends at least 64K context for tool workflows, and
-        # tool transcripts routinely overflow that, so this host runs 128K.
+        # Two concurrent 96K sessions. Hermes Agent recommends at least 64K
+        # context for tool workflows and its transcripts routinely overflow
+        # that, so each of the two slots gets 96K.
         #
-        # Must stay equal to the local-implementer Hermes pin
-        # (~/.hermes/profiles/local-implementer/config.yaml -> context_length);
-        # a longer Hermes context than llama.cpp's is rejected per request, and
-        # a shorter one silently truncates. Change both in the same commit.
+        # llama.cpp splits this total across `parallel` slots, so the
+        # local-implementer Hermes pin
+        # (~/.hermes/profiles/local-implementer/config.yaml -> context_length)
+        # must equal 98304 (contextSize / parallel), NOT contextSize itself; a
+        # longer Hermes context than its slot is rejected per request, and a
+        # shorter one silently truncates. Change both in the same commit.
         #
-        # VRAM budget on the 23.91 GiB card, measured by loading exactly this
-        # configuration on the card and reading the driver's usage counter:
-        #   15.98 GiB weights (16.25 GiB file less the unused blk.64 MTP tensors)
-        # +  4.25 GiB KV cache at 131072 tokens
-        # +  0.86 GiB compute buffers, SSM state and Vulkan bookkeeping
-        # = 21.09 GiB of 23.91 GiB, leaving 2.82 GiB free.
-        # That total was read after a 12,223-token prefill, so it includes the
-        # worst-case full 2048-token ubatch, not just an idle server.
+        # VRAM budget on the 23.91 GiB card, scaled from the measured Q4_K_M
+        # load (15.98 GiB weights, 0.86 GiB buffers at parallel = 1):
+        #   ~14.2 GiB weights (IQ4_XS, 15.48 GB file less the unused blk.64
+        #     MTP tensors)
+        # +  6.38 GiB KV cache at 196608 tokens total (2 x 98304)
+        # +  ~0.86 GiB compute buffers, SSM state and Vulkan bookkeeping, plus
+        #     the second slot's per-sequence recurrent state
+        # = ~21.4 GiB of 23.91 GiB, leaving about 2.5 GiB free - the same
+        # safety class as the previous single 128K session (2.82 GiB). The
+        # parallel = 1 buffer figure is the uncertain term: this hybrid qwen35
+        # keeps a per-sequence gated-delta-net state, so two slots roughly
+        # double that portion. Verify against the card before trusting it.
         #
         # The KV term is derivable from the GGUF header and worth keeping in
         # step with any context change: qwen35, 16 full-attention layers of 64,
         # head_count_kv 4, key and value length 256, which is 34,816 B/token at
-        # Q8_0's 34 B per 32 elements. 262144 would need 8.50 GiB of KV and does
-        # not fit; ggml-vulkan cannot spill a failed allocation to host RAM.
-        contextSize = 131072;
+        # Q8_0's 34 B per 32 elements. A 262144-token total would need 8.50 GiB
+        # of KV and does not fit; ggml-vulkan cannot spill a failed allocation
+        # to host RAM.
+        contextSize = 196608;
+        parallel = 2;
         gpuLayers = "all";
         # Qwen3.8-27B is dense, so there are no MoE expert tensors to keep on
         # the CPU and --cpu-moe / --n-cpu-moe have nothing to do.
