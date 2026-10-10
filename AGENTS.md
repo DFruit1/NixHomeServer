@@ -313,6 +313,12 @@ Must not change: <the guardrail>
 The owner must be able to answer from the first three lines. Evidence goes below
 the ask, never above it and never inside the question.
 
+The owner's phone message is built from these fields, so write them as clear
+single sentences: `ASK` becomes **Blocking**, `IF UNANSWERED` (else
+`NEEDED FROM YOU`) becomes **Why owner**, and option A becomes **Recommended**.
+A Hard Blocker with no A/B choice must add `Why owner: <why only you>` and
+`Unblock: <the recommended action>` so the message is specific, not generic.
+
 ### Hard limits
 
 * **One idea per line.** "Do A, and B, but never C" is three lines, not one
@@ -435,6 +441,10 @@ or a card hard-stuck with no agent-side recovery. Prefer `needs_input` so the
 block is sticky; the line is the marker for an owner-only block that is not a
 `needs_input` choice. It must be its own line; prose mentioning it does not
 count, and the retired `Urgency:` vocabulary does nothing. Both shapes push.
+Every pushed message is self-contained: one sentence on what is blocking, one on
+why only the owner can clear it, and the recommended unblock — so the owner
+never has to ask for details. Supply `Why owner:` and `Unblock:` when the card
+is not an A/B gate.
 
 Everything else — missing evidence, worker/model failures, dependency waits,
 routine cleanups — is a technical blocker that is board-local and never pushed;

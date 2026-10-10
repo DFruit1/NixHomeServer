@@ -27,18 +27,19 @@ the `Hard Blocker` line is the marker for an owner-only block that is not a
 Both shapes are the decision (D) category and are the only cards pushed. Every
 other blocked card is a technical (B) blocker and is never pushed.
 
-Each message shows the decision, a short plain-language description, then the
-recommended choice (A) and the alternatives. Emphasis uses SimpleX markup
-(`*bold*`, `_italic_`, `~strike~`); GitHub-style `**bold**` is converted before
-send:
+Each message is self-contained: it states what is blocking, why only the owner
+can clear it, and the recommended way to unblock — one sentence each — so the
+owner never has to ask for details. A decision with choices shows the recommended
+option (A) and the alternatives. Emphasis uses SimpleX markup (`*bold*`,
+`_italic_`, `~strike~`); GitHub-style `**bold**` is converted before send:
 
 ```text
 *Hard Blocker*
 
 D1 · nixhomeserver
 Choose a recovery mechanism
-Choose a recovery mechanism for this host?
-The worker is down and queued work is stuck.
+Blocking: Choose a recovery mechanism for this host?
+Why owner: Only you can clear this; otherwise the queue stays stuck.
 Recommended: A) Restore the worker with existing credentials
 Alternatives:
 B) Pause work until capacity returns
@@ -46,17 +47,29 @@ B) Pause work until capacity returns
 Reply: D1 <choice or answer>. Details: D1 details
 ```
 
-An agent-asserted Hard Blocker with no choices shows its owner-only reason:
+An agent-asserted Hard Blocker with no choices shows its owner-only reason and a
+recommended action:
 
 ```text
 *Hard Blocker*
 
 D2 · nixhomeserver
 Harden: root SFTP key helper authorization
-needs the owner key
+Blocking: The root SFTP key helper cannot finish.
+Why owner: It needs the owner key.
+Recommended: Provide the owner key, then re-run the card.
 
 Reply: D2 <answer>. Details: D2 details
 ```
+
+The three sentences come from the card: `Blocking:` (else the `ASK:` question,
+else the block reason), `Why owner:` (else `IF UNANSWERED:`, else the
+`Hard Blocker` line), and `Recommended:` (else the recommended `A)` option, else
+`Unblock:`). When an agent blocks a Hard Blocker it should supply `Why owner:`
+and `Unblock:` so the message is specific rather than generic; a `needs_input`
+card whose body is work-shaped rather than a gate still renders all three lines
+from its block reason. When this message format changes, the live decision set is
+re-sent once so a stale stub does not stay on the phone.
 
 A decision pushes when it appears and again only when the ask changes.
 

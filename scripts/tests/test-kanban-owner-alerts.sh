@@ -100,14 +100,31 @@ class AlertsTest(unittest.TestCase):
         alerts.tick(self.root, now=1000)
         message = self.sent[0]
         self.assertIn('D1 · one', message)
-        self.assertIn('Which owner profile should own the adapter?', message)
-        self.assertIn('Two lanes share the same paired endpoint.', message)
-        self.assertNotIn('Context:', message)
+        self.assertIn('Blocking: Which owner profile should own the adapter?', message)
+        self.assertIn('Why owner: Only you can clear this; otherwise adapter rollout stays blocked.', message)
         self.assertIn('Recommended: A) head-coordinator — route replies through the coordinator only', message)
         self.assertIn('Alternatives:', message)
         # GitHub emphasis is converted to the markup SimpleX actually renders.
         self.assertIn('B) gateway — *keep* the existing profile as owner', message)
         self.assertNotIn('**keep**', message)
+
+    def test_needs_input_without_ask_reports_three_sentences(self):
+        # A needs_input card whose body is work-shaped (Goal/Change), not a gate
+        # (no ASK/options), used to reach the phone as a bare "Details required"
+        # stub. It must now carry what/why/recommended in full.
+        reason = 'Upstream review rejected the head; a corrected-source verdict is the prerequisite.'
+        with closing(sqlite3.connect(self.boards['one'])) as db:
+            db.execute("UPDATE tasks SET body='Goal: Activate the accepted inbox.\\n"
+                       "Change: Install only the reviewed head.'")
+            db.execute('UPDATE task_events SET payload=?', (json.dumps({'reason': reason}),))
+            db.commit()
+        alerts.tick(self.root, now=1000)
+        message = self.sent[0]
+        self.assertIn('Blocking: Upstream review rejected the head;', message)
+        self.assertIn('Why owner:', message)
+        self.assertIn('Recommended:', message)
+        self.assertNotIn('Details required before deciding', message)
+        self.assertTrue(alerts.resolve(self.root, 'D1')['compact_complete'])
 
     def test_simplex_markdown_matches_the_messenger(self):
         self.assertEqual('*bold*', alerts.simplex_markdown('**bold**'))
@@ -274,7 +291,7 @@ class AlertsTest(unittest.TestCase):
         self.assertGreater(len(decisions), 1)
         self.assertTrue(all(len(m) <= 1600 for m in decisions))
         self.assertIn('Choose a recovery mechanism for this host?', decisions[0])
-        self.assertIn('The worker is down and queued work is stuck.', decisions[0])
+        self.assertIn('Why owner: Only you can clear this; choose A or B.', decisions[0])
         self.assertIn('Recommended: A) Restore the worker with existing credentials', decisions[0])
         self.assertIn('Alternatives:', decisions[0])
         self.assertIn('B) Pause work until capacity returns', decisions[0])

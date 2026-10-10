@@ -34,6 +34,10 @@ JOB = 'kanban owner blocker alerts'
 MARKER = '<!-- kanban-owner-alerts -->'
 END_MARKER = '<!-- /kanban-owner-alerts -->'
 MESSAGE_LIMIT = 1600
+# Bump when the decision message shape changes so the live set is re-sent once in
+# the new format (a stale delivered flag would otherwise keep an old stub on the
+# phone). Technical messages carry their own format key.
+DECISION_FORMAT = 2
 # A standalone line an agent adds to mark a card it did not block as a decision.
 # Case-insensitive and its own line; prose mentioning it does not count. A card
 # carrying it is a Hard Blocker and belongs to the decision (D) category.
@@ -126,6 +130,8 @@ def load_inbox(root):
             raise ValueError('Invalid delivery record; restore inbox state')
         if 'technical_format' in delivery and (type(delivery['technical_format']) is not int or delivery['technical_format'] < 0):
             raise ValueError('Invalid technical delivery format; restore inbox state')
+        if 'decision_format' in delivery and (type(delivery['decision_format']) is not int or delivery['decision_format'] < 0):
+            raise ValueError('Invalid decision delivery format; restore inbox state')
     return state
 
 
@@ -145,6 +151,25 @@ def first_sentences(text, count=2):
     return re.split(r'(?<=[.!?])\s+', ' '.join(text.split()))[:count]
 
 
+def first_sentence(text):
+    parts = first_sentences(text, 1)
+    return parts[0] if parts else ''
+
+
+def clip(text, limit=170):
+    """Trim a derived (non-ask) sentence to fit a phone line, at a word boundary."""
+    text = ' '.join(text.split())
+    if len(text) <= limit:
+        return text
+    return text[:limit].rsplit(' ', 1)[0].rstrip(' ,;:') + '…'
+
+
+def reason_sentences(reason):
+    # Drop a trailing "Details: <pointer>" clause; it is a pointer, not a reason.
+    reason = re.split(r'\s+Details\b', reason)[0]
+    return [s for s in re.split(r'(?<=[.!?])\s+', ' '.join(reason.split())) if s]
+
+
 def simplex_markdown(text):
     """Render emphasis the way SimpleX parses it.
 
@@ -158,12 +183,29 @@ def simplex_markdown(text):
 
 
 def decision_text(label, board, task):
+    """Render one self-contained decision: what is blocking, why only the owner
+    can clear it, and the recommended unblock. Every owner-facing message carries
+    these three sentences so the phone never needs a follow-up to be actionable.
+    """
     body, reason = task.get('body') or '', task.get('reason') or ''
-    end = r'(?=^\s*[A-Z]\)|^NEEDED FROM YOU:|^IF UNANSWERED:|^Context:|^Must not change:|^Notes?:|\Z)'
-    ask = re.search(r'^ASK:[ \t]*(.*?)' + end, body, re.M | re.S)
+    end = (r'(?=^\s*[A-Z]\)|^ASK:|^Blocking:|^Why owner:|^Why only owner:|^Why owner-only:|'
+           r'^Unblock:|^Recommended:|^NEEDED FROM YOU:|^IF UNANSWERED:|^Context:|'
+           r'^Must not change:|^Notes?:|\Z)')
+
+    def field(name):
+        match = re.search(rf'^{name}:[ \t]*(.*?)' + end, body, re.M | re.S)
+        return ' '.join(match[1].split()) if match else ''
+
+    ask = field(r'ASK')
+    blocking_field = field(r'Blocking')
+    why = field(r'Why owner') or field(r'Why only owner') or field(r'Why owner-only')
+    unblock = field(r'Unblock') or field(r'Recommended')
+    needed = field(r'NEEDED FROM YOU')
+    if_unanswered = field(r'IF UNANSWERED')
+    context = field(r'Context')
     options = re.findall(r'^\s*([A-Z])\)[ \t]*(.*?)' + end, body, re.M | re.S)
-    context = re.search(r'^Context:[ \t]*(.*?)' + end, body, re.M | re.S)
     marker = HARD_BLOCKER.search(body)
+    detail = hard_blocker_detail(body)
     # Older worker blockers sometimes put the choices inline in the reason.
     reason_options = inline_options(reason)
     conflicting = bool(ask and reason_options and
@@ -171,29 +213,61 @@ def decision_text(label, board, task):
     if not ask:
         options = reason_options or options
     heading = f'{label} · {board}\n' + ' '.join(task['title'].split())[:80]
-    # A short plain-language description, one sentence per line: the decision
-    # (or owner-only reason), then the situation that forces it.
-    if ask:
-        description = [' '.join(ask[1].split())]
-        if context:
-            description += first_sentences(context[1], 2)
+
+    # One sentence: what is blocking.
+    if blocking_field:
+        blocking = blocking_field
+    elif ask:
+        blocking = ask
     elif marker:
-        goal = re.search(r'^Goal:[ \t]*(.*?)' + end, body, re.M | re.S)
-        detail = (hard_blocker_detail(body)
-                  or (' '.join(goal[1].split()) if goal else '')
-                  or (' '.join(reason.split()) if reason not in ('', 'initial_status') else ''))
-        description = first_sentences(detail, 2)
+        blocking = first_sentence(field(r'Goal')) or 'This owner decision is blocked.'
+    elif reason not in ('', 'initial_status'):
+        blocking = first_sentence(reason)
     else:
-        description = ['Choose:']
-    # The first choice is presented as the recommendation; the rest are alternatives.
-    lines = [line for line in description if line.strip()]
+        blocking = first_sentence(field(r'Goal')) or 'This owner decision is blocked.'
+    # A derived (reason/goal) sentence is a diagnostic, so it may be clipped to
+    # fit; a formal ASK is never rewritten, only stubbed when too large.
+    blocking_source = 'ask' if ask else ('field' if blocking_field else 'derived')
+    if blocking_source == 'derived':
+        blocking = clip(blocking)
+
+    # One sentence: why only the owner can clear it.
+    if why:
+        why_owner = why
+    elif marker and detail:
+        why_owner = detail
+    elif if_unanswered:
+        why_owner = f'Only you can clear this; otherwise {if_unanswered.rstrip(".")}.'
+    elif needed:
+        why_owner = f'Only you can clear this; {needed.rstrip(".")}.'
+    elif context:
+        why_owner = first_sentence(context)
+    elif reason not in ('', 'initial_status') and not options and len(reason_sentences(reason)) > 1:
+        # The explanatory clause of a block reason is the gating one; the first
+        # sentence is what is blocking and short directives are not "why".
+        why_owner = max(reason_sentences(reason)[1:], key=len)
+    else:
+        why_owner = 'Only you can clear this; the board cannot self-resolve it.'
+    why_owner = clip(why_owner)
+
+    # One sentence: the recommended way to unblock it.
     if options:
-        lines.append(f'Recommended: {options[0][0]}) {" ".join(options[0][1].split())}')
-        if len(options) > 1:
-            lines.append('Alternatives:')
-            lines += [f'{letter}) {" ".join(text.split())}' for letter, text in options[1:]]
+        recommended = f'{options[0][0]}) {" ".join(options[0][1].split())}'
+    elif unblock:
+        recommended = unblock
+    elif needed:
+        recommended = needed
+    else:
+        recommended = f'Reply with your answer; {label} details has the full ask.'
+    if not options:
+        recommended = clip(recommended)
+
+    lines = [f'Blocking: {blocking}', f'Why owner: {why_owner}', f'Recommended: {recommended}']
+    if options and len(options) > 1:
+        lines.append('Alternatives:')
+        lines += [f'{letter}) {" ".join(text.split())}' for letter, text in options[1:]]
     # Never hide scope or consequences behind a truncated approval choice.
-    complete = (not conflicting and bool(lines) and (bool(options or ask) or bool(marker))
+    complete = (not conflicting and bool(blocking) and bool(why_owner) and bool(recommended)
                 and len({v[0] for v in options}) == len(options)
                 and all(len(line) <= 180 for line in lines) and len('\n'.join(lines)) <= 650)
     if not complete:
@@ -360,9 +434,13 @@ def collect(root, state, errors):
                 if label is None:
                     label = f'D{state["next_label"]}'
                     state['next_label'] += 1
-                    shown, complete = decision_text(label, board.parent.name, task)
                     state['decisions'][label] = {'board': board.parent.name, 'task_id': task['id'],
-                        'token': revision, 'shown': shown, 'compact_complete': complete, 'delivered': []}
+                        'token': revision, 'shown': '', 'compact_complete': False, 'delivered': []}
+                # Refresh every tick so a message-format change reaches the live
+                # set without minting a new label for an unchanged card.
+                shown, complete = decision_text(label, board.parent.name, task)
+                state['decisions'][label]['shown'] = shown
+                state['decisions'][label]['compact_complete'] = complete
                 decision_labels[(board.parent.name, task['id'])] = label
         except (ValueError, OSError, sqlite3.Error) as exc:
             errors.append(f'{board.parent.name}: {exc}')
@@ -385,6 +463,13 @@ def tick(root, dry_run=False, now=None, force_decisions=False):
         path = directory / 'inbox.json'
         state = load_inbox(root)
         state['delivery'].setdefault(target, {'technical_token': '', 'technical_at': None, 'hard_blocker': {}})
+        delivery = state['delivery'][target]
+        if delivery.get('decision_format') != DECISION_FORMAT:
+            # One-time format migration: re-send the live decision set so a stale
+            # "Details required" stub does not stay on the phone.
+            for record in state['decisions'].values():
+                record['delivered'] = []
+            delivery['decision_format'] = DECISION_FORMAT
         _, _, decision_labels, decisions, snapshot_failed = collect(root, state, errors)
         if not dry_run:
             save(path, state)  # Labels survive a failed send or a process restart.
