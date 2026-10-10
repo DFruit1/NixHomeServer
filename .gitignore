@@ -30,6 +30,10 @@
 # deploy archive staging never sees them and cleanup is a targeted rm -rf.
 /.tmp/
 
+# Stray Hermes home. A worker running with a repo-relative HERMES_HOME writes
+# profile cache/scratch here (seen once); it must never be tracked or staged.
+/.hermes/
+
 # impeccable-ignore-start
 # Ephemeral output, runtime state, and per-dev overrides (unanchored on purpose).
 # Shared artifacts stay tracked: .impeccable/config.json, .impeccable/design.json,
