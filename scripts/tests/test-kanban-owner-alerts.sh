@@ -34,7 +34,7 @@ class AlertsTest(unittest.TestCase):
             p.mkdir(parents=True)
             (p / 'board.json').write_text('{}')
             with closing(sqlite3.connect(p / 'kanban.db')) as db:
-                db.executescript('CREATE TABLE tasks (id TEXT, title TEXT, body TEXT, status TEXT, block_kind TEXT); CREATE TABLE task_events (id INTEGER, task_id TEXT, kind TEXT, payload TEXT);')
+                db.executescript('CREATE TABLE tasks (id TEXT, title TEXT, body TEXT, status TEXT, block_kind TEXT); CREATE TABLE task_events (id INTEGER, task_id TEXT, kind TEXT, payload TEXT); CREATE TABLE task_comments (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT, author TEXT, body TEXT, created_at INTEGER);')
                 db.execute('INSERT INTO tasks VALUES (?, ?, ?, ?, ?)', ('t_12345678', 'Decide repair', 'ASK: Approve repair?\n A) Approve\n B) Reject', 'blocked', 'needs_input' if board == 'one' else 'capability'))
                 db.execute('INSERT INTO task_events VALUES (1, ?, ?, ?)', ('t_12345678', 'blocked', json.dumps({'reason': 'Need a decision' if board == 'one' else 'Evidence unavailable'})))
                 db.commit()
@@ -101,7 +101,7 @@ class AlertsTest(unittest.TestCase):
         message = self.sent[0]
         self.assertIn('D1 · one', message)
         self.assertIn('Blocking: Which owner profile should own the adapter?', message)
-        self.assertIn('Why owner: Only you can clear this; otherwise adapter rollout stays blocked.', message)
+        self.assertIn('Why owner: If you do not act, adapter rollout stays blocked.', message)
         self.assertIn('Recommended: A) head-coordinator — route replies through the coordinator only', message)
         self.assertIn('Alternatives:', message)
         # GitHub emphasis is converted to the markup SimpleX actually renders.
@@ -125,6 +125,27 @@ class AlertsTest(unittest.TestCase):
         self.assertIn('Recommended:', message)
         self.assertNotIn('Details required before deciding', message)
         self.assertTrue(alerts.resolve(self.root, 'D1')['compact_complete'])
+
+    def test_plain_summary_comment_overrides_jargon_body(self):
+        # The card body and block reason are internal jargon; an agent posts a
+        # plain-language summary as a comment and the phone message uses it.
+        with closing(sqlite3.connect(self.boards['one'])) as db:
+            db.execute("UPDATE tasks SET body='Goal: fix t_abc across the worktree.'")
+            db.execute('UPDATE task_events SET payload=?',
+                       (json.dumps({'reason': 'review t_deadbeef rejected 1e299daf6464c8b6a02080a5d01223f3fe90766c'}),))
+            db.execute("INSERT INTO task_comments (task_id, author, body, created_at) VALUES "
+                       "('t_12345678','head-coordinator',?,1)",
+                       ('Blocking: A required safety check was removed and nobody re-approved it.\n'
+                        'Why owner: Only you can approve restoring the check.\n'
+                        'Unblock: Tell us to restore the check, or to leave it out.',))
+            db.commit()
+        alerts.tick(self.root, now=1000)
+        message = self.sent[0]
+        self.assertIn('Blocking: A required safety check was removed', message)
+        self.assertIn('Why owner: Only you can approve restoring the check.', message)
+        self.assertIn('Recommended: Tell us to restore the check', message)
+        self.assertNotIn('t_deadbeef', message)
+        self.assertNotIn('worktree', message)
 
     def test_simplex_markdown_matches_the_messenger(self):
         self.assertEqual('*bold*', alerts.simplex_markdown('**bold**'))
@@ -291,7 +312,7 @@ class AlertsTest(unittest.TestCase):
         self.assertGreater(len(decisions), 1)
         self.assertTrue(all(len(m) <= 1600 for m in decisions))
         self.assertIn('Choose a recovery mechanism for this host?', decisions[0])
-        self.assertIn('Why owner: Only you can clear this; choose A or B.', decisions[0])
+        self.assertIn('Why owner: This needs you to choose A or B.', decisions[0])
         self.assertIn('Recommended: A) Restore the worker with existing credentials', decisions[0])
         self.assertIn('Alternatives:', decisions[0])
         self.assertIn('B) Pause work until capacity returns', decisions[0])

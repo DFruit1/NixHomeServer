@@ -86,11 +86,42 @@ def snapshot(board_file, task_id=None):
             failure = task.pop('failure')
             if failure and task['reason'] in ('', 'initial_status'):
                 task['reason'] = failure
+            # Prefer the latest agent-authored plain summary comment (the body and
+            # reason are often internal jargon); ordinary comments are ignored.
+            try:
+                comment = db.execute("SELECT body FROM task_comments WHERE task_id=? AND instr(body,'Blocking:')>0 ORDER BY created_at DESC, id DESC LIMIT 1", (task['id'],)).fetchone()
+            except sqlite3.OperationalError:
+                comment = None
+            task['comment'] = comment['body'] if comment else ''
         return tasks
 
 
+def owner_summary(comment):
+    """The agent-authored plain summary lines in a comment, or ''.
+
+    A comment carrying `Blocking:` / `Why owner:` / `Unblock:` is the owner-facing
+    rewrite of a card whose body is internal jargon. Only its presence changes the
+    revision, so ordinary coordination comments never re-page the owner.
+    """
+    if not comment:
+        return ''
+    end = r'(?=^[A-Z][A-Za-z ]*:|\Z)'
+    values = []
+    for name in (r'Blocking', r'Why owner', r'Why only owner', r'Why owner-only', r'Unblock', r'Recommended'):
+        match = re.search(rf'^{name}:[ \t]*(.*?)' + end, comment, re.M | re.S)
+        if match:
+            values.append(' '.join(match[1].split()))
+    return '\n'.join(values)
+
+
 def token(value):
-    return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+    # The owner-facing summary is part of the revision so posting one re-pushes;
+    # the raw comment is excluded so unrelated chatter does not.
+    payload = {key: item for key, item in value.items() if key != 'comment'}
+    summary = owner_summary(value.get('comment', ''))
+    if summary:
+        payload['summary'] = summary
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
 def load_inbox(root):
@@ -182,27 +213,44 @@ def simplex_markdown(text):
     return text
 
 
+def plain(text):
+    """Strip machine tokens (task ids, git hashes) from owner-facing text."""
+    text = re.sub(r'\bsha256-[A-Za-z0-9+/=]+', '', text)
+    text = re.sub(r'\bt_[0-9a-zA-Z_]+', '', text)
+    text = re.sub(r'\b[0-9a-f]{7,40}\b', '', text)
+    return ' '.join(text.split())
+
+
 def decision_text(label, board, task):
     """Render one self-contained decision: what is blocking, why only the owner
     can clear it, and the recommended unblock. Every owner-facing message carries
     these three sentences so the phone never needs a follow-up to be actionable.
+    An agent-authored plain-language summary (a comment with `Blocking:` /
+    `Why owner:` / `Unblock:` lines) overrides the raw body, which is often
+    written in internal jargon.
     """
-    body, reason = task.get('body') or '', task.get('reason') or ''
+    body = task.get('body') or ''
+    reason = task.get('reason') or ''
+    comment = task.get('comment') or ''
     end = (r'(?=^\s*[A-Z]\)|^ASK:|^Blocking:|^Why owner:|^Why only owner:|^Why owner-only:|'
            r'^Unblock:|^Recommended:|^NEEDED FROM YOU:|^IF UNANSWERED:|^Context:|'
            r'^Must not change:|^Notes?:|\Z)')
 
-    def field(name):
-        match = re.search(rf'^{name}:[ \t]*(.*?)' + end, body, re.M | re.S)
+    def field(name, text):
+        match = re.search(rf'^{name}:[ \t]*(.*?)' + end, text, re.M | re.S)
         return ' '.join(match[1].split()) if match else ''
 
-    ask = field(r'ASK')
-    blocking_field = field(r'Blocking')
-    why = field(r'Why owner') or field(r'Why only owner') or field(r'Why owner-only')
-    unblock = field(r'Unblock') or field(r'Recommended')
-    needed = field(r'NEEDED FROM YOU')
-    if_unanswered = field(r'IF UNANSWERED')
-    context = field(r'Context')
+    def summary(name):
+        return field(name, comment) or field(name, body)
+
+    ask = field(r'ASK', body)
+    blocking_field = summary(r'Blocking')
+    why = (summary(r'Why owner') or summary(r'Why only owner') or summary(r'Why owner-only'))
+    unblock = (field(r'Unblock', comment) or field(r'Unblock', body)
+               or summary(r'Recommended'))
+    needed = field(r'NEEDED FROM YOU', body)
+    if_unanswered = field(r'IF UNANSWERED', body)
+    context = field(r'Context', body)
     options = re.findall(r'^\s*([A-Z])\)[ \t]*(.*?)' + end, body, re.M | re.S)
     marker = HARD_BLOCKER.search(body)
     detail = hard_blocker_detail(body)
@@ -212,7 +260,7 @@ def decision_text(label, board, task):
                        [(k, ' '.join(v.split()).rstrip(' ,;.')) for k, v in options] != reason_options)
     if not ask:
         options = reason_options or options
-    heading = f'{label} · {board}\n' + ' '.join(task['title'].split())[:80]
+    heading = f'{label} · {board}\n' + plain(' '.join(task['title'].split()))[:80]
 
     # One sentence: what is blocking.
     if blocking_field:
@@ -220,11 +268,11 @@ def decision_text(label, board, task):
     elif ask:
         blocking = ask
     elif marker:
-        blocking = first_sentence(field(r'Goal')) or 'This owner decision is blocked.'
+        blocking = first_sentence(field(r'Goal', body)) or 'This owner decision is blocked.'
     elif reason not in ('', 'initial_status'):
         blocking = first_sentence(reason)
     else:
-        blocking = first_sentence(field(r'Goal')) or 'This owner decision is blocked.'
+        blocking = first_sentence(field(r'Goal', body)) or 'This owner decision is blocked.'
     # A derived (reason/goal) sentence is a diagnostic, so it may be clipped to
     # fit; a formal ASK is never rewritten, only stubbed when too large.
     blocking_source = 'ask' if ask else ('field' if blocking_field else 'derived')
@@ -237,9 +285,9 @@ def decision_text(label, board, task):
     elif marker and detail:
         why_owner = detail
     elif if_unanswered:
-        why_owner = f'Only you can clear this; otherwise {if_unanswered.rstrip(".")}.'
+        why_owner = f'If you do not act, {if_unanswered.rstrip(".")}.'
     elif needed:
-        why_owner = f'Only you can clear this; {needed.rstrip(".")}.'
+        why_owner = f'This needs you to {needed.rstrip(".")}.'
     elif context:
         why_owner = first_sentence(context)
     elif reason not in ('', 'initial_status') and not options and len(reason_sentences(reason)) > 1:
@@ -266,6 +314,7 @@ def decision_text(label, board, task):
     if options and len(options) > 1:
         lines.append('Alternatives:')
         lines += [f'{letter}) {" ".join(text.split())}' for letter, text in options[1:]]
+    lines = [plain(line) for line in lines]
     # Never hide scope or consequences behind a truncated approval choice.
     complete = (not conflicting and bool(blocking) and bool(why_owner) and bool(recommended)
                 and len({v[0] for v in options}) == len(options)

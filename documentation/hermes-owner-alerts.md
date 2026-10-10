@@ -71,6 +71,14 @@ card whose body is work-shaped rather than a gate still renders all three lines
 from its block reason. When this message format changes, the live decision set is
 re-sent once so a stale stub does not stay on the phone.
 
+All owner-facing text must be plain everyday English for a non-engineer — no
+card/board/kanban/workflow jargon, task ids, commit hashes or internal role
+names. The sender scrubs ids and hashes from whatever it renders, but it cannot
+reword jargon: a card whose body is internal must carry an agent-authored
+summary. Post a comment with plain `Blocking:`, `Why owner:` and `Unblock:`
+lines and the phone message uses that instead of the body, and re-sends when it
+changes.
+
 A decision pushes when it appears and again only when the ask changes.
 
 ## Urgent regressions

@@ -444,7 +444,13 @@ count, and the retired `Urgency:` vocabulary does nothing. Both shapes push.
 Every pushed message is self-contained: one sentence on what is blocking, one on
 why only the owner can clear it, and the recommended unblock — so the owner
 never has to ask for details. Supply `Why owner:` and `Unblock:` when the card
-is not an A/B gate.
+is not an A/B gate. Write that text in plain everyday English for a non-engineer:
+the concrete problem, why it needs the owner, and the action to take. No
+card/board/kanban or workflow jargon, no task ids, no commit hashes, no internal
+role names — the sender scrubs ids and hashes but cannot reword jargon. If the
+body is already jargon, post a comment with plain `Blocking:`, `Why owner:` and
+`Unblock:` lines; that summary is what the phone sends (and re-sends when it
+changes).
 
 Everything else — missing evidence, worker/model failures, dependency waits,
 routine cleanups — is a technical blocker that is board-local and never pushed;
