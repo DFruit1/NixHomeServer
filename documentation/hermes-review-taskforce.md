@@ -7,6 +7,14 @@ Approved worthwhile batches become immutable implementation plans for
 `head-coordinator`, which decomposes and assigns implementation work.
 Auditors and reviewers never implement fixes themselves.
 
+`feature-reviewer` is also the fleet's **verifier lane**. Finished work — a
+per-card diff, a bounded technical question, or a whole-set deploy range — is
+verified by `feature-reviewer`, which runs the gate and returns accept or
+request-changes. `head-coordinator` routes verification straight to
+`feature-reviewer`; `project-auditor` owns findings and plans and never verifies
+a diff itself. The audit work described below is `feature-reviewer`'s secondary
+duty, commissioned by `project-auditor`.
+
 Audits may start without an obvious defect. A useful question might be whether
 Immich repeats expensive work, which invariant caused a media regression, or
 whether an integration can lose a dependency without changing behaviour.

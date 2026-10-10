@@ -14,9 +14,9 @@ SOURCE = Path(__file__).resolve().parent
 MARKER = '<!-- hermes-review-taskforce -->'
 JOB_NAME = 'kanban review taskforce'
 DESCRIPTIONS = {
-    'project-auditor': 'PROJECT AUDITOR AND TASKFORCE LEAD. Verifies implementations and whole deploy ranges. Manages feature-reviewer: commissions focused adversarial audits of idle existing features for correctness, regressions, integration, efficiency, security and simplicity. Sole owner of each board\'s persisted FINDINGS.md and immutable batch plans. Assesses evidence, batches worthwhile proposals, immediately escalates urgent credible security/regression findings, and hands approved plans to head-coordinator. Never implements or deploys.',
-    'feature-reviewer': 'FEATURE REVIEWER. Reports to project-auditor, not head-coordinator. Answers one focused adversarial question about one idle existing feature and its integration boundaries. Reviews correctness, regressions, reliability, performance, security or simpler implementation as relevant. Returns revision-specific evidence, benefits, tradeoffs and verification proposals; clean findings are valid. Never implements, routes cards, edits the central findings document or writes batch plans.',
-    'head-coordinator': 'HEAD COORDINATOR. Routes and decomposes implementation; never implements. Sends scoped audit requests to project-auditor, which exclusively manages feature-reviewer and the continuous improvement findings. Decomposes approved immutable plans into implementer, review and composition cards; keeps the handoff dependency-blocked until the work finishes. Retains existing sensitive-work routing, board health and whole-set guarded deploy gate. principal-consultant remains human-invoked only.',
+    'project-auditor': 'PROJECT AUDITOR AND TASKFORCE LEAD. Sole owner of each board\'s persisted FINDINGS.md and immutable batch plans. Commissions focused adversarial audits of idle existing features from feature-reviewer, assesses their evidence, batches worthwhile proposals, immediately escalates urgent credible security/regression findings, and hands approved plans to head-coordinator. Routes diff and deploy-range verification to feature-reviewer; it does not verify work itself. Never implements or deploys.',
+    'feature-reviewer': 'FEATURE-REVIEWER, THE VERIFIER LANE. Judges finished work against its acceptance criteria: per-card diffs, bounded technical questions and whole-change-set deploy reviews, returning accept or request-changes. Also audits idle existing features when project-auditor commissions one, and reports those findings to project-auditor. Never implements, edits FINDINGS.md or batch plans, or deploys.',
+    'head-coordinator': 'HEAD COORDINATOR. Routes and decomposes implementation; never implements. Sends diff, question and whole-set deploy reviews to feature-reviewer, and scoped audit/planning requests to project-auditor, which exclusively manages feature-reviewer audits and the continuous improvement findings. Decomposes approved immutable plans into implementer, review and composition cards; keeps the handoff dependency-blocked until the work finishes. Retains existing sensitive-work routing, board health and whole-set guarded deploy gate. principal-consultant remains human-invoked only.',
 }
 
 
@@ -39,13 +39,6 @@ def soul(name, existing):
         if MARKER in existing:
             existing = existing.split(MARKER)[0].rstrip() + '\n'
         return existing.rstrip() + '\n\n' + MARKER + '\n' + template
-    existing = existing.replace(
-        '| `feature-reviewer` | One named feature/module/subsystem needs a focused correctness/reliability/performance audit. Cheap, runs often. |',
-        '| `project-auditor` | Manages focused feature audits and approved improvement plans. |')
-    existing = existing.replace('Scoped audit needed → `feature-reviewer`.',
-                                'Scoped audit needed → `project-auditor`, which manages feature-reviewer.')
-    existing = existing.replace('or ask `feature-reviewer` for a\ntargeted review of one suspect slice.',
-                                'or ask `project-auditor` to commission a\ntargeted review of one suspect slice.')
     heading = 'Continuous improvement intake' if '## Continuous improvement intake\n' in existing else 'Requesting an audit on demand'
     existing = section(existing, heading, template)
     existing = existing.replace('A card from `principal-consultant` arrives with the plan attached.',
@@ -75,7 +68,7 @@ def changed_files(root):
         if count != 1:
             raise ValueError(f'Expected description in {metadata}')
         changes[metadata] = text
-        if name in {'project-auditor', 'head-coordinator'}:
+        if name in {'project-auditor', 'feature-reviewer', 'head-coordinator'}:
             config = directory / 'config.yaml'
             text = config.read_text()
             # Enable board tools for on-demand CLI/desktop conversations. Worker lifecycle

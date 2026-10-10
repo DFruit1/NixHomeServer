@@ -70,8 +70,8 @@ printf '%s\n' \
   'scripts/hermes/kanban-retry-breaker.sh parks a card; do not move it.' \
   '8. **WORKER_FAILED_BLOCKED** - re-scope the card and re-dispatch it.' \
   >>"$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md"
-printf '## Whole-change-set deploy review\n' \
-  >"$HERMES_FIXTURE/profiles/project-auditor/SOUL.md"
+printf '### Whole-set deploy review\n' \
+  >"$HERMES_FIXTURE/profiles/feature-reviewer/SOUL.md"
 
 write_config() {
   cat >"$HERMES_FIXTURE/config.yaml" <<YAML

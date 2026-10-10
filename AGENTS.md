@@ -196,9 +196,14 @@ those as mis-assigned and re-route it to a profile that exists under
 
 ### Continuous improvement taskforce
 
-`project-auditor` manages `feature-reviewer`; only the reviewer commissions
-feature audits. `head-coordinator` sends audit requests to the reviewer and
-receives approved implementation plans for decomposition into implementer cards.
+`feature-reviewer` is the **verifier lane**: it judges finished work against its
+acceptance criteria — per-card diffs, bounded technical questions and
+whole-change-set deploy reviews — running the gate and returning accept or
+request-changes. `project-auditor` manages the taskforce and `feature-reviewer`'s
+audit work; only `project-auditor` commissions feature audits. `head-coordinator`
+sends verification (diffs, questions, deploy reviews) to `feature-reviewer` and
+audit requests to `project-auditor`, and receives approved implementation plans
+for decomposition into implementer cards.
 Audits may cover any existing feature, even without a reported defect.
 HERMES_PRIORITIES.md guides selection rather than limiting eligible features.
 Each audit names one feature, one question, explicit file scope and a stopping
@@ -232,14 +237,13 @@ plans require explicit owner approval before dispatch when they include:
 * Existing owner-gated operations: irreversible data/credential changes,
   priority trades or unrequested user-visible behaviour.
 
-The reviewer prepares a concrete immutable plan and records the approval
+project-auditor prepares a concrete immutable plan and records the approval
 classification, exact triggers and evidence. Required approvals use a blocked
 owner gate before an implementation handoff becomes dispatchable. Urgency never
 bypasses this gate. Existing explicit approval for the exact scope remains valid;
 new scope/risk requires a new decision. Implementers stop if a new trigger appears.
 The full rules are tracked in `scripts/hermes/taskforce/approval-policy.md` and
 installed at `~/.hermes/scripts/review-taskforce-approval.md`.
-
 Mechanical guards in `scripts/hermes/review-taskforce.py` back this prose:
 `validate-report` rejects malformed audit reports and `critical`/`high` claims
 without executed checks, `classify` trips the approval rules on a plan's owned
@@ -249,7 +253,7 @@ Lane prompts may point at these commands; they cannot weaken them.
 
 Per-board cadence is off, daily, weekly or a custom interval in hours; off only
 disables scheduled opportunity checks. On-demand commissioning remains allowed.
-The reviewer creates a dependent assessment for each audit and a closure for
+project-auditor creates a dependent assessment for each audit and a closure for
 each coordinator handoff. The coordinator dependency-blocks its handoff until
 implementation/review/composition complete, so closure verifies landed work.
 Never gate implementation children behind their own unfinished handoff.
@@ -338,8 +342,8 @@ the ask, never above it and never inside the question.
 | Lane | Shape |
 |---|---|
 | `head-coordinator` | Work body. An audit card is the **question** + evidence, never a proposed solution. A plan card: `Goal:` is the plan's outcome, its absolute path in `Notes:`. A decision card: the verdict first, routing rules below. |
-| `feature-reviewer` | One question: the slice and the single thing to answer. No solution, no fix plan. |
-| `project-auditor` | Diff review: verdict in `Goal:`, commits in `Notes:`. `Change:` names a revision, range or `file:line` — never "the revision the parent reported". Question card: `Goal:` is the question, `Notes:` the evidence and what it changes. |
+| `feature-reviewer` | Verifier. Diff/deploy review: verdict in `Goal:`, commits or range in `Notes:`, `Change:` names the revision or range. Question card: `Goal:` is the question, `Notes:` the evidence and what it changes. |
+| `project-auditor` | Taskforce. Audit commissioning card: the feature + the single question + scope + stopping condition. Plan card: the plan's outcome, its absolute path in `Notes:`. |
 | `standard-implementer`, `local-implementer` | One-line `Goal:` plus the single acceptance criterion. The parent card holds the context. |
 | `principal-consultant` | Never assign. Its handoff goes **to** `head-coordinator` with the plan attached; `Change:` names the plan path, never re-derives it. |
 | any lane, gate | The gate body above. |
@@ -368,8 +372,8 @@ shares a file to look busy.
 
 ### Deploy gate
 
-A deploy applies a whole change set, so it is reviewed as a whole and carried
-out by `head-coordinator`, never by the reviewer.
+A deploy applies a whole change set, so it is reviewed as a whole by
+`feature-reviewer` and carried out by `head-coordinator`, never by the verifier.
 
 This gate is a convention, not a mechanical check: nothing in `deploy.sh`,
 `validate-repo.sh` or `flake/checks.nix` verifies that a review card exists or
@@ -377,7 +381,7 @@ that it covered the range being switched. `head-coordinator` is what makes it
 real, by reading the range before switching and refusing an unreviewed one.
 
 ```
-Review: <range>          assignee project-auditor, workspace worktree
+Review: <range>          assignee feature-reviewer, workspace worktree
 Decide: deploy <range>   assignee head-coordinator, parents=[review]
 ```
 
@@ -423,17 +427,19 @@ comments into the worker.
 
 The owner's phone gets exactly one unprompted message class: a **Hard Blocker**.
 A blocked card is a Hard Blocker when the owner's action is the only way
-forward — the owner's decision (a blocked `needs_input` gate), or other
-owner-only needs an agent asserts with a standalone `Hard Blocker` line in the
-card body: a secret/credential/authorization only the owner holds, a physical
-action only the owner can take, or a card hard-stuck with no agent-side
-recovery. It must be its own line; prose mentioning it does not count, and the
-retired `Urgency:` vocabulary does nothing.
+forward and it cannot clear itself without the owner — the owner's decision (a
+blocked `needs_input` gate), or other owner-only needs an agent asserts with a
+standalone `Hard Blocker` line in the card body: a secret/credential/
+authorization only the owner holds, a physical action only the owner can take,
+or a card hard-stuck with no agent-side recovery. Prefer `needs_input` so the
+block is sticky; the line is the marker for an owner-only block that is not a
+`needs_input` choice. It must be its own line; prose mentioning it does not
+count, and the retired `Urgency:` vocabulary does nothing. Both shapes push.
 
 Everything else — missing evidence, worker/model failures, dependency waits,
-routine cleanups — is board-local and never pushed; the owner pulls it with
-`B1 details`, `blockers`, `--send-blockers`, `--send-decisions`, or the board
-(`scripts/hermes/kanban-owner-alerts.py`).
+routine cleanups — is a technical blocker that is board-local and never pushed;
+the owner pulls it with `B1 details`, `blockers`, `--send-decisions`, or the
+board (`scripts/hermes/kanban-owner-alerts.py`).
 
 A Hard Blocker is a claim that the owner is the only way forward, not a priority
 hint. An urgent security or availability regression is not a Hard Blocker: fix

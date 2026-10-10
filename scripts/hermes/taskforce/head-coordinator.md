@@ -1,10 +1,17 @@
 ## Continuous improvement intake
 
+`feature-reviewer` is the **verifier lane**: send every per-card diff review,
+bounded technical question and whole-change-set deploy review to
+`feature-reviewer`. Do not do that reasoning yourself and do not send it to
+`project-auditor`; the verifier returns the accept/request-changes verdict and
+runs the gate. This is the default destination for "is this finished work good?"
+above the audit tier.
+
 `project-auditor` manages the continuous improvement taskforce and is the only
 profile that commissions `feature-reviewer` audits or curates their findings.
 Send a targeted audit request to `project-auditor`, naming the feature, question
-and existing evidence. Do not assign feature-reviewer yourself or convert its
-raw suggestions directly into implementation work.
+and existing evidence. Do not convert feature-reviewer's raw suggestions directly
+into implementation work.
 The reviewer may audit healthy features too; a suspected defect is not required.
 
 The reviewer maintains one FINDINGS.md per board and sends you approved,

@@ -8,7 +8,7 @@
 # scripts and two tests, all tracked in this repository. The live half is not:
 # the hermes cron jobs, the copied scripts under ~/.hermes/scripts/, the
 # head-coordinator's "Board health" and "Deploy gate" sections and the
-# project-auditor's "Whole-change-set deploy review" section in their SOUL.md
+# feature-reviewer's "Whole-set deploy review" section in their SOUL.md
 # files, and one key in ~/.hermes/config.yaml. All of that lives under ~/.hermes,
 # which is not tracked and not backed up -- Kopia only snapshots the *server's*
 # /persist. So a rebuilt workstation, a wiped profile, or a fresh hermes upgrade
@@ -41,7 +41,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HERMES_ROOT="${HERMES_ROOT:-$HOME/.hermes}"
 HERMES_BOARD="${HERMES_BOARD:-nixhomeserver}"
 COORDINATOR_SOUL="$HERMES_ROOT/profiles/head-coordinator/SOUL.md"
-AUDITOR_SOUL="$HERMES_ROOT/profiles/project-auditor/SOUL.md"
+REVIEWER_SOUL="$HERMES_ROOT/profiles/feature-reviewer/SOUL.md"
 CONFIG="$HERMES_ROOT/config.yaml"
 
 # Stale detection is off by default upstream (0), which means a worker that is
@@ -355,7 +355,7 @@ check_deploy_section() {
 }
 
 check_deploy_section "$COORDINATOR_SOUL" '## Deploy gate' "head-coordinator SOUL.md"
-check_deploy_section "$AUDITOR_SOUL" '## Whole-change-set deploy review' "project-auditor SOUL.md"
+check_deploy_section "$REVIEWER_SOUL" '### Whole-set deploy review' "feature-reviewer SOUL.md"
 
 if [[ -f "$COORDINATOR_SOUL" ]] && ! grep -q 'nix run .#deploy' "$COORDINATOR_SOUL"; then
   changed "head-coordinator SOUL.md does not name the guarded deploy command"
