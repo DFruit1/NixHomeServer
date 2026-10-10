@@ -114,22 +114,16 @@ if ! probe_err="$(sqlite3 "$DB" "$probe_sql" 2>&1)"; then
   exit 3
 fi
 
-# Read a scalar nested under the top-level `kanban:` block of config.yaml.
-# Deliberately not a YAML parser: hermes owns the config format and this only
-# needs two integers, and a missing key must degrade to a default rather than
-# fail the report.
-kanban_config_scalar() {
-  local key="$1" default="$2" value=""
-  if [[ -r "$CONFIG" ]]; then
-    value="$(awk -v key="$key" '
-      /^[^[:space:]#]/ { inblock = ($0 ~ /^kanban:/) ? 1 : 0 }
-      inblock && $1 == key":" {
-        sub(/^[^:]*:[[:space:]]*/, "", $0); gsub(/[[:space:]#].*$/, "", $0); print $0; exit
-      }
-    ' "$CONFIG")"
-  fi
-  [[ "$value" =~ ^[0-9]+$ ]] && printf '%s\n' "$value" || printf '%s\n' "$default"
-}
+# The concurrency cap is read out of the top-level `kanban:` block of
+# config.yaml. Deliberately not a YAML parser: hermes owns the config format and
+# this only needs a handful of integers, and a missing key must degrade to a
+# default rather than fail the report.
+#
+# `kanban_config_scalar` used to live here and read
+# `max_in_progress_per_profile` as one number for every lane. That is the
+# assumption this repair removes, and it was its only caller, so leaving it
+# behind would invite the next edit to reintroduce it. The reader that replaces
+# it is `read_config_caps` below.
 
 declare -A CAP_MAP=()
 CAPS_READ=0
@@ -137,8 +131,8 @@ CAPS_READ=0
 # The default, and the only fallback value in this file. It is what a fresh
 # install gets and is deliberately the conservative one: a monitor that
 # under-reports a saturated lane is silent, which is the failure this script
-# exists to catch. A cap of 0 stays a cap of 0 -- zero is a real "this lane runs
-# nothing" setting, not a broken parse, and it must not be rewritten here.
+# exists to catch. It is what an unreadable, absent, malformed or unrecognised
+# cap degrades to, so it must never be a value that suppresses a real finding.
 CAP_FALLBACK=2
 
 # ---------------------------------------------------------------------------
@@ -172,13 +166,26 @@ CAP_FALLBACK=2
 # the dispatcher from disagreeing about the same config; the card for this
 # repair records the dispatcher evidence, not a second contract.
 #
+# Map values are held to the dispatcher's own validation too: a map entry is
+# only a cap when it is a positive integer, because
+# `normalize_per_profile_caps` skips any entry whose value is not
+# `isinstance(int) and > 0` (kanban_db_dispatch.py:2289). A `0` in a map is
+# therefore *dropped*, and the lane falls through to the wildcard or the
+# default -- it is not a cap of zero. Honouring it here would report an
+# over-cap alarm for a lane the dispatcher runs at full speed.
+#
+# The scalar form is the one deliberate divergence, and it is preserved rather
+# than repaired: a scalar `0` still resolves to a cap of 0, exactly as this
+# script always did. Making the scalar positive-only would be a cap-policy
+# change, not a reporting correction.
+#
 # The config is read exactly once and cached: every finding below resolves caps
 # inside a loop, and this runs on a 30-minute cron tick.
 #
 # Not a YAML parser, and no new dependency: the same bounded top-level
-# `kanban:` block scan `kanban_config_scalar` already uses, one level deeper.
-# Nothing read here is executed, echoed, or interpolated into SQL; values are
-# validated as plain non-negative integers and a 0 stays a 0.
+# `kanban:` block scan the rest of this script uses, one level deeper.
+# Nothing read here is executed, echoed, or interpolated into SQL, and every
+# value is validated as a plain integer before it is stored.
 
 # A canonical cap-map key for one key read out of config.yaml, or nothing when
 # the key names no lane.
@@ -192,8 +199,12 @@ canonical_cap_key() {
   key="${key%"${key##*[![:space:]]}"}"
   key="${key,,}"
   case "$key" in
-    # `default` is the aliased wildcard the dispatcher folds onto `*`, not a lane.
+    # `default` and `*` are the aliased wildcard the dispatcher folds onto the
+    # default key, not lanes.
     default|'*') printf '%s\n' '*' ;;
+    # A reserved name passes the grammar but is rejected by
+    # validate_profile_name, so it can never name a lane (profiles.py:275).
+    hermes|test|tmp|root|sudo) : ;;
     *) [[ "$key" =~ ^[a-z0-9][a-z0-9_-]{0,63}$ ]] && printf '%s\n' "$key" ;;
   esac
 }
@@ -213,14 +224,17 @@ canonical_assignee() {
 # key's indented entries are walked: the walk is bounded by the next non-blank
 # line at an equal or lower indentation, so a sibling key under `kanban:` can
 # never masquerade as an entry of this one. Every entry is validated as a plain
-# non-negative integer before it is stored, and anything that does not parse is
-# dropped rather than guessed at -- a half-recognised config therefore degrades
-# to the fallback for every lane instead of picking up a stray integer.
+# *positive* integer before it is stored, matching the dispatcher's map
+# validation, and anything that does not parse is dropped rather than guessed
+# at -- a half-recognised config therefore degrades to the fallback for every
+# lane instead of picking up a stray integer.
 read_config_caps() {
   [[ "$CAPS_READ" = 1 ]] && return 0
   CAPS_READ=1
   [[ -r "$CONFIG" ]] || return 0
 
+  # The scalar form keeps the historic `^[0-9]+$` validation, so a scalar 0
+  # stays a cap of 0 (see the divergence note above).
   local scalar=""
   scalar="$(awk '
     /^[^[:space:]#]/ { inblock = ($0 ~ /^kanban:/) ? 1 : 0 }
@@ -249,7 +263,7 @@ read_config_caps() {
     value="${value%\'}"; value="${value#\'}"
     value="${value#"${value%%[![:space:]]*}"}"
     value="${value%"${value##*[![:space:]]}"}"
-    [[ "$value" =~ ^[0-9]+$ ]] || continue
+    [[ "$value" =~ ^[1-9][0-9]*$ ]] || continue
     CAP_MAP["$canon"]="$value"
   done < <(awk '
     /^[^[:space:]#]/ { inblock = ($0 ~ /^kanban:/) ? 1 : 0; next }
