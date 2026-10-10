@@ -72,16 +72,35 @@ approval — no architecture, dependency/framework/runtime change, secrets,
 frontend, or user-visible behaviour change.
 
 
-## Channel separation
+## Channel separation and the owner channel
 
-The steward's reports go to a SimpleX **group** (id 1), never the owner DM:
+The steward's reports go to a SimpleX **group** (id 1), and the owner replies
+there — that group is the owner's separate instructions/notes channel, distinct
+from head-coordinator's DM:
 
 * the shared SimpleX bot is `head-coordinator`, which accepts DMs only
   (`SIMPLEX_ALLOWED_USERS=3`, no groups) — `kanban-owner-alerts.py` refuses to
   run if `SIMPLEX_GROUP_ALLOWED` is set there, so owner alerts stay DM-only;
-* `board-steward` has its own SimpleX binding (`.env`) that accepts **only**
-  group 1 (`SIMPLEX_GROUP_ALLOWED=1`, no DM allowlist), so group traffic and
-  owner replies never mix with head-coordinator's DM.
+* `board-steward` accepts **group 1 only** (`SIMPLEX_GROUP_ALLOWED=1`) plus a
+  sender allowlist of the owner's group member id
+  (`SIMPLEX_ALLOWED_USERS=SkQ1Zml3VHNrc2Q0Tmlqbw==`). A SimpleX group sender is
+  identified by its group **member id**, not the DM contactId, so the group
+  allowlist alone refuses the owner (`Unauthorized user: <id> (David)`) — the
+  sender allowlist is what admits them. Because it holds only the member id and
+  not contact 3, the steward's own bot declines DMs and they keep going to
+  head-coordinator.
+
+The owner's group messages arrive as a normal chat turn for the `board-steward`
+profile (`platform_toolsets.simplex` grants it the same tools as `cli`). The
+steward treats them as directives within its SOUL's hard limits — it never
+deploys, reads secrets, edits `~/.hermes`, or files cards for any lane other
+than `local-implementer` — and saves standing instructions to memory so later
+cron runs honour them.
+
+The member id is opaque and per-membership: if the owner leaves and rejoins the
+group it changes. The steward then logs `Unauthorized user: <id> (David) on
+simplex`; put the new id in `SIMPLEX_ALLOWED_USERS`. Read the current one from
+that log line.
 
 The gateway hot-reloads a profile's adapters when its `.env`/config changes; no
 gateway restart is required.
@@ -102,10 +121,15 @@ gateway restart is required.
    ```
    SIMPLEX_WS_URL=ws://127.0.0.1:5225
    SIMPLEX_GROUP_ALLOWED=1
+   SIMPLEX_ALLOWED_USERS=<owner's group member id>
    SIMPLEX_HOME_CHANNEL=1
    SIMPLEX_HOME_CHANNEL_NAME=hermes-daily-steward
    OPENCODE_API_KEY=<same Zen key as the other profiles>
    ```
+   The member id is not the DM contactId (3). Get it from the first group message
+   the owner sends: the steward logs `Unauthorized user: <id> (David)`, and that
+   `<id>` is the value to allow. Also add `simplex:` to `platform_toolsets` in the
+   profile config, mirroring the `cli:` list, so group turns have the same tools.
 4. Install and schedule: `scripts/hermes/install-daily-steward.sh`.
 
 ## Verification
