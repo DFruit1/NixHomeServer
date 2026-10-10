@@ -114,36 +114,246 @@ if ! probe_err="$(sqlite3 "$DB" "$probe_sql" 2>&1)"; then
   exit 3
 fi
 
-# Read a scalar nested under the top-level `kanban:` block of config.yaml.
-# Deliberately not a YAML parser: hermes owns the config format and this only
-# needs two integers, and a missing key must degrade to a default rather than
-# fail the report.
-kanban_config_scalar() {
-  local key="$1" default="$2" value=""
-  if [[ -r "$CONFIG" ]]; then
-    value="$(awk -v key="$key" '
-      /^[^[:space:]#]/ { inblock = ($0 ~ /^kanban:/) ? 1 : 0 }
-      inblock && $1 == key":" {
-        sub(/^[^:]*:[[:space:]]*/, "", $0); gsub(/[[:space:]#].*$/, "", $0); print $0; exit
-      }
-    ' "$CONFIG")"
+# ---------------------------------------------------------------------------
+# Per-profile concurrency caps
+# ---------------------------------------------------------------------------
+# `max_in_progress_per_profile` used to be read as one scalar and applied to
+# every lane. That was right for a scalar and wrong the moment the key became a
+# `{profile: cap}` map: the scalar reader gets nothing back from a nested map, so
+# every lane fell through to the fallback. On a board whose real caps are
+# standard-implementer=4, local-implementer=1 and project-auditor=1, three
+# healthy standard-implementer workers were reported as an over-cap lane every
+# tick while a genuinely capped local-implementer lane was never reported at all.
+#
+# `kanban.max_in_progress_per_profile` has exactly two shapes, and
+# `normalize_per_profile_caps` / `per_profile_cap_for` / `_canonical_cap_profile`
+# in hermes_cli/kanban_db_dispatch.py are the contract reproduced here:
+#
+#   * one int  -> one cap for every lane, held under the `*` key
+#   * a map    -> {profile: cap} with an optional fallback for lanes the map does
+#                 not name
+#
+# Lookup order is the lane's own cap, then the wildcard fallback, then the
+# conservative default. Map keys are canonicalized the way the dispatcher does
+# it: trimmed, lowercased, `default` and `*` folded onto the wildcard, and a name
+# that is not a valid profile id dropped -- it could never match a lane, so
+# honouring it would silently apply an unrelated lane's cap.
+#
+# A map entry is only a cap when it is a positive integer written plainly, which
+# is exactly the dispatcher's own test (`isinstance(int) and > 0`). A `0` in a
+# map is therefore *dropped* and the lane falls through to the wildcard or the
+# default -- it is not a cap of zero. A quoted `"4"` is a YAML string, which the
+# dispatcher rejects, so it is not a cap here either.
+#
+# The scalar form is the one deliberate divergence, and it is preserved rather
+# than repaired: a scalar `0` still resolves to a cap of 0, exactly as this
+# script always did. Making the scalar positive-only would be a cap-policy
+# change, not a reporting correction.
+
+declare -A CAP_MAP=()
+CAPS_READ=0
+
+# The value every unresolvable cap degrades to: absent, unreadable, malformed or
+# unrecognised. It is what a fresh install gets, and it is deliberately the
+# conservative one -- a monitor that under-reports a saturated lane is silent,
+# and silence is the failure this script exists to catch. Nothing here rewrites
+# it to a value that suppresses a finding.
+CAP_FALLBACK=2
+
+# Bash arithmetic is signed 64-bit, so a config value that does not fit wraps
+# instead of erroring, and a wrapped cap turns `running > cap` into a finding
+# about a lane that is actually uncapped. A lane cap is a worker count, so a
+# value longer than nine digits is already far past anything a board can reach;
+# it is *clamped*, not dropped, because dropping it would fall back to the
+# conservative default and report the uncapped lane as an overage -- the same
+# false-alarm class this repair removes.
+CAP_MAX_DIGITS=9
+CAP_MAX=999999999
+
+# A cap as it may safely be held and compared: a plain integer no longer than
+# CAP_MAX_DIGITS, with anything larger clamped to CAP_MAX. Callers validate the
+# shape first; this only bounds the magnitude.
+bound_cap() {
+  local value="$1"
+  if ((${#value} > CAP_MAX_DIGITS)); then
+    printf '%s\n' "$CAP_MAX"
+  else
+    printf '%s\n' "$value"
   fi
-  [[ "$value" =~ ^[0-9]+$ ]] && printf '%s\n' "$value" || printf '%s\n' "$default"
 }
 
-MAX_PER_PROFILE="$(kanban_config_scalar max_in_progress_per_profile 2)"
-
-# The cap is compared with `(( ))`, so a non-integer here is arithmetic on the
-# empty string rather than an error: every comparison goes false and the
-# saturation detectors go quiet, which reads as a healthy board. Unlike the
-# environment knobs above, this one comes from a config file this script does not
-# own and must not refuse to run over, so degrade to the conservative default.
-# The default is 2 because that is what a fresh install gets and the number only
-# ever appears in output.
-[[ "$MAX_PER_PROFILE" =~ ^[0-9]+$ ]] || {
-  echo "board-health: max_in_progress_per_profile '$MAX_PER_PROFILE' is not an integer; using 2" >&2
-  MAX_PER_PROFILE=2
+# A canonical cap-map key for one key read out of config.yaml, or nothing when
+# the key names no lane. Always returns 0: the caller filters on the emitted
+# string, and a non-zero status here would abort the report under `set -e`.
+canonical_cap_key() {
+  local key="$1"
+  key="${key#"${key%%[![:space:]]*}"}"
+  key="${key%"${key##*[![:space:]]}"}"
+  key="${key%\"}"; key="${key#\"}"
+  key="${key%\'}"; key="${key#\'}"
+  key="${key#"${key%%[![:space:]]*}"}"
+  key="${key%"${key##*[![:space:]]}"}"
+  key="${key,,}"
+  case "$key" in
+    # `default` and `*` are the aliased wildcard the dispatcher folds onto the
+    # default key, not lanes.
+    default|'*') printf '%s\n' '*' ;;
+    # A reserved name passes the id grammar but is rejected by
+    # validate_profile_name, so it can never name a lane (profiles.py:275).
+    hermes|test|tmp|root|sudo) ;;
+    *) [[ "$key" =~ ^[a-z0-9][a-z0-9_-]{0,63}$ ]] && printf '%s\n' "$key" ;;
+  esac
+  return 0
 }
+
+# Canonicalise an assignee through the same normalisation, so a lane stored as a
+# title-cased label still matches a lowercase config key.
+canonical_assignee() {
+  local name="$1"
+  name="${name#"${name%%[![:space:]]*}"}"
+  name="${name%"${name##*[![:space:]]}"}"
+  printf '%s\n' "${name,,}"
+}
+
+# Read `kanban.max_in_progress_per_profile` from config.yaml into CAP_MAP.
+#
+# Both the scalar spelling and the map key are anchored to an *immediate child*
+# of the top-level `kanban:` mapping: the setting is read only at the depth of
+# kanban's first child. A key of the same name nested inside some unrelated
+# kanban key (`unrelated: {max_in_progress_per_profile: 9}`) is that key's value,
+# not this setting, and reading it would apply an unrelated number to every lane.
+#
+# A plain integer on the key's own line is one cap for every lane. Otherwise the
+# key's entries are walked: the walk is bounded by the next non-blank line at an
+# equal or lower indentation, so a sibling key under `kanban:` can never
+# masquerade as an entry of this one. The first child line fixes the entry
+# indentation and only lines at exactly that depth are entries -- a line nested
+# deeper belongs to an entry's own value and is ignored, which is what keeps
+# `unrelated: {standard-implementer: 9}` from becoming a cap for that lane. A
+# comment line is skipped wherever it sits, because YAML ignores it and a
+# two-space comment between two entries must not end the map. Every entry is
+# validated as a plain positive integer before it is stored, and anything that
+# does not parse is dropped rather than guessed at.
+read_config_caps() {
+  [[ "$CAPS_READ" == 1 ]] && return 0
+  CAPS_READ=1
+  [[ -r "$CONFIG" ]] || return 0
+
+  # The scalar form keeps the historic acceptance of `0`, but only in canonical
+  # decimal. A leading-zero spelling is not read here at all: YAML resolves it
+  # as an octal int (or as a string, for `08`), and `(( ))` reads it as octal
+  # too -- and errors outright on `08`, which would silently turn every
+  # comparison false and make the board look healthy. Guessing between those
+  # readings is worse than degrading to the documented fallback.
+  local scalar=""
+  scalar="$(awk '
+    # A line at the mapping root opens or closes the top-level kanban block.
+    /^[^[:space:]#]/ {
+      inblock = ($0 ~ /^kanban:/) ? 1 : 0; childind = -1; next
+    }
+    !inblock { next }
+    /^[[:space:]]*#/ { next }
+    $1 == "" { next }
+    {
+      thisind = index($0, $1) - 1
+      # The first child of kanban fixes the depth of an immediate-child setting.
+      if (childind < 0) { childind = thisind }
+      # A same-named key nested inside an unrelated kanban key is that key value,
+      # not this setting; reading it would lift the cap for the whole board.
+      if (thisind != childind) { next }
+      if ($1 != "max_in_progress_per_profile:") { next }
+      sub(/^[^:]*:[[:space:]]*/, "", $0); gsub(/[[:space:]#].*$/, "", $0); print $0; exit
+    }
+  ' "$CONFIG")"
+
+  if [[ "$scalar" =~ ^(0|[1-9][0-9]*)$ ]]; then
+    CAP_MAP['*']="$(bound_cap "$scalar")"
+    return 0
+  fi
+
+  local line key value canon
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    [[ "$line" == *:* ]] || continue
+    key="${line%%:*}"
+    value="${line#*:}"
+    canon="$(canonical_cap_key "$key")"
+    [[ -n "$canon" ]] || continue
+    # Strip an inline comment before trimming. A plain YAML scalar ends at a `#`
+    # that follows whitespace, and `standard-implementer: 4  # note` has more
+    # than one space before the comment: trimming first leaves the earlier spaces
+    # behind as `4 `, which then fails the integer test and drops a valid cap to
+    # the fallback. Strip the comment, then trim whatever is left.
+    value="${value%%[[:space:]]#*}"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    # No quote stripping: only a plain integer is a cap, matching the
+    # dispatcher's `isinstance(int)` test. `"9"` is a string, not a cap.
+    [[ "$value" =~ ^[1-9][0-9]*$ ]] || continue
+    CAP_MAP["$canon"]="$(bound_cap "$value")"
+  done < <(awk '
+    # A line at the mapping root opens or closes the top-level kanban block.
+    /^[^[:space:]#]/ {
+      inblock = ($0 ~ /^kanban:/) ? 1 : 0; childind = -1; next
+    }
+    !inblock { next }
+    /^[[:space:]]*#/ { next }
+    $1 == "" { next }
+    {
+      thisind = index($0, $1) - 1
+      if (childind < 0) { childind = thisind }
+      if (after) {
+        # Entries are the immediate children of the setting key, and the map
+        # ends at the first line indented no deeper than that key.
+        if (thisind <= keyind) { exit }
+        if (entryind < 0) { entryind = thisind }
+        if (thisind == entryind) { print $0 }
+        next
+      }
+      # Only an immediate child of kanban is this setting. A same-named key
+      # nested inside an unrelated kanban key is that key value, not a cap map.
+      if (thisind != childind) { next }
+      if ($1 != "max_in_progress_per_profile:") { next }
+      # Only a key with no value on its own line opens a nested map. `key: 5`
+      # and `key: {a: 1}` are the scalar and flow shapes, which this bounded scan
+      # does not read as a block map (the latter degrades to the fallback, as
+      # documented). A value spelled only as a comment is still "no value".
+      rest = $0
+      sub(/^[^:]*:/, "", rest)
+      sub(/^[[:space:]]+/, "", rest)
+      if (rest == "" || rest ~ /^#/) {
+        keyind = thisind; entryind = -1; after = 1
+      }
+      next
+    }
+  ' "$CONFIG")
+}
+
+# The cap that governs one assignee: its own entry, else the wildcard fallback,
+# else the conservative default. Always emits a plain non-negative integer; the
+# map only ever holds values validated and bounded on the way in.
+cap_for() {
+  local assignee="$1" resolved="" canon
+  # A no-op after the priming read below (CAPS_READ is inherited as 1), so this
+  # costs nothing in the loops and still resolves correctly if it is ever called
+  # before the priming line.
+  read_config_caps
+  canon="$(canonical_assignee "$assignee")"
+  if [[ -n "$canon" && -n "${CAP_MAP["$canon"]+set}" ]]; then
+    resolved="${CAP_MAP["$canon"]}"
+  elif [[ -n "${CAP_MAP['*']+set}" ]]; then
+    resolved="${CAP_MAP['*']}"
+  else
+    resolved="$CAP_FALLBACK"
+  fi
+  printf '%s\n' "$resolved"
+}
+
+# Prime the map in this shell. `cap_for` is called inside `$(...)`, so a read it
+# triggered there would populate a subshell-local copy and be thrown away -- the
+# config would be re-parsed for every row. Reading it here is what makes "the
+# config is read exactly once" true, and this runs on a 30-minute cron tick.
+read_config_caps
 
 # Age buckets, not exact ages: exact seconds change every run, which would make
 # the monitor hash unstable and wake the head-coordinator on every single tick.
@@ -244,8 +454,12 @@ saturated_rows="$(sql "
 while IFS='|' read -r assignee ready_n running_n; do
   [[ -n "$assignee" ]] || continue
   ((ready_n > 0)) || continue
-  if ((running_n >= MAX_PER_PROFILE)); then
-    emit "PROFILE_SATURATED $assignee ready=$ready_n running=$running_n cap=$MAX_PER_PROFILE"
+  # Resolved per lane rather than against one global number: that is the whole
+  # point. A standard-implementer lane at four workers is healthy while a
+  # local-implementer lane at two is not.
+  cap="$(cap_for "$assignee")"
+  if ((running_n >= cap)); then
+    emit "PROFILE_SATURATED $assignee ready=$ready_n running=$running_n cap=$cap"
   fi
 done <<<"$saturated_rows"
 
@@ -255,18 +469,26 @@ done <<<"$saturated_rows"
 # the rate-limit path and respawned faster than the running count reflected.
 # It matters independently of queueing: several workers sharing one local model
 # endpoint is the mechanism behind the "quota wall" rate-limit churn.
+#
+# The cap does not appear in the query any more. A single integer in WHERE or
+# HAVING is the same scalar assumption in a second place, and with one in the
+# query a lane whose real cap is 1 was filtered out of the result set before its
+# own count was ever compared against it -- the exact case this repair is for.
+# The count therefore comes back per assignee and every row is compared against
+# that lane's cap, so a cap-1 lane with two workers is caught even when nothing
+# is queued behind it.
 overcap_rows="$(sql "
   SELECT assignee, COUNT(*)
     FROM tasks
    WHERE status = 'running' AND assignee IS NOT NULL
    GROUP BY assignee
-  HAVING COUNT(*) > $MAX_PER_PROFILE
    ORDER BY assignee;")"
 
 while IFS='|' read -r assignee running_n; do
   [[ -n "$assignee" ]] || continue
-  ((running_n > MAX_PER_PROFILE)) || continue
-  emit "PROFILE_OVER_CAP $assignee running=$running_n cap=$MAX_PER_PROFILE needs=reduce-inflight"
+  cap="$(cap_for "$assignee")"
+  ((running_n > cap)) || continue
+  emit "PROFILE_OVER_CAP $assignee running=$running_n cap=$cap needs=reduce-inflight"
 done <<<"$overcap_rows"
 
 # Cards the block-loop detector gave up on. `block_recurrences` hits the limit
