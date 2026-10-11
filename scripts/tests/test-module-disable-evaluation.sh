@@ -4,7 +4,7 @@ set -euo pipefail
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test-common.sh"
 cd "$TESTS_REPO_ROOT"
-ensure_tools jq nix
+ensure_tools jq nix sed
 
 host="$(test_default_host)"
 
@@ -13,15 +13,19 @@ host="$(test_default_host)"
 # This test just ensures the enable=false mechanism doesn't regress for common apps.
 cases=(calibre-web chaptarr forgejo freshrss ipfs langfuse prowlarr search sonarr)
 
-# Evaluate all at once (small subset, memory-safe)
+# Evaluate all at once on the configured evaluation host.
 cases_csv="$(IFS=,; echo "${cases[*]}")"
 echo "Evaluating enable=false variants: $cases_csv"
 
-disabled_json="$(
-  NIXHOMESERVER_TEST_HOST="$host" \
-    NIXHOMESERVER_DISABLE_CASES="$cases_csv" \
-    nix eval --impure --json --file scripts/tests/module-disable-matrix.nix
-)"
+host_literal="$(jq -cn --arg value "$host" '$value' | sed 's/${/\\${/g')"
+cases_literal="$(jq -cn --arg value "$cases_csv" '$value')"
+disabled_json="$(remote_eval_batch_json "disabled=
+  import ./scripts/tests/module-disable-matrix.nix {
+    flake = f;
+    hostName = $host_literal;
+    requestedCaseNames = lib.splitString \",\" $cases_literal;
+  }
+" | jq -e '.disabled')"
 
 expected_keys="$(jq -cn '$ARGS.positional | sort' --args "${cases[@]}")"
 

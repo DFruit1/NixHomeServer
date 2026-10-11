@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test-common.sh"
-ensure_tools nix jq
+ensure_tools nix jq tar
 
 # Node apps must key pnpmDeps on dependency manifests only, so editing
 # application source does not invalidate the dependency fetch while a
@@ -19,10 +19,24 @@ cp -a "$TESTS_REPO_ROOT/custom_apps/rust/lib" "$test_root/custom_apps/rust/lib"
 cp -a "$TESTS_REPO_ROOT/custom_apps/node/shared" "$test_root/custom_apps/node/shared"
 cp "$TESTS_REPO_ROOT/custom_apps/node/apps/default.nix" \
   "$test_root/custom_apps/node/apps/default.nix"
-for app in "${apps[@]}"; do
-  cp -a "$TESTS_REPO_ROOT/custom_apps/node/apps/$app" \
-    "$test_root/custom_apps/node/apps/$app"
-done
+if command -v git >/dev/null 2>&1 \
+  && git -C "$TESTS_REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  # Local Tauri targets and dependency caches can exceed the entire temp
+  # filesystem. The fixture needs the same tracked source used by Nix.
+  app_paths=()
+  for app in "${apps[@]}"; do
+    app_paths+=("custom_apps/node/apps/$app")
+  done
+  git -C "$TESTS_REPO_ROOT" ls-files -z -- "${app_paths[@]}" \
+    | tar -C "$TESTS_REPO_ROOT" --null -T - -cf - \
+    | tar -C "$test_root" -xf -
+else
+  # Nix sources and deploy archives already exclude untracked build output.
+  for app in "${apps[@]}"; do
+    cp -a "$TESTS_REPO_ROOT/custom_apps/node/apps/$app" \
+      "$test_root/custom_apps/node/apps/$app"
+  done
+fi
 
 # The shared eval cache keys on the expression text, so each stage carries a
 # distinct label or later stages would read the first stage's cached result.

@@ -1,7 +1,10 @@
+{
+  flake,
+  hostName,
+  requestedCaseNames,
+}:
 let
-  flake = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
   inherit (flake.inputs.nixpkgs) lib;
-  hostName = builtins.getEnv "NIXHOMESERVER_TEST_HOST";
   baseHost = builtins.getAttr hostName flake.nixosConfigurations;
   vars = builtins.getAttr hostName flake.lib.nixhomeserverSettings;
 
@@ -411,7 +414,6 @@ let
     };
   };
 
-  requestedCaseNames = lib.splitString "," (builtins.getEnv "NIXHOMESERVER_DISABLE_CASES");
   selectedCases = lib.filterAttrs (name: _: builtins.elem name requestedCaseNames) cases;
 
   evaluate = name: case:
