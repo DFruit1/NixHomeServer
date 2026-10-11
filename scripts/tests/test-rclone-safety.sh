@@ -33,8 +33,9 @@ jq -e '[to_entries[] | select(.value != true)] | length == 0' \
   exit 1
 }
 
-malformed_log="$(mktemp)"
-trap 'rm -f "$malformed_log"' EXIT
+work="$(mktemp -d /tmp/nixhomeserver-rclone-safety.XXXXXX)"
+trap 'rm -rf "$work"' EXIT
+malformed_log="$work/malformed.log"
 malformed_expr='
 let
   f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
@@ -133,6 +134,46 @@ jq -e '
   jq . <<<"$runtime_json"
   exit 1
 }
+
+# Execute the generated service's result consumer, including its exit handling.
+# A valid false Boolean must survive jq's exit-status semantics.
+jq -r '.script' <<<"$runtime_json" \
+  | sed -n '/^if (( preflight_exit != 0 )); then$/,/^run_rclone_phase() {/p' \
+  | sed '$d' \
+  | sed -E "s@/nix/store/[^ /]+/bin/jq@$(command -v jq)@g; s@/run/rclone/mega-preflight-result.json@$work/preflight-result.json@g" \
+  > "$work/consumer.sh"
+[[ -s "$work/consumer.sh" ]] || {
+  echo "Could not extract the generated MEGA preflight result consumer." >&2
+  exit 1
+}
+for case_spec in '76 false true' '75 true false' '77 false true' '78 false true'; do
+  read -r expected_exit retryable operator_action <<<"$case_spec"
+  jq -nc --argjson retryable "$retryable" --argjson action "$operator_action" \
+    '{failureClass:"capacity",reason:"test_result",message:"Test result",retryable:$retryable,operatorActionRequired:$action}' \
+    > "$work/preflight-result.json"
+  actual_exit=0
+  preflight_exit="$expected_exit" bash -eu -c \
+    'set_status() { :; }; source "$1"' -- "$work/consumer.sh" || actual_exit=$?
+  [[ "$actual_exit" == "$expected_exit" ]] || {
+    echo "MEGA service changed classified exit $expected_exit to $actual_exit." >&2
+    exit 1
+  }
+done
+for invalid_boolean in 'null' '"false"' '0'; do
+  for field in retryable operatorActionRequired; do
+    jq -nc --arg field "$field" --argjson value "$invalid_boolean" \
+      '{failureClass:"capacity",reason:"test_result",message:"Test result",retryable:false,operatorActionRequired:true} | .[$field] = $value' \
+      > "$work/preflight-result.json"
+    actual_exit=0
+    preflight_exit=76 bash -eu -c \
+      'set_status() { :; }; source "$1"' -- "$work/consumer.sh" \
+      > "$work/invalid-result.log" 2>&1 || actual_exit=$?
+    [[ "$actual_exit" == 64 ]] || {
+      echo "MEGA service accepted invalid Boolean $field=$invalid_boolean." >&2
+      exit 1
+    }
+  done
+done
 
 capacity_json="$(nix_eval_with_optional_cache json '
   let
