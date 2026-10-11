@@ -72,6 +72,40 @@ approval — no architecture, dependency/framework/runtime change, secrets,
 frontend, or user-visible behaviour change.
 
 
+## Powers granted by the owner (2026-10-11)
+
+These extend the steward beyond read-only, each with the guardrail stated here.
+They are the normative spec for the daily steward prompt and the interactive
+charter, and the owner can withdraw any of them.
+
+* **Board surgery** — unlink/link dependencies, promote, schedule, reassign
+  between existing lanes when a card is stuck on structure or a worker-toolset
+  gap. Read back before/after into a steward comment, at most three changes a
+  run, never to bypass a pending owner decision or release an owner gate.
+* **Retire stale asks** — mark an owner-facing ask superseded when its premise
+  is provably gone or the owner has already answered and the board has recorded
+  it, so it stops re-pushing. Evidence in a comment; the steward never messages
+  the owner outside the daily report.
+* **Restore broken live scripts** — the one narrow exception to "never touch
+  `~/.hermes`": when a script under `~/.hermes/scripts/` is provably regressed
+  (fails every cron run, or differs from the repository copy), restore the
+  repository's file — hashes recorded, previous copy kept in scratch, same mode,
+  one component per run, no restart, and never `.env`, `config.yaml`, secrets or
+  credentials. A failing bounded cron job may be paused only until its fix
+  lands, and must be resumed.
+* **File across lanes (administrative only)** — one card per run for a lane
+  other than `local-implementer`, tenant `steward-route`, restricted to
+  config restore, evidence collection, mis-route correction and verification
+  requests. Never implementation on privileged paths, never anything needing
+  owner approval, never architecture or user-visible behaviour.
+* **Alert admission** — owner-facing blockers go out as one batch, after a
+  debounce, with each entry's premise machine-checked at send time, and with the
+  recommended option never contradicting a decision already recorded on the card.
+
+Owner-only, whatever else changes: deploy and switch, secrets and credentials,
+document and permission grants, anything irreversible in the owner's name, and
+new architecture or user-visible behaviour.
+
 ## Channel separation and the owner channel
 
 The steward's reports go to a SimpleX **group** (id 1), and the owner replies
