@@ -20,10 +20,12 @@ import argparse
 from contextlib import closing, nullcontext
 import fcntl
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
 import re
+import shlex
 import sqlite3
 import subprocess
 import sys
@@ -33,11 +35,13 @@ PROFILE = 'head-coordinator'
 JOB = 'kanban owner blocker alerts'
 MARKER = '<!-- kanban-owner-alerts -->'
 END_MARKER = '<!-- /kanban-owner-alerts -->'
+AUTHOR_MARKER = '<!-- kanban-owner-blocker-author -->'
+AUTHOR_END_MARKER = '<!-- /kanban-owner-blocker-author -->'
 MESSAGE_LIMIT = 1600
 # Bump when the decision message shape changes so the live set is re-sent once in
 # the new format (a stale delivered flag would otherwise keep an old stub on the
 # phone). Technical messages carry their own format key.
-DECISION_FORMAT = 2
+DECISION_FORMAT = 3
 # A standalone line an agent adds to mark a card it did not block as a decision.
 # Case-insensitive and its own line; prose mentioning it does not count. A card
 # carrying it is a Hard Blocker and belongs to the decision (D) category.
@@ -46,13 +50,6 @@ HARD_BLOCKER = re.compile(r'^Hard Blocker\b[^\n]*$', re.M | re.I)
 
 def is_hard_blocker(task):
     return task['block_kind'] == 'needs_input' or bool(HARD_BLOCKER.search(task['body'] or ''))
-
-
-def hard_blocker_detail(body):
-    match = HARD_BLOCKER.search(body or '')
-    if not match:
-        return ''
-    return re.sub(r'^Hard Blocker\b[ \t:–-]*', '', match.group(0), flags=re.I).strip()
 
 
 def target_config(root):
@@ -76,8 +73,10 @@ def snapshot(board_file, task_id=None):
     with closing(sqlite3.connect((board_file.parent / 'kanban.db').resolve().as_uri() + '?mode=ro', uri=True)) as db:
         db.row_factory = sqlite3.Row
         db.execute('PRAGMA query_only=ON')
-        failure_column = 'last_failure_error' if 'last_failure_error' in [r[1] for r in db.execute('PRAGMA table_info(tasks)')] else 'NULL'
-        query = f'SELECT id,title,body,block_kind,status,{failure_column} AS failure FROM tasks WHERE '
+        columns = [r[1] for r in db.execute('PRAGMA table_info(tasks)')]
+        failure_column = 'last_failure_error' if 'last_failure_error' in columns else 'NULL'
+        creator_column = 'created_by' if 'created_by' in columns else 'NULL'
+        query = f'SELECT id,title,body,block_kind,status,{failure_column} AS failure,{creator_column} AS created_by FROM tasks WHERE '
         tasks = [dict(r) for r in db.execute(query + ('id=?' if task_id else "status='blocked' ORDER BY id"), (task_id,) if task_id else ())]
         for task in tasks:
             event = db.execute("SELECT id,payload FROM task_events WHERE task_id=? AND (kind='blocked' OR (kind='status' AND json_extract(payload,'$.status')='blocked')) ORDER BY id DESC LIMIT 1", (task['id'],)).fetchone()
@@ -86,10 +85,10 @@ def snapshot(board_file, task_id=None):
             failure = task.pop('failure')
             if failure and task['reason'] in ('', 'initial_status'):
                 task['reason'] = failure
-            # Prefer the latest agent-authored plain summary comment (the body and
-            # reason are often internal jargon); ordinary comments are ignored.
+            # Only the coordinator may author the owner ask. Ordinary comments
+            # and summaries from other profiles cannot replace it.
             try:
-                comment = db.execute("SELECT body FROM task_comments WHERE task_id=? AND instr(body,'Blocking:')>0 ORDER BY created_at DESC, id DESC LIMIT 1", (task['id'],)).fetchone()
+                comment = db.execute("SELECT body FROM task_comments WHERE task_id=? AND author=? AND instr(body,'Blocking:')>0 ORDER BY created_at DESC, id DESC LIMIT 1", (task['id'], PROFILE)).fetchone()
             except sqlite3.OperationalError:
                 comment = None
             task['comment'] = comment['body'] if comment else ''
@@ -117,7 +116,9 @@ def owner_summary(comment):
 def token(value):
     # The owner-facing summary is part of the revision so posting one re-pushes;
     # the raw comment is excluded so unrelated chatter does not.
-    payload = {key: item for key, item in value.items() if key != 'comment'}
+    # Authorship is checked separately; adding its read-only column must not
+    # invalidate an unchanged question's existing label during installation.
+    payload = {key: item for key, item in value.items() if key not in ('comment', 'created_by')}
     summary = owner_summary(value.get('comment', ''))
     if summary:
         payload['summary'] = summary
@@ -178,29 +179,6 @@ def inline_options(reason):
     return options
 
 
-def first_sentences(text, count=2):
-    return re.split(r'(?<=[.!?])\s+', ' '.join(text.split()))[:count]
-
-
-def first_sentence(text):
-    parts = first_sentences(text, 1)
-    return parts[0] if parts else ''
-
-
-def clip(text, limit=170):
-    """Trim a derived (non-ask) sentence to fit a phone line, at a word boundary."""
-    text = ' '.join(text.split())
-    if len(text) <= limit:
-        return text
-    return text[:limit].rsplit(' ', 1)[0].rstrip(' ,;:') + '…'
-
-
-def reason_sentences(reason):
-    # Drop a trailing "Details: <pointer>" clause; it is a pointer, not a reason.
-    reason = re.split(r'\s+Details\b', reason)[0]
-    return [s for s in re.split(r'(?<=[.!?])\s+', ' '.join(reason.split())) if s]
-
-
 def simplex_markdown(text):
     """Render emphasis the way SimpleX parses it.
 
@@ -221,106 +199,76 @@ def plain(text):
     return ' '.join(text.split())
 
 
-def decision_text(label, board, task):
-    """Render one self-contained decision: what is blocking, why only the owner
-    can clear it, and the recommended unblock. Every owner-facing message carries
-    these three sentences so the phone never needs a follow-up to be actionable.
-    An agent-authored plain-language summary (a comment with `Blocking:` /
-    `Why owner:` / `Unblock:` lines) overrides the raw body, which is often
-    written in internal jargon.
-    """
-    body = task.get('body') or ''
-    reason = task.get('reason') or ''
+SUMMARY_FIELDS = ('Blocking', 'Why owner', 'Unblock')
+SUMMARY_JARGON = re.compile(
+    r'\b(?:kanban|card|board|workflow|worktree|needs_input|head-coordinator|'
+    r'project-auditor|feature-reviewer|standard-implementer|local-implementer|'
+    r'principal-consultant|t_[a-zA-Z0-9_]+|[0-9a-f]{7,40})\b', re.I)
+SUMMARY_PLACEHOLDER = re.compile(
+    r'\b(?:inspect details|see details|ask for details|reply with your answer|'
+    r'only you can clear this|cannot self-resolve|choose A or B)\b', re.I)
+
+
+def check_summary(text):
+    """Check the coordinator's three lines; never invent an owner-only reason."""
+    lines = text.strip().splitlines()
+    if len(lines) != 3 or any(not line.startswith(name + ': ') for name, line in zip(SUMMARY_FIELDS, lines)):
+        raise ValueError('Write exactly Blocking:, Why owner:, Unblock: in that order')
+    if len(text.strip()) > 1000 or any(len(line) > 90 for line in lines):
+        raise ValueError('Blocker summary exceeds 90 characters per line or 1000 total')
+    fields = {}
+    for name, line in zip(SUMMARY_FIELDS, lines):
+        value = line[len(name) + 2:].strip()
+        if not value or SUMMARY_JARGON.search(value) or SUMMARY_PLACEHOLDER.search(value):
+            raise ValueError(f'{name}: supply a concrete plain-English problem, reason or action')
+        fields[name] = value
+    return fields
+
+
+def blocker_summary(task):
+    # A summary is an atomic statement of the current ask. Never mix a partial
+    # comment with an old body, or attach the old body's choices to a new ask.
     comment = task.get('comment') or ''
-    end = (r'(?=^\s*[A-Z]\)|^ASK:|^Blocking:|^Why owner:|^Why only owner:|^Why owner-only:|'
-           r'^Unblock:|^Recommended:|^NEEDED FROM YOU:|^IF UNANSWERED:|^Context:|'
-           r'^Must not change:|^Notes?:|\Z)')
+    if comment:
+        source = comment
+    elif task.get('created_by') == PROFILE:
+        source = task.get('body') or ''
+    else:
+        raise ValueError('head-coordinator must author the owner-facing summary')
+    lines = [line for line in source.splitlines()
+             if any(line.startswith(name + ':') for name in SUMMARY_FIELDS)]
+    return check_summary('\n'.join(lines))
 
-    def field(name, text):
-        match = re.search(rf'^{name}:[ \t]*(.*?)' + end, text, re.M | re.S)
-        return ' '.join(match[1].split()) if match else ''
 
-    def summary(name):
-        return field(name, comment) or field(name, body)
-
-    ask = field(r'ASK', body)
-    blocking_field = summary(r'Blocking')
-    why = (summary(r'Why owner') or summary(r'Why only owner') or summary(r'Why owner-only'))
-    unblock = (field(r'Unblock', comment) or field(r'Unblock', body)
-               or summary(r'Recommended'))
-    needed = field(r'NEEDED FROM YOU', body)
-    if_unanswered = field(r'IF UNANSWERED', body)
-    context = field(r'Context', body)
-    options = re.findall(r'^\s*([A-Z])\)[ \t]*(.*?)' + end, body, re.M | re.S)
-    marker = HARD_BLOCKER.search(body)
-    detail = hard_blocker_detail(body)
-    # Older worker blockers sometimes put the choices inline in the reason.
-    reason_options = inline_options(reason)
-    conflicting = bool(ask and reason_options and
-                       [(k, ' '.join(v.split()).rstrip(' ,;.')) for k, v in options] != reason_options)
-    if not ask:
-        options = reason_options or options
+def decision_text(label, board, task):
+    """Render only the coordinator's checked owner-facing summary."""
     heading = f'{label} · {board}\n' + plain(' '.join(task['title'].split()))[:80]
-
-    # One sentence: what is blocking.
-    if blocking_field:
-        blocking = blocking_field
-    elif ask:
-        blocking = ask
-    elif marker:
-        blocking = first_sentence(field(r'Goal', body)) or 'This owner decision is blocked.'
-    elif reason not in ('', 'initial_status'):
-        blocking = first_sentence(reason)
-    else:
-        blocking = first_sentence(field(r'Goal', body)) or 'This owner decision is blocked.'
-    # A derived (reason/goal) sentence is a diagnostic, so it may be clipped to
-    # fit; a formal ASK is never rewritten, only stubbed when too large.
-    blocking_source = 'ask' if ask else ('field' if blocking_field else 'derived')
-    if blocking_source == 'derived':
-        blocking = clip(blocking)
-
-    # One sentence: why only the owner can clear it.
-    if why:
-        why_owner = why
-    elif marker and detail:
-        why_owner = detail
-    elif if_unanswered:
-        why_owner = f'If you do not act, {if_unanswered.rstrip(".")}.'
-    elif needed:
-        why_owner = f'This needs you to {needed.rstrip(".")}.'
-    elif context:
-        why_owner = first_sentence(context)
-    elif reason not in ('', 'initial_status') and not options and len(reason_sentences(reason)) > 1:
-        # The explanatory clause of a block reason is the gating one; the first
-        # sentence is what is blocking and short directives are not "why".
-        why_owner = max(reason_sentences(reason)[1:], key=len)
-    else:
-        why_owner = 'Only you can clear this; the board cannot self-resolve it.'
-    why_owner = clip(why_owner)
-
-    # One sentence: the recommended way to unblock it.
-    if options:
-        recommended = f'{options[0][0]}) {" ".join(options[0][1].split())}'
-    elif unblock:
-        recommended = unblock
-    elif needed:
-        recommended = needed
-    else:
-        recommended = f'Reply with your answer; {label} details has the full ask.'
-    if not options:
-        recommended = clip(recommended)
-
-    lines = [f'Blocking: {blocking}', f'Why owner: {why_owner}', f'Recommended: {recommended}']
-    if options and len(options) > 1:
-        lines.append('Alternatives:')
-        lines += [f'{letter}) {" ".join(text.split())}' for letter, text in options[1:]]
-    lines = [plain(line) for line in lines]
-    # Never hide scope or consequences behind a truncated approval choice.
-    complete = (not conflicting and bool(blocking) and bool(why_owner) and bool(recommended)
-                and len({v[0] for v in options}) == len(options)
-                and all(len(line) <= 180 for line in lines) and len('\n'.join(lines)) <= 650)
-    if not complete:
-        return heading + f'\nDetails required before deciding: {label} details', False
+    try:
+        fields = blocker_summary(task)
+    except ValueError as exc:
+        return heading + f'\nCoordinator must repair blocker text: {exc}', False
+    lines = [f'Blocking: {fields["Blocking"]}', f'Why owner: {fields["Why owner"]}',
+             f'Recommended: {fields["Unblock"]}']
+    # Body choices are retained only when that same body supplied the summary.
+    # A coordinator comment replaces the whole owner ask, including its options.
+    if not task.get('comment'):
+        end = r'(?=^\s*[A-Z]\)|^[A-Za-z][A-Za-z ]*:|\Z)'
+        options = re.findall(r'^\s*([A-Z])\)[ \t]*(.*?)' + end,
+                             task.get('body') or '', re.M | re.S)
+        reason_options = inline_options(task.get('reason') or '')
+        normalized = [(letter, ' '.join(value.split()).rstrip(' ,;.')) for letter, value in options]
+        if reason_options and normalized != reason_options:
+            return heading + '\nCoordinator must repair conflicting approval choices.', False
+        if options:
+            if len({letter for letter, _ in options}) != len(options):
+                return heading + '\nCoordinator must repair duplicate approval choices.', False
+            choices = [f'{letter}) {" ".join(value.split())}' for letter, value in options]
+            if any(len(choice) > 90 or SUMMARY_JARGON.search(choice) for choice in choices):
+                return heading + '\nCoordinator must shorten and explain approval choices.', False
+            lines.append('Choices:')
+            lines.extend(choices)
+    if len('\n'.join(lines)) > 1000:
+        return heading + '\nCoordinator must shorten the owner-facing summary.', False
     return heading + '\n' + '\n'.join(lines), True
 
 
@@ -334,6 +282,7 @@ def resolve(root, label):
     decision = records[label]
     tasks = snapshot(root / 'kanban/boards' / decision['board'] / 'board.json', decision['task_id'])
     current = tasks[0] if tasks else None
+    complete = decision_text(label, decision['board'], current)[1] if current and not technical else False
     # A decision is answerable whenever the ask is still live and unchanged: the
     # owner is authenticated and reaches decisions from the board, so an
     # undelivered label is the normal case rather than a staleness signal. A
@@ -345,6 +294,7 @@ def resolve(root, label):
                                     and target_config(root) in decision['delivered'])
                                    if technical else
                                    (is_hard_blocker(current)
+                                    and complete
                                     and token(current) == decision['token'])))}
 
 
@@ -491,6 +441,9 @@ def collect(root, state, errors):
                 state['decisions'][label]['shown'] = shown
                 state['decisions'][label]['compact_complete'] = complete
                 decision_labels[(board.parent.name, task['id'])] = label
+                if not complete:
+                    errors.append(f'{board.parent.name}:{task["id"]}: {shown.splitlines()[-1]}')
+                    snapshot_failed = True
         except (ValueError, OSError, sqlite3.Error) as exc:
             errors.append(f'{board.parent.name}: {exc}')
             snapshot_failed = True
@@ -547,7 +500,8 @@ def tick(root, dry_run=False, now=None, force_decisions=False):
         # not unblock on its own. A technical blocker can clear itself, so it is
         # never sent; it stays board-local and is read with `--details blockers`.
         pending = [decision_labels[(board, task['id'])] for board, task in decisions
-                   if target not in state['decisions'][decision_labels[(board, task['id'])]]['delivered']]
+                   if state['decisions'][decision_labels[(board, task['id'])]]['compact_complete']
+                   and target not in state['decisions'][decision_labels[(board, task['id'])]]['delivered']]
         if pending:
             heading = '*Hard Blocker*\n'
             shown = {label: state['decisions'][label]['shown'] for label in pending}
@@ -573,9 +527,6 @@ def install(root):
     source = Path(__file__).resolve().parent
     target_config(root)
     scripts = root / 'scripts'
-    scripts.mkdir(parents=True, exist_ok=True)
-    (scripts / 'kanban-owner-alerts.py').write_text(Path(__file__).read_text())
-    (scripts / 'kanban-owner-alerts.py').chmod(0o700)
     policy = (source / 'taskforce/owner-alert-replies.md').read_text()
     soul = root / 'profiles' / PROFILE / 'SOUL.md'
     existing = soul.read_text()
@@ -591,16 +542,49 @@ def install(root):
         wanted = existing[:-len(MARKER + '\n' + policy)] + block
     else:
         raise ValueError('Unrecognised owner alert policy; preserve and reconcile it')
-    if soul.read_text() != wanted:
-        backup = root / 'backups/owner-alerts'
-        backup.mkdir(parents=True, exist_ok=True, mode=0o700)
-        copy = backup / (hashlib.sha256(soul.read_bytes()).hexdigest() + '.md')
-        if not copy.exists():
-            copy.write_bytes(soul.read_bytes())
-            copy.chmod(0o600)
-        soul.write_text(wanted)
+    changes = {soul: wanted, scripts / 'kanban-owner-alerts.py': Path(__file__).read_text(),
+               scripts / 'owner-blocker-authoring-guard.py': (source / 'owner-blocker-authoring-guard.py').read_text(),
+               scripts / 'review-taskforce-approval.md': (source / 'taskforce/approval-policy.md').read_text()}
+    spec = importlib.util.spec_from_file_location('steward_installer', source / 'install-steward-readonly.py')
+    installer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(installer)
+    author_policy = (source / 'taskforce/owner-blocker-authoring.md').read_text()
+    author_block = AUTHOR_MARKER + '\n' + author_policy + AUTHOR_END_MARKER + '\n'
+    for profile_soul in sorted((root / 'profiles').glob('*/SOUL.md')):
+        text = changes.get(profile_soul, profile_soul.read_text())
+        if AUTHOR_MARKER in text:
+            text, count = re.subn(re.escape(AUTHOR_MARKER) + r'.*?' + re.escape(AUTHOR_END_MARKER) + r'\n?',
+                                 lambda _: author_block, text, flags=re.S)
+            if count != 1:
+                raise ValueError(f'Invalid blocker authorship section in {profile_soul}')
+        else:
+            text = text.rstrip() + '\n\n' + author_block
+        changes[profile_soul] = text
+        config = profile_soul.with_name('config.yaml')
+        if config.exists():
+            command = shlex.join(['python3', str(scripts / 'owner-blocker-authoring-guard.py')])
+            text = installer.readonly_hook(config.read_text(), command, 'owner-blocker-author',
+                                           '^kanban_(create|block|comment)$')
+            changes[config] = installer.replace_setting(text, 'hooks_auto_accept', 'true')
     jobs = json.loads((root / 'cron/jobs.json').read_text()).get('jobs', [])
     matching = [job for job in jobs if job.get('name') == JOB]
+    if matching and (len(matching) != 1 or matching[0].get('script') != 'kanban-owner-alerts.py'
+                    or not matching[0].get('no_agent') or matching[0].get('schedule', {}).get('minutes') != 1):
+        raise ValueError('Owner alert cron drift; repair the existing job instead of duplicating it')
+    # Validate every policy transformation and cron before installing anything.
+    for path, text in changes.items():
+        if path.exists() and path.read_text() == text:
+            continue
+        if path.exists():
+            backup = root / 'backups/owner-alerts'
+            backup.mkdir(parents=True, exist_ok=True, mode=0o700)
+            copy = backup / (hashlib.sha256(path.read_bytes()).hexdigest() + '.md')
+            if not copy.exists():
+                copy.write_bytes(path.read_bytes())
+                copy.chmod(0o600)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+    (scripts / 'kanban-owner-alerts.py').chmod(0o700)
     if not matching:
         env = os.environ.copy()
         env['HERMES_HOME'] = str(root)
@@ -608,8 +592,6 @@ def install(root):
                         '--name', JOB, '--script', 'kanban-owner-alerts.py', '--no-agent',
                         '--deliver', 'local', '--workdir', str(source.parent.parent),
                         '--paused', '--paused-reason', 'Validate owner alerts before activation'], check=True, env=env)
-    elif len(matching) != 1 or matching[0].get('script') != 'kanban-owner-alerts.py' or not matching[0].get('no_agent') or matching[0].get('schedule', {}).get('minutes') != 1:
-        raise ValueError('Owner alert cron drift; repair the existing job instead of duplicating it')
 
 
 if __name__ == '__main__':
@@ -620,10 +602,21 @@ if __name__ == '__main__':
     actions.add_argument('--send-decisions', action='store_true', help='Send the current decision questions now')
     actions.add_argument('--resolve', metavar='D1|B1', help='Read exact label mapping and current validity as JSON')
     actions.add_argument('--details', metavar='D1|B1|blockers|board:card', help='Read requested diagnostics without sending or mutating')
+    actions.add_argument('--check-summary', metavar='FILE|-', help='Check the coordinator summary without sending or mutating; - reads stdin')
+    actions.add_argument('--check-blockers', action='store_true', help='Check all current owner blockers without sending or mutating')
     args = parser.parse_args()
     root = Path(os.environ.get('HERMES_ROOT', str(Path.home() / '.hermes')))
     try:
-        if args.resolve:
+        if args.check_summary:
+            check_summary(sys.stdin.read() if args.check_summary == '-' else Path(args.check_summary).read_text())
+            print('Blocker summary OK')
+        elif args.check_blockers:
+            errors = []
+            collect(root, load_inbox(root), errors)
+            if errors:
+                raise ValueError('; '.join(errors))
+            print('Owner blocker summaries OK')
+        elif args.resolve:
             print(json.dumps(resolve(root, args.resolve)))
         elif args.details:
             print(details(root, args.details))

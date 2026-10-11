@@ -27,71 +27,96 @@ the `Hard Blocker` line is the marker for an owner-only block that is not a
 Both shapes are the decision (D) category and are the only cards pushed. Every
 other blocked card is a technical (B) blocker and is never pushed.
 
-Each message is self-contained: it states what is blocking, why only the owner
-can clear it, and the recommended way to unblock — one sentence each — so the
-owner never has to ask for details. A decision with choices shows the recommended
-option (A) and the alternatives. Emphasis uses SimpleX markup (`*bold*`,
-`_italic_`, `~strike~`); GitHub-style `**bold**` is converted before send:
+The `head-coordinator` is the sole author of owner-facing blocker cards and
+summaries. Workers report technical blockers and evidence; the coordinator
+exhausts agent-side recovery and checks existing owner decisions before making
+an owner gate. This is enforced at the sender: it accepts only summary comments
+whose author is `head-coordinator`, or summary fields in a gate whose
+`created_by` is `head-coordinator`. A later worker comment cannot override that
+summary. The shared Unix account still makes authorship a workflow boundary,
+not an OS security boundary.
+The installer applies `owner-blocker-authoring-guard.py` to every profile's
+native create/block/comment calls through the existing pre-tool hook protocol.
+It refuses owner-gate creation, `needs_input` blocking and owner-summary comments
+by other profiles, and validates coordinator text before the write. Ordinary
+technical blocks and comments remain available. Missing evidence is routed to
+the coordinator with a technical block kind, rather than turned into an owner
+decision. This closes the publication path as well as the delivery path.
+Hermes converts a dependency block without an open parent to `needs_input`.
+The hook refuses that fallback: link the actual prerequisite first, or record
+the evidence gap with a technical block kind. Missing preparation is not a
+decision for the owner.
+
+Every owner-facing blocker carries these three plain-English lines in order:
+
+```text
+Blocking: The phone test is waiting for confirmation.
+Why owner: Only you can see whether the message reached your phone.
+Unblock: Reply yes if it arrived, or no if it did not.
+```
+
+`Blocking:` names the concrete problem. `Why owner:` explains the specific wall
+the coordinating agent cannot clear without the owner; a stalled queue is only a
+consequence. `Unblock:` gives the exact recommended action or decision. Each
+line fits 90 characters and the summary fits 1000 characters. Workflow jargon,
+task ids, hashes, internal profile names and known vague placeholders such as
+"only you can clear this" or "inspect details" are rejected. The checker
+validates structure and known bad wording; the coordinator must still judge
+whether the reason is true and the action is sufficient.
+
+Before using native board-scoped tools to publish or block a gate, the
+coordinator checks its proposed three lines on stdin:
+
+```bash
+python3 ~/.hermes/scripts/kanban-owner-alerts.py --check-summary - <<'SUMMARY'
+Blocking: The phone test is waiting for confirmation.
+Why owner: Only you can see whether the message reached your phone.
+Unblock: Reply yes if it arrived, or no if it did not.
+SUMMARY
+```
+
+On exit 0, write the gate or post a summary comment under the coordinator's real
+author, block appropriately, and verify native readback. Then check the whole
+current owner-facing set:
+
+```bash
+python3 ~/.hermes/scripts/kanban-owner-alerts.py --check-blockers
+```
+
+Both commands are read-only, work in delegated terminals, and exit 2 on invalid
+text. Use native tools for board changes; these commands do not bypass worker
+fences. Repairing wording requires no new owner approval.
+
+A summary comment replaces the entire owner ask. Include all necessary choices
+and consequences in it; the sender never combines it with old body choices or
+fills partial fields from a different source. For a coordinator-authored gate
+body, separate A/B choices are preserved in full, and conflicting choices in a
+block reason are rejected. The phone shows:
 
 ```text
 *Hard Blocker*
 
 D1 · nixhomeserver
-Choose a recovery mechanism
-Blocking: Choose a recovery mechanism for this host?
-Why owner: Only you can clear this; otherwise the queue stays stuck.
-Recommended: A) Restore the worker with existing credentials
-Alternatives:
-B) Pause work until capacity returns
+Confirm phone delivery
+Blocking: The phone test is waiting for confirmation.
+Why owner: Only you can see whether the message reached your phone.
+Recommended: Reply yes if it arrived, or no if it did not.
 
 Reply: D1 <choice or answer>. Details: D1 details
 ```
 
-An agent-asserted Hard Blocker with no choices shows its owner-only reason and a
-recommended action:
+SimpleX emphasis uses `*bold*`, `_italic_`, `~strike~`; GitHub-style emphasis is
+converted before sending. Labels and board headings remain navigation aids;
+the problem, reason and action use ordinary language.
 
-```text
-*Hard Blocker*
-
-D2 · nixhomeserver
-Harden: root SFTP key helper authorization
-Blocking: The root SFTP key helper cannot finish.
-Why owner: It needs the owner key.
-Recommended: Provide the owner key, then re-run the card.
-
-Reply: D2 <answer>. Details: D2 details
-```
-
-The three sentences come from the card: `Blocking:` (else the `ASK:` question,
-else the block reason), `Why owner:` (else `IF UNANSWERED:`, else the
-`Hard Blocker` line), and `Recommended:` (else the recommended `A)` option, else
-`Unblock:`). When an agent blocks a Hard Blocker it should supply `Why owner:`
-and `Unblock:` so the message is specific rather than generic; a `needs_input`
-card whose body is work-shaped rather than a gate still renders all three lines
-from its block reason. When this message format changes, the live decision set is
-re-sent once so a stale stub does not stay on the phone.
-
-All owner-facing text must be plain everyday English for a non-engineer — no
-card/board/kanban/workflow jargon, task ids, commit hashes or internal role
-names. The sender scrubs ids and hashes from whatever it renders, but it cannot
-reword jargon: a card whose body is internal must carry an agent-authored
-summary. Post a comment with plain `Blocking:`, `Why owner:` and `Unblock:`
-lines and the phone message uses that instead of the body, and re-sends when it
-changes.
-
-## Blocker card structure (hard rule)
-
-Every blocked card carries exactly three plain-English lines, in this order —
-`Blocking:` (the concrete problem), `Why owner:` (the specific wall the
-coordinating agent hit and could not clear itself), `Unblock:` (the exact action
-the owner takes) — on the body or as a summary comment. The block is **≤ 1000
-characters in total** and each line ≤ 90 characters: no card/board/kanban or
-workflow jargon, no task ids, no commit hashes, no internal role or label names,
-and never "inspect details". A missing or jargon-filled field produces an
-unusable alert, so cut to the concrete problem and the concrete action rather
-than compress the jargon to fit.
-
-A decision pushes when it appears and again only when the ask changes.
+Missing, malformed, overlong or generic summaries produce a coordinator repair
+diagnostic and are never sent or marked delivered. Other valid individual
+blockers still send; an explicit whole-set pull is withheld when any item is
+invalid, so it cannot present a partial set as complete. The no-agent job exits
+2 with the board/card and repair reason, and `--check-blockers` exposes the same
+problem. The coordinator owns these repairs, rather than asking the owner to
+interpret an internal failure. Existing labels and delivery receipts are
+preserved; a format update refreshes the valid live set once.
 
 ## Urgent regressions
 
@@ -155,6 +180,9 @@ hermes --profile default cron list
 Installation preserves unrelated profile policy and existing cron state. New
 one-minute jobs start paused for validation. The installed reply policy is
 `scripts/hermes/taskforce/owner-alert-replies.md`, backed up before replacement.
+The installer also adds the blocker authorship policy to every existing profile
+and updates the installed taskforce approval handoff. This prevents the auditor's
+older "create an owner gate" instruction from remaining the active contract.
 Gateway agents cache identity: reattach an idle coordinator profile through the
 existing gateway control socket after updating its SOUL, or reload the gateway
 when idle. Do not interrupt workers to refresh chat instructions.

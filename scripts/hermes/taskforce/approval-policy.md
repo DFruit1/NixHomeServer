@@ -41,14 +41,15 @@ New scope or a materially changed risk requires a new decision.
 
 For a required approval, finish the concrete plan, evidence, alternatives,
 expected user-visible effects, tests and rollback/recovery approach first.
-Publish the immutable plan, then create a concise owner gate using AGENTS.md's
-ASK/options/NEEDED FROM YOU/IF UNANSWERED shape. Block it with
-`kind="needs_input"`; do not send a dispatchable implementation handoff yet.
-The gate is assessed by `project-auditor`. The owner records a decision as a
-comment and unblocks it. A comment alone does not resume a blocked card.
-On approval, record the decision and forward the approved plan to
-`head-coordinator`. On rejection, retain the finding and verdict without
-implementation. A revision needing approval gets a new plan and gate.
+Publish the immutable plan, then hand the exact decision, evidence and
+alternatives to `head-coordinator`. Only the coordinator authors the owner-facing
+gate and checked Blocking/Why owner/Unblock summary. It blocks the gate with
+`kind="needs_input"`; no implementation handoff becomes dispatchable yet.
+`project-auditor` assesses the plan and records the decision after the coordinator
+has recorded the authenticated owner reply. A comment alone does not resume a
+blocked card. On approval, retain the exact approved plan for coordinator
+decomposition. On rejection, retain the finding and verdict without
+implementation. A revision needing approval gets a new plan and coordinator gate.
 
 `head-coordinator` checks the approval classification and its `classify`
 evidence before creating implementation cards. It returns an unapproved gated

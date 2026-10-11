@@ -184,8 +184,8 @@ a workaround without first confirming the DNS and LAN path.
 
 ## Kanban Card Authoring
 
-Hermes injects this file into every agent, so this is the board's only home for
-card conventions. Every profile writes cards, so these rules bind every worker.
+Hermes injects this file into every agent, so this is the board's home for card
+conventions. These rules bind every card-writing profile; the steward only reports.
 
 **When the owner says "planner", they mean `head-coordinator`.** There is no
 `planner` profile on this install; `head-coordinator` is the senior lane that owns
@@ -239,7 +239,9 @@ plans require explicit owner approval before dispatch when they include:
 
 project-auditor prepares a concrete immutable plan and records the approval
 classification, exact triggers and evidence. Required approvals use a blocked
-owner gate before an implementation handoff becomes dispatchable. Urgency never
+owner gate authored by `head-coordinator` before an implementation handoff becomes
+dispatchable. The auditor hands the classified plan and options to the coordinator.
+Urgency never
 bypasses this gate. Existing explicit approval for the exact scope remains valid;
 new scope/risk requires a new decision. Implementers stop if a new trigger appears.
 The full rules are tracked in `scripts/hermes/taskforce/approval-policy.md` and
@@ -313,11 +315,9 @@ Must not change: <the guardrail>
 The owner must be able to answer from the first three lines. Evidence goes below
 the ask, never above it and never inside the question.
 
-The owner's phone message is built from these fields, so write them as clear
-single sentences: `ASK` becomes **Blocking**, `IF UNANSWERED` (else
-`NEEDED FROM YOU`) becomes **Why owner**, and option A becomes **Recommended**.
-A Hard Blocker with no A/B choice must add `Why owner: <why only you>` and
-`Unblock: <the recommended action>` so the message is specific, not generic.
+Every owner gate also carries the checked `Blocking:`, `Why owner:` and
+`Unblock:` summary defined below. `IF UNANSWERED:` states the consequence;
+it does not explain why an agent cannot resolve the problem.
 
 ### Hard limits
 
@@ -431,6 +431,15 @@ comments into the worker.
 
 ### Reaching the owner
 
+The board steward is an independent read-only observer, not a worker or fixer.
+It may inspect every board and relevant non-secret evidence, but never writes
+files, comments or cards, changes state/dependencies/assignments, unblocks work,
+restores scripts, commits, changes configuration or delegates implementation.
+It reports only when asked or in its regular reports. Reports propose remedies,
+disjoint-file parallel work and exact commands in a copyable handoff for the
+external Codex agent, which is the owner's independent unblocker and fixer.
+The coordinator alone authors owner-facing blocker cards and summaries.
+
 The owner's phone gets exactly one unprompted message class: a **Hard Blocker**.
 A blocked card is a Hard Blocker when the owner's action is the only way
 forward and it cannot clear itself without the owner — the owner's decision (a
@@ -441,16 +450,38 @@ or a card hard-stuck with no agent-side recovery. Prefer `needs_input` so the
 block is sticky; the line is the marker for an owner-only block that is not a
 `needs_input` choice. It must be its own line; prose mentioning it does not
 count, and the retired `Urgency:` vocabulary does nothing. Both shapes push.
-Every pushed message is self-contained: one sentence on what is blocking, one on
-why only the owner can clear it, and the recommended unblock — so the owner
-never has to ask for details. Supply `Why owner:` and `Unblock:` when the card
-is not an A/B gate. Write that text in plain everyday English for a non-engineer:
-the concrete problem, why it needs the owner, and the action to take. No
-card/board/kanban or workflow jargon, no task ids, no commit hashes, no internal
-role names — the sender scrubs ids and hashes but cannot reword jargon. If the
-body is already jargon, post a comment with plain `Blocking:`, `Why owner:` and
-`Unblock:` lines; that summary is what the phone sends (and re-sends when it
-changes).
+`head-coordinator` is the sole author of owner-facing blocker cards and summaries.
+Workers report technical blockers and evidence; they do not create owner gates
+or add the `Hard Blocker` marker. The coordinator first exhausts agent-side
+recovery, checks existing owner decisions, and writes exactly these three lines:
+
+```
+Blocking: <the concrete problem preventing progress>
+Why owner: <the specific reason the agent cannot resolve it without you>
+Unblock: <the exact action or decision you take, with a recommendation>
+```
+
+Use everyday English: each line ≤ 90 characters, summary ≤ 1000 characters.
+No workflow jargon, task ids, hashes, internal roles, vague "only you can clear
+this", or "inspect details". State any A/B choices with their consequences.
+Never invent a decision or owner-only requirement for a technical blocker.
+
+Before publishing, the coordinator checks the proposed three lines with:
+`python3 ~/.hermes/scripts/kanban-owner-alerts.py --check-summary -`
+Pass the summary on stdin. On exit 0, use native board-scoped tools to write
+the gate or a summary comment under the real `head-coordinator` author, block
+as appropriate, and read it back. Then run the read-only `--check-blockers`.
+A rewritten summary replaces the entire old ask; include all necessary choices
+and consequences in the new summary. Never forge authors or bypass worker fences.
+
+The sender accepts only coordinator-authored summaries. Missing, malformed,
+overlong or generic summaries remain unsent and produce a diagnostic for the
+coordinator to repair; they are never marked delivered. Other valid blockers
+still send. A wording repair requires no new owner approval.
+The native authoring hook also refuses owner-gate creation, `needs_input` blocks
+and summary publication by other profiles. It checks the coordinator's text
+before the write, so missing fields cannot create another unusable owner gate.
+Missing preparation/evidence is a technical block, not an owner decision.
 
 Everything else — missing evidence, worker/model failures, dependency waits,
 routine cleanups — is a technical blocker that is board-local and never pushed;

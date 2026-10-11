@@ -101,6 +101,12 @@ At most one dependency change per pass.
 You write the owner-facing lines and send the alerts, so the admission rules are
 yours:
 
+- You are the sole author of owner-facing blocker cards and summaries. Workers
+  report technical evidence; do not delegate the owner's ask to an implementer.
+- Follow the installed owner-alert policy: check `Blocking:`, `Why owner:` and
+  `Unblock:` with `--check-summary -`, write using native tools, read back, and
+  run `--check-blockers`. Repair wording immediately without a new owner gate.
+
 - One batch per publish, never one card at a time and never interleaved with
   other content; a short debounce before sending, then rebuild the live set.
 - Every entry's premise is machine-checked at send time: the card is still

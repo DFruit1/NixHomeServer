@@ -34,7 +34,9 @@ bumps proceed automatically unless they carry significant security or regression
 risk.
 
 Routine plans state why automatic approval applies. Gated plans are prepared
-with evidence and alternatives, published, and held on a `needs_input` card.
+with evidence and alternatives, published, and handed to `head-coordinator`.
+Only the coordinator authors the owner-facing `needs_input` gate and its checked
+Blocking/Why owner/Unblock summary; the auditor retains plan assessment ownership.
 The owner comments with their decision and unblocks the card; a comment alone
 does not resume it. The reviewer records the decision and forwards only approved
 scope. An already-recorded approval for that exact scope is sufficient.

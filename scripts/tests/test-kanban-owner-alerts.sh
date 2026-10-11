@@ -19,11 +19,19 @@ from unittest.mock import patch
 spec = importlib.util.spec_from_file_location('alerts', Path(sys.argv[1]) / 'scripts/hermes/kanban-owner-alerts.py')
 alerts = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(alerts)
+writer_spec = importlib.util.spec_from_file_location('writer', Path(sys.argv[1]) / 'scripts/hermes/owner-blocker-authoring-guard.py')
+writer = importlib.util.module_from_spec(writer_spec)
+writer_spec.loader.exec_module(writer)
+
+
+REPAIR_SUMMARY = ('Blocking: Repair is waiting for your approval.\n'
+                  'Why owner: The repair changes a setting you previously chose.\n'
+                  'Unblock: Approve the repair or keep the current setting.')
 
 
 class AlertsTest(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp = tempfile.TemporaryDirectory(prefix='nixhomeserver-owner-alerts-')
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.env = self.root / 'profiles/head-coordinator/.env'
@@ -34,8 +42,8 @@ class AlertsTest(unittest.TestCase):
             p.mkdir(parents=True)
             (p / 'board.json').write_text('{}')
             with closing(sqlite3.connect(p / 'kanban.db')) as db:
-                db.executescript('CREATE TABLE tasks (id TEXT, title TEXT, body TEXT, status TEXT, block_kind TEXT); CREATE TABLE task_events (id INTEGER, task_id TEXT, kind TEXT, payload TEXT); CREATE TABLE task_comments (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT, author TEXT, body TEXT, created_at INTEGER);')
-                db.execute('INSERT INTO tasks VALUES (?, ?, ?, ?, ?)', ('t_12345678', 'Decide repair', 'ASK: Approve repair?\n A) Approve\n B) Reject', 'blocked', 'needs_input' if board == 'one' else 'capability'))
+                db.executescript('CREATE TABLE tasks (id TEXT, title TEXT, body TEXT, status TEXT, block_kind TEXT, created_by TEXT DEFAULT "head-coordinator"); CREATE TABLE task_events (id INTEGER, task_id TEXT, kind TEXT, payload TEXT); CREATE TABLE task_comments (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT, author TEXT, body TEXT, created_at INTEGER);')
+                db.execute('INSERT INTO tasks (id,title,body,status,block_kind) VALUES (?, ?, ?, ?, ?)', ('t_12345678', 'Decide repair', 'ASK: Approve repair?\n A) Approve\n B) Reject\n' + REPAIR_SUMMARY, 'blocked', 'needs_input' if board == 'one' else 'capability'))
                 db.execute('INSERT INTO task_events VALUES (1, ?, ?, ?)', ('t_12345678', 'blocked', json.dumps({'reason': 'Need a decision' if board == 'one' else 'Evidence unavailable'})))
                 db.commit()
         self.boards = {name: self.root / 'kanban/boards' / name / 'kanban.db' for name in ('one', 'two')}
@@ -50,6 +58,154 @@ class AlertsTest(unittest.TestCase):
             db.execute('UPDATE tasks SET body=?', (body,))
             db.commit()
 
+    def test_worker_cannot_turn_a_technical_block_into_an_owner_decision(self):
+        request = {'profile': 'standard-implementer', 'tool_name': 'kanban_block',
+                   'tool_input': {'board': 'one', 'task_id': 't_12345678', 'kind': 'needs_input',
+                                  'reason': 'Missing preparation evidence; ask the coordinator.'}}
+        before = self.board_bytes()
+        response = writer.guard(request, self.root, alerts)
+        self.assertEqual('block', response['action'])
+        self.assertIn('Only head-coordinator', response['message'])
+        request['tool_input']['kind'] = 'capability'
+        self.assertEqual({}, writer.guard(request, self.root, alerts))
+        self.assertEqual(before, self.board_bytes())
+
+    def test_owner_gate_is_checked_before_creation(self):
+        body = 'ASK: Approve repair?\n A) Approve\n B) Keep current setting\n'
+        request = {'profile': 'head-coordinator', 'tool_name': 'kanban_create',
+                   'tool_input': {'board': 'one', 'title': 'Approve repair', 'body': body}}
+        self.assertEqual('block', writer.guard(request, self.root, alerts)['action'])
+
+        request['tool_input']['body'] = body + REPAIR_SUMMARY
+        self.assertEqual({}, writer.guard(request, self.root, alerts))
+        request['profile'] = 'project-auditor'
+        self.assertEqual('block', writer.guard(request, self.root, alerts)['action'])
+
+    def test_dependency_fallback_cannot_manufacture_owner_input(self):
+        with closing(sqlite3.connect(self.boards['one'])) as db:
+            db.execute('CREATE TABLE task_links (parent_id TEXT, child_id TEXT)')
+            db.commit()
+        request = {'profile': 'standard-implementer', 'tool_name': 'kanban_block',
+                   'tool_input': {'board': 'one', 'task_id': 't_12345678', 'kind': 'dependency'}}
+        self.assertEqual('block', writer.guard(request, self.root, alerts)['action'])
+        with closing(sqlite3.connect(self.boards['one'])) as db:
+            db.execute('INSERT INTO tasks (id,title,body,status,block_kind) VALUES (?,?,?,?,?)',
+                       ('t_input', 'Collect missing input', '', 'ready', None))
+            db.execute('INSERT INTO task_links VALUES (?,?)', ('t_input', 't_12345678'))
+            db.commit()
+        self.assertEqual({}, writer.guard(request, self.root, alerts))
+
+    def test_coordinator_owner_block_requires_the_existing_checked_summary(self):
+        request = {'profile': 'head-coordinator', 'tool_name': 'kanban_block',
+                   'tool_input': {'board': 'one', 'task_id': 't_12345678', 'kind': 'needs_input'}}
+        self.assertEqual({}, writer.guard(request, self.root, alerts))
+        self.mark('one', 'Goal: Collect missing preparation evidence.')
+        self.assertEqual('block', writer.guard(request, self.root, alerts)['action'])
+
+    def test_worker_comments_cannot_publish_owner_summary(self):
+        request = {'profile': 'project-auditor', 'tool_name': 'kanban_comment',
+                   'tool_input': {'board': 'one', 'task_id': 't_12345678', 'body': REPAIR_SUMMARY}}
+        self.assertEqual('block', writer.guard(request, self.root, alerts)['action'])
+        request['profile'] = 'head-coordinator'
+        self.assertEqual({}, writer.guard(request, self.root, alerts))
+        request['tool_input']['body'] = 'Owner reply received: choose A. Scope remains unchanged.'
+        self.assertEqual({}, writer.guard(request, self.root, alerts))
+
+    def test_generic_owner_reason_and_details_pointer_are_not_actionable(self):
+        task = alerts.snapshot(self.root / 'kanban/boards/one/board.json')[0]
+        task['body'] = 'Goal: Activate the accepted inbox.'
+        task['reason'] = 'The check failed.'
+        shown, complete = alerts.decision_text('D1', 'one', task)
+        self.assertFalse(complete, shown)
+
+    def test_coordinator_can_check_summary_without_sending_or_mutating(self):
+        summary = ('Blocking: The phone test is waiting for confirmation.\n'
+                   'Why owner: Only you can see whether the message reached your phone.\n'
+                   'Unblock: Reply yes if it arrived, or no if it did not.')
+        environment = {**os.environ, 'HERMES_ROOT': str(self.root),
+                       'HERMES_DELEGATED_CHILD_CONTEXT': '1'}
+        before = self.board_bytes()
+        result = subprocess.run([sys.executable, '-B', alerts.__file__, '--check-summary', '-'],
+                                input=summary, env=environment, text=True, capture_output=True)
+        self.assertEqual(0, result.returncode, result.stderr)
+        for invalid in [summary.replace('Unblock:', 'Notes:'),
+                        summary.replace('Only you can see whether the message reached your phone.',
+                                        'Only you can clear this; the board cannot self-resolve it.'),
+                        summary.replace('Reply yes if it arrived, or no if it did not.',
+                                        'Inspect details.'),
+                        summary.replace('The phone test is waiting for confirmation.', 'x' * 90)]:
+            with self.subTest(invalid=invalid):
+                result = subprocess.run([sys.executable, '-B', alerts.__file__, '--check-summary', '-'],
+                                        input=invalid, env=environment, text=True, capture_output=True)
+                self.assertEqual(2, result.returncode, result.stdout)
+        self.assertEqual(before, self.board_bytes())
+        self.assertFalse(self.sent)
+        self.assertFalse((self.root / 'kanban/owner-alerts').exists())
+
+    def test_worker_summary_cannot_replace_coordinator_summary(self):
+        with closing(sqlite3.connect(self.boards['one'])) as db:
+            for author, timestamp, problem in [('head-coordinator', 1, 'The phone test needs a reply.'),
+                                                ('standard-implementer', 2, 'Approve unrelated changes.')]:
+                db.execute('INSERT INTO task_comments (task_id,author,body,created_at) VALUES (?,?,?,?)',
+                           ('t_12345678', author, f'Blocking: {problem}\n'
+                            'Why owner: Only you can confirm receipt on your phone.\n'
+                            'Unblock: Reply yes if the test message arrived.', timestamp))
+            db.commit()
+        task = alerts.snapshot(self.root / 'kanban/boards/one/board.json')[0]
+        shown, complete = alerts.decision_text('D1', 'one', task)
+        self.assertTrue(complete, shown)
+        self.assertIn('The phone test needs a reply.', shown)
+        self.assertNotIn('unrelated', shown)
+        self.assertNotIn('A) Approve', shown)
+
+    def test_worker_created_gate_requires_coordinator_adoption(self):
+        with closing(sqlite3.connect(self.boards['one'])) as db:
+            db.execute("UPDATE tasks SET created_by='project-auditor'")
+            db.execute('INSERT INTO task_comments (task_id,author,body,created_at) VALUES (?,?,?,?)',
+                       ('t_12345678', 'project-auditor', REPAIR_SUMMARY, 1))
+            db.commit()
+        with self.assertRaisesRegex(RuntimeError, 'head-coordinator must author'):
+            alerts.tick(self.root)
+        self.assertFalse(self.sent)
+        with closing(sqlite3.connect(self.boards['one'])) as db:
+            db.execute('INSERT INTO task_comments (task_id,author,body,created_at) VALUES (?,?,?,?)',
+                       ('t_12345678', 'head-coordinator', REPAIR_SUMMARY, 2))
+            db.commit()
+        alerts.tick(self.root)
+        self.assertEqual(1, len(self.sent))
+
+    def test_partial_comment_cannot_borrow_old_summary_fields(self):
+        with closing(sqlite3.connect(self.boards['one'])) as db:
+            db.execute('INSERT INTO task_comments (task_id,author,body,created_at) VALUES (?,?,?,?)',
+                       ('t_12345678', 'head-coordinator', 'Blocking: The scope has changed.', 1))
+            db.commit()
+        with self.assertRaises(RuntimeError):
+            alerts.tick(self.root)
+        self.assertFalse(self.sent)
+
+    def test_bad_summary_does_not_hide_other_valid_individual_blockers(self):
+        self.mark('two', 'Hard Blocker\nGoal: Sign the release.')
+        with self.assertRaises(RuntimeError):
+            alerts.tick(self.root, force_decisions=True)
+        self.assertEqual(1, len(self.sent))
+        self.assertIn('D1 · one', self.sent[0])
+        self.assertNotIn('D2 · two', self.sent[0])
+        self.assertEqual([], alerts.resolve(self.root, 'D2')['delivered'])
+
+    def test_check_blockers_reports_bad_author_without_mutation(self):
+        with closing(sqlite3.connect(self.boards['one'])) as db:
+            db.execute("UPDATE tasks SET created_by='project-auditor'")
+            db.commit()
+        before = self.board_bytes()
+        result = subprocess.run([sys.executable, '-B', alerts.__file__, '--check-blockers'],
+                                env={**os.environ, 'HERMES_ROOT': str(self.root)},
+                                text=True, capture_output=True)
+        self.assertEqual(2, result.returncode)
+        self.assertIn('one:t_12345678', result.stderr)
+        self.assertIn('head-coordinator must author', result.stderr)
+        self.assertEqual(before, self.board_bytes())
+        self.assertFalse((self.root / 'kanban/owner-alerts').exists())
+
     def board_bytes(self):
         return {name: path.read_bytes() for name, path in self.boards.items()}
 
@@ -58,7 +214,7 @@ class AlertsTest(unittest.TestCase):
         self.assertEqual(1, len(self.sent))
         self.assertTrue(self.sent[0].startswith('*Hard Blocker*\n'))
         self.assertIn('D1 · one', self.sent[0])
-        self.assertIn('Approve repair?', self.sent[0])
+        self.assertIn('Repair is waiting for your approval.', self.sent[0])
         self.assertNotIn('two', self.sent[0])
         alerts.tick(self.root, now=1001)
         self.assertEqual(1, len(self.sent))
@@ -73,58 +229,53 @@ class AlertsTest(unittest.TestCase):
         self.assertFalse(alerts.resolve(self.root, 'B1')['can_reply'])
         # A standalone marker makes the card a Hard Blocker: it joins the D
         # category and reaches the owner.
-        self.mark('two', 'Hard Blocker: needs the owner key\nGoal: Sign the release.')
+        self.mark('two', 'Hard Blocker: needs the owner key\nGoal: Sign the release.\n'
+                  'Blocking: The release cannot be signed.\n'
+                  'Why owner: Only you hold the signing key.\n'
+                  'Unblock: Sign the release with your existing key.')
         alerts.tick(self.root, now=1004)
         self.assertEqual(2, len(self.sent))
         self.assertIn('*Hard Blocker*\n', self.sent[1])
         self.assertIn('D2 · two', self.sent[1])
-        self.assertIn('needs the owner key', self.sent[1])
+        self.assertIn('Only you hold the signing key.', self.sent[1])
         self.assertTrue(alerts.resolve(self.root, 'D2')['can_reply'])
         # The marker line is case-insensitive; a revision repushes as a new D.
-        self.mark('two', 'hard blocker\nGoal: Sign the release.')
+        self.mark('two', 'hard blocker\nGoal: Sign the release.\n' + REPAIR_SUMMARY)
         alerts.tick(self.root, now=1006)
         self.assertEqual(3, len(self.sent))
         self.assertIn('D3 · two', self.sent[-1])
 
     def test_format_shows_description_and_recommendation(self):
-        with closing(sqlite3.connect(self.boards['one'])) as db:
-            db.execute("UPDATE tasks SET body=?",
-                       ('ASK: Which owner profile should own the adapter?\n'
-                        ' A) head-coordinator — route replies through the coordinator only\n'
-                        ' B) gateway — **keep** the existing profile as owner\n'
-                        'NEEDED FROM YOU: choose A or B\n'
-                        'IF UNANSWERED: adapter rollout stays blocked\n'
-                        'Context: Two lanes share the same paired endpoint. This splits '
-                        'handling of authenticated owner traffic.',))
-            db.commit()
-        alerts.tick(self.root, now=1000)
+        self.mark('one', 'ASK: Where should phone replies go?\n'
+                  ' A) Use the existing assistant for replies\n'
+                  ' B) Keep the current setup\n'
+                  'Blocking: Phone replies currently reach two assistants.\n'
+                  'Why owner: Only you can choose which assistant handles your replies.\n'
+                  'Unblock: Choose A to use one assistant, or B to keep the current setup.')
+        alerts.tick(self.root)
         message = self.sent[0]
-        self.assertIn('D1 · one', message)
-        self.assertIn('Blocking: Which owner profile should own the adapter?', message)
-        self.assertIn('Why owner: If you do not act, adapter rollout stays blocked.', message)
-        self.assertIn('Recommended: A) head-coordinator — route replies through the coordinator only', message)
-        self.assertIn('Alternatives:', message)
-        # GitHub emphasis is converted to the markup SimpleX actually renders.
-        self.assertIn('B) gateway — *keep* the existing profile as owner', message)
-        self.assertNotIn('**keep**', message)
+        self.assertIn('Blocking: Phone replies currently reach two assistants.', message)
+        self.assertIn('Why owner: Only you can choose which assistant handles your replies.', message)
+        self.assertIn('Recommended: Choose A to use one assistant', message)
+        self.assertIn('A) Use the existing assistant for replies', message)
+        self.assertIn('B) Keep the current setup', message)
 
-    def test_needs_input_without_ask_reports_three_sentences(self):
-        # A needs_input card whose body is work-shaped (Goal/Change), not a gate
-        # (no ASK/options), used to reach the phone as a bare "Details required"
-        # stub. It must now carry what/why/recommended in full.
-        reason = 'Upstream review rejected the head; a corrected-source verdict is the prerequisite.'
+    def test_incomplete_blocker_is_not_sent_or_marked_delivered(self):
+        self.mark('one', 'Goal: Activate the accepted inbox.')
+        with self.assertRaisesRegex(RuntimeError, 'Coordinator must repair blocker text'):
+            alerts.tick(self.root)
+        self.assertFalse(self.sent)
+        decision = alerts.resolve(self.root, 'D1')
+        self.assertFalse(decision['compact_complete'])
+        self.assertEqual([], decision['delivered'])
         with closing(sqlite3.connect(self.boards['one'])) as db:
-            db.execute("UPDATE tasks SET body='Goal: Activate the accepted inbox.\\n"
-                       "Change: Install only the reviewed head.'")
-            db.execute('UPDATE task_events SET payload=?', (json.dumps({'reason': reason}),))
+            db.execute('INSERT INTO task_comments (task_id,author,body,created_at) VALUES (?,?,?,?)',
+                       ('t_12345678', 'head-coordinator', REPAIR_SUMMARY, 1))
             db.commit()
-        alerts.tick(self.root, now=1000)
-        message = self.sent[0]
-        self.assertIn('Blocking: Upstream review rejected the head;', message)
-        self.assertIn('Why owner:', message)
-        self.assertIn('Recommended:', message)
-        self.assertNotIn('Details required before deciding', message)
-        self.assertTrue(alerts.resolve(self.root, 'D1')['compact_complete'])
+        alerts.tick(self.root)
+        self.assertEqual(1, len(self.sent))
+        self.assertTrue(alerts.resolve(self.root, 'D2')['compact_complete'])
+        self.assertFalse(alerts.resolve(self.root, 'D1')['can_reply'])
 
     def test_plain_summary_comment_overrides_jargon_body(self):
         # The card body and block reason are internal jargon; an agent posts a
@@ -160,7 +311,7 @@ class AlertsTest(unittest.TestCase):
         self.assertTrue(alerts.resolve(self.root, 'D1')['can_reply'])
         self.assertIn('ASK: Approve repair?', alerts.details(self.root, 'D1'))
         with closing(sqlite3.connect(self.boards['one'])) as db:
-            db.execute("UPDATE tasks SET body='ASK: Approve a revised plan?'")
+            db.execute('UPDATE tasks SET body=?', ('ASK: Approve a revised plan?\n' + REPAIR_SUMMARY,))
             db.commit()
         alerts.tick(self.root, now=1001)
         self.assertEqual(2, len(self.sent))
@@ -214,33 +365,25 @@ class AlertsTest(unittest.TestCase):
         self.assertFalse(alerts.resolve(self.root, 'B1')['can_reply'])
         self.assertIn('done', alerts.details(self.root, 'B1'))
 
-    def test_inline_choices_and_large_asks_are_not_rewritten_or_silently_cut(self):
-        reason = ('Unavailable on Void. Choose a supervisor: A) XDG autostart + supervised loop (recommended), '
-                  'B) turnstile/runit user service, or C) user crontab watchdog. Details: /receipt.md')
+    def test_inline_choices_without_coordinator_summary_are_not_sent(self):
         with closing(sqlite3.connect(self.boards['one'])) as db:
             db.execute("UPDATE tasks SET body='Goal: Install approved supervision.'")
-            db.execute('UPDATE task_events SET payload=?', (json.dumps({'reason': reason}),))
+            db.execute('UPDATE task_events SET payload=?',
+                       (json.dumps({'reason': 'Choose a supervisor: A) Autostart, B) Wait'}),))
             db.commit()
-        alerts.tick(self.root, now=1000)
-        self.assertIn('A) XDG autostart + supervised loop (recommended)', self.sent[0])
-        self.assertIn('C) user crontab watchdog', self.sent[0])
-        self.assertNotIn('/receipt.md', self.sent[0])
-        self.assertNotIn('Approve', self.sent[0])
-        with closing(sqlite3.connect(self.boards['one'])) as db:
-            db.execute('UPDATE tasks SET body=?', ('ASK: ' + 'Scope ' * 500 + '\n A) Accept\n B) Reject',))
-            db.commit()
-        alerts.tick(self.root, now=1001)
-        self.assertIn('Details required before deciding', self.sent[-1])
-        self.assertNotIn('A) Accept', self.sent[-1])
-        self.assertFalse(alerts.resolve(self.root, 'D2')['compact_complete'])
-        self.assertLess(len(self.sent[-1]), 500)
+        with self.assertRaises(RuntimeError):
+            alerts.tick(self.root)
+        self.assertFalse(self.sent)
+        self.assertFalse(alerts.resolve(self.root, 'D1')['compact_complete'])
 
-    def test_conflicting_card_and_block_reason_choices_require_details(self):
+    def test_conflicting_card_and_block_reason_choices_are_not_sent(self):
         with closing(sqlite3.connect(self.boards['one'])) as db:
-            db.execute('UPDATE task_events SET payload=?', (json.dumps({'reason': 'Revised ask: A) Replace framework, B) Defer'}),))
+            db.execute('UPDATE task_events SET payload=?',
+                       (json.dumps({'reason': 'Revised ask: A) Replace framework, B) Defer'}),))
             db.commit()
-        alerts.tick(self.root, now=1000)
-        self.assertIn('Details required before deciding', self.sent[0])
+        with self.assertRaisesRegex(RuntimeError, 'conflicting approval choices'):
+            alerts.tick(self.root)
+        self.assertFalse(self.sent)
         self.assertFalse(alerts.resolve(self.root, 'D1')['compact_complete'])
 
     def test_worker_diagnostics_fill_empty_legacy_block_reasons(self):
@@ -279,7 +422,7 @@ class AlertsTest(unittest.TestCase):
     def test_technical_labels_persist_but_never_send(self):
         with closing(sqlite3.connect(self.boards['two'])) as db:
             for number in range(20):
-                db.execute('INSERT INTO tasks VALUES (?, ?, ?, ?, ?)', (f't_extra_{number}', f'Recover worker {number}', '', 'blocked', 'capability'))
+                db.execute('INSERT INTO tasks (id,title,body,status,block_kind) VALUES (?, ?, ?, ?, ?)', (f't_extra_{number}', f'Recover worker {number}', '', 'blocked', 'capability'))
             db.commit()
         alerts.tick(self.root, now=1000)
         self.assertEqual(1, len(self.sent))  # only the decision
@@ -301,20 +444,22 @@ class AlertsTest(unittest.TestCase):
         body = ('ASK: Choose a recovery mechanism\n for this host?\n'
                 ' A) Restore the worker\n  with existing credentials\n'
                 ' B) Pause work\n  until capacity returns\n'
-                'NEEDED FROM YOU: choose A or B\nContext: The worker is down and queued work is stuck.')
+                'Blocking: The worker is down and queued work is stuck.\n'
+                'Why owner: Recovery needs credentials that only you hold.\n'
+                'Unblock: Choose A to restore access, or B to pause work.')
         with closing(sqlite3.connect(self.boards['one'])) as db:
             db.execute('UPDATE tasks SET body=?', (body,))
             for number in range(12):
-                db.execute('INSERT INTO tasks VALUES (?, ?, ?, ?, ?)', (f't_new_{number}', 'Recover worker', body, 'blocked', 'needs_input'))
+                db.execute('INSERT INTO tasks (id,title,body,status,block_kind) VALUES (?, ?, ?, ?, ?)', (f't_new_{number}', 'Recover worker', body, 'blocked', 'needs_input'))
             db.commit()
         alerts.tick(self.root, now=1000)
         decisions = [m for m in self.sent if m.startswith('*Hard Blocker*')]
         self.assertGreater(len(decisions), 1)
         self.assertTrue(all(len(m) <= 1600 for m in decisions))
-        self.assertIn('Choose a recovery mechanism for this host?', decisions[0])
-        self.assertIn('Why owner: This needs you to choose A or B.', decisions[0])
-        self.assertIn('Recommended: A) Restore the worker with existing credentials', decisions[0])
-        self.assertIn('Alternatives:', decisions[0])
+        self.assertIn('Blocking: The worker is down and queued work is stuck.', decisions[0])
+        self.assertIn('Why owner: Recovery needs credentials that only you hold.', decisions[0])
+        self.assertIn('Recommended: Choose A to restore access, or B to pause work.', decisions[0])
+        self.assertIn('Choices:', decisions[0])
         self.assertIn('B) Pause work until capacity returns', decisions[0])
         self.assertNotIn('Context:', decisions[0])
         # An explicit pull with nothing waiting answers instead of going quiet.
@@ -416,7 +561,7 @@ class AlertsTest(unittest.TestCase):
         self.assertEqual(1, len(self.sent))
 
     def test_dry_run_and_fenced_workers_do_not_send(self):
-        self.mark('two', 'Hard Blocker\nGoal: Sign.')
+        self.mark('two', 'Hard Blocker\nGoal: Sign.\n' + REPAIR_SUMMARY)
         with redirect_stdout(StringIO()) as preview:
             alerts.tick(self.root, dry_run=True)
         self.assertIn('Hard Blocker', preview.getvalue())
@@ -447,6 +592,10 @@ class AlertsTest(unittest.TestCase):
     def test_install_preserves_policy_and_job_state(self):
         soul = self.env.parent / 'SOUL.md'
         soul.write_text('# Head\nKeep existing deploy policy.\n')
+        (soul.parent / 'config.yaml').write_text('model: keep-head-model\n')
+        auditor = self.root / 'profiles/project-auditor/SOUL.md'
+        auditor.parent.mkdir(parents=True)
+        auditor.write_text('# Auditor\nKeep existing assessment policy.\n')
         cron = self.root / 'cron/jobs.json'
         cron.parent.mkdir()
         job = {'name': alerts.JOB, 'script': 'kanban-owner-alerts.py', 'no_agent': True,
@@ -456,13 +605,19 @@ class AlertsTest(unittest.TestCase):
         installed = soul.read_text()
         self.assertIn('Keep existing deploy policy.', installed)
         self.assertIn('kanban_comment', installed)
+        self.assertIn('owner-blocker-authoring-guard.py', (soul.parent / 'config.yaml').read_text())
+        self.assertIn('model: keep-head-model', (soul.parent / 'config.yaml').read_text())
+        self.assertIn('sole author', auditor.read_text())
+        self.assertIn('Keep existing assessment policy.', auditor.read_text())
+        installed_auditor = auditor.read_text()
         alerts.install(self.root)
         self.assertEqual(installed, soul.read_text())
+        self.assertEqual(installed_auditor, auditor.read_text())
         soul.write_text(installed + '\n## Another policy\nPreserve this later addition.\n')
         alerts.install(self.root)
         self.assertIn('Preserve this later addition.', soul.read_text())
         self.assertFalse(json.loads(cron.read_text())['jobs'][0]['enabled'])
-        self.assertEqual(1, len(list((self.root / 'backups/owner-alerts').glob('*.md'))))
+        self.assertEqual(3, len(list((self.root / 'backups/owner-alerts').glob('*.md'))))
 
 unittest.main(argv=['alerts'], verbosity=2)
 PY

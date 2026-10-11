@@ -101,3 +101,6 @@ grep -q 'UNTRACKED_ROOT :: stray' <<<"$out4" || fail "a done card suppressed a c
 pass "a completed card does not suppress its candidate"
 
 echo "✅ steward-opportunity-scan"
+
+# The scanner and report agent share the same read-only profile contract.
+bash "$TESTS_REPO_ROOT/scripts/tests/test-steward-readonly.sh"

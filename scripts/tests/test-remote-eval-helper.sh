@@ -92,17 +92,23 @@ echo "  ✅ warns, records a reason, and still returns the value when the target
 
 # --- opt-out is honoured ------------------------------------------------------
 #
-# REMOTE_EVAL=0 must never attempt the network. Point it at a blackhole and
-# confirm it completes quickly rather than waiting on a connect timeout.
-opt_out_start=$SECONDS
+# REMOTE_EVAL=0 must never invoke the remote transport. Observe SSH directly:
+# elapsed time also includes local evaluation and store-lock/CPU contention.
+# A slow workstation is not evidence that the opt-out contacted a server.
+spy_dir="$(mktemp -d "${TMPDIR:-/tmp}/nixhomeserver-remote-eval-spy.XXXXXX")"
+trap 'rm -rf "$spy_dir"' EXIT
+cat >"$spy_dir/ssh" <<'EOF'
+#!/usr/bin/env bash
+printf 'called\n' >>"$REMOTE_EVAL_SSH_SPY"
+exit 99
+EOF
+chmod +x "$spy_dir/ssh"
+PATH="$spy_dir:$PATH" REMOTE_EVAL_SSH_SPY="$spy_dir/calls" \
 REMOTE_EVAL=0 REMOTE_EVAL_HOST="dsaw@192.0.2.1" \
   remote_eval_batch_json 'hostId=f.nixosConfigurations.server.config.networking.hostId' \
   >/dev/null 2>&1 || fail "REMOTE_EVAL=0 evaluation failed"
-opt_out_elapsed=$(( SECONDS - opt_out_start ))
 
-if ((opt_out_elapsed > 20)); then
-  fail "REMOTE_EVAL=0 appears to have attempted the network (${opt_out_elapsed}s)"
-fi
+[[ ! -e "$spy_dir/calls" ]] || fail "REMOTE_EVAL=0 invoked SSH"
 
 echo "  ✅ REMOTE_EVAL=0 stays local"
 echo "✅ remote-eval helper regression test passed"

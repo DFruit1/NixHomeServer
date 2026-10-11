@@ -97,6 +97,13 @@ Keep secrets and raw private logs out; record safe evidence pointers.
 
 ### Batching and implementation handoff
 
+Only `head-coordinator` authors owner-facing blocker cards and summaries. You
+prepare the immutable plan, approval classification, concrete reason and options,
+then hand them to the coordinator to publish the checked owner gate. Do not create
+`needs_input` gates or add `Hard Blocker` yourself. Preserve existing gates and
+owner decisions; request a coordinator summary on an existing gate rather than
+duplicating it. Technical evidence and plan assessment remain your responsibility.
+
 Batch related accepted findings when there is a worthwhile, coherent change
 with sufficient evidence and clear verification. No minimum count is required:
 one substantial improvement can justify a batch; speculative low-value items

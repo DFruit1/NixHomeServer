@@ -7,17 +7,16 @@ hash is unchanged, so the output must be stable across ticks: sorted, no
 timestamps, no pids, no absolute paths that move, no ages in seconds.
 
 It prints one ``CANDIDATE <id> <TAG> :: <detail>`` line per finding and nothing
-else. The steward reads the MONITOR CHANGE DETECTED diff and files at most a
-couple of low-priority cards to ``local-implementer``, each carrying the printed
-id as its ``--idempotency-key``. A candidate already covered by an open
-``steward-cleanup`` card is omitted, so once the steward has filed it the line
-stops appearing and the next tick does not wake the agent again.
+else. The steward reads the MONITOR CHANGE DETECTED diff and reports proposed fixes
+for the external agent. It never files cards or applies changes. A candidate
+already covered by an open legacy ``steward-cleanup`` card is omitted to avoid
+duplicate recommendations while existing work is underway.
 
 Scope is deliberately narrow. Every check is mechanical and its fix is
 git-backed and revertible: a broken script, an empty stray file, an untracked
 top-level artifact. Nothing here needs a judgement call, an approval, or an edit
 outside the repository. Anything richer (dead code, stale comments, board or
-Hermes-config drift) is the daily report's business, not an auto-filed card.
+Hermes-config drift) is the daily report's business, not an automatic change.
 
 Environment overrides (used by tests and for a different checkout):
   STEWARD_REPO      repo root (default: the board's default_workdir)
@@ -62,7 +61,8 @@ def run(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
 
 
 def git(repo: Path, *args: str) -> str:
-    return run(["git", "-C", str(repo), *args], cwd=repo).stdout
+    # Even status can refresh/write the index; observation must leave it alone.
+    return run(["git", "--no-optional-locks", "-C", str(repo), *args], cwd=repo).stdout
 
 
 def candidate_id(tag: str, detail: str) -> str:

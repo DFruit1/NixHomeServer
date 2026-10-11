@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Collect a read-only daily snapshot of every Hermes kanban board.
 
-Injected into the daily board-steward cron prompt. It never mutates a board: the
-steward agent decides what to unblock, this script only reports what exists so the
-agent reasons over real state instead of guessing. Output is compact text.
+Injected into the daily board-steward cron prompt. It never mutates a board:
+the steward reports findings and proposed remedies using real state. Existing
+Python/SQLite operations glue; no new backend or dependency. Output is compact text.
 """
 
 from __future__ import annotations
@@ -43,9 +43,7 @@ def snapshot_board(slug: str) -> list[str]:
         counts = dict(one(conn, "select status, count(*) from tasks group by status"))
         out.append("counts: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
 
-        midnight = int(
-            dt.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
-        )
+        since = int(time.time()) - 24 * 60 * 60
 
         blocked = one(
             conn,
@@ -75,9 +73,9 @@ def snapshot_board(slug: str) -> list[str]:
             conn,
             "select id, assignee, title from tasks where status='done' and completed_at>=?"
             " order by completed_at",
-            (midnight,),
+            (since,),
         )
-        out.append(f"TODAY DONE ({len(done)}):")
+        out.append(f"LAST 24H DONE ({len(done)}):")
         for tid, who, title in done:
             out.append(f"- {tid} @{who or '?'} :: {title}")
 
@@ -87,9 +85,9 @@ def snapshot_board(slug: str) -> list[str]:
             " from task_runs where started_at>=? and (status in"
             " ('crashed','timed_out','failed') or outcome in"
             " ('crashed','timed_out','spawn_failed','gave_up')) order by started_at",
-            (midnight,),
+            (since,),
         )
-        out.append(f"TODAY FAILED RUNS ({len(runs)}):")
+        out.append(f"LAST 24H FAILED RUNS ({len(runs)}):")
         for tid, prof, status, outcome, summary, err in runs:
             detail = (err or summary or "").strip().replace("\n", " ")[:160]
             out.append(f"- {tid} @{prof or '?'} status={status} outcome={outcome or '?'} :: {detail}")
