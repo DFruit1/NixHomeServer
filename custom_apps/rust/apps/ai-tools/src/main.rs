@@ -560,15 +560,34 @@ mod tests {
             .map(str::to_owned)
             .expect("handshake returns a session id");
 
-        for caller in [
-            "ai-users-only caller",
-            "shared-group caller",
-            "unauthenticated caller",
+        for (caller, path, identity) in [
+            (
+                "ai-users-only caller",
+                "private/report.docx",
+                Some("ai-users-only"),
+            ),
+            (
+                "shared-group caller",
+                "shared/report.docx",
+                Some("shared-group"),
+            ),
+            ("unauthenticated caller", "shared/report.docx", None),
         ] {
+            let mut caller_headers = headers.clone();
+            if let Some(identity) = identity {
+                // A gateway-forwarded identity header is a claim about the
+                // caller, not caller permission; the suspended tool must ignore
+                // it. Sending it is the point, so the control covers callers
+                // both with and without identity headers.
+                caller_headers.insert(
+                    "x-ai-tools-identity",
+                    HeaderValue::from_str(identity).expect("identity header"),
+                );
+            }
             let response = router_with_session(
                 &app,
-                convert_document_transport_body(caller),
-                &headers,
+                convert_document_transport_body(caller, path, identity),
+                &caller_headers,
                 &session_id,
             )
             .await;
@@ -578,22 +597,18 @@ mod tests {
                 "{caller}: transport refusal should carry the fixed message, got {body}"
             );
             assert!(
-                !body.contains("shared/") && !body.contains("private/"),
+                !body.contains("report.docx")
+                    && !body.contains("shared/")
+                    && !body.contains("private/"),
                 "{caller}: refusal must not disclose filesystem paths, got {body}"
             );
         }
     }
 
-    fn convert_document_transport_body(caller: &str) -> String {
-        // An identity header is a claim the gateway forwards; the suspended
-        // tool must ignore it rather than treat it as caller permission.
-        let identity = match caller {
-            "ai-users-only caller" => "ai-users-only",
-            "shared-group caller" => "shared-group",
-            _ => "",
-        };
+    fn convert_document_transport_body(caller: &str, path: &str, identity: Option<&str>) -> String {
+        let identity = identity.unwrap_or_default();
         format!(
-            r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"convert_document","arguments":{{"path":"{caller}/report.docx","identity":"{identity}"}}}}}}"#,
+            r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"convert_document","arguments":{{"path":"{path}","caller":"{caller}","identity":"{identity}"}}}}}}"#,
         )
     }
 
@@ -695,6 +710,66 @@ mod tests {
             b"PK\x03\x04 synthetic docx body",
             "denial must not consume the document"
         );
+    }
+
+    /// Conversion must not reach the Collabora upstream either. A loopback
+    /// listener records every connection: it first proves it counts by taking a
+    /// control connection, then the real handler converts a real supported
+    /// document and the count must not move.
+    #[tokio::test]
+    async fn denial_never_contacts_the_collabora_upstream() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind a Collabora stand-in");
+        let address = listener.local_addr().expect("stand-in address");
+        let connections = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&connections);
+        let accept = tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                counter.fetch_add(1, Ordering::SeqCst);
+                drop(stream);
+            }
+        });
+
+        // Control: the stand-in really does observe a connection, so a zero
+        // below is the denial's doing and not a listener that never counted.
+        let _probe = tokio::net::TcpStream::connect(address)
+            .await
+            .expect("control connection");
+        let mut observed = false;
+        for _ in 0..50 {
+            if connections.load(Ordering::SeqCst) == 1 {
+                observed = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            observed,
+            "the Collabora stand-in failed to observe the control connection"
+        );
+
+        let root = SyntheticSharedRoot::new("collabora");
+        let document = root.write("report.docx", b"PK\x03\x04 synthetic docx body");
+        let mut config = test_config();
+        config.collabora_base = format!("http://{address}");
+        let server = Server {
+            config: Arc::new(config),
+        };
+        let arguments = path_arguments(document.to_str().expect("path is UTF-8"));
+        let error = server
+            .run_convert_document(Some(arguments))
+            .await
+            .expect_err("conversion must be denied");
+        assert_eq!(error.message, CONVERT_DOCUMENT_DENIAL_MESSAGE);
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            connections.load(Ordering::SeqCst),
+            1,
+            "conversion must not contact the Collabora upstream"
+        );
+        accept.abort();
     }
 
     /// Source-level guarantee that denial precedes every path or file call, not
