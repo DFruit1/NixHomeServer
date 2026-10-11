@@ -25,11 +25,19 @@ Steps:
      Constraints:
      - <one per line>
 
-3. If no candidate qualifies, do nothing. Print one short line saying so and stop. Silence is a good outcome; do not manufacture work.
+3. CROSS-LANE FILING (administrative only). To keep a stuck item moving you may also file ONE card per run for a lane other than local-implementer, but only administrative or routing work: restore a repo-tracked config, collect missing evidence, re-route a mis-assigned card, verify a claimed result. Use the create command above with the other lane's name, tenant steward-route and priority 0:
+
+   hermes kanban --board <slug> create "<short imperative title>" \
+     --assignee <lane> --tenant steward-route --created-by board-steward \
+     --priority 0 --workspace worktree --body-file -
+
+   Never file implementation work on privileged paths (SFTP, sudo, identity, credentials), never a card that needs owner approval, never anything with architecture, dependency, framework, runtime, frontend or user-visible behaviour change, and never for a lane you cannot name exactly. If in doubt, file nothing.
+
+4. If no candidate qualifies and no cross-lane administrative card is warranted, do nothing. Print one short line saying so and stop. Silence is a good outcome; do not manufacture work.
 
 Hard limits:
 
-- Repo only. The worktree is /home/dsaw/Projects/NixOS. Never read, edit or file work against ~/.hermes or any running config — that is out of scope.
+- Repo only for anything you do yourself. The worktree is /home/dsaw/Projects/NixOS. Never read or edit ~/.hermes or any running config: the one thing that may reference it is an administrative card filed for another lane under step 3.
 - No card that needs owner approval: no architecture, no dependency/framework/runtime changes, no secrets or credentials, no frontend/UI, no user-visible behaviour change.
 - Never implement anything yourself, never claim or review a card, never unblock or comment on cards that are not yours. No deploy.
 - The -10 priority is deliberate: urgent and sensitive local-implementer work must always run first. Do not raise it.

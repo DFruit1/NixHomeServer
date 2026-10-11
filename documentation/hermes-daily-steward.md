@@ -28,6 +28,7 @@ Each run it:
 | Collector (board snapshot) | `scripts/hermes/kanban-daily-steward.py` |
 | Opportunity scanner (monitor source) | `scripts/hermes/steward-opportunity-scan.py` |
 | SimpleX group sender (outbound) | `scripts/hermes/simplex-send-group.sh`, `scripts/hermes/simplex_send_group.py` |
+| Interactive charter (SOUL template) | `scripts/hermes/steward-soul.md` |
 | Daily cron prompt | `scripts/hermes/daily-steward-prompt.txt` |
 | Opportunity cron prompt | `scripts/hermes/steward-opportunity-prompt.txt` |
 | Installer | `scripts/hermes/install-daily-steward.sh` |
@@ -37,6 +38,14 @@ The collector is installed to the profile's script dir
 resolved relative to that home; the sender stays in the shared root
 (`~/.hermes/scripts/`) because it needs the bundled Python and the SimpleX
 credentials, which live there, not in a profile home.
+
+`~/.hermes` is untracked, so none of the live half survives a wipe or a rebuilt
+workstation. The installer puts it back from the repository: the scripts, the
+charter (`scripts/hermes/steward-soul.md` → the profile's `SOUL.md`, the
+identity and the standing powers the interactive group turns run with), and the
+prompt of each of the two cron jobs — the daily job and the opportunity scan.
+Each piece is written only when it differs, so a second run changes nothing and
+an operator can re-run it after any rebuild.
 
 ## Opportunity cleanup
 
@@ -75,8 +84,10 @@ frontend, or user-visible behaviour change.
 ## Powers granted by the owner (2026-10-11)
 
 These extend the steward beyond read-only, each with the guardrail stated here.
-They are the normative spec for the daily steward prompt and the interactive
-charter, and the owner can withdraw any of them.
+They are the normative spec for the daily steward prompt
+(`scripts/hermes/daily-steward-prompt.txt`) and the interactive charter
+(`scripts/hermes/steward-soul.md`, installed to the profile's `SOUL.md`), and
+the owner can withdraw any of them.
 
 * **Board surgery** — unlink/link dependencies, promote, schedule, reassign
   between existing lanes when a card is stuck on structure or a worker-toolset
@@ -148,8 +159,9 @@ gateway restart is required.
    `~/.hermes/profiles/board-steward/config.yaml`, add a `fallback_providers`
    entry of `custom:opencode-go` / `gpt-6-luna`, and add `kanban` to
    `platform_toolsets.cli`.
-2. Overwrite its SOUL with the steward identity (see the installed
-   `~/.hermes/profiles/board-steward/SOUL.md`).
+2. The charter is the repository file `scripts/hermes/steward-soul.md`, installed
+   to `~/.hermes/profiles/board-steward/SOUL.md` by the installer in step 4; do
+   not hand-write the live SOUL, or the next rebuild loses the grant.
 3. Create a SimpleX group with the bot and invite the owner, then write
    `~/.hermes/profiles/board-steward/.env`:
    ```
@@ -164,7 +176,11 @@ gateway restart is required.
    the owner sends: the steward logs `Unauthorized user: <id> (David)`, and that
    `<id>` is the value to allow. Also add `simplex:` to `platform_toolsets` in the
    profile config, mirroring the `cli:` list, so group turns have the same tools.
-4. Install and schedule: `scripts/hermes/install-daily-steward.sh`.
+4. Install and schedule: `sh scripts/hermes/install-daily-steward.sh`. It
+   installs the scripts, the SOUL charter and both cron jobs, and refreshes the
+   prompt of a job whose live text no longer matches the repository file. Re-run
+   it after a wipe or a rebuild; a second run reports every piece as already
+   current and edits nothing.
 
 ## Verification
 
@@ -173,7 +189,14 @@ python3 ~/.hermes/scripts/kanban-daily-steward.py            # snapshot renders
 ~/.hermes/scripts/steward-opportunity-scan.py               # candidate lines, or empty when clean
 printf 'test\n' | ~/.hermes/scripts/simplex-send-group.sh 1  # exit 0, group gets it
 hermes --profile board-steward cron list                     # daily 08:00 + 2-hourly monitor job
+sh scripts/hermes/install-daily-steward.sh                   # idempotent: a re-run changes nothing
+cmp scripts/hermes/steward-soul.md ~/.hermes/profiles/board-steward/SOUL.md  # charter matches the repo
 ```
+
+The readback the installer is checked against: after it runs, the live `SOUL.md`
+byte-matches `scripts/hermes/steward-soul.md`, and each live cron prompt matches
+its repository file — read them from `~/.hermes/profiles/board-steward/cron/jobs.json`,
+whose `prompt` field is the file's text without the trailing newline.
 
 The scanner prints nothing when the repo is clean, which is the healthy state:
 the monitor then suppresses the agent run every tick.
