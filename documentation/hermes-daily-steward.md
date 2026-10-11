@@ -116,6 +116,22 @@ new architecture or user-visible behaviour.
 
 ## Channel separation and the owner channel
 
+### Target arrangement (owner decision, 2026-10-11)
+
+The owner asked for one channel per profile: two separate DM channels, with the
+steward group retired. That needs a *second SimpleX identity* for the steward —
+every profile currently shares one instance (data dir
+`~/.local/state/hermes-simplex-chat/simplex_v1`, port 5225), so the owner's single
+DM is delivered to every profile's adapter and no allowlist can separate it
+(the profile allowlist gates group senders only).
+
+Sequence, not to be reordered: second instance and port → owner pairs with the
+new address → the steward rebinds to that endpoint and moves its daily report
+there → group 1 is retired last. Until the new DM is paired and receiving, the
+steward keeps working in group 1 and stays silent on the DM. The service side is
+routed by `head-coordinator` (steward-route card on the pcops board); the steward
+performs its own binding and prompt changes.
+
 The steward's reports go to a SimpleX **group** (id 1), and the owner replies
 there — that group is the owner's separate instructions/notes channel, distinct
 from head-coordinator's DM:
