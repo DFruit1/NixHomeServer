@@ -53,11 +53,13 @@ STALE_TIMEOUT_SEC="${STALE_TIMEOUT_SEC:-5400}"
 # Profile directories that must not appear in the dispatcher's claim allowlist,
 # with the reason each is absent. `default` runs cron jobs and infrastructure and
 # is never a card worker; principal-consultant is invoked by a human in a
-# conversation and must never be spawned. Everything else that exists as a
-# profile directory and is missing from the allowlist is drift, because a card
-# assigned to such a lane is skipped as nonspawnable and starves in `ready` in
-# silence -- which is the whole failure the lane rename had to be careful about.
-DISPATCH_EXCLUDED_PROFILES="${DISPATCH_EXCLUDED_PROFILES:-default principal-consultant}"
+# conversation and must never be spawned; board-steward is a watchdog that reads
+# the board and performs surgery, and never claims a card itself. Everything
+# else that exists as a profile directory and is missing from the allowlist is
+# drift, because a card assigned to such a lane is skipped as nonspawnable and
+# starves in `ready` in silence -- which is the whole failure the lane rename
+# had to be careful about.
+DISPATCH_EXCLUDED_PROFILES="${DISPATCH_EXCLUDED_PROFILES:-default principal-consultant board-steward}"
 
 check_only=false
 [[ "${1:-}" == "--check" ]] && check_only=true

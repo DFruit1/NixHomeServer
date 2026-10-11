@@ -50,7 +50,7 @@ trap 'rm -rf "$fixture"' EXIT
 
 HERMES_FIXTURE="$fixture/hermes"
 LANES=(default head-coordinator feature-reviewer standard-implementer project-auditor
-       local-implementer principal-consultant)
+       local-implementer principal-consultant board-steward)
 mkdir -p "$HERMES_FIXTURE"
 
 for lane in "${LANES[@]}"; do
@@ -340,6 +340,8 @@ grep -q 'skip: default is not a card lane' <<<"$missing_lane_out" ||
   fail "the default profile, which is not a card lane, was reported as drift"
 grep -q 'skip: principal-consultant is not a card lane' <<<"$missing_lane_out" ||
   fail "principal-consultant, which is never spawned, was reported as drift"
+grep -q 'skip: board-steward is not a card lane' <<<"$missing_lane_out" ||
+  fail "board-steward, the watchdog that never claims a card, was reported as drift"
 pass "does not report the deliberately unclaimed profiles as drift"
 
 write_config
