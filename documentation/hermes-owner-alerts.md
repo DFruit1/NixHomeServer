@@ -79,6 +79,18 @@ summary. Post a comment with plain `Blocking:`, `Why owner:` and `Unblock:`
 lines and the phone message uses that instead of the body, and re-sends when it
 changes.
 
+## Blocker card structure (hard rule)
+
+Every blocked card carries exactly three plain-English lines, in this order —
+`Blocking:` (the concrete problem), `Why owner:` (the specific wall the
+coordinating agent hit and could not clear itself), `Unblock:` (the exact action
+the owner takes) — on the body or as a summary comment. The block is **≤ 1000
+characters in total** and each line ≤ 90 characters: no card/board/kanban or
+workflow jargon, no task ids, no commit hashes, no internal role or label names,
+and never "inspect details". A missing or jargon-filled field produces an
+unusable alert, so cut to the concrete problem and the concrete action rather
+than compress the jargon to fit.
+
 A decision pushes when it appears and again only when the ask changes.
 
 ## Urgent regressions
