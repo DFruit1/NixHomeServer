@@ -233,9 +233,200 @@ fn parse_time(token: &str) -> Option<u64> {
     Some(total_ms + fraction_ms)
 }
 
+fn render_subtitle(cues: &[SubtitleCue], vtt: bool) -> Result<String, String> {
+    const ERROR: &str = "subtitle cues cannot be rendered";
+    let mut output = if vtt {
+        "WEBVTT\n\n".to_string()
+    } else {
+        String::new()
+    };
+    let mut previous_index = None;
+    let mut previous_start = None;
+
+    for cue in cues {
+        if cue.index == 0
+            || previous_index.is_some_and(|index| cue.index <= index)
+            || previous_start.is_some_and(|start| cue.start_ms < start)
+            || cue.end_ms <= cue.start_ms
+            || cue.text.is_empty()
+            || cue.text.trim() != cue.text
+            || cue.text.contains(['\r', '\0'])
+            || cue.text.contains("-->")
+            || cue.text.split('\n').any(|line| line.trim().is_empty())
+        {
+            return Err(ERROR.to_string());
+        }
+        previous_index = Some(cue.index);
+        previous_start = Some(cue.start_ms);
+        output.push_str(&cue.index.to_string());
+        output.push('\n');
+        let separator = if vtt { '.' } else { ',' };
+        for (position, timestamp) in [cue.start_ms, cue.end_ms].into_iter().enumerate() {
+            if position != 0 {
+                output.push_str(" --> ");
+            }
+            let hours = timestamp / 3_600_000;
+            let minutes = (timestamp / 60_000) % 60;
+            let seconds = (timestamp / 1_000) % 60;
+            let millis = timestamp % 1_000;
+            use std::fmt::Write as _;
+            write!(
+                output,
+                "{hours:02}:{minutes:02}:{seconds:02}{separator}{millis:03}"
+            )
+            .expect("writing to String cannot fail");
+        }
+        output.push('\n');
+        output.push_str(&cue.text);
+        output.push_str("\n\n");
+    }
+    Ok(output)
+}
+
+pub(crate) fn render_srt(cues: &[SubtitleCue]) -> Result<String, String> {
+    render_subtitle(cues, false)
+}
+
+pub(crate) fn render_vtt(cues: &[SubtitleCue]) -> Result<String, String> {
+    render_subtitle(cues, true)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{parse_srt, parse_subtitle, subtitle_validation};
+    use super::{
+        parse_srt, parse_subtitle, render_srt, render_vtt, subtitle_validation, SubtitleCue,
+    };
+
+    fn cue(index: u64, start_ms: u64, end_ms: u64, text: &str) -> SubtitleCue {
+        SubtitleCue {
+            index,
+            start_ms,
+            end_ms,
+            text: text.to_string(),
+        }
+    }
+
+    #[test]
+    fn serializers_render_literal_single_and_multiple_cue_goldens() {
+        let single = [cue(7, 1_000, 2_345, "One")];
+        assert_eq!(
+            render_srt(&single).unwrap(),
+            "7\n00:00:01,000 --> 00:00:02,345\nOne\n\n"
+        );
+        assert_eq!(
+            render_vtt(&single).unwrap(),
+            "WEBVTT\n\n7\n00:00:01.000 --> 00:00:02.345\nOne\n\n"
+        );
+
+        let cues = vec![
+            cue(2, 0, 1, "héllo\n<strong>&amp;</strong>"),
+            cue(9, 3_661_001, 3_661_999, "world"),
+        ];
+        assert_eq!(render_srt(&[]).unwrap(), "");
+        assert_eq!(render_vtt(&[]).unwrap(), "WEBVTT\n\n");
+        let srt = render_srt(&cues).unwrap();
+        let vtt = render_vtt(&cues).unwrap();
+        assert_eq!(srt, "2\n00:00:00,000 --> 00:00:00,001\nhéllo\n<strong>&amp;</strong>\n\n9\n01:01:01,001 --> 01:01:01,999\nworld\n\n");
+        assert_eq!(vtt, "WEBVTT\n\n2\n00:00:00.000 --> 00:00:00.001\nhéllo\n<strong>&amp;</strong>\n\n9\n01:01:01.001 --> 01:01:01.999\nworld\n\n");
+        assert!(!srt.contains('\r'));
+        assert!(!vtt.contains('\r'));
+        assert!(!srt.starts_with('\u{feff}'));
+        assert!(!vtt.starts_with('\u{feff}'));
+        assert!(srt.ends_with("\n\n"));
+        assert!(vtt.ends_with("\n\n"));
+    }
+
+    #[test]
+    fn serializers_round_trip_overlap_and_fast_reading_without_mutation() {
+        let cues = vec![
+            cue(
+                2,
+                0,
+                100,
+                "This is deliberately much too long to read quickly.",
+            ),
+            cue(9, 50, 1_000, "overlapping cue"),
+        ];
+        let original = cues.clone();
+        let srt_first = render_srt(&cues).unwrap();
+        let vtt_first = render_vtt(&cues).unwrap();
+        assert_eq!(render_srt(&cues).unwrap(), srt_first);
+        assert_eq!(render_vtt(&cues).unwrap(), vtt_first);
+        for parsed in [
+            parse_srt(&srt_first).unwrap(),
+            parse_srt(&vtt_first).unwrap(),
+        ] {
+            assert_eq!(parsed.len(), cues.len());
+            for (actual, expected) in parsed.iter().zip(&cues) {
+                assert_eq!(
+                    (actual.index, actual.start_ms, actual.end_ms, &actual.text),
+                    (
+                        expected.index,
+                        expected.start_ms,
+                        expected.end_ms,
+                        &expected.text
+                    )
+                );
+            }
+        }
+        assert_eq!(cues.len(), original.len());
+        for (actual, expected) in cues.iter().zip(&original) {
+            assert_eq!(
+                (actual.index, actual.start_ms, actual.end_ms, &actual.text),
+                (
+                    expected.index,
+                    expected.start_ms,
+                    expected.end_ms,
+                    &expected.text
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn serializers_format_timestamp_boundaries_for_both_formats() {
+        let cues = [
+            cue(1, 0, 1, "zero"),
+            cue(2, 999, 1_000, "rollover"),
+            cue(3, 59_999, 60_000, "minute"),
+            cue(4, 3_599_999, 3_600_000, "hour"),
+            cue(5, 360_000_000, u64::MAX, "extreme"),
+        ];
+        let srt = render_srt(&cues).unwrap();
+        let vtt = render_vtt(&cues).unwrap();
+        assert_eq!(srt, "1\n00:00:00,000 --> 00:00:00,001\nzero\n\n2\n00:00:00,999 --> 00:00:01,000\nrollover\n\n3\n00:00:59,999 --> 00:01:00,000\nminute\n\n4\n00:59:59,999 --> 01:00:00,000\nhour\n\n5\n100:00:00,000 --> 5124095576030:25:51,615\nextreme\n\n");
+        assert_eq!(vtt, "WEBVTT\n\n1\n00:00:00.000 --> 00:00:00.001\nzero\n\n2\n00:00:00.999 --> 00:00:01.000\nrollover\n\n3\n00:00:59.999 --> 00:01:00.000\nminute\n\n4\n00:59:59.999 --> 01:00:00.000\nhour\n\n5\n100:00:00.000 --> 5124095576030:25:51.615\nextreme\n\n");
+    }
+
+    #[test]
+    fn serializers_reject_unsupported_cues_with_same_fixed_error() {
+        let invalid = [
+            vec![cue(0, 0, 1, "secret payload")],
+            vec![cue(2, 0, 1, "x"), cue(2, 2, 3, "y")],
+            vec![cue(2, 0, 1, "x"), cue(1, 2, 3, "y")],
+            vec![cue(1, 2, 3, "x"), cue(2, 1, 4, "y")],
+            vec![cue(1, 3, 2, "x")],
+            vec![cue(1, 3, 3, "x")],
+            vec![cue(1, 0, 1, "")],
+            vec![cue(1, 0, 1, " ")],
+            vec![cue(1, 0, 1, " x")],
+            vec![cue(1, 0, 1, "x ")],
+            vec![cue(1, 0, 1, "x\ry")],
+            vec![cue(1, 0, 1, "x\r\ny")],
+            vec![cue(1, 0, 1, "x\0y")],
+            vec![cue(1, 0, 1, "x-->y")],
+            vec![cue(1, 0, 1, "x\n\ny")],
+            vec![cue(1, 0, 1, "x\n \ny")],
+            vec![cue(1, 0, 1, "ok"), cue(2, 0, 1, "secret later payload\r")],
+        ];
+        for cues in invalid {
+            let srt_error = render_srt(&cues).unwrap_err();
+            let vtt_error = render_vtt(&cues).unwrap_err();
+            assert_eq!(srt_error, vtt_error);
+            assert_eq!(srt_error, "subtitle cues cannot be rendered");
+            assert!(!srt_error.contains("secret"));
+        }
+    }
 
     #[test]
     fn standard_srt_blocks_are_parsed_with_timestamps_and_text() {
