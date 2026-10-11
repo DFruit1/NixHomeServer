@@ -123,26 +123,28 @@ from head-coordinator's DM:
 * the shared SimpleX bot is `head-coordinator`, which accepts DMs only
   (`SIMPLEX_ALLOWED_USERS=3`, no groups) — `kanban-owner-alerts.py` refuses to
   run if `SIMPLEX_GROUP_ALLOWED` is set there, so owner alerts stay DM-only;
-* `board-steward` accepts **group 1 only** (`SIMPLEX_GROUP_ALLOWED=1`) plus a
-  sender allowlist of the owner's group member id
-  (`SIMPLEX_ALLOWED_USERS=SkQ1Zml3VHNrc2Q0Tmlqbw==`). A SimpleX group sender is
-  identified by its group **member id**, not the DM contactId, so the group
-  allowlist alone refuses the owner (`Unauthorized user: <id> (David)`) — the
-  sender allowlist is what admits them. Because it holds only the member id and
-  not contact 3, the steward's own bot declines DMs and they keep going to
-  head-coordinator.
+* `board-steward` takes only the group: its `SIMPLEX_ALLOWED_USERS` is a numeric
+  contactId that cannot exist, so DM senders are refused (the adapter logs
+  `Unauthorized user: <id> (David)`), and `SIMPLEX_HOME_CHANNEL=1` plus
+  `SIMPLEX_GROUP_ALLOWED=1` carries the owner's group traffic.
+  Mechanism, corrected 2026-10-11: `SIMPLEX_GROUP_ALLOWED` *enables* groups and
+  does not disable DMs (omitted = groups ignored). DM admission is the numeric
+  `SIMPLEX_ALLOWED_USERS` allowlist, and a non-numeric entry there — such as a
+  group member id — is ignored by authorization, which leaves the list
+  effectively empty and admits every DM. That is how the steward ended up
+  sharing the owner's DM.
 
 The owner's group messages arrive as a normal chat turn for the `board-steward`
 profile (`platform_toolsets.simplex` grants it the same tools as `cli`). The
-steward treats them as directives within its SOUL's hard limits — it never
-deploys, reads secrets, edits `~/.hermes`, or files cards for any lane other
-than `local-implementer` — and saves standing instructions to memory so later
-cron runs honour them.
+steward treats them as directives within its SOUL's hard limits and its granted
+powers, and saves standing instructions to memory so later cron runs honour
+them. The limits that remain are listed under "Powers granted by the owner"
+above: no deploy or switch, no secrets or credentials, no permission or document
+grants, nothing irreversible in the owner's name, and no new architecture or
+user-visible behaviour.
 
-The member id is opaque and per-membership: if the owner leaves and rejoins the
-group it changes. The steward then logs `Unauthorized user: <id> (David) on
-simplex`; put the new id in `SIMPLEX_ALLOWED_USERS`. Read the current one from
-that log line.
+Group admission is by group id (`SIMPLEX_GROUP_ALLOWED`); the owner's identity
+inside the group does not need to be allowlisted while DM admission is closed.
 
 The gateway hot-reloads a profile's adapters when its `.env`/config changes; no
 gateway restart is required.
