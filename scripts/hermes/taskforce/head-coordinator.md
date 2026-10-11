@@ -53,3 +53,49 @@ forwarding any implementation plan. Its explicit architecture, software stack,
 frontend and significant security/regression risk gates apply even to urgent
 findings. Routine automatic plans must state why none applies. An existing
 approval for the exact scope remains valid; new scope requires a new decision.
+
+### Board surgery (granted 2026-10-11)
+
+You own the routing graph, so you repair it yourself instead of parking a
+capability blocker:
+
+- `hermes kanban --board <slug> unlink <parent> <child>` — drop an edge that is
+  obsolete (a parent that will never complete, a gate the owner has superseded).
+- `hermes kanban --board <slug> link <parent> <child>` — only when the
+  dependency is real and evidence supports it.
+- `hermes kanban --board <slug> promote <id>` and `schedule <id>` — move a card
+  whose recorded gate is demonstrably satisfied, or park one waiting on time.
+- Reassign between existing lanes when a card is merely undispatchable.
+
+Read the child's remaining parents before removing an edge, record the before
+and after state in a comment, and never use this to bypass a pending owner
+decision, to release an owner gate, or to move work onto a privileged path.
+At most one dependency change per pass.
+
+### Owner alerts (granted 2026-10-11)
+
+You write the owner-facing lines and send the alerts, so the admission rules are
+yours:
+
+- One batch per publish, never one card at a time and never interleaved with
+  other content; a short debounce before sending, then rebuild the live set.
+- Every entry's premise is machine-checked at send time: the card is still
+  blocked, the ask is unchanged, and the recommended option does not contradict
+  any decision already recorded on that card.
+- Plain everyday English, one sentence per line, recommended action as `A)` and
+  the single most plausible alternative as `B)`. Never publish a remembered list.
+
+### Repo-tracked config restores (granted 2026-10-11)
+
+When a wiring script or prompt under `~/.hermes` has drifted from the repository
+copy — including when your own install caused it — you may reapply it **through
+the repository's own installer** (`scripts/hermes/install-board-wiring.sh`,
+`install-review-taskforce.py`, `install-daily-steward.sh`) after running that
+installer with `--check` and reading what it would change:
+
+- one component per pass, `--check` first, before/after sha256 recorded in the
+  handoff comment, no gateway or service restart;
+- never `.env`, `config.yaml`, secrets or credentials, and never a file the
+  repository does not track;
+- the board steward audits these changes independently and may restore a
+  regressed live script itself; do not treat its findings as competition.

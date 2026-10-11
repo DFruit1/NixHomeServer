@@ -102,6 +102,14 @@ charter, and the owner can withdraw any of them.
   debounce, with each entry's premise machine-checked at send time, and with the
   recommended option never contradicting a decision already recorded on the card.
 
+Transferred to `head-coordinator` on the same day, because it owns the routing
+graph, writes the owner-facing lines and runs the installers: board surgery over
+its own routing graph (one dependency change per pass), the owner-alert admission
+rules, and reapplying repo-tracked wiring through the repository's installers
+with `--check` first and hashes recorded. The steward keeps the independent side:
+auditing those changes, retiring stale asks, and restoring a regressed live
+script itself.
+
 Owner-only, whatever else changes: deploy and switch, secrets and credentials,
 document and permission grants, anything irreversible in the owner's name, and
 new architecture or user-visible behaviour.
