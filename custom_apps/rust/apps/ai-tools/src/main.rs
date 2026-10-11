@@ -17,28 +17,17 @@ use rmcp::{
     },
     ErrorData, RoleServer, ServerHandler,
 };
+// Document conversion is suspended as an interim containment measure
+// (AIACL-20261011-v2): the service account's static read access to the shared
+// root is not bound to the calling user, so no server-side path resolution may
+// be performed at all. `office.rs` and its standalone converter tests stay in
+// the tree for the caller-aware restoration that will be separately approved,
+// and main.rs no longer reaches into that module.
+#[allow(dead_code)]
 mod office;
 
-use office::Converter;
 use serde::{Deserialize, Serialize};
 use std::{env, path::PathBuf, sync::Arc, time::Duration};
-
-#[derive(Debug, Deserialize)]
-struct ConvertDocumentParams {
-    #[serde(default)]
-    path: String,
-}
-
-#[derive(Clone)]
-struct Config {
-    searxng_base: String,
-    searxng_timeout: Duration,
-    max_results: usize,
-    collabora_base: String,
-    collabora_timeout: Duration,
-    shared_root: PathBuf,
-    public_host: Option<String>,
-}
 
 #[derive(Debug, Deserialize)]
 struct WebSearchParams {
@@ -50,6 +39,22 @@ struct WebSearchParams {
     language: Option<String>,
     #[serde(default)]
     max_results: Option<usize>,
+}
+
+#[derive(Clone)]
+struct Config {
+    searxng_base: String,
+    searxng_timeout: Duration,
+    max_results: usize,
+    // Conversion is suspended, so these two are no longer read by this process.
+    // They stay configured and validated so the deployment keeps publishing the
+    // same environment and a later restoration re-enables a working converter
+    // instead of discovering a stale or missing endpoint at republish time.
+    #[allow(dead_code)]
+    collabora_base: String,
+    #[allow(dead_code)]
+    shared_root: PathBuf,
+    public_host: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -65,31 +70,13 @@ instance. Returns ranked results with titles, URLs and snippets. Use it for curr
 for facts you are unsure about, or for anything that needs a source. Prefer the user's own files \
 and context when the question is about them.";
 
-const CONVERT_DOCUMENT_DESCRIPTION: &str = "Convert an office document to text so it can be \
-read. Accepts a path relative to the shared directory and supports docx, odt, rtf, doc, xlsx, \
-ods, pptx and odp. Spreadsheets come back as CSV, everything else as plain text. Use this instead \
-of guessing at the contents of a file the user mentions.";
-
-fn convert_document_schema() -> Arc<JsonObject> {
-    let mut properties = serde_json::Map::new();
-    properties.insert(
-        "path".to_string(),
-        serde_json::json!({
-            "type": "string",
-            "description": "Path to the document, relative to the shared directory. Absolute paths and parent traversal are rejected."
-        }),
-    );
-    Arc::new(
-        serde_json::json!({
-            "type": "object",
-            "properties": properties,
-            "required": ["path"],
-        })
-        .as_object()
-        .cloned()
-        .expect("schema literal is an object"),
-    )
-}
+/// Fixed text returned to every `convert_document` caller while the tool is
+/// suspended. No path, filename, root or error cause appears in it, so the
+/// refusal cannot be used as a filesystem oracle for probing the shared root.
+///
+/// Restoration requirements are in `documentation/ai-tools.md`.
+pub const CONVERT_DOCUMENT_DENIAL_MESSAGE: &str =
+    "Document conversion is unavailable pending caller-permission enforcement";
 
 fn web_search_schema() -> Arc<JsonObject> {
     let mut properties = serde_json::Map::new();
@@ -210,31 +197,27 @@ async fn searxng_search(
 #[derive(Clone)]
 struct Server {
     config: Arc<Config>,
-    converter: Arc<Converter>,
 }
 
 impl Server {
+    /// Document conversion is suspended, so this never parses the caller's path,
+    /// never resolves it and never reads anything. The fixed message is the
+    /// whole answer: a rejection that mentions no filesystem location cannot
+    /// disclose one, and no argument shape changes the outcome.
+    ///
+    /// A protocol-level `ErrorData` rather than `CallToolResult::error` is
+    /// deliberate: rmcp maps a handler error onto the JSON-RPC layer, so the
+    /// refusal is visible to the transport even for a caller that never learned
+    /// the tool from `tools/list`. That is what keeps the denial reachable for
+    /// cached discovery metadata and direct invocation alike.
     async fn run_convert_document(
         &self,
-        arguments: Option<JsonObject>,
+        _arguments: Option<JsonObject>,
     ) -> Result<CallToolResponse, ErrorData> {
-        let raw = arguments
-            .map(serde_json::Value::Object)
-            .unwrap_or(serde_json::Value::Object(Default::default()));
-        let params: ConvertDocumentParams = serde_json::from_value(raw)
-            .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
-
-        let resolved = office::resolve_within(&self.config.shared_root, &params.path)
-            .map_err(|message| ErrorData::invalid_params(message, None))?;
-
-        let payload = self
-            .converter
-            .convert(&resolved)
-            .await
-            .map_err(|message| ErrorData::internal_error(message, None))?;
-
-        let content = ContentBlock::json(payload)?;
-        Ok(CallToolResult::success(vec![content]).into())
+        Err(ErrorData::invalid_params(
+            CONVERT_DOCUMENT_DENIAL_MESSAGE,
+            None,
+        ))
     }
 
     async fn run_web_search(
@@ -295,14 +278,15 @@ impl ServerHandler for Server {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
-        Ok(ListToolsResult::with_all_items(vec![
-            Tool::new("web_search", WEB_SEARCH_DESCRIPTION, web_search_schema()),
-            Tool::new(
-                "convert_document",
-                CONVERT_DOCUMENT_DESCRIPTION,
-                convert_document_schema(),
-            ),
-        ]))
+        // convert_document is deliberately absent: a model that never sees the
+        // tool never tries it. The dispatch branch below is what actually
+        // contains the case, because cached discovery metadata and a direct
+        // JSON-RPC call do not consult this list.
+        Ok(ListToolsResult::with_all_items(vec![Tool::new(
+            "web_search",
+            WEB_SEARCH_DESCRIPTION,
+            web_search_schema(),
+        )]))
     }
 
     async fn call_tool(
@@ -312,6 +296,12 @@ impl ServerHandler for Server {
     ) -> Result<CallToolResponse, ErrorData> {
         match request.name.as_ref() {
             "web_search" => self.run_web_search(request.arguments).await,
+            // Kept as an explicit denial rather than folded into the unknown-tool
+            // arm: a caller that learned the tool name from cached discovery
+            // metadata, or that probes it directly, still gets the containment
+            // message instead of a lookup error, and this branch is the last
+            // point before any path or converter work. Removing discovery alone
+            // would not contain a direct invocation.
             "convert_document" => self.run_convert_document(request.arguments).await,
             other => Err(ErrorData::invalid_params(
                 format!("unknown tool: {other}"),
@@ -345,6 +335,11 @@ fn parse_env() -> Result<Config, String> {
         Err(_) => 8,
     };
 
+    // Conversion is suspended, so the Collabora upstream it used and the shared
+    // root it served are no longer read by this process. Both stay configured
+    // and both stay validated so a later restoration re-enables a working
+    // converter instead of discovering a stale or missing endpoint at
+    // republish time.
     let collabora_base = env::var("AI_TOOLS_COLLABORA_URL")
         .map_err(|_| "AI_TOOLS_COLLABORA_URL is not set".to_string())?
         .trim_end_matches('/')
@@ -352,7 +347,6 @@ fn parse_env() -> Result<Config, String> {
     if !(collabora_base.starts_with("http://") || collabora_base.starts_with("https://")) {
         return Err("AI_TOOLS_COLLABORA_URL must be an http(s) URL".to_string());
     }
-    let collabora_timeout = Duration::from_secs(90);
 
     let shared_root = PathBuf::from(
         env::var("AI_TOOLS_SHARED_ROOT")
@@ -364,7 +358,6 @@ fn parse_env() -> Result<Config, String> {
         searxng_timeout,
         max_results: max_results.clamp(1, 25),
         collabora_base,
-        collabora_timeout,
         shared_root,
         public_host: parse_public_host(env::var("AI_TOOLS_PUBLIC_HOST").ok())?,
     })
@@ -438,13 +431,12 @@ fn router(server: Server, public_host: Option<&str>) -> Router {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listen = env::var("AI_TOOLS_LISTEN")?;
     let config = Arc::new(parse_env()?);
-    let converter = Arc::new(Converter::new(
-        &config.collabora_base,
-        config.collabora_timeout,
-    )?);
+    // No Collabora client is built here: conversion is denied before any
+    // document path is resolved, so the converter is never reached, and a
+    // suspended tool must not keep an idle HTTP client or an unreachable
+    // upstream in its startup path.
     let server = Server {
         config: Arc::clone(&config),
-        converter,
     };
 
     let app = router(server, config.public_host.as_deref());
@@ -466,6 +458,7 @@ mod tests {
         body::Body,
         http::{header::HOST, HeaderMap, HeaderValue, Request, StatusCode},
     };
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tower::ServiceExt;
 
     fn test_config() -> Config {
@@ -474,34 +467,289 @@ mod tests {
             searxng_timeout: Duration::from_secs(5),
             max_results: 8,
             collabora_base: "http://127.0.0.1:9980".to_string(),
-            collabora_timeout: Duration::from_secs(5),
             shared_root: std::env::temp_dir(),
             public_host: None,
         }
     }
 
+    fn test_server() -> Server {
+        Server {
+            config: Arc::new(test_config()),
+        }
+    }
+
+    /// The fixed denial, checked as both the code and the message: the message
+    /// is what the caller sees and it must not name a path.
+    async fn assert_convert_denied(arguments: Option<JsonObject>, caller: &str) -> ErrorData {
+        let error = tokio::time::timeout(
+            Duration::from_secs(5),
+            test_server().run_convert_document(arguments),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("{caller}: conversion denial timed out"))
+        .expect_err(&format!("{caller}: conversion must be denied"));
+        assert_eq!(
+            error.message, CONVERT_DOCUMENT_DENIAL_MESSAGE,
+            "{caller}: denial text changed"
+        );
+        assert_eq!(
+            error.code,
+            rmcp::model::ErrorCode::INVALID_PARAMS,
+            "{caller}: denial must surface as a protocol error"
+        );
+        assert!(
+            error.data.is_none(),
+            "{caller}: denial must not attach a payload"
+        );
+        error
+    }
+
+    /// Caller classes that existed before the pause, in the shapes the
+    /// transport can deliver. Every one of them is refused identically.
+    #[tokio::test]
+    async fn denies_conversion_for_every_caller_class() {
+        let classes: &[(&str, Option<JsonObject>)] = &[
+            ("no arguments", None),
+            ("empty arguments", Some(JsonObject::new())),
+            (
+                "shared-group caller",
+                Some(path_arguments("shared/report.docx")),
+            ),
+            (
+                "ai-users-only caller",
+                Some(path_arguments("ai-users-only/private.docx")),
+            ),
+        ];
+        for (caller, arguments) in classes {
+            let arguments = arguments.clone();
+            assert_convert_denied(arguments, caller).await;
+        }
+    }
+
+    /// A direct JSON-RPC `tools/call` for `convert_document`, sent through the
+    /// real router with a real session and a real Host header. Cached discovery
+    /// metadata and identity headers must not restore the tool: the fixed
+    /// refusal is what comes back over the transport.
+    #[tokio::test]
+    async fn denies_conversion_over_the_transport_for_every_caller() {
+        let mut headers = HeaderMap::new();
+        headers.insert(HOST, HeaderValue::from_static("127.0.0.1:8097"));
+        headers.insert("content-type", HeaderValue::from_static("application/json"));
+        headers.insert(
+            "accept",
+            HeaderValue::from_static("application/json, text/event-stream"),
+        );
+
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/")
+            .body(Body::from(initialize_body()))
+            .expect("build initialize request");
+        request.headers_mut().extend(headers.clone());
+
+        // One router for the whole session: each call to `router` installs its
+        // own session manager, so a handshake answered by one router and a
+        // tools/call sent to another would look like an unknown session.
+        let app = router(test_server(), None);
+        let response = app.clone().oneshot(request).await.expect("router response");
+        assert_eq!(response.status(), StatusCode::OK, "handshake must succeed");
+        let session_id = response
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned)
+            .expect("handshake returns a session id");
+
+        for caller in [
+            "ai-users-only caller",
+            "shared-group caller",
+            "unauthenticated caller",
+        ] {
+            let response = router_with_session(
+                &app,
+                convert_document_transport_body(caller),
+                &headers,
+                &session_id,
+            )
+            .await;
+            let body = body_string(response).await;
+            assert!(
+                body.contains(CONVERT_DOCUMENT_DENIAL_MESSAGE),
+                "{caller}: transport refusal should carry the fixed message, got {body}"
+            );
+            assert!(
+                !body.contains("shared/") && !body.contains("private/"),
+                "{caller}: refusal must not disclose filesystem paths, got {body}"
+            );
+        }
+    }
+
+    fn convert_document_transport_body(caller: &str) -> String {
+        // An identity header is a claim the gateway forwards; the suspended
+        // tool must ignore it rather than treat it as caller permission.
+        let identity = match caller {
+            "ai-users-only caller" => "ai-users-only",
+            "shared-group caller" => "shared-group",
+            _ => "",
+        };
+        format!(
+            r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"convert_document","arguments":{{"path":"{caller}/report.docx","identity":"{identity}"}}}}}}"#,
+        )
+    }
+
+    async fn router_with_session(
+        app: &Router,
+        body: String,
+        headers: &HeaderMap,
+        session_id: &str,
+    ) -> axum::response::Response<Body> {
+        let mut session_headers = headers.clone();
+        session_headers.insert(
+            "mcp-session-id",
+            HeaderValue::from_str(session_id).expect("session id header"),
+        );
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/")
+            .body(Body::from(body))
+            .expect("build tools/call request");
+        request.headers_mut().extend(session_headers);
+
+        app.clone().oneshot(request).await.expect("router response")
+    }
+
+    /// Every path shape the old handler used to act on reaches the same
+    /// refusal, and the refusal names no filesystem location.
+    #[tokio::test]
+    async fn denies_conversion_for_every_path_shape() {
+        let shapes: &[(&str, Option<JsonObject>)] = &[
+            ("missing path", Some(JsonObject::new())),
+            ("malformed path", Some(path_arguments("    "))),
+            ("empty path", Some(path_arguments(""))),
+            ("hidden path", Some(path_arguments(".hidden/report.docx"))),
+            ("absolute path", Some(path_arguments("/etc/passwd.docx"))),
+            (
+                "traversal path",
+                Some(path_arguments("../../etc/report.docx")),
+            ),
+            (
+                "valid supported document",
+                Some(path_arguments("shared/report.docx")),
+            ),
+            ("unsupported type", Some(path_arguments("shared/photo.png"))),
+            ("path is a directory", Some(path_arguments("shared"))),
+        ];
+        for (shape, arguments) in shapes {
+            let arguments = arguments.clone();
+            assert_convert_denied(arguments, shape).await;
+        }
+    }
+
+    /// The real handler against a real readable document and a real FIFO, both
+    /// under a synthetic shared root. The denial must return without opening
+    /// either, so neither the read nor the FIFO open can block.
+    #[tokio::test]
+    async fn denial_precedes_any_path_or_file_operation() {
+        let root = SyntheticSharedRoot::new("deny-before-access");
+        let document = root.write("report.docx", b"PK\x03\x04 synthetic docx body");
+        let fifo = root.fifo("pipe.docx");
+
+        for (label, target) in [
+            ("readable document", document.clone()),
+            ("FIFO", fifo.clone()),
+        ] {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let server = test_server();
+            let document = target.clone();
+            let handle = std::thread::spawn(move || {
+                let arguments = path_arguments(document.to_str().expect("path is UTF-8"));
+                let result = tokio::runtime::Runtime::new()
+                    .expect("runtime")
+                    .block_on(server.run_convert_document(Some(arguments)));
+                let _ = tx.send(result);
+            });
+            // Bounded wait: denial takes microseconds; a FIFO open would block
+            // until the timeout because no writer ever opens the other end.
+            let outcome = rx.recv_timeout(Duration::from_secs(5));
+            assert!(
+                outcome.is_ok(),
+                "{label}: handler did not return, so a path or file operation ran"
+            );
+            let error = outcome
+                .unwrap()
+                .expect_err(&format!("{label}: must be denied"));
+            assert_eq!(
+                error.message, CONVERT_DOCUMENT_DENIAL_MESSAGE,
+                "{label}: denial text changed"
+            );
+            // The FIFO still exists and was never drained: proving it was never
+            // opened, because an open-for-read would have blocked the thread.
+            assert!(fifo.exists(), "{label}: FIFO was removed or replaced");
+            handle.join().expect("handler thread");
+        }
+
+        // The document's contents are never observed by the tool, so a
+        // read-only denial leaves the fixture untouched.
+        assert_eq!(
+            std::fs::read(&document).expect("fixture survives"),
+            b"PK\x03\x04 synthetic docx body",
+            "denial must not consume the document"
+        );
+    }
+
+    /// Source-level guarantee that denial precedes every path or file call, not
+    /// just an observation that no read was seen. A FIFO or zero-upload
+    /// observation alone cannot prove a regular file was not read.
+    #[test]
+    fn denial_precedes_path_and_file_calls_in_source() {
+        let source = conversion_source();
+        let handler_start = source
+            .find("async fn run_convert_document")
+            .expect("conversion handler is present");
+        let handler = &source[handler_start..];
+        let denial = handler
+            .find("CONVERT_DOCUMENT_DENIAL_MESSAGE")
+            .expect("handler returns the fixed denial");
+        // The denial is the body of the handler, so nothing that follows it in
+        // the function can run before the refusal is returned.
+        let handler_end = handler.find("\n    }\n").expect("handler has a body");
+        assert!(
+            denial < handler_end,
+            "the denial must be returned by run_convert_document itself"
+        );
+        // Only the handler's own body is scanned. The rest of this file holds
+        // the office module's converter and this module's own literals, so
+        // scanning it would flag the words this assertion is spelled with.
+        let body = &handler[..handler_end];
+        for forbidden in [
+            "resolve_within",
+            "office::",
+            "Converter",
+            "read_document",
+            "open_document",
+            "std::fs::read",
+        ] {
+            assert!(
+                !body.contains(forbidden),
+                "run_convert_document must not reach {forbidden}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn rejects_an_empty_query() {
-        let server = Server {
-            config: Arc::new(test_config()),
-            converter: Arc::new(
-                Converter::new("http://127.0.0.1:9980", Duration::from_secs(5)).unwrap(),
-            ),
-        };
         let mut arguments = JsonObject::new();
         arguments.insert("query".to_string(), serde_json::json!("   "));
-        let error = server.run_web_search(Some(arguments)).await.unwrap_err();
+        let error = test_server()
+            .run_web_search(Some(arguments))
+            .await
+            .unwrap_err();
         assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
     }
 
     #[tokio::test]
     async fn rejects_a_missing_query() {
-        let server = Server {
-            config: Arc::new(test_config()),
-            converter: Arc::new(
-                Converter::new("http://127.0.0.1:9980", Duration::from_secs(5)).unwrap(),
-            ),
-        };
+        let server = test_server();
         assert!(server
             .run_web_search(Some(JsonObject::new()))
             .await
@@ -552,9 +800,6 @@ mod tests {
     ) -> StatusCode {
         let server = Server {
             config: Arc::new(test_config()),
-            converter: Arc::new(
-                Converter::new("http://127.0.0.1:9980", Duration::from_secs(5)).unwrap(),
-            ),
         };
 
         let mut headers = HeaderMap::new();
@@ -667,6 +912,206 @@ mod tests {
         assert_eq!(
             config.allowed_origins,
             vec![format!("https://{PUBLIC_HOST}")]
+        );
+    }
+
+    fn path_arguments(path: &str) -> JsonObject {
+        let mut arguments = JsonObject::new();
+        arguments.insert("path".to_string(), serde_json::json!(path));
+        arguments
+    }
+
+    fn initialize_body() -> String {
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"conversion-test","version":"0.0.0"}}}"#
+            .to_string()
+    }
+
+    async fn body_string(response: axum::response::Response<Body>) -> String {
+        // Session-routed replies come back as SSE `data:` frames, so each
+        // frame is unwrapped before the JSON is inspected.
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("collect body");
+        let raw = String::from_utf8_lossy(&bytes).into_owned();
+        if raw.contains("data:") {
+            raw.lines()
+                .filter_map(|line| line.strip_prefix("data:").map(str::trim))
+                .filter(|frame| !frame.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n")
+        } else {
+            raw
+        }
+    }
+
+    /// The source text of the file under test, for the review-level assertion
+    /// that denial precedes every path and file operation. An observation that
+    /// nothing was read or uploaded cannot establish that on its own.
+    fn conversion_source() -> String {
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"))
+            .expect("read this crate's main.rs")
+    }
+
+    /// A synthetic shared root with a real readable document and a real FIFO,
+    /// so the controls below exercise real filesystem objects rather than a
+    /// reconstructed permission algorithm.
+    struct SyntheticSharedRoot(PathBuf);
+
+    impl SyntheticSharedRoot {
+        fn new(label: &str) -> Self {
+            static NEXT: AtomicUsize = AtomicUsize::new(0);
+            let dir = std::env::temp_dir().join(format!(
+                "ai-tools-conversion-denial-{label}-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("create synthetic shared root");
+            Self(dir)
+        }
+
+        fn write(&self, name: &str, contents: &[u8]) -> PathBuf {
+            let path = self.0.join(name);
+            std::fs::write(&path, contents).expect("write synthetic document");
+            path
+        }
+
+        fn fifo(&self, name: &str) -> PathBuf {
+            let path = self.0.join(name);
+            let status = std::process::Command::new("mkfifo")
+                .arg(&path)
+                .status()
+                .expect("run mkfifo");
+            assert!(status.success(), "mkfifo failed");
+            path
+        }
+    }
+
+    impl Drop for SyntheticSharedRoot {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Discovery no longer offers the tool and web_search is still advertised.
+    /// Driven through the real router with a real session, so this is the same
+    /// path a model-backed client takes.
+    #[tokio::test]
+    async fn discovery_hides_convert_document_but_keeps_web_search() {
+        let mut headers = HeaderMap::new();
+        headers.insert(HOST, HeaderValue::from_static("127.0.0.1:8097"));
+        headers.insert("content-type", HeaderValue::from_static("application/json"));
+        headers.insert(
+            "accept",
+            HeaderValue::from_static("application/json, text/event-stream"),
+        );
+
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/")
+            .body(Body::from(initialize_body()))
+            .expect("build initialize request");
+        request.headers_mut().extend(headers.clone());
+        let app = router(test_server(), None);
+        let response = app.clone().oneshot(request).await.expect("router response");
+        let session_id = response
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned)
+            .expect("handshake returns a session id");
+
+        let body = tools_list_body(&app, &session_id).await;
+        assert!(
+            body.contains("\"web_search\""),
+            "web_search must stay discoverable, got {body}"
+        );
+        assert!(
+            !body.contains("convert_document"),
+            "convert_document must not be discoverable, got {body}"
+        );
+    }
+
+    async fn tools_list_body(app: &Router, session_id: &str) -> String {
+        let mut headers = HeaderMap::new();
+        headers.insert(HOST, HeaderValue::from_static("127.0.0.1:8097"));
+        headers.insert("content-type", HeaderValue::from_static("application/json"));
+        headers.insert(
+            "accept",
+            HeaderValue::from_static("application/json, text/event-stream"),
+        );
+        headers.insert(
+            "mcp-session-id",
+            HeaderValue::from_str(session_id).expect("session id header"),
+        );
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/")
+            .body(Body::from(
+                r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#,
+            ))
+            .expect("build tools/list request");
+        request.headers_mut().extend(headers);
+
+        // The same router that answered the handshake: a fresh router installs
+        // a fresh session manager and would report this session as unknown.
+        let response = app.clone().oneshot(request).await.expect("router response");
+        body_string(response).await
+    }
+
+    /// web_search still dispatches and returns results: a fake SearXNG answers
+    /// on loopback, so the retained tool is proven working without any internet
+    /// search. Conversion shares the same transport, so a green control here
+    /// also shows the denial is specific to convert_document.
+    #[tokio::test]
+    async fn web_search_still_dispatches_against_a_local_searxng() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind a loopback SearXNG stand-in");
+        let address = listener.local_addr().expect("stand-in address");
+
+        tokio::spawn(async move {
+            let app = axum::Router::new().fallback(|uri: axum::http::Uri| async move {
+                let query = uri.query().unwrap_or_default().to_string();
+                assert!(query.contains("q=rust"), "stand-in saw {query}");
+                (
+                    [(axum::http::header::CONTENT_TYPE, "application/json")],
+                    serde_json::json!({"results": [{
+                        "title": "stand-in result",
+                        "url": "https://example.org/rust",
+                        "content": "synthetic snippet",
+                        "engines": ["stand-in"]
+                    }]})
+                    .to_string(),
+                )
+            });
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let mut config = test_config();
+        config.searxng_base = format!("http://{address}");
+        let server = Server {
+            config: Arc::new(config),
+        };
+        let mut arguments = JsonObject::new();
+        arguments.insert("query".to_string(), serde_json::json!("rust"));
+        let response = server
+            .run_web_search(Some(arguments))
+            .await
+            .expect("web_search still dispatches");
+        let CallToolResponse::Complete(result) = response else {
+            panic!("web_search should complete");
+        };
+        assert_eq!(result.is_error, Some(false));
+        let text = result
+            .content
+            .first()
+            .and_then(|content| content.as_text())
+            .map(|text| text.text.as_str())
+            .expect("web_search returns text content");
+        assert!(
+            text.contains("stand-in result"),
+            "web_search should return the stand-in's results, got {text}"
         );
     }
 }
