@@ -54,6 +54,30 @@ frontend and significant security/regression risk gates apply even to urgent
 findings. Routine automatic plans must state why none applies. An existing
 approval for the exact scope remains valid; new scope requires a new decision.
 
+### Parent only real dependencies
+
+A gate may parent only cards whose work genuinely depends on it. Deploy decisions
+parent deploy, verification and rollback work. A readiness or timeout question
+parents its own readiness work and nothing else. Never parent feature
+implementation, test repair, documentation or cleanup work to a deploy, recovery
+or readiness decision.
+
+This is not hypothetical: one local-worker readiness gate (`t_9d559252`) ended up
+gating 26 of the 33 open cards on nixhomeserver — including sibling test-pin
+repair, the Qwen office-tool gate and steward cleanup work — so one owner question
+froze almost the whole board.
+
+When a chain blocks, keep work moving on what is unaffected:
+
+- Check which cards have no blocked ancestor (walk parents transitively, not just
+  the immediate ones) and route those first.
+- Pull the next unstarted feature rather than leaving lanes idle; the local
+  transcription decision (`documentation/decisions/0010-local-transcription.md`)
+  is unstarted and independent of every deploy chain.
+- Audit over-parenting whenever you touch the graph: a card whose stated work does
+  not mention the gate is almost never its dependent. Board surgery exists so you
+  can drop such an edge instead of parking the card behind it.
+
 ### Board surgery (granted 2026-10-11)
 
 You own the routing graph, so you repair it yourself instead of parking a
