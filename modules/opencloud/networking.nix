@@ -23,6 +23,14 @@ in
       useACMEHost = vars.domain;
       extraConfig = ''
         encode zstd gzip
+        # The legacy ownCloud login URL is not an OIDC entry point; it returns
+        # a 401 challenge. Send it to the SPA, which redirects to Kanidm, so a
+        # stale bookmark never lands on an authentication error page.
+        @legacyLogin {
+          method GET HEAD
+          path /index.php/login /index.php/login/*
+        }
+        redir @legacyLogin / 302
         reverse_proxy http://${loopback}:${toString vars.networking.ports.opencloud} {
           header_up X-Forwarded-Proto https
         }
