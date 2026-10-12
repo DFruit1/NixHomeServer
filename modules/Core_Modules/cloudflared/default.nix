@@ -45,5 +45,17 @@ in
   systemd.services."cloudflared-tunnel-${vars.cloudflareTunnelName}" = {
     wants = [ "network-online.target" "unbound.service" ];
     after = [ "network-online.target" "unbound.service" ];
+    # Ride out a cold boot. unbound can already be active while its upstream WAN
+    # DNS is still unreachable (seen after a power restore), so the first tunnel
+    # dials fail to resolve. The stock unit burns its restart burst almost
+    # immediately and then gives up, leaving the single edge down until a human
+    # restarts it; space the retries and allow enough of them to survive a slow
+    # network bring-up instead.
+    serviceConfig = {
+      Restart = "on-failure";
+      RestartSec = "5s";
+      StartLimitIntervalSec = 600;
+      StartLimitBurst = 60;
+    };
   };
 }
