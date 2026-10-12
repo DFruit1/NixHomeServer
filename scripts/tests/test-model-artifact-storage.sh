@@ -99,6 +99,8 @@ model_json="$(remote_eval_batch_json "models=
     layoutRequires = c.systemd.services.bonsai-storage-layout.requires;
     archiveRequires = archive.requires;
     archiveCondition = archive.unitConfig.ConditionPathIsMountPoint;
+    archiveMounts = archive.unitConfig.RequiresMountsFor;
+    layoutMounts = c.systemd.services.bonsai-storage-layout.unitConfig.RequiresMountsFor;
     expectedMount = settings.dataRoot;
     archiveBefore = archive.before;
     archiveUser = archive.serviceConfig.User or \"root\";
@@ -116,6 +118,8 @@ jq -e '.models | .modelDir as $models |
   and (.layoutRequires | index("bonsai-model-archive.service") != null)
   and (.archiveRequires | index("data-pool-layout.service") != null)
   and .archiveCondition == .expectedMount
+  and (.expectedMount as $mount | .archiveMounts | index($mount) != null)
+  and (.expectedMount as $mount | .layoutMounts | index($mount) != null)
   and (.archiveBefore | index("bonsai-model-prepare.service") != null)
   and .archiveUser == "root"
   and .legacyExcluded and .metadataPersisted

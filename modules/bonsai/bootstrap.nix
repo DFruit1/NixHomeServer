@@ -213,10 +213,10 @@ in
       requires = [ "bonsai-model-archive.service" ];
       after = [ "bonsai-model-archive.service" ];
       before = [ "bonsai-model-prepare.service" ];
+      unitConfig.RequiresMountsFor = [ vars.dataRoot ];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        RequiresMountsFor = [ vars.dataRoot ];
       };
       script = ''
         set -euo pipefail

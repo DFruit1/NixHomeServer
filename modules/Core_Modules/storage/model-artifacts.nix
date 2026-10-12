@@ -12,11 +12,11 @@
     after = [ "local-fs.target" "persist-nesting-migration.service" ];
     before = [ "bonsai-storage-layout.service" "bonsai-model-prepare.service" "bonsai-llama.service" "kopia-persist-snapshot.service" ];
     path = with pkgs; [ coreutils findutils rsync systemd util-linux ];
+    unitConfig.RequiresMountsFor = [ "/persist" vars.dataRoot ];
     serviceConfig = {
       Type = "oneshot";
       RemainAfterExit = true;
       TimeoutStartSec = "2h";
-      RequiresMountsFor = [ "/persist" vars.dataRoot ];
       Nice = 10;
       CPUWeight = 20;
       IOWeight = 20;
