@@ -3,7 +3,10 @@ set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 python3 -B - "$repo" <<'PY'
 from contextlib import closing
+import contextlib
+import datetime
 import importlib.util
+import io
 import json
 from pathlib import Path
 import sqlite3
@@ -24,6 +27,8 @@ guard = module('guard', 'steward-readonly-guard.py')
 reader = module('reader', 'steward-board-read.py')
 installer = module('installer', 'install-steward-readonly.py')
 snapshot = module('snapshot', 'kanban-daily-steward.py')
+window = module('window', 'daily-steward-window.py')
+usage = module('usage', 'usage-pace.py')
 
 class StewardTest(unittest.TestCase):
     def setUp(self):
@@ -149,6 +154,9 @@ class StewardTest(unittest.TestCase):
         self.assertEqual({'kind': 'cron', 'expr': '0 */4 * * *'}, jobs[2]['schedule'])
         self.assertEqual(['self'], jobs[2]['context_from'])
         self.assertEqual('kanban-daily-steward.py', jobs[2]['script'])
+        # The daily job runs through the daytime catch-up window; the four-hourly
+        # stall follow-up keeps the raw collector so it can report every slot.
+        self.assertEqual('daily-steward-window.py', jobs[0]['script'])
         self.assertFalse(jobs[0]['enabled'])
         self.assertEqual({'kind': 'cron', 'expr': '0 7 * * *'}, jobs[0]['schedule'])
         self.assertEqual({'minutes': 120}, jobs[1]['schedule'])
@@ -195,6 +203,99 @@ class StewardTest(unittest.TestCase):
         self.assertIn('LAST 24H FAILED RUNS (1)', output)
         self.assertIn('yesterday', output)
         self.assertNotIn('older', output)
+
+    def test_daily_window_catches_up_only_in_window_and_once_per_day(self):
+        # 07:00 is the only scheduled slot; a missed run catches up inside
+        # 07:00-17:00 exactly once and stays silent outside the window.
+        yes = datetime.datetime(2026, 10, 13, 9, 0)
+        self.assertTrue(window.should_emit(yes, None))
+        self.assertTrue(window.should_emit(yes, datetime.date(2026, 10, 12)))
+        self.assertFalse(window.should_emit(yes, datetime.date(2026, 10, 13)))  # already today
+        self.assertFalse(window.should_emit(datetime.datetime(2026, 10, 13, 6, 59),
+                                            datetime.date(2026, 10, 12)))       # too early
+        self.assertFalse(window.should_emit(datetime.datetime(2026, 10, 13, 17, 0),
+                                            datetime.date(2026, 10, 12)))       # 5pm waits for 7am
+        self.assertFalse(window.should_emit(datetime.datetime(2026, 10, 13, 22, 30), None))
+
+    def test_daily_window_marker_round_trips(self):
+        window.record_emit(self.root, datetime.datetime(2026, 10, 13, 9, 0))
+        self.assertEqual(datetime.date(2026, 10, 13), window.last_emit_date(self.root))
+        self.assertIsNone(window.last_emit_date(self.root / 'absent'))
+
+    def test_daily_window_reopens_the_day_after_a_delivery_failure(self):
+        # A catch-up that fires before the SimpleX daemons are up fails delivery;
+        # the day must stay eligible so a later manual run still reaches the owner.
+        cron = self.root / 'profiles/board-steward/cron'
+        cron.mkdir(parents=True)
+        jobs = cron / 'jobs.json'
+        jobs.write_text(json.dumps({'jobs': [
+            {'name': 'hermes daily steward', 'last_delivery_error': 'SimpleX send failed'}]}))
+        self.assertTrue(window.delivery_failed(self.root))
+        now = datetime.datetime(2026, 10, 13, 9, 0)
+        self.assertFalse(window.should_emit(now, now.date(), False))
+        self.assertTrue(window.should_emit(now, now.date(), True))
+        jobs.write_text(json.dumps({'jobs': [
+            {'name': 'hermes daily steward', 'last_delivery_error': None}]}))
+        self.assertFalse(window.delivery_failed(self.root))
+
+    def test_daily_window_suppress_prints_the_wake_gate(self):
+        # Outside the window the last stdout line must be the Hermes wake gate,
+        # which skips the agent run and delivery entirely.
+        with patch.dict(window.os.environ, {'HERMES_ROOT': str(self.root)}):
+            with patch.object(window, 'should_emit', return_value=False):
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf):
+                    window.main()
+        self.assertEqual('{"wakeAgent": false}', buf.getvalue().strip().splitlines()[-1])
+
+    def test_daily_window_emit_runs_collectors_and_records_marker(self):
+        loaded, calls = [], []
+        class FakeCollector:
+            def main(self):
+                calls.append('main')
+                print('=== KANBAN DAILY SNAPSHOT fixture ===')
+        def fake_load(name):
+            loaded.append(name)
+            return FakeCollector()
+        with patch.dict(window.os.environ, {'HERMES_ROOT': str(self.root)}):
+            with patch.object(window, 'should_emit', return_value=True):
+                with patch.object(window, 'load_collector', fake_load):
+                    buf = io.StringIO()
+                    with contextlib.redirect_stdout(buf):
+                        window.main()
+        self.assertEqual(list(window.COLLECTORS), loaded)
+        self.assertEqual(['main', 'main'], calls)
+        self.assertIn('KANBAN DAILY SNAPSHOT', buf.getvalue())
+        self.assertEqual(datetime.date.today(), window.last_emit_date(self.root))
+
+    def test_usage_pace_reads_local_spend_without_secrets(self):
+        self.root.mkdir(parents=True, exist_ok=True)
+        state = self.root / 'state.db'
+        stamp = int(time.time())
+        with closing(sqlite3.connect(state)) as db:
+            db.execute('CREATE TABLE sessions (id TEXT PRIMARY KEY, model TEXT,'
+                       ' input_tokens INTEGER, output_tokens INTEGER, cache_read_tokens INTEGER,'
+                       ' started_at REAL)')
+            db.execute("INSERT INTO sessions VALUES ('s1','m',1000,500,0,?)", (stamp - 3600,))
+            db.commit()
+        ocdb = self.root / 'opencode.db'
+        with closing(sqlite3.connect(ocdb)) as db:
+            db.execute('CREATE TABLE session (id TEXT PRIMARY KEY, cost REAL, tokens_input INTEGER,'
+                       ' tokens_output INTEGER, time_updated INTEGER)')
+            db.execute("INSERT INTO session VALUES ('x',0.5,2000,1000,?)", (stamp * 1000 - 3600_000,))
+            db.commit()
+        env = {'HERMES_ROOT': str(self.root), 'OPENCODE_DB': str(ocdb), 'HERMES_BIN': '/nonexistent'}
+        with patch.dict(usage.os.environ, env):
+            self.assertEqual([1, 1500, 0.0], usage.hermes_spend()['24h'])
+            self.assertEqual([1, 3000, 0.5], usage.opencode_spend()['24h'])
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                usage.main()
+        out = buf.getvalue()
+        self.assertIn('USAGE PACE', out)
+        self.assertIn('hermes 24h', out)
+        self.assertIn('opencode 24h', out)
+        self.assertIn('unavailable', out)
 
 unittest.main(argv=['steward'], verbosity=2)
 PY

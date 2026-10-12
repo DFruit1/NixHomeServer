@@ -119,6 +119,19 @@ the profile's home channel. The prompt never calls the old group sender.
 Requested DM reports are ordinary chat responses; the steward never replies
 in the coordinator's private conversation or pushes blocker alerts independently.
 
+When the host is off for the 07:00 slot, Hermes re-fires the missed recurring job
+on its next tick, which can be any hour. The daily job runs through
+`daily-steward-window.py`, which emits the snapshot at most once per calendar day
+and only between 07:00 and 17:00 local time. Inside that window a missed run
+catches up as soon as the host is back; outside it the script prints a Hermes
+wake gate (`{"wakeAgent": false}`) so the agent run and delivery are skipped and
+the report waits for the next 07:00 occurrence. A run whose delivery failed (for
+example the SimpleX daemons still starting after a power-on) leaves the day
+eligible, so a later manual `hermes cron run` re-emits instead of being
+suppressed; to force a re-report delete `~/.hermes/state/daily-steward-last-emit`
+and run the job. The four-hourly stall follow-up keeps using
+`kanban-daily-steward.py` directly because it must run every slot.
+
 The two profiles use separate SimpleX identities and loopback endpoints:
 
 - `head-coordinator`: port 5225, state directory `hermes-simplex-chat`.
@@ -138,6 +151,22 @@ cleanup cards suppress duplicate recommendations while their work is ongoing;
 this change does not cancel or rewrite that work. The local report is available
 to the daily report and owner requests.
 
+## Usage and credit pace
+
+The daily job also runs `usage-pace.py` and injects its block. It reads only
+local, non-secret telemetry: provider account windows from
+`hermes usage --provider openai-codex --json` (weekly/5h percent used, reset
+time, plan, banked resets), Hermes' own per-model totals from
+`session_model_usage` in `state.db`, and OpenCode's per-session cost and tokens
+from `~/.local/share/opencode/opencode.db`. Each pool is reported for the last
+24 hours and the last week, and a day whose tokens exceed 1.5x the trailing
+daily average is marked `SPIKE`. The prompt asks the steward to judge credit
+risk against the reset window, attribute spikes to observed behaviour, and
+recommend the smallest avoiding action. A source that is missing or lacks a
+usage endpoint degrades to one explicit line; the collector never prints a
+credential. OpenCode Go exposes no balance through `hermes usage`, so its credit
+risk is reported as spend pace rather than remaining credit.
+
 Transport changes remain an owner-authorized operation for the external agent.
 The steward cannot create an identity, pair it, change its binding or retire a
 channel. Its daily report uses scheduler delivery rather than a sender tool.
@@ -154,7 +183,8 @@ bash scripts/tests/test-steward-opportunity-scan.sh
 ```
 
 The installer replaces the live SOUL and skill with tracked report-only policy,
-installs the guard and readers, and updates both existing cron prompts in place.
+installs the guard, readers, the daily catch-up window and the usage-pace
+collector, and updates both existing cron prompts in place.
 It reconciles the daily schedule to 07:00, including an existing 08:00 job.
 It preserves job IDs, enabled/paused state, the opportunity scan schedule,
 models, credentials, channel bindings and unrelated configuration. Changes are

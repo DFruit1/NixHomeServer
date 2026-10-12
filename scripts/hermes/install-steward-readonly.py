@@ -74,8 +74,9 @@ def install(root, repo, check=False):
                    (SOURCE / 'taskforce/board-steward-skill.md').read_text(),
                config_path: config_text,
                metadata_path: replace_setting(metadata_path.read_text(), 'description', json.dumps(description))}
-    for name in ('kanban-daily-steward.py', 'steward-opportunity-scan.py', 'steward-board-read.py',
-                 'steward-readonly-guard.py'):
+    for name in ('kanban-daily-steward.py', 'daily-steward-window.py', 'usage-pace.py',
+                 'steward-opportunity-scan.py',
+                 'steward-board-read.py', 'steward-readonly-guard.py'):
         changes[root / 'scripts' / name] = (SOURCE / name).read_text()
         if name != 'steward-readonly-guard.py':
             changes[profile / 'scripts' / name] = (SOURCE / name).read_text()
@@ -84,7 +85,10 @@ def install(root, repo, check=False):
     jobs = json.loads(jobs_path.read_text()).get('jobs', []) if jobs_path.exists() else []
     # The separately approved DM split uses profile-scoped scheduler delivery.
     # Reinstallation must not restore manual group sends or disable DM reports.
-    specifications = [('hermes daily steward', '0 7 * * *', 'daily-steward-prompt.txt', '--script', 'kanban-daily-steward.py', 'simplex', False),
+    # The daily job runs through the daytime catch-up window so a missed 07:00
+    # slot after a late power-on is reported during the day, never overnight;
+    # the stall follow-up keeps the raw collector because it fires every slot.
+    specifications = [('hermes daily steward', '0 7 * * *', 'daily-steward-prompt.txt', '--script', 'daily-steward-window.py', 'simplex', False),
                       ('steward opportunity scan', 'every 2h', 'steward-opportunity-prompt.txt', '--monitor-script', 'steward-opportunity-scan.py', 'local', False),
                       ('steward stall follow-up', '0 */4 * * *', 'steward-stall-prompt.txt', '--script', 'kanban-daily-steward.py', 'bot-chat:head-coordinator', True)]
     commands = []
