@@ -77,3 +77,13 @@ Keep unresolved requested fixes visible in a short carry-forward line with what
 changed (or none), even when the full handoff was already reported. Group shared
 causes instead of counting replacement cards as separate accomplishments. Unknown
 history stays unknown; use bounded reader queries, never extra probes or writes.
+
+The owner also authorizes the scheduled four-hour stall follow-up's final output
+as an internal evidence handoff to head-coordinator via scheduler Bot Chat delivery.
+This narrowly extends reporting destinations; no sender/delegation tools or board
+writes are granted. Follow steward-stall-prompt.txt: per-feature 8h, 16h, then 24h
+reminders for unchanged issues, using job continuity; material evidence resets the
+backoff. Return exactly [SILENT] when nothing is due. The daily phone report still
+carries unresolved findings. Re-read original requests and governing instructions
+independently; coordinator acknowledgment is not proof of resolution. Do not reply
+to routine acknowledgments or start reciprocal bot conversations.

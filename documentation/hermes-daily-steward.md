@@ -165,3 +165,26 @@ The old installer skipped existing cron jobs, leaving their mutation prompts
 active after source edits. Existing jobs are now reconciled as well as created.
 Refreshing a cached gateway profile must wait for idle conversations; never
 interrupt an in-flight turn or restart the gateway to apply this policy.
+
+## Four-hour coordinator follow-up
+
+The `steward stall follow-up` job runs at 00:00, 04:00, 08:00, 12:00, 16:00 and
+20:00 in the scheduler's configured timezone. It injects the board snapshot and
+uses `--continuity` to retain its previous non-silent report. Final output is
+routed directly to `bot-chat:head-coordinator`; no phone destination or messaging
+tool permission is added. The steward continues to inspect without board writes.
+
+The prompt tracks each feature/root cause and backs off unchanged handoffs:
+first discovery, then after 8 hours, then 16 hours, then every 24 hours. New
+material evidence or a new explicit owner request resets the issue; acknowledgment
+or routing churn does not. Timing is instruction-driven using output continuity,
+not a separate deterministic timer per issue. `[SILENT]` suppresses empty/not-due
+handoffs without replacing the last useful report. Missing continuity and unknown
+delivery are explicit uncertainties, not proof of resolution or fresh authority.
+
+The coordinator reconciles evidence with existing cards and takes authorized
+recovery/routing action, recording a disposition on the existing card. It does
+not reply for routine acknowledgment. Approval, implementation-lane and deploy
+gates remain in force. The daily report keeps unresolved issues visible even
+while internal reminders back off. This independent review can expose stale
+context or ignored requests; it cannot guarantee detection or override policy.

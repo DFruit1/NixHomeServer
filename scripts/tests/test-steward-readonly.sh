@@ -114,12 +114,20 @@ class StewardTest(unittest.TestCase):
         calls = []
         def edit(command, **kwargs):
             calls.append(command)
-            job = next(job for job in jobs if job['id'] == command[5])
+            if command[4] == 'create':
+                job = {'id': 'stalls', 'name': command[command.index('--name') + 1],
+                       'prompt': command[6].strip(), 'schedule': {'kind': 'cron', 'expr': command[5]},
+                       'enabled': True}
+                jobs.append(job)
+            else:
+                job = next(job for job in jobs if job['id'] == command[5])
             for flag, key in [('--prompt', 'prompt'), ('--script', 'script'),
                               ('--monitor-script', 'monitor_script'), ('--workdir', 'workdir'), ('--deliver', 'deliver')]:
                 if flag in command:
                     job[key] = command[command.index(flag) + 1]
             job['skills'] = ['board-steward']
+            if '--continuity' in command:
+                job['context_from'] = ['self']
             if '--schedule' in command:
                 job['schedule'] = {'kind': 'cron', 'expr': command[command.index('--schedule') + 1]}
             jobs_path.write_text(json.dumps({'jobs': jobs}))
@@ -127,7 +135,20 @@ class StewardTest(unittest.TestCase):
             self.assertEqual(0, installer.install(self.root, self.repo))
             self.assertEqual(0, installer.install(self.root, self.repo, check=True))
             self.assertEqual(0, installer.install(self.root, self.repo))
-        self.assertEqual(2, len(calls))
+        self.assertEqual(3, len(calls))
+        # Losing continuity would reset reminder history; repair it without
+        # duplicating the job or changing unrelated delivery destinations.
+        jobs[2]['context_from'] = []
+        jobs_path.write_text(json.dumps({'jobs': jobs}))
+        with patch.object(installer.subprocess, 'run', edit):
+            self.assertEqual(1, installer.install(self.root, self.repo, check=True))
+            self.assertEqual(0, installer.install(self.root, self.repo))
+            self.assertEqual(0, installer.install(self.root, self.repo, check=True))
+        self.assertEqual(['self'], jobs[2]['context_from'])
+        self.assertEqual('bot-chat:head-coordinator', jobs[2]['deliver'])
+        self.assertEqual({'kind': 'cron', 'expr': '0 */4 * * *'}, jobs[2]['schedule'])
+        self.assertEqual(['self'], jobs[2]['context_from'])
+        self.assertEqual('kanban-daily-steward.py', jobs[2]['script'])
         self.assertFalse(jobs[0]['enabled'])
         self.assertEqual({'kind': 'cron', 'expr': '0 7 * * *'}, jobs[0]['schedule'])
         self.assertEqual({'minutes': 120}, jobs[1]['schedule'])
@@ -138,7 +159,7 @@ class StewardTest(unittest.TestCase):
             self.assertEqual(1, installer.install(self.root, self.repo, check=True))
             self.assertEqual(0, installer.install(self.root, self.repo))
             self.assertEqual(0, installer.install(self.root, self.repo, check=True))
-        self.assertEqual(3, len(calls))
+        self.assertEqual(5, len(calls))
         self.assertEqual({'kind': 'cron', 'expr': '0 7 * * *'}, jobs[0]['schedule'])
         config = (profile / 'config.yaml').read_text()
         self.assertIn('model: {default: keep-model}', config)

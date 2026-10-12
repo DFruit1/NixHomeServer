@@ -84,10 +84,11 @@ def install(root, repo, check=False):
     jobs = json.loads(jobs_path.read_text()).get('jobs', []) if jobs_path.exists() else []
     # The separately approved DM split uses profile-scoped scheduler delivery.
     # Reinstallation must not restore manual group sends or disable DM reports.
-    specifications = [('hermes daily steward', '0 7 * * *', 'daily-steward-prompt.txt', '--script', 'kanban-daily-steward.py', 'simplex'),
-                      ('steward opportunity scan', 'every 2h', 'steward-opportunity-prompt.txt', '--monitor-script', 'steward-opportunity-scan.py', 'local')]
+    specifications = [('hermes daily steward', '0 7 * * *', 'daily-steward-prompt.txt', '--script', 'kanban-daily-steward.py', 'simplex', False),
+                      ('steward opportunity scan', 'every 2h', 'steward-opportunity-prompt.txt', '--monitor-script', 'steward-opportunity-scan.py', 'local', False),
+                      ('steward stall follow-up', '0 */4 * * *', 'steward-stall-prompt.txt', '--script', 'kanban-daily-steward.py', 'bot-chat:head-coordinator', True)]
     commands = []
-    for name, schedule, prompt_name, script_flag, script, deliver in specifications:
+    for name, schedule, prompt_name, script_flag, script, deliver, continuity in specifications:
         matching = [job for job in jobs if job.get('name') == name]
         if len(matching) > 1:
             raise ValueError(f'Duplicate steward job: {name}')
@@ -95,17 +96,20 @@ def install(root, repo, check=False):
         prefix = ['hermes', '--profile', PROFILE, 'cron']
         if matching:
             job = matching[0]
-            schedule_changed = (name == 'hermes daily steward'
+            schedule_changed = (name in {'hermes daily steward', 'steward stall follow-up'}
                                 and (job.get('schedule') or {}).get('expr') != schedule)
-            if (job.get('prompt') != prompt or 'board-steward' not in (job.get('skills') or [])
+            if ((job.get('prompt') or '').strip() != prompt.strip() or 'board-steward' not in (job.get('skills') or [])
                     or job.get('deliver') != deliver or job.get('workdir') != str(repo)
-                    or job.get(script_flag[2:].replace('-', '_')) != script or schedule_changed):
+                    or job.get(script_flag[2:].replace('-', '_')) != script or schedule_changed
+                    or (continuity and 'self' not in (job.get('context_from') or []))):
                 commands.append(prefix + ['edit', job['id'], '--prompt', prompt, '--add-skill', 'board-steward',
                                            script_flag, script, '--workdir', str(repo), '--deliver', deliver]
-                                + (['--schedule', schedule] if schedule_changed else []))
+                                + (['--schedule', schedule] if schedule_changed else [])
+                                + (['--continuity'] if continuity else []))
         else:
             commands.append(prefix + ['create', schedule, prompt, '--name', name, '--skill', 'board-steward',
-                                     script_flag, script, '--workdir', str(repo), '--deliver', deliver])
+                                     script_flag, script, '--workdir', str(repo), '--deliver', deliver]
+                            + (['--continuity'] if continuity else []))
     if check:
         for path in changes:
             print(f'drift: {path}')

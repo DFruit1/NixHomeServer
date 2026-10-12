@@ -435,8 +435,13 @@ The board steward is an independent read-only observer, not a worker or fixer.
 It may inspect every board and relevant non-secret evidence, but never writes
 files, comments or cards, changes state/dependencies/assignments, unblocks work,
 restores scripts, commits, changes configuration or delegates implementation.
-It reports only when asked or in its regular reports. Reports propose remedies,
-disjoint-file parallel work and exact commands in a copyable handoff for the
+It reports only when asked or in its regular reports. The owner-authorized
+four-hour stall follow-up may hand its final report directly to head-coordinator
+through scheduler Bot Chat delivery, with per-feature reminder backoff. This is
+an evidence handoff, not permission for steward tool-based messaging, delegation
+or board changes. The coordinator records authorized action on existing cards;
+routine acknowledgments must not create reciprocal bot conversations. Reports
+propose remedies, disjoint-file parallel work and exact commands in a copyable handoff for the
 external Codex agent, which is the owner's independent unblocker and fixer.
 The coordinator alone authors owner-facing blocker cards and summaries.
 
