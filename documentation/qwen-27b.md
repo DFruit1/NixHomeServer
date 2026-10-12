@@ -145,6 +145,42 @@ ZFS ARC is no longer clamped for this module. `zfs-arc-tune` uses the standard
 `zfsArcMaxPercent` ceiling (50% by default) whether or not Qwen is enabled; the
 previous 8% override existed only to make room for the 94 GB Flash-Next weights.
 
+## Hermes Client Tuning (local-implementer)
+
+The Qwen chat template enables thinking by default (`enable_thinking is
+undefined or is true`), so every request — auxiliary calls included — pays for a
+`<think>` block. On the compression-summary route the model at ~5 t/s generated
+past the 600s compaction ceiling, so Hermes aborted the summary and committed a
+deterministic fallback instead of compressing. At 96K that is slow and lossy.
+
+`profiles/local-implementer/config.yaml` disables thinking for the summarizer
+only and gives it room:
+
+```yaml
+auxiliary:
+  compression:
+    model: "qwen3.8-27b-iq4_xs"
+    timeout: 900
+    extra_body:
+      chat_template_kwargs:
+        enable_thinking: false   # llama.cpp --jinja; reasoning_effort=none is ignored
+```
+
+with `compression.threshold: 0.75` (the earliest allowed for a <512K window),
+`compression.context_total_ceiling_seconds: 1200`,
+`compression.protect_first_n: 0`, and `compression.proactive_prune_tokens: 48000`
+— a deterministic, no-model prune of old tool results that keeps the window
+bounded without relying on the summarizer. `context_file_max_chars: 36000` lets
+the worker read the full repo `AGENTS.md`, which the 96K-window dynamic cap
+(~23.6K chars) truncated.
+
+Verify the effective budgets with:
+
+```bash
+hermes -p local-implementer config get compression.context_total_ceiling_seconds
+hermes -p local-implementer config get auxiliary.compression.extra_body
+```
+
 ## Stability And Quality Choices
 
 The host profile is deliberately biased toward stability and output quality over
