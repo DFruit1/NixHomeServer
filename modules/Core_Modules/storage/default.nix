@@ -6,6 +6,7 @@
     ./fileshare-user-roots.nix
     ./import-fix.nix
     ./layout.nix
+    ./model-artifacts.nix
     ./system-ssd-btrfs.nix
     ./system-ssd-ext4.nix
   ];

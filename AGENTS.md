@@ -180,6 +180,17 @@ a workaround without first confirming the DNS and LAN path.
 * Core_Modules are always assumed to exist in the config and aren't normally modified or removed. Therefore, other modules and config can always assume these modules will exist.
 * Impermanence should always be centrally defined within core modules to prevent accidental data deletion on module removal. Module data should be persisted unless explicitly removed within the central impermanence module. 
 
+### Model artifacts
+
+* Store downloaded inference weights on the data pool under
+  `${dataRoot}/<application>/models`, rather than in system-SSD persistence.
+* Disabling or removing a model application retains its weights there as a
+  reusable archive. Do not automatically delete archived model files.
+* Keep model metadata, databases and configuration in central persistence and
+  regular backups. Global Kopia policy excludes `*.gguf` and `*.gguf.part` from
+  every snapshot root mirrored to MEGA. Irreplaceable or fine-tuned GGUF weights
+  require a separate explicitly configured backup.
+
 ---
 
 ## Kanban Card Authoring

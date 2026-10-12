@@ -15,6 +15,7 @@ rec {
       "absClientSecret"
     ] [ ];
     bonsai = app ./bonsai "Bonsai AI" "automation" [ ] [
+      "bonsai-storage-layout"
       "bonsai-gate"
       "bonsai-llama"
       "bonsai-model-prepare"

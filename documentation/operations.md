@@ -2767,13 +2767,34 @@ concurrency and storage-consistency safeguards. See
 The Kopia policy is deliberately bounded to 7 latest, 14 daily, 4 weekly, and
 2 monthly snapshots (with no hourly or annual tier). Runtime caches, application
 logs, retired Restic/pool-migration copies, and reproducible download/cache data
-under `/persist` are excluded from the offsite snapshot. In particular, only
-`/persist/var/lib/bonsai/models` and `/persist/var/lib/atticd/storage` are
-excluded for Bonsai and Attic; their databases, metadata, configuration, and key
-material remain backed up. The managed `/persist` policy is cleared and rebuilt
+under `/persist` are excluded from the offsite snapshot. A global Kopia rule
+excludes `*.gguf` model weights and `*.gguf.part` partial downloads at every depth
+in every snapshot root, including `/persist` and Paperless. These patterns follow
+[Kopia's documented ignore rules](https://kopia.io/docs/advanced/kopiaignore/).
+Exclude them in Kopia rather than rclone: MEGA receives encrypted repository
+packs, so a filename filter on the mirror cannot identify model weights.
+
+Keep downloaded model artifacts on the data pool under
+`${dataRoot}/<application>/models`, whether the application is active or disabled.
+Bonsai uses `/mnt/data/bonsai/models`; Qwen uses `/mnt/data/qwen-27b/models`.
+Disabling or removing a model application leaves those files in place as a
+reusable archive. Model metadata, databases and configuration remain in central
+persistence and regular backups. Archive retention never deletes model files
+automatically. Fine-tuned or otherwise irreplaceable GGUF weights need a separate
+explicit backup, since the global rule excludes them too.
+
+The core model-archive unit safely migrates legacy Bonsai models from the SSD;
+see [Bonsai model storage](bonsai.md#model-artifacts-and-persistence). The legacy
+`/persist/var/lib/bonsai/models` exclusion remains centrally defined even when
+Bonsai is removed. Attic excludes `/persist/var/lib/atticd/storage`; its databases,
+metadata, configuration and key material remain backed up.
+The managed global and `/persist` policies are cleared and rebuilt
 by an active-exited reconciliation unit on activation. Because NixOS restarts
 that unit when its generated policy changes, enabling, disabling, removing, or
-re-adding a module cannot leave a stale exclusion behind.
+re-adding a module cannot leave a stale exclusion behind. Exclusions affect new
+snapshots. Existing snapshots keep their model chunks until normal retention
+and safe maintenance release them; changing this rule does not immediately
+shrink the repository or unblock an over-capacity MEGA mirror.
 
 MEGA synchronization uses permanent, delete-before semantics for this dedicated
 Kopia mirror. This is important because the MEGA backend otherwise puts deleted

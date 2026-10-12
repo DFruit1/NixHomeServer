@@ -24,6 +24,9 @@ let
     (builtins.readFile ../../../scripts/helpers/check-freshness-marker.sh);
   maintenanceLock = config.repo.backups.maintenanceLock;
   snapshotRoots = config.repo.backups.snapshotRoots;
+  modelArtifactIgnoreFlags = lib.concatMapStrings
+    (pattern: " \\\n      --add-ignore=${lib.escapeShellArg pattern}")
+    [ "*.gguf" "*.gguf.part" ];
   rebuildableSnapshotIgnoreFlags = lib.concatMapStrings
     (path: " \\\n            --add-ignore=${lib.escapeShellArg path}")
     (lib.unique config.repo.backups.rebuildableSnapshotPaths);
@@ -53,13 +56,18 @@ let
       --keep-annual=0 \
       --ignore-cache-dirs=true
 
+    # Add in a separate call: --clear-ignore wins over additions in the same
+    # invocation. Global basename patterns apply to roots without local lists.
+    kopia policy set --global${modelArtifactIgnoreFlags}
+
     # Kopia applies --clear-ignore after additions when both are supplied in
     # one invocation. Keep clearing and rebuilding as two ordered mutations so
     # module disable/removal/re-addition converges without erasing the new set.
     kopia policy set /persist --clear-ignore
 
-    # These patterns are relative only to /persist.
-    kopia policy set /persist \
+    # A target-specific list replaces the global list, so retain the model
+    # patterns here as well. Directory patterns are relative only to /persist.
+    kopia policy set /persist${modelArtifactIgnoreFlags} \
       --add-ignore='appdata/kopia/cache' \
       --add-ignore='appdata/kopia/logs' \
       --add-ignore='appdata/system-state-backup' \

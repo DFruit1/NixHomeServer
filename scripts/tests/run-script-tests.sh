@@ -185,6 +185,7 @@ test_scripts=(
   scripts/tests/test-mkvmaker-tool-resolution.sh
   scripts/tests/test-platform-storage-profiles.sh
   scripts/tests/test-runtime-reliability.sh
+  scripts/tests/test-model-artifact-storage.sh
   scripts/tests/test-rclone-safety.sh
   scripts/tests/test-rclone-mega-capacity-check.sh
   scripts/tests/test-rclone-mega-preflight.sh

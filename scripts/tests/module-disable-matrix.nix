@@ -13,7 +13,7 @@ let
       modules = [ ../../modules/bonsai ];
       disable = { repo.bonsai.enable = lib.mkForce false; };
       registryName = "bonsai";
-      services = [ "bonsai-gate" "bonsai-llama" "bonsai-model-prepare" ];
+      services = [ "bonsai-gate" "bonsai-llama" "bonsai-model-prepare" "bonsai-storage-layout" ];
       timers = [ ];
       hosts = [ "ai" ];
       gatewayApps = [ "bonsai" ];
@@ -23,7 +23,7 @@ let
       groups = [ "bonsai" ];
       secrets = [ ];
       backupApps = [ ];
-      guardedServices = [ ];
+      guardedServices = [ "bonsai-storage-layout" "bonsai-model-prepare" "bonsai-llama" ];
       persistencePaths = [ "/var/lib/bonsai" ];
     };
     calibre-web = {
