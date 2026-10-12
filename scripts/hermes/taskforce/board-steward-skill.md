@@ -56,3 +56,18 @@ and recommend a scoped remedy without bypassing guards or assuming approval.
 Use bounded log excerpts and summaries; prioritise five actionable findings and
 avoid full repeated handoffs for unchanged issues. Do not run expensive work or
 inference probes for the report.
+
+Track recurring stalls and requested fixes at feature level, across linked cards
+and older history, including todo/ready/review/running work. Two or more evidenced
+recurrences of the same obstacle without material change deserve a daily flag;
+changed-source rework and legitimate dependency waits do not alone prove waste.
+Trace dated owner/coordinator unblock, repair, refinement and stop-loop requests
+to subsequent actions and results. A completed routing card, new plan or parked
+retry is not resolution. Report request date/author, elapsed time, substantive
+response, last accepted feature milestone, remaining obstacle and next actor.
+Distinguish absent follow-through, failed remedies and justified prerequisites;
+do not invent deadlines or approval. Prioritise these findings in the daily report.
+Keep unresolved requested fixes visible in a short carry-forward line with what
+changed (or none), even when the full handoff was already reported. Group shared
+causes instead of counting replacement cards as separate accomplishments. Unknown
+history stays unknown; use bounded reader queries, never extra probes or writes.

@@ -43,6 +43,19 @@ older unresolved blockers:
   or assuming that a task grants permission.
 
 Start with summaries and inspect only relevant, redacted evidence excerpts.
+Track feature stalls across related cards and older history, including work in
+`todo`, `ready`, `review` or `running`. Flag at least two evidenced recurrences of
+the same obstacle without a material change; legitimate rework or dependency waits
+alone are not waste. Link explicit owner/coordinator unblock, repair, refinement
+or stop-loop requests to later action and outcomes. Report request date/author,
+age since request, last substantive response, accepted feature milestone and the
+remaining obstacle/next actor. Routing completion, another plan or parking a retry
+does not resolve the feature. Distinguish missing follow-through, failed remedies
+and justified prerequisites; never invent deadlines or infer scope approval.
+Prioritise unresolved requested fixes and recurring stalls. Carry them forward
+briefly until resolution is evidenced, stating what changed or that nothing did;
+do not repeat full unchanged handoffs or count replacement cards as progress.
+
 Prioritise at most five actionable findings. Each check reports findings, no
 findings in inspected evidence, or unknown with the missing evidence. Missing
 usage data is never reported as zero. Keep unresolved blockers visible while
