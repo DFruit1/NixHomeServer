@@ -5,6 +5,9 @@ Reads only local, non-secret telemetry:
 
 * the account rate-limit windows the provider exposes through
   ``hermes usage --json`` (Codex weekly/5h windows, plan, banked resets);
+* OpenCode Go/Zen account windows (rolling 5h, weekly, monthly) from the same
+  source the T3 Code usage tab reads: the ``opencode-go`` key in the local
+  OpenCode auth file, queried against the Zen usage endpoint;
 * Hermes' own per-model spend from ``session_model_usage`` in ``state.db``;
 * OpenCode's per-session totals from its local ``opencode.db``.
 
@@ -14,10 +17,13 @@ this script only supplies the numbers. Every source is best-effort: a missing
 credential, database or binary degrades that one line, never the report.
 
 Environment overrides (used by tests and a different checkout):
-  HERMES_ROOT    hermes state dir (default ~/.hermes)
-  HERMES_BIN     hermes launcher (default ~/.local/bin/hermes, else PATH)
-  OPENCODE_DB    opencode database (default ~/.local/share/opencode/opencode.db)
-  USAGE_PACE_NOW ISO instant to treat as now (default: the current time)
+  HERMES_ROOT         hermes state dir (default ~/.hermes)
+  HERMES_BIN          hermes launcher (default ~/.local/bin/hermes, else PATH)
+  OPENCODE_DB         opencode database (default ~/.local/share/opencode/opencode.db)
+  OPENCODE_AUTH       opencode auth file (default ~/.local/share/opencode/auth.json)
+  OPENCODE_API_KEY    opencode-go key fallback when the auth file has none
+  OPENCODE_USAGE_URL  opencode-go usage endpoint (default the Zen usage API)
+  USAGE_PACE_NOW      ISO instant to treat as now (default: the current time)
 """
 from __future__ import annotations
 
@@ -28,12 +34,24 @@ import shutil
 import sqlite3
 import subprocess
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 DAY = 86400.0
 SPIKE_RATIO = 1.5
 WINDOW_DAYS = {"weekly": 7.0, "daily": 1.0, "monthly": 30.0,
                "5h": 5.0 / 24, "hourly": 1.0 / 24}
+# OpenCode Go/Zen windows, keyed like the Zen usage response; the middle label is
+# printed and the last is the pace window used by ``pace_note``.
+OPENCODE_GO_WINDOWS = (
+    ("rolling", "Session (5h)", "5h"),
+    ("weekly", "Weekly", "weekly"),
+    ("monthly", "Monthly", "monthly"),
+)
+# Cloudflare fronts the Zen endpoint and rejects clients with no/opaque
+# user-agent (error 1010), so send a descriptive product string.
+OPENCODE_GO_UA = "hermes-usage-pace/1.0"
 
 
 def hermes_root() -> Path:
@@ -50,6 +68,20 @@ def hermes_bin() -> str | None:
 
 def opencode_db() -> Path:
     return Path(os.environ.get("OPENCODE_DB", str(Path.home() / ".local/share/opencode/opencode.db")))
+
+
+def opencode_auth() -> Path:
+    return Path(os.environ.get("OPENCODE_AUTH", str(Path.home() / ".local/share/opencode/auth.json")))
+
+
+def opencode_usage_url() -> str:
+    return os.environ.get("OPENCODE_USAGE_URL", "https://opencode.ai/zen/go/v1/usage")
+
+
+def http_get_json(url: str, headers: dict, timeout: int = 15) -> dict:
+    request = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
 
 
 def now() -> dt.datetime:
@@ -79,9 +111,9 @@ def parse_iso(value) -> dt.datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=now().tzinfo)
 
 
-def pace_note(provider: str, label: str, used, resets_at) -> str | None:
+def pace_note(provider: str, label: str, used, resets_at, window: str | None = None) -> str | None:
     """Project the window to its reset at the pace observed since it opened."""
-    window_days = WINDOW_DAYS.get(str(label).strip().lower())
+    window_days = WINDOW_DAYS.get(str(window if window is not None else label).strip().lower())
     reset = parse_iso(resets_at)
     if window_days is None or reset is None or used is None:
         return None
@@ -137,6 +169,56 @@ def provider_windows() -> list[str]:
         for detail in data.get("details") or []:
             lines.append(f"- {provider} note: {detail}")
     return lines
+
+
+def opencode_go_windows() -> list[str]:
+    """OpenCode Go/Zen account windows, from the source the T3 Code usage tab reads.
+
+    The ``opencode-go`` API key comes from the local OpenCode auth file (falling
+    back to ``OPENCODE_API_KEY``); the key authenticates a read-only GET against
+    the Zen usage endpoint, which returns rolling/weekly/monthly ``percent`` and
+    ``resetsAt``. Best-effort: every failure is one line and the key is never
+    printed.
+    """
+    entry = {}
+    try:
+        auth = json.loads(opencode_auth().read_text())
+    except (OSError, ValueError):
+        auth = None
+    if isinstance(auth, dict):
+        candidate = auth.get("opencode-go")
+        if isinstance(candidate, dict) and candidate.get("type") == "api":
+            entry = candidate
+    key = str(entry.get("key", "")).strip() or os.environ.get("OPENCODE_API_KEY", "").strip()
+    if not key:
+        return ["- opencode-go: unavailable (no OpenCode credential)"]
+    try:
+        data = http_get_json(opencode_usage_url(), {
+            "Authorization": f"Bearer {key}",
+            "User-Agent": OPENCODE_GO_UA,
+            "Accept": "application/json",
+        })
+    except urllib.error.HTTPError as exc:
+        return [f"- opencode-go: unavailable (usage request failed: HTTP {exc.code})"]
+    except (urllib.error.URLError, OSError, ValueError):
+        return ["- opencode-go: unavailable (usage request failed)"]
+    usage = data.get("usage") if isinstance(data, dict) else None
+    if not isinstance(usage, dict):
+        return ["- opencode-go: unavailable (no usage in response)"]
+    lines: list[str] = []
+    for name, label, window in OPENCODE_GO_WINDOWS:
+        record = usage.get(name)
+        if not isinstance(record, dict):
+            continue
+        used = record.get("percent")
+        reset = record.get("resetsAt")
+        status = record.get("status")
+        suffix = "" if status in (None, "ok") else f" [{status}]"
+        lines.append(f"- opencode-go {label}: {used}% used, resets {reset}{suffix}")
+        note = pace_note("opencode-go", label, used, reset, window=window)
+        if note:
+            lines.append(note)
+    return lines or ["- opencode-go: unavailable (empty usage response)"]
 
 
 def hermes_spend() -> dict:
@@ -214,6 +296,8 @@ def main() -> None:
     print(f"=== USAGE PACE {stamp} ===")
     print("ACCOUNT LIMITS:")
     for line in provider_windows():
+        print(line)
+    for line in opencode_go_windows():
         print(line)
     print("HERMES BOTS (session history):")
     for line in spend_line("hermes", hermes_spend()):

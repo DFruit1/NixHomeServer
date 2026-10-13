@@ -292,10 +292,13 @@ class StewardTest(unittest.TestCase):
                        ' tokens_output INTEGER, time_updated INTEGER)')
             db.execute("INSERT INTO session VALUES ('x',0.5,2000,1000,?)", (stamp * 1000 - 3600_000,))
             db.commit()
-        env = {'HERMES_ROOT': str(self.root), 'OPENCODE_DB': str(ocdb), 'HERMES_BIN': '/nonexistent'}
+        env = {'HERMES_ROOT': str(self.root), 'OPENCODE_DB': str(ocdb), 'HERMES_BIN': '/nonexistent',
+               'OPENCODE_AUTH': str(self.root / 'absent-auth.json')}
         with patch.dict(usage.os.environ, env):
             self.assertEqual([1, 1500, 0.0], usage.hermes_spend()['24h'])
             self.assertEqual([1, 3000, 0.5], usage.opencode_spend()['24h'])
+            self.assertEqual(['- opencode-go: unavailable (no OpenCode credential)'],
+                             usage.opencode_go_windows())
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
                 usage.main()
@@ -304,6 +307,46 @@ class StewardTest(unittest.TestCase):
         self.assertIn('hermes 24h', out)
         self.assertIn('opencode 24h', out)
         self.assertIn('unavailable', out)
+
+    def test_usage_pace_reports_opencode_go_windows_from_zen(self):
+        # Same source the T3 Code usage tab reads: the opencode-go key in the
+        # OpenCode auth file, queried against the Zen usage endpoint.
+        auth = self.root / 'auth.json'
+        self.root.mkdir(parents=True, exist_ok=True)
+        auth.write_text(json.dumps({'opencode-go': {'type': 'api', 'key': 'secret-key'}}))
+        seen = {}
+
+        def fake_get(url, headers, timeout=15):
+            seen['url'] = url
+            seen['headers'] = headers
+            return {'usage': {
+                'rolling': {'status': 'ok', 'percent': 1, 'resetsAt': '2026-10-14T02:15:05.000Z'},
+                'weekly': {'status': 'ok', 'percent': 44, 'resetsAt': '2026-10-19T00:00:00.000Z'},
+                'monthly': {'status': 'ok', 'percent': 77, 'resetsAt': '2026-10-28T12:50:54.000Z'}}}
+
+        env = {'OPENCODE_AUTH': str(auth), 'USAGE_PACE_NOW': '2026-10-14T09:00:00+11:00'}
+        with patch.dict(usage.os.environ, env):
+            with patch.object(usage, 'http_get_json', fake_get):
+                lines = usage.opencode_go_windows()
+        text = '\n'.join(lines)
+        self.assertEqual('https://opencode.ai/zen/go/v1/usage', seen['url'])
+        self.assertEqual('Bearer secret-key', seen['headers']['Authorization'])
+        self.assertIn('opencode-go Session (5h): 1% used', text)
+        self.assertIn('opencode-go Weekly: 44% used', text)
+        self.assertIn('opencode-go Monthly: 77% used', text)
+        self.assertIn('opencode-go Weekly pace:', text)
+        self.assertNotIn('secret-key', text)
+
+    def test_usage_pace_opencode_go_degrades_without_leaking(self):
+        auth = self.root / 'auth.json'
+        self.root.mkdir(parents=True, exist_ok=True)
+        auth.write_text(json.dumps({'opencode-go': {'type': 'api', 'key': 'secret-key'}}))
+        import urllib.error
+        with patch.dict(usage.os.environ, {'OPENCODE_AUTH': str(auth)}):
+            with patch.object(usage, 'http_get_json',
+                              side_effect=urllib.error.HTTPError('u', 403, 'Forbidden', {}, None)):
+                lines = usage.opencode_go_windows()
+        self.assertEqual(['- opencode-go: unavailable (usage request failed: HTTP 403)'], lines)
 
 unittest.main(argv=['steward'], verbosity=2)
 PY

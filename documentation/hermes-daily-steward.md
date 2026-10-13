@@ -154,18 +154,23 @@ to the daily report and owner requests.
 ## Usage and credit pace
 
 The daily job also runs `usage-pace.py` and injects its block. It reads only
-local, non-secret telemetry: provider account windows from
+local, non-secret telemetry: Codex account windows from
 `hermes usage --provider openai-codex --json` (weekly/5h percent used, reset
-time, plan, banked resets), Hermes' own per-model totals from
-`session_model_usage` in `state.db`, and OpenCode's per-session cost and tokens
-from `~/.local/share/opencode/opencode.db`. Each pool is reported for the last
-24 hours and the last week, and a day whose tokens exceed 1.5x the trailing
-daily average is marked `SPIKE`. The prompt asks the steward to judge credit
-risk against the reset window, attribute spikes to observed behaviour, and
-recommend the smallest avoiding action. A source that is missing or lacks a
-usage endpoint degrades to one explicit line; the collector never prints a
-credential. OpenCode Go exposes no balance through `hermes usage`, so its credit
-risk is reported as spend pace rather than remaining credit.
+time, plan, banked resets), OpenCode Go/Zen account windows from the same source
+the T3 Code usage tab reads (the `opencode-go` key in
+`~/.local/share/opencode/auth.json`, queried read-only against the Zen usage
+endpoint for rolling 5h, weekly and monthly percent used and reset), Hermes' own
+per-model totals from `session_model_usage` in `state.db`, and OpenCode's
+per-session cost and tokens from `~/.local/share/opencode/opencode.db`. Each pool
+is reported for the last 24 hours and the last week, and a day whose tokens
+exceed 1.5x the trailing daily average is marked `SPIKE`. Every account window
+is projected to its reset at the observed pace and flagged `RISK` when it is on
+course to exhaust before reset, so the OpenCode weekly/monthly and the Codex
+weekly limits can be reported under or over pace. The prompt asks the steward to
+judge credit risk against the reset window, attribute spikes to observed
+behaviour, and recommend the smallest avoiding action. A source that is missing,
+lacks a credential or has no usage endpoint degrades to one explicit line; the
+collector never prints a credential.
 
 Transport changes remain an owner-authorized operation for the external agent.
 The steward cannot create an identity, pair it, change its binding or retire a
