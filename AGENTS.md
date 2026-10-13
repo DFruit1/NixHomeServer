@@ -119,9 +119,13 @@ prompt is unavoidable, refer to that secret rather than relying on memory.
 * Flake check derivation builds run on the server too, through
   `scripts/helpers/remote-build.sh` (`remote_build_flake`), so their evaluation
   leaves the workstation as well. Set `REMOTE_BUILD=0` to force a local build.
-* `scripts/tests/*` runs on the workstation. A remote sandbox has no `PATH` into
-  the invoking user's tools, so a script that shells out to `cargo`, `hermes` or
-  `~/.local/bin` fails on the server and passes here.
+* `scripts/tests/*` mostly runs on the workstation. A remote sandbox has no
+  `PATH` into the invoking user's tools, so a script that shells out to `cargo`,
+  `hermes` or `~/.local/bin` fails on the server and passes here. The heavy
+  cargo (`test-ai-gate.sh`) and Playwright (`test-homepage-ui.sh`) suites instead
+  run on the server through `scripts/helpers/remote-run.sh` (`remote_run`),
+  which supplies the toolchain with `nix develop`/`nix shell`. Set
+  `REMOTE_RUN=0` to force them local.
 * Reproducible Nix derivation builds may run on either end; the Attic cache
   serves both.
 * Batch every evaluation query into one `remote_eval_batch_json` call from
@@ -557,6 +561,14 @@ clone, which cannot read this file. That path is disabled with
 `kanban.auto_decompose: false` in `~/.hermes/config.yaml`, so every card on the
 board is written by an agent that has read this section. Leave it off; the
 `hermes kanban specify` and `decompose` verbs have the same blind spot.
+
+### Worktree hygiene
+
+Hermes keeps a completed card's worktree when its branch was not yet pushed, and
+nothing revisits it once the durability sync has published it. `scripts/hermes/reap-kanban-worktrees.sh`
+reclaims exactly those trees: a terminal card's workspace that is clean and whose
+commits are all on a remote-tracking ref. It is a dry run by default (`--apply` to
+remove) and never touches an active card, a dirty tree, or an unpublished one.
 
 ---
 

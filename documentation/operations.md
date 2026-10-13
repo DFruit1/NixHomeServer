@@ -2371,6 +2371,7 @@ default is an owner-gated policy decision.
 | Settings-level `nix eval` | workstation | already served from the local eval cache; the SSH round trip costs more than the eval |
 | Rust / frontend compilations | server, as a Nix `builders` target | 16 cores, sandboxed, RAM headroom; in `remote` mode the workstation contributes no build slots |
 | `validate-repo.sh` check derivation builds | server, via `remote-build.sh` | moves the flake evaluation as well as the compilation off the four-core workstation |
+| Heavy cargo and Playwright tests | server, via `remote-run.sh` | `nix develop`/`nix shell` supply the toolchain, so the compile and the browser run on 16 cores |
 | `scripts/tests/*` shell suite | workstation | a remote sandbox has no `PATH` into the invoking user's tools |
 | Reproducible Nix derivation builds | either | the Attic cache serves both ends over the `127.0.0.1:8080` forward |
 
@@ -2442,8 +2443,9 @@ conclusion.
 The Hermes kanban board is single-host by design and its crash detection
 assumes host-local PIDs, so kanban workers do not run remotely. The SSH
 terminal backend is a global per-profile flip that would also move the guarded
-deploy helpers; it is not the offload mechanism. Tool jobs stay local; the
-auditable path is the `remote-eval.sh` pattern described above.
+deploy helpers; it is not the offload mechanism. Tool jobs that only need the
+repo's own scripts stay local; the auditable patterns are the `remote-eval.sh`,
+`remote-build.sh` and `remote-run.sh` helpers described above.
 
 ## Upstream Sync
 

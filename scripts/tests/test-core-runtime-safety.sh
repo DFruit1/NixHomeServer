@@ -256,7 +256,7 @@ require_fixed modules/Core_Modules/impermanence/default.nix 'if [ ! -e "$source_
   "Live adoption must recreate file mountpoints removed while switch-to-configuration rebuilds /etc."
 require_fixed modules/Core_Modules/impermanence/default.nix '/dev/null' \
   "Live adoption must create an empty regular-file mountpoint before binding persisted state."
-require_fixed scripts/test-homepage-ui.sh '--inputs-from "$repo_root"' \
+require_fixed scripts/test-homepage-ui.sh '--inputs-from "$NIXHOMESERVER_RUN_FLAKE_REF"' \
   "Playwright must resolve from the flake-pinned nixpkgs input."
 require_fixed scripts/test-homepage-ui.sh '#checks.${system}.homepage' \
   "Homepage browser tests must build and run the hermetic flake check output."
