@@ -113,6 +113,12 @@ prompt is unavoidable, refer to that secret rather than relying on memory.
 * Settings-level `nix eval` stays local: the local cache already serves it, and
   the SSH round trip costs more than the eval.
 * Rust and frontend compilations build on the server as a Nix `builders` target.
+  The committed default is `system.buildMode = "remote"`, so the workstation
+  contributes no build slots and the deployed server daemon runs
+  `max-jobs = auto` with `cores = 0`.
+* Flake check derivation builds run on the server too, through
+  `scripts/helpers/remote-build.sh` (`remote_build_flake`), so their evaluation
+  leaves the workstation as well. Set `REMOTE_BUILD=0` to force a local build.
 * `scripts/tests/*` runs on the workstation. A remote sandbox has no `PATH` into
   the invoking user's tools, so a script that shells out to `cargo`, `hermes` or
   `~/.local/bin` fails on the server and passes here.
@@ -123,9 +129,9 @@ prompt is unavoidable, refer to that secret rather than relying on memory.
   `scripts/tests/test-common.sh`. Nix shares nothing between separate `nix eval`
   processes, so batching matters more than offloading. Set `REMOTE_EVAL=0` to
   force local evaluation.
-* Do not change the guarded allocation defaults from here: no backend flip, no
-  `max-jobs` change, no widening of the `repo-policy` sandbox exclusion, no
-  credential transfer. Those are separate, owner-gated decisions.
+* The build-allocation default is owner-gated: changing `buildMode`, a
+  `max-jobs` value, widening the `repo-policy` sandbox exclusion, or moving
+  credentials each needs its own explicit owner decision.
 * The 3.9x evaluation ratio and every `max-jobs` or load-average number behind
   it were taken under load. They are directional only and are not throughput
   benchmarks; re-measure on an idle pair before drawing a scaling conclusion.

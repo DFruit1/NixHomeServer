@@ -2358,16 +2358,19 @@ Use `--build-mode <value>` for a one-shot override. The older
 
 ## Compute Offload (workstation and server)
 
-Both offload paths already exist and are verified against this server. Neither
-is new infrastructure, and nothing here changes the guarded allocation defaults
-in `vars.nix`: a guarded deploy still uses the dashboard-selected build mode and
-still exports its own `NIX_CONFIG`, which overrides any ambient user config.
+Both offload paths already exist and are verified against this server. The
+committed `vars.nix` default is `system.buildMode = "remote"`: the workstation
+contributes no build slots and the server takes all of its own. A guarded
+deploy still uses the dashboard-selected build mode and still exports its own
+`NIX_CONFIG`, which overrides any ambient user config; changing the committed
+default is an owner-gated policy decision.
 
 | Workload | Where to run it | Why |
 | --- | --- | --- |
 | Full `nixosConfigurations` evaluation | server, batched | 74 s local → 19 s remote, identical drvPath |
 | Settings-level `nix eval` | workstation | already served from the local eval cache; the SSH round trip costs more than the eval |
-| Rust / frontend compilations | server, as a Nix `builders` target | 16 cores, sandboxed, RAM headroom; the workstation stays at `max-jobs = 1` |
+| Rust / frontend compilations | server, as a Nix `builders` target | 16 cores, sandboxed, RAM headroom; in `remote` mode the workstation contributes no build slots |
+| `validate-repo.sh` check derivation builds | server, via `remote-build.sh` | moves the flake evaluation as well as the compilation off the four-core workstation |
 | `scripts/tests/*` shell suite | workstation | a remote sandbox has no `PATH` into the invoking user's tools |
 | Reproducible Nix derivation builds | either | the Attic cache serves both ends over the `127.0.0.1:8080` forward |
 
@@ -2398,6 +2401,17 @@ helper rather than calling `flake_eval_json` repeatedly.
 `~/.config/nix/nix.conf` on the workstation already declares the server as an
 `ssh-ng://` builder with a pinned identity and host key, so an ordinary
 `nix build` of a reproducible derivation already offloads without any flag.
+That path still evaluates on the workstation, though: Nix evaluates in the
+local client, so only the compilation moves.
+
+`scripts/helpers/remote-build.sh` provides `remote_build_flake`. It stages the
+same *tracked* tree `remote-eval.sh` uses, runs `nix build` on the server
+against `path:<staged dir>`, and streams the build logs back. It is what
+`scripts/validate-repo.sh` uses for its check derivation builds, so the flake
+evaluation leaves the workstation as well. A build that fails on the server is
+propagated — a failing check must fail the gate — and only an ssh transport
+failure falls back to a local build. Set `REMOTE_BUILD=0` to force a local
+build.
 
 Two limits belong with that statement:
 
@@ -2407,16 +2421,19 @@ Two limits belong with that statement:
   why `scripts/validate-repo.sh` excludes `repo-policy` from `--build-checks`
   and runs the script suite directly. Do not widen that exclusion list from
   this note; the broader sandbox-`PATH` rule is a separate decision.
-* **The server's own `max-jobs = 2` is the real ceiling.** The workstation's
-  16-slot `builders` request is a request, not a grant, and the server truncates
-  it. Raising the deployed limit is a policy change, not a documentation change.
+* **The server's deployed `max-jobs` is the real ceiling.** In the committed
+  `remote` mode the server runs `max-jobs = auto` (all sixteen cores) with
+  `cores = 0`; under `balanced` it is two jobs of four requested cores. The
+  workstation's builder entry is a request, not a grant. Changing the deployed
+  value is a policy change applied by a guarded deploy, not a documentation or
+  ambient `nix.conf` change.
 
 ### What these numbers are and are not
 
 The 3.9x evaluation ratio was measured with a sibling card holding a 48-check
 build, so both hosts were loaded. The evaluation ratio is large enough to be
-directional, but the `max-jobs` 1-vs-2 numbers and any load-average reading
-from that window are **not throughput benchmarks** and must not be quoted as
+directional, but the `max-jobs` and load-average numbers from the previous
+`balanced` window are **not throughput benchmarks** and must not be quoted as
 capacity headroom. Re-measure on an idle pair before drawing a scaling
 conclusion.
 
