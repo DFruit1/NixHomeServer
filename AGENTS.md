@@ -530,7 +530,9 @@ model/provider`.
 
 A `capability` block whose supplier is `owner` is a defect: reclassify it and
 surface it. A parked `capability` hold may not sit indefinitely with no
-owner-visible ask.
+owner-visible ask. Every `capability` block reason must carry the `Input
+supplier:` line; board health surfaces a `capability` hold that does not as
+`CAPABILITY_OWNER_INPUT`, and `--check-blockers` echoes it as a warning.
 
 Everything else — dependency waits and routine cleanups — is a technical blocker
 that is board-local and never pushed; the owner pulls it with `B1 details`,

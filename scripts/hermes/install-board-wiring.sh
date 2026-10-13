@@ -53,11 +53,12 @@ STALE_TIMEOUT_SEC="${STALE_TIMEOUT_SEC:-5400}"
 # Profile directories that must not appear in the dispatcher's claim allowlist,
 # with the reason each is absent. `default` runs cron jobs and infrastructure and
 # is never a card worker; principal-consultant is invoked by a human in a
-# conversation and must never be spawned. Everything else that exists as a
+# conversation and must never be spawned; board-steward is the independent daily
+# watchdog, which reports over SimpleX and claims no cards. Everything else that exists as a
 # profile directory and is missing from the allowlist is drift, because a card
 # assigned to such a lane is skipped as nonspawnable and starves in `ready` in
 # silence -- which is the whole failure the lane rename had to be careful about.
-DISPATCH_EXCLUDED_PROFILES="${DISPATCH_EXCLUDED_PROFILES:-default principal-consultant}"
+DISPATCH_EXCLUDED_PROFILES="${DISPATCH_EXCLUDED_PROFILES:-default principal-consultant board-steward}"
 
 check_only=false
 [[ "${1:-}" == "--check" ]] && check_only=true
@@ -262,6 +263,80 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 2c. Per-profile concurrency caps must exist in every profile config
+# ---------------------------------------------------------------------------
+#
+# Why this check exists
+# ---------------------
+# `kanban.max_in_progress_per_profile` bounds a lane (one local model endpoint,
+# one API quota). Every dispatch entry point resolves it from the ACTIVE
+# profile's config -- the dashboard plugin's POST /dispatch nudge, `hermes
+# kanban dispatch`, and a per-profile gateway all call
+# `configured_max_in_progress_per_profile()` -> `load_config_readonly()`, which
+# reads `get_config_path()` for the active profile. Only the root
+# (~/.hermes/config.yaml) is guaranteed to carry it.
+#
+# The desktop app runs `hermes -p <profile> serve`, and its kanban dashboard
+# nudges dispatch from THAT profile's config. On a profile with no caps the
+# nudge spawns with no lane bound: unblocking a card in the dashboard put four
+# `local-implementer` workers on a lane capped at one, because the nudge read
+# the head-coordinator profile config (no caps) instead of the root. The gateway
+# dispatcher is not the leak -- the dashboard nudge bypasses the singleton
+# dispatcher lock. Mirror the root's cap keys into every profile so whichever
+# profile the dashboard is viewing still enforces them.
+#
+# The values below are the root's; change both together. A profile that already
+# carries the key is left alone (this installer edits, it does not rewrite), and
+# a profile with no config.yaml at all is skipped rather than fabricated.
+CAPS_MAX_IN_PROGRESS="${CAPS_MAX_IN_PROGRESS:-8}"
+CAPS_CAP_DEFAULT="${CAPS_CAP_DEFAULT:-2}"
+CAPS_CAP_LOCAL="${CAPS_CAP_LOCAL:-1}"
+CAPS_CAP_STANDARD="${CAPS_CAP_STANDARD:-4}"
+CAPS_CAP_AUDITOR="${CAPS_CAP_AUDITOR:-1}"
+for _cap_value in "$CAPS_MAX_IN_PROGRESS" "$CAPS_CAP_DEFAULT" "$CAPS_CAP_LOCAL" \
+  "$CAPS_CAP_STANDARD" "$CAPS_CAP_AUDITOR"; do
+  [[ "$_cap_value" =~ ^[1-9][0-9]*$ ]] || {
+    note "CAPS_* values must be positive integers, got '$_cap_value'"
+    exit 2
+  }
+done
+
+caps_block() {
+  printf '%s\n' \
+    "  max_in_progress: $CAPS_MAX_IN_PROGRESS" \
+    "  max_in_progress_per_profile:" \
+    "    default: $CAPS_CAP_DEFAULT" \
+    "    local-implementer: $CAPS_CAP_LOCAL" \
+    "    standard-implementer: $CAPS_CAP_STANDARD" \
+    "    project-auditor: $CAPS_CAP_AUDITOR"
+}
+
+for profile_dir in "$HERMES_ROOT"/profiles/*/; do
+  [[ -d "$profile_dir" ]] || continue
+  profile="${profile_dir%/}"
+  profile="${profile##*/}"
+  pconfig="${profile_dir%/}/config.yaml"
+  [[ -f "$pconfig" ]] || { skip "$profile has no config.yaml; caps not installed"; continue; }
+  if grep -qE '^[[:space:]]*max_in_progress_per_profile:' "$pconfig"; then
+    ok "$profile config carries max_in_progress_per_profile"
+    continue
+  fi
+  if ! grep -qE '^kanban:[[:space:]]*$' "$pconfig"; then
+    unrepaired "$profile config has no top-level 'kanban:' block; add the per-profile caps by hand"
+    continue
+  fi
+  if [[ "$check_only" == true ]]; then
+    changed "$profile config is missing max_in_progress_per_profile (dashboard dispatch would be uncapped)"
+    continue
+  fi
+  awk -v block="$(caps_block)" '
+    /^kanban:[[:space:]]*$/ && !done { print; print block; done = 1; next }
+    { print }
+  ' "$pconfig" >"$pconfig.tmp" && mv "$pconfig.tmp" "$pconfig"
+  changed "added per-profile caps under kanban: in $profile config"
+done
+
+# ---------------------------------------------------------------------------
 # 3. Planner board-health duty
 # ---------------------------------------------------------------------------
 #
@@ -321,6 +396,51 @@ else
     note "  Without it the board-health monitor reports a card whose worker died"
     note "  and the head-coordinator has no rule telling it to re-scope and"
     note "  re-dispatch, so the card and everything behind it stay stopped."
+    drift=$((drift + 1))
+  fi
+fi
+
+# The owner-comment finding is the same shape: the board-health monitor detects
+# an answered gate (the owner commented, no agent replied) and the SOUL must tell
+# the head-coordinator to act on it. Pin the marker so the detector and the
+# policy cannot drift apart silently -- the detector could be added while the
+# policy is lost in a profile reset, leaving the finding firing with no rule.
+if [[ ! -f "$COORDINATOR_SOUL" ]]; then
+  :
+elif grep -q 'OWNER_COMMENT_UNACTED' "$COORDINATOR_SOUL"; then
+  ok "head-coordinator SOUL.md has a policy for OWNER_COMMENT_UNACTED"
+else
+  if [[ "$check_only" == true ]]; then
+    changed "head-coordinator SOUL.md has no policy for OWNER_COMMENT_UNACTED; an owner-answered gate would be reported and then ignored"
+  else
+    note "  ACTION: add an OWNER_COMMENT_UNACTED rule to $COORDINATOR_SOUL by hand."
+    note "  It is prose policy rather than code, so it is not installed from here."
+    note "  Without it the board-health monitor reports a blocked card whose"
+    note "  latest comment is the owner's, and the head-coordinator has no rule"
+    note "  telling it to record the answer and unblock, so the answered gate"
+    note "  stays blocked and nothing dispatches it."
+    drift=$((drift + 1))
+  fi
+fi
+
+# The capability finding is the same shape again: the board-health monitor
+# reports a `capability` card whose reason carries no `Input supplier:` line,
+# because that is the shape that hid four owner asks. Pin the marker so the rule
+# cannot be lost while the detector keeps firing.
+if [[ ! -f "$COORDINATOR_SOUL" ]]; then
+  :
+elif grep -q 'CAPABILITY_OWNER_INPUT' "$COORDINATOR_SOUL"; then
+  ok "head-coordinator SOUL.md has a policy for CAPABILITY_OWNER_INPUT"
+else
+  if [[ "$check_only" == true ]]; then
+    changed "head-coordinator SOUL.md has no policy for CAPABILITY_OWNER_INPUT; an owner-sourced capability hold would be reported and then re-parked"
+  else
+    note "  ACTION: add a CAPABILITY_OWNER_INPUT rule to $COORDINATOR_SOUL by hand."
+    note "  It is prose policy rather than code, so it is not installed from here."
+    note "  Without it the board-health monitor reports a capability card whose"
+    note "  reason names no input supplier, and the head-coordinator has no rule"
+    note "  telling it to classify the supplier and author a gate when it is the"
+    note "  owner -- so an owner ask stays parked as technical."
     drift=$((drift + 1))
   fi
 fi

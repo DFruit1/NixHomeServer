@@ -66,8 +66,8 @@ CREATE TABLE tasks (
   block_kind TEXT,
   consecutive_failures INTEGER DEFAULT 0
 );
-CREATE TABLE task_comments (id INTEGER PRIMARY KEY, task_id TEXT, body TEXT, created_at INTEGER);
-CREATE TABLE task_events (id INTEGER PRIMARY KEY, task_id TEXT, kind TEXT, created_at INTEGER);
+CREATE TABLE task_comments (id INTEGER PRIMARY KEY, task_id TEXT, body TEXT, created_at INTEGER, author TEXT);
+CREATE TABLE task_events (id INTEGER PRIMARY KEY, task_id TEXT, kind TEXT, created_at INTEGER, payload TEXT);
 CREATE TABLE task_runs (id INTEGER PRIMARY KEY, task_id TEXT, outcome TEXT, started_at INTEGER, ended_at INTEGER);
 CREATE TABLE task_links (parent_id TEXT, child_id TEXT, PRIMARY KEY (parent_id, child_id));
 SQL
@@ -129,8 +129,8 @@ sqlite3 "$DB" "INSERT INTO tasks VALUES
   ('t_gaveup','worker ran out of budget','standard-implementer','blocked',$now-7200,$now-7200,NULL,NULL,$now-7200,0,'',2);
 INSERT INTO task_runs VALUES (163,'t_gaveup','timed_out',$now-7200,$now-3600);
 INSERT INTO task_runs VALUES (164,'t_gaveup','gave_up',$now-3600,$now-1800);
-INSERT INTO task_events VALUES (1,'t_gaveup','timed_out',$now-3600);
-INSERT INTO task_events VALUES (2,'t_gaveup','gave_up',$now-1800);
+INSERT INTO task_events VALUES (1,'t_gaveup','timed_out',$now-3600,NULL);
+INSERT INTO task_events VALUES (2,'t_gaveup','gave_up',$now-1800,NULL);
 INSERT INTO task_links VALUES ('t_gaveup','t_dep1'),('t_gaveup','t_dep2');"
 
 # A crash with no `blocked` event: the cause still has to surface, keyed on the
@@ -144,14 +144,16 @@ INSERT INTO task_runs VALUES (165,'t_crash','crashed',$now-3600,$now-3000);"
 sqlite3 "$DB" "INSERT INTO tasks VALUES
   ('t_gate','waiting on the owner','standard-implementer','blocked',$now-3600,$now-3600,NULL,NULL,$now-3600,0,'needs_input',3);
 INSERT INTO task_runs VALUES (166,'t_gate','timed_out',$now-3600,$now-3000);
-INSERT INTO task_events VALUES (3,'t_gate','blocked',$now-3000);"
+INSERT INTO task_events VALUES (3,'t_gate','blocked',$now-3000,NULL);"
 
 # Must NOT be reported: parked by the retry breaker, which owns this class and
-# escalates to triage itself after a second park.
+# escalates to triage itself after a second park. Its reason carries the supplier
+# line the breaker now writes, so the capability detector leaves it alone -- a
+# quota park is a model/provider hold, not an owner ask.
 sqlite3 "$DB" "INSERT INTO tasks VALUES
   ('t_parked','breaker-parked quota wall','local-implementer','blocked',$now-3600,$now-3600,NULL,NULL,$now-3600,1,'capability',4);
 INSERT INTO task_runs VALUES (167,'t_parked','rate_limited',$now-3600,$now-3000);
-INSERT INTO task_events VALUES (4,'t_parked','blocked',$now-3000);"
+INSERT INTO task_events VALUES (4,'t_parked','blocked',$now-3000,'{\"reason\":\"Rate-limit retry breaker: provider quota wall. Input supplier: model/provider.\"}');"
 
 # Must NOT be reported: blocked *and* rate-limited, not yet parked. The breaker
 # is the component that gives this class a stopping condition, so a second
@@ -160,7 +162,7 @@ INSERT INTO task_events VALUES (4,'t_parked','blocked',$now-3000);"
 sqlite3 "$DB" "INSERT INTO tasks VALUES
   ('t_quota','quota wall before the breaker parks it','standard-implementer','blocked',$now-3600,$now-3600,NULL,NULL,$now-3600,0,'',5);
 INSERT INTO task_runs VALUES (168,'t_quota','rate_limited',$now-3600,$now-3000);
-INSERT INTO task_events VALUES (5,'t_quota','blocked',$now-3000);"
+INSERT INTO task_events VALUES (5,'t_quota','blocked',$now-3000,NULL);"
 
 # Must NOT be reported: a blocked worker failure somebody has already ruled on.
 # Without this guard the monitor would wake the head-coordinator every 30 minutes
@@ -169,16 +171,74 @@ INSERT INTO task_events VALUES (5,'t_quota','blocked',$now-3000);"
 sqlite3 "$DB" "INSERT INTO tasks VALUES
   ('t_handled','already ruled on','standard-implementer','blocked',$now-7200,$now-7200,NULL,NULL,$now-7200,0,'',2);
 INSERT INTO task_runs VALUES (169,'t_handled','gave_up',$now-7200,$now-3600);
-INSERT INTO task_events VALUES (6,'t_handled','gave_up',$now-3600);
-INSERT INTO task_comments VALUES (1,'t_handled','re-scoped, re-dispatching',$now-1800);"
+INSERT INTO task_events VALUES (6,'t_handled','gave_up',$now-3600,NULL);
+INSERT INTO task_comments VALUES (1,'t_handled','re-scoped, re-dispatching',$now-1800,'head-coordinator');"
 
 # Must be reported: a comment *before* the block does not count as handling it.
 # The decision predates the failure and cannot have been about it.
 sqlite3 "$DB" "INSERT INTO tasks VALUES
   ('t_stale_comment','comment predates the block','standard-implementer','blocked',$now-7200,$now-7200,NULL,NULL,$now-7200,0,'',2);
 INSERT INTO task_runs VALUES (170,'t_stale_comment','gave_up',$now-7200,$now-3600);
-INSERT INTO task_events VALUES (7,'t_stale_comment','gave_up',$now-3600);
-INSERT INTO task_comments VALUES (2,'t_stale_comment','starting on this now',$now-7000);"
+INSERT INTO task_events VALUES (7,'t_stale_comment','gave_up',$now-3600,NULL);
+INSERT INTO task_comments VALUES (2,'t_stale_comment','starting on this now',$now-7000,'head-coordinator');"
+
+# --- a capability hold that names no input supplier ---------------------------
+#
+# The instruction rule requires every capability hold to name the supplier of its
+# missing input. A capability card whose reason carries no `Input supplier:` line
+# is exactly the shape that hid four owner asks -- parked as "technical" and never
+# surfaced. These pin detection, the explicit-classification exemption, and the
+# self-clearing comment guard.
+sqlite3 "$DB" "INSERT INTO tasks VALUES
+  ('t_cap_owner','owner-sourced gap parked as capability','head-coordinator','blocked',$now-3600,$now-3600,NULL,NULL,$now-3600,0,'capability',0);
+INSERT INTO task_events VALUES (20,'t_cap_owner','blocked',$now-3000,'{\"reason\":\"Runtime STOP: the original owner must supply the exact installed binding; no repository records it.\"}');"
+
+# Must NOT be reported: the hold named its supplier, so it is already classified.
+sqlite3 "$DB" "INSERT INTO tasks VALUES
+  ('t_cap_classified','capability hold that named its supplier','head-coordinator','blocked',$now-3600,$now-3600,NULL,NULL,$now-3600,0,'capability',0);
+INSERT INTO task_events VALUES (21,'t_cap_classified','blocked',$now-3000,'{\"reason\":\"Deferred scope. Input supplier: agent.\"}');"
+
+# A hold is cleared by classification, not by a comment: adding the
+# `Input supplier:` line (t_cap_classified) or reclassifying it away from
+# `capability`. A comment alone leaves it reported, which is the point -- the
+# coordinator's own "parking this" comment is what hid the four owner asks.
+
+# --- the owner answered a gate by commenting on the card ----------------------
+#
+# A comment does not change a card's status, so an answered gate stays `blocked`
+# and nothing dispatches it. These two pin the wake-up for that gap, and its
+# self-clearing property: the owner speaks last -> report; an agent replies ->
+# the finding drops out so the monitor goes quiet.
+sqlite3 "$DB" "INSERT INTO tasks VALUES
+  ('t_owner_last','owner answered, nobody replied','project-auditor','blocked',$now-3600,$now-3600,NULL,NULL,$now-3600,0,'needs_input',0);
+INSERT INTO task_comments VALUES (3,'t_owner_last','I choose A',$now-1800,'desktop');"
+
+sqlite3 "$DB" "INSERT INTO tasks VALUES
+  ('t_owner_handled','owner answered, agent replied','project-auditor','blocked',$now-3600,$now-3600,NULL,NULL,$now-3600,0,'needs_input',0);
+INSERT INTO task_comments VALUES (4,'t_owner_handled','I choose A',$now-2400,'desktop');
+INSERT INTO task_comments VALUES (5,'t_owner_handled','recorded A; unblocking',$now-1800,'head-coordinator');"
+
+# A second board. The owner-comment detector is cross-board, so a gate answered
+# on a board other than $HERMES_BOARD must still surface -- that is the whole
+# point of enumerating every board's DB.
+OTHER_DIR="$fixture/hermes/kanban/boards/otherboard"
+mkdir -p "$OTHER_DIR"
+sqlite3 "$OTHER_DIR/kanban.db" <<'SQL'
+CREATE TABLE tasks (id TEXT PRIMARY KEY, title TEXT, assignee TEXT, status TEXT, created_at INTEGER, started_at INTEGER, claim_lock TEXT, worker_pid INTEGER, last_heartbeat_at INTEGER, block_recurrences INTEGER DEFAULT 0, block_kind TEXT, consecutive_failures INTEGER DEFAULT 0);
+CREATE TABLE task_comments (id INTEGER PRIMARY KEY, task_id TEXT, body TEXT, created_at INTEGER, author TEXT);
+CREATE TABLE task_events (id INTEGER PRIMARY KEY, task_id TEXT, kind TEXT, created_at INTEGER, payload TEXT);
+CREATE TABLE task_runs (id INTEGER PRIMARY KEY, task_id TEXT, outcome TEXT, started_at INTEGER, ended_at INTEGER);
+CREATE TABLE task_links (parent_id TEXT, child_id TEXT, PRIMARY KEY (parent_id, child_id));
+SQL
+sqlite3 "$OTHER_DIR/kanban.db" "INSERT INTO tasks VALUES
+  ('t_other','owner answered on another board','project-auditor','blocked',$now-3600,$now-3600,NULL,NULL,$now-3600,0,'needs_input',0);
+INSERT INTO task_comments VALUES (1,'t_other','I choose B',$now-1800,'desktop');"
+
+# The capability detector is cross-board too: an unclassified hold on another
+# board must surface, because the owner ask it hides is not board-scoped.
+sqlite3 "$OTHER_DIR/kanban.db" "INSERT INTO tasks VALUES
+  ('t_cap_other','owner-sourced capability on another board','head-coordinator','blocked',$now-3600,$now-3600,NULL,NULL,$now-3600,0,'capability',0);
+INSERT INTO task_events VALUES (1,'t_cap_other','blocked',$now-3000,'{\"reason\":\"needs the original owner\"}');"
 
 cat >"$fixture/hermes/config.yaml" <<'YAML'
 kanban:
@@ -268,6 +328,42 @@ grep -q 't_handled' <<<"$out" &&
   fail "reported a block somebody already ruled on; the monitor would never go quiet"
 pass "leaves gates, breaker-parked cards and already-handled blocks alone"
 
+# --- the owner comment the head-coordinator must act on -----------------------
+#
+# The owner answers a gate by commenting on the card, but a comment does not
+# change status, so the answered gate stays blocked and nothing dispatches it.
+# The finding is self-clearing: once the coordinator records its reading the
+# latest author is no longer the owner, and the monitor goes quiet.
+grep -q '^OWNER_COMMENT_UNACTED testboard t_owner_last project-auditor block=needs_input ' <<<"$out" ||
+  fail "did not report a blocked card whose latest comment is the owner's"
+pass "reports a blocked card the owner answered but nobody acted on"
+
+grep -q '^OWNER_COMMENT_UNACTED otherboard t_other project-auditor block=needs_input ' <<<"$out" ||
+  fail "the owner-comment detector is not cross-board: a finding on another board was missed"
+pass "reports an owner-answered gate on every board, not just HERMES_BOARD"
+
+grep -q 't_owner_handled' <<<"$out" &&
+  fail "reported a card an agent already replied to; the monitor would never go quiet"
+pass "clears the owner-comment finding once an agent has replied"
+
+# --- capability holds that name no input supplier -----------------------------
+#
+# A capability card whose reason carries no `Input supplier:` line may be an owner
+# ask parked as technical -- the exact failure this detector exists for. An
+# explicitly classified hold, and one the coordinator already commented on, must
+# not be reported, or the monitor would never go quiet.
+grep -q '^CAPABILITY_OWNER_INPUT testboard t_cap_owner head-coordinator ' <<<"$out" ||
+  fail "did not report an unclassified capability hold"
+pass "reports a capability hold that names no input supplier"
+
+grep -q '^CAPABILITY_OWNER_INPUT otherboard t_cap_other head-coordinator ' <<<"$out" ||
+  fail "the capability detector is not cross-board: a hold on another board was missed"
+pass "reports an unclassified capability hold on every board"
+
+grep -q 't_cap_classified' <<<"$out" &&
+  fail "reported a capability hold that named its supplier"
+pass "leaves a classified capability hold alone"
+
 # An outcome outside the known vocabulary must not put arbitrary text into a
 # byte-hashed line.
 sqlite3 "$DB" "INSERT INTO task_runs VALUES (171,'t_crash','Crashed (pid 12345)',$now-3000,$now-2900);"
@@ -320,6 +416,9 @@ pass "output is byte-stable across runs"
 # woken forever on a board that has nothing wrong with it.
 
 sqlite3 "$DB" "DELETE FROM tasks;"
+# The owner-comment detector is cross-board, so the second board must be cleared
+# too or its finding keeps the report non-empty.
+sqlite3 "$OTHER_DIR/kanban.db" "DELETE FROM tasks;"
 [[ -z "$(run_health)" ]] || fail "a clean board still produced findings"
 pass "a clean board produces no findings"
 

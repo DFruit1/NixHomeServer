@@ -15,6 +15,12 @@
 # prints one line per finding. The head-coordinator is the decision half; see
 # the "Board health" section of profiles/head-coordinator/SOUL.md.
 #
+# Every finding is scoped to $HERMES_BOARD except OWNER_COMMENT_UNACTED and
+# CAPABILITY_OWNER_INPUT, which enumerate every board: an owner-answered gate and
+# an owner-sourced capability hold can sit on any board, and the head-coordinator
+# must be woken for them whichever board this cron names. Their lines carry the
+# board slug so the coordinator acts on the right card.
+#
 # It is wired as a hermes cron `--monitor-script`, which hashes the output
 # byte-for-byte and suppresses the agent run while the hash is unchanged. The
 # output is therefore sorted and free of timestamps, ages are reported as
@@ -42,6 +48,8 @@
 #   BOARD_HEALTH_READY_STALE_SEC   ready+unclaimed before reporting (default 900)
 #   BOARD_HEALTH_READY_OLD_SEC     ready at all before reporting hard (default 3600)
 #   BOARD_HEALTH_TRIAGE_RECURRENCES  triage blocks before reporting (default 2)
+#   BOARD_HEALTH_OWNER_AUTHORS     comment authors treated as the owner speaking
+#                                  on a card (default: desktop)
 
 set -euo pipefail
 
@@ -50,6 +58,11 @@ HERMES_BOARD="${HERMES_BOARD:-nixhomeserver}"
 READY_STALE_SEC="${BOARD_HEALTH_READY_STALE_SEC:-900}"
 READY_OLD_SEC="${BOARD_HEALTH_READY_OLD_SEC:-3600}"
 TRIAGE_RECURRENCES="${BOARD_HEALTH_TRIAGE_RECURRENCES:-2}"
+# Comment authors that are the owner speaking on a card. The Hermes desktop app
+# authors the owner's own card comments as `desktop`; agents author their profile
+# slug. A comma-separated list so a second owner client can be admitted without
+# a code change. Not a positive-integer knob, so it is validated separately.
+OWNER_AUTHORS="${BOARD_HEALTH_OWNER_AUTHORS:-desktop}"
 
 DB="$HERMES_ROOT/kanban/boards/$HERMES_BOARD/kanban.db"
 CONFIG="$HERMES_ROOT/config.yaml"
@@ -611,6 +624,124 @@ while IFS='|' read -r id assignee failures outcome since_ts block_ts comment_ts 
   esac
   emit "WORKER_FAILED_BLOCKED $id ${assignee:-unassigned} cause=$cause failures=$failures age=$(age_of "$((NOW - since_ts))") children=$children needs=rescope-and-redispatch"
 done <<<"$failed_block_rows"
+
+# ---------------------------------------------------------------------------
+# Owner comment awaiting a coordinator decision (EVERY board)
+# ---------------------------------------------------------------------------
+# A gate card is blocked on the owner; the owner answers by commenting on the
+# card (the desktop app authors those comments `desktop`). A comment does not
+# change a card's status, so an answered gate stays `blocked` and nothing
+# dispatches it -- the answer is recorded on the board and then sits there. This
+# detector is the wake-up for that gap: it fires when the *latest* comment on a
+# blocked card is the owner's, which is exactly "the owner spoke last and no
+# agent has responded".
+#
+# It is deliberately board-agnostic, unlike every other finding here. A gate can
+# be answered on any board, and the head-coordinator must be woken for it
+# whichever board this cron names, so the detector enumerates every board's DB
+# and names the board on each line. Every other detector stays scoped to
+# $HERMES_BOARD, whose policy the cron prompt carries; only this one is
+# cross-board, so its line carries the board the coordinator must act on.
+#
+# It is self-clearing, which the monitor requires: the head-coordinator reads the
+# owner's comment, records its reading (its own comment becomes the latest), and
+# unblocks when the answer resolves the gate. Either action makes the latest
+# author non-owner, so the finding drops out on the next tick and the hash
+# settles. The unblock itself still obeys every existing rule -- an owner comment
+# is a decision, not authority to release a rejected change, an absent
+# capability, or a question the comment does not answer.
+shopt -s nullglob
+for owner_db in "$HERMES_ROOT"/kanban/boards/*/kanban.db; do
+  [[ -f "$owner_db" ]] || continue
+  owner_board="$(basename "$(dirname "$owner_db")")"
+  [[ "$owner_board" == "_archived" ]] && continue
+  if ! owner_rows="$(sqlite3 -separator '|' "$owner_db" "
+        SELECT t.id,
+               COALESCE(t.assignee, ''),
+               COALESCE(t.block_kind, ''),
+               COALESCE((SELECT c.author FROM task_comments c
+                          WHERE c.task_id = t.id
+                          ORDER BY c.created_at DESC, c.id DESC LIMIT 1), ''),
+               COALESCE((SELECT MAX(c.created_at) FROM task_comments c
+                          WHERE c.task_id = t.id), t.created_at)
+          FROM tasks t
+         WHERE t.status = 'blocked'
+         ORDER BY 5, t.id;" 2>/dev/null)"; then
+    # A board that will not answer must not silently drop out of a byte-hashed
+    # report: emit a stable marker line so the gap is visible rather than absent.
+    emit "OWNER_COMMENT_SCAN_UNAVAILABLE $owner_board"
+    continue
+  fi
+  while IFS='|' read -r id assignee block_kind last_author comment_ts; do
+    [[ -n "$id" ]] || continue
+    [[ -n "$last_author" ]] || continue
+    case ",${OWNER_AUTHORS}," in
+      *",${last_author},"*) ;;
+      *) continue ;;
+    esac
+    emit "OWNER_COMMENT_UNACTED $owner_board $id ${assignee:-unassigned} block=${block_kind:-none} age=$(age_of "$((NOW - comment_ts))") needs=read-comment-and-decide"
+  done <<<"$owner_rows"
+done
+shopt -u nullglob
+
+# ---------------------------------------------------------------------------
+# Capability hold that names no input supplier (EVERY board)
+# ---------------------------------------------------------------------------
+# The retry breaker parks quota-walled cards with kind=capability, and the same
+# kind is the tempting place to park anything that feels technical. That is how
+# four genuinely owner-sourced gaps -- a missing installed-identity binding, a
+# missing interface description, and a custody release only the source owner
+# could publish -- sat parked as `capability` and were never surfaced.
+#
+# The instruction rule requires every capability hold to name the supplier of
+# its missing input in the block reason:
+#     Input supplier: owner | agent | external-source-owner(<who>) | model/provider
+# So a capability card whose recorded reason carries no `Input supplier:` line is
+# either a quota park that predates the convention or an owner ask parked as
+# technical. Either way the coordinator must look: classify the supplier, and
+# when it is the owner, author a gate instead of leaving it parked. The retry
+# breaker writes `Input supplier: model/provider` into its own reason, so a
+# correctly classified quota park is never reported here.
+#
+# Cross-board for the same reason as the owner-comment detector: these holds sit
+# on nixhomeserver and pcops alike, and the coordinator must be woken whichever
+# board this cron names. Self-clearing on classification: the finding is emitted
+# only while the reason carries no `Input supplier:` line, so adding it, or
+# reclassifying the card away from `capability`, drops the line on the next tick.
+#
+# The line carries no age bucket on purpose. An age that advances would change
+# the byte-hashed output as the bucket rolls over and wake the coordinator again
+# and again on a card it has already been shown. A time-stable line means the
+# monitor wakes it once, and stays quiet until the card is actually classified.
+shopt -s nullglob
+for cap_db in "$HERMES_ROOT"/kanban/boards/*/kanban.db; do
+  [[ -f "$cap_db" ]] || continue
+  cap_board="$(basename "$(dirname "$cap_db")")"
+  [[ "$cap_board" == "_archived" ]] && continue
+  if ! cap_rows="$(sqlite3 -separator '|' "$cap_db" "
+        SELECT t.id,
+               COALESCE(t.assignee, ''),
+               CASE WHEN instr(COALESCE((SELECT e.payload FROM task_events e
+                                           WHERE e.task_id = t.id AND e.kind = 'blocked'
+                                           ORDER BY e.created_at DESC, e.id DESC LIMIT 1), ''),
+                               'Input supplier:') > 0 THEN 1 ELSE 0 END
+          FROM tasks t
+         WHERE t.status = 'blocked'
+           AND COALESCE(t.block_kind, '') = 'capability'
+         ORDER BY t.id;" 2>/dev/null)"; then
+    # A board that will not answer must not drop silently out of a byte-hashed
+    # report: emit a stable marker so the gap is visible rather than absent.
+    emit "CAPABILITY_SCAN_UNAVAILABLE $cap_board"
+    continue
+  fi
+  while IFS='|' read -r id assignee has_supplier; do
+    [[ -n "$id" ]] || continue
+    # A hold that names its supplier is classified; leave it alone.
+    [[ "$has_supplier" == 0 ]] || continue
+    emit "CAPABILITY_OWNER_INPUT $cap_board $id ${assignee:-unassigned} needs=classify-supplier-or-owner-ask"
+  done <<<"$cap_rows"
+done
+shopt -u nullglob
 
 # ---------------------------------------------------------------------------
 # Durability findings

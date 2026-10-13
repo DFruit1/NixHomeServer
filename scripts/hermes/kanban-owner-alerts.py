@@ -450,6 +450,31 @@ def collect(root, state, errors):
     return technical, technical_labels, decision_labels, decisions, snapshot_failed
 
 
+def capability_warnings(root):
+    """Capability holds that name no input supplier, across every board.
+
+    The instruction rule requires every capability block to name the supplier of
+    its missing input (`Input supplier: owner | agent | external-source-owner(...)
+    | model/provider`). A capability card whose reason carries no such line is
+    either a quota park that predates the convention or an owner ask parked as
+    technical -- the shape that hid four owner asks. The board-health monitor
+    wakes the coordinator on these; this read-only list lets the pre-publish
+    check surface them too. It never changes a card or the delivered set.
+    """
+    warnings = []
+    for board in sorted((root / 'kanban/boards').glob('*/board.json')):
+        if board.parent.name.startswith('_'):
+            continue
+        try:
+            for task in snapshot(board):
+                if task['block_kind'] == 'capability' and 'Input supplier:' not in (task['reason'] or ''):
+                    warnings.append(f'{board.parent.name}:{task["id"]}: capability hold names no '
+                                    'input supplier; classify it (supplier=owner -> author a gate)')
+        except (ValueError, OSError, sqlite3.Error) as exc:
+            warnings.append(f'{board.parent.name}: {exc}')
+    return warnings
+
+
 def tick(root, dry_run=False, now=None, force_decisions=False):
     target = target_config(root)
     if not dry_run and (os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT') or os.environ.get('HERMES_KANBAN_TASK')):
@@ -616,6 +641,8 @@ if __name__ == '__main__':
             if errors:
                 raise ValueError('; '.join(errors))
             print('Owner blocker summaries OK')
+            for warning in capability_warnings(root):
+                print(f'warning: {warning}')
         elif args.resolve:
             print(json.dumps(resolve(root, args.resolve)))
         elif args.details:

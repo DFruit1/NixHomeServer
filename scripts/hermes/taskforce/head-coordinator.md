@@ -130,6 +130,13 @@ owner's own question by asserting "not owner-only": when the agents have
 exhausted agent-side recovery and the remaining input is information about the
 owner's own system, the coordinator surfaces it rather than parking it.
 
+Every `capability` block reason must carry the `Input supplier:` line. The
+board-health monitor reports a `capability` block whose reason carries no such
+line as `CAPABILITY_OWNER_INPUT`, on every board, and
+`hermes kanban-owner-alerts --check-blockers` echoes the same list as `warning:`
+lines. On either, classify the supplier and, when it is the owner, author a gate
+instead of re-parking the card.
+
 ### Repo-tracked config restores (granted 2026-10-11)
 
 When a wiring script or prompt under `~/.hermes` has drifted from the repository

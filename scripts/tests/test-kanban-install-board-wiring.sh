@@ -69,6 +69,8 @@ printf '%s\n' \
   'nix run .#deploy' \
   'scripts/hermes/kanban-retry-breaker.sh parks a card; do not move it.' \
   '8. **WORKER_FAILED_BLOCKED** - re-scope the card and re-dispatch it.' \
+  '9. **OWNER_COMMENT_UNACTED** - record the owner answer and unblock.' \
+  '10. **CAPABILITY_OWNER_INPUT** - classify the supplier or author a gate.' \
   >>"$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md"
 printf '### Whole-set deploy review\n' \
   >"$HERMES_FIXTURE/profiles/feature-reviewer/SOUL.md"
@@ -285,6 +287,31 @@ pass "apply mode asks for the prose policy instead of pretending to install it"
 
 cp "$fixture/soul.bak" "$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md"
 
+# Same pin for the owner-comment policy: the board-health monitor fires
+# OWNER_COMMENT_UNACTED when the owner answered a gate, and the SOUL must tell
+# the head-coordinator to act on it.
+grep -v 'OWNER_COMMENT_UNACTED' "$fixture/soul.bak" \
+  >"$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md"
+owner_soul_out="$(run_installer --check)"
+grep -q 'would change: head-coordinator SOUL.md has no policy for OWNER_COMMENT_UNACTED' \
+  <<<"$owner_soul_out" ||
+  fail "a SOUL.md with no policy for the owner-comment finding was not reported: $owner_soul_out"
+pass "reports a missing policy for the owner-comment finding"
+cp "$fixture/soul.bak" "$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md"
+
+# Same pin for the capability policy: the monitor fires CAPABILITY_OWNER_INPUT on
+# a capability card that named no input supplier, and the SOUL must tell the
+# head-coordinator to classify it (and author a gate when the supplier is the
+# owner) rather than re-parking it.
+grep -v 'CAPABILITY_OWNER_INPUT' "$fixture/soul.bak" \
+  >"$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md"
+cap_soul_out="$(run_installer --check)"
+grep -q 'would change: head-coordinator SOUL.md has no policy for CAPABILITY_OWNER_INPUT' \
+  <<<"$cap_soul_out" ||
+  fail "a SOUL.md with no policy for the capability finding was not reported: $cap_soul_out"
+pass "reports a missing policy for the capability finding"
+cp "$fixture/soul.bak" "$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md"
+
 # --- a missing cron job is still created in apply mode -----------------------
 
 : >"$FAKE_HERMES_LOG"
@@ -361,5 +388,45 @@ unreadable_out="$(run_installer --check)"
 grep -q 'could not read kanban.dispatch_profiles as a lane list' <<<"$unreadable_out" ||
   fail "an allowlist in an unexpected form was silently accepted: $unreadable_out"
 pass "reports an allowlist it cannot read rather than assuming it is correct"
+
+# --- per-profile concurrency caps must be mirrored into profile configs -------
+#
+# The dashboard's dispatch nudge resolves the caps from the ACTIVE profile's
+# config, so a profile without them dispatches uncapped: unblocking a card in the
+# desktop dashboard put four local-implementer workers on a lane capped at one.
+# The installer must add the root's cap keys to a profile that lacks them.
+
+write_config
+cat >"$HERMES_FIXTURE/profiles/feature-reviewer/config.yaml" <<'YAML'
+kanban:
+  review_dispatch: true
+YAML
+
+caps_check="$(run_installer --check)"
+grep -q 'feature-reviewer config is missing max_in_progress_per_profile' <<<"$caps_check" ||
+  fail "a profile config without the caps was not reported: $caps_check"
+pass "reports a profile config that is missing the per-profile caps"
+
+run_installer >/dev/null 2>&1
+grep -q 'max_in_progress_per_profile:' "$HERMES_FIXTURE/profiles/feature-reviewer/config.yaml" ||
+  fail "apply mode did not add the caps to the profile config"
+grep -q 'local-implementer: 1' "$HERMES_FIXTURE/profiles/feature-reviewer/config.yaml" ||
+  fail "the mirrored caps do not carry the local-implementer bound"
+awk '/^kanban:/{k=NR} /max_in_progress_per_profile:/{p=NR} END{exit !(p>k)}' \
+  "$HERMES_FIXTURE/profiles/feature-reviewer/config.yaml" ||
+  fail "the caps were not inserted under the kanban: block"
+pass "mirrors the per-profile caps into a profile config under kanban:"
+
+# Re-running must be idempotent: a config that already carries the key is left
+# alone, and a second --check is clean.
+before="$(sha256sum <"$HERMES_FIXTURE/profiles/feature-reviewer/config.yaml")"
+run_installer >/dev/null 2>&1
+after="$(sha256sum <"$HERMES_FIXTURE/profiles/feature-reviewer/config.yaml")"
+[[ "$before" == "$after" ]] ||
+  fail "a second apply rewrote a profile config that already carried the caps"
+caps_recheck="$(run_installer --check)"
+grep -q 'wiring is up to date' <<<"$caps_recheck" ||
+  fail "a second --check reported drift after the caps were installed: $caps_recheck"
+pass "does not re-add caps to a profile config that already has them"
 
 echo "▶ hermes board wiring installer: all checks passed"
