@@ -12,6 +12,22 @@ import shutil
 import sys
 
 READ_TOOLS = {'read_file', 'search', 'skill_view', 'skills_list', 'clarify'}
+# The steward's skill directs it to check owner-alert delivery with the
+# owner-alerts helper. Only its explicitly read-only diagnostics are allowed;
+# the sending and installing actions stay blocked.
+OWNER_ALERT_SCRIPT = 'kanban-owner-alerts.py'
+OWNER_ALERT_READONLY_FLAGS = {'--details', '--resolve', '--check-summary'}
+OWNER_ALERT_READONLY_BARE = {'--check-blockers'}
+OWNER_ALERT_MUTATING_FLAGS = {'--dry-run', '--install', '--send-decisions'}
+
+
+def owner_alert_readonly(args):
+    """True only for an owner-alerts invocation that neither sends nor mutates."""
+    if not args or any(arg in OWNER_ALERT_MUTATING_FLAGS for arg in args):
+        return False
+    if args[0] in OWNER_ALERT_READONLY_BARE:
+        return True
+    return args[0] in OWNER_ALERT_READONLY_FLAGS
 
 
 def terminal_command(command, root, repo):
@@ -33,13 +49,17 @@ def terminal_command(command, root, repo):
             script = repo / script
         scripts = {'kanban-daily-steward.py', 'usage-pace.py',
                    'steward-opportunity-scan.py', 'steward-board-read.py'}
-        allowed_paths = {base / item for base in
-                         (root / 'scripts', root / 'profiles/board-steward/scripts', repo / 'scripts/hermes')
-                         for item in scripts}
+        bases = (root / 'scripts', root / 'profiles/board-steward/scripts', repo / 'scripts/hermes')
+        allowed_paths = {base / item for base in bases for item in scripts}
         allowed_paths.add(root / 'profiles/board-steward/skills/devops/board-steward/scripts/steward-sweep.py')
-        allowed = script.resolve() in {path.resolve() for path in allowed_paths}
+        owner_alert_paths = {base / OWNER_ALERT_SCRIPT for base in bases}
+        resolved = script.resolve()
+        if resolved in {path.resolve() for path in owner_alert_paths}:
+            allowed = owner_alert_readonly(argv[2:])
+        else:
+            allowed = resolved in {path.resolve() for path in allowed_paths}
         if allowed:
-            argv[1] = str(script.resolve())
+            argv[1] = str(resolved)
     elif name == 'git' and len(executable.parts) == 1:
         git_path = shutil.which('git')
         if not git_path:

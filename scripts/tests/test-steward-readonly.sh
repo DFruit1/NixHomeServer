@@ -45,7 +45,11 @@ class StewardTest(unittest.TestCase):
         for tool in ['read_file', 'search']:
             self.assertEqual({}, self.call(tool, board='another-board'))
         for command in [f'python3 {self.root}/scripts/steward-board-read.py --boards',
-                        f'python3 {self.root}/scripts/steward-board-read.py --board pcops --query "SELECT * FROM tasks"']:
+                        f'python3 {self.root}/scripts/steward-board-read.py --board pcops --query "SELECT * FROM tasks"',
+                        f'python3 {self.root}/scripts/kanban-owner-alerts.py --details blockers',
+                        f'python3 {self.root}/scripts/kanban-owner-alerts.py --check-blockers',
+                        f'python3 {self.root}/scripts/kanban-owner-alerts.py --resolve D1',
+                        f'python3 {self.root}/scripts/kanban-owner-alerts.py --check-summary -']:
             self.assertEqual('modify', self.call('terminal', command=command)['action'])
 
     def test_changes_and_arbitrary_execution_are_blocked(self):
@@ -56,7 +60,11 @@ class StewardTest(unittest.TestCase):
                         'hermes kanban --board pcops unblock t_example', 'hermes kanban create change',
                         'hermes cron pause job', 'git commit -m change', 'python3 -c "print(1)"',
                         'sqlite3 board.db "DELETE FROM tasks"', 'sudo systemctl restart hermes',
-                        'git diff --output=/tmp/changed', 'git show --ext-diff HEAD']:
+                        'git diff --output=/tmp/changed', 'git show --ext-diff HEAD',
+                        f'python3 {self.root}/scripts/kanban-owner-alerts.py --send-decisions',
+                        f'python3 {self.root}/scripts/kanban-owner-alerts.py --install',
+                        f'python3 {self.root}/scripts/kanban-owner-alerts.py --dry-run',
+                        f'python3 {self.root}/scripts/kanban-owner-alerts.py']:
             self.assertEqual('block', self.call('terminal', command=command)['action'], command)
 
     def test_shell_injection_cannot_write_a_file(self):
