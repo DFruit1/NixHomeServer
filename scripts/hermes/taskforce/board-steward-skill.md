@@ -21,6 +21,13 @@ alone authors owner-facing blocker cards and summaries.
 
 1. Discover boards; inspect actual cards, parents, comments and run evidence.
 2. Identify the precise root blockers, stale premises and existing decisions.
+   Flag owner-dependent blockers that were not surfaced: any blocked or
+   `capability` card whose reason names input only the owner (or an actor only the
+   owner can direct) can supply — "original owner", "source owner", "custody
+   release", "installed binding/identity", "owner-held", "only the owner" — with
+   its parked age and whether a decision or Hard Blocker was ever delivered
+   (`kanban-owner-alerts.py --details blockers`). A never-delivered owner ask is
+   the top-priority finding. Stay read-only; report it to the coordinator.
 3. Compare declared file ownership and dependency requirements before proposing
    parallel work. Name disjoint slices and the final composition/verification.
 4. Give a concise report with facts, unknowns and copyable external-agent handoffs.

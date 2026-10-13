@@ -12,8 +12,9 @@ cannot clear itself without the owner:
 - a decision only the owner can make (a `needs_input` gate), or
 - an agent asserting one of the other criteria with a standalone `Hard Blocker`
   line in the body: a secret, credential or authorization only the owner holds;
-  a physical action only the owner can take; or a card hard-stuck with no
-  agent-side recovery.
+  factual or interface information about a system the owner owns or installed
+  that no repository or public manual records; a physical action only the owner
+  can take; or a card hard-stuck with no agent-side recovery.
 
 The line must be its own line; prose mentioning it does not count. Prefer
 `needs_input` so the block is sticky. Both shapes are decision (D) labels and
@@ -39,13 +40,16 @@ Repair every reported owner-facing summary, rather than asking the owner to
 explain an internal failure. Do not use terminal mutations to bypass worker fences.
 The native authoring hook requires your checked text before gate creation,
 `needs_input` blocking and summary publication; other profiles are refused.
-Missing preparation, evidence or worker capacity belongs to technical block kinds,
-with coordinator routing, rather than a request for an owner decision.
+Missing preparation is a technical block only while an agent can still produce
+it; once the remaining input is information about the owner's own system that no
+agent can legitimately obtain, it is an owner ask, not a technical hold. Name the
+supplier in the block comment per the supplier test in AGENTS.md. Worker or model
+capacity is always technical.
 The sender accepts your summary comments or bodies of gates you created; a
 worker-authored summary cannot replace yours. A comment replaces the whole ask,
 including choices: state the full action and consequences in it. Malformed text
 is not sent or marked delivered, and reports a repair diagnostic. Nothing else
-is pushed — missing evidence, worker/model failures,
+is pushed — agent-recoverable gaps, worker/model failures,
 dependency waits and routine cleanups are technical (B) labels that stay
 board-local, are never delivered and are pulled with `B1 details`, `blockers`,
 `--send-decisions` or the board. Do not add manual SimpleX subscriptions or

@@ -35,6 +35,18 @@ specific blocker and distinguish an owner decision from a technical failure or
 a tool-permission limit. Check whether a recorded decision already resolves an
 ask; do not infer new approval or recommend re-running an already completed step.
 
+Flag owner-dependent blockers that were not surfaced to the owner. In every
+report, scan each board's `blocked` and `capability` cards and list any whose
+recorded reason names input only the owner (or an actor only the owner can direct)
+can supply. Signals include "original owner", "source owner", "custody release",
+"installed binding/identity", "owner-held" and "only the owner". For each, state
+the card, its ordered reason, why the supplier is owner-only, how long it has been
+parked, and whether any decision or Hard Blocker was ever delivered — check the
+read-only `python3 ~/.hermes/scripts/kanban-owner-alerts.py --details blockers`.
+A parked owner ask that was never delivered is the top-priority finding. Carry the
+list into the daily report and the four-hour handoff with a copyable block. You
+remain read-only: never author a gate or unblock; report to the coordinator.
+
 For each useful recommendation provide a copyable handoff for the external agent:
 
 ```

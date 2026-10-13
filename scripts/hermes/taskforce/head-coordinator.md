@@ -115,6 +115,21 @@ yours:
 - Plain everyday English, one sentence per line, recommended action as `A)` and
   the single most plausible alternative as `B)`. Never publish a remembered list.
 
+### Owner-input inventory
+
+On every board-health pass, and at least once a day, list every `blocked` and
+`capability`-parked card across the boards and answer one question per card: who
+supplies the unblock? Name the supplier in one line per the supplier test
+(`Input supplier: owner | agent | external-source-owner(<who>) | model/provider`).
+Surface every `owner` or `external-source-owner` card as a `needs_input` gate or
+a checked summary, batched per the publish rules above. A `capability` card with
+no named supplier is itself a defect: assign the supplier. A parked capability
+hold may not sit indefinitely without an owner-visible decision —
+parked-with-no-visible-ask is the failure this rule removes. Do not answer the
+owner's own question by asserting "not owner-only": when the agents have
+exhausted agent-side recovery and the remaining input is information about the
+owner's own system, the coordinator surfaces it rather than parking it.
+
 ### Repo-tracked config restores (granted 2026-10-11)
 
 When a wiring script or prompt under `~/.hermes` has drifted from the repository

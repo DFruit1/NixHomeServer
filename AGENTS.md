@@ -486,7 +486,8 @@ Unblock: <the exact action or decision you take, with a recommendation>
 Use everyday English: each line ≤ 90 characters, summary ≤ 1000 characters.
 No workflow jargon, task ids, hashes, internal roles, vague "only you can clear
 this", or "inspect details". State any A/B choices with their consequences.
-Never invent a decision or owner-only requirement for a technical blocker.
+Never invent a decision or owner-only requirement for a technical blocker; the
+supplier test below is what decides whether one actually exists.
 
 Before publishing, the coordinator checks the proposed three lines with:
 `python3 ~/.hermes/scripts/kanban-owner-alerts.py --check-summary -`
@@ -503,12 +504,38 @@ still send. A wording repair requires no new owner approval.
 The native authoring hook also refuses owner-gate creation, `needs_input` blocks
 and summary publication by other profiles. It checks the coordinator's text
 before the write, so missing fields cannot create another unusable owner gate.
-Missing preparation/evidence is a technical block, not an owner decision.
+Missing preparation is a technical block only while an agent can still produce
+it. Once the remaining input is information about the owner's own system that no
+agent can legitimately obtain, it is an owner ask, not a technical hold: do not
+answer the owner's own question by asserting "not owner-only".
 
-Everything else — missing evidence, worker/model failures, dependency waits,
-routine cleanups — is a technical blocker that is board-local and never pushed;
-the owner pulls it with `B1 details`, `blockers`, `--send-decisions`, or the
-board (`scripts/hermes/kanban-owner-alerts.py`).
+The boundary is decided by the supplier of the missing input, not by how hard it
+feels. Before parking any card, name the supplier in one line of the block
+comment: `Input supplier: owner | agent | external-source-owner(<who>) |
+model/provider`.
+
+- `agent` — any agent can still obtain it by reading the repo, running an
+  already-authorised command, or re-scoping the card. Technical; never pushed.
+- `model/provider` — capacity or quota. Technical; never pushed.
+- `owner` — the only authoritative source is the owner or an actor only the owner
+  can direct. This includes a decision only the owner makes; a secret, credential
+  or authorization only the owner holds; factual or interface information about a
+  system the owner owns or installed (the exact command, endpoint, device, binding
+  or identity) that no repository or public manual records; an artifact from a
+  third party whose relationship the owner controls; a physical action. Use
+  `needs_input` (preferred) or a standalone `Hard Blocker` line. It is pushed.
+- `external-source-owner(<who>)` — a third party only the owner can reach,
+  resurrect or replace. Surface it as an owner ask: the owner chooses to obtain
+  the artifact or descope.
+
+A `capability` block whose supplier is `owner` is a defect: reclassify it and
+surface it. A parked `capability` hold may not sit indefinitely with no
+owner-visible ask.
+
+Everything else — dependency waits and routine cleanups — is a technical blocker
+that is board-local and never pushed; the owner pulls it with `B1 details`,
+`blockers`, `--send-decisions`, or the board
+(`scripts/hermes/kanban-owner-alerts.py`).
 
 A Hard Blocker is a claim that the owner is the only way forward, not a priority
 hint. An urgent security or availability regression is not a Hard Blocker: fix
