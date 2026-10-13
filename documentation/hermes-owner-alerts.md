@@ -28,10 +28,10 @@ Both shapes are the decision (D) category and are the only cards pushed. Every
 other blocked card is a technical (B) blocker and is never pushed.
 
 Each message is self-contained: it states what is blocking, why only the owner
-can clear it, and the recommended way to unblock — one sentence each — so the
-owner never has to ask for details. A decision with choices shows the recommended
-option (A) and the alternatives. Emphasis uses SimpleX markup (`*bold*`,
-`_italic_`, `~strike~`); GitHub-style `**bold**` is converted before send:
+can clear it, and the choices — A) the recommended option first, B) the
+alternative, further letters only when the card genuinely has them. Emphasis
+uses SimpleX markup (`*bold*`, `_italic_`, `~strike~`); GitHub-style `**bold**`
+is converted before send:
 
 ```text
 *Hard Blocker*
@@ -40,15 +40,13 @@ D1 · nixhomeserver
 Choose a recovery mechanism
 Blocking: Choose a recovery mechanism for this host?
 Why owner: Only you can clear this; otherwise the queue stays stuck.
-Recommended: A) Restore the worker with existing credentials
-Alternatives:
+A) Restore the worker with existing credentials
 B) Pause work until capacity returns
 
 Reply: D1 <choice or answer>. Details: D1 details
 ```
 
-An agent-asserted Hard Blocker with no choices shows its owner-only reason and a
-recommended action:
+A card with no A/B choices shows its owner-only reason and a recommended action:
 
 ```text
 *Hard Blocker*
@@ -62,14 +60,22 @@ Recommended: Provide the owner key, then re-run the card.
 Reply: D2 <answer>. Details: D2 details
 ```
 
-The three sentences come from the card: `Blocking:` (else the `ASK:` question,
-else the block reason), `Why owner:` (else `IF UNANSWERED:`, else the
-`Hard Blocker` line), and `Recommended:` (else the recommended `A)` option, else
-`Unblock:`). When an agent blocks a Hard Blocker it should supply `Why owner:`
-and `Unblock:` so the message is specific rather than generic; a `needs_input`
-card whose body is work-shaped rather than a gate still renders all three lines
-from its block reason. When this message format changes, the live decision set is
-re-sent once so a stale stub does not stay on the phone.
+The lines come from the card: `Blocking:` (else the `ASK:` question, else the
+block reason), `Why owner:` (else `IF UNANSWERED:`, else the
+`Hard Blocker` line), and the choices — `A)` the recommended option and `B)`
+the alternative when the card has them, else `Recommended:` (else `Unblock:`,
+else the `NEEDED FROM YOU:` directive). When an agent blocks a Hard Blocker it
+should supply `Why owner:` and `Unblock:` so the message is specific rather
+than generic; a `needs_input` card whose body is work-shaped rather than a gate
+still renders all three lines from its block reason.
+
+Decisions are debounced: a card that appears does not push immediately. It
+opens a 120-second window, and the whole live set is sent as one batched
+message when the oldest window closes. A card whose ask is revised while its
+window is running rides that window — the revision is re-derived at its end and
+sent in the same batch. Cards that cleared, were answered or changed drop out
+of the batch; cards that appeared during the window join it. A format change
+re-sends the live set once so a stale stub does not stay on the phone.
 
 All owner-facing text must be plain everyday English for a non-engineer — no
 card/board/kanban/workflow jargon, task ids, commit hashes or internal role

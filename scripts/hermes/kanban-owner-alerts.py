@@ -28,6 +28,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 
 PROFILE = 'head-coordinator'
 JOB = 'kanban owner blocker alerts'
@@ -37,7 +38,20 @@ MESSAGE_LIMIT = 1600
 # Bump when the decision message shape changes so the live set is re-sent once in
 # the new format (a stale delivered flag would otherwise keep an old stub on the
 # phone). Technical messages carry their own format key.
-DECISION_FORMAT = 2
+DECISION_FORMAT = 3
+# A decision is never sent on appearance: it sits out this window first, the
+# whole live set is re-derived at the end of it (cleared, answered and changed
+# cards dropped, cards that appeared meanwhile picked up), and only that set is
+# sent, as one batched message, after every line has been re-read from the
+# board. The owner asked for a minute or two; 120s is that.
+DEBOUNCE_SECONDS = 120
+# Filler and negation markers: stripped from a recorded clause before it is
+# tested against the recommendation, so "do not approve unbounded grants" is
+# tested as "approve unbounded grants" and a clause of pure filler matches
+# nothing.
+STOPWORDS = frozenset(
+    'a an the is are was were be been being any all and or of to in on for with at by as'.split())
+NEGATION = frozenset({'do', 'not', "don't", 'no', 'none', 'never', 'without'})
 # A standalone line an agent adds to mark a card it did not block as a decision.
 # Case-insensitive and its own line; prose mentioning it does not count. A card
 # carrying it is a Hard Blocker and belongs to the decision (D) category.
@@ -124,10 +138,81 @@ def token(value):
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
+def recorded_decisions(board_file, task_id):
+    """The owner's recorded decisions on a card, newest first.
+
+    The reply policy records an authenticated reply as a card comment, so the
+    card's own comments are the record. A decision is a line starting with
+    `D<letter>` (e.g. `D3 A: ...`) or a standalone `Decision:`/`Decided:` line
+    (a bare `Decision:` is not a reply).
+    """
+    try:
+        with closing(sqlite3.connect((board_file.parent / 'kanban.db').resolve().as_uri() + '?mode=ro', uri=True)) as db:
+            rows = db.execute('SELECT body FROM task_comments WHERE task_id=? ORDER BY created_at DESC, id DESC', (task_id,)).fetchall()
+    except sqlite3.Error:
+        return []
+    decisions = []
+    for row in rows:
+        for line in row[0].splitlines():
+            line = line.strip()
+            if re.match(r'^D\d+[A-Z]?\s*[.:—-]', line) or re.match(r'^D\d+[A-Z]?\s+[A-Z]\s*[.:—-]', line) or re.match(r'^(Decision|Decided):[ \t]+', line, re.I):
+                decisions.append(line)
+    return decisions
+
+
+def clause_content(text):
+    """Substantive words of a clause: negation markers and filler dropped.
+
+    A recorded "do not approve unbounded grants" therefore tests as "approve
+    unbounded grants"; a clause of pure negation and filler, "do not", tests
+    as nothing and matches no recommendation.
+    """
+    return [word for word in text.lower().split()
+            if word not in STOPWORDS and word not in NEGATION]
+
+
+def contradicts_recorded(options, recorded):
+    """True when the recommended option fights an already-recorded decision.
+
+    The live defect this guards: a re-pushed, superseded ask recommended the
+    opposite of what the owner had already answered, and the gate had stayed
+    blocked on that recorded answer. Conservative by design — it only drops an
+    entry on a clear contradiction: the recorded line answers with the
+    alternative letter, or the content words of a negated clause of the record
+    reappear, in order, in the recommendation.
+    """
+    if not options or not recorded:
+        return False
+    recommended = [word for word in ' '.join(options[0][1].split()).lower().split()
+                   if word not in STOPWORDS]
+    letters = [letter.lower() for letter, _text in options if letter != options[0][0]]
+    for line in recorded:
+        line = ' '.join(line.split())
+        for letter in letters:
+            # A recorded "D3 B" (or "D3: B ...") answers the alternative.
+            if re.match(rf'^D\d+[\s.:—-]*[{letter}]\b', line, re.I):
+                return True
+        for clause in re.findall(r'(?:do not|don.t|without|never) [^.;]{0,80}', line.lower()):
+            # Strip every negation marker, test the clause's content words as an
+            # in-order subsequence of the recommendation, and require two of them
+            # so a single common word never fires.
+            words = clause_content(clause)
+            if len(words) < 2:
+                continue
+            index = 0
+            for word in recommended:
+                if word == words[index]:
+                    index += 1
+                    if index == len(words):
+                        return True
+    return False
+
+
 def load_inbox(root):
     path = root / 'kanban/owner-alerts/inbox.json'
     if not path.exists():
-        return {'version': 1, 'next_label': 1, 'decisions': {}, 'next_blocker': 1, 'blockers': {}, 'delivery': {}}
+        return {'version': 1, 'next_label': 1, 'decisions': {}, 'queue': {},
+                'next_blocker': 1, 'blockers': {}, 'delivery': {}}
     state = json.loads(path.read_text())
     if (not isinstance(state, dict) or state.get('version') != 1
             or type(state.get('next_label')) is not int or state['next_label'] < 1
@@ -163,6 +248,17 @@ def load_inbox(root):
             raise ValueError('Invalid technical delivery format; restore inbox state')
         if 'decision_format' in delivery and (type(delivery['decision_format']) is not int or delivery['decision_format'] < 0):
             raise ValueError('Invalid decision delivery format; restore inbox state')
+    # Debounce state: a live decision sits out this window before it may be
+    # sent; the set is re-derived at publish, so this is a timing marker, not a
+    # list that gets sent.
+    queue = state.setdefault('queue', {})
+    if not isinstance(queue, dict) or any(
+            not isinstance(value, dict)
+            or not isinstance(value.get('at'), (int, float))
+            or not isinstance(value.get('board'), str)
+            or not isinstance(value.get('task_id'), str)
+            for value in queue.values()):
+        raise ValueError('Invalid debounce state; restore inbox state')
     return state
 
 
@@ -223,11 +319,12 @@ def plain(text):
 
 def decision_text(label, board, task):
     """Render one self-contained decision: what is blocking, why only the owner
-    can clear it, and the recommended unblock. Every owner-facing message carries
-    these three sentences so the phone never needs a follow-up to be actionable.
-    An agent-authored plain-language summary (a comment with `Blocking:` /
-    `Why owner:` / `Unblock:` lines) overrides the raw body, which is often
-    written in internal jargon.
+    can clear it, and the choices — A) the recommended option and B) the
+    alternative, further letters only when the card genuinely has them. Every
+    owner-facing message carries these lines so the phone never needs a
+    follow-up to be actionable. An agent-authored plain-language summary (a
+    comment with `Blocking:` / `Why owner:` / `Unblock:` lines) overrides the
+    raw body, which is often written in internal jargon.
     """
     body = task.get('body') or ''
     reason = task.get('reason') or ''
@@ -300,7 +397,7 @@ def decision_text(label, board, task):
 
     # One sentence: the recommended way to unblock it.
     if options:
-        recommended = f'{options[0][0]}) {" ".join(options[0][1].split())}'
+        recommended = ' '.join(options[0][1].split())
     elif unblock:
         recommended = unblock
     elif needed:
@@ -310,18 +407,22 @@ def decision_text(label, board, task):
     if not options:
         recommended = clip(recommended)
 
-    lines = [f'Blocking: {blocking}', f'Why owner: {why_owner}', f'Recommended: {recommended}']
-    if options and len(options) > 1:
-        lines.append('Alternatives:')
+    # Choices render as A) the recommended option first, B) the alternative,
+    # and only further letters when the card genuinely offers them.
+    lines = [f'Blocking: {blocking}', f'Why owner: {why_owner}']
+    if options:
+        lines.append(f'A) {recommended}')
         lines += [f'{letter}) {" ".join(text.split())}' for letter, text in options[1:]]
+    else:
+        lines.append(f'Recommended: {recommended}')
     lines = [plain(line) for line in lines]
     # Never hide scope or consequences behind a truncated approval choice.
     complete = (not conflicting and bool(blocking) and bool(why_owner) and bool(recommended)
                 and len({v[0] for v in options}) == len(options)
                 and all(len(line) <= 180 for line in lines) and len('\n'.join(lines)) <= 650)
     if not complete:
-        return heading + f'\nDetails required before deciding: {label} details', False
-    return heading + '\n' + '\n'.join(lines), True
+        return heading + f'\nDetails required before deciding: {label} details', False, options
+    return heading + '\n' + '\n'.join(lines), True, options
 
 
 def resolve(root, label):
@@ -487,9 +588,10 @@ def collect(root, state, errors):
                         'token': revision, 'shown': '', 'compact_complete': False, 'delivered': []}
                 # Refresh every tick so a message-format change reaches the live
                 # set without minting a new label for an unchanged card.
-                shown, complete = decision_text(label, board.parent.name, task)
+                shown, complete, options = decision_text(label, board.parent.name, task)
                 state['decisions'][label]['shown'] = shown
                 state['decisions'][label]['compact_complete'] = complete
+                state['decisions'][label]['options'] = [list(pair) for pair in options]
                 decision_labels[(board.parent.name, task['id'])] = label
         except (ValueError, OSError, sqlite3.Error) as exc:
             errors.append(f'{board.parent.name}: {exc}')
@@ -497,10 +599,70 @@ def collect(root, state, errors):
     return technical, technical_labels, decision_labels, decisions, snapshot_failed
 
 
+def publish_decisions(root, state, target, snapshot_failed, deliver, delivered, now):
+    """Send the current live decision set, once, as one batched message.
+
+    Called only after the debounce window. The set is re-derived from the live
+    boards here, not from anything remembered: every entry is re-read from its
+    board and admitted only if the card is still blocked, the ask is unchanged
+    and the recommended option does not contradict a decision the owner already
+    recorded on that card. Anything that cleared, was answered or changed is
+    dropped, and a card that appeared during the window joins the same batch.
+    One message per publish, never one card at a time.
+    """
+    if snapshot_failed:
+        # A partial read omits cards, so a set derived from it is never whole.
+        return
+    queue = state['queue']
+    _, _, decision_labels, decisions, failed_now = collect(root, state, [])
+    if failed_now:
+        return
+    keys = sorted(decision_labels)
+    if not keys:
+        queue.clear()
+        return
+    if queue and now - min(entry['at'] for entry in queue.values()) < DEBOUNCE_SECONDS:
+        return
+    admitted = []
+    for key in keys:
+        label = decision_labels[key]
+        record = state['decisions'][label]
+        if target in record['delivered']:
+            continue
+        tasks = snapshot(root / 'kanban/boards' / record['board'] / 'board.json', record['task_id'])
+        current = tasks[0] if tasks else None
+        # Send-time admission: still blocked, ask unchanged, recommendation not
+        # contradicted by a decision the owner already recorded on this card.
+        if not (current and current['status'] == 'blocked'
+                and is_hard_blocker(current) and token(current) == record['token']):
+            continue
+        if contradicts_recorded([tuple(pair) for pair in record.get('options', [])],
+                                recorded_decisions(root / 'kanban/boards' / record['board'] / 'board.json',
+                                                   record['task_id'])):
+            continue
+        admitted.append(label)
+    if not admitted:
+        # Everything cleared, was answered or now contradicts a recorded
+        # decision: say nothing, and open no window for it.
+        queue.clear()
+        return
+    heading = '*Hard Blocker*\n'
+    shown = {label: state['decisions'][label]['shown'] for label in admitted}
+    for batch in batches_for(shown, admitted, len(heading)):
+        text = (heading + '\n' + '\n\n'.join(shown[label] for label in batch)
+                + f'\n\nReply: {batch[0]} <choice or answer>. Details: {batch[0]} details')
+        if deliver(text):
+            delivered(state['decisions'], batch)
+            for label in batch:
+                for key in [k for k, v in queue.items() if v.get('label') == label]:
+                    queue.pop(key)
+
+
 def tick(root, dry_run=False, now=None, force_decisions=False):
     target = target_config(root)
     if not dry_run and (os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT') or os.environ.get('HERMES_KANBAN_TASK')):
         raise PermissionError('Owner alerts run only from the operator or no-agent cron')
+    now = now if now is not None else time.time()
     directory = root / 'kanban/owner-alerts'
     if not dry_run:
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -517,7 +679,8 @@ def tick(root, dry_run=False, now=None, force_decisions=False):
             # One-time format migration: re-send the live decision set so a stale
             # "Details required" stub does not stay on the phone.
             for record in state['decisions'].values():
-                record['delivered'] = []
+                if isinstance(record, dict) and 'delivered' in record:
+                    record['delivered'] = []
             delivery['decision_format'] = DECISION_FORMAT
         _, _, decision_labels, decisions, snapshot_failed = collect(root, state, errors)
         if not dry_run:
@@ -531,8 +694,9 @@ def tick(root, dry_run=False, now=None, force_decisions=False):
             try:
                 send(root, target, text)
                 return True
-            except (ValueError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
-                errors.append(f'Delivery: {exc}')
+            except (ValueError, OSError, RuntimeError, subprocess.SubprocessError):
+                # A failed delivery is not a tick error: the queue keeps the
+                # entry (and its window) so the next tick retries it.
                 return False
 
         def delivered(records, labels):
@@ -542,20 +706,42 @@ def tick(root, dry_run=False, now=None, force_decisions=False):
                         records[label]['delivered'].append(target)
                 save(path, state)
 
+        def persist():
+            if not dry_run:
+                save(path, state)
+
         # The one owner-facing category is a decision gate: a card blocked with
         # `needs_input`, which only the owner can clear and which the board will
         # not unblock on its own. A technical blocker can clear itself, so it is
         # never sent; it stays board-local and is read with `--details blockers`.
-        pending = [decision_labels[(board, task['id'])] for board, task in decisions
-                   if target not in state['decisions'][decision_labels[(board, task['id'])]]['delivered']]
-        if pending:
-            heading = '*Hard Blocker*\n'
-            shown = {label: state['decisions'][label]['shown'] for label in pending}
-            for batch in batches_for(shown, pending, len(heading)):
-                text = (heading + '\n' + '\n\n'.join(shown[label] for label in batch)
-                        + f'\n\nReply: {batch[0]} <choice or answer>. Details: {batch[0]} details')
-                if deliver(text):
-                    delivered(state['decisions'], batch)
+        #
+        # Nothing is sent on appearance. Each live, undelivered decision opens a
+        # debounce window the first time it is seen; the window is cleared when
+        # the card stops qualifying. After the oldest window has run, the whole
+        # set is re-derived and sent at once, so a batch never leaves the phone
+        # stale: cleared and answered cards drop out, changed asks are skipped,
+        # and cards that appeared during the window join the same message.
+        if not dry_run:
+            queue = state['queue']
+            live = {f'{board}:{task["id"]}': decision_labels[(board, task['id'])]
+                    for board, task in decisions
+                    if target not in state['decisions'][decision_labels[(board, task['id'])]]['delivered']}
+            for key in list(queue):
+                if key not in live:
+                    queue.pop(key)
+            for key, label in live.items():
+                entry = queue.get(key)
+                if entry is None:
+                    board, task_id = key.split(':', 1)
+                    queue[key] = {'at': now, 'board': board, 'task_id': task_id, 'label': label}
+                elif entry.get('label') != label:
+                    # The card's ask was revised (a new D label): it rides the
+                    # window that was already running for it, so the original
+                    # first-seen time is kept and only the label is refreshed.
+                    entry['label'] = label
+            save(path, state)
+        publish_decisions(root, state, target, snapshot_failed, deliver, delivered, now)
+        persist()  # queue.clear() inside publish_decisions mutates in memory only
 
         # Explicit pull of the decision set only. A failed board read omits
         # cards, so an incomplete list is never sent as if it were whole.

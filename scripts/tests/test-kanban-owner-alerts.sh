@@ -20,11 +20,20 @@ spec = importlib.util.spec_from_file_location('alerts', Path(sys.argv[1]) / 'scr
 alerts = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(alerts)
 
+# The debounce window: nothing is sent on appearance, and the live set is
+# re-derived and batched once the oldest window has run.
+T0 = 1000
+T1 = T0 + alerts.DEBOUNCE_SECONDS
+
 
 class AlertsTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
+        # The suite drives tick() directly, so clear the worker fences the
+        # dispatcher puts in its environment; the fence tests re-set them.
+        self.fenced_env = {key: os.environ.pop(key) for key in ('HERMES_KANBAN_TASK', 'HERMES_DELEGATED_CHILD_CONTEXT') if key in os.environ}
+        self.addCleanup(self._restore_fenced_env)
         self.root = Path(self.tmp.name)
         self.env = self.root / 'profiles/head-coordinator/.env'
         self.env.parent.mkdir(parents=True)
@@ -45,6 +54,9 @@ class AlertsTest(unittest.TestCase):
         self.sender.start()
         self.addCleanup(self.sender.stop)
 
+    def _restore_fenced_env(self):
+        os.environ.update(self.fenced_env)
+
     def mark(self, board, body):
         with closing(sqlite3.connect(self.boards[board])) as db:
             db.execute('UPDATE tasks SET body=?', (body,))
@@ -53,28 +65,36 @@ class AlertsTest(unittest.TestCase):
     def board_bytes(self):
         return {name: path.read_bytes() for name, path in self.boards.items()}
 
+    def send_now(self, at=None):
+        """Tick until the debounce window runs and the live set is batched."""
+        alerts.tick(self.root, now=at if at is not None else T1)
+
     def test_only_hard_blockers_reach_the_owner(self):
-        alerts.tick(self.root, now=1000)
+        alerts.tick(self.root, now=T0)
+        self.assertEqual(0, len(self.sent))  # never sent on appearance
+        self.send_now()
         self.assertEqual(1, len(self.sent))
         self.assertTrue(self.sent[0].startswith('*Hard Blocker*\n'))
         self.assertIn('D1 · one', self.sent[0])
         self.assertIn('Approve repair?', self.sent[0])
         self.assertNotIn('two', self.sent[0])
-        alerts.tick(self.root, now=1001)
+        alerts.tick(self.root, now=T1 + 1)
         self.assertEqual(1, len(self.sent))
         # Prose that merely mentions the phrase is not a marker.
         self.mark('two', 'Notes: this is not a Hard Blocker yet.')
-        alerts.tick(self.root, now=1002)
+        alerts.tick(self.root, now=T1 + 20)
         self.assertEqual(1, len(self.sent))
         # The retired urgency vocabulary no longer alerts.
         self.mark('two', 'Urgency: security\nGoal: Contain exposure.')
-        alerts.tick(self.root, now=1003)
+        alerts.tick(self.root, now=T1 + 40)
         self.assertEqual(1, len(self.sent))
         self.assertFalse(alerts.resolve(self.root, 'B1')['can_reply'])
         # A standalone marker makes the card a Hard Blocker: it joins the D
-        # category and reaches the owner.
+        # category and reaches the owner in a later batch.
         self.mark('two', 'Hard Blocker: needs the owner key\nGoal: Sign the release.')
-        alerts.tick(self.root, now=1004)
+        alerts.tick(self.root, now=T1 + 60)
+        self.assertEqual(1, len(self.sent))
+        alerts.tick(self.root, now=T1 + 60 + alerts.DEBOUNCE_SECONDS)
         self.assertEqual(2, len(self.sent))
         self.assertIn('*Hard Blocker*\n', self.sent[1])
         self.assertIn('D2 · two', self.sent[1])
@@ -82,7 +102,8 @@ class AlertsTest(unittest.TestCase):
         self.assertTrue(alerts.resolve(self.root, 'D2')['can_reply'])
         # The marker line is case-insensitive; a revision repushes as a new D.
         self.mark('two', 'hard blocker\nGoal: Sign the release.')
-        alerts.tick(self.root, now=1006)
+        alerts.tick(self.root, now=T1 + 61 + alerts.DEBOUNCE_SECONDS)
+        alerts.tick(self.root, now=T1 + 62 + 2 * alerts.DEBOUNCE_SECONDS)
         self.assertEqual(3, len(self.sent))
         self.assertIn('D3 · two', self.sent[-1])
 
@@ -97,28 +118,33 @@ class AlertsTest(unittest.TestCase):
                         'Context: Two lanes share the same paired endpoint. This splits '
                         'handling of authenticated owner traffic.',))
             db.commit()
-        alerts.tick(self.root, now=1000)
+        alerts.tick(self.root, now=T0)
+        self.assertEqual(0, len(self.sent))
+        self.send_now()
         message = self.sent[0]
         self.assertIn('D1 · one', message)
         self.assertIn('Blocking: Which owner profile should own the adapter?', message)
         self.assertIn('Why owner: If you do not act, adapter rollout stays blocked.', message)
-        self.assertIn('Recommended: A) head-coordinator — route replies through the coordinator only', message)
-        self.assertIn('Alternatives:', message)
-        # GitHub emphasis is converted to the markup SimpleX actually renders.
+        self.assertIn('A) head-coordinator — route replies through the coordinator only', message)
         self.assertIn('B) gateway — *keep* the existing profile as owner', message)
+        self.assertNotIn('Recommended:', message)
+        self.assertNotIn('Alternatives:', message)
+        # GitHub emphasis is converted to the markup SimpleX actually renders.
         self.assertNotIn('**keep**', message)
 
-    def test_needs_input_without_ask_reports_three_sentences(self):
+    def test_needs_input_without_ask_reports_all_lines(self):
         # A needs_input card whose body is work-shaped (Goal/Change), not a gate
         # (no ASK/options), used to reach the phone as a bare "Details required"
         # stub. It must now carry what/why/recommended in full.
         reason = 'Upstream review rejected the head; a corrected-source verdict is the prerequisite.'
         with closing(sqlite3.connect(self.boards['one'])) as db:
-            db.execute("UPDATE tasks SET body='Goal: Activate the accepted inbox.\\n"
-                       "Change: Install only the reviewed head.'")
+            db.execute("UPDATE tasks SET body=?",
+                       ("Goal: Activate the accepted inbox.\n"
+                        "Change: Install only the reviewed head.",))
             db.execute('UPDATE task_events SET payload=?', (json.dumps({'reason': reason}),))
             db.commit()
-        alerts.tick(self.root, now=1000)
+        alerts.tick(self.root, now=T0)
+        self.send_now()
         message = self.sent[0]
         self.assertIn('Blocking: Upstream review rejected the head;', message)
         self.assertIn('Why owner:', message)
@@ -139,7 +165,8 @@ class AlertsTest(unittest.TestCase):
                         'Why owner: Only you can approve restoring the check.\n'
                         'Unblock: Tell us to restore the check, or to leave it out.',))
             db.commit()
-        alerts.tick(self.root, now=1000)
+        alerts.tick(self.root, now=T0)
+        self.send_now()
         message = self.sent[0]
         self.assertIn('Blocking: A required safety check was removed', message)
         self.assertIn('Why owner: Only you can approve restoring the check.', message)
@@ -155,14 +182,20 @@ class AlertsTest(unittest.TestCase):
         self.assertEqual('*Hard Blocker*', alerts.simplex_markdown('**Hard Blocker**'))
 
     def test_decision_hard_blockers_repush_on_revision_and_stay_replyable(self):
-        alerts.tick(self.root, now=1000)
+        alerts.tick(self.root, now=T0)
+        self.assertEqual(0, len(self.sent))
+        self.send_now()
         self.assertEqual(1, len(self.sent))
         self.assertTrue(alerts.resolve(self.root, 'D1')['can_reply'])
         self.assertIn('ASK: Approve repair?', alerts.details(self.root, 'D1'))
         with closing(sqlite3.connect(self.boards['one'])) as db:
             db.execute("UPDATE tasks SET body='ASK: Approve a revised plan?'")
             db.commit()
-        alerts.tick(self.root, now=1001)
+        # The revision opens no window of its own: the original card's window
+        # is already running, and the live set is re-derived at its end.
+        alerts.tick(self.root, now=T1 + 1)
+        self.assertEqual(1, len(self.sent))
+        alerts.tick(self.root, now=T1 + 1 + alerts.DEBOUNCE_SECONDS)
         self.assertEqual(2, len(self.sent))
         self.assertIn('D2 · one', self.sent[1])
         self.assertFalse(alerts.resolve(self.root, 'D1')['can_reply'])
@@ -170,9 +203,95 @@ class AlertsTest(unittest.TestCase):
         with closing(sqlite3.connect(self.boards['one'])) as db:
             db.execute("UPDATE tasks SET status='done'")
             db.commit()
-        alerts.tick(self.root, now=1002)
+        alerts.tick(self.root, now=T1 + 2 + 2 * alerts.DEBOUNCE_SECONDS)
         self.assertEqual(2, len(self.sent))
         self.assertFalse(alerts.resolve(self.root, 'D2')['can_reply'])
+
+    def test_live_set_is_emitted_as_one_batched_message(self):
+        with closing(sqlite3.connect(self.boards['one'])) as db:
+            db.execute("INSERT INTO tasks VALUES ('t_second', 'Second gate', 'ASK: Confirm the rollout?\n A) Proceed\n B) Hold', 'blocked', 'needs_input')")
+            db.execute("INSERT INTO task_events VALUES (2, 't_second', 'blocked', ?)", (json.dumps({'reason': 'Waiting on the owner'}),))
+            db.commit()
+        alerts.tick(self.root, now=T0)
+        self.assertEqual(0, len(self.sent))
+        self.send_now()
+        self.assertEqual(1, len(self.sent))
+        self.assertIn('D1 · one', self.sent[0])
+        self.assertIn('D2 · one', self.sent[0])
+        self.assertIn('Confirm the rollout?', self.sent[0])
+
+    def test_entry_cleared_during_debounce_is_not_rendered(self):
+        with closing(sqlite3.connect(self.boards['one'])) as db:
+            db.execute("INSERT INTO tasks VALUES ('t_third', 'Third gate', 'ASK: Confirm the rollout?\n A) Proceed\n B) Hold', 'blocked', 'needs_input')")
+            db.execute("INSERT INTO task_events VALUES (2, 't_third', 'blocked', ?)", (json.dumps({'reason': 'Waiting on the owner'}),))
+            db.commit()
+        alerts.tick(self.root, now=T0)
+        with closing(sqlite3.connect(self.boards['one'])) as db:
+            db.execute("UPDATE tasks SET status='done' WHERE id='t_third'")
+            db.commit()
+        self.send_now()
+        self.assertEqual(1, len(self.sent))
+        self.assertIn('D1 · one', self.sent[0])
+        self.assertNotIn('t_third', self.sent[0])
+        self.assertNotIn('Confirm the rollout', self.sent[0])
+
+    def test_newly_appeared_decision_joins_the_same_batch(self):
+        alerts.tick(self.root, now=T0)
+        with closing(sqlite3.connect(self.boards['two'])) as db:
+            db.execute("UPDATE tasks SET block_kind='needs_input', body='ASK: Approve the hotfix?\n A) Ship\n B) Roll back'")
+            db.commit()
+        alerts.tick(self.root, now=T0 + 60)
+        self.assertEqual(0, len(self.sent))
+        self.send_now()
+        self.assertEqual(1, len(self.sent))
+        self.assertIn('D1 · one', self.sent[0])
+        self.assertIn('D2 · two', self.sent[0])
+        self.assertIn('Approve the hotfix?', self.sent[0])
+
+    def test_recommendation_contradicting_a_recorded_decision_is_dropped(self):
+        with closing(sqlite3.connect(self.boards['one'])) as db:
+            db.execute("UPDATE tasks SET body='ASK: Grant document access?\n A) Approve unbounded grants\n B) Keep the ceiling'")
+            db.execute("INSERT INTO task_comments (task_id, author, body, created_at) VALUES "
+                       "('t_12345678','head-coordinator','Decision: do not approve unbounded grants',1)")
+            db.commit()
+        alerts.tick(self.root, now=T0)
+        self.send_now()
+        self.assertEqual(0, len(self.sent))  # the ask fights the recorded answer
+
+    def test_recorded_answer_with_the_alternative_letter_drops_the_entry(self):
+        with closing(sqlite3.connect(self.boards['one'])) as db:
+            db.execute("INSERT INTO task_comments (task_id, author, body, created_at) VALUES "
+                       "('t_12345678','head-coordinator','D1 B: rejected',1)")
+            db.commit()
+        alerts.tick(self.root, now=T0)
+        self.send_now()
+        self.assertEqual(0, len(self.sent))
+
+    def test_recorded_answer_matching_the_recommendation_still_sends(self):
+        with closing(sqlite3.connect(self.boards['one'])) as db:
+            db.execute("INSERT INTO task_comments (task_id, author, body, created_at) VALUES "
+                       "('t_12345678','head-coordinator','D1 A: approved',1)")
+            db.commit()
+        alerts.tick(self.root, now=T0)
+        self.send_now()
+        self.assertEqual(1, len(self.sent))
+        self.assertIn('D1 · one', self.sent[0])
+
+    def test_pure_negation_clause_does_not_drop_the_entry(self):
+        with closing(sqlite3.connect(self.boards['one'])) as db:
+            db.execute("INSERT INTO task_comments (task_id, author, body, created_at) VALUES "
+                       "('t_12345678','head-coordinator','Decision: do not',1)")
+            db.commit()
+        alerts.tick(self.root, now=T0)
+        self.send_now()
+        self.assertEqual(1, len(self.sent))
+        self.assertIn('D1 · one', self.sent[0])
+
+    def test_clause_content_strips_negation_and_filler(self):
+        self.assertEqual(['approve', 'unbounded', 'grants'],
+                         alerts.clause_content('do not approve unbounded grants'))
+        self.assertEqual([], alerts.clause_content('do not'))
+        self.assertEqual(['keep', 'ceiling'], alerts.clause_content('without a keep ceiling'))
 
     def test_failed_decision_delivery_retries(self):
         attempts = []
@@ -183,22 +302,26 @@ class AlertsTest(unittest.TestCase):
                 raise RuntimeError('offline')
             self.sent.append(message)
         with patch.object(alerts, 'send', fail_once):
-            with self.assertRaises(RuntimeError):
-                alerts.tick(self.root, now=1000)
-            self.assertFalse(self.sent)
-            alerts.tick(self.root, now=1001)
+            alerts.tick(self.root, now=T0)
+            # The first send happens once the window has run, and it fails.
+            self.send_now()
+        self.assertEqual(0, len(self.sent))
+        self.assertEqual(1, len(attempts))
+        # The queue timestamp is persisted, so the retry needs no new window:
+        # the next tick after the original window re-derives and re-sends.
+        alerts.tick(self.root, now=T1 + 1)
         self.assertEqual(1, len(self.sent))
         self.assertIn('D1 · one', self.sent[0])
         self.assertTrue(alerts.resolve(self.root, 'D1')['can_reply'])
 
     def test_technical_labels_are_terminal_diagnostics_only(self):
-        alerts.tick(self.root, now=1000)
+        alerts.tick(self.root, now=T0)
         self.assertFalse(alerts.resolve(self.root, 'B1')['can_reply'])
         listed = alerts.details(self.root, 'blockers')
         self.assertIn('B1 · two:t_12345678', listed)
         self.assertIn('Evidence unavailable', listed)
         # A technical label never becomes replyable and never reaches the phone.
-        alerts.tick(self.root, now=1001)
+        self.send_now()
         self.assertEqual(1, len(self.sent))
         self.assertFalse(alerts.resolve(self.root, 'B1')['can_reply'])
         self.assertIn('Evidence unavailable', alerts.details(self.root, 'B1'))
@@ -206,7 +329,8 @@ class AlertsTest(unittest.TestCase):
             db.execute("UPDATE tasks SET block_kind='needs_input'")
             db.commit()
         self.assertFalse(alerts.resolve(self.root, 'B1')['can_reply'])
-        alerts.tick(self.root, now=1002)
+        alerts.tick(self.root, now=T1 + 1)
+        alerts.tick(self.root, now=T1 + 2 + alerts.DEBOUNCE_SECONDS)
         self.assertEqual('two', alerts.resolve(self.root, 'D2')['board'])
         with closing(sqlite3.connect(self.boards['two'])) as db:
             db.execute("UPDATE tasks SET status='done'")
@@ -221,15 +345,18 @@ class AlertsTest(unittest.TestCase):
             db.execute("UPDATE tasks SET body='Goal: Install approved supervision.'")
             db.execute('UPDATE task_events SET payload=?', (json.dumps({'reason': reason}),))
             db.commit()
-        alerts.tick(self.root, now=1000)
+        alerts.tick(self.root, now=T0)
+        self.send_now()
         self.assertIn('A) XDG autostart + supervised loop (recommended)', self.sent[0])
+        self.assertIn('B) turnstile/runit user service', self.sent[0])
         self.assertIn('C) user crontab watchdog', self.sent[0])
         self.assertNotIn('/receipt.md', self.sent[0])
         self.assertNotIn('Approve', self.sent[0])
         with closing(sqlite3.connect(self.boards['one'])) as db:
             db.execute('UPDATE tasks SET body=?', ('ASK: ' + 'Scope ' * 500 + '\n A) Accept\n B) Reject',))
             db.commit()
-        alerts.tick(self.root, now=1001)
+        alerts.tick(self.root, now=T1 + 1)
+        alerts.tick(self.root, now=T1 + 2 + alerts.DEBOUNCE_SECONDS)
         self.assertIn('Details required before deciding', self.sent[-1])
         self.assertNotIn('A) Accept', self.sent[-1])
         self.assertFalse(alerts.resolve(self.root, 'D2')['compact_complete'])
@@ -239,7 +366,8 @@ class AlertsTest(unittest.TestCase):
         with closing(sqlite3.connect(self.boards['one'])) as db:
             db.execute('UPDATE task_events SET payload=?', (json.dumps({'reason': 'Revised ask: A) Replace framework, B) Defer'}),))
             db.commit()
-        alerts.tick(self.root, now=1000)
+        alerts.tick(self.root, now=T0)
+        self.send_now()
         self.assertIn('Details required before deciding', self.sent[0])
         self.assertFalse(alerts.resolve(self.root, 'D1')['compact_complete'])
 
@@ -256,23 +384,24 @@ class AlertsTest(unittest.TestCase):
             db.execute("UPDATE tasks SET title='Record cleanup', body='Operator-only: cleanup requires stat receipts from the worktree.'")
             db.execute('UPDATE task_events SET payload=?', (json.dumps({'reason': 'initial_status'}),))
             db.commit()
-        alerts.tick(self.root, now=1000)
+        alerts.tick(self.root, now=T0)
         shown = alerts.details(self.root, 'B1')
         self.assertIn('Blocked: Operator recovery needed', shown)
         self.assertNotIn('Missing evidence', shown)
 
     def test_reclassifying_a_card_moves_it_between_the_two_labels(self):
-        alerts.tick(self.root, now=1000)
+        alerts.tick(self.root, now=T0)
         self.assertFalse(alerts.resolve(self.root, 'B1')['can_reply'])
         with closing(sqlite3.connect(self.boards['two'])) as db:
             db.execute("UPDATE tasks SET block_kind='needs_input'")
             db.commit()
-        alerts.tick(self.root, now=1001)
+        alerts.tick(self.root, now=T1)
         self.assertEqual('two', alerts.resolve(self.root, 'D2')['board'])
         self.assertFalse(alerts.resolve(self.root, 'B1')['can_reply'])
         with closing(sqlite3.connect(self.boards['two'])) as db:
             db.execute("UPDATE tasks SET block_kind='capability'")
             db.commit()
+        alerts.tick(self.root, now=T1 + 1)
         self.assertEqual('two', alerts.resolve(self.root, 'B1')['board'])
         self.assertFalse(alerts.resolve(self.root, 'D2')['can_reply'])
 
@@ -281,15 +410,15 @@ class AlertsTest(unittest.TestCase):
             for number in range(20):
                 db.execute('INSERT INTO tasks VALUES (?, ?, ?, ?, ?)', (f't_extra_{number}', f'Recover worker {number}', '', 'blocked', 'capability'))
             db.commit()
-        alerts.tick(self.root, now=1000)
-        self.assertEqual(1, len(self.sent))  # only the decision
+        alerts.tick(self.root, now=T0)
+        self.assertEqual(0, len(self.sent))  # nothing is sent on appearance
         listed = alerts.details(self.root, 'blockers')
         for number in range(1, 22):
             self.assertIn(f'B{number} · two:t_', listed)
             self.assertFalse(alerts.resolve(self.root, f'B{number}')['can_reply'])
         self.assertEqual('t_12345678', alerts.resolve(self.root, 'B1')['task_id'])
-        alerts.tick(self.root, now=1001)
-        self.assertEqual(1, len(self.sent))
+        self.send_now()
+        self.assertEqual(1, len(self.sent))  # only the decision
         with patch.dict(os.environ, {'HERMES_KANBAN_TASK': 't_worker'}):
             with self.assertRaises(PermissionError):
                 alerts.tick(self.root)
@@ -307,25 +436,26 @@ class AlertsTest(unittest.TestCase):
             for number in range(12):
                 db.execute('INSERT INTO tasks VALUES (?, ?, ?, ?, ?)', (f't_new_{number}', 'Recover worker', body, 'blocked', 'needs_input'))
             db.commit()
-        alerts.tick(self.root, now=1000)
+        alerts.tick(self.root, now=T0)
+        self.send_now()
         decisions = [m for m in self.sent if m.startswith('*Hard Blocker*')]
         self.assertGreater(len(decisions), 1)
         self.assertTrue(all(len(m) <= 1600 for m in decisions))
         self.assertIn('Choose a recovery mechanism for this host?', decisions[0])
         self.assertIn('Why owner: This needs you to choose A or B.', decisions[0])
-        self.assertIn('Recommended: A) Restore the worker with existing credentials', decisions[0])
-        self.assertIn('Alternatives:', decisions[0])
+        self.assertIn('A) Restore the worker with existing credentials', decisions[0])
         self.assertIn('B) Pause work until capacity returns', decisions[0])
+        self.assertNotIn('Alternatives:', decisions[0])
         self.assertNotIn('Context:', decisions[0])
         # An explicit pull with nothing waiting answers instead of going quiet.
         with closing(sqlite3.connect(self.boards['one'])) as db:
             db.execute("UPDATE tasks SET status='done'")
             db.commit()
-        alerts.tick(self.root, now=1001, force_decisions=True)
+        alerts.tick(self.root, now=T1 + 1, force_decisions=True)
         self.assertIn('No decisions are waiting.', self.sent[-1])
 
     def test_details_and_resolve_are_read_only_even_in_fenced_workers(self):
-        alerts.tick(self.root, now=1000)
+        alerts.tick(self.root, now=T0)
         paths = list(self.root.glob('kanban/boards/*/kanban.db')) + [self.root / 'kanban/owner-alerts/inbox.json']
         before = {p: p.read_bytes() for p in paths}
         with patch.dict(os.environ, {'HERMES_DELEGATED_CHILD_CONTEXT': '1'}):
@@ -341,20 +471,20 @@ class AlertsTest(unittest.TestCase):
             alerts.resolve(self.root, 'D999')
 
     def test_old_count_only_state_upgrades_without_repushing(self):
-        alerts.tick(self.root, now=1000)
-        self.assertEqual(1, len(self.sent))
+        alerts.tick(self.root, now=T0)
+        self.assertEqual(0, len(self.sent))
         path = self.root / 'kanban/owner-alerts/inbox.json'
         old = json.loads(path.read_text())
         old.pop('blockers', None)
         old.pop('next_blocker', None)
         old['delivery']['simplex:3'].pop('technical_format', None)
         path.write_text(json.dumps(old))
-        alerts.tick(self.root, now=1001)
+        self.send_now()
         self.assertEqual(1, len(self.sent))
         self.assertEqual('two', alerts.resolve(self.root, 'B1')['board'])
         self.assertEqual(('two', 't_12345678'), tuple(alerts.resolve(self.root, 'B1')[k] for k in ('board', 'task_id')))
 
-    def test_partial_board_reads_block_pulls_but_not_single_alerts(self):
+    def test_partial_board_reads_block_pulls_and_publishes(self):
         original = alerts.snapshot
 
         def broken(root, task_id=None):
@@ -364,39 +494,41 @@ class AlertsTest(unittest.TestCase):
 
         with patch.object(alerts, 'snapshot', broken):
             with self.assertRaises(RuntimeError):
-                alerts.tick(self.root, now=1000)
-            self.assertEqual(1, len(self.sent))
-            self.assertIn('D1 · one', self.sent[0])
+                alerts.tick(self.root, now=T0)
+            self.assertEqual(0, len(self.sent))
             with self.assertRaises(RuntimeError):
-                alerts.tick(self.root, now=1001, force_decisions=True)
-        self.assertEqual(1, len(self.sent))
+                alerts.tick(self.root, now=T1)
+            with self.assertRaises(RuntimeError):
+                alerts.tick(self.root, now=T1 + 1, force_decisions=True)
+        self.assertEqual(0, len(self.sent))
 
     def test_delivery_state_migrates_the_retired_urgent_key(self):
-        alerts.tick(self.root, now=1000)
+        alerts.tick(self.root, now=T0)
         path = self.root / 'kanban/owner-alerts/inbox.json'
         state = json.loads(path.read_text())
         delivery = state['delivery']['simplex:3']
         delivery.pop('hard_blocker', None)
         delivery['urgent'] = {'one:t_12345678': 'abc'}
         path.write_text(json.dumps(state))
-        alerts.tick(self.root, now=1001)
+        alerts.tick(self.root, now=T1)
         migrated = json.loads(path.read_text())['delivery']['simplex:3']
         self.assertNotIn('urgent', migrated)
         self.assertEqual({'one:t_12345678': 'abc'}, migrated['hard_blocker'])
 
     def test_corrupt_label_state_fails_closed(self):
-        alerts.tick(self.root, now=1000)
+        alerts.tick(self.root, now=T0)
         for value in ['{broken', '[]', '{"version":1,"next_label":0,"decisions":{},"delivery":{}}',
                       '{"version":1,"next_label":2,"decisions":{"D1":null},"delivery":{}}',
-                      '{"version":1,"next_label":1,"decisions":{},"delivery":{"simplex:3":{}}}']:
+                      '{"version":1,"next_label":1,"decisions":{},"delivery":{"simplex:3":{}}}',
+                      '{"version":1,"next_label":1,"decisions":{},"delivery":{},"queue":{"one:t_x":{"at":"nope"}}}']:
             with self.subTest(value=value):
                 (self.root / 'kanban/owner-alerts/inbox.json').write_text(value)
                 with self.assertRaises(ValueError):
                     alerts.tick(self.root)
-        self.assertEqual(1, len(self.sent))
+        self.assertEqual(0, len(self.sent))
 
     def test_cli_resolve_and_details_use_persisted_labels_in_fenced_environment(self):
-        alerts.tick(self.root, now=1000)
+        alerts.tick(self.root, now=T0)
         environment = {**os.environ, 'HERMES_ROOT': str(self.root), 'HERMES_DELEGATED_CHILD_CONTEXT': '1'}
         result = subprocess.run([sys.executable, '-B', alerts.__file__, '--resolve', 'D1'], env=environment, text=True, capture_output=True, check=True)
         self.assertEqual('one', json.loads(result.stdout)['board'])
@@ -413,7 +545,7 @@ class AlertsTest(unittest.TestCase):
         result = subprocess.run([sys.executable, '-B', alerts.__file__, '--send-blockers'], env=environment, text=True, capture_output=True)
         self.assertEqual(2, result.returncode)
         self.assertIn('unrecognized arguments', result.stderr)
-        self.assertEqual(1, len(self.sent))
+        self.assertEqual(0, len(self.sent))
 
     def test_dry_run_and_fenced_workers_do_not_send(self):
         self.mark('two', 'Hard Blocker\nGoal: Sign.')

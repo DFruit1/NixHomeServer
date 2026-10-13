@@ -19,9 +19,12 @@ The line must be its own line; prose mentioning it does not count. Prefer
 `needs_input` so the block is sticky. Both shapes are decision (D) labels and
 are pushed. Every pushed message must be self-contained and written in plain
 everyday English for a non-engineer: one sentence on the concrete problem, one
-on why only the owner can clear it, and the recommended action. Avoid all
-card/board/kanban/workflow jargon, task ids, commit hashes and internal role
-names. If the card body is jargon, post a comment with plain `Blocking:`,
+on why only the owner can clear it, and the choices — A) the recommended
+option and B) the alternative, further letters only when the card genuinely
+has them. When a card has no A/B choices the message shows a `Recommended:`
+line. Decisions are debounced (120 s) and sent as one batched message.
+Avoid all card/board/kanban/workflow jargon, task ids, commit hashes and
+internal role names. If the card body is jargon, post a comment with plain `Blocking:`,
 `Why owner:` and `Unblock:` lines; that summary is what the phone sends and
 re-sends when it changes. Nothing else is pushed — missing evidence, worker/model failures,
 dependency waits and routine cleanups are technical (B) labels that stay
