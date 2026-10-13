@@ -50,6 +50,8 @@ in {
   privateIpfsHost = cfg.services.unbound.privateHosts ? "ipfs.${settings.domain}";
   aliasListen = cfg.systemd.services.ipfs-alias.environment.IPFS_ALIAS_LISTEN;
   aliasChannelsDir = cfg.systemd.services.ipfs-alias.environment.IPFS_ALIAS_CHANNELS_DIR;
+  aliasRequires = cfg.systemd.services.ipfs-alias.requires;
+  aliasWants = cfg.systemd.services.ipfs-alias.wants;
   expected = {
     swarmAddr = "/ip4/${netbirdIp}/tcp/${toString swarmPort}";
     gateway = "/ip4/${loopback}/tcp/${toString gatewayPort}";
@@ -83,6 +85,12 @@ jq -e --argjson swarmPort "$swarm_port" '
   and .apiListenStreams == [ "", "%t/ipfs.sock" ]
   and .aliasListen == .expected.aliasListen
   and (.aliasChannelsDir | endswith("/ipfs-distribution/channels"))
+  # The alias server does not need the Kubo process, so it must not hard-require
+  # it: the daemon first NetBird bind can fail transiently, and a requires would
+  # fail this unit start job with a dependency result and leave the F-Droid IPFS
+  # mirror returning 502 until the next boot.
+  and ((.aliasRequires // []) | index("ipfs.service") == null)
+  and ((.aliasWants // []) | index("ipfs.service") != null)
   # Content routing stays disabled and the overlay-only peer port scoping is
   # unchanged: open on NetBird, never on the LAN interface.
   and .bootstrap == []
@@ -114,7 +122,7 @@ jq -e --argjson swarmPort "$swarm_port" '
   and (.ipfsUnit | test("(?m)^Sockets=ipfs-gateway[.]socket$"))
   and (.ipfsUnit | test("(?m)^Sockets=ipfs-api[.]socket$"))
 ' <<<"$kubo_json" >/dev/null || {
-  echo "❌ Kubo swarm binding, listeners, firewall scoping, NetBird ordering, or the bind retry policy regressed." >&2
+  echo "❌ Kubo swarm binding, listeners, firewall scoping, NetBird ordering, alias startup, or the bind retry policy regressed." >&2
   jq . <<<"$kubo_json" >&2
   exit 1
 }

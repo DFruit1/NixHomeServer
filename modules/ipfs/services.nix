@@ -144,7 +144,15 @@ in
     systemd.services.ipfs-alias = {
       description = "Resolve admin distribution names to pinned IPFS content";
       wantedBy = [ "multi-user.target" ];
-      requires = [ "ipfs.service" ];
+      # The alias server only reads the channel pointer files and issues a 302
+      # to the gateway; it does not need the Kubo process itself. Keep the
+      # ordering so it starts after the daemon's first attempt, but use `wants`
+      # rather than `requires`: the daemon's first bind can lose the race with
+      # the NetBird address and fail once before its retry succeeds, and a hard
+      # dependency would then fail this unit's start job (result 'dependency',
+      # which `Restart=` does not retry) and leave the F-Droid IPFS mirror
+      # returning 502 until the next boot.
+      wants = [ "ipfs.service" ];
       after = [ "ipfs.service" ];
       environment = {
         IPFS_ALIAS_LISTEN = "${loopback}:${toString aliasPort}";
