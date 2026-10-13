@@ -9,6 +9,11 @@ source "$script_dir/helpers/repo-common.sh"
 # module-system instantiation on the workstation's four cores.
 # shellcheck source=scripts/helpers/remote-eval.sh
 source "$script_dir/helpers/remote-eval.sh"
+# remote-build.sh moves the derivation build (and its evaluation) to the server
+# too, so the workstation does not pay a local module-system instantiation for
+# every `nix build` after the worklist query.
+# shellcheck source=scripts/helpers/remote-build.sh
+source "$script_dir/helpers/remote-build.sh"
 init_repo_root
 cd_repo_root
 ensure_default_nix_config
@@ -61,10 +66,12 @@ Where the check worklist is evaluated:
   - the worklist is built with one batched query, so the system name and the
     check names cost a single evaluation instead of two
   - by default that query runs on the build server and the gate reports which
-    host evaluated it; `nix build` still runs through the normal builders
-  - REMOTE_EVAL=0 forces the evaluation onto this workstation
+    host evaluated it; the derivation build runs on the server as well, so the
+    workstation pays neither the evaluation nor the compilation
+  - REMOTE_EVAL=0 forces the evaluation onto this workstation; REMOTE_BUILD=0
+    forces the build onto this workstation
   - an unreachable server or a malformed payload stops the gate, never silently
-    reduces the check set
+    reduces the check set; any remote-build failure falls back to a local build
 
 VM tests (--run-vm-tests):
   - runs integration tests requiring VM boot (failure-alert, jellyfin-oidc)
@@ -309,7 +316,8 @@ validate_sandbox_exclusion_table() {
 # gate needs two answers from the same flake (the host system, and the check
 # names for that system). One remote_eval_batch_json call carries both, and by
 # default runs them on the build server rather than the four-core workstation.
-# The `nix build` below is deliberately untouched: only evaluation moves.
+# The derivation build is offloaded too (remote_build_flake), so the names this
+# query returns become a server-side build instead of a second local eval.
 #
 # Why fail closed on shape: a transport or payload problem must never read as an
 # empty (or silently narrower) worklist, because the gate would then report
@@ -450,7 +458,7 @@ build_derivation_attr() {
 
   echo "ℹ️ Running ${#check_targets[@]} derivation checks from ${attr} in one Nix build…"
   new_outputs="$(
-    nix build "${check_targets[@]}" --keep-going --no-link --print-build-logs --json
+    remote_build_flake "${check_targets[@]}" --keep-going --no-link --print-build-logs --json
   )"
   jq -e '
     type == "array"
@@ -472,9 +480,9 @@ run_vm_tests() {
   local system
   system="$(current_system)"
   if [[ "$all_apps" == true ]]; then
-    nix build ".#hydraJobs.${system}.vmTestsAll" --no-link --print-build-logs
+    remote_build_flake ".#hydraJobs.${system}.vmTestsAll" --no-link --print-build-logs
   else
-    nix build ".#hydraJobs.${system}.vmTests" --no-link --print-build-logs
+    remote_build_flake ".#hydraJobs.${system}.vmTests" --no-link --print-build-logs
   fi
 }
 

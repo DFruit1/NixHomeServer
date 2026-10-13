@@ -81,12 +81,22 @@ printf 'ssh %s\n' "$*" >>"$VALIDATION_TEST_LOG"
 args="$*"
 if [[ "$args" == *' bash -s -- '* ]]; then
   cat >/dev/null
+  # The build transport and the evaluation transport share the `bash -s --`
+  # shape; the staging labels are what tell them apart. A build answers with a
+  # `nix build --json` manifest, an evaluation with the batched worklist.
+  if [[ "$args" == *'nixhomeserver-remote-build'* ]]; then
+    [[ "${VALIDATION_TEST_BUILD_FAIL:-0}" == 0 ]] || exit 42
+    printf '%s\n' "$VALIDATION_TEST_BUILD_PAYLOAD"
+    exit "${VALIDATION_TEST_REMOTE_BUILD_STATUS:-0}"
+  fi
   printf '%s\n' "$VALIDATION_TEST_BATCH_PAYLOAD"
   exit "${VALIDATION_TEST_REMOTE_EVAL_STATUS:-0}"
 fi
 case "$args" in
   *' true'*) exit 0 ;;
+  *' stage nixhomeserver-remote-build'*) cat >/dev/null; echo /tmp/nixhomeserver-remote-build.stubarchive.a1b2c3d4.tar ;;
   *' stage '*) cat >/dev/null; echo /tmp/nixhomeserver-remote-eval.stubarchive.a1b2c3d4.tar ;;
+  *'mktemp -d /tmp/nixhomeserver-remote-build'*) echo /tmp/nixhomeserver-remote-build.stubdir ;;
   *'mktemp -d'*) echo /tmp/nixhomeserver-remote-eval.stubdir ;;
   # The batched Nix expression arrives on stdin here, so log it: asserting that
   # the query was built correctly means reading the query that was sent. Only
@@ -106,10 +116,14 @@ make_test_executable "$test_root/bin/ssh"
 # rewrites every assertion about the remote receipt into a local one.
 export REMOTE_EVAL=1
 export VALIDATION_TEST_BATCH_PAYLOAD='{"batchSystem":"x86_64-linux","batchNames":["repo-policy","media-manager-frontendDist","media-manager-test"]}'
+export VALIDATION_TEST_BUILD_PAYLOAD='[{"outputs":{"out":"/nix/store/00000000000000000000000000000000-check"}}]'
+# The staged remote build is the only build transport now; every "was a build
+# attempted" assertion matches this instead of a local `nix build`.
+remote_build_re='bash -s -- .*nixhomeserver-remote-build'
 export PATH="$test_root/bin:$PATH"
 
 run_gate
-forbid_match "$VALIDATION_TEST_LOG" '^nix build' 'Lean validation must remain evaluation/script-only.'
+forbid_match "$VALIDATION_TEST_LOG" "$remote_build_re" 'Lean validation must remain evaluation/script-only.'
 
 if ! run_gate --build-checks --all-apps; then
   cat "$test_root/output"
@@ -134,7 +148,7 @@ require_match "$VALIDATION_TEST_LOG" '^scripts --all-apps$' \
   'Build checks must retain the lean all-app script suite.'
 # Scoped to the build command and the script suite: the evaluated worklist
 # legitimately names repo-policy, since naming a check is what gets it excluded.
-forbid_match "$VALIDATION_TEST_LOG" '^nix build .*(repo-policy|hydraJobs|--full|flake check)' \
+forbid_match "$VALIDATION_TEST_LOG" "bash -s -- .*nixhomeserver-remote-build.*(--full|hydraJobs|flake check|repo-policy)" \
   'Build checks must not recursively build repo-policy or opt into heavier suites.'
 forbid_match "$VALIDATION_TEST_LOG" '^scripts .*(--full|hydraJobs)' \
   'Build checks must not opt into a heavier script suite.'
@@ -169,7 +183,7 @@ require_match "$test_root/output" 'direct validation path is missing or not exec
   'A broken exclusion must name the direct path it could not find.'
 forbid_match "$VALIDATION_TEST_LOG" '^scripts ' \
   'A broken exclusion must stop the gate, not fall through to the script suite.'
-forbid_match "$VALIDATION_TEST_LOG" '^nix build ' \
+forbid_match "$VALIDATION_TEST_LOG" "$remote_build_re" \
   'A broken exclusion must stop before building anything.'
 forbid_match "$VALIDATION_TEST_LOG" ' bash -s -- ' \
   'A broken exclusion must stop before the worklist is even evaluated.'
@@ -203,7 +217,7 @@ probe_exclusion_rejection() {
   fi
   require_match "$test_root/output" 'is excluded from derivation builds' \
     "The rejection must name the exclusion it refused (${label})."
-  forbid_match "$VALIDATION_TEST_LOG" '^nix build ' \
+  forbid_match "$VALIDATION_TEST_LOG" "$remote_build_re" \
     "A rejected exclusion must stop before building anything (${label})."
   forbid_match "$VALIDATION_TEST_LOG" '^scripts ' \
     "A rejected exclusion must stop before the script suite (${label})."
@@ -240,7 +254,7 @@ require_match "$test_root/output" \
 unset VALIDATE_REPO_SANDBOX_EXCLUSIONS
 
 run_gate --build-checks
-require_match "$VALIDATION_TEST_LOG" '^nix build .* --keep-going ' \
+require_match "$VALIDATION_TEST_LOG" "bash -s -- .*nixhomeserver-remote-build.*--keep-going" \
   'Independent builds must finish even when another check fails.'
 require_fixed "$VALIDATION_TEST_LOG" '.#checks.x86_64-linux.media-manager-test' \
   'Host-scoped build checks must use the host check worklist.'
@@ -270,7 +284,7 @@ if run_gate --full --all-apps; then
   exit 1
 fi
 require_match "$VALIDATION_TEST_LOG" '^nix flake check --no-build$' 'Full validation must still evaluate the flake.'
-require_match "$VALIDATION_TEST_LOG" '^nix build ' 'Full validation must still build checks.'
+require_match "$VALIDATION_TEST_LOG" "$remote_build_re" 'Full validation must still build checks.'
 require_match "$VALIDATION_TEST_LOG" '^scripts --all-apps --full$' 'Full validation must still run the full script suite.'
 unset VALIDATION_TEST_SCRIPT_FAIL
 
@@ -280,7 +294,7 @@ unset VALIDATION_TEST_SCRIPT_FAIL
 # builtins.currentSystem, once for the check names. Both must now come from a
 # single batched query, and neither may still cost a local evaluation.
 run_gate --build-checks
-if [[ "$(grep -c ' bash -s -- ' "$VALIDATION_TEST_LOG")" != "1" ]]; then
+if [[ "$(grep -c 'bash -s -- .*nixhomeserver-remote-eval' "$VALIDATION_TEST_LOG")" != "1" ]]; then
   echo '❌ The check worklist must cost exactly one batched evaluation.' >&2
   cat "$VALIDATION_TEST_LOG" >&2
   exit 1
@@ -319,8 +333,8 @@ REMOTE_EVAL=0 run_gate --build-checks
 require_match "$test_root/output" \
   'Evaluated the check worklist on this workstation \(.*media-manager-test' \
   'REMOTE_EVAL=0 must report that the worklist stayed local.'
-forbid_match "$VALIDATION_TEST_LOG" '^ssh ' \
-  'REMOTE_EVAL=0 must never open an SSH session.'
+forbid_match "$VALIDATION_TEST_LOG" 'bash -s -- .*nixhomeserver-remote-eval' \
+  'REMOTE_EVAL=0 must never evaluate the worklist over SSH.'
 require_fixed "$VALIDATION_TEST_LOG" \
   'builtins.attrNames f.checks.${builtins.currentSystem}' \
   'REMOTE_EVAL=0 must still use the same batched expression.'
@@ -351,7 +365,7 @@ for bad_payload in \
   fi
   require_match "$test_root/output" 'malformed payload' \
     'A malformed payload must be reported as malformed, not silently accepted.'
-  forbid_match "$VALIDATION_TEST_LOG" '^nix build ' \
+  forbid_match "$VALIDATION_TEST_LOG" "$remote_build_re" \
     'A malformed payload must stop before building anything.'
   forbid_match "$VALIDATION_TEST_LOG" '^scripts ' \
     'A malformed payload must stop before the script suite.'
@@ -379,7 +393,7 @@ for wrapped_name in $'\nrepo-policy' $'repo-policy\n' $'repo-policy\nmedia-manag
     'A newline-bearing check name must be reported as a malformed payload.'
   forbid_match "$test_root/output" 'Building repo-policy is excluded' \
     'A wrapped name must never be accepted as the excluded check.'
-  forbid_match "$VALIDATION_TEST_LOG" '^nix build ' \
+  forbid_match "$VALIDATION_TEST_LOG" "$remote_build_re" \
     'A newline-bearing check name must stop before building anything.'
   forbid_match "$VALIDATION_TEST_LOG" '^scripts ' \
     'A newline-bearing check name must stop before the script suite.'
