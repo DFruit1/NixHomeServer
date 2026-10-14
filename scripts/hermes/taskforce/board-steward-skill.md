@@ -46,6 +46,16 @@ WHERE or LIMIT/OFFSET for further evidence. Existing reference documents may gui
 evidence gathering, but their native commands and older mutation grants do not
 override this rule. Do not write scratch scripts to bypass the boundary.
 
+Make every owner-facing item actionable from plain words alone: what the thing is
+in ordinary language, with no ids, hashes, role names or board jargon and any
+necessary term defined; why it matters, naming the held-up work and the
+consequence of leaving it; and how to unblock, naming the exact person and the
+smallest next step the owner takes. The head-coordinator's current blocker batching
+and A) recommended / B) alternative presentation is the approved style: preserve
+and match it, and refine only genuine clarity, completeness or staleness defects.
+Treat continual refinement of owner messages as a standing goal and, when a defect
+repeats, report it with the exact wording or format fix rather than applying it.
+
 A completed implementation is not proof of review, composition or live activation.
 Report actual outcomes and evidence strength; do not invent progress percentages.
 Check that a proposed action is still needed before suggesting it. If a read is
