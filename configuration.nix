@@ -99,6 +99,11 @@ in
         # generations, and keeps the 128K context inside the card.
         kvCacheType = "q8_0";
         extraArgs = [
+          # Expose the Prometheus /metrics endpoint so operators can read the
+          # active and queued request counters (llamacpp:requests_processing and
+          # llamacpp:requests_deferred) as a read-only scalar, without inspecting
+          # logs, the board, or request bodies.
+          "--metrics"
           # Larger micro-batches process prompt tokens with fewer passes over
           # the weights.
           "--batch-size" "2048"
