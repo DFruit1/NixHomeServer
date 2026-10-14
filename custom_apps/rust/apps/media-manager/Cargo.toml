@@ -11,7 +11,10 @@ image.workspace = true
 libc.workspace = true
 lofty.workspace = true
 rand.workspace = true
-reqwest.workspace = true
+# reqwest 0.13 gates query-string encoding behind a feature (0.12 exposed it
+# unconditionally); the provider lookups (TMDB, MusicBrainz, OpenSubtitles,
+# Google Books) build requests with .query().
+reqwest = { workspace = true, features = ["query"] }
 roxmltree.workspace = true
 rusqlite = { workspace = true, features = ["functions"] }
 serde.workspace = true
