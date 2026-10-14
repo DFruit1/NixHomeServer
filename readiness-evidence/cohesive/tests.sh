@@ -826,6 +826,128 @@ assert_eq 'the filter stop records no per-slot value' null \
   "$(printf '%s\n' "$OUT" | json_of props_n_ctx)"
 
 # --------------------------------------------------------------------------
+# Exponent class: a non-canonical exponent spelling must never be truncated
+# into an accepted scalar. The shipped pattern and mapper are fetched from the
+# library (never retyped here) and exercised directly over every spelling of the
+# class, then the same class is proved end to end through the frozen remote
+# script and through a full stubbed capture.
+
+props_pattern="$(bash -c 'source "$1" >/dev/null 2>&1 || exit 9; printf "%s" "$COHESIVE_PROPS_WIRE_PATTERN"' _ "$lib")"
+props_mapper="$(bash -c 'source "$1" >/dev/null 2>&1 || exit 9; printf "%s" "$COHESIVE_PROPS_MAP_PROGRAM"' _ "$lib")"
+
+# props_extract <synthetic props line>: exactly what the shipped narrowing emits
+props_extract() {
+  printf '%s' "$1" | grep -oE "$props_pattern" | sed -E -n -e "$props_mapper"
+}
+
+assert_eq 'the shipped props boundary excludes both exponent markers' 1 \
+  "$([[ "$props_pattern" == *'[^0-9.eE]'* ]] && echo 1 || echo 0)"
+
+for key in n_ctx total_slots; do
+  for spelling in 2e5 2E5 2e+5 2e-5 2E+5 2E-5 25e1 05e2 1.5e3 4.5E-2 2e1.5 9e0; do
+    assert_eq "the shipped narrowing emits no ${key} for the exponent spelling ${spelling}" '' \
+      "$(props_extract "{\"$key\": $spelling,}")"
+  done
+done
+
+assert_eq 'the shipped narrowing still extracts a canonical integer' 'props_n_ctx=98304' \
+  "$(props_extract '{"n_ctx": 98304,}')"
+assert_eq 'the shipped narrowing still extracts a canonical slots integer' 'props_total_slots=2' \
+  "$(props_extract '{"total_slots":2,}')"
+assert_eq 'the shipped narrowing tolerates whitespace around a canonical integer' 'props_n_ctx=98304' \
+  "$(props_extract '{"n_ctx"  :  98304 ,}')"
+assert_eq 'the shipped narrowing tolerates whitespace before the slots delimiter' 'props_total_slots=2' \
+  "$(props_extract '{"total_slots" : 2 ,}')"
+
+# props_body_frame <props-fixture> <tag>
+#   Runs the frozen remote script over one synthetic /props body through the
+#   offline curl double, overlays only the absent gtidle leaves (this host has
+#   no approved device node) and leaves the body a stubbed capture replays in
+#   PROPS_BODY_FRAME, with the raw narrowed frame in PROPS_BODY_RAW.
+props_body_frame() {
+  local fixture="$1" tag="$2"
+  local raw="$scratch/local-frame.$tag.raw"
+  local overlaid="$scratch/local-frame.$tag.overlaid.txt"
+  local body="$scratch/local-frame.$tag.body.txt"
+  : >"$local_curl_count"
+  PATH="$stub_dir:$PATH" \
+    COHESIVE_STUB_CURL_LOG="$local_curl_log" \
+    COHESIVE_STUB_CURL_COUNT="$local_curl_count" \
+    COHESIVE_STUB_CURL_PROPS="$fixture" \
+    COHESIVE_STUB_CURL_METRICS="$availability_fixtures/raw-metrics-body.txt" \
+    COHESIVE_STUB_CURL_HEALTH_CODE=200 \
+    bash -c "$remote_script" >"$raw" 2>/dev/null
+  overlay_gtidle "$raw" "$overlaid"
+  tail -n +2 "$overlaid" >"$body"
+  PROPS_BODY_RAW="$raw"
+  PROPS_BODY_FRAME="$body"
+}
+
+while read -r exp_tag exp_fixture exp_canary; do
+  props_body_frame "$fixtures/$exp_fixture" "$exp_tag"
+  assert_eq "the frozen script emits no per-slot scalar for the $exp_tag exponent body" 0 \
+    "$(grep -c '^props_n_ctx=' "$PROPS_BODY_RAW")"
+  assert_eq "the frozen script emits no slots scalar for the $exp_tag exponent body" 0 \
+    "$(grep -c '^props_total_slots=' "$PROPS_BODY_RAW")"
+  assert_eq "the $exp_tag exponent body is reported as filter no-match" 'props_filter_exit=1' \
+    "$(grep -m1 '^props_filter_exit=' "$PROPS_BODY_RAW")"
+  assert_absent "the $exp_tag exponent body canary never crosses the wire" "$exp_canary" \
+    "$(cat "$PROPS_BODY_RAW")"
+  reset_case
+  CASE_FRAME="$PROPS_BODY_FRAME"
+  run_driver capture
+  expect_bundle "the $exp_tag exponent body stops the full stubbed capture" 2 HOLD filter_no_match
+  assert_eq "the $exp_tag exponent body records no per-slot value" null \
+    "$(printf '%s\n' "$OUT" | json_of props_n_ctx)"
+  assert_eq "the $exp_tag exponent body records no slots value" null \
+    "$(printf '%s\n' "$OUT" | json_of props_total_slots)"
+  assert_absent "the $exp_tag exponent canary never reaches stdout" "$exp_canary" "$OUT"
+  assert_absent "the $exp_tag exponent canary never reaches the persisted bundle" "$exp_canary" \
+    "$(cat "$CASE_STATE/bundle.json")"
+done <<'EXPONENT_BODIES'
+lower props-body-exponent.json CANARY_EXPONENT_BODY_FRAGMENT
+upper-signed props-body-exponent-upper.json CANARY_EXPONENT_UPPER_BODY_FRAGMENT
+fractional-signed props-body-exponent-fractional.json CANARY_EXPONENT_FRACTIONAL_BODY_FRAGMENT
+EXPONENT_BODIES
+
+props_body_frame "$fixtures/props-body-exponent-mixed.json" mixed
+assert_eq 'a mixed body still extracts its canonical field' 'props_total_slots=2' \
+  "$(grep -m1 '^props_total_slots=' "$PROPS_BODY_RAW")"
+assert_eq 'a mixed body emits no scalar for the exponent-spelled field' 0 \
+  "$(grep -c '^props_n_ctx=' "$PROPS_BODY_RAW")"
+reset_case
+CASE_FRAME="$PROPS_BODY_FRAME"
+run_driver capture
+expect_bundle 'a mixed body stops on the missing exponent-spelled field' 2 HOLD missing_fact
+assert_eq 'the mixed stop records no per-slot value' null \
+  "$(printf '%s\n' "$OUT" | json_of props_n_ctx)"
+assert_eq 'the mixed stop records no slots value either' null \
+  "$(printf '%s\n' "$OUT" | json_of props_total_slots)"
+assert_absent 'the mixed exponent body canary never reaches stdout' \
+  'CANARY_EXPONENT_MIXED_BODY_FRAGMENT' "$OUT"
+assert_absent 'the mixed exponent body canary never reaches the persisted bundle' \
+  'CANARY_EXPONENT_MIXED_BODY_FRAGMENT' "$(cat "$CASE_STATE/bundle.json")"
+
+props_body_frame "$fixtures/props-body-whitespace.json" whitespace
+assert_eq 'a whitespace-padded canonical body still extracts the per-slot scalar' 'props_n_ctx=98304' \
+  "$(grep -m1 '^props_n_ctx=' "$PROPS_BODY_RAW")"
+assert_eq 'a whitespace-padded canonical body still extracts the slots scalar' 'props_total_slots=2' \
+  "$(grep -m1 '^props_total_slots=' "$PROPS_BODY_RAW")"
+reset_case
+CASE_FRAME="$PROPS_BODY_FRAME"
+run_driver capture
+expect_bundle 'the tightened boundary still captures a canonical whitespace-padded body' 0 CAPTURED none
+assert_eq 'the whitespace control yields the per-slot capacity fact' 98304 \
+  "$(json_in server capacity props_n_ctx)"
+assert_eq 'the whitespace control yields the slots fact' 2 \
+  "$(json_in server capacity props_total_slots)"
+assert_eq 'the whitespace control compares equal against the client intent' 'equal' \
+  "$(printf '%s\n' "$OUT" | json_of client_vs_per_slot_capacity)"
+assert_absent 'the whitespace body canary never crosses the wire' 'CANARY_WHITESPACE_BODY_FRAGMENT' \
+  "$(cat "$PROPS_BODY_RAW")"
+assert_absent 'the whitespace body canary never reaches stdout' 'CANARY_WHITESPACE_BODY_FRAGMENT' "$OUT"
+
+# --------------------------------------------------------------------------
 section 'bounded termination: every operation is killed at its deadline'
 
 reset_case

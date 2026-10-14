@@ -59,10 +59,17 @@ readonly COHESIVE_PROPS_ENDPOINT='http://127.0.0.1:8093/props'
 readonly COHESIVE_PROPS_NCTX_KEY='n_ctx'
 readonly COHESIVE_PROPS_SLOTS_KEY='total_slots'
 # The frozen narrowing requires a canonical integer followed by a boundary, so
-# a decimal or otherwise non-canonical spelling cannot be truncated into a
-# value; the mapper re-anchors each match to the whole line.
-readonly COHESIVE_PROPS_WIRE_PATTERN='"n_ctx"[[:space:]]*:[[:space:]]*[0-9]+[^0-9.]|"total_slots"[[:space:]]*:[[:space:]]*[0-9]+[^0-9.]'
-readonly COHESIVE_PROPS_MAP_PROGRAM='s/^"n_ctx"[[:space:]]*:[[:space:]]*([0-9]+)[^0-9.]$/props_n_ctx=\1/p;s/^"total_slots"[[:space:]]*:[[:space:]]*([0-9]+)[^0-9.]$/props_total_slots=\1/p'
+# a decimal, exponent or otherwise non-canonical spelling cannot be truncated
+# into a value; the mapper re-anchors each match to the whole line.
+#
+# The boundary class excludes the decimal point AND both exponent markers: a
+# bare [^0-9.] let "n_ctx": 2e5 match on its "2e", and the mapper then emitted
+# props_n_ctx=2, silently truncating an exponent spelling into an accepted
+# value. Any further numeric continuation therefore stops the field instead of
+# being clipped, while a genuine integer followed by a delimiter or whitespace
+# is still extracted.
+readonly COHESIVE_PROPS_WIRE_PATTERN='"n_ctx"[[:space:]]*:[[:space:]]*[0-9]+[^0-9.eE]|"total_slots"[[:space:]]*:[[:space:]]*[0-9]+[^0-9.eE]'
+readonly COHESIVE_PROPS_MAP_PROGRAM='s/^"n_ctx"[[:space:]]*:[[:space:]]*([0-9]+)[^0-9.eE]$/props_n_ctx=\1/p;s/^"total_slots"[[:space:]]*:[[:space:]]*([0-9]+)[^0-9.eE]$/props_total_slots=\1/p'
 
 # A count or capacity fact is bounded well inside the shell's integer range, so
 # a comparison can never overflow into a false verdict.
