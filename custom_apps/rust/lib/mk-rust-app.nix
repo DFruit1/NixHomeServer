@@ -16,6 +16,13 @@
 , shellHook ? ""
 , cargoExtraArgs ? "--locked"
 , cargoNextestExtraArgs ? ""
+, # Extra environment for the cargo-nextest (test) check only. rustls uses
+  # rustls-platform-verifier since reqwest 0.13, which reads the system trust
+  # store: a Nix builder sandbox has no /etc/ssl/certs, so a test that builds a
+  # TLS client panics with "No CA certificates" unless it is handed a root
+  # bundle (e.g. SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt").
+  # Only the test check needs it; fmt/clippy never load a trust store.
+  cargoNextestEnv ? { }
 , nativeBuildInputs ? [ ]
 , buildInputs ? [ ]
 , # Optional workspace mode: build against a shared source tree and prebuilt
@@ -105,7 +112,7 @@ let
       });
 
   rawChecks = mkRustChecks {
-    inherit name packageSrc checkSrc commonArgs cargoLock cargoNextestExtraArgs;
+    inherit name packageSrc checkSrc commonArgs cargoLock cargoNextestExtraArgs cargoNextestEnv;
     cargoFmtExtraArgs = lib.optionalString useWorkspace "--package ${packageName} --package homelab-common";
     cargoArtifacts = if sharedCargoArtifacts != null then sharedCargoArtifacts else null;
   };

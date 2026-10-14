@@ -100,7 +100,7 @@ in
     workspaceCheckSrc = workspaceSource "media-manager" true;
   };
   opencloud-share-gate = import ./opencloud-share-gate/default.nix {
-    inherit rustLib;
+    inherit pkgs rustLib;
     inherit workspaceVersion sharedCargoArtifacts cargoLock;
     workspaceSrc = workspaceSource "opencloud-share-gate" false;
     workspaceCheckSrc = workspaceSource "opencloud-share-gate" true;

@@ -9,6 +9,10 @@
 , cargoFmtExtraArgs ? ""
 , cargoClippyExtraArgs ? "--all-targets -- --deny warnings"
 , cargoNextestExtraArgs ? ""
+, # Environment for the test (cargo-nextest) check only -- e.g. SSL_CERT_FILE
+  # pointing at a CA bundle, because a builder sandbox ships no system trust
+  # store. See the matching argument in mk-rust-app.nix.
+  cargoNextestEnv ? { }
 ,
 }:
 let
@@ -48,7 +52,7 @@ in
     src = checkSrc;
   } // lib.optionalAttrs (cargoLock != null) { inherit cargoLock; });
 
-  test = craneLib.cargoNextest (commonArgs // checkProfileEnv // {
+  test = craneLib.cargoNextest (commonArgs // checkProfileEnv // cargoNextestEnv // {
     inherit cargoNextestExtraArgs;
     cargoArtifacts = cargoArtifactsFinal;
     src = checkSrc;

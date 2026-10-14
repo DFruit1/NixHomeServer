@@ -25,6 +25,12 @@ let
     modulePath = ../../../../modules/Core_Modules/media-manager;
     inherit workspaceSrc workspaceCheckSrc sharedCargoArtifacts cargoLock;
     cargoNextestExtraArgs = "--package homelab-common";
+    # reqwest 0.13 verifies TLS with rustls-platform-verifier, which reads the
+    # system trust store; the builder sandbox has none, so hand the test check
+    # the same CA bundle the NixOS host ships.
+    cargoNextestEnv = {
+      SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+    };
     nativeBuildInputs = [ pkgs.pkg-config ];
     buildInputs = [ pkgs.sqlite ];
     shellEnv = {
