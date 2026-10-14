@@ -1,0 +1,18 @@
+gtidle_device=present
+gtidle_unit=ms
+gtidle_status_1=gt-c6
+gtidle_residency_1=987654321
+gtidle_status_2=gt-c6
+gtidle_residency_2=987654325
+health_status=200
+props_n_ctx=98304
+props_total_slots=2
+llamacpp:requests_processing 1
+llamacpp:requests_deferred 0
+gtidle_read_exit=0
+health_curl_exit=0
+props_curl_exit=0
+props_filter_exit=0
+props_map_exit=0
+metrics_curl_exit=0
+metrics_filter_exit=0
