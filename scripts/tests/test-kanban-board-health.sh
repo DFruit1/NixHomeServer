@@ -35,6 +35,30 @@ TESTS_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # copy is held to the same contract without editing it or rewriting this file.
 HEALTH="${BOARD_HEALTH_SCRIPT:-$TESTS_REPO_ROOT/scripts/hermes/kanban-board-health.sh}"
 
+# Detach from any inherited dispatcher worker identity and credential fallback
+# before the fixture is built.
+#
+# Every case below already selects its own root with an explicit HERMES_ROOT,
+# HERMES_BOARD and HERMES_REPO, so the fixture outranks the ambient environment.
+# These unsets are the belt to that pair of braces: they keep a future reader from
+# having to reason about whether an inherited pin can redirect the fixture, and
+# the guard below fails loudly if one is re-added.
+#
+#   HERMES_DELEGATED_CHILD_CONTEXT / HERMES_KANBAN_TASK  the worker write fence
+#   HERMES_KANBAN_DB / HERMES_KANBAN_BOARD               board-resolution pins that
+#                                                        outrank an explicit --board
+#   OPENCODE_API_KEY                                     a live credential fallback
+#
+# These are worker-identity and credential-fallback settings, not locations or
+# fixtures, so dropping them can only reach this test's own mktemp tree.
+unset HERMES_DELEGATED_CHILD_CONTEXT HERMES_KANBAN_TASK HERMES_KANBAN_DB \
+  HERMES_KANBAN_BOARD OPENCODE_API_KEY
+for pin in HERMES_DELEGATED_CHILD_CONTEXT HERMES_KANBAN_TASK HERMES_KANBAN_DB \
+  HERMES_KANBAN_BOARD OPENCODE_API_KEY; do
+  [[ -z "${!pin:-}" ]] ||
+    { echo "❌ $pin is still set; the fixture is not isolated from the ambient worker environment" >&2; exit 1; }
+done
+
 fail() {
   echo "❌ $1" >&2
   exit 1

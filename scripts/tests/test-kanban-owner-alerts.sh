@@ -1,6 +1,36 @@
 #!/usr/bin/env bash
 set -euo pipefail
 TESTS_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+# Detach from any inherited dispatcher worker identity and credential fallback
+# before the fixture runs.
+#
+# This suite drives kanban-owner-alerts.py's send path (`alerts.tick`) directly,
+# and that path refuses a worker context outright: with HERMES_DELEGATED_CHILD_CONTEXT
+# or HERMES_KANBAN_TASK set it raises PermissionError ("Owner alerts run only from
+# the operator or no-agent cron", kanban-owner-alerts.py:487). The operator-context
+# tests are the point of this file, so those pins must be gone before it runs.
+#
+# This is not a fence bypass. The suite's own negative controls set the same
+# variables explicitly with patch.dict / subprocess env and still assert the
+# refusal, the read-only paths and the check-only exit code, so every assertion
+# about the fence survives; untrusting the ambient environment only decides which
+# of the two contexts the harness itself runs in.
+#
+# HERMES_KANBAN_DB / HERMES_KANBAN_BOARD are the hermes CLI's board-resolution
+# pins and can outrank an explicit --board (kanban_db._explicit_board_intent_pinned),
+# so an inherited pin could resolve a call onto the live operator board.
+# OPENCODE_API_KEY is a live credential fallback the suite never supplies. These
+# are worker-identity and credential-fallback settings, not locations or fixtures,
+# so dropping them can only reach this test's own mktemp tree.
+unset HERMES_DELEGATED_CHILD_CONTEXT HERMES_KANBAN_TASK HERMES_KANBAN_DB \
+  HERMES_KANBAN_BOARD OPENCODE_API_KEY
+for pin in HERMES_DELEGATED_CHILD_CONTEXT HERMES_KANBAN_TASK HERMES_KANBAN_DB \
+  HERMES_KANBAN_BOARD OPENCODE_API_KEY; do
+  [[ -z "${!pin:-}" ]] ||
+    { echo "❌ $pin is still set; the fixture is not isolated from the ambient worker environment" >&2; exit 1; }
+done
+
 python3 -B - "$TESTS_REPO_ROOT" <<'PY'
 from contextlib import closing
 import importlib.util
