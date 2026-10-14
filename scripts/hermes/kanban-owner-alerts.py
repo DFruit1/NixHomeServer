@@ -37,11 +37,19 @@ MARKER = '<!-- kanban-owner-alerts -->'
 END_MARKER = '<!-- /kanban-owner-alerts -->'
 AUTHOR_MARKER = '<!-- kanban-owner-blocker-author -->'
 AUTHOR_END_MARKER = '<!-- /kanban-owner-blocker-author -->'
-MESSAGE_LIMIT = 1600
 # Bump when the decision message shape changes so the live set is re-sent once in
 # the new format (a stale delivered flag would otherwise keep an old stub on the
 # phone). Technical messages carry their own format key.
-DECISION_FORMAT = 3
+DECISION_FORMAT = 5
+# The owner-facing summary gives each field room for one or two concrete
+# sentences; the phone wraps them. `Blocking` and `Why owner` must carry real
+# detail (at least two sentences), the whole summary stays within one phone
+# message, and an owner gate body may be a little larger than an ordinary card.
+SUMMARY_FIELD_LIMIT = 300
+SUMMARY_TOTAL_LIMIT = 1200
+SUMMARY_MIN_SENTENCES = 2
+OWNER_GATE_LIMIT = 2000
+OWNER_GATE_LINES = 30
 # A standalone line an agent adds to mark a card it did not block as a decision.
 # Case-insensitive and its own line; prose mentioning it does not count. A card
 # carrying it is a Hard Blocker and belongs to the decision (D) category.
@@ -167,18 +175,6 @@ def load_inbox(root):
     return state
 
 
-def inline_options(reason):
-    matches = list(re.finditer(r'\b([A-Z])\)\s*', reason))
-    options = []
-    for index, match in enumerate(matches):
-        end = matches[index + 1].start() if index + 1 < len(matches) else len(reason)
-        choice = reason[match.end():end]
-        choice = re.split(r'\.\s+(?:Details|Context|Evidence)\b', choice)[0]
-        choice = re.sub(r'[,;\s]+(?:or|and)\s*$', '', choice).rstrip(' ,;.')
-        options.append((match[1], choice))
-    return options
-
-
 def simplex_markdown(text):
     """Render emphasis the way SimpleX parses it.
 
@@ -209,25 +205,61 @@ SUMMARY_PLACEHOLDER = re.compile(
     r'only you can clear this|cannot self-resolve|choose A or B)\b', re.I)
 
 
+def extract_summary(text):
+    """The three owner-facing fields from a gate body or summary comment.
+
+    A field runs from its label to the next recognised label, option line or
+    blank line, so a value may wrap onto continuation lines without losing text.
+    """
+    fields = {}
+    current = None
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        match = re.match(r'^(Blocking|Why owner|Unblock):[ \t]*(.*)$', line)
+        if match:
+            current = match.group(1)
+            fields[current] = match.group(2).strip()
+            continue
+        if current is None:
+            continue
+        if not line.strip() or re.match(r'^\s*[A-Z]\)', line) or re.match(r'^[A-Za-z][A-Za-z ]*:', line):
+            current = None
+            continue
+        fields[current] = (fields[current] + ' ' + line.strip()).strip()
+    return fields
+
+
+def _sentences(value):
+    return [part for part in re.split(r'(?<=[.!?])\s+', value.strip()) if part]
+
+
 def check_summary(text):
     """Check the coordinator's three lines; never invent an owner-only reason."""
-    lines = text.strip().splitlines()
-    if len(lines) != 3 or any(not line.startswith(name + ': ') for name, line in zip(SUMMARY_FIELDS, lines)):
+    fields = extract_summary(text)
+    if list(fields) != list(SUMMARY_FIELDS):
         raise ValueError('Write exactly Blocking:, Why owner:, Unblock: in that order')
-    if len(text.strip()) > 1000 or any(len(line) > 90 for line in lines):
-        raise ValueError('Blocker summary exceeds 90 characters per line or 1000 total')
-    fields = {}
-    for name, line in zip(SUMMARY_FIELDS, lines):
-        value = line[len(name) + 2:].strip()
-        if not value or SUMMARY_JARGON.search(value) or SUMMARY_PLACEHOLDER.search(value):
+    for name, value in fields.items():
+        if not value:
             raise ValueError(f'{name}: supply a concrete plain-English problem, reason or action')
-        fields[name] = value
+        if len(value) > SUMMARY_FIELD_LIMIT:
+            raise ValueError(f'{name}: keep it to one or two sentences ({SUMMARY_FIELD_LIMIT} characters max)')
+        if SUMMARY_JARGON.search(value) or SUMMARY_PLACEHOLDER.search(value):
+            raise ValueError(f'{name}: supply a concrete plain-English problem, reason or action')
+    for name in ('Blocking', 'Why owner'):
+        if len(_sentences(fields[name])) < SUMMARY_MIN_SENTENCES:
+            raise ValueError(f'{name}: add the detail behind it, in at least two sentences')
+    has_a = bool(re.search(r'\bA\)', fields['Unblock']))
+    has_b = bool(re.search(r'\bB\)', fields['Unblock']))
+    if has_a != has_b:
+        raise ValueError('Unblock: give both option A and option B, or neither, as prose')
+    if sum(len(value) for value in fields.values()) > SUMMARY_TOTAL_LIMIT:
+        raise ValueError(f'Blocker summary exceeds {SUMMARY_TOTAL_LIMIT} characters total')
     return fields
 
 
 def blocker_summary(task):
     # A summary is an atomic statement of the current ask. Never mix a partial
-    # comment with an old body, or attach the old body's choices to a new ask.
+    # comment with an old body, or carry fields the coordinator did not write.
     comment = task.get('comment') or ''
     if comment:
         source = comment
@@ -235,13 +267,17 @@ def blocker_summary(task):
         source = task.get('body') or ''
     else:
         raise ValueError('head-coordinator must author the owner-facing summary')
-    lines = [line for line in source.splitlines()
-             if any(line.startswith(name + ':') for name in SUMMARY_FIELDS)]
-    return check_summary('\n'.join(lines))
+    fields = extract_summary(source)
+    return check_summary('\n'.join(f'{name}: {fields[name]}' for name in SUMMARY_FIELDS if name in fields))
 
 
 def decision_text(label, board, task):
-    """Render only the coordinator's checked owner-facing summary."""
+    """Render the coordinator's checked owner-facing summary.
+
+    The `Unblock` field is the whole Recommended section: the coordinator writes
+    a genuine either/or inline as `A) … B) …`, and prose with the recommended or
+    required action otherwise. Nothing is echoed from the card body.
+    """
     heading = f'{label} · {board}\n' + plain(' '.join(task['title'].split()))[:80]
     try:
         fields = blocker_summary(task)
@@ -249,26 +285,6 @@ def decision_text(label, board, task):
         return heading + f'\nCoordinator must repair blocker text: {exc}', False
     lines = [f'Blocking: {fields["Blocking"]}', f'Why owner: {fields["Why owner"]}',
              f'Recommended: {fields["Unblock"]}']
-    # Body choices are retained only when that same body supplied the summary.
-    # A coordinator comment replaces the whole owner ask, including its options.
-    if not task.get('comment'):
-        end = r'(?=^\s*[A-Z]\)|^[A-Za-z][A-Za-z ]*:|\Z)'
-        options = re.findall(r'^\s*([A-Z])\)[ \t]*(.*?)' + end,
-                             task.get('body') or '', re.M | re.S)
-        reason_options = inline_options(task.get('reason') or '')
-        normalized = [(letter, ' '.join(value.split()).rstrip(' ,;.')) for letter, value in options]
-        if reason_options and normalized != reason_options:
-            return heading + '\nCoordinator must repair conflicting approval choices.', False
-        if options:
-            if len({letter for letter, _ in options}) != len(options):
-                return heading + '\nCoordinator must repair duplicate approval choices.', False
-            choices = [f'{letter}) {" ".join(value.split())}' for letter, value in options]
-            if any(len(choice) > 90 or SUMMARY_JARGON.search(choice) for choice in choices):
-                return heading + '\nCoordinator must shorten and explain approval choices.', False
-            lines.append('Choices:')
-            lines.extend(choices)
-    if len('\n'.join(lines)) > 1000:
-        return heading + '\nCoordinator must shorten the owner-facing summary.', False
     return heading + '\n' + '\n'.join(lines), True
 
 
@@ -371,32 +387,23 @@ def technical_text(label, board, task):
     return f'{label} · {board}\n' + ' '.join(task['title'].split())[:80] + '\nBlocked: ' + causes[technical_category(task)]
 
 
-def batches_for(shown, order, heading=0):
-    """Split a label sequence into messages that fit a phone screen."""
-    batches, batch, size = [], [], heading
-    for label in order:
-        if batch and size + len(shown[label]) + 2 > MESSAGE_LIMIT - 120:
-            batches.append(batch)
-            batch, size = [], heading
-        batch.append(label)
-        size += len(shown[label]) + 2
-    if batch:
-        batches.append(batch)
-    return batches
+def decision_message(label, state):
+    """One SimpleX message per blocked card: heading, summary, one reply line.
+
+    Each blocker is its own message so the owner can act on one at a time and a
+    single long summary never crowds another gate off the screen.
+    """
+    return ('*Hard Blocker*\n\n' + state['decisions'][label]['shown']
+            + f'\n\nReply: {label} <choice or answer>. Details: {label} details')
 
 
 def decision_messages(labels, state):
-    """Batch the current decision set, used only for an explicit owner request."""
+    """One message per decision, used only for an explicit owner request."""
     order = sorted(labels)
-    shown = {label: state['decisions'][label]['shown'] for label in order}
-    heading = '*Hard Blocker*\n'
     # An empty set answers the request rather than staying silent: the owner
     # asked, so "nothing waiting" is the reply.
-    batches = batches_for(shown, order, len(heading)) or [[]]
-    return [(heading + '\n' + '\n\n'.join(shown[label] for label in batch)
-             + (f'\n\nReply: {batch[0]} <choice or answer>. Details: {batch[0]} details'
-                if batch else '\nNo decisions are waiting.'), batch)
-            for batch in batches]
+    return [(decision_message(label, state), [label]) for label in order] \
+        or [('*Hard Blocker*\n\nNo decisions are waiting.', [])]
 
 
 def collect(root, state, errors):
@@ -528,13 +535,11 @@ def tick(root, dry_run=False, now=None, force_decisions=False):
                    if state['decisions'][decision_labels[(board, task['id'])]]['compact_complete']
                    and target not in state['decisions'][decision_labels[(board, task['id'])]]['delivered']]
         if pending:
-            heading = '*Hard Blocker*\n'
-            shown = {label: state['decisions'][label]['shown'] for label in pending}
-            for batch in batches_for(shown, pending, len(heading)):
-                text = (heading + '\n' + '\n\n'.join(shown[label] for label in batch)
-                        + f'\n\nReply: {batch[0]} <choice or answer>. Details: {batch[0]} details')
-                if deliver(text):
-                    delivered(state['decisions'], batch)
+            # One message per blocker: the owner can answer each without a
+            # long summary crowding the next gate off the screen.
+            for label in pending:
+                if deliver(decision_message(label, state)):
+                    delivered(state['decisions'], [label])
 
         # Explicit pull of the decision set only. A failed board read omits
         # cards, so an incomplete list is never sent as if it were whole.

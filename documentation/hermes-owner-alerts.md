@@ -50,27 +50,29 @@ decision for the owner.
 Every owner-facing blocker carries these three plain-English lines in order:
 
 ```text
-Blocking: The phone test is waiting for confirmation.
-Why owner: Only you can see whether the message reached your phone.
+Blocking: The phone test is waiting for confirmation. Nothing else can confirm it.
+Why owner: Only you can see whether the message reached your phone. No log proves it was displayed.
 Unblock: Reply yes if it arrived, or no if it did not.
 ```
 
-`Blocking:` names the concrete problem. `Why owner:` explains the specific wall
-the coordinating agent cannot clear without the owner; a stalled queue is only a
-consequence. `Unblock:` gives the exact recommended action or decision. Each
-line fits 90 characters and the summary fits 1000 characters. Workflow jargon,
-task ids, hashes, internal profile names and known vague placeholders such as
-"only you can clear this" or "inspect details" are rejected. The checker
-validates structure and known bad wording; the coordinator must still judge
-whether the reason is true and the action is sufficient.
+`Blocking:` names the concrete problem and its consequence, in one or two
+sentences. `Why owner:` explains the specific wall the coordinating agent cannot
+clear without the owner, also in one or two sentences; a stalled queue is only a
+consequence. `Unblock:` is the whole Recommended section: prose with the
+recommended or required action and any alternatives, or inline `A) … B) …` only
+for a genuine either/or. Each field fits 300 characters and the summary fits
+1200. Workflow jargon, task ids, hashes, internal profile names and known vague
+placeholders such as "only you can clear this" or "inspect details" are rejected.
+The checker validates structure and known bad wording; the coordinator must still
+judge whether the reason is true and the action is sufficient.
 
 Before using native board-scoped tools to publish or block a gate, the
 coordinator checks its proposed three lines on stdin:
 
 ```bash
 python3 ~/.hermes/scripts/kanban-owner-alerts.py --check-summary - <<'SUMMARY'
-Blocking: The phone test is waiting for confirmation.
-Why owner: Only you can see whether the message reached your phone.
+Blocking: The phone test is waiting for confirmation. Nothing else can confirm it.
+Why owner: Only you can see whether the message reached your phone. No log proves it was displayed.
 Unblock: Reply yes if it arrived, or no if it did not.
 SUMMARY
 ```
@@ -87,19 +89,19 @@ Both commands are read-only, work in delegated terminals, and exit 2 on invalid
 text. Use native tools for board changes; these commands do not bypass worker
 fences. Repairing wording requires no new owner approval.
 
-A summary comment replaces the entire owner ask. Include all necessary choices
-and consequences in it; the sender never combines it with old body choices or
-fills partial fields from a different source. For a coordinator-authored gate
-body, separate A/B choices are preserved in full, and conflicting choices in a
-block reason are rejected. The phone shows:
+A summary comment replaces the entire owner ask. The sender never mixes it with
+old body choices or fills partial fields from a different source, and it never
+echoes options from the card body: the `Unblock:` text is the whole Recommended
+section. Each blocker is one SimpleX message, so two gates never share a
+message. The phone shows:
 
 ```text
 *Hard Blocker*
 
 D1 · nixhomeserver
 Confirm phone delivery
-Blocking: The phone test is waiting for confirmation.
-Why owner: Only you can see whether the message reached your phone.
+Blocking: The phone test is waiting for confirmation. Nothing else can confirm it.
+Why owner: Only you can see whether the message reached your phone. No log proves it was displayed.
 Recommended: Reply yes if it arrived, or no if it did not.
 
 Reply: D1 <choice or answer>. Details: D1 details
@@ -146,8 +148,8 @@ python3 ~/.hermes/scripts/kanban-owner-alerts.py --details D1
 python3 ~/.hermes/scripts/kanban-owner-alerts.py --resolve B4
 ```
 
-`--send-decisions` sends the current hard-blocker set immediately, in
-phone-sized batches, using the stable D labels. B labels are terminal
+`--send-decisions` sends the current hard-blocker set immediately, one SimpleX
+message per blocker, using the stable D labels. B labels are terminal
 diagnostics for technical cards: they are never delivered, never replyable and
 never appear on the phone. `--resolve` and `--details` are read-only and allowed
 in delegated terminals.

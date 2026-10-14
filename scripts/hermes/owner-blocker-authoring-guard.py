@@ -58,8 +58,8 @@ def guard(payload, root, alerts):
         if not isinstance(board, str) or not re.fullmatch(r'[A-Za-z0-9_-]+', board):
             raise ValueError('Provide the explicit board for an owner-facing write')
         if owner_create:
-            if len(body) > 1000 or len(body.splitlines()) > 15 or any(len(line) > 90 for line in body.splitlines()):
-                raise ValueError('Owner gate body must fit 15 lines, 1000 characters and 90 per line')
+            if len(body) > alerts.OWNER_GATE_LIMIT or len(body.splitlines()) > alerts.OWNER_GATE_LINES:
+                raise ValueError('Owner gate body is too long; keep the ask and summary concise')
             task = {'title': args.get('title') or 'Owner gate', 'body': body,
                     'created_by': PROFILE, 'comment': '', 'reason': ''}
         elif owner_comment:
@@ -80,8 +80,9 @@ def guard(payload, root, alerts):
     except (ValueError, OSError, sqlite3.Error) as exc:
         return {'action': 'block', 'message':
                 f'Owner blocker was not published: {exc}. Write checked Blocking:, '
-                'Why owner: and Unblock: lines with the concrete problem, specific '
-                'owner-only wall and exact recommended action, then retry.'}
+                'Why owner: and Unblock: lines: the concrete problem and the specific '
+                'owner-only wall, each in at least two sentences, then the exact '
+                'recommended action (prose, or inline A)/B) only for a real either/or).'}
 
 
 if __name__ == '__main__':

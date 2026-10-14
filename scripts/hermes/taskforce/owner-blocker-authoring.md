@@ -7,9 +7,13 @@ blockers may still be recorded by the profile doing the work.
 
 The coordinator first checks existing owner decisions and exhausts agent-side
 recovery. It writes exactly three plain-English lines: `Blocking:` names the
-concrete problem, `Why owner:` names the specific wall the agent cannot clear,
-and `Unblock:` gives the exact recommended owner action or choice. Each line fits
-90 characters; the summary fits 1000. A consequence such as a stalled queue is
+concrete problem and its consequence, `Why owner:` names the specific wall the
+agent cannot clear, and `Unblock:` gives the recommended or required owner action.
+Give `Blocking:` and `Why owner:` one or two sentences each (up to 300 characters)
+so the owner can decide without asking for more context; keep the whole summary
+within 1200 characters. `Unblock:` is the whole Recommended section: write prose
+with the recommended or required action and any alternatives, and use inline
+`A) … B) …` only for a genuine either/or. A consequence such as a stalled queue is
 not an owner-only reason. Never invent an owner-only need for a technical failure;
 the supplier test is what decides whether one actually exists.
 

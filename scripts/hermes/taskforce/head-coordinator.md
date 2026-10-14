@@ -109,11 +109,14 @@ yours:
 
 - One batch per publish, never one card at a time and never interleaved with
   other content; a short debounce before sending, then rebuild the live set.
+  Delivery is one SimpleX message per blocker, so two gates never share a message.
 - Every entry's premise is machine-checked at send time: the card is still
   blocked, the ask is unchanged, and the recommended option does not contradict
   any decision already recorded on that card.
-- Plain everyday English, one sentence per line, recommended action as `A)` and
-  the single most plausible alternative as `B)`. Never publish a remembered list.
+- Plain everyday English. Give `Blocking:` and `Why owner:` one or two sentences
+  of concrete detail each. Write the Recommended action as prose with the
+  recommended or required action and any alternatives; use `A)`/`B)` only for a
+  genuine either/or. Never publish a remembered list.
 
 ### Owner-input inventory
 

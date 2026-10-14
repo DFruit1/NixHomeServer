@@ -24,8 +24,8 @@ writer = importlib.util.module_from_spec(writer_spec)
 writer_spec.loader.exec_module(writer)
 
 
-REPAIR_SUMMARY = ('Blocking: Repair is waiting for your approval.\n'
-                  'Why owner: The repair changes a setting you previously chose.\n'
+REPAIR_SUMMARY = ('Blocking: Repair is waiting for your approval. Nothing proceeds until you decide.\n'
+                  'Why owner: The repair changes a setting you previously chose. Only you can confirm it is wanted.\n'
                   'Unblock: Approve the repair or keep the current setting.')
 
 
@@ -119,8 +119,8 @@ class AlertsTest(unittest.TestCase):
         self.assertFalse(complete, shown)
 
     def test_coordinator_can_check_summary_without_sending_or_mutating(self):
-        summary = ('Blocking: The phone test is waiting for confirmation.\n'
-                   'Why owner: Only you can see whether the message reached your phone.\n'
+        summary = ('Blocking: The phone test is waiting for confirmation. Nothing else can confirm it.\n'
+                   'Why owner: Only you can see whether the message reached your phone. No log proves it was displayed.\n'
                    'Unblock: Reply yes if it arrived, or no if it did not.')
         environment = {**os.environ, 'HERMES_ROOT': str(self.root),
                        'HERMES_DELEGATED_CHILD_CONTEXT': '1'}
@@ -133,7 +133,9 @@ class AlertsTest(unittest.TestCase):
                                         'Only you can clear this; the board cannot self-resolve it.'),
                         summary.replace('Reply yes if it arrived, or no if it did not.',
                                         'Inspect details.'),
-                        summary.replace('The phone test is waiting for confirmation.', 'x' * 90)]:
+                        summary.replace('The phone test is waiting for confirmation.', 'x' * 301),
+                        summary.replace('Blocking: The phone test is waiting for confirmation. Nothing else can confirm it.',
+                                        'Blocking: The phone test is waiting for confirmation.')]:
             with self.subTest(invalid=invalid):
                 result = subprocess.run([sys.executable, '-B', alerts.__file__, '--check-summary', '-'],
                                         input=invalid, env=environment, text=True, capture_output=True)
@@ -144,11 +146,11 @@ class AlertsTest(unittest.TestCase):
 
     def test_worker_summary_cannot_replace_coordinator_summary(self):
         with closing(sqlite3.connect(self.boards['one'])) as db:
-            for author, timestamp, problem in [('head-coordinator', 1, 'The phone test needs a reply.'),
+            for author, timestamp, problem in [('head-coordinator', 1, 'The phone test needs a reply. Nothing else can proceed.'),
                                                 ('standard-implementer', 2, 'Approve unrelated changes.')]:
                 db.execute('INSERT INTO task_comments (task_id,author,body,created_at) VALUES (?,?,?,?)',
                            ('t_12345678', author, f'Blocking: {problem}\n'
-                            'Why owner: Only you can confirm receipt on your phone.\n'
+                            'Why owner: Only you can confirm receipt on your phone. No log records delivery.\n'
                             'Unblock: Reply yes if the test message arrived.', timestamp))
             db.commit()
         task = alerts.snapshot(self.root / 'kanban/boards/one/board.json')[0]
@@ -250,8 +252,8 @@ class AlertsTest(unittest.TestCase):
         # A standalone marker makes the card a Hard Blocker: it joins the D
         # category and reaches the owner.
         self.mark('two', 'Hard Blocker: needs the owner key\nGoal: Sign the release.\n'
-                  'Blocking: The release cannot be signed.\n'
-                  'Why owner: Only you hold the signing key.\n'
+                  'Blocking: The release cannot be signed. The key is missing from the keyring.\n'
+                  'Why owner: Only you hold the signing key. No agent can retrieve it.\n'
                   'Unblock: Sign the release with your existing key.')
         alerts.tick(self.root, now=1004)
         self.assertEqual(2, len(self.sent))
@@ -265,20 +267,23 @@ class AlertsTest(unittest.TestCase):
         self.assertEqual(3, len(self.sent))
         self.assertIn('D3 · two', self.sent[-1])
 
-    def test_format_shows_description_and_recommendation(self):
+    def test_format_shows_description_and_coordinator_recommendation(self):
         self.mark('one', 'ASK: Where should phone replies go?\n'
                   ' A) Use the existing assistant for replies\n'
                   ' B) Keep the current setup\n'
-                  'Blocking: Phone replies currently reach two assistants.\n'
-                  'Why owner: Only you can choose which assistant handles your replies.\n'
+                  'Blocking: Phone replies currently reach two assistants. Only one should answer.\n'
+                  'Why owner: Only you can choose which assistant handles your replies. The choice is a preference only you hold.\n'
                   'Unblock: Choose A to use one assistant, or B to keep the current setup.')
         alerts.tick(self.root)
         message = self.sent[0]
         self.assertIn('Blocking: Phone replies currently reach two assistants.', message)
         self.assertIn('Why owner: Only you can choose which assistant handles your replies.', message)
-        self.assertIn('Recommended: Choose A to use one assistant', message)
-        self.assertIn('A) Use the existing assistant for replies', message)
-        self.assertIn('B) Keep the current setup', message)
+        self.assertIn('Recommended: Choose A to use one assistant, or B to keep the current setup.', message)
+        # The Recommended section is the coordinator's Unblock text only: card
+        # body options are never echoed to the phone.
+        self.assertNotIn('Choices:', message)
+        self.assertNotIn('A) Use the existing assistant for replies', message)
+        self.assertNotIn('B) Keep the current setup', message)
 
     def test_incomplete_blocker_is_not_sent_or_marked_delivered(self):
         self.mark('one', 'Goal: Activate the accepted inbox.')
@@ -306,8 +311,8 @@ class AlertsTest(unittest.TestCase):
                        (json.dumps({'reason': 'review t_deadbeef rejected 1e299daf6464c8b6a02080a5d01223f3fe90766c'}),))
             db.execute("INSERT INTO task_comments (task_id, author, body, created_at) VALUES "
                        "('t_12345678','head-coordinator',?,1)",
-                       ('Blocking: A required safety check was removed and nobody re-approved it.\n'
-                        'Why owner: Only you can approve restoring the check.\n'
+                       ('Blocking: A required safety check was removed and nobody re-approved it. The build is unsafe until it is restored.\n'
+                        'Why owner: Only you can approve restoring the check. The original approval was yours alone.\n'
                         'Unblock: Tell us to restore the check, or to leave it out.',))
             db.commit()
         alerts.tick(self.root, now=1000)
@@ -396,15 +401,17 @@ class AlertsTest(unittest.TestCase):
         self.assertFalse(self.sent)
         self.assertFalse(alerts.resolve(self.root, 'D1')['compact_complete'])
 
-    def test_conflicting_card_and_block_reason_choices_are_not_sent(self):
+    def test_block_reason_options_are_never_echoed_to_the_owner(self):
         with closing(sqlite3.connect(self.boards['one'])) as db:
             db.execute('UPDATE task_events SET payload=?',
                        (json.dumps({'reason': 'Revised ask: A) Replace framework, B) Defer'}),))
             db.commit()
-        with self.assertRaisesRegex(RuntimeError, 'conflicting approval choices'):
-            alerts.tick(self.root)
-        self.assertFalse(self.sent)
-        self.assertFalse(alerts.resolve(self.root, 'D1')['compact_complete'])
+        alerts.tick(self.root)
+        self.assertEqual(1, len(self.sent))
+        self.assertIn('D1 · one', self.sent[0])
+        self.assertNotIn('Replace framework', self.sent[0])
+        self.assertNotIn('Defer', self.sent[0])
+        self.assertNotIn('Choices:', self.sent[0])
 
     def test_worker_diagnostics_fill_empty_legacy_block_reasons(self):
         with closing(sqlite3.connect(self.boards['two'])) as db:
@@ -460,12 +467,12 @@ class AlertsTest(unittest.TestCase):
             with self.assertRaises(PermissionError):
                 alerts.tick(self.root, force_decisions=True)
 
-    def test_wrapped_choices_preserve_consequences_and_batches_fit_phone(self):
+    def test_one_message_per_blocker_keeps_prose_recommendation(self):
         body = ('ASK: Choose a recovery mechanism\n for this host?\n'
                 ' A) Restore the worker\n  with existing credentials\n'
                 ' B) Pause work\n  until capacity returns\n'
-                'Blocking: The worker is down and queued work is stuck.\n'
-                'Why owner: Recovery needs credentials that only you hold.\n'
+                'Blocking: The worker is down and queued work is stuck. Nothing is progressing until it recovers.\n'
+                'Why owner: Recovery needs credentials that only you hold. No agent can supply them.\n'
                 'Unblock: Choose A to restore access, or B to pause work.')
         with closing(sqlite3.connect(self.boards['one'])) as db:
             db.execute('UPDATE tasks SET body=?', (body,))
@@ -474,13 +481,16 @@ class AlertsTest(unittest.TestCase):
             db.commit()
         alerts.tick(self.root, now=1000)
         decisions = [m for m in self.sent if m.startswith('*Hard Blocker*')]
-        self.assertGreater(len(decisions), 1)
+        # Board 'one' holds 13 blocked gates; each is exactly one phone message.
+        self.assertEqual(13, len(decisions))
+        self.assertTrue(all(m.count('Reply:') == 1 for m in decisions))
         self.assertTrue(all(len(m) <= 1600 for m in decisions))
         self.assertIn('Blocking: The worker is down and queued work is stuck.', decisions[0])
         self.assertIn('Why owner: Recovery needs credentials that only you hold.', decisions[0])
         self.assertIn('Recommended: Choose A to restore access, or B to pause work.', decisions[0])
-        self.assertIn('Choices:', decisions[0])
-        self.assertIn('B) Pause work until capacity returns', decisions[0])
+        # Card-body options are never echoed; the coordinator wrote the choice.
+        self.assertNotIn('Choices:', decisions[0])
+        self.assertNotIn('B) Pause work until capacity returns', decisions[0])
         self.assertNotIn('Context:', decisions[0])
         # An explicit pull with nothing waiting answers instead of going quiet.
         with closing(sqlite3.connect(self.boards['one'])) as db:
