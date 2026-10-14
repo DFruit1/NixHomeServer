@@ -55,14 +55,18 @@ Why owner: Only you can see whether the message reached your phone. No log prove
 Unblock: Reply yes if it arrived, or no if it did not.
 ```
 
-`Blocking:` names the concrete problem and its consequence, in one or two
-sentences. `Why owner:` explains the specific wall the coordinating agent cannot
-clear without the owner, also in one or two sentences; a stalled queue is only a
-consequence. `Unblock:` is the whole Recommended section: prose with the
-recommended or required action and any alternatives, or inline `A) … B) …` only
-for a genuine either/or. Each field fits 300 characters and the summary fits
-1200. Workflow jargon, task ids, hashes, internal profile names and known vague
-placeholders such as "only you can clear this" or "inspect details" are rejected.
+`Blocking:` names the concrete problem and its consequence, in two or three
+sentences. Name the specific function, feature, endpoint, service or file the
+problem affects, and say what the owner would observe or lose while it stays
+blocked. `Why owner:` explains the specific wall the coordinating agent cannot
+clear without the owner, also in two or three sentences; name the exact
+credential, authorization, physical action or piece of system knowledge only the
+owner holds, and remember a stalled queue is only a consequence. `Unblock:` is the
+whole Recommended section: prose with the recommended or required action and any
+alternatives, or inline `A) … B) …` only for a genuine either/or. Each field fits
+500 characters and the summary fits 1600. Workflow jargon, task ids, hashes,
+internal profile names and known vague placeholders such as "only you can clear
+this" or "inspect details" are rejected.
 The checker validates structure and known bad wording; the coordinator must still
 judge whether the reason is true and the action is sufficient.
 

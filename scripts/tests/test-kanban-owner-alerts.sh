@@ -133,7 +133,7 @@ class AlertsTest(unittest.TestCase):
                                         'Only you can clear this; the board cannot self-resolve it.'),
                         summary.replace('Reply yes if it arrived, or no if it did not.',
                                         'Inspect details.'),
-                        summary.replace('The phone test is waiting for confirmation.', 'x' * 301),
+                        summary.replace('The phone test is waiting for confirmation.', 'x' * 501),
                         summary.replace('Blocking: The phone test is waiting for confirmation. Nothing else can confirm it.',
                                         'Blocking: The phone test is waiting for confirmation.')]:
             with self.subTest(invalid=invalid):

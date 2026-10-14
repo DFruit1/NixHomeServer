@@ -41,12 +41,13 @@ AUTHOR_END_MARKER = '<!-- /kanban-owner-blocker-author -->'
 # the new format (a stale delivered flag would otherwise keep an old stub on the
 # phone). Technical messages carry their own format key.
 DECISION_FORMAT = 5
-# The owner-facing summary gives each field room for one or two concrete
-# sentences; the phone wraps them. `Blocking` and `Why owner` must carry real
-# detail (at least two sentences), the whole summary stays within one phone
-# message, and an owner gate body may be a little larger than an ordinary card.
-SUMMARY_FIELD_LIMIT = 300
-SUMMARY_TOTAL_LIMIT = 1200
+# The owner-facing summary gives each field room for two or three concrete
+# sentences; the phone wraps them. `Blocking` and `Why owner` must name the
+# specific function, feature or capability at issue and carry real detail (at
+# least two sentences), the whole summary stays within one phone message, and an
+# owner gate body may be a little larger than an ordinary card.
+SUMMARY_FIELD_LIMIT = 500
+SUMMARY_TOTAL_LIMIT = 1600
 SUMMARY_MIN_SENTENCES = 2
 OWNER_GATE_LIMIT = 2000
 OWNER_GATE_LINES = 30
@@ -242,7 +243,7 @@ def check_summary(text):
         if not value:
             raise ValueError(f'{name}: supply a concrete plain-English problem, reason or action')
         if len(value) > SUMMARY_FIELD_LIMIT:
-            raise ValueError(f'{name}: keep it to one or two sentences ({SUMMARY_FIELD_LIMIT} characters max)')
+            raise ValueError(f'{name}: keep it to two or three sentences ({SUMMARY_FIELD_LIMIT} characters max)')
         if SUMMARY_JARGON.search(value) or SUMMARY_PLACEHOLDER.search(value):
             raise ValueError(f'{name}: supply a concrete plain-English problem, reason or action')
     for name in ('Blocking', 'Why owner'):

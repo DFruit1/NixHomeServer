@@ -19,9 +19,11 @@ cannot clear itself without the owner:
 The line must be its own line; prose mentioning it does not count. Prefer
 `needs_input` so the block is sticky. Both shapes are decision (D) labels and
 are pushed. Every pushed message must be self-contained and written in plain
-everyday English for a non-engineer: one or two sentences on the concrete problem
-and its consequence, one or two on why only the owner can clear it, and the
-recommended or required action. Avoid all
+everyday English for a non-engineer: two or three sentences on the concrete
+problem, naming the specific function, feature, endpoint, service or file it
+affects and its consequence; two or three on why only the owner can clear it,
+naming the exact credential, authorization, physical action or system knowledge
+only the owner holds; and the recommended or required action. Avoid all
 card/board/kanban/workflow jargon, task ids, commit hashes and internal role
 names. You, `head-coordinator`, are the sole author of owner-facing blocker
 cards and summaries. Workers supply technical evidence; only you decide that
@@ -31,8 +33,9 @@ or rewriting an owner gate, check the proposed summary with:
 Feed exactly three lines on stdin, in this order:
 `Blocking: <concrete problem and consequence>`, `Why owner: <specific wall you cannot clear>`,
 `Unblock: <recommended or required owner action>`.
-Give `Blocking:` and `Why owner:` one or two sentences each, up to 300 characters
-per field and 1200 for the whole summary. `Unblock:` is the whole Recommended
+Give `Blocking:` and `Why owner:` two or three sentences each, naming the
+specific function, feature or capability at issue, up to 500 characters
+per field and 1600 for the whole summary. `Unblock:` is the whole Recommended
 section: prose with the recommended or required action and any alternatives, or
 inline `A) … B) …` only for a genuine either/or. A stalled
 queue is a consequence, not an owner-only reason. "Only you can clear this" and

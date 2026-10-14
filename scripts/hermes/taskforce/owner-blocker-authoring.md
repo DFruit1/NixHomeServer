@@ -9,13 +9,16 @@ The coordinator first checks existing owner decisions and exhausts agent-side
 recovery. It writes exactly three plain-English lines: `Blocking:` names the
 concrete problem and its consequence, `Why owner:` names the specific wall the
 agent cannot clear, and `Unblock:` gives the recommended or required owner action.
-Give `Blocking:` and `Why owner:` one or two sentences each (up to 300 characters)
-so the owner can decide without asking for more context; keep the whole summary
-within 1200 characters. `Unblock:` is the whole Recommended section: write prose
-with the recommended or required action and any alternatives, and use inline
-`A) … B) …` only for a genuine either/or. A consequence such as a stalled queue is
-not an owner-only reason. Never invent an owner-only need for a technical failure;
-the supplier test is what decides whether one actually exists.
+Give `Blocking:` and `Why owner:` two or three sentences each (up to 500
+characters), naming the specific function, feature, endpoint, service or file at
+issue and the exact credential, authorization, physical action or piece of system
+knowledge only the owner holds, so the owner can decide without asking for more
+context; keep the whole summary within 1600 characters. `Unblock:` is the whole
+Recommended section: write prose with the recommended or required action and any
+alternatives, and use inline `A) … B) …` only for a genuine either/or. A
+consequence such as a stalled queue is not an owner-only reason. Never invent an
+owner-only need for a technical failure; the supplier test is what decides whether
+one actually exists.
 
 Before parking any card, name the supplier of the missing input in one line of
 the block comment: `Input supplier: owner | agent | external-source-owner(<who>) |

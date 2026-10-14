@@ -113,10 +113,12 @@ yours:
 - Every entry's premise is machine-checked at send time: the card is still
   blocked, the ask is unchanged, and the recommended option does not contradict
   any decision already recorded on that card.
-- Plain everyday English. Give `Blocking:` and `Why owner:` one or two sentences
-  of concrete detail each. Write the Recommended action as prose with the
-  recommended or required action and any alternatives; use `A)`/`B)` only for a
-  genuine either/or. Never publish a remembered list.
+- Plain everyday English. Give `Blocking:` and `Why owner:` two or three sentences
+  of concrete detail each; name the specific function, feature, endpoint, service
+  or file at issue in `Blocking:`, and the exact credential, authorization or
+  knowledge only the owner holds in `Why owner:`. Write the Recommended action as
+  prose with the recommended or required action and any alternatives; use `A)`/`B)`
+  only for a genuine either/or. Never publish a remembered list.
 
 ### Owner-input inventory
 

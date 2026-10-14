@@ -339,7 +339,7 @@ the ask, never above it and never inside the question.
 Every owner gate also carries the checked `Blocking:`, `Why owner:` and
 `Unblock:` summary defined below. `IF UNANSWERED:` states the consequence;
 it does not explain why an agent cannot resolve the problem. The three summary
-lines are one or two sentences each and are exempt from the 90-character card
+lines are two or three sentences each and are exempt from the 90-character card
 line limit below.
 
 ### Hard limits
@@ -489,8 +489,9 @@ Why owner: <the specific reason the agent cannot resolve it without you>
 Unblock: <the recommended or required action you take>
 ```
 
-Give `Blocking:` and `Why owner:` one or two sentences of concrete detail each
-(up to 300 characters per field, 1200 for the whole summary), not a bare clause.
+Give `Blocking:` and `Why owner:` two or three sentences of concrete detail each,
+naming the specific function, feature, endpoint, service or file at issue
+(up to 500 characters per field, 1600 for the whole summary), not a bare clause.
 `Unblock:` is the whole Recommended section: write prose with the recommended or
 required action and any alternatives, and use inline `A) … B) …` only for a
 genuine either/or. Use everyday English. No workflow jargon, task ids, hashes,
@@ -559,7 +560,7 @@ it, or roll the system back, without paging the owner. Docs:
 
 Title ≤ 60 chars and names the outcome. First line is the ask, goal, or question.
 Body ≤ 15 lines, ≤ 1000 chars, ≤ 90 chars per line; an owner gate may be larger
-(≤ 30 lines, ≤ 2000 chars) to fit one or two sentences per summary line. A gate
+(≤ 30 lines, ≤ 2000 chars) to fit two or three sentences per summary line. A gate
 gives options and says what stays blocked.
 
 ### Triage auto-decompose is off
