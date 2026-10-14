@@ -1,9 +1,19 @@
-//! Read-only MCP tools for the llama.cpp web UI.
+//! MCP tools for the llama.cpp web UI.
 //!
 //! Tools are attached per client, not baked into the model server, so the
 //! shared inference endpoint keeps serving other consumers (Hermes, Paperless)
 //! with their own tool choices. This process speaks MCP over Streamable HTTP on
 //! loopback and is published through the shared authentication gateway.
+//!
+//! Only `web_search` is served. The four office document tools
+//! (`convert_document`, `spreadsheet_read`, `spreadsheet_write` and
+//! `word_document`) are suspended for every caller as an interim containment
+//! measure: their document access was authorized by this service's static ACLs
+//! rather than by the calling user's own permissions. Each one is refused before
+//! it parses, resolves or opens anything, and none of them is advertised. See
+//! `documentation/ai-tools.md` for the reason and the requirements for
+//! restoring them; `office.rs` and `office_write.rs` stay in the tree, dormant,
+//! for that restoration.
 //!
 //! It also carries the stdio bridge in [`bridge`], which is how llama.cpp itself
 //! reaches the same tools: it can only spawn MCP servers as child processes, so
@@ -23,66 +33,38 @@ use rmcp::{
     ErrorData, RoleServer, ServerHandler,
 };
 mod bridge;
+// The office modules are suspended, so nothing in this file calls them. They stay
+// compiled and their own tests stay live so a caller-aware restoration re-enables
+// a working converter and a working confinement check rather than a stale one.
+// Do not delete them as dead code.
+#[allow(dead_code)]
 mod office;
+#[allow(dead_code)]
 mod office_write;
 
-use office::Converter;
-use office_write::{Helper, WriteFormat};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::{env, path::PathBuf, sync::Arc, time::Duration};
-
-#[derive(Debug, Deserialize)]
-struct ConvertDocumentParams {
-    #[serde(default)]
-    path: String,
-}
-
-/// `spreadsheet_read`: one path, optional per-sheet narrowing.
-#[derive(Debug, Deserialize)]
-struct SpreadsheetReadParams {
-    #[serde(default)]
-    path: String,
-    #[serde(default)]
-    sheets: Option<Vec<String>>,
-}
-
-/// `spreadsheet_write` and `word_document`: the document plus its target.
-///
-/// `path` is deliberately absent on a write. The target is derived entirely from
-/// the `format` and the caller's `name`, both resolved inside the workspace, so
-/// the model never gets to supply a path it could aim somewhere it should not.
-#[derive(Debug, Deserialize)]
-struct DocumentWriteParams {
-    #[serde(default)]
-    format: String,
-    #[serde(default)]
-    name: String,
-    #[serde(default)]
-    sheets: Option<Vec<Value>>,
-    #[serde(default)]
-    blocks: Option<Vec<Value>>,
-    #[serde(default)]
-    overwrite: bool,
-}
-
-/// `word_document` in read mode.
-#[derive(Debug, Deserialize)]
-struct WordReadParams {
-    #[serde(default)]
-    path: String,
-}
 
 #[derive(Clone)]
 struct Config {
     searxng_base: String,
     searxng_timeout: Duration,
     max_results: usize,
+    // The office tools are suspended, so these four are no longer read by this
+    // process. They stay configured and validated so the deployment keeps
+    // publishing the same environment and a later restoration re-enables a
+    // working endpoint instead of discovering a stale or missing one at
+    // republish time.
+    #[allow(dead_code)]
     collabora_base: String,
+    #[allow(dead_code)]
     collabora_timeout: Duration,
+    #[allow(dead_code)]
     shared_root: PathBuf,
+    #[allow(dead_code)]
     workspace_root: PathBuf,
-    helper: Helper,
+    #[allow(dead_code)]
+    helper: office_write::Helper,
     public_host: Option<String>,
 }
 
@@ -111,195 +93,24 @@ instance. Returns ranked results with titles, URLs and snippets. Use it for curr
 for facts you are unsure about, or for anything that needs a source. Prefer the user's own files \
 and context when the question is about them.";
 
-const CONVERT_DOCUMENT_DESCRIPTION: &str = "Convert an office document to text so it can be \
-read. Accepts a path relative to the shared directory and supports docx, odt, rtf, doc, xlsx, \
-ods, pptx and odp. Spreadsheets come back as CSV, everything else as plain text. Use this instead \
-of guessing at the contents of a file the user mentions.";
+/// Fixed text returned to every `convert_document` caller while the office
+/// surface is suspended. No path, filename, root or error cause appears in it,
+/// so the refusal cannot be used as a filesystem oracle for probing the shared
+/// root.
+///
+/// Restoration requirements are in `documentation/ai-tools.md`.
+pub const CONVERT_DOCUMENT_DENIAL_MESSAGE: &str =
+    "Document conversion is unavailable pending caller-permission enforcement";
 
-const SPREADSHEET_READ_DESCRIPTION: &str = "Read a spreadsheet and return every sheet, each as \
-an array of rows. Accepts xlsx and ods and can see the whole shared directory. Use this rather than \
-convert_document when you need a real workbook, because convert_document returns only the first \
-sheet. Formula cells come back as their formula text, not their last calculated value.";
-
-const SPREADSHEET_WRITE_DESCRIPTION: &str = "Create a spreadsheet from sheets you supply and \
-save it into the AI workspace. Every sheet you pass is written, in order, with the names you give \
-it. Choose the 'ods' format for an OpenDocument file and 'xlsx' for a native Excel file. Writes go \
-only to the workspace folder, which is not backed up, so a file you write there can be lost and \
-nothing outside it is ever touched.";
-
-const WORD_DOCUMENT_DESCRIPTION: &str = "Read or write a Word document. Call it with just a \
-'path' to read one; call it with 'format', 'name' and 'blocks' to create one in the AI workspace. \
-Supports docx and odt. Reading returns the document's paragraphs and tables in order with their text \
-and basic formatting. A written document keeps paragraphs, runs and tables; it does not keep \
-tracked changes, comments, footnotes, headers or embedded images.";
-
-fn convert_document_schema() -> Arc<JsonObject> {
-    let mut properties = serde_json::Map::new();
-    properties.insert(
-        "path".to_string(),
-        serde_json::json!({
-            "type": "string",
-            "description": "Path to the document, relative to the shared directory. Absolute paths and parent traversal are rejected."
-        }),
-    );
-    Arc::new(
-        serde_json::json!({
-            "type": "object",
-            "properties": properties,
-            "required": ["path"],
-        })
-        .as_object()
-        .cloned()
-        .expect("schema literal is an object"),
-    )
-}
-
-fn schema_object(properties: serde_json::Map<String, Value>, required: &[&str]) -> Arc<JsonObject> {
-    Arc::new(
-        serde_json::json!({
-            "type": "object",
-            "properties": properties,
-            "required": required,
-        })
-        .as_object()
-        .cloned()
-        .expect("schema literal is an object"),
-    )
-}
-
-fn spreadsheet_read_schema() -> Arc<JsonObject> {
-    let mut properties = serde_json::Map::new();
-    properties.insert(
-        "path".to_string(),
-        serde_json::json!({
-            "type": "string",
-            "description": "Path to the workbook, relative to the shared directory. Absolute paths and parent traversal are rejected."
-        }),
-    );
-    properties.insert(
-        "sheets".to_string(),
-        serde_json::json!({
-            "type": "array",
-            "items": { "type": "string" },
-            "description": "Optional sheet names to return. Omit it to get every sheet, which is the point of this tool."
-        }),
-    );
-    schema_object(properties, &["path"])
-}
-
-fn spreadsheet_write_schema() -> Arc<JsonObject> {
-    let mut properties = serde_json::Map::new();
-    properties.insert(
-        "format".to_string(),
-        serde_json::json!({
-            "type": "string",
-            "enum": ["xlsx", "ods"],
-            "description": "Output dialect. 'xlsx' is native Excel, 'ods' is OpenDocument."
-        }),
-    );
-    properties.insert(
-        "name".to_string(),
-        serde_json::json!({
-            "type": "string",
-            "description": "File name to create inside the AI workspace, with the extension implied by the format. Subdirectories are allowed and must already exist."
-        }),
-    );
-    properties.insert(
-        "sheets".to_string(),
-        serde_json::json!({
-            "type": "array",
-            "description": "The sheets to write, in order. Every entry is written; none is collapsed.",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "name": { "type": "string", "description": "Sheet name, at most 31 characters." },
-                    "rows": {
-                        "type": "array",
-                        "description": "Rows of cells, each row an array of values.",
-                        "items": { "type": "array", "items": {} }
-                    }
-                },
-                "required": ["name", "rows"]
-            }
-        }),
-    );
-    properties.insert(
-        "overwrite".to_string(),
-        serde_json::json!({
-            "type": "boolean",
-            "description": "Set true to replace an existing file in the workspace. Defaults to false, so a write never destroys something that is already there."
-        }),
-    );
-    schema_object(properties, &["format", "name", "sheets"])
-}
-
-fn word_document_schema() -> Arc<JsonObject> {
-    let mut properties = serde_json::Map::new();
-    properties.insert(
-        "path".to_string(),
-        serde_json::json!({
-            "type": "string",
-            "description": "Path to an existing document, relative to the shared directory. Supply this to read."
-        }),
-    );
-    properties.insert(
-        "format".to_string(),
-        serde_json::json!({
-            "type": "string",
-            "enum": ["docx", "odt"],
-            "description": "Output dialect for a write. 'docx' is native Word, 'odt' is OpenDocument."
-        }),
-    );
-    properties.insert(
-        "name".to_string(),
-        serde_json::json!({
-            "type": "string",
-            "description": "File name to create inside the AI workspace when writing."
-        }),
-    );
-    properties.insert(
-        "blocks".to_string(),
-        serde_json::json!({
-            "type": "array",
-            "description": "Document content in order, when writing.",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "kind": { "type": "string", "enum": ["paragraph", "table"] },
-                    "style": { "type": "string", "description": "Paragraph style name, for example 'Heading 1'." },
-                    "text": { "type": "string", "description": "Plain text for a simple paragraph." },
-                    "runs": {
-                        "type": "array",
-                        "description": "Formatted runs, for text that needs bold or italic.",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "text": { "type": "string" },
-                                "bold": { "type": "boolean" },
-                                "italic": { "type": "boolean" }
-                            },
-                            "required": ["text"]
-                        }
-                    },
-                    "rows": {
-                        "type": "array",
-                        "description": "Table rows, each an array of cell values.",
-                        "items": { "type": "array", "items": {} }
-                    }
-                },
-                "required": ["kind"]
-            }
-        }),
-    );
-    properties.insert(
-        "overwrite".to_string(),
-        serde_json::json!({
-            "type": "boolean",
-            "description": "Set true to replace an existing file in the workspace. Defaults to false."
-        }),
-    );
-    schema_object(properties, &[])
-}
+/// Fixed text returned to every `spreadsheet_read`, `spreadsheet_write` and
+/// `word_document` caller while the office surface is suspended.
+///
+/// It is deliberately distinct from [`CONVERT_DOCUMENT_DENIAL_MESSAGE`]: the
+/// conversion refusal is a previously accepted, separately approved wording, and
+/// this one covers the three newer tools. Like that one it names no path, format
+/// or action, so no argument shape turns the refusal into a probe.
+pub const OFFICE_TOOLS_DENIAL_MESSAGE: &str =
+    "Office tools are unavailable pending caller-permission enforcement";
 
 fn web_search_schema() -> Arc<JsonObject> {
     let mut properties = serde_json::Map::new();
@@ -417,470 +228,61 @@ async fn searxng_search(
         .collect())
 }
 
-/// Keep only the named sheets of a helper result.
-///
-/// Filtering here rather than in the helper keeps the helper a pure format
-/// adapter. A name that matches nothing is an error rather than an empty
-/// result, because silently returning nothing looks like an empty workbook and
-/// would be answered with the wrong conclusion.
-fn filter_sheets(payload: &mut Value, wanted: &[String]) -> Result<(), ErrorData> {
-    let sheets = payload
-        .get_mut("sheets")
-        .and_then(Value::as_array_mut)
-        .ok_or_else(|| ErrorData::internal_error("helper returned no sheets", None))?;
-
-    let kept: Vec<Value> = sheets
-        .iter()
-        .filter(|sheet| {
-            sheet
-                .get("name")
-                .and_then(Value::as_str)
-                .is_some_and(|name| wanted.iter().any(|entry| entry == name))
-        })
-        .cloned()
-        .collect();
-
-    let missing: Vec<&str> = wanted
-        .iter()
-        .filter(|entry| {
-            !sheets.iter().any(|sheet| {
-                sheet
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .is_some_and(|name| name == entry.as_str())
-            })
-        })
-        .map(String::as_str)
-        .collect();
-    if !missing.is_empty() {
-        return Err(ErrorData::invalid_params(
-            format!("workbook has no sheet named {missing:?}"),
-            None,
-        ));
-    }
-
-    *sheets = kept;
-    let kept_count = sheets.len();
-    if let Some(object) = payload.as_object_mut() {
-        object.insert("sheet_count".to_string(), Value::from(kept_count));
-        object.insert("filtered".to_string(), Value::Bool(true));
-    }
-    Ok(())
-}
-
-/// Sibling temporary the helper writes before the document is final.
-///
-/// Same directory as the target so the rename is atomic, and inside the
-/// workspace so the write grant covers it. The name is fixed rather than random:
-/// the workspace is a single-user, single-writer directory, and a predictable
-/// name means a leftover from a crashed run is visible instead of accumulating.
-fn staged_sibling(target: &std::path::Path) -> std::path::PathBuf {
-    let name = target
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or("document");
-    let staged = format!(".{name}.staging");
-    target.with_file_name(staged)
-}
-
-/// Write bytes to a validated target, replacing it atomically.
-///
-/// The temp-and-rename is what makes an interrupted write leave the previous
-/// version intact rather than a truncated document. It also means a document the
-/// helper already produced is moved rather than copied, so a large workbook is
-/// not held twice in memory.
-async fn write_bytes(target: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
-    if bytes.len() > office_write::MAX_WRITE_BYTES {
-        return Err(format!(
-            "document is larger than the {} byte write limit",
-            office_write::MAX_WRITE_BYTES
-        ));
-    }
-    let temporary = staged_sibling(target);
-    tokio::fs::write(&temporary, bytes)
-        .await
-        .map_err(|error| format!("could not stage the document: {error}"))?;
-    tokio::fs::rename(&temporary, target)
-        .await
-        .map_err(|error| format!("could not place the document: {error}"))
-}
-
-/// Recover the document bytes from a Collabora convert-to result.
-///
-/// `convert_to` returns the same JSON envelope `convert_document` reports, with
-/// the payload base64 rather than text: an xlsx or docx is a zip archive and
-/// cannot survive a trip through a UTF-8 string.
-fn decode_helper_document(payload: Value) -> Result<Vec<u8>, ErrorData> {
-    use base64::Engine as _;
-
-    let content = payload
-        .get("content")
-        .and_then(Value::as_str)
-        .ok_or_else(|| ErrorData::internal_error("Collabora returned no content", None))?;
-    base64::engine::general_purpose::STANDARD
-        .decode(content)
-        .map_err(|error| {
-            ErrorData::internal_error(format!("Collabora result was not base64: {error}"), None)
-        })
-}
-
 #[derive(Clone)]
 struct Server {
     config: Arc<Config>,
-    converter: Arc<Converter>,
 }
 
 impl Server {
+    /// `convert_document` is suspended, so this never parses the caller's path,
+    /// never resolves it and never reads anything. The fixed message is the whole
+    /// answer: a refusal that mentions no filesystem location cannot disclose
+    /// one, and no argument shape changes the outcome.
+    ///
+    /// A protocol-level `ErrorData` rather than `CallToolResult::error` is
+    /// deliberate: rmcp maps a handler error onto the JSON-RPC layer, so the
+    /// refusal is visible to the transport even for a caller that never learned
+    /// the tool from `tools/list`. That is what keeps the denial reachable for
+    /// cached discovery metadata and direct invocation alike.
     async fn run_convert_document(
         &self,
-        arguments: Option<JsonObject>,
+        _arguments: Option<JsonObject>,
     ) -> Result<CallToolResponse, ErrorData> {
-        let raw = arguments
-            .map(serde_json::Value::Object)
-            .unwrap_or(serde_json::Value::Object(Default::default()));
-        let params: ConvertDocumentParams = serde_json::from_value(raw)
-            .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
-
-        let resolved = office::resolve_within(&self.config.shared_root, &params.path)
-            .map_err(|message| ErrorData::invalid_params(message, None))?;
-
-        let payload = self
-            .converter
-            .convert(&resolved)
-            .await
-            .map_err(|message| ErrorData::internal_error(message, None))?;
-
-        let content = ContentBlock::json(payload)?;
-        Ok(CallToolResult::success(vec![content]).into())
+        Err(ErrorData::invalid_params(
+            CONVERT_DOCUMENT_DENIAL_MESSAGE,
+            None,
+        ))
     }
 
-    /// Read every sheet of a workbook.
-    ///
-    /// An `ods` request is converted to xlsx by Collabora first, because the
-    /// helper has no native ODF reader and introducing one is not worth it. The
-    /// xlsx is held in memory between the two steps rather than written to the
-    /// shared root, so reading an ods never leaves a temporary file behind.
+    /// `spreadsheet_read` is suspended for the same reason as conversion: the
+    /// read was authorized by this service's static grant on the shared root,
+    /// not by the calling user. It is refused here, before the path is touched.
     async fn run_spreadsheet_read(
         &self,
-        arguments: Option<JsonObject>,
+        _arguments: Option<JsonObject>,
     ) -> Result<CallToolResponse, ErrorData> {
-        let raw = arguments
-            .map(Value::Object)
-            .unwrap_or(Value::Object(Default::default()));
-        let params: SpreadsheetReadParams = serde_json::from_value(raw)
-            .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
-
-        // Reads resolve against the whole shared root. That is the owner's
-        // decision: a generated answer may be built from anything already
-        // shared, and only writes are confined.
-        let resolved = office_write::resolve_read(&self.config.shared_root, &params.path)
-            .map_err(|message| ErrorData::invalid_params(message, None))?;
-
-        let document = self.read_native_spreadsheet(&resolved).await?;
-        let mut payload = self
-            .config
-            .helper
-            .read("xlsx", document)
-            .await
-            .map_err(|message| ErrorData::internal_error(message, None))?;
-
-        // Sheet filtering happens here rather than in the helper so the helper
-        // stays a pure format adapter with no policy in it at all.
-        if let Some(wanted) = params.sheets.as_ref().filter(|list| !list.is_empty()) {
-            filter_sheets(&mut payload, wanted)?;
-        }
-
-        let content = ContentBlock::json(payload)?;
-        Ok(CallToolResult::success(vec![content]).into())
+        Err(ErrorData::invalid_params(OFFICE_TOOLS_DENIAL_MESSAGE, None))
     }
 
-    /// Produce a native xlsx for a workbook that may be any dialect.
-    async fn read_native_spreadsheet(&self, path: &std::path::Path) -> Result<Vec<u8>, ErrorData> {
-        let extension = path
-            .extension()
-            .and_then(|value| value.to_str())
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        match extension.as_str() {
-            "xlsx" => office::read_document(path, office_write::MAX_INPUT_BYTES)
-                .await
-                .map_err(|message| ErrorData::invalid_params(message, None)),
-            // Collabora is the only ODF reader in this closure, and it is already
-            // deployed on loopback for OpenCloud. csv is not offered here: a
-            // single-file CSV has no sheets to lose, so convert_document is the
-            // right tool for it.
-            "ods" => {
-                let converted = self
-                    .converter
-                    .convert_to(path, "xlsx")
-                    .await
-                    .map_err(|message| ErrorData::internal_error(message, None))?;
-                decode_helper_document(converted)
-            }
-            other => Err(ErrorData::invalid_params(
-                format!(
-                    "spreadsheet_read accepts xlsx and ods, not {other:?}; use convert_document for csv"
-                ),
-                None,
-            )),
-        }
-    }
-
-    /// Write a spreadsheet into the workspace.
-    ///
-    /// The caller supplies a name and a format, never a path. That is the whole
-    /// containment argument: the extension comes from the format, the directory
-    /// comes from the workspace, and the only free input is a relative name
-    /// checked by `resolve_write` like any other.
+    /// `spreadsheet_write` is suspended with the rest of the office surface. Its
+    /// confinement to the workspace was never the gap; the gap is that the
+    /// service account, not the caller, authorizes the operation, so it is
+    /// refused here before the format, the name or the target is considered.
     async fn run_spreadsheet_write(
         &self,
-        arguments: Option<JsonObject>,
+        _arguments: Option<JsonObject>,
     ) -> Result<CallToolResponse, ErrorData> {
-        let raw = arguments
-            .map(Value::Object)
-            .unwrap_or(Value::Object(Default::default()));
-        let params: DocumentWriteParams = serde_json::from_value(raw)
-            .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
-
-        let format = office_write::write_format_for(&params.format.trim().to_ascii_lowercase())
-            .filter(|candidate| matches!(candidate, WriteFormat::Xlsx | WriteFormat::Ods))
-            .ok_or_else(|| {
-                ErrorData::invalid_params(
-                    "spreadsheet_write accepts format 'xlsx' or 'ods'".to_string(),
-                    None,
-                )
-            })?;
-
-        let sheets = params.sheets.clone().unwrap_or_default();
-        if sheets.is_empty() {
-            return Err(ErrorData::invalid_params(
-                "spreadsheet_write needs at least one sheet".to_string(),
-                None,
-            ));
-        }
-
-        let (staged, target) = self.stage_write(&params, format, &params.name.clone())?;
-        let spec = serde_json::json!({ "sheets": sheets });
-
-        let written = self
-            .config
-            .helper
-            .write(format.helper_extension_public(), &staged, &spec)
-            .await
-            .map_err(|message| ErrorData::internal_error(message, None))?;
-
-        // An ods target is the xlsx Collabora was just handed, converted. The
-        // staged xlsx is the only thing that ever exists on disk, and it is
-        // removed again below.
-        if let Some(target_filter) = format.collabora_target() {
-            let converted = self
-                .converter
-                .convert_to(&staged, target_filter)
-                .await
-                .map_err(|message| ErrorData::internal_error(message, None))?;
-            let _ = tokio::fs::remove_file(&staged).await;
-            write_bytes(&target, &decode_helper_document(converted)?)
-                .await
-                .map_err(|message| ErrorData::internal_error(message, None))?;
-        } else {
-            let bytes = tokio::fs::read(&staged)
-                .await
-                .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-            let _ = tokio::fs::remove_file(&staged).await;
-            write_bytes(&target, &bytes)
-                .await
-                .map_err(|message| ErrorData::internal_error(message, None))?;
-        }
-
-        let payload = serde_json::json!({
-            "path": target.display().to_string(),
-            "format": format.extension(),
-            "sheets": written.get("sheets").cloned().unwrap_or(Value::Null),
-            "not_retained": written.get("not_retained").cloned().unwrap_or(Value::Null),
-        });
-        let content = ContentBlock::json(payload)?;
-        Ok(CallToolResult::success(vec![content]).into())
+        Err(ErrorData::invalid_params(OFFICE_TOOLS_DENIAL_MESSAGE, None))
     }
 
-    /// Read or write a Word document.
-    ///
-    /// One tool with both modes rather than two, because the read half and the
-    /// write half of a round-trip are the same act from the model's side and a
-    /// caller that already knows the shape should not have to learn two names.
+    /// `word_document` is suspended in both of its modes. The refusal sits ahead
+    /// of the read/write branch, so neither a bare `path` nor a write shape
+    /// reaches path resolution, the helper or Collabora.
     async fn run_word_document(
         &self,
-        arguments: Option<JsonObject>,
+        _arguments: Option<JsonObject>,
     ) -> Result<CallToolResponse, ErrorData> {
-        let raw = arguments
-            .map(Value::Object)
-            .unwrap_or(Value::Object(Default::default()));
-        let params: Value = raw;
-
-        // A bare `path` is a read. Anything else is a write. The branch is on
-        // presence rather than on an explicit mode flag so the common case, "read
-        // this document", needs only the one argument.
-        let reading = params.get("blocks").is_none()
-            && params.get("name").is_none()
-            && params.get("path").is_some();
-        if reading {
-            let read: WordReadParams = serde_json::from_value(params)
-                .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
-            let resolved = office_write::resolve_read(&self.config.shared_root, &read.path)
-                .map_err(|message| ErrorData::invalid_params(message, None))?;
-            let payload = self.read_word(&resolved).await?;
-            let content = ContentBlock::json(payload)?;
-            return Ok(CallToolResult::success(vec![content]).into());
-        }
-
-        let params: DocumentWriteParams = serde_json::from_value(params)
-            .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
-        let format = office_write::write_format_for(&params.format.trim().to_ascii_lowercase())
-            .filter(|candidate| matches!(candidate, WriteFormat::Docx | WriteFormat::Odt))
-            .ok_or_else(|| {
-                ErrorData::invalid_params(
-                    "word_document accepts format 'docx' or 'odt'".to_string(),
-                    None,
-                )
-            })?;
-
-        let blocks = params.blocks.clone().unwrap_or_default();
-        if blocks.is_empty() {
-            return Err(ErrorData::invalid_params(
-                "a written document needs at least one block".to_string(),
-                None,
-            ));
-        }
-
-        let (staged, target) = self.stage_write(&params, format, &params.name.clone())?;
-        let spec = serde_json::json!({ "blocks": blocks });
-        let written = self
-            .config
-            .helper
-            .write(format.helper_extension_public(), &staged, &spec)
-            .await
-            .map_err(|message| ErrorData::internal_error(message, None))?;
-
-        if let Some(target_filter) = format.collabora_target() {
-            let converted = self
-                .converter
-                .convert_to(&staged, target_filter)
-                .await
-                .map_err(|message| ErrorData::internal_error(message, None))?;
-            let _ = tokio::fs::remove_file(&staged).await;
-            write_bytes(&target, &decode_helper_document(converted)?)
-                .await
-                .map_err(|message| ErrorData::internal_error(message, None))?;
-        } else {
-            let bytes = tokio::fs::read(&staged)
-                .await
-                .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-            let _ = tokio::fs::remove_file(&staged).await;
-            write_bytes(&target, &bytes)
-                .await
-                .map_err(|message| ErrorData::internal_error(message, None))?;
-        }
-
-        let payload = serde_json::json!({
-            "path": target.display().to_string(),
-            "format": format.extension(),
-            "blocks_written": written.get("block_count").cloned().unwrap_or(Value::Null),
-            "not_retained": written.get("not_retained").cloned().unwrap_or(Value::Null),
-        });
-        let content = ContentBlock::json(payload)?;
-        Ok(CallToolResult::success(vec![content]).into())
-    }
-
-    async fn read_word(&self, path: &std::path::Path) -> Result<Value, ErrorData> {
-        let extension = path
-            .extension()
-            .and_then(|value| value.to_str())
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        match extension.as_str() {
-            "docx" => {
-                let bytes = office::read_document(path, office_write::MAX_INPUT_BYTES)
-                    .await
-                    .map_err(|message| ErrorData::invalid_params(message, None))?;
-                self.config
-                    .helper
-                    .read("docx", bytes)
-                    .await
-                    .map_err(|message| ErrorData::internal_error(message, None))
-            }
-            "odt" => {
-                let converted = self
-                    .converter
-                    .convert_to(path, "docx")
-                    .await
-                    .map_err(|message| ErrorData::internal_error(message, None))?;
-                let bytes = decode_helper_document(converted)?;
-                self.config
-                    .helper
-                    .read("docx", bytes)
-                    .await
-                    .map_err(|message| ErrorData::internal_error(message, None))
-            }
-            other => Err(ErrorData::invalid_params(
-                format!("word_document reads docx and odt, not {other:?}"),
-                None,
-            )),
-        }
-    }
-
-    /// Resolve the caller's name to a validated target, refusing a write that
-    /// would destroy an existing file unless it was asked to.
-    ///
-    /// Two paths come back. `target` is what the caller finally receives, and
-    /// `staged` is a sibling temporary the helper writes first. An ODF target
-    /// needs the native document converted by Collabora afterwards, and doing
-    /// that conversion against a partially-written final file would leave a
-    /// broken `ods` on disk whenever Collabora refused.
-    fn stage_write(
-        &self,
-        params: &DocumentWriteParams,
-        format: WriteFormat,
-        name: &str,
-    ) -> Result<(std::path::PathBuf, std::path::PathBuf), ErrorData> {
-        let requested = match name.trim() {
-            "" => {
-                return Err(ErrorData::invalid_params(
-                    "a written document needs a 'name'".to_string(),
-                    None,
-                ));
-            }
-            trimmed if trimmed.ends_with('.') => {
-                return Err(ErrorData::invalid_params(
-                    "name must not end with a dot".to_string(),
-                    None,
-                ));
-            }
-            trimmed => trimmed.to_string(),
-        };
-
-        let relative = if requested
-            .to_ascii_lowercase()
-            .ends_with(&format!(".{}", format.extension()))
-        {
-            requested
-        } else {
-            format!("{requested}.{}", format.extension())
-        };
-
-        let target = office_write::resolve_write(&self.config.workspace_root, &relative)
-            .map_err(|message| ErrorData::invalid_params(message, None))?;
-
-        if target.exists() && !params.overwrite {
-            return Err(ErrorData::invalid_params(
-                format!(
-                    "{} already exists in the workspace; pass overwrite true to replace it",
-                    relative
-                ),
-                None,
-            ));
-        }
-
-        let staged = staged_sibling(&target);
-        Ok((staged, target))
+        Err(ErrorData::invalid_params(OFFICE_TOOLS_DENIAL_MESSAGE, None))
     }
 
     async fn run_web_search(
@@ -931,10 +333,11 @@ impl ServerHandler for Server {
     fn get_info(&self) -> InitializeResult {
         InitializeResult::new(ServerCapabilities::builder().enable_tools().build())
             .with_instructions(
-                "Tools for this home server. web_search queries the local SearXNG instance, and \
-                 convert_document turns an office file into text. The office tools read across the \
-                 whole shared directory and write only into the AI workspace folder. Prefer the \
-                 user's own files and context for questions about their data.",
+                "Tools for this home server. web_search queries the local SearXNG instance. The \
+                 office document tools (convert_document, spreadsheet_read, spreadsheet_write, \
+                 word_document) are suspended pending caller-permission enforcement and are \
+                 refused for every caller, so they are not listed or usable. Prefer the user's \
+                 own files and context for questions about their data.",
             )
     }
 
@@ -943,29 +346,15 @@ impl ServerHandler for Server {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
-        Ok(ListToolsResult::with_all_items(vec![
-            Tool::new("web_search", WEB_SEARCH_DESCRIPTION, web_search_schema()),
-            Tool::new(
-                "convert_document",
-                CONVERT_DOCUMENT_DESCRIPTION,
-                convert_document_schema(),
-            ),
-            Tool::new(
-                "spreadsheet_read",
-                SPREADSHEET_READ_DESCRIPTION,
-                spreadsheet_read_schema(),
-            ),
-            Tool::new(
-                "spreadsheet_write",
-                SPREADSHEET_WRITE_DESCRIPTION,
-                spreadsheet_write_schema(),
-            ),
-            Tool::new(
-                "word_document",
-                WORD_DOCUMENT_DESCRIPTION,
-                word_document_schema(),
-            ),
-        ]))
+        // The four office tools are deliberately absent: a model that never sees
+        // a tool never tries it. The dispatch branches below are what actually
+        // contain the case, because cached discovery metadata and a direct
+        // JSON-RPC call do not consult this list.
+        Ok(ListToolsResult::with_all_items(vec![Tool::new(
+            "web_search",
+            WEB_SEARCH_DESCRIPTION,
+            web_search_schema(),
+        )]))
     }
 
     async fn call_tool(
@@ -975,6 +364,12 @@ impl ServerHandler for Server {
     ) -> Result<CallToolResponse, ErrorData> {
         match request.name.as_ref() {
             "web_search" => self.run_web_search(request.arguments).await,
+            // The four office branches are kept as explicit denials rather than
+            // folded into the unknown-tool arm: a caller that learned a tool name
+            // from cached discovery metadata, or that probes it directly, still
+            // gets the containment message instead of a lookup error, and each
+            // branch is the last point before any path or upstream work. Removing
+            // discovery alone would not contain a direct invocation.
             "convert_document" => self.run_convert_document(request.arguments).await,
             "spreadsheet_read" => self.run_spreadsheet_read(request.arguments).await,
             "spreadsheet_write" => self.run_spreadsheet_write(request.arguments).await,
@@ -1011,6 +406,11 @@ fn parse_env() -> Result<Config, String> {
         Err(_) => 8,
     };
 
+    // The office tools are suspended, so the Collabora upstream they used and the
+    // shared root and workspace they served are no longer read by this process.
+    // All of them stay configured and all of them stay validated so a later
+    // restoration re-enables a working converter instead of discovering a stale
+    // or missing endpoint at republish time.
     let collabora_base = env::var("AI_TOOLS_COLLABORA_URL")
         .map_err(|_| "AI_TOOLS_COLLABORA_URL is not set".to_string())?
         .trim_end_matches('/')
@@ -1040,7 +440,7 @@ fn parse_env() -> Result<Config, String> {
         );
     }
 
-    let helper = Helper::new(&env::var("AI_TOOLS_OFFICE_HELPER").map_err(|_| {
+    let helper = office_write::Helper::new(&env::var("AI_TOOLS_OFFICE_HELPER").map_err(|_| {
         "AI_TOOLS_OFFICE_HELPER is not set; the native xlsx/docx tools cannot run without it"
             .to_string()
     })?)?;
@@ -1155,13 +555,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let listen = env::var("AI_TOOLS_LISTEN")?;
     let config = Arc::new(parse_env()?);
-    let converter = Arc::new(Converter::new(
-        &config.collabora_base,
-        config.collabora_timeout,
-    )?);
+    // No Collabora client is built here: the office tools are denied before any
+    // document path is resolved, so the converter is never reached, and a
+    // suspended tool must not keep an idle HTTP client or an unreachable
+    // upstream in its startup path.
     let server = Server {
         config: Arc::clone(&config),
-        converter,
     };
 
     let app = router(server, config.public_host.as_deref());
@@ -1183,6 +582,8 @@ mod tests {
         body::Body,
         http::{header::HOST, HeaderMap, HeaderValue, Request, StatusCode},
     };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tower::ServiceExt;
 
     fn test_config() -> Config {
@@ -1195,36 +596,503 @@ mod tests {
             collabora_timeout: Duration::from_secs(5),
             workspace_root: shared_root.join("ai-workspace-test"),
             shared_root,
-            // The path is never executed by these tests; only the handshake
-            // policy is under test here. The helper's own behaviour is covered
-            // by the helper's unit tests and by the write-path tests below.
-            helper: Helper::new("/nix/store/fake-helper/bin/helper").expect("helper"),
+            // The path is never executed by these tests; the handshake and
+            // denial policy is what is under test here. The helper's own
+            // behaviour is covered by the helper's unit tests.
+            helper: crate::office_write::Helper::new("/nix/store/fake-helper/bin/helper")
+                .expect("helper"),
             public_host: None,
         }
     }
 
+    fn test_server() -> Server {
+        Server {
+            config: Arc::new(test_config()),
+        }
+    }
+
+    /// The suspended tools, with the exact refusal each one must return.
+    const PAUSED_TOOLS: &[(&str, &str)] = &[
+        ("convert_document", CONVERT_DOCUMENT_DENIAL_MESSAGE),
+        ("spreadsheet_read", OFFICE_TOOLS_DENIAL_MESSAGE),
+        ("spreadsheet_write", OFFICE_TOOLS_DENIAL_MESSAGE),
+        ("word_document", OFFICE_TOOLS_DENIAL_MESSAGE),
+    ];
+
+    /// Call one suspended tool through the same handler the dispatch match uses.
+    async fn call_paused_tool(
+        server: &Server,
+        tool: &str,
+        arguments: Option<JsonObject>,
+    ) -> Result<CallToolResponse, ErrorData> {
+        match tool {
+            "convert_document" => server.run_convert_document(arguments).await,
+            "spreadsheet_read" => server.run_spreadsheet_read(arguments).await,
+            "spreadsheet_write" => server.run_spreadsheet_write(arguments).await,
+            "word_document" => server.run_word_document(arguments).await,
+            other => panic!("{other} is not a suspended tool"),
+        }
+    }
+
+    fn expected_denial(tool: &str) -> &'static str {
+        PAUSED_TOOLS
+            .iter()
+            .find(|(name, _)| *name == tool)
+            .map(|(_, message)| *message)
+            .unwrap_or_else(|| panic!("{tool} is not a suspended tool"))
+    }
+
+    /// The fixed denial, checked as both the code and the message: the message
+    /// is what the caller sees and it must not name a path or an action.
+    async fn assert_denied(tool: &str, arguments: Option<JsonObject>, caller: &str) -> ErrorData {
+        let error = tokio::time::timeout(
+            Duration::from_secs(5),
+            call_paused_tool(&test_server(), tool, arguments),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("{caller} {tool}: denial timed out"))
+        .expect_err(&format!("{caller} {tool}: must be denied"));
+        assert_eq!(
+            error.message,
+            expected_denial(tool),
+            "{caller} {tool}: denial text changed"
+        );
+        assert_eq!(
+            error.code,
+            rmcp::model::ErrorCode::INVALID_PARAMS,
+            "{caller} {tool}: denial must surface as a protocol error"
+        );
+        assert!(
+            error.data.is_none(),
+            "{caller} {tool}: denial must not attach a payload"
+        );
+        error
+    }
+
+    fn path_arguments(path: &str) -> JsonObject {
+        let mut arguments = JsonObject::new();
+        arguments.insert("path".to_string(), serde_json::json!(path));
+        arguments
+    }
+
+    /// A write shape for `spreadsheet_write` and `word_document`. The refusal
+    /// must come before the format, the name, the overwrite flag or the payload
+    /// is looked at, so both the create and the overwrite inputs are covered by
+    /// the same denial.
+    fn write_arguments(format: &str, name: &str) -> JsonObject {
+        let mut arguments = JsonObject::new();
+        arguments.insert("format".to_string(), serde_json::json!(format));
+        arguments.insert("name".to_string(), serde_json::json!(name));
+        arguments.insert("overwrite".to_string(), serde_json::json!(true));
+        arguments.insert(
+            "sheets".to_string(),
+            serde_json::json!([{ "name": "Sheet1", "rows": [[1, 2]] }]),
+        );
+        arguments.insert(
+            "blocks".to_string(),
+            serde_json::json!([{ "kind": "paragraph", "text": "hello" }]),
+        );
+        arguments
+    }
+
+    /// Caller classes and input shapes that existed before the pause, in the
+    /// forms the transports can deliver. Every one of them is refused
+    /// identically, for every suspended tool.
+    #[tokio::test]
+    async fn denies_every_paused_tool_for_every_input_shape() {
+        let shapes: &[(&str, Option<JsonObject>)] = &[
+            ("no arguments", None),
+            ("empty arguments", Some(JsonObject::new())),
+            ("malformed path", Some(path_arguments("    "))),
+            ("empty path", Some(path_arguments(""))),
+            ("hidden path", Some(path_arguments(".hidden/report.docx"))),
+            ("absolute path", Some(path_arguments("/etc/passwd"))),
+            (
+                "traversal path",
+                Some(path_arguments("../../etc/report.docx")),
+            ),
+            (
+                "shared-root read",
+                Some(path_arguments("shared/report.docx")),
+            ),
+            (
+                "ai-users-only read",
+                Some(path_arguments("ai-users-only/private.docx")),
+            ),
+            (
+                "valid supported document",
+                Some(path_arguments("shared/report.docx")),
+            ),
+            ("unsupported type", Some(path_arguments("shared/photo.png"))),
+            ("path is a directory", Some(path_arguments("shared"))),
+            (
+                "spreadsheet write, new file",
+                Some(write_arguments("xlsx", "summary.xlsx")),
+            ),
+            (
+                "spreadsheet write, overwrite",
+                Some(write_arguments("ods", "summary.xlsx")),
+            ),
+            ("word write", Some(write_arguments("docx", "report.docx"))),
+        ];
+        for &(tool, _) in PAUSED_TOOLS {
+            for (caller, arguments) in shapes {
+                assert_denied(tool, arguments.clone(), caller).await;
+            }
+        }
+    }
+
+    /// The real handler against a real readable document and a real FIFO, both
+    /// under a synthetic shared root. The denial must return without opening
+    /// either, so neither the read nor the FIFO open can block.
+    #[tokio::test]
+    async fn denial_precedes_any_path_or_file_operation() {
+        let root = SyntheticSharedRoot::new("deny-before-access");
+        let document = root.write("report.docx", b"PK\x03\x04 synthetic docx body");
+        let fifo = root.fifo("pipe.docx");
+
+        for &(tool, _) in PAUSED_TOOLS {
+            for (label, target) in [
+                ("readable document", document.clone()),
+                ("FIFO", fifo.clone()),
+            ] {
+                let (tx, rx) = std::sync::mpsc::channel();
+                let server = test_server();
+                let tool = tool.to_string();
+                let worker_tool = tool.clone();
+                let target = target.clone();
+                let handle = std::thread::spawn(move || {
+                    let arguments = path_arguments(target.to_str().expect("path is UTF-8"));
+                    let result = tokio::runtime::Runtime::new()
+                        .expect("runtime")
+                        .block_on(call_paused_tool(&server, &worker_tool, Some(arguments)));
+                    let _ = tx.send(result);
+                });
+                // Bounded wait: denial takes microseconds; a FIFO open would
+                // block until the timeout because no writer ever opens the other
+                // end.
+                let outcome = rx.recv_timeout(Duration::from_secs(5));
+                assert!(
+                    outcome.is_ok(),
+                    "{tool} {label}: handler did not return, so a path or file operation ran"
+                );
+                let error = outcome
+                    .unwrap()
+                    .expect_err(&format!("{tool} {label}: must be denied"));
+                assert_eq!(
+                    error.message,
+                    expected_denial(&tool),
+                    "{tool} {label}: denial text changed"
+                );
+                // The FIFO still exists and was never drained: proving it was
+                // never opened, because an open-for-read would have blocked.
+                assert!(
+                    fifo.exists(),
+                    "{tool} {label}: FIFO was removed or replaced"
+                );
+                handle.join().expect("handler thread");
+            }
+        }
+
+        assert_eq!(
+            std::fs::read(&document).expect("fixture survives"),
+            b"PK\x03\x04 synthetic docx body",
+            "denial must not consume the document"
+        );
+    }
+
+    /// Source-level guarantee that the denial is the handler's whole body, not
+    /// just an observation that nothing was read. A FIFO or zero-request
+    /// observation alone cannot prove a regular file was not opened.
+    #[test]
+    fn denial_precedes_path_and_file_calls_in_source() {
+        let source = crate_source();
+        for &(tool, _) in PAUSED_TOOLS {
+            let start = source
+                .find(&format!("async fn run_{tool}"))
+                .unwrap_or_else(|| panic!("{tool}: handler is present"));
+            let handler = &source[start..];
+            let end = handler
+                .find("\n    }\n")
+                .unwrap_or_else(|| panic!("{tool}: handler has a body"));
+            let body = &handler[..end];
+            assert!(
+                body.contains("_arguments"),
+                "{tool}: the handler must not read its arguments: {body}"
+            );
+            // Only the handler's own body is scanned. The rest of this file holds
+            // the office modules' machinery and the literals this assertion is
+            // spelled with, so scanning it would flag the words themselves.
+            for forbidden in [
+                "serde_json::from_value",
+                "arguments.map",
+                "resolve_read",
+                "resolve_write",
+                "resolve_within",
+                "office::",
+                "office_write::",
+                "Converter",
+                "Helper",
+                "read_document",
+                "open_document",
+                "std::fs",
+                "tokio::fs",
+                "stage_write",
+                "helper",
+                "convert_to",
+                "spawn",
+            ] {
+                assert!(
+                    !body.contains(forbidden),
+                    "{tool}: run_{tool} must not reach {forbidden}: {body}"
+                );
+            }
+        }
+    }
+
+    /// A suspended tool must not reach the Collabora upstream either. A loopback
+    /// listener records every connection: it first proves it counts by taking a
+    /// control connection, then each suspended handler runs against a real
+    /// supported document and the count must not move.
+    #[tokio::test]
+    async fn denial_never_contacts_the_collabora_upstream() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind a Collabora stand-in");
+        let address = listener.local_addr().expect("stand-in address");
+        let connections = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&connections);
+        let accept = tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                counter.fetch_add(1, Ordering::SeqCst);
+                drop(stream);
+            }
+        });
+
+        let _probe = tokio::net::TcpStream::connect(address)
+            .await
+            .expect("control connection");
+        let mut observed = false;
+        for _ in 0..50 {
+            if connections.load(Ordering::SeqCst) == 1 {
+                observed = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            observed,
+            "the Collabora stand-in failed to observe the control connection"
+        );
+
+        let root = SyntheticSharedRoot::new("collabora");
+        let document = root.write("report.docx", b"PK\x03\x04 synthetic docx body");
+        let mut config = test_config();
+        config.collabora_base = format!("http://{address}");
+        let server = Server {
+            config: Arc::new(config),
+        };
+        for &(tool, _) in PAUSED_TOOLS {
+            let arguments = path_arguments(document.to_str().expect("path is UTF-8"));
+            let error = call_paused_tool(&server, tool, Some(arguments))
+                .await
+                .expect_err("must be denied");
+            assert_eq!(error.message, expected_denial(tool));
+        }
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            connections.load(Ordering::SeqCst),
+            1,
+            "a suspended tool must not contact the Collabora upstream"
+        );
+        accept.abort();
+    }
+
+    /// A suspended tool must not launch the Python office helper either. The
+    /// stand-in helper appends one byte per run, and the test first proves the
+    /// recorder works by running it once directly.
+    #[tokio::test]
+    async fn denial_never_launches_the_office_helper() {
+        let dir = SyntheticSharedRoot::new("helper-launches");
+        let marker = dir.join("launches");
+        let script = dir.join("fake-helper");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\nprintf x >> {}\nexit 0\n", marker.display()),
+        )
+        .expect("write the stand-in helper");
+        let mut permissions = std::fs::metadata(&script)
+            .expect("stand-in metadata")
+            .permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+        std::fs::set_permissions(&script, permissions).expect("make the stand-in executable");
+
+        // Control: the stand-in really does record a launch, so a missing marker
+        // afterwards is the denial's doing and not a recorder that never wrote.
+        let status = std::process::Command::new(&script)
+            .stdin(std::process::Stdio::null())
+            .status()
+            .expect("run the control launch");
+        assert!(status.success(), "the stand-in helper control run failed");
+        assert!(
+            marker.exists(),
+            "the stand-in helper did not record its control run"
+        );
+        std::fs::remove_file(&marker).expect("clear the marker");
+
+        let mut config = test_config();
+        config.helper = crate::office_write::Helper::new(script.to_str().expect("path is UTF-8"))
+            .expect("helper");
+        let server = Server {
+            config: Arc::new(config),
+        };
+        for &(tool, _) in PAUSED_TOOLS {
+            let arguments = path_arguments("shared/report.docx");
+            let error = call_paused_tool(&server, tool, Some(arguments))
+                .await
+                .expect_err("must be denied");
+            assert_eq!(error.message, expected_denial(tool));
+        }
+
+        assert!(
+            !marker.exists(),
+            "a suspended tool must not launch the office helper"
+        );
+    }
+
+    /// Discovery no longer offers any suspended tool and web_search is still
+    /// advertised. Driven through the real router with a real session, so this
+    /// is the same path a model-backed client takes.
+    #[tokio::test]
+    async fn discovery_hides_every_suspended_tool_but_keeps_web_search() {
+        let (app, session_id, headers) = handshake().await;
+        let response = router_with_session(
+            &app,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#.to_string(),
+            &headers,
+            &session_id,
+        )
+        .await;
+        let body = body_string(response).await;
+        assert!(
+            body.contains("web_search"),
+            "web_search must stay advertised: {body}"
+        );
+        for &(tool, _) in PAUSED_TOOLS {
+            assert!(
+                !body.contains(tool),
+                "tools/list must not offer {tool}: {body}"
+            );
+        }
+    }
+
+    /// A direct JSON-RPC `tools/call` for each suspended tool, sent through the
+    /// real router with a real session and a real Host header. Cached discovery
+    /// metadata and identity headers must not restore any of them: the fixed
+    /// refusal is what comes back over the transport.
+    #[tokio::test]
+    async fn denies_every_suspended_tool_over_the_transport() {
+        let (app, session_id, headers) = handshake().await;
+        for &(tool, expected) in PAUSED_TOOLS {
+            for (caller, identity) in [
+                ("ai-users-only caller", Some("ai-users-only")),
+                ("shared-group caller", Some("shared-group")),
+                ("unauthenticated caller", None),
+            ] {
+                let mut caller_headers = headers.clone();
+                if let Some(identity) = identity {
+                    // A gateway-forwarded identity header is a claim about the
+                    // caller, not caller permission; a suspended tool must
+                    // ignore it. Sending it is the point, so the control covers
+                    // callers both with and without identity headers.
+                    caller_headers.insert(
+                        "x-ai-tools-identity",
+                        HeaderValue::from_str(identity).expect("identity header"),
+                    );
+                }
+                let response = router_with_session(
+                    &app,
+                    tool_call_body(tool, caller, identity),
+                    &caller_headers,
+                    &session_id,
+                )
+                .await;
+                let body = body_string(response).await;
+                assert!(
+                    body.contains(expected),
+                    "{caller} {tool}: transport refusal should carry the fixed message, got {body}"
+                );
+                assert!(
+                    !body.contains("report.docx")
+                        && !body.contains("shared/")
+                        && !body.contains("private/"),
+                    "{caller} {tool}: refusal must not disclose filesystem paths, got {body}"
+                );
+            }
+        }
+    }
+
+    /// The remaining tool must still reach its upstream and return real results.
+    /// A local stand-in answers in the SearXNG shape, so a green deploy cannot
+    /// hide a web_search path that was broken by the pause.
+    #[tokio::test]
+    async fn web_search_still_dispatches_against_a_stand_in_searxng() {
+        let body = r#"{"results":[{"title":"Water bore report","url":"https://example.org/one","content":"Snippet text","engines":["stand-in"]}]}"#;
+        let base = spawn_json_server(body.to_string()).await;
+        let mut config = test_config();
+        config.searxng_base = base;
+        let server = Server {
+            config: Arc::new(config),
+        };
+
+        let mut arguments = JsonObject::new();
+        arguments.insert("query".to_string(), serde_json::json!("water bore"));
+        let response = server
+            .run_web_search(Some(arguments))
+            .await
+            .expect("web_search must still dispatch");
+        let CallToolResponse::Complete(result) = &response else {
+            panic!("expected a complete tool result");
+        };
+        assert_eq!(result.is_error, Some(false));
+        let rendered = format!("{result:?}");
+        assert!(
+            rendered.contains("example.org/one"),
+            "web_search should return the stand-in result: {rendered}"
+        );
+    }
+
+    /// Health must stay available with the office surface paused: the service is
+    /// still the gateway's canary target.
+    #[tokio::test]
+    async fn health_stays_available_while_the_office_tools_are_paused() {
+        let request = Request::builder()
+            .method("GET")
+            .uri("/healthz")
+            .body(Body::empty())
+            .expect("build health request");
+        let response = router(test_server(), None)
+            .oneshot(request)
+            .await
+            .expect("router response");
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
     #[tokio::test]
     async fn rejects_an_empty_query() {
-        let server = Server {
-            config: Arc::new(test_config()),
-            converter: Arc::new(
-                Converter::new("http://127.0.0.1:9980", Duration::from_secs(5)).unwrap(),
-            ),
-        };
         let mut arguments = JsonObject::new();
         arguments.insert("query".to_string(), serde_json::json!("   "));
-        let error = server.run_web_search(Some(arguments)).await.unwrap_err();
+        let error = test_server()
+            .run_web_search(Some(arguments))
+            .await
+            .unwrap_err();
         assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
     }
 
     #[tokio::test]
     async fn rejects_a_missing_query() {
-        let server = Server {
-            config: Arc::new(test_config()),
-            converter: Arc::new(
-                Converter::new("http://127.0.0.1:9980", Duration::from_secs(5)).unwrap(),
-            ),
-        };
+        let server = test_server();
         assert!(server
             .run_web_search(Some(JsonObject::new()))
             .await
@@ -1273,12 +1141,7 @@ mod tests {
         host: &str,
         origin: Option<&str>,
     ) -> StatusCode {
-        let server = Server {
-            config: Arc::new(test_config()),
-            converter: Arc::new(
-                Converter::new("http://127.0.0.1:9980", Duration::from_secs(5)).unwrap(),
-            ),
-        };
+        let server = test_server();
 
         let mut headers = HeaderMap::new();
         headers.insert(HOST, HeaderValue::from_str(host).expect("host header"));
@@ -1294,9 +1157,7 @@ mod tests {
         let mut request = Request::builder()
             .method("POST")
             .uri("/")
-            .body(Body::from(
-                r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"host-policy-test","version":"0.0.0"}}}"#,
-            ))
+            .body(Body::from(initialize_body()))
             .expect("build initialize request");
         request.headers_mut().extend(headers);
 
@@ -1395,17 +1256,11 @@ mod tests {
 
     /// The instructions a client reads at handshake are the model's first
     /// description of this surface, so a stale claim here is a real defect: when
-    /// the office write tools landed, the handshake still said "read-only" and
-    /// told the model nothing about where a write could land.
+    /// the office tools were suspended, a handshake that still advertised them
+    /// would describe a surface that refuses every call.
     #[test]
-    fn the_handshake_describes_the_write_surface_and_where_it_lands() {
-        let server = Server {
-            config: Arc::new(test_config()),
-            converter: Arc::new(
-                Converter::new("http://127.0.0.1:9980", Duration::from_secs(5)).unwrap(),
-            ),
-        };
-        let instructions = server
+    fn the_handshake_describes_the_paused_office_surface() {
+        let instructions = test_server()
             .get_info()
             .instructions
             .unwrap_or_default()
@@ -1414,11 +1269,183 @@ mod tests {
             !instructions.contains("read-only"),
             "the handshake must not claim a read-only surface: {instructions}"
         );
-        for expected in ["convert_document", "workspace"] {
+        assert!(
+            instructions.contains("web_search"),
+            "the handshake should keep naming web_search: {instructions}"
+        );
+        for tool in [
+            "convert_document",
+            "spreadsheet_read",
+            "spreadsheet_write",
+            "word_document",
+        ] {
             assert!(
-                instructions.contains(expected),
-                "the handshake should mention {expected}: {instructions}"
+                instructions.contains(tool),
+                "the handshake should name the suspended tool {tool}: {instructions}"
             );
+        }
+        assert!(
+            instructions.contains("suspended") || instructions.contains("refused"),
+            "the handshake should say the office tools are unavailable: {instructions}"
+        );
+    }
+
+    fn initialize_body() -> String {
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"office-pause-test","version":"0.0.0"}}}"#
+            .to_string()
+    }
+
+    /// A real handshake on a real session. One router serves the whole session:
+    /// each call to `router` installs its own session manager, so a handshake
+    /// answered by one router and a later request sent to another would look
+    /// like an unknown session.
+    async fn handshake() -> (Router, String, HeaderMap) {
+        let mut headers = HeaderMap::new();
+        headers.insert(HOST, HeaderValue::from_static("127.0.0.1:8097"));
+        headers.insert("content-type", HeaderValue::from_static("application/json"));
+        headers.insert(
+            "accept",
+            HeaderValue::from_static("application/json, text/event-stream"),
+        );
+
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/")
+            .body(Body::from(initialize_body()))
+            .expect("build initialize request");
+        request.headers_mut().extend(headers.clone());
+
+        let app = router(test_server(), None);
+        let response = app.clone().oneshot(request).await.expect("router response");
+        assert_eq!(response.status(), StatusCode::OK, "handshake must succeed");
+        let session_id = response
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned)
+            .expect("handshake returns a session id");
+        (app, session_id, headers)
+    }
+
+    fn tool_call_body(tool: &str, caller: &str, identity: Option<&str>) -> String {
+        format!(
+            r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"{tool}","arguments":{{"path":"shared/report.docx","caller":"{caller}","identity":"{}"}}}}}}"#,
+            identity.unwrap_or_default()
+        )
+    }
+
+    async fn router_with_session(
+        app: &Router,
+        body: String,
+        headers: &HeaderMap,
+        session_id: &str,
+    ) -> axum::response::Response<Body> {
+        let mut session_headers = headers.clone();
+        session_headers.insert(
+            "mcp-session-id",
+            HeaderValue::from_str(session_id).expect("session id header"),
+        );
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/")
+            .body(Body::from(body))
+            .expect("build tools request");
+        request.headers_mut().extend(session_headers);
+
+        app.clone().oneshot(request).await.expect("router response")
+    }
+
+    async fn body_string(response: axum::response::Response<Body>) -> String {
+        // Session-routed replies come back as SSE `data:` frames, so each
+        // frame is unwrapped before the JSON is inspected.
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("collect body");
+        let raw = String::from_utf8_lossy(&bytes).into_owned();
+        if raw.contains("data:") {
+            raw.lines()
+                .filter_map(|line| line.strip_prefix("data:").map(str::trim))
+                .filter(|frame| !frame.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n")
+        } else {
+            raw
+        }
+    }
+
+    /// A one-request HTTP/1.1 stand-in that answers with `body`, so the
+    /// web_search control can prove the surviving tool still reaches an upstream
+    /// and returns what it said.
+    async fn spawn_json_server(body: String) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind the stand-in SearXNG");
+        let address = listener.local_addr().expect("stand-in address");
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let mut request = [0u8; 4096];
+                let _ = stream.read(&mut request).await;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+                let _ = stream.shutdown().await;
+            }
+        });
+        format!("http://{address}")
+    }
+
+    /// The source text of the file under test, for the review-level assertion
+    /// that the denial is the whole handler. An observation that nothing was read
+    /// or uploaded cannot establish that on its own.
+    fn crate_source() -> String {
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"))
+            .expect("read this crate's main.rs")
+    }
+
+    /// A synthetic shared root with a real readable document and a real FIFO, so
+    /// the controls below exercise real filesystem objects rather than a
+    /// reconstructed permission algorithm.
+    struct SyntheticSharedRoot(PathBuf);
+
+    impl SyntheticSharedRoot {
+        fn new(label: &str) -> Self {
+            static NEXT: AtomicUsize = AtomicUsize::new(0);
+            let dir = std::env::temp_dir().join(format!(
+                "ai-tools-office-pause-{label}-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("create synthetic shared root");
+            Self(dir)
+        }
+
+        fn join(&self, name: &str) -> PathBuf {
+            self.0.join(name)
+        }
+
+        fn write(&self, name: &str, contents: &[u8]) -> PathBuf {
+            let path = self.0.join(name);
+            std::fs::write(&path, contents).expect("write synthetic document");
+            path
+        }
+
+        fn fifo(&self, name: &str) -> PathBuf {
+            let path = self.0.join(name);
+            let status = std::process::Command::new("mkfifo")
+                .arg(&path)
+                .status()
+                .expect("run mkfifo");
+            assert!(status.success(), "mkfifo failed");
+            path
+        }
+    }
+
+    impl Drop for SyntheticSharedRoot {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
         }
     }
 }

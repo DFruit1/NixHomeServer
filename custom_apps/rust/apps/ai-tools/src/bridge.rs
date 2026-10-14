@@ -14,6 +14,11 @@
 //! own, reaches nothing but loopback, and re-validates nothing itself: every
 //! path a tool receives is resolved by ai-tools against the shared root before
 //! it is opened.
+//!
+//! The office document tools are currently suspended upstream (see
+//! `documentation/ai-tools.md`), so the list this bridge forwards is just
+//! `web_search`. The bridge adds no tool of its own: it republishes whatever the
+//! loopback endpoint lists, and every call reaches that endpoint's policy.
 
 use std::{borrow::Cow, sync::Arc, time::Duration};
 
@@ -290,12 +295,13 @@ impl ServerHandler for StdioBridge {
     fn get_info(&self) -> InitializeResult {
         InitializeResult::new(ServerCapabilities::builder().enable_tools().build())
             .with_instructions(
-                "Tools from this host's ai-tools MCP endpoint: web_search over the local \
-                 SearXNG instance, convert_document for office files, spreadsheet_read and \
-                 spreadsheet_write for whole workbooks, and word_document for Word files. They \
-                 read across the shared directory and write only into the AI workspace folder. \
-                 Every call is forwarded to that endpoint, which owns the file access policy. \
-                 Prefer the user's own files and context for questions about their data.",
+                "Tools from this host's ai-tools MCP endpoint. web_search queries the local \
+                 SearXNG instance. The office document tools (convert_document, \
+                 spreadsheet_read, spreadsheet_write, word_document) are suspended pending \
+                 caller-permission enforcement: every call to them is refused and they are not \
+                 listed here. Every call is forwarded to that endpoint, which owns the file \
+                 access policy. Prefer the user's own files and context for questions about \
+                 their data.",
             )
     }
 
@@ -442,26 +448,54 @@ mod tests {
     }
 
     /// What the bridge says about itself at handshake is the model's first
-    /// description of the surface. It forwarded the whole office tool set while
-    /// still claiming only "web_search and document conversion", so the model
-    /// was never told where a write could land.
+    /// description of the surface. The office tools are suspended upstream, so a
+    /// handshake that still advertised them would describe a surface that refuses
+    /// every call.
     #[test]
-    fn the_handshake_names_the_office_tools_and_the_workspace() {
+    fn the_handshake_describes_the_paused_office_surface() {
         let instructions = StdioBridge { bridge: bridge() }
             .get_info()
             .instructions
             .unwrap_or_default()
             .to_lowercase();
         assert!(
-            instructions.contains("workspace"),
-            "the bridge handshake should name the workspace: {instructions}"
+            instructions.contains("web_search"),
+            "the bridge handshake should keep naming web_search: {instructions}"
         );
-        for tool in ["web_search", "convert_document", "spreadsheet", "word"] {
+        for tool in [
+            "convert_document",
+            "spreadsheet_read",
+            "spreadsheet_write",
+            "word_document",
+        ] {
             assert!(
                 instructions.contains(tool),
-                "the bridge handshake should mention {tool}: {instructions}"
+                "the bridge handshake should name the suspended tool {tool}: {instructions}"
             );
         }
+        assert!(
+            instructions.contains("suspended") || instructions.contains("refused"),
+            "the bridge handshake should say the office tools are unavailable: {instructions}"
+        );
+    }
+
+    /// The bridge republishes the upstream tool list and defines no tool of its
+    /// own, which is what makes the reduced upstream surface reach llama.cpp
+    /// without a second place to keep in sync.
+    #[test]
+    fn the_bridge_defines_no_tools_of_its_own() {
+        let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bridge.rs"))
+            .expect("read this module's source");
+        assert!(
+            source.contains("list_all_tools"),
+            "the bridge list must come from the upstream endpoint"
+        );
+        // Spelled by concatenation so this assertion does not match itself.
+        let synthesized = format!("{}{}", "Tool", "::new(");
+        assert!(
+            !source.contains(&synthesized),
+            "the bridge must not synthesize tools of its own"
+        );
     }
 
     #[test]

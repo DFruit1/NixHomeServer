@@ -306,9 +306,17 @@ slow inference run as a model problem.
 
 The `ai-tools` module serves an MCP tool endpoint that llama-server reaches as
 its own tool set. Qwen therefore does not answer from the model's weights alone:
-it can search the web, read a document you have shared, and write a spreadsheet
-or a Word file back into a workspace folder. This section is the operator view
-of that surface. The inference host is the entry point in `ai.<domain>`.
+it can search the web, and — once the office tools are restored — read a
+document you have shared and write a spreadsheet or a Word file back into a
+workspace folder. This section is the operator view of that surface. The
+inference host is the entry point in `ai.<domain>`.
+
+**The four office tools are currently unavailable.** `convert_document`,
+`spreadsheet_read`, `spreadsheet_write` and `word_document` are refused for every
+caller pending caller-permission enforcement, and only `web_search` is advertised
+or served. `documentation/ai-tools.md` records the fixed refusals, the reason,
+and what a restoration must establish. The rest of this section describes the
+surface as it is configured, which is what a restoration re-enables.
 
 ### How the tools reach the model
 
@@ -346,20 +354,24 @@ would otherwise publish none.
 
 ### The tool surface
 
-| Tool | Does | Formats | Access |
-| --- | --- | --- | --- |
-| `web_search` | Ranked results from the local SearXNG | — | loopback only |
-| `convert_document` | Office file to text; spreadsheets become CSV | docx, odt, rtf, doc, xlsx, ods, pptx, odp | reads shared root |
-| `spreadsheet_read` | **Every sheet**, each as an array of rows | xlsx, ods | reads shared root |
-| `spreadsheet_write` | New workbook from sheets you supply | xlsx, ods | **writes workspace only** |
-| `word_document` | Read or write a Word document | docx, odt | read root / **write workspace only** |
+Only `web_search` is served today; the other four rows are the configured
+surface a restoration re-enables.
+
+| Tool | Does | Formats | Access | Today |
+| --- | --- | --- | --- | --- |
+| `web_search` | Ranked results from the local SearXNG | — | loopback only | served |
+| `convert_document` | Office file to text; spreadsheets become CSV | docx, odt, rtf, doc, xlsx, ods, pptx, odp | reads shared root | refused |
+| `spreadsheet_read` | **Every sheet**, each as an array of rows | xlsx, ods | reads shared root | refused |
+| `spreadsheet_write` | New workbook from sheets you supply | xlsx, ods | **writes workspace only** | refused |
+| `word_document` | Read or write a Word document | docx, odt | read root / **write workspace only** | refused |
 
 `spreadsheet_read` exists because `convert_document` returns only the *first*
 sheet — Collabora's convert-to cannot do better, which is the whole reason the
 native helper exists.
 
-The read tools return a `not_retained` list on **every** response, naming
-exactly what the round trip loses. Nothing is lost silently:
+When the office tools are restored, the read tools return a `not_retained` list on
+**every** response, naming exactly what the round trip loses. Nothing is lost
+silently:
 
 - **Spreadsheets**: cell formatting (fonts, fills, borders, number formats,
   column widths), merged ranges, conditional formatting, data validation, named
@@ -379,7 +391,8 @@ as an empty cell and lost.
 
 ### Reads are broad; writes are confined
 
-This asymmetry is the design, and it is enforced at three independent layers.
+When the office tools are enabled, this asymmetry is the design: it is enforced
+at three independent layers, and a restoration must preserve it.
 
 **Reads** resolve against the whole shared root: a generated answer may be built
 from anything you have already shared. A read refuses an absolute path, a parent
