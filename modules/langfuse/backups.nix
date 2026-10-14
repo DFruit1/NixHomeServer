@@ -1,4 +1,4 @@
-{ config, lib, pkgs, ... }:
+{ config, lib, ... }:
 {
   config = lib.mkIf config.repo.langfuse.enable {
     # Both stores hold reproducible artifacts, not user data: ClickHouse is
