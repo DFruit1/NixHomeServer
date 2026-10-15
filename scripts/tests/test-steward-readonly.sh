@@ -52,6 +52,19 @@ class StewardTest(unittest.TestCase):
                         f'python3 {self.root}/scripts/kanban-owner-alerts.py --check-summary -']:
             self.assertEqual('modify', self.call('terminal', command=command)['action'])
 
+    def test_coordinator_handoff_can_request_actions_outside_steward_scope(self):
+        self.assertEqual({}, self.call('message_agent', target='head-coordinator',
+            message='Please repair the tracked script through its installer and record the result.'))
+        for target in ['standard-implementer', 'owner', 'peer/head-coordinator',
+                       'head-coordinator@remote', '@head-coordinator', '', None]:
+            self.assertEqual('block', self.call('message_agent', target=target,
+                message='Please write the fix.')['action'])
+        for message in ['', '   ', None, {}, 42]:
+            self.assertEqual('block', self.call('message_agent', target='head-coordinator',
+                message=message)['action'])
+        self.assertEqual('block', self.call('delegate_task', target='head-coordinator',
+            task='Write the fix.')['action'])
+
     def test_changes_and_arbitrary_execution_are_blocked(self):
         for tool in ['kanban_list', 'kanban_show', 'kanban_attachments', 'kanban_create', 'kanban_comment', 'kanban_unblock', 'kanban_link', 'write_file',
                      'patch', 'memory', 'cronjob', 'delegate_task', 'process']:

@@ -458,14 +458,18 @@ The board steward is an independent read-only observer, not a worker or fixer.
 It may inspect every board and relevant non-secret evidence, but never writes
 files, comments or cards, changes state/dependencies/assignments, unblocks work,
 restores scripts, commits, changes configuration or delegates implementation.
-It reports only when asked or in its regular reports. The owner-authorized
-four-hour stall follow-up may hand its final report directly to head-coordinator
-through scheduler Bot Chat delivery, with per-feature reminder backoff. This is
-an evidence handoff, not permission for steward tool-based messaging, delegation
-or board changes. The coordinator records authorized action on existing cards;
-routine acknowledgments must not create reciprocal bot conversations. Reports
-propose remedies, disjoint-file parallel work and exact commands in a copyable handoff for the
-external Codex agent, which is the owner's independent unblocker and fixer.
+It may send actionable findings and requests to head-coordinator with
+`message_agent(target="head-coordinator", message="...")`, including requests for
+file writes or other actions it cannot perform itself. Requesting action does
+not grant the steward execution rights or confer owner approval. The coordinator
+checks its own authority and existing approval gates, then acts or routes work
+within its lane. Never withhold a handoff solely because the steward cannot
+perform the requested action. Other recipients and direct implementation
+delegation remain forbidden. When the tool is unavailable outside Bot Chat, the
+four-hour stall follow-up delivers its final output through scheduler Bot Chat.
+Avoid duplicate handoffs, follow per-feature reminder backoff, and do not create
+reciprocal acknowledgment loops. Reports give evidence and proposed commands;
+the external Codex agent remains the owner's independent unblocker and fixer.
 The coordinator alone authors owner-facing blocker cards and summaries.
 
 The owner's phone gets exactly one unprompted message class: a **Hard Blocker**.

@@ -89,6 +89,16 @@ def terminal_command(command, root, repo):
 def guard(payload, root, repo):
     tool = payload.get('tool_name')
     args = payload.get('tool_input') or {}
+    # Asking the coordinator to act is authorized even when performing the
+    # requested action is outside the steward's own read-only scope.
+    if tool == 'message_agent':
+        message = args.get('message')
+        if (args.get('target') == 'head-coordinator'
+                and isinstance(message, str) and message.strip()):
+            return {}
+        return {'action': 'block', 'message':
+                'Steward handoffs require target=head-coordinator and a non-empty message. '
+                'Other recipients and delegation tools remain outside this scope.'}
     if tool in READ_TOOLS:
         return {}
     if isinstance(tool, str) and tool.startswith('kanban_'):
@@ -102,7 +112,7 @@ def guard(payload, root, repo):
             return {'action': 'modify', 'args': checked}
     return {'action': 'block', 'message':
             'The board steward is read-only. Report the finding, exact proposed action '
-            'and commands for the owner to pass to the external agent; do not execute the change.'}
+            'and proposed commands to head-coordinator with message_agent; do not execute the change.'}
 
 
 if __name__ == '__main__':

@@ -154,5 +154,16 @@ installer with `--check` and reading what it would change:
   handoff comment, no gateway or service restart;
 - never `.env`, `config.yaml`, secrets or credentials, and never a file the
   repository does not track;
-- the board steward audits these changes independently and may restore a
-  regressed live script itself; do not treat its findings as competition.
+- the board steward audits these changes independently and may request a
+  restore; it never restores scripts itself. Check its evidence and act or route
+  within your authority, preserving existing approval gates.
+
+### Steward action requests
+
+The steward may send you findings and requests for actions beyond its own
+read-only permissions, including writes, board repairs and installer restores.
+Judge the requested action against your authority and existing owner decisions,
+not the steward's execution permissions. Reconcile current evidence, then act
+within your lane or route implementation and record the disposition on the
+relevant existing card. A steward request is not new owner approval and does not
+bypass architecture, credentials or deployment gates. Avoid acknowledgment loops.

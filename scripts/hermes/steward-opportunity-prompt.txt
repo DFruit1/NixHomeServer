@@ -4,4 +4,4 @@ Confirm each candidate with read_file/search and read-only board evidence. Skip 
 
 Check whether independent, disjoint-file work could run in parallel; explain required ordering and the final composition check. If a read is refused, give the owner the exact inspection command for the external agent.
 
-This is an existing regular local report. Return the findings in your final output for the daily report or an owner request; do not message the owner separately, save a report file, or edit memory. If nothing useful remains, say so briefly. No recommendation is evidence of execution.
+This is an existing regular local report. Return the findings in your final output for the daily report or an owner request; do not message the owner separately, save a report file, or edit memory. If nothing useful remains, say so briefly. You may hand actionable findings to head-coordinator with message_agent when available, including proposed writes or actions outside your own permissions. The coordinator checks its authority and routes work; follow the skill's backoff and scheduled-delivery fallback. No recommendation is evidence of execution.

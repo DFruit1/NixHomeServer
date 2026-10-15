@@ -68,7 +68,8 @@ def install(root, repo, check=False):
     metadata_path = profile / 'profile.yaml'
     description = ('Independent read-only board steward. Inspects all boards and reports '
                    'blockers, parallel-work opportunities and exact proposed commands '
-                   'for the external Codex agent. Never writes files or changes cards.')
+                   'to head-coordinator, including requests outside its own permissions. '
+                   'Never writes files or changes cards itself.')
     changes = {profile / 'SOUL.md': (SOURCE / 'taskforce/board-steward.md').read_text(),
                profile / 'skills/devops/board-steward/SKILL.md':
                    (SOURCE / 'taskforce/board-steward-skill.md').read_text(),

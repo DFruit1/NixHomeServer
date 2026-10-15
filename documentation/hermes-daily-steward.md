@@ -3,11 +3,13 @@
 The board steward is an independent, read-only observer. It may inspect every
 board and relevant non-secret evidence, including cards, comments, runs,
 dependencies, logs, repository state and runtime configuration. It reports only
-when asked or as part of its existing regular reports.
+when asked or as part of its existing regular reports, and may send actionable
+findings to head-coordinator through the scoped exception below.
 
 The owner uses the external Codex agent as the independent unblocker and fixer.
-The steward identifies the problem and proposes a concrete remedy; Codex checks
-and implements it. `head-coordinator` owns the Hermes routing workflow and is
+The steward identifies the problem and hands off a concrete action request;
+the coordinator checks its authority and acts or routes it. `head-coordinator`
+owns the Hermes routing workflow and is
 the sole author of owner-facing blocker cards and summaries. The steward may
 critique those asks and recommend clearer wording without publishing a gate.
 
@@ -17,8 +19,10 @@ All previous grants to mutate boards, dispatch cleanup work, restore scripts,
 write notes, change bindings or commit work are revoked. The steward never
 writes files or memory, creates/comments/edits cards, changes status or
 assignments, edits dependencies, unblocks work, changes cron/configuration,
-installs/restores scripts, commits, pushes, restarts, deploys or delegates.
-Even a requested fix becomes a proposed external-agent handoff.
+installs/restores scripts, commits, pushes, restarts, deploys or directly
+delegates implementation.
+A requested fix may be handed to head-coordinator for action under its own
+authority, even when performing it is outside the steward's permissions.
 
 Reports explain what landed, the precise cause of each blocker, existing owner
 decisions, stale premises, permission limitations and credible tooling defects.
@@ -206,8 +210,8 @@ interrupt an in-flight turn or restart the gateway to apply this policy.
 The `steward stall follow-up` job runs at 00:00, 04:00, 08:00, 12:00, 16:00 and
 20:00 in the scheduler's configured timezone. It injects the board snapshot and
 uses `--continuity` to retain its previous non-silent report. Final output is
-routed directly to `bot-chat:head-coordinator`; no phone destination or messaging
-tool permission is added. The steward continues to inspect without board writes.
+routed directly to `bot-chat:head-coordinator`; this scheduled delivery needs no
+phone destination or messaging tool. The steward still cannot write boards.
 
 The prompt tracks each feature/root cause and backs off unchanged handoffs:
 first discovery, then after 8 hours, then 16 hours, then every 24 hours. New
@@ -223,3 +227,20 @@ not reply for routine acknowledgment. Approval, implementation-lane and deploy
 gates remain in force. The daily report keeps unresolved issues visible even
 while internal reminders back off. This independent review can expose stale
 context or ignored requests; it cannot guarantee detection or override policy.
+
+## Direct coordinator requests
+
+In Bot Chat the steward may use
+`message_agent(target="head-coordinator", message="...")` to request action,
+including file writes, board changes and installer restores it cannot execute
+itself. The hook permits only this exact local recipient and a non-empty message;
+other messaging, direct implementation delegation and state changes stay blocked.
+The coordinator checks its own permissions and existing owner decisions, then
+acts within its lane or routes implementation. This handoff grants no approval.
+Include Goal, Evidence, proposed Action/Commands, Verify and Constraints.
+
+Send new findings or material changes once. Reuse the existing 8h/16h/24h backoff
+for unchanged findings and avoid acknowledgment loops. Outside Bot Chat, where
+Hermes does not expose message_agent, the four-hour scheduled final output remains
+the internal delivery path. Do not also send that scheduled report with a tool,
+create a terminal workaround, or claim delivery from a queued acknowledgment.
