@@ -62,8 +62,13 @@ python3 scripts/hermes/install-review-taskforce.py
 python3 scripts/hermes/install-review-taskforce.py --check
 ```
 
-The installer updates the three roles and descriptions, preserves unrelated
-policies/models/settings, enables kanban tools for reviewer/coordinator CLI and
+The installer updates taskforce roles and local-implementer instructions, sets
+`kanban.max_in_progress: 3` in the root and every profile config, and preserves
+model settings and per-profile lane caps. It installs the coordinator phone
+policy and replaces the global deployment freeze with a hold on writers affecting
+the exact reviewed deployment source. Isolated work may continue. Existing workers
+drain normally; installation does not kill workers or restart the gateway.
+It preserves unrelated policies and enables kanban tools for reviewer/coordinator CLI and
 desktop conversations, and copies the helper and no-agent tick script into Hermes.
 Taskforce identity sections have explicit start/end markers. Legacy sections
 are migrated while preserving independently marked or separately headed policies

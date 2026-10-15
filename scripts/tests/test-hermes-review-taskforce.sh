@@ -22,6 +22,36 @@ installer = importlib.util.module_from_spec(installer_spec)
 installer_spec.loader.exec_module(installer)
 
 class TaskforceTest(unittest.TestCase):
+    def test_worker_cap_preserves_other_settings_and_nested_caps(self):
+        before = ('model:\n  default: keep-model\nkanban:\n'
+                  '  max_in_progress: 8 # old copied global cap\n'
+                  '  max_in_progress_per_profile:\n    default: 2\n    local-implementer: 1\n'
+                  'terminal:\n  cwd: .\n')
+        expected = before.replace('max_in_progress: 8', 'max_in_progress: 3')
+        self.assertEqual(expected, installer.worker_cap(before))
+        self.assertEqual(expected, installer.worker_cap(expected))
+        missing = 'kanban:\n  max_in_progress_per_profile:\n    default: 2\n'
+        self.assertIn('kanban:\n  max_in_progress: 3\n', installer.worker_cap(missing))
+        self.assertIn('    default: 2\n', installer.worker_cap(missing))
+        self.assertIn('model:\n  default: keep\n', installer.worker_cap('model:\n  default: keep\n'))
+        for malformed in ('kanban:\n  max_in_progress: unlimited\n',
+                          'kanban:\n  max_in_progress: 3\n  max_in_progress: 8\n',
+                          'kanban:\nkanban:\n'):
+            with self.assertRaises(ValueError):
+                installer.worker_cap(malformed)
+
+    def test_deploy_source_policy_replaces_only_quiescence_section(self):
+        before = ('# Head\n## Continuous improvement intake\nOld intake.\n'
+                  '## Deploy gate\nKeep test and switch commands.\n'
+                  '**2a. Old global freeze.**\nWait for every board.\n'
+                  '**3. On rejection.**\nPreserve rejection routing.\n')
+        actual = installer.soul('head-coordinator', before)
+        self.assertNotIn('Wait for every board.', actual)
+        self.assertIn('isolated worktrees', actual)
+        self.assertIn('Keep test and switch commands.', actual)
+        self.assertIn('Preserve rejection routing.', actual)
+        self.assertEqual(actual, installer.soul('head-coordinator', actual))
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -381,6 +411,16 @@ class TaskforceTest(unittest.TestCase):
                 '# Profile\n\n- **Never leave your workspace.**\n\n## Whole-change-set deploy review\nPreserve verifier.\n')
             (directory / 'profile.yaml').write_text('description: old role\ndescription_auto: false\nprevious_names:\n  - old-name\n')
             (directory / 'config.yaml').write_text('model:\n  default: unchanged-model\nplatform_toolsets:\n  cli: [file, terminal]\n  desktop: [file, terminal]\n')
+        extra = self.root / 'profiles/unmanaged/config.yaml'
+        extra.parent.mkdir()
+        cap_config = ('model:\n  default: keep-extra-model\nkanban:\n'
+                      '  max_in_progress: 8\n  max_in_progress_per_profile:\n    default: 1\n')
+        extra.write_text(cap_config)
+        (self.root / 'config.yaml').write_text(cap_config)
+        skill = self.root / 'profiles/head-coordinator/skills/devops/kanban-orchestration/SKILL.md'
+        skill.parent.mkdir(parents=True)
+        skill.write_text('# Skill\n## Owner-facing SimpleX delivery\nSend milestones.\n'
+                         '## Routing\nPreserve routing.\n')
         original = (self.root / 'profiles/head-coordinator/SOUL.md').read_text()
         self.assertEqual(1, installer.install(self.root, check=True, cron=False))
         self.assertEqual(original, (self.root / 'profiles/head-coordinator/SOUL.md').read_text())
@@ -394,6 +434,10 @@ class TaskforceTest(unittest.TestCase):
         self.assertIn('unchanged-model', (self.root / 'profiles/project-auditor/config.yaml').read_text())
         self.assertIn('kanban', (self.root / 'profiles/project-auditor/config.yaml').read_text())
         self.assertIn('desktop: [file, terminal, kanban]', (self.root / 'profiles/project-auditor/config.yaml').read_text())
+        for config in (extra, self.root / 'config.yaml'):
+            self.assertEqual(cap_config.replace('max_in_progress: 8', 'max_in_progress: 3'), config.read_text())
+        self.assertNotIn('Send milestones.', skill.read_text())
+        self.assertIn('Preserve routing.', skill.read_text())
         self.assertTrue((self.root / 'scripts/review-taskforce-approval.md').is_file())
 
 unittest.main(argv=['taskforce'], verbosity=2)

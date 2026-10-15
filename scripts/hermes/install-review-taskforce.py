@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install reviewer taskforce policy without rewriting models or other settings."""
+"""Install fleet instructions and the owner-approved global cap; preserve model settings."""
 import argparse
 import hashlib
 import json
@@ -14,11 +14,37 @@ SOURCE = Path(__file__).resolve().parent
 MARKER = '<!-- hermes-review-taskforce -->'
 END_MARKER = '<!-- /hermes-review-taskforce -->'
 JOB_NAME = 'kanban review taskforce'
+GLOBAL_WORKER_LIMIT = 3
 DESCRIPTIONS = {
     'project-auditor': 'PROJECT AUDITOR AND TASKFORCE LEAD. Sole owner of each board\'s persisted FINDINGS.md and immutable batch plans. Commissions focused adversarial audits of idle existing features from feature-reviewer, assesses their evidence, batches worthwhile proposals, immediately escalates urgent credible security/regression findings, and hands approved plans to head-coordinator. Routes diff and deploy-range verification to feature-reviewer; it does not verify work itself. Never implements or deploys.',
     'feature-reviewer': 'FEATURE-REVIEWER, THE VERIFIER LANE. Judges finished work against its acceptance criteria: per-card diffs, bounded technical questions and whole-change-set deploy reviews, returning accept or request-changes. Also audits idle existing features when project-auditor commissions one, and reports those findings to project-auditor. Never implements, edits FINDINGS.md or batch plans, or deploys.',
     'head-coordinator': 'HEAD COORDINATOR. Routes and decomposes implementation; never implements. Sends diff, question and whole-set deploy reviews to feature-reviewer, and scoped audit/planning requests to project-auditor, which exclusively manages feature-reviewer audits and the continuous improvement findings. Decomposes approved immutable plans into implementer, review and composition cards; keeps the handoff dependency-blocked until the work finishes. Retains existing sensitive-work routing, board health and whole-set guarded deploy gate. The owner uses T3 Code for manual large-model consultation.',
+    'local-implementer': 'LOCAL IMPLEMENTER. Uses local model inference for confidential work. Approved network tools may receive only non-sensitive inputs; secrets, private task content and personal data must not enter remote models, searches or telemetry. This is an agent policy, not a claim of offline isolation. Ordinary non-sensitive implementation belongs to standard-implementer.',
 }
+
+
+def worker_cap(text):
+    """Set only kanban.max_in_progress, retaining nested caps and all other YAML."""
+    blocks = list(re.finditer(r'^kanban:[ \t]*\n.*?(?=^[^\s#]|\Z)', text, re.M | re.S))
+    if not blocks:
+        if re.search(r'^kanban:', text, re.M):
+            raise ValueError('Expected block YAML for kanban settings')
+        return text.rstrip() + f'\n\nkanban:\n  max_in_progress: {GLOBAL_WORKER_LIMIT}\n'
+    if len(blocks) != 1:
+        raise ValueError('Duplicate kanban settings')
+    block = blocks[0]
+    current = block[0]
+    rows = re.findall(r'^  max_in_progress:[^\n]*', current, re.M)
+    if len(rows) > 1:
+        raise ValueError('Duplicate global worker cap')
+    if rows:
+        updated, count = re.subn(r'^(  max_in_progress:[ \t]*)[0-9]+([ \t]*(?:#.*)?)$',
+                                 lambda m: m[1] + str(GLOBAL_WORKER_LIMIT) + m[2], current, flags=re.M)
+        if count != 1:
+            raise ValueError('Expected an integer global worker cap')
+    else:
+        updated = current.replace('\n', f'\n  max_in_progress: {GLOBAL_WORKER_LIMIT}\n', 1)
+    return text[:block.start()] + updated + text[block.end():]
 
 
 def policy(existing, template, start=0, end=None, legacy_heading=None):
@@ -54,7 +80,7 @@ def policy(existing, template, start=0, end=None, legacy_heading=None):
 
 def soul(name, existing):
     template = (SOURCE / 'taskforce' / f'{name}.md').read_text()
-    if name == 'feature-reviewer':
+    if name in {'feature-reviewer', 'local-implementer'}:
         return policy(existing, template)
     if name == 'project-auditor':
         existing = existing.replace('- **Never leave your workspace.**',
@@ -82,6 +108,23 @@ def soul(name, existing):
     for old in ('A card from `principal-consultant` arrives with the plan attached.',
                 'A card from `principal-consultant` or `project-auditor` arrives with the plan attached.'):
         existing = existing.replace(old, 'A card from `project-auditor` or the owner arrives with the plan attached.')
+    if re.search(r'^\*\*2a\.', existing, re.M):
+        quiescence = (SOURCE / 'taskforce/deploy-source-policy.md').read_text().rstrip() + '\n\n'
+        existing, count = re.subn(r'^\*\*2a\..*?(?=^\*\*3\.)', lambda _: quiescence,
+                                  existing, flags=re.M | re.S)
+        if count != 1:
+            raise ValueError('Expected one bounded deploy quiescence section')
+    existing = re.sub(r'^\| `local-implementer` \|.*$',
+                      '| `local-implementer` | Confidential work with local inference; network tools receive only non-sensitive inputs. |',
+                      existing, flags=re.M)
+    existing = existing.replace(
+        'One exception you do not route and must not "correct": the board steward files\n'
+        'its own low-priority repo cleanup cards straight to `local-implementer`\n'
+        '(tenant `steward-cleanup`, priority `-10`). Those are intentional — leave them\n'
+        'alone, and never reassign one to `standard-implementer`.',
+        'Legacy low-priority `steward-cleanup` cards may finish in their recorded lane\n'
+        'without delaying confidential work. The steward is read-only and cannot\n'
+        'create new cleanup cards. Route ordinary new work to `standard-implementer`.')
     start = existing.find('- Give each child the slice it owns')
     end = existing.find('- Preserve the plan\'s structure:', start)
     if start >= 0 and end >= 0:
@@ -130,6 +173,20 @@ def changed_files(root):
                     settings = settings[:match.start(1)] + ', '.join(tools) + settings[match.end(1):]
             text = text[:block.start()] + settings + text[block.end():]
             changes[config] = text
+    # All live profiles must agree with the root's owner-approved global cap.
+    # Per-profile limits and inference/model settings are separate and untouched.
+    configs = [root / 'config.yaml', *sorted((root / 'profiles').glob('*/config.yaml'))]
+    for config in configs:
+        if config.exists() and not config.parent.name.startswith('.'):
+            changes[config] = worker_cap(changes.get(config, config.read_text()))
+    phone_skill = root / 'profiles/head-coordinator/skills/devops/kanban-orchestration/SKILL.md'
+    if phone_skill.exists():
+        text, count = re.subn(r'^## Owner-facing SimpleX delivery\n.*?(?=^## |\Z)',
+                             lambda _: (SOURCE / 'taskforce/coordinator-phone-policy.md').read_text().rstrip() + '\n\n',
+                             phone_skill.read_text(), flags=re.M | re.S)
+        if count != 1:
+            raise ValueError('Expected one coordinator phone policy section')
+        changes[phone_skill] = text
     for directory in [root / 'scripts', *(p / 'scripts' for p in (root / 'profiles').iterdir() if p.is_dir())]:
         for name in ('review-taskforce.py', 'review-taskforce-tick.sh'):
             changes[directory / name] = (SOURCE / name).read_text()

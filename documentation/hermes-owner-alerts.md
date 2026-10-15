@@ -1,5 +1,10 @@
 # Hermes owner alerts: Hard Blockers only
 
+Only owner-action blockers justify unsolicited coordinator phone messages. Direct
+replies and requested reports, including the scheduled steward report, remain
+separate. Feature milestones and routine completion events stay internal.
+Collecting and debouncing a set never combines blockers into one message.
+
 The `head-coordinator` SimpleX adapter receives owner replies on the existing
 numeric contact allowlist. Its daemon and gateway must be running. The no-agent
 sender reads every board without changing cards or assuming approval.

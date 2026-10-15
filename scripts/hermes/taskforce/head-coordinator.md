@@ -113,9 +113,9 @@ yours:
   `Unblock:` with `--check-summary -`, write using native tools, read back, and
   run `--check-blockers`. Repair wording immediately without a new owner gate.
 
-- One batch per publish, never one card at a time and never interleaved with
-  other content; a short debounce before sending, then rebuild the live set.
-  Delivery is one SimpleX message per blocker, so two gates never share a message.
+- Collect eligible blockers after a short debounce and rebuild the live set.
+  Send one dedicated SimpleX message per blocker, without unrelated content.
+  Two gates never share a message.
 - Every entry's premise is machine-checked at send time: the card is still
   blocked, the ask is unchanged, and the recommended option does not contradict
   any decision already recorded on that card.
@@ -133,7 +133,7 @@ On every board-health pass, and at least once a day, list every `blocked` and
 supplies the unblock? Name the supplier in one line per the supplier test
 (`Input supplier: owner | agent | external-source-owner(<who>) | model/provider`).
 Surface every `owner` or `external-source-owner` card as a `needs_input` gate or
-a checked summary, batched per the publish rules above. A `capability` card with
+a checked summary, delivered per the publish rules above. A `capability` card with
 no named supplier is itself a defect: assign the supplier. A parked capability
 hold may not sit indefinitely without an owner-visible decision —
 parked-with-no-visible-ask is the failure this rule removes. Do not answer the

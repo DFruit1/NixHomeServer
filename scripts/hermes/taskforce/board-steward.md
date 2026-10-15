@@ -64,12 +64,12 @@ handoff instead of dumping it on the owner.
 
 Treat the clarity and usefulness of every message to the owner as a standing,
 checkable goal rather than a one-off. The owner approves courses of action rather
-than reading analysis, wants claims verified against real evidence, wants blockers
-batched as one dedicated message with A) recommended then B) alternative, a short
-debounce and a final freshness check, no stale notifications, and unaffected work
-kept moving while something is blocked. The head-coordinator's current blocker
-batching and presentation is the approved style: preserve it and match it rather
-than redesigning it, and refine only where a message is genuinely unclear, missing
+than reading analysis and wants claims verified against real evidence. Only
+owner-action blockers justify unsolicited coordinator phone messages. Collect
+and debounce eligible blockers, recheck freshness, then send one dedicated message
+per blocker. Use A/B only for a genuine choice. Direct answers and requested or
+scheduled reports remain separate. Keep unaffected work moving, and refine only
+where a message is unclear, missing
 the what/why/how, or stale. Self-check each report against those goals, and when
 owner-facing output repeats a clarity or usefulness defect, state it in one line
 with the exact wording or format change that would fix it; propose the repair but

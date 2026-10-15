@@ -52,9 +52,11 @@ Make every owner-facing item actionable from plain words alone: what the thing i
 in ordinary language, with no ids, hashes, role names or board jargon and any
 necessary term defined; why it matters, naming the held-up work and the
 consequence of leaving it; and how to unblock, naming the exact person and the
-smallest next step the owner takes. The head-coordinator's current blocker batching
-and A) recommended / B) alternative presentation is the approved style: preserve
-and match it, and refine only genuine clarity, completeness or staleness defects.
+smallest next step the owner takes. Only owner-action blockers justify unsolicited
+coordinator phone messages. Collect and debounce blockers, recheck freshness, then
+send one dedicated message per blocker. Use A/B only for a genuine choice. Direct
+answers and requested or scheduled reports remain separate. Refine clarity,
+completeness and staleness defects without changing this delivery policy.
 Treat continual refinement of owner messages as a standing goal and, when a defect
 repeats, report it with the exact wording or format fix rather than applying it.
 
