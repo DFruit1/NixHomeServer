@@ -11,7 +11,8 @@ import shlex
 import shutil
 import sys
 
-READ_TOOLS = {'read_file', 'search', 'skill_view', 'skills_list', 'clarify'}
+READ_TOOLS = {'read_file', 'search', 'skill_view', 'skills_list', 'clarify',
+              'tool_search', 'tool_describe'}
 # The steward's skill directs it to check owner-alert delivery with the
 # owner-alerts helper. Only its explicitly read-only diagnostics are allowed;
 # the sending and installing actions stay blocked.
@@ -30,9 +31,18 @@ def owner_alert_readonly(args):
     return args[0] in OWNER_ALERT_READONLY_FLAGS
 
 
+def coordinator_request_args(args):
+    # No recipient, executable, output path or arbitrary native CLI arguments.
+    if len(args) != 4 or set(args[::2]) != {'--request-id', '--message'}:
+        return False
+    values = dict(zip(args[::2], args[1::2]))
+    return (bool(values['--request-id'].strip()) and len(values['--request-id']) <= 128
+            and bool(values['--message'].strip()) and len(values['--message']) <= 24000)
+
+
 def terminal_command(command, root, repo):
     # Cron delivers the final report through the profile's configured channel.
-    # The steward never invokes a sender or performs an outbound tool mutation.
+    # Only the fixed-recipient coordinator helper may queue an internal request.
     try:
         argv = shlex.split(command)
     except ValueError:
@@ -53,8 +63,11 @@ def terminal_command(command, root, repo):
         allowed_paths = {base / item for base in bases for item in scripts}
         allowed_paths.add(root / 'profiles/board-steward/skills/devops/board-steward/scripts/steward-sweep.py')
         owner_alert_paths = {base / OWNER_ALERT_SCRIPT for base in bases}
+        request_paths = {base / 'steward-coordinator-request.py' for base in bases}
         resolved = script.resolve()
-        if resolved in {path.resolve() for path in owner_alert_paths}:
+        if resolved in {path.resolve() for path in request_paths}:
+            allowed = coordinator_request_args(argv[2:])
+        elif resolved in {path.resolve() for path in owner_alert_paths}:
             allowed = owner_alert_readonly(argv[2:])
         else:
             allowed = resolved in {path.resolve() for path in allowed_paths}
@@ -112,7 +125,8 @@ def guard(payload, root, repo):
             return {'action': 'modify', 'args': checked}
     return {'action': 'block', 'message':
             'The board steward is read-only. Report the finding, exact proposed action '
-            'and proposed commands to head-coordinator with message_agent; do not execute the change.'}
+            'to head-coordinator: use message_agent in Bot Chat, or the installed '
+            'steward-coordinator-request.py helper in SimpleX. Do not execute the change.'}
 
 
 if __name__ == '__main__':

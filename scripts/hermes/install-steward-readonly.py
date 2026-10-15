@@ -77,7 +77,7 @@ def install(root, repo, check=False):
                metadata_path: replace_setting(metadata_path.read_text(), 'description', json.dumps(description))}
     for name in ('kanban-daily-steward.py', 'daily-steward-window.py', 'usage-pace.py',
                  'steward-opportunity-scan.py',
-                 'steward-board-read.py', 'steward-readonly-guard.py'):
+                 'steward-board-read.py', 'steward-readonly-guard.py', 'steward-coordinator-request.py'):
         changes[root / 'scripts' / name] = (SOURCE / name).read_text()
         if name != 'steward-readonly-guard.py':
             changes[profile / 'scripts' / name] = (SOURCE / name).read_text()

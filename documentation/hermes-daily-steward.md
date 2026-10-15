@@ -202,8 +202,18 @@ only and reports drift.
 
 The old installer skipped existing cron jobs, leaving their mutation prompts
 active after source edits. Existing jobs are now reconciled as well as created.
-Refreshing a cached gateway profile must wait for idle conversations; never
-interrupt an in-flight turn or restart the gateway to apply this policy.
+Refresh an idle gateway profile after a policy update; never interrupt a turn.
+Continuing conversations also persist their own system prompt. Reattaching the
+profile does not replace that prompt. For an affected idle conversation, use the
+native targeted cache repair (history is preserved; the next turn rebuilds it):
+
+```bash
+hermes --profile board-steward sessions repair-prompts <session-id> --json
+hermes --profile board-steward sessions repair-prompts <session-id> --apply --json
+```
+
+Inspect the first command's target before applying. Do not clear unrelated sessions.
+After the repair, reattach the idle profile to evict any in-memory prompt cache.
 
 ## Four-hour coordinator follow-up
 
@@ -234,13 +244,24 @@ In Bot Chat the steward may use
 `message_agent(target="head-coordinator", message="...")` to request action,
 including file writes, board changes and installer restores it cannot execute
 itself. The hook permits only this exact local recipient and a non-empty message;
-other messaging, direct implementation delegation and state changes stay blocked.
+other messaging, direct implementation delegation and direct state changes stay blocked.
 The coordinator checks its own permissions and existing owner decisions, then
 acts within its lane or routes implementation. This handoff grants no approval.
 Include Goal, Evidence, proposed Action/Commands, Verify and Constraints.
 
 Send new findings or material changes once. Reuse the existing 8h/16h/24h backoff
-for unchanged findings and avoid acknowledgment loops. Outside Bot Chat, where
-Hermes does not expose message_agent, the four-hour scheduled final output remains
-the internal delivery path. Do not also send that scheduled report with a tool,
-create a terminal workaround, or claim delivery from a queued acknowledgment.
+for unchanged findings and avoid acknowledgment loops. Hermes exposes message_agent
+only in canonical Bot Chat, not the owner's SimpleX conversation. In that session
+use the installed fixed-recipient helper immediately:
+
+```bash
+python3 ~/.hermes/scripts/steward-coordinator-request.py \
+  --request-id <stable-request-id> --message '<request>'
+```
+
+The helper uses Hermes' existing durable delivery queue and scheduler, retaining
+its locks, receipts and single-consumer rules. It accepts no recipient or generic
+command. Reuse the request ID on retries; a different payload with the same ID is
+refused. Queued status is not a completion receipt. Read-only tool_search and
+tool_describe are allowed, while generic tool_call remains blocked. Scheduled
+stall reports already use internal delivery; do not queue duplicate handoffs.

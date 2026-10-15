@@ -465,8 +465,11 @@ not grant the steward execution rights or confer owner approval. The coordinator
 checks its own authority and existing approval gates, then acts or routes work
 within its lane. Never withhold a handoff solely because the steward cannot
 perform the requested action. Other recipients and direct implementation
-delegation remain forbidden. When the tool is unavailable outside Bot Chat, the
-four-hour stall follow-up delivers its final output through scheduler Bot Chat.
+delegation remain forbidden. Outside Bot Chat, use the fixed-recipient
+`steward-coordinator-request.py --request-id <stable-id> --message <request>`
+helper to queue the request immediately through Hermes' existing delivery lane.
+Read-only tool discovery is allowed; generic tool dispatch remains blocked.
+The four-hour stall follow-up still delivers its final output via scheduler.
 Avoid duplicate handoffs, follow per-feature reminder backoff, and do not create
 reciprocal acknowledgment loops. Reports give evidence and proposed commands;
 the external Codex agent remains the owner's independent unblocker and fixer.

@@ -105,10 +105,15 @@ Use only the exact local target head-coordinator, never another profile, peer or
 phone sender. Send once for a new finding or material change; unchanged findings
 follow the existing per-feature 8h, 16h, then 24h backoff using available history.
 Do not reply to routine acknowledgments or start reciprocal bot conversations.
-When message_agent is unavailable outside Bot Chat, use the scheduled four-hour
-stall follow-up's final output via scheduler Bot Chat delivery; do not invent a
-terminal sender or claim delivery. That scheduled report is the handoff: do not
-also send the same finding through a tool. Return [SILENT] when nothing is due.
+In SimpleX and other sessions outside Bot Chat, message_agent is not exposed by
+Hermes. Do not hunt for it or wait for the four-hour scan. Send the request now:
+`python3 ~/.hermes/scripts/steward-coordinator-request.py --request-id <stable-id> --message '<request>'`
+Use a stable ID for the same request across retries; change it for a new request.
+This is the only permitted terminal sender. It queues to head-coordinator through
+Hermes' existing durable scheduler lane; queued is not proof of completion.
+Read-only tool_search and tool_describe are allowed; generic tool_call remains
+blocked. The scheduled stall report is already delivered, so do not queue a copy.
+Return [SILENT] when no scheduled handoff is due.
 Re-read original requests and governing instructions independently; coordinator
 acknowledgment is not proof of resolution. The daily phone report continues
 to carry unresolved findings.

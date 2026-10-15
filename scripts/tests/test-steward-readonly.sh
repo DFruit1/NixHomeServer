@@ -29,6 +29,7 @@ installer = module('installer', 'install-steward-readonly.py')
 snapshot = module('snapshot', 'kanban-daily-steward.py')
 window = module('window', 'daily-steward-window.py')
 usage = module('usage', 'usage-pace.py')
+handoff = module('handoff', 'steward-coordinator-request.py')
 
 class StewardTest(unittest.TestCase):
     def setUp(self):
@@ -64,6 +65,45 @@ class StewardTest(unittest.TestCase):
                 message=message)['action'])
         self.assertEqual('block', self.call('delegate_task', target='head-coordinator',
             task='Write the fix.')['action'])
+
+    def test_discovery_and_simplex_handoff_are_available_without_generic_dispatch(self):
+        for tool in ['tool_search', 'tool_describe']:
+            self.assertEqual({}, self.call(tool, queries=['message_agent'], names=['message_agent']))
+        self.assertEqual('block', self.call('tool_call', name='write_file', arguments={})['action'])
+        command = (f'python3 {self.root}/scripts/steward-coordinator-request.py '
+                   '--request-id owner-request-1 --message "Request a consolidated question list"')
+        self.assertEqual('modify', self.call('terminal', command=command)['action'])
+        for tail in ['--target standard-implementer', '--script evil.py', '--install']:
+            self.assertEqual('block', self.call('terminal', command=command+' '+tail)['action'])
+
+    def test_simplex_request_reuses_native_queue_with_fixed_target_and_stable_id(self):
+        target = self.root / 'profiles/head-coordinator'
+        target.mkdir(parents=True)
+        (target / 'state.db').touch()
+        records = {}
+        class Delivery:
+            def defer(_, key, job, content, profile, home):
+                record = dict(status='queued', content=content, profile=profile, home=home)
+                if key in records and records[key] != record:
+                    raise ValueError('delivery id already belongs to a different payload')
+                records[key] = record
+                return record
+        delivery = Delivery()
+        first = handoff.queue_request(self.root, 'owner-1', 'Please write the fix.', delivery)
+        self.assertEqual(first, handoff.queue_request(self.root, 'owner-1', 'Please write the fix.', delivery))
+        self.assertEqual(1, len(records))
+        record = records[first['delivery_id']]
+        self.assertEqual(('head-coordinator', target), (record['profile'], record['home']))
+        self.assertIn('not owner approval', record['content'])
+        self.assertEqual('queued', first['status'])
+        with self.assertRaises(ValueError):
+            handoff.queue_request(self.root, 'owner-1', 'Different request.', delivery)
+        for bad in ['', ' ', None, 'x' * 24001]:
+            with self.assertRaises(ValueError):
+                handoff.queue_request(self.root, 'bad', bad, delivery)
+        (target / 'state.db').unlink()
+        with self.assertRaises(ValueError):
+            handoff.queue_request(self.root, 'missing', 'Please act.', delivery)
 
     def test_changes_and_arbitrary_execution_are_blocked(self):
         for tool in ['kanban_list', 'kanban_show', 'kanban_attachments', 'kanban_create', 'kanban_comment', 'kanban_unblock', 'kanban_link', 'write_file',
