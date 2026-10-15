@@ -15,6 +15,17 @@ request-changes. `head-coordinator` routes verification straight to
 a diff itself. The audit work described below is `feature-reviewer`'s secondary
 duty, commissioned by `project-auditor`.
 
+The unused `principal-consultant` profile is retired. Manual large-model
+consultation happens in T3 Code at the owner's discretion; no Hermes card or
+fallback routes to that profile. Existing plan attachments remain valid evidence.
+
+Separate downstream verification cards return `metadata.verdict: accept` or
+`request-changes` through `kanban_complete`; both outcomes finish the review card.
+The coordinator must read that verdict before treating the work as accepted.
+Rejection routes fixes and a fresh review. `kanban_request_changes` is reserved
+for native review runs claimed from `review` with an implementer's
+`review_requested` handoff; it cannot reject an ordinary downstream card.
+
 Audits may start without an obvious defect. A useful question might be whether
 Immich repeats expensive work, which invariant caused a media regression, or
 whether an integration can lose a dependency without changing behaviour.
@@ -54,6 +65,10 @@ python3 scripts/hermes/install-review-taskforce.py --check
 The installer updates the three roles and descriptions, preserves unrelated
 policies/models/settings, enables kanban tools for reviewer/coordinator CLI and
 desktop conversations, and copies the helper and no-agent tick script into Hermes.
+Taskforce identity sections have explicit start/end markers. Legacy sections
+are migrated while preserving independently marked or separately headed policies
+that follow them. Later refreshes replace only the bounded taskforce section;
+operator policies outside it survive repeated installation.
 It creates a single hourly cron job **paused** for validation. Existing job state
 is preserved; malformed existing wiring is reported for repair, not duplicated.
 Old profile files are kept under `~/.hermes/backups/review-taskforce/`.

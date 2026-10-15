@@ -12,37 +12,76 @@ import tempfile
 
 SOURCE = Path(__file__).resolve().parent
 MARKER = '<!-- hermes-review-taskforce -->'
+END_MARKER = '<!-- /hermes-review-taskforce -->'
 JOB_NAME = 'kanban review taskforce'
 DESCRIPTIONS = {
     'project-auditor': 'PROJECT AUDITOR AND TASKFORCE LEAD. Sole owner of each board\'s persisted FINDINGS.md and immutable batch plans. Commissions focused adversarial audits of idle existing features from feature-reviewer, assesses their evidence, batches worthwhile proposals, immediately escalates urgent credible security/regression findings, and hands approved plans to head-coordinator. Routes diff and deploy-range verification to feature-reviewer; it does not verify work itself. Never implements or deploys.',
     'feature-reviewer': 'FEATURE-REVIEWER, THE VERIFIER LANE. Judges finished work against its acceptance criteria: per-card diffs, bounded technical questions and whole-change-set deploy reviews, returning accept or request-changes. Also audits idle existing features when project-auditor commissions one, and reports those findings to project-auditor. Never implements, edits FINDINGS.md or batch plans, or deploys.',
-    'head-coordinator': 'HEAD COORDINATOR. Routes and decomposes implementation; never implements. Sends diff, question and whole-set deploy reviews to feature-reviewer, and scoped audit/planning requests to project-auditor, which exclusively manages feature-reviewer audits and the continuous improvement findings. Decomposes approved immutable plans into implementer, review and composition cards; keeps the handoff dependency-blocked until the work finishes. Retains existing sensitive-work routing, board health and whole-set guarded deploy gate. principal-consultant remains human-invoked only.',
+    'head-coordinator': 'HEAD COORDINATOR. Routes and decomposes implementation; never implements. Sends diff, question and whole-set deploy reviews to feature-reviewer, and scoped audit/planning requests to project-auditor, which exclusively manages feature-reviewer audits and the continuous improvement findings. Decomposes approved immutable plans into implementer, review and composition cards; keeps the handoff dependency-blocked until the work finishes. Retains existing sensitive-work routing, board health and whole-set guarded deploy gate. The owner uses T3 Code for manual large-model consultation.',
 }
 
 
-def section(text, heading, replacement):
-    pattern = rf'^## {re.escape(heading)}\n.*?(?=^## |\Z)'
-    changed, count = re.subn(pattern, lambda _: replacement.rstrip() + '\n\n', text, flags=re.M | re.S)
-    if count != 1:
-        raise ValueError(f'Expected one policy section: {heading}')
-    return changed
+def policy(existing, template, start=0, end=None, legacy_heading=None):
+    """Replace our bounded policy, migrating legacy files without owning their tail."""
+    block = MARKER + '\n' + template.rstrip() + '\n' + END_MARKER + '\n'
+    if MARKER in existing or END_MARKER in existing:
+        if existing.count(MARKER) != 1 or existing.count(END_MARKER) > 1:
+            raise ValueError('Invalid taskforce policy markers')
+        start = existing.index(MARKER)
+        if END_MARKER in existing:
+            end = existing.index(END_MARKER)
+            if end < start:
+                raise ValueError('Reversed taskforce policy markers')
+            end += len(END_MARKER)
+            if existing[end:end + 1] == '\n':
+                end += 1
+            return existing[:start] + block + existing[end:]
+    end = len(existing) if end is None else end
+    # Old reviewer files owned the introduction and named sections; old auditor
+    # files had only a start marker. Preserve the first independent section and
+    # everything after it, rather than guessing that appended policy is ours.
+    headings = set(re.findall(r'^## .+$', template, re.M))
+    if legacy_heading:
+        headings.add('## ' + legacy_heading)
+    legacy = existing[start:end]
+    for boundary in re.finditer(r'^## .+$|^<!-- [^/\n].* -->$', legacy, re.M):
+        if boundary[0] != MARKER and boundary[0] not in headings:
+            end = start + boundary.start()
+            break
+    suffix = existing[end:]
+    return existing[:start] + block + ('\n' if suffix and not suffix.startswith('\n') else '') + suffix
 
 
 def soul(name, existing):
     template = (SOURCE / 'taskforce' / f'{name}.md').read_text()
     if name == 'feature-reviewer':
-        return template
+        return policy(existing, template)
     if name == 'project-auditor':
         existing = existing.replace('- **Never leave your workspace.**',
             '- **Never leave your workspace**, except for the board taskforce documents\n'
             '  explicitly authorised below; never edit source under that exception.')
-        if MARKER in existing:
-            existing = existing.split(MARKER)[0].rstrip() + '\n'
-        return existing.rstrip() + '\n\n' + MARKER + '\n' + template
+        if MARKER not in existing and END_MARKER not in existing:
+            existing = existing.rstrip() + '\n\n'
+            return policy(existing, template, start=len(existing))
+        return policy(existing, template)
     heading = 'Continuous improvement intake' if '## Continuous improvement intake\n' in existing else 'Requesting an audit on demand'
-    existing = section(existing, heading, template)
-    existing = existing.replace('A card from `principal-consultant` arrives with the plan attached.',
-                                'A card from `principal-consultant` or `project-auditor` arrives with the plan attached.')
+    if MARKER in existing or END_MARKER in existing:
+        existing = policy(existing, template)
+    else:
+        sections = list(re.finditer(rf'^## {re.escape(heading)}\n.*?(?=^## |\Z)', existing, re.M | re.S))
+        if len(sections) != 1:
+            raise ValueError(f'Expected one policy section: {heading}')
+        existing = policy(existing, template, sections[0].start(), sections[0].end(), heading)
+    # The unused manual consultant was retired by the owner. Migrate its routing
+    # prose, while retaining the plan contract and all independently owned policy.
+    existing = re.sub(r'^## `principal-consultant` is not yours\n.*?(?=^## |\Z)',
+                      '', existing, flags=re.M | re.S)
+    existing = re.sub(r'^The rule underneath all four:.*?(?=^## |\Z)',
+                      '', existing, flags=re.M | re.S)
+    existing = existing.replace('dispatchable, so this is cheap next to the frontier lane.', 'dispatchable.')
+    for old in ('A card from `principal-consultant` arrives with the plan attached.',
+                'A card from `principal-consultant` or `project-auditor` arrives with the plan attached.'):
+        existing = existing.replace(old, 'A card from `project-auditor` or the owner arrives with the plan attached.')
     start = existing.find('- Give each child the slice it owns')
     end = existing.find('- Preserve the plan\'s structure:', start)
     if start >= 0 and end >= 0:
@@ -55,7 +94,9 @@ def soul(name, existing):
 
 
 def changed_files(root):
-    changes = {}
+    default = root / 'SOUL.md'
+    changes = {default: policy(default.read_text() if default.exists() else '',
+                               (SOURCE / 'taskforce/default.md').read_text())}
     for name in DESCRIPTIONS:
         directory = root / 'profiles' / name
         path = directory / 'SOUL.md'

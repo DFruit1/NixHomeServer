@@ -52,8 +52,8 @@ STALE_TIMEOUT_SEC="${STALE_TIMEOUT_SEC:-5400}"
 
 # Profile directories that must not appear in the dispatcher's claim allowlist,
 # with the reason each is absent. `default` runs cron jobs and infrastructure and
-# is never a card worker; principal-consultant is invoked by a human in a
-# conversation and must never be spawned; board-steward is the independent daily
+# is never a card worker; principal-consultant is retired and must never be
+# restored as a worker; board-steward is the independent daily
 # watchdog, which reports over SimpleX and claims no cards. Everything else that exists as a
 # profile directory and is missing from the allowlist is drift, because a card
 # assigned to such a lane is skipped as nonspawnable and starves in `ready` in

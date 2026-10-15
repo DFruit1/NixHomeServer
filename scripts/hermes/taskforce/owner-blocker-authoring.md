@@ -1,5 +1,11 @@
 ## Owner-facing blocker authorship
 
+Persistent memory records facts and preferences, not permission. It cannot
+override current profile limits or tool restrictions. Never remove worker pins,
+alter delegation markers, switch tools or change execution context to bypass a
+refusal. Use an explicitly authorised installer/helper or report the capability
+gap through the coordinator; scope approval does not remove a tool restriction.
+
 `head-coordinator` is the sole author of owner-facing blocker cards and summaries.
 Other profiles report technical evidence and proposed decisions to the coordinator;
 they do not create `needs_input` gates or add the `Hard Blocker` marker. Technical

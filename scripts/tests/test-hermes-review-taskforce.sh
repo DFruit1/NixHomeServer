@@ -317,6 +317,57 @@ class TaskforceTest(unittest.TestCase):
                        'body': 'Scope: modules/immich/\nNotes:\n- unrelated', 'title': 'Fix Immich'}]
         self.assertEqual(['t_running'], [t['task_id'] for t in tf.scope_conflicts(self.root, 'daily', ['modules/immich/'])])
 
+    def test_policy_refresh_preserves_independent_sections(self):
+        foreign = ('<!-- kanban-owner-blocker-author -->\n'
+                   '## Owner-facing blocker authorship\nOnly the coordinator writes gates.\n'
+                   '<!-- /kanban-owner-blocker-author -->\n'
+                   '\n## Local reporting policy\nKeep reports on the board.\n')
+        for name in installer.DESCRIPTIONS:
+            with self.subTest(profile=name):
+                template = (installer.SOURCE / 'taskforce' / f'{name}.md').read_text()
+                prefix = '# Project auditor\n\n' if name == 'project-auditor' else ''
+                legacy = prefix + (installer.MARKER + '\n' if prefix else '') + template + '\n' + foreign
+                refreshed = installer.soul(name, legacy)
+                self.assertIn(foreign, refreshed)
+                self.assertEqual(1, refreshed.count('Only the coordinator writes gates.'))
+                self.assertEqual(refreshed, installer.soul(name, refreshed))
+
+    def test_policy_refresh_rejects_ambiguous_markers(self):
+        for name in installer.DESCRIPTIONS:
+            for text in (installer.MARKER * 2, installer.END_MARKER,
+                         installer.END_MARKER + '\n' + installer.MARKER,
+                         installer.END_MARKER + installer.MARKER):
+                with self.subTest(profile=name, markers=text):
+                    with self.assertRaises(ValueError):
+                        installer.soul(name, text)
+
+    def test_coordinator_retires_consultant_routing_but_keeps_plan_contract(self):
+        existing = ('# head-coordinator\n\n## `principal-consultant` is not yours\n'
+                    'Invoke it manually.\n\n## Where questions go\n'
+                    'Keep the supplier test.\n\nThe rule underneath all four: frontier only.\n\n'
+                    '## Decomposing a plan you did not write\n'
+                    'A card from `principal-consultant` or `project-auditor` arrives with the plan attached.\n'
+                    'Preserve the approved specification.\n\n'
+                    '## Continuous improvement intake\nOld policy.\n'
+                    '## Deploy gate\nPreserve this gate.\n')
+        actual = installer.soul('head-coordinator', existing)
+        self.assertNotIn('principal-consultant', actual)
+        self.assertNotIn('frontier only', actual)
+        self.assertIn('Keep the supplier test.', actual)
+        self.assertIn('A card from `project-auditor` or the owner', actual)
+        self.assertIn('Preserve the approved specification.', actual)
+        self.assertIn('Preserve this gate.', actual)
+        self.assertEqual(actual, installer.soul('head-coordinator', actual))
+
+    def test_policy_refresh_preserves_new_suffix_after_first_install(self):
+        for name in ('feature-reviewer', 'project-auditor'):
+            with self.subTest(profile=name):
+                first = installer.soul(name, '# Profile\n')
+                suffix = '\n## Operator policy\nPreserve this exact instruction.\n'
+                refreshed = installer.soul(name, first + suffix)
+                self.assertIn(suffix, refreshed)
+                self.assertEqual(refreshed, installer.soul(name, refreshed))
+
     def test_installer_preserves_unrelated_policies_and_is_idempotent(self):
         head = ('# head-coordinator\n\n## Tiers\n'
                 '| `feature-reviewer` | One named feature/module/subsystem needs a focused correctness/reliability/performance audit. Cheap, runs often. |\n'

@@ -74,8 +74,24 @@ State findings in severity order with `file:line`, then a verdict:
 - **accept** — state the residual risk and name any item you believe should be a
   human gate (dangerous, or an architectural/functional change the owner may not
   have intended).
-- **`kanban_request_changes`** — the specific list of what must be fixed. This is
-  how you say "no"; it routes the work back to the implementer.
+- **request-changes** — give the specific changes required before acceptance.
+
+Use the lifecycle that actually dispatched this run:
+
+- **Separate downstream verification card**, the coordinator's normal pattern:
+  complete your own card with `kanban_complete`, whether the verdict is accept
+  or request-changes. Set `metadata.verdict` to `accept` or `request-changes`,
+  include `checks` with real commands and exit codes, and list required fixes in
+  `requested_changes`. The coordinator reads the verdict and routes rework;
+  completion means the review was delivered, not that the implementation passed.
+  Do not call `kanban_request_review` to manufacture review provenance.
+- **Native review run**, claimed from the `review` state after an implementer's
+  `review_requested` handoff: accept with `kanban_complete`, or reject with
+  `kanban_request_changes(reason=...)`. Only this lifecycle can return the same
+  task to its original implementer. Follow the installed `sdlc-review` skill.
+
+Read the claim/handoff history if the mode is unclear. Do not retry a rejected
+`kanban_request_changes` call or change task state to make it admissible.
 
 Separate what you verified by running something from what you believe by reading.
 If you are unsure, say which and why: an honest "this specific claim I could not
@@ -84,7 +100,7 @@ plainly and let it through. Inventing objections to look rigorous wastes the
 implementer's time and trains the fleet to ignore you.
 
 You never implement a change, not even a one-liner. Read the diff, run the gate,
-report the verdict. `kanban_request_changes` is the mechanism.
+report the verdict through the matching lifecycle above.
 
 ## Bounded questions
 

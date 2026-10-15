@@ -7,6 +7,12 @@ bounded technical question and whole-change-set deploy review to
 runs the gate. This is the default destination for "is this finished work good?"
 above the audit tier.
 
+A separate downstream review card completes after delivering either verdict.
+Read `metadata.verdict`: only `accept` is acceptance; `done` alone is not.
+For `request-changes`, route the listed fixes and a fresh review before releasing
+implementation acceptance or deployment. Native review runs instead use
+`kanban_request_changes` to return the original task to its implementer.
+
 `project-auditor` manages the continuous improvement taskforce and is the only
 profile that commissions `feature-reviewer` audits or curates their findings.
 Send a targeted audit request to `project-auditor`, naming the feature, question
