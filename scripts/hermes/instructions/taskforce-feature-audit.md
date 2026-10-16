@@ -68,18 +68,71 @@ Board/card/DB shapes and liveness probes: `references/kanban-board-inspection.md
   heavy server validation. For state/lifecycle questions reproduce the mechanism
   offline with ONE probe — recipe in `references/offline-state-probe.md`.
 
+Choose axes relevant to the card: correctness, reliability, efficiency, security,
+simplicity or integration. Trace the boundaries needed to answer that question.
+For efficiency, identify redundant work or measure a cost; for simplicity, show
+which concepts, branches or dependencies could go and which behavior must remain.
+For security, identify reachable exposure, preconditions and mitigation; an
+unproven threat remains an unknown. Propose the smallest useful change, its
+tradeoffs and a check that would prove the improvement without regression.
+
 ## Report
 
-- Deliver via `kanban_complete` on your own card: `summary` prose + structured
-  `metadata` (`slice`, `question`, `scope_paths`, `revision`, `outcome`,
-  `priority_served`, `findings[]`, `checked_and_clean`, `unknowns`, `checks[]`).
-  A clean result is valid and must not become invented faults.
-- If the session lacks kanban lifecycle tools (a plain chat session has none),
-  present the same structured metadata inline to the owner and state that the
-  card's dispatcher worker owns completion; do NOT mutate the card with ad-hoc
-  CLI calls.
-- Never edit FINDINGS.md (only `project-auditor` publishes taskforce documents)
-  and never comment on other cards.
+If the session lacks native Kanban lifecycle tools, present the same structured
+metadata inline and report the capability gap to head-coordinator. The card's
+dispatcher worker owns completion; never use ad-hoc CLI transitions to manufacture
+provenance or bypass a completion guard.
+
+Use `kanban_complete` on your own card, with concise prose in `summary` and
+structured `metadata`. Draft the metadata as JSON under .tmp/<task>/ in the workspace (or one
+mktemp task directory), then before completing:
+
+    python3 ~/.hermes/scripts/review-taskforce.py --board <slug> \
+      validate-report --metadata .tmp/<task>/report-metadata.json
+
+It exits 2 on a malformed report: fix the report, never edit the evidence to fit.
+A `critical`/`high` finding requires `confidence: verified` and at least one
+executed command in `checks[]` with a real exit code; pure code-reading evidence
+supports `medium` or lower. Never include secrets, tokens or raw private logs.
+
+Publish your detailed report as a durable artifact through the helper, then cite
+that path in the completion summary:
+
+    python3 ~/.hermes/scripts/review-taskforce.py --board <slug> \
+      write --source .tmp/<task>/audit-report.md --name reports/<task-id>-<slug>.md
+
+Finally record the audit so scheduling can see coverage:
+
+    python3 ~/.hermes/scripts/review-taskforce.py --board <slug> \
+      record-audit --task <task-id> --metadata .tmp/<task>/report-metadata.json
+
+Then complete with that metadata:
+
+    {
+      "slice": "<feature>", "question": "<one question>",
+      "scope_paths": ["<project-relative path>"],
+      "revision": "<git hash, or dated evidence for a non-git project>",
+      "outcome": "findings|clean|inconclusive|deferred_active_work",
+      "priority_served": "P<n>|unlisted",
+      "findings": [{
+        "file": "<path>", "line": 1,
+        "severity": "critical|high|medium|low",
+        "axis": "correctness|reliability|performance|security|simplicity|integration",
+        "evidence": "<safe pointer and concrete proof>",
+        "suggested_fix": "<smallest useful change>",
+        "benefit": "<effect or measured gain>", "tradeoffs": "<cost and risk>",
+        "verification": "<command and expected result>",
+        "confidence": "verified|inferred", "urgent": false
+      }],
+      "checked_and_clean": ["<verified coverage>"],
+      "unknowns": ["<what evidence is missing>"],
+      "checks": [{"command": "<command>", "exit_code": 0}]
+    }
+
+Never include secrets, tokens or raw private logs. An audit report goes to the
+dependent assessment card owned by `project-auditor`, which judges proposals and
+owns the central findings. Your job ends at the report; do not send fixes directly
+to head-coordinator.
 
 ## Pitfalls
 

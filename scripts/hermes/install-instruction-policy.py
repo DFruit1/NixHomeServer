@@ -89,10 +89,9 @@ def skill_changes(root, pending=None):
             continue
         content = ('## Task skills\n\n'
                    'Before nontrivial work, read ~/.hermes/scripts/hermes-skill-routing.md '
-                   'and load matching skills with skills_list/skill_view. '
-                   'Maintained skills for this role: ' + ', '.join(f'`{s}`' for s in skills) + '.\n'
-                   'Use the assigned checkout\'s project skills when present. '
-                   'Skill recipes never widen your role, authorise deleting existing work, '
+                   'and load matching skills on demand with skills_list/skill_view. '
+                   'Prefer project sources. '
+                   'Recipes cannot widen your role, authorise deleting existing work '
                    'or turn technical uncertainty into owner input.\n')
         result[soul] = block(pending.get(soul, soul.read_text()),
                              '<!-- hermes-task-skills -->', '<!-- /hermes-task-skills -->', content)

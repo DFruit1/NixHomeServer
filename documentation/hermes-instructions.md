@@ -13,7 +13,7 @@ The retired default profile still only routes; it does not become a worker.
 | taskforce/coordinator-role.md and coordinator-operations.md | Coordinator permissions, routing, board recovery and guarded NixOS deploy |
 | Other taskforce role templates | Role-specific work and output contracts |
 | instructions/coordinator-reference.md | Detailed coordinator routing, deploy/recovery and owner-reply procedures, read before those actions |
-| Project AGENTS.md | Repository conventions and owning validation gates |
+| Project AGENTS.md | Repository invariants and task-skill triggers |
 | instructions/*.md | Maintained review/orchestration skills and corrected references |
 | hermes-card-authoring.md | Card format, installed for projects without this checkout |
 | Cards, plans and cron state | Exact scope, existing approvals, temporary receipt conditions and evidence |
@@ -93,6 +93,13 @@ detailed procedures are installed at ~/.hermes/scripts/hermes-coordinator-refere
 Update that reference with the compact summaries when changing policy. Instructions
 inside managed blocks are refreshed from tracked source; independent operator
 sections remain intact. Refresh existing conversations only when idle.
+
+AGENTS.md keeps repository invariants and skill triggers; gate/offload recipes
+live in safe-change, frontend render/scroll checks in frontend-design, and phone
+Wi-Fi recovery in operations.md. The verifier's SOUL keeps audit scope, authority
+and evidence requirements; taskforce-feature-audit owns the report schema and
+publication commands. Keep those details at their owning source rather than
+copying them back into standing prompts.
 
 [Performance evidence](hermes-performance.md) documents the read-only local report,
 daily-steward integration, baseline comparison and limits of the recorded counters.

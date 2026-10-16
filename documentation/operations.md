@@ -2667,6 +2667,22 @@ curl -kI --resolve <passwords-domain>:443:<server-lan-ip> https://<passwords-dom
 
 - if the forced-resolution check succeeds while normal resolution fails, troubleshoot workstation DNS, LAN resolver reachability, or NetBird instead of changing Vaultwarden exposure
 
+## Phone Wi-Fi Access
+
+Private application hosts such as Photos and Videos use LAN/NetBird DNS, not
+public Cloudflare routes. If a phone can reach an app over NetBird but a host
+that previously worked stops responding on home Wi-Fi, first check the phone's
+resolver or VPN state:
+
+1. Toggle Wi-Fi off and on, then retry.
+2. If needed, connect NetBird and confirm the app works, disconnect NetBird,
+   then retry on Wi-Fi. This can reinitialize the phone's VPN/DNS state.
+3. If the reset helps, verify that Wi-Fi DNS is the home router or server's LAN
+   DNS and that the phone is not on a guest or client-isolated SSID.
+
+Do not publish a private hostname or alter the Cloudflare tunnel as a workaround
+without first confirming the DNS and LAN path.
+
 ## Unbound Ad-Block
 
 The resolver filters advertising, tracker, and known-malware domains from a

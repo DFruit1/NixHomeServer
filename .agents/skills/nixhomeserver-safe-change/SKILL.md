@@ -50,7 +50,19 @@ repository gate:
 - Change needing explicit flake-output evaluation: run
   `scripts/validate-repo.sh --run-flake-check`.
 - Broad, security-sensitive, storage, identity, backup/restore, deployment, or
-  release-candidate change: run `scripts/validate-repo.sh --full`.
+  release-candidate change, or persistent integration issues: run
+  `scripts/validate-repo.sh --full`.
+
+The default lean gate checks enabled applications; add `--all-apps` for the whole
+catalog. The full gate adds heavy evaluation, deploy transaction and first-boot
+checks, secret generation, Kopia wrapper coverage, derivation builds and Homepage
+Playwright e2e. VM tests (`--run-vm-tests`) need `/dev/kvm` and are allowed only
+for persistent bugs severely lacking integration coverage, or explicit user
+permission. Do not interpret an interrupted run as a pass.
+
+Before `--full`, use the shutdown-guard skill to extend a pending shutdown by
+30 minutes and maintain that protection while validation runs. If none is
+scheduled, do not create or extend one.
 
 Batch full-system evaluation with `remote_eval_batch_json` from
 `scripts/helpers/remote-eval.sh`; keep settings-level evaluation local. Use the
@@ -81,6 +93,10 @@ report the evidence.
 6. After activation, verify the exact units, routes, authenticated canaries,
    persistence mounts, or backup health affected by the change. On failure,
    preserve evidence and allow the guarded rollback path to complete.
+   After deploying a new app, run `sudo systemctl start homepage-canary.service`
+   then `sudo homepage-canary-assert` and inspect the rendered authenticated
+   result. The canary logs in as `canary-user` and checks private-host access;
+   a green deploy alone does not prove it.
 
 ## Destructive and recovery work
 
