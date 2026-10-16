@@ -89,3 +89,42 @@ out of standing prompts. Preserve immutable plans and task-specific no-retry,
 custody and recovery conditions on their existing cards/jobs. Refresh a profile
 only after its active turns finish using the supported Hermes surface; never
 interrupt work or restart services merely to load new wording.
+
+## Configuration maintenance
+
+The root and named profiles have independent configs. Keep their explicit
+settings: removing values merely because they match current defaults can change
+behaviour after an upgrade or between Hermes consumers. Models, worker limits,
+approvals, credentials, channel bindings and job state are separate decisions.
+
+To remove copied reference comments from the root and named profile configs:
+
+```bash
+python3 -B scripts/hermes/hermes_config.py --check
+python3 -B scripts/hermes/hermes_config.py
+python3 -B scripts/hermes/hermes_config.py --check
+```
+
+This uses Hermes' existing PyYAML dependency. Only full-line comments matching
+the installed hermes-agent/cli-config.yaml.example are removed; custom comments,
+inline annotations, managed hook markers and multiline strings survive. An
+alternate checkout's reference can be supplied with --reference. Every config
+is parsed and checked for unchanged settings before any write. Duplicate keys,
+aliases, malformed YAML and symlink configs require manual reconciliation.
+Check mode writes nothing. Changed files retain their permissions and originals
+are archived privately under ~/.hermes/backups/config-compaction/, with the path
+hash as the directory and content hash as the filename. Writes happen in place
+to avoid credential-bearing temporary files; after an interrupted write, restore
+the corresponding original from that archive before retrying.
+
+The taskforce installer enables Kanban on CLI and desktop for the coordinator,
+auditor and reviewer, accepting both YAML list styles. The steward installer
+limits its existing CLI, desktop and SimpleX selections to file, terminal, skills
+and clarify. Its guard still rejects writes within those toolsets; Bot Chat
+injects the separately guarded coordinator message tool. Other platforms and all
+other settings are retained. Run each owning installer's --check after compaction
+to verify that hook markers and tool selections still converge. Do not restart
+active sessions just to reload configuration.
+
+The regression suite includes scripts/tests/test-hermes-config-policy.sh and
+tests both list styles, safe compaction, backups and installer convergence.

@@ -149,9 +149,10 @@ review; a clean result is useful and must not become invented faults.
 
 At startup, read active implementer cards and run:
 `python3 ~/.hermes/scripts/review-taskforce.py --board <slug> check-scope <paths>`.
-This read-only helper is your sole exception to workspace confinement; it checks
-running implementation across boards sharing the same checkout. If the slice is
-actively being implemented or in a review/rework cycle, report
+Alongside the taskforce report helper authorised below, this read-only helper is
+an exception to workspace confinement. It checks running implementation across
+boards sharing the same checkout. If the slice is actively being implemented or
+in a review/rework cycle, report
 `deferred_active_work` to `project-auditor` and complete your own audit card. Do
 not interrupt an implementer, change their cards, or audit a moving target.
 Recheck before a long investigation or expensive verification. Identify the exact

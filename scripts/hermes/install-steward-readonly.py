@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Install the report-only steward using existing Hermes hooks and cron.
 
-Standard-library operations glue preserves unrelated YAML without reserialising
-the profile or adding a parser dependency.
+Python operations glue preserves unrelated YAML; the bounded tool-list editor
+reuses Hermes' existing PyYAML dependency.
 """
 import argparse
 import hashlib
@@ -16,12 +16,20 @@ import subprocess
 import sys
 
 SOURCE = Path(__file__).resolve().parent
+sys.path.insert(0, str(SOURCE))
+from hermes_config import platform_tools
 PROFILE = 'board-steward'
 
 
 def replace_setting(text, key, yaml_value):
     block = key + ': ' + yaml_value + '\n\n'
     pattern = rf'^{re.escape(key)}:.*?(?=^[^\s#]|\Z)'
+    matches = list(re.finditer(pattern, text, flags=re.M | re.S))
+    if len(matches) == 1:
+        lines = matches[0][0].splitlines()
+        if (lines[0] == key + ': ' + yaml_value
+                and all(not line.strip() or line.lstrip().startswith('#') for line in lines[1:])):
+            return text  # Keep existing spacing and annotations on an unchanged setting.
     changed, count = re.subn(pattern, lambda _: block, text, flags=re.M | re.S)
     if count > 1:
         raise ValueError(f'Duplicate {key} settings')
@@ -66,6 +74,11 @@ def install(root, repo, check=False):
     # The owner's explicit read-only request authorises this scoped hook. Other
     # hooks/configuration are retained; only the steward profile is affected.
     config_text = replace_setting(config_text, 'hooks_auto_accept', 'true')
+    # Offer tools the existing read-only guard can use. Bot Chat injects its
+    # fixed-recipient message_agent separately; this does not widen the guard.
+    for platform in ('cli', 'desktop', 'simplex'):
+        config_text = platform_tools(config_text, platform,
+                                    replace=('file', 'terminal', 'skills', 'clarify'), optional=True)
     metadata_path = profile / 'profile.yaml'
     description = ('Independent read-only board steward. Inspects all boards and reports '
                    'blockers, parallel-work opportunities and exact proposed commands '

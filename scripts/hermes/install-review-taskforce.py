@@ -13,6 +13,8 @@ import sys
 import tempfile
 
 SOURCE = Path(__file__).resolve().parent
+sys.path.insert(0, str(SOURCE))
+from hermes_config import platform_tools
 MARKER = '<!-- hermes-review-taskforce -->'
 END_MARKER = '<!-- /hermes-review-taskforce -->'
 JOB_NAME = 'kanban review taskforce'
@@ -174,21 +176,8 @@ def changed_files(root, policy_only=False):
             text = config.read_text()
             # Enable board tools for on-demand CLI/desktop conversations. Worker lifecycle
             # tools are still injected by Hermes; worker kanban_list stays hidden.
-            block = re.search(r'^platform_toolsets:\n.*?(?=^\S|\Z)', text, re.M | re.S)
-            if not block:
-                raise ValueError('Expected platform_toolsets; inspect config before updating')
-            settings = block.group(0)
             for platform in ('cli', 'desktop'):
-                match = re.search(rf'^  {platform}: \[([^\n]*)\]', settings, re.M)
-                if not match:
-                    if platform == 'cli':
-                        raise ValueError('Expected inline platform_toolsets.cli')
-                    continue
-                tools = [x.strip() for x in match.group(1).split(',') if x.strip()]
-                if 'kanban' not in tools:
-                    tools.append('kanban')
-                    settings = settings[:match.start(1)] + ', '.join(tools) + settings[match.end(1):]
-            text = text[:block.start()] + settings + text[block.end():]
+                text = platform_tools(text, platform, add=('kanban',), optional=platform == 'desktop')
             changes[config] = text
     # All live profiles must agree with the root's owner-approved global cap.
     # Per-profile limits and inference/model settings are separate and untouched.

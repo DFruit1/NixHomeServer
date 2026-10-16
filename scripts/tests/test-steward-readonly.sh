@@ -165,7 +165,9 @@ class StewardTest(unittest.TestCase):
         profile = self.root / 'profiles/board-steward'
         profile.mkdir(parents=True)
         (profile / 'SOUL.md').write_text('Old grant: restore scripts and unblock cards.')
-        (profile / 'config.yaml').write_text('model: {default: keep-model}\nhooks:\n  post_tool_call:\n    - command: echo keep-hook\n')
+        (profile / 'config.yaml').write_text('model: {default: keep-model}\nhooks:\n  post_tool_call:\n    - command: echo keep-hook\n'
+            'platform_toolsets:\n  cli: [file, terminal, memory, kanban]\n'
+            '  desktop:\n    - web\n    - skills\n  simplex: [web, todo]\n  telegram: [web]\n')
         (profile / 'profile.yaml').write_text('name: board-steward\ndescription: Old mutator\n')
         jobs_path = profile / 'cron/jobs.json'
         jobs_path.parent.mkdir()
@@ -199,6 +201,10 @@ class StewardTest(unittest.TestCase):
             jobs_path.write_text(json.dumps({'jobs': jobs}))
         with patch.object(installer.subprocess, 'run', edit):
             self.assertEqual(0, installer.install(self.root, self.repo))
+            self.assertEqual(0, installer.install(self.root, self.repo, check=True))
+            from hermes_config import compact
+            path = profile / 'config.yaml'
+            path.write_text(compact(path.read_text(), '# Copied reference comment\n'))
             self.assertEqual(0, installer.install(self.root, self.repo, check=True))
             self.assertEqual(0, installer.install(self.root, self.repo))
         self.assertEqual(3, len(calls))
@@ -235,6 +241,11 @@ class StewardTest(unittest.TestCase):
         self.assertIn('post_tool_call:\n    - command: echo keep-hook', config)
         self.assertIn('fail_closed: true', config)
         self.assertIn('hooks_auto_accept: true', config)
+        from hermes_config import document
+        tools = document(config)['platform_toolsets']
+        for platform in ('cli', 'desktop', 'simplex'):
+            self.assertEqual(['file', 'terminal', 'skills', 'clarify'], tools[platform])
+        self.assertEqual(['web'], tools['telegram'])
         self.assertIn('read-only observer', (profile / 'SOUL.md').read_text())
         self.assertIn('copyable external-agent handoff', jobs[1]['prompt'])
         self.assertTrue((self.root / 'backups/steward-readonly').is_dir())

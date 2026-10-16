@@ -422,6 +422,10 @@ class TaskforceTest(unittest.TestCase):
                 '# Profile\n\n- **Never leave your workspace.**\n\n## Whole-change-set deploy review\nPreserve verifier.\n')
             (directory / 'profile.yaml').write_text('description: old role\ndescription_auto: false\nprevious_names:\n  - old-name\n')
             (directory / 'config.yaml').write_text('model:\n  default: unchanged-model\nplatform_toolsets:\n  cli: [file, terminal]\n  desktop: [file, terminal]\n')
+            if name == 'head-coordinator':
+                config = directory / 'config.yaml'
+                config.write_text(config.read_text().replace('desktop: [file, terminal]',
+                                  'desktop:\n    - file\n    - terminal'))
         extra = self.root / 'profiles/unmanaged/config.yaml'
         extra.parent.mkdir()
         cap_config = ('model:\n  default: keep-extra-model\nkanban:\n'
@@ -438,6 +442,10 @@ class TaskforceTest(unittest.TestCase):
         self.assertEqual(1, installer.install(self.root, check=True, cron=False))
         self.assertEqual(original, (self.root / 'profiles/head-coordinator/SOUL.md').read_text())
         installer.install(self.root, cron=False)
+        self.assertEqual(0, installer.install(self.root, check=True, cron=False))
+        from hermes_config import compact
+        for config in [self.root / 'config.yaml', *self.root.glob('profiles/*/config.yaml')]:
+            config.write_text(compact(config.read_text(), '# Copied reference comment\n'))
         self.assertEqual(0, installer.install(self.root, check=True, cron=False))
         installed_head = (self.root / 'profiles/head-coordinator/SOUL.md').read_text()
         self.assertIn('Preserve this deploy policy.', installed_head)
@@ -456,6 +464,8 @@ class TaskforceTest(unittest.TestCase):
         config = self.root / 'profiles/head-coordinator/config.yaml'
         self.assertEqual(1, config.read_text().count('# nixhomeserver-review-verdict:start'))
         self.assertIn('^kanban_complete$', config.read_text())
+        from hermes_config import document
+        self.assertIn('kanban', document(config.read_text())['platform_toolsets']['desktop'])
         jobs = self.root / 'profiles/head-coordinator/cron/jobs.json'
         jobs.parent.mkdir()
         jobs.write_text(json.dumps({'jobs':[{'name':'kanban idle recovery'},{'name':'kanban idle recovery'}]}))
