@@ -3,22 +3,40 @@
 
 Reads only local, non-secret telemetry:
 
-* the account rate-limit windows the provider exposes through
-  ``hermes usage --json`` (Codex weekly/5h windows, plan, banked resets);
-* OpenCode Go/Zen account windows (rolling 5h, weekly, monthly) from the same
-  source the T3 Code usage tab reads: the ``opencode-go`` key in the local
-  OpenCode auth file, queried against the Zen usage endpoint;
+* the account rate-limit windows T3 Code resolves for Codex and OpenCode Go/Zen,
+  from its provider cache (``~/.t3/caches/<provider>.json`` -> ``usageLimits``);
+  each resolved window carries ``usedPercent``, ``resetsAt`` and, when the
+  provider reports it, ``windowDurationMins``;
+* the same windows live, best-effort: Codex from ``hermes usage --json`` and
+  OpenCode Go/Zen from the ``opencode-go`` key in the local OpenCode auth file,
+  queried against the Zen usage endpoint (the source the T3 Code usage tab
+  reads);
 * Hermes' own per-model spend from ``session_model_usage`` in ``state.db``;
 * OpenCode's per-session totals from its local ``opencode.db``.
 
+Pace reuses T3 Code's own assessment so a window reads here exactly as it does in
+T3: compare the used percent against the elapsed fraction of the window and call
+it ``OVER PACE`` when usage leads the clock by more than five points, ``Under
+pace`` when it trails by more than five, ``On pace`` otherwise. T3 is the only
+source that resolves ``windowDurationMins`` (the raw endpoints omit it), so the
+duration comes from its cache; the kind/label/duration fall back only when the
+cache is missing.
+
+Each account window prints as one line, one metric per bullet::
+
+    Codex
+    - Weekly: 75% left, resets in 5d 13h (OVER PACE)
+    OpenCode
+    - 5-Hour: 84% left, resets in 2h 23m (On pace)
+
 It prints a short block and never sends, writes board state, or reveals a
-credential. The daily prompt turns this into a credit-risk and spike report;
-this script only supplies the numbers. Every source is best-effort: a missing
-credential, database or binary degrades that one line, never the report.
+credential. Every source is best-effort: a missing credential, database or
+binary degrades that one line, never the report.
 
 Environment overrides (used by tests and a different checkout):
   HERMES_ROOT         hermes state dir (default ~/.hermes)
   HERMES_BIN          hermes launcher (default ~/.local/bin/hermes, else PATH)
+  T3_CACHE_DIR        T3 Code provider cache (default ~/.t3/caches)
   OPENCODE_DB         opencode database (default ~/.local/share/opencode/opencode.db)
   OPENCODE_AUTH       opencode auth file (default ~/.local/share/opencode/auth.json)
   OPENCODE_API_KEY    opencode-go key fallback when the auth file has none
@@ -40,15 +58,23 @@ from pathlib import Path
 
 DAY = 86400.0
 SPIKE_RATIO = 1.5
-WINDOW_DAYS = {"weekly": 7.0, "daily": 1.0, "monthly": 30.0,
-               "5h": 5.0 / 24, "hourly": 1.0 / 24}
-# OpenCode Go/Zen windows, keyed like the Zen usage response; the middle label is
-# printed and the last is the pace window used by ``pace_note``.
-OPENCODE_GO_WINDOWS = (
-    ("rolling", "Session (5h)", "5h"),
-    ("weekly", "Weekly", "weekly"),
-    ("monthly", "Monthly", "monthly"),
+MINUTE_MS = 60_000
+HOUR_MS = 3_600_000
+DAY_MS = 86_400_000
+# T3 Code calls usage "ahead"/"under" pace past a five-point lead/lag against the
+# elapsed fraction of the window; keep the same margin so the verdicts match.
+PACE_MARGIN = 5.0
+# Provider display order, and the window kinds each reports. T3 resolves the
+# window list; this is the order to print them in and the fallback set when its
+# cache is missing.
+PROVIDERS = (
+    ("codex", "Codex", ("weekly",)),
+    ("opencode", "OpenCode", ("session", "weekly", "monthly")),
 )
+KIND_LABELS = {"session": "5-Hour", "weekly": "Weekly", "monthly": "Monthly"}
+KIND_DURATION_MINS = {"session": 300, "weekly": 10_080, "monthly": 43_200}
+# Zen usage keys mapped to T3 window kinds.
+OPENCODE_GO_KINDS = {"rolling": "session", "weekly": "weekly", "monthly": "monthly"}
 # Cloudflare fronts the Zen endpoint and rejects clients with no/opaque
 # user-agent (error 1010), so send a descriptive product string.
 OPENCODE_GO_UA = "hermes-usage-pace/1.0"
@@ -64,6 +90,10 @@ def hermes_bin() -> str | None:
         return override if Path(override).exists() else None
     local = Path.home() / ".local/bin/hermes"
     return str(local) if local.exists() else shutil.which("hermes")
+
+
+def t3_cache_dir() -> Path:
+    return Path(os.environ.get("T3_CACHE_DIR", str(Path.home() / ".t3" / "caches")))
 
 
 def opencode_db() -> Path:
@@ -94,6 +124,10 @@ def now() -> dt.datetime:
     return dt.datetime.now().astimezone()
 
 
+def now_ms() -> float:
+    return now().timestamp() * 1000
+
+
 def fmt_tokens(value: int) -> str:
     for unit, scale in (("B", 1e9), ("M", 1e6), ("K", 1e3)):
         if abs(value) >= scale:
@@ -101,84 +135,140 @@ def fmt_tokens(value: int) -> str:
     return str(value)
 
 
-def parse_iso(value) -> dt.datetime | None:
+def parse_epoch_ms(value) -> float | None:
     if not isinstance(value, str):
         return None
     try:
-        parsed = dt.datetime.fromisoformat(value)
+        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=now().tzinfo)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=now().tzinfo)
+    return parsed.timestamp() * 1000
 
 
-def pace_note(provider: str, label: str, used, resets_at, window: str | None = None) -> str | None:
-    """Project the window to its reset at the pace observed since it opened."""
-    window_days = WINDOW_DAYS.get(str(window if window is not None else label).strip().lower())
-    reset = parse_iso(resets_at)
-    if window_days is None or reset is None or used is None:
+def t3_usage_limits(provider: str) -> dict:
+    """The provider's resolved usage limits from T3 Code's cache, best-effort."""
+    path = t3_cache_dir() / f"{provider}.json"
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    limits = data.get("usageLimits") if isinstance(data, dict) else None
+    return limits if isinstance(limits, dict) else {}
+
+
+def t3_windows(provider: str) -> dict:
+    """kind -> resolved window (usedPercent, resetsAt, windowDurationMins)."""
+    windows = {}
+    for window in t3_usage_limits(provider).get("windows") or []:
+        if isinstance(window, dict) and window.get("kind"):
+            windows[str(window["kind"])] = window
+    return windows
+
+
+def remaining_percent(used) -> int | None:
+    try:
+        used = float(used)
+    except (TypeError, ValueError):
         return None
-    remaining_days = (reset - now()).total_seconds() / DAY
-    elapsed_days = window_days - remaining_days
-    if elapsed_days <= 0 or remaining_days < 0:
+    return round(100 - max(0.0, min(100.0, used)))
+
+
+def pace_verdict(used, resets_at, duration_mins, moment_ms: float) -> str | None:
+    """T3 Code's pace assessment, mapped to a short label.
+
+    ``usedPercent`` versus the elapsed fraction of a fixed-length window: a lead
+    of more than five points is over pace, a lag of more than five is under.
+    Returns ``None`` when T3 could not resolve the window length.
+    """
+    try:
+        used = float(used)
+    except (TypeError, ValueError):
         return None
-    rate = used / elapsed_days
-    projected = used + rate * remaining_days
-    risk = "RISK: projected to exhaust before reset" if projected >= 100 else "ok"
-    return (f"- {provider} {label} pace: {rate:.1f}%/day; projected "
-            f"{projected:.0f}% at reset ({risk})")
+    reset = parse_epoch_ms(resets_at)
+    if reset is None or not duration_mins or duration_mins <= 0:
+        return None
+    window_ms = float(duration_mins) * MINUTE_MS
+    elapsed = max(0.0, min(1.0, (window_ms - (reset - moment_ms)) / window_ms))
+    diff = used - elapsed * 100
+    if diff > PACE_MARGIN:
+        return "OVER PACE"
+    if diff < -PACE_MARGIN:
+        return "Under pace"
+    return "On pace"
 
 
-def provider_windows() -> list[str]:
-    """Account rate-limit windows from `hermes usage --json`, best-effort."""
+def duration_phrase(ms: float) -> str:
+    """T3 Code's reset countdown: ``Xd Yh`` / ``Xh Ym`` / ``Xm``."""
+    ms = max(0, int(ms))
+    days = ms // DAY_MS
+    hours = (ms % DAY_MS) // HOUR_MS
+    minutes = (ms % HOUR_MS) // MINUTE_MS
+    if days > 0:
+        return f"{days}d {hours}h"
+    if hours > 0:
+        return f"{hours}h {minutes}m"
+    return f"{minutes}m"
+
+
+def reset_phrase(resets_at, moment_ms: float) -> str | None:
+    reset = parse_epoch_ms(resets_at)
+    if reset is None:
+        return None
+    if reset <= moment_ms:
+        return "resets now"
+    return f"resets in {duration_phrase(reset - moment_ms)}"
+
+
+def window_line(label: str, used, resets_at, duration_mins, moment_ms: float) -> str:
+    """One metric per bullet: ``- Weekly: 75% left, resets in 5d 13h (OVER PACE)``."""
+    left = remaining_percent(used)
+    if left is None:
+        return f"- {label}: usage unavailable"
+    line = f"- {label}: {left}% left"
+    reset = reset_phrase(resets_at, moment_ms)
+    if reset:
+        line += f", {reset}"
+    verdict = pace_verdict(used, resets_at, duration_mins, moment_ms)
+    if verdict:
+        line += f" ({verdict})"
+    return line
+
+
+def codex_live() -> tuple[dict, str | None]:
+    """kind -> (used_percent, resets_at) from ``hermes usage --json``, best-effort."""
     binary = hermes_bin()
     if not binary:
-        return ["- unavailable: no hermes launcher found"]
-    lines: list[str] = []
-    providers = ["openai-codex"]
-    default = os.environ.get("USAGE_PACE_PROVIDER")
-    if default:
-        providers.insert(0, default)
-    seen: set[str] = set()
-    for provider in providers:
-        if provider in seen:
-            continue
-        seen.add(provider)
-        try:
-            proc = subprocess.run(
-                [binary, "usage", "--provider", provider, "--json"],
-                capture_output=True, text=True, timeout=30,
-                env={**os.environ, "HERMES_HOME": str(hermes_root())})
-            data = json.loads(proc.stdout or "{}")
-        except (OSError, subprocess.SubprocessError, ValueError):
-            lines.append(f"- {provider}: unavailable (usage fetch failed)")
-            continue
-        windows = data.get("windows") or []
-        if not windows:
-            reason = data.get("unavailable_reason") or "no usage endpoint"
-            lines.append(f"- {provider}: {reason}")
-            continue
-        plan = data.get("plan") or "?"
-        for window in windows:
-            label = window.get("label") or "window"
-            used = window.get("used_percent")
-            reset = window.get("resets_at")
-            lines.append(f"- {provider} ({plan}) {label}: {used}% used, resets {reset}")
-            note = pace_note(provider, label, used, reset)
-            if note:
-                lines.append(note)
-        for detail in data.get("details") or []:
-            lines.append(f"- {provider} note: {detail}")
-    return lines
+        return {}, "no hermes launcher found"
+    try:
+        proc = subprocess.run(
+            [binary, "usage", "--provider", "openai-codex", "--json"],
+            capture_output=True, text=True, timeout=30,
+            env={**os.environ, "HERMES_HOME": str(hermes_root())})
+        data = json.loads(proc.stdout or "{}")
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return {}, "usage fetch failed"
+    windows = data.get("windows") or []
+    if not windows:
+        return {}, str(data.get("unavailable_reason") or "no usage endpoint")
+    resolved = {}
+    for window in windows:
+        label = str(window.get("label") or "").strip().lower()
+        kind = {"weekly": "weekly", "5h": "session", "session": "session",
+                "monthly": "monthly"}.get(label)
+        if kind:
+            resolved[kind] = (window.get("used_percent"), window.get("resets_at"))
+    return resolved, None
 
 
-def opencode_go_windows() -> list[str]:
-    """OpenCode Go/Zen account windows, from the source the T3 Code usage tab reads.
+def opencode_live() -> tuple[dict, str | None]:
+    """kind -> (percent, resetsAt) from the Zen usage endpoint, best-effort.
 
     The ``opencode-go`` API key comes from the local OpenCode auth file (falling
     back to ``OPENCODE_API_KEY``); the key authenticates a read-only GET against
     the Zen usage endpoint, which returns rolling/weekly/monthly ``percent`` and
-    ``resetsAt``. Best-effort: every failure is one line and the key is never
-    printed.
+    ``resetsAt``. The key is never printed.
     """
     entry = {}
     try:
@@ -191,7 +281,7 @@ def opencode_go_windows() -> list[str]:
             entry = candidate
     key = str(entry.get("key", "")).strip() or os.environ.get("OPENCODE_API_KEY", "").strip()
     if not key:
-        return ["- opencode-go: unavailable (no OpenCode credential)"]
+        return {}, "no OpenCode credential"
     try:
         data = http_get_json(opencode_usage_url(), {
             "Authorization": f"Bearer {key}",
@@ -199,26 +289,50 @@ def opencode_go_windows() -> list[str]:
             "Accept": "application/json",
         })
     except urllib.error.HTTPError as exc:
-        return [f"- opencode-go: unavailable (usage request failed: HTTP {exc.code})"]
+        return {}, f"usage request failed: HTTP {exc.code}"
     except (urllib.error.URLError, OSError, ValueError):
-        return ["- opencode-go: unavailable (usage request failed)"]
+        return {}, "usage request failed"
     usage = data.get("usage") if isinstance(data, dict) else None
     if not isinstance(usage, dict):
-        return ["- opencode-go: unavailable (no usage in response)"]
-    lines: list[str] = []
-    for name, label, window in OPENCODE_GO_WINDOWS:
+        return {}, "no usage in response"
+    resolved = {}
+    for name, kind in OPENCODE_GO_KINDS.items():
         record = usage.get(name)
-        if not isinstance(record, dict):
-            continue
-        used = record.get("percent")
-        reset = record.get("resetsAt")
-        status = record.get("status")
-        suffix = "" if status in (None, "ok") else f" [{status}]"
-        lines.append(f"- opencode-go {label}: {used}% used, resets {reset}{suffix}")
-        note = pace_note("opencode-go", label, used, reset, window=window)
-        if note:
-            lines.append(note)
-    return lines or ["- opencode-go: unavailable (empty usage response)"]
+        if isinstance(record, dict):
+            resolved[kind] = (record.get("percent"), record.get("resetsAt"))
+    return resolved, None if resolved else "empty usage response"
+
+
+def account_limit_lines() -> list[str]:
+    """Account windows as one metric per bullet, reusing T3 Code's assessments."""
+    moment_ms = now_ms()
+    lines: list[str] = []
+    live = {"codex": codex_live(), "opencode": opencode_live()}
+    for provider, display, kinds in PROVIDERS:
+        cached = t3_windows(provider)
+        resolved, reason = live[provider]
+        bullets: list[str] = []
+        for kind in kinds:
+            window = cached.get(kind) or {}
+            used, resets_at = resolved.get(kind, (None, None))
+            if used is None:
+                used = window.get("usedPercent")
+            if resets_at is None:
+                resets_at = window.get("resetsAt")
+            duration = window.get("windowDurationMins")
+            if not isinstance(duration, (int, float)) or duration <= 0:
+                duration = KIND_DURATION_MINS.get(kind)
+            if used is None and resets_at is None:
+                continue
+            bullets.append(window_line(KIND_LABELS.get(kind, kind), used, resets_at, duration, moment_ms))
+        if provider == "codex":
+            credits = t3_usage_limits(provider).get("resetCredits") or {}
+            count = credits.get("availableCount")
+            if count:
+                bullets.append(f"- Banked resets: {count}")
+        lines.append(display)
+        lines.extend(bullets or [f"- unavailable ({reason or 'no usage data'})"])
+    return lines
 
 
 def hermes_spend() -> dict:
@@ -259,14 +373,14 @@ def opencode_spend() -> dict:
     db = opencode_db()
     if not db.exists():
         return totals
-    now_ms = int(now().timestamp() * 1000)
+    now_epoch_ms = int(now_ms())
     try:
         conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
     except sqlite3.Error:
         return totals
     try:
         for key, window in (("7d", 7 * DAY), ("24h", DAY)):
-            cutoff = now_ms - int(window * 1000)
+            cutoff = now_epoch_ms - int(window * 1000)
             row = conn.execute(
                 "select count(*),"
                 " coalesce(sum(tokens_input)+sum(tokens_output),0),"
@@ -295,9 +409,7 @@ def main() -> None:
     stamp = now().strftime("%Y-%m-%d %H:%M")
     print(f"=== USAGE PACE {stamp} ===")
     print("ACCOUNT LIMITS:")
-    for line in provider_windows():
-        print(line)
-    for line in opencode_go_windows():
+    for line in account_limit_lines():
         print(line)
     print("HERMES BOTS (session history):")
     for line in spend_line("hermes", hermes_spend()):

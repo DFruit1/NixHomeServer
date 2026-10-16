@@ -1,8 +1,10 @@
 # Hermes card authoring
 
 Read this before creating or editing Hermes cards.
-Role permissions, owner-blocker admission and deployment gates remain in
-[AGENTS.md](../AGENTS.md#kanban-card-authoring).
+Role permissions, owner-blocker admission and deployment gates follow the shared
+fleet rules and project instructions; see [instruction ownership](hermes-instructions.md).
+The installed copy at ~/.hermes/scripts/hermes-card-authoring.md applies when this
+repository is not the worker's workspace.
 
 The reader is a human in a narrow column, mid-review of something else. A card
 must answer two questions from its first lines:
@@ -48,31 +50,32 @@ the card. Always this shape:
 
 ```
 ASK: <the one decision, as a choice>
-  A) <option> — <consequence in a few words>
-  B) <option> — <consequence in a few words>
+  <required action, or A)/B) alternatives only for a genuine choice>
 NEEDED FROM YOU: <approve / choose / confirm>
 IF UNANSWERED: <what stays blocked>
 Context: <one or two sentences, file:line>
 Must not change: <the guardrail>
 ```
 
-The owner must be able to answer from the first three lines. Evidence goes below
-the ask, never above it and never inside the question.
+The owner must be able to answer from the first lines. A factual input or required
+action does not need invented alternatives. Evidence goes below the ask.
 
 Every owner gate also carries the checked `Blocking:`, `Why owner:` and
-`Unblock:` summary defined in AGENTS.md's "Reaching the owner" section.
+`Unblock:` summary defined in the shared fleet and owner-alert policies.
 `IF UNANSWERED:` states the consequence;
 it does not explain why an agent cannot resolve the problem. The three summary
-lines are two or three sentences each and are exempt from the 90-character card
-line limit below.
+lines use as many sentences as the concrete explanation needs, without padding,
+and are exempt from the 90-character card line limit below. They are the canonical
+owner-facing ask; do not duplicate a long explanation or choices in both formats.
 
 ### Hard limits
 
 * **One idea per line.** "Do A, and B, but never C" is three lines, not one
   200-character sentence.
 * **Under 90 characters per line**, or it runs off the narrow detail pane.
-* **Code and figures get their own line.** A path, hash, count, mode, or command
-  never sits inside a sentence.
+* **Keep commands copyable.** Long commands, paths and revision identifiers may
+  exceed 90 characters on their own lines; never split a command to satisfy width.
+  Concise file:line references may stay in the required Change/Verify fields.
 * **Say it once.** A constraint restated in prose and in `Constraints:` means the
   prose is deletable. A specification path belongs on the parent card; a child
   names its parent instead of repeating the path on every card in the graph.
@@ -118,6 +121,11 @@ Before cutting implementer cards, decide serial or parallel per slice:
 * **Compose last.** A card that merges parallel branches is the one place the
   conflicts surface; it names the branches and runs the full gate.
 
+Context references do not require dependency edges. Siblings may reference the
+same specification without waiting for that parent handoff to complete. Link only
+required results; never make fan-out children depend on their own unfinished
+coordinator completion handoff.
+
 A chain of cards that each touch one app is the right shape, not a defect. Do
 not serialise independent work to look tidy, and do not parallelise work that
 shares a file to look busy.
@@ -154,6 +162,6 @@ comments into the worker.
 ### Pre-flight check
 
 Title ≤ 60 chars and names the outcome. First line is the ask, goal, or question.
-Body ≤ 15 lines, ≤ 1000 chars, ≤ 90 chars per line; an owner gate may be larger
-(≤ 30 lines, ≤ 2000 chars) to fit two or three sentences per summary line. A gate
-gives options and says what stays blocked.
+Body ≤ 15 lines, ≤ 1000 chars, normally ≤ 90 chars per line, with copyable command
+exceptions above. An owner gate may use ≤ 30 lines and ≤ 2000 chars to include the
+checked summary; options appear only for genuine choices. State what stays blocked.

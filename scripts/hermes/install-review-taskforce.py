@@ -227,9 +227,13 @@ def changed_files(root, policy_only=False):
         for name in ('review-taskforce.py', 'review-taskforce-tick.sh'):
             changes[directory / name] = (SOURCE / name).read_text()
     changes[root / 'scripts/review-taskforce-approval.md'] = (SOURCE / 'taskforce/approval-policy.md').read_text()
-    return {path: text for path, text in changes.items()
-            if not (policy_only and path.name in {'config.yaml', 'profile.yaml'})
-            and (not path.exists() or path.read_text() != text)}
+    changes = {path: text for path, text in changes.items()
+               if not (policy_only and path.name in {'config.yaml', 'profile.yaml'})}
+    spec = importlib.util.spec_from_file_location('instruction_policy', SOURCE / 'install-instruction-policy.py')
+    instructions = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(instructions)
+    return {path: text for path, text in instructions.changes(root, changes).items()
+            if not (policy_only and path.name in {'config.yaml', 'profile.yaml'})}
 
 
 def install(root, check=False, cron=True, policy_only=False):

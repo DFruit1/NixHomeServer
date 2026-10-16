@@ -79,7 +79,7 @@ or unrelated workspaces under this exception.
 
 Run `python3 ~/.hermes/scripts/review-taskforce.py --board <slug> status` to obtain
 its absolute location and current `findings_sha256`. Draft the updated Markdown
-in your workspace, then publish it with:
+under .tmp/<task>/ in your workspace, then publish it with:
 `python3 ~/.hermes/scripts/review-taskforce.py --board <slug> write --source <draft> --expected-sha256 <hash>`.
 A stale hash is a failed write: reread and merge, never overwrite the other run.
 This enforces cooperative ownership, not Unix isolation: all profiles share the

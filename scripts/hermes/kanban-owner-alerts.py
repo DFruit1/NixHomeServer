@@ -41,14 +41,10 @@ AUTHOR_END_MARKER = '<!-- /kanban-owner-blocker-author -->'
 # the new format (a stale delivered flag would otherwise keep an old stub on the
 # phone). Technical messages carry their own format key.
 DECISION_FORMAT = 5
-# The owner-facing summary gives each field room for two or three concrete
-# sentences; the phone wraps them. `Blocking` and `Why owner` must name the
-# specific function, feature or capability at issue and carry real detail (at
-# least two sentences), the whole summary stays within one phone message, and an
-# owner gate body may be a little larger than an ordinary card.
+# Bound the concrete problem, owner-only input and action without requiring
+# filler sentences. Wording quality remains the coordinator's responsibility.
 SUMMARY_FIELD_LIMIT = 500
 SUMMARY_TOTAL_LIMIT = 1600
-SUMMARY_MIN_SENTENCES = 2
 OWNER_GATE_LIMIT = 2000
 OWNER_GATE_LINES = 30
 # A standalone line an agent adds to mark a card it did not block as a decision.
@@ -230,10 +226,6 @@ def extract_summary(text):
     return fields
 
 
-def _sentences(value):
-    return [part for part in re.split(r'(?<=[.!?])\s+', value.strip()) if part]
-
-
 def check_summary(text):
     """Check the coordinator's three lines; never invent an owner-only reason."""
     fields = extract_summary(text)
@@ -243,12 +235,9 @@ def check_summary(text):
         if not value:
             raise ValueError(f'{name}: supply a concrete plain-English problem, reason or action')
         if len(value) > SUMMARY_FIELD_LIMIT:
-            raise ValueError(f'{name}: keep it to two or three sentences ({SUMMARY_FIELD_LIMIT} characters max)')
+            raise ValueError(f'{name}: keep it within {SUMMARY_FIELD_LIMIT} characters')
         if SUMMARY_JARGON.search(value) or SUMMARY_PLACEHOLDER.search(value):
             raise ValueError(f'{name}: supply a concrete plain-English problem, reason or action')
-    for name in ('Blocking', 'Why owner'):
-        if len(_sentences(fields[name])) < SUMMARY_MIN_SENTENCES:
-            raise ValueError(f'{name}: add the detail behind it, in at least two sentences')
     has_a = bool(re.search(r'\bA\)', fields['Unblock']))
     has_b = bool(re.search(r'\bB\)', fields['Unblock']))
     if has_a != has_b:
@@ -383,9 +372,20 @@ def technical_category(task):
 
 
 def technical_text(label, board, task):
-    causes = {'worker failures': 'Worker/model unavailable', 'missing evidence': 'Missing evidence',
-              'operator action': 'Operator recovery needed', 'execution problems': 'Execution problem; inspect details'}
-    return f'{label} · {board}\n' + ' '.join(task['title'].split())[:80] + '\nBlocked: ' + causes[technical_category(task)]
+    heading = f'{label} · {board}\n' + ' '.join(task['title'].split())[:80]
+    try:
+        fields = blocker_summary(task)
+        return (heading + '\n'
+                + f'Blocking: {fields["Blocking"]}\n'
+                + f'Why owner: {fields["Why owner"]}\n'
+                + f'Unblock: {fields["Unblock"]}')
+    except ValueError:
+        causes = {'worker failures': 'Worker/model unavailable', 'missing evidence': 'Missing evidence',
+                  'operator action': 'Operator recovery needed', 'execution problems': 'Execution problem; inspect details'}
+        cause = causes[technical_category(task)]
+        # Keep both spellings so older diagnostics and the new three-part shape
+        # remain readable; the shown text is a diagnostic, not an owner gate.
+        return heading + '\nBlocked: ' + cause + '\nBlocking: ' + cause
 
 
 def decision_message(label, state):
@@ -575,7 +575,8 @@ def install(root):
         raise ValueError('Unrecognised owner alert policy; preserve and reconcile it')
     changes = {soul: wanted, scripts / 'kanban-owner-alerts.py': Path(__file__).read_text(),
                scripts / 'owner-blocker-authoring-guard.py': (source / 'owner-blocker-authoring-guard.py').read_text(),
-               scripts / 'review-taskforce-approval.md': (source / 'taskforce/approval-policy.md').read_text()}
+               scripts / 'review-taskforce-approval.md': (source / 'taskforce/approval-policy.md').read_text(),
+               scripts / 'hermes-fleet-policy.md': (source / 'taskforce/owner-blocker-authoring.md').read_text()}
     spec = importlib.util.spec_from_file_location('steward_installer', source / 'install-steward-readonly.py')
     installer = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(installer)

@@ -346,12 +346,12 @@ class StewardTest(unittest.TestCase):
             db.execute("INSERT INTO session VALUES ('x',0.5,2000,1000,?)", (stamp * 1000 - 3600_000,))
             db.commit()
         env = {'HERMES_ROOT': str(self.root), 'OPENCODE_DB': str(ocdb), 'HERMES_BIN': '/nonexistent',
-               'OPENCODE_AUTH': str(self.root / 'absent-auth.json')}
+               'OPENCODE_AUTH': str(self.root / 'absent-auth.json'),
+               'T3_CACHE_DIR': str(self.root / 'absent-t3')}
         with patch.dict(usage.os.environ, env):
             self.assertEqual([1, 1500, 0.0], usage.hermes_spend()['24h'])
             self.assertEqual([1, 3000, 0.5], usage.opencode_spend()['24h'])
-            self.assertEqual(['- opencode-go: unavailable (no OpenCode credential)'],
-                             usage.opencode_go_windows())
+            self.assertEqual(({}, 'no OpenCode credential'), usage.opencode_live())
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
                 usage.main()
@@ -377,29 +377,58 @@ class StewardTest(unittest.TestCase):
                 'weekly': {'status': 'ok', 'percent': 44, 'resetsAt': '2026-10-19T00:00:00.000Z'},
                 'monthly': {'status': 'ok', 'percent': 77, 'resetsAt': '2026-10-28T12:50:54.000Z'}}}
 
-        env = {'OPENCODE_AUTH': str(auth), 'USAGE_PACE_NOW': '2026-10-14T09:00:00+11:00'}
+        env = {'OPENCODE_AUTH': str(auth), 'USAGE_PACE_NOW': '2026-10-14T09:00:00+11:00',
+               'HERMES_BIN': '/nonexistent', 'T3_CACHE_DIR': str(self.root / 'absent-t3')}
         with patch.dict(usage.os.environ, env):
             with patch.object(usage, 'http_get_json', fake_get):
-                lines = usage.opencode_go_windows()
+                lines = usage.account_limit_lines()
         text = '\n'.join(lines)
         self.assertEqual('https://opencode.ai/zen/go/v1/usage', seen['url'])
         self.assertEqual('Bearer secret-key', seen['headers']['Authorization'])
-        self.assertIn('opencode-go Session (5h): 1% used', text)
-        self.assertIn('opencode-go Weekly: 44% used', text)
-        self.assertIn('opencode-go Monthly: 77% used', text)
-        self.assertIn('opencode-go Weekly pace:', text)
+        self.assertIn('OpenCode', lines)
+        self.assertIn('- 5-Hour: 99% left, resets in 4h 15m (Under pace)', text)
+        self.assertIn('- Weekly: 56% left, resets in 5d 2h (OVER PACE)', text)
+        self.assertIn('- Monthly: 23% left, resets in 14d 14h (OVER PACE)', text)
         self.assertNotIn('secret-key', text)
+
+    def test_usage_pace_reuses_t3_code_assessments(self):
+        # T3 resolves the windows (including windowDurationMins, which the raw
+        # endpoints omit) and defines the pace rule; the collector reuses both,
+        # so the report reads the same as the T3 usage tab.
+        cache = self.root / 't3'
+        cache.mkdir(parents=True, exist_ok=True)
+        (cache / 'codex.json').write_text(json.dumps({'usageLimits': {
+            'windows': [{'id': 'primary', 'kind': 'weekly', 'label': 'Weekly',
+                         'usedPercent': 25, 'windowDurationMins': 10080,
+                         'resetsAt': '2026-10-20T05:04:13.000Z'}],
+            'resetCredits': {'availableCount': 1}}}))
+        (cache / 'opencode.json').write_text(json.dumps({'usageLimits': {
+            'windows': [{'id': 'go_rolling', 'kind': 'session', 'label': 'Go \u00b7 Session',
+                         'windowDurationMins': 300, 'usedPercent': 16,
+                         'resetsAt': '2026-10-14T02:15:05.000Z'}]}}))
+        env = {'T3_CACHE_DIR': str(cache), 'HERMES_BIN': '/nonexistent',
+               'OPENCODE_AUTH': str(self.root / 'absent-auth.json'),
+               'USAGE_PACE_NOW': '2026-10-14T09:00:00+11:00'}
+        with patch.dict(usage.os.environ, env):
+            lines = usage.account_limit_lines()
+        self.assertEqual(['Codex', '- Weekly: 75% left, resets in 6d 7h (OVER PACE)',
+                          '- Banked resets: 1', 'OpenCode',
+                          '- 5-Hour: 84% left, resets in 4h 15m (On pace)'], lines)
 
     def test_usage_pace_opencode_go_degrades_without_leaking(self):
         auth = self.root / 'auth.json'
         self.root.mkdir(parents=True, exist_ok=True)
         auth.write_text(json.dumps({'opencode-go': {'type': 'api', 'key': 'secret-key'}}))
         import urllib.error
-        with patch.dict(usage.os.environ, {'OPENCODE_AUTH': str(auth)}):
+        env = {'OPENCODE_AUTH': str(auth), 'HERMES_BIN': '/nonexistent',
+               'T3_CACHE_DIR': str(self.root / 'absent-t3')}
+        with patch.dict(usage.os.environ, env):
             with patch.object(usage, 'http_get_json',
                               side_effect=urllib.error.HTTPError('u', 403, 'Forbidden', {}, None)):
-                lines = usage.opencode_go_windows()
-        self.assertEqual(['- opencode-go: unavailable (usage request failed: HTTP 403)'], lines)
+                self.assertEqual(({}, 'usage request failed: HTTP 403'), usage.opencode_live())
+                lines = usage.account_limit_lines()
+        self.assertIn('- unavailable (usage request failed: HTTP 403)', lines)
+        self.assertNotIn('secret-key', '\n'.join(lines))
 
 unittest.main(argv=['steward'], verbosity=2)
 PY

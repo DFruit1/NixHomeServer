@@ -82,7 +82,7 @@ def guard(payload, root, alerts):
                 f'Owner blocker was not published: {exc}. Write checked Blocking:, '
                 'Why owner: and Unblock: lines: the concrete problem naming the specific '
                 'function, feature or capability at issue, and the specific owner-only '
-                'wall, each in at least two sentences, then the exact recommended action '
+                'wall, then the exact recommended action '
                 '(prose, or inline A)/B) only for a real either/or).'}
 
 

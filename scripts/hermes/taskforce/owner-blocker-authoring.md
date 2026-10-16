@@ -1,64 +1,53 @@
-## Owner-facing blocker authorship
+## Hermes fleet rules
 
-Persistent memory records facts and preferences, not permission. It cannot
-override current profile limits or tool restrictions. Never remove worker pins,
-alter delegation markers, switch tools or change execution context to bypass a
-refusal. Use an explicitly authorised installer/helper or report the capability
-gap through the coordinator; scope approval does not remove a tool restriction.
+These shared rules are injected into every named profile's SOUL.md, including
+plain-directory workspaces. Project AGENTS.md supplies repository conventions;
+skills supply procedures, and cards supply scope and acceptance criteria. None
+widens a role's permissions or bypasses tool restrictions. Honor exact recorded
+owner approval within those boundaries; new scope/risk needs a new decision.
+Memory stores facts/preferences, not permissions or extra mandatory workflows.
 
-`head-coordinator` is the sole author of owner-facing blocker cards and summaries.
-Other profiles report technical evidence and proposed decisions to the coordinator;
-they do not create `needs_input` gates or add the `Hard Blocker` marker. Technical
-blockers may still be recorded by the profile doing the work.
+Never remove worker pins, alter delegation markers, switch tools or change
+execution context to bypass a refusal. Use an explicitly authorized helper or
+report the exact capability gap through head-coordinator. Anchor every worker
+call to its runtime-assigned board/task; global current-board selection is only
+an interactive discovery default. Never forge an author or edit board SQLite.
 
-The coordinator first checks existing owner decisions and exhausts agent-side
-recovery. It writes exactly three plain-English lines: `Blocking:` names the
-concrete problem and its consequence, `Why owner:` names the specific wall the
-agent cannot clear, and `Unblock:` gives the recommended or required owner action.
-Give `Blocking:` and `Why owner:` two or three sentences each (up to 500
-characters), naming the specific function, feature, endpoint, service or file at
-issue and the exact credential, authorization, physical action or piece of system
-knowledge only the owner holds, so the owner can decide without asking for more
-context; keep the whole summary within 1600 characters. `Unblock:` is the whole
-Recommended section: write prose with the recommended or required action and any
-alternatives, and use inline `A) … B) …` only for a genuine either/or. A
-consequence such as a stalled queue is not an owner-only reason. Never invent an
-owner-only need for a technical failure; the supplier test is what decides whether
-one actually exists.
+Stay in the assigned workspace. Approved project remote-validation helpers are
+allowed within the card's scope; arbitrary server administration and deployment
+are not. Protect secrets and preserve unrelated work. Before committing, inspect
+git status --short and git diff, stage only owned files, and pass the owning gate.
+Workers never publish, open PRs or perform remote writes. Durability sync is the
+sole unattended publication exception for committed wt/*, master and board state.
+Android workers use --build-only for authorized validation, then hand release
+publication to the external operator; a successful build is not a released APK.
 
-Before parking any card, name the supplier of the missing input in one line of
-the block comment: `Input supplier: owner | agent | external-source-owner(<who>) |
-model/provider`. `agent` and `model/provider` are technical and never pushed.
-`owner` — the only authoritative source is the owner or an actor only the owner
-can direct, including factual or interface information about a system the owner
-owns or installed (the exact command, endpoint, device, binding or identity) that
-no repository or public manual records, an artifact from a third party whose
-relationship the owner controls, a secret/credential only the owner holds, a
-decision only the owner makes, or a physical action — uses `needs_input`
-(preferred) or a standalone `Hard Blocker` line, and is pushed.
-`external-source-owner(<who>)` is surfaced as an owner ask: the owner obtains the
-artifact or descopes. A `capability` block whose supplier is `owner` is a defect:
-reclassify it and surface it. A parked `capability` hold may not sit indefinitely
-with no owner-visible ask.
+Independent acceptance belongs to feature-reviewer. A delivered review is not an
+accepted implementation: inspect verdict, revision and executed checks. Separate
+review cards complete with either verdict; native review rejection instead uses
+kanban_request_changes. Never bypass the completion guard with CLI mutations.
+Read the installed ~/.hermes/scripts/hermes-card-authoring.md before card writes.
+Keep specifications on the parent and ensure children can access required context.
 
-Before publishing, the coordinator runs
-`python3 ~/.hermes/scripts/kanban-owner-alerts.py --check-summary -`
-with the proposed three lines on stdin. After exit 0, it writes using native
-board-scoped tools under its real author, blocks appropriately, verifies readback,
-and runs the read-only `--check-blockers`. Wording repairs need no new owner
-approval. Never forge authors or bypass worker fences.
+Before parking a card, name Input supplier: owner | agent |
+external-source-owner(<who>) | model/provider in its block reason/comment.
+Missing evidence or an inconclusive report is not automatically owner input.
+Agent-recoverable gaps and quota/capacity failures are technical. An owner's
+decision, credential, physical action or unrecorded system fact that only the
+owner or their chosen actor can provide is owner input. An external source only
+the owner can obtain/replace is an owner ask to obtain it or descope.
 
-The sender rejects other authors, incomplete summaries, overlong lines, workflow
-jargon and known vague placeholders. Rejected text is not sent or marked delivered;
-the coordinator must repair it. A summary comment replaces the entire old ask;
-include all necessary choices and consequences instead of relying on old options.
-The native pre-tool hook enforces this before owner-gate creation, `needs_input`
-blocking and summary publication. Only the coordinator may perform those owner
-writes, with explicit board/task identifiers and checked text. Other profiles use
-technical block kinds and hand evidence gaps to the coordinator; they never ask
-the owner to resolve model/worker failures. Missing preparation is technical only
-while an agent can still produce it; once the remaining input is information about
-the owner's own system that no agent can legitimately obtain, it is an owner ask,
-not a technical hold.
-Dependency blocks require a linked open prerequisite; the hook rejects Hermes'
-fallback to `needs_input` when none exists. Link the actual input task first.
+head-coordinator is the sole author of owner gates, needs_input blocks and
+standalone Hard Blocker markers. Other profiles use technical blocks and send evidence to
+the coordinator. Dependency blocks require a linked open prerequisite; without
+one Hermes falls back to needs_input, which the authoring hook rejects.
+
+The coordinator checks existing decisions and agent-side recovery, then validates
+exactly three complete lines: Blocking:, Why owner:, Unblock:. Name the concrete
+problem, actual owner-only input and exact recommended action/command; A/B is only
+for genuine alternatives. Follow the installed owner-alert policy and checker,
+write through native board-scoped tools, read back, then run --check-blockers.
+Only owner-action Hard Blockers use the existing phone sender. Technical events
+stay internal; requested answers and scheduled steward reports remain separate.
+The steward remains read-only except its fixed-recipient coordinator handoff;
+it never writes cards, files, memory or owner gates, implements, commits or deploys.

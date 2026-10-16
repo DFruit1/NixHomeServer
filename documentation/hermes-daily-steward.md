@@ -40,6 +40,14 @@ older unresolved blockers:
 - Persistent blockers, with age derived from the current blocked spell in
   status history, their cause, last progress and downstream impact. Check
   recorded owner answers and completed dependencies before proposing a remedy.
+- Current features being worked on: enumerate the active feature trackers
+  (not their execution cards). For each, report its purpose, how it progressed
+  since the previous daily report, and what done looks like. This section is
+  a required report section; compress unchanged detail first. Within the 3000-character
+  phone budget, prioritize complete owner asks, then feature lines, changed stalls,
+  usage risks and one optional handoff. State any omitted feature count explicitly;
+  never imply complete coverage when details did not fit. Send technical detail
+  through the existing internal coordinator handoff, without extra phone messages.
 - Repeated permission denials, grouped by profile, tool, refusing policy and
   affected instruction or goal. Include standing goals outside cards. Compare
   rejected actions with both the task and its policy; distinguish valid refusals
@@ -157,24 +165,27 @@ to the daily report and owner requests.
 
 ## Usage and credit pace
 
-The daily job also runs `usage-pace.py` and injects its block. It reads only
-local, non-secret telemetry: Codex account windows from
-`hermes usage --provider openai-codex --json` (weekly/5h percent used, reset
-time, plan, banked resets), OpenCode Go/Zen account windows from the same source
-the T3 Code usage tab reads (the `opencode-go` key in
-`~/.local/share/opencode/auth.json`, queried read-only against the Zen usage
-endpoint for rolling 5h, weekly and monthly percent used and reset), Hermes' own
-per-model totals from `session_model_usage` in `state.db`, and OpenCode's
+The daily job also runs `usage-pace.py` and injects its block. Each account
+window prints as one metric per bullet, reusing T3 Code's own assessment so the
+report reads the same as the T3 usage tab, for example
+`- Weekly: 75% left, resets in 5d 13h (OVER PACE)`. The verdict is T3's rule:
+the used percent against the elapsed fraction of the window, `OVER PACE` when
+usage leads the clock by more than five points, `Under pace` when it trails by
+more than five, `On pace` otherwise. T3 is the only source that resolves
+`windowDurationMins` (the raw endpoints omit it), so the window kind, label and
+duration come from its provider cache (`~/.t3/caches/<provider>.json` ->
+`usageLimits`); the live values come from `hermes usage --provider
+openai-codex --json` (Codex) and the `opencode-go` key in
+`~/.local/share/opencode/auth.json` queried read-only against the Zen usage
+endpoint (OpenCode Go/Zen), with the cached window as the fallback. Hermes' own
+per-model totals come from `session_model_usage` in `state.db`, and OpenCode's
 per-session cost and tokens from `~/.local/share/opencode/opencode.db`. Each pool
 is reported for the last 24 hours and the last week, and a day whose tokens
-exceed 1.5x the trailing daily average is marked `SPIKE`. Every account window
-is projected to its reset at the observed pace and flagged `RISK` when it is on
-course to exhaust before reset, so the OpenCode weekly/monthly and the Codex
-weekly limits can be reported under or over pace. The prompt asks the steward to
-judge credit risk against the reset window, attribute spikes to observed
-behaviour, and recommend the smallest avoiding action. A source that is missing,
-lacks a credential or has no usage endpoint degrades to one explicit line; the
-collector never prints a credential.
+exceed 1.5x the trailing daily average is marked `SPIKE`. The prompt asks the
+steward to judge credit risk against the reset window, attribute spikes to
+observed behaviour, and recommend the smallest avoiding action. A source that is
+missing, lacks a credential or has no usage endpoint degrades to one explicit
+line; the collector never prints a credential.
 
 Transport changes remain an owner-authorized operation for the external agent.
 The steward cannot create an identity, pair it, change its binding or retire a

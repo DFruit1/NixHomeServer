@@ -450,7 +450,8 @@ class TaskforceTest(unittest.TestCase):
         for config in (extra, self.root / 'config.yaml'):
             self.assertEqual(cap_config.replace('max_in_progress: 8', 'max_in_progress: 3'), config.read_text())
         self.assertNotIn('Send milestones.', skill.read_text())
-        self.assertIn('Preserve routing.', skill.read_text())
+        self.assertIn('runtime-assigned board/task', skill.read_text())
+        self.assertIn('Hermes fleet rules', installed_head)
         self.assertTrue((self.root / 'scripts/review-taskforce-approval.md').is_file())
         config = self.root / 'profiles/head-coordinator/config.yaml'
         self.assertEqual(1, config.read_text().count('# nixhomeserver-review-verdict:start'))

@@ -526,7 +526,7 @@ fi
 
 board_health_prompt="Board health check. Run 'hermes kanban --board $HERMES_BOARD list' and 'hermes kanban --board $HERMES_BOARD diagnostics' to see current state. The attached MONITOR CHANGE DETECTED block lists findings from scripts/hermes/kanban-board-health.sh.
 
-Work through every finding using the 'Board health' section of your SOUL.md. For each one decide: is it truly blocked, or merely undispatchable? If undispatchable, reassign it to a lane with headroom. If it is genuinely waiting on the owner, block it with kind=needs_input and a comment stating the exact question -- do not leave human-decision cards sitting in 'ready', where they falsely advertise that a worker is about to pick them up. Free saturated lanes. For UNPUSHED/MASTER_AHEAD findings run scripts/hermes/kanban-durability-sync.sh and report anything it could not push.
+Work through every finding using the 'Board health' section of your SOUL.md. Classify the actual missing input and existing recovery conditions before routing. Reassign eligible non-sensitive work only within the recorded limits; never evade quota-breaker holds. Only genuine owner-only input warrants a checked needs_input gate, authored through native tools after summary validation. UNPUSHED/MASTER_AHEAD belongs to the existing no-agent durability-sync cron; never publish worker branches or run a remote-writing sync from coordinator recovery. Report failed durability internally.
 
 Do not implement anything yourself and do not re-audit. Report in prose what you changed and what still needs the owner."
 

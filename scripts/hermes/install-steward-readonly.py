@@ -6,6 +6,7 @@ the profile or adding a parser dependency.
 """
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -70,11 +71,17 @@ def install(root, repo, check=False):
                    'blockers, parallel-work opportunities and exact proposed commands '
                    'to head-coordinator, including requests outside its own permissions. '
                    'Never writes files or changes cards itself.')
-    changes = {profile / 'SOUL.md': (SOURCE / 'taskforce/board-steward.md').read_text(),
+    spec = importlib.util.spec_from_file_location('instruction_policy', SOURCE / 'install-instruction-policy.py')
+    instructions = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(instructions)
+    changes = {profile / 'SOUL.md': instructions.shared((SOURCE / 'taskforce/board-steward.md').read_text()),
                profile / 'skills/devops/board-steward/SKILL.md':
                    (SOURCE / 'taskforce/board-steward-skill.md').read_text(),
                config_path: config_text,
                metadata_path: replace_setting(metadata_path.read_text(), 'description', json.dumps(description))}
+    changes[root / 'scripts/hermes-fleet-policy.md'] = (SOURCE / 'taskforce/owner-blocker-authoring.md').read_text()
+    changes[root / 'scripts/hermes-card-authoring.md'] = (SOURCE.parent.parent / 'documentation/hermes-card-authoring.md').read_text()
+    changes[root / 'scripts/hermes-instructions.md'] = (SOURCE.parent.parent / 'documentation/hermes-instructions.md').read_text()
     for name in ('kanban-daily-steward.py', 'daily-steward-window.py', 'usage-pace.py',
                  'steward-opportunity-scan.py',
                  'steward-board-read.py', 'steward-readonly-guard.py', 'steward-coordinator-request.py'):

@@ -1,8 +1,7 @@
 # Hermes Project Priorities
 
-This file is the **audited contract** for this project. `principal-consultant` reads
-it to answer one question per priority: *is this feature set stable, correct,
-and efficient?* The `project-auditor` taskforce uses it to guide selection and
+This file is the **audited contract** for this project. The `project-auditor`
+taskforce uses it to guide selection and
 expectations. `feature-reviewer` may audit any existing feature, including ones
 not listed here, for a focused question about correctness, regressions,
 integration, efficiency, security or simpler implementation with a concrete

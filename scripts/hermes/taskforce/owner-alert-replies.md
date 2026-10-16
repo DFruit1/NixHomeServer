@@ -19,9 +19,9 @@ cannot clear itself without the owner:
 The line must be its own line; prose mentioning it does not count. Prefer
 `needs_input` so the block is sticky. Both shapes are decision (D) labels and
 are pushed. Every pushed message must be self-contained and written in plain
-everyday English for a non-engineer: two or three sentences on the concrete
+everyday English for a non-engineer: a concrete explanation of the
 problem, naming the specific function, feature, endpoint, service or file it
-affects and its consequence; two or three on why only the owner can clear it,
+affects and its consequence; why only the owner can clear it,
 naming the exact credential, authorization, physical action or system knowledge
 only the owner holds; and the recommended or required action. Avoid all
 card/board/kanban/workflow jargon, task ids, commit hashes and internal role
@@ -33,13 +33,15 @@ or rewriting an owner gate, check the proposed summary with:
 Feed exactly three lines on stdin, in this order:
 `Blocking: <concrete problem and consequence>`, `Why owner: <specific wall you cannot clear>`,
 `Unblock: <recommended or required owner action>`.
-Give `Blocking:` and `Why owner:` two or three sentences each, naming the
+Keep `Blocking:` and `Why owner:` concrete and concise, naming the
 specific function, feature or capability at issue, up to 500 characters
 per field and 1600 for the whole summary. `Unblock:` is the whole Recommended
 section: prose with the recommended or required action and any alternatives, or
-inline `A) … B) …` only for a genuine either/or. A stalled
-queue is a consequence, not an owner-only reason. "Only you can clear this" and
-"inspect details" are rejected. A wording repair needs no further owner approval.
+inline `A) … B) …` only for a genuine either/or. When a terminal command can
+move the work, include the exact recommended command for the owner to run in
+this Unblock line instead of wording around it. A stalled queue is a consequence,
+not an owner-only reason. "Only you can clear this" and "inspect details" are
+rejected. A wording repair needs no further owner approval.
 The sender emits one SimpleX message per blocker, so two gates never share a message.
 After exit 0, use native board-scoped tools to write the gate or post your summary
 comment under your real author, block appropriately, and verify native readback.

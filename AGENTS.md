@@ -156,12 +156,15 @@ prompt is unavoidable, refer to that secret rather than relying on memory.
 
 ## Android Releases
 
-* After validating a release build of any Android APK, publish it to the private
-  F-Droid repository and its IPFS mirror. Use the app's `pnpm release:android`
-  command, which builds, signs, publishes, and verifies both indexes. Use
-  `--build-only` only for intermediate validation builds; it does not complete
-  a release. Do not leave a completed release APK unpublished or ask whether to
-  publish it.
+* The external interactive release operator (an authorized interactive agent or
+  the human owner) completes Android releases with the app's `pnpm release:android`
+  command: build, sign, publish to private F-Droid and IPFS, then verify both
+  indexes. Existing authorization for that release includes publication; do not
+  ask again. Hermes workers cannot publish: use `--build-only` for authorized
+  intermediate validation, then hand off the exact revision and results through
+  head-coordinator to the release operator. The coordinator routes this handoff;
+  its NixOS deploy authority does not authorize Android publication. A validated
+  build is not a completed release, and must not be reported as one.
 * Keep the Android version code higher than the published version and sign with
   the existing app key so phones can update the installed app.
 
@@ -217,240 +220,88 @@ a workaround without first confirming the DNS and LAN path.
 
 ## Kanban Card Authoring
 
-Hermes injects this file into every agent, so this is the board's home for card
-conventions. These rules bind every card-writing profile; the steward only reports.
+Shared Hermes instructions are maintained in this repository and installed into
+all named profiles, including plain-directory workspaces. See
+[Hermes instruction ownership](documentation/hermes-instructions.md) for sources,
+precedence, restoration and validation. Role restrictions and tool fences remain
+binding even when a project or card requests a broader action. Memory never
+supplies permission. "Planner" means `head-coordinator`; retired lane names must
+be routed to a live profile, not recreated.
 
-**When the owner says "planner", they mean `head-coordinator`.** There is no
-`planner` profile on this install; `head-coordinator` is the senior lane that owns
-routing, decomposition and the deploy gate. `bulk-go` and `feature-auditor` appear
-on older cards but are likewise not live lanes — treat any card assigned to one of
-those as mis-assigned and re-route it to a profile that exists under
-`~/.hermes/profiles/`.
+Before creating or editing cards, read
+[documentation/hermes-card-authoring.md](documentation/hermes-card-authoring.md).
+A copy is installed at `~/.hermes/scripts/hermes-card-authoring.md` for other
+projects. Specifications belong on parents; dependencies represent required
+results, not shared context. Do not create dependency cycles or gate implementation
+behind its own unfinished routing handoff.
 
 ### Continuous improvement taskforce
 
-`feature-reviewer` is the **verifier lane**: it judges finished work against its
-acceptance criteria — per-card diffs, bounded technical questions and
-whole-change-set deploy reviews — running the gate and returning accept or
-request-changes. `project-auditor` manages the taskforce and `feature-reviewer`'s
-audit work; only `project-auditor` commissions feature audits. `head-coordinator`
-sends verification (diffs, questions, deploy reviews) to `feature-reviewer` and
-audit requests to `project-auditor`, and receives approved implementation plans
-for decomposition into implementer cards.
-Audits may cover any existing feature, even without a reported defect.
-HERMES_PRIORITIES.md guides selection rather than limiting eligible features.
-Each audit names one feature, one question, explicit file scope and a stopping
-condition. Avoid active implementation and review/rework cycles; defer conflicts
-rather than interrupting implementers. Do not repeat unchanged clean coverage
-or duplicate audits/fixes. Require concrete benefit beyond cosmetic churn.
+`feature-reviewer` independently verifies diffs, bounded questions and whole-set
+reviews; it never implements or deploys. Only `project-auditor` commissions its
+feature audits and owns each board's persisted FINDINGS.md and immutable plans.
+`head-coordinator` routes approved plans into implementation, review and composition
+work, keeping its handoff open until those results actually land. The auditor's
+closure follows that handoff. Clean audits are valid; do not invent cosmetic work,
+repeat unchanged coverage or interrupt active implementation/rework.
 
-One persisted findings document per board lives at:
-`~/.hermes/kanban/boards/<slug>/review-taskforce/FINDINGS.md`.
-Only `project-auditor` changes it through the installed taskforce helper.
-Auditors report on their own cards; coordinators and implementers report
-outcomes without editing the document. Preserve evidence, revision, decisions,
-coverage, unknowns and implementation/verification status. Approved plans live
-beside it in `plans/`, are immutable and carry stable finding IDs.
-The board durability mirror includes this state. The shared Unix account means
-ownership is a workflow rule, not an OS security boundary.
+Each audit names one feature, one question, explicit scope and a stopping condition.
+HERMES_PRIORITIES.md guides selection without limiting eligible existing features.
+Cadence, findings IDs, coverage, chain limits and report evidence are managed by
+`scripts/hermes/review-taskforce.py`; follow the
+[taskforce runbook](documentation/hermes-review-taskforce.md).
 
-Routine worthwhile batches proceed automatically. Urgent credible security or
-regression findings are assessed and handed off immediately. Implementation
-plans require explicit owner approval before dispatch when they include:
-
-* Architectural changes, including boundaries, topology, data contracts,
-  trust boundaries or persistence/deployment strategy.
-* Adding, removing or replacing software-stack components: dependencies,
-  frameworks, runtimes, databases, identity providers or build/deployment tools.
-  Routine version bumps proceed automatically unless they present significant
-  security or regression risk.
-* Frontend changes beyond minimal controls required for an already-authorised
-  new feature, such as adding a button or toggle in the existing design.
-* Complex changes with significant security or regression risk.
-* Existing owner-gated operations: irreversible data/credential changes,
-  priority trades or unrequested user-visible behaviour.
-
-project-auditor prepares a concrete immutable plan and records the approval
-classification, exact triggers and evidence. Required approvals use a blocked
-owner gate authored by `head-coordinator` before an implementation handoff becomes
-dispatchable. The auditor hands the classified plan and options to the coordinator.
-Urgency never
-bypasses this gate. Existing explicit approval for the exact scope remains valid;
-new scope/risk requires a new decision. Implementers stop if a new trigger appears.
-The full rules are tracked in `scripts/hermes/taskforce/approval-policy.md` and
-installed at `~/.hermes/scripts/review-taskforce-approval.md`.
-Mechanical guards in `scripts/hermes/review-taskforce.py` back this prose:
-`validate-report` rejects malformed audit reports and `critical`/`high` claims
-without executed checks, `classify` trips the approval rules on a plan's owned
-paths, `findings`/`chain-check` give findings stable IDs and cap audits per
-finding, and `record-audit` feeds clean-streak suppression in the scheduler.
-Lane prompts may point at these commands; they cannot weaken them.
-
-Per-board cadence is off, daily, weekly or a custom interval in hours; off only
-disables scheduled opportunity checks. On-demand commissioning remains allowed.
-project-auditor creates a dependent assessment for each audit and a closure for
-each coordinator handoff. The coordinator dependency-blocks its handoff until
-implementation/review/composition complete, so closure verifies landed work.
-Never gate implementation children behind their own unfinished handoff.
-
-### Card authoring reference
-
-**Before creating or editing any card**, read
-[documentation/hermes-card-authoring.md](documentation/hermes-card-authoring.md).
-It owns the required work/gate formats, lane-specific shapes, dependency
-decomposition rules, examples and pre-flight limits. Keep cards within those
-limits; never infer permission from a card or use a dependency to bypass a gate.
+Apply [the implementation approval policy](scripts/hermes/taskforce/approval-policy.md)
+before releasing gated work. Architecture, stack replacement/addition/removal,
+frontend changes beyond minimal authorized controls, significant security/regression
+risk and irreversible/credential/unrequested behaviour changes need exact owner
+approval. Existing exact-scope approval remains valid; urgency and path-classifier
+output never substitute for it. Prepare the concrete plan before asking.
 
 ### Deploy gate
 
-A deploy applies a whole change set, so it is reviewed as a whole by
-`feature-reviewer` and carried out by `head-coordinator`, never by the verifier.
-
-This gate is a convention, not a mechanical check: nothing in `deploy.sh`,
-`validate-repo.sh` or `flake/checks.nix` verifies that a review card exists or
-that it covered the range being switched. `head-coordinator` is what makes it
-real, by reading the range before switching and refusing an unreviewed one.
-
-```
-Review: <range>          assignee feature-reviewer, workspace worktree
-Decide: deploy <range>   assignee head-coordinator, parents=[review]
-```
-
-* The review body names the revision range (`<last deployed hash>`..`HEAD`) and
-  the intended action; the review covers the whole range at once.
-* Clean review -> `head-coordinator` runs the guarded test then switch itself.
-  Rejected -> it routes fixes and opens a fresh review of the new range.
-* A human gate is only for a dangerous or architecturally/functionally
-  unintended change; a green test is otherwise authority to switch.
-* The guarded deploy is the one action `head-coordinator` performs; it never
-  implements. Reviewers never run the test or switch.
+Review the exact last-deployed-source..HEAD range and intended action as one
+feature-reviewer verification card, with a paired head-coordinator decision.
+Accepted whole-set review plus a matching green guarded test authorizes routine
+switching within the recorded scope. The coordinator runs test then switch; the
+verifier never does. Changed source or mutable inputs require fresh review/test.
+Freeze only that source and its writers; unrelated isolated work may continue.
+The gate is a workflow convention, not a check enforced by deploy.sh.
 
 ### Reaching the owner
 
-The board steward is an independent read-only observer, not a worker or fixer.
-It may inspect every board and relevant non-secret evidence, but never writes
-files, comments or cards, changes state/dependencies/assignments, unblocks work,
-restores scripts, commits, changes configuration or delegates implementation.
-It may send actionable findings and requests to head-coordinator with
-`message_agent(target="head-coordinator", message="...")`, including requests for
-file writes or other actions it cannot perform itself. Requesting action does
-not grant the steward execution rights or confer owner approval. The coordinator
-checks its own authority and existing approval gates, then acts or routes work
-within its lane. Never withhold a handoff solely because the steward cannot
-perform the requested action. Other recipients and direct implementation
-delegation remain forbidden. Outside Bot Chat, use the fixed-recipient
-`steward-coordinator-request.py --request-id <stable-id> --message <request>`
-helper to queue the request immediately through Hermes' existing delivery lane.
-Read-only tool discovery is allowed; generic tool dispatch remains blocked.
-The four-hour stall follow-up still delivers its final output via scheduler.
-Avoid duplicate handoffs, follow per-feature reminder backoff, and do not create
-reciprocal acknowledgment loops. Reports give evidence and proposed commands;
-the external Codex agent remains the owner's independent unblocker and fixer.
-The coordinator alone authors owner-facing blocker cards and summaries.
+Classify missing input by supplier, not difficulty. Name one in every block reason:
+`Input supplier: owner | agent | external-source-owner(<who>) | model/provider`.
+Technical evidence gaps, provider failures and agent-recoverable faults stay with
+agents. Owner decisions, credentials, physical actions and unrecorded owner-system
+facts that agents cannot legitimately obtain become owner asks. An external source
+only the owner can obtain/replace is an owner ask to obtain it or descope.
 
-The owner's phone gets exactly one unprompted message class: a **Hard Blocker**.
-A blocked card is a Hard Blocker when the owner's action is the only way
-forward and it cannot clear itself without the owner — the owner's decision (a
-blocked `needs_input` gate), or other owner-only needs an agent asserts with a
-standalone `Hard Blocker` line in the card body: a secret/credential/
-authorization only the owner holds, a physical action only the owner can take,
-or a card hard-stuck with no agent-side recovery. Prefer `needs_input` so the
-block is sticky; the line is the marker for an owner-only block that is not a
-`needs_input` choice. It must be its own line; prose mentioning it does not
-count, and the retired `Urgency:` vocabulary does nothing. Both shapes push.
-`head-coordinator` is the sole author of owner-facing blocker cards and summaries.
-Workers report technical blockers and evidence; they do not create owner gates
-or add the `Hard Blocker` marker. The coordinator first exhausts agent-side
-recovery, checks existing owner decisions, and writes exactly these three lines:
+Only head-coordinator authors owner gates, needs_input blocks and standalone
+Hard Blocker markers. It checks existing decisions and agent-side recovery, validates
+Blocking / Why owner / Unblock, writes through native tools, reads back and runs
+--check-blockers. Include an exact owner command when applicable; A/B is only for
+real choices. The [owner-alert runbook](documentation/hermes-owner-alerts.md) owns
+format limits, authentication and delivery. Only genuine owner-action blockers go
+to the phone; technical events remain internal. The steward's requested/scheduled
+reports are separate. An inconclusive investigation is not automatically owner input.
 
-```
-Blocking: <the concrete problem and its consequence>
-Why owner: <the specific reason the agent cannot resolve it without you>
-Unblock: <the recommended or required action you take>
-```
+The steward observes all boards read-only. It may send actionable requests only
+to head-coordinator through Bot Chat or the fixed-recipient coordinator helper;
+requests confer no approval or execution authority. It never edits cards/files,
+implements, commits, restores configuration or authors owner gates. Follow the
+[steward runbook](documentation/hermes-daily-steward.md).
 
-Give `Blocking:` and `Why owner:` two or three sentences of concrete detail each,
-naming the specific function, feature, endpoint, service or file at issue
-(up to 500 characters per field, 1600 for the whole summary), not a bare clause.
-`Unblock:` is the whole Recommended section: write prose with the recommended or
-required action and any alternatives, and use inline `A) … B) …` only for a
-genuine either/or. Use everyday English. No workflow jargon, task ids, hashes,
-internal roles, vague "only you can clear this", or "inspect details". State any
-choice's consequence. Each blocker is sent as its own SimpleX message, so two
-gates never share a message.
-Never invent a decision or owner-only requirement for a technical blocker; the
-supplier test below is what decides whether one actually exists.
+### Scheduler and worktree hygiene
 
-Before publishing, the coordinator checks the proposed three lines with:
-`python3 ~/.hermes/scripts/kanban-owner-alerts.py --check-summary -`
-Pass the summary on stdin. On exit 0, use native board-scoped tools to write
-the gate or a summary comment under the real `head-coordinator` author, block
-as appropriate, and read it back. Then run the read-only `--check-blockers`.
-A rewritten summary replaces the entire old ask; include all necessary choices
-and consequences in the new summary. Never forge authors or bypass worker fences.
+Keep `kanban.auto_decompose: false`: upstream auto-decomposition cannot read this
+repository's card conventions. Do not use specify/decompose to bypass them.
+Task-specific receipt predicates remain on their owning cards/jobs, not in standing
+role prompts. Preserve current idle-recovery conditions and anti-loop backoff.
 
-The sender accepts only coordinator-authored summaries. Missing, malformed,
-overlong or generic summaries remain unsent and produce a diagnostic for the
-coordinator to repair; they are never marked delivered. Other valid blockers
-still send. A wording repair requires no new owner approval.
-The native authoring hook also refuses owner-gate creation, `needs_input` blocks
-and summary publication by other profiles. It checks the coordinator's text
-before the write, so missing fields cannot create another unusable owner gate.
-Missing preparation is a technical block only while an agent can still produce
-it. Once the remaining input is information about the owner's own system that no
-agent can legitimately obtain, it is an owner ask, not a technical hold: do not
-answer the owner's own question by asserting "not owner-only".
-
-The boundary is decided by the supplier of the missing input, not by how hard it
-feels. Before parking any card, name the supplier in one line of the block
-comment: `Input supplier: owner | agent | external-source-owner(<who>) |
-model/provider`.
-
-- `agent` — any agent can still obtain it by reading the repo, running an
-  already-authorised command, or re-scoping the card. Technical; never pushed.
-- `model/provider` — capacity or quota. Technical; never pushed.
-- `owner` — the only authoritative source is the owner or an actor only the owner
-  can direct. This includes a decision only the owner makes; a secret, credential
-  or authorization only the owner holds; factual or interface information about a
-  system the owner owns or installed (the exact command, endpoint, device, binding
-  or identity) that no repository or public manual records; an artifact from a
-  third party whose relationship the owner controls; a physical action. Use
-  `needs_input` (preferred) or a standalone `Hard Blocker` line. It is pushed.
-- `external-source-owner(<who>)` — a third party only the owner can reach,
-  resurrect or replace. Surface it as an owner ask: the owner chooses to obtain
-  the artifact or descope.
-
-A `capability` block whose supplier is `owner` is a defect: reclassify it and
-surface it. A parked `capability` hold may not sit indefinitely with no
-owner-visible ask. Every `capability` block reason must carry the `Input
-supplier:` line; board health surfaces a `capability` hold that does not as
-`CAPABILITY_OWNER_INPUT`, and `--check-blockers` echoes it as a warning.
-
-Everything else — dependency waits and routine cleanups — is a technical blocker
-that is board-local and never pushed; the owner pulls it with `B1 details`,
-`blockers`, `--send-decisions`, or the board
-(`scripts/hermes/kanban-owner-alerts.py`).
-
-A Hard Blocker is a claim that the owner is the only way forward, not a priority
-hint. An urgent security or availability regression is not a Hard Blocker: fix
-it, or roll the system back, without paging the owner. Docs:
-`documentation/hermes-owner-alerts.md`.
-
-### Triage auto-decompose is off
-
-The gateway can write cards from a hardcoded prompt inside the upstream hermes
-clone, which cannot read this file. That path is disabled with
-`kanban.auto_decompose: false` in `~/.hermes/config.yaml`, so every card on the
-board is written by an agent that has read this section. Leave it off; the
-`hermes kanban specify` and `decompose` verbs have the same blind spot.
-
-### Worktree hygiene
-
-Hermes keeps a completed card's worktree when its branch was not yet pushed, and
-nothing revisits it once the durability sync has published it. `scripts/hermes/reap-kanban-worktrees.sh`
-reclaims exactly those trees: a terminal card's workspace that is clean and whose
-commits are all on a remote-tracking ref. It is a dry run by default (`--apply` to
-remove) and never touches an active card, a dirty tree, or an unpublished one.
+`scripts/hermes/reap-kanban-worktrees.sh` is a dry run unless --apply is supplied.
+It reclaims only terminal-card workspaces that are clean and wholly represented
+on remote-tracking refs. Never remove active, dirty or unpublished worktrees.
 
 ---
 

@@ -133,9 +133,7 @@ class AlertsTest(unittest.TestCase):
                                         'Only you can clear this; the board cannot self-resolve it.'),
                         summary.replace('Reply yes if it arrived, or no if it did not.',
                                         'Inspect details.'),
-                        summary.replace('The phone test is waiting for confirmation.', 'x' * 501),
-                        summary.replace('Blocking: The phone test is waiting for confirmation. Nothing else can confirm it.',
-                                        'Blocking: The phone test is waiting for confirmation.')]:
+                        summary.replace('The phone test is waiting for confirmation.', 'x' * 501)]:
             with self.subTest(invalid=invalid):
                 result = subprocess.run([sys.executable, '-B', alerts.__file__, '--check-summary', '-'],
                                         input=invalid, env=environment, text=True, capture_output=True)
@@ -143,6 +141,13 @@ class AlertsTest(unittest.TestCase):
         self.assertEqual(before, self.board_bytes())
         self.assertFalse(self.sent)
         self.assertFalse((self.root / 'kanban/owner-alerts').exists())
+
+    def test_concrete_single_sentence_fields_need_no_padding(self):
+        summary = ('Blocking: Phone delivery cannot be verified until the message is seen.\n'
+                   'Why owner: Only you can see whether the message appeared on your phone.\n'
+                   'Unblock: Reply yes if it arrived, or no if it did not.')
+        self.assertEqual('Reply yes if it arrived, or no if it did not.',
+                         alerts.check_summary(summary)['Unblock'])
 
     def test_worker_summary_cannot_replace_coordinator_summary(self):
         with closing(sqlite3.connect(self.boards['one'])) as db:

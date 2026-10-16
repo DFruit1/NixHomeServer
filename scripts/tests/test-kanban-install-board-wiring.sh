@@ -269,12 +269,13 @@ for singleton in \
       FAKE_DUPLICATE_NAME="$duplicate_name" run_installer "${args[@]}" 2>&1)"; then
       fail "$mode accepted duplicate '$duplicate_name' jobs in $duplicate_profile"
     fi
-    grep -qi 'duplicate' <<<"$duplicate_out" &&
-      grep -qF "$duplicate_name" <<<"$duplicate_out" &&
-      grep -qF "$duplicate_profile" <<<"$duplicate_out" &&
-      grep -qF "$original_id" <<<"$duplicate_out" &&
-      grep -qF 'deadbeef1234' <<<"$duplicate_out" ||
+    if ! grep -qi 'duplicate' <<<"$duplicate_out" ||
+      ! grep -qF "$duplicate_name" <<<"$duplicate_out" ||
+      ! grep -qF "$duplicate_profile" <<<"$duplicate_out" ||
+      ! grep -qF "$original_id" <<<"$duplicate_out" ||
+      ! grep -qF 'deadbeef1234' <<<"$duplicate_out"; then
       fail "$mode duplicate diagnostic omitted the profile, name or job IDs: $duplicate_out"
+    fi
     [[ "$(fixture_snapshot)" == "$before" ]] ||
       fail "$mode changed the fixture before refusing duplicate '$duplicate_name' jobs"
     if grep -Eq 'cron (create|edit|delete|remove|pause|resume)' "$FAKE_HERMES_LOG"; then

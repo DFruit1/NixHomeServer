@@ -175,11 +175,11 @@ edit FINDINGS.md, or write batch plans.
 ### Report to project-auditor
 
 Use `kanban_complete` on your own card, with concise prose in `summary` and
-structured `metadata`. Draft the metadata as JSON in your workspace first, then
-before completing:
+structured `metadata`. Draft the metadata as JSON under .tmp/<task>/ in the workspace (or one
+mktemp task directory), then before completing:
 
     python3 ~/.hermes/scripts/review-taskforce.py --board <slug> \
-      validate-report --metadata report-metadata.json
+      validate-report --metadata .tmp/<task>/report-metadata.json
 
 It exits 2 on a malformed report: fix the report, never edit the evidence to fit.
 A `critical`/`high` finding requires `confidence: verified` and at least one
@@ -190,12 +190,12 @@ Publish your detailed report as a durable artifact through the helper, then cite
 that path in the completion summary:
 
     python3 ~/.hermes/scripts/review-taskforce.py --board <slug> \
-      write --source audit-report.md --name reports/<task-id>-<slug>.md
+      write --source .tmp/<task>/audit-report.md --name reports/<task-id>-<slug>.md
 
 Finally record the audit so scheduling can see coverage:
 
     python3 ~/.hermes/scripts/review-taskforce.py --board <slug> \
-      record-audit --task <task-id> --metadata report-metadata.json
+      record-audit --task <task-id> --metadata .tmp/<task>/report-metadata.json
 
 Then complete with that metadata:
 

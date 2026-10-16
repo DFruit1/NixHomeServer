@@ -53,7 +53,7 @@ implementation. A revision needing approval gets a new plan and coordinator gate
 
 `head-coordinator` checks the approval classification and its `classify`
 evidence before creating implementation cards. It returns an unapproved gated
-plan to the reviewer and keeps its handoff blocked; it cannot approve on the
+plan to project-auditor and keeps its handoff blocked; it cannot approve on the
 owner's behalf. Implementers preserve approved scope and stop on newly
-discovered gate triggers. The reviewer retains plan/gate IDs, approvals and
+discovered gate triggers. The project-auditor retains plan/gate IDs, approvals and
 classify evidence in FINDINGS.md.

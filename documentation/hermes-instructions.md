@@ -1,0 +1,91 @@
+# Hermes instruction ownership
+
+The owner authorized harmonizing the fleet on 2026-10-16. Shared rules must reach
+both git worktrees and plain-directory projects. They are injected into named
+profiles' SOUL.md rather than relying on a NixOS AGENTS.md being in every workspace.
+The retired default profile still only routes; it does not become a worker.
+
+## Sources and precedence
+
+| Source | Responsibility |
+|---|---|
+| taskforce/owner-blocker-authoring.md | Shared fleet permissions, supplier test and lifecycle invariants; installed as hermes-fleet-policy.md and a bounded block in each named SOUL.md |
+| taskforce/coordinator-role.md and coordinator-operations.md | Coordinator permissions, routing, board recovery and guarded NixOS deploy |
+| Other taskforce role templates | Role-specific work and output contracts |
+| Project AGENTS.md | Repository conventions and owning validation gates |
+| instructions/*.md | Maintained review/orchestration skills and corrected references |
+| hermes-card-authoring.md | Card format, installed for projects without this checkout |
+| Cards, plans and cron state | Exact scope, existing approvals, temporary receipt conditions and evidence |
+| Memory | Facts and preferences; no permission grants or extra mandatory workflows |
+
+Paths in the first three rows are relative to scripts/hermes/. Platform/tool
+restrictions always constrain execution. Honor recorded exact-scope owner approval
+within those boundaries; no project instruction, recipe or card widens a role or
+bypasses a refusal. Source/installed/runtime identity and review completion versus
+acceptance remain separate evidence. A policy file on disk does not prove an
+already-running session loaded it.
+
+## Ownership decisions
+
+Workers commit locally after the owning gate; they never publish. The durability
+cron alone may publish committed wt/* and master and mirror board state. Ordinary
+coordinator recovery does not invoke that remote-writing path. Android workers
+validate intermediate builds with --build-only and hand off to the authorized
+external interactive release operator. That operator completes the existing
+signed F-Droid/IPFS publication; the coordinator's NixOS deployment authority
+does not cover Android publishing.
+
+Approved project remote-validation helpers are available to workers. That does
+not grant live server administration/deployment. The coordinator may inspect
+instructions and bounded metadata, route graph repairs and apply approved tracked
+restores; source reasoning and gates stay with feature-reviewer. Deploy freezes
+only the reviewed source and mutable inputs. The idle-recovery job's global-idle
+rule remains specific to that job.
+
+Owner asks follow the concrete missing supplier. Inconclusive investigation and
+provider quota do not automatically require owner action. Only the coordinator
+authors owner gates; the steward observes and sends fixed-recipient requests.
+Owner summaries require meaningful problem/input/action fields, not a sentence
+quota. Existing authorship, vocabulary, option and length checks remain active.
+
+## Restore and verify
+
+Run from the NixOS checkout; HERMES_ROOT selects an isolated fixture when testing:
+
+```bash
+python3 -B scripts/hermes/install-instruction-policy.py --check
+python3 -B scripts/hermes/install-instruction-policy.py
+python3 -B scripts/hermes/install-instruction-policy.py --check
+```
+
+The installer validates all transformations first, preserves independent operator
+sections and backs up changed non-secret instruction files under
+~/.hermes/backups/instruction-policy/. It changes no models, approval settings,
+channel bindings, task state or cron receipt conditions. This Python script is
+operations glue for existing files; a Rust backend or new dependency is unnecessary.
+It refreshes the sender/authoring guard implementation without ticking the sender,
+and replaces the standard implementer's stale model promise in profile metadata.
+It does not restart Hermes, send messages or declare active sessions refreshed.
+
+The taskforce installer composes these same transformations; the steward and
+owner-alert installers preserve the shared fleet block. The steward installer
+updates its existing report jobs in place. Apply the owning component installer
+for changes to report prompts or sender implementation, then check convergence.
+Do not run a sender tick or reset delivery state merely to validate wording.
+
+Focused checks:
+
+```bash
+bash scripts/tests/test-hermes-instruction-policy.sh
+bash scripts/tests/test-hermes-review-taskforce.sh
+bash scripts/tests/test-kanban-owner-alerts.sh
+bash scripts/tests/test-steward-readonly.sh
+bash scripts/tests/test-hermes-coordination.sh
+bash scripts/tests/test-hermes-owner-chat-policy.sh
+```
+
+Review broad changes with scripts/validate-repo.sh --full. Keep incident narratives
+out of standing prompts. Preserve immutable plans and task-specific no-retry,
+custody and recovery conditions on their existing cards/jobs. Refresh a profile
+only after its active turns finish using the supported Hermes surface; never
+interrupt work or restart services merely to load new wording.
