@@ -79,6 +79,44 @@ is preserved; malformed existing wiring is reported for repair, not duplicated.
 Old profile files are kept under `~/.hermes/backups/review-taskforce/`.
 No upstream Hermes source is patched.
 
+The installer also installs a fail-closed `kanban_complete` hook in worker
+profiles. Verification uses tenant `verification` (legacy non-audit/non-question
+reviewer cards also qualify), exact lowercase `metadata.verdict`, a reviewed
+`revision`, and executed `checks` containing commands and integer exit codes.
+Acceptance requires passing checks; rejection requires `requested_changes`.
+Audit reports (`continuous-improvement`) and bounded questions (`review-question`)
+retain their own output contracts. A rejected downstream review may release only
+coordinator routing. Consumers cannot complete against rejected/missing review
+evidence; link a fresh accepted review before retiring a superseded dependency.
+The hook governs native agent tools; it is a workflow guard, not Unix isolation
+against the shared account's human CLI or arbitrary direct database writes.
+It does not reinterpret old completed records or grant deployment permission.
+
+The existing five-minute idle recovery job gains `idle-recovery-monitor.py`.
+It hashes board state, dependencies, owner replies, non-coordinator comments and
+latest run/receipt evidence, including completed source cards. Heartbeats and
+routine coordinator comments on unfinished cards do not cause wakes. While any
+task is running it emits one stable BUSY value; after work ends it emits a new
+idle digest. The first observation and busy/idle transitions may each cause one
+agent check; unchanged state does not. Native monitor baselines are stored before
+the agent runs, so a failed check is retried when evidence changes; the separate
+board-health monitor remains the safety net. Unknown databases/schema fail loudly.
+All existing card-specific recovery triggers, global-idle restrictions, schedule,
+model and local delivery settings survive. Installation refuses duplicate idle jobs.
+
+For a policy/script-only restore without config, profile metadata or cron writes:
+
+```bash
+python3 scripts/hermes/install-review-taskforce.py --policy-only --check
+python3 scripts/hermes/install-review-taskforce.py --policy-only
+```
+
+A normal installation may change only the already approved worker cap, toolset
+and completion-hook wiring. Read `--check`; other settings need separate scope.
+The board-wiring installer rejects duplicate singleton jobs before changing files.
+To retire an actual duplicate, compare both jobs and use native `hermes cron remove`
+for the redundant ID after retaining a private backup; it never guesses a winner.
+
 Configure cadence separately per project board:
 
 ```bash

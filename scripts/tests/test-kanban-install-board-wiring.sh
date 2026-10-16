@@ -134,6 +134,13 @@ if [[ "${1:-}" == cron && "${2:-}" == list ]]; then
     printf '    Script:    %s\n' "${FAKE_B_SCRIPT:-kanban-retry-breaker.sh}"
     printf '    Workdir:   %s\n' "${FAKE_B_WORKDIR:?}"
   fi
+  if [[ "$profile" == "${FAKE_DUPLICATE_PROFILE:-}" ]]; then
+    printf '\n  %s [active]\n' "deadbeef1234"
+    printf '    Name:      %s\n' "${FAKE_DUPLICATE_NAME:?}"
+    printf '    Schedule:  every 15m\n'
+    printf '    Script:    kanban-retry-breaker.sh\n'
+    printf '    Workdir:   %s\n' "${FAKE_B_WORKDIR:?}"
+  fi
   exit 0
 fi
 exit 0
@@ -225,6 +232,58 @@ fi
 grep -q 'cron edit' "$FAKE_HERMES_LOG" &&
   fail "--check edited a cron job; the log shows: $(cat "$FAKE_HERMES_LOG")"
 pass "--check creates and edits nothing"
+
+# --- duplicate managed jobs must stop before any installation writes ---------
+#
+# A name-to-id map used to silently keep the last matching job. Both schedules
+# then remained enabled while --check claimed the wiring was healthy. Refuse an
+# ambiguous singleton in either mode; choosing a survivor is an operator action.
+# Leave a separate config repair pending to prove refusal happens before writes.
+fixture_snapshot() {
+  python3 - "$HERMES_FIXTURE" <<'PY'
+import hashlib
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+for path in sorted(root.rglob('*')):
+    kind = 'directory' if path.is_dir() else hashlib.sha256(path.read_bytes()).hexdigest()
+    print(path.relative_to(root), path.stat().st_mode, kind)
+PY
+}
+
+cp "$HERMES_FIXTURE/config.yaml" "$fixture/duplicate-config.bak"
+sed -i 's/dispatch_stale_timeout_seconds: 5400/dispatch_stale_timeout_seconds: 123/' \
+  "$HERMES_FIXTURE/config.yaml"
+for singleton in \
+  'head-coordinator|kanban board health|3a860e9db444' \
+  'default|kanban durability sync|a4290015937b' \
+  'default|kanban retry breaker|101dd0d6f734'; do
+  IFS='|' read -r duplicate_profile duplicate_name original_id <<<"$singleton"
+  for mode in check apply; do
+    args=()
+    [[ "$mode" == check ]] && args=(--check)
+    before="$(fixture_snapshot)"
+    : >"$FAKE_HERMES_LOG"
+    if duplicate_out="$(FAKE_DUPLICATE_PROFILE="$duplicate_profile" \
+      FAKE_DUPLICATE_NAME="$duplicate_name" run_installer "${args[@]}" 2>&1)"; then
+      fail "$mode accepted duplicate '$duplicate_name' jobs in $duplicate_profile"
+    fi
+    grep -qi 'duplicate' <<<"$duplicate_out" &&
+      grep -qF "$duplicate_name" <<<"$duplicate_out" &&
+      grep -qF "$duplicate_profile" <<<"$duplicate_out" &&
+      grep -qF "$original_id" <<<"$duplicate_out" &&
+      grep -qF 'deadbeef1234' <<<"$duplicate_out" ||
+      fail "$mode duplicate diagnostic omitted the profile, name or job IDs: $duplicate_out"
+    [[ "$(fixture_snapshot)" == "$before" ]] ||
+      fail "$mode changed the fixture before refusing duplicate '$duplicate_name' jobs"
+    if grep -Eq 'cron (create|edit|delete|remove|pause|resume)' "$FAKE_HERMES_LOG"; then
+      fail "$mode mutated cron while refusing duplicate '$duplicate_name' jobs"
+    fi
+  done
+done
+cp "$fixture/duplicate-config.bak" "$HERMES_FIXTURE/config.yaml"
+pass "refuses every duplicate managed cron name before check or apply mutates anything"
 
 # --- a drifted cron job is reported, with the command that fixes it ---------
 #

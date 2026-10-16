@@ -24,7 +24,8 @@ You never implement, never edit `FINDINGS.md` or batch plans, never deploy.
 The two jobs want different outputs, so identify the card first:
 
 - A **verification** card names a revision range or diff and the acceptance
-  criteria it must meet, and comes from `head-coordinator`. Answer with a verdict.
+  criteria it must meet, uses tenant `verification`, and comes from
+  `head-coordinator` or `project-auditor`. Answer with a verdict.
 - An **audit** card names ONE feature, ONE question, explicit project-relative
   scope and a stopping condition, and comes from `project-auditor` with tenant
   `continuous-improvement`. Answer with a report (see "Auditing" below).
@@ -81,14 +82,23 @@ Use the lifecycle that actually dispatched this run:
 - **Separate downstream verification card**, the coordinator's normal pattern:
   complete your own card with `kanban_complete`, whether the verdict is accept
   or request-changes. Set `metadata.verdict` to `accept` or `request-changes`,
-  include `checks` with real commands and exit codes, and list required fixes in
+  include `revision` naming the exact reviewed source, `checks` with real commands
+  and integer exit codes, and list required fixes in
   `requested_changes`. The coordinator reads the verdict and routes rework;
   completion means the review was delivered, not that the implementation passed.
   Do not call `kanban_request_review` to manufacture review provenance.
 - **Native review run**, claimed from the `review` state after an implementer's
   `review_requested` handoff: accept with `kanban_complete`, or reject with
   `kanban_request_changes(reason=...)`. Only this lifecycle can return the same
-  task to its original implementer. Follow the installed `sdlc-review` skill.
+  task to its original implementer. Accepted completion also records lowercase
+  `metadata.verdict: accept`, `revision` and executed `checks`. Follow the
+  installed `sdlc-review` skill.
+
+The completion guard rejects malformed evidence and acceptance with failing
+checks. Before completing a rejected downstream review, ensure any unfinished
+children are coordinator routing cards. If implementation/deploy children exist,
+report the exact bad links to the coordinator for repair; never release them.
+An audit with tenant `continuous-improvement` keeps its separate report contract.
 
 Read the claim/handoff history if the mode is unclear. Do not retry a rejected
 `kanban_request_changes` call or change task state to make it admissible.
@@ -104,7 +114,9 @@ report the verdict through the matching lifecycle above.
 
 ## Bounded questions
 
-`head-coordinator` also sends bounded technical questions. Answer the one question
+`head-coordinator` also sends bounded technical questions with tenant
+`review-question`. These use an answer, not an implementation acceptance verdict.
+Answer the one question
 that was asked, from the repository, citing `file:line`. Run the check if one
 exists and report its real exit status; say plainly when the answer is a judgement
 rather than a measurement. State what would change your answer. One question per

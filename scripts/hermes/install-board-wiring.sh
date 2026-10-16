@@ -85,6 +85,34 @@ unrepaired() { drift=$((drift + 1)); note "  needs manual repair: $*"; }
   exit 2
 }
 
+# Reject ambiguous singleton jobs before touching any files or configuration.
+# The later field checks still report drift; preflight never removes a job.
+declare -A PREFLIGHT_CRON_IDS=()
+for cron_profile in head-coordinator default; do
+  cron_listing="$(hermes -p "$cron_profile" cron list 2>/dev/null)" || {
+    note "Cannot inspect $cron_profile cron jobs; no wiring changed"
+    exit 2
+  }
+  cron_id=''
+  while IFS= read -r cron_line; do
+    if [[ "$cron_line" =~ ^[[:space:]]+([0-9a-f]{8,})[[:space:]]+\[ ]]; then
+      cron_id="${BASH_REMATCH[1]}"
+    elif [[ "$cron_line" =~ ^[[:space:]]+Name:[[:space:]]*(.*)$ ]]; then
+      cron_name="${BASH_REMATCH[1]}"
+      case "$cron_profile/$cron_name" in
+        'head-coordinator/kanban board health'|'default/kanban durability sync'|'default/kanban retry breaker') ;;
+        *) continue ;;
+      esac
+      cron_key="$cron_profile/$cron_name"
+      if [[ -n "${PREFLIGHT_CRON_IDS[$cron_key]:-}" ]]; then
+        note "Duplicate cron '$cron_name' in $cron_profile: ${PREFLIGHT_CRON_IDS[$cron_key]} $cron_id; no wiring changed"
+        exit 2
+      fi
+      PREFLIGHT_CRON_IDS["$cron_key"]="$cron_id"
+    fi
+  done <<<"$cron_listing"
+done
+
 note "▶ hermes board wiring ($HERMES_ROOT)"
 
 # ---------------------------------------------------------------------------

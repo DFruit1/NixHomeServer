@@ -2,10 +2,12 @@
 """Install fleet instructions and the owner-approved global cap; preserve model settings."""
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -136,7 +138,22 @@ def soul(name, existing):
     return existing
 
 
-def changed_files(root):
+def idle_recovery_prompt(text):
+    start = '<!-- hermes-idle-recovery -->'
+    end = '<!-- /hermes-idle-recovery -->'
+    block = start + '\n' + (SOURCE / 'taskforce/idle-recovery-policy.md').read_text().rstrip() + '\n' + end
+    if start in text or end in text:
+        if text.count(start) != 1 or text.count(end) != 1 or text.index(end) < text.index(start):
+            raise ValueError('Invalid idle recovery policy markers')
+        text = re.sub(re.escape(start) + r'.*?' + re.escape(end), lambda _: block, text, flags=re.S)
+    else:
+        text = block + '\n\n' + text
+    text = text.replace('bind its blocker notification before needs_input blocking, record the exact question/cause once,',
+                        'author its checked owner-blocker summary before needs_input blocking, record the exact question/cause once,')
+    return text
+
+
+def changed_files(root, policy_only=False):
     default = root / 'SOUL.md'
     changes = {default: policy(default.read_text() if default.exists() else '',
                                (SOURCE / 'taskforce/default.md').read_text())}
@@ -187,15 +204,44 @@ def changed_files(root):
         if count != 1:
             raise ValueError('Expected one coordinator phone policy section')
         changes[phone_skill] = text
+    # Reuse the existing bounded hook editor; keep unrelated hooks verbatim.
+    spec = importlib.util.spec_from_file_location('steward_installer', SOURCE / 'install-steward-readonly.py')
+    hooks = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hooks)
+    for name in (*DESCRIPTIONS, 'standard-implementer'):
+        config = root / 'profiles' / name / 'config.yaml'
+        if config.exists():
+            text = changes.get(config, config.read_text())
+            command = 'python3 ' + shlex.quote(str(root / 'scripts/review-verdict-guard.py'))
+            changes[config] = hooks.readonly_hook(text, command, 'review-verdict', '^kanban_complete$')
+    changes[root / 'scripts/review-verdict-guard.py'] = (SOURCE / 'review-verdict-guard.py').read_text()
+    changes[root / 'profiles/head-coordinator/scripts/idle-recovery-monitor.py'] = (SOURCE / 'idle-recovery-monitor.py').read_text()
+    skill = root / 'profiles/feature-reviewer/skills/devops/sdlc-review/SKILL.md'
+    if skill.exists():
+        changes[skill] = skill.read_text().replace(
+            'metadata={"review_outcome": "approved", "reviewer_checks": [...]}' ,
+            'metadata={"review_outcome": "approved", "verdict": "accept",\n'
+            '              "revision": "<reviewed source revision>",\n'
+            '              "checks": [{"command": "<exact check>", "exit_code": 0}]}')
     for directory in [root / 'scripts', *(p / 'scripts' for p in (root / 'profiles').iterdir() if p.is_dir())]:
         for name in ('review-taskforce.py', 'review-taskforce-tick.sh'):
             changes[directory / name] = (SOURCE / name).read_text()
     changes[root / 'scripts/review-taskforce-approval.md'] = (SOURCE / 'taskforce/approval-policy.md').read_text()
-    return {path: text for path, text in changes.items() if not path.exists() or path.read_text() != text}
+    return {path: text for path, text in changes.items()
+            if not (policy_only and path.name in {'config.yaml', 'profile.yaml'})
+            and (not path.exists() or path.read_text() != text)}
 
 
-def install(root, check=False, cron=True):
-    changes = changed_files(root)  # Validate all transformations before writing.
+def install(root, check=False, cron=True, policy_only=False):
+    changes = changed_files(root, policy_only=policy_only)  # Validate all transformations before writing.
+    idle_changed = False
+    idle_jobs_file = root / 'profiles/head-coordinator/cron/jobs.json'
+    idle_jobs = json.loads(idle_jobs_file.read_text()).get('jobs', []) if idle_jobs_file.exists() else []
+    idle = [job for job in idle_jobs if job.get('name') == 'kanban idle recovery']
+    if len(idle) > 1:
+        raise ValueError('Duplicate idle recovery jobs; repair the existing wiring')
+    if cron and not policy_only and idle:
+        idle_recovery_prompt(idle[0].get('prompt') or '')  # Reject malformed markers before writes.
     for path, text in changes.items():
         print(f'{"drift" if check else "install"}: {path}')
         if check:
@@ -218,10 +264,20 @@ def install(root, check=False, cron=True):
         finally:
             if os.path.exists(temporary):
                 os.unlink(temporary)
+    if cron and not policy_only and idle:
+        job = idle[0]
+        prompt = idle_recovery_prompt(job.get('prompt') or '')
+        idle_changed = job.get('monitor_script') != 'idle-recovery-monitor.py' or prompt != job.get('prompt')
+        if idle_changed:
+            print('drift: idle recovery monitor' if check else 'install: idle recovery monitor')
+            if not check:
+                subprocess.run(['hermes', '--profile', 'head-coordinator', 'cron', 'edit',
+                                job['id'], '--monitor-script', 'idle-recovery-monitor.py', '--prompt', prompt],
+                               check=True, env={**os.environ, 'HERMES_HOME': str(root)})
     jobs_file = root / 'cron/jobs.json'
     jobs = json.loads(jobs_file.read_text()).get('jobs', []) if jobs_file.exists() else []
     matching = [job for job in jobs if job.get('name') == JOB_NAME]
-    if cron and not matching:
+    if cron and not policy_only and not matching:
         print('drift: missing taskforce cron' if check else 'create: paused taskforce cron')
         if not check:
             env = os.environ.copy()
@@ -230,21 +286,22 @@ def install(root, check=False, cron=True):
                             '--name', JOB_NAME, '--script', 'review-taskforce-tick.sh', '--no-agent',
                             '--deliver', 'local', '--workdir', str(SOURCE.parent.parent),
                             '--paused', '--paused-reason', 'Validate taskforce wiring before activation'], check=True, env=env)
-    elif cron:
+    elif cron and not policy_only:
         expected = str(SOURCE.parent.parent)
         if len(matching) != 1 or any(job.get('script') != 'review-taskforce-tick.sh'
             or not job.get('no_agent') or job.get('workdir') != expected
             or job.get('schedule', {}).get('minutes') != 60 for job in matching):
             raise ValueError('Taskforce cron drift; repair the existing job using hermes cron edit')
-    return 1 if check and (changes or (cron and not matching)) else 0
+    return 1 if check and (changes or idle_changed or (cron and not policy_only and not matching)) else 0
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--check', action='store_true')
+    parser.add_argument('--policy-only', action='store_true', help='Refresh tracked-source scripts/policies without configuration, metadata or cron writes')
     args = parser.parse_args()
     root = Path(os.environ.get('HERMES_ROOT', str(Path.home() / '.hermes')))
-    return install(root, check=args.check)
+    return install(root, check=args.check, policy_only=args.policy_only)
 
 
 if __name__ == '__main__':

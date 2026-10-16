@@ -52,6 +52,17 @@ class TaskforceTest(unittest.TestCase):
         self.assertIn('Preserve rejection routing.', actual)
         self.assertEqual(actual, installer.soul('head-coordinator', actual))
 
+    def test_idle_prompt_preserves_receipt_conditions_without_subscriptions(self):
+        original = ('Keep the original globally-idle rule.\n'
+                    'Receipt trigger: keep exact source, owner gate and custody.\n'
+                    'bind its blocker notification before needs_input blocking, record the exact question/cause once,')
+        refreshed = installer.idle_recovery_prompt(original)
+        self.assertIn('Receipt trigger: keep exact source, owner gate and custody.', refreshed)
+        self.assertNotIn('bind its blocker notification', refreshed)
+        self.assertEqual(refreshed, installer.idle_recovery_prompt(refreshed))
+        with self.assertRaises(ValueError):
+            installer.idle_recovery_prompt('<!-- hermes-idle-recovery --> missing end')
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -421,6 +432,8 @@ class TaskforceTest(unittest.TestCase):
         skill.parent.mkdir(parents=True)
         skill.write_text('# Skill\n## Owner-facing SimpleX delivery\nSend milestones.\n'
                          '## Routing\nPreserve routing.\n')
+        policy_changes = installer.changed_files(self.root, policy_only=True)
+        self.assertTrue(all(p.name not in {'config.yaml', 'profile.yaml'} for p in policy_changes))
         original = (self.root / 'profiles/head-coordinator/SOUL.md').read_text()
         self.assertEqual(1, installer.install(self.root, check=True, cron=False))
         self.assertEqual(original, (self.root / 'profiles/head-coordinator/SOUL.md').read_text())
@@ -439,6 +452,18 @@ class TaskforceTest(unittest.TestCase):
         self.assertNotIn('Send milestones.', skill.read_text())
         self.assertIn('Preserve routing.', skill.read_text())
         self.assertTrue((self.root / 'scripts/review-taskforce-approval.md').is_file())
+        config = self.root / 'profiles/head-coordinator/config.yaml'
+        self.assertEqual(1, config.read_text().count('# nixhomeserver-review-verdict:start'))
+        self.assertIn('^kanban_complete$', config.read_text())
+        jobs = self.root / 'profiles/head-coordinator/cron/jobs.json'
+        jobs.parent.mkdir()
+        jobs.write_text(json.dumps({'jobs':[{'name':'kanban idle recovery'},{'name':'kanban idle recovery'}]}))
+        default = self.root / 'SOUL.md'
+        default.write_text('Unrestored old policy.\n')
+        with self.assertRaises(ValueError):
+            installer.install(self.root, cron=False)
+        self.assertEqual('Unrestored old policy.\n', default.read_text())
+
 
 unittest.main(argv=['taskforce'], verbosity=2)
 PY

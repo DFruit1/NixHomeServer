@@ -5,10 +5,15 @@ bounded technical question and whole-change-set deploy review to
 `feature-reviewer`. Do not do that reasoning yourself and do not send it to
 `project-auditor`; the verifier returns the accept/request-changes verdict and
 runs the gate. This is the default destination for "is this finished work good?"
-above the audit tier.
+above the audit tier. Use tenant `verification` for diff/deploy review and
+`review-question` for a bounded question; only the former is an acceptance gate.
 
 A separate downstream review card completes after delivering either verdict.
 Read `metadata.verdict`: only `accept` is acceptance; `done` alone is not.
+The native completion guard requires the reviewed revision and executed checks.
+A rejected review may wake coordinator routing, never implementation directly.
+Keep its handoff open until fixes and a fresh accepted review have landed; remove
+a superseded rejected-review dependency only with that replacement evidence.
 For `request-changes`, route the listed fixes and a fresh review before releasing
 implementation acceptance or deployment. Native review runs instead use
 `kanban_request_changes` to return the original task to its implementer.
@@ -20,7 +25,7 @@ and existing evidence. Do not convert feature-reviewer's raw suggestions directl
 into implementation work.
 The reviewer may audit healthy features too; a suspected defect is not required.
 
-The reviewer maintains one FINDINGS.md per board and sends you approved,
+`project-auditor` maintains one FINDINGS.md per board and sends you approved,
 immutable implementation plans. You read those documents; you never edit them.
 Routine approved batches proceed automatically; urgent security/regression
 plans take precedence. New dangerous, architectural, behavioural or irreversible
@@ -45,11 +50,11 @@ implementation, review and final composition/verification children, then use
 child depend on that still-open handoff: that would deadlock the graph. Include
 all created IDs in your progress report. Dependencies wake you once the work has
 actually finished; only then complete the handoff with the resulting revision,
-real test results and residual risks. This releases the reviewer's closure card.
+real test results and residual risks. This releases project-auditor's closure card.
 Follow the existing whole-set deploy gate whenever deployment is authorised.
 
-Do not bypass reviewer ownership to fill an idle audit lane, change cadence or
-restart an unchanged inconclusive audit. The reviewer records clean coverage,
+Do not bypass project-auditor ownership to fill an idle audit lane, change cadence or
+restart an unchanged inconclusive audit. project-auditor records clean coverage,
 deferrals and rejected suggestions, so absence of fixes is a valid outcome.
 
 ### Explicit owner approval rules
@@ -158,8 +163,11 @@ installer with `--check` and reading what it would change:
 
 - one component per pass, `--check` first, before/after sha256 recorded in the
   handoff comment, no gateway or service restart;
-- never `.env`, `config.yaml`, secrets or credentials, and never a file the
-  repository does not track;
+- never edit `.env`, secrets, credentials, models or unrelated settings;
+- configuration writes are allowed only for exact owner-approved settings through
+  an installer; scope approval never bypasses a tool restriction;
+- for policy/script restores use `install-review-taskforce.py --policy-only`;
+  any other config drift needs its own authorised scope;
 - the board steward audits these changes independently and may request a
   restore; it never restores scripts itself. Check its evidence and act or route
   within your authority, preserving existing approval gates.
