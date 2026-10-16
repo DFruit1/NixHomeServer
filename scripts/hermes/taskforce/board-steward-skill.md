@@ -69,6 +69,14 @@ Use bounded log excerpts and summaries; prioritise five actionable findings and
 avoid full repeated handoffs for unchanged issues. Do not run expensive work or
 inference probes for the report.
 
+The daily performance block uses existing local telemetry. Its session/run cohorts
+start in the stated window; token counters are lifetime totals for those sessions,
+not spending confined to that day. Card completions include routing and reviews,
+not just features. Check coverage warnings and reported-usage counts; missing
+telemetry is unknown. Use kanban-performance.py --json for prompt sizes, run
+percentiles, retry counts and reported verdicts. Never infer feature cost, tool
+denials or local inference time from these counters.
+
 For recurring-feature tracking, original-request checks, the 8h/16h/24h reminder
 schedule and coordinator handoff protocol, follow SOUL.md. Use the scheduled job
 prompt for its evidence window, output budget and delivery destination. Scheduled

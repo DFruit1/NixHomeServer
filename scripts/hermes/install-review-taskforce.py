@@ -94,7 +94,9 @@ def soul(name, existing):
             existing = existing.rstrip() + '\n\n'
             return policy(existing, template, start=len(existing))
         return policy(existing, template)
-    heading = 'Continuous improvement intake' if '## Continuous improvement intake\n' in existing else 'Requesting an audit on demand'
+    heading = next((h for h in ('Review and improvement', 'Continuous improvement intake',
+                               'Requesting an audit on demand') if '## ' + h + '\n' in existing),
+                   'Requesting an audit on demand')
     if MARKER in existing or END_MARKER in existing:
         existing = policy(existing, template)
     else:

@@ -571,6 +571,7 @@ def install(root):
         existing += END_MARKER + '\n'
     wanted = instructions.block(existing, MARKER, END_MARKER, policy)
     changes = {soul: wanted, scripts / 'kanban-owner-alerts.py': Path(__file__).read_text(),
+               scripts / 'hermes-coordinator-reference.md': (source / 'instructions/coordinator-reference.md').read_text(),
                scripts / 'owner-blocker-authoring-guard.py': (source / 'owner-blocker-authoring-guard.py').read_text(),
                scripts / 'review-taskforce-approval.md': (source / 'taskforce/approval-policy.md').read_text(),
                scripts / 'hermes-fleet-policy.md': (source / 'taskforce/owner-blocker-authoring.md').read_text()}

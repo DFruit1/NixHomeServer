@@ -67,12 +67,16 @@ class InstructionPolicyTest(unittest.TestCase):
         target.write_text(text)
         policy.install(self.root)
         result = target.read_text()
-        for retained in ['Keep this exact note.', 'Keep taskforce.',
+        for retained in ['Keep this exact note.', 'Review and improvement',
                          'Record the verbatim authenticated owner reply FIRST']:
             self.assertIn(retained, result)
         self.assertNotIn('Old routing.', result)
         self.assertIn('nix run .#deploy', result)
         self.assertIn('WORKER_FAILED_BLOCKED', result)
+        reference = self.root / 'scripts/hermes-coordinator-reference.md'
+        self.assertIn('At most one dependency repair', reference.read_text())
+        self.assertIn('compact_complete', reference.read_text())
+        self.assertLess(len(result.split()), 1500)
         self.assertEqual(0, policy.install(self.root, check=True))
 
     def test_ambiguous_managed_blocks_fail_before_any_write(self):

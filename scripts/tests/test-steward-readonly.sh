@@ -57,6 +57,7 @@ class StewardTest(unittest.TestCase):
         for tool in ['read_file', 'search']:
             self.assertEqual({}, self.call(tool, board='another-board'))
         for command in [f'python3 {self.root}/scripts/steward-board-read.py --boards',
+                        f'python3 {self.root}/scripts/kanban-performance.py --json',
                         f'python3 {self.root}/scripts/steward-board-read.py --board pcops --query "SELECT * FROM tasks"',
                         f'python3 {self.root}/scripts/kanban-owner-alerts.py --details blockers',
                         f'python3 {self.root}/scripts/kanban-owner-alerts.py --check-blockers',
@@ -347,7 +348,7 @@ class StewardTest(unittest.TestCase):
                     with contextlib.redirect_stdout(buf):
                         window.main()
         self.assertEqual(list(window.COLLECTORS), loaded)
-        self.assertEqual(['main', 'main'], calls)
+        self.assertEqual(['main'] * len(window.COLLECTORS), calls)
         self.assertIn('KANBAN DAILY SNAPSHOT', buf.getvalue())
         self.assertEqual(datetime.date.today(), window.last_emit_date(self.root))
 

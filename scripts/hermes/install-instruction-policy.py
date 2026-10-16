@@ -68,6 +68,9 @@ def changes(root, pending=None):
         SOURCE.parent.parent / 'documentation/hermes-card-authoring.md').read_text()
     result[root / 'scripts/hermes-instructions.md'] = (
         SOURCE.parent.parent / 'documentation/hermes-instructions.md').read_text()
+    result[root / 'scripts/hermes-coordinator-reference.md'] = (
+        SOURCE / 'instructions/coordinator-reference.md').read_text()
+    result[root / 'scripts/kanban-performance.py'] = (SOURCE / 'kanban-performance.py').read_text()
     for filename in ('kanban-owner-alerts.py', 'owner-blocker-authoring-guard.py'):
         result[root / 'scripts' / filename] = (SOURCE / filename).read_text()
     for name in PROFILES:
@@ -78,6 +81,8 @@ def changes(root, pending=None):
         text = result.get(soul, soul.read_text())
         if name == 'head-coordinator':
             text = coordinator(text)
+            text = block(text, '<!-- hermes-review-taskforce -->', '<!-- /hermes-review-taskforce -->',
+                         (SOURCE / 'taskforce/head-coordinator.md').read_text())
             text = block(text, '<!-- kanban-owner-alerts -->', '<!-- /kanban-owner-alerts -->',
                          (SOURCE / 'taskforce/owner-alert-replies.md').read_text())
         elif name == 'standard-implementer':
