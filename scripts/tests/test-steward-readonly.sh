@@ -32,6 +32,17 @@ usage = module('usage', 'usage-pace.py')
 handoff = module('handoff', 'steward-coordinator-request.py')
 
 class StewardTest(unittest.TestCase):
+    def test_managed_hooks_reject_orphan_duplicate_and_reversed_markers(self):
+        marker = '    # nixhomeserver-steward-readonly:'
+        start, end = marker + 'start\n', marker + 'end\n'
+        for section in (start, end, start + end + end, start + start + end, end + start):
+            with self.subTest(section=section):
+                with self.assertRaises(ValueError):
+                    installer.readonly_hook('hooks:\n  pre_tool_call:\n' + section, 'python3 guard.py')
+        text = 'hooks:\n  pre_tool_call:\n' + start + end.rstrip('\n')
+        updated = installer.readonly_hook(text, 'python3 guard.py')
+        self.assertEqual(updated, installer.readonly_hook(updated, 'python3 guard.py'))
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='nixhomeserver-steward-readonly-')
         self.addCleanup(self.tmp.cleanup)

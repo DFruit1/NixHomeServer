@@ -626,7 +626,8 @@ class AlertsTest(unittest.TestCase):
 
     def test_install_preserves_policy_and_job_state(self):
         soul = self.env.parent / 'SOUL.md'
-        soul.write_text('# Head\nKeep existing deploy policy.\n')
+        legacy = (Path(alerts.__file__).parent / 'taskforce/owner-alert-replies.md').read_text()
+        soul.write_text('# Head\nKeep existing deploy policy.\n' + alerts.MARKER + '\n' + legacy)
         (soul.parent / 'config.yaml').write_text('model: keep-head-model\n')
         auditor = self.root / 'profiles/project-auditor/SOUL.md'
         auditor.parent.mkdir(parents=True)
@@ -653,6 +654,28 @@ class AlertsTest(unittest.TestCase):
         self.assertIn('Preserve this later addition.', soul.read_text())
         self.assertFalse(json.loads(cron.read_text())['jobs'][0]['enabled'])
         self.assertEqual(3, len(list((self.root / 'backups/owner-alerts').glob('*.md'))))
+
+    def test_install_rejects_ambiguous_policy_markers_before_any_write(self):
+        head = self.env.parent / 'SOUL.md'
+        auditor = self.root / 'profiles/project-auditor/SOUL.md'
+        auditor.parent.mkdir(parents=True)
+        cron = self.root / 'cron/jobs.json'
+        cron.parent.mkdir()
+        cron.write_text(json.dumps({'jobs': [{'name': alerts.JOB, 'script': 'kanban-owner-alerts.py',
+            'no_agent': True, 'schedule': {'minutes': 1}, 'enabled': False}]}))
+        for target, start, end in ((head, alerts.MARKER, alerts.END_MARKER),
+                                   (auditor, alerts.AUTHOR_MARKER, alerts.AUTHOR_END_MARKER)):
+            for text in (start, end, start + end + end, start + start + end, end + start):
+                with self.subTest(target=target.name, text=text):
+                    head.write_text('# Coordinator\n')
+                    auditor.write_text('# Auditor\n')
+                    target.write_text(text)
+                    before = {p: p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
+                    with patch.object(alerts.subprocess, 'run') as run:
+                        with self.assertRaises(ValueError):
+                            alerts.install(self.root)
+                        run.assert_not_called()
+                    self.assertEqual(before, {p: p.read_bytes() for p in self.root.rglob('*') if p.is_file()})
 
 unittest.main(argv=['alerts'], verbosity=2)
 PY

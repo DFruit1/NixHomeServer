@@ -38,10 +38,14 @@ def replace_setting(text, key, yaml_value):
 
 def readonly_hook(text, command, marker_name='steward-readonly', matcher='.*'):
     marker = f'    # nixhomeserver-{marker_name}:'
-    if marker + 'start' in text:
-        text, count = re.subn(r'^' + marker + r'start\n.*?^' + marker + r'end\n', '', text, flags=re.M | re.S)
+    start, end = marker + 'start', marker + 'end'
+    if start in text or end in text:
+        if text.count(start) != 1 or text.count(end) != 1 or text.index(end) < text.index(start):
+            raise ValueError('Invalid managed hook markers; preserve and reconcile the config')
+        text, count = re.subn(r'^' + re.escape(start) + r'\n.*?^' + re.escape(end) + r'(?:\n|\Z)',
+                              '', text, flags=re.M | re.S)
         if count != 1:
-            raise ValueError('Invalid managed steward hook section')
+            raise ValueError('Invalid managed hook section; preserve and reconcile the config')
     stanza = (marker + 'start\n    - matcher: ' + json.dumps(matcher) + '\n      command: ' + json.dumps(command)
               + '\n      timeout: 10\n      fail_closed: true\n' + marker + 'end\n')
     match = re.search(r'^hooks:[ \t]*\n(.*?)(?=^\S|\Z)', text, re.M | re.S)

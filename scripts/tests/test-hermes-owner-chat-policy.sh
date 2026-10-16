@@ -73,11 +73,15 @@ class OwnerChatPolicyTest(unittest.TestCase):
             root = Path(tmp)
             soul = root / 'profiles/head-coordinator/SOUL.md'
             soul.parent.mkdir(parents=True)
-            soul.write_text(policy.MARKER + '\nMissing end marker\n')
-            with patch.object(policy.subprocess, 'run') as run:
-                with self.assertRaises(ValueError):
-                    policy.install(root, 'simplex:3')
-                run.assert_not_called()
+            start, end = policy.MARKER + '\n', policy.END_MARKER + '\n'
+            for text in (start, end, start + end + end, start + start + end, end + start):
+                with self.subTest(text=text):
+                    soul.write_text(text)
+                    with patch.object(policy.subprocess, 'run') as run:
+                        with self.assertRaises(ValueError):
+                            policy.install(root, 'simplex:3')
+                        run.assert_not_called()
+                    self.assertEqual(text, soul.read_text())
 
 
 unittest.main(argv=['owner-chat-policy'], verbosity=2)

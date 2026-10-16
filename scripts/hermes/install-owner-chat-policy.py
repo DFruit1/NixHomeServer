@@ -40,16 +40,11 @@ def install(root, target):
     owner = target.split(':', 1)[1]
     soul = root / 'profiles/head-coordinator/SOUL.md'
     existing = soul.read_text()
-    block = MARKER + '\n' + POLICY + END_MARKER + '\n'
-    if MARKER in existing:
-        if existing.count(MARKER) != 1 or existing.count(END_MARKER) != 1:
-            raise ValueError('Invalid private-chat policy section')
-        wanted, count = re.subn(re.escape(MARKER) + r'.*?' + re.escape(END_MARKER) + r'\n?',
-                               lambda _: block, existing, flags=re.S)
-        if count != 1:
-            raise ValueError('Invalid private-chat policy section')
-    else:
-        wanted = existing.rstrip() + '\n\n' + block
+    spec = importlib.util.spec_from_file_location('instructions',
+        Path(__file__).with_name('install-instruction-policy.py'))
+    instructions = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(instructions)
+    wanted = instructions.block(existing, MARKER, END_MARKER, POLICY)
     env = {**os.environ, 'HERMES_HOME': str(root)}
     # Hermes reloads config when its file signature changes. Disable creation
     # before removing old rows, so new cards cannot immediately recreate them.

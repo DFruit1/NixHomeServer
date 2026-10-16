@@ -561,18 +561,15 @@ def install(root):
     policy = (source / 'taskforce/owner-alert-replies.md').read_text()
     soul = root / 'profiles' / PROFILE / 'SOUL.md'
     existing = soul.read_text()
-    block = MARKER + '\n' + policy + END_MARKER + '\n'
-    if MARKER not in existing:
-        wanted = existing.rstrip() + '\n\n' + block
-    elif END_MARKER in existing:
-        wanted, count = re.subn(re.escape(MARKER) + r'.*?' + re.escape(END_MARKER) + r'\n?',
-                               lambda _: block, existing, flags=re.S)
-        if count != 1:
-            raise ValueError('Duplicate owner alert policy sections')
-    elif existing.endswith(MARKER + '\n' + policy):
-        wanted = existing[:-len(MARKER + '\n' + policy)] + block
-    else:
-        raise ValueError('Unrecognised owner alert policy; preserve and reconcile it')
+    spec = importlib.util.spec_from_file_location('instructions', source / 'install-instruction-policy.py')
+    instructions = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(instructions)
+    # The sole supported unbounded legacy section is our exact old template at
+    # EOF. Do not guess where a damaged or independently edited policy ends.
+    if (existing.count(MARKER) == 1 and END_MARKER not in existing
+            and existing.endswith(MARKER + '\n' + policy)):
+        existing += END_MARKER + '\n'
+    wanted = instructions.block(existing, MARKER, END_MARKER, policy)
     changes = {soul: wanted, scripts / 'kanban-owner-alerts.py': Path(__file__).read_text(),
                scripts / 'owner-blocker-authoring-guard.py': (source / 'owner-blocker-authoring-guard.py').read_text(),
                scripts / 'review-taskforce-approval.md': (source / 'taskforce/approval-policy.md').read_text(),
@@ -580,18 +577,9 @@ def install(root):
     spec = importlib.util.spec_from_file_location('steward_installer', source / 'install-steward-readonly.py')
     installer = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(installer)
-    author_policy = (source / 'taskforce/owner-blocker-authoring.md').read_text()
-    author_block = AUTHOR_MARKER + '\n' + author_policy + AUTHOR_END_MARKER + '\n'
     for profile_soul in sorted((root / 'profiles').glob('*/SOUL.md')):
         text = changes.get(profile_soul, profile_soul.read_text())
-        if AUTHOR_MARKER in text:
-            text, count = re.subn(re.escape(AUTHOR_MARKER) + r'.*?' + re.escape(AUTHOR_END_MARKER) + r'\n?',
-                                 lambda _: author_block, text, flags=re.S)
-            if count != 1:
-                raise ValueError(f'Invalid blocker authorship section in {profile_soul}')
-        else:
-            text = text.rstrip() + '\n\n' + author_block
-        changes[profile_soul] = text
+        changes[profile_soul] = instructions.shared(text)
         config = profile_soul.with_name('config.yaml')
         if config.exists():
             command = shlex.join(['python3', str(scripts / 'owner-blocker-authoring-guard.py')])

@@ -73,6 +73,20 @@ updates its existing report jobs in place. Apply the owning component installer
 for changes to report prompts or sender implementation, then check convergence.
 Do not run a sender tick or reset delivery state merely to validate wording.
 
+Managed sections must have exactly one ordered start/end marker pair. Instruction,
+owner-chat, owner-alert and hook installers reject orphaned, duplicate or reversed
+markers before writing files or invoking mutating CLI commands. Reconcile damaged
+sections explicitly; do not append a second policy over them. The owner-alert
+installer still recognises its exact historical template at EOF without an end
+marker as a supported migration. Hook sections also accept a missing final newline.
+
+The steward's SOUL.md owns permissions, coordinator handoffs, reminder backoff,
+original-request checks and owner-message clarity. Its skill supplies inspection
+and daily evidence procedures; job prompts own the schedule and delivery. Only
+scheduled scans whose prompts require it may return [SILENT]; direct owner
+requests receive normal answers. The steward may request coordinator action
+within its existing handoff exception, and never sends owner alerts itself.
+
 Focused checks:
 
 ```bash
