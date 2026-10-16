@@ -3,6 +3,8 @@
 `deployment-receipt.py` checks that whole-set review, coordinator decision,
 current source and the supplied guarded-test stamp agree. It reads existing
 native records and reuses the repository's archive and version=2 stamp helpers.
+Archive, verdict-validator and stamp helpers come from the reviewed `--repo`
+checkout, so an installed sibling validator cannot override that source's checks.
 It never deploys, writes cards or grants permission. The deploy gate remains a
 workflow convention; `deploy.sh` does not enforce this checker.
 
@@ -113,6 +115,7 @@ nix run .#deploy -- --action switch
 The check requires the latest run overall to be a completed feature-reviewer
 acceptance, all decision prerequisites done, a matching latest coordinator
 decision, exact current scope and, for switch, a valid v2 stamp for that source.
+Both review and decision scopes must satisfy the schema, including exact types.
 It checks board evidence again after source capture. Invalid/missing evidence,
 changed target/source/manifest, failed checks and superseded decisions fail
 closed. JSON receipts identify native run/comment IDs and evidence hashes; keep

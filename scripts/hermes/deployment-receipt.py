@@ -19,9 +19,6 @@ import subprocess
 import tempfile
 import time
 
-SOURCE = Path(__file__).resolve().parent
-
-
 def strict_json(text):
     def unique(pairs):
         result = {}
@@ -142,8 +139,9 @@ def capture_scope(repo,base,baseline_evidence,hostname,target,actions,inputs):
         'hostname':hostname,'target':target,'actions':actions,'inputs':manifest})
 
 
-def evidence(root,board,review,decision):
-    spec = importlib.util.spec_from_file_location('receipt_verdict',SOURCE/'review-verdict-guard.py')
+def evidence(root,board,review,decision,repo):
+    validator = Path(repo).resolve()/'scripts/hermes/review-verdict-guard.py'
+    spec = importlib.util.spec_from_file_location('receipt_verdict',validator)
     guard = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(guard)
     path = root/'kanban/boards'/board/'kanban.db'
@@ -212,9 +210,10 @@ def evidence(root,board,review,decision):
         if (not isinstance(chosen,dict) or set(chosen)!=keys or type(chosen['schema_version']) is not int
                 or chosen['schema_version']!=1
                 or chosen['approved'] is not True or chosen['review_task']!=review
-                or type(chosen['review_run_id']) is not int or chosen['review_run_id']!=run['id']
-                or chosen['scope']!=scope):
+                or type(chosen['review_run_id']) is not int or chosen['review_run_id']!=run['id']):
             raise ValueError('Latest coordinator decision is missing, withdrawn or does not match the reviewed scope/run')
+        if digest(validate_scope(chosen['scope']))!=digest(scope):
+            raise ValueError('Coordinator deployment scope differs from the reviewed scope')
         return {'scope':scope,'review_run_id':run['id'],'decision_comment_id':comment_id,
                 'review_metadata_sha256':digest(metadata),'decision_sha256':digest(chosen)}
 
@@ -233,7 +232,7 @@ def tested_stamp(path,repo):
 def check(root,board,review,decision,repo,action,inputs,stamp=None,*,hostname,target):
     if not re.fullmatch(r'[A-Za-z0-9_-]+',board) or any(not re.fullmatch(r't_[A-Za-z0-9_]+',tid) for tid in (review,decision)):
         raise ValueError('Use explicit board and native task identifiers')
-    first = evidence(root,board,review,decision)
+    first = evidence(root,board,review,decision,repo)
     scope = first['scope']
     if hostname!=scope['hostname'] or target!=scope['target']:
         raise ValueError('Intended hostname/target differs from the reviewed scope')
@@ -250,7 +249,7 @@ def check(root,board,review,decision,repo,action,inputs,stamp=None,*,hostname,ta
         tested = tested_stamp(stamp,repo)
         if tested['source_hash']!=scope['source_hash']:
             raise ValueError('Tested source differs from accepted source')
-    if evidence(root,board,review,decision)!=first:
+    if evidence(root,board,review,decision,repo)!=first:
         raise ValueError('Review or decision changed during consistency checking')
     return {'schema_version':1,'checked_at':time.time(),'board':board,'review_task':review,'decision_task':decision,
             **first,'action':action,'stage':'reviewed_and_tested' if tested else 'reviewed','tested':tested,

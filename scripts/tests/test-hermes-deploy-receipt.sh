@@ -160,6 +160,22 @@ class ReceiptTest(unittest.TestCase):
         self.db.execute("INSERT INTO task_comments VALUES (100,'t_decision','head-coordinator',?)",(body,))
         with self.assertRaises(ValueError): self.check()
 
+    def test_decision_scope_requires_exact_schema_types(self):
+        for version in (True,1.0):
+            decision=copy.deepcopy(self.decision)
+            decision['scope']['schema_version']=version
+            self.comment(decision)
+            with self.subTest(version=version), self.assertRaises(ValueError): self.check()
+
+    def test_verdict_validator_comes_from_reviewed_checkout(self):
+        checkout=self.root/'checkout'
+        helper=checkout/'scripts/hermes/review-verdict-guard.py'
+        helper.parent.mkdir(parents=True)
+        helper.write_text('def validate(metadata):\n    raise ValueError("Checkout validator refuses acceptance")\n')
+        with patch.object(receipt,'capture_scope',return_value=self.scope), self.assertRaisesRegex(ValueError,'Checkout validator refuses'):
+            receipt.check(self.root,'one','t_review','t_decision',checkout,'test',{},
+                          hostname='server',target='operator@server')
+
     def test_board_change_during_capture_invalidates_receipt(self):
         def capture(*args):
             self.comment({**self.decision,'approved':False})
@@ -170,12 +186,17 @@ class ReceiptTest(unittest.TestCase):
 
     def test_absent_board_is_not_created(self):
         with self.assertRaises(sqlite3.Error):
-            receipt.evidence(self.root,'missing','t_review','t_decision')
+            receipt.evidence(self.root,'missing','t_review','t_decision',PROJECT)
         self.assertFalse((self.root/'kanban/boards/missing/kanban.db').exists())
 
     def test_installed_script_uses_checkout_helpers(self):
-        with patch.object(receipt,'SOURCE',self.root/'installed/scripts'):
-            self.assertEqual(self.scope['source_hash'],receipt.tested_stamp(self.stamp,PROJECT)['source_hash'])
+        path=self.root/'installed/scripts/deployment-receipt.py'
+        path.parent.mkdir(parents=True)
+        shutil.copyfile(PROJECT/'scripts/hermes/deployment-receipt.py',path)
+        spec=importlib.util.spec_from_file_location('installed_receipt',path)
+        installed=importlib.util.module_from_spec(spec); spec.loader.exec_module(installed)
+        self.assertEqual(self.scope,installed.evidence(self.root,'one','t_review','t_decision',PROJECT)['scope'])
+        self.assertEqual(self.scope['source_hash'],installed.tested_stamp(self.stamp,PROJECT)['source_hash'])
 
     def test_capture_hashes_canonical_extracted_archive_and_rejects_dirty_checkout(self):
         checkout=self.root/'checkout'; checkout.mkdir()
@@ -197,7 +218,7 @@ class ReceiptTest(unittest.TestCase):
                 self.assertFalse((tree/'.git').exists()); self.assertFalse((tree/'ignored').exists())
                 return self.scope['source_hash']
             return original(argv,**kwargs)
-        with patch.object(receipt,'SOURCE',self.root/'installed/scripts'), patch.object(receipt,'command',side_effect=run):
+        with patch.object(receipt,'command',side_effect=run):
             snapshot=receipt.capture_scope(checkout,revision,'fixture','server','operator@server',['test'],{})
         self.assertEqual(revision,snapshot['head_revision'])
         git('update-index','--assume-unchanged','tracked')
