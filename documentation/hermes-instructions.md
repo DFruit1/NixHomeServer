@@ -152,3 +152,51 @@ active sessions just to reload configuration.
 
 The regression suite includes scripts/tests/test-hermes-config-policy.sh and
 tests both list styles, safe compaction, backups and installer convergence.
+
+## Reused task skills
+
+The instruction installer also supplies focused task skills and a short,
+role-specific discovery block in SOUL.md. It copies the three existing
+`.agents/skills/nixhomeserver-{safe-change,module-change,shutdown-guard}/SKILL.md`
+sources directly, so Codex and Hermes use the same maintained procedures.
+Prefer the skill in the assigned checkout when available; installed copies
+support discovery and provide a fallback. NixHomeServer gates apply only to
+this project. Frontend work reads the existing project frontend-design skill
+and its references rather than copying its vendored toolchains into profiles.
+
+| Profile | Managed task skills |
+| --- | --- |
+| standard-implementer, local-implementer | Safe change, module change, shutdown guard, systematic debugging |
+| feature-reviewer | Safe change, module change, systematic debugging; investigation and verification only |
+| head-coordinator | Safe change and shutdown guard; routing and existing guarded deployment authority only |
+| project-auditor | Safe change and module change for planning only |
+| board-steward | Keeps its existing inspection skill; no new execution skills |
+
+The online source is [Hermes Agent's bundled systematic-debugging skill](https://github.com/NousResearch/hermes-agent/blob/0f3fcacd3f92d02d163789b4c3441b6388f8753d/skills/software-development/systematic-debugging/SKILL.md),
+pinned at `0f3fcacd3f92d02d163789b4c3441b6388f8753d` (MIT, originally adapted
+from obra/superpowers). The maintained adaptation is
+`scripts/hermes/instructions/systematic-debugging.md`; its upstream license is
+`instructions/LICENSE.hermes-skills`. It retains the four-phase investigation
+and reproduction method, adapts role/tool/privacy limits and escalation, and
+removes automatic delegation and unsupported performance claims. Existing
+bundled test-driven-development remains available: use its test-first method
+with project exemptions and preserve existing work. Existing review and
+orchestration skills remain authoritative for their workflows.
+
+Install only this skill selection and its discovery blocks without refreshing
+other policy, models, configs, approvals, jobs or sessions:
+
+```bash
+python3 -B scripts/hermes/install-instruction-policy.py --skills-only --check
+python3 -B scripts/hermes/install-instruction-policy.py --skills-only
+python3 -B scripts/hermes/install-instruction-policy.py --skills-only --check
+hermes --profile standard-implementer skills list
+```
+
+The normal instruction installer and taskforce installer include these same
+transformations. Existing non-secret instruction and skill files are backed up
+by the owning installer. Update the tracked sources and rerun it; no network
+fetch or unpinned Hub install occurs during restoration. The routing reference
+is installed at `~/.hermes/scripts/hermes-skill-routing.md` and loaded on demand.
+Installing files does not prove an active session consumed them; do not
+interrupt running turns or restart services to refresh them.

@@ -8,6 +8,7 @@ from pathlib import Path
 import tempfile
 import unittest
 import sys
+from unittest.mock import patch
 
 source = Path(sys.argv[1]) / 'scripts/hermes'
 spec = importlib.util.spec_from_file_location('instructions', source / 'install-instruction-policy.py')
@@ -86,6 +87,65 @@ class InstructionPolicyTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             policy.install(self.root)
         self.assertEqual(before, {p: p.read_bytes() for p in self.root.rglob('*') if p.is_file()})
+
+    def test_skills_only_reuses_project_sources_without_changing_runtime_settings(self):
+        before = {p: p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
+        self.assertEqual(1, policy.install(self.root, check=True, skills_only=True))
+        self.assertEqual(before, {p: p.read_bytes() for p in self.root.rglob('*') if p.is_file()})
+        self.assertEqual(0, policy.install(self.root, skills_only=True))
+        self.assertEqual(0, policy.install(self.root, check=True, skills_only=True))
+        for path, original in before.items():
+            if path.name != 'SOUL.md':
+                self.assertEqual(original, path.read_bytes())
+        for profile in ('standard-implementer', 'local-implementer', 'feature-reviewer'):
+            home = self.root / 'profiles' / profile
+            for skill in ('nixhomeserver-safe-change', 'nixhomeserver-module-change'):
+                self.assertEqual((source.parents[1] / '.agents/skills' / skill / 'SKILL.md').read_bytes(),
+                                 (home / 'skills/devops' / skill / 'SKILL.md').read_bytes())
+            debug = home / 'skills/software-development/systematic-debugging/SKILL.md'
+            self.assertEqual((source / 'instructions/systematic-debugging.md').read_bytes(), debug.read_bytes())
+            self.assertTrue((debug.parent / 'LICENSE').is_file())
+        self.assertFalse((self.root / 'profiles/board-steward/skills').exists())
+        self.assertEqual(before[self.root / 'profiles/board-steward/SOUL.md'],
+                         (self.root / 'profiles/board-steward/SOUL.md').read_bytes())
+        self.assertFalse((self.root / 'profiles/head-coordinator/skills/software-development').exists())
+        self.assertTrue((self.root / 'profiles/head-coordinator/skills/devops/nixhomeserver-shutdown-guard/SKILL.md').is_file())
+        self.assertFalse((self.root / 'profiles/project-auditor/skills/software-development').exists())
+        self.assertFalse((self.root / 'scripts/hermes-fleet-policy.md').exists())
+
+    def test_skills_install_rejects_ambiguous_routing_before_any_write(self):
+        target = self.root / 'profiles/feature-reviewer/SOUL.md'
+        target.write_text('<!-- hermes-task-skills -->\nMissing end\n')
+        before = {p: p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
+        with self.assertRaises(ValueError):
+            policy.install(self.root, skills_only=True)
+        self.assertEqual(before, {p: p.read_bytes() for p in self.root.rglob('*') if p.is_file()})
+
+    def test_skill_refresh_preserves_and_backs_up_existing_profile_edits(self):
+        default = self.root / 'SOUL.md'
+        default.write_text('Retired routing profile; preserve.\n')
+        target = self.root / 'profiles/local-implementer/skills/software-development/systematic-debugging/SKILL.md'
+        target.parent.mkdir(parents=True)
+        target.write_text('Existing customized debugging recipe.\n')
+        original = target.read_bytes()
+        unrelated = target.parent.parent / 'operator-skill/SKILL.md'
+        unrelated.parent.mkdir()
+        unrelated.write_text('Independent skill; preserve.\n')
+        policy.install(self.root, skills_only=True)
+        self.assertEqual('Retired routing profile; preserve.\n', default.read_text())
+        self.assertEqual('Independent skill; preserve.\n', unrelated.read_text())
+        self.assertTrue(any(p.read_bytes() == original for p in
+                            (self.root / 'backups/instruction-policy').rglob('*') if p.is_file()))
+        self.assertFalse(any(p.name == 'config.yaml' for p in policy.skill_changes(self.root)))
+        # Changes to a canonical project skill propagate through the same installer.
+        replacement = self.root / 'updated-project-skill.md'
+        replacement.write_text('---\nname: nixhomeserver-safe-change\ndescription: Updated procedure\n---\n')
+        sources = dict(policy.SKILL_SOURCES)
+        sources['nixhomeserver-safe-change'] = (replacement, 'devops/nixhomeserver-safe-change/SKILL.md')
+        with patch.dict(policy.SKILL_SOURCES, sources, clear=True):
+            policy.install(self.root, skills_only=True)
+            self.assertEqual(replacement.read_bytes(), (self.root /
+                'profiles/local-implementer/skills/devops/nixhomeserver-safe-change/SKILL.md').read_bytes())
 
 
 unittest.main(argv=['instruction-policy'], verbosity=2)

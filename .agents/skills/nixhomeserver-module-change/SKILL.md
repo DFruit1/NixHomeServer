@@ -8,6 +8,11 @@ description: Safely add, remove, enable, disable, or restructure a NixHomeServer
 Preserve the repository's central invariant: removing an application module
 must not break unrelated evaluation or delete retained application data.
 
+Resolve paths in the assigned NixHomeServer checkout and prefer its current
+skill over an installed copy. Hermes implementers execute the assigned change;
+feature-reviewer uses this contract to verify without editing source, and
+project-auditor uses it for planning. Preserve role and card limits throughout.
+
 ## Establish the boundary
 
 1. Read `AGENTS.md`, `modules/catalog.nix`, the target module, and the relevant
@@ -72,7 +77,7 @@ Add or update regression coverage before claiming completion:
   routes, identity reconciliation, or storage consumers when those boundaries
   change.
 
-Run focused tests during development. Then invoke `$nixhomeserver-safe-change`
+Run focused tests during development. Then load `nixhomeserver-safe-change`
 to select the repository-level validation gate.
 
 ## Review checklist

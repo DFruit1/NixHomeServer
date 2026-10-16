@@ -8,6 +8,20 @@ description: Select and execute the safe validation, build, deployment, or recov
 Choose evidence proportional to risk while preserving the guarded deployment,
 rollback, secret, and recovery boundaries.
 
+## Project and role boundaries
+
+Resolve repository paths in the assigned NixHomeServer checkout; prefer its
+current skill over an installed copy. Do not apply these gates to other projects.
+Honor existing exact-scope approval without asking again.
+
+For Hermes, apply only the steps allowed by the role and card: implementers run
+approved validation and commit locally; feature-reviewer independently verifies
+without implementing or deploying, and preserves an audit card's offline limits;
+project-auditor uses this guidance for plans, not execution. head-coordinator
+routes source questions and implementation tests, and runs guarded test/switch
+only after accepted whole-set review of the exact source and intended action.
+The steward remains read-only. A loaded skill grants no operational authority.
+
 ## Start safely
 
 1. Read `AGENTS.md`, `README.md`, `documentation/operations.md`, and the
@@ -38,18 +52,25 @@ repository gate:
 - Broad, security-sensitive, storage, identity, backup/restore, deployment, or
   release-candidate change: run `scripts/validate-repo.sh --full`.
 
+Batch full-system evaluation with `remote_eval_batch_json` from
+`scripts/helpers/remote-eval.sh`; keep settings-level evaluation local. Use the
+existing remote-build and remote-run helpers for their documented workloads.
+Before long-running work, load `nixhomeserver-shutdown-guard` and protect the
+pending timer through an already-authorized helper or the coordinator.
+
 Do not weaken or skip a failing check merely to obtain a green result. Diagnose
 the failure, distinguish change-caused failures from pre-existing failures, and
 report the evidence.
 
 ## Build and deploy
 
-1. A request to edit or validate does not authorize deployment. Deploy only
-   when the user explicitly requests live or target-system activation.
+1. A request to edit or validate does not authorize deployment. Require existing
+   explicit authority for live activation and satisfy the project's deploy gate.
 2. Prefer remote-server builds for Nix derivations and Rust artifacts when the
    guarded helper supports them.
-3. Use the repository's guarded deploy surface (`nix run .#deploy` and its
-   documented arguments). Do not use direct `nixos-rebuild switch` except for a
+3. Use `nix run .#deploy -- --action test|switch` with the helper's default
+   allocation; do not override build mode or build host. Do not use direct
+   `nixos-rebuild switch` except for a
    documented console-recovery procedure explicitly in scope.
 4. Preserve the helper's evaluate, build, test-activate, route/unit/canary
    checks, tested-closure stamp, boot commit, and rollback sequence. Do not

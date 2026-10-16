@@ -17,6 +17,23 @@ PROFILES = ('head-coordinator', 'standard-implementer', 'local-implementer',
             'feature-reviewer', 'project-auditor', 'board-steward')
 FLEET_START = '<!-- kanban-owner-blocker-author -->'
 FLEET_END = '<!-- /kanban-owner-blocker-author -->'
+PROJECT_SKILLS = SOURCE.parents[1] / '.agents/skills'
+SKILL_SOURCES = {
+    name: (PROJECT_SKILLS / name / 'SKILL.md', f'devops/{name}/SKILL.md')
+    for name in ('nixhomeserver-safe-change', 'nixhomeserver-module-change',
+                 'nixhomeserver-shutdown-guard')
+}
+SKILL_SOURCES['systematic-debugging'] = (
+    SOURCE / 'instructions/systematic-debugging.md',
+    'software-development/systematic-debugging/SKILL.md')
+ROLE_SKILLS = {
+    'standard-implementer': tuple(SKILL_SOURCES),
+    'local-implementer': tuple(SKILL_SOURCES),
+    'feature-reviewer': ('nixhomeserver-safe-change', 'nixhomeserver-module-change',
+                         'systematic-debugging'),
+    'head-coordinator': ('nixhomeserver-safe-change', 'nixhomeserver-shutdown-guard'),
+    'project-auditor': ('nixhomeserver-safe-change', 'nixhomeserver-module-change'),
+}
 
 
 def block(text, start, end, content):
@@ -58,6 +75,34 @@ def coordinator(text):
             text = re.sub(r'^## ' + re.escape(heading) + r'\n.*?(?=^## |^<!-- |\Z)',
                           '', text, flags=re.M | re.S)
     return block(text, start, end, (SOURCE / 'taskforce/coordinator-operations.md').read_text())
+
+
+def skill_changes(root, pending=None):
+    """Reuse project skills and the pinned Hermes debugging adaptation by role."""
+    pending = pending or {}
+    result = {root / 'scripts/hermes-skill-routing.md':
+              (SOURCE / 'instructions/skill-routing.md').read_text()}
+    for name, skills in ROLE_SKILLS.items():
+        home = root / 'profiles' / name
+        soul = home / 'SOUL.md'
+        if not soul.exists():
+            continue
+        content = ('## Task skills\n\n'
+                   'Before nontrivial work, read ~/.hermes/scripts/hermes-skill-routing.md '
+                   'and load matching skills with skills_list/skill_view. '
+                   'Maintained skills for this role: ' + ', '.join(f'`{s}`' for s in skills) + '.\n'
+                   'Use the assigned checkout\'s project skills when present. '
+                   'Skill recipes never widen your role, authorise deleting existing work, '
+                   'or turn technical uncertainty into owner input.\n')
+        result[soul] = block(pending.get(soul, soul.read_text()),
+                             '<!-- hermes-task-skills -->', '<!-- /hermes-task-skills -->', content)
+        for skill in skills:
+            source, target = SKILL_SOURCES[skill]
+            result[home / 'skills' / target] = source.read_text()
+            if skill == 'systematic-debugging':
+                result[home / 'skills' / Path(target).parent / 'LICENSE'] = (
+                    SOURCE / 'instructions/LICENSE.hermes-skills').read_text()
+    return {p: t for p, t in result.items() if not p.exists() or p.read_text() != t}
 
 
 def changes(root, pending=None):
@@ -120,11 +165,12 @@ def changes(root, pending=None):
             for source, target in files:
                 result[root / 'profiles' / name / 'skills' / target] = (
                     SOURCE / 'instructions' / source).read_text()
+    result.update(skill_changes(root, result))
     return {p: t for p, t in result.items() if not p.exists() or p.read_text() != t}
 
 
-def install(root, check=False):
-    pending = changes(root)
+def install(root, check=False, skills_only=False):
+    pending = skill_changes(root) if skills_only else changes(root)
     for path, content in pending.items():
         print(f'{"drift" if check else "install"}: {path}')
         if check:
@@ -145,9 +191,12 @@ def install(root, check=False):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--check', action='store_true')
+    parser.add_argument('--skills-only', action='store_true',
+                        help='Install task skills and their routing only; leave other policy untouched')
     args = parser.parse_args()
     try:
-        sys.exit(install(Path(os.environ.get('HERMES_ROOT', str(Path.home() / '.hermes'))), args.check))
+        sys.exit(install(Path(os.environ.get('HERMES_ROOT', str(Path.home() / '.hermes'))),
+                         args.check, args.skills_only))
     except (ValueError, OSError) as exc:
         print(f'instruction installer: {exc}', file=sys.stderr)
         sys.exit(2)
