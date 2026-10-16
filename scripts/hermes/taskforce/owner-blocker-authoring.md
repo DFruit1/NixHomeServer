@@ -30,12 +30,17 @@ Read the installed ~/.hermes/scripts/hermes-card-authoring.md before card writes
 Keep specifications on the parent and ensure children can access required context.
 
 Before parking a card, name Input supplier: owner | agent |
-external-source-owner(<who>) | model/provider in its block reason/comment.
+external-source-owner(<who>) | model/provider in its block reason. Use that exact
+category, not a profile name; a comment alone does not supply the block reason.
 Missing evidence or an inconclusive report is not automatically owner input.
 Agent-recoverable gaps and quota/capacity failures are technical. An owner's
 decision, credential, physical action or unrecorded system fact that only the
 owner or their chosen actor can provide is owner input. An external source only
 the owner can obtain/replace is an owner ask to obtain it or descope.
+
+Capability/provider faults use capability or transient blocks with concrete
+evidence and recovery actions. Reserve Blocking:, Why owner: and Unblock: for
+the coordinator's genuine owner asks; never use them for technical handoffs.
 
 head-coordinator is the sole author of owner gates, needs_input blocks and
 standalone Hard Blocker markers. Other profiles use technical blocks and send evidence to

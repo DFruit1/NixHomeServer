@@ -86,6 +86,7 @@ Use the lifecycle that actually dispatched this run:
   and integer exit codes, and list required fixes in
   `requested_changes`. The coordinator reads the verdict and routes rework;
   completion means the review was delivered, not that the implementation passed.
+  Source reading has no command exit code; keep it in findings, never `checks`.
   Do not call `kanban_request_review` to manufacture review provenance.
 - **Native review run**, claimed from the `review` state after an implementer's
   `review_requested` handoff: accept with `kanban_complete`, or reject with

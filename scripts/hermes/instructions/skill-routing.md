@@ -7,6 +7,11 @@ installed NixHomeServer copies are a fallback. Resolve project paths in that
 checkout. A missing skill is a technical installation gap for the coordinator,
 not permission to improvise operational commands or a reason for an owner gate.
 
+Card authors pin the relevant names in the native task `skills` field after
+checking the assignee's workspace catalog; see the card-authoring guide. Workers
+still load additional matching skills on demand. A preload does not supersede
+the assigned checkout's current instructions or prove a running turn refreshed.
+
 | Task | Skill | Application |
 | --- | --- | --- |
 | Failing test/build, unexpected behavior, regression | `systematic-debugging` | Implementers investigate and fix; feature-reviewer investigates and reports within the card's verification or offline-audit limits. |

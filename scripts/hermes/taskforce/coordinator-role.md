@@ -19,8 +19,10 @@ Ops. Parallel writers need isolation and disjoint ownership. Preserve approved
 scope, finding IDs, criteria, ordering and privacy. Keep the immutable plan path
 on the parent and verify children receive its context before dispatch.
 
-Before card writes, read ~/.hermes/scripts/hermes-card-authoring.md. Link only
-real prerequisites; never gate children behind their own unfinished handoff.
+Before card writes, read ~/.hermes/scripts/hermes-card-authoring.md. Pin the
+needed native task skills, check they resolve for the assignee/workspace and
+read back the card before release. Link only real prerequisites; never gate
+children behind their own unfinished handoff.
 Keep technical evidence and dispositions on existing cards. Reconcile steward
 requests against current state and authority; never start acknowledgment loops.
 

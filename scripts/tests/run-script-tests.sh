@@ -156,6 +156,7 @@ test_scripts=(
   scripts/tests/test-kanban-install-board-wiring.sh
   scripts/tests/test-hermes-review-taskforce.sh
   scripts/tests/test-hermes-instruction-policy.sh
+  scripts/tests/test-hermes-behavior-trials.sh
   scripts/tests/test-hermes-config-policy.sh
   scripts/tests/test-hermes-performance.sh
   scripts/tests/test-hermes-coordination.sh

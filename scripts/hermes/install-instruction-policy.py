@@ -112,6 +112,8 @@ def changes(root, pending=None):
         SOURCE.parent.parent / 'documentation/hermes-card-authoring.md').read_text()
     result[root / 'scripts/hermes-instructions.md'] = (
         SOURCE.parent.parent / 'documentation/hermes-instructions.md').read_text()
+    result[root / 'scripts/hermes-behavior-trials.md'] = (
+        SOURCE.parent.parent / 'documentation/hermes-behavior-trials.md').read_text()
     result[root / 'scripts/hermes-coordinator-reference.md'] = (
         SOURCE / 'instructions/coordinator-reference.md').read_text()
     result[root / 'scripts/kanban-performance.py'] = (SOURCE / 'kanban-performance.py').read_text()

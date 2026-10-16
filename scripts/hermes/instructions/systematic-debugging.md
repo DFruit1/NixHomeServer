@@ -56,6 +56,16 @@ The feedback loop is the debugging work. Before reading code to build a theory, 
 
 When a clean repro is hard, spend disproportionate effort building the loop. Guessing without a red-capable loop is the failure mode this skill exists to prevent.
 
+Execute the reproduction and record its failing assertion and integer exit code
+**before the first source edit**, even when an existing test clearly covers the
+bug. Reading that test is not a red run. A denied command or unavailable helper
+is a capability gap, not reproduction evidence; route it to head-coordinator.
+
+For Hermes implementers, park that gap with
+`kanban_block(kind="capability", reason="Input supplier: agent; <command and exit code>; head-coordinator: <required authorized recovery>")`
+and stop the turn. Use `model/provider` for a provider fault. Do not add owner
+summary fields or call `kanban_complete` after blocking unverified work.
+
 ## When to Use
 
 Use for ANY technical issue:

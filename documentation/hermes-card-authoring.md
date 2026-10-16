@@ -43,6 +43,49 @@ Notes:  (optional — drop rather than pad)
 - <a supporting fact, never reasoning or a second ask>
 ```
 
+### Task skills
+
+When commissioning work, pin the procedures the assignee needs in the native
+`skills` field. Hermes persists these names and preloads them into the worker;
+a skill name in the body alone does not preload it. Keep the body for scope and
+acceptance. Skills neither grant tools nor widen role permissions.
+
+Use the smallest relevant set from
+`~/.hermes/scripts/hermes-skill-routing.md`:
+
+| Work | Pin when applicable |
+|---|---|
+| Failure investigation or bug fix | `systematic-debugging` |
+| Meaningful implementation logic | `test-driven-development` |
+| NixHomeServer validation or operational evidence | `nixhomeserver-safe-change` |
+| Optional NixOS application boundary or integration | `nixhomeserver-module-change` |
+| Work needing protection from a pending shutdown | `nixhomeserver-shutdown-guard` within existing role authority |
+| Rendered frontend implementation or review | `frontend-design` from the assigned project |
+| Taskforce feature audit | `taskforce-feature-audit` |
+| Coordinator routing or recovery | `kanban-orchestration` |
+
+Check availability for the **assignee in the assigned workspace**, including
+project skills and disabled skills. The author's catalog can differ. Reuse the
+existing profile/project catalog; route a missing or disabled required skill as
+an agent installation/configuration gap, without silently enabling it. Do not
+dispatch a card claiming a preload that cannot resolve. Simple metadata work,
+owner gates and planning do not need implementation recipes.
+
+For example, a NixOS optional-module regression can use
+`kanban_create(..., skills=["systematic-debugging", "nixhomeserver-module-change",
+"nixhomeserver-safe-change"])`. CLI creation uses repeated
+`--skill systematic-debugging --skill nixhomeserver-module-change
+--skill nixhomeserver-safe-change`. Read back the created card with `kanban_show`
+and verify its `skills`, assignee, workspace and prerequisites before release.
+Set skills at creation: the installed native API does not expose a task-skills
+update operation. Do not edit board SQLite or recreate an active graph just to
+backfill this field. Existing workers keep using on-demand skill loading; a
+changed card never proves its already-started worker refreshed instructions.
+
+Native lifecycle review already injects `sdlc-review`; do not add it to a separate
+downstream verification card, which has its own verdict contract. Ordinary diff
+verification does not become a taskforce audit by loading its skill.
+
 ### Gate body
 
 A gate asks the owner to authorise something, so the ask is the first thing on

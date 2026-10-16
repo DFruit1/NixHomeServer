@@ -77,6 +77,8 @@ class InstructionPolicyTest(unittest.TestCase):
         reference = self.root / 'scripts/hermes-coordinator-reference.md'
         self.assertIn('At most one dependency repair', reference.read_text())
         self.assertIn('compact_complete', reference.read_text())
+        self.assertIn('--runtime-profile',
+                      (self.root / 'scripts/hermes-behavior-trials.md').read_text())
         self.assertLess(len(result.split()), 1500)
         self.assertEqual(0, policy.install(self.root, check=True))
 

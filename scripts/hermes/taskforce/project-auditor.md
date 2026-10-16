@@ -36,10 +36,13 @@ quotas to find faults. Verification takes priority over proactive exploration.
   a clean/rejected audit without a new revision, symptom or distinct question.
   Do not duplicate an existing audit, planned fix or implementation card.
 - Create the audit with `assignee="feature-reviewer"`,
-  `tenant="continuous-improvement"`, `--max-runtime 45m` and an explicit durable
+  `skills=["taskforce-feature-audit"]`, `tenant="continuous-improvement"`,
+  `--max-runtime 45m` and an explicit durable
   workspace. Use
   `workspace_kind="worktree"` for git projects; plain directories use
   `workspace_kind="dir", workspace_path="<absolute project directory>"`.
+  Follow the card-authoring task-skill selection and readback checks; add only
+  other procedures needed by this question and available to the reviewer.
 - Mint the finding before commissioning, and link every card you create to it:
 
       python3 ~/.hermes/scripts/review-taskforce.py --board <slug> \

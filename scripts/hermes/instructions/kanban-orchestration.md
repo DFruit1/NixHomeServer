@@ -35,7 +35,9 @@ rules constrain this procedure. Never implement or independently verify source.
 5. Provision isolated workspaces at the intended base and lawfully deliver required
    evidence before release. Verify actual attachments/copies and identities; a
    path in another worker's summary does not authorize reading it. Parallelize
-   disjoint slices, serialize shared files/contracts and compose last. No gate
+   disjoint slices, serialize shared files/contracts and compose last. Pin the
+   required native task skills using the card-authoring guide; verify assignee
+   availability and persisted skill names before dispatch. No gate
    may block unrelated work merely because it is convenient to chain it.
 6. Reconcile accepted source, installed files and loaded runtime separately.
    A source verdict does not prove installation, rollback, supervision or live

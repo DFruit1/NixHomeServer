@@ -26,6 +26,10 @@ bypasses a refusal. Source/installed/runtime identity and review completion vers
 acceptance remain separate evidence. A policy file on disk does not prove an
 already-running session loaded it.
 
+Use the [behaviour trials](hermes-behavior-trials.md) for bounded model checks
+after instruction changes; deterministic installer checks alone do not prove
+agents follow the installed procedures.
+
 ## Ownership decisions
 
 Workers commit locally after the owning gate; they never publish. The durability
