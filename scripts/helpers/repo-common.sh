@@ -240,9 +240,9 @@ create_deploy_repo_archive() {
   local manifest git_manifest untracked_manifest refused_path tar_status
 
   if command -v git >/dev/null 2>&1 && git -C "$repo_root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    manifest="$(mktemp /tmp/deploy-repo-manifest.XXXXXX)"
-    git_manifest="$(mktemp /tmp/deploy-git-manifest.XXXXXX)"
-    untracked_manifest="$(mktemp /tmp/deploy-untracked-manifest.XXXXXX)"
+    manifest="$(mktemp "${TMPDIR:-/tmp}/deploy-repo-manifest.XXXXXX")"
+    git_manifest="$(mktemp "${TMPDIR:-/tmp}/deploy-git-manifest.XXXXXX")"
+    untracked_manifest="$(mktemp "${TMPDIR:-/tmp}/deploy-untracked-manifest.XXXXXX")"
 
     if ! git -C "$repo_root" ls-files -z --others --exclude-standard >"$untracked_manifest"; then
       rm -f "$manifest" "$git_manifest" "$untracked_manifest"

@@ -156,6 +156,13 @@ isolated work may continue. Record checkout, reviewed revision and source identi
 Required commits land before review. Recheck that identity immediately before
 switch; changed source/inputs require fresh review and test.
 
+Follow ~/.hermes/scripts/hermes-deployment-receipts.md: capture the clean source
+scope, have the verifier independently bind it to completion metadata, record
+the latest structured coordinator decision, and run the read-only consistency
+check before test and switch. This adds evidence, not deployment authority or
+an automatic gate in deploy.sh. Baseline and target stamp provenance still need
+the existing authorized operator evidence.
+
 Run these yourself from that reviewed source, with the dashboard allocation:
 
     nix run .#deploy -- --action test
@@ -172,6 +179,13 @@ Android publication is an external operator's release handoff, not this deploy.
 
 Use the installed kanban-board-health.sh monitor and current native board state.
 Its output is a wake signal; unchanged conditions need no repeated comment.
+
+Use `python3 ~/.hermes/scripts/kanban-blockers.py` to prioritize prerequisite
+roots by unique downstream impact; `--board BOARD --task t_CARD` shows paths.
+Read ~/.hermes/scripts/hermes-prerequisites.md before graph repair. Only done
+satisfies dependencies; retain intermediate holds, archived parents and cycles
+as evidence rather than deleting them to release work. Recorded needs_input
+does not establish an owner supplier. Reread the native cards and decisions.
 
 | Finding | Action |
 |---|---|

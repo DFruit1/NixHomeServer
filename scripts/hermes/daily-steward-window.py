@@ -24,7 +24,7 @@ from pathlib import Path
 
 START_HOUR = 7   # 07:00 local, inclusive
 END_HOUR = 17    # 17:00 local, exclusive: a later power-on waits for the next 07:00
-COLLECTORS = ("kanban-daily-steward.py", "usage-pace.py", "kanban-performance.py")
+COLLECTORS = ("kanban-daily-steward.py", "kanban-blockers.py", "usage-pace.py", "kanban-performance.py")
 DAILY_JOB_NAME = "hermes daily steward"
 
 

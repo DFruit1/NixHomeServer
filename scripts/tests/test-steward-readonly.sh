@@ -58,6 +58,7 @@ class StewardTest(unittest.TestCase):
             self.assertEqual({}, self.call(tool, board='another-board'))
         for command in [f'python3 {self.root}/scripts/steward-board-read.py --boards',
                         f'python3 {self.root}/scripts/kanban-performance.py --json',
+                        f'python3 {self.root}/scripts/kanban-blockers.py --board pcops --json',
                         f'python3 {self.root}/scripts/steward-board-read.py --board pcops --query "SELECT * FROM tasks"',
                         f'python3 {self.root}/scripts/kanban-owner-alerts.py --details blockers',
                         f'python3 {self.root}/scripts/kanban-owner-alerts.py --check-blockers',

@@ -68,6 +68,11 @@ structurally could not see.
   after it accepts your report. Report whether the set is safe to test, and say
   what you did not check.
 
+Read ~/.hermes/scripts/hermes-deployment-receipts.md for whole-set review.
+Independently reproduce the clean source snapshot and put that exact scope in
+completion metadata.deployment_scope alongside verdict, revision and checks.
+Do not accept a supplied baseline without its recorded deployment evidence.
+
 ### Verdict
 
 State findings in severity order with `file:line`, then a verdict:

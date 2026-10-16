@@ -49,6 +49,7 @@ def guard(payload, root):
         with closing(sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True, timeout=5)) as db:
             db.row_factory = sqlite3.Row
             db.execute('PRAGMA query_only=ON')
+            db.execute('BEGIN')
             task = db.execute('SELECT id,status,assignee,tenant FROM tasks WHERE id=?', (task_id,)).fetchone()
             if task is None:
                 raise ValueError('Unknown task; do not infer review acceptance')
@@ -69,7 +70,9 @@ def guard(payload, root):
                     continue
                 if parent['status'] != 'done':
                     raise ValueError(f"Review {parent['id']} is not complete")
-                run = db.execute("SELECT metadata FROM task_runs WHERE task_id=? AND status='done' ORDER BY id DESC LIMIT 1", (parent['id'],)).fetchone()
+                run = db.execute("SELECT profile,status,outcome,metadata FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1", (parent['id'],)).fetchone()
+                if not run or run['profile'] != 'feature-reviewer' or run['status'] != 'done' or run['outcome'] != 'completed':
+                    raise ValueError(f"Latest run for review {parent['id']} is not a completed verifier run")
                 evidence = json.loads(run['metadata'] or '{}') if run else {}
                 validate(evidence)
                 if evidence['verdict'] != 'accept':

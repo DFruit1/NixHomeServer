@@ -104,6 +104,50 @@ class PerformanceTest(unittest.TestCase):
         self.assertIsNone(report['profiles']['other']['sessions'])
         self.assertTrue(any(w['reason']=='shared_database' for w in report['warnings']))
 
+    def test_failure_taxonomy_counts_unknowns_without_leaking_metadata(self):
+        with closing(sqlite3.connect(self.board)) as db:
+            db.execute("INSERT INTO task_runs VALUES ('private-failure','head-coordinator',180,190,'failed','failed',?)",
+                       (json.dumps({'failure_category':'provider_unavailable'}),))
+            db.execute("INSERT INTO task_runs VALUES ('private-unknown','head-coordinator',181,191,'failed','failed',?)",
+                       (json.dumps({'failure_category':'SECRET failure payload'}),))
+            db.commit()
+        result=performance.report(self.root,100,200)
+        runs=result['profiles']['head-coordinator']['runs']
+        self.assertEqual({'worker_crash':1,'provider_unavailable':1,'unknown':1},runs['failure_causes'])
+        self.assertEqual(1,runs['reported_failure_category_runs'])
+        self.assertEqual(1,runs['repeat_attempts'])
+        self.assertNotIn('SECRET',json.dumps(result))
+
+    def test_model_accounting_and_worker_join_coverage_are_explicit(self):
+        with closing(sqlite3.connect(self.state)) as db:
+            db.executescript('''ALTER TABLE sessions ADD COLUMN id TEXT;
+                UPDATE sessions SET id='SECRET-ID' WHERE started_at=150;
+                CREATE TABLE session_model_usage(session_id TEXT,model TEXT,billing_provider TEXT,task TEXT,
+                  api_call_count INTEGER,input_tokens INTEGER,output_tokens INTEGER,
+                  cache_read_tokens INTEGER,cache_write_tokens INTEGER,reasoning_tokens INTEGER,
+                  estimated_cost_usd REAL,actual_cost_usd REAL,cost_status TEXT);
+                INSERT INTO session_model_usage VALUES
+                  ('SECRET-ID','model-a','provider-a','',2,100,20,60,0,10,.01,0,'estimated'),
+                  ('SECRET-ID','model-b','provider-b','vision',1,50,10,0,0,0,0,0,'unknown'),
+                  ('SECRET-ID','https://private.example.invalid/path','https://private.example.invalid',
+                   'title_generation',1,5,1,0,0,0,0,0,'included');''')
+            db.commit()
+        result=performance.report(self.root,100,200)
+        profile=result['profiles']['head-coordinator']
+        self.assertEqual(1,profile['runs']['worker_session_id_matched'])
+        usage=profile['sessions']['model_usage']
+        self.assertEqual(4,usage['api_call_count'])
+        self.assertEqual(3,len(usage['by_model']))
+        self.assertEqual({'main','vision','title_generation'},{r['task'] for r in usage['by_model']})
+        self.assertEqual(1,usage['estimated_cost_rows'])
+        self.assertEqual(0,usage['actual_cost_rows'])
+        self.assertIsNone(usage['actual_cost_usd'])
+        self.assertEqual({'estimated':1,'unknown':1,'included':1},usage['cost_status_rows'])
+        self.assertNotIn('SECRET-ID',json.dumps(result))
+        self.assertNotIn('private.example.invalid',json.dumps(result))
+        with patch.object(performance,'MAX_MODEL_ROWS',2):
+            self.assertIsNone(performance.report(self.root,100,200)['profiles']['head-coordinator']['sessions']['model_usage'])
+
     def test_daily_collector_does_not_parse_its_callers_arguments(self):
         with patch.dict(performance.os.environ, {'HERMES_ROOT': str(self.root)}):
             with patch.object(sys, 'argv', ['daily-steward-window.py', '--scheduler-context']):

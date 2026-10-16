@@ -78,6 +78,10 @@ report the evidence.
 
 1. A request to edit or validate does not authorize deployment. Require existing
    explicit authority for live activation and satisfy the project's deploy gate.
+   Hermes follows `documentation/hermes-deployment-receipts.md` (installed under
+   `~/.hermes/scripts/`) to check whole-set review/decision/source/test consistency.
+   The read-only receipt helper grants no permission and does not replace the
+   guarded deployer's live stamp, health or rollback checks.
 2. Prefer remote-server builds for Nix derivations and Rust artifacts when the
    guarded helper supports them.
 3. Use `nix run .#deploy -- --action test|switch` with the helper's default

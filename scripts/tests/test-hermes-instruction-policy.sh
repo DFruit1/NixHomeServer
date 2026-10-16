@@ -45,6 +45,9 @@ class InstructionPolicyTest(unittest.TestCase):
         self.assertTrue(any(p.read_bytes() == before for p in
                             (self.root / 'backups/instruction-policy').rglob('*') if p.is_file()))
         self.assertEqual(settings, {p: p.read_bytes() for p in settings})
+        for script in ('daily-steward-window.py','kanban-performance.py','kanban-blockers.py'):
+            self.assertEqual((source / script).read_bytes(),
+                (self.root / 'profiles/board-steward/scripts' / script).read_bytes())
         self.assertIn('previous_names: [bulk-go]', self.metadata.read_text())
         self.assertIn('Models and fallbacks come from configuration', self.metadata.read_text())
         for name in policy.PROFILES:

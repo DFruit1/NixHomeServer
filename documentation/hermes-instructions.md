@@ -108,6 +108,12 @@ copying them back into standing prompts.
 [Performance evidence](hermes-performance.md) documents the read-only local report,
 daily-steward integration, baseline comparison and limits of the recorded counters.
 
+[Prerequisite evidence](hermes-prerequisites.md) documents root impact, intermediate
+holds, cycles and native dependency semantics. [Deployment receipts](hermes-deployment-receipts.md)
+bind existing review/decision records to clean source and supplied test evidence.
+Both helpers are read-only and installed by the instruction/taskforce installer;
+neither creates schedules, changes cards or widens a role's authority.
+
 Focused checks:
 
 ```bash

@@ -35,7 +35,8 @@ class CoordinationTest(unittest.TestCase):
                 status TEXT, assignee TEXT, tenant TEXT, priority INTEGER DEFAULT 0,
                 block_kind TEXT, result TEXT, current_run_id INTEGER, last_heartbeat_at INTEGER);
                 CREATE TABLE task_links (parent_id TEXT, child_id TEXT);
-                CREATE TABLE task_runs (id INTEGER, task_id TEXT, status TEXT, outcome TEXT, metadata TEXT);
+                CREATE TABLE task_runs (id INTEGER, task_id TEXT, status TEXT, outcome TEXT, metadata TEXT,
+                    profile TEXT DEFAULT 'feature-reviewer');
                 CREATE TABLE task_comments (id INTEGER, task_id TEXT, author TEXT, body TEXT);
                 CREATE TABLE task_events (id INTEGER, task_id TEXT, kind TEXT, payload TEXT);''')
             db.execute("INSERT INTO tasks (id,title,body,status,assignee) VALUES ('t_review','Verify change','Goal: Verify','running','feature-reviewer')")
@@ -93,11 +94,23 @@ class CoordinationTest(unittest.TestCase):
         self.sql("UPDATE tasks SET status='done'")
         self.sql("INSERT INTO tasks (id,status,assignee) VALUES ('t_route','running','head-coordinator')")
         self.sql("INSERT INTO task_links VALUES ('t_review','t_route')")
-        self.sql("INSERT INTO task_runs VALUES (1,'t_review','done','completed',?)", (json.dumps({**self.valid,'verdict':'request-changes'}),))
+        self.sql("INSERT INTO task_runs (id,task_id,status,outcome,metadata) VALUES (1,'t_review','done','completed',?)", (json.dumps({**self.valid,'verdict':'request-changes'}),))
         self.assertEqual('block', self.complete({}, 't_route', 'head-coordinator')['action'])
         self.sql('UPDATE task_runs SET metadata=?', (json.dumps(self.valid),))
         self.assertEqual({}, self.complete({}, 't_route', 'head-coordinator'))
         self.sql("UPDATE task_runs SET metadata='{}'")
+        self.assertEqual('block', self.complete({}, 't_route', 'head-coordinator')['action'])
+
+    def test_consumer_cannot_reuse_acceptance_before_a_newer_failed_review(self):
+        self.sql("UPDATE tasks SET status='done'")
+        self.sql("INSERT INTO tasks (id,status,assignee) VALUES ('t_route','running','head-coordinator')")
+        self.sql("INSERT INTO task_links VALUES ('t_review','t_route')")
+        self.sql("INSERT INTO task_runs VALUES (1,'t_review','done','completed',?,'feature-reviewer')",
+                 (json.dumps(self.valid),))
+        self.sql("INSERT INTO task_runs VALUES (2,'t_review','crashed','crashed','{}','feature-reviewer')")
+        self.assertEqual('block', self.complete({}, 't_route', 'head-coordinator')['action'])
+        self.sql("UPDATE task_runs SET status='done',outcome='completed',metadata=?,profile='head-coordinator' WHERE id=2",
+                 (json.dumps(self.valid),))
         self.assertEqual('block', self.complete({}, 't_route', 'head-coordinator')['action'])
 
     def test_missing_board_fails_closed_for_completion_but_other_tools_pass(self):

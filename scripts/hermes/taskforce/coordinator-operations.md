@@ -7,6 +7,9 @@ acceptance of last-deployed-source..HEAD and matching guarded test before switch
     nix run .#deploy -- --action test
     nix run .#deploy -- --action switch
 
+Follow ~/.hermes/scripts/hermes-deployment-receipts.md to capture and check the
+review/decision/source/test binding before each guarded action.
+
 Use dashboard allocation; never raw nixos-rebuild or build-mode overrides. Freeze
 only reviewed source/mutable inputs, recheck identity before switch and obtain
 fresh review/test if they change. Preserve rollback and canary checks. New risky
@@ -18,6 +21,8 @@ the reference's Board health table (including WORKER_FAILED_BLOCKED). Read remai
 parents and record before/after evidence; at most one dependency repair per
 recovery pass, except preparing an authorised decomposition graph. Keep unrelated
 work moving. Inventory blocked/capability work across boards at least daily.
+Use ~/.hermes/scripts/kanban-blockers.py for prerequisite roots and local holds;
+reread native cards and suppliers before acting on its recorded-state report.
 
 Narrow failing work; never raise budgets, clear quota-breaker holds or swap
 models/lanes to evade them. Follow recorded provider recovery conditions.

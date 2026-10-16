@@ -2298,6 +2298,11 @@ with an instruction to rerun `--action test`; they are never silently upgraded
 or assumed to have been debug-validated. Run `./scripts/deploy.sh --action test`
 once after upgrading to record a new stamp before switching.
 
+Hermes coordinators also follow the [deployment receipt procedure](hermes-deployment-receipts.md)
+to compare whole-set review, coordinator decision, clean source and supplied test
+stamp evidence before each action. This read-only check does not enforce the
+workflow inside deploy.sh or replace its live target stamp validation.
+
 The regular deploy path stays intentionally focused. It evaluates the target,
 checks build and target capacity, uses the build allocation selected in
 `vars.nix`, and runs the runtime health gates described above.

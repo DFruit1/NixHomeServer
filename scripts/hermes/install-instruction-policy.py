@@ -116,9 +116,15 @@ def changes(root, pending=None):
         SOURCE.parent.parent / 'documentation/hermes-behavior-trials.md').read_text()
     result[root / 'scripts/hermes-coordinator-reference.md'] = (
         SOURCE / 'instructions/coordinator-reference.md').read_text()
-    result[root / 'scripts/kanban-performance.py'] = (SOURCE / 'kanban-performance.py').read_text()
-    for filename in ('kanban-owner-alerts.py', 'owner-blocker-authoring-guard.py'):
+    for filename in ('hermes-prerequisites.md','hermes-deployment-receipts.md','hermes-performance.md'):
+        result[root / 'scripts' / filename] = (SOURCE.parent.parent / 'documentation' / filename).read_text()
+    for filename in ('kanban-owner-alerts.py', 'owner-blocker-authoring-guard.py',
+                     'kanban-performance.py', 'kanban-blockers.py', 'deployment-receipt.py',
+                     'review-verdict-guard.py', 'daily-steward-window.py', 'steward-readonly-guard.py'):
         result[root / 'scripts' / filename] = (SOURCE / filename).read_text()
+    if (root / 'profiles/board-steward/SOUL.md').exists():
+        for filename in ('daily-steward-window.py','kanban-performance.py','kanban-blockers.py'):
+            result[root / 'profiles/board-steward/scripts' / filename] = (SOURCE / filename).read_text()
     for name in PROFILES:
         home = root / 'profiles' / name
         soul = home / 'SOUL.md'
