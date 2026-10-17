@@ -94,13 +94,20 @@ let
     metric_log = clickhouseLogTtl 7 "metric_log";
     asynchronous_metric_log = clickhouseLogTtl 7 "asynchronous_metric_log";
     part_log = clickhouseLogTtl 7 "part_log";
-    opentelemetry_span_log = clickhouseLogTtl 7 "opentelemetry_span_log";
     text_log = clickhouseLogTtl 7 "text_log";
     error_log = clickhouseLogTtl 7 "error_log";
     background_schedule_pool_log = clickhouseLogTtl 7 "background_schedule_pool_log";
     backup_log = clickhouseLogTtl 7 "backup_log";
     session_log = clickhouseLogTtl 7 "session_log";
     s3queue_log = clickhouseLogTtl 7 "s3queue_log";
+    # The packaged config pins a full engine spec for this log because it
+    # partitions by finish_date rather than event_date, and ClickHouse refuses a
+    # separate `ttl` beside an `engine`, so the retention goes in the spec.
+    opentelemetry_span_log = {
+      database = "system";
+      table = "opentelemetry_span_log";
+      engine = "engine MergeTree partition by toYYYYMM(finish_date) order by (finish_date, finish_time_us) ttl finish_date + INTERVAL 7 DAY delete";
+    };
   };
   # A data-store restart must not stay silent: bounded retries, then an alert.
   dataStoreUnit = overrides: {

@@ -75,8 +75,9 @@ jq -e '
   and .clickhouse.trace_log.database == "system"
   and .clickhouse.trace_log.ttl == "event_date + INTERVAL 3 DAY DELETE"
   and .clickhouse.query_log.ttl == "event_date + INTERVAL 7 DAY DELETE"
-  and ([ .clickhouse | to_entries[] | select(.key | endswith("_log")) | .value.ttl ]
-       | length == 15 and all(endswith("DELETE")))
+  and ([ .clickhouse | to_entries[] | select(.key | endswith("_log")) | (.value.ttl // .value.engine) ]
+       | length == 15 and all(. != null))
+  and (.clickhouse.opentelemetry_span_log.engine | contains("ttl finish_date + INTERVAL 7 DAY delete"))
   and (.clickhouse.processors_profile_log | not)
   and (.bootstrapAfter | index("postgresql-setup.service")) != null
   and (.bootstrapRequires | index("postgresql-setup.service")) != null
