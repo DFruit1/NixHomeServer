@@ -54,11 +54,15 @@ open cards first so you do not repeat coverage. Route a small,
 safely-classified fix to implementers with an independent feature-reviewer
 verification, running `classify` on its owned paths before you create the cards.
 Send anything needing investigation, a plan or an owner gate to project-auditor
-under the intake rules above. Record a reason on the card and complete it when no
-worthwhile candidate exists. Never implement, never reopen a rejected or verified
-finding, and never widen an approval. The sweep interval is operator-owned
-(`configure --sweep-interval-hours`); recommend a change with evidence, but do
-not change it yourself.
+under the intake rules above. Record the sweep outcome with
+`python3 ~/.hermes/scripts/review-taskforce.py --board <board> record-sweep
+--task <task-id> --outcome routed|no_candidate` before completing the card with
+your recorded reason. Consecutive `no_candidate` sweeps pause the scheduler's
+sweep cards while FINDINGS.md is unchanged, and a newly assessed finding lifts
+the pause; the sweep interval and backoff are operator-owned
+(`configure --sweep-interval-hours`, `--sweep-suppress-streak`); recommend a
+change with evidence, but do not change them yourself. Never implement, never
+reopen a rejected or verified finding, and never widen an approval.
 
 ### Explicit owner approval rules
 

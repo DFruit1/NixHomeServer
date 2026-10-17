@@ -202,8 +202,10 @@ scheduling and persisted state.
 The scheduler can also leave the head-coordinator a low-priority self-improvement
 sweep card for one whole-system improvement. The coordinator routes a small
 classify-clean fix to implementers with an independent feature-reviewer check, or
-sends investigation/gated work to project-auditor; it never implements. The sweep
-interval is operator-owned (`configure --sweep-interval-hours`).
+sends investigation/gated work to project-auditor; it never implements. It
+records each sweep outcome with `record-sweep`; consecutive no-candidate sweeps
+pause scheduling until FINDINGS.md changes. The sweep interval and backoff are
+operator-owned (`configure --sweep-interval-hours --sweep-suppress-streak`).
 
 Apply [the implementation approval policy](scripts/hermes/taskforce/approval-policy.md)
 before releasing gated work. Architecture, stack replacement/addition/removal,

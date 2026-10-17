@@ -396,6 +396,52 @@ class TaskforceTest(unittest.TestCase):
         off_creates = [c for c in self.calls if c[0] == 'off' and c[1][0] == 'create']
         self.assertEqual([tf.SWEEP_TITLE], [c[1][1] for c in off_creates])
 
+    def test_sweep_outcomes_backoff_and_findings_resume(self):
+        tf.configure(self.root, 'daily', 'daily', sweep_interval_hours=24)
+        with patch.dict(os.environ, {'HERMES_PROFILE': 'feature-reviewer'}):
+            with self.assertRaises(PermissionError):
+                tf.record_sweep(self.root, 'daily', 't_sweep1', 'no_candidate')
+        with patch.dict(os.environ, {'HERMES_PROFILE': 'head-coordinator'}):
+            with self.assertRaises(ValueError):
+                tf.record_sweep(self.root, 'daily', 't_sweep1', 'clean')
+            tf.record_sweep(self.root, 'daily', 't_sweep1', 'no_candidate')
+        # One no-candidate sweep is not yet a pause.
+        tf.tick(self.root, self.now + 24 * 3600)
+        self.assertTrue(any(c[0] == 'daily' and c[1][0] == 'create' and tf.SWEEP_TITLE in c[1]
+                            for c in self.calls))
+        self.calls.clear()
+        with patch.dict(os.environ, {'HERMES_PROFILE': 'head-coordinator'}):
+            tf.record_sweep(self.root, 'daily', 't_sweep2', 'no_candidate')
+        # Two consecutive no-candidate sweeps pause the sweep only.
+        tf.tick(self.root, self.now + 2 * 24 * 3600)
+        self.assertFalse(any(c[1][0] == 'create' and tf.SWEEP_TITLE in c[1] for c in self.calls))
+        self.assertTrue(any(c[0] == 'daily' and c[1][0] == 'create' for c in self.calls))
+        # A newly assessed finding lifts the pause at the next tick.
+        (tf.review_dir(self.root, 'daily') / 'FINDINGS.md').write_text('# New finding assessed\n')
+        tf.tick(self.root, self.now + 3 * 24 * 3600)
+        self.assertTrue(any(c[0] == 'daily' and c[1][0] == 'create' and tf.SWEEP_TITLE in c[1]
+                            for c in self.calls))
+        # A routed outcome resets the streak without touching FINDINGS.md.
+        self.calls.clear()
+        with patch.dict(os.environ, {'HERMES_PROFILE': 'head-coordinator'}):
+            tf.record_sweep(self.root, 'daily', 't_sweep3', 'routed')
+            tf.record_sweep(self.root, 'daily', 't_sweep4', 'no_candidate')
+        tf.tick(self.root, self.now + 4 * 24 * 3600)
+        self.assertTrue(any(c[0] == 'daily' and c[1][0] == 'create' and tf.SWEEP_TITLE in c[1]
+                            for c in self.calls))
+        self.calls.clear()
+        # Two more no-candidate sweeps would pause again, but the operator can
+        # also disable the backoff entirely; a negative streak is rejected.
+        with patch.dict(os.environ, {'HERMES_PROFILE': 'head-coordinator'}):
+            tf.record_sweep(self.root, 'daily', 't_sweep5', 'no_candidate')
+        tf.configure(self.root, 'daily', 'daily', sweep_interval_hours=24, sweep_suppress_streak=0)
+        tf.tick(self.root, self.now + 5 * 24 * 3600)
+        self.assertTrue(any(c[0] == 'daily' and c[1][0] == 'create' and tf.SWEEP_TITLE in c[1]
+                            for c in self.calls))
+        with self.assertRaises(ValueError):
+            tf.configure(self.root, 'daily', 'daily', sweep_suppress_streak=-1)
+        self.assertEqual(0, tf.load_config(self.root, 'daily')['sweep_suppress_streak'])
+
     def test_sweep_failed_create_does_not_advance_schedule(self):
         tf.configure(self.root, 'off', 'off', sweep_interval_hours=24)
 

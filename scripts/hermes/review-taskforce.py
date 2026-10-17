@@ -43,6 +43,12 @@ DEFAULT_MAX_AUDITS_PER_FINDING = 2
 # opts in, matching the per-board cadence's "unconfigured means no schedule"
 # rule. A positive interval creates at most one pending sweep card per board.
 DEFAULT_SWEEP_INTERVAL_HOURS = 0
+# A run of whole-system sweeps that ended with no worthwhile candidate pauses
+# sweep scheduling while FINDINGS.md stays unchanged; any new assessed finding
+# resumes it automatically. 0 or 1 disables the backoff.
+DEFAULT_SWEEP_SUPPRESS_STREAK = 2
+SWEEP_OUTCOMES = {'routed', 'no_candidate'}
+SWEEP_PROFILES = {'head-coordinator'}
 # Bounded retention for the append-only metrics log; consumers read only the
 # tail (latest entry or the last N outcomes), so older rows are dead weight.
 METRICS_RETENTION = 5000
@@ -173,6 +179,10 @@ def metrics_index(root, board):
     return review_dir(root, board) / 'metrics.jsonl'
 
 
+def sweeps_index(root, board):
+    return review_dir(root, board) / 'sweeps.jsonl'
+
+
 def load_config(root, board):
     directory = review_dir(root, board)
     path = directory / 'config.json'
@@ -180,18 +190,21 @@ def load_config(root, board):
         return {'cadence': 'off', 'interval_hours': 0,
                 'suppress_clean_streak': DEFAULT_SUPPRESS_CLEAN_STREAK,
                 'max_audits_per_finding': DEFAULT_MAX_AUDITS_PER_FINDING,
-                'sweep_interval_hours': DEFAULT_SWEEP_INTERVAL_HOURS}
+                'sweep_interval_hours': DEFAULT_SWEEP_INTERVAL_HOURS,
+                'sweep_suppress_streak': DEFAULT_SWEEP_SUPPRESS_STREAK}
     config = json.loads(path.read_text())
     config.setdefault('suppress_clean_streak', DEFAULT_SUPPRESS_CLEAN_STREAK)
     config.setdefault('max_audits_per_finding', DEFAULT_MAX_AUDITS_PER_FINDING)
     config.setdefault('sweep_interval_hours', DEFAULT_SWEEP_INTERVAL_HOURS)
+    config.setdefault('sweep_suppress_streak', DEFAULT_SWEEP_SUPPRESS_STREAK)
     return config
 
 
 def configure(root, board, cadence, interval_hours=None,
               suppress_clean_streak=DEFAULT_SUPPRESS_CLEAN_STREAK,
               max_audits_per_finding=DEFAULT_MAX_AUDITS_PER_FINDING,
-              sweep_interval_hours=None):
+              sweep_interval_hours=None,
+              sweep_suppress_streak=DEFAULT_SWEEP_SUPPRESS_STREAK):
     if cadence not in {*CADENCES, 'custom'}:
         raise ValueError('Cadence must be off, daily, weekly or custom')
     hours = CADENCES.get(cadence, interval_hours)
@@ -201,6 +214,8 @@ def configure(root, board, cadence, interval_hours=None,
         raise ValueError('suppress_clean_streak must be a non-negative integer')
     if not isinstance(max_audits_per_finding, int) or isinstance(max_audits_per_finding, bool) or max_audits_per_finding < 1:
         raise ValueError('max_audits_per_finding must be a positive integer')
+    if not isinstance(sweep_suppress_streak, int) or isinstance(sweep_suppress_streak, bool) or sweep_suppress_streak < 0:
+        raise ValueError('sweep_suppress_streak must be a non-negative integer')
     directory = review_dir(root, board)
     with locked(directory):
         existing = {}
@@ -216,7 +231,8 @@ def configure(root, board, cadence, interval_hours=None,
         config = {**existing, 'cadence': cadence, 'interval_hours': hours,
                   'suppress_clean_streak': suppress_clean_streak,
                   'max_audits_per_finding': max_audits_per_finding,
-                  'sweep_interval_hours': sweep_interval_hours}
+                  'sweep_interval_hours': sweep_interval_hours,
+                  'sweep_suppress_streak': sweep_suppress_streak}
         atomic_write(config_file, json.dumps(config, indent=2) + '\n')
         if not (directory / 'FINDINGS.md').exists():
             atomic_write(directory / 'FINDINGS.md',
@@ -303,6 +319,7 @@ def sweep_body(root, board):
         '- Route small safe fixes to implementers with an independent feature-reviewer check.',
         '- Send investigations or gated work to project-auditor for a plan and owner gate.',
         '- Do nothing with a recorded reason when no worthwhile candidate exists.',
+        '- Record the outcome with record-sweep --task <id> --outcome routed|no_candidate.',
         '- Never implement; never bypass approval rules, findings or owner gates.',
     ])
 
@@ -332,6 +349,26 @@ def opportunity_pending(tasks):
 def sweep_pending(tasks):
     return any(task.get('tenant') == TENANT and task.get('title') == SWEEP_TITLE
                and task.get('status') not in {'done', 'archived'} for task in tasks)
+
+
+def sweep_suppressed(root, board):
+    """Consecutive no-candidate sweeps pause scheduling while findings unchanged.
+
+    Mirrors the auditor's clean-streak suppression, keyed on recorded sweep
+    outcomes. Suppression holds only while FINDINGS.md has the same digest it
+    had at those sweeps; a newly assessed finding lifts the pause at the next
+    tick, so the backoff self-heals without operator intervention.
+    """
+    config = load_config(root, board)
+    limit = config.get('sweep_suppress_streak', DEFAULT_SWEEP_SUPPRESS_STREAK)
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit < 2:
+        return False
+    outcomes = read_jsonl(sweeps_index(root, board))[-limit:]
+    if len(outcomes) < limit or any(entry.get('outcome') != 'no_candidate' for entry in outcomes):
+        return False
+    findings = review_dir(root, board) / 'FINDINGS.md'
+    current = digest(findings) if findings.exists() else 'missing'
+    return all(entry.get('findings_sha256') == current for entry in outcomes)
 
 
 def suppressed_by_clean_streak(root, board):
@@ -365,7 +402,8 @@ def tick_board(root, board_file, now):
         # hourly no-agent tick must stay cheap on ticks with nothing to do.
         opportunity_due = bool(hours) and now - state.get('last_created_at', 0) >= hours * 3600 \
             and not suppressed_by_clean_streak(root, board)
-        sweep_due = bool(sweep_hours) and now - state.get('last_sweep_at', 0) >= sweep_hours * 3600
+        sweep_due = bool(sweep_hours) and now - state.get('last_sweep_at', 0) >= sweep_hours * 3600 \
+            and not sweep_suppressed(root, board)
         if not opportunity_due and not sweep_due:
             return
         board_info = json.loads(board_file.read_text())
@@ -693,6 +731,24 @@ def record_audit(root, board, task, metadata=None, outcome=None, slice_name=None
     print(json.dumps(entry, sort_keys=True))
 
 
+def record_sweep(root, board, task, outcome, note=None):
+    """The coordinator records a completed sweep card's outcome for telemetry.
+
+    `no_candidate` outcomes drive the sweep backoff; `routed` resets the
+    streak. The FINDINGS.md digest at record time tells the tick whether the
+    findings document changed since the sweep, lifting the pause when it did.
+    """
+    require_profile('record', SWEEP_PROFILES)
+    if outcome not in SWEEP_OUTCOMES:
+        raise ValueError(f'outcome must be one of {sorted(SWEEP_OUTCOMES)}')
+    findings = review_dir(root, board) / 'FINDINGS.md'
+    entry = {'task': task, 'outcome': outcome, 'note': note,
+             'findings_sha256': digest(findings) if findings.exists() else 'missing',
+             'recorded_at': int(time.time())}
+    append_jsonl(sweeps_index(root, board), entry, keep_last=METRICS_RETENTION)
+    print(json.dumps(entry, sort_keys=True))
+
+
 def write_document(root, board, name, content, expected):
     if name == 'FINDINGS.md':
         allowed = MUTATING_PROFILES
@@ -735,7 +791,8 @@ def board_status(root, board):
                       {'cadence': 'off', 'interval_hours': 0,
                        'suppress_clean_streak': DEFAULT_SUPPRESS_CLEAN_STREAK,
                        'max_audits_per_finding': DEFAULT_MAX_AUDITS_PER_FINDING,
-                       'sweep_interval_hours': DEFAULT_SWEEP_INTERVAL_HOURS},
+                       'sweep_interval_hours': DEFAULT_SWEEP_INTERVAL_HOURS,
+                       'sweep_suppress_streak': DEFAULT_SWEEP_SUPPRESS_STREAK},
             'findings_sha256': digest(findings) if findings.exists() else 'missing',
             'findings': {'total': len(index), 'by_status': by_status,
                          'ids': [entry.get('id') for entry in index]},
@@ -757,6 +814,8 @@ def main():
                                   default=DEFAULT_MAX_AUDITS_PER_FINDING)
     configure_parser.add_argument('--sweep-interval-hours', type=int,
                                   help='Coordinator self-improvement sweep cadence; 0 disables')
+    configure_parser.add_argument('--sweep-suppress-streak', type=int,
+                                  help='no_candidate sweeps that pause scheduling while findings unchanged')
     commands.add_parser('tick')
     commands.add_parser('status')
     scope = commands.add_parser('check-scope')
@@ -792,6 +851,10 @@ def main():
     record.add_argument('--revision')
     record.add_argument('--findings', type=int)
     record.add_argument('--duration-seconds', type=int)
+    record_sweep_parser = commands.add_parser('record-sweep')
+    record_sweep_parser.add_argument('--task', required=True)
+    record_sweep_parser.add_argument('--outcome', required=True, choices=sorted(SWEEP_OUTCOMES))
+    record_sweep_parser.add_argument('--note')
     write = commands.add_parser('write')
     write.add_argument('--source', type=Path, required=True)
     write.add_argument('--name', default='FINDINGS.md')
@@ -805,7 +868,7 @@ def main():
     if args.command == 'configure':
         configure(root, args.board, args.cadence, args.interval_hours,
                   args.suppress_clean_streak, args.max_audits_per_finding,
-                  args.sweep_interval_hours)
+                  args.sweep_interval_hours, args.sweep_suppress_streak)
     elif args.command == 'status':
         print(json.dumps(board_status(root, args.board), indent=2))
     elif args.command == 'check-scope':
@@ -843,6 +906,8 @@ def main():
     elif args.command == 'record-audit':
         record_audit(root, args.board, args.task, args.metadata, args.outcome,
                      args.slice, args.revision, args.findings, args.duration_seconds)
+    elif args.command == 'record-sweep':
+        record_sweep(root, args.board, args.task, args.outcome, args.note)
     elif args.command == 'write':
         print(write_document(root, args.board, args.name, args.source.read_text(), args.expected_sha256))
     return 0

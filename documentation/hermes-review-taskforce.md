@@ -127,7 +127,7 @@ python3 scripts/hermes/review-taskforce.py --board pcops configure --cadence off
 python3 scripts/hermes/review-taskforce.py --board myproject configure --cadence weekly
 python3 scripts/hermes/review-taskforce.py --board myproject configure --cadence custom --interval-hours 48
 python3 scripts/hermes/review-taskforce.py --board myproject configure --cadence daily --max-audits-per-finding 2 --suppress-clean-streak 3
-python3 scripts/hermes/review-taskforce.py --board myproject configure --cadence daily --sweep-interval-hours 24
+python3 scripts/hermes/review-taskforce.py --board myproject configure --cadence daily --sweep-interval-hours 24 --sweep-suppress-streak 3
 ```
 
 Only existing boards with an absolute `default_workdir` can schedule checks.
@@ -165,14 +165,32 @@ suppresses the auditor's opportunity check without silencing the coordinator's
 improvement pass. At most one pending sweep card exists per board, and a pending
 sweep never suppresses the auditor's own opportunity card.
 
+The coordinator records each completed sweep's outcome for telemetry before
+closing the card:
+
+```bash
+python3 ~/.hermes/scripts/review-taskforce.py --board nixhomeserver record-sweep --task t_123 --outcome routed
+python3 ~/.hermes/scripts/review-taskforce.py --board nixhomeserver record-sweep --task t_456 --outcome no_candidate --note "reason recorded on the card"
+```
+
+`routed` means work was routed; `no_candidate` means nothing worthwhile was
+found. A run of consecutive `no_candidate` sweeps pauses sweep scheduling
+(`sweep_suppress_streak`, default 2; `--sweep-suppress-streak`, 0 or 1
+disables) while `FINDINGS.md` keeps the digest it had at those sweeps. Any
+newly assessed finding changes that digest and lifts the pause at the next
+tick, so the backoff self-heals without operator intervention; recording a
+`routed` outcome resets the streak immediately. Audit telemetry in
+`metrics.jsonl` is unaffected; sweeps append to `sweeps.jsonl`.
+
 On the card the coordinator scans the whole system (repo modules and custom
 apps, scripts, fleet policy and jobs) for one worthwhile change in security,
 efficiency, reliability, integration or simplicity. It routes a small,
 classify-clean fix to implementers with an independent feature-reviewer
 verification, sends anything needing investigation, a plan or an owner gate to
 `project-auditor`, and completes the card with a recorded reason when nothing
-worthwhile is found. It never implements, reopens a rejected/verified finding or
-widens an approval. Off leaves on-demand and the auditor opportunity intact.
+worthwhile is found — recording the sweep outcome with `record-sweep` first. It
+never implements, reopens a rejected/verified finding or widens an approval.
+Off leaves on-demand and the auditor opportunity intact.
 
 ## Findings, audit conflicts and handoffs
 
@@ -186,6 +204,8 @@ State lives outside worktrees and survives completion/restarts:
   findings.jsonl    machine-readable finding index (IDs, tasks, statuses)
   metrics.jsonl     append-only audit telemetry (outcome per audit; the last
                     5000 entries are retained)
+  sweeps.jsonl      append-only sweep telemetry (recorded coordinator sweep
+                    outcomes; drives the sweep backoff)
   classify.json     optional per-board approval tripwire rule overrides
   plans/<batch>.md  reviewer-owned immutable implementation plans
   reports/<task>-<slug>.md  durable audit reports from feature-reviewer
