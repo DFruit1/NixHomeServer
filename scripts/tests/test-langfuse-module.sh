@@ -43,6 +43,10 @@ in {
   redisOnFailure = cfg.systemd.services.redis-langfuse.unitConfig.OnFailure;
   unitOnFailure = map (name: cfg.systemd.services.\${name}.unitConfig.OnFailure)
     [ \"langfuse-prepare\" \"langfuse-db-bootstrap\" \"langfuse-web\" \"langfuse-worker\" \"langfuse-minio\" ];
+  freshnessExec = cfg.systemd.services.langfuse-ingestion-freshness.serviceConfig.ExecStart or null;
+  freshnessCredential = cfg.systemd.services.langfuse-ingestion-freshness.serviceConfig.LoadCredential or [];
+  freshnessOnFailure = cfg.systemd.services.langfuse-ingestion-freshness.unitConfig.OnFailure or [];
+  freshnessTimer = cfg.systemd.timers.\"langfuse-ingestion-freshness\".timerConfig or {};
   prepareTriggers = cfg.systemd.services.langfuse-prepare.restartTriggers;
   bootstrapTriggers = cfg.systemd.services.langfuse-db-bootstrap.restartTriggers;
   containerOptions = map (name: containers.\${name}.extraOptions)
@@ -75,6 +79,11 @@ jq -e '
   and (.redisInterval | length > 0) and (.redisBurst | length > 0)
   and (.onFailure | length) == 1 and (.redisOnFailure | length) == 1
   and all(.unitOnFailure[]; length == 1)
+  and (.freshnessExec | test("/bin/langfuse-ingestion-freshness$") != null)
+  and .freshnessCredential == ["redis-password:/run/langfuse-redis/password"]
+  and (.freshnessOnFailure | length) == 1
+  and .freshnessTimer.OnUnitActiveSec == "15min"
+  and .freshnessTimer.Persistent == true
   and (.prepareTriggers | length) == 1 and (.bootstrapTriggers | length) == 1
   and all(.containerOptions[]; index("--cap-drop=ALL") != null)
   and .postgresTimezone == "UTC"

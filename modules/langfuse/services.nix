@@ -83,6 +83,75 @@ let
       done
     '';
   };
+  # Ingestion freshness: Redis, ClickHouse, MinIO and the app containers cover
+  # their own failures through unit OnFailure alerting, but the only silent
+  # failure mode is a worker that is running yet no longer consumes the
+  # ingestion queue. The BullMQ queue depth detects that while staying
+  # independent of fleet traffic: healthy processing drains wait+active within
+  # seconds even under a whole-board burst, and an idle fleet reads as zero
+  # depth. Trace timestamps are deliberately not the signal, because the fleet
+  # legitimately idles. The check skips its alert while Redis itself is down -
+  # that outage alerting already covers it - and lives in this module so it
+  # disappears with the app.
+  ingestionStallQueueDepth = 500;
+  ingestionFreshnessCheck = pkgs.writeShellApplication {
+    name = "langfuse-ingestion-freshness";
+    runtimeInputs = with pkgs; [ coreutils redis ];
+    text = ''
+      host="${loopback}"
+      port="${toString vars.networking.ports.langfuseRedis}"
+      queue="bull:ingest-queue"
+      password="$(tr -d '\r\n' < "$CREDENTIALS_DIRECTORY/redis-password")"
+
+      redis() {
+        ${pkgs.redis}/bin/redis-cli --no-auth-warning \
+          -h "$host" -p "$port" -a "$password" "$@"
+      }
+
+      if [[ "$(redis PING 2>/dev/null)" != PONG ]]; then
+        echo "Redis is down; its own failure alerting covers the outage. Skipping." >&2
+        exit 0
+      fi
+
+      wait="$(redis LLEN "$queue:wait")"
+      active="$(redis ZCARD "$queue:active")"
+      depth=$((wait + active))
+      echo "ingestion queue depth: $depth (wait: $wait, active: $active)"
+
+      if (( depth > ${toString ingestionStallQueueDepth} )); then
+        echo "Langfuse ingestion stalled: queue depth $depth exceeds the ${toString ingestionStallQueueDepth} bound" >&2
+        exit 1
+      fi
+    '';
+  };
+  ingestionFreshnessHardening = {
+    serviceConfig = {
+      Type = "oneshot";
+      ExecStart = "${ingestionFreshnessCheck}/bin/langfuse-ingestion-freshness";
+      LoadCredential = [ "redis-password:/run/langfuse-redis/password" ];
+      DynamicUser = true;
+      NoNewPrivileges = true;
+      PrivateDevices = true;
+      PrivateTmp = true;
+      ProtectClock = true;
+      ProtectControlGroups = true;
+      ProtectHome = true;
+      ProtectHostname = true;
+      ProtectKernelLogs = true;
+      ProtectKernelModules = true;
+      ProtectKernelTunables = true;
+      ProtectSystem = "strict";
+      RestrictAddressFamilies = [ "AF_INET" "AF_INET6" ];
+      RestrictNamespaces = true;
+      RestrictSUIDSGID = true;
+      SystemCallArchitectures = "native";
+      UMask = "0077";
+    };
+    unitConfig = {
+      OnFailure = [ config.repo.monitoring.failureAlerts.targetUnit ];
+      OnFailureJobMode = "replace-irreversibly";
+    };
+  };
 in {
   options.repo.langfuse = {
     enable = lib.mkOption { type = lib.types.bool; default = true; description = "Enable private Langfuse observability."; };
@@ -182,5 +251,17 @@ in {
     };
     systemd.services.langfuse-web = appService;
     systemd.services.langfuse-worker = appService;
+    systemd.services.langfuse-ingestion-freshness = ingestionFreshnessHardening;
+    systemd.timers.langfuse-ingestion-freshness = {
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        # A stuck worker reaches the depth bound well inside one interval, so a
+        # 15 minute check cadence is enough; boot persistence catches ticks a
+        # restart skips.
+        OnBootSec = "5min";
+        OnUnitActiveSec = "15min";
+        Persistent = true;
+      };
+    };
   };
 }

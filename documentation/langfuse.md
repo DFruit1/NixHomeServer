@@ -74,6 +74,22 @@ ClickHouse is pinned to UTC because Langfuse writes UTC date strings. Verify a
 fresh generation through `/api/public/v2/observations` with a bounded UTC time
 range; the legacy traces API is unavailable on this Langfuse version.
 
+## Ingestion freshness monitoring
+
+A timer runs `langfuse-ingestion-freshness` every 15 minutes (seconds after
+boot). It reads the Redis BullMQ `ingest-queue` depth (wait + active) and
+alerts through the shared failure-alert webhook when it exceeds 500. Queue
+depth is deliberately traffic-independent: healthy processing drains the queue
+within seconds even under a whole-board burst, and an idle fleet reads as zero
+depth, so no alerts occur while the owner sleeps. The check skips its alert
+while Redis itself is down, because the Redis unit's failure alerting already
+covers that outage; a worker that runs but stops consuming is the remaining
+silent failure mode this monitor closes. Trace timestamps were rejected as the
+signal precisely because the fleet legitimately idles.
+
+The monitor is part of the `langfuse` module: removing the app removes the
+service and timer.
+
 ## Persistence and restore
 
 Central impermanence retains `/var/lib/langfuse`, `/var/lib/clickhouse`, and
