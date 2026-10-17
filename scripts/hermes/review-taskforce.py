@@ -31,6 +31,7 @@ REPORT_PROFILES = {REVIEWER, 'project-auditor'}
 TELEMETRY_PROFILES = {REVIEWER, 'project-auditor'}
 ACTIVE_STATUSES = {'running'}
 PENDING_STATUSES = {'ready', 'todo', 'blocked', 'review', 'scheduled'}
+TERMINAL_STATUSES = {'done', 'archived'}
 OUTCOMES = {'findings', 'clean', 'inconclusive', 'deferred_active_work'}
 SEVERITIES = {'critical', 'high', 'medium', 'low'}
 AXES = {'correctness', 'reliability', 'performance', 'security', 'simplicity', 'integration'}
@@ -489,6 +490,37 @@ def pending_overlaps(root, board, paths):
     return active_overlaps(root, board, paths, PENDING_STATUSES)
 
 
+def ownership_conflicts(root):
+    """Flag pairs of non-terminal cards whose declared owned paths overlap.
+
+    Board-global rather than board-local: every active board is scanned, even
+    those with a different ``default_workdir``, because a card's declared
+    Change/Scope paths are the real ownership claim. Any assignee counts, and
+    an unscoped card guards the whole project (it pairs with every other card).
+    Detection and routing only: this never mutates a card or contacts anyone.
+    """
+    cards = []
+    for board_file in sorted((root / 'kanban/boards').glob('*/board.json')):
+        board = board_file.parent.name
+        # Skip underscore-prefixed internal boards and board.json entries with
+        # no card database: they cannot own paths, and reading fails closed.
+        if board.startswith('_') or not (board_file.parent / 'kanban.db').is_file():
+            continue
+        for task in board_tasks(root, board):
+            if task.get('status') in TERMINAL_STATUSES:
+                continue
+            cards.append({'board': board, 'task_id': task['id'], 'status': task.get('status'),
+                          'assignee': task.get('assignee'), 'paths': owned_paths(task)})
+    pairs = []
+    for index, first in enumerate(cards):
+        for second in cards[index + 1:]:
+            # Either direction so an unscoped card (no owned paths) guards all.
+            if (paths_overlap(first['paths'], second['paths'])
+                    or paths_overlap(second['paths'], first['paths'])):
+                pairs.append({'a': first, 'b': second})
+    return pairs
+
+
 def classified_rules(root, board):
     rules = {rule_id: dict(rule) for rule_id, rule in DEFAULT_CLASSIFY_RULES.items()}
     path = review_dir(root, board) / 'classify.json'
@@ -818,6 +850,7 @@ def main():
                                   help='no_candidate sweeps that pause scheduling while findings unchanged')
     commands.add_parser('tick')
     commands.add_parser('status')
+    commands.add_parser('check-ownership')
     scope = commands.add_parser('check-scope')
     scope.add_argument('paths', nargs='+')
     classify = commands.add_parser('classify')
@@ -864,6 +897,10 @@ def main():
     if args.command == 'tick':
         tick(root)
         return 0
+    if args.command == 'check-ownership':
+        pairs = ownership_conflicts(root)
+        print(json.dumps({'conflicts': pairs}, indent=2))
+        return 1 if pairs else 0
     review_dir(root, args.board or '')
     if args.command == 'configure':
         configure(root, args.board, args.cadence, args.interval_hours,

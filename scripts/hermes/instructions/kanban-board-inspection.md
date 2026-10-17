@@ -10,6 +10,11 @@
   `standard-implementer`, `local-implementer`) across every board sharing the
   same `default_workdir`, using each running card's `Change:` line to derive
   owned paths. An unscoped running card protects the whole project.
+- Run `check-ownership` before releasing an implementer card: it scans every
+  active board for non-terminal cards of any assignee whose `Change:`/`Scope:`
+  paths overlap — including cross-board pairs whose `default_workdir` differs —
+  and fails with each conflicting pair. An unscoped card guards the whole
+  project.
 
 ## Read a card fully (read-only, no CLI write txn)
 
