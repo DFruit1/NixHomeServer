@@ -35,11 +35,14 @@ other blocked card is a technical (B) blocker and is never pushed.
 The `head-coordinator` is the sole author of owner-facing blocker cards and
 summaries. Workers report technical blockers and evidence; the coordinator
 exhausts agent-side recovery and checks existing owner decisions before making
-an owner gate. This is enforced at the sender: it accepts only summary comments
-whose author is `head-coordinator`, or summary fields in a gate whose
-`created_by` is `head-coordinator`. A later worker comment cannot override that
-summary. The shared Unix account still makes authorship a workflow boundary,
-not an OS security boundary.
+an owner gate. Two shapes only make a card a *candidate* for the owner: a
+`needs_input` block and a standalone `Hard Blocker` line. Admission is separate
+and needs both the card still `blocked` and the coordinator's *current* complete
+summary. A worker-authored gate, summary, marker or `initial_status` cannot grant
+it, and neither can `created_by` alone: a recorded body or title edit withdraws
+the provenance of a gate body, so it needs a fresh coordinator summary comment.
+The shared Unix account still makes authorship a workflow boundary, not an OS
+security boundary.
 The installer applies `owner-blocker-authoring-guard.py` to every profile's
 native create/block/comment calls through the existing pre-tool hook protocol.
 It refuses owner-gate creation, `needs_input` blocking and owner-summary comments
@@ -122,14 +125,44 @@ SimpleX emphasis uses `*bold*`, `_italic_`, `~strike~`; GitHub-style emphasis is
 converted before sending. Labels and board headings remain navigation aids;
 the problem, reason and action use ordinary language.
 
-Missing, malformed, overlong or generic summaries produce a coordinator repair
-diagnostic and are never sent or marked delivered. Other valid individual
-blockers still send; an explicit whole-set pull is withheld when any item is
-invalid, so it cannot present a partial set as complete. The no-agent job exits
-2 with the board/card and repair reason, and `--check-blockers` exposes the same
-problem. The coordinator owns these repairs, rather than asking the owner to
-interpret an internal failure. Existing labels and delivery receipts are
-preserved; a format update refreshes the valid live set once.
+Missing, malformed, overlong or generic summaries, and ask history that cannot
+be proven, produce a coordinator repair diagnostic and are never sent or marked
+delivered. Other valid individual blockers still send; an explicit whole-set pull
+is withheld when any item is invalid, so it cannot present a partial set as
+complete. The no-agent job exits 2 with the board/card and repair reason, and
+`--check-blockers` exposes the same problem. The coordinator owns these repairs,
+rather than asking the owner to interpret an internal failure. Existing labels
+and delivery receipts are preserved; a format update refreshes the valid live set
+once.
+
+## The current ask
+
+Only the latest coordinator statement on a card controls its owner ask. A later
+coordinator statement that is not a complete summary withholds the ask until a
+complete current summary is restated; an older valid summary is never selected
+behind it. An answer or disposition, an unblock or reblock, a reclassification
+and a title/body change all invalidate the older ask. None of this re-pages the
+owner: a genuinely changed ask takes a new `D` revision, and re-posting unchanged
+summary text is not a reason to send again.
+
+Ordering comes from the recorded comment and `commented` event streams, which
+`kanban_db.add_comment` writes together. Comment ids and event ids are different
+sequences and timestamps are not proof, so history that cannot be paired against
+those events is left unadmitted and reported for coordinator restatement rather
+than silently trusted.
+
+The same current-ask check runs when labels are refreshed, in `--resolve`
+(`can_reply`), and again immediately before each actual send. A card that was
+answered, closed, reclassified or edited after collection sends nothing, is not
+marked delivered, and never has new text substituted under its old label. A
+failed send is retried only after that same recheck. An explicit
+`--send-decisions` is the owner's request rather than permission to send twice,
+so a newly pending decision is delivered once.
+
+This sender is the sole owner-blocker door. Gateway task pings and other raw
+event doors do not page the owner for blockers; a real owner blocker reaches the
+phone only through this coordinator-authorized sender. Operator and phone
+acceptance prerequisites are unchanged.
 
 ## Urgent regressions
 

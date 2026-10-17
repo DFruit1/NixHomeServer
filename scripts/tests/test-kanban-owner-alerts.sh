@@ -29,6 +29,10 @@ REPAIR_SUMMARY = ('Blocking: Repair is waiting for your approval. Nothing procee
                   'Why owner: The repair changes a setting you previously chose. Only you can confirm it is wanted.\n'
                   'Unblock: Approve the repair or keep the current setting.')
 
+KEYLESS_SUMMARY = ('Blocking: The release cannot be signed.\n'
+                   'Why owner: Only you hold the signing key.\n'
+                   'Unblock: Sign the release with your existing key.')
+
 
 class AlertsTest(unittest.TestCase):
     def setUp(self):
@@ -54,10 +58,31 @@ class AlertsTest(unittest.TestCase):
         self.sender.start()
         self.addCleanup(self.sender.stop)
 
-    def mark(self, board, body):
+    def mark(self, board, body, edited=False):
         with closing(sqlite3.connect(self.boards[board])) as db:
             db.execute('UPDATE tasks SET body=?', (body,))
+            if edited:
+                # kanban_db records a body edit as its own lifecycle event.
+                db.execute('INSERT INTO task_events (id, task_id, kind, payload) VALUES (?, ?, ?, ?)',
+                           (self.next_event(db), 't_12345678', 'edited', json.dumps({'fields': ['body']})))
             db.commit()
+
+    def next_event(self, db):
+        return db.execute('SELECT IFNULL(MAX(id),0)+1 FROM task_events').fetchone()[0]
+
+    def comment(self, board, author, body, timestamp=1):
+        """Append a comment exactly as kanban_db.add_comment does: comment + event."""
+        with closing(sqlite3.connect(self.boards[board])) as db:
+            cursor = db.execute('INSERT INTO task_comments (task_id,author,body,created_at) VALUES (?,?,?,?)',
+                                ('t_12345678', author, body, timestamp))
+            db.execute('INSERT INTO task_events (id, task_id, kind, payload) VALUES (?, ?, ?, ?)',
+                       (self.next_event(db), 't_12345678', 'commented',
+                        json.dumps({'author': author, 'len': len(body)})))
+            db.commit()
+        return cursor.lastrowid
+
+    def inbox(self):
+        return json.loads((self.root / 'kanban/owner-alerts/inbox.json').read_text())
 
     def test_worker_cannot_turn_a_technical_block_into_an_owner_decision(self):
         request = {'profile': 'standard-implementer', 'tool_name': 'kanban_block',
@@ -151,14 +176,14 @@ class AlertsTest(unittest.TestCase):
                          alerts.check_summary(summary)['Unblock'])
 
     def test_worker_summary_cannot_replace_coordinator_summary(self):
-        with closing(sqlite3.connect(self.boards['one'])) as db:
-            for author, timestamp, problem in [('head-coordinator', 1, 'The phone test needs a reply. Nothing else can proceed.'),
-                                                ('standard-implementer', 2, 'Approve unrelated changes.')]:
-                db.execute('INSERT INTO task_comments (task_id,author,body,created_at) VALUES (?,?,?,?)',
-                           ('t_12345678', author, f'Blocking: {problem}\n'
-                            'Why owner: Only you can confirm receipt on your phone. No log records delivery.\n'
-                            'Unblock: Reply yes if the test message arrived.', timestamp))
-            db.commit()
+        self.comment('one', 'head-coordinator',
+                     'Blocking: The phone test needs a reply. Nothing else can proceed.\n'
+                     'Why owner: Only you can confirm receipt on your phone. No log records delivery.\n'
+                     'Unblock: Reply yes if the test message arrived.', timestamp=1)
+        self.comment('one', 'standard-implementer',
+                     'Blocking: Approve unrelated changes.\n'
+                     'Why owner: Only you can confirm receipt on your phone. No log records delivery.\n'
+                     'Unblock: Reply yes if the test message arrived.', timestamp=2)
         task = alerts.snapshot(self.root / 'kanban/boards/one/board.json')[0]
         shown, complete = alerts.decision_text('D1', 'one', task)
         self.assertTrue(complete, shown)
@@ -169,24 +194,17 @@ class AlertsTest(unittest.TestCase):
     def test_worker_created_gate_requires_coordinator_adoption(self):
         with closing(sqlite3.connect(self.boards['one'])) as db:
             db.execute("UPDATE tasks SET created_by='project-auditor'")
-            db.execute('INSERT INTO task_comments (task_id,author,body,created_at) VALUES (?,?,?,?)',
-                       ('t_12345678', 'project-auditor', REPAIR_SUMMARY, 1))
             db.commit()
+        self.comment('one', 'project-auditor', REPAIR_SUMMARY, timestamp=1)
         with self.assertRaisesRegex(RuntimeError, 'head-coordinator must author'):
             alerts.tick(self.root)
         self.assertFalse(self.sent)
-        with closing(sqlite3.connect(self.boards['one'])) as db:
-            db.execute('INSERT INTO task_comments (task_id,author,body,created_at) VALUES (?,?,?,?)',
-                       ('t_12345678', 'head-coordinator', REPAIR_SUMMARY, 2))
-            db.commit()
+        self.comment('one', 'head-coordinator', REPAIR_SUMMARY, timestamp=2)
         alerts.tick(self.root)
         self.assertEqual(1, len(self.sent))
 
     def test_partial_comment_cannot_borrow_old_summary_fields(self):
-        with closing(sqlite3.connect(self.boards['one'])) as db:
-            db.execute('INSERT INTO task_comments (task_id,author,body,created_at) VALUES (?,?,?,?)',
-                       ('t_12345678', 'head-coordinator', 'Blocking: The scope has changed.', 1))
-            db.commit()
+        self.comment('one', 'head-coordinator', 'Blocking: The scope has changed.', timestamp=1)
         with self.assertRaises(RuntimeError):
             alerts.tick(self.root)
         self.assertFalse(self.sent)
@@ -299,10 +317,7 @@ class AlertsTest(unittest.TestCase):
         decision = alerts.resolve(self.root, 'D1')
         self.assertFalse(decision['compact_complete'])
         self.assertEqual([], decision['delivered'])
-        with closing(sqlite3.connect(self.boards['one'])) as db:
-            db.execute('INSERT INTO task_comments (task_id,author,body,created_at) VALUES (?,?,?,?)',
-                       ('t_12345678', 'head-coordinator', REPAIR_SUMMARY, 1))
-            db.commit()
+        self.comment('one', 'head-coordinator', REPAIR_SUMMARY, timestamp=1)
         alerts.tick(self.root)
         self.assertEqual(1, len(self.sent))
         self.assertTrue(alerts.resolve(self.root, 'D2')['compact_complete'])
@@ -315,12 +330,11 @@ class AlertsTest(unittest.TestCase):
             db.execute("UPDATE tasks SET body='Goal: fix t_abc across the worktree.'")
             db.execute('UPDATE task_events SET payload=?',
                        (json.dumps({'reason': 'review t_deadbeef rejected 1e299daf6464c8b6a02080a5d01223f3fe90766c'}),))
-            db.execute("INSERT INTO task_comments (task_id, author, body, created_at) VALUES "
-                       "('t_12345678','head-coordinator',?,1)",
-                       ('Blocking: A required safety check was removed and nobody re-approved it. The build is unsafe until it is restored.\n'
-                        'Why owner: Only you can approve restoring the check. The original approval was yours alone.\n'
-                        'Unblock: Tell us to restore the check, or to leave it out.',))
             db.commit()
+        self.comment('one', 'head-coordinator',
+                     'Blocking: A required safety check was removed and nobody re-approved it. The build is unsafe until it is restored.\n'
+                     'Why owner: Only you can approve restoring the check. The original approval was yours alone.\n'
+                     'Unblock: Tell us to restore the check, or to leave it out.', timestamp=1)
         alerts.tick(self.root, now=1000)
         message = self.sent[0]
         self.assertIn('Blocking: A required safety check was removed', message)
@@ -685,6 +699,157 @@ class AlertsTest(unittest.TestCase):
                             alerts.install(self.root)
                         run.assert_not_called()
                     self.assertEqual(before, {p: p.read_bytes() for p in self.root.rglob('*') if p.is_file()})
+
+    # ── current-ask admission and send-freshness controls ─────────────────
+
+    def test_latest_coordinator_statement_controls_the_ask(self):
+        # The body is jargon-only, so the coordinator's summary comment is the ask.
+        self.mark('one', 'ASK: Approve repair?\n A) Approve\n B) Reject\n')
+        self.comment('one', 'head-coordinator', REPAIR_SUMMARY, timestamp=100)
+        alerts.tick(self.root, now=1000)
+        self.assertEqual(1, len(self.sent))
+        self.assertTrue(alerts.resolve(self.root, 'D1')['can_reply'])
+        # A later coordinator disposition withholds the older summary instead of
+        # leaving its authority live. Its wall-clock stamp is EARLIER than the
+        # summary, so the ordering must come from the recorded event stream.
+        self.comment('one', 'head-coordinator',
+                     'Disposition: the procedure was supplied; no owner action remains.',
+                     timestamp=50)
+        with self.assertRaisesRegex(RuntimeError, 'Write exactly Blocking:'):
+            alerts.tick(self.root, now=1001)
+        self.assertEqual(1, len(self.sent))          # no re-push of the delivered ask
+        self.assertFalse(alerts.resolve(self.root, 'D1')['can_reply'])
+        self.assertFalse(alerts.resolve(self.root, 'D2')['can_reply'])
+        self.assertIn('Stale', alerts.details(self.root, 'D1'))
+        # Only a complete current summary restores send/reply authority; the
+        # unchanged already-delivered question is not re-paged.
+        self.comment('one', 'head-coordinator', REPAIR_SUMMARY, timestamp=101)
+        alerts.tick(self.root, now=1002)
+        self.assertEqual(1, len(self.sent))
+        self.assertTrue(alerts.resolve(self.root, 'D1')['can_reply'])
+
+    def test_coordinator_created_body_needs_intact_provenance(self):
+        alerts.tick(self.root, now=1000)
+        self.assertEqual(1, len(self.sent))
+        self.assertTrue(alerts.resolve(self.root, 'D1')['can_reply'])
+        # A recorded body edit withdraws the provenance of the checked body, so
+        # `created_by` alone no longer authorises the card as the current ask.
+        self.mark('one', 'ASK: Approve the revised repair?\n' + REPAIR_SUMMARY, edited=True)
+        with self.assertRaisesRegex(RuntimeError, 'changed after'):
+            alerts.tick(self.root, now=1001)
+        self.assertEqual(1, len(self.sent))
+        self.assertFalse(alerts.resolve(self.root, 'D2')['can_reply'])
+        # A fresh coordinator summary adopts the current card without a schema change.
+        self.comment('one', 'head-coordinator', REPAIR_SUMMARY, timestamp=2)
+        alerts.tick(self.root, now=1002)
+        self.assertEqual(2, len(self.sent))
+        self.assertIn('D3 · one', self.sent[-1])
+
+    def test_unpaired_comment_history_withholds_the_ask(self):
+        self.mark('one', 'ASK: Approve repair?\n')
+        with closing(sqlite3.connect(self.boards['one'])) as db:
+            # A comment with no matching `commented` event cannot be ordered
+            # against lifecycle events: UNKNOWN, never silently trusted.
+            db.execute("INSERT INTO task_comments (task_id,author,body,created_at) VALUES (?,?,?,?)",
+                       ('t_12345678', 'head-coordinator', REPAIR_SUMMARY, 1))
+            db.commit()
+        with self.assertRaisesRegex(RuntimeError, 'cannot be proven'):
+            alerts.tick(self.root)
+        self.assertFalse(self.sent)
+        self.assertFalse(alerts.resolve(self.root, 'D1')['compact_complete'])
+        self.assertEqual([], alerts.resolve(self.root, 'D1')['delivered'])
+
+    def test_current_ask_is_rechecked_immediately_before_each_send(self):
+        real_snapshot = alerts.snapshot
+        injected = {'done': False}
+
+        def racing(board_file, task_id=None):
+            # Inject a real change at the final send-time read, after collection.
+            if task_id is not None and not injected['done']:
+                injected['done'] = True
+                with closing(sqlite3.connect(self.boards['one'])) as db:
+                    db.execute("UPDATE tasks SET status='done'")
+                    db.commit()
+            return real_snapshot(board_file, task_id)
+
+        with patch.object(alerts, 'snapshot', racing):
+            with self.assertRaisesRegex(RuntimeError, 'no longer the pending decision'):
+                alerts.tick(self.root, now=1000)
+        self.assertFalse(self.sent)
+        self.assertEqual([], alerts.resolve(self.root, 'D1')['delivered'])
+
+    def test_failed_send_retries_only_for_the_same_current_ask(self):
+        attempts = []
+
+        def fail_always(root, target, message):
+            attempts.append(message)
+            raise RuntimeError('offline')
+
+        with patch.object(alerts, 'send', fail_always):
+            with self.assertRaises(RuntimeError):
+                alerts.tick(self.root, now=1000)
+            self.assertEqual(1, len(attempts))
+            # A newer coordinator disposition replaces the ask before the retry.
+            self.comment('one', 'head-coordinator',
+                         'Disposition: the procedure was supplied; no owner action remains.',
+                         timestamp=2)
+            with self.assertRaises(RuntimeError):
+                alerts.tick(self.root, now=1001)
+        self.assertEqual(1, len(attempts))           # no retry for the superseded ask
+        self.assertFalse(self.sent)
+        self.assertEqual([], alerts.resolve(self.root, 'D1')['delivered'])
+        self.assertFalse(alerts.resolve(self.root, 'D1')['can_reply'])
+        self.assertFalse(alerts.resolve(self.root, 'D1')['compact_complete'])
+
+    def test_requested_pull_does_not_double_send_a_new_decision(self):
+        alerts.tick(self.root, now=1000, force_decisions=True)
+        self.assertEqual(1, len(self.sent))
+        self.assertIn('D1 · one', self.sent[0])
+        self.assertNotIn('two', self.sent[0])
+
+    def test_owner_only_remedy_is_admitted_once_and_recoverable_twins_stay_local(self):
+        # A typed capability card is not inherently owner-facing: the coordinator's
+        # current evidenced summary admits the owner-only credential wall, with no
+        # needs_input relabel and no secret value logged.
+        self.mark('two', 'Hard Blocker\nGoal: Sign the release.')
+        self.comment('two', 'head-coordinator', KEYLESS_SUMMARY, timestamp=1)
+        alerts.tick(self.root, now=1000)
+        # Each admitted gate is still its own phone-sized message.
+        self.assertEqual(2, len(self.sent))
+        self.assertIn('D1 · one', self.sent[0])
+        self.assertIn('D2 · two', self.sent[1])
+        self.assertIn('Only you hold the signing key.', self.sent[1])
+        self.assertTrue(alerts.resolve(self.root, 'D2')['can_reply'])
+        # A look-alike twin with a plain agent-side remedy has no owner-only wall.
+        with closing(sqlite3.connect(self.boards['two'])) as db:
+            db.execute('INSERT INTO tasks (id,title,body,status,block_kind) VALUES (?,?,?,?,?)',
+                       ('t_recover', 'Recover worker', 'Hard Blocker\nGoal: Restart the worker.',
+                        'blocked', 'capability'))
+            db.commit()
+        with self.assertRaises(RuntimeError):
+            alerts.tick(self.root, now=1001)
+        self.assertEqual(2, len(self.sent))
+        self.assertFalse(any('Restart the worker' in message for message in self.sent))
+        self.assertFalse(alerts.resolve(self.root, 'D3')['can_reply'])
+
+    def test_fresh_evidence_does_not_repush_an_unchanged_ask(self):
+        alerts.tick(self.root, now=1000)
+        self.assertEqual(1, len(self.sent))
+        before = alerts.resolve(self.root, 'D1')
+        self.assertTrue(before['can_reply'])
+        # A worker comment is fresh evidence, but not a new ask.
+        self.comment('one', 'standard-implementer', 'Checkpoint: nothing to report.', timestamp=2)
+        alerts.tick(self.root, now=1001)
+        self.assertEqual(1, len(self.sent))
+        after = alerts.resolve(self.root, 'D1')
+        self.assertTrue(after['can_reply'])
+        self.assertEqual(before['token'], after['token'])
+        self.assertEqual(before['delivered'], after['delivered'])
+        # No counter reset and no reused label: the exact old receipt is kept.
+        state = self.inbox()
+        self.assertEqual(2, state['next_label'])
+        self.assertEqual(['simplex:3'], state['decisions']['D1']['delivered'])
+
 
 unittest.main(argv=['alerts'], verbosity=2)
 PY

@@ -74,6 +74,50 @@ def target_config(root):
     return f'simplex:{home}'
 
 
+def comment_stream(db, task_id):
+    """Pair a task's comments with the `commented` events they were appended with.
+
+    `kanban_db.add_comment` records a comment and its `commented` event in one
+    transaction, so the two ordered streams correspond one-to-one by author and
+    body length. Comment ids and event ids are different sequences, so the paired
+    event id is what orders a coordinator statement against lifecycle events.
+    A stream that does not pair is UNKNOWN, never guessed from wall-clock time.
+    """
+    comments = [dict(row) for row in db.execute(
+        'SELECT id, author, body FROM task_comments WHERE task_id=? ORDER BY id', (task_id,))]
+    events = [dict(row) for row in db.execute(
+        "SELECT id, payload FROM task_events WHERE task_id=? AND kind='commented' ORDER BY id", (task_id,))]
+    if len(comments) != len(events):
+        return [], False
+    for comment, event in zip(comments, events):
+        try:
+            payload = json.loads(event['payload'] or '{}')
+        except ValueError:
+            return [], False
+        if (payload.get('author') != comment['author']
+                or payload.get('len') != len(comment['body'] or '')):
+            return [], False
+        comment['event_id'] = event['id']
+    return comments, True
+
+
+def last_ask_edit(db, task_id):
+    """Highest event id that recorded a body or title edit, or None.
+
+    `created_by` alone cannot prove the body an owner gate was created with is
+    still the body on the card, so a body/title edit withdraws that provenance.
+    """
+    last = None
+    for event in db.execute("SELECT id, payload FROM task_events WHERE task_id=? AND kind='edited' ORDER BY id", (task_id,)):
+        try:
+            fields = json.loads(event['payload'] or '{}').get('fields') or []
+        except ValueError:
+            fields = []
+        if 'body' in fields or 'title' in fields:
+            last = event['id']
+    return last
+
+
 def snapshot(board_file, task_id=None):
     with closing(sqlite3.connect((board_file.parent / 'kanban.db').resolve().as_uri() + '?mode=ro', uri=True)) as db:
         db.row_factory = sqlite3.Row
@@ -90,13 +134,37 @@ def snapshot(board_file, task_id=None):
             failure = task.pop('failure')
             if failure and task['reason'] in ('', 'initial_status'):
                 task['reason'] = failure
-            # Only the coordinator may author the owner ask. Ordinary comments
-            # and summaries from other profiles cannot replace it.
+            # Candidate shape is not permission to send. The CURRENT coordinator
+            # statement alone controls the ask: a later coordinator statement
+            # that is not a complete summary, an ask changed after its summary,
+            # a worker-authored gate, or unproven comment/event history all
+            # withhold the ask instead of falling back to an older summary.
+            task['comment'] = ''
+            task['ask_source'] = None
+            task['ask_diag'] = ''
             try:
-                comment = db.execute("SELECT body FROM task_comments WHERE task_id=? AND author=? AND instr(body,'Blocking:')>0 ORDER BY created_at DESC, id DESC LIMIT 1", (task['id'], PROFILE)).fetchone()
+                comments, ordered = comment_stream(db, task['id'])
             except sqlite3.OperationalError:
-                comment = None
-            task['comment'] = comment['body'] if comment else ''
+                comments, ordered = [], False
+            if not ordered:
+                task['ask_diag'] = 'the owner-ask history cannot be proven; restate the current ask'
+            else:
+                latest = max((c for c in comments if c['author'] == PROFILE),
+                             key=lambda c: c['event_id'], default=None)
+                edited = last_ask_edit(db, task['id'])
+                if latest is not None:
+                    if edited is not None and edited > latest['event_id']:
+                        task['ask_diag'] = 'the card changed after the summary; restate the current ask'
+                    else:
+                        task['ask_source'] = 'comment'
+                        task['comment'] = latest['body'] or ''
+                elif task['created_by'] == PROFILE:
+                    if edited is None:
+                        task['ask_source'] = 'body'
+                    else:
+                        task['ask_diag'] = 'the card body changed after it was authored; restate the current ask'
+                else:
+                    task['ask_diag'] = 'head-coordinator must author the owner-facing summary'
         return tasks
 
 
@@ -118,12 +186,14 @@ def owner_summary(comment):
     return '\n'.join(values)
 
 
+TOKEN_FIELDS = ('id', 'title', 'body', 'block_kind', 'status', 'event_id', 'reason')
+
+
 def token(value):
-    # The owner-facing summary is part of the revision so posting one re-pushes;
-    # the raw comment is excluded so unrelated chatter does not.
-    # Authorship is checked separately; adding its read-only column must not
-    # invalidate an unchanged question's existing label during installation.
-    payload = {key: item for key, item in value.items() if key not in ('comment', 'created_by')}
+    # The owner-facing summary is part of the revision so posting one re-pushes.
+    # Authorship and ordering evidence is deliberately excluded so new read-only
+    # proof columns cannot rekey an unchanged question or re-page the owner.
+    payload = {key: value[key] for key in TOKEN_FIELDS if key in value}
     summary = owner_summary(value.get('comment', ''))
     if summary:
         payload['summary'] = summary
@@ -250,14 +320,24 @@ def check_summary(text):
 def blocker_summary(task):
     # A summary is an atomic statement of the current ask. Never mix a partial
     # comment with an old body, or carry fields the coordinator did not write.
-    comment = task.get('comment') or ''
-    if comment:
-        source = comment
-    elif task.get('created_by') == PROFILE:
-        source = task.get('body') or ''
+    if 'ask_source' not in task:
+        # Synthetic task (the authoring guard's preview) with no recorded
+        # stream: keep the original comment-then-body precedence.
+        if task.get('comment'):
+            source = 'comment'
+        elif task.get('created_by') == PROFILE:
+            source = 'body'
+        else:
+            raise ValueError('head-coordinator must author the owner-facing summary')
     else:
-        raise ValueError('head-coordinator must author the owner-facing summary')
-    fields = extract_summary(source)
+        source = task.get('ask_source')
+    if source == 'comment':
+        text = task.get('comment') or ''
+    elif source == 'body':
+        text = task.get('body') or ''
+    else:
+        raise ValueError(task.get('ask_diag') or 'head-coordinator must author the owner-facing summary')
+    fields = extract_summary(text)
     return check_summary('\n'.join(f'{name}: {fields[name]}' for name in SUMMARY_FIELDS if name in fields))
 
 
@@ -391,22 +471,23 @@ def technical_text(label, board, task):
         return heading + '\nBlocked: ' + cause + '\nBlocking: ' + cause
 
 
-def decision_message(label, state):
+def decision_message(label, shown):
     """One SimpleX message per blocked card: heading, summary, one reply line.
 
     Each blocker is its own message so the owner can act on one at a time and a
-    single long summary never crowds another gate off the screen.
+    single long summary never crowds another gate off the screen. `shown` is the
+    text revalidated immediately before the send, never a snapshot captured
+    before it.
     """
-    return ('*Hard Blocker*\n\n' + state['decisions'][label]['shown']
+    return ('*Hard Blocker*\n\n' + shown
             + f'\n\nReply: {label} <choice or answer>. Details: {label} details')
 
 
-def decision_messages(labels, state):
-    """One message per decision, used only for an explicit owner request."""
-    order = sorted(labels)
+def decision_messages(shown, order):
+    """One message per revalidated decision, used only for an explicit owner request."""
     # An empty set answers the request rather than staying silent: the owner
     # asked, so "nothing waiting" is the reply.
-    return [(decision_message(label, state), [label]) for label in order] \
+    return [(decision_message(label, shown[label]), [label]) for label in order] \
         or [('*Hard Blocker*\n\nNo decisions are waiting.', [])]
 
 
@@ -535,28 +616,70 @@ def tick(root, dry_run=False, now=None, force_decisions=False):
                         records[label]['delivered'].append(target)
                 save(path, state)
 
+        def revalidate(label):
+            """Apply the current-ask predicate again immediately before sending.
+
+            The exact pending record is compared with a fresh read of the same
+            board/task: status, shape, complete current coordinator summary and
+            ask revision. Anything unreadable, answered, reclassified or changed
+            withholds the old send and never substitutes new text under it.
+            """
+            record = state['decisions'][label]
+            try:
+                tasks = snapshot(root / 'kanban/boards' / record['board'] / 'board.json', record['task_id'])
+            except (ValueError, OSError, sqlite3.Error) as exc:
+                errors.append(f'{label}: {exc}')
+                return None
+            current = tasks[0] if tasks else None
+            if not current or current['status'] != 'blocked' or not is_hard_blocker(current):
+                errors.append(f'{label}: no longer the pending decision; holding it')
+                return None
+            shown, complete = decision_text(label, record['board'], current)
+            if not complete or token(current) != record['token']:
+                errors.append(f'{label}: the current ask changed before sending; holding it')
+                return None
+            return shown
+
+        def refreshed(labels):
+            """The still-valid rendered text for each label; everything else held."""
+            shown = {}
+            for label in labels:
+                current = revalidate(label)
+                if current is not None:
+                    shown[label] = current
+            return shown
+
+        def send_individual(labels):
+            """Send each still-valid decision as its own phone-sized message."""
+            shown = refreshed(labels)
+            for label in sorted(shown):
+                if deliver(decision_message(label, shown[label])):
+                    delivered(state['decisions'], [label])
+
         # The one owner-facing category is a decision gate: a card blocked with
-        # `needs_input`, which only the owner can clear and which the board will
-        # not unblock on its own. A technical blocker can clear itself, so it is
+        # `needs_input` or a standalone `Hard Blocker` line AND carrying the
+        # coordinator's CURRENT complete summary. A candidate shape is not
+        # permission to send. A technical blocker can clear itself, so it is
         # never sent; it stays board-local and is read with `--details blockers`.
         pending = [decision_labels[(board, task['id'])] for board, task in decisions
                    if state['decisions'][decision_labels[(board, task['id'])]]['compact_complete']
                    and target not in state['decisions'][decision_labels[(board, task['id'])]]['delivered']]
-        if pending:
-            # One message per blocker: the owner can answer each without a
-            # long summary crowding the next gate off the screen.
-            for label in pending:
-                if deliver(decision_message(label, state)):
-                    delivered(state['decisions'], [label])
-
-        # Explicit pull of the decision set only. A failed board read omits
-        # cards, so an incomplete list is never sent as if it were whole.
+        # An explicit pull is the owner's request, not autonomous permission.
+        # When it can be answered from complete reads it is the single send pass
+        # for this tick, so a newly pending item is never sent twice.
         if force_decisions and not snapshot_failed:
-            for text, batch in decision_messages(decision_labels.values(), state):
+            labels = [label for label in decision_labels.values()
+                      if state['decisions'][label]['compact_complete']]
+            shown = refreshed(labels)
+            for text, batch in decision_messages(shown, sorted(shown)):
                 if not deliver(text):
                     continue
                 if batch:
                     delivered(state['decisions'], batch)
+        elif pending:
+            # A failed board read omits cards, so single alerts still send but an
+            # incomplete set is never presented as a whole answer.
+            send_individual(pending)
     if errors:
         raise RuntimeError('; '.join(errors))
 
