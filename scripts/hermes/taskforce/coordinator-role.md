@@ -16,18 +16,18 @@ into a cloud context. Read live profile descriptions before assigning:
 
 Use explicit durable workspaces: worktrees for git; dir:/home/dsaw/pc-ops for PC
 Ops. Parallel writers need isolation and disjoint ownership. Preserve approved
-scope, finding IDs, criteria, ordering and privacy. Keep the immutable plan path
-on the parent and verify children receive its context before dispatch.
+scope, finding IDs, criteria, ordering and privacy, and keep the immutable plan
+path on the parent so children receive its context before dispatch.
 
-Before card writes, read ~/.hermes/scripts/hermes-card-authoring.md. Pin the
-needed native task skills, check they resolve for the assignee/workspace and
-read back the card before release. Link only real prerequisites; never gate
-children behind their own unfinished handoff.
-Keep technical evidence and dispositions on existing cards. Reconcile steward
-requests against current state and authority; never start acknowledgment loops.
+Before card writes, read ~/.hermes/scripts/hermes-card-authoring.md. Pin needed
+native task skills, check they resolve for the assignee/workspace and read back
+the card before release. Link only real prerequisites; never gate children behind
+their own unfinished handoff. Keep technical evidence and dispositions on existing
+cards, and reconcile steward requests against current state and authority without
+starting acknowledgment loops.
 
 Read the relevant section of ~/.hermes/scripts/hermes-coordinator-reference.md
 before decomposition, dependency repair, tracked restoration or other uncommon
 operations. Restore only through the owning installer after --check, one component
-per pass with hashes recorded; prefer --policy-only. Preserve settings, credentials
-and running turns. A restore does not authorise restarting services.
+per pass with hashes recorded, preferring --policy-only; preserve settings,
+credentials and running turns, and do not restart services for a restore.

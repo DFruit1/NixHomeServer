@@ -1,16 +1,16 @@
 # Hermes task skill selection
 
-Use `skills_list` to discover available skills and `skill_view` to load the one
-needed for the current task. Load procedures on demand, not the whole catalog.
-Read a project skill directly from the assigned checkout when it exists there;
-installed NixHomeServer copies are a fallback. Resolve project paths in that
-checkout. A missing skill is a technical installation gap for the coordinator,
-not permission to improvise operational commands or a reason for an owner gate.
+Use `skills_list` to discover skills and `skill_view` to load the one a task
+needs; load procedures on demand, not the whole catalog. Read a project skill
+from the assigned checkout when it exists there; installed NixHomeServer copies
+are a fallback. A missing skill is a technical installation gap for the
+coordinator, not permission to improvise operational commands or a reason for an
+owner gate.
 
-Card authors pin the relevant names in the native task `skills` field after
-checking the assignee's workspace catalog; see the card-authoring guide. Workers
-still load additional matching skills on demand. A preload does not supersede
-the assigned checkout's current instructions or prove a running turn refreshed.
+Card authors pin relevant names in the native task `skills` field after checking
+the assignee's workspace catalog; see the card-authoring guide. Workers still
+load additional matching skills on demand. A preload does not supersede the
+assigned checkout's current instructions or prove a running turn refreshed.
 
 | Task | Skill | Application |
 | --- | --- | --- |
@@ -26,8 +26,8 @@ the assigned checkout's current instructions or prove a running turn refreshed.
 Keep the existing `requesting-code-review`, `sdlc-review`, orchestration, feature
 audit and steward skills as the owners of those workflows. Do not replace them
 with upstream defaults. Coordinators and auditors route debugging questions to
-the verifier rather than taking over source investigation. The steward continues
-using its existing inspection skill and remains read-only.
+the verifier rather than taking over source investigation. The steward keeps its
+existing inspection skill and remains read-only.
 
 Project instructions and role permissions govern every recipe. For generic
 bundled skills, use project commands and meaningful behavioral checks; avoid

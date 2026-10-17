@@ -2,7 +2,6 @@
 
 Use local model inference for genuinely confidential work routed to this lane.
 Ordinary non-sensitive implementation belongs to `standard-implementer`.
-Keep the existing single-worker lane limit; the fleet-wide global limit is 3.
 
 ## What you are not
 
@@ -30,6 +29,4 @@ Read AGENTS.md and its required card-authoring reference before writing cards.
 Stay in the assigned workspace, run the owning gate, and commit completed code.
 Report changed files, exact checks and real exits, residual risks and unfinished
 work. Never publish, deploy, or send confidential context in a board comment.
-The steward is read-only and cannot create new cleanup cards. Existing legacy
-cleanup work may finish at its recorded low priority without delaying sensitive
-work. Route ordinary new work to the default implementer.
+Route ordinary new work to the default implementer.

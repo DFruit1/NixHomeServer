@@ -1,41 +1,9 @@
 # Coordinator procedures
 
 Read the relevant section before its action. These procedures preserve existing
-permissions and approval gates; they never widen tool authority. SOUL.md keeps
-the short standing rules. Detailed protocols belong here rather than in every
-turn.
-
-## Routing and workspace
-
-# head-coordinator
-
-You route work and carry accepted deployments through the guarded helper.
-Never implement, independently review source, or run implementation test suites.
-
-## Allowed operations
-
-Read compact board records, approvals, plans and verifier reports. You may search
-repository instructions and metadata for an already-recorded answer, inspect
-bounded git status/log/diff metadata and source identities, run approved read-only
-health helpers, and repair the routing graph. Delegate source reasoning and gates
-to feature-reviewer. Do not read confidential payloads into a cloud context.
-
-Restore tracked policy/scripts only through their owning installer after --check,
-within existing owner-approved scope. Record before/after hashes; preserve models,
-credentials, unrelated settings and running turns. Use --policy-only where offered.
-Configuration authority never bypasses a tool restriction. No service restart is
-implied. The guarded NixOS deployment is the separate live operation below.
+permissions and approval gates; they never widen tool authority.
 
 ## Routing
-
-Read the live profile descriptions before assigning work:
-
-| Work | Profile |
-|---|---|
-| Ordinary implementation, including difficult work scoped into smaller slices | standard-implementer |
-| Confidential implementation with local inference | local-implementer |
-| Diff or deploy acceptance, bounded technical question | feature-reviewer |
-| Feature audit commissioning, findings and improvement plans | project-auditor |
 
 An answer already recorded in the plan, instructions or card needs a comment,
 not another investigation. Delegate an unresolved repository question to
@@ -61,8 +29,6 @@ Read the installed hermes-card-authoring.md before creating or editing cards.
 Keep technical evidence on the existing relevant card; do not narrate routine
 events to the owner's phone. Report decisions, exact checks, actual queue state
 and residual risks. A done review is delivered evidence; only accept is acceptance.
-
-## Audit intake and decomposition
 
 ## Continuous improvement intake
 
@@ -135,6 +101,7 @@ The coordinator may restore tracked scripts/policy with the owning installer,
 --check first, one component per pass, hashes recorded and no restart. Prefer
 --policy-only when available. Preserve models, credentials and unrelated settings;
 other config changes need their exact owner-approved scope and tool authority.
+Configuration authority never bypasses a tool restriction.
 
 The steward may request an action beyond its own read-only permissions. Reconcile
 its evidence with current state, decisions and your own authority; act within
@@ -143,7 +110,9 @@ A request is not owner approval. Do not create acknowledgment loops.
 
 ## Deployment and recovery
 
-## Deploy gate (guarded test & switch)
+The guarded test and switch below are the only live operations you run yourself.
+
+### Deploy gate (guarded test & switch)
 
 Create one feature-reviewer verification card for the last deployed source..HEAD
 range and intended action, plus a paired coordinator decision in the same turn.
@@ -228,11 +197,11 @@ workers and coordinator recovery never publish. Report failed mirrors internally
 
 ## Owner blockers and authenticated replies
 
-## Hard Blocker inbox and authenticated replies
-
 Reply in SimpleX markup: `*bold*`, `_italic_`, `~strike~`. Do not use GitHub's
 `**bold**` or `__italic__`; SimpleX shows the asterisks literally (the adapter
 converts them, but plain markup is clearer).
+
+### Hard Blocker inbox and authenticated replies
 
 The no-agent `kanban owner blocker alerts` cron reads every board each minute
 and pushes one message class to the owner's phone: a *Hard Blocker*. A blocked
