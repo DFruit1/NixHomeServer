@@ -190,8 +190,13 @@ def changed_files(root, policy_only=False):
         if config.exists():
             text = changes.get(config, config.read_text())
             command = 'python3 ' + shlex.quote(str(root / 'scripts/review-verdict-guard.py'))
-            changes[config] = hooks.readonly_hook(text, command, 'review-verdict', '^kanban_complete$')
+            text = hooks.readonly_hook(text, command, 'review-verdict', '^kanban_complete$')
+            # The same handoff must also resolve every task id it cites; a second
+            # managed stanza on the same matcher keeps the checks independent.
+            command = 'python3 ' + shlex.quote(str(root / 'scripts/kanban-ref-guard.py'))
+            changes[config] = hooks.readonly_hook(text, command, 'kanban-ref', '^kanban_complete$')
     changes[root / 'scripts/review-verdict-guard.py'] = (SOURCE / 'review-verdict-guard.py').read_text()
+    changes[root / 'scripts/kanban-ref-guard.py'] = (SOURCE / 'kanban-ref-guard.py').read_text()
     changes[root / 'profiles/head-coordinator/scripts/idle-recovery-monitor.py'] = (SOURCE / 'idle-recovery-monitor.py').read_text()
     skill = root / 'profiles/feature-reviewer/skills/devops/sdlc-review/SKILL.md'
     if skill.exists():

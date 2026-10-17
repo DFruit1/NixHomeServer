@@ -581,6 +581,11 @@ class TaskforceTest(unittest.TestCase):
         config = self.root / 'profiles/head-coordinator/config.yaml'
         self.assertEqual(1, config.read_text().count('# nixhomeserver-review-verdict:start'))
         self.assertIn('^kanban_complete$', config.read_text())
+        # A completion handoff must also resolve the task ids it cites, so the
+        # installer wires the reference guard beside the verdict guard.
+        self.assertEqual(1, config.read_text().count('# nixhomeserver-kanban-ref:start'))
+        self.assertIn('kanban-ref-guard.py', config.read_text())
+        self.assertTrue((self.root / 'scripts/kanban-ref-guard.py').is_file())
         from hermes_config import document
         self.assertIn('kanban', document(config.read_text())['platform_toolsets']['desktop'])
         jobs = self.root / 'profiles/head-coordinator/cron/jobs.json'
