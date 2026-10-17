@@ -56,9 +56,6 @@ in {
   oauth2Client = cfg.services.kanidm.provision.systems.oauth2.langfuse;
   oauth2SecretMode = cfg.age.secrets.langfuseClientSecret.mode;
   expectedOwnerEmail = vars.kanidmAppUserEmails.\${vars.localAdminUser} or vars.kanidmAdminEmail;
-  reconcileType = cfg.systemd.services.langfuse-oidc-reconcile.serviceConfig.Type;
-  reconcileAfter = cfg.systemd.services.langfuse-oidc-reconcile.after;
-  reconcileTimer = cfg.systemd.timers.\"langfuse-oidc-reconcile\".timerConfig;
   backupWants = cfg.systemd.services.backup-prepare.wants;
   backupRequires = cfg.systemd.services.backup-prepare.requires;
   containerOptions = map (name: containers.\${name}.extraOptions)
@@ -116,8 +113,6 @@ jq -e '
   and (.oauth2Client.originUrl | endswith("/api/auth/callback/custom"))
   and .oauth2Client.scopeMaps."langfuse-users" == ["openid","profile","email"]
   and .oauth2SecretMode == "0440"
-  and .reconcileType == "oneshot" and (.reconcileAfter | index("langfuse-web.service")) != null
-  and .reconcileTimer.OnUnitActiveSec == "1h"
   and (.backupWants | index("clickhouse.service")) != null
   and ((.backupRequires | index("clickhouse.service")) == null)
   and all(.containerOptions[]; index("--cap-drop=ALL") != null)

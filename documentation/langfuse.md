@@ -17,10 +17,11 @@ accounts that already exist can sign in.
 Langfuse links an SSO identity to an account by email address, so the owner
 account must carry the Kanidm mail address of the local administrator
 (`vars.kanidmAppUserEmails.<localAdminUser>`). The module seeds
-`LANGFUSE_INIT_USER_EMAIL` with that address and the `langfuse-oidc-reconcile`
-unit converges an account that was created earlier with `vars.kanidmAdminEmail`
-onto it, so the first SSO sign-in links to the existing owner instead of being
-rejected. There is no public Cloudflare route.
+`LANGFUSE_INIT_USER_EMAIL` with that address, and Langfuse's headless
+initialization keeps the owner account's address in step with it, so the first
+SSO sign-in links to the existing owner instead of being rejected. Signup stays
+disabled, so only the owner (and any other account an operator creates) can
+sign in. There is no public Cloudflare route.
 
 `/api/public/*`, including OTLP ingestion, uses native Langfuse project-key
 authentication instead of browser SSO. Unauthenticated ingestion must fail;
