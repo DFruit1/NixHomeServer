@@ -128,6 +128,29 @@ Removing `langfuse` from `applications.enabled` removes its runtime, routes,
 identity registration, and secret materialization without deleting retained
 state. Redis tuning is gated on the owning module in `system-resources.nix`.
 
+## ClickHouse system logs
+
+ClickHouse creates each `system.*_log` table from its configuration section only
+when the table is missing, so the retention has to live in the config. The
+packaged config leaves most of these logs without a TTL, and they were the bulk
+of the ClickHouse footprint: `trace_log` alone reached 1.3 GiB at ~100 MiB/day
+while Langfuse's own data was ~60 MiB. The module now bounds the sections the
+package leaves unbounded - 3 days for the query profiler (`trace_log`) and 7
+days for the rest - and deliberately leaves the sections the package already
+bounds (`processors_profile_log`, `asynchronous_insert_log`, `blob_storage_log`,
+the zookeeper logs) untouched.
+
+Changing a TTL for a table that already exists makes ClickHouse rename it to
+`<name>_N` and create a fresh, bounded table; the copy keeps the old rows and,
+with no TTL of its own, never expires. After a deploy that introduces a TTL,
+drop the leftover copies to reclaim that space, for example:
+
+    clickhouse-client --config-file /run/langfuse/clickhouse-client.xml \
+      --query "SELECT name FROM system.tables WHERE database='system' AND name LIKE '%_log_%'"
+
+then `DROP TABLE system.<name>_N` for each. Only the diagnostics are dropped;
+Langfuse data lives in the separate `default` database and is unaffected.
+
 ## Upstream contracts
 
 - [Langfuse deployment](https://langfuse.com/self-hosting/deployment/docker-compose)

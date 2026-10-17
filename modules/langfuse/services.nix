@@ -46,6 +46,39 @@ let
   # crash-loop instead of converging. Each consumer restarts when the encrypted
   # source changes, exactly like langfuse-prepare and langfuse-db-bootstrap.
   secretRestartTriggers = [ config.age.secrets.langfuseServerEnv.file ];
+  # ClickHouse creates each system log table from its config section only when
+  # the table is missing, and the packaged config ships no TTL for the sections
+  # below, so they grow without bound. On this host they were 1.86 GiB of the
+  # 2.2 GiB ClickHouse footprint while Langfuse's own data was ~60 MiB, and
+  # trace_log alone gains ~100 MiB/day. Bound the sections the package leaves
+  # unbounded; the ones it already bounds (processors_profile_log,
+  # asynchronous_insert_log, blob_storage_log, the zookeeper logs) are left
+  # alone so their tables keep their definition. Adding a TTL to a table that
+  # already exists makes ClickHouse rename it to <name>_N and create a fresh
+  # bounded table, so a one-time drop of those copies reclaims the old rows.
+  clickhouseLogTtl = days: table: {
+    inherit table;
+    database = "system";
+    ttl = "event_date + INTERVAL ${toString days} DAY DELETE";
+  };
+  clickhouseLogTtls = {
+    # Query profiler samples are the heaviest log and only aid short debugging.
+    trace_log = clickhouseLogTtl 3 "trace_log";
+    query_log = clickhouseLogTtl 7 "query_log";
+    query_thread_log = clickhouseLogTtl 7 "query_thread_log";
+    query_views_log = clickhouseLogTtl 7 "query_views_log";
+    query_metric_log = clickhouseLogTtl 7 "query_metric_log";
+    metric_log = clickhouseLogTtl 7 "metric_log";
+    asynchronous_metric_log = clickhouseLogTtl 7 "asynchronous_metric_log";
+    part_log = clickhouseLogTtl 7 "part_log";
+    opentelemetry_span_log = clickhouseLogTtl 7 "opentelemetry_span_log";
+    text_log = clickhouseLogTtl 7 "text_log";
+    error_log = clickhouseLogTtl 7 "error_log";
+    background_schedule_pool_log = clickhouseLogTtl 7 "background_schedule_pool_log";
+    backup_log = clickhouseLogTtl 7 "backup_log";
+    session_log = clickhouseLogTtl 7 "session_log";
+    s3queue_log = clickhouseLogTtl 7 "s3queue_log";
+  };
   # A data-store restart must not stay silent: bounded retries, then an alert.
   dataStoreUnit = overrides: {
     serviceConfig = overrides.serviceConfig // {
@@ -197,7 +230,7 @@ in {
     };
     services.clickhouse = {
       enable = true;
-      serverConfig = {
+      serverConfig = clickhouseLogTtls // {
         listen_host = loopback;
         # Langfuse writes UTC date strings; a local timezone shifts stored instants.
         timezone = "UTC";

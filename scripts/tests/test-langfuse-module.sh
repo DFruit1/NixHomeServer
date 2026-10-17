@@ -67,6 +67,12 @@ jq -e '
   and .clickhouse.listen_host == "127.0.0.1"
   and .clickhouse.timezone == "UTC"
   and .clickhouse.tcp_port == 19140 and .clickhouse.http_port == 18140
+  and .clickhouse.trace_log.database == "system"
+  and .clickhouse.trace_log.ttl == "event_date + INTERVAL 3 DAY DELETE"
+  and .clickhouse.query_log.ttl == "event_date + INTERVAL 7 DAY DELETE"
+  and ([ .clickhouse | to_entries[] | select(.key | endswith("_log")) | .value.ttl ]
+       | length == 15 and all(endswith("DELETE")))
+  and (.clickhouse.processors_profile_log | not)
   and (.bootstrapAfter | index("postgresql-setup.service")) != null
   and (.bootstrapRequires | index("postgresql-setup.service")) != null
   and (.minioArgs | index("127.0.0.1:9040")) != null
