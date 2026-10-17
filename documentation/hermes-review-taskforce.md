@@ -127,6 +127,7 @@ python3 scripts/hermes/review-taskforce.py --board pcops configure --cadence off
 python3 scripts/hermes/review-taskforce.py --board myproject configure --cadence weekly
 python3 scripts/hermes/review-taskforce.py --board myproject configure --cadence custom --interval-hours 48
 python3 scripts/hermes/review-taskforce.py --board myproject configure --cadence daily --max-audits-per-finding 2 --suppress-clean-streak 3
+python3 scripts/hermes/review-taskforce.py --board myproject configure --cadence daily --sweep-interval-hours 24
 ```
 
 Only existing boards with an absolute `default_workdir` can schedule checks.
@@ -150,6 +151,28 @@ Scheduling and dispatch require the shared default-profile gateway. Starting it
 also dispatches existing ready work on all boards; preserve deliberate pauses
 unless activation of that queue is authorised. Use the host's existing gateway
 launcher/supervisor; do not install a second per-profile gateway.
+
+### Coordinator self-improvement sweep
+
+The same no-agent tick can leave the **head-coordinator** a low-priority
+`continuous-improvement` card, "Improve: route one system-wide improvement".
+Its interval is a separate, operator-owned `sweep_interval_hours` key (default
+`0`, disabled; `--sweep-interval-hours N`; a positive N also schedules on a
+board whose audit cadence is off). It is off until an operator opts a board in,
+so unconfigured boards get no proactive coordinator card. The sweep is
+independent of the audit clean-streak suppression: a run of clean audits
+suppresses the auditor's opportunity check without silencing the coordinator's
+improvement pass. At most one pending sweep card exists per board, and a pending
+sweep never suppresses the auditor's own opportunity card.
+
+On the card the coordinator scans the whole system (repo modules and custom
+apps, scripts, fleet policy and jobs) for one worthwhile change in security,
+efficiency, reliability, integration or simplicity. It routes a small,
+classify-clean fix to implementers with an independent feature-reviewer
+verification, sends anything needing investigation, a plan or an owner gate to
+`project-auditor`, and completes the card with a recorded reason when nothing
+worthwhile is found. It never implements, reopens a rejected/verified finding or
+widens an approval. Off leaves on-demand and the auditor opportunity intact.
 
 ## Findings, audit conflicts and handoffs
 

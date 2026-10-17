@@ -353,6 +353,72 @@ class TaskforceTest(unittest.TestCase):
         tf.tick(self.root, self.now + 2 * 86400)
         self.assertTrue(any(c[0] == 'daily' and c[1][0] == 'create' for c in self.calls))
 
+    def test_sweep_disabled_by_default_and_configurable(self):
+        # No board schedules the coordinator sweep until an operator opts in.
+        tf.tick(self.root, self.now)
+        self.assertFalse(any(c[1][0] == 'create' and tf.SWEEP_TITLE in c[1] for c in self.calls))
+        tf.configure(self.root, 'daily', 'daily', sweep_interval_hours=24)
+        self.calls.clear()
+        tf.tick(self.root, self.now)
+        sweeps = [c for c in self.calls if c[1][0] == 'create' and tf.SWEEP_TITLE in c[1]]
+        self.assertEqual(['daily'], [c[0] for c in sweeps])
+        args = sweeps[0][1]
+        self.assertEqual('head-coordinator', args[args.index('--assignee') + 1])
+        self.assertEqual(tf.TENANT, args[args.index('--tenant') + 1])
+        self.assertEqual('review-taskforce-scheduler', args[args.index('--created-by') + 1])
+        body = args[args.index('--body') + 1]
+        self.assertLessEqual(len(body.splitlines()), 15)
+        self.assertLessEqual(len(body), 1000)
+        self.assertTrue(all(len(line) < 90 for line in body.splitlines()))
+        # The configured interval, not the hourly cadence, governs the next sweep.
+        self.calls.clear()
+        tf.tick(self.root, self.now + 3600)
+        self.assertFalse(any(c[1][0] == 'create' and tf.SWEEP_TITLE in c[1] for c in self.calls))
+        tf.tick(self.root, self.now + 24 * 3600)
+        self.assertTrue(any(c[1][0] == 'create' and tf.SWEEP_TITLE in c[1] for c in self.calls))
+
+    def test_pending_sweep_card_prevents_duplicate(self):
+        tf.configure(self.root, 'daily', 'daily', sweep_interval_hours=24)
+        self.tasks = [{'id': 't_sweep', 'assignee': 'head-coordinator', 'tenant': tf.TENANT,
+                       'title': tf.SWEEP_TITLE, 'status': 'ready'}]
+        tf.tick(self.root, self.now)
+        self.assertFalse(any(c[1][0] == 'create' and tf.SWEEP_TITLE in c[1] for c in self.calls))
+        # A pending sweep must not suppress the auditor's own opportunity card.
+        self.assertTrue(any(c[1][0] == 'create' and c[1][1] == tf.OPPORTUNITY_TITLE
+                            for c in self.calls))
+
+    def test_clean_streak_suppresses_audits_but_not_sweeps(self):
+        tf.configure(self.root, 'off', 'off', sweep_interval_hours=24)
+        for index in range(3):
+            with patch.dict(os.environ, {'HERMES_PROFILE': 'feature-reviewer'}):
+                tf.record_audit(self.root, 'off', f't_clean{index}', outcome='clean')
+        tf.tick(self.root, self.now)
+        off_creates = [c for c in self.calls if c[0] == 'off' and c[1][0] == 'create']
+        self.assertEqual([tf.SWEEP_TITLE], [c[1][1] for c in off_creates])
+
+    def test_sweep_failed_create_does_not_advance_schedule(self):
+        tf.configure(self.root, 'off', 'off', sweep_interval_hours=24)
+
+        def fail(board, *args):
+            if args[0] == 'create':
+                raise RuntimeError('offline')
+            return []
+
+        with patch.object(tf, 'hermes', fail):
+            with self.assertRaises(RuntimeError):
+                tf.tick(self.root, self.now)
+        self.calls.clear()
+        tf.tick(self.root, self.now)
+        self.assertTrue(any(c[0] == 'off' and c[1][0] == 'create' and tf.SWEEP_TITLE in c[1]
+                            for c in self.calls))
+
+    def test_configure_preserves_sweep_interval_when_omitted(self):
+        tf.configure(self.root, 'daily', 'daily', sweep_interval_hours=24)
+        tf.configure(self.root, 'daily', 'weekly')
+        self.assertEqual(24, tf.load_config(self.root, 'daily')['sweep_interval_hours'])
+        with self.assertRaises(ValueError):
+            tf.configure(self.root, 'daily', 'weekly', sweep_interval_hours=-1)
+
     def test_pending_implementer_work_warns_without_blocking(self):
         self.tasks = [{'id': 't_queued', 'assignee': 'standard-implementer', 'status': 'ready',
                        'body': 'Change: modules/immich/default.nix — adjust limits', 'title': 'Fix Immich'}]

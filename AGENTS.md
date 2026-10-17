@@ -199,6 +199,12 @@ Reviewers load `taskforce-feature-audit` for audit procedures and report format;
 follow the [taskforce runbook](documentation/hermes-review-taskforce.md) for
 scheduling and persisted state.
 
+The scheduler can also leave the head-coordinator a low-priority self-improvement
+sweep card for one whole-system improvement. The coordinator routes a small
+classify-clean fix to implementers with an independent feature-reviewer check, or
+sends investigation/gated work to project-auditor; it never implements. The sweep
+interval is operator-owned (`configure --sweep-interval-hours`).
+
 Apply [the implementation approval policy](scripts/hermes/taskforce/approval-policy.md)
 before releasing gated work. Architecture, stack replacement/addition/removal,
 frontend changes beyond minimal authorized controls, significant security/regression

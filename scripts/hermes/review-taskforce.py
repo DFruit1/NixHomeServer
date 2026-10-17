@@ -22,6 +22,7 @@ import time
 
 TENANT = 'continuous-improvement'
 OPPORTUNITY_TITLE = 'Review: choose a focused improvement audit'
+SWEEP_TITLE = 'Improve: route one system-wide improvement'
 CADENCES = {'off': 0, 'daily': 24, 'weekly': 168}
 IMPLEMENTERS = {'standard-implementer', 'local-implementer'}
 REVIEWER = 'feature-reviewer'
@@ -38,6 +39,10 @@ FINDING_STATUSES = {'open', 'accepted', 'deferred', 'rejected', 'implemented', '
 TASK_ROLES = {'audit', 'assessment', 'plan', 'gate', 'handoff', 'implementer', 'closure'}
 DEFAULT_SUPPRESS_CLEAN_STREAK = 3
 DEFAULT_MAX_AUDITS_PER_FINDING = 2
+# The coordinator self-improvement sweep is operator-owned and off until a board
+# opts in, matching the per-board cadence's "unconfigured means no schedule"
+# rule. A positive interval creates at most one pending sweep card per board.
+DEFAULT_SWEEP_INTERVAL_HOURS = 0
 # Bounded retention for the append-only metrics log; consumers read only the
 # tail (latest entry or the last N outcomes), so older rows are dead weight.
 METRICS_RETENTION = 5000
@@ -174,16 +179,19 @@ def load_config(root, board):
     if not path.is_file():
         return {'cadence': 'off', 'interval_hours': 0,
                 'suppress_clean_streak': DEFAULT_SUPPRESS_CLEAN_STREAK,
-                'max_audits_per_finding': DEFAULT_MAX_AUDITS_PER_FINDING}
+                'max_audits_per_finding': DEFAULT_MAX_AUDITS_PER_FINDING,
+                'sweep_interval_hours': DEFAULT_SWEEP_INTERVAL_HOURS}
     config = json.loads(path.read_text())
     config.setdefault('suppress_clean_streak', DEFAULT_SUPPRESS_CLEAN_STREAK)
     config.setdefault('max_audits_per_finding', DEFAULT_MAX_AUDITS_PER_FINDING)
+    config.setdefault('sweep_interval_hours', DEFAULT_SWEEP_INTERVAL_HOURS)
     return config
 
 
 def configure(root, board, cadence, interval_hours=None,
               suppress_clean_streak=DEFAULT_SUPPRESS_CLEAN_STREAK,
-              max_audits_per_finding=DEFAULT_MAX_AUDITS_PER_FINDING):
+              max_audits_per_finding=DEFAULT_MAX_AUDITS_PER_FINDING,
+              sweep_interval_hours=None):
     if cadence not in {*CADENCES, 'custom'}:
         raise ValueError('Cadence must be off, daily, weekly or custom')
     hours = CADENCES.get(cadence, interval_hours)
@@ -199,9 +207,16 @@ def configure(root, board, cadence, interval_hours=None,
         config_file = directory / 'config.json'
         if config_file.is_file():
             existing = json.loads(config_file.read_text())
+        # An omitted sweep interval preserves the operator's existing setting;
+        # passing a value (including 0 to disable) is explicit.
+        if sweep_interval_hours is None:
+            sweep_interval_hours = existing.get('sweep_interval_hours', DEFAULT_SWEEP_INTERVAL_HOURS)
+        if not isinstance(sweep_interval_hours, int) or isinstance(sweep_interval_hours, bool) or sweep_interval_hours < 0:
+            raise ValueError('sweep_interval_hours must be a non-negative integer')
         config = {**existing, 'cadence': cadence, 'interval_hours': hours,
                   'suppress_clean_streak': suppress_clean_streak,
-                  'max_audits_per_finding': max_audits_per_finding}
+                  'max_audits_per_finding': max_audits_per_finding,
+                  'sweep_interval_hours': sweep_interval_hours}
         atomic_write(config_file, json.dumps(config, indent=2) + '\n')
         if not (directory / 'FINDINGS.md').exists():
             atomic_write(directory / 'FINDINGS.md',
@@ -277,6 +292,48 @@ def opportunity_body(root, board):
     ])
 
 
+def sweep_body(root, board):
+    return '\n'.join([
+        'Goal: Choose one whole-system improvement and route it.',
+        'Change: review-taskforce/FINDINGS.md:1 — check existing coverage first.',
+        'Verify: python3 ~/.hermes/scripts/review-taskforce.py status — report real exit.',
+        board_state_line(root, board),
+        'Constraints:',
+        '- Scan the whole system, not one board feature: security, efficiency, reliability.',
+        '- Route small safe fixes to implementers with an independent feature-reviewer check.',
+        '- Send investigations or gated work to project-auditor for a plan and owner gate.',
+        '- Do nothing with a recorded reason when no worthwhile candidate exists.',
+        '- Never implement; never bypass approval rules, findings or owner gates.',
+    ])
+
+
+def bounded_body(body, state_line):
+    if len(body) > 1000 or len(body.splitlines()) > 15:
+        return body.replace(state_line, 'State: see FINDINGS.md.')
+    return body
+
+
+def opportunity_pending(tasks):
+    """A scheduler-created card suppresses duplicate opportunity checks.
+
+    Sweep cards are scheduler-created too, so they are excluded by title: the
+    coordinator's improvement pass must not swallow the auditor's audit pick.
+    """
+    for task in tasks:
+        if task.get('tenant') != TENANT or task.get('status') in {'done', 'archived'}:
+            continue
+        if task.get('title') == OPPORTUNITY_TITLE:
+            return True
+        if task.get('created_by') == 'review-taskforce-scheduler' and task.get('title') != SWEEP_TITLE:
+            return True
+    return False
+
+
+def sweep_pending(tasks):
+    return any(task.get('tenant') == TENANT and task.get('title') == SWEEP_TITLE
+               and task.get('status') not in {'done', 'archived'} for task in tasks)
+
+
 def suppressed_by_clean_streak(root, board):
     config = load_config(root, board)
     limit = config.get('suppress_clean_streak', DEFAULT_SUPPRESS_CLEAN_STREAK)
@@ -299,18 +356,17 @@ def tick_board(root, board_file, now):
         hours = config['interval_hours']
         if not isinstance(hours, int) or isinstance(hours, bool) or hours < 0:
             raise ValueError(f'Invalid cadence for {board}')
-        if not hours:
-            return
-        if suppressed_by_clean_streak(root, board):
-            return
+        sweep_hours = config.get('sweep_interval_hours', DEFAULT_SWEEP_INTERVAL_HOURS)
+        if not isinstance(sweep_hours, int) or isinstance(sweep_hours, bool) or sweep_hours < 0:
+            raise ValueError(f'Invalid sweep cadence for {board}')
         state_file = directory / 'schedule.json'
         state = json.loads(state_file.read_text()) if state_file.exists() else {}
-        if now - state.get('last_created_at', 0) < hours * 3600:
-            return
-        tasks = board_tasks(root, board)
-        if any(t.get('tenant') == TENANT and (t.get('title') == OPPORTUNITY_TITLE
-               or t.get('created_by') == 'review-taskforce-scheduler')
-               and t['status'] not in {'done', 'archived'} for t in tasks):
+        # Decide due-ness before touching the board DB, the workdir or git: the
+        # hourly no-agent tick must stay cheap on ticks with nothing to do.
+        opportunity_due = bool(hours) and now - state.get('last_created_at', 0) >= hours * 3600 \
+            and not suppressed_by_clean_streak(root, board)
+        sweep_due = bool(sweep_hours) and now - state.get('last_sweep_at', 0) >= sweep_hours * 3600
+        if not opportunity_due and not sweep_due:
             return
         board_info = json.loads(board_file.read_text())
         workdir = Path(board_info.get('default_workdir') or '')
@@ -318,18 +374,33 @@ def tick_board(root, board_file, now):
             raise ValueError(f'Board {board} needs an existing absolute default_workdir')
         is_git = subprocess.run(['git', '-C', str(workdir), 'rev-parse', '--git-dir'],
                                 capture_output=True, timeout=10).returncode == 0
-        body = opportunity_body(root, board)
-        if len(body) > 1000 or len(body.splitlines()) > 15:
-            body = body.replace(board_state_line(root, board), 'State: see FINDINGS.md.')
-        # Hermes deduplicates retries even if creation succeeded but our state write failed.
-        key = f'taskforce-opportunity:{board}:{now // (hours * 3600)}'
-        created = hermes(board, 'create', OPPORTUNITY_TITLE, '--assignee', 'project-auditor',
-                         '--tenant', TENANT, '--created-by', 'review-taskforce-scheduler',
-                         '--priority', '-10', '--workspace', 'worktree' if is_git else f'dir:{workdir}',
-                         '--idempotency-key', key, '--body', body)
-        task_id = created['id']
-        atomic_write(state_file, json.dumps({'last_created_at': now, 'task_id': task_id}) + '\n')
-        print(f'{board}: opportunity check {task_id}')
+        workspace = 'worktree' if is_git else f'dir:{workdir}'
+        tasks = board_tasks(root, board)
+
+        if opportunity_due and not opportunity_pending(tasks):
+            body = bounded_body(opportunity_body(root, board), board_state_line(root, board))
+            # Hermes deduplicates retries even if creation succeeded but our state write failed.
+            key = f'taskforce-opportunity:{board}:{now // (hours * 3600)}'
+            created = hermes(board, 'create', OPPORTUNITY_TITLE, '--assignee', 'project-auditor',
+                             '--tenant', TENANT, '--created-by', 'review-taskforce-scheduler',
+                             '--priority', '-10', '--workspace', workspace,
+                             '--idempotency-key', key, '--body', body)
+            state['last_created_at'] = now
+            state['task_id'] = created['id']
+            atomic_write(state_file, json.dumps(state) + '\n')
+            print(f'{board}: opportunity check {created["id"]}')
+
+        if sweep_due and not sweep_pending(tasks):
+            body = bounded_body(sweep_body(root, board), board_state_line(root, board))
+            key = f'taskforce-sweep:{board}:{now // (sweep_hours * 3600)}'
+            created = hermes(board, 'create', SWEEP_TITLE, '--assignee', 'head-coordinator',
+                             '--tenant', TENANT, '--created-by', 'review-taskforce-scheduler',
+                             '--priority', '-10', '--workspace', workspace,
+                             '--idempotency-key', key, '--body', body)
+            state['last_sweep_at'] = now
+            state['sweep_task_id'] = created['id']
+            atomic_write(state_file, json.dumps(state) + '\n')
+            print(f'{board}: improvement sweep {created["id"]}')
 
 
 def owned_paths(task):
@@ -663,7 +734,8 @@ def board_status(root, board):
             'config': load_config(root, board) if config_file.exists() else
                       {'cadence': 'off', 'interval_hours': 0,
                        'suppress_clean_streak': DEFAULT_SUPPRESS_CLEAN_STREAK,
-                       'max_audits_per_finding': DEFAULT_MAX_AUDITS_PER_FINDING},
+                       'max_audits_per_finding': DEFAULT_MAX_AUDITS_PER_FINDING,
+                       'sweep_interval_hours': DEFAULT_SWEEP_INTERVAL_HOURS},
             'findings_sha256': digest(findings) if findings.exists() else 'missing',
             'findings': {'total': len(index), 'by_status': by_status,
                          'ids': [entry.get('id') for entry in index]},
@@ -683,6 +755,8 @@ def main():
                                   default=DEFAULT_SUPPRESS_CLEAN_STREAK)
     configure_parser.add_argument('--max-audits-per-finding', type=int,
                                   default=DEFAULT_MAX_AUDITS_PER_FINDING)
+    configure_parser.add_argument('--sweep-interval-hours', type=int,
+                                  help='Coordinator self-improvement sweep cadence; 0 disables')
     commands.add_parser('tick')
     commands.add_parser('status')
     scope = commands.add_parser('check-scope')
@@ -730,7 +804,8 @@ def main():
     review_dir(root, args.board or '')
     if args.command == 'configure':
         configure(root, args.board, args.cadence, args.interval_hours,
-                  args.suppress_clean_streak, args.max_audits_per_finding)
+                  args.suppress_clean_streak, args.max_audits_per_finding,
+                  args.sweep_interval_hours)
     elif args.command == 'status':
         print(json.dumps(board_status(root, args.board), indent=2))
     elif args.command == 'check-scope':

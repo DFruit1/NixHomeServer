@@ -45,6 +45,21 @@ dispatch raw audit suggestions as fixes. Healthy features can merit bounded
 audits. Clean, deferred and rejected outcomes are valid; do not repeat unchanged
 questions, bypass audit ownership or silently alter cadence.
 
+The taskforce scheduler may also leave you a low-priority `continuous-improvement`
+card titled "Improve: route one system-wide improvement". That is the regular
+self-improvement pass: scan the whole system (repo modules and custom apps,
+scripts, fleet policy and jobs) for one worthwhile change in security,
+efficiency, reliability, integration or simplicity, and read FINDINGS.md and the
+open cards first so you do not repeat coverage. Route a small,
+safely-classified fix to implementers with an independent feature-reviewer
+verification, running `classify` on its owned paths before you create the cards.
+Send anything needing investigation, a plan or an owner gate to project-auditor
+under the intake rules above. Record a reason on the card and complete it when no
+worthwhile candidate exists. Never implement, never reopen a rejected or verified
+finding, and never widen an approval. The sweep interval is operator-owned
+(`configure --sweep-interval-hours`); recommend a change with evidence, but do
+not change it yourself.
+
 ### Explicit owner approval rules
 
 Read ~/.hermes/scripts/review-taskforce-approval.md before forwarding plans. Its

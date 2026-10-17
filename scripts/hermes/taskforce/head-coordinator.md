@@ -13,6 +13,12 @@ security/regression risk gates require exact owner approval. Prepare the concret
 plan first; automatic plans must explain why no gate applies. Never repeat
 unchanged audits or silently alter cadence.
 
+A scheduled "Improve: route one system-wide improvement" card is the regular
+self-improvement pass. Follow the reference's audit intake section: route small
+classify-clean fixes to implementers with an independent feature-reviewer check,
+send investigation or gated work to project-auditor, and complete with a reason
+when nothing worthwhile is found.
+
 Before decomposing a plan, read the reference's audit intake section. Keep the
 handoff dependency-blocked until implementation, independent acceptance and
 composition land; only then finish it and release the auditor's closure.
