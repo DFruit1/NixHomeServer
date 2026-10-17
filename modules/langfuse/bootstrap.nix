@@ -5,6 +5,8 @@ let
   ageHeader = "-----BEGIN AGE ENCRYPTED FILE-----";
   secretPath = repoRoot + "/secrets/langfuseServerEnv.age";
   secretContent = if builtins.pathExists secretPath then builtins.readFile secretPath else "";
+  clientSecretPath = repoRoot + "/secrets/langfuseClientSecret.age";
+  clientSecretContent = if builtins.pathExists clientSecretPath then builtins.readFile clientSecretPath else "";
 in {
   config = lib.mkIf cfg.enable {
     # Fail the evaluation with an actionable message instead of silently
@@ -18,6 +20,14 @@ in {
           && secretContent != ""
           && builtins.substring 0 (builtins.stringLength ageHeader) secretContent == ageHeader;
         message = "Missing or invalid langfuseServerEnv secret. Expected secrets/langfuseServerEnv.age to be a non-empty age-armored value generated through nix run .#generate-secrets.";
+      }
+      {
+        assertion =
+          config.age.secrets ? langfuseClientSecret
+          && builtins.pathExists clientSecretPath
+          && clientSecretContent != ""
+          && builtins.substring 0 (builtins.stringLength ageHeader) clientSecretContent == ageHeader;
+        message = "Missing or invalid langfuseClientSecret secret. Expected secrets/langfuseClientSecret.age to be a non-empty age-armored value generated through nix run .#generate-secrets.";
       }
     ];
 
@@ -54,7 +64,10 @@ in {
       before = [ "langfuse-db-bootstrap.service" "redis-langfuse.service" "clickhouse.service" "langfuse-minio.service" ];
       # Same one-shot rotation problem as the role password above: a rotated
       # secret must regenerate /run state without waiting for a reboot.
-      restartTriggers = [ config.age.secrets.langfuseServerEnv.file ];
+      restartTriggers = [
+        config.age.secrets.langfuseServerEnv.file
+        config.age.secrets.langfuseClientSecret.file
+      ];
       unitConfig = {
         OnFailure = [ config.repo.monitoring.failureAlerts.targetUnit ];
         OnFailureJobMode = "replace-irreversibly";
@@ -95,6 +108,9 @@ in {
         printf 'LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY=%s\nLANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY=%s\n' \
           "$s3_password" "$s3_password" >> /run/langfuse/app.env
         grep -E '^(NEXTAUTH_SECRET|LANGFUSE_INIT_)' "$source_file" > /run/langfuse/web.env
+        client_secret="$(< ${lib.escapeShellArg config.age.secrets.langfuseClientSecret.path})"
+        [[ "$client_secret" =~ ^[A-Za-z0-9]{32,}$ ]]
+        printf 'AUTH_CUSTOM_CLIENT_SECRET=%s\n' "$client_secret" > /run/langfuse/oidc.env
         clickhouse_password="$(sed -n 's/^CLICKHOUSE_PASSWORD=//p' "$source_file")"
         [[ "$clickhouse_password" =~ ^[a-f0-9]{64}$ ]]
         printf '<config><host>127.0.0.1</host><port>${toString vars.networking.ports.langfuseClickhouseTcp}</port><user>langfuse</user><password>%s</password></config>\n' \

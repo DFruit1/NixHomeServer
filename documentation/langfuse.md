@@ -6,10 +6,21 @@ Langfuse web/worker and the upstream-recommended Chainguard MinIO image run in
 Podman, pinned by digest. The Nixpkgs MinIO package has known vulnerabilities
 and is deliberately not permitted.
 
-The UI requires the `langfuse-users` Kanidm group, followed by a Langfuse login.
-The initial owner email is `vars.kanidmAdminEmail`. Its generated password and
-project keys are held in the root-only agenix secret `langfuseServerEnv`.
-Signup is disabled. There is no public Cloudflare route.
+The UI requires the `langfuse-users` Kanidm group at the gateway, then a
+Langfuse sign-in through Kanidm OIDC. The module provisions the
+`langfuse` OAuth2 client (`services.kanidm.provision.systems.oauth2.langfuse`)
+with the `/api/auth/callback/custom` callback and the `langfuseClientSecret`
+agenix secret. The generated owner password and project keys are held in the
+root-only agenix secret `langfuseServerEnv`. Signup is disabled, so only
+accounts that already exist can sign in.
+
+Langfuse links an SSO identity to an account by email address, so the owner
+account must carry the Kanidm mail address of the local administrator
+(`vars.kanidmAppUserEmails.<localAdminUser>`). The module seeds
+`LANGFUSE_INIT_USER_EMAIL` with that address and the `langfuse-oidc-reconcile`
+unit converges an account that was created earlier with `vars.kanidmAdminEmail`
+onto it, so the first SSO sign-in links to the existing owner instead of being
+rejected. There is no public Cloudflare route.
 
 `/api/public/*`, including OTLP ingestion, uses native Langfuse project-key
 authentication instead of browser SSO. Unauthenticated ingestion must fail;
@@ -23,6 +34,9 @@ creates it using `scripts/helpers/generate-langfuse-env.sh`:
 ```sh
 nix run .#generate-secrets -- --identity /path/to/current/age.key
 ```
+
+It also declares `langfuseClientSecret`, the OIDC client secret shared with the
+Kanidm `langfuse` OAuth2 client; it is generated like the other client secrets.
 
 Existing ciphertext is preserved and verified by default. Never use `--fresh`
 for routine setup: it replaces all generated secrets. Remove plaintext staging
@@ -43,6 +57,8 @@ keeps the environment it started with, so without those triggers a rotation
 would leave the app crash-looping against stores that already adopted the new
 credentials. Rotating `NEXTAUTH_SECRET` or the project keys still requires the
 Hermes `.env` files to be updated and its processes restarted.
+Rotating `langfuseClientSecret` is likewise supported: `langfuse-prepare`
+rewrites `/run/langfuse/oidc.env` and `langfuse-web` restarts.
 
 Hermes needs these values in its own root and worker-profile `.env` files:
 

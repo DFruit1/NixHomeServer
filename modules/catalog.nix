@@ -77,9 +77,9 @@ rec {
       "kiwix-serve"
       "kiwix-serve-archives"
     ];
-    langfuse = app ./langfuse "Agent Traces" "automation" [ "langfuseServerEnv" ] [
+    langfuse = app ./langfuse "Agent Traces" "automation" [ "langfuseServerEnv" "langfuseClientSecret" ] [
       "langfuse-prepare" "langfuse-db-bootstrap" "langfuse-web" "langfuse-worker"
-      "redis-langfuse" "clickhouse" "langfuse-minio" "langfuse-ingestion-freshness"
+      "redis-langfuse" "clickhouse" "langfuse-minio" "langfuse-ingestion-freshness" "langfuse-oidc-reconcile"
     ];
     mail-archive-ui = app ./mail-archive-ui "Mail Archive" "productivity" [
       "mailArchiveOauth2ProxyClientSecret"

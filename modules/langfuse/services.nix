@@ -46,6 +46,29 @@ let
   # crash-loop instead of converging. Each consumer restarts when the encrypted
   # source changes, exactly like langfuse-prepare and langfuse-db-bootstrap.
   secretRestartTriggers = [ config.age.secrets.langfuseServerEnv.file ];
+  # The interactive owner is the local administrator's Kanidm identity. Browser
+  # sign-in now goes through Kanidm, and Langfuse links accounts by email, so
+  # the headless-init owner must carry that account's mail address; otherwise
+  # the first SSO sign-in would be turned away while signup stays disabled.
+  ownerEmail =
+    if builtins.hasAttr vars.localAdminUser vars.kanidmAppUserEmails then
+      vars.kanidmAppUserEmails.${vars.localAdminUser}
+    else
+      vars.kanidmAdminEmail;
+  # Non-secret half of the Langfuse custom OIDC provider. The client secret is
+  # supplied separately through /run/langfuse/oidc.env.
+  oidcEnvironment = {
+    AUTH_CUSTOM_CLIENT_ID = "langfuse";
+    AUTH_CUSTOM_ISSUER = vars.kanidmIssuer "langfuse";
+    AUTH_CUSTOM_NAME = "Kanidm";
+    AUTH_CUSTOM_SCOPE = "openid profile email";
+    # Kanidm carries the profile in the id_token, but sourcing it from the
+    # userinfo endpoint keeps the login working if a claim moves.
+    AUTH_CUSTOM_FETCH_USERINFO = "true";
+    # Migrate the existing email/password owner onto the Kanidm identity: once
+    # the addresses match, Auth.js merges the accounts on first SSO sign-in.
+    AUTH_CUSTOM_ALLOW_ACCOUNT_LINKING = "true";
+  };
   # ClickHouse creates each system log table from its config section only when
   # the table is missing, and the packaged config ships no TTL for the sections
   # below, so they grow without bound. On this host they were 1.86 GiB of the
@@ -275,8 +298,8 @@ in {
       };
       langfuse-web = (container "docker.langfuse.com/langfuse/langfuse@sha256:3d2ae888a0e6edb41fdba6e7d5baca5e4baede3a870dac7970dadd9d925b018e" "4g") // {
         serviceName = "langfuse-web";
-        environmentFiles = [ "/run/langfuse/app.env" "/run/langfuse/web.env" ];
-        environment = commonEnvironment // {
+        environmentFiles = [ "/run/langfuse/app.env" "/run/langfuse/web.env" "/run/langfuse/oidc.env" ];
+        environment = commonEnvironment // oidcEnvironment // {
           HOSTNAME = loopback;
           PORT = webPort;
           AUTH_DISABLE_SIGNUP = "true";
@@ -284,7 +307,7 @@ in {
           LANGFUSE_INIT_ORG_NAME = "NixHomeServer";
           LANGFUSE_INIT_PROJECT_ID = "hermes";
           LANGFUSE_INIT_PROJECT_NAME = "Hermes";
-          LANGFUSE_INIT_USER_EMAIL = vars.kanidmAdminEmail;
+          LANGFUSE_INIT_USER_EMAIL = ownerEmail;
           LANGFUSE_INIT_USER_NAME = vars.localAdminUser;
         };
       };
@@ -300,7 +323,10 @@ in {
     } // dataStoreUnit {
       serviceConfig = { MemoryHigh = "1G"; MemoryMax = "2G"; };
     };
-    systemd.services.langfuse-web = appService;
+    systemd.services.langfuse-web = appService // {
+      # A rotated OIDC client secret must reach the running container too.
+      restartTriggers = secretRestartTriggers ++ [ config.age.secrets.langfuseClientSecret.file ];
+    };
     systemd.services.langfuse-worker = appService;
     systemd.services.langfuse-ingestion-freshness = ingestionFreshnessHardening;
     systemd.timers.langfuse-ingestion-freshness = {

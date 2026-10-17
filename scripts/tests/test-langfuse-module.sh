@@ -51,6 +51,14 @@ in {
   bootstrapTriggers = cfg.systemd.services.langfuse-db-bootstrap.restartTriggers;
   consumerTriggers = map (name: cfg.systemd.services.\${name}.restartTriggers)
     [ \"langfuse-web\" \"langfuse-worker\" \"langfuse-minio\" \"clickhouse\" \"redis-langfuse\" ];
+  webEnvironment = containers.langfuse-web.environment;
+  webEnvironmentFiles = containers.langfuse-web.environmentFiles;
+  oauth2Client = cfg.services.kanidm.provision.systems.oauth2.langfuse;
+  oauth2SecretMode = cfg.age.secrets.langfuseClientSecret.mode;
+  expectedOwnerEmail = vars.kanidmAppUserEmails.\${vars.localAdminUser} or vars.kanidmAdminEmail;
+  reconcileType = cfg.systemd.services.langfuse-oidc-reconcile.serviceConfig.Type;
+  reconcileAfter = cfg.systemd.services.langfuse-oidc-reconcile.after;
+  reconcileTimer = cfg.systemd.timers.\"langfuse-oidc-reconcile\".timerConfig;
   backupWants = cfg.systemd.services.backup-prepare.wants;
   backupRequires = cfg.systemd.services.backup-prepare.requires;
   containerOptions = map (name: containers.\${name}.extraOptions)
@@ -94,8 +102,22 @@ jq -e '
   and (.freshnessOnFailure | length) == 1
   and .freshnessTimer.OnUnitActiveSec == "15min"
   and .freshnessTimer.Persistent == true
-  and (.prepareTriggers | length) == 1 and (.bootstrapTriggers | length) == 1
-  and all(.consumerTriggers[]; length == 1)
+  and (.prepareTriggers | length) == 2 and (.bootstrapTriggers | length) == 1
+  and (.consumerTriggers[0] | length) == 2
+  and all(.consumerTriggers[1:][]; length == 1)
+  and .webEnvironment.AUTH_CUSTOM_CLIENT_ID == "langfuse"
+  and .webEnvironment.AUTH_CUSTOM_NAME == "Kanidm"
+  and (.webEnvironment.AUTH_CUSTOM_ISSUER | startswith("https://id."))
+  and (.webEnvironment.AUTH_CUSTOM_ISSUER | endswith("/oauth2/openid/langfuse"))
+  and .webEnvironment.AUTH_CUSTOM_ALLOW_ACCOUNT_LINKING == "true"
+  and .webEnvironment.LANGFUSE_INIT_USER_EMAIL == .expectedOwnerEmail
+  and (.webEnvironmentFiles | index("/run/langfuse/oidc.env")) != null
+  and .oauth2Client.basicSecretFile == "/run/agenix/langfuseClientSecret"
+  and (.oauth2Client.originUrl | endswith("/api/auth/callback/custom"))
+  and .oauth2Client.scopeMaps."langfuse-users" == ["openid","profile","email"]
+  and .oauth2SecretMode == "0440"
+  and .reconcileType == "oneshot" and (.reconcileAfter | index("langfuse-web.service")) != null
+  and .reconcileTimer.OnUnitActiveSec == "1h"
   and (.backupWants | index("clickhouse.service")) != null
   and ((.backupRequires | index("clickhouse.service")) == null)
   and all(.containerOptions[]; index("--cap-drop=ALL") != null)
