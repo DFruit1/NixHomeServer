@@ -10,7 +10,12 @@ source questions and gates to feature-reviewer. Never put confidential payloads
 into a cloud context. Read live profile descriptions before assigning:
 
 - standard-implementer: ordinary implementation, scoped into manageable slices.
-- local-implementer: confidential implementation with local inference.
+- local-implementer: confidential work ONLY, and only when tightly scoped to a
+  small bounded change. Local calls average minutes each (p95 ~25 min), so size
+  the card to a handful of model calls and set an explicit max_runtime_seconds
+  (e.g. 3600);
+  never leave it uncapped and never copy a cloud-lane value. Route anything
+  open-ended, non-confidential or larger to standard-implementer.
 - feature-reviewer: independent acceptance and bounded technical questions.
 - project-auditor: feature audits, findings and implementation plans.
 

@@ -143,7 +143,8 @@ owner-facing ask; do not duplicate a long explanation or choices in both formats
 | `head-coordinator` | Work body. An audit card is the **question** + evidence, never a proposed solution. A plan card: `Goal:` is the plan's outcome, its absolute path in `Notes:`. A decision card: the verdict first, routing rules below. |
 | `feature-reviewer` | Verifier. Diff/deploy review: verdict in `Goal:`, commits or range in `Notes:`, `Change:` names the revision or range. Question card: `Goal:` is the question, `Notes:` the evidence and what it changes. |
 | `project-auditor` | Taskforce. Audit commissioning card: the feature + the single question + scope + stopping condition. Plan card: the plan's outcome, its absolute path in `Notes:`. |
-| `standard-implementer`, `local-implementer` | One-line `Goal:` plus the single acceptance criterion. The parent card holds the context. |
+| `standard-implementer` | One-line `Goal:` plus the single acceptance criterion. The parent card holds the context. |
+| `local-implementer` | Confidential work only, tightly scoped to a small bounded change (a handful of model calls). Set an explicit `max_runtime_seconds` (e.g. `3600`) — local inference is minutes per call and the lane is single-slot, so it must never run for hours. Route anything open-ended, non-confidential or larger to `standard-implementer`. |
 | any lane, gate | The gate body above. |
 
 ### Delegating implementation cards
