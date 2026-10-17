@@ -158,18 +158,17 @@ class Fixture:
         if (name == 'read_file' and self.scratch and '..' not in path.parts
                 and path.is_relative_to(self.scratch)):
             return {'error': 'assigned workspace file not found', 'not_found': True}
-        # A read under the installation tree that the fixture does not model,
-        # or a workspace-relative read of an unmodelled file, is a real
-        # not-found: in the live environment the installation tree is the
-        # agent's own readable root and a relative read resolves inside the
-        # assigned workspace, so an unmodelled file there simply does not
-        # exist. A read outside those, including a `..` escape, stays an
-        # unavailable operation: the fixture is inert and cannot emulate real
-        # filesystem reads there.
-        if name == 'read_file' and not path.is_absolute() and '..' not in path.parts:
-            return {'error': 'file not found in fixture', 'not_found': True}
-        if (name == 'read_file' and self.hermes_prefixes
-                and any(str(path).startswith(prefix) for prefix in self.hermes_prefixes)):
+        # A read under the agent's own home or installation tree that the
+        # fixture does not model, or a workspace-relative read of an unmodelled
+        # file, is a real not-found: in the live environment those trees are
+        # readable and a relative read resolves inside the assigned workspace,
+        # so an unmodelled file there simply does not exist. A read outside
+        # them, including a `..` escape, stays an unavailable operation: the
+        # fixture is inert and cannot emulate the real filesystem there.
+        # Neutralising those misses keeps a guessed instruction path (for
+        # example a `~` expanded to the wrong home) from failing an
+        # otherwise-correct trial.
+        if name == 'read_file' and self._readable_tree(path):
             return {'error': 'file not found in fixture', 'not_found': True}
         if name == 'write_file':
             if (self.name != 'reproduce-before-fix' or args.get('path') != 'expiry.rs'
@@ -222,6 +221,23 @@ class Fixture:
         if name == 'check_summary':
             return checked_summary(args.get('summary', ''))
         return {'error': 'unavailable fixture operation'}
+
+    def _readable_tree(self, path):
+        """True when an unmodelled read targets a tree the live agent can read.
+
+        The agent's own home and installation tree are readable in the live
+        environment, so an unmodelled file there is a real not-found rather than
+        an unavailable operation. A `..` escape or a read outside those roots
+        stays unavailable, because the inert fixture cannot emulate the real
+        filesystem there.
+        """
+        if '..' in path.parts:
+            return False
+        if not path.is_absolute():
+            return True
+        if '.hermes' in path.parts or path.parts[:2] in (('/', 'home'), ('/', 'root')):
+            return True
+        return any(str(path).startswith(prefix) for prefix in self.hermes_prefixes)
 
     def failures(self):
         problems = []

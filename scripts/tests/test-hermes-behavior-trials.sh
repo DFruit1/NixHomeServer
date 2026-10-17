@@ -156,6 +156,15 @@ class BehaviorTrialTest(unittest.TestCase):
         self.assertTrue(f.call('read_file', {'path': '/tmp/assigned-trial/missing.md'})['not_found'])
         self.assertFalse(f.call('read_file', {'path': '/tmp/elsewhere/missing.md'}).get('not_found'))
 
+    def test_guessed_install_tree_read_is_neutralised_not_fatal(self):
+        f = Fixture('reproduce-before-fix')
+        for path in ('/home/hermes/scripts/hermes-card-authoring.md',
+                     '/home/.hermes/scripts/hermes-card-authoring.md',
+                     '/root/.hermes/scripts/hermes-fleet-policy.md'):
+            with self.subTest(path=path):
+                self.assertTrue(f.call('read_file', {'path': path}).get('not_found'))
+        self.assertNotIn('attempted an unavailable fixture operation', f.failures())
+
 
 unittest.main(argv=[sys.argv[0]], verbosity=2)
 PY
