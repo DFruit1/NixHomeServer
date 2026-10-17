@@ -8,7 +8,13 @@
       "var/lib/clickhouse"
       "var/lib/langfuse/minio"
     ];
-    systemd.services.backup-prepare.requires = [ "clickhouse.service" ];
+    # ClickHouse is a soft dependency, not a required one: the guarded fragment
+    # below already publishes the run without the archive when ClickHouse is
+    # unreachable, and the PostgreSQL dump and every other app's dump do not
+    # need it. `requires` would instead fail the whole backup generation
+    # whenever ClickHouse is down, which is exactly what the fragment's
+    # graceful path exists to avoid.
+    systemd.services.backup-prepare.wants = [ "clickhouse.service" ];
     systemd.services.backup-prepare.after = [ "clickhouse.service" ];
     repo.backups = {
       appStateEntries = [ {

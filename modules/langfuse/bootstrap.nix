@@ -1,7 +1,26 @@
 { config, lib, pkgs, vars, ... }:
-let cfg = config.repo.langfuse;
+let
+  cfg = config.repo.langfuse;
+  repoRoot = ../..;
+  ageHeader = "-----BEGIN AGE ENCRYPTED FILE-----";
+  secretPath = repoRoot + "/secrets/langfuseServerEnv.age";
+  secretContent = if builtins.pathExists secretPath then builtins.readFile secretPath else "";
 in {
   config = lib.mkIf cfg.enable {
+    # Fail the evaluation with an actionable message instead of silently
+    # materializing credentials that langfuse-prepare cannot read. Sibling
+    # modules declare the same assertion for their owned secrets.
+    assertions = [
+      {
+        assertion =
+          config.age.secrets ? langfuseServerEnv
+          && builtins.pathExists secretPath
+          && secretContent != ""
+          && builtins.substring 0 (builtins.stringLength ageHeader) secretContent == ageHeader;
+        message = "Missing or invalid langfuseServerEnv secret. Expected secrets/langfuseServerEnv.age to be a non-empty age-armored value generated through nix run .#generate-secrets.";
+      }
+    ];
+
     age.secrets.langfuseServerEnv = {
       file = ../../secrets/langfuseServerEnv.age;
       owner = "root";

@@ -38,6 +38,14 @@ let
     # both run as an unprivileged user against their own bind-mounted state.
     extraOptions = [ "--memory=${memory}" "--memory-reservation=1g" "--security-opt=no-new-privileges" "--cap-drop=ALL" ];
   };
+  # A rotated langfuseServerEnv makes langfuse-prepare rewrite /run/langfuse/*
+  # and the Redis password file, and langfuse-db-bootstrap rotate the PostgreSQL
+  # role password. A running process keeps the environment it started with, so
+  # without these triggers the containers and stores would keep the superseded
+  # credentials and fail against peers that already moved on - the app would
+  # crash-loop instead of converging. Each consumer restarts when the encrypted
+  # source changes, exactly like langfuse-prepare and langfuse-db-bootstrap.
+  secretRestartTriggers = [ config.age.secrets.langfuseServerEnv.file ];
   # A data-store restart must not stay silent: bounded retries, then an alert.
   dataStoreUnit = overrides: {
     serviceConfig = overrides.serviceConfig // {
@@ -56,6 +64,7 @@ let
   appService = {
     requires = deps;
     after = deps;
+    restartTriggers = secretRestartTriggers;
     # The readiness loop below waits on two endpoints, up to 90 attempts each at
     # 3s plus 2s of sleep, so its worst case is 900s. The container module
     # defaults this to 0, which would let a container that never becomes ready
@@ -182,6 +191,7 @@ in {
     systemd.services.redis-langfuse = {
       requires = [ "langfuse-prepare.service" ];
       after = [ "langfuse-prepare.service" ];
+      restartTriggers = secretRestartTriggers;
     } // dataStoreUnit {
       serviceConfig = { MemoryHigh = "768M"; MemoryMax = "1G"; };
     };
@@ -212,6 +222,7 @@ in {
     systemd.services.clickhouse = {
       requires = [ "langfuse-prepare.service" ];
       after = [ "langfuse-prepare.service" ];
+      restartTriggers = secretRestartTriggers;
     } // dataStoreUnit {
       serviceConfig = { EnvironmentFile = "/run/langfuse/clickhouse.env"; MemoryHigh = "4G"; MemoryMax = "5G"; };
     };
@@ -252,6 +263,7 @@ in {
     systemd.services.langfuse-minio = {
       requires = [ "langfuse-prepare.service" ];
       after = [ "langfuse-prepare.service" ];
+      restartTriggers = secretRestartTriggers;
     } // dataStoreUnit {
       serviceConfig = { MemoryHigh = "1G"; MemoryMax = "2G"; };
     };

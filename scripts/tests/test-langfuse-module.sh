@@ -49,6 +49,10 @@ in {
   freshnessTimer = cfg.systemd.timers.\"langfuse-ingestion-freshness\".timerConfig or {};
   prepareTriggers = cfg.systemd.services.langfuse-prepare.restartTriggers;
   bootstrapTriggers = cfg.systemd.services.langfuse-db-bootstrap.restartTriggers;
+  consumerTriggers = map (name: cfg.systemd.services.\${name}.restartTriggers)
+    [ \"langfuse-web\" \"langfuse-worker\" \"langfuse-minio\" \"clickhouse\" \"redis-langfuse\" ];
+  backupWants = cfg.systemd.services.backup-prepare.wants;
+  backupRequires = cfg.systemd.services.backup-prepare.requires;
   containerOptions = map (name: containers.\${name}.extraOptions)
     [ \"langfuse-web\" \"langfuse-worker\" \"langfuse-minio\" ];
   postgresTimezone = cfg.services.postgresql.settings.timezone or null;
@@ -85,6 +89,9 @@ jq -e '
   and .freshnessTimer.OnUnitActiveSec == "15min"
   and .freshnessTimer.Persistent == true
   and (.prepareTriggers | length) == 1 and (.bootstrapTriggers | length) == 1
+  and all(.consumerTriggers[]; length == 1)
+  and (.backupWants | index("clickhouse.service")) != null
+  and ((.backupRequires | index("clickhouse.service")) == null)
   and all(.containerOptions[]; index("--cap-drop=ALL") != null)
   and .postgresTimezone == "UTC"
   and (.rebuildable | index("var/lib/clickhouse") != null)

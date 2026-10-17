@@ -34,6 +34,16 @@ startup. Initialization preserves existing resources; editing the bootstrap
 keys later does not rotate a project's existing keys. Use the Langfuse UI to
 rotate keys, then update Hermes credentials.
 
+Rotating the encrypted `langfuseServerEnv` is a supported operation. The
+prepare unit rewrites the `/run/langfuse` environment and the Redis password
+file, the bootstrap unit rotates the PostgreSQL role password, and every
+consumer (`langfuse-web`, `langfuse-worker`, `langfuse-minio`, `clickhouse`,
+`redis-langfuse`) carries a restart trigger on the secret. A running process
+keeps the environment it started with, so without those triggers a rotation
+would leave the app crash-looping against stores that already adopted the new
+credentials. Rotating `NEXTAUTH_SECRET` or the project keys still requires the
+Hermes `.env` files to be updated and its processes restarted.
+
 Hermes needs these values in its own root and worker-profile `.env` files:
 
 - `HERMES_LANGFUSE_PUBLIC_KEY`: `LANGFUSE_INIT_PROJECT_PUBLIC_KEY`
@@ -102,8 +112,12 @@ shared persistent cluster. MinIO stores events/media; Redis persists pending
 queue work with AOF and uses `noeviction` centrally to preserve that work.
 
 Backup preparation contributes `dumps/langfuse.pgdump` and a consistent
-`dumps/langfuse-clickhouse.zip` using ClickHouse's BACKUP command. Object
-storage and queue state remain within the existing `/persist` Kopia snapshot.
+`dumps/langfuse-clickhouse.zip` using ClickHouse's BACKUP command. ClickHouse
+is wired as a soft dependency of the backup step: a ClickHouse outage must not
+withhold the PostgreSQL dump or every other app's dump, and the guarded
+ClickHouse fragment already publishes the run without its archive in that
+case. Object storage and queue state remain within the existing `/persist`
+Kopia snapshot.
 Restore logical database backups rather than treating a live ClickHouse parts
 copy as a consistent backup. Database snapshots are separate transactions;
 quiesce web/worker ingestion when an exact coordinated restore point is needed.
