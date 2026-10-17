@@ -86,13 +86,15 @@ let
   # Ingestion freshness: Redis, ClickHouse, MinIO and the app containers cover
   # their own failures through unit OnFailure alerting, but the only silent
   # failure mode is a worker that is running yet no longer consumes the
-  # ingestion queue. The BullMQ queue depth detects that while staying
+  # ingestion queues. The BullMQ queue depth detects that while staying
   # independent of fleet traffic: healthy processing drains wait+active within
   # seconds even under a whole-board burst, and an idle fleet reads as zero
   # depth. Trace timestamps are deliberately not the signal, because the fleet
-  # legitimately idles. The check skips its alert while Redis itself is down -
-  # that outage alerting already covers it - and lives in this module so it
-  # disappears with the app.
+  # legitimately idles. The four-queue family matches this Langfuse release
+  # (verified against the live Redis key space): the standard and OTLP paths,
+  # plus their secondary variants. The check skips its alert while Redis
+  # itself is down - that outage alerting already covers it - and lives in
+  # this module so it disappears with the app.
   ingestionStallQueueDepth = 500;
   ingestionFreshnessCheck = pkgs.writeShellApplication {
     name = "langfuse-ingestion-freshness";
@@ -100,7 +102,6 @@ let
     text = ''
       host="${loopback}"
       port="${toString vars.networking.ports.langfuseRedis}"
-      queue="bull:ingest-queue"
       password="$(tr -d '\r\n' < "$CREDENTIALS_DIRECTORY/redis-password")"
 
       redis() {
@@ -113,13 +114,18 @@ let
         exit 0
       fi
 
-      wait="$(redis LLEN "$queue:wait")"
-      active="$(redis ZCARD "$queue:active")"
-      depth=$((wait + active))
-      echo "ingestion queue depth: $depth (wait: $wait, active: $active)"
+      depth=0
+      for queue in ingestion-queue otel-ingestion-queue \
+                   secondary-ingestion-queue secondary-otel-ingestion-queue; do
+        wait="$(redis LLEN "bull:$queue:wait")"
+        active="$(redis ZCARD "bull:$queue:active")"
+        depth=$((depth + wait + active))
+        echo "ingestion queue depth: $queue (wait: $wait, active: $active)"
+      done
+      echo "ingestion queue depth: $depth (total)"
 
       if (( depth > ${toString ingestionStallQueueDepth} )); then
-        echo "Langfuse ingestion stalled: queue depth $depth exceeds the ${toString ingestionStallQueueDepth} bound" >&2
+        echo "Langfuse ingestion stalled: queue depth $depth (across the ingestion queue family) exceeds the ${toString ingestionStallQueueDepth} bound" >&2
         exit 1
       fi
     '';
