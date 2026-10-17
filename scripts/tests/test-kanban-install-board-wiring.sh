@@ -58,22 +58,50 @@ for lane in "${LANES[@]}"; do
 done
 
 # The two SOUL.md files the installer inspects, already carrying every section it
-# looks for, so a clean fixture is genuinely clean.
-printf '## Board health\n\nSee scripts/hermes/kanban-board-health.sh.\n' \
-  >"$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md"
-# One grouped append: the retry-breaker rule and the WORKER_FAILED_BLOCKED policy
-# the drift check below looks for.
+# looks for, so a clean fixture is genuinely clean: the compact post-shortening
+# design where the SOUL keeps the pointer and the standing rules and the
+# installed coordinator reference carries the Board health finding table.
+mkdir -p "$HERMES_FIXTURE/scripts"
 printf '%s\n' \
-  '## Deploy gate' \
+  '## Deployment and recovery' \
   '' \
-  'nix run .#deploy' \
-  'scripts/hermes/kanban-retry-breaker.sh parks a card; do not move it.' \
-  '8. **WORKER_FAILED_BLOCKED** - re-scope the card and re-dispatch it.' \
-  '9. **OWNER_COMMENT_UNACTED** - record the owner answer and unblock.' \
-  '10. **CAPABILITY_OWNER_INPUT** - classify the supplier or author a gate.' \
-  >>"$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md"
+  'Before deployment, read the reference. Run:' \
+  '' \
+  '    nix run .#deploy -- --action test' \
+  '' \
+  'Health output is a wake signal; consult the reference Board health table' \
+  '(including WORKER_FAILED_BLOCKED) before graph repair. Never clear' \
+  'quota-breaker holds or swap models/lanes to evade them.' \
+  >"$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md"
+printf '%s\n' \
+  '# Coordinator procedures' \
+  '' \
+  '## Board health' \
+  '' \
+  '| Finding | Action |' \
+  '|---|---|' \
+  '| WORKER_FAILED_BLOCKED | Re-scope the card and re-dispatch it. |' \
+  '| OWNER_COMMENT_UNACTED | Record the owner answer and unblock. |' \
+  '| CAPABILITY_OWNER_INPUT | Classify the supplier or author a gate. |' \
+  '| MIRROR_STALE | Inspect the durability-sync cron and route the repair. |' \
+  '' \
+  'The installed kanban-retry-breaker.sh parks repeated provider failures.' \
+  >"$HERMES_FIXTURE/scripts/hermes-coordinator-reference.md"
 printf '### Whole-set deploy review\n' \
   >"$HERMES_FIXTURE/profiles/feature-reviewer/SOUL.md"
+
+# The local-implementer profile config carries the context pin this installer
+# verifies against the repo's served slot size (contextSize / parallel from
+# the real configuration.nix, so the expected value is genuine, not mirrored).
+cat >"$HERMES_FIXTURE/profiles/local-implementer/config.yaml" <<'YAML'
+model:
+  context_length: 98304
+kanban:
+  max_in_progress: 8
+  max_in_progress_per_profile:
+    default: 2
+    local-implementer: 1
+YAML
 
 write_config() {
   cat >"$HERMES_FIXTURE/config.yaml" <<YAML
@@ -323,54 +351,101 @@ grep -q -- "--monitor-script 'kanban-board-health.sh'" <<<"$monitor_out" ||
 pass "names --monitor-script for the monitored job"
 
 # The board-health detector and the policy that tells the head-coordinator what
-# to do about it live in two different files, one in the repo and one in the
-# profile directory. Nothing connects them at runtime, so if the policy is lost
-# the finding still fires and the coordinator has no rule to follow -- which is
-# the same gap as a missing cron job: the work happens and nothing is acted on.
-# Pin the drift check so the two cannot be edited apart.
+# to do about it live in two different files: the detector in the repo, the
+# policy in the installed coordinator reference, and the SOUL pointer between
+# them. Nothing connects them at runtime, so if the policy is lost the finding
+# still fires and the coordinator has no rule to follow -- which is the same gap
+# as a missing cron job: the work happens and nothing is acted on. Pin all
+# three halves so they cannot be edited apart: the SOUL pointer, the reference
+# section, and one reference row per finding the monitor emits.
 cp "$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md" "$fixture/soul.bak"
-grep -v 'WORKER_FAILED_BLOCKED' "$fixture/soul.bak" \
+cp "$HERMES_FIXTURE/scripts/hermes-coordinator-reference.md" "$fixture/reference.bak"
+
+grep -v 'Board health table' "$fixture/soul.bak" \
   >"$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md"
-soul_out="$(run_installer --check)"
-grep -q 'would change: head-coordinator SOUL.md has no policy for WORKER_FAILED_BLOCKED' <<<"$soul_out" ||
-  fail "a SOUL.md with no policy for the finding was not reported: $soul_out"
-pass "reports a missing policy for the board-health finding"
-
-# It is prose, not code: apply mode must tell the operator to add it rather than
-# implying it installed something, and must not rewrite the file itself.
-apply_out="$(run_installer)"
-grep -q 'ACTION: add a WORKER_FAILED_BLOCKED rule' <<<"$apply_out" ||
-  fail "apply mode did not tell the operator to add the prose policy by hand: $apply_out"
-grep -q 'WORKER_FAILED_BLOCKED' "$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md" &&
-  fail "apply mode rewrote SOUL.md, which is prose policy rather than installed code"
-pass "apply mode asks for the prose policy instead of pretending to install it"
-
+pointer_out="$(run_installer --check)"
+grep -q 'would change: head-coordinator SOUL.md is missing the Board health table pointer' \
+  <<<"$pointer_out" ||
+  fail "a SOUL.md with no Board health pointer was not reported: $pointer_out"
+pass "reports a SOUL.md missing the Board health table pointer"
 cp "$fixture/soul.bak" "$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md"
 
-# Same pin for the owner-comment policy: the board-health monitor fires
-# OWNER_COMMENT_UNACTED when the owner answered a gate, and the SOUL must tell
-# the head-coordinator to act on it.
-grep -v 'OWNER_COMMENT_UNACTED' "$fixture/soul.bak" \
+grep -v 'quota-breaker' "$fixture/soul.bak" \
   >"$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md"
-owner_soul_out="$(run_installer --check)"
-grep -q 'would change: head-coordinator SOUL.md has no policy for OWNER_COMMENT_UNACTED' \
-  <<<"$owner_soul_out" ||
-  fail "a SOUL.md with no policy for the owner-comment finding was not reported: $owner_soul_out"
-pass "reports a missing policy for the owner-comment finding"
+quota_out="$(run_installer --check)"
+grep -q 'would change: head-coordinator SOUL.md has no quota-breaker hold policy' \
+  <<<"$quota_out" ||
+  fail "a SOUL.md with no quota-breaker rule was not reported: $quota_out"
+pass "reports a SOUL.md missing the quota-breaker hold policy"
 cp "$fixture/soul.bak" "$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md"
 
-# Same pin for the capability policy: the monitor fires CAPABILITY_OWNER_INPUT on
-# a capability card that named no input supplier, and the SOUL must tell the
-# head-coordinator to classify it (and author a gate when the supplier is the
-# owner) rather than re-parking it.
-grep -v 'CAPABILITY_OWNER_INPUT' "$fixture/soul.bak" \
+rm -f "$HERMES_FIXTURE/scripts/hermes-coordinator-reference.md"
+ref_missing_out="$(run_installer --check)"
+grep -q 'MISSING: .*hermes-coordinator-reference.md' <<<"$ref_missing_out" ||
+  fail "a missing coordinator reference was not reported: $ref_missing_out"
+pass "reports a missing coordinator reference"
+cp "$fixture/reference.bak" "$HERMES_FIXTURE/scripts/hermes-coordinator-reference.md"
+
+for finding in WORKER_FAILED_BLOCKED OWNER_COMMENT_UNACTED CAPABILITY_OWNER_INPUT MIRROR_STALE; do
+  grep -v "$finding" "$fixture/reference.bak" \
+    >"$HERMES_FIXTURE/scripts/hermes-coordinator-reference.md"
+  finding_out="$(run_installer --check)"
+  grep -q "would change: coordinator reference has no policy for $finding" \
+    <<<"$finding_out" ||
+    fail "a reference with no $finding row was not reported: $finding_out"
+done
+grep -v 'kanban-retry-breaker.sh' "$fixture/reference.bak" \
+  >"$HERMES_FIXTURE/scripts/hermes-coordinator-reference.md"
+breaker_out="$(run_installer --check)"
+grep -q 'would change: coordinator reference does not mention kanban-retry-breaker.sh' \
+  <<<"$breaker_out" ||
+  fail "a reference with no breaker mention was not reported: $breaker_out"
+pass "reports a reference missing any finding row or the breaker mention"
+cp "$fixture/reference.bak" "$HERMES_FIXTURE/scripts/hermes-coordinator-reference.md"
+
+# The deploy duty: the compact SOUL keeps the 'Deployment and recovery' section.
+grep -v '## Deployment and recovery' "$fixture/soul.bak" \
   >"$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md"
-cap_soul_out="$(run_installer --check)"
-grep -q 'would change: head-coordinator SOUL.md has no policy for CAPABILITY_OWNER_INPUT' \
-  <<<"$cap_soul_out" ||
-  fail "a SOUL.md with no policy for the capability finding was not reported: $cap_soul_out"
-pass "reports a missing policy for the capability finding"
+deploy_out="$(run_installer --check)"
+grep -q "would change: head-coordinator SOUL.md is missing the '## Deployment and recovery' section" \
+  <<<"$deploy_out" ||
+  fail "a SOUL.md with no Deployment and recovery section was not reported: $deploy_out"
+pass "reports a SOUL.md missing the Deployment and recovery section"
 cp "$fixture/soul.bak" "$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md"
+
+# --- the local-implementer context pin must match the served slot -----------
+#
+# The pin is the only guard against a contextSize/parallel change on the server
+# silently breaking every local-inference request, and both ends of the
+# invariant live in files this repo does not edit. The check computes the
+# expected slot from the real configuration.nix and reports a drifted or
+# missing pin; it must never edit the profile config itself.
+
+pin_file="$HERMES_FIXTURE/profiles/local-implementer/config.yaml"
+cp "$pin_file" "$fixture/pin.bak"
+
+sed -i 's/context_length: 98304/context_length: 131072/' "$pin_file"
+pin_out="$(run_installer --check)"
+grep -q "local-implementer context_length is 131072, want 98304" <<<"$pin_out" ||
+  fail "a drifted context pin was not reported against the repo slot size: $pin_out"
+grep -q 'change configuration.nix and the pin in the same commit' <<<"$pin_out" ||
+  fail "the context-pin report does not name the same-commit rule: $pin_out"
+
+grep -v 'context_length:' "$fixture/pin.bak" >"$pin_file"
+nopin_out="$(run_installer --check)"
+grep -q 'local-implementer config.yaml pins no context_length' <<<"$nopin_out" ||
+  fail "a missing context pin was not reported: $nopin_out"
+cp "$fixture/pin.bak" "$pin_file"
+pin_ok_out="$(run_installer --check)"
+grep -q 'wiring is up to date' <<<"$pin_ok_out" ||
+  fail "a matching context pin was reported as drift: $pin_ok_out"
+pass "verifies the local-implementer context pin against the repo slot size"
+
+rm -f "$pin_file"
+nopinconfig_out="$(run_installer --check)"
+grep -q 'skip: no local-implementer config.yaml' <<<"$nopinconfig_out" ||
+  fail "an absent local-implementer config must be skipped, not drift: $nopinconfig_out"
+cp "$fixture/pin.bak" "$pin_file"
 
 # --- a missing cron job is still created in apply mode -----------------------
 
@@ -476,6 +551,17 @@ awk '/^kanban:/{k=NR} /max_in_progress_per_profile:/{p=NR} END{exit !(p>k)}' \
   "$HERMES_FIXTURE/profiles/feature-reviewer/config.yaml" ||
   fail "the caps were not inserted under the kanban: block"
 pass "mirrors the per-profile caps into a profile config under kanban:"
+
+# A config file this installer edits is archived under the private backups tree
+# first, content-addressed, so a bad edit has an undo: ~/.hermes is not
+# otherwise backed up and these edits change live configuration in place.
+pre_caps_sha="$(printf 'kanban:\n  review_dispatch: true\n' | sha256sum | cut -d' ' -f1)"
+[[ -f "$HERMES_FIXTURE/backups/board-wiring/$pre_caps_sha" ]] ||
+  fail "the pre-edit profile config was not archived before the caps edit"
+cmp -s <(printf 'kanban:\n  review_dispatch: true\n') \
+  "$HERMES_FIXTURE/backups/board-wiring/$pre_caps_sha" ||
+  fail "the archived pre-edit profile config does not match the original"
+pass "archives a config file before editing it in place"
 
 # Re-running must be idempotent: a config that already carries the key is left
 # alone, and a second --check is clean.

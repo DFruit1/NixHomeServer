@@ -46,7 +46,9 @@ def board_repo() -> Path:
         workdir = json.loads(board_json.read_text()).get("default_workdir")
     except (OSError, ValueError):
         workdir = None
-    return Path(workdir) if workdir else Path("/home/dsaw/Projects/NixOS")
+    # No silent fallback to a hardcoded path: an unreadable board.json must
+    # produce no candidates rather than report on the wrong checkout.
+    return Path(workdir) if workdir else Path()
 
 
 def board_db() -> Path:
@@ -154,17 +156,47 @@ def check_untracked_root(repo: Path) -> list[tuple[str, str]]:
     return out
 
 
+def check_reapable_worktrees(repo: Path) -> list[tuple[str, str]]:
+    """Terminal-card worktrees the dry-run reap would reclaim.
+
+    The reap script is dry-run by default and --apply stays an operator
+    action: this surfaces the reclaimable count as one bounded candidate so
+    the operator (or the coordinator, within its lane) can run the apply,
+    instead of the disk quietly filling with published terminal-card trees.
+    """
+    script = repo / "scripts" / "hermes" / "reap-kanban-worktrees.sh"
+    if not script.is_file():
+        return []
+    # A dedicated bound: the dry run without --bytes still runs one git status
+    # per worktree, and a large fleet has a hundred-plus trees.
+    try:
+        proc = subprocess.run(["bash", str(script), "--board", BOARD], cwd=repo,
+                              capture_output=True, text=True, timeout=120)
+    except subprocess.SubprocessError:
+        return []
+    if proc.returncode != 0:
+        return []
+    for line in proc.stdout.splitlines():
+        if line.startswith("Reapable (terminal card, clean, published): "):
+            count = line.split(":", 1)[1].strip()
+            if count.isdigit() and int(count) > 0:
+                return [("WORKTREES_REAPABLE",
+                         f"{count} reapable worktrees; scripts/hermes/reap-kanban-worktrees.sh --apply")]
+    return []
+
+
 def main() -> None:
     repo = board_repo()
     if not (repo / ".git").exists():
         return
     tracked = git(repo, "ls-files").splitlines()
-    caps = {"BROKEN_SYNTAX": 10, "EMPTY_FILE": 8, "UNTRACKED_ROOT": 8}
+    caps = {"BROKEN_SYNTAX": 10, "EMPTY_FILE": 8, "UNTRACKED_ROOT": 8, "WORKTREES_REAPABLE": 1}
     per_tag: dict[str, int] = {}
     candidates: list[tuple[str, str]] = []
     for check in (lambda: check_syntax(repo, tracked),
                   lambda: check_empty(repo, tracked),
-                  lambda: check_untracked_root(repo)):
+                  lambda: check_untracked_root(repo),
+                  lambda: check_reapable_worktrees(repo)):
         try:
             found = check()
         except (OSError, subprocess.SubprocessError):

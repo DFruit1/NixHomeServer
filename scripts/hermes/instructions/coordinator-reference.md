@@ -198,6 +198,7 @@ does not establish an owner supplier. Reread the native cards and decisions.
 | WORKER_FAILED_BLOCKED | Inspect bounded git status/log or report artifacts; route finishing work from retained output. |
 | OWNER_COMMENT_UNACTED | Read the exact owner answer, record/read back the interpretation, unblock only resolved scope. |
 | CAPABILITY_OWNER_INPUT | Assign the missing supplier; surface genuine owner input through the checked gate. |
+| MIRROR_STALE | Inspect the durability-sync cron, its job log and the SSH path; route the repair. Report failed mirrors internally. |
 
 For budget failures, narrow remaining work before a retry. Never raise retry or
 iteration budgets. If narrowed work still fails, investigate the concrete cause
@@ -241,9 +242,8 @@ cannot clear itself without the owner:
 - a decision only the owner can make (a `needs_input` gate), or
 - an agent asserting one of the other criteria with a standalone `Hard Blocker`
   line in the body: a secret, credential or authorization only the owner holds;
-  factual or interface information about a system the owner owns or installed
-  that no repository or public manual records; a physical action only the owner
-  can take; or a card hard-stuck with no agent-side recovery.
+  a physical action only the owner can take; or a card hard-stuck with no
+  agent-side recovery.
 
 The line must be its own line; prose mentioning it does not count. Prefer
 `needs_input` so the block is sticky. Both shapes are decision (D) labels and

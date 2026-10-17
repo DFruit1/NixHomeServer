@@ -34,15 +34,18 @@ worktrees_dir="$repo_root/.worktrees"
 
 apply=false
 board=""
+bytes=false
 hermes_bin="${HERMES_BIN:-hermes}"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/hermes/reap-kanban-worktrees.sh [--apply] [--board <slug>]
+Usage: scripts/hermes/reap-kanban-worktrees.sh [--apply] [--bytes] [--board <slug>]
 
 Classify and reclaim stale kanban worktrees under .worktrees/.
 
   --apply          Remove the trees classified reap; default is a dry run.
+  --bytes          Include disk-byte accounting (walks every tree with du);
+                   the default dry run reports counts only and stays cheap.
   --board <slug>   Read card state from this board (default: current board).
   -h, --help       Show this help.
 
@@ -56,6 +59,7 @@ while (($# > 0)); do
   case "$1" in
     --apply) apply=true; shift ;;
     --dry-run) apply=false; shift ;;
+    --bytes) bytes=true; shift ;;
     --board) [[ $# -ge 2 ]] || { echo "❌ --board needs a value" >&2; exit 2; }; board="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "❌ Unknown argument: $1" >&2; usage >&2; exit 2 ;;
@@ -69,6 +73,17 @@ command -v "$hermes_bin" >/dev/null 2>&1 || {
 command -v jq >/dev/null 2>&1 || { echo "❌ jq is required." >&2; exit 1; }
 
 [[ -d "$worktrees_dir" ]] || { echo "ℹ️  No .worktrees directory at $worktrees_dir; nothing to do."; exit 0; }
+
+# One reaper at a time. Concurrent runs double-attempt the same removal (git
+# re-verifies, so it is safe but noisy), and the du walk in --bytes mode is
+# expensive enough that overlapping runs are a real waste. A held lock skips
+# this run entirely rather than queueing behind the running one.
+git_dir="$(git -C "$repo_root" rev-parse --git-dir)"
+exec 9>"$git_dir/reap-kanban-worktrees.lock"
+if ! flock -n 9; then
+  echo "ℹ️  Another reap run holds the lock; skipping."
+  exit 0
+fi
 
 board_args=()
 [[ -n "$board" ]] && board_args=(--board "$board")
@@ -87,10 +102,17 @@ while IFS= read -r p; do
   active["$(realpath -m "$p")"]=1
 done <<<"$active_paths"
 
-reap=0 reap_bytes=0 keep=0 keep_bytes=0 dirty=0 dirty_bytes=0 unpublished=0 unpublished_bytes=0
+reap=0 reap_bytes=0 keep=0 keep_bytes=0 dirty=0 dirty_bytes=0 unpublished=0 unpublished_bytes=0 unknown=0
 reap_paths=()
 
 human() { awk -v b="$1" 'BEGIN{printf "%.1f GiB", b/1024/1024/1024}'; }
+# Byte suffixes only in --bytes mode: the du walk over every tree is the
+# expensive part of a dry run, and the steward scan wants the cheap counts.
+sum() { # <bytes> -> " (X GiB)" or ""
+  if [[ "$bytes" == true ]]; then
+    printf ' (%s)' "$(human "$1")"
+  fi
+}
 
 while IFS= read -r line; do
   path="${line#worktree }"
@@ -102,35 +124,46 @@ while IFS= read -r line; do
   [[ -d "$path" ]] || continue
 
   rpath="$(realpath -m "$path")"
-  bytes="$(du -sb "$path" 2>/dev/null | cut -f1)"; bytes="${bytes:-0}"
+  bytes_now=0
+  if [[ "$bytes" == true ]]; then
+    bytes_now="$(du -sb "$path" 2>/dev/null | cut -f1)"; bytes_now="${bytes_now:-0}"
+  fi
 
   if [[ -n "${active[$rpath]:-}" ]]; then
-    keep=$((keep+1)); keep_bytes=$((keep_bytes+bytes))
+    keep=$((keep+1)); keep_bytes=$((keep_bytes+bytes_now))
     continue
   fi
 
   # Clean working tree? Untracked-only scratch counts as dirty, as in hermes.
-  if [[ -n "$(git -C "$path" status --porcelain 2>/dev/null | head -c1)" ]]; then
-    dirty=$((dirty+1)); dirty_bytes=$((dirty_bytes+bytes))
+  # A failing git status is its own preserve reason: classifying a broken
+  # worktree as clean would reap on a false negative.
+  if ! status_out="$(git --no-optional-locks -C "$path" status --porcelain 2>/dev/null)"; then
+    unknown=$((unknown+1))
+    echo "  preserve (git status failed): ${path#"$repo_root"/}"
+    continue
+  fi
+  if [[ -n "$status_out" ]]; then
+    dirty=$((dirty+1)); dirty_bytes=$((dirty_bytes+bytes_now))
     echo "  preserve (uncommitted changes): ${path#"$repo_root"/}"
     continue
   fi
 
   head="$(git -C "$path" rev-parse HEAD 2>/dev/null || true)"
   if [[ -z "$head" ]] || [[ -z "$(git -C "$repo_root" branch -r --contains "$head" 2>/dev/null)" ]]; then
-    unpublished=$((unpublished+1)); unpublished_bytes=$((unpublished_bytes+bytes))
+    unpublished=$((unpublished+1)); unpublished_bytes=$((unpublished_bytes+bytes_now))
     echo "  preserve (unpublished commits): ${path#"$repo_root"/}"
     continue
   fi
 
-  reap=$((reap+1)); reap_bytes=$((reap_bytes+bytes))
+  reap=$((reap+1)); reap_bytes=$((reap_bytes+bytes_now))
   reap_paths+=("$path")
 done < <(git -C "$repo_root" worktree list --porcelain)
 
-echo "Reapable (terminal card, clean, published): ${reap} ($(human "$reap_bytes"))"
-echo "Preserve (uncommitted changes):             ${dirty} ($(human "$dirty_bytes"))"
-echo "Preserve (unpublished commits):             ${unpublished} ($(human "$unpublished_bytes"))"
-echo "Preserve (active card):                     ${keep} ($(human "$keep_bytes"))"
+echo "Reapable (terminal card, clean, published): ${reap}$(sum "$reap_bytes")"
+echo "Preserve (uncommitted changes):             ${dirty}$(sum "$dirty_bytes")"
+echo "Preserve (unpublished commits):              ${unpublished}$(sum "$unpublished_bytes")"
+echo "Preserve (git status failed):               ${unknown}"
+echo "Preserve (active card):                     ${keep}$(sum "$keep_bytes")"
 
 if [[ "$apply" != true ]]; then
   echo "ℹ️  Dry run. Re-run with --apply to remove the ${reap} reapable tree(s)."

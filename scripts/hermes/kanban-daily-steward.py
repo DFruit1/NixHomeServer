@@ -18,13 +18,17 @@ from pathlib import Path
 # a per-profile cron job still inspects every board on the host.
 ROOT = Path(os.environ.get("HERMES_ROOT", str(Path.home() / ".hermes")))
 BOARDS = ROOT / "kanban" / "boards"
-SKIP = {"_archived"}
 
 
 def board_slugs() -> list[str]:
+    # Any underscore or dot prefixed slug is hermes bookkeeping (the same rule
+    # the durability sync and board-health enumerators use), not a board.
     if not BOARDS.is_dir():
         return []
-    return sorted(p.name for p in BOARDS.iterdir() if p.is_dir() and p.name not in SKIP)
+    return sorted(
+        p.name for p in BOARDS.iterdir()
+        if p.is_dir() and not p.name.startswith(("_", "."))
+    )
 
 
 def one(conn: sqlite3.Connection, sql: str, args: tuple = ()) -> list:
@@ -116,7 +120,14 @@ def main() -> None:
         print("(no boards found)")
         return
     for slug in slugs:
-        lines = snapshot_board(slug)
+        try:
+            lines = snapshot_board(slug)
+        except sqlite3.Error as exc:
+            # One corrupt, locked or schema-drifted board must not take the
+            # whole daily report down with it: the healthy boards still
+            # report, and the failed board surfaces as its own warning line
+            # (the same convention the other collectors use).
+            lines = [f"[board {slug}] BOARD_READ_FAILED :: {str(exc).strip()[:200]}"]
         if lines:
             print()
             print("\n".join(lines))

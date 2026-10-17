@@ -308,13 +308,16 @@ def details(root, label):
     if label.lower() == 'blockers':
         entries = []
         state = load_inbox(root)
+        # Reverse index once: a per-task next() scan over every label rewalks
+        # the whole blocker map for every technical card on every call.
+        blocker_index = {(record['board'], record['task_id']): alias
+                         for alias, record in state['blockers'].items()}
         for board in sorted((root / 'kanban/boards').glob('*/board.json')):
             if not board.parent.name.startswith('_'):
                 for task in snapshot(board):
                     if is_hard_blocker(task):
                         continue
-                    alias = next((alias for alias, record in state['blockers'].items()
-                                  if (record['board'], record['task_id']) == (board.parent.name, task['id'])), 'Unlabelled')
+                    alias = blocker_index.get((board.parent.name, task['id']), 'Unlabelled')
                     entries.append(f"{alias} · {board.parent.name}:{task['id']} · {task['title']}\nBlock reason: {task['reason']}")
         return '\n\n'.join(entries) or 'No technical blockers.'
     if re.fullmatch(r'[a-zA-Z0-9_-]+:t_[a-zA-Z0-9_]+', label):
@@ -417,6 +420,12 @@ def collect(root, state, errors):
     """
     technical, technical_labels, decision_labels, decisions = [], {}, {}, []
     snapshot_failed = False
+    # Reverse indexes built once: a per-task next() scan over every label is
+    # quadratic in blockers plus decisions, on every tick, for every card.
+    blocker_index = {(record['board'], record['task_id']): label
+                     for label, record in state['blockers'].items()}
+    decision_index = {(record['board'], record['task_id'], record['token']): label
+                      for label, record in state['decisions'].items()}
     for board in sorted((root / 'kanban/boards').glob('*/board.json')):
         if board.parent.name.startswith('_'):
             continue
@@ -424,8 +433,7 @@ def collect(root, state, errors):
             for task in snapshot(board):
                 if not is_hard_blocker(task):
                     technical.append((board.parent.name, task))
-                    label = next((label for label, record in state['blockers'].items()
-                                  if (record['board'], record['task_id']) == (board.parent.name, task['id'])), None)
+                    label = blocker_index.get((board.parent.name, task['id']))
                     if label is None:
                         label = f'B{state["next_blocker"]}'
                         state['next_blocker'] += 1
@@ -436,8 +444,7 @@ def collect(root, state, errors):
                     continue
                 decisions.append((board.parent.name, task))
                 revision = token(task)
-                label = next((label for label, d in state['decisions'].items()
-                              if (d['board'], d['task_id'], d['token']) == (board.parent.name, task['id'], revision)), None)
+                label = decision_index.get((board.parent.name, task['id'], revision))
                 if label is None:
                     label = f'D{state["next_label"]}'
                     state['next_label'] += 1
@@ -593,18 +600,12 @@ def install(root):
                     or not matching[0].get('no_agent') or matching[0].get('schedule', {}).get('minutes') != 1):
         raise ValueError('Owner alert cron drift; repair the existing job instead of duplicating it')
     # Validate every policy transformation and cron before installing anything.
+    import hermes_common  # Local to the checkout this installer runs from.
     for path, text in changes.items():
         if path.exists() and path.read_text() == text:
             continue
-        if path.exists():
-            backup = root / 'backups/owner-alerts'
-            backup.mkdir(parents=True, exist_ok=True, mode=0o700)
-            copy = backup / (hashlib.sha256(path.read_bytes()).hexdigest() + '.md')
-            if not copy.exists():
-                copy.write_bytes(path.read_bytes())
-                copy.chmod(0o600)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text)
+        hermes_common.backup_file(root, 'owner-alerts', path)
+        hermes_common.atomic_write(path, text)
     (scripts / 'kanban-owner-alerts.py').chmod(0o700)
     if not matching:
         env = os.environ.copy()
@@ -612,7 +613,7 @@ def install(root):
         subprocess.run(['hermes', '--profile', 'default', 'cron', 'create', 'every 1m',
                         '--name', JOB, '--script', 'kanban-owner-alerts.py', '--no-agent',
                         '--deliver', 'local', '--workdir', str(source.parent.parent),
-                        '--paused', '--paused-reason', 'Validate owner alerts before activation'], check=True, env=env)
+                        '--paused', '--paused-reason', 'Validate owner alerts before activation'], check=True, timeout=60, env=env)
 
 
 if __name__ == '__main__':

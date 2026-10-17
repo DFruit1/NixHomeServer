@@ -77,6 +77,11 @@ owner-alert installers preserve the shared fleet block. The steward installer
 updates its existing report jobs in place. Apply the owning component installer
 for changes to report prompts or sender implementation, then check convergence.
 Do not run a sender tick or reset delivery state merely to validate wording.
+The private-chat quiet policy installer gained its own read-only mode; run
+`python3 -B scripts/hermes/install-owner-chat-policy.py --check` from the
+checkout to verify the head-coordinator policy block, the
+`kanban.auto_subscribe_on_create: false` settings and the absence of
+private-chat subscriptions without writing or unsubscribing anything.
 
 Managed sections must have exactly one ordered start/end marker pair. Instruction,
 owner-chat, owner-alert and hook installers reject orphaned, duplicate or reversed
@@ -170,6 +175,55 @@ active sessions just to reload configuration.
 The regression suite includes scripts/tests/test-hermes-config-policy.sh and
 tests both list styles, safe compaction, backups and installer convergence.
 
+## Fleet operations runbook
+
+Recurring operational state and its owning procedure.
+
+**Durability-mirror staleness.** The durability-sync cron records each board's
+last successful mirror as an epoch under `~/.hermes/state/durability-sync/`.
+The board-health monitor reports `MIRROR_STALE <board>` when a board's epoch
+is missing or older than `BOARD_HEALTH_MIRROR_STALE_SEC` (default one hour), so
+a dropped cron, an SSH outage or a failing rotation surfaces to the
+coordinator once instead of the boards quietly becoming workstation-only. A
+successful mirror clears the line on the next tick. Inspect the cron job
+(`hermes -p default cron list`), its failure log and the SSH path; report
+failed mirrors internally.
+
+**Board disaster recovery.** Restore in this order: Kopia restores the
+server's `/persist` if the server lost the disk; otherwise copy
+`/persist/home/dsaw/.hermes-durability/<board>/current/` (the newest
+generation by mtime) back to `~/.hermes/kanban/boards/<board>/`, verify with
+`sqlite3 kanban.db 'PRAGMA integrity_check;'` and the task/comment counts in
+the generation's MANIFEST, then reconcile card IDs against the board's
+`review-taskforce/` directory (database and file snapshots are individually
+consistent, not one transaction). Restore git work from `origin/wt/*` and
+`origin/master`, which the durability sync republishes every 15 minutes.
+
+**Backup retention.** Every installer archives pre-change files under
+`~/.hermes/backups/<installer>/<path-hash>/<content-hash>/`, content-addressed
+so unchanged content is stored once. These archives are not pruned
+automatically; prune old private archive generations manually when they grow,
+keeping at least the most recent content per path. The server mirrors keep
+exactly `DURABILITY_GENERATIONS` (default 3) generations per board.
+
+**Provider credential rotation.** Credentials live in the profile `.env`
+files and config.yaml and are owner-scoped decisions. After rotating one, run
+`python3 -B scripts/hermes/hermes_config.py --check` and the affected
+profile's read-only helpers. Never mirror credential-bearing files: the
+server mirror sits under Kopia's `/persist` snapshot, which replicates to the
+MEGA offsite, and that is why only board databases are mirrored, not profile
+configuration.
+
+**Model updates and failover.** A model or lane change needs its own explicit
+authorization and must retain privacy and all gates (see the coordinator
+reference). Repeated provider failures park through
+`scripts/hermes/kanban-retry-breaker.sh` with recorded recovery conditions.
+The local-implementer context pin is verified by
+`scripts/hermes/install-board-wiring.sh --check` against the repo's
+`contextSize / parallel`, so a server slot-size change is caught before
+requests start failing: change `configuration.nix` and the profile pin in the
+same commit.
+
 ## Reused task skills
 
 The instruction installer also supplies focused task skills and a short,
@@ -188,6 +242,23 @@ and its references rather than copying its vendored toolchains into profiles.
 | head-coordinator | Safe change and shutdown guard; routing and existing guarded deployment authority only |
 | project-auditor | Safe change and module change for planning only |
 | board-steward | Keeps its existing inspection skill; no new execution skills |
+
+The `sdlc-review` and `requesting-code-review` skills are card-workflow
+procedures, so they are installed only for the roles that implement, review or
+route source work: standard-implementer, local-implementer, feature-reviewer
+and head-coordinator. The read-only board-steward, the planning-only
+project-auditor and the routing-only root/default profile carry neither, and a
+copy left at root scope would resolve for exactly those profiles, so the
+installer removes byte-identical stale copies there (an independently edited
+copy is preserved, never deleted). The adapted systematic-debugging skill is
+installed at root scope as well, so root-scoped resolution no longer serves an
+unadapted upstream copy.
+
+The procedure references the live skills point at are tracked sources too:
+`instructions/queue-recovery.md` and `instructions/source-to-service-planning.md`
+(kanban-orchestration) and `instructions/offline-state-probe.md`
+(taskforce-feature-audit). A rebuild restores them with the skill instead of
+losing them as stale installed-only copies.
 
 The online source is [Hermes Agent's bundled systematic-debugging skill](https://github.com/NousResearch/hermes-agent/blob/0f3fcacd3f92d02d163789b4c3441b6388f8753d/skills/software-development/systematic-debugging/SKILL.md),
 pinned at `0f3fcacd3f92d02d163789b4c3441b6388f8753d` (MIT, originally adapted

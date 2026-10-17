@@ -38,6 +38,9 @@ FINDING_STATUSES = {'open', 'accepted', 'deferred', 'rejected', 'implemented', '
 TASK_ROLES = {'audit', 'assessment', 'plan', 'gate', 'handoff', 'implementer', 'closure'}
 DEFAULT_SUPPRESS_CLEAN_STREAK = 3
 DEFAULT_MAX_AUDITS_PER_FINDING = 2
+# Bounded retention for the append-only metrics log; consumers read only the
+# tail (latest entry or the last N outcomes), so older rows are dead weight.
+METRICS_RETENTION = 5000
 FINDING_ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{2,}')
 PLAN_NAME = re.compile(r'plans/[A-Za-z0-9][A-Za-z0-9_-]*\.md')
 REPORT_NAME = re.compile(r'reports/[A-Za-z0-9][A-Za-z0-9._-]*\.md')
@@ -138,7 +141,7 @@ def write_jsonl(path, entries):
         atomic_write(path, ''.join(json.dumps(entry, sort_keys=True) + '\n' for entry in entries))
 
 
-def append_jsonl(path, entry):
+def append_jsonl(path, entry, keep_last=None):
     with locked(path.parent):
         entry = dict(entry)
         entry.setdefault('at', int(time.time()))
@@ -146,6 +149,15 @@ def append_jsonl(path, entry):
             stream.write(json.dumps(entry, sort_keys=True) + '\n')
             stream.flush()
             os.fsync(stream.fileno())
+        if keep_last:
+            # Retention for an append-only log: every consumer reads only the
+            # tail (latest entry or the last N), so a bounded rewrite keeps
+            # the file from growing without end while preserving all in-use
+            # entries, under the same lock as the append.
+            entries = read_jsonl(path)
+            if len(entries) > keep_last:
+                atomic_write(path, ''.join(
+                    json.dumps(e, sort_keys=True) + '\n' for e in entries[-keep_last:]))
 
 
 def findings_index(root, board):
@@ -305,7 +317,7 @@ def tick_board(root, board_file, now):
         if not workdir.is_absolute() or not workdir.is_dir():
             raise ValueError(f'Board {board} needs an existing absolute default_workdir')
         is_git = subprocess.run(['git', '-C', str(workdir), 'rev-parse', '--git-dir'],
-                                capture_output=True).returncode == 0
+                                capture_output=True, timeout=10).returncode == 0
         body = opportunity_body(root, board)
         if len(body) > 1000 or len(body.splitlines()) > 15:
             body = body.replace(board_state_line(root, board), 'State: see FINDINGS.md.')
@@ -474,9 +486,12 @@ def findings_set_status(root, board, finding_id, status):
 
 def finding_audit_count(root, board, finding_id):
     """Count commissioned audits for a finding: reviewer cards citing it plus index links."""
+    # Word-boundary match: a plain substring test counts a body citing CI-10
+    # as an audit of CI-1, inflating the chain count and blocking new work.
+    pattern = re.compile(rf'\b{re.escape(finding_id)}\b')
     tasks = {task['id'] for task in board_tasks(root, board)
              if task.get('tenant') == TENANT and task.get('assignee') == REVIEWER
-             and finding_id in (task.get('body') or '')}
+             and pattern.search(task.get('body') or '')}
     entry = finding_entry(root, board, finding_id)
     if entry:
         tasks |= {task['task_id'] for task in entry.get('tasks', []) if task.get('role') == 'audit'}
@@ -603,7 +618,7 @@ def record_audit(root, board, task, metadata=None, outcome=None, slice_name=None
         raise ValueError(f'outcome must be one of {sorted(OUTCOMES)}')
     entry = {'task': task, 'slice': slice_name, 'outcome': outcome, 'revision': revision,
              'findings': findings, 'duration_seconds': duration_seconds}
-    append_jsonl(metrics_index(root, board), entry)
+    append_jsonl(metrics_index(root, board), entry, keep_last=METRICS_RETENTION)
     print(json.dumps(entry, sort_keys=True))
 
 

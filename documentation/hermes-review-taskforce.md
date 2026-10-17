@@ -64,9 +64,11 @@ python3 scripts/hermes/install-review-taskforce.py --check
 
 The installer updates taskforce roles and local-implementer instructions, sets
 `kanban.max_in_progress: 3` in the root and every profile config, and preserves
-model settings and per-profile lane caps. It installs the coordinator phone
-policy and replaces the global deployment freeze with a hold on writers affecting
-the exact reviewed deployment source. Isolated work may continue. Existing workers
+model settings and per-profile lane caps. The coordinator's phone-delivery
+policy and the deploy-source freeze rule live in their canonical sources: the
+`Owner-facing SimpleX delivery` section of the installed kanban-orchestration
+skill, and the deploy gate sections of the taskforce templates and the
+coordinator reference. Isolated work may continue. Existing workers
 drain normally; installation does not kill workers or restart the gateway.
 It preserves unrelated policies and enables kanban tools for reviewer/coordinator CLI and
 desktop conversations, and copies the helper and no-agent tick script into Hermes.
@@ -132,10 +134,8 @@ Unconfigured boards default to no scheduled reviews. Choose daily for active,
 large, immature or critical projects; weekly or off for stable/less critical ones.
 Changing cadence preserves findings and plans. Off retains on-demand reviews.
 Cadence is operator-owned; the reviewer may recommend changes with evidence.
-The hourly tick is cheap and uses no model. It creates a low-priority reviewer
-opportunity card only when due, with at most one pending check per board.
-The reviewer chooses at most one audit or closes it without finding work.
-Failed card creation does not advance cadence; retries use a deduplication key.
+The hourly tick's behaviour is described in full under "Findings, audit
+conflicts and handoffs" below, including clean-streak suppression.
 
 After validation, resume the named cron job using its ID from `hermes cron list`:
 
@@ -161,7 +161,8 @@ State lives outside worktrees and survives completion/restarts:
   schedule.json     last successfully created opportunity check
   FINDINGS.md       reviewer-owned decisions and lifecycle
   findings.jsonl    machine-readable finding index (IDs, tasks, statuses)
-  metrics.jsonl     append-only audit telemetry (outcome per audit)
+  metrics.jsonl     append-only audit telemetry (outcome per audit; the last
+                    5000 entries are retained)
   classify.json     optional per-board approval tripwire rule overrides
   plans/<batch>.md  reviewer-owned immutable implementation plans
   reports/<task>-<slug>.md  durable audit reports from feature-reviewer

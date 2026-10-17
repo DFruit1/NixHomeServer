@@ -11,6 +11,9 @@ import sys
 from unittest.mock import patch
 
 source = Path(sys.argv[1]) / 'scripts/hermes'
+# The installers import sibling helpers (hermes_common, hermes_config) by
+# module name; loading them from this suite needs their directory on sys.path.
+sys.path.insert(0, str(source))
 spec = importlib.util.spec_from_file_location('instructions', source / 'install-instruction-policy.py')
 policy = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(policy)
@@ -151,6 +154,76 @@ class InstructionPolicyTest(unittest.TestCase):
             policy.install(self.root, skills_only=True)
             self.assertEqual(replacement.read_bytes(), (self.root /
                 'profiles/local-implementer/skills/devops/nixhomeserver-safe-change/SKILL.md').read_bytes())
+
+
+    def test_review_skills_exclude_readonly_and_planning_profiles_and_root(self):
+        # Stale copies this installer previously installed at the excluded
+        # scopes: root (routing-only default), board-steward (read-only) and
+        # project-auditor (planning only). Only byte-identical copies are
+        # removed; an independently edited copy is preserved untouched.
+        review_sources = {'requesting-code-review.md':
+                          source / 'instructions/requesting-code-review.md',
+                          'sdlc-review.md': source / 'instructions/sdlc-review.md'}
+        stale = [
+            self.root / 'skills/software-development/requesting-code-review/SKILL.md',
+            self.root / 'skills/devops/sdlc-review/SKILL.md',
+            self.root / 'profiles/board-steward/skills/software-development/requesting-code-review/SKILL.md',
+            self.root / 'profiles/board-steward/skills/devops/sdlc-review/SKILL.md',
+            self.root / 'profiles/project-auditor/skills/devops/sdlc-review/SKILL.md',
+        ]
+        for path in stale:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(review_sources['requesting-code-review.md' if 'requesting-code-review' in path.parts else 'sdlc-review.md'].read_text())
+        edited = self.root / 'profiles/project-auditor/skills/software-development/requesting-code-review/SKILL.md'
+        edited.parent.mkdir(parents=True, exist_ok=True)
+        edited.write_text('Operator-edited review recipe; never deleted.\n')
+        self.assertEqual(1, policy.install(self.root, check=True))
+        for path in stale:
+            self.assertTrue(path.exists())
+        self.assertEqual(0, policy.install(self.root))
+        self.assertEqual(0, policy.install(self.root, check=True))
+        for path in stale:
+            self.assertFalse(path.exists())
+        self.assertTrue(edited.exists())
+        for name in policy.REVIEW_SKILL_PROFILES:
+            home = self.root / 'profiles' / name
+            self.assertEqual(review_sources['requesting-code-review.md'].read_bytes(),
+                             (home / 'skills/software-development/requesting-code-review/SKILL.md').read_bytes())
+            self.assertEqual(review_sources['sdlc-review.md'].read_bytes(),
+                             (home / 'skills/devops/sdlc-review/SKILL.md').read_bytes())
+        archived = {p.read_bytes() for p in (self.root / 'backups/instruction-policy').rglob('*')
+                    if p.is_file()}
+        self.assertIn(review_sources['sdlc-review.md'].read_bytes(), archived)
+
+    def test_root_scope_carries_the_adapted_systematic_debugging_skill(self):
+        # An unadapted upstream copy at root scope resolves for root-scoped
+        # sessions and for any profile without its own copy; the installer
+        # now converges it to the fleet-adapted source, with a backup.
+        root_skill = self.root / 'skills/software-development/systematic-debugging/SKILL.md'
+        root_skill.parent.mkdir(parents=True)
+        root_skill.write_text('# Upstream unadapted debugging skill\n')
+        policy.install(self.root, skills_only=True)
+        self.assertEqual((source / 'instructions/systematic-debugging.md').read_bytes(),
+                         root_skill.read_bytes())
+        self.assertTrue((root_skill.parent / 'LICENSE').is_file())
+        archived = {p.read_bytes() for p in (self.root / 'backups/instruction-policy').rglob('*')
+                    if p.is_file()}
+        self.assertIn(b'# Upstream unadapted debugging skill\n', archived)
+
+    def test_skill_references_are_tracked_sources(self):
+        # The live skills reference these procedures; losing the tracked
+        # source would lose them on rebuild, which is how they became
+        # stale installed-only copies in the first place.
+        policy.install(self.root)
+        orchestration = self.root / 'profiles/head-coordinator/skills/devops/kanban-orchestration'
+        self.assertEqual((source / 'instructions/queue-recovery.md').read_bytes(),
+                         (orchestration / 'references/queue-recovery.md').read_bytes())
+        self.assertEqual((source / 'instructions/source-to-service-planning.md').read_bytes(),
+                         (orchestration / 'references/source-to-service-planning.md').read_bytes())
+        audit = self.root / 'profiles/feature-reviewer/skills/autonomous-ai-agents/taskforce-feature-audit'
+        self.assertEqual((source / 'instructions/offline-state-probe.md').read_bytes(),
+                         (audit / 'references/offline-state-probe.md').read_bytes())
+        self.assertEqual(0, policy.install(self.root, check=True))
 
 
 unittest.main(argv=['instruction-policy'], verbosity=2)

@@ -100,6 +100,40 @@ out4="$(scan "$board")"
 grep -q 'UNTRACKED_ROOT :: stray' <<<"$out4" || fail "a done card suppressed a candidate it should not"
 pass "a completed card does not suppress its candidate"
 
+# 7. A reapable worktree becomes one bounded candidate; an empty set emits none.
+#    The reap dry run is read-only, so the steward may surface its count while
+#    the --apply itself stays an operator action.
+mkdir -p "$repo/scripts/hermes" "$repo/bin"
+cp "$TESTS_REPO_ROOT/scripts/hermes/reap-kanban-worktrees.sh" "$repo/scripts/hermes/"
+cat >"$repo/bin/hermes" <<EOF
+#!/usr/bin/env bash
+cat <<JSON
+[{"id":"t_none","status":"todo","workspace_kind":"worktree","workspace_path":"$repo/.worktrees/t_kept","branch_name":"wt/t_kept"}]
+JSON
+EOF
+chmod +x "$repo/bin/hermes"
+# A remote-tracking ref makes the base commit "published", so the t_gone
+# worktree (still at base) classifies reapable rather than unpublished.
+git -C "$repo" update-ref refs/remotes/origin/main "$(git -C "$repo" rev-parse HEAD)"
+git -C "$repo" worktree add -q "$repo/.worktrees/t_kept" -b wt/t_kept >/dev/null 2>&1
+git -C "$repo" worktree add -q "$repo/.worktrees/t_gone" -b wt/t_gone >/dev/null 2>&1
+scan_path_backup="$PATH"
+PATH="$repo/bin:$PATH"
+reap_out="$(scan "$none")"
+PATH="$scan_path_backup"
+grep -q 'WORKTREES_REAPABLE :: 1 reapable worktrees; scripts/hermes/reap-kanban-worktrees.sh --apply' \
+  <<<"$reap_out" || fail "a reapable worktree was not surfaced as one bounded candidate: $reap_out"
+pass "surfaces a reapable worktree count as one bounded candidate"
+
+git -C "$repo" worktree remove --force "$repo/.worktrees/t_gone" >/dev/null 2>&1
+scan_path_backup="$PATH"
+PATH="$repo/bin:$PATH"
+reap_out2="$(scan "$none")"
+PATH="$scan_path_backup"
+grep -q 'WORKTREES_REAPABLE' <<<"$reap_out2" &&
+  fail "an empty reap set still emitted a WORKTREES_REAPABLE candidate: $reap_out2"
+pass "an empty reap set emits no candidate"
+
 echo "✅ steward-opportunity-scan"
 
 # The scanner and report agent share the same read-only profile contract.

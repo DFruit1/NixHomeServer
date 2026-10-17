@@ -158,9 +158,11 @@ replay_last_ssh() {
 }
 
 remote_paths() {
+  # Dot-prefixed entries are the rotation's bookkeeping (.rotation.lock), not
+  # generations; the generation assertions care about current/previous.* only.
   python3 -c 'import os,sys
 try:
-    print(" ".join(sorted(os.listdir(sys.argv[1]))))
+    print(" ".join(sorted(p for p in os.listdir(sys.argv[1]) if not p.startswith("."))))
 except OSError:
     print("")' "$REMOTE_ROOT/${1:-.}"
 }
@@ -539,5 +541,54 @@ awk '/^umask 077$/ { found = NR }
      END { exit 0 }' "$SYNC" ||
   fail "mktemp -d runs before umask 077; the board copy would be world-readable"
 pass "sets umask 077 before creating the snapshot directory"
+
+# --- a successful mirror records the epoch the staleness detector reads ---------
+#
+# The board-health monitor reports MIRROR_STALE from
+# state/durability-sync/<board>.epoch. A mirror that does not record it looks
+# stale forever; a check-only run must not record it, because no mirror
+# happened.
+new_remote_root epoch-mode
+HERMES_BOARD=nixhomeserver run_sync >/dev/null 2>&1 || true
+replay_last_ssh
+epoch_file="$HERMES_FIXTURE/state/durability-sync/nixhomeserver.epoch"
+[[ -r "$epoch_file" ]] ||
+  fail "a successful mirror did not record its epoch for the staleness detector"
+epoch_value="$(cat "$epoch_file")"
+if ! [[ "$epoch_value" =~ ^[0-9]+$ ]] || (( epoch_value <= 0 )); then
+  fail "the recorded mirror epoch is not a positive epoch: '$epoch_value'"
+fi
+pass "records the mirror epoch after a successful mirror"
+
+rm -f "$epoch_file"
+HERMES_BOARD=nixhomeserver run_sync --check >/dev/null 2>&1 || true
+[[ ! -e "$epoch_file" ]] ||
+  fail "a check-only run recorded a mirror epoch without mirroring"
+pass "a check-only run records no mirror epoch"
+
+# --- an overlapping tick skips rather than racing the rotation -----------------
+#
+# Two concurrent syncs interleave their remote generation rotations; the local
+# flock makes the second tick skip the work entirely rather than queue behind
+# it or race it.
+lock_dir="$HERMES_FIXTURE/state/durability-sync"
+mkdir -p "$lock_dir"
+exec 9>"$lock_dir/sync.lock"
+flock 9
+calls_before="$(ssh_calls)"
+skip_out="$(run_sync 2>&1)" || true
+grep -q 'another durability sync holds the lock; skipping this tick' <<<"$skip_out" ||
+  fail "an overlapping tick did not skip: $skip_out"
+[[ "$(ssh_calls)" == "$calls_before" ]] ||
+  fail "an overlapping tick still contacted the durability target"
+pass "an overlapping tick skips without contacting the target"
+exec 9>&-
+
+# --- --help -------------------------------------------------------------------
+
+help_out="$("$SYNC" --help)"
+grep -q 'Usage: scripts/hermes/kanban-durability-sync.sh' <<<"$help_out" ||
+  fail "--help did not print usage"
+pass "prints usage for --help"
 
 echo "▶ kanban durability sync: all checks passed"

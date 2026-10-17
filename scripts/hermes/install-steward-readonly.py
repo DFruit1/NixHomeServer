@@ -5,7 +5,6 @@ Python operations glue preserves unrelated YAML; the bounded tool-list editor
 reuses Hermes' existing PyYAML dependency.
 """
 import argparse
-import hashlib
 import importlib.util
 import json
 import os
@@ -14,6 +13,8 @@ import re
 import shlex
 import subprocess
 import sys
+
+import hermes_common
 
 SOURCE = Path(__file__).resolve().parent
 sys.path.insert(0, str(SOURCE))
@@ -65,6 +66,26 @@ def readonly_hook(text, command, marker_name='steward-readonly', matcher='.*'):
     else:
         hooks = '  pre_tool_call:\n' + stanza + hooks
     return text[:match.start(1)] + hooks + text[match.end(1):]
+
+
+def default_repo(root):
+    """The repo a steward cron workdir points at.
+
+    REPO_DIR overrides; otherwise the nixhomeserver board's recorded
+    default_workdir is the natural source (the same one the steward scripts
+    resolve checkouts from), with the tracked workstation path as the final
+    fallback for a machine whose board state is not yet installed.
+    """
+    env_repo = os.environ.get('REPO_DIR')
+    if env_repo:
+        return Path(env_repo)
+    try:
+        workdir = json.loads((root / 'kanban/boards/nixhomeserver/board.json').read_text()).get('default_workdir')
+        if workdir:
+            return Path(workdir)
+    except (OSError, ValueError):
+        pass
+    return Path('/home/dsaw/Projects/NixOS')
 
 
 def install(root, repo, check=False):
@@ -146,22 +167,14 @@ def install(root, repo, check=False):
             print(f'drift: steward cron {command[4]}')
         return int(bool(changes or commands))
     for path, text in changes.items():
-        if path.exists():
-            backup = root / 'backups/steward-readonly' / hashlib.sha256(str(path).encode()).hexdigest()[:12]
-            backup.mkdir(parents=True, exist_ok=True, mode=0o700)
-            old = path.read_bytes()
-            copy = backup / hashlib.sha256(old).hexdigest()
-            if not copy.exists():
-                copy.write_bytes(old)
-                copy.chmod(0o600)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text)
-        if path.suffix in ('.sh', '.py'):
-            path.chmod(0o700)
+        hermes_common.backup_file(root, 'steward-readonly', path)
+        mode = 0o700 if path.suffix in ('.sh', '.py') else (
+            path.stat().st_mode & 0o777 if path.exists() else 0o600)
+        hermes_common.atomic_write(path, text, mode=mode)
         print(f'installed: {path}')
     environment = {**os.environ, 'HERMES_ROOT': str(root), 'HERMES_HOME': str(root)}
     for command in commands:
-        subprocess.run(command, check=True, env=environment, stdout=subprocess.DEVNULL)
+        subprocess.run(command, check=True, timeout=60, env=environment, stdout=subprocess.DEVNULL)
     return 0
 
 
@@ -171,8 +184,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
     try:
         root = Path(os.environ.get('HERMES_ROOT', str(Path.home() / '.hermes')))
-        repo = Path(os.environ.get('REPO_DIR', '/home/dsaw/Projects/NixOS'))
-        sys.exit(install(root, repo, args.check))
+        sys.exit(install(root, default_repo(root), args.check))
     except (ValueError, OSError, subprocess.SubprocessError) as exc:
         print(f'steward installer: {exc}', file=sys.stderr)
         sys.exit(2)

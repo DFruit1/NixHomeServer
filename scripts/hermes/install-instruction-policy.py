@@ -5,12 +5,13 @@ Python operations glue reuses the existing instruction-file layout. It introduce
 no backend or dependency. All transformations are validated before any writes.
 """
 import argparse
-import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import sys
+
+import hermes_common
 
 SOURCE = Path(__file__).resolve().parent
 PROFILES = ('head-coordinator', 'standard-implementer', 'local-implementer',
@@ -34,6 +35,18 @@ ROLE_SKILLS = {
     'head-coordinator': ('nixhomeserver-safe-change', 'nixhomeserver-shutdown-guard'),
     'project-auditor': ('nixhomeserver-safe-change', 'nixhomeserver-module-change'),
 }
+# sdlc-review and requesting-code-review are card-workflow skills: they drive
+# kanban_complete/kanban_request_changes procedures for roles that implement
+# or review source. The read-only board-steward, the planning-only
+# project-auditor and the routing-only root/default profile must not carry
+# them (the documented task-skill table), and a copy left at root scope would
+# resolve for exactly those profiles, so stale copies are removed below.
+REVIEW_SKILLS = (
+    ('requesting-code-review.md', 'software-development/requesting-code-review/SKILL.md'),
+    ('sdlc-review.md', 'devops/sdlc-review/SKILL.md'),
+)
+REVIEW_SKILL_PROFILES = ('standard-implementer', 'local-implementer',
+                         'feature-reviewer', 'head-coordinator')
 
 
 def block(text, start, end, content):
@@ -82,6 +95,14 @@ def skill_changes(root, pending=None):
     pending = pending or {}
     result = {root / 'scripts/hermes-skill-routing.md':
               (SOURCE / 'instructions/skill-routing.md').read_text()}
+    # Root scope carries the fleet-adapted systematic-debugging skill too. An
+    # unadapted upstream copy at root resolves for any profile without its own
+    # copy and for root-scoped sessions, and no convergence check covered it.
+    for skill in ('systematic-debugging',):
+        source, target = SKILL_SOURCES[skill]
+        result[root / 'skills' / target] = source.read_text()
+        result[root / 'skills' / Path(target).parent / 'LICENSE'] = (
+            SOURCE / 'instructions/LICENSE.hermes-skills').read_text()
     for name, skills in ROLE_SKILLS.items():
         home = root / 'profiles' / name
         soul = home / 'SOUL.md'
@@ -118,7 +139,7 @@ def changes(root, pending=None):
         SOURCE / 'instructions/coordinator-reference.md').read_text()
     for filename in ('hermes-prerequisites.md','hermes-deployment-receipts.md','hermes-performance.md'):
         result[root / 'scripts' / filename] = (SOURCE.parent.parent / 'documentation' / filename).read_text()
-    for filename in ('kanban-owner-alerts.py', 'owner-blocker-authoring-guard.py',
+    for filename in ('hermes_common.py', 'kanban-owner-alerts.py', 'owner-blocker-authoring-guard.py',
                      'kanban-performance.py', 'kanban-blockers.py', 'deployment-receipt.py',
                      'review-verdict-guard.py', 'daily-steward-window.py', 'steward-readonly-guard.py'):
         result[root / 'scripts' / filename] = (SOURCE / filename).read_text()
@@ -155,17 +176,23 @@ def changes(root, pending=None):
                 raise ValueError('Expected exactly one standard-implementer description')
             result[metadata] = updated
     # These are complete maintained skills, not model-specific profile copies.
-    for home in [root, *(root / 'profiles' / name for name in PROFILES
-                          if (root / 'profiles' / name).is_dir())]:
-        for skill, target in [('requesting-code-review.md', 'software-development/requesting-code-review/SKILL.md'),
-                              ('sdlc-review.md', 'devops/sdlc-review/SKILL.md')]:
+    # Only roles that implement, review or route source work carry them; see
+    # REVIEW_SKILL_PROFILES above for the exclusion rationale.
+    for name in REVIEW_SKILL_PROFILES:
+        home = root / 'profiles' / name
+        if not home.is_dir():
+            continue
+        for skill, target in REVIEW_SKILLS:
             result[home / 'skills' / target] = (SOURCE / 'instructions' / skill).read_text()
     targets = {
         'head-coordinator': [('kanban-orchestration.md', 'devops/kanban-orchestration/SKILL.md'),
-                             ('activation-handoffs.md', 'devops/kanban-orchestration/references/activation-handoffs.md')],
+                             ('activation-handoffs.md', 'devops/kanban-orchestration/references/activation-handoffs.md'),
+                             ('queue-recovery.md', 'devops/kanban-orchestration/references/queue-recovery.md'),
+                             ('source-to-service-planning.md', 'devops/kanban-orchestration/references/source-to-service-planning.md')],
         'board-steward': [('blocker-triage.md', 'devops/board-steward/references/blocker-triage.md')],
         'feature-reviewer': [('taskforce-feature-audit.md', 'autonomous-ai-agents/taskforce-feature-audit/SKILL.md'),
-                             ('kanban-board-inspection.md', 'autonomous-ai-agents/taskforce-feature-audit/references/kanban-board-inspection.md')],
+                             ('kanban-board-inspection.md', 'autonomous-ai-agents/taskforce-feature-audit/references/kanban-board-inspection.md'),
+                             ('offline-state-probe.md', 'autonomous-ai-agents/taskforce-feature-audit/references/offline-state-probe.md')],
     }
     for name, files in targets.items():
         if (root / 'profiles' / name).is_dir():
@@ -176,23 +203,45 @@ def changes(root, pending=None):
     return {p: t for p, t in result.items() if not p.exists() or p.read_text() != t}
 
 
+def stale_review_skills(root):
+    """Copies of the review skills at excluded scopes this installer owns.
+
+    A stale copy is removed only when it is byte-identical to the tracked
+    source, i.e. one this installer previously put there. An independently
+    edited copy is never deleted; it is reported so the operator reconciles it.
+    """
+    stale = []
+    excluded = [root] + [root / 'profiles' / name for name in PROFILES
+                          if name not in REVIEW_SKILL_PROFILES]
+    for home in excluded:
+        if not home.is_dir():
+            continue
+        for skill, target in REVIEW_SKILLS:
+            path = home / 'skills' / target
+            if not path.exists():
+                continue
+            if path.read_text() == (SOURCE / 'instructions' / skill).read_text():
+                stale.append(path)
+    return stale
+
+
 def install(root, check=False, skills_only=False):
     pending = skill_changes(root) if skills_only else changes(root)
+    stale = stale_review_skills(root)
+    for path in stale:
+        print(f'{"drift" if check else "remove"}: stale review skill {path}')
+        if check:
+            continue
+        hermes_common.backup_file(root, 'instruction-policy', path)
+        path.unlink()
     for path, content in pending.items():
         print(f'{"drift" if check else "install"}: {path}')
         if check:
             continue
         if path.exists():
-            old = path.read_bytes()
-            backup = root / 'backups/instruction-policy' / hashlib.sha256(str(path).encode()).hexdigest()[:12]
-            backup.mkdir(parents=True, exist_ok=True, mode=0o700)
-            copy = backup / hashlib.sha256(old).hexdigest()
-            if not copy.exists():
-                copy.write_bytes(old)
-                copy.chmod(0o600)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content)
-    return int(check and bool(pending))
+            hermes_common.backup_file(root, 'instruction-policy', path)
+        hermes_common.atomic_write(path, content)
+    return int(check and (bool(pending) or bool(stale)))
 
 
 if __name__ == '__main__':

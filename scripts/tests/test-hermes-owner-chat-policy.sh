@@ -11,6 +11,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+sys.path.insert(0, str(Path(sys.argv[1]) / 'scripts/hermes'))
 spec = importlib.util.spec_from_file_location('policy', Path(sys.argv[1]) / 'scripts/hermes/install-owner-chat-policy.py')
 policy = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(policy)
@@ -67,6 +68,52 @@ class OwnerChatPolicyTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 policy.install(Path('/unused'), 'simplex:group:1')
             run.assert_not_called()
+
+    def test_check_reports_drift_without_writing_or_unsubscribing(self):
+        with tempfile.TemporaryDirectory(prefix='nixhomeserver-owner-chat-policy-') as tmp:
+            root = Path(tmp)
+            soul = root / 'profiles/head-coordinator/SOUL.md'
+            soul.parent.mkdir(parents=True)
+            board = root / 'kanban/boards/one/board.json'
+            board.parent.mkdir(parents=True)
+            board.write_text('{}')
+            rows = []
+            auto_subscribe = 'false\n'
+            seen = []
+
+            def run(args, **kwargs):
+                seen.append(list(args))
+                if 'config' in args and 'get' in args:
+                    return subprocess.CompletedProcess(args, 0, auto_subscribe, '')
+                if 'notify-list' in args:
+                    return subprocess.CompletedProcess(args, 0, json.dumps(rows), '')
+                return subprocess.CompletedProcess(args, 0, '', '')
+
+            def mutating_calls():
+                return [call for call in seen
+                        if 'notify-unsubscribe' in call or ('config' in call and 'set' in call)]
+
+            with patch.object(policy.subprocess, 'run', side_effect=run):
+                soul.write_text('# Coordinator\nKeep the deploy gate.\n')
+                self.assertEqual(1, policy.check(root, 'simplex:3'))
+                self.assertEqual('# Coordinator\nKeep the deploy gate.\n', soul.read_text())
+                self.assertEqual([], mutating_calls())
+
+                policy.install(root, 'simplex:3')
+                seen.clear()
+                self.assertEqual(0, policy.check(root, 'simplex:3'))
+                self.assertEqual([], mutating_calls())
+
+                rows.append(dict(task_id='t_done', platform='simplex', chat_id='3', thread_id=''))
+                self.assertEqual(1, policy.check(root, 'simplex:3'))
+                self.assertEqual(1, len(rows))
+                self.assertEqual([], mutating_calls())
+
+                auto_subscribe = 'true\n'
+                self.assertEqual(3, policy.check(root, 'simplex:3'))
+                rows.clear()
+                self.assertEqual(2, policy.check(root, 'simplex:3'))
+            self.assertIn('unsolicited files', soul.read_text())
 
     def test_malformed_policy_fails_before_config_changes(self):
         with tempfile.TemporaryDirectory(prefix='nixhomeserver-owner-chat-policy-') as tmp:

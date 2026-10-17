@@ -20,6 +20,8 @@ the assigned checkout's current instructions or prove a running turn refreshed.
 | Optional application module, integrations or removal | `nixhomeserver-module-change` | Implementers change the module; reviewer checks the contract; auditor uses it for planning. |
 | Long work that may outlast a pending server shutdown | `nixhomeserver-shutdown-guard` | Use existing operational authority or route the timer action to the coordinator. |
 | Rendered frontend work | Project `.agents/skills/frontend-design/SKILL.md` | Read the existing project workflow and its references; implementers build and reviewers apply its review discipline within their role. |
+| Taskforce feature audit (commissioned only) | `taskforce-feature-audit` | feature-reviewer audits within the audit card's offline limits and report contract. |
+| Coordinator routing or recovery | `kanban-orchestration` | head-coordinator only; follow its references for recovery recipes and read-only commissioning. |
 
 Keep the existing `requesting-code-review`, `sdlc-review`, orchestration, feature
 audit and steward skills as the owners of those workflows. Do not replace them

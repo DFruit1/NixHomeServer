@@ -129,11 +129,22 @@ def worker(args):
         for name, path in DOCS.items():
             for alias in (f'~/.hermes/scripts/{name}', str(args.root / 'scripts' / name), name):
                 instructions[alias] = policy_text(path)
+        # The coordinator's installed orchestration skill is a real, readable
+        # surface the routing table points at; serve it and its references so
+        # an on-demand load is not an unavailable fixture operation.
+        for rel, path in (('kanban-orchestration/SKILL.md', SOURCE / 'instructions/kanban-orchestration.md'),
+                          ('kanban-orchestration/references/activation-handoffs.md', SOURCE / 'instructions/activation-handoffs.md'),
+                          ('kanban-orchestration/references/queue-recovery.md', SOURCE / 'instructions/queue-recovery.md'),
+                          ('kanban-orchestration/references/source-to-service-planning.md', SOURCE / 'instructions/source-to-service-planning.md')):
+            for base in ('~/.hermes/profiles/head-coordinator/skills/devops',
+                         str(args.root / 'profiles/head-coordinator/skills/devops')):
+                instructions[f'{base}/{rel}'] = policy_text(path)
         for name, filename in ROLES.items():
             path = SOURCE / 'taskforce' / filename
             for base in ('~/.hermes', str(args.root), str(home)):
                 instructions[f'{base}/profiles/{name}/SOUL.md'] = policy_text(path)
-        fixture = Fixture(args.worker, instructions, scratch=args.scratch)
+        fixture = Fixture(args.worker, instructions, scratch=args.scratch,
+                          hermes_prefixes=('~/.hermes', str(args.root)))
         role_text = '\n\n'.join(policy_text(p) for p in role_paths)
         system = (role_text + '\n\n' + policy_text(DOCS['hermes-skill-routing.md']) + '\n\n' + preload
                   + '\n\nThis isolated trial uses assigned fixture tools. All board actions '

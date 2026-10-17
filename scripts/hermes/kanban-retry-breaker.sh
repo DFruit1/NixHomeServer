@@ -64,6 +64,7 @@
 # -----
 #   scripts/hermes/kanban-retry-breaker.sh            # apply (parks cards)
 #   scripts/hermes/kanban-retry-breaker.sh --check    # report only, change nothing
+#   scripts/hermes/kanban-retry-breaker.sh --help     # usage
 #
 # Exit status is part of the contract, because this runs unattended from cron
 # where "printed nothing" and "could not look" are otherwise the same event:
@@ -110,7 +111,20 @@ export HERMES_KANBAN_HOME="$HERMES_ROOT"
 DB="${KANBAN_DB:-$HERMES_ROOT/kanban/boards/$HERMES_BOARD/kanban.db}"
 
 check_only=false
-[[ "${1:-}" == "--check" ]] && check_only=true
+case "${1:-}" in
+  --check) check_only=true ;;
+  --help|-h)
+    cat <<'EOF'
+Usage: scripts/hermes/kanban-retry-breaker.sh [--check]
+
+  --check    Report would-park cards only; change nothing (default: apply).
+  -h, --help Show this help.
+
+Environment: HERMES_ROOT, HERMES_BOARD, RETRY_BREAKER_THRESHOLD,
+HERMES_BIN, KANBAN_DB (see the header comments for each).
+EOF
+    exit 0 ;;
+esac
 
 [[ "$THRESHOLD" =~ ^[1-9][0-9]*$ ]] || {
   echo "RETRY_BREAKER_THRESHOLD must be a positive integer, got '$THRESHOLD'" >&2
@@ -128,6 +142,17 @@ if [[ ! -x "$HERMES_BIN" ]]; then
   # that cannot block is not a breaker.
   echo "RETRY_BREAKER_NO_CLI $HERMES_BIN is not executable; cannot park cards" >&2
   exit 3
+fi
+
+# One breaker per board at a time: overlapping 15-minute ticks double-attempt
+# the same block, and a hung CLI call would otherwise stall the tick after it.
+# A held lock skips this tick; the next one re-checks the same streak.
+state_dir="$HERMES_ROOT/state"
+mkdir -p "$state_dir"
+exec 9>"$state_dir/kanban-retry-breaker-$HERMES_BOARD.lock"
+if ! flock -n 9; then
+  echo "RETRY_BREAKER_LOCKED board=$HERMES_BOARD (another tick is running); skipping" >&2
+  exit 0
 fi
 
 # Why the schema is probed before it is queried
@@ -235,7 +260,8 @@ while IFS= read -r row; do
   # not a failure: the card got a real attempt instead of being parked, and one
   # such card is not a broken breaker. So it is reported on stderr and the tick
   # still succeeds, rather than parking a card mid-turn or retrying into a lock.
-  if "$HERMES_BIN" kanban --board "$HERMES_BOARD" block "$id" --kind capability "$reason" >/dev/null; then
+  # Bounded: an unbounded CLI call would hold this tick (and its lock) open.
+  if timeout 60 "$HERMES_BIN" kanban --board "$HERMES_BOARD" block "$id" --kind capability "$reason" >/dev/null; then
     echo "PARKED $id ${assignee:-unassigned} streak=$streak threshold=$THRESHOLD kind=capability"
     parked=$((parked + 1))
   else

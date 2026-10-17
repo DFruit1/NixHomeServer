@@ -370,4 +370,28 @@ if HERMES_BIN="$missing_cli/hermes" run_breaker >/dev/null 2>&1; then
 fi
 pass "refuses loudly when the hermes CLI is unavailable"
 
+# --- an overlapping tick skips rather than racing the same block ---------------
+#
+# Two overlapping ticks double-attempt the same block; the flock makes the
+# second skip. The lock lives under HERMES_ROOT/state, so a test holds it the
+# same way the script does.
+state_dir="$HERMES_KANBAN_HOME/state"
+mkdir -p "$state_dir"
+exec 9>"$state_dir/kanban-retry-breaker-testboard.lock"
+flock 9
+lock_out="$(run_breaker 2>&1)" || true
+grep -q 'RETRY_BREAKER_LOCKED' <<<"$lock_out" ||
+  fail "an overlapping tick did not skip while the lock was held: $lock_out"
+grep -q 'PARKED' <<<"$lock_out" &&
+  fail "an overlapping tick still parked a card while the lock was held"
+pass "an overlapping tick skips while the lock is held"
+exec 9>&-
+
+# --- --help -------------------------------------------------------------------
+
+help_out="$("$BREAKER" --help)"
+grep -q 'Usage: scripts/hermes/kanban-retry-breaker.sh' <<<"$help_out" ||
+  fail "--help did not print usage"
+pass "prints usage for --help"
+
 echo "▶ kanban retry breaker: all checks passed"

@@ -129,10 +129,26 @@ def guard(payload, root, repo):
             'steward-coordinator-request.py helper in SimpleX. Do not execute the change.'}
 
 
+def default_repo(root):
+    """The repo relative steward terminal paths resolve against.
+
+    STEWARD_REPO overrides; otherwise the nixhomeserver board's recorded
+    default_workdir is authoritative, with the tracked workstation path as the
+    final fallback for a machine whose board state is not yet installed.
+    """
+    override = os.environ.get('STEWARD_REPO')
+    if override:
+        return Path(override)
+    try:
+        workdir = json.loads((root / 'kanban/boards/nixhomeserver/board.json').read_text()).get('default_workdir')
+    except (OSError, ValueError):
+        workdir = None
+    return Path(workdir) if workdir else Path('/home/dsaw/Projects/NixOS')
+
+
 if __name__ == '__main__':
     try:
         root = Path(os.environ.get('HERMES_ROOT', str(Path.home() / '.hermes')))
-        repo = Path(os.environ.get('STEWARD_REPO', '/home/dsaw/Projects/NixOS'))
-        print(json.dumps(guard(json.load(sys.stdin), root, repo)))
+        print(json.dumps(guard(json.load(sys.stdin), root, default_repo(root))))
     except (ValueError, TypeError, AttributeError):
         print(json.dumps({'action': 'block', 'message': 'Invalid steward tool request; no action allowed.'}))

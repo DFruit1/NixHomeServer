@@ -417,9 +417,14 @@ pass "output is byte-stable across runs"
 
 sqlite3 "$DB" "DELETE FROM tasks;"
 # The owner-comment detector is cross-board, so the second board must be cleared
-# too or its finding keeps the report non-empty.
+# too or its finding keeps the report non-empty. A fresh mirror epoch for every
+# board is part of the healthy case since the staleness detector was added.
 sqlite3 "$OTHER_DIR/kanban.db" "DELETE FROM tasks;"
+mkdir -p "$fixture/hermes/state/durability-sync"
+printf '%s\n' "$now" >"$fixture/hermes/state/durability-sync/testboard.epoch"
+printf '%s\n' "$now" >"$fixture/hermes/state/durability-sync/otherboard.epoch"
 [[ -z "$(run_health)" ]] || fail "a clean board still produced findings"
+rm -rf "$fixture/hermes/state/durability-sync"
 pass "a clean board produces no findings"
 
 # --- graceful behaviour on a broken install ---------------------------------
@@ -1134,6 +1139,75 @@ map_second="$(run_health | sha256sum)"
 [[ "$map_first" == "$map_second" ]] ||
   fail "the map-config report is not byte-stable; the cron monitor would never suppress"
 pass "the map-config report is byte-stable across runs"
+
+# --- durability mirror staleness -----------------------------------------------
+#
+# The durability-sync cron records each board's last successful mirror as an
+# epoch under state/durability-sync/. A mirror that has gone stale leaves the
+# board workstation-only with no wake-up anywhere else: the sync's failure
+# delivery is local and its per-tick failures self-clear from the job log, so
+# this line is the only persistent signal. It must appear for a missing epoch
+# (never mirrored, or the cron stopped before its first success) and for a
+# stale one, carry no age (a time-stable line wakes the coordinator once, not
+# at every bucket rollover), and self-clear on the next successful mirror.
+state_dir="$fixture/hermes/state/durability-sync"
+mirror_out="$(run_health)"
+grep -q '^MIRROR_STALE testboard needs=verify-durability-sync-cron' <<<"$mirror_out" ||
+  fail "a board with no recorded mirror epoch was not reported as stale"
+grep -q '^MIRROR_STALE otherboard ' <<<"$mirror_out" ||
+  fail "the mirror-staleness detector is not cross-board"
+pass "reports a board whose mirror has never succeeded"
+
+mkdir -p "$state_dir"
+printf '%s\n' "$now" >"$state_dir/testboard.epoch"
+printf '%s\n' "$now" >"$state_dir/otherboard.epoch"
+fresh_out="$(run_health)"
+grep -q 'MIRROR_STALE' <<<"$fresh_out" &&
+  fail "a freshly mirrored board was reported as stale"
+pass "a fresh mirror epoch silences the finding"
+
+printf '%s\n' "$((now - 3601))" >"$state_dir/testboard.epoch"
+stale_out="$(run_health)"
+grep -q '^MIRROR_STALE testboard ' <<<"$stale_out" ||
+  fail "a mirror an hour stale (default threshold) was not reported"
+grep -q '^MIRROR_STALE otherboard ' <<<"$stale_out" &&
+  fail "a fresh epoch on another board leaked into a stale report"
+pass "reports a mirror past the default staleness threshold"
+
+# The boundary is inclusive, and the knob is honoured, so an operator can
+# tighten the threshold without editing the script.
+printf '%s\n' "$((now - 99))" >"$state_dir/testboard.epoch"
+boundary_out="$(BOARD_HEALTH_MIRROR_STALE_SEC=100 run_health)"
+grep -q '^MIRROR_STALE testboard ' <<<"$boundary_out" ||
+  fail "the staleness boundary is not inclusive at the configured threshold"
+printf '%s\n' "$((now - 100))" >"$state_dir/testboard.epoch"
+exact_out="$(BOARD_HEALTH_MIRROR_STALE_SEC=100 run_health)"
+grep -q '^MIRROR_STALE testboard ' <<<"$exact_out" ||
+  fail "an epoch exactly at the threshold must still count as stale"
+grep -q 'age=' <<<"$stale_out" &&
+  fail "the MIRROR_STALE line carries an age; it must be time-stable"
+pass "honours the threshold knob with an inclusive boundary, without ages"
+
+# --- underscore and dot prefixed boards are not boards -------------------------
+#
+# Every board enumerator in this script used to skip exactly `_archived`, while
+# the rest of the fleet skips any `_` or `.` prefixed slug. A hypothetical
+# `_staging` or `.draft` board would have been reported by the steward but
+# never mirrored or monitored. The cross-board detectors must agree with the
+# durability sync's rule.
+mkdir -p "$fixture/hermes/kanban/boards/_staging" "$fixture/hermes/kanban/boards/.draft"
+: >"$fixture/hermes/kanban/boards/_staging/kanban.db"
+: >"$fixture/hermes/kanban/boards/.draft/kanban.db"
+prefixed_out="$(run_health)"
+grep -q '_staging' <<<"$prefixed_out" &&
+  fail "an underscore-prefixed board leaked into the report"
+grep -q '\.draft' <<<"$prefixed_out" &&
+  fail "a dot-prefixed board leaked into the report"
+grep -q 'SCAN_UNAVAILABLE' <<<"$prefixed_out" &&
+  fail "a bookkeeping board produced a scan-unavailable line; it must be skipped entirely"
+pass "skips underscore and dot prefixed boards entirely"
+
+rm -rf "$fixture/hermes/kanban/boards/_staging" "$fixture/hermes/kanban/boards/.draft" "$state_dir"
 
 # --- the installed copy runs the same suite ----------------------------------
 #

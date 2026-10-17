@@ -15,11 +15,12 @@
 # prints one line per finding. The head-coordinator is the decision half; see
 # the "Board health" section of profiles/head-coordinator/SOUL.md.
 #
-# Every finding is scoped to $HERMES_BOARD except OWNER_COMMENT_UNACTED and
-# CAPABILITY_OWNER_INPUT, which enumerate every board: an owner-answered gate and
-# an owner-sourced capability hold can sit on any board, and the head-coordinator
-# must be woken for them whichever board this cron names. Their lines carry the
-# board slug so the coordinator acts on the right card.
+# Every finding is scoped to $HERMES_BOARD except OWNER_COMMENT_UNACTED,
+# CAPABILITY_OWNER_INPUT and MIRROR_STALE, which enumerate every board: an
+# owner-answered gate, an owner-sourced capability hold and a board whose
+# durability mirror has gone stale can sit on any board, and the
+# head-coordinator must be woken for them whichever board this cron names.
+# Their lines carry the board slug so the coordinator acts on the right card.
 #
 # It is wired as a hermes cron `--monitor-script`, which hashes the output
 # byte-for-byte and suppresses the agent run while the hash is unchanged. The
@@ -48,6 +49,7 @@
 #   BOARD_HEALTH_READY_STALE_SEC   ready+unclaimed before reporting (default 900)
 #   BOARD_HEALTH_READY_OLD_SEC     ready at all before reporting hard (default 3600)
 #   BOARD_HEALTH_TRIAGE_RECURRENCES  triage blocks before reporting (default 2)
+#   BOARD_HEALTH_MIRROR_STALE_SEC   board mirror age before reporting (default 3600)
 #   BOARD_HEALTH_OWNER_AUTHORS     comment authors treated as the owner speaking
 #                                  on a card (default: desktop)
 
@@ -58,6 +60,7 @@ HERMES_BOARD="${HERMES_BOARD:-nixhomeserver}"
 READY_STALE_SEC="${BOARD_HEALTH_READY_STALE_SEC:-900}"
 READY_OLD_SEC="${BOARD_HEALTH_READY_OLD_SEC:-3600}"
 TRIAGE_RECURRENCES="${BOARD_HEALTH_TRIAGE_RECURRENCES:-2}"
+MIRROR_STALE_SEC="${BOARD_HEALTH_MIRROR_STALE_SEC:-3600}"
 # Comment authors that are the owner speaking on a card. The Hermes desktop app
 # authors the owner's own card comments as `desktop`; agents author their profile
 # slug. A comma-separated list so a second owner client can be admitted without
@@ -88,6 +91,7 @@ require_positive_int() {
 require_positive_int BOARD_HEALTH_READY_STALE_SEC "$READY_STALE_SEC"
 require_positive_int BOARD_HEALTH_READY_OLD_SEC "$READY_OLD_SEC"
 require_positive_int BOARD_HEALTH_TRIAGE_RECURRENCES "$TRIAGE_RECURRENCES"
+require_positive_int BOARD_HEALTH_MIRROR_STALE_SEC "$MIRROR_STALE_SEC"
 
 if [[ ! -f "$DB" ]]; then
   echo "BOARD_MISSING $HERMES_BOARD (no kanban.db under $HERMES_ROOT)"
@@ -654,7 +658,9 @@ shopt -s nullglob
 for owner_db in "$HERMES_ROOT"/kanban/boards/*/kanban.db; do
   [[ -f "$owner_db" ]] || continue
   owner_board="$(basename "$(dirname "$owner_db")")"
-  [[ "$owner_board" == "_archived" ]] && continue
+  case "$owner_board" in
+    _*|.*) continue ;;
+  esac
   if ! owner_rows="$(sqlite3 -separator '|' "$owner_db" "
         SELECT t.id,
                COALESCE(t.assignee, ''),
@@ -717,7 +723,9 @@ shopt -s nullglob
 for cap_db in "$HERMES_ROOT"/kanban/boards/*/kanban.db; do
   [[ -f "$cap_db" ]] || continue
   cap_board="$(basename "$(dirname "$cap_db")")"
-  [[ "$cap_board" == "_archived" ]] && continue
+  case "$cap_board" in
+    _*|.*) continue ;;
+  esac
   if ! cap_rows="$(sqlite3 -separator '|' "$cap_db" "
         SELECT t.id,
                COALESCE(t.assignee, ''),
@@ -796,5 +804,39 @@ if [[ -n "$repo" ]] && git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
     emit "MASTER_UNTRACKED needs=push-master"
   fi
 fi
+
+# ---------------------------------------------------------------------------
+# Durability mirror staleness (EVERY board)
+# ---------------------------------------------------------------------------
+# The durability-sync cron records the epoch of each board's last successful
+# mirror under $HERMES_ROOT/state/durability-sync/<board>.epoch. A mirror that
+# has gone stale -- a cron a hermes upgrade dropped, a workstation-to-server
+# SSH outage, a failing rotation -- leaves the boards workstation-only, and
+# the sync's own failure delivery is local, so nothing wakes anyone. The
+# sync's per-tick failures also self-clear from the job log; this line stays
+# until a mirror actually succeeds again, so the coordinator sees a
+# persistent outage once, and sees it resolved when it clears.
+#
+# No age bucket on the line, for the same reason as the capability detector:
+# an advancing age would re-wake the coordinator at every bucket rollover on
+# a card it has already been shown. The line is time-stable and self-clearing
+# on the next successful mirror.
+shopt -s nullglob
+for mirror_db in "$HERMES_ROOT"/kanban/boards/*/kanban.db; do
+  [[ -f "$mirror_db" ]] || continue
+  mirror_board="$(basename "$(dirname "$mirror_db")")"
+  case "$mirror_board" in
+    _*|.*) continue ;;
+  esac
+  mirror_epoch_file="$HERMES_ROOT/state/durability-sync/$mirror_board.epoch"
+  mirror_epoch=""
+  if [[ -r "$mirror_epoch_file" ]]; then
+    mirror_epoch="$(tr -cd '0-9' <"$mirror_epoch_file")"
+  fi
+  if [[ -z "$mirror_epoch" ]] || ((NOW - mirror_epoch >= MIRROR_STALE_SEC)); then
+    emit "MIRROR_STALE $mirror_board needs=verify-durability-sync-cron"
+  fi
+done
+shopt -u nullglob
 
 exit 0

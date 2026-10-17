@@ -14,6 +14,7 @@ import unittest
 from unittest.mock import patch
 import sys
 
+sys.path.insert(0, str(Path(sys.argv[1]) / 'scripts/hermes'))
 spec = importlib.util.spec_from_file_location('taskforce', Path(sys.argv[1]) / 'scripts/hermes/review-taskforce.py')
 tf = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(tf)
@@ -40,14 +41,18 @@ class TaskforceTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 installer.worker_cap(malformed)
 
-    def test_deploy_source_policy_replaces_only_quiescence_section(self):
+    def test_legacy_quiescence_section_is_preserved_not_rewritten(self):
+        # The deploy-source splice was dead code: its legacy guard matched no
+        # installed SOUL, and the live policy moved into the taskforce
+        # templates and the coordinator reference. A legacy **2a. section is
+        # operator content and must survive installation untouched rather
+        # than being rewritten by a stale template.
         before = ('# Head\n## Continuous improvement intake\nOld intake.\n'
                   '## Deploy gate\nKeep test and switch commands.\n'
                   '**2a. Old global freeze.**\nWait for every board.\n'
                   '**3. On rejection.**\nPreserve rejection routing.\n')
         actual = installer.soul('head-coordinator', before)
-        self.assertNotIn('Wait for every board.', actual)
-        self.assertIn('isolated worktrees', actual)
+        self.assertIn('Wait for every board.', actual)
         self.assertIn('Keep test and switch commands.', actual)
         self.assertIn('Preserve rejection routing.', actual)
         self.assertEqual(actual, installer.soul('head-coordinator', actual))

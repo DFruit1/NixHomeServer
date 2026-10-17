@@ -16,6 +16,7 @@ from io import StringIO
 import unittest
 from unittest.mock import patch
 
+sys.path.insert(0, str(Path(sys.argv[1]) / 'scripts/hermes'))
 spec = importlib.util.spec_from_file_location('alerts', Path(sys.argv[1]) / 'scripts/hermes/kanban-owner-alerts.py')
 alerts = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(alerts)
@@ -649,11 +650,19 @@ class AlertsTest(unittest.TestCase):
         alerts.install(self.root)
         self.assertEqual(installed, soul.read_text())
         self.assertEqual(installed_auditor, auditor.read_text())
+        # The pre-install head policy is archived, content-addressed, and a
+        # no-change reinstall adds no new archive.
+        archived = {p.read_bytes() for p in (self.root / 'backups/owner-alerts').rglob('*')
+                    if p.is_file()}
+        self.assertIn(('# Head\nKeep existing deploy policy.\n' + alerts.MARKER + '\n' + legacy).encode(),
+                      archived)
+        alerts.install(self.root)
+        self.assertEqual(archived, {p.read_bytes() for p in (self.root / 'backups/owner-alerts').rglob('*')
+                                    if p.is_file()})
         soul.write_text(installed + '\n## Another policy\nPreserve this later addition.\n')
         alerts.install(self.root)
         self.assertIn('Preserve this later addition.', soul.read_text())
         self.assertFalse(json.loads(cron.read_text())['jobs'][0]['enabled'])
-        self.assertEqual(3, len(list((self.root / 'backups/owner-alerts').glob('*.md'))))
 
     def test_install_rejects_ambiguous_policy_markers_before_any_write(self):
         head = self.env.parent / 'SOUL.md'

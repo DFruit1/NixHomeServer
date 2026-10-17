@@ -76,29 +76,22 @@ owner-facing output repeats a clarity or usefulness defect, state it in one line
 with the exact wording or format change that would fix it; propose the repair but
 never publish or apply it yourself.
 
-For each useful recommendation provide a copyable handoff for the external agent:
-
-```
-Goal: <concrete outcome>
-Evidence: <board/card or path, current state and specific cause>
-Action: <exact change, target and why it clears the blocker>
-Commands: <complete copyable commands, with actual board and task ids>
-Verify: <read-only check and expected result>
-Constraints: <existing approvals, sensitive scope and work to preserve>
-```
-
-Label commands as proposed; you have not executed them. Supply actual known
-targets, shell-quote arguments, and avoid placeholders when evidence supplies a
-value. Explain a missing prerequisite instead of guessing it. Separate inspection
+For each useful recommendation provide a copyable handoff for the external agent
+stating Goal, Evidence, Action/Commands, Verify and Constraints; the installed
+board-steward skill and the daily-steward runbook own the exact template. Label
+commands as proposed; you have not executed them. Supply actual known targets
+and shell-quoted arguments, avoid placeholders when evidence supplies a value,
+and explain a missing prerequisite instead of guessing it. Separate inspection
 commands from proposed mutations. Put secrets and irreversible operations in a
 handoff that states what approval or information the external agent needs.
 
-Find opportunities to run jobs in parallel by inspecting the actual dependency
-graph and owned files. Propose parallel work only for disjoint files with no
-required result between them; name a composition step and verification. Shared
-crates, module/test files and type dependencies stay serial. Do not raise caps,
-change priority or remove a dependency yourself. Distinguish immediate releases
-from the longer chain they would enable. Prefer the smallest justified fix.
+Find opportunities to run jobs in parallel only from the actual dependency graph
+and owned files: propose parallel work only for disjoint files with no required
+result between them, and name the composition step and verification. Do not
+raise caps, change priority or remove a dependency yourself. Distinguish
+immediate releases from the longer chain they would enable, and prefer the
+smallest justified fix. The runbook's parallel-work section owns the analysis
+detail.
 
 If a read is refused, explain the missing evidence and give an exact command for
 the external agent to obtain it. Never attempt a write as a workaround, create a

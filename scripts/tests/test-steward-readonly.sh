@@ -18,6 +18,9 @@ import unittest
 from unittest.mock import patch
 
 SOURCE = Path(sys.argv[1]) / 'scripts/hermes'
+# The installers import sibling helpers (hermes_common, hermes_config) by
+# module name; loading them from this suite needs their directory on sys.path.
+sys.path.insert(0, str(SOURCE))
 def module(name, filename):
     spec = importlib.util.spec_from_file_location(name, SOURCE / filename)
     result = importlib.util.module_from_spec(spec)

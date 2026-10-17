@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Install fleet instructions and the owner-approved global cap; preserve model settings."""
 import argparse
-import hashlib
 import importlib.util
 import json
 import os
@@ -10,7 +9,8 @@ import re
 import shlex
 import subprocess
 import sys
-import tempfile
+
+import hermes_common
 
 SOURCE = Path(__file__).resolve().parent
 sys.path.insert(0, str(SOURCE))
@@ -114,12 +114,6 @@ def soul(name, existing):
     for old in ('A card from `principal-consultant` arrives with the plan attached.',
                 'A card from `principal-consultant` or `project-auditor` arrives with the plan attached.'):
         existing = existing.replace(old, 'A card from `project-auditor` or the owner arrives with the plan attached.')
-    if re.search(r'^\*\*2a\.', existing, re.M):
-        quiescence = (SOURCE / 'taskforce/deploy-source-policy.md').read_text().rstrip() + '\n\n'
-        existing, count = re.subn(r'^\*\*2a\..*?(?=^\*\*3\.)', lambda _: quiescence,
-                                  existing, flags=re.M | re.S)
-        if count != 1:
-            raise ValueError('Expected one bounded deploy quiescence section')
     existing = re.sub(r'^\| `local-implementer` \|.*$',
                       '| `local-implementer` | Confidential work with local inference; network tools receive only non-sensitive inputs. |',
                       existing, flags=re.M)
@@ -187,14 +181,6 @@ def changed_files(root, policy_only=False):
     for config in configs:
         if config.exists() and not config.parent.name.startswith('.'):
             changes[config] = worker_cap(changes.get(config, config.read_text()))
-    phone_skill = root / 'profiles/head-coordinator/skills/devops/kanban-orchestration/SKILL.md'
-    if phone_skill.exists():
-        text, count = re.subn(r'^## Owner-facing SimpleX delivery\n.*?(?=^## |\Z)',
-                             lambda _: (SOURCE / 'taskforce/coordinator-phone-policy.md').read_text().rstrip() + '\n\n',
-                             phone_skill.read_text(), flags=re.M | re.S)
-        if count != 1:
-            raise ValueError('Expected one coordinator phone policy section')
-        changes[phone_skill] = text
     # Reuse the existing bounded hook editor; keep unrelated hooks verbatim.
     spec = importlib.util.spec_from_file_location('steward_installer', SOURCE / 'install-steward-readonly.py')
     hooks = importlib.util.module_from_spec(spec)
@@ -242,23 +228,9 @@ def install(root, check=False, cron=True, policy_only=False):
         if check:
             continue
         path.parent.mkdir(parents=True, exist_ok=True)
-        if path.exists():
-            backup = root / 'backups/review-taskforce' / hashlib.sha256(str(path).encode()).hexdigest()[:12]
-            backup.mkdir(parents=True, exist_ok=True, mode=0o700)
-            old = path.read_bytes()
-            copy = backup / hashlib.sha256(old).hexdigest()
-            if not copy.exists():
-                copy.write_bytes(old)
-                copy.chmod(0o600)
-        fd, temporary = tempfile.mkstemp(dir=path.parent)
-        try:
-            with os.fdopen(fd, 'w') as stream:
-                stream.write(text)
-            os.chmod(temporary, path.stat().st_mode & 0o777 if path.exists() else 0o700)
-            os.replace(temporary, path)
-        finally:
-            if os.path.exists(temporary):
-                os.unlink(temporary)
+        hermes_common.backup_file(root, 'review-taskforce', path)
+        mode = path.stat().st_mode & 0o777 if path.exists() else 0o700
+        hermes_common.atomic_write(path, text, mode=mode)
     if cron and not policy_only and idle:
         job = idle[0]
         prompt = idle_recovery_prompt(job.get('prompt') or '')
@@ -268,7 +240,7 @@ def install(root, check=False, cron=True, policy_only=False):
             if not check:
                 subprocess.run(['hermes', '--profile', 'head-coordinator', 'cron', 'edit',
                                 job['id'], '--monitor-script', 'idle-recovery-monitor.py', '--prompt', prompt],
-                               check=True, env={**os.environ, 'HERMES_HOME': str(root)})
+                                check=True, timeout=60, env={**os.environ, 'HERMES_HOME': str(root)})
     jobs_file = root / 'cron/jobs.json'
     jobs = json.loads(jobs_file.read_text()).get('jobs', []) if jobs_file.exists() else []
     matching = [job for job in jobs if job.get('name') == JOB_NAME]
@@ -280,7 +252,7 @@ def install(root, check=False, cron=True, policy_only=False):
             subprocess.run(['hermes', '--profile', 'default', 'cron', 'create', 'every 1h',
                             '--name', JOB_NAME, '--script', 'review-taskforce-tick.sh', '--no-agent',
                             '--deliver', 'local', '--workdir', str(SOURCE.parent.parent),
-                            '--paused', '--paused-reason', 'Validate taskforce wiring before activation'], check=True, env=env)
+                            '--paused', '--paused-reason', 'Validate taskforce wiring before activation'], check=True, timeout=60, env=env)
     elif cron and not policy_only:
         expected = str(SOURCE.parent.parent)
         if len(matching) != 1 or any(job.get('script') != 'review-taskforce-tick.sh'

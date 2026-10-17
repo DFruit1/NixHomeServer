@@ -124,7 +124,8 @@ isolation. Hermes itself still maintains conversation history and cron receipts.
 
 ## Regular reports and channel
 
-The daily 07:00 job (Australia/Sydney, following daylight saving) reads the
+The daily 07:00 job (in the Hermes scheduler's configured timezone, currently
+Australia/Sydney with daylight saving) reads the
 rolling 24-hour board snapshot and returns its report in the final response.
 The cron scheduler delivers that response to the steward's own SimpleX DM using
 the profile's home channel. The prompt never calls the old group sender.

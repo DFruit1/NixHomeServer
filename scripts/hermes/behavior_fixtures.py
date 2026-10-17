@@ -121,7 +121,7 @@ def checked_review(metadata):
 
 
 class Fixture:
-    def __init__(self, name, instructions=None, scratch=None):
+    def __init__(self, name, instructions=None, scratch=None, hermes_prefixes=()):
         self.name = name
         self.role, self.skills, self.prompt = CASES[name]
         self.files = {'expiry.rs': BUG, 'owner-notes.txt': 'Unrelated owner work: retain exactly.\n',
@@ -130,6 +130,9 @@ class Fixture:
         self.files.update(instructions or {})
         self.instruction_dirs = {str(Path(p).parent) for p in (instructions or {}) if '/scripts/' in p}
         self.scratch = scratch
+        # Readable installation-tree prefixes (the live HERMES_ROOT) that a
+        # live agent may legitimately read; see the not-found rule in _call.
+        self.hermes_prefixes = tuple(str(p) for p in hermes_prefixes)
         self.events = []
         self.cards = {'t_trial': {'id': 't_trial', 'status': 'running', 'assignee': self.role,
                                  'skills': self.skills, 'revision': 'abc1234',
@@ -155,6 +158,19 @@ class Fixture:
         if (name == 'read_file' and self.scratch and '..' not in path.parts
                 and path.is_relative_to(self.scratch)):
             return {'error': 'assigned workspace file not found', 'not_found': True}
+        # A read under the installation tree that the fixture does not model,
+        # or a workspace-relative read of an unmodelled file, is a real
+        # not-found: in the live environment the installation tree is the
+        # agent's own readable root and a relative read resolves inside the
+        # assigned workspace, so an unmodelled file there simply does not
+        # exist. A read outside those, including a `..` escape, stays an
+        # unavailable operation: the fixture is inert and cannot emulate real
+        # filesystem reads there.
+        if name == 'read_file' and not path.is_absolute() and '..' not in path.parts:
+            return {'error': 'file not found in fixture', 'not_found': True}
+        if (name == 'read_file' and self.hermes_prefixes
+                and any(str(path).startswith(prefix) for prefix in self.hermes_prefixes)):
+            return {'error': 'file not found in fixture', 'not_found': True}
         if name == 'write_file':
             if (self.name != 'reproduce-before-fix' or args.get('path') != 'expiry.rs'
                     or args.get('content') not in (BUG, FIX)):

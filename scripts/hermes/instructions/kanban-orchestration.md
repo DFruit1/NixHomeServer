@@ -27,6 +27,9 @@ rules constrain this procedure. Never implement or independently verify source.
    evidence and incomplete corrective parents before a dependency wait, because
    Hermes converts a wait without open parents into needs_input. Retire an old
    rejected-review edge only with replacement acceptance and recorded evidence.
+   When the owner supplies an existing codebase and wants a receiving application
+   designed around it read-only, commission that investigation with
+   references/source-to-service-planning.md rather than ad-hoc reader cards.
 4. Preserve failed workers' partial trees, commits and artifacts. Inspect bounded
    status/log and structured errors, narrow remaining work, then route finishing
    work. Never raise budgets or repeat an unchanged failed investigation. Recover
