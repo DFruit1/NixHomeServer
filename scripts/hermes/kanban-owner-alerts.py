@@ -130,7 +130,7 @@ def token(value):
     # the raw comment is excluded so unrelated chatter does not.
     # Authorship is checked separately; adding its read-only column must not
     # invalidate an unchanged question's existing label during installation.
-    payload = {key: item for key, item in value.items() if key not in ('comment', 'created_by')}
+    payload = {key: item for key, item in value.items() if key not in ('comment', 'created_by', 'blocked_at')}
     summary = owner_summary(value.get('comment', ''))
     if summary:
         payload['summary'] = summary

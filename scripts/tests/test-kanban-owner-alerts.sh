@@ -234,6 +234,34 @@ class AlertsTest(unittest.TestCase):
         self.assertNotIn('two:t_12345678', result.stdout)
         self.assertFalse((self.root / 'kanban/owner-alerts').exists())
 
+    def test_old_decision_identity_survives_blocked_at_metadata(self):
+        for timestamp_schema in (False, True):
+            with self.subTest(timestamp_schema=timestamp_schema):
+                with closing(sqlite3.connect(self.boards['one'])) as db:
+                    if timestamp_schema:
+                        db.execute('ALTER TABLE task_events ADD COLUMN created_at INTEGER')
+                        db.execute('UPDATE task_events SET created_at=1000')
+                    db.commit()
+
+                # Prior snapshots did not include blocked_at. Seed a persisted
+                # label and delivery receipt using that exact token shape.
+                previous_snapshot = alerts.snapshot(self.root / 'kanban/boards/one/board.json')[0]
+                previous_snapshot.pop('blocked_at', None)
+                prior_token = alerts.token(previous_snapshot)
+                state = alerts.load_inbox(self.root)
+                state['next_label'] = 2
+                state['decisions']['D1'] = {
+                    'board': 'one', 'task_id': 't_12345678', 'token': prior_token,
+                    'shown': '', 'compact_complete': True, 'delivered': ['simplex:3'],
+                }
+                errors = []
+                result = alerts.collect(self.root, state, errors)
+
+                self.assertFalse(errors)
+                self.assertEqual('D1', result[2][('one', 't_12345678')])
+                self.assertEqual(['simplex:3'], state['decisions']['D1']['delivered'])
+                self.assertEqual(2, state['next_label'])
+
     def test_check_blockers_warns_on_missing_supplier_and_stale_hold_age(self):
         environment = {**os.environ, 'HERMES_ROOT': str(self.root)}
         with closing(sqlite3.connect(self.boards['one'])) as db:
@@ -703,5 +731,6 @@ class AlertsTest(unittest.TestCase):
                         run.assert_not_called()
                     self.assertEqual(before, {p: p.read_bytes() for p in self.root.rglob('*') if p.is_file()})
 
-unittest.main(argv=['alerts'], verbosity=2)
+test_filter = [os.environ['ALERTS_TEST_FILTER']] if os.environ.get('ALERTS_TEST_FILTER') else []
+unittest.main(argv=['alerts', *test_filter], verbosity=2)
 PY
