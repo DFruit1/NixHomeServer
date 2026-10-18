@@ -354,6 +354,99 @@ class StewardTest(unittest.TestCase):
         self.assertIn('yesterday', output)
         self.assertNotIn('older', output)
 
+    def test_long_blocked_qualifies_on_spell_age_and_on_repeated_reblocking(self):
+        # A long current spell is stuck-in-place work; an old card with a fresh
+        # spell is a feature that keeps being re-blocked. Both belong in the
+        # owner's unblock list, and a merely fresh blocked card does not.
+        boards = self.root / 'kanban/boards'
+        board = boards / 'one'
+        board.mkdir(parents=True)
+        now = int(time.time())
+        with closing(sqlite3.connect(board / 'kanban.db')) as db:
+            db.executescript('''
+                CREATE TABLE tasks (id, title, assignee, status, block_kind,
+                    block_recurrences, consecutive_failures, last_failure_error,
+                    completed_at, worker_pid, last_heartbeat_at, body, created_at);
+                CREATE TABLE task_runs (task_id, profile, status, outcome,
+                    summary, error, started_at, ended_at);
+                CREATE TABLE task_events (id, task_id, run_id, kind, payload, created_at);
+            ''')
+            # (id, created_age, spell_age, reason)
+            for tid, card_age, spell_age, reason in [
+                    ('stuck', 40 * 3600, 30 * 3600, 'spell ran long'),
+                    ('churn', 300 * 3600, 20 * 60, 'reblocked again'),
+                    ('fresh', 3 * 3600, 2 * 3600, 'blocked just now')]:
+                db.execute('INSERT INTO tasks VALUES (?, ?, ?, ?, ?, 1, 0, NULL,'
+                           ' NULL, NULL, NULL, ?, ?)',
+                           (tid, tid, 'worker', 'blocked', 'capability',
+                            '', now - card_age))
+                db.execute('INSERT INTO task_events VALUES (NULL, ?, NULL, ?, ?, ?)',
+                           (tid, 'blocked', json.dumps({'reason': reason}), now - spell_age))
+            db.commit()
+        with patch.object(snapshot, 'BOARDS', boards):
+            output = '\n'.join(snapshot.snapshot_board('one'))
+        # Every blocked card is still listed; only the long ones are qualified.
+        self.assertIn('- fresh @worker', output)
+        long_blocked = output[output.index('LONG BLOCKED'):output.index('LAST 24H DONE')]
+        self.assertIn('LONG BLOCKED (spell>=24h or card>=168h, 2)', long_blocked)
+        self.assertIn('stuck', long_blocked)
+        self.assertIn('churn', long_blocked)
+        self.assertNotIn('fresh', long_blocked)
+        self.assertIn('basis=spell', long_blocked)
+        self.assertIn('basis=card', long_blocked)
+        # The cause comes from the blocking event, not the often-empty failure field.
+        self.assertIn('spell ran long', long_blocked)
+        self.assertIn('reblocked again', long_blocked)
+
+    def test_long_blocked_age_is_unknown_without_history_or_card_age(self):
+        # A board with neither status history nor created_at cannot prove a
+        # block is long; it must report nothing rather than a huge fake age.
+        boards = self.root / 'kanban/boards'
+        board = boards / 'one'
+        board.mkdir(parents=True)
+        with closing(sqlite3.connect(board / 'kanban.db')) as db:
+            db.executescript('''
+                CREATE TABLE tasks (id, title, assignee, status, block_kind,
+                    block_recurrences, consecutive_failures, last_failure_error,
+                    completed_at, worker_pid, last_heartbeat_at, body);
+                CREATE TABLE task_runs (task_id, profile, status, outcome,
+                    summary, error, started_at, ended_at);
+            ''')
+            db.execute('INSERT INTO tasks VALUES (?, ?, ?, ?, NULL, 0, 0, NULL,'
+                       ' NULL, NULL, NULL, ?)', ('x', 'x', 'worker', 'blocked', ''))
+            db.commit()
+        with patch.object(snapshot, 'BOARDS', boards):
+            output = '\n'.join(snapshot.snapshot_board('one'))
+        self.assertIn('BLOCKED:', output)
+        self.assertNotIn('LONG BLOCKED', output)
+
+    def test_long_blocked_thresholds_are_owner_overridable(self):
+        with patch.dict(os.environ, {'STEWARD_LONG_BLOCKED_HOURS': '2',
+                                     'STEWARD_STALE_CARD_HOURS': '4'}):
+            self.assertEqual(2.0, snapshot.long_blocked_hours())
+            self.assertEqual(4.0, snapshot.stale_card_hours())
+        # An unusable value falls back to the documented default rather than
+        # disabling the section or blocking every card.
+        for value in ('', 'none', '-5'):
+            with patch.dict(os.environ, {'STEWARD_LONG_BLOCKED_HOURS': value,
+                                         'STEWARD_STALE_CARD_HOURS': value}):
+                self.assertEqual(snapshot.DEFAULT_LONG_BLOCKED_HOURS, snapshot.long_blocked_hours())
+                self.assertEqual(snapshot.DEFAULT_STALE_CARD_HOURS, snapshot.stale_card_hours())
+
+    def test_long_blocked_marks_an_owner_gate_rather_than_an_unblock_prompt(self):
+        # A long-blocked needs_input card still needs an owner decision, not an
+        # outside-agent fix; the gate flag is what keeps the report honest.
+        now = int(time.time())
+        conn = sqlite3.connect(':memory:')
+        rows = [('gate', 'worker', 'needs_input', 0, 0, '', now - 30 * 3600, 'Hard Blocker'),
+                ('tech', 'worker', 'capability', 1, 0, '', now - 30 * 3600, '')]
+        output = '\n'.join(snapshot.long_blocked_lines(conn, rows))
+        self.assertIn('LONG BLOCKED', output)
+        self.assertIn('gate', output)
+        self.assertIn('tech', output)
+        self.assertEqual(1, output.count('owner_gate=yes'))
+        self.assertEqual(1, output.count('owner_gate=no'))
+
     def test_daily_window_catches_up_only_in_window_and_once_per_day(self):
         # 07:00 is the only scheduled slot; a missed run catches up inside
         # 07:00-17:00 exactly once and stays silent outside the window.

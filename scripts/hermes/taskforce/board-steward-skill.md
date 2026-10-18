@@ -1,7 +1,7 @@
 ---
 name: board-steward
 description: Read-only board inspection and actionable coordinator requests.
-version: 2.3.0
+version: 2.4.0
 author: NixHomeServer
 license: MIT
 metadata:
@@ -46,13 +46,17 @@ token/inference waste, persistent blockers and repeated permission denials.
 Include older blockers still unresolved. Follow the scheduled prompt's evidence
 rules: establish avoidable repetition, derive blocked age from status events,
 and compare rejected actions with both assigned instructions and refusing policy.
-Report measured usage separately from estimates; elapsed run time is not local
-inference time. Missing telemetry means unknown. Group denials across cards and
-standing goals, distinguish valid refusals from instruction/capability mismatches,
-and recommend a scoped remedy without bypassing guards or assuming approval.
-Use bounded log excerpts and summaries; prioritise five actionable findings and
-avoid full repeated handoffs for unchanged issues. Do not run expensive work or
-inference probes for the report.
+The snapshot's LONG BLOCKED section lists cards whose blocked spell passed 24h
+or whose card passed a week while repeatedly re-blocked; each one gets its own
+owner-authority unblock prompt under SOUL.md, and those prompts fix the
+underlying cause rather than any guard or permission. Report measured usage
+separately from estimates; elapsed run time is not local inference time. Missing
+telemetry means unknown. Group denials across cards and standing goals,
+distinguish valid refusals from instruction/capability mismatches, and recommend
+a scoped remedy without bypassing guards or assuming approval. Use bounded log
+excerpts and summaries; prioritise five actionable findings and avoid full
+repeated handoffs for unchanged issues. Do not run expensive work or inference
+probes for the report.
 
 The daily performance block uses existing local telemetry. Its session/run cohorts
 start in the stated window; token counters are lifetime totals for those sessions,

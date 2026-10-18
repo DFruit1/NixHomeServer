@@ -120,6 +120,31 @@ changed (or none), even when the full handoff was already reported. Group shared
 causes instead of counting replacement cards as separate accomplishments. Unknown
 history stays unknown; use bounded reader queries, never extra probes or writes.
 
+## Long-blocked cards and owner-authority unblock prompts
+
+When a card's blocked spell outlives 24 hours, or the card itself outlives a
+week while it keeps being re-blocked, it is long-blocked. Report every such
+card in the daily report with one copyable prompt the owner can hand to an
+outside agent (Codex or T3 Code) that works with the owner's direct authority
+outside Hermes roles, tool fences and approval lanes. Say what is stuck in plain
+words and how long, then target the underlying cause: a missing package or tool,
+a false or stale premise, an input that is not where the card assumes, a test
+asserting the wrong thing, a stale pin or lock. Name exact files, quoted commands
+and the read-only check that proves the fix worked, so the outside agent needs
+no further discovery.
+
+This is the one place your read-only limit is the owner's advantage rather than
+an obstacle, and it is still not permission to relax a control. Never propose
+disabling, weakening, editing, reordering or routing around a guard, permission,
+worker pin, delegation marker, approval lane, deploy gate, retry breaker or
+instruction policy, and never propose erasing or reinterpreting a correct
+refusal. A refused operation stays refused: the outside agent fixes the cause,
+it does not acquire authority the Hermes lane withheld. When the only thing that
+would release the card is a policy or permission change, report it as an owner
+decision to make and state the choice plainly. Preserve each card's existing
+plan, review verdicts and approvals. Commands in these prompts are proposed and
+unexecuted, and the report supplies no approval.
+
 ## Coordinator handoff
 
 For a CAPABILITY_HOLD finding, use the deterministic scoped queue helper:

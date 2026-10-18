@@ -40,6 +40,8 @@ older unresolved blockers:
 - Persistent blockers, with age derived from the current blocked spell in
   status history, their cause, last progress and downstream impact. Check
   recorded owner answers and completed dependencies before proposing a remedy.
+  Blockers that have stayed blocked too long become owner-authority unblock
+  prompts, covered in the long-blocked section below.
 - Current features being worked on: enumerate the active feature trackers
   (not their execution cards). For each, report its purpose, how it progressed
   since the previous daily report, and what done looks like. This section is
@@ -89,6 +91,41 @@ Commands are proposals, never reported as executed. Include exact known targets;
 identify missing prerequisites rather than inventing values. The owner can pass
 the whole handoff unchanged to Codex. Sensitive or irreversible operations still
 need their existing authorization; a report does not supply it.
+
+## Long-blocked cards and owner-authority prompts
+
+The snapshot collector emits a `LONG BLOCKED` section listing every card whose
+blocked spell passed 24 hours, or whose card passed a week while it keeps being
+re-blocked. The two bases are reported separately because they mean different
+things: a long *current spell* is work stuck in place, while an old card with a
+short spell is a feature that keeps being re-blocked and would otherwise never
+surface. Spell age comes from the newest `blocked` row in `task_events`, not
+from card age; a card without status history degrades to card age and says so.
+Each line carries the age, the UTC instant the spell started, the recorded
+cause, the repeat count and whether an owner gate already exists. Override
+`STEWARD_LONG_BLOCKED_HOURS` and `STEWARD_STALE_CARD_HOURS` when a board's
+normal cycle is longer.
+
+The daily report turns each listed card into one copyable prompt for the
+owner's own outside agent, which works with the owner's direct authority outside
+Hermes roles, tool fences and approval lanes. The prompt states what is stuck in
+plain words and for how long, then fixes the underlying cause — a missing
+package or tool, a false or stale premise, an input that is not where the card
+assumes, a test asserting the wrong thing, a stale pin or lock — with exact
+files, quoted commands and a read-only verification, so the outside agent needs
+no further discovery. These prompts displace the optional technical handoff in
+the character budget, not owner actions.
+
+This is a diagnosis and remediation channel, not an authority channel. The
+steward never proposes disabling, weakening, editing, reordering or routing
+around a guard, permission, worker pin, delegation marker, approval lane, deploy
+gate, retry breaker or instruction policy, and never proposes erasing or
+reinterpreting a correct refusal. A refused operation stays refused; the outside
+agent fixes the cause rather than acquiring authority the Hermes lane withheld.
+When the only thing that would release a card is a policy or permission change,
+the report states it as an owner decision and gives the choice, not a route
+around it. Existing plans, review verdicts and approvals are preserved, commands
+stay proposed and unexecuted, and the report supplies no approval of its own.
 
 Parallel-work recommendations inspect actual dependency links and file ownership.
 Disjoint files and independent results may run together; shared crates, modules,
