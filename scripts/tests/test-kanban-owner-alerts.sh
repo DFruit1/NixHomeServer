@@ -2,7 +2,9 @@
 set -euo pipefail
 TESTS_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 python3 -B - "$TESTS_REPO_ROOT" <<'PY'
+import base64
 from contextlib import closing
+import hashlib
 import importlib.util
 import json
 import os
@@ -11,6 +13,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import zlib
 from contextlib import redirect_stdout
 from io import StringIO
 import unittest
@@ -23,6 +26,10 @@ spec.loader.exec_module(alerts)
 writer_spec = importlib.util.spec_from_file_location('writer', Path(sys.argv[1]) / 'scripts/hermes/owner-blocker-authoring-guard.py')
 writer = importlib.util.module_from_spec(writer_spec)
 writer_spec.loader.exec_module(writer)
+HISTORICAL_HEADING = '## Blocker delivery and reply-to-unblock (SimpleX)'
+HISTORICAL_POLICY = zlib.decompress(base64.b85decode(
+    'c-nPWO>f*r620?R6rw{CK{JMuJxR6!X=MZgyqiFZ5#PinSu@ifvYXr8)OarY+w-cr$r%TUVQBbSAFp1$DqdXBeec^n2kN-DuN;nKTt|V&{<unhHMvIa(+|&f7<>NwV^!VJ)+DCZgpO<^?|QsL|C=}_>m5xl*`Csl$sZi-;*sS0j!fgHL^fTi1G#TpJaDLH8wVfKjt)DM=;$Ye(E8A=>32L??~QAWD;Ap)vFSOaSW_Fk-il(iI_!MU)O$bP;vB{!w;C7@7vr7BG2>c-AJgtQ%H=gZcyd0G={g#Wn@nGoyeUpiY=a%e6aofb)7aZqkjQb|00hOv^f1{SXF$259sa_7wOq*<7zxeeps}vAZcD8nMox(3V1a}{6xnsi6w&LM8MrbN4uP?_?x@`v=eS>2)y2gHU9ag6N%4e!WRBU}S?*OOpgO-YTUeT%jK1$9v2vjCl8J;NMH44m4G>o~c@yI_;7Vo2G5A;0uc`hNV68pgNLEv@=~%1Z)AhjHz%c?q+zA0tkR1l@EHdejx7Fm-5wa>3jyZ52q}qW~u)roJa|GKg7bbxgJdEi`y^V<mHiZXc;8*J>oN&8yfU7^5ZF@E-!<rs5u%_?*LEeY&j9V#th57)HXr$~nRkfn};hOI1EBTclU?ErDW-h<4g*uWX3#pm-t7#LM&{|2GBqTXl&xWq(;U~I3e`|g=5=g<Ll*T2XLry9~z#FY1rjtkN9?=K2c8?&WWwd<O#S|u`ef)=*PN+yxuQKiDVwUhaPR91=Fv;@%>^!ixJAm{q@z<mcd`tBVFkHsHmO-lmc78MsgI!j#v72KFV#Wi_Q$N&MP52}w^KGDgzuc8@D}$boapuID?x+_B^2~yhra}$SNRj(ZW=pv%T_2^ZJjJ~oE9qDvxI`=tzDH_P2+|#`nIf0|`e{v19DNVwYHsSY;f+UsOKTygsv`UwkLVotGyVU~8U-3SzRBVd-()3QDa%$_Io9KmR;y49-(OeN6T(>uriJ1{Pf*i3L=F+*t@eI`W$R3Tqrm`+DL7oNwR!8Ss!piFi|vH1d$37<OIC6icL<{NXlvYyYQA)4PA=;@#Kuc6udDwma$D3!6(F$kP@x=nXjJG1zz!JCp|);wUXD%h0~u*6C$jts)5s&Dm!s_=6RheYQv?n)OAQP1vRW1T(ZjWbe>%UvmSj)oXDpQ5&Ta@WH&Wl4wjw_>eg7(Sm2oH_4%YO{S(|le*>*3-DnT2Gwi5;^S|bOO5Ig=WiDV{y@l7Gl&q5rTXQfo5lvZ?{<^ij4+YNo0!2ONoE)yx!<pq;rK-qrK4BoxfpZBnk3;gbFo6j5H9pAkb7qg695sJ`2zJ~WdX4x;MbS}$-Q!q`>W!zo~`&DL_IME983<MLl!a>)eVF0PqsVQ7QWrGa<feU4%CG~afi=BC8RhZ(Ob#pLoUID&&Mk?cU?u!DLZfVLq7RxU1BJ`~_J<$_Y@wk^M3;g=BfH*!Ih1u6Ue9_e8fD4=|nyc8NhTUSm)TOTSZh~M`{_kcYtJ0RuMSNh~0C5c>i>c!SsZF7T>a^}nQN;C$zm%n90F%)9lK^*`6WU*|mJzQIEZ2rQ8%H0lyjR8nD1tVDl*uwhS|x=y(5CP(sHd_hY+0N?I@}ygS=KbmWs55!)GZo(n?pZHYHe>6YuzN!^+EtKcy~5Ta?NwVk^Xid<pmS%29{;@=rB95iFKYMG7|6>)uxU8N`r^!VT}PK-K-I#h@UPKWxs)h$(yHs64AcAyj$3tLz4+{HtGakjM?5F*O!;{m<mfW|Cd3O_pfT%d$q!%4}`dQE$>P2Y8iUMc`Yg8nU{xUEzH<}hSl;4^u(#U&sCHC#F1{Yt6aEM<WxA3(_LPky<jthIvX)f5uMWRPCb~UVwc#7_wf=FdC&CS7VE=Kx=W2I0^bQZxqE~Tl|&*bLje{f<|Zn-_OG&ViXz71R(7b(Mw;apRC&Zo79$qTvbou<^SXM~&yWB4?c;~fFTXtf`sufqyN@4#{o_Mk0`lZQ#<Ej4$WcTG%-E{Exk7nU&9es~reHQ3+nzozMBIb#=j~f9$TbY<x!LnNl4SgzgyQ=+Kla$s*iU(#q*K5p)R#}sAD*7;)AA@*v?5puFh!+x_nddVZ(fzZ^ULSi5?fv8=+4PJahkf0*s|qo9TAC?X&RvgdHyt6bWa}z@}=WL6!8O%oEJmdsAa0j#xFVo?b`~Cq(}3&((DMcY^T>uUXWc9jrF783tC3OW1JdfEsrfQ+7l(0Xuy<zd$+M+kTQxSL%Bl&4RJWi+lhzyqf>4Gczk#XThbJ7g?dxY38o?LCM2cL!}X2wJ9pFk+<IPCZ~j4iPA@3atGq18du1Tz@5j7#RDS}7E?TJ'))
+HISTORICAL_SOURCE_SHA256 = 'b58cd2e82dfcf91d4c8a3fce2fb6846de47ed74954dd7d3a0b6d4704eb011fc9'
 
 
 REPAIR_SUMMARY = ('Blocking: Repair is waiting for your approval. Nothing proceeds until you decide.\n'
@@ -638,6 +645,107 @@ class AlertsTest(unittest.TestCase):
             with patch.object(alerts.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, stdout, '')):
                 with self.assertRaises(RuntimeError):
                     self.real_send(self.root, 'simplex:3', 'test')
+
+    def test_install_reconciles_historical_policy_after_either_second_installer(self):
+        historical = HISTORICAL_POLICY.decode()
+        self.assertEqual(HISTORICAL_SOURCE_SHA256, hashlib.sha256(HISTORICAL_POLICY).hexdigest())
+        policy = (Path(alerts.__file__).parent / 'taskforce/owner-alert-replies.md').read_text()
+        for order in (('board', 'compact'), ('compact', 'board')):
+            for paused in (False, True):
+                for placement in ('absent', 'before', 'after'):
+                    with self.subTest(order=order, paused=paused, placement=placement):
+                        root = self.root / ('-'.join(order) + '-' + str(paused) + '-' + placement)
+                        head = root / 'profiles/head-coordinator/SOUL.md'
+                        head.parent.mkdir(parents=True)
+                        prefix, suffix = '## Unrelated prefix\nKeep prefix.\n', '\n## Unrelated tail\nKeep tail.\n'
+                        canonical = alerts.MARKER + '\n' + policy + alerts.END_MARKER + '\n'
+                        if placement == 'absent':
+                            original = prefix + canonical + suffix
+                        elif placement == 'before':
+                            original = prefix + historical + canonical + suffix
+                        else:
+                            original = prefix + canonical + historical + suffix
+                        head.write_text(original)
+                        (head.parent / '.env').write_text(
+                            'SIMPLEX_WS_URL=ws://127.0.0.1:5225\n'
+                            'SIMPLEX_ALLOWED_USERS=3\nSIMPLEX_HOME_CHANNEL=3\n')
+                        (head.parent / 'config.yaml').write_text('model: keep-model\n')
+                        jobs = {'jobs': [{'name': alerts.JOB, 'script': 'kanban-owner-alerts.py',
+                                         'no_agent': True, 'schedule': {'minutes': 1},
+                                         'enabled': not paused, 'paused': paused}]}
+                        cron = root / 'cron/jobs.json'
+                        cron.parent.mkdir()
+                        cron.write_text(json.dumps(jobs, separators=(',', ':')) + '\n')
+                        cron_before = cron.read_bytes()
+                        reviewer = root / 'profiles/feature-reviewer'
+                        reviewer.mkdir(parents=True)
+                        (reviewer / 'SOUL.md').write_text('### Whole-set deploy review\n')
+                        (root / 'config.yaml').write_text(
+                            'kanban:\n  dispatch_profiles:\n    - head-coordinator\n'
+                            '    - feature-reviewer\n  dispatch_stale_timeout_seconds: 5400\n')
+                        fakebin = root / 'bin'
+                        fakebin.mkdir()
+                        fake_hermes = fakebin / 'hermes'
+                        fake_hermes.write_text('#!/bin/sh\nexit 0\n')
+                        fake_hermes.chmod(0o755)
+                        environment = dict(os.environ, HERMES_ROOT=str(root),
+                                           PATH=str(fakebin) + os.pathsep + os.environ['PATH'])
+
+                        def apply(which):
+                            if which == 'board':
+                                result = subprocess.run(
+                                    ['bash', str(Path(sys.argv[1]) /
+                                     'scripts/hermes/install-board-wiring.sh')],
+                                    env=environment, text=True, capture_output=True)
+                                self.assertEqual(0, result.returncode, result.stderr)
+                            else:
+                                alerts.install(root)
+
+                        with redirect_stdout(StringIO()):
+                            for installer in order:
+                                apply(installer)
+                        installed = head.read_text()
+                        self.assertEqual(1, installed.count(alerts.MARKER))
+                        self.assertEqual(1, installed.count(alerts.END_MARKER))
+                        self.assertIn(policy.rstrip(), installed,
+                                      repr(installed[installed.index(alerts.MARKER):installed.index(alerts.END_MARKER) + len(alerts.END_MARKER)]))
+                        self.assertNotIn(HISTORICAL_HEADING, installed)
+                        self.assertNotIn('B1 <recovery instructions>', installed)
+                        self.assertIn(prefix.rstrip(), installed)
+                        self.assertIn(suffix.lstrip(), installed)
+                        self.assertEqual(cron_before, cron.read_bytes())
+                        after_two = head.read_bytes()
+                        with redirect_stdout(StringIO()):
+                            for installer in order:
+                                apply(installer)
+                        self.assertEqual(after_two, head.read_bytes())
+                        self.assertEqual(cron_before, cron.read_bytes())
+
+    def test_install_rejects_unknown_or_ambiguous_historical_policy_without_soul_write(self):
+        historical = HISTORICAL_POLICY.decode()
+        self.assertEqual(HISTORICAL_SOURCE_SHA256, hashlib.sha256(HISTORICAL_POLICY).hexdigest())
+        for original in (historical.replace('B1 <recovery instructions>', 'B1 changed instructions'),
+                         historical + '\n' + historical,
+                         HISTORICAL_HEADING + '\nEdited prose.\n'):
+            with self.subTest(original=original[:80]):
+                root = self.root / ('invalid-' + str(len(original)))
+                head = root / 'profiles/head-coordinator/SOUL.md'
+                head.parent.mkdir(parents=True)
+                head.write_text('# Keep this\n' + original + '\n## Tail\nKeep tail.\n')
+                (head.parent / '.env').write_text(
+                    'SIMPLEX_WS_URL=ws://127.0.0.1:5225\n'
+                    'SIMPLEX_ALLOWED_USERS=3\nSIMPLEX_HOME_CHANNEL=3\n')
+                cron = root / 'cron/jobs.json'
+                cron.parent.mkdir()
+                jobs = {'jobs': [{'name': alerts.JOB, 'script': 'kanban-owner-alerts.py',
+                                 'no_agent': True, 'schedule': {'minutes': 1},
+                                 'enabled': False}]}
+                cron.write_text(json.dumps(jobs, separators=(',', ':')) + '\n')
+                before_soul, before_cron = head.read_bytes(), cron.read_bytes()
+                with self.assertRaises(ValueError):
+                    alerts.install(root)
+                self.assertEqual(before_soul, head.read_bytes())
+                self.assertEqual(before_cron, cron.read_bytes())
 
     def test_install_preserves_policy_and_job_state(self):
         soul = self.env.parent / 'SOUL.md'

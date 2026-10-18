@@ -684,13 +684,35 @@ def tick(root, dry_run=False, now=None, force_decisions=False):
         raise RuntimeError('; '.join(errors))
 
 
+def drop_superseded_policy(text):
+    """Remove only the byte-exact historical SimpleX policy section."""
+    heading = '## Blocker delivery and reply-to-unblock (SimpleX)'
+    matches = list(re.finditer(r'^' + re.escape(heading) + r'\n', text, re.M))
+    if not matches:
+        return text
+    if len(matches) != 1:
+        raise ValueError('Duplicate historical SimpleX policy sections')
+    start = matches[0].start()
+    boundary = re.search(r'^(?:## |<!-- )', text[matches[0].end():], re.M)
+    end = matches[0].end() + boundary.start() if boundary else len(text)
+    section = text[start:end]
+    trailing_newlines = len(section) - len(section.rstrip(chr(10)))
+    if trailing_newlines > 2:
+        raise ValueError('Ambiguous historical SimpleX policy boundary')
+    signature = hashlib.sha256((section.rstrip('\n') + '\n').encode()).hexdigest()
+    if signature != 'b58cd2e82dfcf91d4c8a3fce2fb6846de47ed74954dd7d3a0b6d4704eb011fc9':
+        raise ValueError('Unrecognised historical SimpleX policy; preserve and reconcile it')
+    preserved_separator = 1 if trailing_newlines == 2 else 0
+    return text[:start] + text[end - preserved_separator:]
+
+
 def install(root):
     source = Path(__file__).resolve().parent
-    target_config(root)
-    scripts = root / 'scripts'
     policy = (source / 'taskforce/owner-alert-replies.md').read_text()
     soul = root / 'profiles' / PROFILE / 'SOUL.md'
-    existing = soul.read_text()
+    existing = drop_superseded_policy(soul.read_text())
+    target_config(root)
+    scripts = root / 'scripts'
     spec = importlib.util.spec_from_file_location('instructions', source / 'install-instruction-policy.py')
     instructions = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(instructions)
