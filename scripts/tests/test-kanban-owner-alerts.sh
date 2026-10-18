@@ -53,6 +53,14 @@ class AlertsTest(unittest.TestCase):
         self.sender = patch.object(alerts, 'send', lambda root, target, message: self.sent.append(message))
         self.sender.start()
         self.addCleanup(self.sender.stop)
+        # tick() refuses pinned worker contexts by design. These cases assert the
+        # operator path, so the suite controls its own caller identity instead of
+        # inheriting it. Tests that need a fenced context set the pin themselves.
+        pins = ('HERMES_KANBAN_TASK', 'HERMES_KANBAN_RUN_ID',
+                'HERMES_DELEGATED_CHILD_CONTEXT', 'HERMES_KANBAN_CLAIM_LOCK')
+        saved = {key: os.environ.pop(key) for key in pins if key in os.environ}
+        if saved:
+            self.addCleanup(os.environ.update, saved)
 
     def mark(self, board, body):
         with closing(sqlite3.connect(self.boards[board])) as db:

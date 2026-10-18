@@ -136,9 +136,14 @@ class InstallerTest(unittest.TestCase):
     def test_learning_trials_are_opt_in_and_refuse_worker_context(self):
         import os
         script=source.parent/'background-learning-trials.py'
-        listed=subprocess.run([sys.executable,'-B',str(script)],capture_output=True,text=True)
+        # The trial script refuses pinned worker contexts, so each assertion controls
+        # the environment it runs in. Inheriting the caller's environment made this
+        # pass only from an operator shell and fail from every kanban worker.
+        pins=('HERMES_KANBAN_TASK','HERMES_KANBAN_RUN_ID','HERMES_DELEGATED_CHILD_CONTEXT','HERMES_KANBAN_CLAIM_LOCK')
+        clean={key:value for key,value in os.environ.items() if key not in pins}
+        listed=subprocess.run([sys.executable,'-B',str(script)],env=clean,capture_output=True,text=True)
         self.assertEqual(0,listed.returncode)
-        env=dict(os.environ,HERMES_KANBAN_TASK='t_fixture')
+        env=dict(clean,HERMES_KANBAN_TASK='t_fixture')
         refused=subprocess.run([sys.executable,'-B',str(script),'--live'],env=env,capture_output=True,text=True)
         self.assertEqual(2,refused.returncode)
         self.assertIn('worker pins remain binding',refused.stderr)
