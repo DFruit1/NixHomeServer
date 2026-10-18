@@ -88,6 +88,19 @@ def default_repo(root):
     return Path('/home/dsaw/Projects/NixOS')
 
 
+def steward_soul(current, instructions):
+    wanted = instructions.shared((SOURCE / 'taskforce/board-steward.md').read_text())
+    # The cron installer owns this independent block. Retain its exact bytes;
+    # refreshing the steward role must not remove another component's policy.
+    start, end = '<!-- hermes-cron-policy -->', '<!-- /hermes-cron-policy -->'
+    if start not in current and end not in current:
+        return wanted
+    if current.count(start) != 1 or current.count(end) != 1 or current.index(end) < current.index(start):
+        raise ValueError('Invalid managed cron policy markers; preserve and reconcile the SOUL')
+    section = current[current.index(start):current.index(end) + len(end)]
+    return wanted.rstrip() + '\n\n' + section + '\n'
+
+
 def install(root, repo, check=False):
     profile = root / 'profiles' / PROFILE
     if not (profile / 'SOUL.md').exists():
@@ -112,7 +125,7 @@ def install(root, repo, check=False):
     spec = importlib.util.spec_from_file_location('instruction_policy', SOURCE / 'install-instruction-policy.py')
     instructions = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(instructions)
-    changes = {profile / 'SOUL.md': instructions.shared((SOURCE / 'taskforce/board-steward.md').read_text()),
+    changes = {profile / 'SOUL.md': steward_soul((profile / 'SOUL.md').read_text(), instructions),
                profile / 'skills/devops/board-steward/SKILL.md':
                    (SOURCE / 'taskforce/board-steward-skill.md').read_text(),
                config_path: config_text,

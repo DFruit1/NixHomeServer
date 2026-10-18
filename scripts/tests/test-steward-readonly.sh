@@ -277,6 +277,16 @@ class StewardTest(unittest.TestCase):
         self.assertIn('read-only observer', (profile / 'SOUL.md').read_text())
         self.assertIn('copyable external-agent handoff', jobs[1]['prompt'])
         self.assertTrue((self.root / 'backups/steward-readonly').is_dir())
+        # Cron owns a separate SOUL section. Refreshing the steward must retain
+        # it so the two installers converge in either order.
+        soul = profile / 'SOUL.md'
+        cron_block = ('<!-- hermes-cron-policy -->\nKeep scheduler constraints.\n'
+                      '<!-- /hermes-cron-policy -->\n')
+        soul.write_text(soul.read_text().rstrip() + '\n\n' + cron_block)
+        with patch.object(installer.subprocess, 'run', edit):
+            self.assertEqual(0, installer.install(self.root, self.repo, check=True))
+            self.assertEqual(0, installer.install(self.root, self.repo))
+        self.assertTrue(soul.read_text().endswith(cron_block))
 
     def test_daily_snapshot_includes_yesterday_and_excludes_older_activity(self):
         boards = self.root / 'kanban/boards'
