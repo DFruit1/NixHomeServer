@@ -525,12 +525,24 @@ def check_ownership(root):
                         "SELECT body FROM task_comments WHERE task_id=? AND body LIKE 'Decision owner:%'"
                         ' ORDER BY created_at DESC, id DESC LIMIT 1', (task['id'],)).fetchone()
                     marker = DECISION_MARKER.match(marker_row['body']) if marker_row else None
+                    event = db.execute(
+                        "SELECT payload FROM task_events WHERE task_id=? AND (kind='blocked' OR"
+                        " (kind='status' AND json_extract(payload,'$.status')='blocked'))"
+                        ' ORDER BY id DESC LIMIT 1', (task['id'],)).fetchone()
+                    reason = (json.loads(event['payload'] or '{}').get('reason') or '') if event else ''
+                    coordinator_summary = db.execute(
+                        "SELECT id FROM task_comments WHERE task_id=? AND author=? AND instr(body,'Blocking:')>0"
+                        ' ORDER BY created_at DESC, id DESC LIMIT 1', (task['id'], PROFILE)).fetchone()
+                    if not gate and re.search(r'Input supplier:[ \t]*owner\b', reason or '', re.I):
+                        problems.append(f'{key}: {task["status"]} hold names supplier=owner but is not a'
+                                        ' delivered gate; coordinator: author the ASK: needs_input gate or rework the classification')
                     if gate:
                         if task['status'] != 'blocked':
                             problems.append(f'{key}: needs_input/Hard Blocker on a {task["status"]} card is a'
                                             ' stuck gate that never delivers; coordinator: block the card or clear the gate')
-                        if not ASK_LINE.search(body):
-                            problems.append(f'{key}: owner-gate body lacks a leading ASK: line; coordinator: repair the card text')
+                        if not ASK_LINE.search(body) and not coordinator_summary:
+                            problems.append(f'{key}: owner-gate body lacks a leading ASK: line and no coordinator'
+                                            ' summary comment carries Blocking:; coordinator: repair the card text')
                         if marker:
                             problems.append(f'{key}: Decision owner marker is stale on an owner gate; remove it')
                     else:
