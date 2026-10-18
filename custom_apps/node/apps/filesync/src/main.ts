@@ -1048,7 +1048,10 @@ async function restoreSessionBackup(generation: number): Promise<boolean> {
     if (user) cacheSignedInUser(user);
     return user !== undefined;
   } catch (error) {
-    if (startupGeneration.isCurrent(generation) && isTerminalSessionError(error)) clearCachedSession();
+    if (startupGeneration.isCurrent(generation) && isTerminalSessionError(error)) {
+      clearCachedSession();
+      state.error = error instanceof Error ? error.message : String(error);
+    }
     return false;
   }
 }
@@ -1236,22 +1239,30 @@ async function finishCallbackOnce(url: string): Promise<string | undefined> {
   let generation: number | undefined;
   try {
     const user = await invoke<string>('finish_login', { callbackUrl: url });
+    if (!startupGeneration.isCurrent(observedGeneration)) return user;
     generation = startupGeneration.begin();
     state.user = user;
     state.offline = false;
     cacheSignedInUser(user);
-    const authorized = await invoke<boolean>('settings_authorized');
-    if (!startupGeneration.isCurrent(generation)) return user;
-    state.settingsAuthorized = authorized;
-    await saveSessionBackup(generation);
-    if (!startupGeneration.isCurrent(generation)) return user;
-    await loadPresets(generation);
-    if (!startupGeneration.isCurrent(generation)) return user;
-    applySpacePrefsToPairs();
-    await persistPairs(generation);
-    if (!startupGeneration.isCurrent(generation)) return user;
-    state.error = '';
-    state.notice = `Signed in as ${state.user}.`;
+    try {
+      const authorized = await invoke<boolean>('settings_authorized');
+      if (!startupGeneration.isCurrent(generation)) return user;
+      state.settingsAuthorized = authorized;
+      await saveSessionBackup(generation);
+      if (!startupGeneration.isCurrent(generation)) return user;
+      await loadPresets(generation);
+      if (!startupGeneration.isCurrent(generation)) return user;
+      applySpacePrefsToPairs();
+      await persistPairs(generation);
+      if (!startupGeneration.isCurrent(generation)) return user;
+      state.error = '';
+      state.notice = `Signed in as ${state.user}.`;
+    } catch (error) {
+      if (startupGeneration.isCurrent(generation)) {
+        state.error = error instanceof Error ? error.message : String(error);
+        state.notice = `Signed in as ${state.user}; some account details could not be refreshed.`;
+      }
+    }
   } catch (error) {
     if ((generation === undefined && startupGeneration.isCurrent(observedGeneration)) || (generation !== undefined && startupGeneration.isCurrent(generation))) {
       state.error = error instanceof Error ? error.message : String(error);

@@ -97,6 +97,40 @@ test('main callback handler preserves a valid transaction after rejected state a
   assert.equal(retryCalls, 2);
 });
 
+test('main callback is consumed once when ancillary preset loading fails after native login', async () => {
+  const source = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
+  const start = source.indexOf('async function finishCallbackOnce(');
+  const end = source.indexOf('\nconst finishCallback =', start);
+  assert.ok(start >= 0 && end > start, 'production callback handler is present');
+  const handlerSource = source.slice(start, end)
+    .replace('async function finishCallbackOnce(url: string): Promise<string | undefined> {', 'async function finishCallbackOnce(url) {')
+    .replaceAll('invoke<string>(', 'invoke(')
+    .replaceAll('invoke<boolean>(', 'invoke(')
+    .replace('let generation: number | undefined;', 'let generation;');
+  const generation = createStartupGeneration();
+  const state: Record<string, unknown> = { user: undefined, offline: false, error: '', notice: '' };
+  let finishCalls = 0;
+  const invoke = async (command: string) => {
+    if (command === 'finish_login') { finishCalls += 1; return 'alice'; }
+    if (command === 'settings_authorized') return true;
+    if (command === 'session_backup') return null;
+    if (command === 'server_presets') throw new Error('presets temporarily unavailable');
+    if (command === 'update_background_syncs') return undefined;
+    throw new Error(`unexpected invoke: ${command}`);
+  };
+  const handler = new Function('startupGeneration', 'invoke', 'state', 'cacheSignedInUser', 'saveSessionBackup', 'loadPresets', 'applySpacePrefsToPairs', 'persistPairs', 'render', 'refreshEstimates', `${handlerSource}; return finishCallbackOnce;`)(
+    generation, invoke, state, (user: string) => { state.user = user; }, async () => undefined,
+    async () => { throw new Error('presets temporarily unavailable'); }, () => undefined, async () => undefined, () => undefined, async () => undefined,
+  ) as (url: string) => Promise<string | undefined>;
+  const processor = createCallbackProcessor(handler);
+  const callbackUrl = 'filesync://oauth/callback?already-consumed';
+  assert.equal(await processor(callbackUrl), undefined);
+  assert.equal(await processor(callbackUrl), undefined);
+  assert.equal(finishCalls, 1);
+  assert.equal(state.user, 'alice');
+  assert.match(String(state.error), /presets temporarily unavailable/);
+});
+
 test('main offline startup does not replace a newer login after deferred session lookup', async () => {
   const source = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
   const start = source.indexOf('async function start(): Promise<void> {');
@@ -141,6 +175,41 @@ test('main offline startup does not replace a newer login after deferred session
 });
 
 
+test('main callback completion cannot replace a newer login transaction', async () => {
+  const source = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
+  const start = source.indexOf('async function finishCallbackOnce(');
+  const end = source.indexOf('\nconst finishCallback =', start);
+  assert.ok(start >= 0 && end > start, 'production callback handler is present');
+  const handlerSource = source.slice(start, end)
+    .replace('async function finishCallbackOnce(url: string): Promise<string | undefined> {', 'async function finishCallbackOnce(url) {')
+    .replaceAll('invoke<string>(', 'invoke(')
+    .replaceAll('invoke<boolean>(', 'invoke(')
+    .replace('let generation: number | undefined;', 'let generation;');
+  const generation = createStartupGeneration();
+  let resolveOld!: (user: string) => void;
+  const state: Record<string, unknown> = { user: undefined, offline: false, error: '', notice: '' };
+  const invoke = async (command: string, args?: { callbackUrl?: string }) => {
+    if (command === 'finish_login') return await new Promise<string>((resolve) => { resolveOld = resolve; });
+    if (command === 'settings_authorized') return true;
+    if (command === 'session_backup') return null;
+    if (command === 'server_presets') return [];
+    if (command === 'update_background_syncs') return undefined;
+    throw new Error(`unexpected invoke: ${command} ${args?.callbackUrl ?? ''}`);
+  };
+  const handler = new Function('startupGeneration', 'invoke', 'state', 'cacheSignedInUser', 'saveSessionBackup', 'loadPresets', 'applySpacePrefsToPairs', 'persistPairs', 'render', 'refreshEstimates', `${handlerSource}; return finishCallbackOnce;`)(
+    generation, invoke, state, (user: string) => { state.user = user; }, async () => undefined,
+    async () => undefined, () => undefined, async () => undefined, () => undefined, async () => undefined,
+  ) as (url: string) => Promise<string | undefined>;
+  const oldCompletion = handler('filesync://oauth/callback?old');
+  await Promise.resolve();
+  const replacement = generation.begin();
+  state.user = 'new-user';
+  resolveOld('old-user');
+  await oldCompletion;
+  assert.equal(generation.current(), replacement);
+  assert.equal(state.user, 'new-user');
+});
+
 test('main restore handler does not commit a deferred prior account after a newer login', async () => {
   const source = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
   const start = source.indexOf('async function restoreSessionBackup(');
@@ -156,7 +225,7 @@ test('main restore handler does not commit a deferred prior account after a newe
     ['nixhomeserver.filesync.session-backup.v1', 'old-backup'],
     ['nixhomeserver.filesync.user.v1', 'cached-user'],
   ]);
-  const state: { user?: string } = { user: 'new-user' };
+  const state: { user?: string; error?: string } = { user: 'new-user' };
   let terminalRestore = false;
   let finishRestore!: () => void;
   const restore = new Function('startupGeneration', 'invoke', 'localStorage', 'SESSION_BACKUP_KEY', 'state', 'cacheSignedInUser', 'isTerminalSessionError', 'clearCachedSession', `${restoreSource}; return restoreSessionBackup;`)(
@@ -191,4 +260,5 @@ test('main restore handler does not commit a deferred prior account after a newe
   assert.equal(state.user, undefined);
   assert.equal(storage.has('nixhomeserver.filesync.user.v1'), false);
   assert.equal(storage.has('nixhomeserver.filesync.session-backup.v1'), false);
+  assert.match(state.error ?? '', /invalid_grant/);
 });

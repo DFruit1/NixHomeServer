@@ -391,7 +391,6 @@ async fn finish_login<R: Runtime>(
             .clear_secret("pending-login".into())
             .map_err(|_| "Secure sign-in storage is unavailable.".to_owned())
     })?;
-    drop(_pending_auth_guard);
 
     let client = http_client()?;
     let token_response: TokenResponse = client
