@@ -262,5 +262,48 @@ Python environment, `scripts/tests/hermes-memory-policy-native.py --hermes-repo
 <checkout> --scratch <task-temp-dir>`. Add `--live` for bounded isolated checks
 of the configured coordinator fallback: save a genuine owner preference while
 preserving an existing preference, and refuse to learn a temporary task receipt.
-Only synthetic content and inert tools are exposed; existing login credentials
+Only synthetic content and fixture-confined tools are exposed; existing login credentials
 remain in memory and are never copied to the fixture home.
+
+Learning follows a verified correction or reusable success. The role prompt
+asks for one bounded learning check before closing such a task, using existing
+evidence without another model pass or routine test replay. The reference
+distinguishes owner preferences, environment facts, learned procedures,
+maintained source corrections and temporary card/session evidence. It covers
+scope, verification, invalidation, safe consolidation and independent role
+libraries. A full store does not authorize eviction or growth of the prompt.
+
+Tool evidence accepts either the actual call ID or a tool name plus an exact
+output quotation, for example `Evidence: tool:read_file:Void Linux`. Quotations
+are resolved against successful persisted results from the current turn, using
+message order as well as timestamps. Detached `/refine` reads are not new
+persisted proof; use the parent turn's recorded evidence or leave a candidate.
+The native trial additionally verifies quoted environment learning and creation
+of a fixture-local learned skill, alongside preference retention and rejection
+of temporary receipts.
+
+Installed source-managed skills cannot be changed through `skill_manage`,
+including foreground batches. The installer pins their existing local copies
+in the native usage ledger while preserving unrelated provenance, using its
+native sidecar lock. This protects them from the deterministic curator as well
+as model edits; changes belong in tracked source. No skill content is rewritten
+by this installation. Learned-skill edits are confined to the active profile's
+local library, with native ownership checks still binding. Shared/external
+procedures require a source-owner handoff rather than an in-place learning edit.
+For learning roles the curator is explicitly enabled with model consolidation
+and built-in pruning off: unused learned skills become stale after 90 days and
+are recoverably archived after 365 days, rather than the native 14/30 defaults.
+The steward and local-worker curator remain disabled. No new cron is installed.
+
+The existing `kanban-performance.py` report now includes per-home memory health
+in its text and JSON output: enabled-store sizes/limits, normalized duplicate
+counts and pending-queue count/age. It reads at most 64 KiB per config/store and
+256 proposal metadata records; unsupported/unreadable inputs report `unknown`.
+It emits no memory text, proposal payloads or unrelated configuration. Capacity at
+80% or duplicate entries, and proposals older than seven days, produce
+`attention`; that is a maintenance cue, never a deletion or approval decision.
+Age alone cannot invalidate a fact or proposal. Existing steward report reads
+pick up these counters without another inference job or write permission.
+Missing fail-closed hook configuration or nonzero learning nudges also produce
+`attention`. This checks saved configuration and guard presence, not whether an
+already-running session reloaded it; refresh at idle after installation.

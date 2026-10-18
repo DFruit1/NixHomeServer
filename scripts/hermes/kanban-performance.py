@@ -15,8 +15,10 @@ import math
 import os
 from pathlib import Path
 import re
+import shlex
 import sqlite3
 import time
+from itertools import islice
 
 FAILURE_CATEGORIES = {'provider_unavailable', 'provider_auth', 'provider_quota',
                       'provider_request', 'timeout', 'worker_crash', 'spawn_failure',
@@ -24,6 +26,67 @@ FAILURE_CATEGORIES = {'provider_unavailable', 'provider_auth', 'provider_quota',
 RUN_VALUES = {'running', 'done', 'completed', 'blocked', 'crashed', 'timed_out',
               'failed', 'released', 'spawn_failed', 'gave_up', 'reclaimed'}
 MAX_MODEL_ROWS, MAX_MODEL_GROUPS, MAX_SESSION_IDS = 20000, 256, 100000
+
+
+def memory_health(home):
+    """Bounded current-state counters, never memory/config/proposal contents.
+
+    Unknown is explicit. Capacity and queue age trigger investigation, never
+    automatic deletion; file age does not establish that a fact is invalid.
+    YAML is optional so older/minimal report environments still collect usage.
+    """
+    def small(path):
+        if path.is_symlink() or path.stat().st_size>65536:
+            raise ValueError('Unsupported input')
+        with path.open() as stream:
+            value=stream.read(65537)
+        if len(value)>65536:raise ValueError('Unsupported input')
+        return value
+
+    try:
+        try:
+            from hermes_yaml import safe_load
+        except ImportError:
+            from yaml import safe_load
+        config=safe_load(small(home/'config.yaml'))
+        memory=config.get('memory',{})
+        if not isinstance(memory,dict):raise ValueError('Unsupported memory configuration')
+        stores={}
+        for target,filename,flag,key,default in (
+                ('memory','MEMORY.md','memory_enabled','memory_char_limit',2200),
+                ('user','USER.md','user_profile_enabled','user_char_limit',1375)):
+            limit=memory.get(key,default);enabled=memory.get(flag,True)
+            if type(limit) is not int or limit<=0 or type(enabled) is not bool:
+                raise ValueError('Unsupported memory configuration')
+            path=home/'memories'/filename
+            text=small(path).strip() if path.exists() else ''
+            entries=text.split('\n§\n') if text else []
+            normalized=[' '.join(re.findall(r'\w+',entry.casefold())) for entry in entries]
+            stores[target]={'enabled':enabled,'chars':len(text),'limit':limit,'entries':len(entries),
+                'normalized_duplicates':len(entries)-len(set(normalized)),
+                'capacity_pressure':enabled and len(text)>=limit*.8}
+        directory=home/'pending/memory'
+        paths=list(islice(directory.glob('*.json'),257))
+        if len(paths)>256:raise ValueError('Queue exceeds inspection bound')
+        ages=[max(0,(time.time()-p.stat().st_mtime)/86400) for p in paths if not p.is_symlink()]
+        if len(ages)!=len(paths):raise ValueError('Unsupported queue input')
+        pending={'count':len(paths),'older_than_seven_days':sum(age>=7 for age in ages),
+                 'oldest_days':round(max(ages),1) if ages else None}
+        root=home.parent.parent if home.parent.name=='profiles' else home
+        command=shlex.join(['python3',str(root/'scripts/memory-policy.py')])
+        guard_present=(root/'scripts/memory-policy.py').is_file() and any(
+            isinstance(h,dict) and h.get('command')==command and h.get('fail_closed') is True
+            and h.get('matcher')=='^(memory|skill_manage)$'
+            for h in config.get('hooks',{}).get('pre_tool_call',[]))
+        event_driven=memory.get('nudge_interval')==0 and config.get('skills',{}).get('creation_nudge_interval')==0
+        attention=(not guard_present or not event_driven or pending['older_than_seven_days']
+                   or any(s['capacity_pressure'] or s['normalized_duplicates'] for s in stores.values()))
+        return {'status':'attention' if attention else 'ok','stores':stores,'pending':pending,
+                'guard_present':guard_present,'event_driven':event_driven}
+    except Exception:
+        # Parser exceptions can contain sensitive snippets. Keep the existing
+        # performance report usable and expose no raw exception or input text.
+        return {'status':'unknown','stores':None,'pending':None}
 
 
 def model_usage(db, since, until):
@@ -189,7 +252,8 @@ def report(root, since, until):
         snapshot = read(home/'state.db', 'sessions:'+name,
                         lambda db:(session_stats(db,since,until),stored_session_ids(db)))
         session_ids[name] = snapshot[1] if snapshot else None
-        profiles[name] = {'standing_prompt': standing,'sessions':snapshot[0] if snapshot else None,'runs':None}
+        profiles[name] = {'standing_prompt': standing,'sessions':snapshot[0] if snapshot else None,'runs':None,
+                          'memory':memory_health(home)}
 
     runs_by_profile = defaultdict(list)
     paths = set((root/'kanban/boards').glob('*/kanban.db'))
@@ -251,6 +315,13 @@ def render(data):
                 f"session-links={runs['worker_session_id_matched']}/{runs['worker_session_id_present']} "
                 f"failure-causes={json.dumps(runs['failure_causes'],sort_keys=True,separators=(',',':'))}")
         lines.append(f'@{name}: {usage}; {work}')
+        if (memory:=profile.get('memory')) is not None:
+            stores=memory.get('stores') or {}
+            counts=' '.join(f"{key}={store['chars']}/{store['limit']}" for key,store in stores.items() if store['enabled'])
+            pending=memory.get('pending') or {}
+            lines.append(f"  learning={memory['status']} {counts} pending={pending.get('count','unknown')} "
+                         f"pending-over-7d={pending.get('older_than_seven_days','unknown')} "
+                         f"guard={memory.get('guard_present','unknown')} event-driven={memory.get('event_driven','unknown')}")
     completions = sum(b['completed_cards'] for b in data['boards'].values()) if data['boards'] else 'unknown'
     lines.append('Card completions (not features; readable boards only): ' + str(completions))
     if data['warnings']:

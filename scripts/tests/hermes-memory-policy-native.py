@@ -65,6 +65,7 @@ try:
             from hermes_constants import resolve_reasoning_config
             from run_agent import AIAgent
             from tools.memory_tool import MEMORY_SCHEMA
+            from tools.skill_manager_tool import SKILL_MANAGE_SCHEMA,_skill_manage_from
             import model_tools
             real=safe_load((Path.home()/'.hermes/profiles/head-coordinator/config.yaml').read_text())
             fallback=real['fallback_providers'][0]
@@ -75,6 +76,7 @@ try:
                 runtime=resolve_runtime_provider(requested=fallback['provider'],target_model=fallback['model'])
             reasoning=resolve_reasoning_config(real,fallback['model'])
             definitions=[{'type':'function','function':MEMORY_SCHEMA},
+                {'type':'function','function':SKILL_MANAGE_SCHEMA},
                 {'type':'function','function':{'name':'read_file','description':'Read the memory admission reference.',
                     'parameters':{'type':'object','properties':{'path':{'type':'string'}},'required':['path']}}}]
             actions=[]
@@ -83,17 +85,24 @@ try:
                     for call in message.tool_calls:
                         values=json.loads(call.function.arguments)
                         if call.function.name=='read_file':
-                            result={'content':(source/'instructions/memory-policy.md').read_text()}
+                            result={'content':('Fixture host: Void Linux with runit.' if values.get('path')=='/fixture/environment'
+                                else (source/'instructions/memory-policy.md').read_text())}
+                            db.append_message(self.session_id,'tool',json.dumps(result),tool_call_id=call.id,tool_name='read_file')
                         elif call.function.name=='memory':
                             block,modified=_dispatch_pre_tool_call_hooks('memory',values,session_id=self.session_id)
                             result={'error':block} if block else json.loads(memory_tool(**modified,store=store))
                             actions.append({'session':self.session_id,'success':bool(result.get('success'))})
+                        elif call.function.name=='skill_manage':
+                            block,modified=_dispatch_pre_tool_call_hooks('skill_manage',values,session_id=self.session_id)
+                            result={'error':block} if block else json.loads(_skill_manage_from(modified if modified is not None else values))
                         else:
                             result={'error':'Unavailable fixture tool'}
                         messages.append({'role':'tool','tool_call_id':call.id,'name':call.function.name,'content':json.dumps(result)})
             for identity,prompt in (
                 ('fixture-live-owner','Remember that I prefer brief answers.'),
-                ('fixture-live-ephemeral','Review this temporary receipt for task t_deadbeef: it ran today, and expires this afternoon. There are no new durable facts.')):
+                ('fixture-live-ephemeral','Review this temporary receipt for task t_deadbeef: it ran today, and expires this afternoon. There are no new durable facts.'),
+                ('fixture-live-environment','Read /fixture/environment and save its durable environment fact scoped to this workstation, citing the exact successful output quotation.'),
+                ('fixture-live-skill','For this synthetic fixture, reading /fixture/environment is a verified reusable inspection method. Read it, then save a small learned-fixture-inspection skill with its fixture-only scope, trigger, successful validation and limitations. Do not edit any maintained skill.')):
                 db.create_session(identity,'desktop');db.append_message(identity,'user',prompt)
                 with patch.object(model_tools,'get_tool_definitions',return_value=definitions):
                     agent=TrialAgent(provider=runtime['provider'],model=runtime.get('model') or fallback['model'],
@@ -114,6 +123,8 @@ try:
             assert 'celsius' in contents and 'brief' in contents
             assert any(a['session']=='fixture-live-owner' and a['success'] for a in actions)
             assert not any(a['session']=='fixture-live-ephemeral' for a in actions)
-        print('PASS live configured-fallback owner preference retention and ephemeral-receipt rejection')
+            assert 'void linux' in (home/'memories/MEMORY.md').read_text().lower()
+            assert list((home/'skills').glob('**/learned-fixture-inspection/SKILL.md'))
+        print('PASS live owner retention, ephemeral rejection, quoted environment evidence and learned-skill creation')
 finally:
     db.close()

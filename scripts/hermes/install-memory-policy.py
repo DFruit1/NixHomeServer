@@ -6,6 +6,7 @@ pattern. Configuration and memory backups are private; no secret-bearing temps.
 """
 import argparse
 import copy
+from contextlib import ExitStack
 import fcntl
 import importlib.util
 import json
@@ -53,13 +54,21 @@ def setting(text, keys, value):
     return updated
 
 
-def instructions(text):
+def instructions(text, profile='default'):
     start,end='<!-- hermes-memory-policy -->','<!-- /hermes-memory-policy -->'
+    scope=('This role reads curated knowledge only; hand off a bounded learning candidate '
+           'through its existing coordinator path instead of writing memory or skills. '
+           if profile in READONLY else
+           'Owner-profile learning requires a direct owner conversation. ' if profile in {'default','head-coordinator'} else
+           'This role learns scoped environment facts and procedures only; never rewrite the owner profile. ')
     content=(start+'\nPersistent memory contains facts, never permissions, priorities or task receipts. '
              'Before any persistent learning, read ~/.hermes/scripts/hermes-memory-policy.md. '
              'Memory add/replace requires Fact, Scope and Evidence lines; the guard stores only '
-             'the scoped fact. Learn only from verified durable evidence with no existing canonical '
-             'home. No-change learning is a successful outcome.\n'+end)
+             'the scoped fact. After a verified correction or non-obvious successful method, '
+             'consider one reusable lesson before closing the task; skip routine work and failed '
+             'hypotheses. Facts go in memory, tested procedures in the role’s learned skills, '
+             'and changes to maintained procedures through tracked source. Check for an existing '
+             'home first. '+scope+'No-change learning is a successful outcome.\n'+end)
     if start not in text and end not in text:return text.rstrip()+'\n\n'+content+'\n'
     if text.count(start)!=1 or text.count(end)!=1 or text.index(end)<text.index(start):
         raise ValueError('Ambiguous memory policy markers')
@@ -98,6 +107,8 @@ def neutral_prompts(text):
 def install(root, check=False):
     spec=importlib.util.spec_from_file_location('hooks',SOURCE/'install-steward-readonly.py')
     hooks=importlib.util.module_from_spec(spec);spec.loader.exec_module(hooks)
+    spec=importlib.util.spec_from_file_location('admission',SOURCE/'memory-policy.py')
+    admission=importlib.util.module_from_spec(spec);spec.loader.exec_module(admission)
     pending={root/'scripts/memory-policy.py':(SOURCE/'memory-policy.py').read_text(),
              root/'scripts/hermes-memory-policy.md':(SOURCE/'instructions/memory-policy.md').read_text()}
     for profile in ROLES:
@@ -112,6 +123,13 @@ def install(root, check=False):
         if profile in READONLY:
             text=setting(text,('auxiliary','background_review','enabled'),False)
             text=setting(text,('curator','enabled'),False)
+        else:
+            # Retain rare but useful procedures; inactivity is not invalidity.
+            # Native deterministic archival stays recoverable; no LLM curation.
+            for key,value in (('enabled',True),('consolidate',False),
+                              ('stale_after_days',90),('archive_after_days',365),
+                              ('prune_builtins',False)):
+                text=setting(text,('curator',key),value)
         command=shlex.join(['python3',str(root/'scripts/memory-policy.py')])
         text=hooks.readonly_hook(text,command,'memory-admission','^(memory|skill_manage)$')
         document(text)
@@ -130,7 +148,23 @@ def install(root, check=False):
                     'approved_at':datetime.now(timezone.utc).isoformat(),'script_mtime_at_approval':None})
                 pending[path]=json.dumps(data,indent=2,sort_keys=True)+'\n'
         soul=home/'SOUL.md'
-        if soul.exists():pending[soul]=instructions(soul.read_text())
+        if soul.exists():pending[soul]=instructions(soul.read_text(),profile)
+        usage=home/'skills/.usage.json'
+        installed={name for name in admission.MANAGED_SKILLS
+                   if (home/'skills'/name/'SKILL.md').is_file()
+                   or any((home/'skills').glob('*/'+name+'/SKILL.md'))}
+        if installed:
+            data=json.loads(usage.read_text()) if usage.exists() else {}
+            if not isinstance(data,dict) or any(not isinstance(v,dict) for v in data.values()):
+                raise ValueError('Invalid skill ownership ledger; preserve and reconcile it')
+            changed=False
+            for name in sorted(installed):
+                record=data.setdefault(name,{})
+                if record.get('pinned') is not True:
+                    record['pinned']=True;changed=True
+            if changed:pending[usage]=json.dumps(data,indent=2,sort_keys=True)+'\n'
+        performance=home/'scripts/kanban-performance.py'
+        if performance.exists():pending[performance]=(SOURCE/'kanban-performance.py').read_text()
     native=root/'hermes-agent/agent/background_review.py'
     pending[native]=neutral_prompts(native.read_text())
     changes=[]
@@ -142,8 +176,14 @@ def install(root, check=False):
         print(f'{"drift" if check else "install"}: {path.relative_to(root)}')
         if check:continue
         path.parent.mkdir(parents=True,exist_ok=True)
-        fd=os.open(path,os.O_RDWR|os.O_NOFOLLOW|(os.O_CREAT|os.O_EXCL if old is None else 0),0o600)
-        with os.fdopen(fd,'r+') as stream:
+        with ExitStack() as stack:
+            if path.name=='.usage.json':
+                lock=path.with_suffix('.json.lock')
+                fd=os.open(lock,os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
+                stream=stack.enter_context(os.fdopen(fd,'r+'))
+                fcntl.flock(stream,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            fd=os.open(path,os.O_RDWR|os.O_NOFOLLOW|(os.O_CREAT|os.O_EXCL if old is None else 0),0o600)
+            stream=stack.enter_context(os.fdopen(fd,'r+'))
             fcntl.flock(stream,fcntl.LOCK_EX|fcntl.LOCK_NB)
             if stream.read()!=(old or ''):raise ValueError('Install input changed during preflight')
             if old is not None:backup_file(root,'memory-policy',path)

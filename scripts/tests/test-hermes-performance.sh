@@ -20,6 +20,44 @@ spec.loader.exec_module(performance)
 
 
 class PerformanceTest(unittest.TestCase):
+    def test_memory_health_detects_pressure_duplicates_and_old_proposals_without_content(self):
+        import os,time
+        with tempfile.TemporaryDirectory(prefix='hermes-learning-health-') as directory:
+            home=Path(directory);(home/'memories').mkdir()
+            (home/'config.yaml').write_text('memory:\n  memory_char_limit: 80\n  user_char_limit: 1375\n  memory_enabled: true\n  user_profile_enabled: false\n')
+            fact='Workstation: PRIVATE FACT on the workstation.'
+            (home/'memories/MEMORY.md').write_text(fact+'\n§\n'+fact.lower())
+            pending=home/'pending/memory';pending.mkdir(parents=True)
+            proposal=pending/'1234abcd.json';proposal.write_text('{"PRIVATE PAYLOAD":"do not emit"}')
+            old=time.time()-9*86400;os.utime(proposal,(old,old))
+            before={p:p.read_bytes() for p in home.rglob('*') if p.is_file()}
+            health=performance.memory_health(home)
+            self.assertEqual('attention',health['status'])
+            self.assertEqual(1,health['stores']['memory']['normalized_duplicates'])
+            self.assertTrue(health['stores']['memory']['capacity_pressure'])
+            self.assertFalse(health['stores']['user']['enabled'])
+            self.assertEqual(1,health['pending']['older_than_seven_days'])
+            self.assertEqual(before,{p:p.read_bytes() for p in before})
+            self.assertNotIn('PRIVATE',json.dumps(health))
+            (home/'config.yaml').write_text('memory: [incompatible]')
+            self.assertEqual('unknown',performance.memory_health(home)['status'])
+
+    def test_memory_health_notices_guard_and_nudge_configuration_drift(self):
+        with tempfile.TemporaryDirectory(prefix='hermes-learning-drift-') as directory:
+            home=Path(directory);(home/'scripts').mkdir()
+            guard=home/'scripts/memory-policy.py';guard.write_text('Fixture guard')
+            config={'memory':{'nudge_interval':0},'skills':{'creation_nudge_interval':0},
+                'hooks':{'pre_tool_call':[{'command':performance.shlex.join(['python3',str(guard)]),
+                    'matcher':'^(memory|skill_manage)$','fail_closed':True}]}}
+            (home/'config.yaml').write_text(json.dumps(config))
+            self.assertEqual('ok',performance.memory_health(home)['status'])
+            config['hooks']['pre_tool_call'][0]['fail_closed']=False
+            config['skills']['creation_nudge_interval']=15
+            (home/'config.yaml').write_text(json.dumps(config))
+            result=performance.memory_health(home)
+            self.assertEqual('attention',result['status'])
+            self.assertFalse(result['guard_present']);self.assertFalse(result['event_driven'])
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='nixhomeserver-hermes-performance-')
         self.addCleanup(self.tmp.cleanup)

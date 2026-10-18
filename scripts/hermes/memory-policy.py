@@ -18,6 +18,13 @@ import time
 READONLY = {'board-steward', 'local-implementer'}
 OWNER_WRITERS = {'default', 'head-coordinator'}
 ROLES = OWNER_WRITERS | READONLY | {'feature-reviewer', 'standard-implementer', 'project-auditor'}
+# These are installed from tracked source, including copies whose historical
+# usage ledger incorrectly calls them agent-created. Learning must not fork them.
+MANAGED_SKILLS = {'systematic-debugging', 'requesting-code-review', 'sdlc-review',
+                  'kanban-orchestration', 'taskforce-feature-audit', 'board-steward',
+                  'nixhomeserver-safe-change', 'nixhomeserver-module-change',
+                  'nixhomeserver-shutdown-guard'}
+PROBE_TOOLS = {'read_file', 'terminal', 'search', 'search_files'}
 POLLUTION = re.compile(
     r'\bt_[a-z0-9_]+\b|\b[0-9a-f]{40,64}\b|\bkanban_\w+\b|\.stamp\b|'
     r'\b(?:verdict|dossier|receipts?|task[_ -]?id|FINDINGS\.md|metadata\.\w+|run_tests)\b|'
@@ -29,6 +36,38 @@ POLLUTION = re.compile(
 
 def normalized(text):
     return ' '.join(re.findall(r'[\w]+', text.casefold()))
+
+
+def probe_evidence(db, session_id, latest_user, reference):
+    """Resolve an exact call ID or a model-visible tool name/output quotation.
+
+    Message order binds evidence to this turn even when timestamps coincide.
+    A quotation is provenance, not a semantic proof of the proposed fact.
+    """
+    name, separator, quote = reference.partition(':')
+    quoted = bool(separator and name in PROBE_TOOLS)
+    if quoted and len(normalized(quote)) < 8:
+        return False
+    rows = db.execute("SELECT tool_name,content FROM messages WHERE session_id=? AND role='tool' "
+                      'AND id>? AND timestamp>=? AND '+('tool_name=?' if quoted else 'tool_call_id=?')+
+                      ' ORDER BY id DESC LIMIT 64',
+                      (session_id, latest_user['id'], latest_user['timestamp'], name if quoted else reference))
+    for row in rows:
+        if not row['content'] or row['tool_name'] not in PROBE_TOOLS:
+            continue
+        try:
+            result = json.loads(row['content'])
+        except (ValueError, TypeError):
+            result = None
+        if isinstance(result, dict) and (result.get('error') or result.get('success') is False
+                or result.get('exit_code', result.get('returncode', 0)) not in (None, 0)
+                or result.get('status') in {'error', 'failed', 'timed_out'}):
+            continue
+        if re.match(r'\s*(?:error:|exception:|traceback|permission denied)', row['content'], re.I):
+            continue
+        if not quoted or normalized(quote) in normalized(row['content']):
+            return True
+    return False
 
 
 def owner_session(session, root):
@@ -86,18 +125,8 @@ def candidate(text, target, profile, db, session_id, latest_user, root, session,
             if POLLUTION.search(quote):
                 raise ValueError('Quoted permissions, priorities, task instructions or credentials are not owner-profile preferences')
     elif target == 'memory' and kind == 'tool' and separator:
-        row = db.execute("SELECT tool_name,content FROM messages WHERE session_id=? AND role='tool' "
-                         'AND tool_call_id=? AND timestamp>=? ORDER BY id DESC LIMIT 1',
-                         (session_id, reference, latest_user['timestamp'])).fetchone()
-        if not row or not row['content'] or row['tool_name'] not in {'read_file', 'terminal', 'search', 'search_files'}:
-            raise ValueError('Tool evidence must identify a real read/probe result from this turn')
-        try:
-            result = json.loads(row['content'])
-        except (ValueError, TypeError):
-            result = None
-        if isinstance(result, dict) and (result.get('error') or result.get('success') is False
-                                        or result.get('exit_code', 0) not in (None, 0)):
-            raise ValueError('A failed probe cannot verify an environment fact')
+        if not probe_evidence(db, session_id, latest_user, reference):
+            raise ValueError('Cite a successful probe from this turn: tool:<actual call ID> or tool:<tool name>:<exact output quote>')
     else:
         raise ValueError('Evidence must be owner:<exact quote> or, for environment facts, tool:<current tool_call_id>')
     if target == 'memory' and not normalized(fact).startswith(normalized(scope) + ' '):
@@ -117,9 +146,25 @@ def guard(payload, root):
             raise ValueError('Unknown profile; do not write persistent learning state')
         if profile in READONLY:
             raise ValueError('This role reads curated knowledge but cannot write memories or skills; report a scoped proposal to the coordinator')
-        if tool != 'memory':
-            return {}
         home = root if profile == 'default' else root / 'profiles' / profile
+        if tool != 'memory':
+            args = payload.get('tool_input') or {}
+            operations = args.get('operations') if args.get('operations') is not None else [args]
+            if not isinstance(operations, list) or any(not isinstance(op, dict) for op in operations):
+                raise ValueError('Use valid native skill operations')
+            if any(Path(str(op.get('name', ''))).name in MANAGED_SKILLS for op in operations):
+                raise ValueError('This skill is maintained in tracked source; record the verified lesson on its card and route a source change through the coordinator')
+            for op in operations:
+                name=op.get('name')
+                if op.get('action') in {'patch','edit','delete','write_file','remove_file'}:
+                    basename=Path(name).name if isinstance(name,str) else ''
+                    if not re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,63}',basename):
+                        raise ValueError('Use a valid local learned-skill name')
+                    local=home/'skills'
+                    matches=list(local.glob('**/'+basename+'/SKILL.md'))
+                    if not matches or any(not p.resolve().is_relative_to(local.resolve()) for p in matches):
+                        raise ValueError('Edit only this profile’s local learned skills; shared or external procedures need a source-owner handoff')
+            return {}
         args = copy.deepcopy(payload.get('tool_input') or {})
         target = args.get('target') or 'memory'
         session_id = payload.get('session_id')
@@ -132,7 +177,7 @@ def guard(payload, root):
             db.set_progress_handler(lambda: int(time.monotonic() > deadline), 1000)
             db.execute('BEGIN')
             session = db.execute('SELECT source,chat_type,user_id,parent_session_id FROM sessions WHERE id=?', (session_id,)).fetchone()
-            latest = db.execute("SELECT content,timestamp FROM messages WHERE session_id=? AND role='user' ORDER BY id DESC LIMIT 1", (session_id,)).fetchone()
+            latest = db.execute("SELECT id,content,timestamp FROM messages WHERE session_id=? AND role='user' ORDER BY id DESC LIMIT 1", (session_id,)).fetchone()
             if not session or not latest:
                 raise ValueError('Persistent facts require a recorded session and current user turn')
             if target == 'user' and (profile not in OWNER_WRITERS or not owner_session(session, root)):
