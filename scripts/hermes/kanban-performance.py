@@ -28,6 +28,26 @@ RUN_VALUES = {'running', 'done', 'completed', 'blocked', 'crashed', 'timed_out',
 MAX_MODEL_ROWS, MAX_MODEL_GROUPS, MAX_SESSION_IDS = 20000, 256, 100000
 
 
+def cron_health(root,name):
+    path=root/'scripts/hermes-cron-policy.json'
+    if not path.exists():return None
+    try:
+        entries=json.loads(path.read_text())['jobs']
+        jobs=[key for key,value in entries.items() if value['profile']==name]
+        if not jobs:return None
+        observed=pending=exhausted=errors=0
+        for key in jobs:
+            if not re.fullmatch(r'[a-f0-9]+',key):raise ValueError('Invalid journal key')
+            journal=root/'state/cron-policy'/(key+'.json')
+            if not journal.exists():continue
+            state=json.loads(journal.read_text());observed+=1
+            pending+=bool(state.get('pending') or state.get('stall_pending'))
+            exhausted+=bool(state.get('budget_exhausted'));errors+=bool(state.get('collection_error'))
+        return {'status':'attention' if pending or exhausted or errors else 'ok' if observed==len(jobs) else 'unobserved',
+                'jobs':len(jobs),'observed':observed,'pending':pending,'budget_stops':exhausted,'collection_errors':errors}
+    except (ValueError,OSError,KeyError,TypeError):return {'status':'unknown'}
+
+
 def memory_health(home):
     """Bounded current-state counters, never memory/config/proposal contents.
 
@@ -253,7 +273,7 @@ def report(root, since, until):
                         lambda db:(session_stats(db,since,until),stored_session_ids(db)))
         session_ids[name] = snapshot[1] if snapshot else None
         profiles[name] = {'standing_prompt': standing,'sessions':snapshot[0] if snapshot else None,'runs':None,
-                          'memory':memory_health(home)}
+                          'memory':memory_health(home),'scheduled_inspections':cron_health(root,name)}
 
     runs_by_profile = defaultdict(list)
     paths = set((root/'kanban/boards').glob('*/kanban.db'))
@@ -315,6 +335,8 @@ def render(data):
                 f"session-links={runs['worker_session_id_matched']}/{runs['worker_session_id_present']} "
                 f"failure-causes={json.dumps(runs['failure_causes'],sort_keys=True,separators=(',',':'))}")
         lines.append(f'@{name}: {usage}; {work}')
+        if (cron:=profile.get('scheduled_inspections')) is not None:
+            lines.append('  scheduled-inspections='+json.dumps(cron,sort_keys=True,separators=(',',':')))
         if (memory:=profile.get('memory')) is not None:
             stores=memory.get('stores') or {}
             counts=' '.join(f"{key}={store['chars']}/{store['limit']}" for key,store in stores.items() if store['enabled'])

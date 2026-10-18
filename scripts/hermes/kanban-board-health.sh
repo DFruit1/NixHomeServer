@@ -387,11 +387,9 @@ bucket() {
 
 # Coarse age of a card's last sign of life.
 age_of() {
-  local ts="$1"
-  [[ "$ts" =~ ^[0-9]+$ ]] || { printf 'unknown'; return; }
-  local d=$((NOW - ts))
-  ((d < 0)) && d=0
-  bucket "$d"
+  local age="$1"
+  [[ "$age" =~ ^[0-9]+$ ]] || { printf 'unknown'; return; }
+  bucket "$age"
 }
 
 emit() { printf '%s\n' "$*"; }

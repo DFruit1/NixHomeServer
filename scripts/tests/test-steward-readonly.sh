@@ -212,6 +212,8 @@ class StewardTest(unittest.TestCase):
             job['skills'] = ['board-steward']
             if '--continuity' in command:
                 job['context_from'] = ['self']
+            elif '--no-continuity' in command:
+                job['context_from'] = [ref for ref in job.get('context_from', []) if ref != 'self']
             if '--schedule' in command:
                 job['schedule'] = {'kind': 'cron', 'expr': command[command.index('--schedule') + 1]}
             jobs_path.write_text(json.dumps({'jobs': jobs}))
@@ -224,21 +226,22 @@ class StewardTest(unittest.TestCase):
             self.assertEqual(0, installer.install(self.root, self.repo, check=True))
             self.assertEqual(0, installer.install(self.root, self.repo))
         self.assertEqual(3, len(calls))
-        # Losing continuity would reset reminder history; repair it without
-        # duplicating the job or changing unrelated delivery destinations.
-        jobs[2]['context_from'] = []
+        # Daily comparison needs its previous answer; stall timing now belongs
+        # to the machine ledger and must not inherit a narrative clock.
+        jobs[0]['context_from'] = []
+        jobs[2]['context_from'] = ['self']
         jobs_path.write_text(json.dumps({'jobs': jobs}))
         with patch.object(installer.subprocess, 'run', edit):
             self.assertEqual(1, installer.install(self.root, self.repo, check=True))
             self.assertEqual(0, installer.install(self.root, self.repo))
             self.assertEqual(0, installer.install(self.root, self.repo, check=True))
-        self.assertEqual(['self'], jobs[2]['context_from'])
+        self.assertEqual(['self'], jobs[0]['context_from'])
+        self.assertEqual([], jobs[2]['context_from'])
         self.assertEqual('bot-chat:head-coordinator', jobs[2]['deliver'])
         self.assertEqual({'kind': 'cron', 'expr': '0 */4 * * *'}, jobs[2]['schedule'])
-        self.assertEqual(['self'], jobs[2]['context_from'])
         self.assertEqual('kanban-daily-steward.py', jobs[2]['script'])
-        # The daily job runs through the daytime catch-up window; the four-hourly
-        # stall follow-up keeps the raw collector so it can report every slot.
+        # The daily window remains; the cron policy wraps the stall collector
+        # with bounded, due-only evidence without changing its stored schedule.
         self.assertEqual('daily-steward-window.py', jobs[0]['script'])
         self.assertFalse(jobs[0]['enabled'])
         self.assertEqual({'kind': 'cron', 'expr': '0 7 * * *'}, jobs[0]['schedule'])
@@ -250,7 +253,7 @@ class StewardTest(unittest.TestCase):
             self.assertEqual(1, installer.install(self.root, self.repo, check=True))
             self.assertEqual(0, installer.install(self.root, self.repo))
             self.assertEqual(0, installer.install(self.root, self.repo, check=True))
-        self.assertEqual(5, len(calls))
+        self.assertEqual(6, len(calls))
         self.assertEqual({'kind': 'cron', 'expr': '0 7 * * *'}, jobs[0]['schedule'])
         config = (profile / 'config.yaml').read_text()
         self.assertIn('model: {default: keep-model}', config)

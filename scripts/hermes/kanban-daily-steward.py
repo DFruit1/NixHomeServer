@@ -113,7 +113,7 @@ def snapshot_board(slug: str) -> list[str]:
 
 
 def main() -> None:
-    now = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
+    now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="minutes")
     print(f"=== KANBAN DAILY SNAPSHOT {now} ===")
     slugs = board_slugs()
     if not slugs:

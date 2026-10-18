@@ -74,8 +74,8 @@ pass "detects broken shell, broken python and empty files"
 # 3. An untracked top-level artifact is detected.
 printf 'x\n' > "$repo/stray"
 out="$(scan "$none")"
-grep -q 'UNTRACKED_ROOT :: stray' <<<"$out" || fail "missing untracked-root candidate"
-pass "detects an untracked top-level artifact"
+if grep -q 'UNTRACKED_ROOT :: stray' <<<"$out"; then fail "active untracked file became a candidate"; fi
+pass "ignores active untracked files"
 
 # 4. Output is byte-stable, so the monitor hash only moves on real change.
 out2="$(scan "$none")"
@@ -83,13 +83,13 @@ out2="$(scan "$none")"
 pass "output is byte-stable between runs"
 
 # 5. An open steward-cleanup card suppresses its candidate.
-cid="$(grep 'UNTRACKED_ROOT :: stray' <<<"$out" | awk '{print $2}')"
+cid="$(grep 'BROKEN_SYNTAX :: scripts/broken.py' <<<"$out" | awk '{print $2}')"
 [[ -n "$cid" ]] || fail "could not read the candidate id"
 board="$fixture/board.db"
 sqlite3 "$board" "CREATE TABLE tasks (id TEXT, tenant TEXT, status TEXT, idempotency_key TEXT);"
 sqlite3 "$board" "INSERT INTO tasks VALUES ('t1','steward-cleanup','todo','steward-cleanup:$cid');"
 out3="$(scan "$board")"
-if grep -q 'UNTRACKED_ROOT :: stray' <<<"$out3"; then
+if grep -q 'BROKEN_SYNTAX :: scripts/broken.py' <<<"$out3"; then
   fail "a candidate covered by an open steward-cleanup card was not suppressed"
 fi
 pass "an open steward-cleanup card suppresses its candidate"
@@ -97,42 +97,29 @@ pass "an open steward-cleanup card suppresses its candidate"
 # 6. A completed card does not suppress — a resolved issue may legitimately recur.
 sqlite3 "$board" "UPDATE tasks SET status='done' WHERE id='t1';"
 out4="$(scan "$board")"
-grep -q 'UNTRACKED_ROOT :: stray' <<<"$out4" || fail "a done card suppressed a candidate it should not"
+grep -q 'BROKEN_SYNTAX :: scripts/broken.py' <<<"$out4" || fail "a done card suppressed a candidate it should not"
 pass "a completed card does not suppress its candidate"
 
-# 7. A reapable worktree becomes one bounded candidate; an empty set emits none.
-#    The reap dry run is read-only, so the steward may surface its count while
-#    the --apply itself stays an operator action.
-mkdir -p "$repo/scripts/hermes" "$repo/bin"
-cp "$TESTS_REPO_ROOT/scripts/hermes/reap-kanban-worktrees.sh" "$repo/scripts/hermes/"
-cat >"$repo/bin/hermes" <<EOF
-#!/usr/bin/env bash
-cat <<JSON
-[{"id":"t_none","status":"todo","workspace_kind":"worktree","workspace_path":"$repo/.worktrees/t_kept","branch_name":"wt/t_kept"}]
-JSON
-EOF
-chmod +x "$repo/bin/hermes"
-# A remote-tracking ref makes the base commit "published", so the t_gone
-# worktree (still at base) classifies reapable rather than unpublished.
-git -C "$repo" update-ref refs/remotes/origin/main "$(git -C "$repo" rev-parse HEAD)"
-git -C "$repo" worktree add -q "$repo/.worktrees/t_kept" -b wt/t_kept >/dev/null 2>&1
-git -C "$repo" worktree add -q "$repo/.worktrees/t_gone" -b wt/t_gone >/dev/null 2>&1
-scan_path_backup="$PATH"
-PATH="$repo/bin:$PATH"
-reap_out="$(scan "$none")"
-PATH="$scan_path_backup"
-grep -q 'WORKTREES_REAPABLE :: 1 reapable worktrees; scripts/hermes/reap-kanban-worktrees.sh --apply' \
-  <<<"$reap_out" || fail "a reapable worktree was not surfaced as one bounded candidate: $reap_out"
-pass "surfaces a reapable worktree count as one bounded candidate"
+# Active working edits must not create syntax candidates from a clean HEAD.
+printf '#!/bin/sh\nexit 0\n' > "$repo/scripts/clean.sh"
+git -C "$repo" add scripts/clean.sh
+git -C "$repo" commit -q -m clean-script
+printf '#!/bin/sh\nif (\n' > "$repo/scripts/clean.sh"
+if scan "$none" | grep -q 'BROKEN_SYNTAX :: scripts/clean.sh'; then fail "active edit became a candidate"; fi
+pass "checks committed content instead of transient working edits"
 
-git -C "$repo" worktree remove --force "$repo/.worktrees/t_gone" >/dev/null 2>&1
-scan_path_backup="$PATH"
-PATH="$repo/bin:$PATH"
-reap_out2="$(scan "$none")"
-PATH="$scan_path_backup"
-grep -q 'WORKTREES_REAPABLE' <<<"$reap_out2" &&
-  fail "an empty reap set still emitted a WORKTREES_REAPABLE candidate: $reap_out2"
-pass "an empty reap set emits no candidate"
+# No reaper or count-based cleanup is invoked, even when such a script exists.
+mkdir -p "$repo/scripts/hermes"
+printf '#!/bin/sh\ntouch "%s"\n' "$fixture/reaper-was-run" > "$repo/scripts/hermes/reap-kanban-worktrees.sh"
+scan "$none" >/dev/null
+[[ ! -e "$fixture/reaper-was-run" ]] || fail "scanner invoked the reaper"
+pass "does not invoke cleanup or wake on counts"
+
+# Current handoffs suppress a candidate across tenants, not only legacy cleanup.
+sqlite3 "$board" "ALTER TABLE tasks ADD COLUMN title TEXT; ALTER TABLE tasks ADD COLUMN body TEXT;"
+sqlite3 "$board" "INSERT INTO tasks VALUES ('t2','continuous-improvement','blocked',NULL,'Fix syntax','Scope: scripts/broken.py');"
+if scan "$board" | grep -q 'BROKEN_SYNTAX :: scripts/broken.py'; then fail "open handoff was ignored"; fi
+pass "deduplicates against current coordinator work"
 
 echo "✅ steward-opportunity-scan"
 

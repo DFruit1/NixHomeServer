@@ -13,8 +13,8 @@ already covered by an open legacy ``steward-cleanup`` card is omitted to avoid
 duplicate recommendations while existing work is underway.
 
 Scope is deliberately narrow. Every check is mechanical and its fix is
-git-backed and revertible: a broken script, an empty stray file, an untracked
-top-level artifact. Nothing here needs a judgement call, an approval, or an edit
+git-backed and revertible: a broken script, an empty tracked script in committed HEAD. Active edits, untracked
+artifacts and worktree counts never trigger this scan. Nothing here needs a judgement call, an approval, or an edit
 outside the repository. Anything richer (dead code, stale comments, board or
 Hermes-config drift) is the daily report's business, not an automatic change.
 
@@ -95,13 +95,14 @@ def covered_keys() -> set[str]:
     return keys
 
 
-def shebang(path: Path) -> str:
-    try:
-        with path.open("r", encoding="utf-8", errors="replace") as handle:
-            line = handle.readline()
-    except OSError:
-        return ""
-    return line.strip() if line.startswith("#!") else ""
+def covered_paths() -> list[str]:
+    """An open coordinator/implementation handoff owns its listed paths too."""
+    db=board_db()
+    if not db.exists():return []
+    with sqlite3.connect(db.resolve().as_uri()+'?mode=ro',uri=True,timeout=1) as conn:
+        columns={r[1] for r in conn.execute('PRAGMA table_info(tasks)')}
+        if not {'body','title'}<=columns:return []
+        return [row[0] for row in conn.execute("SELECT coalesce(title,'')||' '||coalesce(body,'') FROM tasks WHERE status NOT IN ('done','archived') LIMIT 1001")]
 
 
 def check_syntax(repo: Path, tracked: list[str]) -> list[tuple[str, str]]:
@@ -109,22 +110,21 @@ def check_syntax(repo: Path, tracked: list[str]) -> list[tuple[str, str]]:
     for rel in tracked:
         if not rel.startswith("scripts/"):
             continue
-        path = repo / rel
-        if not path.is_file():
-            continue
+        content=git(repo,'show','HEAD:'+rel)
+        if not content:continue
         if rel.endswith(".py"):
             try:
-                compile(path.read_bytes(), rel, "exec")
+                compile(content, rel, "exec")
             except SyntaxError as exc:
                 out.append(("BROKEN_SYNTAX", f"{rel} :: line {exc.lineno}: {exc.msg}"))
             continue
         if not rel.endswith((".sh", ".bash")):
             continue
-        interp = "bash" if "bash" in shebang(path) else "sh"
-        proc = run([interp, "-n", str(path)], cwd=repo)
+        interp = "bash" if "bash" in content.splitlines()[0] else "sh"
+        proc = subprocess.run([interp,'-n'],input=content,cwd=repo,capture_output=True,text=True,timeout=10)
         if proc.returncode != 0:
             err = (proc.stderr or proc.stdout).strip().splitlines()
-            msg = (err[-1] if err else "syntax error").replace(str(path), rel)
+            msg = err[-1] if err else "syntax error"
             out.append(("BROKEN_SYNTAX", f"{rel} :: {msg[:120]}"))
     return out
 
@@ -136,67 +136,23 @@ def check_empty(repo: Path, tracked: list[str]) -> list[tuple[str, str]]:
             continue
         if rel.endswith((".gitkeep", ".keep")):
             continue
-        path = repo / rel
         try:
-            if path.is_file() and path.stat().st_size == 0:
+            if not git(repo,'show','HEAD:'+rel):
                 out.append(("EMPTY_FILE", rel))
         except OSError:
             continue
     return out
 
 
-def check_untracked_root(repo: Path) -> list[tuple[str, str]]:
-    out = []
-    for line in git(repo, "status", "--porcelain").splitlines():
-        if not line.startswith("?? "):
-            continue
-        rel = line[3:].strip().rstrip("/")
-        if "/" not in rel and rel:
-            out.append(("UNTRACKED_ROOT", rel))
-    return out
-
-
-def check_reapable_worktrees(repo: Path) -> list[tuple[str, str]]:
-    """Terminal-card worktrees the dry-run reap would reclaim.
-
-    The reap script is dry-run by default and --apply stays an operator
-    action: this surfaces the reclaimable count as one bounded candidate so
-    the operator (or the coordinator, within its lane) can run the apply,
-    instead of the disk quietly filling with published terminal-card trees.
-    """
-    script = repo / "scripts" / "hermes" / "reap-kanban-worktrees.sh"
-    if not script.is_file():
-        return []
-    # A dedicated bound: the dry run without --bytes still runs one git status
-    # per worktree, and a large fleet has a hundred-plus trees.
-    try:
-        proc = subprocess.run(["bash", str(script), "--board", BOARD], cwd=repo,
-                              capture_output=True, text=True, timeout=120)
-    except subprocess.SubprocessError:
-        return []
-    if proc.returncode != 0:
-        return []
-    for line in proc.stdout.splitlines():
-        if line.startswith("Reapable (terminal card, clean, published): "):
-            count = line.split(":", 1)[1].strip()
-            if count.isdigit() and int(count) > 0:
-                return [("WORKTREES_REAPABLE",
-                         f"{count} reapable worktrees; scripts/hermes/reap-kanban-worktrees.sh --apply")]
-    return []
-
-
 def main() -> None:
     repo = board_repo()
     if not (repo / ".git").exists():
         return
-    tracked = git(repo, "ls-files").splitlines()
-    caps = {"BROKEN_SYNTAX": 10, "EMPTY_FILE": 8, "UNTRACKED_ROOT": 8, "WORKTREES_REAPABLE": 1}
+    tracked = git(repo, "ls-tree", "-r", "--name-only", "HEAD", "--", "scripts").splitlines()
+    caps = {"BROKEN_SYNTAX": 10, "EMPTY_FILE": 8}
     per_tag: dict[str, int] = {}
     candidates: list[tuple[str, str]] = []
-    for check in (lambda: check_syntax(repo, tracked),
-                  lambda: check_empty(repo, tracked),
-                  lambda: check_untracked_root(repo),
-                  lambda: check_reapable_worktrees(repo)):
+    for check in (lambda: check_syntax(repo, tracked),lambda: check_empty(repo, tracked)):
         try:
             found = check()
         except (OSError, subprocess.SubprocessError):
@@ -208,12 +164,14 @@ def main() -> None:
             candidates.append((tag, detail))
 
     covered = covered_keys()
+    owned=covered_paths()
     lines: list[str] = []
     seen: set[str] = set()
     for tag, detail in sorted(candidates, key=lambda c: (c[0], c[1])):
         cid = candidate_id(tag, detail)
         line = f"CANDIDATE {cid} {tag} :: {detail}"
-        if f"{TENANT}:{cid}" in covered or line in seen:
+        path=detail.split(' :: ',1)[0]
+        if f"{TENANT}:{cid}" in covered or any(path in body for body in owned) or line in seen:
             continue
         seen.add(line)
         lines.append(line)

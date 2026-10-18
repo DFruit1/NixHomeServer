@@ -77,7 +77,9 @@ now="$(date +%s)"
 # A card the dispatcher cannot spawn into: ready, unclaimed, stale past the
 # threshold. This is the exact shape of the bug that went unnoticed for hours.
 sqlite3 "$DB" "INSERT INTO tasks VALUES
-  ('t_stale','stale ready card','local-implementer','ready',$now-7200,$now-7200,NULL,NULL,$now-7200,0,'',0);"
+  ('t_stale','stale ready card','local-implementer','ready',$now-7200,$now-7200,NULL,NULL,$now-7200,0,'',0);
+INSERT INTO tasks VALUES
+  ('t_mid_age','mid-age unclaimed ready card','local-implementer','ready',$now-2100,$now-2100,NULL,NULL,$now-2100,0,'',0);"
 
 # A card a worker is actively heartbeating. Must never be reported. Its worker
 # pid is this test's own shell, which is definitionally alive.
@@ -264,11 +266,14 @@ grep -q '^READY_NO_WORKER t_stale local-implementer ' <<<"$out" ||
   fail "did not report the stale unclaimed ready card"
 pass "reports a stale unclaimed ready card"
 
-grep -q 'age=gt4h hard=yes' <<<"$out" ||
-  fail "a 2h-old card should be past the hard threshold"
-pass "flags a card past the hard threshold as hard=yes"
+grep -q 'age=1-4h hard=yes' <<<"$out" ||
+  fail "a 2h-old card should report its real age and be past the hard threshold"
+pass "reports the real age and flags a card past the hard threshold"
 
-grep -q 'hard=no' <<<"$out" && fail "the only stale card here is old; hard=no should not appear"
+grep -q '^READY_NO_WORKER t_mid_age local-implementer age=30-60m hard=no$' <<<"$out" ||
+  fail "a ~35m-old card should report age=30-60m"
+pass "reports the 30-60m age bucket"
+
 pass "hard threshold boundary behaves"
 
 grep -q '^DEAD_WORKER t_dead ' <<<"$out" ||

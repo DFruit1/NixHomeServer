@@ -133,10 +133,10 @@ def install(root, repo, check=False):
     # Reinstallation must not restore manual group sends or disable DM reports.
     # The daily job runs through the daytime catch-up window so a missed 07:00
     # slot after a late power-on is reported during the day, never overnight;
-    # the stall follow-up keeps the raw collector because it fires every slot.
-    specifications = [('hermes daily steward', '0 7 * * *', 'daily-steward-prompt.txt', '--script', 'daily-steward-window.py', 'simplex', False),
+    # cron-policy wraps the stall collector with a bounded, due-only packet.
+    specifications = [('hermes daily steward', '0 7 * * *', 'daily-steward-prompt.txt', '--script', 'daily-steward-window.py', 'simplex', True),
                       ('steward opportunity scan', 'every 2h', 'steward-opportunity-prompt.txt', '--monitor-script', 'steward-opportunity-scan.py', 'local', False),
-                      ('steward stall follow-up', '0 */4 * * *', 'steward-stall-prompt.txt', '--script', 'kanban-daily-steward.py', 'bot-chat:head-coordinator', True)]
+                      ('steward stall follow-up', '0 */4 * * *', 'steward-stall-prompt.txt', '--script', 'kanban-daily-steward.py', 'bot-chat:head-coordinator', False)]
     commands = []
     for name, schedule, prompt_name, script_flag, script, deliver, continuity in specifications:
         matching = [job for job in jobs if job.get('name') == name]
@@ -151,11 +151,11 @@ def install(root, repo, check=False):
             if ((job.get('prompt') or '').strip() != prompt.strip() or 'board-steward' not in (job.get('skills') or [])
                     or job.get('deliver') != deliver or job.get('workdir') != str(repo)
                     or job.get(script_flag[2:].replace('-', '_')) != script or schedule_changed
-                    or (continuity and 'self' not in (job.get('context_from') or []))):
+                    or (continuity != ('self' in (job.get('context_from') or [])))):
                 commands.append(prefix + ['edit', job['id'], '--prompt', prompt, '--add-skill', 'board-steward',
                                            script_flag, script, '--workdir', str(repo), '--deliver', deliver]
                                 + (['--schedule', schedule] if schedule_changed else [])
-                                + (['--continuity'] if continuity else []))
+                                + (['--continuity'] if continuity else ['--no-continuity']))
         else:
             commands.append(prefix + ['create', schedule, prompt, '--name', name, '--skill', 'board-steward',
                                      script_flag, script, '--workdir', str(repo), '--deliver', deliver]

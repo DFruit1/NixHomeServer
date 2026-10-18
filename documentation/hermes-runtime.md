@@ -307,3 +307,67 @@ pick up these counters without another inference job or write permission.
 Missing fail-closed hook configuration or nonzero learning nudges also produce
 `attention`. This checks saved configuration and guard presence, not whether an
 already-running session reloaded it; refresh at idle after installation.
+
+## Bounded scheduled improvement
+
+`python3 -B scripts/hermes/install-cron-policy.py --check` inspects installation
+drift without running jobs. Apply without `--check`, then recheck convergence
+and gracefully refresh the idle supervised gateway. The installer changes the
+existing job prompts/continuity through native cron edits and backs up old
+files privately under `~/.hermes/backups/cron-policy/`. It preserves models,
+credentials, profile turn limits, schedules, recipients and job enablement.
+It never fires a job or sends a message. Apply this component after broader
+steward/taskforce installers, then check all owning components for convergence.
+
+The [scheduled inspection reference](../scripts/hermes/instructions/cron-policy.md)
+defines per-job turn, tool and runtime limits. The small native source adapter
+wraps the existing `run_job`, bounds its existing agent constructor, and checks
+the existing pre-tool and watchdog seams. Parallel batches share a locked tool
+counter. Runtime expiry requests native cooperative interruption and retains
+deferred cleanup; it does not forcibly kill or undo an in-flight operation.
+Unregistered jobs, interactive agents and kanban workers are unchanged. Exact
+anchors, syntax checks and idempotence protect upgrades and unrelated native
+edits; incompatible source must be reconciled before installing.
+
+The four-hour stall job now starts a model only for material changes or due
+inspection. Read-only SQLite queries select at most three unresolved questions
+and immediate dependency metadata. Its scheduler-owned UTC ledger advances
+8h/16h/24h after an actual successful, non-exhausted pass. Routine acknowledgments,
+heartbeats, continuously increasing ages and identical failure counters do not
+reset it. Unknown/missing board evidence fails visibly without starting a model.
+The packet is a navigation aid, not a verdict or approval. Owner requests and
+all open task statuses remain eligible; an inspection is never a delivery receipt.
+
+The native monitor's detection hash remains intact. A failed/uncompleted model
+pass leaves a separate pending record, retried after 1h/4h up to three attempts
+per unchanged snapshot/configuration. Actual config/auth-file changes permit
+fresh bounded recovery. A historical failure coincident with the last consumed
+monitor change is migrated once. No-change ticks do not acknowledge a pending
+failure, and exhausted/declared-failure responses do not claim successful
+processing. Native quota/unreachable handling remains in place. The journal
+under `~/.hermes/state/cron-policy/` contains only IDs, hashes and counters.
+Its pending work, collection errors and budget stops appear in the existing
+performance report; unobserved is distinct from healthy.
+
+Opportunity scans inspect committed scripts and suppress paths owned by open
+handoffs across tenants. They no longer invoke the worktree reaper or propose
+cleanup from changing counts/untracked files. The daily report receives its
+previous answer as comparison evidence, and the collector prints explicit UTC.
+The stall prompt no longer injects or generates an unreliable narrative clock
+ledger. Scheduled delivery and the steward's read-only restrictions remain intact.
+
+The existing hourly no-agent taskforce tick uses `cron_sweep.py` to retain the
+weekly sweep cadence while suppressing new sweeps behind open improvement work.
+Future sweep cards require a benefit, scope, stopping condition and delivered
+result, with a 300s cap/one attempt. Children must not depend on closing the
+handoff that tracks their completion. `routed` remains an intake metric. This
+change also composes the independently accepted age-bucket correction from
+`05cb7523` into the maintained/installed board-health monitor; routing and local
+acceptance had previously left its actual behavior unchanged.
+
+Focused validation is `bash scripts/tests/test-hermes-cron-policy.sh`, the
+steward opportunity/read-only suites, board-health and taskforce tests. The
+opt-in `scripts/tests/hermes-cron-policy-native.py --hermes-repo <checkout>
+--scratch <task-temp-dir>` exercises the real adapted constructor, wrapper,
+pre-tool admission and watchdog with inert agents and fixture state. It makes
+no model calls, executes no real tools and invokes no delivery.
