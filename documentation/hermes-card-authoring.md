@@ -43,6 +43,18 @@ Notes:  (optional — drop rather than pad)
 - <a supporting fact, never reasoning or a second ask>
 ```
 
+For specifically commissioned evidence-only recovery, include the exact
+unbulleted line `Recovery mode: evidence-only` before `Constraints:` **at
+creation**, with a positive native runtime cap. The native constructor recognises
+that line and persists `max_retries=1`; read back both fields before release.
+Putting the marker in a bullet does not activate this policy, and editing the
+body later does not backfill the persisted retry limit. If no supported setter
+can repair an unstarted assignment, preserve its history and inputs in a
+correctly bounded native replacement, transfer its real result dependencies
+before retiring the invalid assignment, and keep only one runnable owner. Never
+repair this with direct database writes, guard removal or counter clearing;
+leave active workers untouched.
+
 ### Task skills
 
 When commissioning work, pin the procedures the assignee needs in the native
