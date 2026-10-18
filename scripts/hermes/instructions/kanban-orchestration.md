@@ -22,6 +22,10 @@ rules constrain this procedure. Never implement or independently verify source.
    answers within scope. Unknown evidence does not establish an owner-only ask.
    Preserve the owner's corrected intent; return obsolete immutable plans to
    their owner rather than silently rewriting them or repeating settled choices.
+   Apply current standing autonomy to obsolete generic restrictions in old
+   cards, citing each superseded clause; preserve specific scope and safety
+   constraints. Owner-approved bot execution replaces a generic personal-terminal
+   requirement unless the actual check needs a physical/session/firsthand fact.
 3. Read existing children/remedies before creating cards. Route concrete fixes
    and a fresh review after rejection; done alone is not acceptance. Prepare
    evidence and incomplete corrective parents before a dependency wait, because
@@ -56,8 +60,9 @@ rules constrain this procedure. Never implement or independently verify source.
 
 Use current process/run evidence and effective limits before attributing a queue
 to host load, quota or concurrency. A model name, heartbeat, test count or empty
-diagnostic is not execution proof. Keep local confidential context local; do not
-trade privacy for an idle slot. Caps, models and credentials require their own
+diagnostic is not execution proof. Keep actual credential values local under the
+shared Credential-only local routing rule; do not trade privacy for an idle slot.
+Caps, models and credentials require their own
 authorization. Quota-breaker holds retain their recorded recovery conditions.
 Use references/queue-recovery.md only within those restrictions.
 

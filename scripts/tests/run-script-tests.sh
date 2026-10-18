@@ -93,6 +93,10 @@ test_scripts=(
   scripts/tests/test-hermes-cron-policy.sh
   scripts/tests/test-hermes-memory-policy.sh
   scripts/tests/test-hermes-worker-policy.sh
+  scripts/tests/test-hermes-autonomy.sh
+  scripts/tests/test-hermes-autonomy-runtime.sh
+  scripts/tests/test-hermes-fixture-isolation.sh
+  scripts/tests/test-hermes-capability-recovery.sh
   scripts/tests/test-module-structure.sh
   scripts/tests/test-langfuse-secrets.sh
   scripts/tests/test-langfuse-module.sh

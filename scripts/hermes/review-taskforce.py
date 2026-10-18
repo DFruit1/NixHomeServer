@@ -78,12 +78,17 @@ DEFAULT_CLASSIFY_RULES = {
         'patterns': (r'\.(css|scss|less|tsx|jsx|vue|svelte)$', r'(^|/)(frontend|ui|client|web)/'),
     },
     '4': {
-        'label': 'security/regression risk: auth, secrets, routing, persistence, privilege',
-        'paths': ('secrets', 'modules/Core_Modules/kanidm', 'modules/Core_Modules/auth-gateway',
-                  'modules/Core_Modules/backups', 'modules/Core_Modules/kopia',
-                  'modules/Core_Modules/impermanence'),
+        'label': 'delegated-tier security/regression risk: auth, secrets, persistence, privilege',
+        'paths': ('modules/Core_Modules/kanidm', 'modules/Core_Modules/auth-gateway',
+                  'modules/Core_Modules/backups', 'modules/Core_Modules/kopia'),
         'basenames': ('age.pub',),
         'patterns': (r'(secret|credential|oauth|sudo|kanidm|agenix|password|passkey)',),
+    },
+    '5': {
+        'label': 'owner gate: secrets, public exposure/routing, persistence strategy, irreversible data',
+        'paths': ('secrets', 'modules/Core_Modules/cloudflared', 'modules/Core_Modules/impermanence'),
+        'basenames': (),
+        'patterns': (r'\.age$', r'(^|/)serverBootstrapSudoPassword'),
     },
 }
 

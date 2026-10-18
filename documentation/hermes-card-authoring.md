@@ -144,7 +144,7 @@ owner-facing ask; do not duplicate a long explanation or choices in both formats
 | `feature-reviewer` | Verifier. Diff/deploy review: verdict in `Goal:`, commits or range in `Notes:`, `Change:` names the revision or range. Question card: `Goal:` is the question, `Notes:` the evidence and what it changes. |
 | `project-auditor` | Taskforce. Audit commissioning card: the feature + the single question + scope + stopping condition. Plan card: the plan's outcome, its absolute path in `Notes:`. |
 | `standard-implementer` | One-line `Goal:` plus the single acceptance criterion. The parent card holds the context. |
-| `local-implementer` | Confidential work only, tightly scoped to a small bounded change (a handful of model calls). Set an explicit `max_runtime_seconds` (e.g. `3600`) — local inference is minutes per call and the lane is single-slot, so it must never run for hours. Route anything open-ended, non-confidential or larger to `standard-implementer`. |
+| `local-implementer` | Only the smallest step requiring actual passwords, API keys, tokens, private keys or equivalent credentials. State why secret values are unavoidable; set explicit `max_runtime_seconds` (e.g. `3600`). Source changes, mocks, tests, documentation and composition stay in ordinary lanes. Private data, internal paths, telemetry and security subject matter alone do not qualify. Preserve separate approvals and gates. |
 | any lane, gate | The gate body above. |
 
 ### Delegating implementation cards

@@ -12,6 +12,26 @@ report the exact capability gap through head-coordinator. Anchor every worker
 call to its runtime-assigned board/task; global current-board selection is only
 an interactive discovery default. Never forge an author or edit board SQLite.
 
+Owner-approved autonomy (2026-10-18): follow ~/.hermes/scripts/hermes-autonomy.md
+for exact phone-approved bot execution, bounded configured fallbacks (never
+credential contexts), coordinator read-only cross-board evidence, confined
+fixture-runner.py and reconciliation of obsolete generic restrictions. Preserve
+specific safeguards, real provenance and tool/deploy gates. Personal execution
+is only for physical, owner-session or firsthand checks. Documented-behaviour
+fixes and reversible safety containment need no fresh behaviour approval.
+Follow ~/.hermes/scripts/hermes-capability-recovery.md for bounded recovery and
+reversible copy conflicts; technical source disagreements are agent work.
+
+## Credential-only local routing
+
+"Confidential" means actual passwords, API keys, tokens, private keys or equivalent
+usable credentials. Only the smallest step needing secret values goes to
+local-implementer; specify its boundary. Opaque credential-consuming helpers and
+surrounding code/tests/review use ordinary lanes. Private data, paths, telemetry
+or security subject matter alone do not qualify. Redact credentials.
+Reclassify pending privacy-only holds; preserve partial work, real prerequisites,
+secret/tool restrictions and other gates. Do not reclaim running workers.
+
 Stay in the assigned workspace. Approved project remote-validation helpers are
 allowed within the card's scope; arbitrary server administration and deployment
 are not. Protect secrets and preserve unrelated work. Before committing, inspect
@@ -21,21 +41,18 @@ sole unattended publication exception for committed wt/*, master and board state
 Android workers use --build-only for authorized validation, then hand release
 publication to the external operator; a successful build is not a released APK.
 
-Independent acceptance belongs to feature-reviewer. A delivered review is not an
-accepted implementation: inspect verdict, revision and executed checks. Separate
-review cards complete with either verdict; native review rejection instead uses
-kanban_request_changes. Never bypass the completion guard with CLI mutations.
+Independent acceptance belongs to feature-reviewer: inspect verdict, revision
+and executed checks. Separate review cards complete with either verdict; native
+rejection uses kanban_request_changes. Never bypass the completion guard.
 Read the installed ~/.hermes/scripts/hermes-card-authoring.md before card writes.
 Keep specifications on the parent and ensure children can access required context.
 
 Before parking a card, name Input supplier: owner | agent |
-external-source-owner(<who>) | model/provider in its block reason, using that exact
-category rather than a profile name; a comment alone does not supply it. Missing
-evidence or an inconclusive report is not automatically owner input. Agent-recoverable
-gaps and quota/capacity failures are technical. Owner input is an owner's decision,
-credential, physical action or unrecorded system fact that only the owner or their
-chosen actor can provide; an external source only the owner can obtain or replace
-is an owner ask to obtain it or descope.
+external-source-owner(<who>) | model/provider in its block reason, never a profile
+name or comment alone. Evidence gaps, inconclusive reports and provider faults
+are technical. Owner input is a decision, credential, physical action or unrecorded
+system fact only the owner/chosen actor can supply; an owner-only external source
+requires an ask to obtain it or descope.
 
 Capability/provider faults use capability or transient blocks with concrete
 evidence and recovery actions. Reserve Blocking:, Why owner: and Unblock: for

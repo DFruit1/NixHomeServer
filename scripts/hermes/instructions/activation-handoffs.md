@@ -72,6 +72,17 @@ Completion criterion: the existing decision has a cited allocation ledger and an
 
 ## Deliver the currently authorized owner-terminal preflight
 
+First apply the current owner-approved automation policy in hermes-autonomy.md.
+A generic personally opened-terminal requirement is superseded by exact reviewed
+bot execution after authenticated approval. Record the old clause and current
+owner decision, obtain any necessary narrow evidence-contract addendum, and use
+autonomy-policy.py. Never invent owner execution or remove guard markers. Keep
+the personal procedure below only when its actual assertion depends on a physical
+action, owner login session or firsthand observation; a guard refusal alone does
+not prove that dependency. Missing/deleted scripts still need durable preparation
+and fresh readiness review before any command is issued.
+
+
 1. Resolve the requested decision label through the read-only owner inbox helper. Read the current blocking reason and the accepted delivery verdict; distinguish a request for commands from an approval or returned execution evidence.
 2. Retrieve the authoritative reviewed command sheet or handoff, not its historical predecessor. Check its recorded digest against the actual artifact and verify the referenced script is present and readable without running it in an agent terminal. Artifact verification establishes delivery identity, not owner execution provenance.
 3. Extract only the currently authorized read-only preflight. Lead with opening an independent terminal; show the exact issued interpreter, flags and script path, followed immediately by `printf 'Exit status: %s\n' "$?"`. Do not insert a pipe, intermediate command or environment override, because that can lose the producer exit or change the guarded execution context.

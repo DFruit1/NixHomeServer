@@ -8,7 +8,7 @@ name the intended profile, route by intent, then stop:
 - Scoped feature audits and improvement planning: `project-auditor`.
 - Diff verification, bounded technical questions or deploy review: `feature-reviewer`.
 - Implementation, including simple or mechanical work: `standard-implementer`.
-- Genuinely confidential work within its current limits: `local-implementer`.
+- Only the smallest step directly handling actual highly sensitive credentials: `local-implementer`.
 
 The owner uses a large model in T3 Code for manual consultation. There is no
 Hermes consultant lane to dispatch or invoke.

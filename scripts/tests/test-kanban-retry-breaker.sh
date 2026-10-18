@@ -32,37 +32,13 @@ BREAKER="$TESTS_REPO_ROOT/scripts/hermes/kanban-retry-breaker.sh"
 HERMES_BIN="${HERMES_BIN:-$(command -v hermes 2>/dev/null || true)}"
 [[ -n "$HERMES_BIN" ]] || HERMES_BIN="$HOME/.local/bin/hermes"
 
-# Detach from any inherited dispatcher worker identity.
-#
-# This test drives the real `hermes kanban` CLI, and the CLI reads four ambient
-# variables the dispatcher injects into every worker it spawns. Two of them
-# decide whether this test's fixture board is even reachable:
-#
-#   * HERMES_DELEGATED_CHILD_CONTEXT carries the write fence. Any kanban mutation
-#     from a process holding it is refused outright ("delegate_task child
-#     contexts cannot mutate Kanban tasks via the CLI"), so every CLI call below
-#     dies on its first line and the test reports a fence-probe failure with no
-#     clue why. Confirmed reproducible: three standalone runs inside a worker
-#     all failed on that one message, and the test passed the moment the marker
-#     was removed.
-#   * HERMES_KANBAN_TASK + HERMES_KANBAN_DB mark a *pinned* resolution. With both
-#     set, an explicit `--board testboard` deliberately stops outranking the pin
-#     (kanban_db._explicit_board_intent_pinned), so the fixture home built below
-#     is bypassed and the CLI resolves the pinned database instead. Under the
-#     full gate that pin points at the live operator board, which is the hazard
-#     this line exists to prevent: a test that creates, parks and unblocks cards
-#     must never be one export away from doing that to real work.
-#
-# HERMES_KANBAN_BOARD goes for the same reason: it is a resolution input ahead of
-# the `current` pointer, so a stale slug inherited from the ambient worker
-# environment can silently select a board other than the fixture.
-#
-# These are worker *identity* pins, not credentials or locations, so dropping
-# them cannot reach anything but this test's own mktemp fixture: the board path
-# is then derived solely from HERMES_KANBAN_HOME, and the fixture-home assertion
-# immediately after board creation proves it did.
-unset HERMES_DELEGATED_CHILD_CONTEXT HERMES_KANBAN_TASK HERMES_KANBAN_DB \
-  HERMES_KANBAN_BOARD
+# A fenced worker delegates synthetic mutation to the approved confined executor.
+# The helper retains origin pins and exposes no production state or credentials.
+# Never clear worker/delegation markers in this suite or retry unsandboxed.
+if [[ -n "${HERMES_KANBAN_TASK:-}${HERMES_DELEGATED_CHILD_CONTEXT:-}" ]]; then
+  exec python3 -B "$TESTS_REPO_ROOT/scripts/hermes/fixture-runner.py" \
+    --repo "$TESTS_REPO_ROOT" --suite "${BASH_SOURCE[0]}"
+fi
 
 fail() {
   echo "❌ $1" >&2

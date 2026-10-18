@@ -61,6 +61,26 @@ class InstructionPolicyTest(unittest.TestCase):
         # Fleet rules reach plain-directory projects without creating project files.
         self.assertFalse((self.root / 'AGENTS.md').exists())
 
+    def test_credential_only_routing_reaches_every_profile_and_local_role(self):
+        local = self.root / 'profiles/local-implementer'
+        soul = local / 'SOUL.md'
+        soul.write_text('## Operator note\nKeep this exact note.\n'
+                        '<!-- hermes-review-taskforce -->\n'
+                        'Old broad private-data routing.\n'
+                        '<!-- /hermes-review-taskforce -->\n')
+        (local / 'profile.yaml').write_text('description: Confidential work only\nmodel: keep\n')
+        policy.install(self.root)
+        for name in policy.PROFILES:
+            text = (self.root / 'profiles' / name / 'SOUL.md').read_text()
+            self.assertIn('Credential-only local routing', text)
+            self.assertIn('only the smallest step', text.lower())
+            self.assertIn('Do not reclaim running workers', text)
+        self.assertNotIn('Old broad private-data routing', soul.read_text())
+        self.assertIn('Keep this exact note.', soul.read_text())
+        self.assertIn('model: keep', (local / 'profile.yaml').read_text())
+        self.assertIn('actual passwords', (local / 'profile.yaml').read_text())
+        self.assertEqual(0, policy.install(self.root, check=True))
+
     def test_legacy_coordinator_migration_preserves_independent_policy(self):
         text = ('# head-coordinator\n\nOld introduction.\n## Tiers\nOld routing.\n'
                 '## Operator note\nKeep this exact note.\n'

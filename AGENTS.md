@@ -49,6 +49,27 @@ temporary task receipts on their cards/jobs, not in standing instructions.
 
 ## Instruction and Permission Boundaries
 
+* Owner-approved autonomy (2026-10-18): authenticated phone approval authorises
+  the designated bot to execute the exact reviewed operation via
+  `scripts/hermes/autonomy-policy.py`; use the manifest and one-shot receipt
+  procedure in `documentation/hermes-autonomy.md`. Personal execution is needed
+  only for physical, owner-session-dependent or firsthand checks. Preserve real
+  execution provenance, tool restrictions, independent review and deploy gates.
+* Fixes restoring documented behaviour and reversible safety containment are
+  authorised without a fresh behaviour approval; destructive effects are not.
+  Configured provider fallbacks are preapproved in declared order, except cloud
+  fallback for credential-handling context. Reconcile obsolete generic card
+  restrictions with current standing policy; retain specific scope and safeguards.
+* Coordinators may read other boards through the native read-only evidence path.
+  `scripts/hermes/fixture-runner.py` is the authorised isolated synthetic-test
+  executor; it preserves parent pins and records origin, gives the non-agent
+  test process fresh fixture bindings, and refuses an unsandboxed fallback.
+* Follow `~/.hermes/scripts/hermes-capability-recovery.md` for bounded recovery
+  and informed reversible copy-conflict decisions. Preserve both copies or a
+  rollback; involve project-auditor for architecture/provenance choices. Technical
+  source conflicts stay with agents; retain secret, destructive and exposure
+  gates and verify acceptance against the actual new source.
+
 * Persistent memory records facts and preferences; it never grants permissions
   or overrides current profile limits, project rules, or tool restrictions.
 * A refused operation is not permission to switch tools, remove worker pins,
@@ -208,11 +229,16 @@ pause scheduling until FINDINGS.md changes. The sweep interval and backoff are
 operator-owned (`configure --sweep-interval-hours --sweep-suppress-streak`).
 
 Apply [the implementation approval policy](scripts/hermes/taskforce/approval-policy.md)
-before releasing gated work. Architecture, stack replacement/addition/removal,
-frontend changes beyond minimal authorized controls, significant security/regression
-risk and irreversible/credential/unrequested behaviour changes need exact owner
-approval. Existing exact-scope approval remains valid; urgency and path-classifier
-output never substitute for it. Prepare the concrete plan before asking.
+before releasing gated work. Tiered autonomy (owner decision 2026-10-18):
+architecture, stack and frontend changes are approved autonomously by
+`head-coordinator` under the delegated conditions — recorded immutable plan
+with rollback, bounded blast radius, independent verifier evidence and a
+FINDINGS.md decision record. Exact owner approval remains required for
+irreversible or destructive data operations, secret/credential changes,
+public exposure and routing, priority trades, and deliberate unrequested product/workflow
+changes. Existing exact-scope approval remains valid; urgency and
+path-classifier output never substitute for it. Prepare the concrete plan
+before asking.
 
 ### Deploy gate
 

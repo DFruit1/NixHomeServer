@@ -127,10 +127,15 @@ Classify the plan against the approval rules before any handoff:
     python3 ~/.hermes/scripts/review-taskforce.py --board <slug> \
       classify <owned paths...>
 
-Exit 1 means at least one rule fired. The plan must then either cite an explicit
-owner approval covering exactly this scope, or state why the fired rule does not
-apply. Record the classification and its evidence in FINDINGS.md beside the
-plan; "Approval: automatic" without the recorded check is incomplete.
+Exit 1 means at least one rule fired. A rule 5 hit is standing owner-gate
+territory: the plan must cite an explicit owner approval covering exactly
+this scope, or state why the fired rule does not apply. A rule 1-4 hit is
+delegated-tier: the plan must state that the delegated conditions in
+`review-taskforce-approval.md` hold (recorded immutable plan with rollback,
+bounded blast radius, independent verification to come) or cite an existing
+covering approval. Record the classification and its evidence in FINDINGS.md
+beside the plan; "Approval: automatic" without the recorded check is
+incomplete.
 Create one `head-coordinator` handoff card naming the absolute plan path in
 `Notes:`, with this tenant and a durable workspace. Attach the plan as a durable
 artifact too. Use a stable batch idempotency key so a retry cannot send it twice.
@@ -168,8 +173,16 @@ recorded; on-demand audit requests remain active.
 ## Explicit owner approval rules
 
 Read `~/.hermes/scripts/review-taskforce-approval.md` before assessing or
-forwarding any implementation plan. Its explicit architecture, software stack,
-frontend and significant security/regression risk gates apply even to urgent
-findings. Routine automatic plans must state why none applies, confirmed by the
-helper's `classify` output on the plan's owned paths. An existing approval for
-the exact scope remains valid; new scope requires a new decision.
+forwarding any implementation plan. Its tiered autonomy (owner decision
+2026-10-18) delegates architecture, stack, frontend and security-regression
+approvals to the coordinator under the recorded delegated conditions; only
+the standing owner gates (irreversible/destructive data, credentials, public
+exposure/routing, priority trades, deliberate unrequested product/workflow
+changes or lasting capability removal) need an exact owner decision. Restoring
+documented behaviour and reversible safety containment need no fresh behaviour
+approval. Persist the coordinator's exact delegated decision from its native
+card comment in FINDINGS.md and supply readback before implementation release;
+the coordinator does not write your file. Routine automatic plans must state why none
+applies, confirmed by the helper's `classify` output on the plan's owned
+paths. An existing approval for the exact scope remains valid; new scope
+requires a new decision.

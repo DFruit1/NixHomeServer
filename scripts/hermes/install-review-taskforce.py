@@ -22,8 +22,8 @@ GLOBAL_WORKER_LIMIT = 3
 DESCRIPTIONS = {
     'project-auditor': 'PROJECT AUDITOR AND TASKFORCE LEAD. Sole owner of each board\'s persisted FINDINGS.md and immutable batch plans. Commissions focused adversarial audits of idle existing features from feature-reviewer, assesses their evidence, batches worthwhile proposals, immediately escalates urgent credible security/regression findings, and hands approved plans to head-coordinator. Routes diff and deploy-range verification to feature-reviewer; it does not verify work itself. Never implements or deploys.',
     'feature-reviewer': 'FEATURE-REVIEWER, THE VERIFIER LANE. Judges finished work against its acceptance criteria: per-card diffs, bounded technical questions and whole-change-set deploy reviews, returning accept or request-changes. Also audits idle existing features when project-auditor commissions one, and reports those findings to project-auditor. Never implements, edits FINDINGS.md or batch plans, or deploys.',
-    'head-coordinator': 'HEAD COORDINATOR. Routes and decomposes implementation; never implements. Sends diff, question and whole-set deploy reviews to feature-reviewer, and scoped audit/planning requests to project-auditor, which exclusively manages feature-reviewer audits and the continuous improvement findings. Decomposes approved immutable plans into implementer, review and composition cards; keeps the handoff dependency-blocked until the work finishes. Retains existing sensitive-work routing, board health and whole-set guarded deploy gate. The owner uses T3 Code for manual large-model consultation.',
-    'local-implementer': 'LOCAL IMPLEMENTER. Confidential work only, and only when tightly scoped to a small bounded change; local inference is minutes per call, so this lane is not for open-ended or multi-hour tasks. Approved network tools may receive only non-sensitive inputs; secrets, private task content and personal data must not enter remote models, searches or telemetry. This is an agent policy, not a claim of offline isolation. Ordinary non-sensitive implementation belongs to standard-implementer.',
+    'head-coordinator': 'HEAD COORDINATOR. Routes and decomposes implementation; never implements. Sends diff, question and whole-set deploy reviews to feature-reviewer, and scoped audit/planning requests to project-auditor, which exclusively manages feature-reviewer audits and the continuous improvement findings. Decomposes approved immutable plans into implementer, review and composition cards; keeps the handoff dependency-blocked until the work finishes. Routes only unavoidable actual credential handling locally; preserves board health and whole-set guarded deploy gate. The owner uses T3 Code for manual large-model consultation.',
+    'local-implementer': 'LOCAL IMPLEMENTER. Only the smallest bounded step requiring actual passwords, API keys, tokens, private keys or equivalent credentials. Explicit secret boundary and runtime cap required. Surrounding source, mocks, tests and composition use standard-implementer. Private data, paths and telemetry alone do not qualify. Never send credentials to remote models or tools.',
 }
 
 
@@ -115,7 +115,7 @@ def soul(name, existing):
                 'A card from `principal-consultant` or `project-auditor` arrives with the plan attached.'):
         existing = existing.replace(old, 'A card from `project-auditor` or the owner arrives with the plan attached.')
     existing = re.sub(r'^\| `local-implementer` \|.*$',
-                      '| `local-implementer` | Confidential work with local inference; network tools receive only non-sensitive inputs. |',
+                      '| `local-implementer` | Only the smallest step requiring actual credential values; all surrounding work uses ordinary lanes. |',
                       existing, flags=re.M)
     existing = existing.replace(
         'One exception you do not route and must not "correct": the board steward files\n'
@@ -123,7 +123,7 @@ def soul(name, existing):
         '(tenant `steward-cleanup`, priority `-10`). Those are intentional — leave them\n'
         'alone, and never reassign one to `standard-implementer`.',
         'Legacy low-priority `steward-cleanup` cards may finish in their recorded lane\n'
-        'without delaying confidential work. The steward is read-only and cannot\n'
+        'only when direct credential handling is unavoidable; otherwise reassign them. The steward is read-only and cannot\n'
         'create new cleanup cards. Route ordinary new work to `standard-implementer`.')
     start = existing.find('- Give each child the slice it owns')
     end = existing.find('- Preserve the plan\'s structure:', start)

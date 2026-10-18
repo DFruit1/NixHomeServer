@@ -127,6 +127,11 @@ def skill_changes(root, pending=None):
 
 def changes(root, pending=None):
     result = dict(pending or {})
+    default = root / 'SOUL.md'
+    if default.exists():
+        result[default] = block(result.get(default, default.read_text()),
+                                '<!-- hermes-review-taskforce -->', '<!-- /hermes-review-taskforce -->',
+                                (SOURCE / 'taskforce/default.md').read_text())
     result[root / 'scripts/hermes-fleet-policy.md'] = (
         SOURCE / 'taskforce/owner-blocker-authoring.md').read_text()
     result[root / 'scripts/hermes-card-authoring.md'] = (
@@ -139,6 +144,10 @@ def changes(root, pending=None):
         SOURCE / 'instructions/review-evidence.md').read_text()
     result[root / 'scripts/hermes-coordinator-reference.md'] = (
         SOURCE / 'instructions/coordinator-reference.md').read_text()
+    result[root / 'scripts/review-taskforce-approval.md'] = (
+        SOURCE / 'taskforce/approval-policy.md').read_text()
+    result[root / 'scripts/hermes-autonomy.md'] = (
+        SOURCE.parent.parent / 'documentation/hermes-autonomy.md').read_text()
     for filename in ('hermes-prerequisites.md','hermes-deployment-receipts.md','hermes-performance.md'):
         result[root / 'scripts' / filename] = (SOURCE.parent.parent / 'documentation' / filename).read_text()
     for filename in ('hermes_common.py', 'kanban-owner-alerts.py', 'owner-blocker-authoring-guard.py',
@@ -160,22 +169,36 @@ def changes(root, pending=None):
                          (SOURCE / 'taskforce/head-coordinator.md').read_text())
             text = block(text, '<!-- kanban-owner-alerts -->', '<!-- /kanban-owner-alerts -->',
                          (SOURCE / 'taskforce/owner-alert-replies.md').read_text())
+        elif name == 'local-implementer':
+            text = block(text, '<!-- hermes-review-taskforce -->', '<!-- /hermes-review-taskforce -->',
+                         (SOURCE / 'taskforce/local-implementer.md').read_text())
         elif name == 'standard-implementer':
             text = role(text, name, {'What a good card looks like to you', 'How to work',
                         'Handoff evidence', 'Card authoring'})
         result[soul] = shared(text)
         metadata = home / 'profile.yaml'
-        if name == 'standard-implementer' and metadata.exists():
-            description = ('STANDARD IMPLEMENTER. Default for non-sensitive implementation, '
+        if name in {'standard-implementer', 'local-implementer', 'head-coordinator'} and metadata.exists():
+            description = ('STANDARD IMPLEMENTER. Default for implementation without direct credential-value handling, '
                            'tests and documentation in the assigned durable workspace. '
                            'Models and fallbacks come from configuration; provider failures '
                            'follow bounded recovery. Commits locally after the owning gate '
                            'and hands evidence to independent feature-reviewer acceptance. Never publishes.')
+            if name == 'local-implementer':
+                description = ('LOCAL IMPLEMENTER. Only the smallest bounded step requiring direct handling '
+                               'of actual passwords, API keys, tokens, private keys or equivalent credentials. '
+                               'Explicit secret boundary and runtime cap required. Surrounding source, mocks, '
+                               'tests and composition use standard-implementer. Private data, paths and telemetry '
+                               'alone do not qualify. Never send credentials to remote models or tools.')
+            elif name == 'head-coordinator':
+                description = ('HEAD COORDINATOR. Routes and decomposes work; never implements. '
+                               'Local-implementer handles only the smallest step requiring actual credential values; '
+                               'surrounding implementation uses standard-implementer. Preserves independent review, '
+                               'owner gates and guarded deployment authority.')
             updated, count = re.subn(r'^description:.*?(?=^[A-Za-z_][A-Za-z_0-9]*:|\Z)',
                 lambda _: 'description: ' + json.dumps(description) + '\n',
                 result.get(metadata, metadata.read_text()), flags=re.M | re.S)
             if count != 1:
-                raise ValueError('Expected exactly one standard-implementer description')
+                raise ValueError(f'Expected exactly one {name} description')
             result[metadata] = updated
     # These are complete maintained skills, not model-specific profile copies.
     # Only roles that implement, review or route source work carry them; see

@@ -20,3 +20,8 @@ Record the verbatim authenticated owner reply FIRST with native kanban_comment,
 verify with kanban_show, then unblock only the resolved scope. Rejection must not
 release implementation. Silence, connectivity tests and unrelated replies are
 not approval. Confirm only actual status; queued does not mean started.
+
+For exact bot execution, follow hermes-autonomy.md: publish the manifest before
+`D<n> approve <request-sha256>`, authenticate/record the reply, then post native
+owner_execution_decision. Revalidate, preserve bot provenance and never replay
+an attempt implicitly. Already-authorised agent commands need no new owner gate.

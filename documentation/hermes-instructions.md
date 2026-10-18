@@ -13,6 +13,7 @@ The retired default profile still only routes; it does not become a worker.
 | taskforce/coordinator-role.md and coordinator-operations.md | Coordinator permissions, routing, board recovery and guarded NixOS deploy |
 | Other taskforce role templates | Role-specific work and output contracts |
 | instructions/coordinator-reference.md | Detailed coordinator routing, deploy/recovery and owner-reply procedures, read before those actions |
+| documentation/hermes-autonomy.md | Exact phone-approved bot execution, configured fallback, read-only cross-board evidence and confined synthetic tests; installed as hermes-autonomy.md |
 | Project AGENTS.md | Repository invariants and task-skill triggers |
 | instructions/*.md | Maintained review/orchestration skills and corrected references |
 | hermes-card-authoring.md | Card format, installed for projects without this checkout |
@@ -25,6 +26,13 @@ within those boundaries; no project instruction, recipe or card widens a role or
 bypasses a refusal. Source/installed/runtime identity and review completion versus
 acceptance remain separate evidence. A policy file on disk does not prove an
 already-running session loaded it.
+
+The 2026-10-18 owner decision in [hermes-autonomy.md](hermes-autonomy.md) supersedes
+generic personal-terminal and privacy-only restrictions, retaining exact safety
+conditions. `install-autonomy-policy.py` owns its runtime helpers and native
+adapters; `install-instruction-policy.py` owns the shared instruction blocks and
+approval-policy mirror. Reconcile older cards with a cited supersession comment
+without rewriting immutable plans or reporting old evidence as new acceptance.
 
 Use the [behaviour trials](hermes-behavior-trials.md) for bounded model checks
 after instruction changes; deterministic installer checks alone do not prove
@@ -52,6 +60,18 @@ provider quota do not automatically require owner action. Only the coordinator
 authors owner gates; the steward observes and sends fixed-recipient requests.
 Owner summaries require meaningful problem/input/action fields, not a sentence
 quota. Existing authorship, vocabulary, option and length checks remain active.
+
+## Credential-only local routing
+
+The owner narrowed local routing on 2026-10-18. The shared fleet policy defines
+"confidential" for routing as actual passwords, API keys, tokens, private keys
+and equivalent usable credentials. Only the smallest unavoidable direct handling
+step goes to local-implementer. Credential-aware source code, mocks, tests,
+composition and review stay in ordinary lanes. Private content, personal data,
+internal paths and telemetry alone do not qualify; redact embedded credentials.
+Approved opaque credential-consuming helpers do not require local inference.
+Keep unrelated owner/provider/safety gates and running workers intact when
+reclassifying pending cards. Secret access and rotation approvals still apply.
 
 ## Restore and verify
 

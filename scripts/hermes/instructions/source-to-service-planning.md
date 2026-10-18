@@ -8,7 +8,7 @@ Use when the owner supplies an existing codebase or firmware and wants a receivi
 - Put the verbatim request, read-only boundary, deliverables and exclusions in one durable specification outside that source before releasing readers. Keep runnable cards concise and point them to that specification.
 - Route the investigation through the audit lead. Commission source readers in bounded independent slices, then synthesis, finished-proposal verification and final owner delivery. Do not end the lead handoff merely because readers were created.
 - Preserve read-only source status with optional-lock-free Git metadata queries, such as `GIT_OPTIONAL_LOCKS=0 git -C <source> status --porcelain`, plus an externally stored source-file digest inventory where permitted. Do not create worktrees, reports or build outputs under the protected tree, refresh its index, stash changes or run its scripts. Record exclusions and concurrent drift rather than claiming global immutability without evidence.
-- Keep credentials, private locations and production telemetry out of reports. Route genuinely necessary confidential inspection to the local lane rather than copying secrets into a general review.
+- Keep actual credential values out of reports. Private locations and production telemetry alone do not require local routing. Isolate only unavoidable direct credential handling locally under the shared Credential-only local routing rule; use sanitized evidence for general review.
 
 ## 2. Commission complementary evidence slices
 
