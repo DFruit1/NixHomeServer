@@ -28,11 +28,11 @@ class TaskforceTest(unittest.TestCase):
                   '  max_in_progress: 8 # old copied global cap\n'
                   '  max_in_progress_per_profile:\n    default: 2\n    local-implementer: 1\n'
                   'terminal:\n  cwd: .\n')
-        expected = before.replace('max_in_progress: 8', 'max_in_progress: 3')
+        expected = before.replace('max_in_progress: 8', 'max_in_progress: 4')
         self.assertEqual(expected, installer.worker_cap(before))
         self.assertEqual(expected, installer.worker_cap(expected))
         missing = 'kanban:\n  max_in_progress_per_profile:\n    default: 2\n'
-        self.assertIn('kanban:\n  max_in_progress: 3\n', installer.worker_cap(missing))
+        self.assertIn('kanban:\n  max_in_progress: 4\n', installer.worker_cap(missing))
         self.assertIn('    default: 2\n', installer.worker_cap(missing))
         self.assertIn('model:\n  default: keep\n', installer.worker_cap('model:\n  default: keep\n'))
         for malformed in ('kanban:\n  max_in_progress: unlimited\n',
@@ -574,7 +574,7 @@ class TaskforceTest(unittest.TestCase):
         self.assertIn('kanban', (self.root / 'profiles/project-auditor/config.yaml').read_text())
         self.assertIn('desktop: [file, terminal, kanban]', (self.root / 'profiles/project-auditor/config.yaml').read_text())
         for config in (extra, self.root / 'config.yaml'):
-            self.assertEqual(cap_config.replace('max_in_progress: 8', 'max_in_progress: 3'), config.read_text())
+            self.assertEqual(cap_config.replace('max_in_progress: 8', 'max_in_progress: 4'), config.read_text())
         self.assertNotIn('Send milestones.', skill.read_text())
         self.assertIn('runtime-assigned board/task', skill.read_text())
         self.assertIn('Hermes fleet rules', installed_head)

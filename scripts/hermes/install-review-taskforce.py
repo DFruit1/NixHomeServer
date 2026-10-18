@@ -18,7 +18,7 @@ from hermes_config import platform_tools
 MARKER = '<!-- hermes-review-taskforce -->'
 END_MARKER = '<!-- /hermes-review-taskforce -->'
 JOB_NAME = 'kanban review taskforce'
-GLOBAL_WORKER_LIMIT = 3
+GLOBAL_WORKER_LIMIT = 4
 DESCRIPTIONS = {
     'project-auditor': 'PROJECT AUDITOR AND TASKFORCE LEAD. Sole owner of each board\'s persisted FINDINGS.md and immutable batch plans. Commissions focused adversarial audits of idle existing features from feature-reviewer, assesses their evidence, batches worthwhile proposals, immediately escalates urgent credible security/regression findings, and hands approved plans to head-coordinator. Routes diff and deploy-range verification to feature-reviewer; it does not verify work itself. Never implements or deploys.',
     'feature-reviewer': 'FEATURE-REVIEWER, THE VERIFIER LANE. Judges finished work against its acceptance criteria: per-card diffs, bounded technical questions and whole-change-set deploy reviews, returning accept or request-changes. Also audits idle existing features when project-auditor commissions one, and reports those findings to project-auditor. Never implements, edits FINDINGS.md or batch plans, or deploys.',

@@ -63,7 +63,7 @@ python3 scripts/hermes/install-review-taskforce.py --check
 ```
 
 The installer updates taskforce roles and local-implementer instructions, sets
-`kanban.max_in_progress: 3` in the root and every profile config, and preserves
+`kanban.max_in_progress: 4` in the root and every profile config, and preserves
 model settings and per-profile lane caps. The coordinator's phone-delivery
 policy and the deploy-source freeze rule live in their canonical sources: the
 `Owner-facing SimpleX delivery` section of the installed kanban-orchestration
