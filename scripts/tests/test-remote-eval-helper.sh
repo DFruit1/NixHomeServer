@@ -105,4 +105,34 @@ if ((opt_out_elapsed > 20)); then
 fi
 
 echo "  ✅ REMOTE_EVAL=0 stays local"
+
+# --- strict mode refuses missing identity before any local fallback ----------
+# Strict mode is a separate contract from the ordinary fallback behavior.
+strict_stderr="$(mktemp)"
+if REMOTE_EVAL=1 REMOTE_EVAL_HOST="dsaw@192.0.2.1" \
+    NIXHOMESERVER_REQUIRE_REMOTE=1 \
+    NIXHOMESERVER_EXPECTED_HEAD="" NIXHOMESERVER_EXPECTED_TREE="" \
+    NIXHOMESERVER_EVIDENCE_DIR="" \
+    remote_eval_batch_json 'hostId=f.nixosConfigurations.server.config.networking.hostId' \
+    >/dev/null 2>"$strict_stderr"; then
+  rm -f "$strict_stderr"
+  fail "strict evaluation accepted missing source identity/evidence inputs"
+fi
+rm -f "$strict_stderr"
+
+echo "  ✅ strict mode rejects missing identity before fallback"
+
+if REMOTE_EVAL=0 NIXHOMESERVER_REQUIRE_REMOTE=1 \
+    remote_eval_batch_json 'hostId=f.nixosConfigurations.server.config.networking.hostId' \
+    >/dev/null 2>"$strict_stderr"; then
+  rm -f "$strict_stderr"
+  fail "strict evaluation accepted REMOTE_EVAL=0"
+fi
+if ! grep -q 'conflicts with REMOTE_EVAL=0' "$strict_stderr"; then
+  rm -f "$strict_stderr"
+  fail "strict/opt-out conflict was not diagnosed before evaluation"
+fi
+rm -f "$strict_stderr"
+
+echo "  ✅ strict mode rejects the local opt-out before evaluation"
 echo "✅ remote-eval helper regression test passed"

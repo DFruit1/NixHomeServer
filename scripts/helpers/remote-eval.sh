@@ -51,7 +51,16 @@ _remote_eval_resolve_host() {
 # Each body is the same text flake_eval_json takes: `f` is the flake and `lib`
 # its nixpkgs lib. Prints one JSON object mapping name -> value.
 remote_eval_batch_json() {
-  local pairs=("$@") spec name body built all
+  local pairs=("$@") spec name body built all strict_status=0
+  strict_remote_preflight "${REMOTE_EVAL:-1}" "REMOTE_EVAL=0" || strict_status=$?
+  if ((strict_status == 2)); then
+    return 1
+  fi
+  if ((strict_status == 0)); then
+    strict_remote_active=1
+  else
+    strict_remote_active=0
+  fi
   if ((${#pairs[@]} == 0)); then
     echo "remote-eval: no queries given" >&2
     return 1
@@ -80,6 +89,10 @@ ${built}}"
     if _remote_eval_run "$all"; then
       return 0
     fi
+    if ((strict_remote_active)); then
+      echo "remote-eval: strict remote evaluation failed (${remote_eval_reason})" >&2
+      return 1
+    fi
     echo "remote-eval: falling back to local evaluation (${remote_eval_reason})" >&2
   fi
 
@@ -91,7 +104,7 @@ ${built}}"
 
 _remote_eval_run() {
   local expression="$1"
-  local repo_root archive remote_archive remote_dir output
+  local repo_root archive remote_archive remote_dir output archive_sha
 
   init_repo_root
   repo_root="$(cd "$repo_root" && pwd)"
@@ -116,6 +129,12 @@ _remote_eval_run() {
     rm -f "$archive"
     remote_eval_reason="create_deploy_repo_archive refused this working tree"
     return 1
+  fi
+  if ((strict_remote_active)); then
+    strict_remote_verify_identity || { rm -f "$archive"; remote_eval_reason="source identity changed before staging"; return 1; }
+    archive_sha="$(sha256sum "$archive" | awk '{print $1}')" || { rm -f "$archive"; remote_eval_reason="could not hash source archive"; return 1; }
+  else
+    archive_sha=""
   fi
 
   remote_archive="$(stage_archive_on_remote "$archive" "$remote_eval_host" "nixhomeserver-remote-eval")" || {
@@ -147,12 +166,17 @@ _remote_eval_run() {
   remote_err="$(mktemp /tmp/nixhomeserver-remote-eval-err.XXXXXX)" || return 1
 
   if ! output="$(ssh -o BatchMode=yes "$remote_eval_host" bash -s -- \
-    "$remote_dir" "$remote_archive" "$remote_expr" 2>"$remote_err" <<'REMOTE_EOF'
+    "$remote_dir" "$remote_archive" "$remote_expr" "$archive_sha" 2>"$remote_err" <<'REMOTE_EOF'
 set -euo pipefail
 remote_dir="$1"
 remote_archive="$2"
 remote_expr="$3"
+expected_archive_sha="$4"
 trap 'rm -rf "$remote_dir" "$remote_archive"' EXIT
+if [[ -n "$expected_archive_sha" ]]; then
+  actual_archive_sha="$(sha256sum "$remote_archive" | awk '{print $1}')"
+  [[ "$actual_archive_sha" == "$expected_archive_sha" ]] || { echo "archive checksum mismatch" >&2; exit 1; }
+fi
 mkdir -p "$remote_dir"
 tar -C "$remote_dir" -xf "$remote_archive"
 cd "$remote_dir"
@@ -169,6 +193,13 @@ REMOTE_EOF
     return 1
   fi
   rm -f "$remote_err"
+  if ((strict_remote_active)); then
+    strict_remote_verify_identity || { remote_eval_reason="source identity changed during remote evaluation"; return 1; }
+    if ! jq -e 'type == "object" and length > 0' <<<"$output" >/dev/null; then
+      remote_eval_reason="remote evaluation returned an empty or malformed JSON payload"
+      return 1
+    fi
+  fi
 
   printf '%s\n' "$output"
 }

@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ "${NIXHOMESERVER_REQUIRE_REMOTE:-0}" == 1 ]]; then
+  source "$script_dir/../helpers/remote-run.sh"
+  remote_run 'NIXHOMESERVER_REQUIRE_REMOTE=0 bash scripts/tests/test-ai-gate.sh'
+  exit $?
+fi
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test-common.sh"
 cd "$TESTS_REPO_ROOT"
 ensure_tools jq nix cargo

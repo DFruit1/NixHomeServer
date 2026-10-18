@@ -4,6 +4,9 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$script_dir/helpers/repo-common.sh"
+source "$script_dir/helpers/remote-eval.sh"
+source "$script_dir/helpers/remote-build.sh"
+source "$script_dir/helpers/remote-run.sh"
 init_repo_root
 cd_repo_root
 ensure_default_nix_config
@@ -120,6 +123,19 @@ while (($# > 0)); do
   esac
 done
 
+strict_status=0
+strict_remote_preflight "${REMOTE_EVAL:-1}" "REMOTE_EVAL=0" || strict_status=$?
+if ((strict_status == 2)); then
+  exit 1
+fi
+if ((strict_status == 0)); then
+  strict_validation=1
+  strict_remote_preflight "${REMOTE_BUILD:-1}" "REMOTE_BUILD=0" || exit 1
+  strict_remote_preflight "${REMOTE_RUN:-1}" "REMOTE_RUN=0" || exit 1
+else
+  strict_validation=0
+fi
+
 need nix jq rg flock
 
 local_attic_cache="http://127.0.0.1:8080/nixhomeserver"
@@ -166,13 +182,17 @@ current_system() {
 
 build_derivation_attr() {
   local attr="$1" system="$2" check_name check_names output_path root_path
-  local -a check_targets=()
-  local new_outputs
+  local -a check_targets=() attr_parts=()
+  local new_outputs attr_path
+  IFS='.' read -r -a attr_parts <<<"$attr"
+  printf -v attr_path '"%s" ' "${attr_parts[@]}"
 
   if ! check_names="$(
-    nix eval --json ".#${attr}" --apply 'checks: builtins.attrNames checks' \
-      | jq -r '.[]' \
-      | sort
+    if ((strict_validation)); then
+      remote_eval_batch_json "names=builtins.attrNames (builtins.getAttrFromPath [ ${attr_path} ] f)" | jq -r '.names[]'
+    else
+      nix eval --json ".#${attr}" --apply 'checks: builtins.attrNames checks' | jq -r '.[]'
+    fi | sort
   )" || [[ -z "$check_names" ]]; then
     echo "❌ Could not evaluate a non-empty flake check worklist for ${attr}." >&2
     exit 1
@@ -194,7 +214,11 @@ build_derivation_attr() {
 
   echo "ℹ️ Running ${#check_targets[@]} derivation checks from ${attr} in one Nix build…"
   new_outputs="$(
-    nix build "${check_targets[@]}" --keep-going --no-link --print-build-logs --json
+    if ((strict_validation)); then
+      remote_build_flake "${check_targets[@]}" --keep-going --no-link --print-build-logs --json
+    else
+      nix build "${check_targets[@]}" --keep-going --no-link --print-build-logs --json
+    fi
   )"
   jq -e '
     type == "array"
@@ -353,7 +377,11 @@ run_full_e2e_checks() {
 if [[ "$skip_flake_check" == false ]]; then
   if [[ "$full_mode" == true || "$run_flake_check" == true ]]; then
     echo "ℹ️ Running flake checks (no build)…"
-    nix flake check --no-build
+    if ((strict_validation)); then
+      remote_run 'set -euo pipefail; cd "$1"; nix flake check --no-build'
+    else
+      nix flake check --no-build
+    fi
   fi
 fi
 

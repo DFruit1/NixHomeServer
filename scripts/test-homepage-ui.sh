@@ -3,6 +3,11 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ "${NIXHOMESERVER_REQUIRE_REMOTE:-0}" == 1 ]]; then
+  source "$script_dir/helpers/remote-run.sh"
+  remote_run 'NIXHOMESERVER_REQUIRE_REMOTE=0 bash scripts/test-homepage-ui.sh'
+  exit $?
+fi
 repo_root="$(cd "$script_dir/.." && pwd)"
 homepage_dir="$repo_root/custom_apps/node/apps/homepage"
 system="$(nix eval --raw --impure --expr builtins.currentSystem)"
