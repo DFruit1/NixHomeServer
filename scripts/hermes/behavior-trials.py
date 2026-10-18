@@ -7,6 +7,7 @@ Python is glue for the existing Python runtime, not a new service/backend.
 """
 import argparse
 import contextlib
+import copy
 import hashlib
 import io
 import json
@@ -31,8 +32,22 @@ ROLES = {'head-coordinator': 'coordinator-role.md',
 DOCS = {'hermes-card-authoring.md': REPO / 'documentation/hermes-card-authoring.md',
         'hermes-skill-routing.md': SOURCE / 'instructions/skill-routing.md',
         'hermes-fleet-policy.md': SOURCE / 'taskforce/owner-blocker-authoring.md',
+        'hermes-review-evidence.md': SOURCE / 'instructions/review-evidence.md',
         'hermes-coordinator-reference.md': SOURCE / 'instructions/coordinator-reference.md',
         'hermes-owner-alerts.md': REPO / 'documentation/hermes-owner-alerts.md'}
+
+
+def trial_config(config, fallback=False):
+    """Explicitly test the first configured fallback, never silently fail over."""
+    selected=copy.deepcopy(config)
+    if fallback:
+        chain=selected.get('fallback_providers') or []
+        if not chain or not all(isinstance(chain[0].get(k),str) and chain[0][k]
+                                for k in ('provider','model')):
+            raise ValueError('No configured fallback for this runtime profile')
+        selected['model']={'default':chain[0]['model'],'provider':chain[0]['provider']}
+    selected['fallback_providers']=[]
+    return selected
 
 
 def worker(args):
@@ -52,7 +67,7 @@ def worker(args):
         load_hermes_dotenv()
         from hermes_cli.config import load_config_readonly
         from hermes_cli.runtime_provider import resolve_runtime_provider
-        config = load_config_readonly()
+        config = trial_config(load_config_readonly(),args.runtime_fallback)
         from hermes_constants import resolve_reasoning_config
         reasoning = resolve_reasoning_config(config, config['model']['default'])
         from hermes_yaml import safe_load
@@ -186,6 +201,7 @@ def worker(args):
             result = agent.run_conversation(user_message=fixture.prompt, system_message=system)
         report = {'case': args.worker, 'role': role, 'model': agent.model,
                   'provider': runtime['provider'], 'runtime_profile': runtime_profile,
+                  'runtime_route': 'configured_fallback' if args.runtime_fallback else 'primary',
                   'reasoning': reasoning,
                   'loaded_skills': loaded,
                   'native_skill_round_trip': True,
@@ -218,6 +234,9 @@ def main():
     parser.add_argument('--runtime-profile', choices=ROLES,
                         help='Explicit trial-only provider/model source; default is the scenario role. '
                              'Does not change live profile settings or reassign work.')
+    parser.add_argument('--runtime-fallback', action='store_true',
+                        help='Explicitly exercise the first configured fallback with its reasoning override; '
+                             'never changes live settings or automatically retries another model.')
     parser.add_argument('--timeout', type=int, default=180, help='Hard seconds per case, 30..600 (default 180).')
     parser.add_argument('--max-turns', type=int, default=12, help='Maximum model iterations per case, 1..30.')
     parser.add_argument('--output', type=Path, help='Optional synthetic JSON report. Never contains credentials.')
@@ -257,6 +276,8 @@ def main():
                        '--timeout', str(args.timeout), '--max-turns', str(args.max_turns)]
             if args.runtime_profile:
                 command.extend(['--runtime-profile', args.runtime_profile])
+            if args.runtime_fallback:
+                command.append('--runtime-fallback')
             start = time.monotonic()
             try:
                 run = subprocess.run(command, capture_output=True, text=True, timeout=args.timeout)

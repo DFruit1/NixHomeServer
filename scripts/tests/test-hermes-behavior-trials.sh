@@ -6,13 +6,29 @@ import sys
 import subprocess
 import os
 import unittest
+import importlib.util
 from pathlib import Path
 
 sys.path.insert(0, str(Path(sys.argv[1]) / 'scripts/hermes'))
 from behavior_fixtures import Fixture, BUG, FIX
+spec = importlib.util.spec_from_file_location('trials',Path(sys.argv[1])/'scripts/hermes/behavior-trials.py')
+trials = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(trials)
 
 
 class BehaviorTrialTest(unittest.TestCase):
+    def test_fallback_trial_selects_only_the_recorded_fallback_and_drops_primary_context_pin(self):
+        config={'model':{'default':'primary','provider':'custom:provider','context_length':1234},
+                'fallback_providers':[{'provider':'openai-codex','model':'fallback'}],
+                'agent':{'reasoning_effort':'high','reasoning_overrides':{'fallback':'low'}}}
+        selected=trials.trial_config(config,True)
+        self.assertEqual({'default':'fallback','provider':'openai-codex'},selected['model'])
+        self.assertEqual('low',selected['agent']['reasoning_overrides']['fallback'])
+        self.assertEqual('primary',config['model']['default'])
+        self.assertEqual(1234,config['model']['context_length'])
+        self.assertEqual([],selected['fallback_providers'])
+        with self.assertRaises(ValueError):trials.trial_config({'model':{}},True)
+
     def test_runner_imports_with_no_script_directory_on_python_path(self):
         script = Path(sys.argv[1]) / 'scripts/hermes/behavior-trials.py'
         run = subprocess.run([sys.executable, '-I', '-B', str(script)],

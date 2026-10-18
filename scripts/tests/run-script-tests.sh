@@ -159,6 +159,7 @@ test_scripts=(
   scripts/tests/test-hermes-behavior-trials.sh
   scripts/tests/test-hermes-config-policy.sh
   scripts/tests/test-hermes-performance.sh
+  scripts/tests/test-hermes-runtime-evidence.sh
   scripts/tests/test-hermes-blockers.sh
   scripts/tests/test-hermes-deploy-receipt.sh
   scripts/tests/test-hermes-coordination.sh

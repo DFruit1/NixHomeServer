@@ -68,6 +68,19 @@ model. There is no automatic fallback. Do not use trials to bypass a refusal,
 worker pins, confidentiality limits or a provider hold; worker/delegation contexts
 are refused without changing their markers.
 
+An interactive operator may explicitly test the runtime profile's first configured
+fallback using `--runtime-fallback`, including its per-model reasoning override.
+The trial records `runtime_route: configured_fallback`, discards the primary's
+context pin and offers no further fallbacks. For example:
+
+```bash
+python3 -B scripts/hermes/behavior-trials.py --live --runtime-fallback \
+  --case review-request-changes --timeout 180
+```
+
+This does not change live configuration and is not evidence about the unavailable
+primary. See [runtime evidence and recovery](hermes-runtime.md).
+
 Each run prints JSON, or writes it to an operator-supplied `--output` path.
 Choose a path in the task's existing scratch directory for temporary reports.
 Reports contain the Hermes source revision, policy hashes, loaded skills,

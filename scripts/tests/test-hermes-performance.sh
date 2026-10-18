@@ -148,6 +148,28 @@ class PerformanceTest(unittest.TestCase):
         with patch.object(performance,'MAX_MODEL_ROWS',2):
             self.assertIsNone(performance.report(self.root,100,200)['profiles']['head-coordinator']['sessions']['model_usage'])
 
+    def test_terminal_provider_exit_is_not_reported_as_worker_crash(self):
+        with closing(sqlite3.connect(self.board)) as db:
+            db.execute("UPDATE task_runs SET metadata=? WHERE status='crashed'",
+                       (json.dumps({'exit_kind': 'terminal_provider', 'terminal_provider': True,
+                                    'worker_output': 'SECRET provider diagnostics'}),))
+            db.commit()
+        result = performance.report(self.root,100,200)
+        runs = result['profiles']['head-coordinator']['runs']
+        self.assertEqual({'provider_terminal': 1}, runs['failure_causes'])
+        self.assertEqual(1, runs['terminal_provider_runs'])
+        self.assertEqual(0, runs['reported_failure_category_runs'])
+        self.assertNotIn('SECRET',json.dumps(result))
+
+    def test_untrusted_terminal_marker_does_not_classify_a_crash(self):
+        with closing(sqlite3.connect(self.board)) as db:
+            db.execute("UPDATE task_runs SET metadata=? WHERE status='crashed'",
+                       (json.dumps({'terminal_provider': 'true', 'exit_kind': 'terminal_provider'}),))
+            db.commit()
+        runs = performance.report(self.root,100,200)['profiles']['head-coordinator']['runs']
+        self.assertEqual({'worker_crash': 1}, runs['failure_causes'])
+        self.assertEqual(0, runs['terminal_provider_runs'])
+
     def test_daily_collector_does_not_parse_its_callers_arguments(self):
         with patch.dict(performance.os.environ, {'HERMES_ROOT': str(self.root)}):
             with patch.object(sys, 'argv', ['daily-steward-window.py', '--scheduler-context']):

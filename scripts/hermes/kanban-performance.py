@@ -130,13 +130,16 @@ def run_stats(rows, until, known_sessions=None):
     causes = Counter()
     fallback = {'crashed':'worker_crash','timed_out':'timeout','spawn_failed':'spawn_failure','gave_up':'retry_exhausted'}
     for r in failed:
-        causes[r[8] if r[8] in FAILURE_CATEGORIES else fallback.get(r[5],fallback.get(r[4],'unknown'))]+=1
+        cause = r[8] if r[8] in FAILURE_CATEGORIES else (
+            'provider_terminal' if r[9] else fallback.get(r[5],fallback.get(r[4],'unknown')))
+        causes[cause]+=1
     return {
         'count': len(rows), 'tasks': len(attempts),
         'repeat_attempt_tasks': sum(n>1 for n in attempts.values()),
         'repeat_attempts': sum(n-1 for n in attempts.values()),
         'failures': len(failed), 'failure_causes':dict(causes),
         'reported_failure_category_runs':sum(r[8] in FAILURE_CATEGORIES for r in failed),
+        'terminal_provider_runs':sum(bool(r[9]) for r in failed),
         'statuses':dict(Counter(r[4] if r[4] in RUN_VALUES else 'unknown' for r in rows)),
         'outcomes':dict(Counter(r[5] if r[5] in RUN_VALUES else 'unknown' for r in rows)),
         'unfinished_at_window_end': sum(r[3] is None or r[3]>=until for r in rows),
@@ -203,7 +206,11 @@ def report(root, since, until):
                 CASE WHEN json_valid(metadata) AND json_type(metadata,'$.worker_session_id')='text'
                      THEN json_extract(metadata,'$.worker_session_id') END,
                 CASE WHEN json_valid(metadata) THEN json_extract(metadata,'$.verdict') END,
-                CASE WHEN json_valid(metadata) THEN json_extract(metadata,'$.failure_category') END
+                CASE WHEN json_valid(metadata) THEN json_extract(metadata,'$.failure_category') END,
+                CASE WHEN json_valid(metadata) THEN
+                    json_type(metadata,'$.terminal_provider')='true'
+                    AND json_extract(metadata,'$.exit_kind')='terminal_provider'
+                    ELSE 0 END
                 FROM task_runs WHERE started_at>=? AND started_at<?''', (since, until)).fetchall()
             events = dict(db.execute('''SELECT kind,count(*) FROM task_events
                 WHERE created_at>=? AND created_at<? AND kind IN

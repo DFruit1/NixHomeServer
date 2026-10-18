@@ -135,6 +135,8 @@ def changes(root, pending=None):
         SOURCE.parent.parent / 'documentation/hermes-instructions.md').read_text()
     result[root / 'scripts/hermes-behavior-trials.md'] = (
         SOURCE.parent.parent / 'documentation/hermes-behavior-trials.md').read_text()
+    result[root / 'scripts/hermes-review-evidence.md'] = (
+        SOURCE / 'instructions/review-evidence.md').read_text()
     result[root / 'scripts/hermes-coordinator-reference.md'] = (
         SOURCE / 'instructions/coordinator-reference.md').read_text()
     for filename in ('hermes-prerequisites.md','hermes-deployment-receipts.md','hermes-performance.md'):

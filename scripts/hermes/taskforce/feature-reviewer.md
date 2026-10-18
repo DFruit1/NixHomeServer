@@ -79,31 +79,14 @@ State findings in severity order with `file:line`, then a verdict:
   have intended).
 - **request-changes** — give the specific changes required before acceptance.
 
-Use the lifecycle that actually dispatched this run:
-
-- **Separate downstream verification card**, the coordinator's normal pattern:
-  complete your own card with `kanban_complete`, whether the verdict is accept
-  or request-changes. Set `metadata.verdict` to `accept` or `request-changes`,
-  include `revision` naming the exact reviewed source and `checks` with real
-  commands and integer exit codes, and list required fixes in `requested_changes`.
-  The coordinator reads the verdict and routes rework; completion means the review
-  was delivered, not that the implementation passed. Source reading has no command
-  exit code; keep it in findings, never `checks`. Do not call `kanban_request_review`
-  to manufacture review provenance.
-- **Native review run**, claimed from the `review` state after an implementer's
-  `review_requested` handoff: accept with `kanban_complete`, or reject with
-  `kanban_request_changes(reason=...)`. Only this lifecycle can return the same
-  task to its original implementer. Accepted completion also records lowercase
-  `metadata.verdict: accept`, `revision` and executed `checks`. Follow the
-  installed `sdlc-review` skill.
-
-The completion guard rejects malformed evidence and acceptance with failing
-checks. Before completing a rejected downstream review, ensure any unfinished
-children are coordinator routing cards; if implementation/deploy children exist,
-report the exact bad links to the coordinator for repair and never release them.
-An audit with tenant `continuous-improvement` keeps its separate report contract.
-Read the claim/handoff history if the mode is unclear, and never retry a rejected
-`kanban_request_changes` call or change task state to make it admissible.
+Before submitting a verdict, read ~/.hermes/scripts/hermes-review-evidence.md.
+Use the actual dispatch lifecycle: a separate downstream card completes for
+either verdict; a native review run rejects with `kanban_request_changes`.
+Completion is not acceptance. Acceptance requires lowercase `metadata.verdict`,
+the exact revision and executed checks with integer exit codes. Report source
+reading separately, never as an executed check. Preserve rejected-work holds,
+report bad child links to the coordinator and never change state to bypass a
+refusal. Audits retain their separate report contract.
 
 Separate what you verified by running something from what you believe by reading,
 and say which when unsure: an honest "this specific claim I could not check" is

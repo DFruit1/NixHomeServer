@@ -1,0 +1,6 @@
+name: runtime-evidence
+version: "1.0.0"
+description: "Metadata-only model, reasoning, role and Kanban identity alongside existing Langfuse traces."
+author: NixHomeServer
+provides_hooks:
+  - pre_api_request
