@@ -95,7 +95,7 @@ need their existing authorization; a report does not supply it.
 ## Long-blocked cards and owner-authority prompts
 
 The snapshot collector emits a `LONG BLOCKED` section listing every card whose
-blocked spell passed 24 hours, or whose card passed a week while it keeps being
+blocked spell passed 4 hours, or whose card passed 20 hours while it keeps being
 re-blocked. The two bases are reported separately because they mean different
 things: a long *current spell* is work stuck in place, while an old card with a
 short spell is a feature that keeps being re-blocked and would otherwise never

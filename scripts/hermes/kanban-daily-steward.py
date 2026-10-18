@@ -23,13 +23,13 @@ BOARDS = ROOT / "kanban" / "boards"
 # A blocked spell older than this is reported as long-blocked. The owner
 # overrides it with STEWARD_LONG_BLOCKED_HOURS when a board's normal cycle is
 # longer; the runbook owns the default.
-DEFAULT_LONG_BLOCKED_HOURS = 24.0
+DEFAULT_LONG_BLOCKED_HOURS = 4.0
 
 # A *card* older than this counts as long-standing even when its current
-# blocked spell is short: re-blocking a two-week-old card is a stalled feature
-# wearing a fresh block, and a spell-only threshold hides exactly the work the
-# owner wants surfaced.
-DEFAULT_STALE_CARD_HOURS = 168.0
+# blocked spell is short: re-blocking an old card is a stalled feature wearing
+# a fresh block, and a spell-only threshold hides exactly the work the owner
+# wants surfaced.
+DEFAULT_STALE_CARD_HOURS = 20.0
 
 
 def _hours(name: str, default: float) -> float:

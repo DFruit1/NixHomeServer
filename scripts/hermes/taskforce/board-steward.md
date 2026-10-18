@@ -122,8 +122,8 @@ history stays unknown; use bounded reader queries, never extra probes or writes.
 
 ## Long-blocked cards and owner-authority unblock prompts
 
-When a card's blocked spell outlives 24 hours, or the card itself outlives a
-week while it keeps being re-blocked, it is long-blocked. Report every such
+When a card's blocked spell outlives 4 hours, or the card itself outlives 20
+hours while it keeps being re-blocked, it is long-blocked. Report every such
 card in the daily report with one copyable prompt the owner can hand to an
 outside agent (Codex or T3 Code) that works with the owner's direct authority
 outside Hermes roles, tool fences and approval lanes. Say what is stuck in plain

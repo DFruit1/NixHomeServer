@@ -371,9 +371,10 @@ class StewardTest(unittest.TestCase):
                     summary, error, started_at, ended_at);
                 CREATE TABLE task_events (id, task_id, run_id, kind, payload, created_at);
             ''')
-            # (id, created_age, spell_age, reason)
+            # (id, created_age, spell_age, reason). Each case isolates one basis:
+            # 'stuck' passes only the spell limit, 'churn' only the card limit.
             for tid, card_age, spell_age, reason in [
-                    ('stuck', 40 * 3600, 30 * 3600, 'spell ran long'),
+                    ('stuck', 10 * 3600, 30 * 3600, 'spell ran long'),
                     ('churn', 300 * 3600, 20 * 60, 'reblocked again'),
                     ('fresh', 3 * 3600, 2 * 3600, 'blocked just now')]:
                 db.execute('INSERT INTO tasks VALUES (?, ?, ?, ?, ?, 1, 0, NULL,'
@@ -383,8 +384,12 @@ class StewardTest(unittest.TestCase):
                 db.execute('INSERT INTO task_events VALUES (NULL, ?, NULL, ?, ?, ?)',
                            (tid, 'blocked', json.dumps({'reason': reason}), now - spell_age))
             db.commit()
-        with patch.object(snapshot, 'BOARDS', boards):
-            output = '\n'.join(snapshot.snapshot_board('one'))
+        # Pinned thresholds keep this test about the qualification rules rather
+        # than about whatever the shipped defaults happen to be.
+        with patch.dict(os.environ, {'STEWARD_LONG_BLOCKED_HOURS': '24',
+                                     'STEWARD_STALE_CARD_HOURS': '168'}):
+            with patch.object(snapshot, 'BOARDS', boards):
+                output = '\n'.join(snapshot.snapshot_board('one'))
         # Every blocked card is still listed; only the long ones are qualified.
         self.assertIn('- fresh @worker', output)
         long_blocked = output[output.index('LONG BLOCKED'):output.index('LAST 24H DONE')]

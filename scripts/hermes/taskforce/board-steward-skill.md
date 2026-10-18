@@ -46,8 +46,8 @@ token/inference waste, persistent blockers and repeated permission denials.
 Include older blockers still unresolved. Follow the scheduled prompt's evidence
 rules: establish avoidable repetition, derive blocked age from status events,
 and compare rejected actions with both assigned instructions and refusing policy.
-The snapshot's LONG BLOCKED section lists cards whose blocked spell passed 24h
-or whose card passed a week while repeatedly re-blocked; each one gets its own
+The snapshot's LONG BLOCKED section lists cards whose blocked spell passed 4h
+or whose card passed 20h while repeatedly re-blocked; each one gets its own
 owner-authority unblock prompt under SOUL.md, and those prompts fix the
 underlying cause rather than any guard or permission. Report measured usage
 separately from estimates; elapsed run time is not local inference time. Missing
