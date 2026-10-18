@@ -32,6 +32,17 @@ BREAKER="$TESTS_REPO_ROOT/scripts/hermes/kanban-retry-breaker.sh"
 HERMES_BIN="${HERMES_BIN:-$(command -v hermes 2>/dev/null || true)}"
 [[ -n "$HERMES_BIN" ]] || HERMES_BIN="$HOME/.local/bin/hermes"
 
+# A worker/delegated shell must run this real native-CLI suite only inside the
+# installed confined fixture runner. Ignore HERMES_FIXTURE_ACTIVE as authority:
+# the runner's clean child environment has no outer identity pins, so it will
+# naturally continue below without trusting a caller-controlled bypass flag.
+if [[ -n "${HERMES_KANBAN_TASK:-}${HERMES_KANBAN_RUN_ID:-}${HERMES_KANBAN_CLAIM_LOCK:-}${HERMES_PROFILE_NAME:-}${HERMES_PROFILE:-}${HERMES_SESSION_ID:-}${HERMES_KANBAN_DB:-}${HERMES_KANBAN_BOARD:-}${HERMES_DELEGATED_CHILD_CONTEXT:-}" ]]; then
+  exec python3 /home/dsaw/.hermes/scripts/fixture-runner.py \
+    --repo "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)" \
+    --suite "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/$(basename "${BASH_SOURCE[0]}")" \
+    --timeout 300
+fi
+
 fail() {
   echo "❌ $1" >&2
   exit 1
@@ -57,7 +68,8 @@ now="$(date +%s)"
 # requires, then drive its status directly. Using the CLI for creation keeps the
 # fixture honest about NOT NULL columns and defaults.
 new_card() {
-  "$HERMES_BIN" kanban --board testboard create "$1" --assignee "${2:-local-implementer}" 2>/dev/null |
+  "$HERMES_BIN" kanban --board testboard create "$1" \
+    --assignee "${2:-local-implementer}" --max-runtime 5m 2>/dev/null |
     grep -oE 't_[0-9a-f]+' | head -1
 }
 
@@ -324,5 +336,11 @@ if HERMES_BIN="$missing_cli/hermes" run_breaker >/dev/null 2>&1; then
   fail "exited 0 with no hermes CLI available; it cannot have parked anything"
 fi
 pass "refuses loudly when the hermes CLI is unavailable"
+
+# The runner deletes its temporary origin file on exit. Emit only non-secret
+# identity fields while still inside the confined child, never host paths.
+if [[ -n "${HERMES_FIXTURE_ORIGIN:-}" ]]; then
+  python3 -c 'import json, os; d=json.load(open(os.environ["HERMES_FIXTURE_ORIGIN"])); o=d["origin"]; print("FIXTURE_ORIGIN " + json.dumps({"board":o.get("HERMES_KANBAN_BOARD"),"task":o.get("HERMES_KANBAN_TASK"),"run":o.get("HERMES_KANBAN_RUN_ID"),"provenance":d.get("provenance")}, sort_keys=True))'
+fi
 
 echo "▶ kanban retry breaker: all checks passed"
