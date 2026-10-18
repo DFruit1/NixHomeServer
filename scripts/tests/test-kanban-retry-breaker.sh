@@ -53,6 +53,29 @@ done
 fixture="$(mktemp -d)"
 trap 'rm -rf "$fixture"' EXIT
 
+# A direct invocation with worker identity pins must stop before any CLI call;
+# only the repository runner's confined child may clear those pins.
+probe_cli="$fixture/probe-hermes"
+probe_cli_log="$fixture/probe-cli-log"
+probe_output="$fixture/probe-output"
+cat >"$probe_cli" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\\n' called >>"$PROBE_CLI_LOG"
+EOF
+chmod +x "$probe_cli"
+if env PROBE_CLI_LOG="$probe_cli_log" HERMES_BIN="$probe_cli" \
+  HERMES_KANBAN_HOME="$fixture/probe-home" HERMES_DELEGATED_CHILD_CONTEXT=synthetic \
+  HERMES_KANBAN_TASK=t_synthetic HERMES_KANBAN_DB="$fixture/live.db" \
+  HERMES_KANBAN_BOARD=synthetic bash "${BASH_SOURCE[0]}" >"$probe_output" 2>&1; then
+  fail "direct invocation accepted worker identity pins"
+fi
+grep -q 'run this suite through scripts/tests/run-script-tests.sh' "$probe_output" || {
+  cat "$probe_output" >&2
+  fail "pinned direct invocation did not direct the caller to the confined runner"
+}
+[[ ! -s "$probe_cli_log" ]] || fail "pinned direct invocation reached the Hermes CLI"
+pass "direct invocation refuses worker pins before any CLI call"
+
 export HERMES_KANBAN_HOME="$fixture/hermes"
 mkdir -p "$HERMES_KANBAN_HOME"
 "$HERMES_BIN" kanban boards create testboard >/dev/null

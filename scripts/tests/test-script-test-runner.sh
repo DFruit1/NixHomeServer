@@ -126,4 +126,75 @@ if ! grep -Eq '4 test script\(s\) failed' "$tmpdir/refused-output"; then
   exit 1
 fi
 
-echo "✅ Parallel runner preserves failures and confines the exact four pinned suites."
+# Ordinary CI has no worker pins and must execute the listed scripts directly,
+# without requiring the installed confined helper.
+direct_log="$tmpdir/direct-log"
+ordinary_routes="$tmpdir/ordinary-routes.txt"
+: >"$ordinary_routes"
+for suite in test-kanban-owner-alerts.sh test-steward-readonly.sh \
+  test-steward-opportunity-scan.sh test-kanban-retry-breaker.sh; do
+  direct_suite="$tmpdir/$suite"
+  cat >"$direct_suite" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "${BASH_SOURCE[0]##*/}" >>"$DIRECT_LOG"
+EOF
+  chmod +x "$direct_suite"
+  printf '%s\n' "$direct_suite" >>"$ordinary_routes"
+done
+ordinary_runner="$tmpdir/ordinary-runner.sh"
+awk -v fixture_list="$ordinary_routes" '
+  /^test_scripts=\($/ {
+    print "test_scripts=("
+    while ((getline fixture < fixture_list) > 0) printf "  \"%s\"\n", fixture
+    close(fixture_list)
+    replacing = 1
+    next
+  }
+  replacing && /^\)$/ { print ")"; replacing = 0; next }
+  !replacing { print }
+' scripts/tests/run-script-tests.sh >"$ordinary_runner"
+sed -i "s|^source .*test-common[.]sh.*$|source '$TESTS_REPO_ROOT/scripts/tests/test-common.sh'|" "$ordinary_runner"
+sed -i "s|/home/dsaw/.hermes/scripts/fixture-runner[.]py|$tmpdir/missing-fixture-runner.py|g" "$ordinary_runner"
+: >"$route_log"
+if ! env -u HERMES_KANBAN_TASK -u HERMES_KANBAN_DB -u HERMES_KANBAN_BOARD \
+  -u HERMES_KANBAN_RUN_ID -u HERMES_KANBAN_CLAIM_LOCK \
+  -u HERMES_DELEGATED_CHILD_CONTEXT -u HERMES_PROFILE_NAME -u HERMES_PROFILE \
+  DIRECT_LOG="$direct_log" NIXHOMESERVER_DEFAULT_HOST=fixture-host \
+  bash "$ordinary_runner" >"$tmpdir/ordinary-output" 2>&1; then
+  cat "$tmpdir/ordinary-output" >&2
+  exit 1
+fi
+[[ ! -e "$route_log" || ! -s "$route_log" ]] || {
+  echo "Unpinned ordinary CI unexpectedly invoked the confined helper." >&2
+  cat "$route_log" >&2
+  exit 1
+}
+[[ "$(wc -l <"$direct_log")" -eq 4 ]] || {
+  echo "Unpinned ordinary CI did not directly execute all four suites." >&2
+  cat "$direct_log" >&2
+  exit 1
+}
+
+# A missing required helper must fail the routed suites, never run them directly.
+: >"$direct_log"
+missing_runner="$tmpdir/missing-runner.sh"
+sed "s|$tmpdir/missing-fixture-runner[.]py|$tmpdir/absent-fixture-runner.py|g" \
+  "$ordinary_runner" >"$missing_runner"
+if env NIXHOMESERVER_DEFAULT_HOST=fixture-host DIRECT_LOG="$direct_log" \
+  HERMES_KANBAN_TASK=t_fixture HERMES_KANBAN_DB=/fixture/kanban.db \
+  HERMES_PROFILE=fixture bash "$missing_runner" >"$tmpdir/missing-output" 2>&1; then
+  echo "A missing required helper was treated as success." >&2
+  exit 1
+fi
+if ! grep -Eq '4 test script\(s\) failed' "$tmpdir/missing-output"; then
+  echo "A missing helper did not propagate through the runner." >&2
+  cat "$tmpdir/missing-output" >&2
+  exit 1
+fi
+[[ ! -s "$direct_log" ]] || {
+  echo "A missing required helper fell back to direct execution." >&2
+  cat "$direct_log" >&2
+  exit 1
+}
+
+echo "✅ Parallel runner preserves failures, confines pinned suites, and keeps ordinary CI direct."
