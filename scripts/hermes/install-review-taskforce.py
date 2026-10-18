@@ -179,7 +179,7 @@ def changed_files(root, policy_only=False):
     # Per-profile limits and inference/model settings are separate and untouched.
     configs = [root / 'config.yaml', *sorted((root / 'profiles').glob('*/config.yaml'))]
     for config in configs:
-        if config.exists() and not config.parent.name.startswith('.'):
+        if config.exists() and (config == root / 'config.yaml' or not config.parent.name.startswith('.')):
             changes[config] = worker_cap(changes.get(config, config.read_text()))
     # Reuse the existing bounded hook editor; keep unrelated hooks verbatim.
     spec = importlib.util.spec_from_file_location('steward_installer', SOURCE / 'install-steward-readonly.py')
