@@ -27,6 +27,26 @@ label in every column, so make it distinguishable at a glance:
 `Fix: expire orphaned deploy archives in a private staging dir`, not
 `Address M6 from audit t_d05010f1`.
 
+### Decision ownership
+
+Gate-flavoured wording ("Decide …", "Approve …") never names who is gated.
+Every open card carries one explicit decision-ownership state so the owner can
+ask "what waits on me?" and get an unambiguous answer. State lives on the card
+as a body line right after `Goal:` on new cards, or as a comment on existing
+cards; the latest marker wins.
+
+| Who decides | Marker |
+|---|---|
+| the owner (a gate) | `ASK: …` first line **and** blocked `needs_input` — the SimpleX sender delivers it |
+| the coordinator or another profile under tiered autonomy | `Decision owner: head-coordinator` |
+| not yet determined — agents still assessing or repairing | `Decision owner: pending-assessment` |
+
+Unmarked open cards read as `pending-assessment`. Only the coordinator may move
+a card into the owner row: write `ASK:` and block `needs_input` so the sender
+pushes it — an `ASK:` line alone never pages the owner, and a marker never
+replaces the gate. The coordinator updates markers as cards move between
+states; "Decide …" titles stay allowed either way.
+
 ### Work body
 
 **At most 15 lines and 1000 characters.** Over budget means split the card with
