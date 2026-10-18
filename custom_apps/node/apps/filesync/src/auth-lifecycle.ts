@@ -1,5 +1,6 @@
 export function isTerminalSessionError(error: unknown): boolean {
-  return error instanceof Error && /invalid_grant|session expired or was revoked/i.test(error.message);
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+  return /invalid_grant|session expired or was revoked/i.test(message);
 }
 
 export function shouldRestoreSessionBackup(error: unknown): boolean {
@@ -24,10 +25,11 @@ export function createCallbackProcessor<T>(finish: (url: string) => Promise<T>):
   };
 }
 
-export function createStartupGeneration(): { begin(): number; invalidate(): void; isCurrent(generation: number): boolean } {
+export function createStartupGeneration(): { begin(): number; current(): number; invalidate(): void; isCurrent(generation: number): boolean } {
   let generation = 0;
   return {
     begin: () => ++generation,
+    current: () => generation,
     invalidate: () => { generation += 1; },
     isCurrent: (candidate) => generation === candidate,
   };

@@ -1007,11 +1007,13 @@ function showError(error: unknown): void {
   render();
 }
 
-async function saveSessionBackup(): Promise<void> {
+async function saveSessionBackup(generation?: number): Promise<void> {
   if (!invoke) return;
   try {
     const backup = await invoke<string | null>('session_backup');
-    if (backup) localStorage.setItem(SESSION_BACKUP_KEY, backup);
+    if (backup && (generation === undefined || startupGeneration.isCurrent(generation))) {
+      localStorage.setItem(SESSION_BACKUP_KEY, backup);
+    }
   } catch { /* The session stays available in secure storage only. */ }
 }
 
@@ -1033,17 +1035,20 @@ async function hasStoredSession(): Promise<boolean> {
   } catch { return false; }
 }
 
-async function restoreSessionBackup(): Promise<boolean> {
-  if (!invoke) return false;
+async function restoreSessionBackup(generation: number): Promise<boolean> {
+  if (!invoke || !startupGeneration.isCurrent(generation)) return false;
   const backup = localStorage.getItem(SESSION_BACKUP_KEY);
   if (!backup) return false;
   try {
     await invoke<void>('restore_session_backup', { backup });
-    state.user = await invoke<string | null>('current_user') ?? undefined;
-    if (state.user) cacheSignedInUser(state.user);
-    return state.user !== undefined;
+    if (!startupGeneration.isCurrent(generation)) return false;
+    const user = await invoke<string | null>('current_user') ?? undefined;
+    if (!startupGeneration.isCurrent(generation)) return false;
+    state.user = user;
+    if (user) cacheSignedInUser(user);
+    return user !== undefined;
   } catch (error) {
-    if (isTerminalSessionError(error)) clearCachedSession();
+    if (startupGeneration.isCurrent(generation) && isTerminalSessionError(error)) clearCachedSession();
     return false;
   }
 }
@@ -1053,7 +1058,7 @@ const startupGeneration = createStartupGeneration();
 async function start(): Promise<void> {
   if (invoke) {
     try {
-      await onOpenUrl((urls) => { for (const url of urls) void finishCallback(url); });
+      await onOpenUrl((urls) => { for (const url of urls) dispatchCallback(url); });
     } catch { /* The browser preview does not provide native deep links. */ }
     const generation = startupGeneration.begin();
     let startupError: unknown;
@@ -1066,13 +1071,15 @@ async function start(): Promise<void> {
     }
     if (startupGeneration.isCurrent(generation) && state.user) {
       cacheSignedInUser(state.user);
-      await saveSessionBackup();
+      await saveSessionBackup(generation);
     } else if (startupGeneration.isCurrent(generation) && startupError && isTerminalSessionError(startupError)) {
       clearCachedSession();
       state.error = startupError instanceof Error ? startupError.message : String(startupError);
-    } else if (startupGeneration.isCurrent(generation) && (!startupError || shouldRestoreSessionBackup(startupError)) && await restoreSessionBackup()) {
-      state.notice = 'Signed in from the saved session.';
-      await saveSessionBackup();
+    } else if (startupGeneration.isCurrent(generation) && (!startupError || shouldRestoreSessionBackup(startupError)) && await restoreSessionBackup(generation)) {
+      if (startupGeneration.isCurrent(generation)) {
+        state.notice = 'Signed in from the saved session.';
+        await saveSessionBackup(generation);
+      }
     } else if (startupGeneration.isCurrent(generation)) {
       // The server may just be unreachable (offline, VPN, captive portal)
       // while a valid session sits in secure storage. Stay signed in under
@@ -1080,26 +1087,32 @@ async function start(): Promise<void> {
       // sync attempt revalidates and surfaces the real error if the session
       // is actually dead.
       const cached = localStorage.getItem(USER_KEY);
-      if (cached && (await hasStoredSession())) {
+      if (cached && await hasStoredSession() && startupGeneration.isCurrent(generation)) {
         state.user = cached;
         state.offline = true;
         state.notice = 'Could not reach the sync server. Showing the saved sign-in; syncs will retry.';
       }
     }
     try {
-      state.backgroundStatus = readBackgroundStatus(await invoke<string | null>('background_sync_status'));
-      applySpacePrefsToPairs();
-      await persistPairs();
-      if (state.user) {
-        state.settingsAuthorized = await invoke<boolean>('settings_authorized');
-        await loadPresets();
+      const backgroundStatus = readBackgroundStatus(await invoke<string | null>('background_sync_status'));
+      if (startupGeneration.isCurrent(generation)) {
+        state.backgroundStatus = backgroundStatus;
+        applySpacePrefsToPairs();
+        await persistPairs(generation);
+        if (state.user && startupGeneration.isCurrent(generation)) {
+          const authorized = await invoke<boolean>('settings_authorized');
+          if (startupGeneration.isCurrent(generation)) {
+            state.settingsAuthorized = authorized;
+            await loadPresets(generation);
+          }
+        }
       }
     } catch (error) {
-      state.error = error instanceof Error ? error.message : String(error);
+      if (startupGeneration.isCurrent(generation)) state.error = error instanceof Error ? error.message : String(error);
     }
     try {
       const initialLinks = await getCurrent();
-      for (const url of initialLinks ?? []) void finishCallback(url);
+      for (const url of initialLinks ?? []) dispatchCallback(url);
     } catch { /* No pending native deep link. */ }
     // Notification permission is best-effort: sync still works without it.
     void invoke<boolean>('ensure_notifications').catch(() => undefined);
@@ -1219,33 +1232,43 @@ async function runFileAction(name: string, action: FileAction, size: number): Pr
 
 async function finishCallbackOnce(url: string): Promise<string | undefined> {
   if (!url.startsWith('filesync://oauth/callback') || !invoke) return undefined;
-  const generation = startupGeneration.begin();
+  const observedGeneration = startupGeneration.current();
+  let generation: number | undefined;
   try {
     const user = await invoke<string>('finish_login', { callbackUrl: url });
-    if (!startupGeneration.isCurrent(generation)) return user;
+    generation = startupGeneration.begin();
     state.user = user;
     state.offline = false;
     cacheSignedInUser(user);
-    state.settingsAuthorized = await invoke<boolean>('settings_authorized');
+    const authorized = await invoke<boolean>('settings_authorized');
     if (!startupGeneration.isCurrent(generation)) return user;
-    await saveSessionBackup();
-    await loadPresets();
+    state.settingsAuthorized = authorized;
+    await saveSessionBackup(generation);
+    if (!startupGeneration.isCurrent(generation)) return user;
+    await loadPresets(generation);
     if (!startupGeneration.isCurrent(generation)) return user;
     applySpacePrefsToPairs();
-    await persistPairs();
+    await persistPairs(generation);
     if (!startupGeneration.isCurrent(generation)) return user;
     state.error = '';
     state.notice = `Signed in as ${state.user}.`;
   } catch (error) {
-    if (startupGeneration.isCurrent(generation)) {
+    if ((generation === undefined && startupGeneration.isCurrent(observedGeneration)) || (generation !== undefined && startupGeneration.isCurrent(generation))) {
       state.error = error instanceof Error ? error.message : String(error);
     }
+    throw error;
   }
   render();
   void refreshEstimates();
 }
 
 const finishCallback = createCallbackProcessor(finishCallbackOnce);
+
+function dispatchCallback(url: string): void {
+  void finishCallback(url).catch(() => {
+    render();
+  });
+}
 
 async function obtainPresetFolder(preset: SyncPreset): Promise<Folder | null> {
   if (!invoke) return null;
@@ -1320,17 +1343,20 @@ function normalizeServerAddress(value: string): string {
   return url.origin;
 }
 
-async function loadPresets(): Promise<void> {
+async function loadPresets(generation?: number): Promise<void> {
   if (!invoke) return;
-  state.presets = await invoke<SyncPreset[]>('server_presets');
+  const presets = await invoke<SyncPreset[]>('server_presets');
+  if (generation === undefined || startupGeneration.isCurrent(generation)) state.presets = presets;
 }
 
-async function persistPairs(): Promise<void> {
+async function persistPairs(generation?: number): Promise<void> {
   const serialized = JSON.stringify(state.pairs);
   try {
     if (invoke) await invoke<void>('update_background_syncs', { pairs: state.pairs });
+    if (generation !== undefined && !startupGeneration.isCurrent(generation)) return;
     localStorage.setItem(STORAGE_KEY, serialized);
   } catch (error) {
+    if (generation !== undefined && !startupGeneration.isCurrent(generation)) return;
     state.pairs = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '[]') as SyncPair[];
     state.error = error instanceof Error ? error.message : String(error);
     throw error;
