@@ -38,6 +38,9 @@ For each existing hold:
    A path in another worker's summary is not a transferred artifact or access
    grant. Keep preparation and its consumers acyclic; do not gate preparation on
    outputs that cannot exist until it finishes.
+   Pair each new verifier with a coordinator decision. Its verdict feeds that
+   decision, which holds the consumer until acceptance; a rejected review must
+   never directly release an implementation just because its card is done.
 5. Verify the supplied capability/input under the actual worker restrictions.
    Record source identity, actual command and integer exit or native result.
    Only then update runnable card instructions and use the supported transition.
@@ -51,6 +54,13 @@ For each existing hold:
    its real input is available. Preserve rejected history and feature gates;
    retire the superseded rejection edge only after fresh independent acceptance,
    then resume the original implementation receipt and composition.
+   Native unblock handles blocked/scheduled cards, not triage; reassign does
+   not promote triage either. After verified material recovery, an authorised
+   interactive operator can use the board's authenticated Move to Ready action
+   for a nonrunning, eligible triage card. Preserve its scope, prerequisites,
+   counters and identity. Workers still report missing transition capabilities;
+   they must not invoke an operator surface to evade their own restrictions or
+   bounce through artificial states to make an ineligible tool work.
 6. A failed remedy returns its new evidence to the same owner. Narrow the repair
    or obtain a concrete alternative from the auditor; never repeat unchanged
    audits, manufacture receipts, clear cooldowns or disable a guard. Exhausted
