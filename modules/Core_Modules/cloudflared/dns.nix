@@ -6,7 +6,10 @@
 # the public CNAME records that point a hostname at the tunnel, so they are
 # reconciled here through the Cloudflare API using the existing agenix
 # `cfAPIToken` and the tunnel id from `cfHomeCreds`. The sync is idempotent:
-# records that already point at the tunnel are left untouched.
+# records that already point at the tunnel are left untouched. Records that
+# still point at this tunnel but are no longer declared in the ingress are
+# pruned, so a removed public host cannot keep answering from the edge and
+# shadowing the private split-horizon record on LAN clients.
 
 let
   tunnelName = vars.cloudflareTunnelName;
@@ -79,6 +82,44 @@ ${lib.concatMapStringsSep "\n" (host: "        ${lib.escapeShellArg host}") host
           exit 1
         fi
         echo "synced: $host -> $target"
+      done
+
+      # Prune stale tunnel CNAMEs. When a host is removed from the tunnel
+      # ingress, its public CNAME used to survive forever; the edge kept
+      # answering it (typically with the tunnel's default 404) and shadowed
+      # the private split-horizon record for LAN clients. Consider only
+      # CNAMEs pointing at this tunnel's id; other record types and other
+      # targets are left untouched.
+      page=1
+      while :; do
+        listing="$(curl_json "$api/zones/$zone_id/dns_records?type=CNAME&per_page=100&page=$page")"
+        if [ "$(jq -r '.success' <<<"$listing")" != "true" ]; then
+          echo "cloudflare-dns-sync: could not list CNAME records for pruning: $(jq -c '.errors' <<<"$listing")" >&2
+          exit 1
+        fi
+        count="$(jq '.result | length' <<<"$listing")"
+        while IFS=$'\t' read -r prune_id prune_name prune_content; do
+          [ -n "$prune_id" ] || continue
+          [ "$prune_content" = "$target" ] || continue
+          declared=no
+          for host in "''${hosts[@]}"; do
+            if [ "$host" = "$prune_name" ]; then
+              declared=yes
+            fi
+          done
+          if [ "$declared" != yes ]; then
+            response="$(curl_json -X DELETE "$api/zones/$zone_id/dns_records/$prune_id")"
+            if [ "$(jq -r '.success' <<<"$response")" != "true" ]; then
+              echo "cloudflare-dns-sync: failed to prune $prune_name: $(jq -c '.errors' <<<"$response")" >&2
+              exit 1
+            fi
+            echo "pruned: $prune_name (no longer in tunnel ingress)"
+          fi
+        done < <(jq -r '.result[] | [.id, .name, .content] | @tsv' <<<"$listing")
+        if [ "$count" -lt 100 ]; then
+          break
+        fi
+        page=$((page + 1))
       done
     '';
   };
