@@ -32,38 +32,6 @@ BREAKER="$TESTS_REPO_ROOT/scripts/hermes/kanban-retry-breaker.sh"
 HERMES_BIN="${HERMES_BIN:-$(command -v hermes 2>/dev/null || true)}"
 [[ -n "$HERMES_BIN" ]] || HERMES_BIN="$HOME/.local/bin/hermes"
 
-# Detach from any inherited dispatcher worker identity.
-#
-# This test drives the real `hermes kanban` CLI, and the CLI reads four ambient
-# variables the dispatcher injects into every worker it spawns. Two of them
-# decide whether this test's fixture board is even reachable:
-#
-#   * HERMES_DELEGATED_CHILD_CONTEXT carries the write fence. Any kanban mutation
-#     from a process holding it is refused outright ("delegate_task child
-#     contexts cannot mutate Kanban tasks via the CLI"), so every CLI call below
-#     dies on its first line and the test reports a fence-probe failure with no
-#     clue why. Confirmed reproducible: three standalone runs inside a worker
-#     all failed on that one message, and the test passed the moment the marker
-#     was removed.
-#   * HERMES_KANBAN_TASK + HERMES_KANBAN_DB mark a *pinned* resolution. With both
-#     set, an explicit `--board testboard` deliberately stops outranking the pin
-#     (kanban_db._explicit_board_intent_pinned), so the fixture home built below
-#     is bypassed and the CLI resolves the pinned database instead. Under the
-#     full gate that pin points at the live operator board, which is the hazard
-#     this line exists to prevent: a test that creates, parks and unblocks cards
-#     must never be one export away from doing that to real work.
-#
-# HERMES_KANBAN_BOARD goes for the same reason: it is a resolution input ahead of
-# the `current` pointer, so a stale slug inherited from the ambient worker
-# environment can silently select a board other than the fixture.
-#
-# These are worker *identity* pins, not credentials or locations, so dropping
-# them cannot reach anything but this test's own mktemp fixture: the board path
-# is then derived solely from HERMES_KANBAN_HOME, and the fixture-home assertion
-# immediately after board creation proves it did.
-unset HERMES_DELEGATED_CHILD_CONTEXT HERMES_KANBAN_TASK HERMES_KANBAN_DB \
-  HERMES_KANBAN_BOARD
-
 fail() {
   echo "❌ $1" >&2
   exit 1
@@ -71,11 +39,42 @@ fail() {
 
 pass() { echo "  ✅ $1"; }
 
+# Direct execution must preserve worker identity pins. The repository runner
+# invokes this suite through the confined fixture helper when those pins exist.
+for pin in HERMES_DELEGATED_CHILD_CONTEXT HERMES_KANBAN_TASK HERMES_KANBAN_DB \
+  HERMES_KANBAN_BOARD; do
+  [[ -z "${!pin:-}" ]] ||
+    fail "$pin is set; run this suite through scripts/tests/run-script-tests.sh"
+done
+
 [[ -x "$BREAKER" ]] || fail "kanban-retry-breaker.sh is not executable"
 [[ -x "$HERMES_BIN" ]] || fail "hermes CLI not found (set HERMES_BIN)"
 
 fixture="$(mktemp -d)"
 trap 'rm -rf "$fixture"' EXIT
+
+# A direct invocation with worker identity pins must stop before any CLI call;
+# only the repository runner's confined child may clear those pins.
+probe_cli="$fixture/probe-hermes"
+probe_cli_log="$fixture/probe-cli-log"
+probe_output="$fixture/probe-output"
+cat >"$probe_cli" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\\n' called >>"$PROBE_CLI_LOG"
+EOF
+chmod +x "$probe_cli"
+if env PROBE_CLI_LOG="$probe_cli_log" HERMES_BIN="$probe_cli" \
+  HERMES_KANBAN_HOME="$fixture/probe-home" HERMES_DELEGATED_CHILD_CONTEXT=synthetic \
+  HERMES_KANBAN_TASK=t_synthetic HERMES_KANBAN_DB="$fixture/live.db" \
+  HERMES_KANBAN_BOARD=synthetic bash "${BASH_SOURCE[0]}" >"$probe_output" 2>&1; then
+  fail "direct invocation accepted worker identity pins"
+fi
+grep -q 'run this suite through scripts/tests/run-script-tests.sh' "$probe_output" || {
+  cat "$probe_output" >&2
+  fail "pinned direct invocation did not direct the caller to the confined runner"
+}
+[[ ! -s "$probe_cli_log" ]] || fail "pinned direct invocation reached the Hermes CLI"
+pass "direct invocation refuses worker pins before any CLI call"
 
 export HERMES_KANBAN_HOME="$fixture/hermes"
 mkdir -p "$HERMES_KANBAN_HOME"
@@ -102,7 +101,8 @@ now="$(date +%s)"
 # requires, then drive its status directly. Using the CLI for creation keeps the
 # fixture honest about NOT NULL columns and defaults.
 new_card() {
-  "$HERMES_BIN" kanban --board testboard create "$1" --assignee "${2:-local-implementer}" 2>/dev/null |
+  "$HERMES_BIN" kanban --board testboard create "$1" --assignee "${2:-local-implementer}" \
+    --max-runtime 5m 2>/dev/null |
     grep -oE 't_[0-9a-f]+' | head -1
 }
 
