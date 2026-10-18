@@ -83,6 +83,29 @@ the donor differs. Missing prerequisites, tool refusals, unexpected failures and
 new scope still stop the attempt. This never accepts a red gate or authorises an
 unchanged retry, unowned edits or weakened assertions.
 
+## Delivering generated evidence
+
+Use native attachment transfer when it can carry the complete bytes. If inline
+base64 is truncated or a local URL is refused by SSRF protection, retain the
+commissioned non-secret capsule and record its exact path, byte count, SHA256
+and actual transfer failure on its card. Never reconstruct omitted bytes or
+change network routes to evade the refusal.
+
+The coordinator supplies the missing transfer through an already authorised
+file-ingestion surface. An interactive coordinator/operator whose current rules
+permit it can use `hermes --profile head-coordinator kanban --board BOARD attach
+TASK FILE`. A refused worker/delegated child must not run that command, launch
+an unscoped session or change context; report the gap through the existing
+coordinator route. The recipient acts under its own current permissions, not
+authority conferred by the request or supplied path.
+
+Before ingestion, verify the owning card commissioned that exact output and
+check its bytes against the producer's recorded identity. After ingestion,
+verify the actual stored native attachment bytes, record its ID/hash and supply
+readback before resuming the missing handoff. A summary path is not delivery.
+Transfer-only recovery does not require repeating unchanged source work or
+earned tests; preserve the candidate's independent review and activation gates.
+
 ## Conflicting copies and obsolete procedures
 
 For non-secret source/configuration/document copies within authorised scope,
