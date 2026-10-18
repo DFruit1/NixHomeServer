@@ -35,6 +35,9 @@ For each existing hold:
    documenting a concrete unavailable capability and the next recovery action.
 4. Deliver inputs through durable attachments/task-local copies before releasing
    consumers. Check assigned checkout/base and input availability before dispatch.
+   Bind prepared checkouts with explicit `dir:` assignments; follow the installed
+   card-authoring guide's prepared-workspace procedure. A worktree seed is not
+   proof of the consumer's eventual checkout or base.
    A path in another worker's summary is not a transferred artifact or access
    grant. Keep preparation and its consumers acyclic; do not gate preparation on
    outputs that cannot exist until it finishes.
@@ -43,6 +46,10 @@ For each existing hold:
    never directly release an implementation just because its card is done.
 5. Verify the supplied capability/input under the actual worker restrictions.
    Record source identity, actual command and integer exit or native result.
+   Measure identity from the actual worker process and cross-check its native
+   claim, using only safe identity fields. A nested terminal can have a scrubbed
+   environment; absent shell fields alone do not prove an unpinned worker.
+   Never export missing pins, dump credentials or change execution context.
    Only then update runnable card instructions and use the supported transition.
    Queued/running means recovery resumed; only actual accepted deliverables and
    required activation receipts resolve the feature. Keep the owning handoff

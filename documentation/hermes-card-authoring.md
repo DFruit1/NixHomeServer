@@ -86,6 +86,22 @@ Native lifecycle review already injects `sdlc-review`; do not add it to a separa
 downstream verification card, which has its own verdict contract. Ordinary diff
 verification does not become a taskforce audit by loading its skill.
 
+### Prepared source workspaces
+
+Bind an already prepared, exclusively owned checkout with
+`--workspace dir:/absolute/prepared-checkout`. Prepare its branch, fixed base and
+actual input bytes before releasing its consumer. Read back the native workspace
+kind/path, then verify that exact directory's HEAD/tree, declared working changes
+and input hashes. A prepared path in a comment is not an assignment.
+
+`worktree:/path` invokes the native worktree resolver: a repository root anchors
+a new task checkout, and an existing linked checkout on another branch can route
+to the task's own checkout. It does not pin the prepared base or deliver inputs.
+If an existing task was misprovisioned, the coordinator supplies lawful parent
+preparation of its inactive assigned workspace or a supported continuation;
+the worker stops rather than entering another checkout. Preserve original
+branches, active/dirty work and rollback copies.
+
 ### Gate body
 
 A gate asks the owner to authorise something, so the ask is the first thing on
