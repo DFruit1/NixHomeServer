@@ -58,6 +58,11 @@ chmod +x "$root/bin/hermes"
 
 reap="$root/scripts/hermes/reap-kanban-worktrees.sh"
 
+# Launch from outside every checkout. A relative .git lock must not be resolved
+# against the caller's cwd (which may itself be a linked worktree's .git file).
+mkdir "$root/unrelated working directory"
+cd "$root/unrelated working directory"
+
 echo "▶ kanban worktree reaper contract"
 
 # --- dry run classifies without deleting -------------------------------------
@@ -89,12 +94,19 @@ echo "  ✅ --bytes adds byte accounting to every summary line"
 
 # --- an overlapping reap skips rather than racing -----------------------------
 
-git_dir="$(git -C "$root" rev-parse --git-dir)"
+git_dir="$(git -C "$root" rev-parse --path-format=absolute --git-common-dir)"
 exec 9>"$git_dir/reap-kanban-worktrees.lock"
 flock 9
 lock_out="$(HERMES_BIN="$root/bin/hermes" bash "$reap" 2>&1)" || true
 grep -q 'Another reap run holds the lock; skipping' <<<"$lock_out" \
   || { echo "$lock_out" >&2; echo "❌ an overlapping reap did not skip" >&2; exit 1; }
+
+linked="$root/.worktrees/t_active"
+mkdir -p "$linked/scripts/hermes" "$linked/.worktrees"
+cp "$reap" "$linked/scripts/hermes/"
+linked_out="$(HERMES_BIN="$root/bin/hermes" bash "$linked/scripts/hermes/reap-kanban-worktrees.sh" 2>&1)"
+grep -q 'Another reap run holds the lock; skipping' <<<"$linked_out" \
+  || { echo "$linked_out" >&2; echo "❌ a linked checkout did not share the repository lock" >&2; exit 1; }
 exec 9>&-
 
 echo "  ✅ an overlapping reap skips while the lock is held"

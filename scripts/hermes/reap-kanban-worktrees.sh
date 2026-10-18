@@ -78,7 +78,9 @@ command -v jq >/dev/null 2>&1 || { echo "❌ jq is required." >&2; exit 1; }
 # re-verifies, so it is safe but noisy), and the du walk in --bytes mode is
 # expensive enough that overlapping runs are a real waste. A held lock skips
 # this run entirely rather than queueing behind the running one.
-git_dir="$(git -C "$repo_root" rev-parse --git-dir)"
+# Resolve against the target repository, never the caller's cwd. Linked
+# checkouts also share this lock through their common Git directory.
+git_dir="$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir)"
 exec 9>"$git_dir/reap-kanban-worktrees.lock"
 if ! flock -n 9; then
   echo "ℹ️  Another reap run holds the lock; skipping."
