@@ -372,16 +372,22 @@ class StewardTest(unittest.TestCase):
                        ' tokens_output INTEGER, time_updated INTEGER)')
             db.execute("INSERT INTO session VALUES ('x',0.5,2000,1000,?)", (stamp * 1000 - 3600_000,))
             db.commit()
-        env = {'HERMES_ROOT': str(self.root), 'OPENCODE_DB': str(ocdb), 'HERMES_BIN': '/nonexistent',
+        env = {'HERMES_ROOT': str(self.root), 'OPENCODE_DB': str(ocdb),
+               'HERMES_BIN': '/nonexistent', 'OPENCODE_API_KEY': '',
                'OPENCODE_AUTH': str(self.root / 'absent-auth.json'),
                'T3_CACHE_DIR': str(self.root / 'absent-t3')}
         with patch.dict(usage.os.environ, env):
-            self.assertEqual([1, 1500, 0.0], usage.hermes_spend()['24h'])
-            self.assertEqual([1, 3000, 0.5], usage.opencode_spend()['24h'])
-            self.assertEqual(({}, 'no OpenCode credential'), usage.opencode_live())
-            buf = io.StringIO()
-            with contextlib.redirect_stdout(buf):
-                usage.main()
+            with patch.dict(usage.os.environ, {'OPENCODE_API_KEY': 'ambient-fake-key'}):
+                ambient_spend = [usage.hermes_spend()['24h'], usage.opencode_spend()['24h']]
+            with patch.dict(usage.os.environ, {'OPENCODE_API_KEY': ''}):
+                self.assertEqual(ambient_spend, [usage.hermes_spend()['24h'],
+                                                 usage.opencode_spend()['24h']])
+                self.assertEqual([1, 1500, 0.0], ambient_spend[0])
+                self.assertEqual([1, 3000, 0.5], ambient_spend[1])
+                self.assertEqual(({}, 'no OpenCode credential'), usage.opencode_live())
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf):
+                    usage.main()
         out = buf.getvalue()
         self.assertIn('USAGE PACE', out)
         self.assertIn('hermes 24h', out)
@@ -404,7 +410,9 @@ class StewardTest(unittest.TestCase):
                 'weekly': {'status': 'ok', 'percent': 44, 'resetsAt': '2026-10-19T00:00:00.000Z'},
                 'monthly': {'status': 'ok', 'percent': 77, 'resetsAt': '2026-10-28T12:50:54.000Z'}}}
 
-        env = {'OPENCODE_AUTH': str(auth), 'USAGE_PACE_NOW': '2026-10-14T09:00:00+11:00',
+        env = {'HERMES_ROOT': str(self.root), 'OPENCODE_DB': str(self.root / 'absent-opencode.db'),
+               'OPENCODE_AUTH': str(auth), 'OPENCODE_API_KEY': '',
+               'USAGE_PACE_NOW': '2026-10-14T09:00:00+11:00',
                'HERMES_BIN': '/nonexistent', 'T3_CACHE_DIR': str(self.root / 'absent-t3')}
         with patch.dict(usage.os.environ, env):
             with patch.object(usage, 'http_get_json', fake_get):
@@ -433,8 +441,9 @@ class StewardTest(unittest.TestCase):
             'windows': [{'id': 'go_rolling', 'kind': 'session', 'label': 'Go \u00b7 Session',
                          'windowDurationMins': 300, 'usedPercent': 16,
                          'resetsAt': '2026-10-14T02:15:05.000Z'}]}}))
-        env = {'T3_CACHE_DIR': str(cache), 'HERMES_BIN': '/nonexistent',
-               'OPENCODE_AUTH': str(self.root / 'absent-auth.json'),
+        env = {'HERMES_ROOT': str(self.root), 'OPENCODE_DB': str(self.root / 'absent-opencode.db'),
+               'OPENCODE_AUTH': str(self.root / 'absent-auth.json'), 'OPENCODE_API_KEY': '',
+               'T3_CACHE_DIR': str(cache), 'HERMES_BIN': '/nonexistent',
                'USAGE_PACE_NOW': '2026-10-14T09:00:00+11:00'}
         with patch.dict(usage.os.environ, env):
             lines = usage.account_limit_lines()
@@ -447,8 +456,9 @@ class StewardTest(unittest.TestCase):
         self.root.mkdir(parents=True, exist_ok=True)
         auth.write_text(json.dumps({'opencode-go': {'type': 'api', 'key': 'secret-key'}}))
         import urllib.error
-        env = {'OPENCODE_AUTH': str(auth), 'HERMES_BIN': '/nonexistent',
-               'T3_CACHE_DIR': str(self.root / 'absent-t3')}
+        env = {'HERMES_ROOT': str(self.root), 'OPENCODE_DB': str(self.root / 'absent-opencode.db'),
+               'OPENCODE_AUTH': str(auth), 'OPENCODE_API_KEY': '',
+               'HERMES_BIN': '/nonexistent', 'T3_CACHE_DIR': str(self.root / 'absent-t3')}
         with patch.dict(usage.os.environ, env):
             with patch.object(usage, 'http_get_json',
                               side_effect=urllib.error.HTTPError('u', 403, 'Forbidden', {}, None)):

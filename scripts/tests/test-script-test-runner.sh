@@ -70,4 +70,124 @@ if ! grep -Eq '1 test script\(s\) failed' "$output"; then
   exit 1
 fi
 
-echo "✅ Parallel script-test runner preserves failures reaped at the concurrency limit."
+# Pinned worker runs must route the four synthetic suites through the confined
+# helper, while unpinned CI keeps direct execution and helper refusals propagate.
+routes="$tmpdir/routes.txt"
+printf '%s\n' scripts/tests/test-kanban-owner-alerts.sh scripts/tests/test-steward-readonly.sh scripts/tests/test-steward-opportunity-scan.sh scripts/tests/test-kanban-retry-breaker.sh >"$routes"
+route_runner="$tmpdir/route-runner.sh"
+awk -v fixture_list="$routes" '
+  /^test_scripts=\($/ {
+    print "test_scripts=("
+    while ((getline fixture < fixture_list) > 0) printf "  \"%s\"\n", fixture
+    close(fixture_list)
+    replacing = 1
+    next
+  }
+  replacing && /^\)$/ { print ")"; replacing = 0; next }
+  !replacing { print }
+' scripts/tests/run-script-tests.sh >"$route_runner"
+sed -i "s|^source .*test-common[.]sh.*$|source '$TESTS_REPO_ROOT/scripts/tests/test-common.sh'|" "$route_runner"
+sed -i "s|/home/dsaw/.hermes/scripts/fixture-runner[.]py|$tmpdir/fixture-runner.py|g" "$route_runner"
+cat >"$tmpdir/fixture-runner.py" <<'PY'
+import json, os, sys
+with open(os.environ['ROUTE_LOG'], 'a') as f:
+    f.write(json.dumps(sys.argv[1:]) + '\n')
+sys.exit(int(os.environ.get('ROUTE_STATUS', '0')))
+PY
+route_log="$tmpdir/route-log"
+if ! env NIXHOMESERVER_DEFAULT_HOST=fixture-host ROUTE_LOG="$route_log" \
+  HERMES_KANBAN_TASK=t_fixture HERMES_KANBAN_DB=/fixture/kanban.db \
+  HERMES_KANBAN_BOARD=fixture HERMES_DELEGATED_CHILD_CONTEXT=fixture \
+  HERMES_PROFILE=fixture bash "$route_runner" >"$tmpdir/routes-output" 2>&1; then
+  cat "$tmpdir/routes-output" >&2
+  exit 1
+fi
+python3 - "$route_log" "$TESTS_REPO_ROOT" <<'PY'
+import json
+from pathlib import Path
+import sys
+rows = [json.loads(line) for line in Path(sys.argv[1]).read_text().splitlines()]
+root = sys.argv[2]
+suites = ('test-kanban-owner-alerts.sh', 'test-steward-readonly.sh',
+          'test-steward-opportunity-scan.sh', 'test-kanban-retry-breaker.sh')
+assert len(rows) == 4, rows
+for suite in suites:
+    assert any(row == ['--repo', root, '--suite', f'{root}/scripts/tests/{suite}',
+                       '--timeout', '300'] for row in rows), (suite, rows)
+PY
+
+# Ordinary unpinned CI must remain direct and not require the installed helper.
+direct_log="$tmpdir/direct-log"
+ordinary_routes="$tmpdir/ordinary-routes.txt"
+: >"$ordinary_routes"
+for suite in test-kanban-owner-alerts.sh test-steward-readonly.sh \
+  test-steward-opportunity-scan.sh test-kanban-retry-breaker.sh; do
+  direct_suite="$tmpdir/$suite"
+  cat >"$direct_suite" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "${BASH_SOURCE[0]##*/}" >>"$DIRECT_LOG"
+EOF
+  chmod +x "$direct_suite"
+  printf '%s\n' "$direct_suite" >>"$ordinary_routes"
+done
+ordinary_runner="$tmpdir/ordinary-runner.sh"
+awk -v fixture_list="$ordinary_routes" '
+  /^test_scripts=\($/ {
+    print "test_scripts=("
+    while ((getline fixture < fixture_list) > 0) printf "  \"%s\"\n", fixture
+    close(fixture_list)
+    replacing = 1
+    next
+  }
+  replacing && /^\)$/ { print ")"; replacing = 0; next }
+  !replacing { print }
+' scripts/tests/run-script-tests.sh >"$ordinary_runner"
+sed -i "s|^source .*test-common[.]sh.*$|source '$TESTS_REPO_ROOT/scripts/tests/test-common.sh'|" "$ordinary_runner"
+sed -i "s|/home/dsaw/.hermes/scripts/fixture-runner[.]py|$tmpdir/missing-fixture-runner.py|g" "$ordinary_runner"
+if ! env -u HERMES_KANBAN_TASK -u HERMES_KANBAN_DB -u HERMES_KANBAN_BOARD \
+  -u HERMES_KANBAN_RUN_ID -u HERMES_KANBAN_CLAIM_LOCK \
+  -u HERMES_DELEGATED_CHILD_CONTEXT -u HERMES_PROFILE_NAME -u HERMES_PROFILE \
+  DIRECT_LOG="$direct_log" NIXHOMESERVER_DEFAULT_HOST=fixture-host \
+  bash "$ordinary_runner" >"$tmpdir/ordinary-output" 2>&1; then
+  cat "$tmpdir/ordinary-output" >&2
+  exit 1
+fi
+[[ "$(wc -l <"$direct_log")" -eq 4 ]] || {
+  echo "Unpinned ordinary CI did not directly execute all four suites." >&2
+  exit 1
+}
+
+# Refusal for a required helper must stay a failure, never direct-fallback.
+if env NIXHOMESERVER_DEFAULT_HOST=fixture-host ROUTE_LOG="$route_log" ROUTE_STATUS=126 \
+  HERMES_KANBAN_TASK=t_fixture HERMES_KANBAN_DB=/fixture/kanban.db \
+  HERMES_PROFILE=fixture bash "$route_runner" >"$tmpdir/refused-output" 2>&1; then
+  echo "A refused helper was treated as success." >&2
+  exit 1
+fi
+if ! grep -Eq '4 test script\(s\) failed' "$tmpdir/refused-output"; then
+  echo "A refused helper did not propagate through the runner." >&2
+  cat "$tmpdir/refused-output" >&2
+  exit 1
+fi
+
+# A missing helper likewise cannot be bypassed or treated as success.
+missing_runner="$tmpdir/missing-runner.sh"
+sed "s|$tmpdir/missing-fixture-runner[.]py|$tmpdir/absent-fixture-runner.py|g" \
+  "$ordinary_runner" >"$missing_runner"
+if env NIXHOMESERVER_DEFAULT_HOST=fixture-host DIRECT_LOG="$direct_log" \
+  HERMES_KANBAN_TASK=t_fixture HERMES_KANBAN_DB=/fixture/kanban.db \
+  HERMES_PROFILE=fixture bash "$missing_runner" >"$tmpdir/missing-output" 2>&1; then
+  echo "A missing required helper was treated as success." >&2
+  exit 1
+fi
+if ! grep -Eq '4 test script\(s\) failed' "$tmpdir/missing-output"; then
+  echo "A missing helper did not propagate through the runner." >&2
+  cat "$tmpdir/missing-output" >&2
+  exit 1
+fi
+[[ "$(wc -l <"$direct_log")" -eq 4 ]] || {
+  echo "A missing helper fell back to direct execution." >&2
+  exit 1
+}
+
+echo "✅ Parallel runner preserves failures and confines pinned suites without changing ordinary CI."
