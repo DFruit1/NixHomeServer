@@ -47,13 +47,10 @@ For specifically commissioned evidence-only recovery, include the exact
 unbulleted line `Recovery mode: evidence-only` before `Constraints:` **at
 creation**, with a positive native runtime cap. The native constructor recognises
 that line and persists `max_retries=1`; read back both fields before release.
-Putting the marker in a bullet does not activate this policy, and editing the
-body later does not backfill the persisted retry limit. If no supported setter
-can repair an unstarted assignment, preserve its history and inputs in a
-correctly bounded native replacement, transfer its real result dependencies
-before retiring the invalid assignment, and keep only one runnable owner. Never
-repair this with direct database writes, guard removal or counter clearing;
-leave active workers untouched.
+A bulleted marker does not activate the policy, and a later body edit does not
+backfill the retry limit. Full retry/replacement mechanics live in
+`hermes-worker-budgets.md`; never repair assignments with direct database
+writes or guard removal.
 
 ### Task skills
 
@@ -83,11 +80,9 @@ an agent installation/configuration gap, without silently enabling it. Do not
 dispatch a card claiming a preload that cannot resolve. Simple metadata work,
 owner gates and planning do not need implementation recipes.
 
-For example, a NixOS optional-module regression can use
-`kanban_create(..., skills=["systematic-debugging", "nixhomeserver-module-change",
-"nixhomeserver-safe-change"])`. CLI creation uses repeated
-`--skill systematic-debugging --skill nixhomeserver-module-change
---skill nixhomeserver-safe-change`. Read back the created card with `kanban_show`
+For example: `kanban_create(..., skills=["systematic-debugging",
+"nixhomeserver-module-change", "nixhomeserver-safe-change"])`, or repeated
+`--skill` flags on the CLI. Read back the created card with `kanban_show`
 and verify its `skills`, assignee, workspace and prerequisites before release.
 Set skills at creation: the installed native API does not expose a task-skills
 update operation. Do not edit board SQLite or recreate an active graph just to
@@ -106,12 +101,10 @@ actual input bytes before releasing its consumer. Read back the native workspace
 kind/path, then verify that exact directory's HEAD/tree, declared working changes
 and input hashes. A prepared path in a comment is not an assignment.
 
-`worktree:/path` invokes the native worktree resolver: a repository root anchors
-a new task checkout, and an existing linked checkout on another branch can route
-to the task's own checkout. It does not pin the prepared base or deliver inputs.
-If an existing task was misprovisioned, the coordinator supplies lawful parent
-preparation of its inactive assigned workspace or a supported continuation;
-the worker stops rather than entering another checkout. Preserve original
+`worktree:/path` invokes the native worktree resolver (a repository root anchors
+a new task checkout); it does not pin the prepared base or deliver inputs.
+A misprovisioned task stops rather than entering another checkout; the
+coordinator supplies lawful preparation or continuation. Preserve original
 branches, active/dirty work and rollback copies.
 
 ### Gate body

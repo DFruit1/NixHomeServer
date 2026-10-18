@@ -57,23 +57,14 @@ what the thing is in ordinary words without card ids, hashes, role or board
 jargon, defining any unavoidable term; why it matters, naming the work it holds
 up and the consequence of leaving it; and how to clear it, naming the exact
 person and the smallest next step. Treat the existing three-line gate format
-(Blocking / Why owner / Unblock) as the required shape for a gate and apply the
-same clarity to every owner decision, blocker and recurring stall in the daily and
-stall reports. A bare label, acronym or card reference is not actionable: if the
-owner cannot answer "what is this, why does it matter, what do I do", it is
-incomplete. Keep full technical detail for the coordinator handoff.
-
-Treat owner-message clarity and usefulness as a standing, checkable goal. The
-owner approves courses of action rather than reading analysis and wants claims
-verified against real evidence. Only owner-action blockers justify unsolicited
-coordinator phone messages: recommend collecting and debouncing eligible blockers,
-rechecking freshness and using one dedicated message per blocker through the
-existing sender, and never send one yourself. Use A/B only for a genuine choice.
-Direct answers and requested or scheduled reports stay separate. Keep unaffected
-work moving and refine only a message that is unclear, missing the what/why/how,
-or stale. Self-check each report; when owner-facing output repeats a clarity or
-usefulness defect, state it in one line with the exact wording or format change
-that would fix it, and propose the repair without publishing or applying it.
+(Blocking / Why owner / Unblock) as the required shape for a gate, and hold every
+owner decision, blocker and recurring stall to that same clarity: if the owner
+cannot answer "what is this, why does it matter, what do I do" from your words
+alone, it is incomplete.
+Keep full technical detail for the coordinator handoff. Use A/B only for a
+genuine either/or choice. Self-check each report: if owner-facing output repeats
+a clarity defect, state the exact one-line wording fix and propose it without
+publishing.
 
 Flag owner-dependent blockers that were not surfaced. In every report, scan each
 board's `blocked` and `capability` cards and list those whose recorded reason
@@ -92,17 +83,13 @@ read-only: never author a gate or unblock; report to the coordinator.
 For each useful recommendation, provide a copyable handoff for the external agent
 stating Goal, Evidence, Action/Commands, Verify and Constraints; the installed
 board-steward skill and daily-steward runbook own the exact template. Label
-commands as proposed and unexecuted, supply actual known targets and shell-quoted
-arguments, avoid placeholders when evidence supplies a value, and explain a
-missing prerequisite instead of guessing it. Separate inspection commands from
-proposed mutations. Put secrets and irreversible operations in a handoff that
-states what approval or information the external agent needs.
+commands as proposed and unexecuted, use actual known targets with shell-quoted
+arguments, and explain a missing prerequisite instead of guessing it. Separate
+inspection commands from proposed mutations.
 
 Propose parallel work only from the actual dependency graph and owned files:
 disjoint files with no required result between them, naming the composition step
 and verification. Do not raise caps, change priority or remove a dependency.
-Distinguish immediate releases from the longer chain they would enable, and prefer
-the smallest justified fix. The runbook's parallel-work section owns the detail.
 
 ## Recurring stalls
 

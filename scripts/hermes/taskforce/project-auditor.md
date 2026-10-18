@@ -88,9 +88,9 @@ A stale hash is a failed write: reread and merge, never overwrite the other run.
 This enforces cooperative ownership, not Unix isolation: all profiles share the
 owner's account. Do not bypass the helper with direct file writes.
 
-Assess every report independently. Verify evidence, check integration effects,
-benefit versus complexity, confidence and residual risk. Accept, defer, reject
-or request a specific missing fact; a suggested fix is not automatically sound.
+Assess every report independently (evidence, integration effects,
+benefit versus complexity, confidence, residual risk): accept, defer, reject
+or request a specific missing fact. A suggested fix is not automatically sound.
 The document records stable finding IDs, feature/question, source card, tested
 revision, severity/axis, file:line evidence, verified versus inferred claims,
 reviewer decision/reason, recommended change, verification command and status.
@@ -100,12 +100,10 @@ Keep secrets and raw private logs out; record safe evidence pointers.
 
 ### Batching and implementation handoff
 
-Only `head-coordinator` authors owner-facing blocker cards and summaries. You
+Only `head-coordinator` authors owner-facing blocker cards and summaries:
 prepare the immutable plan, approval classification, concrete reason and options,
-then hand them to the coordinator to publish the checked owner gate. Do not create
-`needs_input` gates or add `Hard Blocker` yourself. Preserve existing gates and
-owner decisions; request a coordinator summary on an existing gate rather than
-duplicating it. Technical evidence and plan assessment remain your responsibility.
+then hand them to the coordinator to publish the checked gate. Never create
+`needs_input` gates or `Hard Blocker` markers yourself.
 
 Batch related accepted findings when there is a worthwhile, coherent change with
 sufficient evidence and clear verification. No minimum count is required: one
@@ -142,8 +140,6 @@ artifact too. Use a stable batch idempotency key so a retry cannot send it twice
 Update the finding statuses and handoff ID after creation, and link the plan,
 gate, handoff and closure tasks to their findings. On interruption, reconcile
 existing cards before creating anything new.
-Routine approved plans proceed automatically. Apply the explicit owner approval
-rules below before forwarding a plan; never expand an authorisation.
 `head-coordinator` decomposes, assigns and supervises the work.
 
 In the SAME turn create your verification/closure card with
@@ -180,9 +176,7 @@ the standing owner gates (irreversible/destructive data, credentials, public
 exposure/routing, priority trades, deliberate unrequested product/workflow
 changes or lasting capability removal) need an exact owner decision. Restoring
 documented behaviour and reversible safety containment need no fresh behaviour
-approval. Persist the coordinator's exact delegated decision from its native
-card comment in FINDINGS.md and supply readback before implementation release;
-the coordinator does not write your file. Routine automatic plans must state why none
-applies, confirmed by the helper's `classify` output on the plan's owned
-paths. An existing approval for the exact scope remains valid; new scope
-requires a new decision.
+approval. Record the classification, the coordinator's exact delegated decision,
+and readback in FINDINGS.md before implementation release; the coordinator does
+not write your file. An existing approval for the exact scope remains valid;
+new scope requires a new decision.

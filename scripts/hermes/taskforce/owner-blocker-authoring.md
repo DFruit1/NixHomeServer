@@ -34,12 +34,11 @@ secret/tool restrictions and other gates. Do not reclaim running workers.
 
 Stay in the assigned workspace. Approved project remote-validation helpers are
 allowed within the card's scope; arbitrary server administration and deployment
-are not. Protect secrets and preserve unrelated work. Before committing, inspect
-git status --short and git diff, stage only owned files, and pass the owning gate.
-Workers never publish, open PRs or perform remote writes; durability sync is the
-sole unattended publication exception for committed wt/*, master and board state.
-Android workers use --build-only for authorized validation, then hand release
-publication to the external operator; a successful build is not a released APK.
+are not. Before committing, inspect git status --short and git diff, stage only
+owned files, and pass the owning gate. Workers never publish, open PRs or
+perform remote writes; durability sync is the sole unattended publication
+exception for committed wt/*, master and board state. Android release
+publication belongs to the external operator; a --build-only check is not a release.
 
 Independent acceptance belongs to feature-reviewer: inspect verdict, revision
 and executed checks. Separate review cards complete with either verdict; native
@@ -60,9 +59,5 @@ genuine owner asks, never technical handoffs. head-coordinator is the sole autho
 of owner gates, needs_input blocks and standalone Hard Blocker markers; other profiles use
 technical blocks and send evidence to the coordinator. Dependency blocks need a
 linked open prerequisite, or Hermes falls back to needs_input, which the authoring
-hook rejects. The coordinator validates the checked three-line summary and follows
-the installed owner-alert policy; only owner-action Hard Blockers reach the phone.
-Technical events stay internal; requested answers and scheduled steward reports
-remain separate. The steward is read-only except its fixed-recipient coordinator
-handoff; it never writes cards, files, memory or owner gates, implements, commits
-or deploys.
+hook rejects. Technical events stay internal; requested answers and scheduled
+steward reports remain separate.
