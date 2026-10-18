@@ -157,31 +157,7 @@ def check_untracked_root(repo: Path) -> list[tuple[str, str]]:
 
 
 def check_reapable_worktrees(repo: Path) -> list[tuple[str, str]]:
-    """Terminal-card worktrees the dry-run reap would reclaim.
-
-    The reap script is dry-run by default and --apply stays an operator
-    action: this surfaces the reclaimable count as one bounded candidate so
-    the operator (or the coordinator, within its lane) can run the apply,
-    instead of the disk quietly filling with published terminal-card trees.
-    """
-    script = repo / "scripts" / "hermes" / "reap-kanban-worktrees.sh"
-    if not script.is_file():
-        return []
-    # A dedicated bound: the dry run without --bytes still runs one git status
-    # per worktree, and a large fleet has a hundred-plus trees.
-    try:
-        proc = subprocess.run(["bash", str(script), "--board", BOARD], cwd=repo,
-                              capture_output=True, text=True, timeout=120)
-    except subprocess.SubprocessError:
-        return []
-    if proc.returncode != 0:
-        return []
-    for line in proc.stdout.splitlines():
-        if line.startswith("Reapable (terminal card, clean, published): "):
-            count = line.split(":", 1)[1].strip()
-            if count.isdigit() and int(count) > 0:
-                return [("WORKTREES_REAPABLE",
-                         f"{count} reapable worktrees; scripts/hermes/reap-kanban-worktrees.sh --apply")]
+    """Worktree reclamation is paused pending ownership clearance."""
     return []
 
 
