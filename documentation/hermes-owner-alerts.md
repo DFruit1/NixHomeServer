@@ -191,7 +191,7 @@ hermes --profile default cron list
 ```
 
 Installation preserves unrelated profile policy and existing cron state. New
-one-minute jobs start paused for validation. The installed reply policy is
+five-minute jobs start paused for validation. The installed reply policy is
 `scripts/hermes/taskforce/owner-alert-replies.md`, backed up before replacement.
 The installer also adds the blocker authorship policy to every existing profile
 and updates the installed taskforce approval handoff. This prevents the auditor's

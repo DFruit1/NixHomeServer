@@ -597,7 +597,7 @@ def install(root):
     jobs = json.loads((root / 'cron/jobs.json').read_text()).get('jobs', [])
     matching = [job for job in jobs if job.get('name') == JOB]
     if matching and (len(matching) != 1 or matching[0].get('script') != 'kanban-owner-alerts.py'
-                    or not matching[0].get('no_agent') or matching[0].get('schedule', {}).get('minutes') != 1):
+                    or not matching[0].get('no_agent') or matching[0].get('schedule', {}).get('minutes') != 5):
         raise ValueError('Owner alert cron drift; repair the existing job instead of duplicating it')
     # Validate every policy transformation and cron before installing anything.
     import hermes_common  # Local to the checkout this installer runs from.
@@ -610,7 +610,7 @@ def install(root):
     if not matching:
         env = os.environ.copy()
         env['HERMES_HOME'] = str(root)
-        subprocess.run(['hermes', '--profile', 'default', 'cron', 'create', 'every 1m',
+        subprocess.run(['hermes', '--profile', 'default', 'cron', 'create', 'every 5m',
                         '--name', JOB, '--script', 'kanban-owner-alerts.py', '--no-agent',
                         '--deliver', 'local', '--workdir', str(source.parent.parent),
                         '--paused', '--paused-reason', 'Validate owner alerts before activation'], check=True, timeout=60, env=env)

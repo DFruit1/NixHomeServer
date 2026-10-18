@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stable read-only digest for the existing five-minute idle recovery job.
+"""Stable read-only digest for the existing idle recovery job.
 
 Python glue reuses Hermes monitor change detection. No model, writes, dispatch,
 private source reads or new scheduling state. Heartbeats and routine coordinator comments

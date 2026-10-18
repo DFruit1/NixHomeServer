@@ -247,7 +247,7 @@ Reply in SimpleX markup: `*bold*`, `_italic_`, `~strike~`. Do not use GitHub's
 
 ### Hard Blocker inbox and authenticated replies
 
-The no-agent `kanban owner blocker alerts` cron reads every board each minute
+The no-agent `kanban owner blocker alerts` cron reads every board every 5 minutes
 and pushes one message class to the owner's phone: a *Hard Blocker*. A blocked
 card is a Hard Blocker when the owner's action is the only way forward and it
 cannot clear itself without the owner:

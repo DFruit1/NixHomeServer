@@ -94,7 +94,7 @@ The hook governs native agent tools; it is a workflow guard, not Unix isolation
 against the shared account's human CLI or arbitrary direct database writes.
 It does not reinterpret old completed records or grant deployment permission.
 
-The existing five-minute idle recovery job gains `idle-recovery-monitor.py`.
+The existing idle recovery job gains `idle-recovery-monitor.py`.
 It hashes board state, dependencies, owner replies, non-coordinator comments and
 latest run/receipt evidence, including completed source cards. Heartbeats and
 routine coordinator comments on unfinished cards do not cause wakes. While any
