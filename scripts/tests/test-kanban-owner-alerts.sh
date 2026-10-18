@@ -234,6 +234,23 @@ class AlertsTest(unittest.TestCase):
         self.assertNotIn('two:t_12345678', result.stdout)
         self.assertFalse((self.root / 'kanban/owner-alerts').exists())
 
+    def test_check_blockers_warns_on_missing_supplier_and_stale_hold_age(self):
+        environment = {**os.environ, 'HERMES_ROOT': str(self.root)}
+        with closing(sqlite3.connect(self.boards['one'])) as db:
+            db.execute('ALTER TABLE task_events ADD COLUMN created_at INTEGER')
+            db.execute('UPDATE task_events SET created_at=?', (1000,))
+            db.commit()
+        before = self.board_bytes()
+        result = subprocess.run([sys.executable, '-B', alerts.__file__, '--check-blockers'],
+                                env=environment, text=True, capture_output=True)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn('one:t_12345678', result.stdout)
+        self.assertIn('input supplier', result.stdout)
+        self.assertIn('held for', result.stdout)
+        self.assertIn('hours', result.stdout)
+        self.assertEqual(before, self.board_bytes())
+        self.assertFalse((self.root / 'kanban/owner-alerts').exists())
+
     def board_bytes(self):
         return {name: path.read_bytes() for name, path in self.boards.items()}
 
