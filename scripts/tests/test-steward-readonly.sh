@@ -374,14 +374,15 @@ class StewardTest(unittest.TestCase):
             db.commit()
         env = {'HERMES_ROOT': str(self.root), 'OPENCODE_DB': str(ocdb), 'HERMES_BIN': '/nonexistent',
                'OPENCODE_AUTH': str(self.root / 'absent-auth.json'),
-               'T3_CACHE_DIR': str(self.root / 'absent-t3')}
-        with patch.dict(usage.os.environ, env):
-            self.assertEqual([1, 1500, 0.0], usage.hermes_spend()['24h'])
-            self.assertEqual([1, 3000, 0.5], usage.opencode_spend()['24h'])
-            self.assertEqual(({}, 'no OpenCode credential'), usage.opencode_live())
-            buf = io.StringIO()
-            with contextlib.redirect_stdout(buf):
-                usage.main()
+               'OPENCODE_API_KEY': '', 'T3_CACHE_DIR': str(self.root / 'absent-t3')}
+        with patch.dict(usage.os.environ, {'OPENCODE_API_KEY': 'ambient-fake-key'}):
+            with patch.dict(usage.os.environ, env):
+                self.assertEqual([1, 1500, 0.0], usage.hermes_spend()['24h'])
+                self.assertEqual([1, 3000, 0.5], usage.opencode_spend()['24h'])
+                self.assertEqual(({}, 'no OpenCode credential'), usage.opencode_live())
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf):
+                    usage.main()
         out = buf.getvalue()
         self.assertIn('USAGE PACE', out)
         self.assertIn('hermes 24h', out)

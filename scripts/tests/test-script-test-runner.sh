@@ -70,4 +70,60 @@ if ! grep -Eq '1 test script\(s\) failed' "$output"; then
   exit 1
 fi
 
-echo "✅ Parallel script-test runner preserves failures reaped at the concurrency limit."
+# Pinned worker runs must route each exact synthetic suite through the confined
+# helper. Replace that one executable in a copy so the test records dispatches.
+routes="$tmpdir/routes.txt"
+printf '%s\n' scripts/tests/test-kanban-owner-alerts.sh scripts/tests/test-steward-readonly.sh scripts/tests/test-steward-opportunity-scan.sh scripts/tests/test-kanban-retry-breaker.sh >"$routes"
+route_runner="$tmpdir/route-runner.sh"
+awk -v fixture_list="$routes" '
+  /^test_scripts=\($/ {
+    print "test_scripts=("
+    while ((getline fixture < fixture_list) > 0) printf "  \"%s\"\n", fixture
+    close(fixture_list)
+    replacing = 1
+    next
+  }
+  replacing && /^\)$/ { print ")"; replacing = 0; next }
+  !replacing { print }
+' scripts/tests/run-script-tests.sh >"$route_runner"
+sed -i "s|^source .*test-common[.]sh.*$|source '$TESTS_REPO_ROOT/scripts/tests/test-common.sh'|" "$route_runner"
+sed -i "s|/home/dsaw/.hermes/scripts/fixture-runner[.]py|$tmpdir/fixture-runner.py|g" "$route_runner"
+cat >"$tmpdir/fixture-runner.py" <<'PY'
+import json, os, sys
+with open(os.environ['ROUTE_LOG'], 'a') as f:
+    f.write(json.dumps(sys.argv[1:]) + '\n')
+sys.exit(int(os.environ.get('ROUTE_STATUS', '0')))
+PY
+route_log="$tmpdir/route-log"
+identity_before="${HERMES_KANBAN_TASK:-}|${HERMES_KANBAN_DB:-}|${HERMES_KANBAN_BOARD:-}|${HERMES_DELEGATED_CHILD_CONTEXT:-}|${HERMES_PROFILE:-}"
+if ! env NIXHOMESERVER_DEFAULT_HOST=fixture-host ROUTE_LOG="$route_log" HERMES_KANBAN_TASK=t_fixture HERMES_KANBAN_DB=/fixture/kanban.db HERMES_KANBAN_BOARD=fixture HERMES_DELEGATED_CHILD_CONTEXT=fixture HERMES_PROFILE=fixture bash "$route_runner" >"$tmpdir/routes-output" 2>&1; then
+  cat "$tmpdir/routes-output" >&2
+  exit 1
+fi
+[[ "$(wc -l <"$route_log")" -eq 4 ]] || { echo "Expected four confined suite invocations." >&2; cat "$route_log" >&2; exit 1; }
+python3 - "$route_log" "$TESTS_REPO_ROOT" <<'PY'
+import json
+from pathlib import Path
+import sys
+rows = [json.loads(line) for line in Path(sys.argv[1]).read_text().splitlines()]
+root = sys.argv[2]
+suites = ('test-kanban-owner-alerts.sh', 'test-steward-readonly.sh',
+          'test-steward-opportunity-scan.sh', 'test-kanban-retry-breaker.sh')
+assert len(rows) == 4, rows
+for suite in suites:
+    assert any(row == ['--repo', root, '--suite', f'{root}/scripts/tests/{suite}',
+                       '--timeout', '300'] for row in rows), (suite, rows)
+PY
+identity_after="${HERMES_KANBAN_TASK:-}|${HERMES_KANBAN_DB:-}|${HERMES_KANBAN_BOARD:-}|${HERMES_DELEGATED_CHILD_CONTEXT:-}|${HERMES_PROFILE:-}"
+[[ "$identity_before" == "$identity_after" ]] || { echo "Runner modified parent identity." >&2; exit 1; }
+if env NIXHOMESERVER_DEFAULT_HOST=fixture-host ROUTE_LOG="$route_log" ROUTE_STATUS=126 HERMES_KANBAN_TASK=t_fixture HERMES_KANBAN_DB=/fixture/kanban.db HERMES_PROFILE=fixture bash "$route_runner" >"$tmpdir/refused-output" 2>&1; then
+  echo "A refused helper was treated as success." >&2
+  exit 1
+fi
+if ! grep -Eq '4 test script\(s\) failed' "$tmpdir/refused-output"; then
+  echo "A refused helper did not propagate through the runner." >&2
+  cat "$tmpdir/refused-output" >&2
+  exit 1
+fi
+
+echo "✅ Parallel runner preserves failures and confines the exact four pinned suites."

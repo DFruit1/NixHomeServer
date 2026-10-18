@@ -57,6 +57,7 @@ EOF
 chmod +x "$root/bin/hermes"
 
 reap="$root/scripts/hermes/reap-kanban-worktrees.sh"
+cd "$root"
 
 echo "▶ kanban worktree reaper contract"
 
