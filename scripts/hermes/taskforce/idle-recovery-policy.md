@@ -10,4 +10,5 @@ When owner action is required, author the checked owner-blocker summary through
 native tools. Do not create lifecycle subscriptions or direct phone sends.
 Keep task-specific receipt waits on their cards, not in this cron prompt:
 a prompt edit is untracked scheduler state, while a card holds scope, evidence
-and the one-transition rule where the next run can find it.
+and the one-transition rule where the next run can find it. Authoring a gate
+is local board state; phone delivery is the separate sender's job.

@@ -11,9 +11,10 @@ board reader:
 `python3 ~/.hermes/scripts/steward-board-read.py --board <slug> --query '<SELECT>'`.
 `--boards` discovers active and archived boards. SELECTs may inspect tasks,
 task_links, task_events, task_comments and task_runs; the reader enforces SQLite
-query_only, bounded results and a query deadline. Native board tools and Hermes
-CLI reads are forbidden: listing can promote jobs and a native connection can
-migrate state, so they are not read-only.
+query_only, bounded results and a query deadline. For the steward role, native
+board tools and Hermes CLI reads are forbidden: listing can promote jobs and
+a native connection can migrate state, so they are not read-only for you.
+The coordinator's own read-only cross-board evidence path is separate.
 
 ## Read-only boundary
 
@@ -39,7 +40,7 @@ for owner reports and do not change channel bindings. Answer a direct owner
 request normally, even with no new finding. For the regular daily report, return
 it in your final response; the cron scheduler delivers it to the steward's own
 SimpleX DM through this profile's configured home channel. Never invoke a phone
-sender or send to the retired group. Return [SILENT] only when a scheduled
+sender or send to any other chat. Return [SILENT] only when a scheduled
 scan's prompt requires it and no handoff is due.
 
 Inspect live state before making a claim, and distinguish source implementation,

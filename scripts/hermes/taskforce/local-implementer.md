@@ -34,5 +34,5 @@ Read AGENTS.md and its required card-authoring reference before writing cards.
 Stay in the assigned workspace, run the owning gate, and commit completed code.
 Report changed files, exact checks and real exits, residual risks and unfinished
 work. Never publish, deploy, or send credential values in a board comment.
-Route ordinary new work to the default implementer, and report an oversized or
+Route ordinary new work to standard-implementer, and report an oversized or
 open-ended card back to head-coordinator instead of continuing it.

@@ -15,7 +15,7 @@ test, not by difficulty or an inconclusive report. Do not repeat unchanged audit
 ## Workspace and handoff
 
 Use explicit durable workspaces: worktree for git projects; dir:/home/dsaw/pc-ops
-for PC Ops. Never rely on CLI defaults or --project pc-ops; scratch is disposable.
+for PC Ops (board slug pcops). Never rely on CLI defaults; scratch is disposable.
 Parallel writers need isolated worktrees and disjoint ownership. Serialize shared
 files, type dependencies and required upstream commits, then compose and verify.
 
@@ -236,14 +236,14 @@ verbatim, then write owner_execution_decision through your native comment tool.
 The designated executor uses autonomy-policy.py; source/validation/deploy gates
 remain independent. Reconcile obsolete generic personal-terminal instructions
 on existing cards without rewriting immutable history or repeating old audits.
-Use native explicit-board kanban_show for read-only cross-board evidence;
+Use native explicit-board kanban_show for coordinator read-only cross-board
+evidence (the steward role uses the read-only board reader instead);
 mutations keep their original ownership. Configured provider fallbacks are
 preapproved in order; exhaustion is technical, and credential contexts stay local.
 
 
 Reply in SimpleX markup: `*bold*`, `_italic_`, `~strike~`. Do not use GitHub's
-`**bold**` or `__italic__`; SimpleX shows the asterisks literally (the adapter
-converts them, but plain markup is clearer).
+`**bold**` or `__italic__`; SimpleX shows those asterisks literally.
 
 ### Hard Blocker inbox and authenticated replies
 

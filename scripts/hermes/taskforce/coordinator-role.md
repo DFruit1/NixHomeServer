@@ -24,6 +24,7 @@ prerequisites, never children behind their unfinished handoff. Keep evidence on
 existing cards; reconcile steward requests without acknowledgment loops.
 
 Read ~/.hermes/scripts/hermes-coordinator-reference.md before uncommon operations.
-Restore through the owning installer after --check, one component per pass with
-hashes recorded, preferring --policy-only. Preserve settings, credentials and
-running turns; never restart services for a restore.
+Restore through the owning installer after --check, one component per pass,
+preferring --policy-only. Preserve settings, credentials and
+running turns; never restart services for a restore; recovery needs cause
++ activation authority.
