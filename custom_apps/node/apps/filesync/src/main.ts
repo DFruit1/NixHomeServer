@@ -4,6 +4,7 @@ import { openUrl } from '@tauri-apps/plugin-opener';
 import { browseOrder, directoriesOnly, entryMeta, fileActionLabel, joinPath, parentPath, type BrowseEntry, type FileAction } from './browse';
 import { parseSavedPairs, type Folder, type SyncDirection, type SyncPair } from './pairs';
 import { DEFAULT_BLOCK_PERCENT, DEFAULT_WARN_PERCENT, clampPercent, evaluateSpace, formatBytes } from './storage';
+import { createCallbackProcessor, createStartupGeneration, isTerminalSessionError, shouldRestoreSessionBackup } from './auth-lifecycle';
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 type TauriWindow = Window & { __TAURI__?: { core?: { invoke?: Invoke } } };
@@ -1019,6 +1020,12 @@ function cacheSignedInUser(username: string): void {
   try { localStorage.setItem(USER_KEY, username); } catch { /* The name is a display hint only. */ }
 }
 
+function clearCachedSession(): void {
+  state.user = undefined;
+  try { localStorage.removeItem(SESSION_BACKUP_KEY); } catch { /* Best effort; native session is already invalid. */ }
+  try { localStorage.removeItem(USER_KEY); } catch { /* Best effort; native session is already invalid. */ }
+}
+
 async function hasStoredSession(): Promise<boolean> {
   if (!invoke) return false;
   try {
@@ -1035,27 +1042,38 @@ async function restoreSessionBackup(): Promise<boolean> {
     state.user = await invoke<string | null>('current_user') ?? undefined;
     if (state.user) cacheSignedInUser(state.user);
     return state.user !== undefined;
-  } catch { return false; }
+  } catch (error) {
+    if (isTerminalSessionError(error)) clearCachedSession();
+    return false;
+  }
 }
+
+const startupGeneration = createStartupGeneration();
 
 async function start(): Promise<void> {
   if (invoke) {
     try {
       await onOpenUrl((urls) => { for (const url of urls) void finishCallback(url); });
     } catch { /* The browser preview does not provide native deep links. */ }
+    const generation = startupGeneration.begin();
+    let startupError: unknown;
     try {
-      state.user = await invoke<string | null>('current_user') ?? undefined;
-    } catch { state.user = undefined; }
-    if (state.user) {
+      const startupUser = await invoke<string | null>('current_user') ?? undefined;
+      if (startupGeneration.isCurrent(generation)) state.user = startupUser;
+    } catch (error) {
+      startupError = error;
+      if (startupGeneration.isCurrent(generation)) state.user = undefined;
+    }
+    if (startupGeneration.isCurrent(generation) && state.user) {
       cacheSignedInUser(state.user);
-      // Token refresh may have rotated the session just now; keep the
-      // browser backup identical so a later restore never replays a dead
-      // refresh token over the live one.
       await saveSessionBackup();
-    } else if (await restoreSessionBackup()) {
+    } else if (startupGeneration.isCurrent(generation) && startupError && isTerminalSessionError(startupError)) {
+      clearCachedSession();
+      state.error = startupError instanceof Error ? startupError.message : String(startupError);
+    } else if (startupGeneration.isCurrent(generation) && (!startupError || shouldRestoreSessionBackup(startupError)) && await restoreSessionBackup()) {
       state.notice = 'Signed in from the saved session.';
       await saveSessionBackup();
-    } else {
+    } else if (startupGeneration.isCurrent(generation)) {
       // The server may just be unreachable (offline, VPN, captive portal)
       // while a valid session sits in secure storage. Stay signed in under
       // the cached name instead of bouncing to "Sign in to sync": the next
@@ -1199,25 +1217,35 @@ async function runFileAction(name: string, action: FileAction, size: number): Pr
   updateFileActions(name);
 }
 
-async function finishCallback(url: string): Promise<void> {
-  if (!url.startsWith('filesync://oauth/callback') || !invoke) return;
+async function finishCallbackOnce(url: string): Promise<string | undefined> {
+  if (!url.startsWith('filesync://oauth/callback') || !invoke) return undefined;
+  const generation = startupGeneration.begin();
   try {
-    state.user = await invoke<string>('finish_login', { callbackUrl: url });
+    const user = await invoke<string>('finish_login', { callbackUrl: url });
+    if (!startupGeneration.isCurrent(generation)) return user;
+    state.user = user;
     state.offline = false;
-    cacheSignedInUser(state.user);
+    cacheSignedInUser(user);
     state.settingsAuthorized = await invoke<boolean>('settings_authorized');
+    if (!startupGeneration.isCurrent(generation)) return user;
     await saveSessionBackup();
     await loadPresets();
+    if (!startupGeneration.isCurrent(generation)) return user;
     applySpacePrefsToPairs();
     await persistPairs();
+    if (!startupGeneration.isCurrent(generation)) return user;
     state.error = '';
     state.notice = `Signed in as ${state.user}.`;
   } catch (error) {
-    state.error = error instanceof Error ? error.message : String(error);
+    if (startupGeneration.isCurrent(generation)) {
+      state.error = error instanceof Error ? error.message : String(error);
+    }
   }
   render();
   void refreshEstimates();
 }
+
+const finishCallback = createCallbackProcessor(finishCallbackOnce);
 
 async function obtainPresetFolder(preset: SyncPreset): Promise<Folder | null> {
   if (!invoke) return null;

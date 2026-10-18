@@ -14,6 +14,7 @@ use url::Url;
 
 const CALLBACK_URI: &str = "filesync://oauth/callback";
 const APP_USER_AGENT: &str = "NixHomeServer-FileSync/0.1";
+static PENDING_AUTH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[derive(Serialize, Deserialize)]
 struct PendingAuth {
@@ -280,6 +281,7 @@ async fn begin_login<R: Runtime>(app: AppHandle<R>, server_url: String) -> Resul
     };
     let serialized =
         serde_json::to_string(&pending).map_err(|_| "Sign-in state could not be saved.")?;
+    let _pending_auth_guard = PENDING_AUTH_LOCK.lock().await;
     app.mobile_files()
         .store_secret("pending-login".into(), serialized)
         .map_err(|_| "Secure sign-in storage is unavailable.".to_owned())?;
@@ -378,19 +380,18 @@ async fn finish_login<R: Runtime>(
     let returned_state = query
         .get("state")
         .ok_or("Kanidm did not return sign-in state.")?;
+    let _pending_auth_guard = PENDING_AUTH_LOCK.lock().await;
     let pending_raw = app
         .mobile_files()
         .load_secret("pending-login".into())
         .map_err(|_| "Secure sign-in storage is unavailable.")?
         .ok_or("This sign-in request has expired. Start again.")?;
-    app.mobile_files()
-        .clear_secret("pending-login".into())
-        .map_err(|_| "Secure sign-in storage is unavailable.")?;
-    let pending: PendingAuth = serde_json::from_str(&pending_raw)
-        .map_err(|_| "This sign-in request is invalid. Start again.")?;
-    if !constant_time_equal(returned_state.as_bytes(), pending.state.as_bytes()) {
-        return Err("The sign-in response did not match the request. Start again.".into());
-    }
+    let pending = consume_pending_auth(&pending_raw, returned_state, || {
+        app.mobile_files()
+            .clear_secret("pending-login".into())
+            .map_err(|_| "Secure sign-in storage is unavailable.".to_owned())
+    })?;
+    drop(_pending_auth_guard);
 
     let client = http_client()?;
     let token_response: TokenResponse = client
@@ -1711,6 +1712,20 @@ fn random_urlsafe(length: usize) -> String {
     URL_SAFE_NO_PAD.encode(bytes)
 }
 
+fn consume_pending_auth(
+    pending_raw: &str,
+    returned_state: &str,
+    clear_pending: impl FnOnce() -> Result<(), String>,
+) -> Result<PendingAuth, String> {
+    let pending: PendingAuth = serde_json::from_str(pending_raw)
+        .map_err(|_| "This sign-in request is invalid. Start again.")?;
+    if !constant_time_equal(returned_state.as_bytes(), pending.state.as_bytes()) {
+        return Err("The sign-in response did not match the request. Start again.".into());
+    }
+    clear_pending()?;
+    Ok(pending)
+}
+
 fn constant_time_equal(left: &[u8], right: &[u8]) -> bool {
     if left.len() != right.len() {
         return false;
@@ -1719,6 +1734,48 @@ fn constant_time_equal(left: &[u8], right: &[u8]) -> bool {
         .zip(right)
         .fold(0_u8, |difference, (a, b)| difference | (a ^ b))
         == 0
+}
+
+#[cfg(test)]
+mod auth_tests {
+    use super::*;
+
+    fn pending_raw() -> String {
+        serde_json::json!({
+            "state": "expected",
+            "verifier": "verifier",
+            "nonce": "nonce",
+            "issuer": "https://issuer.example",
+            "client_id": "client",
+            "token_endpoint": "https://issuer.example/token",
+            "jwks_uri": "https://issuer.example/jwks",
+            "revocation_endpoint": null,
+            "api_base": "https://api.example"
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn wrong_callback_state_preserves_pending_login() {
+        let mut cleared = false;
+        let result = consume_pending_auth(&pending_raw(), "wrong", || {
+            cleared = true;
+            Ok(())
+        });
+        assert!(result.is_err());
+        assert!(!cleared);
+    }
+
+    #[test]
+    fn matching_callback_consumes_pending_login() {
+        let mut cleared = false;
+        let result = consume_pending_auth(&pending_raw(), "expected", || {
+            cleared = true;
+            Ok(())
+        });
+        assert!(result.is_ok());
+        assert!(cleared);
+    }
 }
 
 fn now_seconds() -> u64 {
