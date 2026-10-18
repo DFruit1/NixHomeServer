@@ -46,11 +46,15 @@ test_default_host() {
     return
   fi
 
+  if [[ "${NIXHOMESERVER_REQUIRE_REMOTE:-0}" == 1 ]]; then
+    remote_eval_batch_json 'hostname=vars.hostname' | jq -er '.hostname'
+    return
+  fi
   nix_eval_with_optional_cache raw '
     let
       f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
       lib = f.inputs.nixpkgs.lib;
-      vars = import ./vars.nix { inherit lib; };
+      vars = import (builtins.toPath (builtins.getEnv "NIXHOMESERVER_REPO_ROOT_FOR_EVAL" + "/vars.nix")) { inherit lib; };
     in vars.hostname
   '
 }
@@ -110,6 +114,11 @@ require_json_equal() {
 # (drvPath and other single strings) is printed to stdout.
 flake_eval() {
   local body="$1"
+  if [[ "${NIXHOMESERVER_REQUIRE_REMOTE:-0}" == 1 ]]; then
+    local flake_expr='builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL")'
+    remote_eval_batch_json "value=(let f = ${flake_expr}; lib = f.inputs.nixpkgs.lib; ${body})" | jq -er '.value | if type == "string" then . else tostring end'
+    return
+  fi
   nix_eval_with_optional_cache raw "
     let
       f = builtins.getFlake (builtins.getEnv \"NIXHOMESERVER_FLAKE_REF_FOR_EVAL\");
@@ -121,6 +130,11 @@ flake_eval() {
 # JSON variant of flake_eval.
 flake_eval_json() {
   local body="$1"
+  if [[ "${NIXHOMESERVER_REQUIRE_REMOTE:-0}" == 1 ]]; then
+    local flake_expr='builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL")'
+    remote_eval_batch_json "value=(let f = ${flake_expr}; lib = f.inputs.nixpkgs.lib; ${body})" | jq -ce '.value'
+    return
+  fi
   nix_eval_with_optional_cache json "
     let
       f = builtins.getFlake (builtins.getEnv \"NIXHOMESERVER_FLAKE_REF_FOR_EVAL\");

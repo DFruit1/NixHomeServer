@@ -244,7 +244,8 @@ strict_remote_enabled() {
 }
 
 strict_remote_preflight() {
-  local mode="${1:-}" head tree evidence actual_head actual_tree
+  local mode="${1:-}" head tree evidence actual_head actual_tree untracked_entry
+  local -a unexpected_untracked=()
   case "${NIXHOMESERVER_REQUIRE_REMOTE:-0}" in
     0) return 1 ;;
     1) ;;
@@ -272,10 +273,15 @@ strict_remote_preflight() {
     echo "strict-remote: evidence directory resolves outside the assigned task root" >&2
     return 2
   fi
+  while IFS= read -r -d '' untracked_entry; do
+    if [[ "$repo_root/$untracked_entry" != "$evidence" && "$repo_root/$untracked_entry" != "$evidence"/* ]]; then
+      unexpected_untracked+=("$untracked_entry")
+    fi
+  done < <(git -C "$repo_root" ls-files --others --exclude-standard -z) || return 2
   if ! git -C "$repo_root" diff --quiet --ignore-submodules -- ||
      ! git -C "$repo_root" diff --cached --quiet --ignore-submodules -- ||
-     [[ -n "$(git -C "$repo_root" ls-files --others --exclude-standard)" ]]; then
-    echo "strict-remote: source must have no tracked, indexed, or untracked changes" >&2
+     ((${#unexpected_untracked[@]} > 0)); then
+    echo "strict-remote: source must have no tracked, indexed, or untracked changes outside its evidence directory" >&2
     return 2
   fi
   actual_head="$(git -C "$repo_root" rev-parse HEAD)" || return 2
@@ -287,8 +293,176 @@ strict_remote_preflight() {
   return 0
 }
 
+strict_validation_check_names() {
+  local check_name
+  while IFS= read -r check_name; do
+    [[ -n "$check_name" && "$check_name" != repo-policy ]] || continue
+    if [[ "$check_name" =~ ^(failure-alert|jellyfin-oidc)$ && ! -c /dev/kvm ]]; then
+      echo "ℹ️ Skipping ${check_name} VM execution because /dev/kvm is unavailable; flake evaluation still checks the test definition." >&2
+      continue
+    fi
+    printf '%s\n' "$check_name"
+  done <<<"$1"
+}
+
+strict_remote_host_facts() {
+  local host="$1" hostname system
+  hostname="$(ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" hostname -f)" || return 1
+  system="$(ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" uname -srm)" || return 1
+  [[ -n "$hostname" && -n "$system" && "$hostname" != "$system" ]] || return 1
+  jq -cn --arg hostname "$hostname" --arg system "$system" \
+    '{hostname:$hostname,system:$system}'
+}
+
+strict_helper_digest() {
+  local helper="$1" archive_helper="$deploy_archive_helper_path"
+  sha256sum "$_repo_lib_dir/repo-common.sh" "$helper" "$archive_helper" |
+    sha256sum | awk '{print $1}'
+}
+
+strict_write_phase_receipt() {
+  local phase="$1" selected_host="$2" host_facts_json="$3" manifest="$4"
+  local archive_sha="$5" helper_sha="$6" argv_json="$7" snippet="$8"
+  local status="$9" stdout_path="${10}" stderr_path="${11}" cleanup="${12}"
+  local task="${HERMES_KANBAN_TASK:-}" board="${HERMES_KANBAN_BOARD:-}" run="${HERMES_KANBAN_RUN_ID:-}"
+  local output_sha="" error_sha="" snippet_path="" snippet_sha="" receipt_tmp
+  [[ "$phase" =~ ^[A-Za-z0-9-]+$ && "$status" =~ ^[0-9]+$ ]] || return 1
+  [[ -n "$task" && -n "$board" && -n "$run" ]] || {
+    echo "strict-remote: task, board, and run provenance are required for receipts" >&2
+    return 1
+  }
+  jq -e 'type == "object" and (.hostname | type == "string" and length > 0) and (.system | type == "string" and length > 0)' \
+    <<<"$host_facts_json" >/dev/null || return 1
+  jq -e 'type == "array" and all(.[]; type == "string")' <<<"$argv_json" >/dev/null || return 1
+  if [[ -n "$stdout_path" && -f "$stdout_path" ]]; then
+    cp -- "$stdout_path" "$NIXHOMESERVER_EVIDENCE_DIR/$phase.stdout.log" || return 1
+    chmod 0600 "$NIXHOMESERVER_EVIDENCE_DIR/$phase.stdout.log" || return 1
+    output_sha="$(sha256sum "$NIXHOMESERVER_EVIDENCE_DIR/$phase.stdout.log" | awk '{print $1}')" || return 1
+  fi
+  if [[ -n "$stderr_path" && -f "$stderr_path" ]]; then
+    cp -- "$stderr_path" "$NIXHOMESERVER_EVIDENCE_DIR/$phase.stderr.log" || return 1
+    chmod 0600 "$NIXHOMESERVER_EVIDENCE_DIR/$phase.stderr.log" || return 1
+    error_sha="$(sha256sum "$NIXHOMESERVER_EVIDENCE_DIR/$phase.stderr.log" | awk '{print $1}')" || return 1
+  fi
+  if [[ -n "$snippet" ]]; then
+    snippet_path="$NIXHOMESERVER_EVIDENCE_DIR/$phase.snippet.sh"
+    (umask 077; printf '%s' "$snippet" >"$snippet_path") || return 1
+    snippet_sha="$(sha256sum "$snippet_path" | awk '{print $1}')" || return 1
+  fi
+  receipt_tmp="$(mktemp "$NIXHOMESERVER_EVIDENCE_DIR/$phase.XXXXXX.json")" || return 1
+  if ! jq -cn \
+    --arg task "$task" --arg board "$board" --arg run "$run" \
+    --arg phase "$phase" --arg head "$NIXHOMESERVER_EXPECTED_HEAD" \
+    --arg tree "$NIXHOMESERVER_EXPECTED_TREE" --arg manifest "$manifest" \
+    --arg archive "$archive_sha" --arg helper "$helper_sha" \
+    --arg host "$selected_host" --arg status "$status" \
+    --arg cleanup "$cleanup" --arg output "$output_sha" --arg error "$error_sha" \
+    --arg snippet_path "$snippet_path" --arg snippet_sha "$snippet_sha" \
+    --argjson host_facts "$host_facts_json" --argjson argv "$argv_json" \
+    '{task:$task,board:$board,run:$run,phase:$phase,commit:$head,tree:$tree,
+      canonical_manifest_sha256:$manifest,archive_sha256:$archive,helper_sha256:$helper,
+      selected_host:$host,actual_host:$host_facts.hostname,actual_system:$host_facts.system,
+      argv:$argv,snippet_path:(if $snippet_path == "" then null else $snippet_path end),
+      snippet_sha256:(if $snippet_sha == "" then null else $snippet_sha end),
+      exit_status:($status|tonumber),cleanup:$cleanup,
+      output_sha256:(if $output == "" then null else $output end),
+      stderr_sha256:(if $error == "" then null else $error end)}' >"$receipt_tmp"; then
+    rm -f "$receipt_tmp"
+    return 1
+  fi
+  chmod 0600 "$receipt_tmp" || { rm -f "$receipt_tmp"; return 1; }
+  mv -- "$receipt_tmp" "$NIXHOMESERVER_EVIDENCE_DIR/$phase.receipt.json"
+}
+
+strict_tree_manifest() {
+  local tree_root="$1"
+  python3 - "$tree_root" <<'PY'
+import hashlib
+import json
+import os
+import stat
+import subprocess
+import sys
+
+root = os.path.realpath(sys.argv[1])
+try:
+    paths = subprocess.run(
+        ["git", "-C", root, "ls-files", "-z"], check=True,
+        stdout=subprocess.PIPE,
+    ).stdout.split(b"\0")
+except (OSError, subprocess.CalledProcessError):
+    raise SystemExit("strict-remote: cannot enumerate tracked source")
+entries = []
+for raw_path in paths:
+    if not raw_path:
+        continue
+    path = os.fsdecode(raw_path)
+    full = os.path.join(root, path)
+    try:
+        info = os.lstat(full)
+        if stat.S_ISLNK(info.st_mode):
+            kind, data = "symlink", os.fsencode(os.readlink(full))
+            mode = "120000"
+        elif stat.S_ISREG(info.st_mode):
+            kind = "file"
+            with open(full, "rb") as stream:
+                data = stream.read()
+            mode = "100755" if info.st_mode & 0o111 else "100644"
+        else:
+            raise ValueError("unsupported tracked file kind")
+    except (OSError, ValueError) as error:
+        raise SystemExit(f"strict-remote: invalid tracked source entry: {path}: {error}")
+    entries.append({"path": path, "kind": kind, "mode": mode,
+                    "sha256": hashlib.sha256(data).hexdigest()})
+entries.sort(key=lambda entry: entry["path"].encode())
+encoded = json.dumps(entries, ensure_ascii=True, separators=(",", ":")).encode()
+print(hashlib.sha256(encoded).hexdigest())
+PY
+}
+
+strict_extracted_manifest() {
+  local tree_root="$1"
+  python3 - "$tree_root" <<'PY'
+import hashlib
+import json
+import os
+import stat
+import sys
+
+root = os.path.realpath(sys.argv[1])
+entries = []
+for directory, dirs, files in os.walk(root, topdown=True, followlinks=False):
+    dirs.sort()
+    files.sort()
+    for name in list(dirs):
+        full = os.path.join(directory, name)
+        if os.path.islink(full):
+            files.append(name)
+            dirs.remove(name)
+    for name in files:
+        full = os.path.join(directory, name)
+        path = os.path.relpath(full, root).replace(os.sep, "/")
+        info = os.lstat(full)
+        if stat.S_ISLNK(info.st_mode):
+            kind, data, mode = "symlink", os.fsencode(os.readlink(full)), "120000"
+        elif stat.S_ISREG(info.st_mode):
+            kind, mode = "file", "100755" if info.st_mode & 0o111 else "100644"
+            with open(full, "rb") as stream:
+                data = stream.read()
+        else:
+            raise SystemExit("strict-remote: unsupported extracted file kind")
+        entries.append({"path": path, "kind": kind, "mode": mode,
+                        "sha256": hashlib.sha256(data).hexdigest()})
+entries.sort(key=lambda entry: entry["path"].encode())
+encoded = json.dumps(entries, ensure_ascii=True, separators=(",", ":")).encode()
+print(hashlib.sha256(encoded).hexdigest())
+PY
+}
+
 strict_remote_verify_identity() {
-  local actual_head actual_tree
+  local actual_head actual_tree untracked_entry evidence="${NIXHOMESERVER_EVIDENCE_DIR:-}"
+  local -a unexpected_untracked=()
+
   actual_head="$(git -C "$repo_root" rev-parse HEAD)" || return 1
   actual_tree="$(git -C "$repo_root" rev-parse 'HEAD^{tree}')" || return 1
   [[ "$actual_head" == "$NIXHOMESERVER_EXPECTED_HEAD" &&
@@ -301,8 +475,13 @@ strict_remote_verify_identity() {
       echo "strict-remote: source became dirty during execution" >&2
       return 1
     }
-  [[ -z "$(git -C "$repo_root" ls-files --others --exclude-standard)" ]] || {
-    echo "strict-remote: untracked source appeared during execution" >&2
+  while IFS= read -r -d '' untracked_entry; do
+    if [[ "$repo_root/$untracked_entry" != "$evidence" && "$repo_root/$untracked_entry" != "$evidence"/* ]]; then
+      unexpected_untracked+=("$untracked_entry")
+    fi
+  done < <(git -C "$repo_root" ls-files --others --exclude-standard -z) || return 1
+  ((${#unexpected_untracked[@]} == 0)) || {
+    echo "strict-remote: untracked source appeared outside its evidence directory" >&2
     return 1
   }
 }
@@ -321,13 +500,21 @@ create_deploy_repo_archive() {
       return 1
     fi
     if [[ -s "$untracked_manifest" ]]; then
-      echo "❌ Refusing to deploy with untracked, non-ignored files." >&2
-      echo "   Review and stage intended files with 'git add', or ignore local-only files:" >&2
+      local -a refused_untracked=()
       while IFS= read -r -d '' path; do
-        printf '   %s\n' "$path" >&2
+        if [[ -z "${NIXHOMESERVER_EVIDENCE_DIR:-}" ||
+          ( "$repo_root/$path" != "$NIXHOMESERVER_EVIDENCE_DIR" &&
+            "$repo_root/$path" != "$NIXHOMESERVER_EVIDENCE_DIR"/* ) ]]; then
+          refused_untracked+=("$path")
+        fi
       done <"$untracked_manifest"
-      rm -f "$manifest" "$git_manifest" "$untracked_manifest"
-      return 1
+      if ((${#refused_untracked[@]})); then
+        echo "❌ Refusing to deploy with untracked, non-ignored files." >&2
+        echo "   Review and stage intended files with 'git add', or ignore local-only files:" >&2
+        printf '   %s\n' "${refused_untracked[@]}" >&2
+        rm -f "$manifest" "$git_manifest" "$untracked_manifest"
+        return 1
+      fi
     fi
     rm -f "$untracked_manifest"
 

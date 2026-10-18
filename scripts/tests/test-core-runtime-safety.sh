@@ -2,16 +2,184 @@
 
 set -euo pipefail
 
+core_runtime_synthetic_enabled() {
+  case "${NIXHOMESERVER_CORE_RUNTIME_SYNTHETIC:-0}" in
+    0) return 1 ;;
+    1) ;;
+    *) echo "NIXHOMESERVER_CORE_RUNTIME_SYNTHETIC must be 0 or 1" >&2; return 2 ;;
+  esac
+  [[ "${NIXHOMESERVER_CORE_RUNTIME_FIXTURE:-0}" != 1 ]]
+}
+
+if [[ "${NIXHOMESERVER_CORE_RUNTIME_SYNTHETIC:-0}" == 0 ]] &&
+  core_runtime_synthetic_enabled; then
+  echo "❌ Default core runtime mode unexpectedly selects synthetic fixtures." >&2
+  exit 1
+fi
+if NIXHOMESERVER_CORE_RUNTIME_SYNTHETIC=1 NIXHOMESERVER_CORE_RUNTIME_FIXTURE=1 \
+  core_runtime_synthetic_enabled; then
+  echo "❌ Confined child fixture was mistaken for a new synthetic wrapper run." >&2
+  exit 1
+fi
+
+if core_runtime_synthetic_enabled; then
+  fixture_root="$(mktemp -d "${TMPDIR:-/tmp}/core-runtime-fixture.XXXXXX")"
+  trap 'rm -rf -- "$fixture_root"' EXIT
+  mkdir -p "$fixture_root/bin"
+  jq -cn '
+    {
+      dataPool: {
+        forceImportRoot: false,
+        wantedBy: ["local-fs.target"],
+        fileshareRequires: ["data-pool-layout.service"],
+        fileshareAfter: ["kanidm-unixd.service"],
+        kopiaBootstrapRequires: ["data-pool-layout.service"],
+        kopiaSnapshotRequires: ["data-pool-layout.service", "kopia-repository-bootstrap.service"],
+        zfsMaintenanceOrdering: ["zfs-scrub", "zfs-snapshot-daily", "zfs-snapshot-hourly", "zfs-snapshot-weekly"] | map({name: ., requires: ["data-pool-layout.service"], after: ["data-pool-layout.service"]})
+      },
+      dns: {freebind: true, unboundBefore: ["netbird-main.service"], netbirdAfter: ["unbound.service"]},
+      syncthing: {host: "syncthing.example.test", upstream: "http://127.0.0.1:8384", allowedGroups: ["app-admin"]},
+      backups: {
+        sqliteSources: ["/var/lib/audiobookshelf/config/absdatabase.sqlite", "/var/lib/jellyfin/data/jellyfin.db"],
+        postgresqlDatabases: ["immich"], snapshotRoots: ["/persist", "/mnt/data/paperless"]
+      },
+      optionalFiles: {
+        kanidmRequires: ["filestash-identity-secret-materialize.service"],
+        sftpRequires: ["data-pool-layout.service", "fileshare-user-root-sync.service"],
+        sftpWants: [], filestashRequires: ["data-pool-layout.service", "fileshare-user-root-sync.service"]
+      },
+      maintenance: {
+        backupUnit: {StartLimitIntervalSec: "2h"}, backupServiceHasStartLimit: false,
+        kopiaSnapshotUnit: {StartLimitIntervalSec: "2h"},
+        gcUnit: {OnFailure: ["nixhomeserver-failure-alert@%n.service"]},
+        gcService: {restart: null, successExitStatus: [75]},
+        gcTimer: {OnCalendar: "hourly"}, optimiseSuccessExitStatus: [75]
+      },
+      localAdminPassword: {
+        wantedBy: ["multi-user.target"], before: ["systemd-user-sessions.service"],
+        credentials: ["bootstrap-password:/run/agenix/serverBootstrapSudoPassword"],
+        execStart: "local-admin-bootstrap-password", restartTriggers: ["/run/agenix/serverBootstrapSudoPassword"],
+        expectedRestartTrigger: "/run/agenix/serverBootstrapSudoPassword", sshPasswordAuthentication: false
+      },
+      fileshareAclMigration: {
+        wantedBy: ["multi-user.target"], after: ["fileshare-user-root-sync.service"],
+        script: "fileshare-acl-policy-v1 install -D -m 0600 /dev/null \"$marker\"", policyVersion: 1
+      },
+      power: {
+        available: true, stateFile: "/var/lib/power-schedule/schedule.json",
+        defaults: {enabled: false, wakeTime: "10:30", idleWindowStartHour: 22, forcedWindowEndHour: 10},
+        defaultsJson: "{\"enabled\":false,\"wakeTime\":\"10:30\",\"idleWindowStartHour\":22,\"forcedWindowEndHour\":10}",
+        timerOnCalendar: ["*-*-* *:00/15:00"], suspendScript: "/var/lib/power-schedule/schedule.json jq -cerf dashboard power schedule falling back to Nix defaults",
+        tmpfiles: ["d /var/lib/power-schedule 0755 root root -", "d /var/lib/deploy-settings 0755 root root -"],
+        homepageEnv: {
+          HOMEPAGE_POWER_SCHEDULE_FILE: "/var/lib/power-schedule/schedule.json",
+          HOMEPAGE_POWER_SCHEDULE_APPLY_COMMAND: "apply-power",
+          HOMEPAGE_POWER_SCHEDULE_DEFAULTS: "{\"wakeTime\":\"10:30\"}",
+          HOMEPAGE_BUILD_MODE_FILE: "/var/lib/deploy-settings/build-mode.json",
+          HOMEPAGE_BUILD_MODE_DEFAULT: "balanced", HOMEPAGE_BUILD_MODE_APPLY_COMMAND: "apply-build-mode"
+        },
+        buildModeEnv: {
+          HOMEPAGE_BUILD_MODE_FILE: "/var/lib/deploy-settings/build-mode.json",
+          HOMEPAGE_BUILD_MODE_DEFAULT: "balanced", HOMEPAGE_BUILD_MODE_APPLY_COMMAND: "apply-build-mode"
+        },
+        homepageReadWritePaths: ["/var/lib/power-schedule", "/var/lib/deploy-settings"],
+        homepageSudoCommands: ["apply-power", "apply-build-mode"],
+        persistedDirectories: ["/var/lib/power-schedule", "/var/lib/deploy-settings"]
+      },
+      persistence: {
+        directories: ["/etc/nixos", "/var/lib/postgresql", "/var/log/caddy"],
+        files: ["/etc/machine-id", "/var/lib/systemd/random-seed"]
+      }
+    }
+  ' >"$fixture_root/runtime.json"
+  cat >"$fixture_root/bin/nix" <<'FIXTURE_NIX'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'nix %s\n' "$*" >>"$CORE_RUNTIME_SPY"
+[[ "${1:-}" == eval ]] || { printf 'unexpected nix invocation\n' >>"$CORE_RUNTIME_SPY"; exit 97; }
+if [[ "$*" == *'attrNames f.nixosConfigurations'* ]]; then
+  printf '%s\n' '{"hosts":["fixture-host"],"settings":{"fixture-host":{"serverLanIP":"192.0.2.10","localAdminUser":"fixture"}}}'
+elif [[ "$*" == *'NIXHOMESERVER_REMOTE_EVAL_NEED_TARGET'* || "$*" == *'localAdminUser'* ]]; then
+  printf '%s\n' '{"localAdminUser":"fixture","serverLanIP":"192.0.2.10"}'
+elif [[ "$*" == *'forceImportRoot'* ]]; then
+  jq -c . "$CORE_RUNTIME_FIXTURE_ROOT/runtime.json"
+else
+  printf 'unexpected Nix expression\n' >>"$CORE_RUNTIME_SPY"
+  exit 97
+fi
+FIXTURE_NIX
+  cat >"$fixture_root/bin/ssh" <<'FIXTURE_SSH'
+#!/usr/bin/env bash
+printf 'forbidden ssh %s\n' "$*" >>"$CORE_RUNTIME_SPY"
+exit 97
+FIXTURE_SSH
+  real_git="$(type -P git)"
+  cat >"$fixture_root/bin/git" <<'FIXTURE_GIT'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'git %s\n' "$*" >>"$CORE_RUNTIME_SPY"
+args=("$@")
+while ((${#args[@]})) && [[ "${args[0]}" == -* ]]; do
+  case "${args[0]}" in
+    -C|-c) args=("${args[@]:2}") ;;
+    *) args=("${args[@]:1}") ;;
+  esac
+done
+case "${args[0]:-}" in
+  diff|ls-files|rev-parse|status) exec "$CORE_RUNTIME_REAL_GIT" "$@" ;;
+  *) printf 'forbidden git mutation or command\n' >>"$CORE_RUNTIME_SPY"; exit 97 ;;
+esac
+FIXTURE_GIT
+  for command in nix-store nixos-rebuild cargo scp rsync sudo systemctl; do
+    cat >"$fixture_root/bin/$command" <<'FIXTURE_FORBIDDEN'
+#!/usr/bin/env bash
+printf 'forbidden %s %s\n' "${0##*/}" "$*" >>"$CORE_RUNTIME_SPY"
+exit 97
+FIXTURE_FORBIDDEN
+    chmod +x "$fixture_root/bin/$command"
+  done
+  chmod +x "$fixture_root/bin/nix" "$fixture_root/bin/ssh" "$fixture_root/bin/git"
+  export CORE_RUNTIME_FIXTURE_ROOT="$fixture_root"
+  export CORE_RUNTIME_SPY="$fixture_root/commands.log"
+  export CORE_RUNTIME_REAL_GIT="$real_git"
+  : >"$CORE_RUNTIME_SPY"
+  if ! env -u NIXHOMESERVER_REQUIRE_REMOTE NIXHOMESERVER_CORE_RUNTIME_FIXTURE=1 REMOTE_EVAL=0 \
+    PATH="$fixture_root/bin:$PATH" bash "${BASH_SOURCE[0]}"; then
+    exit 1
+  fi
+  if rg -q '^unexpected |^forbidden ' "$CORE_RUNTIME_SPY"; then
+    echo "❌ Core runtime suite crossed a fixture command boundary." >&2
+    cat "$CORE_RUNTIME_SPY" >&2
+    exit 1
+  fi
+  wrong_runtime="$fixture_root/wrong-runtime.json"
+  jq '.dataPool.forceImportRoot = true' "$fixture_root/runtime.json" >"$wrong_runtime"
+  if jq -e '.dataPool.forceImportRoot == false' "$wrong_runtime" >/dev/null; then
+    echo "❌ Deliberately wrong runtime fixture passed the safety assertion." >&2
+    exit 1
+  fi
+  [[ "$(rg -c '^nix eval ' "$CORE_RUNTIME_SPY")" == 2 ]] || {
+    echo "❌ Expected exactly two synthetic Nix evaluations." >&2
+    cat "$CORE_RUNTIME_SPY" >&2
+    exit 1
+  }
+  if [[ -n "${NIXHOMESERVER_CORE_RUNTIME_ARTIFACT_DIR:-}" ]]; then
+    mkdir -p "$NIXHOMESERVER_CORE_RUNTIME_ARTIFACT_DIR"
+    cp -- "$CORE_RUNTIME_SPY" "$NIXHOMESERVER_CORE_RUNTIME_ARTIFACT_DIR/command-spy.log"
+    cp -- "$fixture_root/runtime.json" "$NIXHOMESERVER_CORE_RUNTIME_ARTIFACT_DIR/runtime-fixture.json"
+  fi
+  exit 0
+fi
+
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test-common.sh"
 cd "$TESTS_REPO_ROOT"
 ensure_tools jq nix rg
 
-host_name="$(
-  nix eval --json '.#nixosConfigurations' --apply builtins.attrNames \
-    | jq -er '[.[] | select(endswith("-bootstrap") | not)] | first'
-)"
-
-serializable_settings="$(nix eval --json '.#lib.nixhomeserverSerializableSettings')"
+bootstrap_query="$(remote_eval_batch_json \
+  'hosts=builtins.attrNames f.nixosConfigurations' \
+  'settings=f.lib.nixhomeserverSerializableSettings')"
+host_name="$(jq -er '.hosts | [.[] | select(endswith("-bootstrap") | not)] | first' <<<"$bootstrap_query")"
+serializable_settings="$(jq -c '.settings' <<<"$bootstrap_query")"
 jq -e --arg host "$host_name" '
   length == 1
   and has($host)

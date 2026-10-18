@@ -69,19 +69,26 @@ tests_dir="${VALIDATE_REPO_TESTS_DIR:-$repo_root/scripts/tests}"
   eval_cache_dir=""
   eval_cache_owned=""
   pending_validation_roots_dir=""
+  pending_validation_roots_token=""
   validation_outputs_json="[]"
 
 cleanup_tmpdirs() {
+  local exit_status=$?
+  if [[ -n "$pending_validation_roots_token" && "${strict_validation:-0}" == 1 ]]; then
+    local root_state="${VALIDATE_REPO_ROOTS_DIR:-}"
+    remote_run 'set -euo pipefail; root_state="$2"; token="$3"; [[ "$token" =~ ^[A-Za-z0-9-]+$ ]]; if [[ -n "$root_state" ]]; then base="$root_state"; else base="${XDG_STATE_HOME:-$HOME/.local/state}/nixhomeserver/validation-roots"; fi; pending="$base/pending.$token"; [[ ! -L "$pending" ]]; if [[ -d "$pending" ]]; then rm -rf -- "$pending"; fi; printf cleaned' "$root_state" "$pending_validation_roots_token" >/dev/null || exit_status=1
+  fi
   if [[ -n "$pending_validation_roots_dir" && -d "$pending_validation_roots_dir" ]]; then
-    rm -rf "$pending_validation_roots_dir"
+    rm -rf "$pending_validation_roots_dir" || exit_status=1
   fi
   # Only a run-scoped cache we created ourselves (the no-Git fallback) is ours
   # to remove. The content-keyed persistent cache must survive the run or it
   # cannot amortize host-config evals across validations; caller-supplied
   # directories are the caller's to clean up.
   if [[ "$eval_cache_owned" == "1" && -n "$eval_cache_dir" && -d "$eval_cache_dir" ]]; then
-    rm -rf "$eval_cache_dir"
+    rm -rf "$eval_cache_dir" || exit_status=1
   fi
+  return "$exit_status"
 }
 
 trap cleanup_tmpdirs EXIT
@@ -189,7 +196,7 @@ build_derivation_attr() {
 
   if ! check_names="$(
     if ((strict_validation)); then
-      remote_eval_batch_json "names=builtins.attrNames (builtins.getAttrFromPath [ ${attr_path} ] f)" | jq -r '.names[]'
+      remote_eval_batch_json "names=builtins.attrNames (lib.attrByPath [ ${attr_path} ] {} f)" | jq -r '.names[]'
     else
       nix eval --json ".#${attr}" --apply 'checks: builtins.attrNames checks' | jq -r '.[]'
     fi | sort
@@ -198,13 +205,9 @@ build_derivation_attr() {
     exit 1
   fi
 
+  check_names="$(strict_validation_check_names "$check_names")"
   while IFS= read -r check_name; do
     [[ -n "$check_name" ]] || continue
-    [[ "$check_name" != "repo-policy" ]] || continue
-    if [[ "$check_name" =~ ^(failure-alert|jellyfin-oidc)$ && ! -c /dev/kvm ]]; then
-      echo "ℹ️ Skipping ${check_name} VM execution because /dev/kvm is unavailable; flake evaluation still checks the test definition."
-      continue
-    fi
     check_targets+=(".#${attr}.${check_name}")
   done <<<"$check_names"
 
@@ -246,6 +249,60 @@ run_vm_tests() {
   fi
 }
 
+strict_stage_validation_roots() {
+  local root_state_dir="$1" token="$2" outputs="$3"
+  remote_run 'set -euo pipefail
+root_state="$2"; token="$3"; outputs="$4"
+[[ "$token" =~ ^[A-Za-z0-9-]+$ ]]
+if [[ -n "$root_state" ]]; then base="$root_state"; else base="${XDG_STATE_HOME:-$HOME/.local/state}/nixhomeserver/validation-roots"; fi
+[[ "$base" == /* && ! -L "$base" ]]
+pending="$base/pending.$token"
+[[ ! -L "$pending" ]]
+output_paths="$(jq -er "if type == \"array\" and length > 0 and all(.[]; (.outputs | type == \"object\" and length > 0 and all(.[]; type == \"string\" and startswith(\"/nix/store/\")))) then [.[].outputs[]] | unique | .[] else error(\"invalid full-validation build output payload\") end" <<<"$outputs")"
+[[ -n "$output_paths" ]]
+install -d -m 0700 "$pending"
+while IFS= read -r output; do
+  [[ "$output" == /nix/store/* && "$output" != *"/../"* ]]
+  name="${output##*/}"
+  [[ "$name" =~ ^[A-Za-z0-9+._?-]+$ ]]
+  nix-store --add-root "$pending/$name" --indirect --realise "$output" >/dev/null
+done <<<"$output_paths"
+printf '{"staged":true}\\n'
+' "$root_state_dir" "$token" "$outputs"
+}
+
+strict_commit_validation_roots() {
+  local root_state_dir="$1" token="$2" retain="$3"
+  remote_run 'set -euo pipefail
+root_state="$2"; token="$3"; retain="$4"
+[[ "$token" =~ ^[A-Za-z0-9-]+$ && "$retain" =~ ^[01]$ ]]
+if [[ -n "$root_state" ]]; then base="$root_state"; else base="${XDG_STATE_HOME:-$HOME/.local/state}/nixhomeserver/validation-roots"; fi
+[[ "$base" == /* && ! -L "$base" ]]
+pending="$base/pending.$token"; current="$base/current"; previous="$base/previous.$token"
+[[ -d "$pending" && ! -L "$pending" && ! -e "$previous" && ! -L "$previous" ]]
+install -d -m 0700 "$base"
+exec 9>"$base/.roots.lock"; flock 9
+if [[ -e "$current" || -L "$current" ]]; then
+  [[ -d "$current" && ! -L "$current" ]]
+  mv -- "$current" "$previous"
+fi
+if [[ "$retain" == 1 ]]; then
+  if ! mv -- "$pending" "$current"; then
+    [[ ! -e "$previous" ]] || mv -- "$previous" "$current"
+    exit 1
+  fi
+else
+  if ! mkdir -m 0700 "$current"; then
+    [[ ! -e "$previous" ]] || mv -- "$previous" "$current"
+    exit 1
+  fi
+  rm -rf -- "$pending"
+fi
+[[ ! -e "$previous" ]] || rm -rf -- "$previous"
+printf '{"committed":true}\\n'
+' "$root_state_dir" "$token" "$retain"
+}
+
 run_derivation_checks() {
   local system check_attr root_state_dir output_path root_path
 
@@ -265,6 +322,16 @@ run_derivation_checks() {
   # build_derivation_attr "$vm_attr" "$system"
 
   if [[ "$full_mode" != true || "$all_apps" == true ]]; then
+    return 0
+  fi
+
+  root_state_dir="${VALIDATE_REPO_ROOTS_DIR:-}"
+  if ((strict_validation)); then
+    pending_validation_roots_token="$(date +%s)-$$-$RANDOM"
+    if ! strict_stage_validation_roots "$root_state_dir" "$pending_validation_roots_token" "$validation_outputs_json"; then
+      echo "❌ Could not stage validation roots on the build server." >&2
+      exit 1
+    fi
     return 0
   fi
 
@@ -294,6 +361,17 @@ commit_validation_roots() {
   local root_state_dir current_dir desired_manifest output_path root_path existing_root lock_fd
 
   if [[ "$full_mode" != true || "$all_apps" == true ]]; then
+    return 0
+  fi
+  if ((strict_validation)); then
+    [[ -n "$pending_validation_roots_token" ]] || {
+      echo "❌ Full validation root transaction was not staged." >&2
+      return 1
+    }
+    strict_commit_validation_roots "${VALIDATE_REPO_ROOTS_DIR:-}" \
+      "$pending_validation_roots_token" "$retain_validation_roots"
+    pending_validation_roots_token=""
+    echo "ℹ️ Committed passing host-scoped validation roots on the build server."
     return 0
   fi
 
