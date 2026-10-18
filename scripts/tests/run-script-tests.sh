@@ -89,6 +89,7 @@ lean_skip_test() {
 }
 
 test_scripts=(
+  scripts/tests/test-hermes-worker-policy.sh
   scripts/tests/test-module-structure.sh
   scripts/tests/test-langfuse-secrets.sh
   scripts/tests/test-langfuse-module.sh

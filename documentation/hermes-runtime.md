@@ -108,3 +108,82 @@ Validation: `bash scripts/tests/test-hermes-runtime-evidence.sh`,
 `bash scripts/tests/test-hermes-performance.sh`, and
 `bash scripts/tests/test-hermes-behavior-trials.sh`. Native provider recovery is
 covered by Hermes' `test_kanban_db.py` terminal-provider and rate-limit cases.
+
+## Worker budgets and titles
+
+Install these independent runtime settings and lifecycle checks with:
+
+```bash
+python3 -B scripts/hermes/install-worker-policy.py --check
+python3 -B scripts/hermes/install-worker-policy.py
+python3 -B scripts/hermes/install-worker-policy.py --check
+```
+
+The five card-worker profiles retain derived titles without an LLM upgrade;
+manual renames remain available. Models, credentials, steward settings and
+ordinary retry limits are preserved. The installer retains YAML comments and
+all unrelated values. Previous files have private content-addressed backups
+under `~/.hermes/backups/worker-policy/`; config edits use no temporary files.
+
+The [worker budget reference](../scripts/hermes/instructions/worker-budgets.md)
+defines local runtime caps, the explicit `Recovery mode: evidence-only` marker
+and coordinator retry receipts. Native creation sets marked recovery cards to
+`max_retries=1`, reusing the existing breaker. Unblock checks a receipt for the
+latest failed run. Dispatch validates legacy/edited local cards before claim
+and checks the claimed budget again before spawning, covering a concurrent cap
+removal. Invalid cards get an agent capability block; no owner alert or model
+call is needed. No existing card is rewritten by installation.
+
+Upstream currently has no pre-dispatch policy hook. The small
+`worker_runtime_adapter.py` adds explicit calls at native creation, unblock
+and dispatch boundaries and installs `worker-policy.py` as
+`hermes_cli/nixhomeserver_worker_policy.py`. Source anchors and Python syntax
+are checked before any writes; incompatible upstream source stops installation.
+Other native edits are retained. Re-run check/validation after Hermes upgrades;
+this is a maintained local adapter, not an upstream-supported policy hook.
+
+New processes load these changes. At a verified idle boundary, use the existing
+supervisor's native graceful restart path to refresh the host multiplexer;
+never kill active workers or launch a second gateway. On this supervised Void
+host, SIGUSR1 asks the verified gateway PID to drain and exit 75, and the
+existing supervisor relaunches it. Check the replacement PID, heartbeat and
+startup errors. This is a Hermes runtime refresh, not NixOS activation.
+
+To roll back, remove only this adapter's calls from the two native files before
+removing its installed policy module. Restore only the title setting and
+managed instruction block, preserving intervening operator edits. Use private
+backups as references rather than blindly replacing changed files.
+
+Run `bash scripts/tests/test-hermes-worker-policy.sh` for policy/installer tests.
+For the actual installed native lifecycle, use its Python environment to run
+`scripts/tests/hermes-worker-policy-native.py --hermes-repo <native-checkout>
+--scratch <task-temp-dir>`. The test overlays only the adapted source in its
+isolated home and uses an inert spawn function. It covers first-failure parking,
+legacy assignments, a concurrent budget edit and release receipts.
+
+## Background learning budget trials
+
+```bash
+python3 -B scripts/hermes/background-learning-trials.py --live
+```
+
+The opt-in runner compares Hermes' native default review budget with 48,000
+input tokens on short memory, medium skill and long skill histories. It uses
+the coordinator's explicitly selected first configured fallback and reasoning
+override, with no automatic provider retry. It exercises the actual detached
+background-review fork and budget logic; all learning tools are inert and only
+synthetic content is exposed. Live memory, skill files and board state remain
+untouched. Worker/delegation contexts cannot launch the trial.
+
+Success requires the intended durable preference or procedure to be captured
+through a successful fixture tool action. A cheaper or faster run that fails to
+save the lesson is a failed trial. Default and candidate settings stay local to
+each trial process; the runner does not promote a budget to live profiles.
+
+The native budget is checked at the next loop iteration after a request, so the
+first request can exceed it. Report input and cache-read counters separately;
+these trials do not establish a hard request-size cap, production cost savings
+or memory quality across unrelated work. In particular, short-history success
+does not establish that a budget is safe for long histories. Treat any retention
+failure as a reason to leave live learning unchanged and investigate a larger
+budget or a separately tested digest route.
