@@ -548,7 +548,7 @@ fi
 # wrong interval, was invisible to `--check`. It is reported, not repaired; see
 # the header for why.
 
-board_health_prompt="Board health check. Run 'hermes kanban --board $HERMES_BOARD list' and 'hermes kanban --board $HERMES_BOARD diagnostics' to see current state. The attached MONITOR CHANGE DETECTED block lists findings from scripts/hermes/kanban-board-health.sh.
+board_health_prompt="Board health check. Discover active boards under ~/.hermes/kanban/boards (start with '$HERMES_BOARD'), then run 'hermes kanban --board <each-slug> list' and 'hermes kanban --board <each-slug> diagnostics' for every board named in the attached MONITOR CHANGE DETECTED block. That block lists findings from scripts/hermes/kanban-board-health.sh.
 
 Work through every finding using the Board health table in ~/.hermes/scripts/hermes-coordinator-reference.md, which your SOUL.md's Deployment and recovery section directs you to. Classify the actual missing input and existing recovery conditions before routing. Reassign eligible non-sensitive work only within the recorded limits; never evade quota-breaker holds. Only genuine owner-only input warrants a checked needs_input gate, authored through native tools after summary validation. UNPUSHED/MASTER_AHEAD belongs to the existing no-agent durability-sync cron; never publish worker branches or run a remote-writing sync from coordinator recovery. Report failed durability internally.
 
