@@ -29,6 +29,7 @@ import shlex
 import sqlite3
 import subprocess
 import sys
+import time
 import tempfile
 
 PROFILE = 'head-coordinator'
@@ -74,18 +75,24 @@ def target_config(root):
     return f'simplex:{home}'
 
 
+STALE_HOLD_THRESHOLD_HOURS = 24
+
+
 def snapshot(board_file, task_id=None):
     with closing(sqlite3.connect((board_file.parent / 'kanban.db').resolve().as_uri() + '?mode=ro', uri=True)) as db:
         db.row_factory = sqlite3.Row
         db.execute('PRAGMA query_only=ON')
         columns = [r[1] for r in db.execute('PRAGMA table_info(tasks)')]
+        event_columns = [r[1] for r in db.execute('PRAGMA table_info(task_events)')]
         failure_column = 'last_failure_error' if 'last_failure_error' in columns else 'NULL'
         creator_column = 'created_by' if 'created_by' in columns else 'NULL'
         query = f'SELECT id,title,body,block_kind,status,{failure_column} AS failure,{creator_column} AS created_by FROM tasks WHERE '
         tasks = [dict(r) for r in db.execute(query + ('id=?' if task_id else "status='blocked' ORDER BY id"), (task_id,) if task_id else ())]
         for task in tasks:
-            event = db.execute("SELECT id,payload FROM task_events WHERE task_id=? AND (kind='blocked' OR (kind='status' AND json_extract(payload,'$.status')='blocked')) ORDER BY id DESC LIMIT 1", (task['id'],)).fetchone()
+            event_time_column = 'created_at' if 'created_at' in event_columns else 'NULL'
+            event = db.execute(f"SELECT id,payload,{event_time_column} AS created_at FROM task_events WHERE task_id=? AND (kind='blocked' OR (kind='status' AND json_extract(payload,'$.status')='blocked')) ORDER BY id DESC LIMIT 1", (task['id'],)).fetchone()
             task['event_id'] = event['id'] if event else 0
+            task['blocked_at'] = event['created_at'] if event else None
             task['reason'] = (json.loads(event['payload'] or '{}').get('reason') or '') if event else ''
             failure = task.pop('failure')
             if failure and task['reason'] in ('', 'initial_status'):
@@ -466,25 +473,27 @@ def collect(root, state, errors):
 
 
 def capability_warnings(root):
-    """Capability holds that name no input supplier, across every board.
-
-    The instruction rule requires every capability block to name the supplier of
-    its missing input (`Input supplier: owner | agent | external-source-owner(...)
-    | model/provider`). A capability card whose reason carries no such line is
-    either a quota park that predates the convention or an owner ask parked as
-    technical -- the shape that hid four owner asks. The board-health monitor
-    wakes the coordinator on these; this read-only list lets the pre-publish
-    check surface them too. It never changes a card or the delivered set.
-    """
+    """Warn about supplier-less and stale blocked cards, without changing them."""
     warnings = []
+    now = time.time()
+    threshold_seconds = STALE_HOLD_THRESHOLD_HOURS * 60 * 60
     for board in sorted((root / 'kanban/boards').glob('*/board.json')):
         if board.parent.name.startswith('_'):
             continue
         try:
             for task in snapshot(board):
-                if task['block_kind'] == 'capability' and 'Input supplier:' not in (task['reason'] or ''):
-                    warnings.append(f'{board.parent.name}:{task["id"]}: capability hold names no '
-                                    'input supplier; classify it (supplier=owner -> author a gate)')
+                reason = task['reason'] or ''
+                if 'Input supplier:' not in reason:
+                    if task['block_kind'] == 'capability':
+                        warnings.append(f'{board.parent.name}:{task["id"]}: capability hold names no '
+                                        'input supplier; classify it (supplier=owner -> author a gate)')
+                    else:
+                        warnings.append(f'{board.parent.name}:{task["id"]}: blocked hold names no input supplier; classify it')
+                blocked_at = task.get('blocked_at')
+                if isinstance(blocked_at, (int, float)) and now - blocked_at > threshold_seconds:
+                    elapsed_hours = int((now - blocked_at) // 3600)
+                    warnings.append(f'{board.parent.name}:{task["id"]}: blocked hold held for {elapsed_hours} hours '
+                                    f'(threshold {STALE_HOLD_THRESHOLD_HOURS} hours)')
         except (ValueError, OSError, sqlite3.Error) as exc:
             warnings.append(f'{board.parent.name}: {exc}')
     return warnings
