@@ -89,6 +89,7 @@ lean_skip_test() {
 }
 
 test_scripts=(
+  scripts/tests/test-hermes-opencode-acp.sh
   scripts/tests/test-hermes-cron-policy.sh
   scripts/tests/test-hermes-memory-policy.sh
   scripts/tests/test-hermes-worker-policy.sh

@@ -1,0 +1,4 @@
+name: opencode-acp-provider
+kind: model-provider
+version: 1.0.0
+description: Use the logged-in OpenCode CLI through Hermes's ACP transport
