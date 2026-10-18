@@ -15,6 +15,11 @@ def utc(value):return dt.datetime.fromtimestamp(value,dt.timezone.utc).isoformat
 
 
 def collect(root,state,now):
+    if __package__ == 'cron':
+        from cron import nixhomeserver_capability_recovery as recovery
+    else:
+        import capability_recovery as recovery
+    helpers=recovery.helper_identity(root)
     boards=sorted(p for p in (root/'kanban/boards').glob('*/board.json') if not p.parent.name.startswith(('_','.')))
     if not boards:raise ValueError('No active board manifests')
     issues=state.get('issues',{});due=[];live=set()
@@ -29,6 +34,7 @@ def collect(root,state,now):
             rows=db.execute("SELECT id,status,assignee,block_kind,consecutive_failures,block_recurrences,"+ownership+" FROM tasks "
                             "WHERE status NOT IN ('done','archived') ORDER BY id LIMIT 1001").fetchall()
             if len(rows)>1000:raise ValueError('Open task inspection bound exceeded')
+            capability={h['task_id']:h for h in recovery.read_board(db,root,board,helpers)}
             for row in rows:
                 task=dict(row);key=board+':'+task['id'];live.add(key)
                 run=db.execute('SELECT status,outcome,ended_at,metadata FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1',
@@ -39,14 +45,16 @@ def collect(root,state,now):
                 failed=outcome in {'crashed','failed','timed_out','spawn_failed','gave_up','blocked'}
                 unfulfilled=bool(owner and (not run or owner['created_at']>(run['ended_at'] or 0)))
                 owner_requested=task['created_by'] in {'desktop','user','owner','owner-agent'}
-                if not (task['status']=='blocked' or failed or unfulfilled or owner_requested
+                hold=capability.get(task['id'])
+                if not (hold or task['status']=='blocked' or failed or unfulfilled or owner_requested
                         or (task['block_recurrences'] or 0)>=2 or (task['consecutive_failures'] or 0)>=2):continue
                 metadata=json.loads(run['metadata'] or '{}') if run else {}
                 if not isinstance(metadata,dict):raise ValueError('Unsupported run metadata')
                 evidence={k:metadata.get(k) for k in ('verdict','revision','failure_category')}
                 evidence['verdict']=evidence['verdict'] if evidence['verdict'] in ('accept','request-changes') else None
                 version=[task['status'],task['assignee'],task['block_kind'],outcome,evidence,
-                         [owner['id'],hashlib.sha256(owner['body'].encode()).hexdigest()] if owner else None]
+                         [owner['id'],hashlib.sha256(owner['body'].encode()).hexdigest()] if owner else None,
+                         hold['version'] if hold else None]
                 digest=hashlib.sha256(json.dumps(version,sort_keys=True).encode()).hexdigest()
                 previous=issues.get(key,{})
                 if previous.get('version')==digest and now<previous.get('next_due',0):continue
@@ -62,6 +70,7 @@ def collect(root,state,now):
                     'next_due_utc':utc(previous['next_due']) if previous.get('version')==digest and previous.get('next_due') else None,
                     'links':[list(link) for link in links[:20]],'links_truncated':len(links)>20,
                     '_order':(previous.get('next_due',0),key)})
+                if hold:due[-1]['capability_recovery']=hold
     # Resolved tasks leave the scheduler ledger; no card, memory or report is written.
     state['issues']={key:value for key,value in issues.items() if key in live}
     selected=sorted(due,key=lambda item:item['_order'])[:3]

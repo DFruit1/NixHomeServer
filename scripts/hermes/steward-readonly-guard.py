@@ -7,6 +7,7 @@ It is not a new backend. The shared account remains a workflow boundary.
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
 import sys
@@ -64,8 +65,15 @@ def terminal_command(command, root, repo):
         allowed_paths.add(root / 'profiles/board-steward/skills/devops/board-steward/scripts/steward-sweep.py')
         owner_alert_paths = {base / OWNER_ALERT_SCRIPT for base in bases}
         request_paths = {base / 'steward-coordinator-request.py' for base in bases}
+        recovery_paths = {base / 'capability_recovery.py' for base in bases}
         resolved = script.resolve()
-        if resolved in {path.resolve() for path in request_paths}:
+        if resolved in {path.resolve() for path in recovery_paths}:
+            tail = argv[2:]
+            allowed = (tail in ([], ['--inspect'], ['--monitor']) or
+                       (len(tail) == 3 and tail[0] == '--handoff'
+                        and re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,63}:t_[a-z0-9_]{1,64}', tail[1])
+                        and re.fullmatch(r'[a-f0-9]{64}', tail[2])))
+        elif resolved in {path.resolve() for path in request_paths}:
             allowed = coordinator_request_args(argv[2:])
         elif resolved in {path.resolve() for path in owner_alert_paths}:
             allowed = owner_alert_readonly(argv[2:])

@@ -63,17 +63,20 @@ def changes(root):
     pending[root/'scripts/hermes-cron-policy.md']=(SOURCE/'instructions/cron-policy.md').read_text()
     native=root/'hermes-agent'
     for name in EDITS:pending[native/name]=adapt(name,(native/name).read_text())
-    for source,target in (('cron_policy.py','nixhomeserver_cron_policy.py'),('cron_stall.py','nixhomeserver_cron_stall.py')):
+    # Install the dependency first; active scheduler turns may import it on demand.
+    for source,target in (('capability_recovery.py','nixhomeserver_capability_recovery.py'),
+                          ('cron_policy.py','nixhomeserver_cron_policy.py'),('cron_stall.py','nixhomeserver_cron_stall.py')):
         pending[native/'cron'/target]=(SOURCE/source).read_text()
     for role in ('head-coordinator','board-steward'):
         soul=root/'profiles'/role/'SOUL.md';pending[soul]=instructions(soul.read_text())
-    copies={'review-taskforce-tick.sh','cron_sweep.py','cron_policy.py','cron_stall.py',
+    copies={'review-taskforce-tick.sh','cron_sweep.py','cron_policy.py','cron_stall.py','capability_recovery.py',
             'steward-opportunity-scan.py','kanban-daily-steward.py','kanban-board-health.sh','kanban-performance.py'}
-    for name in copies:
+    for name in sorted(copies,key=lambda name:(name!='capability_recovery.py',name)):
         pending[root/'scripts'/name]=(SOURCE/name).read_text()
         for role in ('head-coordinator','board-steward'):
             target=root/'profiles'/role/'scripts'/name
-            if target.exists():pending[target]=(SOURCE/name).read_text()
+            if target.exists() or (name=='capability_recovery.py' and role=='board-steward'):
+                pending[target]=(SOURCE/name).read_text()
     return pending,commands
 
 

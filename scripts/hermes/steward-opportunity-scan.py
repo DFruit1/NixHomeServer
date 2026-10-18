@@ -30,7 +30,10 @@ import json
 import os
 import sqlite3
 import subprocess
+import sys
 from pathlib import Path
+
+sys.dont_write_bytecode = True
 
 HERMES_ROOT = Path(os.environ.get("HERMES_ROOT", str(Path.home() / ".hermes")))
 TENANT = "steward-cleanup"
@@ -145,6 +148,15 @@ def check_empty(repo: Path, tracked: list[str]) -> list[tuple[str, str]]:
 
 
 def main() -> None:
+    # Board recovery must still be observed when a project checkout is absent.
+    # No task writes or source inspection occurs in this collector.
+    from capability_recovery import report, monitor_lines
+    recovery = report(HERMES_ROOT)
+    recovery_lines = monitor_lines(recovery)
+    if recovery_lines:
+        print("\n".join(recovery_lines))
+    if recovery['warnings']:
+        raise SystemExit(2)
     repo = board_repo()
     if not (repo / ".git").exists():
         return

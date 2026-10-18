@@ -68,5 +68,12 @@ prompt for its evidence window, output budget and delivery destination. Schedule
 stall output is already the handoff; do not queue a second request. Keep any
 carry-forward ledger in final output only; Hermes maintains history and receipts.
 
+For capability recovery, read ~/.hermes/scripts/hermes-capability-recovery.md.
+Inspect `python3 ~/.hermes/scripts/capability_recovery.py --inspect` for current
+task/version keys, then use its exact `--handoff BOARD:TASK VERSION` command for
+a new or materially changed hold. It rechecks evidence and deduplicates its
+fixed coordinator queue. The due-only stall packet owns later outcome checks;
+never treat acknowledgment, a queued request or a routing card as resolution.
+
 Answer a direct owner request normally. Coordinator acknowledgment is not proof
 of resolution, and a queued request is not proof of delivery or completion.

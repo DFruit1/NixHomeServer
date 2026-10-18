@@ -92,6 +92,15 @@ class StewardTest(unittest.TestCase):
         for tail in ['--target standard-implementer', '--script evil.py', '--install']:
             self.assertEqual('block', self.call('terminal', command=command+' '+tail)['action'])
 
+    def test_capability_handoff_is_a_narrow_fixed_recipient_exception(self):
+        command = f'python3 {self.root}/scripts/capability_recovery.py'
+        for tail in ('', ' --inspect', ' --monitor', ' --handoff test:t_one ' + 'a' * 64):
+            self.assertEqual('modify', self.call('terminal', command=command + tail)['action'])
+        for tail in (' --handoff test:t_one short', ' --handoff ../test:t_one ' + 'a' * 64,
+                     ' --handoff test:t_one ' + 'a' * 64 + ' --target standard-implementer',
+                     ' --install', ' --root /other', ' --execute'):
+            self.assertEqual('block', self.call('terminal', command=command + tail)['action'])
+
     def test_simplex_request_reuses_native_queue_with_fixed_target_and_stable_id(self):
         target = self.root / 'profiles/head-coordinator'
         target.mkdir(parents=True)

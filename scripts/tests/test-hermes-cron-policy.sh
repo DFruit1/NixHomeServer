@@ -202,6 +202,11 @@ class CronPolicyTest(unittest.TestCase):
             self.assertEqual(before,{p:p.read_bytes() for p in before})
             with patch.object(installer.subprocess,'run',side_effect=edit):self.assertEqual(0,installer.install(self.root))
             self.assertEqual(0,installer.install(self.root,True))
+        dependency=(Path(sys.argv[1])/'scripts/hermes/capability_recovery.py').read_bytes()
+        for relative in ('scripts/capability_recovery.py',
+                         'profiles/board-steward/scripts/capability_recovery.py',
+                         'hermes-agent/cron/nixhomeserver_capability_recovery.py'):
+            self.assertEqual(dependency,(self.root/relative).read_bytes())
         for role in jobs:
             data=json.loads((self.root/'profiles'/role/'cron/jobs.json').read_text())['jobs']
             for job in data:

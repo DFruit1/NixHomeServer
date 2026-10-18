@@ -40,7 +40,7 @@ done
 python3 -c 'import sys; compile(open(sys.argv[1], "rb").read(), sys.argv[1], "exec")' \
   "$SCAN" || fail "scanner does not compile"
 
-fixture="$(mktemp -d)"
+fixture="$(mktemp -d /tmp/hermes-steward-opportunity.XXXXXXXX)"
 trap 'rm -rf "$fixture"' EXIT
 
 repo="$fixture/repo"
@@ -51,7 +51,12 @@ git -C "$repo" config user.email test@example.invalid
 git -C "$repo" config user.name test
 git -C "$repo" commit -q --allow-empty -m init
 
-scan() { STEWARD_REPO="$repo" STEWARD_BOARD_DB="$1" python3 "$SCAN"; }
+# Board-recovery observation must use fixtures too, never the operator's boards.
+mkdir -p "$fixture/hermes/kanban/boards/test"
+printf '{}\n' > "$fixture/hermes/kanban/boards/test/board.json"
+sqlite3 "$fixture/hermes/kanban/boards/test/kanban.db" \
+  'CREATE TABLE tasks(id TEXT,status TEXT,assignee TEXT,block_kind TEXT); CREATE TABLE task_links(parent_id TEXT,child_id TEXT);'
+scan() { HERMES_ROOT="$fixture/hermes" STEWARD_REPO="$repo" STEWARD_BOARD_DB="$1" python3 "$SCAN"; }
 
 # 1. A clean repo prints nothing — the healthy, agent-suppressing state.
 out="$(scan "$none")"
