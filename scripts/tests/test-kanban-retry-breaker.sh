@@ -102,7 +102,8 @@ now="$(date +%s)"
 # requires, then drive its status directly. Using the CLI for creation keeps the
 # fixture honest about NOT NULL columns and defaults.
 new_card() {
-  "$HERMES_BIN" kanban --board testboard create "$1" --assignee "${2:-local-implementer}" 2>/dev/null |
+  # Local workers require a positive runtime cap, including fixture cards.
+  "$HERMES_BIN" kanban --board testboard create "$1" --assignee "${2:-local-implementer}" --max-runtime 5m 2>/dev/null |
     grep -oE 't_[0-9a-f]+' | head -1
 }
 

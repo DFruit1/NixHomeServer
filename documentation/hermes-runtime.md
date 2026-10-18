@@ -187,3 +187,80 @@ or memory quality across unrelated work. In particular, short-history success
 does not establish that a budget is safe for long histories. Treat any retention
 failure as a reason to leave live learning unchanged and investigate a larger
 budget or a separately tested digest route.
+
+## Memory admission and maintenance
+
+The [role-aware learning reference](../scripts/hermes/instructions/memory-policy.md)
+keeps memories factual, scoped and independent of permissions or task state.
+Install from this checkout:
+
+```bash
+python3 -B scripts/hermes/install-memory-policy.py --check
+python3 -B scripts/hermes/install-memory-policy.py
+python3 -B scripts/hermes/install-memory-policy.py --check
+```
+
+All seven homes keep their existing models, credentials and memory budgets.
+Memory/skill nudge intervals become zero: learning follows evidence or explicit
+requests rather than elapsed turns. Four task-only profiles cannot write the
+owner profile. The steward keeps curated preferences readable; steward and
+local-worker memory/skill writes, background learning and curator maintenance
+are disabled. Other roles retain foreground and explicit learning under their
+existing ownership rules. No new cron, model or memory backend is installed.
+
+The native fail-closed pre-tool hook checks `memory` and `skill_manage`. Memory
+adds/replacements use a temporary Fact/Scope/Evidence envelope; only the short
+scoped fact reaches storage. Owner statements must match the current owner
+message without changed meaning, and only default/head-coordinator direct
+interactive sessions or the configured private SimpleX owner contact qualify.
+Cron, workers, delegated sessions and group chats cannot provide owner-profile
+facts. Environment facts need a current successful read/probe tool ID or a real
+owner statement. Common task IDs, hashes, receipts, workflows, priority/authority
+claims and credential content are rejected. Exact canonical-instruction copies
+are rejected as well. These checks establish provenance and reject common
+pollution; they are not a semantic proof of arbitrary environment claims or a
+filesystem sandbox. Existing role fences and evidence judgment remain binding.
+
+The installer also removes the native skill-review prompts' update quota and
+the claim that memory should retain current operational state. The small
+source adapter checks exact anchors and syntax before writes, preserves other
+native edits, and refuses incompatible upstream changes. Recheck after Hermes
+upgrades. Config changes preserve unrelated values/comments and previous bytes
+are privately archived under `~/.hermes/backups/memory-policy/`.
+Homes requiring individual hook consent receive an allowlist entry for this
+exact guard command. Other approvals and `hooks_auto_accept` stay unchanged.
+
+Reviewed existing pollution is a separate one-time operation:
+
+```bash
+python3 -B scripts/hermes/clean-memory.py
+python3 -B scripts/hermes/clean-memory.py --apply
+```
+
+Cleanup matches exact reviewed entry hashes, keeps unknown/newly changed entries,
+and folds useful environment facts and owner preferences into compact entries.
+It uses native memory lock paths and private backups. A dry run writes nothing;
+exit 1 means a reviewed change remains. Repeat application converges.
+
+To retire a reviewed pending proposal, pass
+`--retire-proposal <profile>:<id>:<sha256-of-exact-file-bytes>` to the same helper,
+with `--apply` only after reviewing its contents. Every proposal is preflighted
+before any cleanup, backed up and verified before removal from the pending
+queue. Changed, unknown or missing-unarchived proposals stop the operation;
+new proposals are never swept by age or a directory glob. Do not bulk-approve
+stale replacements over newer memory. Both global maintenance installers refuse
+worker/delegation contexts for writes.
+
+Refresh the idle supervised gateway using the existing drain path after
+installation. New agents use the cleaned memory; already-running agents keep
+their frozen snapshots. Do not erase conversation history to refresh memory.
+Rollback uses the private backups and removes only the managed hook/settings,
+instruction block and native prompt replacements, preserving intervening edits.
+
+Validation: `bash scripts/tests/test-hermes-memory-policy.sh` and, in the native
+Python environment, `scripts/tests/hermes-memory-policy-native.py --hermes-repo
+<checkout> --scratch <task-temp-dir>`. Add `--live` for bounded isolated checks
+of the configured coordinator fallback: save a genuine owner preference while
+preserving an existing preference, and refuse to learn a temporary task receipt.
+Only synthetic content and inert tools are exposed; existing login credentials
+remain in memory and are never copied to the fixture home.
