@@ -75,6 +75,14 @@ For each existing hold:
    rules. Owner-only secrets, physical facts or a new owner-owned risk use the
    coordinator's existing checked owner gate after preparation is complete.
 
+For specifically commissioned TDD or compatibility work, an intended new-behaviour
+RED test or a reference patch that needs adaptation is an implementation input.
+Implement the assessed contract or adapt minimal owned hunks within that scope;
+do not request another approval merely because the implementation is absent or
+the donor differs. Missing prerequisites, tool refusals, unexpected failures and
+new scope still stop the attempt. This never accepts a red gate or authorises an
+unchanged retry, unowned edits or weakened assertions.
+
 ## Conflicting copies and obsolete procedures
 
 For non-secret source/configuration/document copies within authorised scope,
