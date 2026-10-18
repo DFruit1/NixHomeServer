@@ -45,7 +45,9 @@ Unmarked open cards read as `pending-assessment`. Only the coordinator may move
 a card into the owner row: write `ASK:` and block `needs_input` so the sender
 pushes it — an `ASK:` line alone never pages the owner, and a marker never
 replaces the gate. The coordinator updates markers as cards move between
-states; "Decide …" titles stay allowed either way.
+states; "Decide …" titles stay allowed either way. Check coverage and gate
+consistency read-only with
+`python3 scripts/hermes/kanban-owner-alerts.py --check-ownership`.
 
 ### Work body
 

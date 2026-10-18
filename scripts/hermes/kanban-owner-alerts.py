@@ -490,6 +490,65 @@ def capability_warnings(root):
     return warnings
 
 
+DECISION_MARKER = re.compile(r'^Decision owner:[ \t]*([A-Za-z-]+)', re.M)
+GATE_TITLE = re.compile(r'^(Decide|Approve)\b')
+ASK_LINE = re.compile(r'^ASK:', re.M)
+HARD_LINE = re.compile(r'^Hard Blocker\b', re.M | re.I)
+MARKER_VALUES = ('head-coordinator', 'pending-assessment')
+
+
+def check_ownership(root):
+    """Read-only lint: decision-ownership markers and owner-gate consistency.
+
+    Every open card must say unambiguously who is gated. Owner gates need
+    blocked status plus a leading `ASK:` line so the sender actually delivers
+    them; gate-flavoured titles need an explicit `Decision owner:` marker; the
+    marker vocabulary is closed. It never changes a card or the delivered set.
+    """
+    problems = []
+    for board in sorted((root / 'kanban/boards').glob('*/board.json')):
+        name = board.parent.name
+        if name.startswith('_'):
+            continue
+        try:
+            with closing(sqlite3.connect((board.parent / 'kanban.db').resolve().as_uri() + '?mode=ro', uri=True)) as db:
+                db.row_factory = sqlite3.Row
+                db.execute('PRAGMA query_only=ON')
+                tasks = [dict(r) for r in db.execute(
+                    "SELECT id,title,body,block_kind,status FROM tasks"
+                    " WHERE status IN ('triage','todo','scheduled','blocked') ORDER BY id")]
+                for task in tasks:
+                    key = f'{name}:{task["id"]}'
+                    body = task['body'] or ''
+                    gate = task['block_kind'] == 'needs_input' or HARD_LINE.search(body)
+                    marker_row = db.execute(
+                        "SELECT body FROM task_comments WHERE task_id=? AND body LIKE 'Decision owner:%'"
+                        ' ORDER BY created_at DESC, id DESC LIMIT 1', (task['id'],)).fetchone()
+                    marker = DECISION_MARKER.match(marker_row['body']) if marker_row else None
+                    if gate:
+                        if task['status'] != 'blocked':
+                            problems.append(f'{key}: needs_input/Hard Blocker on a {task["status"]} card is a'
+                                            ' stuck gate that never delivers; coordinator: block the card or clear the gate')
+                        if not ASK_LINE.search(body):
+                            problems.append(f'{key}: owner-gate body lacks a leading ASK: line; coordinator: repair the card text')
+                        if marker:
+                            problems.append(f'{key}: Decision owner marker is stale on an owner gate; remove it')
+                    else:
+                        if ASK_LINE.search(body):
+                            problems.append(f'{key}: ASK: line without needs_input never pages the owner;'
+                                            ' coordinator: block needs_input or reword the ask')
+                        if GATE_TITLE.search(task['title']):
+                            if marker is None:
+                                problems.append(f'{key}: gate-flavoured title without a Decision owner marker;'
+                                                ' add Decision owner: head-coordinator or pending-assessment')
+                            elif marker[1] not in MARKER_VALUES:
+                                problems.append(f'{key}: unknown Decision owner value "{marker[1]}";'
+                                                f' use one of: {", ".join(MARKER_VALUES)}')
+        except (ValueError, OSError, sqlite3.Error) as exc:
+            problems.append(f'{name}: {exc}')
+    return problems
+
+
 def tick(root, dry_run=False, now=None, force_decisions=False):
     target = target_config(root)
     if not dry_run and (os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT') or os.environ.get('HERMES_KANBAN_TASK')):
@@ -626,6 +685,7 @@ if __name__ == '__main__':
     actions.add_argument('--details', metavar='D1|B1|blockers|board:card', help='Read requested diagnostics without sending or mutating')
     actions.add_argument('--check-summary', metavar='FILE|-', help='Check the coordinator summary without sending or mutating; - reads stdin')
     actions.add_argument('--check-blockers', action='store_true', help='Check all current owner blockers without sending or mutating')
+    actions.add_argument('--check-ownership', action='store_true', help='Lint decision-ownership markers and owner-gate consistency without sending or mutating')
     args = parser.parse_args()
     root = Path(os.environ.get('HERMES_ROOT', str(Path.home() / '.hermes')))
     try:
@@ -640,6 +700,13 @@ if __name__ == '__main__':
             print('Owner blocker summaries OK')
             for warning in capability_warnings(root):
                 print(f'warning: {warning}')
+        elif args.check_ownership:
+            problems = check_ownership(root)
+            for problem in problems:
+                print(problem)
+            if problems:
+                sys.exit(2)
+            print('Decision ownership OK')
         elif args.resolve:
             print(json.dumps(resolve(root, args.resolve)))
         elif args.details:
