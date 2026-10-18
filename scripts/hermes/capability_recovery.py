@@ -21,6 +21,7 @@ sys.dont_write_bytecode = True
 
 MAX_OPEN = 1000
 HELPERS = ('scripts/fixture-runner.py', 'scripts/autonomy-policy.py',
+           'scripts/steward-coordinator-request.py',
            'scripts/hermes-capability-recovery.md', 'scripts/hermes-coordinator-reference.md',
            'hermes-agent/hermes_cli/nixhomeserver_autonomy.py',
            'hermes-agent/tools/kanban_tools.py')

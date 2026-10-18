@@ -44,6 +44,13 @@ For each existing hold:
    Queued/running means recovery resumed; only actual accepted deliverables and
    required activation receipts resolve the feature. Keep the owning handoff
    open through that outcome, using real prerequisites instead of repeated runs.
+   If an earlier rejected review blocks fix completion while its replacement
+   review waits for that completion, supply the exact committed candidate and
+   readiness evidence directly to the existing verifier. Remove only that
+   verifier's obsolete completion prerequisite after native readback confirms
+   its real input is available. Preserve rejected history and feature gates;
+   retire the superseded rejection edge only after fresh independent acceptance,
+   then resume the original implementation receipt and composition.
 6. A failed remedy returns its new evidence to the same owner. Narrow the repair
    or obtain a concrete alternative from the auditor; never repeat unchanged
    audits, manufacture receipts, clear cooldowns or disable a guard. Exhausted

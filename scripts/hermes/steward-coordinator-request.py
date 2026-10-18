@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 
 
@@ -31,6 +32,30 @@ def queue_request(root, request_id, message, delivery=None):
         source = root / 'hermes-agent'
         if not (source / 'cron/bot_chat_delivery.py').is_file():
             raise ValueError('Hermes native delivery module is unavailable')
+        # Observation runs with system Python, but the native queue depends on
+        # Hermes' installed environment. Enter that interpreter only for this
+        # fixed-recipient operation; preserve all task/delegation restrictions.
+        native = source / '.venv/bin/python'
+        if not native.is_file():
+            raise ValueError('Hermes native Python environment is unavailable; nothing was queued')
+        if Path(sys.prefix).resolve() != native.parent.parent.resolve():
+            try:
+                child = subprocess.run(
+                    [str(native), '-I', '-B', str(Path(__file__).resolve()),
+                     '--request-id=' + request_id, '--message=' + message],
+                    env=dict(os.environ, HERMES_ROOT=str(root)),
+                    text=True, capture_output=True, timeout=30)
+            except subprocess.TimeoutExpired as exc:
+                raise ValueError('Native queue timed out; delivery is unverified, retain request ID') from exc
+            try:
+                receipt = json.loads(child.stdout)
+            except ValueError as exc:
+                raise ValueError('Native queue returned no valid receipt; delivery is unverified') from exc
+            if child.returncode or not isinstance(receipt, dict):
+                raise ValueError('Native queue failed; delivery is unverified')
+            if receipt.get('delivery_id') != key or receipt.get('target') != 'head-coordinator':
+                raise ValueError('Native queue returned a mismatched receipt; delivery is unverified')
+            return receipt
         os.environ['HERMES_HOME'] = str(root / 'profiles/board-steward')
         sys.dont_write_bytecode = True
         sys.path.insert(0, str(source))

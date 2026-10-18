@@ -8,6 +8,7 @@ import datetime
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -129,6 +130,45 @@ class StewardTest(unittest.TestCase):
         (target / 'state.db').unlink()
         with self.assertRaises(ValueError):
             handoff.queue_request(self.root, 'missing', 'Please act.', delivery)
+
+    def test_system_python_handoff_uses_installed_native_dependencies(self):
+        source = self.root / 'hermes-agent'
+        (source / 'cron').mkdir(parents=True)
+        (source / 'cron/__init__.py').touch()
+        (source / 'cron/bot_chat_delivery.py').write_text(
+            'import native_queue_dependency, os\n'
+            'def defer(key, job, content, profile, home):\n'
+            '    assert profile == "head-coordinator"\n'
+            '    assert "not owner approval" in content\n'
+            '    assert os.environ["HERMES_KANBAN_TASK"] == "t_preserved"\n'
+            '    assert os.environ["HERMES_DELEGATED_CHILD_CONTEXT"] == "preserved"\n'
+            '    return {"status": native_queue_dependency.STATUS}\n')
+        target = self.root / 'profiles/head-coordinator'
+        target.mkdir(parents=True)
+        (target / 'state.db').touch()
+        native = source / '.venv'
+        subprocess.run([sys.executable, '-m', 'venv', '--without-pip', str(native)], check=True)
+        site = next((native / 'lib').glob('python*/site-packages'))
+        (site / 'native_queue_dependency.py').write_text('STATUS = "queued"\n')
+        script = self.root / 'scripts/steward-coordinator-request.py'
+        script.parent.mkdir()
+        script.write_bytes((SOURCE / script.name).read_bytes())
+        env = dict(os.environ, HERMES_ROOT=str(self.root),
+                   HERMES_KANBAN_TASK='t_preserved', HERMES_DELEGATED_CHILD_CONTEXT='preserved')
+        result = subprocess.run([sys.executable, '-I', '-B', str(script),
+                                 '--request-id=-native-runtime', '--message=--route'],
+                                env=env, text=True, capture_output=True)
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        receipt = json.loads(result.stdout)
+        self.assertEqual('queued', receipt['status'])
+        self.assertEqual(handoff.request_key('-native-runtime'), receipt['delivery_id'])
+        self.assertEqual('head-coordinator', receipt['target'])
+        (native / 'bin/python').unlink()
+        refused = subprocess.run([sys.executable, '-I', '-B', str(script),
+                                  '--request-id', 'missing-runtime', '--message', 'Please route.'],
+                                 env=env, text=True, capture_output=True)
+        self.assertNotEqual(0, refused.returncode)
+        self.assertIn('native', refused.stdout.lower())
 
     def test_changes_and_arbitrary_execution_are_blocked(self):
         for tool in ['kanban_list', 'kanban_show', 'kanban_attachments', 'kanban_create', 'kanban_comment', 'kanban_unblock', 'kanban_link', 'write_file',
