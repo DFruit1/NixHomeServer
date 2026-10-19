@@ -6,8 +6,42 @@ separate. Feature milestones and routine completion events stay internal.
 Collecting and debouncing a set never combines blockers into one message.
 
 The `head-coordinator` SimpleX adapter receives owner replies on the existing
-numeric contact allowlist. Its daemon and gateway must be running. The no-agent
-sender reads every board without changing cards or assuming approval.
+numeric contact allowlist and, once the decision channel is installed, the one
+decision-group id. Its daemon and gateway must be running. The no-agent sender
+reads every board without changing cards or assuming approval.
+
+## Decision channel
+
+Owner decisions live in the coordinator-owned `Hermes Decisions` SimpleX group,
+the third owner-facing channel. The general DM remains a conversation. A group
+is used because one SimpleX contact can have only one direct conversation.
+
+The group is a live ledger, not a transcript. Every five minutes the sender
+reconciles it with the open decision set: it posts a new gate, edits a gate whose
+wording changed and deletes a gate that was answered, revised or closed. A gate
+waiting on the coordinator, a reviewer, a worker or another agent is internal
+and is never posted. If a board read fails, the group is left untouched so an
+incomplete set cannot delete live decisions.
+
+The coordinator can maintain its own status messages in the group with
+`~/.hermes/scripts/simplex-decisions.sh`. `post`, `edit` and `delete` operate on
+a stable key and reject keys that look like the `D1`/`B1` alert labels, so
+manual messages cannot collide with the automatically reconciled set. Use
+`--list` to see them. Owner replies in the group are accepted by the same
+D-label reply path as the DM.
+
+Install or verify the channel from the repository checkout:
+
+```bash
+python3 scripts/hermes/install-decision-channel.py --check
+python3 scripts/hermes/install-decision-channel.py --install
+```
+
+The installer creates the group with full deletion enabled, invites the owner,
+records the group id and the narrow inbound allowlist in the coordinator
+profile, and copies the ledger CLI. The owner accepts the group invitation in
+SimpleX; then refresh the coordinator adapter when it is idle:
+`hermes --profile head-coordinator gateway restart`.
 
 ## What a Hard Blocker is
 
@@ -118,9 +152,11 @@ Recommended: Reply yes if it arrived, or no if it did not.
 Reply: D1 <choice or answer>. Details: D1 details
 ```
 
-SimpleX emphasis uses `*bold*`, `_italic_`, `~strike~`; GitHub-style emphasis is
-converted before sending. Labels and board headings remain navigation aids;
-the problem, reason and action use ordinary language.
+The decision channel uses `*Decision*` as the heading for the same message; an
+explicit DM pull keeps `*Hard Blocker*`. SimpleX emphasis uses `*bold*`,
+`_italic_`, `~strike~`; GitHub-style emphasis is converted before sending.
+Labels and board headings remain navigation aids; the problem, reason and
+action use ordinary language.
 
 Missing, malformed, overlong or generic summaries produce a coordinator repair
 diagnostic and are never sent or marked delivered. Other valid individual
@@ -185,6 +221,7 @@ Existing owner approval and whole-set deploy gates still apply.
 ```bash
 python3 scripts/hermes/kanban-owner-alerts.py --dry-run
 python3 scripts/hermes/kanban-owner-alerts.py --install
+python3 scripts/hermes/install-decision-channel.py --check
 python3 ~/.hermes/scripts/kanban-owner-alerts.py
 python3 ~/.hermes/scripts/kanban-owner-alerts.py --send-decisions
 hermes --profile default cron list
@@ -201,8 +238,10 @@ existing gateway control socket after updating its SOUL, or reload the gateway
 when idle. Do not interrupt workers to refresh chat instructions.
 
 Labels and acknowledgments persist in
-`~/.hermes/kanban/owner-alerts/inbox.json`; a lock serialises ticks and atomic
-private writes prevent partial state. Each hard-blocker revision gets a D label;
+`~/.hermes/kanban/owner-alerts/inbox.json`; the decision-channel item ids
+persist in `~/.hermes/kanban/owner-alerts/decision-messages.json`, under the same
+lock as the inbox. A lock serialises ticks and atomic private writes prevent
+partial state. Each hard-blocker revision gets a D label;
 each technical card gets a permanent B label for diagnostics. Labels are never
 reassigned. Existing count-only state upgrades once to individual entries,
 without resending delivered questions. Allocation survives failed delivery, and
@@ -220,4 +259,5 @@ terminals; send/tick remains fenced. Authentication and deployment policy are
 unchanged. Python standard-library glue reuses the existing Hermes runtime/CLI;
 no new backend service, stack component or dependency is needed.
 
-Verification: `bash scripts/tests/test-kanban-owner-alerts.sh` and the lean gate.
+Verification: `bash scripts/tests/test-kanban-owner-alerts.sh`,
+`bash scripts/tests/test-simplex-decisions.sh` and the lean gate.

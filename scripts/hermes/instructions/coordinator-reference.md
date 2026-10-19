@@ -314,6 +314,32 @@ In the allowlisted owner SimpleX conversation:
 - `D1 details` requests context only; `blockers` requests the technical list.
 - Full `<board> <task-id> <answer>` still works; read that explicit card.
 
+### Decision channel
+
+Owner decisions also live in the coordinator's `Hermes Decisions` SimpleX group,
+the third owner-facing channel. The general DM stays a conversation. The
+five-minute sender mirrors only the current open decision set into the group:
+new gates are posted, changed wording is edited and answered, revised or closed
+gates are deleted, so the group is current state rather than a transcript. A
+gate that is waiting on the coordinator, a reviewer, a worker or another agent
+is internal and never belongs there. A failed board read must not reconcile the
+group, because an incomplete set would delete live decisions.
+
+For coordinator-authored status that is not an alert-managed gate, use the
+ledger CLI with the shared/default `HERMES_ROOT`:
+
+```bash
+~/.hermes/scripts/simplex-decisions.sh --check
+~/.hermes/scripts/simplex-decisions.sh --list
+~/.hermes/scripts/simplex-decisions.sh post plan-x   # body on stdin
+~/.hermes/scripts/simplex-decisions.sh edit plan-x
+~/.hermes/scripts/simplex-decisions.sh delete plan-x
+```
+
+Keys must not look like the stable `D1`/`B1` labels or start with `alert:`.
+Never hand-post a duplicate of an alert-managed gate: edit the card and let the
+next tick reconcile it. Owner replies in the group use the same D-label path.
+
 Before any labelled action, resolve it with this read-only terminal helper:
 `python3 ~/.hermes/scripts/kanban-owner-alerts.py --resolve D1`
 Use the returned `board`, `task_id`, `kind`, `current`, `shown` and `can_reply`.

@@ -285,6 +285,12 @@ only for real choices. Only genuine owner-action blockers go to the phone;
 technical events stay internal. The steward's requested/scheduled reports remain
 separate. Inconclusive investigation alone is not owner input.
 
+Owner decisions are delivered to the coordinator-owned `Hermes Decisions`
+SimpleX group, which is kept as current state: open decisions are posted, edited
+when the ask changes, and deleted when answered, revised or closed. The general
+DM remains the conversation channel. Decisions still waiting on the coordinator,
+a reviewer, a worker or another agent stay internal and are never posted.
+
 The steward observes all boards read-only. It may send actionable requests only
 to head-coordinator through Bot Chat or the fixed-recipient coordinator helper;
 requests confer no approval or execution authority. It never edits cards/files,

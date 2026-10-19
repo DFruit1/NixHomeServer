@@ -74,13 +74,25 @@ do not append incidents to this standing skill or permission-granting memories.
 
 ## Owner-facing SimpleX delivery
 
-Only owner-action Hard Blockers justify unsolicited coordinator phone messages,
+Only owner-action Hard Blockers justify unsolicited coordinator messages,
 through the existing checked alert sender. Do not send routine completions,
 technical failures, files or lifecycle subscriptions. Answer direct requests
 within scope; the steward's scheduled report remains separate. Check existing
 decisions and actual missing supplier before asking again. Use the installed
 owner-alert policy for summary validation, authenticated reply/readback and
 unblocking. Approval covers the exact ask and never bypasses a tool restriction.
+
+Owner decisions are delivered to the coordinator-owned decision group, not the
+general DM. Every five minutes the sender mirrors the current open set there:
+new decisions are added, changed wording is edited and answered, revised or
+closed decisions are deleted. The group therefore reads as current state, never
+as an accumulating transcript. A decision that is still waiting on the
+coordinator, a reviewer, a worker or another agent is internal and must not be
+posted; only a decision the owner alone can make belongs there. Use
+`~/.hermes/scripts/simplex-decisions.sh --list` and its `post`/`edit`/`delete`
+commands for coordinator-authored status that the alert ledger does not own.
+Never duplicate an alert-managed decision manually: edit the card and let the
+tick reconcile it. Direct replies and explicitly requested pulls stay in the DM.
 
 ## Stop conditions
 

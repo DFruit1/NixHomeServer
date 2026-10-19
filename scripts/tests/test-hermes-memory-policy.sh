@@ -53,6 +53,19 @@ class AdmissionTest(unittest.TestCase):
             self.db.execute('UPDATE sessions SET chat_type=?,user_id=?',(chat_type,user_id));self.db.commit()
             self.assertEqual('block',self.call(text)['action'])
 
+    def test_simplex_accepts_only_the_decision_group_allowlist(self):
+        self.db.execute("UPDATE sessions SET source='simplex',chat_type='dm',user_id='17'");self.db.commit()
+        text='Fact: The owner prefers temperatures in Celsius.\nScope: owner\nEvidence: owner:I prefer temperatures in Celsius'
+        (self.home/'.env').write_text('SIMPLEX_HOME_CHANNEL=17\nSIMPLEX_ALLOWED_USERS=17\n'
+                                      'SIMPLEX_DECISION_GROUP=7\nSIMPLEX_GROUP_ALLOWED=7\n')
+        self.assertEqual('modify',self.call(text)['action'])
+        for allowlist in ('7,8', '*'):
+            with self.subTest(allowlist=allowlist):
+                (self.home/'.env').write_text('SIMPLEX_HOME_CHANNEL=17\nSIMPLEX_ALLOWED_USERS=17\n'
+                                              'SIMPLEX_DECISION_GROUP=7\n'
+                                              f'SIMPLEX_GROUP_ALLOWED={allowlist}\n')
+                self.assertEqual('block',self.call(text)['action'])
+
     def test_failed_old_and_self_cited_tool_results_are_not_evidence(self):
         text='Fact: Void Linux uses runit.\nScope: workstation\nEvidence: tool:call_read'
         for content,name,timestamp in (('{"exit_code":1}','terminal',101),

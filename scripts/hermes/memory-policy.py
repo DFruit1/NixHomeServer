@@ -85,9 +85,17 @@ def owner_session(session, root):
         if match:
             values[match[1]] = match[2].strip('"\'')
     owner = values.get('SIMPLEX_HOME_CHANNEL', '')
+    group_allowlist = values.get('SIMPLEX_GROUP_ALLOWED', '').strip()
+    decision_group = values.get('SIMPLEX_DECISION_GROUP', '').strip()
     return (bool(re.fullmatch(r'[0-9]+', owner)) and str(session['user_id']) == owner
             and owner in values.get('SIMPLEX_ALLOWED_USERS', '').split(',')
-            and not values.get('SIMPLEX_ALLOW_ALL_USERS') and not values.get('SIMPLEX_GROUP_ALLOWED'))
+            and not values.get('SIMPLEX_ALLOW_ALL_USERS')
+            # The decision group is the one inbound group the coordinator may
+            # admit; any other allowlist means this is no longer a checked
+            # private owner destination.
+            and (not group_allowlist
+                 or (bool(re.fullmatch(r'[0-9]+', decision_group))
+                     and group_allowlist == decision_group)))
 
 
 def candidate(text, target, profile, db, session_id, latest_user, root, session, canonical):

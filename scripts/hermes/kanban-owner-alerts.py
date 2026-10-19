@@ -31,6 +31,8 @@ import subprocess
 import sys
 import tempfile
 
+import simplex_decisions
+
 PROFILE = 'head-coordinator'
 JOB = 'kanban owner blocker alerts'
 MARKER = '<!-- kanban-owner-alerts -->'
@@ -67,8 +69,15 @@ def target_config(root):
     allowed = values.get('SIMPLEX_ALLOWED_USERS', '').split(',')
     if not re.fullmatch(r'[0-9]+', home) or home not in allowed or not all(re.fullmatch(r'[0-9]+', v) for v in allowed):
         raise ValueError('Owner home channel must be a numeric allowlisted contact')
-    if values.get('SIMPLEX_ALLOW_ALL_USERS') or values.get('SIMPLEX_GROUP_ALLOWED'):
-        raise ValueError('Owner delivery requires allow-all and group settings absent')
+    if values.get('SIMPLEX_ALLOW_ALL_USERS'):
+        raise ValueError('Owner delivery requires allow-all settings absent')
+    # The only group the coordinator may ingest is the decision channel. Any
+    # wider allowlist (especially `*`) would admit unrelated group traffic.
+    group_allowlist = values.get('SIMPLEX_GROUP_ALLOWED', '').strip()
+    if group_allowlist:
+        decision_group = values.get('SIMPLEX_DECISION_GROUP', '').strip()
+        if not re.fullmatch(r'[0-9]+', decision_group) or group_allowlist != decision_group:
+            raise ValueError('Only the decision group may be allowlisted')
     if not re.fullmatch(r'ws://127\.0\.0\.1:[0-9]+', values.get('SIMPLEX_WS_URL', '')):
         raise ValueError('Use the existing loopback SimpleX daemon')
     return f'simplex:{home}'
@@ -391,13 +400,15 @@ def technical_text(label, board, task):
         return heading + '\nBlocked: ' + cause + '\nBlocking: ' + cause
 
 
-def decision_message(label, state):
+def decision_message(label, state, heading='Hard Blocker'):
     """One SimpleX message per blocked card: heading, summary, one reply line.
 
     Each blocker is its own message so the owner can act on one at a time and a
-    single long summary never crowds another gate off the screen.
+    single long summary never crowds another gate off the screen. The decision
+    channel uses ``Decision`` as its heading because that group holds only
+    owner decisions.
     """
-    return ('*Hard Blocker*\n\n' + state['decisions'][label]['shown']
+    return (f'*{heading}*\n\n' + state['decisions'][label]['shown']
             + f'\n\nReply: {label} <choice or answer>. Details: {label} details')
 
 
@@ -563,6 +574,7 @@ def check_ownership(root):
 
 def tick(root, dry_run=False, now=None, force_decisions=False):
     target = target_config(root)
+    decision_group = simplex_decisions.configured_group(root)
     if not dry_run and (os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT') or os.environ.get('HERMES_KANBAN_TASK')):
         raise PermissionError('Owner alerts run only from the operator or no-agent cron')
     directory = root / 'kanban/owner-alerts'
@@ -610,15 +622,34 @@ def tick(root, dry_run=False, now=None, force_decisions=False):
         # `needs_input`, which only the owner can clear and which the board will
         # not unblock on its own. A technical blocker can clear itself, so it is
         # never sent; it stays board-local and is read with `--details blockers`.
-        pending = [decision_labels[(board, task['id'])] for board, task in decisions
-                   if state['decisions'][decision_labels[(board, task['id'])]]['compact_complete']
-                   and target not in state['decisions'][decision_labels[(board, task['id'])]]['delivered']]
-        if pending:
-            # One message per blocker: the owner can answer each without a
-            # long summary crowding the next gate off the screen.
-            for label in pending:
-                if deliver(decision_message(label, state)):
-                    delivered(state['decisions'], [label])
+        # When the decision channel is installed it is the authoritative mirror:
+        # add new decisions, edit changed ones and delete any message whose card
+        # is answered, revised or closed. A fallback DM send is kept for hosts
+        # that have not installed the channel yet.
+        if decision_group is not None:
+            if snapshot_failed:
+                errors.append('Decision channel not reconciled: board read was incomplete')
+            else:
+                live = {}
+                for board, task in decisions:
+                    label = decision_labels[(board, task['id'])]
+                    if state['decisions'][label]['compact_complete']:
+                        live[f'alert:{label}'] = decision_message(label, state, heading='Decision')
+                try:
+                    errors.extend(simplex_decisions.reconcile(
+                        root, live, dry_run=dry_run))
+                except (ValueError, OSError, RuntimeError) as exc:
+                    errors.append(f'Decision channel: {exc}')
+        else:
+            pending = [decision_labels[(board, task['id'])] for board, task in decisions
+                       if state['decisions'][decision_labels[(board, task['id'])]]['compact_complete']
+                       and target not in state['decisions'][decision_labels[(board, task['id'])]]['delivered']]
+            if pending:
+                # One message per blocker: the owner can answer each without a
+                # long summary crowding the next gate off the screen.
+                for label in pending:
+                    if deliver(decision_message(label, state)):
+                        delivered(state['decisions'], [label])
 
         # Explicit pull of the decision set only. A failed board read omits
         # cards, so an incomplete list is never sent as if it were whole.
@@ -649,6 +680,8 @@ def install(root):
         existing += END_MARKER + '\n'
     wanted = instructions.block(existing, MARKER, END_MARKER, policy)
     changes = {soul: wanted, scripts / 'kanban-owner-alerts.py': Path(__file__).read_text(),
+               scripts / 'simplex_decisions.py': Path(__file__).with_name('simplex_decisions.py').read_text(),
+               scripts / 'simplex-decisions.sh': Path(__file__).with_name('simplex-decisions.sh').read_text(),
                scripts / 'hermes-coordinator-reference.md': (source / 'instructions/coordinator-reference.md').read_text(),
                scripts / 'owner-blocker-authoring-guard.py': (source / 'owner-blocker-authoring-guard.py').read_text(),
                scripts / 'review-taskforce-approval.md': (source / 'taskforce/approval-policy.md').read_text(),
@@ -678,6 +711,8 @@ def install(root):
         hermes_common.backup_file(root, 'owner-alerts', path)
         hermes_common.atomic_write(path, text)
     (scripts / 'kanban-owner-alerts.py').chmod(0o700)
+    (scripts / 'simplex_decisions.py').chmod(0o700)
+    (scripts / 'simplex-decisions.sh').chmod(0o700)
     if not matching:
         env = os.environ.copy()
         env['HERMES_HOME'] = str(root)

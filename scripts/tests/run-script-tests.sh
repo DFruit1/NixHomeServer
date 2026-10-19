@@ -186,6 +186,7 @@ test_scripts=(
   scripts/tests/test-hermes-deploy-receipt.sh
   scripts/tests/test-hermes-coordination.sh
   scripts/tests/test-kanban-owner-alerts.sh
+  scripts/tests/test-simplex-decisions.sh
   scripts/tests/test-hermes-owner-chat-policy.sh
   scripts/tests/test-steward-readonly.sh
   scripts/tests/test-steward-opportunity-scan.sh

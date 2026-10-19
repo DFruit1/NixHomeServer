@@ -619,6 +619,28 @@ class AlertsTest(unittest.TestCase):
                 self.assertFalse(self.sent)
                 self.env.write_text(original)
 
+    def test_decision_channel_mirrors_the_live_set_instead_of_dming(self):
+        self.env.write_text(self.env.read_text() + 'SIMPLEX_DECISION_GROUP=7\nSIMPLEX_GROUP_ALLOWED=7\n')
+        self.assertEqual('simplex:3', alerts.target_config(self.root))
+        seen = []
+        with patch.object(alerts.simplex_decisions, 'reconcile',
+                          side_effect=lambda root, live, dry_run=False: seen.append(live) or []):
+            alerts.tick(self.root)
+        self.assertFalse(self.sent)
+        self.assertEqual(1, len(seen))
+        self.assertIn('alert:D1', seen[0])
+        self.assertIn('*Decision*', seen[0]['alert:D1'])
+
+    def test_incomplete_board_read_never_deletes_live_decisions(self):
+        self.env.write_text(self.env.read_text() + 'SIMPLEX_DECISION_GROUP=7\nSIMPLEX_GROUP_ALLOWED=7\n')
+        seen = []
+        with patch.object(alerts, 'collect', return_value=([], {}, {}, [], True)), \
+             patch.object(alerts.simplex_decisions, 'reconcile',
+                          side_effect=lambda root, live, dry_run=False: seen.append(live) or []):
+            with self.assertRaises(RuntimeError):
+                alerts.tick(self.root)
+        self.assertEqual([], seen)
+
     def test_transport_requires_success_acknowledgment(self):
         for stdout in ['{"success":false}', '{"skipped":true}', '{"error":"offline"}']:
             with patch.object(alerts.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, stdout, '')):
