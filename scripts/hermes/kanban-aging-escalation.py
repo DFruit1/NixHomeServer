@@ -207,22 +207,42 @@ def reviewer_is_done(db, task_id):
 def stale_block_evidence(db, task_id, reason):
     """Evidence that a blocked card's stated condition no longer holds.
 
-    Only the high-precision review pattern is automatable: the block reason
-    names a review card whose verdict was 'request-changes' at block time,
-    and that same card's newest verifier verdict is now 'accept'. Block
-    reasons are prose, so anything else stays with the coordinator and the
-    aging tiers rather than risking a false unblock.
+    Two high-precision patterns are automatable; block reasons are otherwise
+    prose, so anything else stays with the coordinator and the aging tiers
+    rather than risking a false unblock:
+
+    * the reason names a review card whose verdict was 'request-changes' at
+      block time and that card's newest verifier verdict is now 'accept';
+    * the card is a dependency block and none of its parents are open any
+      more -- the exact shape the owner-blocker-authoring guard refuses to
+      create, because a dependency block with no open prerequisite would
+      otherwise degrade into a manufactured owner question.
     """
-    if 'requested changes' not in reason.lower():
-        return None
-    for ref in sorted(set(re.findall(r't_[0-9a-f]+', reason))):
-        if not reviewer_is_done(db, ref):
-            continue
-        if latest_verdict(db, ref) == 'accept':
-            return (f"the block reason names review {ref} with verdict"
-                    f" 'request-changes', but {ref}'s newest verifier verdict"
-                    " is now 'accept'")
+    if 'requested changes' in reason.lower():
+        for ref in sorted(set(re.findall(r't_[0-9a-f]+', reason))):
+            if not reviewer_is_done(db, ref):
+                continue
+            if latest_verdict(db, ref) == 'accept':
+                return (f"the block reason names review {ref} with verdict"
+                        f" 'request-changes', but {ref}'s newest verifier verdict"
+                        " is now 'accept'")
     return None
+
+
+def stale_dependency_block(db, task_id):
+    """Whether a dependency block has outlived every open prerequisite."""
+    try:
+        kind = db.execute('SELECT block_kind FROM tasks WHERE id=?',
+                          (task_id,)).fetchone()
+        if not kind or kind['block_kind'] != 'dependency':
+            return False
+        open_parents = db.execute(
+            "SELECT 1 FROM task_links l JOIN tasks p ON p.id=l.parent_id"
+            " WHERE l.child_id=? AND p.status NOT IN ('done','archived') LIMIT 1",
+            (task_id,)).fetchone()
+    except sqlite3.Error:
+        return False
+    return open_parents is None
 
 
 def recheck_blocks(root, slug, now, dry_run, report):
@@ -244,10 +264,14 @@ def recheck_blocks(root, slug, now, dry_run, report):
             return
         for row in rows:
             tid = row['id']
-            reason = block_reason(db, tid)
-            if not reason:
-                continue
-            evidence = stale_block_evidence(db, tid, reason)
+            evidence = None
+            if stale_dependency_block(db, tid):
+                evidence = ('this dependency block has no open prerequisite'
+                            ' left; every parent is done or archived')
+            else:
+                reason = block_reason(db, tid)
+                if reason:
+                    evidence = stale_block_evidence(db, tid, reason)
             if not evidence:
                 continue
             try:

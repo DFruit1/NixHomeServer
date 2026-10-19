@@ -190,7 +190,7 @@ def changed_files(root, policy_only=False):
         if config.exists():
             text = changes.get(config, config.read_text())
             command = 'python3 ' + shlex.quote(str(root / 'scripts/review-verdict-guard.py'))
-            changes[config] = hooks.readonly_hook(text, command, 'review-verdict', '^kanban_complete$')
+            changes[config] = hooks.readonly_hook(text, command, 'review-verdict', '^kanban_(complete|unlink)$')
     changes[root / 'scripts/review-verdict-guard.py'] = (SOURCE / 'review-verdict-guard.py').read_text()
     changes[root / 'profiles/head-coordinator/scripts/idle-recovery-monitor.py'] = (SOURCE / 'idle-recovery-monitor.py').read_text()
     skill = root / 'profiles/feature-reviewer/skills/devops/sdlc-review/SKILL.md'

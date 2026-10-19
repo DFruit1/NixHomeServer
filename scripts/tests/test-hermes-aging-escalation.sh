@@ -246,6 +246,46 @@ class AgingEscalationTest(unittest.TestCase):
                              report=report)
         self.assertEqual([], report)
 
+    def test_dependency_block_with_no_open_parents_is_stale(self):
+        # The shape the owner-blocker-authoring guard refuses to create: a
+        # dependency block whose every parent is done. The block is dead.
+        now = make_board(self.root, [
+            ('t_0b10c5ff', 'Follow-on work', 'blocked', 2.0,
+             {'block_kind': 'dependency'}),
+            ('t_5a1b2c77', 'Finished prerequisite', 'done', 4.0,
+             {'assignee': 'standard-implementer'}),
+        ])
+        db = sqlite3.connect(
+            self.root / 'kanban' / 'boards' / 'testboard' / 'kanban.db')
+        db.execute("INSERT INTO task_links (parent_id, child_id)"
+                   " VALUES ('t_5a1b2c77', 't_0b10c5ff')")
+        db.commit()
+        db.close()
+        report = []
+        aging.recheck_blocks(self.root, 'testboard', now, dry_run=True,
+                             report=report)
+        self.assertTrue(any('no open prerequisite' in line
+                            and 't_0b10c5ff' in line for line in report),
+                        report)
+
+    def test_live_dependency_block_is_not_stale(self):
+        now = make_board(self.root, [
+            ('t_0b10c6aa', 'Follow-on work', 'blocked', 2.0,
+             {'block_kind': 'dependency'}),
+            ('t_5a1b2c88', 'Open prerequisite', 'blocked', 4.0,
+             {'assignee': 'standard-implementer'}),
+        ])
+        db = sqlite3.connect(
+            self.root / 'kanban' / 'boards' / 'testboard' / 'kanban.db')
+        db.execute("INSERT INTO task_links (parent_id, child_id)"
+                   " VALUES ('t_5a1b2c88', 't_0b10c6aa')")
+        db.commit()
+        db.close()
+        report = []
+        aging.recheck_blocks(self.root, 'testboard', now, dry_run=True,
+                             report=report)
+        self.assertEqual([], report)
+
     def test_commission_rotates_past_tripped_key(self):
         # A breaker-tripped commission must not own the key forever: the next
         # escalation rotates to a fresh sequence so a replacement can exist.
