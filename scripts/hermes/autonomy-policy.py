@@ -47,12 +47,15 @@ def _file(path):
         for chunk in iter(lambda: stream.read(1024 * 1024), b''):
             digest.update(chunk)
     # Compare only fields that indicate the reviewed bytes are no longer the
-    # bytes being hashed. A full stat comparison spuriously fails on relatime
-    # mounts (bwrap tmpfs among them): the first read of a fresh file bumps
-    # st_atime, so equality would report a change that never touched content.
+    # bytes being hashed. atime is excluded deliberately: a full stat comparison
+    # spuriously fails on relatime mounts (bwrap tmpfs among them), because the
+    # first read of a fresh file bumps st_atime. ctime is a metadata-generation
+    # field, not a read counter: reading never moves it, while a chmod, chown,
+    # link-count or replace does, so it stays in the comparison. deployment-receipt.py
+    # compares the same generation pair (mtime, ctime) for the same reason.
     after = path.stat()
     fields = ('st_dev', 'st_ino', 'st_mode', 'st_uid', 'st_gid', 'st_size',
-              'st_mtime_ns')
+              'st_mtime_ns', 'st_ctime_ns')
     if any(getattr(before, f) != getattr(after, f) for f in fields):
         raise ValueError('Input changed while hashing')
     return {'path': str(path), 'sha256': digest.hexdigest()}

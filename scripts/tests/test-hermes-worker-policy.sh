@@ -1,6 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# A fenced worker must not launder its own identity pins. This suite asserts
+# environment-gated policy that refuses pinned workers, so instead of clearing
+# HERMES_KANBAN_*/DELEGATED in-process it delegates to the approved confined
+# executor. That runner keeps the origin pins in a readonly receipt and starts
+# the suite with fresh synthetic bindings. Never unset pins here and never retry
+# outside the sandbox: the runner fails closed without bubblewrap.
+if [[ -n "${HERMES_KANBAN_TASK:-}${HERMES_KANBAN_RUN_ID:-}${HERMES_KANBAN_CLAIM_LOCK:-}${HERMES_DELEGATED_CHILD_CONTEXT:-}" ]]; then
+  exec python3 -B "$repo/scripts/hermes/fixture-runner.py" \
+    --repo "$repo" --suite "${BASH_SOURCE[0]}"
+fi
+# Reaching this line with a pin set would mean the routing above did not happen,
+# so the assertions below would be made against an unconfined synthetic identity.
+for pin in HERMES_KANBAN_TASK HERMES_KANBAN_RUN_ID HERMES_KANBAN_CLAIM_LOCK \
+  HERMES_DELEGATED_CHILD_CONTEXT; do
+  [[ -z "${!pin:-}" ]] || {
+    echo "❌ $pin is set; run this suite through scripts/hermes/fixture-runner.py" >&2
+    exit 1
+  }
+done
 python3 -B - "$repo" <<'PY'
 import importlib.util
 import contextlib
@@ -136,14 +155,13 @@ class InstallerTest(unittest.TestCase):
     def test_learning_trials_are_opt_in_and_refuse_worker_context(self):
         import os
         script=source.parent/'background-learning-trials.py'
-        # The trial script refuses pinned worker contexts, so each assertion controls
-        # the environment it runs in. Inheriting the caller's environment made this
-        # pass only from an operator shell and fail from every kanban worker.
-        pins=('HERMES_KANBAN_TASK','HERMES_KANBAN_RUN_ID','HERMES_DELEGATED_CHILD_CONTEXT','HERMES_KANBAN_CLAIM_LOCK')
-        clean={key:value for key,value in os.environ.items() if key not in pins}
-        listed=subprocess.run([sys.executable,'-B',str(script)],env=clean,capture_output=True,text=True)
+        # The trial script refuses pinned worker contexts, so each assertion
+        # controls the environment it runs in. The confined shell prologue binds
+        # this suite with a pin-free environment instead of the test clearing
+        # inherited pins; the refusal case adds the one pin it asserts on.
+        listed=subprocess.run([sys.executable,'-B',str(script)],capture_output=True,text=True)
         self.assertEqual(0,listed.returncode)
-        env=dict(clean,HERMES_KANBAN_TASK='t_fixture')
+        env=dict(os.environ,HERMES_KANBAN_TASK='t_fixture')
         refused=subprocess.run([sys.executable,'-B',str(script),'--live'],env=env,capture_output=True,text=True)
         self.assertEqual(2,refused.returncode)
         self.assertIn('worker pins remain binding',refused.stderr)
