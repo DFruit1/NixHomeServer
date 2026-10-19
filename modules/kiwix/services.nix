@@ -11,24 +11,40 @@ let
         library_root=${lib.escapeShellArg cfg.paths.libraryRoot}
         library_file=${lib.escapeShellArg libraryFile}
         state_dir=${lib.escapeShellArg cfg.stateDir}
+        tmp_manifest=""
+        tmp_library=""
+        cleanup() {
+          if [ -n "$tmp_manifest" ]; then
+            ${pkgs.coreutils}/bin/rm -f -- "$tmp_manifest"
+          fi
+          if [ -n "$tmp_library" ]; then
+            ${pkgs.coreutils}/bin/rm -f -- "$tmp_library"
+          fi
+        }
+        trap cleanup EXIT
+        tmp_manifest="$(${pkgs.coreutils}/bin/mktemp "$state_dir/library-manifest.XXXXXX")"
         tmp_library="$(${pkgs.coreutils}/bin/mktemp "$state_dir/library.XXXXXX.xml")"
-        trap 'rm -f "$tmp_library"' EXIT
 
         cat >"$tmp_library" <<'EOF'
     <?xml version="1.0" encoding="UTF-8"?>
     <library version="20110515"></library>
     EOF
 
+        if ! ${pkgs.findutils}/bin/find "$library_root" -maxdepth 1 -type f -name '*.zim' -print0 \
+          | ${pkgs.coreutils}/bin/sort -z >"$tmp_manifest"; then
+          echo "Failed to enumerate Kiwix library files; preserving the published catalog." >&2
+          exit 1
+        fi
+
         while IFS= read -r -d $'\0' zim_path; do
           if ! ${cfg.package}/bin/kiwix-manage "$tmp_library" add "$zim_path"; then
             echo "Skipping invalid or incomplete ZIM file: $zim_path" >&2
           fi
-        done < <(
-          ${pkgs.findutils}/bin/find "$library_root" -maxdepth 1 -type f -name '*.zim' -print0 \
-            | ${pkgs.coreutils}/bin/sort -z
-        )
+        done <"$tmp_manifest"
 
-        ${pkgs.coreutils}/bin/install -D -m 0640 -o kiwix -g kiwix "$tmp_library" "$library_file"
+        ${pkgs.coreutils}/bin/chown kiwix:kiwix "$tmp_library"
+        ${pkgs.coreutils}/bin/chmod 0640 "$tmp_library"
+        ${pkgs.coreutils}/bin/mv -f -- "$tmp_library" "$library_file"
   '';
 in
 {
