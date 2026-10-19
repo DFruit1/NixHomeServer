@@ -8,11 +8,18 @@ Reads only local, non-secret telemetry:
   each resolved window carries ``usedPercent``, ``resetsAt`` and, when the
   provider reports it, ``windowDurationMins``;
 * the same windows live, best-effort: Codex from ``hermes usage --json`` and
-  OpenCode Go/Zen from the ``opencode-go`` key in the local OpenCode auth file,
-  queried against the Zen usage endpoint (the source the T3 Code usage tab
-  reads);
+  OpenCode Go/Zen from a local OpenCode credential, queried against the Zen
+  usage endpoint (the source the T3 Code usage tab reads);
 * Hermes' own per-model spend from ``session_model_usage`` in ``state.db``;
 * OpenCode's per-session totals from its local ``opencode.db``.
+
+The OpenCode usage credential is resolved locally, in order: the ``opencode-go``
+API key in the auth file, else the active console (device-login) access token in
+``opencode.db`` — the credential the CLI/TUI and Hermes' ``opencode-go`` provider
+use, and the only one the Zen endpoint entitles — else ``OPENCODE_API_KEY``. A
+raw console API key returns HTTP 403 ("An active OpenCode Go subscription is
+required") even with a live subscription, so the device token is required; an
+env-key-only setup produces the same 403 the daily report showed.
 
 Pace reuses T3 Code's own assessment so a window reads here exactly as it does in
 T3: compare the used percent against the elapsed fraction of the window and call
@@ -37,9 +44,11 @@ Environment overrides (used by tests and a different checkout):
   HERMES_ROOT         hermes state dir (default ~/.hermes)
   HERMES_BIN          hermes launcher (default ~/.local/bin/hermes, else PATH)
   T3_CACHE_DIR        T3 Code provider cache (default ~/.t3/caches)
-  OPENCODE_DB         opencode database (default ~/.local/share/opencode/opencode.db)
+  OPENCODE_DB         opencode database, incl. the console credential
+                      (default ~/.local/share/opencode/opencode.db)
   OPENCODE_AUTH       opencode auth file (default ~/.local/share/opencode/auth.json)
-  OPENCODE_API_KEY    opencode-go key fallback when the auth file has none
+  OPENCODE_GO_TOKEN   explicit Zen/Go token, overriding both local sources
+  OPENCODE_API_KEY    legacy opencode-go key, used only when nothing else resolves
   OPENCODE_USAGE_URL  opencode-go usage endpoint (default the Zen usage API)
   USAGE_PACE_NOW      ISO instant to treat as now (default: the current time)
 """
@@ -262,15 +271,49 @@ def codex_live() -> tuple[dict, str | None]:
     return resolved, None
 
 
-def opencode_live() -> tuple[dict, str | None]:
-    """kind -> (percent, resetsAt) from the Zen usage endpoint, best-effort.
+def opencode_device_token() -> str:
+    """The active OpenCode console (device-login) access token, best-effort.
 
-    The ``opencode-go`` API key comes from the local OpenCode auth file (falling
-    back to ``OPENCODE_API_KEY``); the key authenticates a read-only GET against
-    the Zen usage endpoint, which returns rolling/weekly/monthly ``percent`` and
-    ``resetsAt``. The key is never printed.
+    The Zen usage endpoint entitles this token, not a console API key: an
+    API-key request returns HTTP 403 ("An active OpenCode Go subscription is
+    required") even with a live subscription. It is the credential the CLI/TUI
+    and Hermes' ``opencode-go`` provider use, read from the same read-only
+    ``credential`` row in ``opencode.db``; reading it at call time keeps the
+    report working when opencode refreshes it. The token is never printed.
     """
-    entry = {}
+    db = opencode_db()
+    if not db.exists():
+        return ""
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
+    except sqlite3.Error:
+        return ""
+    try:
+        row = conn.execute(
+            "select value from credential"
+            " where integration_id = 'opencode' and label = 'Default' and active = 1"
+        ).fetchone()
+    except sqlite3.Error:
+        return ""
+    finally:
+        conn.close()
+    try:
+        return str(json.loads(row[0]).get("access", "")).strip()
+    except (TypeError, ValueError, AttributeError, IndexError):
+        return ""
+
+
+def opencode_usage_key() -> str:
+    """Resolve the OpenCode Go credential for the Zen usage endpoint, best-effort.
+
+    Order: an explicit ``OPENCODE_GO_TOKEN``, then the ``opencode-go`` API key
+    in the local OpenCode auth file (the source T3 Code reads), then the active
+    console device credential, then the legacy ``OPENCODE_API_KEY``. Only the
+    device token is reliably entitled, so it is what an env-key-only setup needs.
+    """
+    key = os.environ.get("OPENCODE_GO_TOKEN", "").strip()
+    if key:
+        return key
     try:
         auth = json.loads(opencode_auth().read_text())
     except (OSError, ValueError):
@@ -278,8 +321,20 @@ def opencode_live() -> tuple[dict, str | None]:
     if isinstance(auth, dict):
         candidate = auth.get("opencode-go")
         if isinstance(candidate, dict) and candidate.get("type") == "api":
-            entry = candidate
-    key = str(entry.get("key", "")).strip() or os.environ.get("OPENCODE_API_KEY", "").strip()
+            key = str(candidate.get("key", "")).strip()
+            if key:
+                return key
+    return opencode_device_token() or os.environ.get("OPENCODE_API_KEY", "").strip()
+
+
+def opencode_live() -> tuple[dict, str | None]:
+    """kind -> (percent, resetsAt) from the Zen usage endpoint, best-effort.
+
+    The key (see ``opencode_usage_key``) authenticates a read-only GET against
+    the Zen usage endpoint, which returns rolling/weekly/monthly ``percent`` and
+    ``resetsAt``. The key is never printed.
+    """
+    key = opencode_usage_key()
     if not key:
         return {}, "no OpenCode credential"
     try:

@@ -213,9 +213,16 @@ more than five, `On pace` otherwise. T3 is the only source that resolves
 `windowDurationMins` (the raw endpoints omit it), so the window kind, label and
 duration come from its provider cache (`~/.t3/caches/<provider>.json` ->
 `usageLimits`); the live values come from `hermes usage --provider
-openai-codex --json` (Codex) and the `opencode-go` key in
-`~/.local/share/opencode/auth.json` queried read-only against the Zen usage
-endpoint (OpenCode Go/Zen), with the cached window as the fallback. Hermes' own
+openai-codex --json` (Codex) and an OpenCode Go credential queried read-only
+against the Zen usage endpoint (OpenCode Go/Zen), with the cached window as the
+fallback. The OpenCode credential resolves in order: the `opencode-go` key in
+`~/.local/share/opencode/auth.json`, else the active console (device-login)
+access token in `~/.local/share/opencode/opencode.db` — the credential the CLI
+and Hermes' `opencode-go` provider use — else `OPENCODE_API_KEY`. The Zen
+endpoint entitles the device token, not a console API key: an API-key-only
+setup answers `HTTP 403` ("An active OpenCode Go subscription is required") even
+with a live subscription, which is the failure a profile with only a stale
+`OPENCODE_API_KEY` reports. Hermes' own
 per-model totals come from `session_model_usage` in `state.db`, and OpenCode's
 per-session cost and tokens from `~/.local/share/opencode/opencode.db`. Each pool
 is reported for the last 24 hours and the last week, and a day whose tokens

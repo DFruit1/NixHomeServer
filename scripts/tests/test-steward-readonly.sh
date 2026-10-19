@@ -534,6 +534,7 @@ class StewardTest(unittest.TestCase):
             db.commit()
         env = {'HERMES_ROOT': str(self.root), 'OPENCODE_DB': str(ocdb), 'HERMES_BIN': '/nonexistent',
                'OPENCODE_AUTH': str(self.root / 'absent-auth.json'),
+               'OPENCODE_GO_TOKEN': '', 'OPENCODE_API_KEY': '',
                'T3_CACHE_DIR': str(self.root / 'absent-t3')}
         with patch.dict(usage.os.environ, env):
             self.assertEqual([1, 1500, 0.0], usage.hermes_spend()['24h'])
@@ -578,6 +579,40 @@ class StewardTest(unittest.TestCase):
         self.assertIn('- Monthly: 23% left, resets in 14d 14h (OVER PACE)', text)
         self.assertNotIn('secret-key', text)
 
+    def test_usage_pace_falls_back_to_active_console_credential(self):
+        # The Zen usage endpoint entitles the device-login access token, not a
+        # console API key, which gets HTTP 403 even with a live subscription; an
+        # env-key-only setup (no opencode-go key in the auth file) produced the
+        # daily report's 403. With no auth-file key, the collector must read the
+        # same active credential the CLI and Hermes' opencode-go provider use.
+        self.root.mkdir(parents=True, exist_ok=True)
+        ocdb = self.root / 'opencode.db'
+        with closing(sqlite3.connect(ocdb)) as db:
+            db.execute('CREATE TABLE credential (id TEXT, integration_id TEXT, label TEXT,'
+                       ' value TEXT, active INTEGER)')
+            db.execute("INSERT INTO credential VALUES ('c1','opencode','Default',?,1)",
+                       (json.dumps({'type': 'oauth', 'access': 'device-secret'}),))
+            db.execute("INSERT INTO credential VALUES ('c2','opencode','API key',?,0)",
+                       (json.dumps({'type': 'api', 'key': 'inactive-secret'}),))
+            db.commit()
+        seen = {}
+
+        def fake_get(url, headers, timeout=15):
+            seen['headers'] = headers
+            return {'usage': {'rolling': {'percent': 1, 'resetsAt': '2026-10-14T02:15:05.000Z'}}}
+
+        env = {'OPENCODE_DB': str(ocdb), 'OPENCODE_AUTH': str(self.root / 'absent-auth.json'),
+               'OPENCODE_GO_TOKEN': '', 'OPENCODE_API_KEY': 'stale-env-key',
+               'HERMES_BIN': '/nonexistent', 'T3_CACHE_DIR': str(self.root / 'absent-t3'),
+               'USAGE_PACE_NOW': '2026-10-14T09:00:00+11:00'}
+        with patch.dict(usage.os.environ, env):
+            # The device token wins over the stale env key that caused the 403.
+            self.assertEqual('device-secret', usage.opencode_usage_key())
+            with patch.object(usage, 'http_get_json', fake_get):
+                self.assertEqual(({'session': (1, '2026-10-14T02:15:05.000Z')}, None),
+                                 usage.opencode_live())
+        self.assertEqual('Bearer device-secret', seen['headers']['Authorization'])
+
     def test_usage_pace_reuses_t3_code_assessments(self):
         # T3 resolves the windows (including windowDurationMins, which the raw
         # endpoints omit) and defines the pace rule; the collector reuses both,
@@ -595,6 +630,8 @@ class StewardTest(unittest.TestCase):
                          'resetsAt': '2026-10-14T02:15:05.000Z'}]}}))
         env = {'T3_CACHE_DIR': str(cache), 'HERMES_BIN': '/nonexistent',
                'OPENCODE_AUTH': str(self.root / 'absent-auth.json'),
+               'OPENCODE_DB': str(self.root / 'absent-opencode.db'),
+               'OPENCODE_API_KEY': '', 'OPENCODE_GO_TOKEN': '',
                'USAGE_PACE_NOW': '2026-10-14T09:00:00+11:00'}
         with patch.dict(usage.os.environ, env):
             lines = usage.account_limit_lines()
