@@ -76,7 +76,15 @@ def guard(payload, root):
                 evidence = json.loads(run['metadata'] or '{}') if run else {}
                 validate(evidence)
                 if evidence['verdict'] != 'accept':
-                    raise ValueError(f"Review {parent['id']} requested changes; link fixes and a fresh accepted review, then retire the superseded dependency with evidence")
+                    raise ValueError(
+                        f"Review {parent['id']} requested changes. A review card that"
+                        ' depends on this card can never run (claims require done'
+                        " parents), and link/unlink are coordinator-only CLI"
+                        ' actions. Decision owner: head-coordinator -- link an'
+                        " accepted review of the current revision as this card's"
+                        f" parent in place of {parent['id']}, or close this card as"
+                        ' superseded with evidence; the worker cannot perform'
+                        ' either repair')
         return {}
     except (ValueError, TypeError, OSError, sqlite3.Error) as exc:
         return {'action': 'block', 'message': f'Review completion refused: {exc}. Keep the handoff open; never treat done as acceptance or bypass this guard with the CLI.'}

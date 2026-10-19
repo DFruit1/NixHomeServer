@@ -52,6 +52,7 @@ AUDITOR = 'project-auditor'
 JOB = 'kanban aging escalation'
 CREATED_BY = 'aging-escalation'
 DIRECTIVE_MARKER = '<!-- kanban-aging-escalation -->'
+STALE_BLOCK_MARKER = '<!-- kanban-stale-block -->'
 
 # Idle hours that trigger each tier. Environment-overridable like the
 # steward's thresholds; an unusable override falls back to the default.
@@ -153,6 +154,125 @@ def recently_escalated(db, task_id, now, damp_seconds=3 * 86400):
         return False
     return bool(row and row['created_at']
                 and now - row['created_at'] < damp_seconds)
+
+
+def block_reason(db, task_id):
+    """The newest blocked event's reason text, or ''."""
+    try:
+        row = db.execute(
+            "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'blocked'"
+            ' ORDER BY id DESC LIMIT 1', (task_id,)).fetchone()
+    except sqlite3.Error:
+        return ''
+    if not row:
+        return ''
+    try:
+        return (json.loads(row['payload'] or '{}').get('reason') or '').strip()
+    except (ValueError, AttributeError):
+        return ''
+
+
+def latest_verdict(db, task_id):
+    """The newest verifier run's verdict metadata on a review card, or None."""
+    try:
+        row = db.execute(
+            'SELECT metadata FROM task_runs WHERE task_id = ?'
+            ' ORDER BY id DESC LIMIT 1', (task_id,)).fetchone()
+    except sqlite3.Error:
+        return None
+    if not row:
+        return None
+    try:
+        data = json.loads(row['metadata'] or '{}')
+    except (ValueError, AttributeError):
+        return None
+    verdict = data.get('verdict')
+    return verdict if verdict in ('accept', 'request-changes') else None
+
+
+def reviewer_is_done(db, task_id):
+    """Whether the card is a completed feature-reviewer verification card."""
+    try:
+        row = db.execute(
+            "SELECT assignee, tenant, status FROM tasks WHERE id = ?",
+            (task_id,)).fetchone()
+    except sqlite3.Error:
+        return False
+    return bool(row and row['assignee'] == 'feature-reviewer'
+                and (row['tenant'] or '') not in
+                {'continuous-improvement', 'review-question'}
+                and row['status'] == 'done')
+
+
+def stale_block_evidence(db, task_id, reason):
+    """Evidence that a blocked card's stated condition no longer holds.
+
+    Only the high-precision review pattern is automatable: the block reason
+    names a review card whose verdict was 'request-changes' at block time,
+    and that same card's newest verifier verdict is now 'accept'. Block
+    reasons are prose, so anything else stays with the coordinator and the
+    aging tiers rather than risking a false unblock.
+    """
+    if 'requested changes' not in reason.lower():
+        return None
+    for ref in sorted(set(re.findall(r't_[0-9a-f]+', reason))):
+        if not reviewer_is_done(db, ref):
+            continue
+        if latest_verdict(db, ref) == 'accept':
+            return (f"the block reason names review {ref} with verdict"
+                    f" 'request-changes', but {ref}'s newest verifier verdict"
+                    " is now 'accept'")
+    return None
+
+
+def recheck_blocks(root, slug, now, dry_run, report):
+    """Flag blocked cards whose stated condition verifiably no longer holds.
+
+    Read-only evaluation; the action is a damped evidence comment for the
+    coordinator. It never changes card status: unblocking is a decision, and
+    only head-coordinator holds it.
+    """
+    db_path = root / 'kanban' / 'boards' / slug / 'kanban.db'
+    env = os.environ.copy()
+    env['HERMES_HOME'] = str(root)
+    with connect_ro(db_path) as db:
+        try:
+            rows = db.execute(
+                "SELECT id, title FROM tasks WHERE status = 'blocked'"
+                ' ORDER BY created_at ASC').fetchall()
+        except sqlite3.Error:
+            return
+        for row in rows:
+            tid = row['id']
+            reason = block_reason(db, tid)
+            if not reason:
+                continue
+            evidence = stale_block_evidence(db, tid, reason)
+            if not evidence:
+                continue
+            try:
+                recent = db.execute(
+                    'SELECT created_at FROM task_comments WHERE task_id = ?'
+                    " AND author = ? AND body LIKE ?"
+                    ' ORDER BY id DESC LIMIT 1',
+                    (tid, CREATED_BY, f'{STALE_BLOCK_MARKER}%')).fetchone()
+            except sqlite3.Error:
+                recent = None
+            if recent and recent['created_at'] and \
+                    now - recent['created_at'] < 3 * 86400:
+                continue
+            report.append(f"[{slug}] {tid} (blocked) stale block: {evidence}")
+            if dry_run:
+                continue
+            comment = '\n'.join([
+                STALE_BLOCK_MARKER,
+                f"Stale block check: {evidence}. The stated condition no",
+                "longer holds.",
+                f"Decision owner: {PROFILE} -- unblock this card, or restate",
+                "the current block reason so the next check is accurate.",
+            ])
+            run_cli(['kanban', '--board', slug, 'comment', tid, comment,
+                     '--author', CREATED_BY], env)
 
 
 def classify(db, row, now, priority_hours, escalation_hours,
@@ -307,14 +427,51 @@ def escalated_components(db, tids):
     return ordered
 
 
-def create_commission(slug, cluster, cards, env, report):
+def commission_key(slug, ids, sequence=0):
+    """Dedupe key for one commission; sequence rotates past dead attempts."""
+    base = f"aging-deepdive:{slug}:{'-'.join(sorted(ids))}"
+    return base if sequence == 0 else f"{base}:r{sequence}"
+
+
+def commission_usable(status, failures):
+    """Whether an existing commission already covers this cluster."""
+    # A live commission (ready/review/running/todo/blocked-untripped) still
+    # owns the audit. A done one means the cluster re-armed and needs a fresh
+    # audit; a breaker-tripped one (blocked with failures) means the attempt
+    # dead-ended and the key must rotate so a replacement can exist at all.
+    return status not in ('done', 'archived', 'blocked') or (
+        status == 'blocked' and not failures)
+
+
+def create_commission(slug, cluster, cards, db, env, report):
     """Create one deep-dive commission for a cluster of aged cards.
 
     ``cards`` maps task id -> its escalation metadata. Returns the commission
-    card id, or a note when the idempotency key says it already exists.
+    card id, or a note when a usable commission already exists.
     """
     ids = sorted(cluster)
-    key = f"aging-deepdive:{slug}:{'-'.join(ids)}"
+    base = f"aging-deepdive:{slug}:{'-'.join(ids)}"
+    existing = {}
+    try:
+        rows = db.execute(
+            "SELECT idempotency_key, status, consecutive_failures FROM tasks"
+            " WHERE idempotency_key LIKE ? || '%'", (base,)).fetchall()
+        for row in rows:
+            existing[row['idempotency_key']] = (row['status'],
+                                                row['consecutive_failures'])
+    except sqlite3.Error:
+        existing = {}
+    sequence = 0
+    while True:
+        key = commission_key(slug, ids, sequence)
+        entry = existing.get(key)
+        if entry is None:
+            break
+        status, failures = entry
+        if commission_usable(status, failures):
+            return 'already commissioned'
+        sequence += 1
+    key = commission_key(slug, ids, sequence)
     label = (f"aged {ids[0]}" if len(ids) == 1
              else f"aged cluster of {len(ids)} linked cards")
     title = f"Deep-dive: route to clear {label}"
@@ -391,7 +548,7 @@ def escalate_board(root, slug, now, dry_run, priority_hours, escalation_hours,
                 cluster_key = tuple(sorted(clusters[tid]))
                 if cluster_key not in commissions:
                     commissions[cluster_key] = create_commission(
-                        slug, list(cluster_key), cards, env, report)
+                        slug, list(cluster_key), cards, db, env, report)
                 evidence = commissions[cluster_key]
             elif item['owner_gated']:
                 evidence = 'owner-gated card, audit not commissioned'
@@ -440,6 +597,7 @@ def main():
     now = int(time.time())
     report = []
     for slug in slugs:
+        recheck_blocks(root, slug, now, args.dry_run, report)
         escalate_board(root, slug, now, args.dry_run, priority_hours,
                        escalation_hours, report)
     if not report:

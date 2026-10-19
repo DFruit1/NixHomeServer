@@ -29,6 +29,18 @@
 # Safety is the archive's: create_deploy_repo_archive refuses secrets/unencrypted,
 # SensitivePrivateSecrets and any untracked non-ignored file, so only ciphertext
 # crosses the wire and the staged tree cannot diverge from the tracked one.
+#
+# Durable stages
+# --------------
+# A snippet that realizes dependencies (pnpm/cargo) normally throws that work
+# away: the stage is a mktemp dir deleted on EXIT. Set REMOTE_RUN_PERSIST_DIR
+# to an absolute server-side path to stage into that directory instead and
+# leave it behind, so a later invocation reuses the realized tree. The stage
+# is pinned by the archive's sha256: a reused label with a different tracked
+# tree refuses (fail closed) unless REMOTE_RUN_PERSIST_REPLACE=1 re-extracts.
+# One invocation at a time per label; the caller owns the directory and its
+# eventual cleanup. Persistence is remote-only: local fallbacks run in the
+# live repo as before.
 
 # shellcheck source=scripts/helpers/repo-common.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/repo-common.sh"
@@ -43,6 +55,14 @@ remote_run_exit=""
 remote_run() {
   if (($# == 0)); then
     echo "remote-run: no snippet given" >&2
+    return 1
+  fi
+  # A durable stage is an explicit caller demand: an invalid value must abort
+  # rather than fall back to local execution, which silently drops persistence.
+  if [[ -n "${REMOTE_RUN_PERSIST_DIR:-}" ]] \
+      && { [[ ! "$REMOTE_RUN_PERSIST_DIR" =~ ^/[A-Za-z0-9/._-]+$ ]] \
+           || [[ "$REMOTE_RUN_PERSIST_DIR" == *..* ]]; }; then
+    echo "remote-run: REMOTE_RUN_PERSIST_DIR must be a clean absolute server path (got '${REMOTE_RUN_PERSIST_DIR}')" >&2
     return 1
   fi
   local snippet="$1"
@@ -80,6 +100,7 @@ _remote_run_run() {
   shift
   local -a forward=("$@")
   local archive remote_archive remote_dir remote_snippet remote_cmd ssh_status=0
+  local persist_dir="${REMOTE_RUN_PERSIST_DIR:-}" archive_hash="" staged_hash=""
 
   init_repo_root
   repo_root="$(cd "$repo_root" && pwd)"
@@ -105,6 +126,7 @@ _remote_run_run() {
     remote_run_reason="create_deploy_repo_archive refused this working tree"
     return 1
   fi
+  archive_hash="$(sha256sum "$archive" | cut -d' ' -f1)"
 
   remote_archive="$(stage_archive_on_remote "$archive" "$remote_run_host" "nixhomeserver-remote-run")" || {
     rm -f "$archive"
@@ -113,23 +135,51 @@ _remote_run_run() {
   }
   rm -f "$archive"
 
-  remote_dir="$(ssh -o BatchMode=yes "$remote_run_host" \
-    "mktemp -d /tmp/nixhomeserver-remote-run.XXXXXX")" || {
-    remote_run_reason="could not create a remote staging directory"
-    return 1
-  }
+  if [[ -n "$persist_dir" ]]; then
+    remote_dir="$persist_dir"
+  else
+    remote_dir="$(ssh -o BatchMode=yes "$remote_run_host" \
+      "mktemp -d /tmp/nixhomeserver-remote-run.XXXXXX")" || {
+      remote_run_reason="could not create a remote staging directory"
+      return 1
+    }
+  fi
+
+  # Reuse check for a persisted stage: same tracked tree reuses the realized
+  # dependencies in place; a different tree refuses unless replacement is
+  # explicitly enabled. The check runs remotely so two machines cannot disagree.
+  if [[ -n "$persist_dir" ]]; then
+    staged_hash="$(ssh -o BatchMode=yes "$remote_run_host" \
+      "cat $(printf '%q' "$remote_dir/.remote-run-tree-hash") 2>/dev/null || true")"
+    if [[ -n "$staged_hash" && "$staged_hash" != "$archive_hash" ]]; then
+      if [[ "${REMOTE_RUN_PERSIST_REPLACE:-0}" != "1" ]]; then
+        remote_run_reason="persisted stage ${remote_dir} holds tree ${staged_hash:0:12}, this invocation stages ${archive_hash:0:12}; clean it, change the label, or set REMOTE_RUN_PERSIST_REPLACE=1"
+        rm -f "$archive"
+        return 1
+      fi
+    fi
+  fi
 
   remote_snippet="$remote_dir/run.sh"
   if ! printf '%s\n' "$snippet" | ssh -o BatchMode=yes "$remote_run_host" \
-      "cat > $(printf '%q' "$remote_snippet")"; then
-    ssh -o BatchMode=yes "$remote_run_host" "rm -rf $(printf '%q' "$remote_dir")" 2>/dev/null || true
+      "mkdir -p $(printf '%q' "$remote_dir") && cat > $(printf '%q' "$remote_snippet")"; then
+    # A persisted stage may already hold a realized tree; never wipe it for a
+    # snippet-transfer failure — the caller cleans persisted dirs.
+    if [[ -z "$persist_dir" ]]; then
+      ssh -o BatchMode=yes "$remote_run_host" "rm -rf $(printf '%q' "$remote_dir")" 2>/dev/null || true
+    fi
     remote_run_reason="could not transfer the snippet to ${remote_run_host}"
     return 1
   fi
 
   # Quote each forwarded argument individually so the remote shell rebuilds the
-  # exact argument vector rather than re-splitting it.
-  remote_cmd="bash -s -- $(printf '%q ' "$remote_dir" "$remote_archive" "$remote_snippet" "${forward[@]}")"
+  # exact argument vector rather than re-splitting it. The persist mode and
+  # archive hash travel as fixed args so the remote side needs no env contract.
+  local persist_mode="clean"
+  if [[ -n "$persist_dir" ]]; then
+    persist_mode="keep"
+  fi
+  remote_cmd="bash -s -- $(printf '%q ' "$remote_dir" "$remote_archive" "$remote_snippet" "$persist_mode" "$archive_hash" "${forward[@]}")"
 
   # The snippet's own stdin is left alone; only this wrapper script travels on
   # stdin, so a snippet that reads stdin still sees the terminal.
@@ -138,10 +188,31 @@ set -euo pipefail
 remote_dir="$1"
 remote_archive="$2"
 remote_snippet="$3"
-shift 3
-trap 'rm -rf "$remote_dir" "$remote_archive"' EXIT
-mkdir -p "$remote_dir"
-tar -C "$remote_dir" -xf "$remote_archive"
+persist_mode="$4"
+archive_hash="$5"
+shift 5
+if [[ "$persist_mode" == "keep" ]]; then
+  # Keep the realized tree; only the archive and the helper-written snippet
+  # are transient. The tree-hash pin was checked host-side before staging.
+  trap 'rm -rf "$remote_archive"' EXIT
+  mkdir -p "$remote_dir"
+  if [[ -f "$remote_dir/.remote-run-tree-hash" ]] \
+      && [[ "$(cat "$remote_dir/.remote-run-tree-hash")" == "$archive_hash" ]]; then
+    echo "remote-run: reusing persisted stage $remote_dir (tree ${archive_hash:0:12})" >&2
+  else
+    # Preserve the helper's own run.sh: it was transferred before this point
+    # and lives inside the tree, so a wipe must not take it with the stage.
+    find "$remote_dir" -mindepth 1 -maxdepth 1 ! -path "$remote_snippet" \
+      -exec rm -rf {} +
+    tar -C "$remote_dir" -xf "$remote_archive"
+    printf '%s\n' "$archive_hash" > "$remote_dir/.remote-run-tree-hash"
+    echo "remote-run: persisted stage at $remote_dir (tree ${archive_hash:0:12})" >&2
+  fi
+else
+  trap 'rm -rf "$remote_dir" "$remote_archive"' EXIT
+  mkdir -p "$remote_dir"
+  tar -C "$remote_dir" -xf "$remote_archive"
+fi
 export NIXHOMESERVER_RUN_FLAKE_REF="path:$remote_dir"
 cd "$remote_dir"
 bash "$remote_snippet" "$remote_dir" "$@"

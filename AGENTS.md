@@ -262,7 +262,10 @@ fresh. Running cards, `[FEATURE TRACKER` cards and owner gates are exempt;
 gates receive the directive only, since only head-coordinator touches gate
 state. `scripts/hermes/kanban-aging-escalation.py` runs the policy as the
 `kanban aging escalation` cron job; `--dry-run` previews, and thresholds are
-`AGING_PRIORITY_HOURS` / `AGING_ESCALATION_HOURS`.
+`AGING_PRIORITY_HOURS` / `AGING_ESCALATION_HOURS`. Each run also rechecks
+blocked cards for a verifiably stale condition (a named review whose verdict
+flipped to accept) and posts a damped evidence comment — it never unblocks;
+unblocking stays the decision owner's move.
 
 ### Reaching the owner
 

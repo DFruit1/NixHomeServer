@@ -42,6 +42,11 @@ CREATE TABLE task_links (
     parent_id TEXT NOT NULL, child_id TEXT NOT NULL,
     PRIMARY KEY (parent_id, child_id)
 );
+CREATE TABLE task_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL,
+    profile TEXT, status TEXT, outcome TEXT, metadata TEXT,
+    started_at INTEGER, ended_at INTEGER
+);
 """
 
 
@@ -66,10 +71,13 @@ def make_board(root, cards):
     for tid, title, status, age_days, extra in cards:
         created = now - int(age_days * DAY)
         db.execute(
-            "INSERT INTO tasks (id, title, status, created_at, priority, body, block_kind)"
-            " VALUES (?,?,?,?,?,?,?)",
+            "INSERT INTO tasks (id, title, status, created_at, priority, body, block_kind,"
+            " idempotency_key, consecutive_failures, assignee)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?)",
             (tid, title, status, created, extra.get('priority', 0),
-             extra.get('body'), extra.get('block_kind')))
+             extra.get('body'), extra.get('block_kind'),
+             extra.get('idempotency_key'), extra.get('consecutive_failures', 0),
+             extra.get('assignee')))
         db.execute(
             "INSERT INTO task_events (task_id, kind, created_at)"
             " VALUES (?, 'created', ?)", (tid, created))
@@ -77,6 +85,12 @@ def make_board(root, cards):
             db.execute(
                 "INSERT INTO task_events (task_id, kind, created_at)"
                 " VALUES (?, ?, ?)", (tid, kind, now - int(age_days_offset * DAY)))
+        for verdict, age_days_offset in extra.get('runs', []):
+            db.execute(
+                "INSERT INTO task_runs (task_id, profile, status, outcome, metadata,"
+                " ended_at) VALUES (?, 'feature-reviewer', 'done', 'completed', ?, ?)",
+                (tid, json.dumps({'verdict': verdict}),
+                 now - int(age_days_offset * DAY)))
     db.commit()
     db.close()
     return now
@@ -180,6 +194,93 @@ class AgingEscalationTest(unittest.TestCase):
             db, row, now, 48.0, 72.0)
         db.close()
         self.assertEqual(tier, 'escalate')
+
+    def test_stale_block_flags_review_flipped_to_accept(self):
+        # Block reason says the review requested changes; the same review's
+        # newest verdict is now accept -> the block condition no longer holds.
+        now = make_board(self.root, [
+            ('t_0b10c5dd', 'Implement the repair', 'blocked', 1.0,
+             {'events': [('blocked', 0.9)]}),
+            ('t_5a1b2c3d', 'Review the repair', 'done', 3.0,
+             {'assignee': 'feature-reviewer',
+              'runs': [('request-changes', 2.5), ('accept', 0.5)]}),
+        ])
+        insert_comment(self.root / 'kanban' / 'boards' / 'testboard' /
+                       'kanban.db', 't_0b10c5dd', 'head-coordinator', 0.9)
+        # The block event payload must name the review.
+        db = sqlite3.connect(
+            self.root / 'kanban' / 'boards' / 'testboard' / 'kanban.db')
+        db.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at)"
+            " VALUES ('t_0b10c5dd', 'blocked', ?, ?)",
+            (json.dumps({'reason': 'Review t_5a1b2c3d requested changes; the'
+                                   ' completion guard refused'}),
+             now - int(0.9 * DAY)))
+        db.commit()
+        db.close()
+        report = []
+        aging.recheck_blocks(self.root, 'testboard', now, dry_run=True,
+                             report=report)
+        self.assertTrue(any('stale block' in line and 't_0b10c5dd' in line
+                            for line in report), report)
+
+    def test_stale_block_stays_silent_while_verdict_stands(self):
+        now = make_board(self.root, [
+            ('t_0b10c5ee', 'Implement the repair', 'blocked', 1.0, {}),
+            ('t_5a1b2c4e', 'Review the repair', 'done', 3.0,
+             {'assignee': 'feature-reviewer',
+              'runs': [('request-changes', 0.5)]}),
+        ])
+        db = sqlite3.connect(
+            self.root / 'kanban' / 'boards' / 'testboard' / 'kanban.db')
+        db.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at)"
+            " VALUES ('t_0b10c5ee', 'blocked', ?, ?)",
+            (json.dumps({'reason': 'Review t_5a1b2c4e requested changes; the'
+                                   ' completion guard refused'}),
+             now - int(0.9 * DAY)))
+        db.commit()
+        db.close()
+        report = []
+        aging.recheck_blocks(self.root, 'testboard', now, dry_run=True,
+                             report=report)
+        self.assertEqual([], report)
+
+    def test_commission_rotates_past_tripped_key(self):
+        # A breaker-tripped commission must not own the key forever: the next
+        # escalation rotates to a fresh sequence so a replacement can exist.
+        base = aging.commission_key('testboard', ['t_old'])
+        make_board(self.root, [
+            ('t_old', 'Work on something', 'todo', 4.0, {}),
+            ('t_comm', 'Deep-dive: route to clear aged t_old', 'blocked',
+             3.0, {'idempotency_key': base, 'consecutive_failures': 2}),
+        ])
+        db = aging.connect_ro(
+            self.root / 'kanban' / 'boards' / 'testboard' / 'kanban.db')
+        calls = []
+
+        class FakeResult:
+            returncode = 0
+            stdout = 'Created task t_abc123'
+            stderr = ''
+
+        def fake_cli(args, env):
+            calls.append(args)
+            return FakeResult()
+
+        self.addCleanup(setattr, aging, 'run_cli', aging.run_cli)
+        aging.run_cli = fake_cli
+        report = []
+        try:
+            result = aging.create_commission(
+                'testboard', ['t_old'], {'t_old': {'idle_days': 4.0}}, db,
+                {}, report)
+        finally:
+            pass
+        self.assertEqual('t_abc123', result)
+        create_args = [a for a in calls if 'create' in a][0]
+        self.assertIn(base + ':r1', create_args)
+        self.assertTrue(any('--idempotency-key' in a for a in calls))
 
     def test_running_card_is_exempt(self):
         idle_days, tier, exempt, gated = self.classify_card(

@@ -79,4 +79,23 @@ grep -q 'called' "$spy_dir/ssh-fallback" \
 
 rm -f "$stderr_file"
 echo "  ✅ warns, names the cause, and falls back locally when the target is unreachable"
+
+# --- durable-stage validation (fail closed before any wire traffic) ----------
+
+for bad in "relative/path" "/has..traversal/x" "/semi;colon" "/space path" "noslash"; do
+  contacted="$spy_dir/ssh-persist-$bad"
+  err_file="$spy_dir/persist-err"
+  if PATH="$spy_dir:$PATH" REMOTE_RUN_SSH_SPY="$contacted" \
+      REMOTE_EVAL_HOST="dsaw@192.0.2.1" \
+      REMOTE_RUN_PERSIST_DIR="$bad" remote_run "$probe" 2>"$err_file" >/dev/null; then
+    fail "REMOTE_RUN_PERSIST_DIR='$bad' was accepted"
+  fi
+  [[ ! -e "$contacted" ]] || fail "a bad persist dir ('$bad') still contacted SSH"
+  grep -q "REMOTE_RUN_PERSIST_DIR" "$err_file" \
+    || fail "the persist-dir refusal did not name the variable: $(cat "$err_file")"
+  rm -f "$err_file"
+done
+
+echo "  ✅ rejects malformed REMOTE_RUN_PERSIST_DIR values without contacting SSH"
+
 echo "✅ remote-run helper regression test passed"
