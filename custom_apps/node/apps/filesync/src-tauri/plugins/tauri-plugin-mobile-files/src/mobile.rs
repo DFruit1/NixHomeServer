@@ -43,38 +43,50 @@ impl<R: Runtime> MobileFiles<R> {
     }
 
     pub fn create_temp_file(&self) -> crate::Result<String> {
-        let response: StringResponse = self.0
+        let response: StringResponse = self
+            .0
             .run_mobile_plugin("createTempFile", ())
             .map_err(crate::Error::from)?;
-        response.value.ok_or_else(|| crate::Error::Operation("Android returned no temporary file".into()))
+        response
+            .value
+            .ok_or_else(|| crate::Error::Operation("Android returned no temporary file".into()))
     }
 
     pub fn pick_local_folder(&self) -> crate::Result<Option<PickedFolder>> {
-        let response: PickedFolderResponse = self.0
+        let response: PickedFolderResponse = self
+            .0
             .run_mobile_plugin("pickLocalFolder", ())
             .map_err(crate::Error::from)?;
         Ok(response.value)
     }
 
     pub fn ensure_all_files_access(&self) -> crate::Result<bool> {
-        let response: BooleanResponse = self.0
+        let response: BooleanResponse = self
+            .0
             .run_mobile_plugin("ensureAllFilesAccess", ())
             .map_err(crate::Error::from)?;
         Ok(response.value)
     }
 
     pub fn request_all_files_access(&self) -> crate::Result<bool> {
-        let response: BooleanResponse = self.0
+        let response: BooleanResponse = self
+            .0
             .run_mobile_plugin("requestAllFilesAccess", ())
             .map_err(crate::Error::from)?;
         Ok(response.value)
     }
 
     pub fn create_local_folder(&self, subpath: String) -> crate::Result<PickedFolder> {
-        let response: PickedFolderResponse = self.0
-            .run_mobile_plugin("createLocalFolder", serde_json::json!({ "subpath": subpath }))
+        let response: PickedFolderResponse = self
+            .0
+            .run_mobile_plugin(
+                "createLocalFolder",
+                serde_json::json!({ "subpath": subpath }),
+            )
             .map_err(crate::Error::from)?;
-        response.value.ok_or_else(|| crate::Error::Operation("Android returned no folder".into()))
+        response
+            .value
+            .ok_or_else(|| crate::Error::Operation("Android returned no folder".into()))
     }
 
     pub fn store_session(&self, session: String) -> crate::Result<()> {
@@ -99,7 +111,8 @@ impl<R: Runtime> MobileFiles<R> {
     }
 
     pub fn load_secret(&self, slot: String) -> crate::Result<Option<String>> {
-        let response: StringResponse = self.0
+        let response: StringResponse = self
+            .0
             .run_mobile_plugin("loadSecret", serde_json::json!({ "slot": slot }))
             .map_err(crate::Error::from)?;
         Ok(response.value)
@@ -140,7 +153,10 @@ impl<R: Runtime> MobileFiles<R> {
 
     pub fn estimate_sync_pair(&self, pair_json: String) -> crate::Result<serde_json::Value> {
         self.0
-            .run_mobile_plugin("estimateSyncPair", serde_json::json!({ "pairJson": pair_json }))
+            .run_mobile_plugin(
+                "estimateSyncPair",
+                serde_json::json!({ "pairJson": pair_json }),
+            )
             .map_err(Into::into)
     }
 
@@ -154,21 +170,24 @@ impl<R: Runtime> MobileFiles<R> {
     }
 
     pub fn background_sync_status(&self) -> crate::Result<Option<String>> {
-        let response: StringResponse = self.0
+        let response: StringResponse = self
+            .0
             .run_mobile_plugin("backgroundSyncStatus", serde_json::json!({}))
             .map_err(crate::Error::from)?;
         Ok(response.value)
     }
 
     pub fn sync_progress(&self) -> crate::Result<Option<String>> {
-        let response: StringResponse = self.0
+        let response: StringResponse = self
+            .0
             .run_mobile_plugin("syncProgress", serde_json::json!({}))
             .map_err(crate::Error::from)?;
         Ok(response.value)
     }
 
     pub fn ensure_notifications(&self) -> crate::Result<bool> {
-        let response: BooleanResponse = self.0
+        let response: BooleanResponse = self
+            .0
             .run_mobile_plugin("ensureNotifications", serde_json::json!({}))
             .map_err(crate::Error::from)?;
         Ok(response.value)
@@ -190,13 +209,16 @@ impl<R: Runtime> MobileFiles<R> {
         folder_uri: String,
         relative_path: String,
     ) -> crate::Result<String> {
-        let response: StringResponse = self.0
+        let response: StringResponse = self
+            .0
             .run_mobile_plugin(
                 "stageLocalFile",
                 serde_json::json!({ "folderUri": folder_uri, "relativePath": relative_path }),
             )
             .map_err(crate::Error::from)?;
-        response.value.ok_or_else(|| crate::Error::Operation("Android returned no staged file".into()))
+        response
+            .value
+            .ok_or_else(|| crate::Error::Operation("Android returned no staged file".into()))
     }
 
     pub fn install_local_file(

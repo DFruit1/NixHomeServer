@@ -79,10 +79,9 @@ mod tests {
     #[test]
     fn mobile_folder_response_preserves_cancel_and_selection() {
         let cancelled: PickedFolderResponse = serde_json::from_str(r#"{"value":null}"#).unwrap();
-        let selected: PickedFolderResponse = serde_json::from_str(
-            r#"{"value":{"uri":"content://tree","displayName":"Files"}}"#,
-        )
-        .unwrap();
+        let selected: PickedFolderResponse =
+            serde_json::from_str(r#"{"value":{"uri":"content://tree","displayName":"Files"}}"#)
+                .unwrap();
         assert!(cancelled.value.is_none());
         assert_eq!(selected.value.unwrap().display_name, "Files");
     }

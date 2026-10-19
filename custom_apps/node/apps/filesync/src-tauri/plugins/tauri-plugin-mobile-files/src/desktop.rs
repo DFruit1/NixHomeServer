@@ -348,7 +348,9 @@ fn unique_path(directory: &Path, file_name: &str) -> crate::Result<PathBuf> {
     if !candidate.exists() {
         return Ok(candidate);
     }
-    let stem = Path::new(file_name).file_stem().and_then(|stem| stem.to_str());
+    let stem = Path::new(file_name)
+        .file_stem()
+        .and_then(|stem| stem.to_str());
     let extension = Path::new(file_name)
         .extension()
         .and_then(|extension| extension.to_str());
