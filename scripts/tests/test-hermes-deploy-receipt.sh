@@ -92,8 +92,13 @@ class ReceiptTest(unittest.TestCase):
         self.comment({**self.decision,'approved':False})
         with self.assertRaises(ValueError): self.check()
         self.comment(self.decision)
-        self.db.execute("INSERT INTO task_comments VALUES (100,'t_decision','desktop','Stop; scope changed')")
-        with self.assertRaises(ValueError): self.check()
+        # The owner writes through three clients (desktop app, own CLI, recorded
+        # decision marker). A later comment from any of them must supersede the
+        # approval, not just the desktop app's.
+        for index,author in enumerate(('desktop','user','owner'),start=100):
+            with self.subTest(author=author):
+                self.db.execute("INSERT INTO task_comments VALUES (?,'t_decision',?,'Stop; scope changed')",(index,author))
+                with self.assertRaises(ValueError): self.check()
 
     def test_changed_source_target_action_or_input_manifest_fails(self):
         for key,value in [('head_revision','c'*40),('target','operator@elsewhere'),

@@ -51,7 +51,7 @@
 #   BOARD_HEALTH_TRIAGE_RECURRENCES  triage blocks before reporting (default 2)
 #   BOARD_HEALTH_MIRROR_STALE_SEC   board mirror age before reporting (default 3600)
 #   BOARD_HEALTH_OWNER_AUTHORS     comment authors treated as the owner speaking
-#                                  on a card (default: desktop)
+#                                  on a card (default: owner,desktop,user)
 
 set -euo pipefail
 
@@ -61,11 +61,15 @@ READY_STALE_SEC="${BOARD_HEALTH_READY_STALE_SEC:-900}"
 READY_OLD_SEC="${BOARD_HEALTH_READY_OLD_SEC:-3600}"
 TRIAGE_RECURRENCES="${BOARD_HEALTH_TRIAGE_RECURRENCES:-2}"
 MIRROR_STALE_SEC="${BOARD_HEALTH_MIRROR_STALE_SEC:-3600}"
-# Comment authors that are the owner speaking on a card. The Hermes desktop app
-# authors the owner's own card comments as `desktop`; agents author their profile
-# slug. A comma-separated list so a second owner client can be admitted without
-# a code change. Not a positive-integer knob, so it is validated separately.
-OWNER_AUTHORS="${BOARD_HEALTH_OWNER_AUTHORS:-desktop}"
+# Comment authors that are the owner speaking on a card. The owner writes through
+# three clients and the board records each with its own author: the desktop app
+# as `desktop`, the owner's own CLI as `user`, and an owner-recorded decision
+# marker as `owner`. All three are the owner, and omitting any one hides that
+# client's answer from this detector -- recreating the "owner spoke, nobody
+# acted" silence the finding exists to break. Agents author their profile slug.
+# A comma-separated list so a further owner client can be admitted without a
+# code change. Not a positive-integer knob, so it is validated separately.
+OWNER_AUTHORS="${BOARD_HEALTH_OWNER_AUTHORS:-owner,desktop,user}"
 
 DB="$HERMES_ROOT/kanban/boards/$HERMES_BOARD/kanban.db"
 CONFIG="$HERMES_ROOT/config.yaml"

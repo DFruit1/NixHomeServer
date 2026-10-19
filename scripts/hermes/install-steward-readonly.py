@@ -40,15 +40,25 @@ def replace_setting(text, key, yaml_value):
 def readonly_hook(text, command, marker_name='steward-readonly', matcher='.*'):
     marker = f'    # nixhomeserver-{marker_name}:'
     start, end = marker + 'start', marker + 'end'
+    stanza = (marker + 'start\n    - matcher: ' + json.dumps(matcher) + '\n      command: ' + json.dumps(command)
+              + '\n      timeout: 10\n      fail_closed: true\n' + marker + 'end\n')
     if start in text or end in text:
         if text.count(start) != 1 or text.count(end) != 1 or text.index(end) < text.index(start):
             raise ValueError('Invalid managed hook markers; preserve and reconcile the config')
+        # An exact block is left exactly where it is. Every installer prepends its
+        # own block to pre_tool_call, so the second installer moved the first one
+        # down and the first then rewrote it back on top: `--check` reported
+        # permanent drift on six profile configs and the always-red signal was
+        # ignored. Hook order between distinct matchers is not significant, so
+        # only a wrong or absent block is rewritten.
+        existing = re.search(r'^' + re.escape(start) + r'\n.*?^' + re.escape(end) + r'(?:\n|\Z)',
+                             text, flags=re.M | re.S)
+        if existing and existing.group(0) == stanza:
+            return text
         text, count = re.subn(r'^' + re.escape(start) + r'\n.*?^' + re.escape(end) + r'(?:\n|\Z)',
                               '', text, flags=re.M | re.S)
         if count != 1:
             raise ValueError('Invalid managed hook section; preserve and reconcile the config')
-    stanza = (marker + 'start\n    - matcher: ' + json.dumps(matcher) + '\n      command: ' + json.dumps(command)
-              + '\n      timeout: 10\n      fail_closed: true\n' + marker + 'end\n')
     match = re.search(r'^hooks:[ \t]*\n(.*?)(?=^\S|\Z)', text, re.M | re.S)
     if not match:
         if re.search(r'^hooks:', text, re.M):
@@ -90,15 +100,24 @@ def default_repo(root):
 
 def steward_soul(current, instructions):
     wanted = instructions.shared((SOURCE / 'taskforce/board-steward.md').read_text())
-    # The cron installer owns this independent block. Retain its exact bytes;
+    # Independent policy blocks are installed by other components: the cron
+    # installer owns the hermes-cron-policy block and the memory installer owns
+    # the hermes-memory-policy block. Retain each one's exact bytes, because
     # refreshing the steward role must not remove another component's policy.
-    start, end = '<!-- hermes-cron-policy -->', '<!-- /hermes-cron-policy -->'
-    if start not in current and end not in current:
+    # Preserving only the cron block made this installer and
+    # install-memory-policy.py strip each other's block on every run, so
+    # `--check` reported drift forever on the steward SOUL.
+    sections = []
+    for name in ('cron-policy', 'memory-policy'):
+        start, end = f'<!-- hermes-{name} -->', f'<!-- /hermes-{name} -->'
+        if start not in current and end not in current:
+            continue
+        if current.count(start) != 1 or current.count(end) != 1 or current.index(end) < current.index(start):
+            raise ValueError(f'Invalid managed {name} markers; preserve and reconcile the SOUL')
+        sections.append(current[current.index(start):current.index(end) + len(end)])
+    if not sections:
         return wanted
-    if current.count(start) != 1 or current.count(end) != 1 or current.index(end) < current.index(start):
-        raise ValueError('Invalid managed cron policy markers; preserve and reconcile the SOUL')
-    section = current[current.index(start):current.index(end) + len(end)]
-    return wanted.rstrip() + '\n\n' + section + '\n'
+    return wanted.rstrip() + '\n\n' + '\n\n'.join(sections) + '\n'
 
 
 def install(root, repo, check=False):

@@ -548,9 +548,11 @@ fi
 # wrong interval, was invisible to `--check`. It is reported, not repaired; see
 # the header for why.
 
-board_health_prompt="Board health check. Discover active boards under ~/.hermes/kanban/boards (start with '$HERMES_BOARD'), then run 'hermes kanban --board <each-slug> list' and 'hermes kanban --board <each-slug> diagnostics' for every board named in the attached MONITOR CHANGE DETECTED block. That block lists findings from scripts/hermes/kanban-board-health.sh.
+board_health_prompt="Board health check. The attached MONITOR CHANGE DETECTED block is the authoritative finding set: those cards are the only ones in scope. Read only the boards and cards that block names -- one 'hermes kanban --board <slug> show <card>' per finding is enough to act on it, so do not rescan every board with list/diagnostics.
 
-Work through every finding using the Board health table in ~/.hermes/scripts/hermes-coordinator-reference.md, which your SOUL.md's Deployment and recovery section directs you to. Classify the actual missing input and existing recovery conditions before routing. Reassign eligible non-sensitive work only within the recorded limits; never evade quota-breaker holds. Only genuine owner-only input warrants a checked needs_input gate, authored through native tools after summary validation. UNPUSHED/MASTER_AHEAD belongs to the existing no-agent durability-sync cron; never publish worker branches or run a remote-writing sync from coordinator recovery. Report failed durability internally.
+Address at most the first three findings, highest-priority first, and stop if room runs short: state the findings you did not reach instead of pushing on. The next tick re-reports anything you did not clear, so clearing every finding in one pass is neither required nor safe -- a run that exhausts its budget leaves the snapshot unprocessed and the identical set returns unchanged.
+
+Use the Board health table in ~/.hermes/scripts/hermes-coordinator-reference.md, which your SOUL.md's Deployment and recovery section directs you to. Classify the actual missing input and existing recovery conditions before routing. Reassign eligible non-sensitive work only within the recorded limits; never evade quota-breaker holds. Only genuine owner-only input warrants a checked needs_input gate, authored through native tools after summary validation. UNPUSHED/MASTER_AHEAD belongs to the existing no-agent durability-sync cron; never publish worker branches or run a remote-writing sync from coordinator recovery. Report failed durability internally.
 
 Do not implement anything yourself and do not re-audit. Report in prose what you changed and what still needs the owner."
 
@@ -641,6 +643,41 @@ else
       --monitor-script kanban-board-health.sh \
       --workdir "$REPO_ROOT" >/dev/null
     changed "created cron 'kanban board health' (head-coordinator, every 30m)"
+  fi
+fi
+
+# The board-health prompt is prose, so `hermes cron list` cannot show it and the
+# field checks above cannot see it drift. That is how the live job kept an older
+# prompt whose "work through every finding" instruction cannot fit its
+# 12-tool/180s inspection budget, so every change-wakeup ran past the deadline
+# and failed, leaving the snapshot unprocessed (recurring incident, detected
+# 2026-10-19 21:21 and still open on 2026-10-20). Unlike the field checks, the
+# prompt is read and written through profiles/head-coordinator/cron/jobs.json --
+# not the cron-list renderer -- so it can be repaired in place with the same
+# `hermes cron edit --prompt` path install-cron-policy.py already trusts.
+BOARD_HEALTH_JOBS="$HERMES_ROOT/profiles/head-coordinator/cron/jobs.json"
+if cron_has_job "kanban board health" && [[ -f "$BOARD_HEALTH_JOBS" ]]; then
+  board_health_state="$(python3 - "$BOARD_HEALTH_JOBS" "$board_health_prompt" <<'PY' 2>/dev/null || true
+import json, sys
+jobs = json.load(open(sys.argv[1]))
+jobs = jobs.get('jobs', jobs) if isinstance(jobs, dict) else jobs
+for job in jobs:
+    if job.get('name') == 'kanban board health':
+        print(job.get('id', ''))
+        print('match' if (job.get('prompt') or '') == sys.argv[2] else 'drift')
+        sys.exit(0)
+sys.exit(1)
+PY
+)"
+  board_health_id="$(sed -n 1p <<<"$board_health_state")"
+  board_health_verdict="$(sed -n 2p <<<"$board_health_state")"
+  if [[ "$board_health_verdict" == match ]]; then
+    ok "cron 'kanban board health' carries the tracked prompt"
+  elif [[ -n "$board_health_id" && "$check_only" != true ]]; then
+    timeout 60 hermes -p head-coordinator cron edit "$board_health_id" --prompt "$board_health_prompt" >/dev/null
+    changed "updated cron 'kanban board health' prompt to the tracked text"
+  else
+    changed "cron 'kanban board health' prompt differs from the tracked text"
   fi
 fi
 

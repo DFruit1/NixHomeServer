@@ -19,6 +19,15 @@ import subprocess
 import tempfile
 import time
 
+# Board comment authors that represent the owner speaking on a decision card.
+# The desktop app writes `desktop`, the owner's own CLI writes `user`, and an
+# owner-recorded decision marker writes `owner`. All three are the owner, so a
+# later comment from any of them must still supersede an approval; keying on
+# `desktop` alone silently let owner feedback from the other two clients pass a
+# stale approval. Kept in step with kanban-board-health.sh and cron_stall.py.
+OWNER_AUTHORS=('owner','desktop','user')
+
+
 def strict_json(text):
     def unique(pairs):
         result = {}
@@ -181,7 +190,7 @@ def evidence(root,board,review,decision,repo):
                 'SELECT id,author,body FROM task_comments WHERE task_id=? ORDER BY id DESC LIMIT 201',(decision,))):
             if index>=200:
                 raise ValueError('Reconcile the decision in a recent bounded structured comment')
-            if comment['author']=='desktop' and chosen is None:
+            if comment['author'] in OWNER_AUTHORS and chosen is None:
                 raise ValueError('New owner feedback needs coordinator reconciliation')
             body = comment['body'] or ''
             if not isinstance(body,str):

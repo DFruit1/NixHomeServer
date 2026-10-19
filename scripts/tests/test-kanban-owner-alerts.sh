@@ -43,9 +43,9 @@ class AlertsTest(unittest.TestCase):
             p.mkdir(parents=True)
             (p / 'board.json').write_text('{}')
             with closing(sqlite3.connect(p / 'kanban.db')) as db:
-                db.executescript('CREATE TABLE tasks (id TEXT, title TEXT, body TEXT, status TEXT, block_kind TEXT, created_by TEXT DEFAULT "head-coordinator"); CREATE TABLE task_events (id INTEGER, task_id TEXT, kind TEXT, payload TEXT); CREATE TABLE task_comments (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT, author TEXT, body TEXT, created_at INTEGER);')
+                db.executescript('CREATE TABLE tasks (id TEXT, title TEXT, body TEXT, status TEXT, block_kind TEXT, created_by TEXT DEFAULT "head-coordinator"); CREATE TABLE task_events (id INTEGER, task_id TEXT, kind TEXT, payload TEXT, created_at INTEGER DEFAULT 0); CREATE TABLE task_comments (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT, author TEXT, body TEXT, created_at INTEGER);')
                 db.execute('INSERT INTO tasks (id,title,body,status,block_kind) VALUES (?, ?, ?, ?, ?)', ('t_12345678', 'Decide repair', 'ASK: Approve repair?\n A) Approve\n B) Reject\n' + REPAIR_SUMMARY, 'blocked', 'needs_input' if board == 'one' else 'capability'))
-                db.execute('INSERT INTO task_events VALUES (1, ?, ?, ?)', ('t_12345678', 'blocked', json.dumps({'reason': 'Need a decision' if board == 'one' else 'Evidence unavailable'})))
+                db.execute('INSERT INTO task_events (id,task_id,kind,payload) VALUES (1, ?, ?, ?)', ('t_12345678', 'blocked', json.dumps({'reason': 'Need a decision' if board == 'one' else 'Evidence unavailable'})))
                 db.commit()
         self.boards = {name: self.root / 'kanban/boards' / name / 'kanban.db' for name in ('one', 'two')}
         self.sent = []
@@ -58,6 +58,31 @@ class AlertsTest(unittest.TestCase):
         with closing(sqlite3.connect(self.boards[board])) as db:
             db.execute('UPDATE tasks SET body=?', (body,))
             db.commit()
+
+    def test_answered_owner_hold_is_not_reported_as_an_open_ask(self):
+        # A supplier=owner reason lives on an immutable block event. Once the
+        # owner answers, that text is stale; reporting it as an open ask tells
+        # the coordinator to author a gate the owner already answered, which
+        # pages the owner twice for one decision.
+        with closing(sqlite3.connect(self.boards['one'])) as db:
+            db.execute("INSERT INTO tasks (id,title,body,status,block_kind) VALUES (?,?,?,?,?)",
+                       ('t_ownerhold', 'Route approval', 'Goal: route the approval', 'todo', None))
+            db.execute("INSERT INTO task_events VALUES (?,?,?,?,?)",
+                       (10, 't_ownerhold', 'blocked',
+                        json.dumps({'reason': 'Input supplier: owner\nBlocking: x'}), 0))
+            db.commit()
+        problems = alerts.check_ownership(self.root)
+        self.assertTrue(any('t_ownerhold' in p and 'author the ASK' in p for p in problems),
+                        problems)
+        with closing(sqlite3.connect(self.boards['one'])) as db:
+            db.execute("INSERT INTO task_comments (task_id,author,body,created_at) VALUES (?,?,?,?)",
+                       ('t_ownerhold', 'owner', 'Owner decision: A', 2))
+            db.commit()
+        problems = alerts.check_ownership(self.root)
+        self.assertTrue(any('t_ownerhold' in p and 'do not re-page' in p for p in problems),
+                        problems)
+        self.assertFalse(any('t_ownerhold' in p and 'author the ASK' in p for p in problems),
+                         problems)
 
     def test_worker_cannot_turn_a_technical_block_into_an_owner_decision(self):
         request = {'profile': 'standard-implementer', 'tool_name': 'kanban_block',

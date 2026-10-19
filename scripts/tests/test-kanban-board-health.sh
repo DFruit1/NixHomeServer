@@ -220,6 +220,17 @@ sqlite3 "$DB" "INSERT INTO tasks VALUES
 INSERT INTO task_comments VALUES (4,'t_owner_handled','I choose A',$now-2400,'desktop');
 INSERT INTO task_comments VALUES (5,'t_owner_handled','recorded A; unblocking',$now-1800,'head-coordinator');"
 
+# The owner has three author spellings on the board, and `desktop` is only one
+# of them: an owner answering from the CLI writes `user`, and an owner-recorded
+# decision marker writes `owner`. A detector that knows only `desktop` misses
+# those answers and the gate starves -- the exact silence this finding breaks.
+sqlite3 "$DB" "INSERT INTO tasks VALUES
+  ('t_owner_cli','owner answered from the CLI','project-auditor','blocked',$now-3600,$now-3600,NULL,NULL,$now-3600,0,'needs_input',0);
+INSERT INTO task_comments VALUES (6,'t_owner_cli','Owner decision: A',$now-1800,'user');
+INSERT INTO tasks VALUES
+  ('t_owner_marker','owner recorded a decision marker','project-auditor','blocked',$now-3600,$now-3600,NULL,NULL,$now-3600,0,'needs_input',0);
+INSERT INTO task_comments VALUES (7,'t_owner_marker','Decision owner: head-coordinator - delegate','$now-1800','owner');"
+
 # A second board. The owner-comment detector is cross-board, so a gate answered
 # on a board other than $HERMES_BOARD must still surface -- that is the whole
 # point of enumerating every board's DB.
@@ -350,6 +361,14 @@ pass "reports an owner-answered gate on every board, not just HERMES_BOARD"
 grep -q 't_owner_handled' <<<"$out" &&
   fail "reported a card an agent already replied to; the monitor would never go quiet"
 pass "clears the owner-comment finding once an agent has replied"
+
+grep -q '^OWNER_COMMENT_UNACTED testboard t_owner_cli project-auditor block=needs_input ' <<<"$out" ||
+  fail "did not report an owner answer written by the owner's CLI client (author=user)"
+pass "reports an owner answer recorded as user"
+
+grep -q '^OWNER_COMMENT_UNACTED testboard t_owner_marker project-auditor block=needs_input ' <<<"$out" ||
+  fail "did not report an owner-recorded decision marker (author=owner)"
+pass "reports an owner answer recorded as owner"
 
 # --- capability holds that name no input supplier -----------------------------
 #

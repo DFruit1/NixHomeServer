@@ -537,16 +537,32 @@ def check_ownership(root):
                         ' ORDER BY created_at DESC, id DESC LIMIT 1', (task['id'],)).fetchone()
                     marker = DECISION_MARKER.match(marker_row['body']) if marker_row else None
                     event = db.execute(
-                        "SELECT payload FROM task_events WHERE task_id=? AND (kind='blocked' OR"
+                        "SELECT payload, created_at FROM task_events WHERE task_id=? AND (kind='blocked' OR"
                         " (kind='status' AND json_extract(payload,'$.status')='blocked'))"
                         ' ORDER BY id DESC LIMIT 1', (task['id'],)).fetchone()
                     reason = (json.loads(event['payload'] or '{}').get('reason') or '') if event else ''
+                    # A supplier=owner hold is only an open owner ask while the
+                    # owner has not already spoken. The reason lives on an
+                    # immutable event, so an owner answer recorded afterwards
+                    # leaves the stale text behind; reading it as an open ask
+                    # told the coordinator to author a gate the owner had
+                    # already answered, which pages the owner twice for one
+                    # decision. Owner authors match kanban-board-health.sh.
+                    owner_spoke_since = bool(event and db.execute(
+                        "SELECT 1 FROM task_comments WHERE task_id=? AND created_at>=?"
+                        " AND author IN ('owner','desktop','user') LIMIT 1",
+                        (task['id'], event['created_at'])).fetchone())
                     coordinator_summary = db.execute(
                         "SELECT id FROM task_comments WHERE task_id=? AND author=? AND instr(body,'Blocking:')>0"
                         ' ORDER BY created_at DESC, id DESC LIMIT 1', (task['id'], PROFILE)).fetchone()
                     if not gate and re.search(r'Input supplier:[ \t]*owner\b', reason or '', re.I):
-                        problems.append(f'{key}: {task["status"]} hold names supplier=owner but is not a'
-                                        ' delivered gate; coordinator: author the ASK: needs_input gate or rework the classification')
+                        if owner_spoke_since:
+                            problems.append(f'{key}: {task["status"]} still carries a stale supplier=owner hold,'
+                                            ' but the owner has commented since it was recorded; coordinator: rework'
+                                            ' the classification and act on that comment, do not re-page the owner')
+                        else:
+                            problems.append(f'{key}: {task["status"]} hold names supplier=owner but is not a'
+                                            ' delivered gate; coordinator: author the ASK: needs_input gate or rework the classification')
                     if gate:
                         if task['status'] != 'blocked':
                             problems.append(f'{key}: needs_input/Hard Blocker on a {task["status"]} card is a'
