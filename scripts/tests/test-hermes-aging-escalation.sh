@@ -1,0 +1,276 @@
+#!/usr/bin/env bash
+set -euo pipefail
+repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+python3 -B - "$repo" <<'PY'
+import importlib.util
+import json
+from pathlib import Path
+import sqlite3
+import sys
+import tempfile
+import time
+import unittest
+
+source = Path(sys.argv[1]) / 'scripts/hermes/kanban-aging-escalation.py'
+spec = importlib.util.spec_from_file_location('aging', source)
+aging = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(aging)
+
+DAY = 86400
+SCHEMA = """
+CREATE TABLE tasks (
+    id TEXT PRIMARY KEY, title TEXT NOT NULL, body TEXT, assignee TEXT,
+    status TEXT NOT NULL, priority INTEGER DEFAULT 0, created_by TEXT,
+    created_at INTEGER NOT NULL, started_at INTEGER, completed_at INTEGER,
+    workspace_kind TEXT NOT NULL DEFAULT 'scratch', workspace_path TEXT,
+    branch_name TEXT, project_id TEXT, claim_lock TEXT, claim_expires INTEGER,
+    tenant TEXT, result TEXT, idempotency_key TEXT,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0, worker_pid INTEGER,
+    worker_started_at INTEGER, last_failure_error TEXT,
+    max_runtime_seconds INTEGER, last_heartbeat_at INTEGER,
+    block_kind TEXT
+);
+CREATE TABLE task_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL, run_id INTEGER,
+    kind TEXT NOT NULL, payload TEXT, created_at INTEGER NOT NULL
+);
+CREATE TABLE task_comments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL, author TEXT,
+    body TEXT, created_at INTEGER NOT NULL
+);
+CREATE TABLE task_links (
+    parent_id TEXT NOT NULL, child_id TEXT NOT NULL,
+    PRIMARY KEY (parent_id, child_id)
+);
+"""
+
+
+def insert_comment(db_path, tid, author, age_days):
+    now = int(time.time())
+    db = sqlite3.connect(db_path)
+    db.execute(
+        "INSERT INTO task_comments (task_id, author, body, created_at)"
+        " VALUES (?, ?, 'x', ?)", (tid, author, now - int(age_days * DAY)))
+    db.commit()
+    db.close()
+
+
+def make_board(root, cards):
+    """cards: list of (tid, title, status, age_days, extra dict)."""
+    board = root / 'kanban' / 'boards' / 'testboard'
+    board.mkdir(parents=True)
+    (board / 'board.json').write_text('{}')
+    db = sqlite3.connect(board / 'kanban.db')
+    db.executescript(SCHEMA)
+    now = int(time.time())
+    for tid, title, status, age_days, extra in cards:
+        created = now - int(age_days * DAY)
+        db.execute(
+            "INSERT INTO tasks (id, title, status, created_at, priority, body, block_kind)"
+            " VALUES (?,?,?,?,?,?,?)",
+            (tid, title, status, created, extra.get('priority', 0),
+             extra.get('body'), extra.get('block_kind')))
+        db.execute(
+            "INSERT INTO task_events (task_id, kind, created_at)"
+            " VALUES (?, 'created', ?)", (tid, created))
+        for kind, age_days_offset in extra.get('events', []):
+            db.execute(
+                "INSERT INTO task_events (task_id, kind, created_at)"
+                " VALUES (?, ?, ?)", (tid, kind, now - int(age_days_offset * DAY)))
+    db.commit()
+    db.close()
+    return now
+
+
+class AgingEscalationTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix='aging-escalation-test-')
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.report = []
+
+    def classify_card(self, cards):
+        now = make_board(self.root, cards)
+        db = aging.connect_ro(self.root / 'kanban' / 'boards' / 'testboard' / 'kanban.db')
+        row = db.execute("SELECT * FROM tasks WHERE id = ?",
+                         (cards[0][0],)).fetchone()
+        result = aging.classify(db, row, now, 48.0, 72.0)
+        db.close()
+        return result
+
+    def test_fresh_card_is_not_escalated(self):
+        idle_days, tier, exempt, gated = self.classify_card(
+            [('t_fresh', 'Work on something', 'todo', 1.0, {})])
+        self.assertIsNone(tier)
+
+    def test_two_day_idle_card_bumps_priority(self):
+        idle_days, tier, exempt, gated = self.classify_card(
+            [('t_aged', 'Work on something', 'todo', 2.5, {})])
+        self.assertEqual(tier, 'bump')
+        row = ('t_aged', 'Work on something', 'todo', 2.5, {})
+        actions = aging.plan_card(row, idle_days, tier, exempt, gated)
+        self.assertEqual(actions, ['priority -> >=50'])
+
+    def test_three_day_idle_card_escalates_fully(self):
+        idle_days, tier, exempt, gated = self.classify_card(
+            [('t_old', 'Work on something', 'todo', 4.0, {})])
+        self.assertEqual(tier, 'escalate')
+        row = ('t_old', 'Work on something', 'todo', 4.0, {})
+        actions = aging.plan_card(row, idle_days, tier, exempt, gated)
+        self.assertEqual(actions, ['priority -> >=100',
+                                   'commission auditor deep-dive',
+                                   'post coordinator clearing directive'])
+
+    def test_recent_comment_resets_idle_clock(self):
+        # An old card with a substantive comment yesterday is not stale.
+        idle_days, tier, exempt, gated = self.classify_card(
+            [('t_active', 'Work on something', 'todo', 6.0,
+              {'events': [('commented', 1.0)]})])
+        self.assertIsNone(tier)
+
+    def test_heartbeat_alone_does_not_reset_idle(self):
+        idle_days, tier, exempt, gated = self.classify_card(
+            [('t_quiet', 'Work on something', 'ready', 4.0,
+              {'events': [('heartbeat', 0.01)]})])
+        self.assertEqual(tier, 'escalate')
+
+    def test_age_backstop_escalates_actively_held_card(self):
+        # A 10-day-old card kept "fresh" by a holding comment this morning
+        # still escalates: the decision stall outlives the comments.
+        idle_days, tier, exempt, gated = self.classify_card(
+            [('t_held', 'Decide: deploy the range', 'todo', 10.0,
+              {'events': [('commented', 0.2)]})])
+        self.assertEqual(tier, 'escalate')
+
+    def test_backstop_respects_exemptions(self):
+        idle_days, tier, exempt, gated = self.classify_card(
+            [('t_track2', '[FEATURE TRACKER] ideas', 'triage', 12.0,
+              {'events': [('commented', 0.5)]})])
+        self.assertTrue(exempt)
+        self.assertEqual([], aging.plan_card(
+            ('t_track2', 'x', 'triage', 12.0, {}), idle_days, tier, exempt,
+            gated))
+
+    def test_recent_escalation_comment_damps_refire(self):
+        # A card the job escalated yesterday must not re-escalate on the next
+        # run: the age backstop would otherwise repost directives forever.
+        now = make_board(self.root, [
+            ('t_damped', 'Decide: deploy the range', 'todo', 14.0, {}),
+        ])
+        insert_comment(self.root / 'kanban' / 'boards' / 'testboard' /
+                       'kanban.db', 't_damped', aging.CREATED_BY, 1.0)
+        db = aging.connect_ro(
+            self.root / 'kanban' / 'boards' / 'testboard' / 'kanban.db')
+        row = db.execute("SELECT * FROM tasks WHERE id = 't_damped'").fetchone()
+        idle_days, tier, exempt, gated = aging.classify(
+            db, row, now, 48.0, 72.0)
+        db.close()
+        self.assertIsNone(tier)
+
+    def test_old_escalation_comment_rearms_escalation(self):
+        now = make_board(self.root, [
+            ('t_rearm', 'Decide: deploy the range', 'todo', 14.0, {}),
+        ])
+        insert_comment(self.root / 'kanban' / 'boards' / 'testboard' /
+                       'kanban.db', 't_rearm', aging.CREATED_BY, 4.0)
+        db = aging.connect_ro(
+            self.root / 'kanban' / 'boards' / 'testboard' / 'kanban.db')
+        row = db.execute("SELECT * FROM tasks WHERE id = 't_rearm'").fetchone()
+        idle_days, tier, exempt, gated = aging.classify(
+            db, row, now, 48.0, 72.0)
+        db.close()
+        self.assertEqual(tier, 'escalate')
+
+    def test_running_card_is_exempt(self):
+        idle_days, tier, exempt, gated = self.classify_card(
+            [('t_run', 'Work on something', 'running', 5.0, {})])
+        self.assertTrue(exempt)
+        self.assertEqual([], aging.plan_card(
+            ('t_run', 'x', 'running', 5.0, {}), idle_days, tier, exempt, gated))
+
+    def test_feature_tracker_is_exempt(self):
+        idle_days, tier, exempt, gated = self.classify_card(
+            [('t_track', '[FEATURE TRACKER — NOT AN EXECUTION TASK] ideas',
+              'triage', 9.0, {})])
+        self.assertTrue(exempt)
+        self.assertEqual([], aging.plan_card(
+            ('t_track', 'x', 'triage', 9.0, {}), idle_days, tier, exempt, gated))
+
+    def test_owner_gate_gets_directive_only(self):
+        idle_days, tier, exempt, gated = self.classify_card(
+            [('t_gate', 'ASK: pick a route', 'blocked', 5.0,
+              {'block_kind': 'needs_input'})])
+        self.assertEqual(tier, 'escalate')
+        self.assertTrue(gated)
+        row = ('t_gate', 'ASK: pick a route', 'blocked', 5.0, {})
+        actions = aging.plan_card(row, idle_days, tier, exempt, gated)
+        self.assertEqual(actions, ['post coordinator clearing directive'])
+
+    def test_high_hard_blocker_line_counts_as_gate(self):
+        idle_days, tier, exempt, gated = self.classify_card(
+            [('t_hard', 'Ship the widget', 'blocked', 5.0,
+              {'body': 'Goal: ship it\nHard Blocker: needs owner key\n'})])
+        self.assertTrue(gated)
+
+    def test_escalate_board_mutates_via_cli(self):
+        # Integration: real CLI against a scratch HERMES_HOME root, using the
+        # real kanban CLI is out of scope for a unit test; here we assert the
+        # report/dry-run plumbing on the synthetic board only.
+        make_board(self.root, [
+            ('t_old', 'Work on something', 'todo', 4.0, {}),
+            ('t_track', '[FEATURE TRACKER] ideas', 'triage', 9.0, {}),
+        ])
+        aging.escalate_board(self.root, 'testboard', int(time.time()),
+                             dry_run=True, priority_hours=48.0,
+                             escalation_hours=72.0, report=self.report)
+        joined = '\n'.join(self.report)
+        self.assertIn('t_old', joined)
+        self.assertIn('commission auditor deep-dive', joined)
+        self.assertNotIn('t_track', joined)
+
+    def test_directive_body_names_card_and_route(self):
+        body = aging.directive_body('t_old', 4.0, 't_abc123')
+        self.assertIn('aging-escalation', body)
+        self.assertIn('Decision owner: head-coordinator', body)
+        self.assertIn('t_abc123', body)
+        for line in body.splitlines():
+            if not line.startswith('<!--'):
+                self.assertLessEqual(len(line), 90, line)
+
+    def test_commission_body_is_question_scope_stopping_condition(self):
+        body = aging.commission_body(['t_old'], 'testboard',
+                                     {'t_old': {'idle_days': 4.0}})
+        self.assertIn('Goal: Name the concrete route', body)
+        self.assertIn('Stopping condition:', body)
+        self.assertIn('Evidence-only', body)
+
+    def test_cluster_commission_names_all_members(self):
+        cards = {f't_{i}': {'idle_days': 8.0} for i in range(3)}
+        body = aging.commission_body(['t_0', 't_1', 't_2'], 'testboard', cards)
+        for tid in ('t_0', 't_1', 't_2'):
+            self.assertIn(tid, body)
+        self.assertIn('every member card', body)
+
+    def test_dependency_clusters_group_linked_cards(self):
+        make_board(self.root, [
+            ('t_a', 'Work a', 'todo', 8.0, {}),
+            ('t_b', 'Work b', 'todo', 8.0, {}),
+            ('t_c', 'Work c', 'todo', 8.0, {}),
+        ])
+        db = sqlite3.connect(
+            self.root / 'kanban' / 'boards' / 'testboard' / 'kanban.db')
+        db.execute("INSERT INTO task_links (parent_id, child_id)"
+                   " VALUES ('t_a', 't_b')")
+        db.commit()
+        db.close()
+        db = aging.connect_ro(
+            self.root / 'kanban' / 'boards' / 'testboard' / 'kanban.db')
+        groups = aging.escalated_components(db, ['t_a', 't_b', 't_c'])
+        db.close()
+        self.assertEqual(2, len(groups))
+        self.assertEqual(1, len([g for g in groups if len(g) == 2]))
+
+
+if __name__ == '__main__':
+    unittest.main(argv=[sys.argv[0]], verbosity=2)
+PY

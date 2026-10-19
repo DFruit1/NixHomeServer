@@ -250,6 +250,20 @@ verifier never does. Changed source or mutable inputs require fresh review/test.
 Freeze only that source and its writers; unrelated isolated work may continue.
 The gate is a workflow convention, not a check enforced by deploy.sh.
 
+### Aging escalation
+
+Open cards escalate by quiet time, not card age alone. Idle ≥2 days raises
+dispatch priority (≥50; the dispatcher orders lanes by `priority DESC`). Idle
+≥3 days raises it further (≥100), commissions one project-auditor deep-dive
+per dependency cluster, and posts a coordinator clearing directive: obtain the
+missing input, supersede with evidence, or close with a reason. A card older
+than 7 days escalates on age even when holding comments keep the idle clock
+fresh. Running cards, `[FEATURE TRACKER` cards and owner gates are exempt;
+gates receive the directive only, since only head-coordinator touches gate
+state. `scripts/hermes/kanban-aging-escalation.py` runs the policy as the
+`kanban aging escalation` cron job; `--dry-run` previews, and thresholds are
+`AGING_PRIORITY_HOURS` / `AGING_ESCALATION_HOURS`.
+
 ### Reaching the owner
 
 Classify missing input by supplier, not difficulty. Name one in every block reason:

@@ -110,6 +110,7 @@ test_scripts=(
   scripts/tests/test-hermes-autonomy-runtime.sh
   scripts/tests/test-hermes-fixture-isolation.sh
   scripts/tests/test-hermes-capability-recovery.sh
+  scripts/tests/test-hermes-aging-escalation.sh
   scripts/tests/test-module-structure.sh
   scripts/tests/test-langfuse-secrets.sh
   scripts/tests/test-langfuse-module.sh
