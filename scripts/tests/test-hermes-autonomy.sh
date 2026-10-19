@@ -56,6 +56,16 @@ class ApprovedExecutionTest(unittest.TestCase):
         self.pin = self.root / 'pinned-production-sentinel/kanban.db'
         self.pin.parent.mkdir()
         self.pin.write_bytes(b'NOT A DATABASE: must not be opened')
+        # autonomy-policy refuses delegated children and worker pins that do not
+        # match the approved manifest. These cases assert the coordinator/owner
+        # path, so the suite controls its own caller identity instead of
+        # inheriting the dispatcher's. The laundering cases below set the pin
+        # they need explicitly.
+        pins = ('HERMES_KANBAN_TASK', 'HERMES_KANBAN_RUN_ID',
+                'HERMES_DELEGATED_CHILD_CONTEXT', 'HERMES_KANBAN_CLAIM_LOCK')
+        saved = {key: os.environ.pop(key) for key in pins if key in os.environ}
+        if saved:
+            self.addCleanup(os.environ.update, saved)
         self.environ = patch.dict(os.environ, {'HERMES_KANBAN_DB': str(self.pin)})
         self.environ.start()
         self.addCleanup(self.environ.stop)

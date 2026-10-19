@@ -48,6 +48,13 @@ class StewardTest(unittest.TestCase):
         self.assertEqual(updated, installer.readonly_hook(updated, 'python3 guard.py'))
 
     def setUp(self):
+        # usage_pace falls back to an ambient OPENCODE_API_KEY when the OpenCode
+        # auth file has none, so an operator or worker credential would turn the
+        # "no credential" cases into live Zen requests. Every credential these
+        # cases use is supplied explicitly.
+        ambient_key = os.environ.pop('OPENCODE_API_KEY', None)
+        if ambient_key is not None:
+            self.addCleanup(os.environ.__setitem__, 'OPENCODE_API_KEY', ambient_key)
         self.tmp = tempfile.TemporaryDirectory(prefix='nixhomeserver-steward-readonly-')
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name) / 'hermes'

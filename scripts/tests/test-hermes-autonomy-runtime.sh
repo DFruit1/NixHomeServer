@@ -24,6 +24,15 @@ installer=importlib.util.module_from_spec(spec);spec.loader.exec_module(installe
 
 class RuntimeTest(unittest.TestCase):
     def setUp(self):
+        # evidence_board only takes the cross-board read path for an unpinned,
+        # non-delegated coordinator. The cases that need a pinned or delegated
+        # caller set that pin themselves, so the suite controls its own caller
+        # identity instead of inheriting the dispatcher's.
+        pins=('HERMES_KANBAN_TASK','HERMES_KANBAN_RUN_ID','HERMES_KANBAN_CLAIM_LOCK',
+              'HERMES_DELEGATED_CHILD_CONTEXT')
+        saved={key:os.environ.pop(key) for key in pins if key in os.environ}
+        if saved:
+            self.addCleanup(os.environ.update,saved)
         self.temp=tempfile.TemporaryDirectory(prefix='hermes-autonomy-runtime-',dir='/tmp')
         self.addCleanup(self.temp.cleanup);self.root=Path(self.temp.name)
         self.base=self.root/'kanban/boards';self.base.mkdir(parents=True)
