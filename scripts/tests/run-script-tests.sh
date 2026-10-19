@@ -52,6 +52,19 @@ else
   export NIXHOMESERVER_TEST_ALL_APPS=0
 fi
 
+# The Hermes policy tests import PyYAML directly or through the installers
+# they exercise. A delegated worker's terminal resolves python3 to Hermes'
+# managed runtime, which does not ship PyYAML; without this preflight that
+# surfaces as many unrelated ModuleNotFoundError failures instead of one
+# actionable message (2026-10-19: eight policy tests red for one cause).
+if ! python3 -c 'import yaml' >/dev/null 2>&1; then
+  echo "❌ PyYAML is unavailable to the resolved python3: $(command -v python3 || echo 'not found')" >&2
+  echo "   Repository script tests import yaml. Install PyYAML for that interpreter" >&2
+  echo "   (e.g. 'python3 -m pip install pyyaml', or transplant the distro package" >&2
+  echo "   into the interpreter's site-packages when pip has no reachable index)." >&2
+  exit 1
+fi
+
 all_app_only_test() {
   case "${1##*/}" in
     test-module-structure.sh | \
