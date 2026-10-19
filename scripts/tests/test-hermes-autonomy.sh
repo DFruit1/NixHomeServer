@@ -188,9 +188,20 @@ class ApprovedExecutionTest(unittest.TestCase):
     def test_changed_declared_input_invalidates_approval(self):
         manifest = self.prepare()
         self.approve(manifest)
-        self.input.write_text('changed after owner review\n')
-        with self.assertRaises(ValueError):
-            policy.check(self.root, manifest['sha256'], profile='head-coordinator')
+        # Real content must always invalidate.
+        with self.subTest('content change'):
+            self.input.write_text('changed after owner review\n')
+            with self.assertRaises(ValueError):
+                policy.check(self.root, manifest['sha256'], profile='head-coordinator')
+
+    def test_prepare_and_check_tolerate_first_read_atime_bump(self):
+        # On relatime mounts (the confined fixture uses one), the first read of
+        # a freshly created input bumps st_atime. prepare() hashes that input
+        # immediately, so this is the exact sequence that previously failed with
+        # 'Input changed while hashing' when stat comparison included atime:
+        # fresh input without any prior read, hashed twice in one process.
+        self.prepare()  # hashes self.input and the fresh executable copy
+        self.prepare()  # re-hashes the same, never-mutated, now-atime-bumped files
 
     def test_changed_executable_invalidates_approval(self):
         manifest = self.prepare()

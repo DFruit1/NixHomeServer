@@ -46,7 +46,14 @@ def _file(path):
     with path.open('rb') as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b''):
             digest.update(chunk)
-    if before != path.stat():
+    # Compare only fields that indicate the reviewed bytes are no longer the
+    # bytes being hashed. A full stat comparison spuriously fails on relatime
+    # mounts (bwrap tmpfs among them): the first read of a fresh file bumps
+    # st_atime, so equality would report a change that never touched content.
+    after = path.stat()
+    fields = ('st_dev', 'st_ino', 'st_mode', 'st_uid', 'st_gid', 'st_size',
+              'st_mtime_ns')
+    if any(getattr(before, f) != getattr(after, f) for f in fields):
         raise ValueError('Input changed while hashing')
     return {'path': str(path), 'sha256': digest.hexdigest()}
 
