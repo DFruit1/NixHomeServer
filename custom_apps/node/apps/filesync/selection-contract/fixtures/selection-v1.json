@@ -1,0 +1,1478 @@
+{
+  "schemaVersion": 1,
+  "engine": {
+    "contractVersion": 1,
+    "dialect": "rust-regex-1",
+    "regexCrate": "regex",
+    "regexVersion": "1.13.1",
+    "serdeVersion": "1.0.228",
+    "serdeJsonVersion": "1.0.145"
+  },
+  "decodeCases": [
+    {
+      "name": "absent-is-legacy-all",
+      "input": {
+        "present": false,
+        "raw": null
+      },
+      "expect": {
+        "outcome": "selection",
+        "state": "legacy-all",
+        "pattern": "",
+        "extension": null,
+        "canonical": null
+      },
+      "matches": [
+        {
+          "basename": "report.docx",
+          "matches": true
+        },
+        {
+          "basename": "anything.pdf",
+          "matches": true
+        },
+        {
+          "basename": "",
+          "error": "invalid-basename"
+        }
+      ]
+    },
+    {
+      "name": "present-both-empty-is-explicit-all",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\"\"}"
+      },
+      "expect": {
+        "outcome": "selection",
+        "state": "explicit-all",
+        "pattern": "",
+        "extension": null,
+        "canonical": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\"\"}"
+      },
+      "matches": [
+        {
+          "basename": "report.docx",
+          "matches": true
+        },
+        {
+          "basename": "notes.pdf",
+          "matches": true
+        }
+      ]
+    },
+    {
+      "name": "whitespace-only-extension-is-explicit-all",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\" \\t\\r\\n \"}"
+      },
+      "expect": {
+        "outcome": "selection",
+        "state": "explicit-all",
+        "pattern": "",
+        "extension": null,
+        "canonical": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\"\"}"
+      },
+      "matches": [
+        {
+          "basename": "report.docx",
+          "matches": true
+        },
+        {
+          "basename": "notes.pdf",
+          "matches": true
+        }
+      ]
+    },
+    {
+      "name": "regex-only-is-constrained",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"^invoice\",\"extension\":\"\"}"
+      },
+      "expect": {
+        "outcome": "selection",
+        "state": "constrained",
+        "pattern": "^invoice",
+        "extension": null,
+        "canonical": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"^invoice\",\"extension\":\"\"}"
+      },
+      "matches": [
+        {
+          "basename": "invoice-1.docx",
+          "matches": true
+        },
+        {
+          "basename": "invoice.pdf",
+          "matches": true
+        },
+        {
+          "basename": "draft-invoice.docx",
+          "matches": false
+        }
+      ]
+    },
+    {
+      "name": "extension-only-is-constrained",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\"docx\"}"
+      },
+      "expect": {
+        "outcome": "selection",
+        "state": "constrained",
+        "pattern": "",
+        "extension": "docx",
+        "canonical": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\"docx\"}"
+      },
+      "matches": [
+        {
+          "basename": "report.docx",
+          "matches": true
+        },
+        {
+          "basename": "report.pdf",
+          "matches": false
+        }
+      ]
+    },
+    {
+      "name": "regex-and-extension-is-constrained",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"^invoice\",\"extension\":\"docx\"}"
+      },
+      "expect": {
+        "outcome": "selection",
+        "state": "constrained",
+        "pattern": "^invoice",
+        "extension": "docx",
+        "canonical": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"^invoice\",\"extension\":\"docx\"}"
+      },
+      "matches": [
+        {
+          "basename": "invoice-1.DOCX",
+          "matches": true
+        },
+        {
+          "basename": "Invoice-1.DOCX",
+          "matches": false
+        },
+        {
+          "basename": "invoice.pdf",
+          "matches": false
+        },
+        {
+          "basename": "other.docx",
+          "matches": false
+        }
+      ]
+    },
+    {
+      "name": "present-member-order-and-whitespace",
+      "input": {
+        "present": true,
+        "raw": "{ \"extension\" : \" .DOCX \" , \"dialect\":\"rust-regex-1\",\n  \"version\":1, \"filenameRegex\":\"\" }"
+      },
+      "expect": {
+        "outcome": "selection",
+        "state": "constrained",
+        "pattern": "",
+        "extension": "docx"
+      },
+      "matches": [
+        {
+          "basename": "report.docx",
+          "matches": true
+        },
+        {
+          "basename": "report.pdf",
+          "matches": false
+        }
+      ]
+    },
+    {
+      "name": "extension-leading-dot-and-case",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\".DOCX\"}"
+      },
+      "expect": {
+        "outcome": "selection",
+        "state": "constrained",
+        "pattern": "",
+        "extension": "docx",
+        "canonical": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\"docx\"}"
+      },
+      "matches": [
+        {
+          "basename": "report.DOCX",
+          "matches": true
+        },
+        {
+          "basename": ".report.docx",
+          "matches": true
+        },
+        {
+          "basename": "REPORT.docx",
+          "matches": true
+        },
+        {
+          "basename": "report.pdf",
+          "matches": false
+        }
+      ]
+    },
+    {
+      "name": "extension-whitespace-and-case",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\"  .DocX\\t\"}"
+      },
+      "expect": {
+        "outcome": "selection",
+        "state": "constrained",
+        "pattern": "",
+        "extension": "docx",
+        "canonical": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\"docx\"}"
+      },
+      "matches": [
+        {
+          "basename": "report.docx",
+          "matches": true
+        },
+        {
+          "basename": "report.pdf",
+          "matches": false
+        }
+      ]
+    },
+    {
+      "name": "extension-trailing-whitespace-trimmed",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\"docx \\r\\n\"}"
+      },
+      "expect": {
+        "outcome": "selection",
+        "state": "constrained",
+        "pattern": "",
+        "extension": "docx"
+      },
+      "matches": [
+        {
+          "basename": "report.docx",
+          "matches": true
+        }
+      ]
+    },
+    {
+      "name": "extension-internal-space-invalid",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\"do cx\"}"
+      },
+      "expect": {
+        "outcome": "error",
+        "errorClass": "invalid-extension"
+      }
+    },
+    {
+      "name": "extension-lone-dot-invalid",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\".\"}"
+      },
+      "expect": {
+        "outcome": "error",
+        "errorClass": "invalid-extension"
+      }
+    },
+    {
+      "name": "extension-two-dots-invalid",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\"tar.gz\"}"
+      },
+      "expect": {
+        "outcome": "error",
+        "errorClass": "invalid-extension"
+      }
+    },
+    {
+      "name": "extension-comma-invalid",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\"docx,pdf\"}"
+      },
+      "expect": {
+        "outcome": "error",
+        "errorClass": "invalid-extension"
+      }
+    },
+    {
+      "name": "extension-literal-backslash-t-invalid",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\"\\\\t\"}"
+      },
+      "expect": {
+        "outcome": "error",
+        "errorClass": "invalid-extension"
+      }
+    },
+    {
+      "name": "extension-33-bytes-invalid",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}"
+      },
+      "expect": {
+        "outcome": "error",
+        "errorClass": "invalid-extension"
+      }
+    },
+    {
+      "name": "extension-32-bytes-valid",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}"
+      },
+      "expect": {
+        "outcome": "selection",
+        "state": "constrained",
+        "pattern": "",
+        "extension": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "matches": [
+        {
+          "basename": "note.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "matches": true
+        }
+      ]
+    },
+    {
+      "name": "extension-hyphen-underscore-valid",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\"_doc-x\"}"
+      },
+      "expect": {
+        "outcome": "selection",
+        "state": "constrained",
+        "pattern": "",
+        "extension": "_doc-x"
+      },
+      "matches": [
+        {
+          "basename": "f._DOC-X",
+          "matches": true
+        }
+      ]
+    },
+    {
+      "name": "extension-unicode-invalid",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\"docü\"}"
+      },
+      "expect": {
+        "outcome": "error",
+        "errorClass": "invalid-extension"
+      }
+    },
+    {
+      "name": "extension-dotfile-not-an-extension",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\"docx\"}"
+      },
+      "expect": {
+        "outcome": "selection",
+        "state": "constrained",
+        "pattern": "",
+        "extension": "docx"
+      },
+      "matches": [
+        {
+          "basename": ".docx",
+          "matches": false
+        },
+        {
+          "basename": ".bashrc",
+          "matches": false
+        },
+        {
+          "basename": "report.",
+          "matches": false
+        },
+        {
+          "basename": "reportdocx",
+          "matches": false
+        },
+        {
+          "basename": "report.docx.tmp",
+          "matches": false
+        }
+      ]
+    },
+    {
+      "name": "extension-compound-gz",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\"gz\"}"
+      },
+      "expect": {
+        "outcome": "selection",
+        "state": "constrained",
+        "pattern": "",
+        "extension": "gz"
+      },
+      "matches": [
+        {
+          "basename": "archive.tar.gz",
+          "matches": true
+        },
+        {
+          "basename": "archive.tar.bz2",
+          "matches": false
+        }
+      ]
+    },
+    {
+      "name": "extension-unicode-stem",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\"docx\"}"
+      },
+      "expect": {
+        "outcome": "selection",
+        "state": "constrained",
+        "pattern": "",
+        "extension": "docx"
+      },
+      "matches": [
+        {
+          "basename": "résumé.docx",
+          "matches": true
+        },
+        {
+          "basename": "ÜBERSICHT.DOCX",
+          "matches": true
+        },
+        {
+          "basename": "résumé.pdf",
+          "matches": false
+        }
+      ]
+    },
+    {
+      "name": "regex-search-not-anchored",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"invoice\",\"extension\":\"\"}"
+      },
+      "expect": {
+        "outcome": "selection",
+        "state": "constrained",
+        "pattern": "invoice",
+        "extension": null
+      },
+      "matches": [
+        {
+          "basename": "draft-invoice.docx",
+          "matches": true
+        },
+        {
+          "basename": "invoice-1.docx",
+          "matches": true
+        },
+        {
+          "basename": "draft.pdf",
+          "matches": false
+        }
+      ]
+    },
+    {
+      "name": "regex-inline-flag-case-insensitive",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"(?i)^invoice\",\"extension\":\"\"}"
+      },
+      "expect": {
+        "outcome": "selection",
+        "state": "constrained",
+        "pattern": "(?i)^invoice",
+        "extension": null
+      },
+      "matches": [
+        {
+          "basename": "INVOICE.pdf",
+          "matches": true
+        },
+        {
+          "basename": "invoice.pdf",
+          "matches": true
+        },
+        {
+          "basename": "my-invoice.pdf",
+          "matches": false
+        }
+      ]
+    },
+    {
+      "name": "regex-space-pattern-is-real",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\" \",\"extension\":\"\"}"
+      },
+      "expect": {
+        "outcome": "selection",
+        "state": "constrained",
+        "pattern": " ",
+        "extension": null
+      },
+      "matches": [
+        {
+          "basename": "a b.txt",
+          "matches": true
+        },
+        {
+          "basename": "ab.txt",
+          "matches": false
+        }
+      ]
+    },
+    {
+      "name": "regex-dot-excludes-newline",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"^a.b$\",\"extension\":\"\"}"
+      },
+      "expect": {
+        "outcome": "selection",
+        "state": "constrained",
+        "pattern": "^a.b$",
+        "extension": null
+      },
+      "matches": [
+        {
+          "basename": "aXb",
+          "matches": true
+        },
+        {
+          "basename": "a\nb",
+          "matches": false
+        }
+      ]
+    },
+    {
+      "name": "regex-unicode-class",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"^\\\\p{Greek}+$\",\"extension\":\"\"}"
+      },
+      "expect": {
+        "outcome": "selection",
+        "state": "constrained",
+        "pattern": "^\\p{Greek}+$",
+        "extension": null
+      },
+      "matches": [
+        {
+          "basename": "αβγ",
+          "matches": true
+        },
+        {
+          "basename": "abc",
+          "matches": false
+        }
+      ]
+    },
+    {
+      "name": "regex-parent-directory-not-matched",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"^invoice\",\"extension\":\"\"}"
+      },
+      "expect": {
+        "outcome": "selection",
+        "state": "constrained",
+        "pattern": "^invoice",
+        "extension": null
+      },
+      "matches": [
+        {
+          "basename": "notes.txt",
+          "matches": false
+        }
+      ]
+    },
+    {
+      "name": "regex-backreference-invalid",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"(x)\\\\1\",\"extension\":\"\"}"
+      },
+      "expect": {
+        "outcome": "error",
+        "errorClass": "invalid-regex"
+      }
+    },
+    {
+      "name": "regex-double-backslash-is-literal",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"(x)\\\\\\\\1\",\"extension\":\"\"}"
+      },
+      "expect": {
+        "outcome": "selection",
+        "state": "constrained",
+        "pattern": "(x)\\\\1",
+        "extension": null
+      },
+      "matches": [
+        {
+          "basename": "x\\1",
+          "matches": true
+        },
+        {
+          "basename": "x1",
+          "matches": false
+        }
+      ]
+    },
+    {
+      "name": "regex-unclosed-class-invalid",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"[\",\"extension\":\"\"}"
+      },
+      "expect": {
+        "outcome": "error",
+        "errorClass": "invalid-regex"
+      }
+    },
+    {
+      "name": "regex-lookahead-invalid",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"(?=x)\",\"extension\":\"\"}"
+      },
+      "expect": {
+        "outcome": "error",
+        "errorClass": "invalid-regex"
+      }
+    },
+    {
+      "name": "schema-present-null",
+      "input": {
+        "present": true,
+        "raw": "null"
+      },
+      "expect": {
+        "outcome": "error",
+        "errorClass": "present-null"
+      }
+    },
+    {
+      "name": "schema-malformed-truncated",
+      "input": {
+        "present": true,
+        "raw": "{"
+      },
+      "expect": {
+        "outcome": "error",
+        "errorClass": "malformed-json"
+      }
+    },
+    {
+      "name": "schema-empty-text",
+      "input": {
+        "present": true,
+        "raw": ""
+      },
+      "expect": {
+        "outcome": "error",
+        "errorClass": "malformed-json"
+      }
+    },
+    {
+      "name": "schema-whitespace-only-text",
+      "input": {
+        "present": true,
+        "raw": " \n\t "
+      },
+      "expect": {
+        "outcome": "error",
+        "errorClass": "malformed-json"
+      }
+    },
+    {
+      "name": "schema-trailing-garbage",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\"\"} 0"
+      },
+      "expect": {
+        "outcome": "error",
+        "errorClass": "malformed-json"
+      }
+    },
+    {
+      "name": "schema-top-level-array",
+      "input": {
+        "present": true,
+        "raw": "[]"
+      },
+      "expect": {
+        "outcome": "error",
+        "errorClass": "not-an-object"
+      }
+    },
+    {
+      "name": "schema-top-level-string",
+      "input": {
+        "present": true,
+        "raw": "\"selection\""
+      },
+      "expect": {
+        "outcome": "error",
+        "errorClass": "not-an-object"
+      }
+    },
+    {
+      "name": "schema-top-level-number",
+      "input": {
+        "present": true,
+        "raw": "1"
+      },
+      "expect": {
+        "outcome": "error",
+        "errorClass": "not-an-object"
+      }
+    },
+    {
+      "name": "schema-top-level-bool",
+      "input": {
+        "present": true,
+        "raw": "true"
+      },
+      "expect": {
+        "outcome": "error",
+        "errorClass": "not-an-object"
+      }
+    },
+    {
+      "name": "schema-duplicate-version",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\"\"}"
+      },
+      "expect": {
+        "outcome": "error",
+        "errorClass": "duplicate-member"
+      }
+    },
+    {
+      "name": "schema-duplicate-dialect",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\"\"}"
+      },
+      "expect": {
+        "outcome": "error",
+        "errorClass": "duplicate-member"
+      }
+    },
+    {
+      "name": "schema-duplicate-filenameRegex",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"filenameRegex\":\"\",\"extension\":\"\"}"
+      },
+      "expect": {
+        "outcome": "error",
+        "errorClass": "duplicate-member"
+      }
+    },
+    {
+      "name": "schema-duplicate-extension",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\"\",\"extension\":\"\"}"
+      },
+      "expect": {
+        "outcome": "error",
+        "errorClass": "duplicate-member"
+      }
+    },
+    {
+      "name": "schema-unknown-member",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\"\",\"selectionMode\":\"all\"}"
+      },
+      "expect": {
+        "outcome": "error",
+        "errorClass": "unknown-member"
+      }
+    },
+    {
+      "name": "schema-missing-version",
+      "input": {
+        "present": true,
+        "raw": "{\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\"\"}"
+      },
+      "expect": {
+        "outcome": "error",
+        "errorClass": "missing-member"
+      }
+    },
+    {
+      "name": "schema-missing-dialect",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"filenameRegex\":\"\",\"extension\":\"\"}"
+      },
+      "expect": {
+        "outcome": "error",
+        "errorClass": "missing-member"
+      }
+    },
+    {
+      "name": "schema-missing-filenameRegex",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"extension\":\"\"}"
+      },
+      "expect": {
+        "outcome": "error",
+        "errorClass": "missing-member"
+      }
+    },
+    {
+      "name": "schema-missing-extension",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\"}"
+      },
+      "expect": {
+        "outcome": "error",
+        "errorClass": "missing-member"
+      }
+    },
+    {
+      "name": "schema-unknown-version-999",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":999,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\"\"}"
+      },
+      "expect": {
+        "outcome": "error",
+        "errorClass": "unknown-version"
+      }
+    },
+    {
+      "name": "schema-unknown-version-0",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":0,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\"\"}"
+      },
+      "expect": {
+        "outcome": "error",
+        "errorClass": "unknown-version"
+      }
+    },
+    {
+      "name": "schema-version-negative-invalid",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":-1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\"\"}"
+      },
+      "expect": {
+        "outcome": "error",
+        "errorClass": "unknown-version"
+      }
+    },
+    {
+      "name": "schema-version-string-invalid",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":\"1\",\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\"\"}"
+      },
+      "expect": {
+        "outcome": "error",
+        "errorClass": "wrong-type"
+      }
+    },
+    {
+      "name": "schema-version-bool-invalid",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":true,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\"\"}"
+      },
+      "expect": {
+        "outcome": "error",
+        "errorClass": "wrong-type"
+      }
+    },
+    {
+      "name": "schema-version-float-invalid",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1.0,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\"\"}"
+      },
+      "expect": {
+        "outcome": "error",
+        "errorClass": "wrong-type"
+      }
+    },
+    {
+      "name": "schema-version-null-invalid",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":null,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\"\"}"
+      },
+      "expect": {
+        "outcome": "error",
+        "errorClass": "wrong-type"
+      }
+    },
+    {
+      "name": "schema-dialect-unknown",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-2\",\"filenameRegex\":\"\",\"extension\":\"\"}"
+      },
+      "expect": {
+        "outcome": "error",
+        "errorClass": "unknown-dialect"
+      }
+    },
+    {
+      "name": "schema-dialect-wrong-type",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":2,\"filenameRegex\":\"\",\"extension\":\"\"}"
+      },
+      "expect": {
+        "outcome": "error",
+        "errorClass": "wrong-type"
+      }
+    },
+    {
+      "name": "schema-regex-wrong-type",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":1,\"extension\":\"\"}"
+      },
+      "expect": {
+        "outcome": "error",
+        "errorClass": "wrong-type"
+      }
+    },
+    {
+      "name": "schema-regex-null-invalid",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":null,\"extension\":\"\"}"
+      },
+      "expect": {
+        "outcome": "error",
+        "errorClass": "wrong-type"
+      }
+    },
+    {
+      "name": "schema-extension-wrong-type",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":[\"docx\"]}"
+      },
+      "expect": {
+        "outcome": "error",
+        "errorClass": "wrong-type"
+      }
+    },
+    {
+      "name": "limit-pattern-1024-valid",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"extension\":\"\"}"
+      },
+      "expect": {
+        "outcome": "selection",
+        "state": "constrained",
+        "pattern": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "extension": null
+      },
+      "matches": [
+        {
+          "basename": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "matches": true
+        },
+        {
+          "basename": "a",
+          "matches": false
+        }
+      ]
+    },
+    {
+      "name": "limit-pattern-1025-invalid",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"extension\":\"\"}"
+      },
+      "expect": {
+        "outcome": "error",
+        "errorClass": "pattern-too-long"
+      }
+    },
+    {
+      "name": "limit-pattern-nesting-32-valid",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"((((((((((((((((((((((((((((((((a))))))))))))))))))))))))))))))))\",\"extension\":\"\"}"
+      },
+      "expect": {
+        "outcome": "selection",
+        "state": "constrained",
+        "pattern": "((((((((((((((((((((((((((((((((a))))))))))))))))))))))))))))))))",
+        "extension": null
+      },
+      "matches": [
+        {
+          "basename": "a",
+          "matches": true
+        }
+      ]
+    },
+    {
+      "name": "limit-pattern-nesting-33-invalid",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"(((((((((((((((((((((((((((((((((a)))))))))))))))))))))))))))))))))\",\"extension\":\"\"}"
+      },
+      "expect": {
+        "outcome": "error",
+        "errorClass": "pattern-resource-limit"
+      }
+    },
+    {
+      "name": "limit-pattern-size-invalid",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"a{100000}\",\"extension\":\"\"}"
+      },
+      "expect": {
+        "outcome": "error",
+        "errorClass": "pattern-resource-limit"
+      }
+    },
+    {
+      "name": "candidate-length-4096-valid",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\"txt\"}"
+      },
+      "expect": {
+        "outcome": "selection",
+        "state": "constrained",
+        "pattern": "",
+        "extension": "txt"
+      },
+      "matches": [
+        {
+          "basename": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.txt",
+          "matches": true
+        }
+      ]
+    },
+    {
+      "name": "candidate-length-4097-invalid",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\"txt\"}"
+      },
+      "expect": {
+        "outcome": "selection",
+        "state": "constrained",
+        "pattern": "",
+        "extension": "txt"
+      },
+      "matches": [
+        {
+          "basename": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.txt",
+          "error": "basename-too-long"
+        }
+      ]
+    },
+    {
+      "name": "candidate-empty-invalid",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\"docx\"}"
+      },
+      "expect": {
+        "outcome": "selection",
+        "state": "constrained",
+        "pattern": "",
+        "extension": "docx"
+      },
+      "matches": [
+        {
+          "basename": "",
+          "error": "invalid-basename"
+        }
+      ]
+    },
+    {
+      "name": "candidate-dot-invalid",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\"docx\"}"
+      },
+      "expect": {
+        "outcome": "selection",
+        "state": "constrained",
+        "pattern": "",
+        "extension": "docx"
+      },
+      "matches": [
+        {
+          "basename": ".",
+          "error": "invalid-basename"
+        }
+      ]
+    },
+    {
+      "name": "candidate-dotdot-invalid",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\"docx\"}"
+      },
+      "expect": {
+        "outcome": "selection",
+        "state": "constrained",
+        "pattern": "",
+        "extension": "docx"
+      },
+      "matches": [
+        {
+          "basename": "..",
+          "error": "invalid-basename"
+        }
+      ]
+    },
+    {
+      "name": "candidate-path-invalid",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\"docx\"}"
+      },
+      "expect": {
+        "outcome": "selection",
+        "state": "constrained",
+        "pattern": "",
+        "extension": "docx"
+      },
+      "matches": [
+        {
+          "basename": "parent/invoice.docx",
+          "error": "invalid-basename"
+        }
+      ]
+    },
+    {
+      "name": "candidate-nul-invalid",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\"docx\"}"
+      },
+      "expect": {
+        "outcome": "selection",
+        "state": "constrained",
+        "pattern": "",
+        "extension": "docx"
+      },
+      "matches": [
+        {
+          "basename": "a\u0000b",
+          "error": "invalid-basename"
+        }
+      ]
+    },
+    {
+      "name": "candidate-backslash-is-literal",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\"docx\"}"
+      },
+      "expect": {
+        "outcome": "selection",
+        "state": "constrained",
+        "pattern": "",
+        "extension": "docx"
+      },
+      "matches": [
+        {
+          "basename": "dir\\report.docx",
+          "matches": true
+        }
+      ]
+    },
+    {
+      "name": "neg-and-not-or",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"^invoice\",\"extension\":\"docx\"}"
+      },
+      "expect": {
+        "outcome": "selection",
+        "state": "constrained",
+        "pattern": "^invoice",
+        "extension": "docx"
+      },
+      "matches": [
+        {
+          "basename": "invoice.pdf",
+          "matches": false
+        },
+        {
+          "basename": "other.docx",
+          "matches": false
+        },
+        {
+          "basename": "invoice-1.DOCX",
+          "matches": true
+        }
+      ]
+    },
+    {
+      "name": "neg-regex-ignored",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"^invoice$\",\"extension\":\"\"}"
+      },
+      "expect": {
+        "outcome": "selection",
+        "state": "constrained",
+        "pattern": "^invoice$",
+        "extension": null
+      },
+      "matches": [
+        {
+          "basename": "invoice",
+          "matches": true
+        },
+        {
+          "basename": "draft-invoice",
+          "matches": false
+        }
+      ]
+    },
+    {
+      "name": "neg-extension-ignored",
+      "input": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\"docx\"}"
+      },
+      "expect": {
+        "outcome": "selection",
+        "state": "constrained",
+        "pattern": "",
+        "extension": "docx"
+      },
+      "matches": [
+        {
+          "basename": "report.docx",
+          "matches": true
+        },
+        {
+          "basename": "report.pdf",
+          "matches": false
+        }
+      ]
+    }
+  ],
+  "effectiveCases": [
+    {
+      "name": "effective-new-preset-default-only",
+      "pairKind": "new-preset",
+      "presetDefault": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\"docx\"}"
+      },
+      "explicit": null,
+      "expect": {
+        "state": "constrained",
+        "pattern": "",
+        "extension": "docx"
+      }
+    },
+    {
+      "name": "effective-new-preset-explicit-wins",
+      "pairKind": "new-preset",
+      "presetDefault": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\"docx\"}"
+      },
+      "explicit": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"^invoice\",\"extension\":\"\"}"
+      },
+      "expect": {
+        "state": "constrained",
+        "pattern": "^invoice",
+        "extension": null
+      },
+      "matches": [
+        {
+          "basename": "invoice-1.docx",
+          "matches": true
+        },
+        {
+          "basename": "other.docx",
+          "matches": false
+        }
+      ]
+    },
+    {
+      "name": "effective-new-preset-without-settings",
+      "pairKind": "new-preset",
+      "presetDefault": null,
+      "explicit": null,
+      "expect": {
+        "state": "explicit-all",
+        "pattern": "",
+        "extension": null
+      },
+      "matches": [
+        {
+          "basename": "report.pdf",
+          "matches": true
+        }
+      ]
+    },
+    {
+      "name": "effective-new-preset-explicit-empty-wins",
+      "pairKind": "new-preset",
+      "presetDefault": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\"docx\"}"
+      },
+      "explicit": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\"\"}"
+      },
+      "expect": {
+        "state": "explicit-all",
+        "pattern": "",
+        "extension": null
+      },
+      "matches": [
+        {
+          "basename": "report.pdf",
+          "matches": true
+        }
+      ]
+    },
+    {
+      "name": "effective-new-manual-without-settings",
+      "pairKind": "new-manual",
+      "presetDefault": null,
+      "explicit": null,
+      "expect": {
+        "state": "explicit-all",
+        "pattern": "",
+        "extension": null
+      },
+      "matches": [
+        {
+          "basename": "report.pdf",
+          "matches": true
+        }
+      ]
+    },
+    {
+      "name": "effective-existing-legacy-stays-legacy",
+      "pairKind": "existing",
+      "presetDefault": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\"docx\"}"
+      },
+      "explicit": null,
+      "expect": {
+        "state": "legacy-all",
+        "pattern": "",
+        "extension": null
+      },
+      "matches": [
+        {
+          "basename": "report.pdf",
+          "matches": true
+        }
+      ]
+    },
+    {
+      "name": "effective-existing-keeps-explicit",
+      "pairKind": "existing",
+      "presetDefault": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\"docx\"}"
+      },
+      "explicit": {
+        "present": true,
+        "raw": "{\"version\":1,\"dialect\":\"rust-regex-1\",\"filenameRegex\":\"\",\"extension\":\"pdf\"}"
+      },
+      "expect": {
+        "state": "constrained",
+        "pattern": "",
+        "extension": "pdf"
+      },
+      "matches": [
+        {
+          "basename": "report.pdf",
+          "matches": true
+        },
+        {
+          "basename": "report.docx",
+          "matches": false
+        }
+      ]
+    }
+  ],
+  "negativeControls": [
+    {
+      "kind": "decode",
+      "name": "neg-and-not-or",
+      "mutation": "treating regex AND extension as OR would accept invoice.pdf or other.docx"
+    },
+    {
+      "kind": "decode",
+      "name": "neg-regex-ignored",
+      "mutation": "ignoring the regex constraint would accept draft-invoice"
+    },
+    {
+      "kind": "decode",
+      "name": "neg-extension-ignored",
+      "mutation": "ignoring the extension constraint would accept report.pdf"
+    },
+    {
+      "kind": "decode",
+      "name": "regex-unclosed-class-invalid",
+      "mutation": "converting a decoder error into an all-files selection would return a selection here"
+    },
+    {
+      "kind": "effective",
+      "name": "effective-new-preset-explicit-empty-wins",
+      "mutation": "refreshing defaults over an explicit empty selection would resolve constrained docx"
+    },
+    {
+      "kind": "effective",
+      "name": "effective-existing-legacy-stays-legacy",
+      "mutation": "upgrading a legacy pair to the preset default would resolve constrained docx"
+    }
+  ]
+}
