@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import {
   createCallbackProcessor,
+  createCallbackOwnership,
   createStartupGeneration,
   isTerminalSessionError,
   shouldRestoreSessionBackup,
@@ -76,8 +77,8 @@ test('main callback handler preserves a valid transaction after rejected state a
     if (command === 'update_background_syncs') return undefined;
     throw new Error(`unexpected invoke: ${command}`);
   };
-  const handler = new Function('startupGeneration', 'invoke', 'state', 'cacheSignedInUser', 'saveSessionBackup', 'loadPresets', 'applySpacePrefsToPairs', 'persistPairs', 'render', 'refreshEstimates', `${handlerSource}; return finishCallbackOnce;`)(
-    generation, invoke, state,
+  const handler = new Function('startupGeneration', 'callbackOwnership', 'invoke', 'state', 'cacheSignedInUser', 'saveSessionBackup', 'loadPresets', 'applySpacePrefsToPairs', 'persistPairs', 'render', 'refreshEstimates', `${handlerSource}; return finishCallbackOnce;`)(
+    generation, createCallbackOwnership(), invoke, state,
     (user: string) => { state.user = user; }, async () => undefined, async () => undefined,
     () => undefined, async () => undefined, () => undefined, async () => undefined,
   ) as (url: string) => Promise<string | undefined>;
@@ -118,8 +119,8 @@ test('main callback is consumed once when ancillary preset loading fails after n
     if (command === 'update_background_syncs') return undefined;
     throw new Error(`unexpected invoke: ${command}`);
   };
-  const handler = new Function('startupGeneration', 'invoke', 'state', 'cacheSignedInUser', 'saveSessionBackup', 'loadPresets', 'applySpacePrefsToPairs', 'persistPairs', 'render', 'refreshEstimates', `${handlerSource}; return finishCallbackOnce;`)(
-    generation, invoke, state, (user: string) => { state.user = user; }, async () => undefined,
+  const handler = new Function('startupGeneration', 'callbackOwnership', 'invoke', 'state', 'cacheSignedInUser', 'saveSessionBackup', 'loadPresets', 'applySpacePrefsToPairs', 'persistPairs', 'render', 'refreshEstimates', `${handlerSource}; return finishCallbackOnce;`)(
+    generation, createCallbackOwnership(), invoke, state, (user: string) => { state.user = user; }, async () => undefined,
     async () => { throw new Error('presets temporarily unavailable'); }, () => undefined, async () => undefined, () => undefined, async () => undefined,
   ) as (url: string) => Promise<string | undefined>;
   const processor = createCallbackProcessor(handler);
@@ -157,8 +158,8 @@ test('main offline startup does not replace a newer login after deferred session
     if (command === 'ensure_notifications') return true;
     throw new Error(`unexpected invoke: ${command}`);
   };
-  const startApp = new Function('invoke', 'onOpenUrl', 'startupGeneration', 'state', 'restoreSessionBackup', 'shouldRestoreSessionBackup', 'isTerminalSessionError', 'localStorage', 'USER_KEY', 'hasStoredSession', 'readBackgroundStatus', 'applySpacePrefsToPairs', 'persistPairs', 'loadPresets', 'getCurrent', 'dispatchCallback', 'window', 'refreshProgress', 'render', 'refreshEstimates', `${startSource}; return start;`)(
-    invoke, async () => undefined, startupGeneration, state, async () => false,
+  const startApp = new Function('invoke', 'onOpenUrl', 'startupGeneration', 'state', 'cacheSignedInUser', 'saveSessionBackup', 'restoreSessionBackup', 'shouldRestoreSessionBackup', 'isTerminalSessionError', 'localStorage', 'USER_KEY', 'hasStoredSession', 'readBackgroundStatus', 'applySpacePrefsToPairs', 'persistPairs', 'loadPresets', 'getCurrent', 'dispatchCallback', 'window', 'refreshProgress', 'render', 'refreshEstimates', `${startSource}; return start;`)(
+    invoke, async () => undefined, startupGeneration, state, (user: string) => { state.user = user; }, async () => undefined, async () => false,
     () => true, () => false, { getItem: (key: string) => storage.get(key) ?? null },
     'nixhomeserver.filesync.user.v1', hasStoredSession, () => undefined, () => undefined,
     async () => undefined, async () => undefined, async () => [], () => undefined,
@@ -172,6 +173,64 @@ test('main offline startup does not replace a newer login after deferred session
   await pendingStart;
   assert.equal(state.user, 'new-user');
   assert.equal(state.offline, false);
+});
+
+test('actual callback survives listener-registration delivery and initial-link replay', async () => {
+  const source = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
+  const start = source.indexOf('async function start(): Promise<void> {');
+  const end = source.indexOf(String.fromCharCode(10) + 'async function renderServerBrowser', start);
+  const callbackStart = source.indexOf('async function finishCallbackOnce(');
+  const callbackEnd = source.indexOf(String.fromCharCode(10) + 'const finishCallback =', callbackStart);
+  assert.ok(start >= 0 && end > start && callbackStart >= 0 && callbackEnd > callbackStart, 'production startup and callback handlers are present');
+  const startSource = source.slice(start, end)
+    .replace('async function start(): Promise<void> {', 'async function start() {')
+    .replace(/invoke<[^>]+>\(/g, 'invoke(')
+    .replace('let startupError: unknown;', 'let startupError;');
+  const callbackSource = source.slice(callbackStart, callbackEnd)
+    .replace('async function finishCallbackOnce(url: string): Promise<string | undefined> {', 'async function finishCallbackOnce(url) {')
+    .replaceAll('invoke<string>(', 'invoke(')
+    .replaceAll('invoke<boolean>(', 'invoke(')
+    .replace('let generation: number | undefined;', 'let generation;');
+  const startupGeneration = createStartupGeneration();
+  const callbackOwnership = createCallbackOwnership();
+  const state: Record<string, unknown> = { user: undefined, offline: false, error: '', notice: '', pairs: [] };
+  const callbackUrl = 'filesync://oauth/callback?startup';
+  const delivered: string[] = [];
+  const callbackOperations: Promise<unknown>[] = [];
+  let finishCalls = 0;
+  const invoke = async (command: string) => {
+    if (command === 'finish_login') { finishCalls += 1; return 'new-user'; }
+    if (command === 'current_user') return 'cached-user';
+    if (command === 'background_sync_status') return null;
+    if (command === 'settings_authorized') return true;
+    if (command === 'session_backup') return null;
+    if (command === 'server_presets') return [];
+    if (command === 'update_background_syncs') return undefined;
+    if (command === 'ensure_notifications') return true;
+    throw new Error(`unexpected invoke: ${command}`);
+  };
+  const cacheSignedInUser = (user: string) => { state.user = user; };
+  const callbackHandler = new Function('startupGeneration', 'callbackOwnership', 'invoke', 'state', 'cacheSignedInUser', 'saveSessionBackup', 'loadPresets', 'applySpacePrefsToPairs', 'persistPairs', 'render', 'refreshEstimates', `${callbackSource}; return finishCallbackOnce;`)(
+    startupGeneration, callbackOwnership, invoke, state, cacheSignedInUser, async () => undefined,
+    async () => undefined, () => undefined, async () => undefined, () => undefined, async () => undefined,
+  ) as (url: string) => Promise<string | undefined>;
+  const processCallback = createCallbackProcessor(callbackHandler);
+  const startApp = new Function('invoke', 'onOpenUrl', 'startupGeneration', 'state', 'cacheSignedInUser', 'saveSessionBackup', 'restoreSessionBackup', 'shouldRestoreSessionBackup', 'isTerminalSessionError', 'localStorage', 'USER_KEY', 'hasStoredSession', 'readBackgroundStatus', 'applySpacePrefsToPairs', 'persistPairs', 'loadPresets', 'getCurrent', 'dispatchCallback', 'window', 'refreshProgress', 'render', 'refreshEstimates', `${startSource}; return start;`)(
+    invoke, async (listener: (links: string[]) => void) => { listener([callbackUrl]); }, startupGeneration, state,
+    cacheSignedInUser, async () => undefined, async () => false, () => true, () => false,
+    { getItem: () => null }, 'nixhomeserver.filesync.user.v1', async () => false,
+    () => undefined, () => undefined, async () => undefined, async () => undefined,
+    async () => [callbackUrl], (url: string) => {
+      delivered.push(url);
+      callbackOperations.push(processCallback(url));
+    },
+    { setInterval: () => 0 }, async () => undefined, () => undefined, async () => undefined,
+  ) as () => Promise<void>;
+  await startApp();
+  await Promise.all(callbackOperations);
+  assert.equal(state.user, 'new-user');
+  assert.equal(finishCalls, 1, 'the replay coalesces with the registration-delivered callback');
+  assert.deepEqual(delivered, [callbackUrl, callbackUrl]);
 });
 
 
@@ -196,8 +255,8 @@ test('main callback completion cannot replace a newer login transaction', async 
     if (command === 'update_background_syncs') return undefined;
     throw new Error(`unexpected invoke: ${command} ${args?.callbackUrl ?? ''}`);
   };
-  const handler = new Function('startupGeneration', 'invoke', 'state', 'cacheSignedInUser', 'saveSessionBackup', 'loadPresets', 'applySpacePrefsToPairs', 'persistPairs', 'render', 'refreshEstimates', `${handlerSource}; return finishCallbackOnce;`)(
-    generation, invoke, state, (user: string) => { state.user = user; }, async () => undefined,
+  const handler = new Function('startupGeneration', 'callbackOwnership', 'invoke', 'state', 'cacheSignedInUser', 'saveSessionBackup', 'loadPresets', 'applySpacePrefsToPairs', 'persistPairs', 'render', 'refreshEstimates', `${handlerSource}; return finishCallbackOnce;`)(
+    generation, createCallbackOwnership(), invoke, state, (user: string) => { state.user = user; }, async () => undefined,
     async () => undefined, () => undefined, async () => undefined, () => undefined, async () => undefined,
   ) as (url: string) => Promise<string | undefined>;
   const oldCompletion = handler('filesync://oauth/callback?old');
@@ -261,4 +320,42 @@ test('main restore handler does not commit a deferred prior account after a newe
   assert.equal(storage.has('nixhomeserver.filesync.user.v1'), false);
   assert.equal(storage.has('nixhomeserver.filesync.session-backup.v1'), false);
   assert.match(state.error ?? '', /invalid_grant/);
+});
+
+test('actual callback handler lets the latest successful replacement own state in either response order', async () => {
+  const source = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
+  const start = source.indexOf('async function finishCallbackOnce(');
+  const end = source.indexOf(String.fromCharCode(10) + 'const finishCallback =', start);
+  assert.ok(start >= 0 && end > start, 'production callback handler is present');
+  const handlerSource = source.slice(start, end)
+    .replace('async function finishCallbackOnce(url: string): Promise<string | undefined> {', 'async function finishCallbackOnce(url) {')
+    .replaceAll('invoke<string>(', 'invoke(')
+    .replaceAll('invoke<boolean>(', 'invoke(')
+    .replace('let generation: number | undefined;', 'let generation;');
+
+  for (const responseOrder of [['old', 'new'], ['new', 'old']]) {
+    const generation = createStartupGeneration();
+    const ownership = createCallbackOwnership();
+    const state: Record<string, unknown> = { user: undefined, offline: false, error: '', notice: '' };
+    const resolvers = new Map<string, (user: string) => void>();
+    const invoke = async (command: string, args?: { callbackUrl?: string }) => {
+      if (command === 'finish_login') return await new Promise<string>((resolve) => { resolvers.set(args!.callbackUrl!, resolve); });
+      if (command === 'settings_authorized') return true;
+      if (command === 'session_backup') return null;
+      if (command === 'server_presets') return [];
+      if (command === 'update_background_syncs') return undefined;
+      throw new Error(`unexpected invoke: ${command}`);
+    };
+    const handler = new Function('startupGeneration', 'callbackOwnership', 'invoke', 'state', 'cacheSignedInUser', 'saveSessionBackup', 'loadPresets', 'applySpacePrefsToPairs', 'persistPairs', 'render', 'refreshEstimates', `${handlerSource}; return finishCallbackOnce;`)(
+      generation, ownership, invoke, state, (user: string) => { state.user = user; }, async () => undefined,
+      async () => undefined, () => undefined, async () => undefined, () => undefined, async () => undefined,
+    ) as (url: string) => Promise<string | undefined>;
+    const oldCallback = handler('filesync://oauth/callback?old');
+    const newCallback = handler('filesync://oauth/callback?new');
+    resolvers.get(`filesync://oauth/callback?${responseOrder[0]}`)!(responseOrder[0]);
+    await Promise.resolve();
+    resolvers.get(`filesync://oauth/callback?${responseOrder[1]}`)!(responseOrder[1]);
+    await Promise.all([oldCallback, newCallback]);
+    assert.equal(state.user, 'new', `${responseOrder.join('-first')} response order`);
+  }
 });

@@ -4,7 +4,7 @@ import { openUrl } from '@tauri-apps/plugin-opener';
 import { browseOrder, directoriesOnly, entryMeta, fileActionLabel, joinPath, parentPath, type BrowseEntry, type FileAction } from './browse';
 import { parseSavedPairs, type Folder, type SyncDirection, type SyncPair } from './pairs';
 import { DEFAULT_BLOCK_PERCENT, DEFAULT_WARN_PERCENT, clampPercent, evaluateSpace, formatBytes } from './storage';
-import { createCallbackProcessor, createStartupGeneration, isTerminalSessionError, shouldRestoreSessionBackup } from './auth-lifecycle';
+import { createCallbackOwnership, createCallbackProcessor, createStartupGeneration, isTerminalSessionError, shouldRestoreSessionBackup } from './auth-lifecycle';
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 type TauriWindow = Window & { __TAURI__?: { core?: { invoke?: Invoke } } };
@@ -1057,13 +1057,14 @@ async function restoreSessionBackup(generation: number): Promise<boolean> {
 }
 
 const startupGeneration = createStartupGeneration();
+const callbackOwnership = createCallbackOwnership();
 
 async function start(): Promise<void> {
   if (invoke) {
+    const generation = startupGeneration.begin();
     try {
       await onOpenUrl((urls) => { for (const url of urls) dispatchCallback(url); });
     } catch { /* The browser preview does not provide native deep links. */ }
-    const generation = startupGeneration.begin();
     let startupError: unknown;
     try {
       const startupUser = await invoke<string | null>('current_user') ?? undefined;
@@ -1235,12 +1236,14 @@ async function runFileAction(name: string, action: FileAction, size: number): Pr
 
 async function finishCallbackOnce(url: string): Promise<string | undefined> {
   if (!url.startsWith('filesync://oauth/callback') || !invoke) return undefined;
+  const callbackSequence = callbackOwnership.begin();
   const observedGeneration = startupGeneration.current();
   let generation: number | undefined;
   try {
     const user = await invoke<string>('finish_login', { callbackUrl: url });
-    if (!startupGeneration.isCurrent(observedGeneration)) return user;
+    if (!callbackOwnership.claim(callbackSequence, observedGeneration, startupGeneration.current())) return user;
     generation = startupGeneration.begin();
+    callbackOwnership.recordGeneration(callbackSequence, generation);
     state.user = user;
     state.offline = false;
     cacheSignedInUser(user);
@@ -1264,7 +1267,7 @@ async function finishCallbackOnce(url: string): Promise<string | undefined> {
       }
     }
   } catch (error) {
-    if ((generation === undefined && startupGeneration.isCurrent(observedGeneration)) || (generation !== undefined && startupGeneration.isCurrent(generation))) {
+    if ((generation === undefined && callbackOwnership.isCurrent(callbackSequence, observedGeneration, startupGeneration.current())) || (generation !== undefined && startupGeneration.isCurrent(generation))) {
       state.error = error instanceof Error ? error.message : String(error);
     }
     throw error;
