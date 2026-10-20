@@ -28,6 +28,7 @@ Replace every value that belongs to the previous site. At minimum:
 - [ ] `branding.displayName`
 - [ ] `applications.enabled` — only the apps this host should run.
 - [ ] `identity.adminUser`, `identity.localAdminUser`, `identity.sshPublicKey`
+      (plus `identity.sshExtraPublicKeys` for any additional operator devices)
 - [ ] `identity.appUsers`, `identity.appAdminUsers`, `identity.appUserEmails`
 - [ ] `identity.adminEmail` — must be a real mailbox for ACME and Kanidm.
 - [ ] `network.hostname`, `network.domain` (the new owner's Cloudflare zone)

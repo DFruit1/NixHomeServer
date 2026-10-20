@@ -150,6 +150,12 @@ present, and a guarded test deploy passes:
 ./scripts/deploy.sh --debug --action test
 ```
 
+SSH access for `vars.localAdminUser` accepts `vars.identity.sshPublicKey` plus
+every single-line key in `vars.identity.sshExtraPublicKeys` — for example a phone
+SSH client reaching the host over NetBird. Extra keys must not repeat the primary
+key or each other; root login, password and keyboard-interactive authentication
+stay disabled for all of them.
+
 After that point, do not return to installer-time disk provisioning for normal
 work. Routine changes use the guarded deploy path:
 

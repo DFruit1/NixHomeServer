@@ -240,6 +240,24 @@ else
 fi
 rm -f "$ssh_key_file"
 
+mapfile -t extra_ssh_keys < <(jq -r '(.serverSSHExtraPubKeys // [])[]' <<<"$settings_json")
+extra_ssh_key_index=0
+for extra_ssh_key in "${extra_ssh_keys[@]}"; do
+  extra_ssh_key_index=$((extra_ssh_key_index + 1))
+  extra_key_file="$readiness_tmpdir/server-ssh-extra-key-${extra_ssh_key_index}.pub"
+  if [[ "$extra_ssh_key" == *CHANGE_ME* ]]; then
+    block "vars.nix -> identity.sshExtraPublicKeys entry ${extra_ssh_key_index} is still a placeholder"
+  elif [[ "$extra_ssh_key" == *$'\n'* || "$extra_ssh_key" == *$'\r'* ]]; then
+    block "vars.nix -> identity.sshExtraPublicKeys entry ${extra_ssh_key_index} must be exactly one public-key line"
+  elif ! printf '%s\n' "$extra_ssh_key" >"$extra_key_file" \
+    || ! ssh-keygen -l -f "$extra_key_file" >/dev/null 2>&1; then
+    block "vars.nix -> identity.sshExtraPublicKeys entry ${extra_ssh_key_index} is not a valid OpenSSH public key"
+  else
+    ready "vars.nix -> identity.sshExtraPublicKeys entry ${extra_ssh_key_index} is a valid OpenSSH public key"
+  fi
+  rm -f "$extra_key_file"
+done
+
 case "$dns_mode" in
   split-horizon|netbird-only)
     ready "vars.nix -> dnsSettings.mode is ${dns_mode}"

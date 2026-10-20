@@ -59,6 +59,7 @@ let
       }; # Optional email map for extra app users.
       adminEmail = "dsaw@tuta.io"; # Single contact address used for both ACME and the Kanidm admin account.
       sshPublicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDECt+GBZcPahwDCtWiMgn24qGdqMOJhP/pHo/pKsHAF From PC desktop into Home Server"; # Public key authorized for the local Unix administrator.
+      sshExtraPublicKeys = [ ]; # Additional single-line public keys (for example a phone SSH client) authorized for the local Unix administrator alongside sshPublicKey.
       localAdminUser = "dsaw"; # Local Unix SSH/sudo account retained for this existing server.
       authSessionExpirySeconds = 7776000; # 90 days: how long Kanidm keeps users logged in (auth session lifetime in seconds). Also caps how long the native app can silently refresh.
     };

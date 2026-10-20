@@ -208,6 +208,8 @@ rec {
   kanidmAdminMailAddresses = identityAccessModel.adminMailAddresses;
   kanidmAdminEmail = identity.adminEmail;
   serverSSHPubKey = identity.sshPublicKey;
+  # Extra keys are optional so an existing vars.nix keeps evaluating unchanged.
+  serverSSHExtraPubKeys = identity.sshExtraPublicKeys or [ ];
   localAdminUser = identity.localAdminUser;
   # vars.nix is merge=ours and never updated from upstream, so an existing
   # host's file predates identity.localAdminSudo. Default to the pre-change
