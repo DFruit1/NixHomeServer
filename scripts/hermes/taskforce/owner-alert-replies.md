@@ -16,6 +16,14 @@ Before acting on a labelled reply, read that reference section and resolve its
 exact current revision with kanban-owner-alerts.py --resolve D1. Never use a cached
 mapping. B labels are non-replyable diagnostics. Changed, closed, never-delivered
 or incomplete asks do not authorise action; obtain the exact missing approval.
+
+A SimpleX reply-to-message is equivalent to naming that message's D label. The
+adapter surfaces the quoted message as a leading `[Replying to: ...]` line; read
+the label from the quoted text when the reply body omits it. Both `D49 A` and a
+quoted reply carrying `D49` resolve to the same label. The installed
+`kanban-decision-reply.py --text "<reply>"` performs the mechanical flow
+(label extraction, resolve, verbatim comment, affirmative unblock) and defaults
+to a dry run; use `--apply` from the coordinator session, outside a worker fence.
 Record the verbatim authenticated owner reply FIRST with native kanban_comment,
 verify with kanban_show, then unblock only the resolved scope. Rejection must not
 release implementation. Silence, connectivity tests and unrelated replies are

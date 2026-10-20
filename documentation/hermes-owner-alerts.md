@@ -218,6 +218,28 @@ implementer for the rejected change. Unclear replies keep work blocked.
 Confirmations are one short line per decision and name the actual status.
 Existing owner approval and whole-set deploy gates still apply.
 
+A SimpleX reply-to-message is equivalent to naming that message's D label. The
+installed adapter surfaces the quoted message as a leading `[Replying to: ...]`
+line, so a reply that only quotes the original still resolves. Two adapter
+behaviours make group replies reach the coordinator at all:
+
+- group senders are identified by their stable numeric `memberContactId` when
+  they are saved contacts, so `SIMPLEX_ALLOWED_USERS` (numeric contact ids)
+  authorises the owner in the decision group as well as in the DM; and
+- a quoted `msgContent.quoted` text is prepended to the reply body.
+
+Both live in `plugins/platforms/simplex/adapter.py` of the Hermes install and
+need a gateway/profile reload after a change. Without the `memberContactId`
+mapping the gateway logs `Unauthorized user: <base64 memberId>` and silently
+drops every group reply, which is why a reply can appear to go unanswered.
+
+The mechanical flow is also available as a helper:
+`python3 ~/.hermes/scripts/kanban-decision-reply.py --text "<reply>"` extracts
+the D label from the text or its quoted prefix, resolves it read-only, refuses
+technical (B) labels and stale/closed asks, records the verbatim reply, and with
+`--apply` unblocks only an affirmative `kind=decision` reply. It is a dry run by
+default.
+
 ```bash
 python3 scripts/hermes/kanban-owner-alerts.py --dry-run
 python3 scripts/hermes/kanban-owner-alerts.py --install

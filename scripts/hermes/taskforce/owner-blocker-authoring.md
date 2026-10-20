@@ -61,3 +61,26 @@ technical blocks and send evidence to the coordinator. Dependency blocks need a
 linked open prerequisite, or Hermes falls back to needs_input, which the authoring
 hook rejects. Technical events stay internal; requested answers and scheduled
 steward reports remain separate.
+
+## Classification discipline
+
+The three block kinds are mutually exclusive and exhaustive. Misclassification
+routes cards to the wrong queue and stalls work that could proceed.
+
+| Kind | Means | Example |
+|------|-------|---------|
+| `capability` | A tool, command, package, permission or provider is unavailable and no agent can recover it without owner action. | "pnpm not found", "exit 126 on deploy script", "permission denied on /dev/kvm" |
+| `dependency` | Waiting on another card, review verdict, upstream output, or linked prerequisite to complete. | "waiting on t_abc123 review", "blocked until producer capsule arrives" |
+| `needs_input` | Only the owner can decide or act — a credential, a physical action, an unrecorded system fact, or an owner-only external source. | "need owner to approve deploy", "need SSH key for server" |
+| `transient` | A provider/service fault expected to resolve on retry without owner action. | "provider quota exhausted", "rate limited" |
+
+**The distinction that matters most:** if the blocker reason references another
+card, a review, an upstream output, or a producer — it is `dependency`, not
+`capability`. Link the prerequisite and use `dependency`. A `capability` block
+names a specific missing tool, command, or permission with an exit code or
+error message.
+
+**Do not block cards that are ready to execute.** A card with no tool gap,
+no upstream dependency and no owner-only input should be `todo` or `running`,
+not `blocked`. The guard rejects `capability` blocks whose reason describes
+dependency patterns.

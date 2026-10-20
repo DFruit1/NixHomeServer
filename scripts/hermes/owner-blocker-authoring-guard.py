@@ -16,10 +16,70 @@ import sys
 PROFILE = 'head-coordinator'
 
 
+CAPABILITY_MISCLASS_PATTERNS = [
+    # Waiting on another card's output, review, or findings is a dependency, not a capability gap.
+    (re.compile(r'\bwaiting on\b.*\b(?:card|task|review|verdict|findings|output|producer|reviewer)\b', re.I),
+     'Use kind="dependency" when waiting on another card, review, or upstream output; that is a prerequisite, not a capability gap.'),
+    (re.compile(r'\b(?:waiting|blocked|pending|depends?|until|after|once)\b[^.\n]{0,80}\bt_\d{6,}\b', re.I),
+     'A block reason that waits on a task ID is describing a dependency on that card; use kind="dependency" and link the prerequisite.'),
+    (re.compile(r'\bt_\d{6,}\b[^.\n]{0,80}\b(?:review|verdict|producer|output|findings|completes?|arrives?|done)\b', re.I),
+     'A block reason conditioned on another card completing is a dependency, not a capability gap.'),
+    (re.compile(r'\b(?:after|once|when|until)\b.*\b(?:review|verdict|producer|reviewer|parent|upstream|findings)\b', re.I),
+     'A block reason conditioned on another card completing is a dependency, not a capability gap.'),
+    (re.compile(r'\b(?:blocked|waiting)\s+on\s+(?:another|other|upstream|parent)\b', re.I),
+     'Waiting on another card is a dependency; link the prerequisite and use kind="dependency".'),
+    (re.compile(r'\b(?:capability|tool|permission)\s+(?:gap|missing|not available|unavailable)\b', re.I),
+     None),  # This is a legitimate capability block — do not flag.
+]
+
+
+def check_capability_classification(args, root):
+    """Detect capability blocks that describe dependency patterns.
+
+    Returns an error message string if the block should be reclassified, or None.
+    """
+    reason = str(args.get('reason') or '')
+    if not reason:
+        return None
+    # Check for legitimate capability patterns first — if the reason clearly
+    # describes a tool/permission gap, do not flag it.
+    if re.search(r'\b(?:command|binary|executable|package|library|module|API|endpoint|token|credential)\s+(?:not found|missing|not available|unavailable|denied|exit \d+)\b', reason, re.I):
+        return None
+    if re.search(r'\b(?:permission denied|exit code \d+|command not found|no such file|not installed)\b', reason, re.I):
+        return None
+    # A lifecycle catch-22 (a completion guard that requires an edge only a
+    # coordinator can retire) is agent-side sequencing, not a card dependency.
+    if re.search(r'\b(?:lifecycle guard|sequencing|catch-?22)\b', reason, re.I):
+        return None
+    for pattern, message in CAPABILITY_MISCLASS_PATTERNS:
+        if pattern.search(reason) and message:
+            return message
+    return None
+
+
 def guard(payload, root, alerts):
     tool = payload.get('tool_name')
     args = payload.get('tool_input') or {}
     body = str(args.get('body') or '')
+
+    # Classification correctness check: catch capability blocks that are
+    # actually dependencies before they reach the board.
+    if tool == 'kanban_block' and args.get('kind') == 'capability':
+        misclass = check_capability_classification(args, root)
+        if misclass:
+            return {'action': 'block', 'message': f'Capability block misclassified: {misclass}'}
+
+    # A capability/transient block must carry a reason: it is the machine-auditable
+    # claim that a tool or provider is unavailable, and stale-block detection reads
+    # it. Owner gates carry their ask in Blocking:/Why owner:/Unblock: instead, and
+    # dependency blocks are validated by the linked-prerequisite check below.
+    if tool == 'kanban_block' and args.get('kind') in ('capability', 'transient'):
+        reason = str(args.get('reason') or '').strip()
+        if not reason:
+            return {'action': 'block', 'message':
+                    'Every capability/transient block must carry a reason. Record '
+                    'the concrete evidence: what is blocked, why, and the recovery route.'}
+
     if tool == 'kanban_block' and args.get('kind') == 'dependency':
         # Hermes turns a dependency block with no open parent into needs_input.
         # Do not let that fallback manufacture an owner question from evidence

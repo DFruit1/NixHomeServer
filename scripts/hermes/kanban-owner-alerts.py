@@ -700,6 +700,7 @@ def install(root):
                scripts / 'simplex-decisions.sh': Path(__file__).with_name('simplex-decisions.sh').read_text(),
                scripts / 'hermes-coordinator-reference.md': (source / 'instructions/coordinator-reference.md').read_text(),
                scripts / 'owner-blocker-authoring-guard.py': (source / 'owner-blocker-authoring-guard.py').read_text(),
+               scripts / 'kanban-decision-reply.py': (source / 'kanban-decision-reply.py').read_text(),
                scripts / 'review-taskforce-approval.md': (source / 'taskforce/approval-policy.md').read_text(),
                scripts / 'hermes-fleet-policy.md': (source / 'taskforce/owner-blocker-authoring.md').read_text()}
     spec = importlib.util.spec_from_file_location('steward_installer', source / 'install-steward-readonly.py')

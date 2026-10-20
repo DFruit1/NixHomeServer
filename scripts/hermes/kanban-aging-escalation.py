@@ -15,6 +15,10 @@ substantive board event, not card age:
     coordinator directive comment instructing head-coordinator to clear the
     card -- obtain the missing input, record a superseding decision, or close
     it with evidence.
+  * auditor-reviewed >= 5 days -- a card the auditor has reviewed at least
+    once, and that remains unresolved 5+ days after that review, is forced to
+    ``needs_input``. The auditor's deep-dive did not clear it; further idle
+    time will not. The owner must decide: unblock, supersede, or close.
 
 Every escalation action writes a board event (``reprioritized`` or
 ``commented``), which resets the card's idle clock. The job is therefore
@@ -70,6 +74,17 @@ NON_SUBSTANTIVE = {
     'terminal_worker_reaped', 'claim_rejected',
 }
 TRACKER_TITLE = re.compile(r'^\[FEATURE TRACKER', re.I)
+
+# Owner escalation policy: a card the auditor has reviewed at least once, and
+# that remains unresolved 5 days (default) after that review, is forced to
+# needs_input -- it is not budging on its own and the auditor's deep-dive did
+# not clear it. The owner must decide: unblock, supersede, or close.
+DEFAULT_OWNER_ESCALATION_DAYS = 5.0
+
+# Triage aging: a card left in triage for more than this many days without
+# being promoted to todo or done is flagged for coordinator disposition.
+# Triage is a stopping point, not a resting place.
+DEFAULT_TRIAGE_MAX_AGE_DAYS = 7.0
 
 
 def hours_env(name, default):
@@ -287,6 +302,30 @@ def recheck_blocks(root, slug, now, dry_run, report):
                 continue
             report.append(f"[{slug}] {tid} (blocked) stale block: {evidence}")
             if dry_run:
+                continue
+            # Auto-unblock only when the dependency is OBJECTIVELY satisfied:
+            #   1. all parents are done/archived, AND
+            #   2. the block reason references a task ID, AND
+            #   3. the reason does NOT describe a missing deliverable, an owner
+            #      ask, a capability gap, or a deferred scope — those are real
+            #      blockers that auto-unblocking would wrongly release.
+            # Cards failing (3) get the evidence comment instead, so the
+            # coordinator decides.
+            reason = block_reason(db, tid)
+            safe_to_unblock = True
+            for unsafe in ('required', 'missing', 'no attachment', 'not delivered',
+                           'deferred', 'gap', 'owner', 'capability', 'cannot',
+                           'refuses', 'requires', 'outstanding', 'unproven',
+                           'destroyed', 'lifecycle guard'):
+                if unsafe in reason.lower():
+                    safe_to_unblock = False
+                    break
+            if stale_dependency_block(db, tid) and re.search(r't_\d{6,}', reason) \
+                    and safe_to_unblock:
+                run_cli(['kanban', '--board', slug, 'unblock', tid,
+                         '--reason', 'Auto-unblocked: dependency prerequisite '
+                         'is satisfied (all parents done)'], env)
+                report.append(f"  -> auto-unblocked (dependency satisfied)")
                 continue
             comment = '\n'.join([
                 STALE_BLOCK_MARKER,
@@ -583,6 +622,126 @@ def escalate_board(root, slug, now, dry_run, priority_hours, escalation_hours,
                      '--author', CREATED_BY], env)
 
 
+def last_auditor_review_at(db, task_id):
+    """The newest timestamp the auditor reviewed this card, or None.
+
+    A review is a comment by project-auditor on the card itself (not a
+    separate audit card). This distinguishes 'the auditor looked at this card'
+    from 'an audit was commissioned somewhere else'.
+    """
+    try:
+        row = db.execute(
+            "SELECT created_at FROM task_comments WHERE task_id = ?"
+            " AND author = ? ORDER BY id DESC LIMIT 1",
+            (task_id, AUDITOR)).fetchone()
+    except sqlite3.Error:
+        return None
+    return row['created_at'] if row and row['created_at'] else None
+
+
+def owner_escalation_candidates(db, now, owner_escalation_days):
+    """Cards the auditor reviewed that remain unresolved past the owner threshold.
+
+    Returns a list of (task_id, review_age_days, last_reason) tuples. Only
+    cards still in an open status are returned -- done and archived cards
+    resolved themselves and need no owner nudge.
+    """
+    try:
+        rows = db.execute(
+            "SELECT id, block_kind, created_at FROM tasks"
+            f" WHERE status IN ({','.join('?' * len(OPEN_STATUSES))})"
+            " AND status != 'running'",
+            OPEN_STATUSES).fetchall()
+    except sqlite3.Error:
+        return []
+    candidates = []
+    threshold_seconds = owner_escalation_days * 86400.0
+    for row in rows:
+        reviewed_at = last_auditor_review_at(db, row['id'])
+        if not reviewed_at:
+            continue
+        age = now - reviewed_at
+        if age < threshold_seconds:
+            continue
+        reason = block_reason(db, row['id']) or 'no recorded block reason'
+        candidates.append((row['id'], age / 86400.0, reason))
+    return candidates
+
+
+def force_owner_escalation(root, slug, now, owner_escalation_days, dry_run, report):
+    """Force auditor-reviewed stale cards to needs_input.
+
+    A card the auditor has reviewed at least once, and that remains unresolved
+    after the owner escalation threshold, is not clearing on its own. The
+    auditor's deep-dive did not resolve it, and further idle time will not
+    change that. Force the card to needs_input so it reaches the owner's
+    decision channel instead of accumulating dust.
+    """
+    db_path = root / 'kanban' / 'boards' / slug / 'kanban.db'
+    env = os.environ.copy()
+    env['HERMES_HOME'] = str(root)
+    with connect_ro(db_path) as db:
+        candidates = owner_escalation_candidates(db, now, owner_escalation_days)
+        for task_id, age_days, reason in candidates:
+            title = ''
+            try:
+                row = db.execute("SELECT title FROM tasks WHERE id=?", (task_id,)).fetchone()
+                title = row['title'] if row else ''
+            except sqlite3.Error:
+                pass
+            report.append(
+                f"[{slug}] {task_id} (auditor-reviewed {age_days:.1f}d ago)"
+                f" owner escalation: {title[:50]}")
+            report.append(f"  -> force needs_input (block reason: {reason[:80]})")
+            if dry_run:
+                continue
+            # Reclassify to needs_input and post a directive
+            directive = '\n'.join([
+                DIRECTIVE_MARKER,
+                f"Owner escalation: the auditor reviewed this card"
+                f" {age_days:.1f} days ago and it remains unresolved.",
+                "The auditor's deep-dive did not clear it; further idle time"
+                " will not. This card is now forced to needs_input.",
+                f"Decision owner: {PROFILE} -- unblock with a concrete"
+                " disposition, supersede with evidence, or close it as"
+                " descoped. Do not leave it accumulating idle time.",
+                f"Prior block reason: {reason[:200]}",
+            ])
+            run_cli(['kanban', '--board', slug, 'comment', task_id, directive,
+                     '--author', CREATED_BY], env)
+            # Use kanban_block to set needs_input -- this is the one case
+            # where an automated job reclassifies, because the auditor +
+            # idle time together have proven the card is stuck.
+            run_cli(['kanban', '--board', slug, 'block', task_id,
+                     '--kind', 'needs_input',
+                     '--reason', f'Forced owner escalation: auditor reviewed '
+                                 f'{age_days:.1f}d ago, card did not resolve. '
+                                 f'Prior reason: {reason[:200]}'], env)
+
+
+def triage_aging_candidates(db, now, triage_max_age_days):
+    """Cards in triage longer than the triage age limit.
+
+    Triage is a stopping point for cards awaiting classification, not a
+    resting place. A card left in triage for more than triage_max_age_days
+    is flagged for the coordinator to promote or archive.
+    """
+    try:
+        rows = db.execute(
+            "SELECT id, title, created_at FROM tasks"
+            " WHERE status = 'triage' ORDER BY created_at ASC").fetchall()
+    except sqlite3.Error:
+        return []
+    candidates = []
+    threshold_seconds = triage_max_age_days * 86400.0
+    for row in rows:
+        age = now - int(row['created_at'] or 0)
+        if age < threshold_seconds:
+            continue
+        candidates.append((row['id'], age / 86400.0, row['title']))
+    return candidates
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     actions = parser.add_mutually_exclusive_group()
@@ -597,6 +756,10 @@ def main():
                                  DEFAULT_ESCALATION_HOURS)
     if escalation_hours <= priority_hours:
         escalation_hours = priority_hours + 24.0
+    owner_escalation_days = hours_env('AGING_OWNER_ESCALATION_DAYS',
+                                      DEFAULT_OWNER_ESCALATION_DAYS)
+    triage_max_age_days = hours_env('AGING_TRIAGE_MAX_AGE_DAYS',
+                                    DEFAULT_TRIAGE_MAX_AGE_DAYS)
 
     if args.install:
         source = Path(__file__).resolve()
@@ -624,6 +787,18 @@ def main():
         recheck_blocks(root, slug, now, args.dry_run, report)
         escalate_board(root, slug, now, args.dry_run, priority_hours,
                        escalation_hours, report)
+        force_owner_escalation(root, slug, now, owner_escalation_days,
+                               args.dry_run, report)
+        # Triage aging: cards left in triage too long get flagged
+        db_path = root / 'kanban' / 'boards' / slug / 'kanban.db'
+        with connect_ro(db_path) as db:
+            triage_candidates = triage_aging_candidates(db, now,
+                                                        triage_max_age_days)
+        for task_id, age_days, title in triage_candidates:
+            report.append(
+                f"[{slug}] {task_id} (triage, age {age_days:.1f}d)"
+                f" exceeds triage limit: {title[:50]}")
+            report.append(f"  -> promote to todo, or archive with reason")
     if not report:
         print("aging escalation: nothing to escalate")
     else:

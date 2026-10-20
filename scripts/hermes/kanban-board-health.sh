@@ -754,6 +754,20 @@ done
 shopt -u nullglob
 
 # ---------------------------------------------------------------------------
+# Classification audit (EVERY board)
+# ---------------------------------------------------------------------------
+# Run the periodic classification audit and emit one line per finding.
+# Misclassified blocks route cards to the wrong queue and stall work that
+# could proceed. This detector surfaces them for the coordinator.
+classification_audit="$HERMES_ROOT/scripts/kanban-classification-audit.py"
+if [[ -f "$classification_audit" ]]; then
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    emit "CLASSIFICATION_AUDIT $line"
+  done < <(python3 "$classification_audit" 2>/dev/null | head -20)
+fi
+
+# ---------------------------------------------------------------------------
 # Durability findings
 # ---------------------------------------------------------------------------
 # Worktree branches hold the only copy of their commits until they are pushed.
