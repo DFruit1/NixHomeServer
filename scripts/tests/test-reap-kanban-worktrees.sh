@@ -58,10 +58,9 @@ chmod +x "$root/bin/hermes"
 
 reap="$root/scripts/hermes/reap-kanban-worktrees.sh"
 
-# Launch from outside every checkout. A relative .git lock must not be resolved
-# against the caller's cwd (which may itself be a linked worktree's .git file).
-mkdir "$root/unrelated working directory"
-cd "$root/unrelated working directory"
+# The copied reaper resolves its repository relative to itself. Enter the
+# fixture's own initialized repository so relative Git metadata stays local.
+cd "$root"
 
 echo "▶ kanban worktree reaper contract"
 

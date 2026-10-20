@@ -212,6 +212,189 @@ require_fixed modules/Core_Modules/backups/default.nix 'sha256sum -- "dumps/$out
   "Published backup checksums must use generation-relative dump paths."
 require_fixed modules/Core_Modules/backups/default.nix 'sha256sum --check metadata/SHA256SUMS' \
   "Backup preparation must verify its checksum manifest before publication."
+run_backup_retention_fixture() {
+  local retention="$1" ordering="$2" layout="$3" fixture_root="$4"
+  local source_file="$TESTS_REPO_ROOT/modules/Core_Modules/backups/default.nix"
+  local executable="$fixture_root/production-retention.sh"
+  local generations="$fixture_root/generations" staging="$fixture_root/staging"
+  local generation count current_target return_code current_link checksum_return_code
+
+  mkdir -p "$generations" "$staging" "$fixture_root/work/metadata" "$fixture_root/work/dumps"
+  generation=old-current
+  mkdir -p "$generations/$generation/dumps" "$generations/$generation/metadata"
+  printf '%s\n' "$generation" >"$generations/$generation/dumps/payload"
+  (cd "$generations/$generation" && sha256sum dumps/payload >metadata/SHA256SUMS)
+  if [[ "$layout" == full ]]; then
+    for generation in prior-a prior-b; do
+      mkdir -p "$generations/$generation/dumps" "$generations/$generation/metadata"
+      printf '%s\n' "$generation" >"$generations/$generation/dumps/payload"
+      (cd "$generations/$generation" && sha256sum dumps/payload >metadata/SHA256SUMS)
+    done
+  fi
+  ln -s generations/old-current "$fixture_root/current"
+  mkdir -p "$generations/.prepare.sentinel"
+  printf 'prepare\n' >"$generations/.prepare.sentinel/marker"
+  printf 'outside\n' >"$fixture_root/outside-sentinel"
+  if [[ "$ordering" == tied ]]; then
+    while IFS= read -r generation_path; do
+      touch -d '@1000000200' "$generation_path"
+    done < <(find "$generations" -mindepth 1 -maxdepth 1 -type d ! -name '.prepare.*')
+  elif [[ "$ordering" == reordered ]]; then
+    touch -d '@1000000000' "$generations/old-current"
+    [[ ! -d "$generations/prior-a" ]] || touch -d '@2000000000' "$generations/prior-a"
+    [[ ! -d "$generations/prior-b" ]] || touch -d '@2000000100' "$generations/prior-b"
+  else
+    touch -d '@1000000000' "$generations/old-current"
+    [[ ! -d "$generations/prior-a" ]] || touch -d '@1000000100' "$generations/prior-a"
+    [[ ! -d "$generations/prior-b" ]] || touch -d '@1000000200' "$generations/prior-b"
+  fi
+  for generation_path in "$generations/old-current" "$generations/prior-a" "$generations/prior-b"; do
+    [[ -d "$generation_path" ]] || continue
+    set +e
+    (cd "$generation_path" && sha256sum --check metadata/SHA256SUMS) >"$fixture_root/input-checksum" 2>&1
+    input_checksum_exit=$?
+    set -e
+    printf 'input_generation=%s checksum_exit=%s manifest=' "${generation_path##*/}" "$input_checksum_exit"
+    sha256sum "$generation_path/metadata/SHA256SUMS"
+    [[ "$input_checksum_exit" -eq 0 ]] || return 1
+  done
+
+  python3 - "$source_file" "$executable" "$generations" "$staging" "$retention" "$ordering" <<'PY'
+import pathlib
+import shlex
+import sys
+
+source_path, executable_path, generations, staging, retention, ordering = sys.argv[1:]
+source = pathlib.Path(source_path).read_text()
+
+def unique_marker(value):
+    if source.count(value) != 1:
+        raise SystemExit(f"Expected one production boundary: {value!r}")
+    return source.index(value)
+
+function_start = unique_marker("        publish_current_link() {")
+function_end_marker = "\n\n        # Interrupted publications"
+if source.count(function_end_marker) != 1:
+    raise SystemExit("Expected one end boundary for production publication function")
+function_end = source.index(function_end_marker, function_start)
+tail_start = unique_marker('        generation="$(date --utc +%Y%m%dT%H%M%S)-$$"')
+tail_end_marker = "\n      '';"
+if source.count(tail_end_marker) != 1:
+    raise SystemExit("Expected one end boundary for production retention tail")
+tail_end = source.index(tail_end_marker, tail_start)
+script = source[function_start:function_end] + "\n" + source[tail_start:tail_end]
+
+substitutions = {
+    "''${": ("${", 3),
+    "${lib.escapeShellArg successfulGenerationRoot}": (shlex.quote(generations), 3),
+    "${lib.escapeShellArg stagingRoot}": (shlex.quote(staging), 1),
+    "${lib.escapeShellArg successfulCurrentPath}": (shlex.quote(str(pathlib.Path(generations).parent / 'current')), 1),
+    "${toString config.repo.backups.retainedSuccessfulGenerations}": (retention, 1),
+}
+for marker, (replacement, expected_count) in substitutions.items():
+    actual_count = script.count(marker)
+    if actual_count != expected_count:
+        raise SystemExit(f"Expected {expected_count} substitutions for {marker!r}; found {actual_count}")
+    script = script.replace(marker, replacement)
+if "${lib." in script or "${toString" in script or "''${" in script:
+    raise SystemExit("Unaccounted Nix interpolation remains in production fixture")
+header = (
+    "#!/usr/bin/env bash\nset -euo pipefail\n"
+    f"successfulGenerationRoot={generations!r}\n"
+    f"stagingRoot={staging!r}\n"
+    f"successfulCurrentPath={str(pathlib.Path(generations).parent / 'current')!r}\n"
+    f"retention={retention!r}\nwork=\"$stagingRoot/prepared\"\n"
+    "mkdir -p \"$work/metadata\" \"$work/dumps\"\n"
+    "printf 'published\\n' >\"$work/dumps/payload\"\n"
+    "(cd \"$work\" && sha256sum dumps/payload > metadata/SHA256SUMS)\n"
+    f"if [[ {ordering!r} == reordered ]]; then touch -d '@1000000200' \"$work\"; "
+    f"elif [[ {ordering!r} == tied ]]; then touch -d '@1000000200' \"$work\"; "
+    "else touch -d '@1000000200' \"$work\"; fi\n"
+)
+pathlib.Path(executable_path).write_text(header + script + "\n")
+PY
+  chmod +x "$executable"
+  set +e
+  "$executable" >"$fixture_root/stdout" 2>"$fixture_root/stderr"
+  return_code=$?
+  set -e
+  [[ "$return_code" -eq 0 ]] || {
+    printf 'Production retention shell returned %s (%s, retention %s).\n' \
+      "$return_code" "$ordering" "$retention" >&2
+    printf '%s\n' '--- extracted production shell ---' >&2
+    cat "$executable" >&2
+    printf '%s\\n' '--- production shell stderr ---' >&2
+    cat "$fixture_root/stderr" >&2
+    printf '%s\\n' '--- production shell stdout ---' >&2
+    cat "$fixture_root/stdout" >&2
+    return 1
+  }
+
+  assert_backup_retention_fixture() {
+  current_link="$(readlink "$fixture_root/current")"
+  current_target="$(readlink -f "$fixture_root/current")"
+  [[ "$current_link" == generations/* && "$current_target" == "$generations"/* && -d "$current_target" ]] || {
+    printf 'Published current link/target is invalid (%s, retention %s).\n' "$ordering" "$retention" >&2
+    return 1
+  }
+  set +e
+  (cd "$current_target" && sha256sum --check metadata/SHA256SUMS) >"$fixture_root/current-checksum" 2>&1
+  checksum_return_code=$?
+  set -e
+  [[ "$checksum_return_code" -eq 0 ]] || {
+    cat "$fixture_root/current-checksum" >&2
+    return 1
+  }
+  [[ -f "$fixture_root/outside-sentinel" && -f "$generations/.prepare.sentinel/marker" ]] || return 1
+  count="$(find "$generations" -mindepth 1 -maxdepth 1 -type d ! -name '.prepare.*' | wc -l)"
+  [[ "$count" -le "$retention" ]] || {
+    printf 'Retention bound exceeded: %s > %s.\n' "$count" "$retention" >&2
+    find "$generations" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' >&2
+    return 1
+  }
+  while IFS= read -r generation_path; do
+    set +e
+    (cd "$generation_path" && sha256sum --check metadata/SHA256SUMS) >"$fixture_root/retained-checksum" 2>&1
+    generation_checksum_exit=$?
+    set -e
+    printf 'retained_generation=%s checksum_exit=%s files=' "${generation_path##*/}" "$generation_checksum_exit"
+    find "$generation_path" -mindepth 1 -maxdepth 2 -type f -printf '%P,' | sort
+    printf 'manifest_sha256='
+    sha256sum "$generation_path/metadata/SHA256SUMS"
+    [[ "$generation_checksum_exit" -eq 0 ]] || return 1
+  done < <(find "$generations" -mindepth 1 -maxdepth 1 -type d ! -name '.prepare.*')
+  if [[ "$layout" == full && "$ordering" != tied && "$retention" -eq 2 ]]; then
+    [[ -d "$generations/prior-b" ]] || return 1
+  elif [[ "$layout" == few && "$retention" -eq 2 ]]; then
+    [[ -d "$generations/old-current" ]] || return 1
+  fi
+  }
+  set +e
+  assert_backup_retention_fixture
+  fixture_assertion_exit=$?
+  set -e
+  [[ "$fixture_assertion_exit" -eq 0 ]] || return "$fixture_assertion_exit"
+  printf 'retention case=%s/%s bound=%s shell_exit=%s assertion_exit=%s current=%s resolved=%s checksum_exit=%s count=%s inventory=' "$ordering" "$layout" "$retention" "$return_code" "$fixture_assertion_exit" "$current_link" "$current_target" "$checksum_return_code" "$count"
+  find "$generations" -mindepth 1 -maxdepth 1 -type d ! -name '.prepare.*' -printf '%f,' | sort
+  printf 'shell stdout:\n'
+  cat "$fixture_root/stdout"
+  printf 'shell stderr:\n'
+  cat "$fixture_root/stderr"
+  sha256sum "$source_file" "$executable"
+}
+
+retention_fixture_root="$(mktemp -d "${TMPDIR:-/tmp}/t_c32871c3-backup-retention.XXXXXX")"
+trap 'rm -rf -- "$retention_fixture_root"' EXIT
+for retention_case in \
+  '2 chronological full' '2 reordered full' '1 chronological full' '1 reordered full' \
+  '2 tied full' '2 chronological few' '1 chronological few'; do
+  read -r retention_value ordering_value layout_value <<<"$retention_case"
+  run_backup_retention_fixture "$retention_value" "$ordering_value" "$layout_value" \
+    "$retention_fixture_root/$retention_case"
+done
+rm -rf -- "$retention_fixture_root"
+trap - EXIT
+
 require_fixed modules/Core_Modules/backups/default.nix 'mktemp -d ${lib.escapeShellArg stagingRoot}/.current-link.XXXXXX' \
   "Backup publication must use a unique temporary symlink directory."
 forbid_match modules/Core_Modules/backups/default.nix 'successfulCurrentPath[}]?[.]new' \
