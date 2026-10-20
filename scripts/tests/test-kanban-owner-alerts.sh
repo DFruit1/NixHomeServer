@@ -1,6 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 TESTS_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# A fenced worker must not launder its own identity pins. This suite asserts
+# environment-gated policy that refuses pinned workers, so instead of clearing
+# HERMES_KANBAN_*/DELEGATED in-process it delegates to the approved confined
+# executor. That runner keeps the origin pins in a readonly receipt and starts
+# the suite with fresh synthetic bindings. Never unset pins here and never retry
+# outside the sandbox: the runner fails closed without bubblewrap.
+if [[ -n "${HERMES_KANBAN_TASK:-}${HERMES_KANBAN_RUN_ID:-}${HERMES_KANBAN_CLAIM_LOCK:-}${HERMES_DELEGATED_CHILD_CONTEXT:-}" ]]; then
+  exec python3 -B "$TESTS_REPO_ROOT/scripts/hermes/fixture-runner.py" \
+    --repo "$TESTS_REPO_ROOT" --suite "${BASH_SOURCE[0]}"
+fi
+# Reaching this line with a pin set would mean the routing above did not happen,
+# so the assertions below would be made against an unconfined synthetic identity.
+for pin in HERMES_KANBAN_TASK HERMES_KANBAN_RUN_ID HERMES_KANBAN_CLAIM_LOCK \
+  HERMES_DELEGATED_CHILD_CONTEXT; do
+  [[ -z "${!pin:-}" ]] || {
+    echo "❌ $pin is set; run this suite through scripts/hermes/fixture-runner.py" >&2
+    exit 1
+  }
+done
 python3 -B - "$TESTS_REPO_ROOT" <<'PY'
 from contextlib import closing
 import importlib.util

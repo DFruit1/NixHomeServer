@@ -1,6 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# A fenced worker must not launder its own identity pins. This suite asserts
+# environment-gated policy that refuses pinned workers, so instead of clearing
+# HERMES_KANBAN_*/DELEGATED in-process it delegates to the approved confined
+# executor. That runner keeps the origin pins in a readonly receipt and starts
+# the suite with fresh synthetic bindings. Never unset pins here and never retry
+# outside the sandbox: the runner fails closed without bubblewrap.
+if [[ -n "${HERMES_KANBAN_TASK:-}${HERMES_KANBAN_RUN_ID:-}${HERMES_KANBAN_CLAIM_LOCK:-}${HERMES_DELEGATED_CHILD_CONTEXT:-}" ]]; then
+  exec python3 -B "$repo/scripts/hermes/fixture-runner.py" \
+    --repo "$repo" --suite "${BASH_SOURCE[0]}"
+fi
+# Reaching this line with a pin set would mean the routing above did not happen,
+# so the assertions below would be made against an unconfined synthetic identity.
+for pin in HERMES_KANBAN_TASK HERMES_KANBAN_RUN_ID HERMES_KANBAN_CLAIM_LOCK \
+  HERMES_DELEGATED_CHILD_CONTEXT; do
+  [[ -z "${!pin:-}" ]] || {
+    echo "❌ $pin is set; run this suite through scripts/hermes/fixture-runner.py" >&2
+    exit 1
+  }
+done
 task_tmp="$(mktemp -d /tmp/nixhomeserver-hermes-autonomy-test.XXXXXX)"
 trap 'rm -rf -- "$task_tmp"' EXIT
 python3 -B - "$repo" "$task_tmp" <<'PY'
@@ -181,6 +200,38 @@ class ApprovedExecutionTest(unittest.TestCase):
         self.input.write_text('changed after owner review\n')
         with self.assertRaises(ValueError):
             policy.check(self.root, manifest['sha256'], profile='head-coordinator')
+
+    def test_prepare_and_check_tolerate_first_read_atime_bump(self):
+        # On relatime mounts (the confined fixture runner uses one) the first
+        # read of a freshly created input bumps st_atime. prepare() hashes that
+        # input immediately, so this is the exact sequence that previously failed
+        # with 'Input changed while hashing' when the drift comparison included
+        # atime: fresh, never-read inputs hashed twice in one process.
+        self.prepare()  # hashes self.input and the fresh executable copy
+        self.prepare()  # re-hashes the same, never-mutated, now-atime-bumped files
+
+    def test_metadata_generation_change_invalidates_while_hashing(self):
+        # st_ctime moves on chmod/chown/link changes even when the bytes are
+        # identical, so a metadata-only rewrite between the before/after stat is
+        # real contamination of the reviewed input. Restoring atime and mtime to
+        # their pre-mutation values leaves ctime as the only field that differs,
+        # which makes this fail again if the drift comparison drops ctime.
+        original = self.input.stat()
+        real_open = Path.open
+        mutated = []
+
+        def mutating_open(path, *args, **kwargs):
+            stream = real_open(path, *args, **kwargs)
+            if not mutated and path == self.input:
+                mutated.append(True)
+                os.utime(path, ns=(original.st_atime_ns, original.st_mtime_ns))
+            return stream
+
+        with patch.object(Path, 'open', mutating_open):
+            with self.assertRaisesRegex(ValueError, 'Input changed while hashing'):
+                self.prepare()
+        self.assertTrue(mutated)
+        self.assertEqual(original.st_mtime_ns, self.input.stat().st_mtime_ns)
 
     def test_changed_executable_invalidates_approval(self):
         manifest = self.prepare()
