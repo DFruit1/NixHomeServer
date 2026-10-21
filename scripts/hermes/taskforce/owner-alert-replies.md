@@ -6,8 +6,8 @@ Never create lifecycle subscriptions or duplicate manual alerts. SimpleX replies
 use *bold*, _italic_ and ~strike~ markup.
 
 Before authoring/rewording an owner gate, the owner must answer "what is this,
-why does it matter, what do I do" from the gate text alone, with no cards, hashes,
-profile names or board jargon in owner-visible fields. Read the Owner blockers
+why does it matter, what do I do" from the gate text alone; no cards, hashes,
+profile names or jargon in owner-visible fields. Read the Owner blockers
 and authenticated replies section of
 ~/.hermes/scripts/hermes-coordinator-reference.md, apply the supplier test and
 existing decisions; check exactly Blocking / Why owner / Unblock
@@ -27,10 +27,10 @@ quoted reply carrying `D49` resolve to the same label. The installed
 `kanban-decision-reply.py --text "<reply>"` performs the mechanical flow
 (label extraction, resolve, verbatim comment, affirmative unblock) and defaults
 to a dry run; use `--apply` from the coordinator session, outside a worker fence.
-Record the verbatim authenticated owner reply FIRST with native kanban_comment,
+Record the verbatim authenticated owner reply FIRST via kanban_comment,
 verify with kanban_show, then unblock only the resolved scope. Rejection must not
 release implementation. Silence, connectivity tests and unrelated replies are
-not approval. Confirm only actual status; queued does not mean started.
+not approval. Confirm actual status; queued is not started.
 
 For exact bot execution, follow hermes-autonomy.md: publish the manifest before
 `D<n> approve <request-sha256>`, authenticate/record the reply, then post native
