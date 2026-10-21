@@ -42,6 +42,19 @@ card-age basis alongside its current-spell basis.
 The job mutates boards through the ``hermes kanban`` CLI and reads through
 read-only SQLite connections, the same split the steward and owner-alert jobs
 use. It creates no owner pages, subscriptions or timers.
+
+Installing
+----------
+The cron engine runs the copy under ``$HERMES_ROOT/scripts``, not this file, so
+an edited script has no effect until it is installed again:
+
+  * ``--install-files`` copies the script to ``$HERMES_ROOT/scripts`` with mode
+    0700 and changes nothing else. This is the update path for a host that
+    already runs the job: it never calls ``hermes cron create``, so re-running
+    it cannot leave a duplicate job behind.
+  * ``--install`` does the same copy and then creates the paused, disabled
+    ``kanban aging escalation`` job. It is for a new install only; it creates a
+    job rather than checking for one.
 """
 import argparse
 import json
@@ -780,11 +793,47 @@ def triage_aging_candidates(db, now, triage_max_age_days):
     return cards, trackers
 
 
+def install_files(root):
+    """Copy this script to ``<root>/scripts`` with mode 0700; touch no cron job.
+
+    The cron engine executes the installed copy, not the checkout, so every
+    script edit needs this step. It is separate from job creation so an
+    existing install can be refreshed without ``hermes cron create`` running
+    again -- which is how a refresh used to leave a duplicate job behind.
+    """
+    source = Path(__file__).resolve()
+    scripts = root / 'scripts'
+    scripts.mkdir(parents=True, exist_ok=True)
+    target = scripts / source.name
+    data = source.read_bytes()
+    if not target.exists() or target.read_bytes() != data:
+        target.write_bytes(data)
+    target.chmod(0o700)
+    return target
+
+
+def create_job(root):
+    """Create the paused ``kanban aging escalation`` job for a new install."""
+    source = Path(__file__).resolve()
+    env = os.environ.copy()
+    env['HERMES_HOME'] = str(root)
+    subprocess.run(['hermes', '--profile', 'default', 'cron', 'create',
+                    'every 6h', '--name', JOB, '--script', source.name,
+                    '--no-agent', '--deliver', 'local', '--workdir',
+                    str(source.parent.parent), '--paused',
+                    '--paused-reason',
+                    'Validate aging escalation with --dry-run before activation'],
+                   check=True, timeout=60, env=env)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     actions = parser.add_mutually_exclusive_group()
     actions.add_argument('--dry-run', action='store_true')
-    actions.add_argument('--install', action='store_true')
+    actions.add_argument('--install', action='store_true',
+                         help='Install the script and create the paused job')
+    actions.add_argument('--install-files', action='store_true',
+                         help='Install the script only; never touch cron jobs')
     parser.add_argument('--board', help='restrict to one board slug')
     args = parser.parse_args()
 
@@ -799,22 +848,14 @@ def main():
     triage_max_age_days = hours_env('AGING_TRIAGE_MAX_AGE_DAYS',
                                     DEFAULT_TRIAGE_MAX_AGE_DAYS)
 
+    if args.install_files:
+        target = install_files(root)
+        print(f"installed {target}; no cron job created")
+        return
+
     if args.install:
-        source = Path(__file__).resolve()
-        scripts = root / 'scripts'
-        scripts.mkdir(parents=True, exist_ok=True)
-        target = scripts / source.name
-        target.write_bytes(source.read_bytes())
-        target.chmod(0o700)
-        env = os.environ.copy()
-        env['HERMES_HOME'] = str(root)
-        subprocess.run(['hermes', '--profile', 'default', 'cron', 'create',
-                        'every 6h', '--name', JOB, '--script', source.name,
-                        '--no-agent', '--deliver', 'local', '--workdir',
-                        str(source.parent.parent), '--paused',
-                        '--paused-reason',
-                        'Validate aging escalation with --dry-run before activation'],
-                       check=True, timeout=60, env=env)
+        target = install_files(root)
+        create_job(root)
         print(f"installed {target} and created the paused '{JOB}' job")
         return
 

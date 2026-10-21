@@ -226,6 +226,14 @@ automatically; prune old private archive generations manually when they grow,
 keeping at least the most recent content per path. The server mirrors keep
 exactly `DURABILITY_GENERATIONS` (default 3) generations per board.
 
+**Aging-escalation script updates.** The `kanban aging escalation` cron runs
+`~/.hermes/scripts/kanban-aging-escalation.py`, not the checkout copy. After
+editing it, refresh the installed file with
+`python3 -B scripts/hermes/kanban-aging-escalation.py --install-files`: it
+writes the copy with mode 0700 and leaves cron state alone. `--install` is for a
+new install only, because it also creates the paused job and would duplicate an
+existing one.
+
 **Provider credential rotation.** Credentials live in the profile `.env`
 files and config.yaml and are owner-scoped decisions. After rotating one, run
 `python3 -B scripts/hermes/hermes_config.py --check` and the affected
