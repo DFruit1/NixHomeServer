@@ -71,6 +71,14 @@ class VerdictGuardTest(unittest.TestCase):
             (tid, row[0], row[1]))
         self.db.commit()
 
+    def add_blocked_run(self, tid, ended):
+        # An interrupted attempt: no verdict, no acceptance, but a real ended_at.
+        self.db.execute(
+            "INSERT INTO task_runs (task_id, profile, status, outcome, metadata,"
+            " ended_at) VALUES (?, 'feature-reviewer', 'blocked', 'blocked', NULL, ?)",
+            (tid, ended))
+        self.db.commit()
+
     def link(self, parent, child):
         self.db.execute("INSERT INTO task_links (parent_id, child_id) VALUES (?,?)",
                         (parent, child))
@@ -109,6 +117,62 @@ class VerdictGuardTest(unittest.TestCase):
         self.card('t_child', assignee='standard-implementer', status='running')
         self.link('t_rev_old', 't_child')
         self.assertEqual({}, guard_mod.guard(self.payload('t_rev_old', 't_child'), self.root))
+
+    def test_blocked_attempt_after_an_acceptance_does_not_shut_the_gate(self):
+        # A blocked run carries no verdict. Anchoring the supersession window
+        # on the parent's latest attempt of any status hid the acceptance that
+        # had already landed (live incident: blocked run 1182 ended after
+        # accept run 1181).
+        self.card('t_rev_old', assignee='feature-reviewer', status='blocked',
+                  created=NOW - 4 * DAY)
+        self.add_run('t_rev_old', 'request-changes', NOW - 3 * DAY)
+        self.card('t_rev_new', assignee='feature-reviewer', created=NOW - 2 * DAY)
+        self.add_run('t_rev_new', 'accept', NOW - 2 * DAY)
+        self.add_blocked_run('t_rev_old', NOW)
+        self.card('t_child', assignee='standard-implementer', status='running')
+        self.link('t_rev_old', 't_child')
+        self.assertEqual({}, guard_mod.guard(self.payload('t_rev_old', 't_child'), self.root))
+
+    def test_newer_request_changes_does_not_shadow_an_acceptance(self):
+        # The window is "any completed accept after the anchor", not "the last
+        # completed verdict in the window".
+        self.card('t_rev_old', assignee='feature-reviewer', created=NOW - 4 * DAY)
+        self.add_run('t_rev_old', 'request-changes', NOW - 3 * DAY)
+        self.card('t_rev_accept', assignee='feature-reviewer', created=NOW - 3 * DAY)
+        self.add_run('t_rev_accept', 'accept', NOW - 2 * DAY)
+        # Card status is mutable after a review; do not require the accepting
+        # card to remain done when considering its completed run.
+        self.db.execute("UPDATE tasks SET status='blocked' WHERE id='t_rev_accept'")
+        self.db.commit()
+        self.card('t_rev_later', assignee='feature-reviewer', created=NOW - 2 * DAY)
+        self.add_run('t_rev_later', 'request-changes', NOW - DAY)
+        self.card('t_child', assignee='standard-implementer', status='running')
+        self.link('t_rev_old', 't_child')
+        self.assertEqual({}, guard_mod.guard(self.payload('t_rev_old', 't_child'), self.root))
+
+    def test_no_acceptance_in_window_still_refuses(self):
+        self.card('t_rev_old', assignee='feature-reviewer', created=NOW - 6 * DAY)
+        self.add_run('t_rev_old', 'request-changes', NOW - 3 * DAY)
+        # An acceptance older than the anchor is outside the window, not evidence.
+        self.card('t_rev_stale_accept', assignee='feature-reviewer', created=NOW - 6 * DAY)
+        self.add_run('t_rev_stale_accept', 'accept', NOW - 5 * DAY)
+        self.card('t_rev_later', assignee='feature-reviewer', created=NOW - 2 * DAY)
+        self.add_run('t_rev_later', 'request-changes', NOW - DAY)
+        self.card('t_child', assignee='standard-implementer', status='running')
+        self.link('t_rev_old', 't_child')
+        result = guard_mod.guard(self.payload('t_rev_old', 't_child'), self.root)
+        self.assertEqual('block', result.get('action'))
+        self.assertIn('live review gate', result.get('message', ''))
+        self.assertIn('second parent', result.get('message', ''))
+
+    def test_review_without_a_completed_run_cannot_be_retired(self):
+        self.card('t_rev', assignee='feature-reviewer', status='blocked')
+        self.add_blocked_run('t_rev', NOW - DAY)
+        self.card('t_child', assignee='standard-implementer', status='running')
+        self.link('t_rev', 't_child')
+        result = guard_mod.guard(self.payload('t_rev', 't_child'), self.root)
+        self.assertEqual('block', result.get('action'))
+        self.assertIn('cannot be retired', result.get('message', ''))
 
     def test_retiring_a_live_review_gate_is_refused(self):
         # The catch-22 bypass: unlinking the request-changes review then
