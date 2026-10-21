@@ -744,5 +744,8 @@ class AlertsTest(unittest.TestCase):
                         run.assert_not_called()
                     self.assertEqual(before, {p: p.read_bytes() for p in self.root.rglob('*') if p.is_file()})
 
-unittest.main(argv=['alerts'], verbosity=2)
+with patch.dict(os.environ):
+    os.environ.pop('HERMES_DELEGATED_CHILD_CONTEXT', None)
+    os.environ.pop('HERMES_KANBAN_TASK', None)
+    unittest.main(argv=['alerts'], verbosity=2)
 PY

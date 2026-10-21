@@ -5,6 +5,8 @@ python3 -B - "$repo" <<'PY'
 import importlib.util
 import contextlib
 import io
+import os
+from unittest.mock import patch
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -154,7 +156,7 @@ class InstallerTest(unittest.TestCase):
         script=source.parent/'background-learning-trials.py'
         listed=subprocess.run([sys.executable,'-B',str(script)],capture_output=True,text=True)
         self.assertEqual(0,listed.returncode)
-        env=dict(os.environ,HERMES_KANBAN_TASK='t_fixture')
+        env=dict(os.environ,HERMES_KANBAN_TASK='t_fixture',HERMES_DELEGATED_CHILD_CONTEXT='fixture')
         refused=subprocess.run([sys.executable,'-B',str(script),'--live'],env=env,capture_output=True,text=True)
         self.assertEqual(2,refused.returncode)
         self.assertIn('worker pins remain binding',refused.stderr)
@@ -190,5 +192,8 @@ class InstallerTest(unittest.TestCase):
             self.assertEqual('model: {provider: custom, default: local}\n',config.read_text())
 
 
-unittest.main(argv=[sys.argv[0]])
+with patch.dict(os.environ):
+    os.environ.pop('HERMES_DELEGATED_CHILD_CONTEXT', None)
+    os.environ.pop('HERMES_KANBAN_TASK', None)
+    unittest.main(argv=[sys.argv[0]])
 PY
