@@ -133,6 +133,22 @@ class InstallerTest(unittest.TestCase):
         self.assertTrue(updated.startswith(text))
         self.assertEqual(updated, installer.instruction(updated))
 
+    def test_block_removal_converges_and_refuses_ambiguous_markers(self):
+        # Root scope must converge to the absence of the block, and a damaged
+        # section is refused for manual reconciliation rather than guessed at.
+        from hermes_common import remove_block
+        start,end=installer.START,installer.END
+        block=start+'\nOld budget block.\n'+end+'\n'
+        for text,expected in (('Routing only.\n\n'+block,'Routing only.\n'),
+                              ('Routing only.\n','Routing only.\n'),
+                              ('Routing only.\n\n'+block+'\nLater note.\n',
+                               'Routing only.\n\nLater note.\n')):
+            removed=remove_block(text,start,end,'worker instruction')
+            self.assertEqual(expected,removed)
+            self.assertEqual(removed,remove_block(removed,start,end,'worker instruction'))
+        for text in (start,end,start+end+end,start+start+end,end+start):
+            with self.assertRaises(ValueError):remove_block(text,start,end)
+
     def test_learning_trials_are_opt_in_and_refuse_worker_context(self):
         import os
         script=source.parent/'background-learning-trials.py'
