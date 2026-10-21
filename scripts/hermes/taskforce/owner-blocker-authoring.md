@@ -1,9 +1,9 @@
 ## Hermes fleet rules
 
-AGENTS.md supplies conventions, skills procedures, cards scope and acceptance
-criteria. None widens a role's permissions or bypasses tool restrictions; honor
+AGENTS.md supplies conventions, skills, card scope and acceptance criteria. None
+widens a role's permissions or bypasses tool restrictions; honor
 exact recorded owner approval within those boundaries, and get a new decision for
-new scope or risk. Memory stores facts and preferences, not permissions or extra
+new scope or risk. Memory stores facts and preferences, not permissions or
 mandatory workflows.
 
 Never remove worker pins, alter delegation markers, switch tools or change
@@ -12,14 +12,14 @@ report the exact capability gap through head-coordinator. Anchor every worker
 call to its runtime-assigned board/task. Never forge an author or edit board
 SQLite.
 
-Owner-approved autonomy (2026-10-18): follow ~/.hermes/scripts/hermes-autonomy.md
-for bounded fallbacks (never credential contexts), read-only cross-board evidence
-and confined synthetic tests, and
-~/.hermes/scripts/hermes-capability-recovery.md for bounded recovery and
+Owner-approved autonomy (2026-10-18): ~/.hermes/scripts/hermes-autonomy.md
+covers bounded fallbacks (never credential contexts), read-only cross-board
+evidence and confined synthetic tests;
+~/.hermes/scripts/hermes-capability-recovery.md covers bounded recovery and
 reversible copy conflicts. Preserve specific safeguards, real provenance and
 tool/deploy gates.
 Documented-behaviour fixes and reversible containment need no fresh approval;
-personal execution is only for physical, owner-session or firsthand checks.
+personal execution covers only physical, owner-session or firsthand checks.
 Operator detail: ~/.hermes/scripts/hermes-instructions.md.
 
 ## Credential-only local routing
@@ -42,27 +42,27 @@ rejection uses kanban_request_changes. Never bypass the completion guard. Read
 ~/.hermes/scripts/hermes-card-authoring.md before card writes.
 
 **Comment economy:** one evidence comment per decision, after the read-back,
-never restating an adjacent comment, asserting intended state or posting a typo
-correction; cite cards by id plus title, not comment number. Internal comments
+never restating an adjacent comment, asserting intended state or correcting a
+typo; cite cards by id plus title, not comment number. Internal comments
 ≤1,200 characters; detail goes in the artifact.
 
 Before parking a card, name Input supplier: owner | agent |
 external-source-owner(<who>) | model/provider, never a profile name or comment
-alone. head-coordinator is the sole author
-of owner gates, needs_input blocks and standalone Hard Blocker markers; other
-profiles use technical blocks. Dependency blocks link an open prerequisite.
+alone. head-coordinator is sole author of owner gates, needs_input blocks and
+standalone Hard Blocker markers; other profiles use technical blocks. Dependency
+blocks link an open prerequisite.
 
 ## Classification discipline
 
 `capability`, `needs_input` and `transient` park the card; `dependency` links a
-prerequisite and returns it to `todo`.
+prerequisite, returning to `todo`.
 
 | Kind | Means |
 |------|-------|
-| `capability` | A tool, package, permission, local environment or provider gap an agent must resolve, with evidence and a named recovery path. |
-| `needs_input` | Only the owner, or an actor only the owner can direct, can decide or supply it: a credential, physical action, unrecorded owner-system fact or owner-only source. |
+| `capability` | A tool, package, permission, environment or provider gap an agent must resolve, with evidence and a named recovery path. |
+| `needs_input` | Only the owner, or an actor only the owner can direct, can decide or supply: a credential, physical action, unrecorded owner-system fact or owner-only source. |
 | `transient` | A provider/service fault expected to clear on retry. |
 | `dependency` | Waiting on another card, review verdict or upstream output. Link it. |
 
 **Key distinction:** an agent-resolvable gap is `capability`, not an owner ask;
-one naming another card is `dependency` and must link it. Do not block ready cards.
+a dependency must link its prerequisite. Do not block ready cards.
