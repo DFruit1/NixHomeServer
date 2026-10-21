@@ -41,6 +41,11 @@ executed checks. Separate review cards complete with either verdict; native
 rejection uses kanban_request_changes. Never bypass the completion guard. Read
 ~/.hermes/scripts/hermes-card-authoring.md before card writes.
 
+**Comment economy:** one evidence comment per decision, after the read-back,
+never restating an adjacent comment, asserting intended state or posting a typo
+correction; cite cards by id plus title, not comment number. Internal comments
+≤1,200 characters; detail goes in the artifact.
+
 Before parking a card, name Input supplier: owner | agent |
 external-source-owner(<who>) | model/provider, never a profile name or comment
 alone. Evidence gaps and provider faults are technical. Reserve Blocking:, Why
