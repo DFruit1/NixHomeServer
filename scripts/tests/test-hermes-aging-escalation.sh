@@ -4,6 +4,7 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 python3 -B - "$repo" <<'PY'
 import importlib.util
 import json
+import os
 from pathlib import Path
 import sqlite3
 import sys
@@ -50,12 +51,12 @@ CREATE TABLE task_runs (
 """
 
 
-def insert_comment(db_path, tid, author, age_days):
+def insert_comment(db_path, tid, author, age_days, body='x'):
     now = int(time.time())
     db = sqlite3.connect(db_path)
     db.execute(
         "INSERT INTO task_comments (task_id, author, body, created_at)"
-        " VALUES (?, ?, 'x', ?)", (tid, author, now - int(age_days * DAY)))
+        " VALUES (?, ?, ?, ?)", (tid, author, body, now - int(age_days * DAY)))
     db.commit()
     db.close()
 
@@ -391,6 +392,127 @@ class AgingEscalationTest(unittest.TestCase):
         for tid in ('t_0', 't_1', 't_2'):
             self.assertIn(tid, body)
         self.assertIn('every member card', body)
+
+    # --- Auditor-reviewed clearance escalation -------------------------
+
+    def _fake_cli(self):
+        calls = []
+
+        class FakeResult:
+            returncode = 0
+            stdout = ''
+            stderr = ''
+
+        def fake_cli(args, env):
+            calls.append(args)
+            return FakeResult()
+
+        self.addCleanup(setattr, aging, 'run_cli', aging.run_cli)
+        aging.run_cli = fake_cli
+        return calls
+
+    def _clearance_board(self, tid='t_stuck', status='todo', extra=None):
+        make_board(self.root, [(tid, 'Stuck thing', status, 20.0, extra or {})])
+        insert_comment(self.root / 'kanban' / 'boards' / 'testboard' /
+                       'kanban.db', tid, 'project-auditor', 6.0)
+
+    def test_clearance_escalation_never_reclassifies_the_card(self):
+        # The job cannot know which supplier is missing, and only
+        # head-coordinator authors needs_input gates. It posts a directive.
+        self._clearance_board()
+        calls = self._fake_cli()
+        aging.force_owner_escalation(
+            self.root, 'testboard', int(time.time()), 5.0, False, self.report)
+        self.assertTrue(any('comment' in c for c in calls), calls)
+        self.assertFalse(any('block' in c for c in calls), calls)
+        joined = '\n'.join(' '.join(c) for c in calls)
+        self.assertIn('Decision owner: head-coordinator', joined)
+        self.assertIn(aging.OWNER_ESCALATION_MARKER, joined)
+        self.assertNotIn('forced to needs_input', joined)
+        self.assertTrue(any('clearance escalation' in line
+                            for line in self.report), self.report)
+
+    def test_clearance_skips_coordinator_scheduled_hold(self):
+        # A scheduled hold is a deliberate time wait, not an unattended card.
+        self._clearance_board(status='scheduled')
+        calls = self._fake_cli()
+        aging.force_owner_escalation(
+            self.root, 'testboard', int(time.time()), 5.0, False, self.report)
+        self.assertEqual([], calls)
+        self.assertEqual([], self.report)
+
+    def test_clearance_skips_existing_owner_gate(self):
+        self._clearance_board(extra={'block_kind': 'needs_input'})
+        calls = self._fake_cli()
+        aging.force_owner_escalation(
+            self.root, 'testboard', int(time.time()), 5.0, False, self.report)
+        self.assertEqual([], calls)
+
+    def test_clearance_directive_is_damped(self):
+        self._clearance_board()
+        insert_comment(self.root / 'kanban' / 'boards' / 'testboard' /
+                       'kanban.db', 't_stuck', aging.CREATED_BY, 1.0,
+                       body=aging.OWNER_ESCALATION_MARKER + '\nprior')
+        calls = self._fake_cli()
+        aging.force_owner_escalation(
+            self.root, 'testboard', int(time.time()), 5.0, False, self.report)
+        self.assertEqual([], calls)
+
+    def test_clearance_directive_rearms_after_damping(self):
+        self._clearance_board()
+        insert_comment(self.root / 'kanban' / 'boards' / 'testboard' /
+                       'kanban.db', 't_stuck', aging.CREATED_BY,
+                       aging.CLEARANCE_DAMP_DAYS + 1.0,
+                       body=aging.OWNER_ESCALATION_MARKER + '\nprior')
+        calls = self._fake_cli()
+        aging.force_owner_escalation(
+            self.root, 'testboard', int(time.time()), 5.0, False, self.report)
+        self.assertTrue(any('comment' in c for c in calls), calls)
+
+    # --- Triage aging and the tracker parking lot ----------------------
+
+    def test_triage_aging_splits_trackers_from_real_cards(self):
+        now = make_board(self.root, [
+            ('t_t1', '[FEATURE TRACKER] ideas', 'triage', 10.0, {}),
+            ('t_t2', '[FEATURE TRACKER — NOT AN EXECUTION TASK] more',
+             'triage', 9.0, {}),
+            ('t_real', 'Compose the validated thing', 'triage', 8.0, {}),
+            ('t_new', 'Fresh triage card', 'triage', 1.0, {}),
+        ])
+        db = aging.connect_ro(
+            self.root / 'kanban' / 'boards' / 'testboard' / 'kanban.db')
+        cards, trackers = aging.triage_aging_candidates(db, now, 7.0)
+        db.close()
+        self.assertEqual(['t_real'], [c[0] for c in cards])
+        self.assertEqual({'t_t1', 't_t2'}, {t[0] for t in trackers})
+
+    def test_triage_report_aggregates_tracker_parking_lot(self):
+        # 13 per-card tracker lines buried the real signal on 2026-10-21.
+        make_board(self.root, [
+            ('t_t1', '[FEATURE TRACKER] one', 'triage', 11.0, {}),
+            ('t_t2', '[FEATURE TRACKER] two', 'triage', 9.0, {}),
+            ('t_real', 'Compose the validated thing', 'triage', 8.0, {}),
+        ])
+        import contextlib
+        import io
+        out = io.StringIO()
+        old_root = os.environ.get('HERMES_ROOT')
+        old_argv = sys.argv
+        os.environ['HERMES_ROOT'] = str(self.root)
+        sys.argv = [sys.argv[0], '--dry-run', '--board', 'testboard']
+        try:
+            with contextlib.redirect_stdout(out):
+                aging.main()
+        finally:
+            sys.argv = old_argv
+            if old_root is None:
+                os.environ.pop('HERMES_ROOT', None)
+            else:
+                os.environ['HERMES_ROOT'] = old_root
+        text = out.getvalue()
+        self.assertIn('2 [FEATURE TRACKER] cards exceed triage limit', text)
+        self.assertIn('t_real', text)
+        self.assertNotIn('t_t1', text)
 
     def test_dependency_clusters_group_linked_cards(self):
         make_board(self.root, [

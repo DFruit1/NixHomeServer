@@ -16,9 +16,11 @@ substantive board event, not card age:
     card -- obtain the missing input, record a superseding decision, or close
     it with evidence.
   * auditor-reviewed >= 5 days -- a card the auditor has reviewed at least
-    once, and that remains unresolved 5+ days after that review, is forced to
-    ``needs_input``. The auditor's deep-dive did not clear it; further idle
-    time will not. The owner must decide: unblock, supersede, or close.
+    once, and that remains unresolved 5+ days after that review, gets a
+    one-shot clearance directive to head-coordinator. The auditor's deep-dive
+    did not clear it; further idle time will not. The coordinator must obtain
+    the missing input, supersede it with evidence, or close it, and authors
+    the owner gate itself if the supplier turns out to be the owner.
 
 Every escalation action writes a board event (``reprioritized`` or
 ``commented``), which resets the card's idle clock. The job is therefore
@@ -56,6 +58,7 @@ AUDITOR = 'project-auditor'
 JOB = 'kanban aging escalation'
 CREATED_BY = 'aging-escalation'
 DIRECTIVE_MARKER = '<!-- kanban-aging-escalation -->'
+OWNER_ESCALATION_MARKER = '<!-- kanban-aging-clearance-escalation -->'
 STALE_BLOCK_MARKER = '<!-- kanban-stale-block -->'
 
 # Idle hours that trigger each tier. Environment-overridable like the
@@ -76,10 +79,12 @@ NON_SUBSTANTIVE = {
 TRACKER_TITLE = re.compile(r'^\[FEATURE TRACKER', re.I)
 
 # Owner escalation policy: a card the auditor has reviewed at least once, and
-# that remains unresolved 5 days (default) after that review, is forced to
-# needs_input -- it is not budging on its own and the auditor's deep-dive did
-# not clear it. The owner must decide: unblock, supersede, or close.
+# that remains unresolved 5 days (default) after that review, gets a one-shot
+# clearance directive to head-coordinator. This job never reclassifies the card:
+# needs_input means owner-only, and only head-coordinator authors owner gates.
 DEFAULT_OWNER_ESCALATION_DAYS = 5.0
+# Repeat a clearance directive at most this often while the card is unchanged.
+CLEARANCE_DAMP_DAYS = 5.0
 
 # Triage aging: a card left in triage for more than this many days without
 # being promoted to todo or done is flagged for coordinator disposition.
@@ -165,6 +170,24 @@ def recently_escalated(db, task_id, now, damp_seconds=3 * 86400):
             "SELECT created_at FROM task_comments WHERE task_id = ?"
             " AND author = ? ORDER BY id DESC LIMIT 1",
             (task_id, CREATED_BY)).fetchone()
+    except sqlite3.Error:
+        return False
+    return bool(row and row['created_at']
+                and now - row['created_at'] < damp_seconds)
+
+
+def marker_posted_since(db, task_id, marker, now, damp_seconds):
+    """Whether this job already posted a comment with ``marker`` recently.
+
+    Clearance escalations need their own damping keyed on their own marker:
+    a tier directive from the same tick must not suppress the clearance
+    directive, and an unchanged clearance must not repost every six hours.
+    """
+    try:
+        row = db.execute(
+            "SELECT created_at FROM task_comments WHERE task_id = ?"
+            " AND author = ? AND body LIKE ? ORDER BY id DESC LIMIT 1",
+            (task_id, CREATED_BY, f'{marker}%')).fetchone()
     except sqlite3.Error:
         return False
     return bool(row and row['created_at']
@@ -648,7 +671,7 @@ def owner_escalation_candidates(db, now, owner_escalation_days):
     """
     try:
         rows = db.execute(
-            "SELECT id, block_kind, created_at FROM tasks"
+            "SELECT id, status, block_kind, created_at FROM tasks"
             f" WHERE status IN ({','.join('?' * len(OPEN_STATUSES))})"
             " AND status != 'running'",
             OPEN_STATUSES).fetchall()
@@ -657,6 +680,16 @@ def owner_escalation_candidates(db, now, owner_escalation_days):
     candidates = []
     threshold_seconds = owner_escalation_days * 86400.0
     for row in rows:
+        # A scheduled hold is the coordinator's deliberate time wait, and an
+        # existing owner gate already waits on the owner; neither is a card
+        # left unattended. Escalating them would paper over a live decision.
+        if row['status'] == 'scheduled':
+            continue
+        if gate_kind(db, row['id']) == 'needs_input':
+            continue
+        if marker_posted_since(db, row['id'], OWNER_ESCALATION_MARKER, now,
+                               CLEARANCE_DAMP_DAYS * 86400):
+            continue
         reviewed_at = last_auditor_review_at(db, row['id'])
         if not reviewed_at:
             continue
@@ -669,13 +702,18 @@ def owner_escalation_candidates(db, now, owner_escalation_days):
 
 
 def force_owner_escalation(root, slug, now, owner_escalation_days, dry_run, report):
-    """Force auditor-reviewed stale cards to needs_input.
+    """Escalate auditor-reviewed stale cards to the coordinator, once.
 
     A card the auditor has reviewed at least once, and that remains unresolved
-    after the owner escalation threshold, is not clearing on its own. The
-    auditor's deep-dive did not resolve it, and further idle time will not
-    change that. Force the card to needs_input so it reaches the owner's
-    decision channel instead of accumulating dust.
+    after the escalation threshold, is not clearing on its own. The auditor's
+    deep-dive did not resolve it, and further idle time will not change that.
+
+    The job does not reclassify the card. ``needs_input`` means only the owner
+    can decide or act, and only head-coordinator authors owner gates after the
+    supplier test; a cron cannot know which supplier is missing. So this posts
+    one directive asking the coordinator to clear the card or author a checked
+    gate, and leaves status and block kind untouched. A deliberate ``scheduled``
+    time wait and an existing owner gate are never overridden.
     """
     db_path = root / 'kanban' / 'boards' / slug / 'kanban.db'
     env = os.environ.copy()
@@ -691,55 +729,55 @@ def force_owner_escalation(root, slug, now, owner_escalation_days, dry_run, repo
                 pass
             report.append(
                 f"[{slug}] {task_id} (auditor-reviewed {age_days:.1f}d ago)"
-                f" owner escalation: {title[:50]}")
-            report.append(f"  -> force needs_input (block reason: {reason[:80]})")
+                f" clearance escalation: {title[:50]}")
+            report.append(
+                f"  -> post coordinator clearing directive"
+                f" (block reason: {reason[:80]})")
             if dry_run:
                 continue
-            # Reclassify to needs_input and post a directive
             directive = '\n'.join([
-                DIRECTIVE_MARKER,
-                f"Owner escalation: the auditor reviewed this card"
+                OWNER_ESCALATION_MARKER,
+                f"Clearance escalation: the auditor reviewed this card"
                 f" {age_days:.1f} days ago and it remains unresolved.",
-                "The auditor's deep-dive did not clear it; further idle time"
-                " will not. This card is now forced to needs_input.",
-                f"Decision owner: {PROFILE} -- unblock with a concrete"
-                " disposition, supersede with evidence, or close it as"
-                " descoped. Do not leave it accumulating idle time.",
+                "Further idle time will not clear it. Do not park it unchanged.",
+                f"Decision owner: {PROFILE} -- obtain the missing input, record",
+                "a superseding decision with evidence, or close it as",
+                "descoped/superseded with a reason.",
+                "If the missing supplier is the owner, author the checked gate",
+                "through the existing sender; this job does not create one.",
                 f"Prior block reason: {reason[:200]}",
             ])
             run_cli(['kanban', '--board', slug, 'comment', task_id, directive,
                      '--author', CREATED_BY], env)
-            # Use kanban_block to set needs_input -- this is the one case
-            # where an automated job reclassifies, because the auditor +
-            # idle time together have proven the card is stuck.
-            run_cli(['kanban', '--board', slug, 'block', task_id,
-                     '--kind', 'needs_input',
-                     '--reason', f'Forced owner escalation: auditor reviewed '
-                                 f'{age_days:.1f}d ago, card did not resolve. '
-                                 f'Prior reason: {reason[:200]}'], env)
 
 
 def triage_aging_candidates(db, now, triage_max_age_days):
     """Cards in triage longer than the triage age limit.
 
     Triage is a stopping point for cards awaiting classification, not a
-    resting place. A card left in triage for more than triage_max_age_days
-    is flagged for the coordinator to promote or archive.
+    resting place. Returns ``(cards, trackers)``: cards need a per-card
+    promote-or-archive disposition, while ``[FEATURE TRACKER`` cards are the
+    deliberate parking lot and are reported as one aggregate line so a large
+    tracker backlog stays visible without burying the real triage signal.
     """
     try:
         rows = db.execute(
             "SELECT id, title, created_at FROM tasks"
             " WHERE status = 'triage' ORDER BY created_at ASC").fetchall()
     except sqlite3.Error:
-        return []
-    candidates = []
+        return [], []
+    cards, trackers = [], []
     threshold_seconds = triage_max_age_days * 86400.0
     for row in rows:
         age = now - int(row['created_at'] or 0)
         if age < threshold_seconds:
             continue
-        candidates.append((row['id'], age / 86400.0, row['title']))
-    return candidates
+        item = (row['id'], age / 86400.0, row['title'])
+        if TRACKER_TITLE.match(row['title'] or ''):
+            trackers.append(item)
+        else:
+            cards.append(item)
+    return cards, trackers
 
 
 def main():
@@ -789,16 +827,24 @@ def main():
                        escalation_hours, report)
         force_owner_escalation(root, slug, now, owner_escalation_days,
                                args.dry_run, report)
-        # Triage aging: cards left in triage too long get flagged
+        # Triage aging: cards left in triage too long get flagged. Trackers
+        # are aggregated so a parking-lot backlog cannot drown the real signal.
         db_path = root / 'kanban' / 'boards' / slug / 'kanban.db'
         with connect_ro(db_path) as db:
-            triage_candidates = triage_aging_candidates(db, now,
-                                                        triage_max_age_days)
-        for task_id, age_days, title in triage_candidates:
+            triage_cards, triage_trackers = triage_aging_candidates(
+                db, now, triage_max_age_days)
+        for task_id, age_days, title in triage_cards:
             report.append(
                 f"[{slug}] {task_id} (triage, age {age_days:.1f}d)"
                 f" exceeds triage limit: {title[:50]}")
             report.append(f"  -> promote to todo, or archive with reason")
+        if triage_trackers:
+            oldest = max(age_days for _, age_days, _ in triage_trackers)
+            report.append(
+                f"[{slug}] {len(triage_trackers)} [FEATURE TRACKER] cards"
+                f" exceed triage limit (oldest {oldest:.1f}d)")
+            report.append(
+                "  -> keep as tracker, promote one to todo, or archive with reason")
     if not report:
         print("aging escalation: nothing to escalate")
     else:

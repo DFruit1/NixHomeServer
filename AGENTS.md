@@ -262,9 +262,14 @@ dispatch priority (≥50; the dispatcher orders lanes by `priority DESC`). Idle
 per dependency cluster, and posts a coordinator clearing directive: obtain the
 missing input, supersede with evidence, or close with a reason. A card older
 than 7 days escalates on age even when holding comments keep the idle clock
-fresh. Running cards, `[FEATURE TRACKER` cards and owner gates are exempt;
-gates receive the directive only, since only head-coordinator touches gate
-state. `scripts/hermes/kanban-aging-escalation.py` runs the policy as the
+fresh. Running cards, owner gates and `[FEATURE TRACKER` cards are exempt from
+per-card escalation; gates receive the directive only, since only
+head-coordinator touches gate state, and trackers are reported as one aggregate
+triage line so a parking-lot backlog stays visible without burying the real
+signal. A card the auditor reviewed 5+ days ago that is still unresolved gets a
+one-shot clearance directive to head-coordinator; the job never reclassifies it
+to `needs_input`, because only the coordinator authors owner gates.
+`scripts/hermes/kanban-aging-escalation.py` runs the policy as the
 `kanban aging escalation` cron job; `--dry-run` previews, and thresholds are
 `AGING_PRIORITY_HOURS` / `AGING_ESCALATION_HOURS`. Each run also rechecks
 blocked cards for a verifiably stale condition (a named review whose verdict

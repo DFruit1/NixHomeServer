@@ -64,23 +64,23 @@ steward reports remain separate.
 
 ## Classification discipline
 
-The three block kinds are mutually exclusive and exhaustive. Misclassification
-routes cards to the wrong queue and stalls work that could proceed.
+Four typed reasons. `capability`, `needs_input` and `transient` park the card.
+`dependency` links a prerequisite and returns the card to `todo`, so it is a
+wait, not a block. Misclassification stalls work.
 
 | Kind | Means | Example |
 |------|-------|---------|
-| `capability` | A tool, command, package, permission or provider is unavailable and no agent can recover it without owner action. | "pnpm not found", "exit 126 on deploy script", "permission denied on /dev/kvm" |
-| `dependency` | Waiting on another card, review verdict, upstream output, or linked prerequisite to complete. | "waiting on t_abc123 review", "blocked until producer capsule arrives" |
-| `needs_input` | Only the owner can decide or act — a credential, a physical action, an unrecorded system fact, or an owner-only external source. | "need owner to approve deploy", "need SSH key for server" |
-| `transient` | A provider/service fault expected to resolve on retry without owner action. | "provider quota exhausted", "rate limited" |
+| `capability` | A tool, package, permission, local environment or provider gap an agent must resolve, with evidence and a named recovery path. It does not need the owner. | "pnpm not found (exit 127)" |
+| `needs_input` | Only the owner, or an actor only the owner can direct, can decide or supply it: a credential, physical action, unrecorded owner-system fact or owner-only source. | "owner-held SSH key" |
+| `transient` | A provider/service fault expected to clear on retry. | "rate limited" |
+| `dependency` | Waiting on another card, review verdict or upstream output. Link it. | "waiting on t_abc123" |
 
-**The distinction that matters most:** if the blocker reason references another
-card, a review, an upstream output, or a producer — it is `dependency`, not
-`capability`. Link the prerequisite and use `dependency`. A `capability` block
-names a specific missing tool, command, or permission with an exit code or
-error message.
+**The distinction that matters most:** if an agent can resolve it with tooling it
+already has, it is `capability` with a recovery action — not an owner ask. If the
+missing item is a decision, credential, physical action or unrecorded
+owner-system fact, it is `needs_input`. A reason naming another card, review or
+producer is `dependency`, and must link that card.
 
-**Do not block cards that are ready to execute.** A card with no tool gap,
-no upstream dependency and no owner-only input should be `todo` or `running`,
-not `blocked`. The guard rejects `capability` blocks whose reason describes
-dependency patterns.
+**Do not block cards that are ready to execute.** No tool gap, no upstream
+dependency and no owner-only input means `todo` or `running`, not `blocked`. The
+guard rejects `capability` blocks whose reason describes dependency patterns.
