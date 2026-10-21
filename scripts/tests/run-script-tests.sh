@@ -176,6 +176,7 @@ test_scripts=(
   scripts/tests/test-remote-run-helper.sh
   scripts/tests/test-reap-kanban-worktrees.sh
   scripts/tests/test-kanban-board-health.sh
+  scripts/tests/test-quiescence-inventory.sh
   scripts/tests/test-kanban-retry-breaker.sh
   scripts/tests/test-kanban-durability-sync.sh
   scripts/tests/test-kanban-install-board-wiring.sh
