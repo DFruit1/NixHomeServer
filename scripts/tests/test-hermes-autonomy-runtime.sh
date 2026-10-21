@@ -104,5 +104,8 @@ class RuntimeTest(unittest.TestCase):
         self.assertEqual(before,receipt.read_bytes())
 
 
-unittest.main(argv=[sys.argv[0]],verbosity=2)
+with patch.dict(os.environ):
+    os.environ.pop('HERMES_DELEGATED_CHILD_CONTEXT', None)
+    os.environ.pop('HERMES_KANBAN_TASK', None)
+    unittest.main(argv=[sys.argv[0]],verbosity=2)
 PY
