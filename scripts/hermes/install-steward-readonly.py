@@ -99,7 +99,7 @@ def default_repo(root):
 
 
 def steward_soul(current, instructions):
-    wanted = instructions.shared((SOURCE / 'taskforce/board-steward.md').read_text())
+    wanted = instructions.shared((SOURCE / 'taskforce/board-steward.md').read_text(), PROFILE)
     # Independent policy blocks are installed by other components: the cron
     # installer owns the hermes-cron-policy block and the memory installer owns
     # the hermes-memory-policy block. Retain each one's exact bytes, because

@@ -41,6 +41,26 @@ def atomic_write(path, content, mode=None):
             os.unlink(temporary)
 
 
+def remove_block(text, start, end, label='managed'):
+    """Drop one managed block, leaving the surrounding text otherwise stable.
+
+    A role that must converge to the absence of a block (for example the
+    routing-only default profile) needs a removal, not a rewrite: re-installing
+    a different block would leave stale text behind forever. Ambiguous markers
+    are refused exactly as in the block installers so a damaged section is
+    reconciled deliberately rather than guessed at.
+    """
+    if start not in text and end not in text:
+        return text
+    if text.count(start) != 1 or text.count(end) != 1 or text.index(end) < text.index(start):
+        raise ValueError(f'Ambiguous {label} markers')
+    head = text[:text.index(start)].rstrip('\n')
+    tail = text[text.index(end) + len(end):].lstrip('\n')
+    if not head:
+        return tail
+    return head + '\n\n' + tail if tail else head + '\n'
+
+
 def backup_file(root, subdir, path):
     """Archive an existing file under root/backups/<subdir>/ before changing it.
 

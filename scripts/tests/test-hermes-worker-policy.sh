@@ -133,6 +133,22 @@ class InstallerTest(unittest.TestCase):
         self.assertTrue(updated.startswith(text))
         self.assertEqual(updated, installer.instruction(updated))
 
+    def test_block_removal_converges_and_refuses_ambiguous_markers(self):
+        # Root scope must converge to the absence of the block, and a damaged
+        # section is refused for manual reconciliation rather than guessed at.
+        from hermes_common import remove_block
+        start,end=installer.START,installer.END
+        block=start+'\nOld budget block.\n'+end+'\n'
+        for text,expected in (('Routing only.\n\n'+block,'Routing only.\n'),
+                              ('Routing only.\n','Routing only.\n'),
+                              ('Routing only.\n\n'+block+'\nLater note.\n',
+                               'Routing only.\n\nLater note.\n')):
+            removed=remove_block(text,start,end,'worker instruction')
+            self.assertEqual(expected,removed)
+            self.assertEqual(removed,remove_block(removed,start,end,'worker instruction'))
+        for text in (start,end,start+end+end,start+start+end,end+start):
+            with self.assertRaises(ValueError):remove_block(text,start,end)
+
     def test_learning_trials_are_opt_in_and_refuse_worker_context(self):
         import os
         script=source.parent/'background-learning-trials.py'
@@ -151,12 +167,22 @@ class InstallerTest(unittest.TestCase):
             config=root/'profiles/local-implementer/config.yaml';config.parent.mkdir(parents=True)
             config.write_text('model: {provider: custom, default: local}\n')
             config.chmod(0o640)
-            (root/'SOUL.md').write_text('Operator instructions\n')
+            # The retired default profile only routes: an old budget block is
+            # removed, and lane SOULs receive the block.
+            (root/'SOUL.md').write_text('Operator instructions\n\n' + installer.START
+                                        + '\nOld budget block.\n' + installer.END + '\n')
+            for lane in ('head-coordinator', 'project-auditor'):
+                (root/'profiles'/lane).mkdir(parents=True)
+                (root/'profiles'/lane/'SOUL.md').write_text('# ' + lane + '\n')
             original={p:p.read_bytes() for p in root.rglob('*') if p.is_file()}
             self.assertEqual(1,installer.install(root,True))
             self.assertEqual(original,{p:p.read_bytes() for p in root.rglob('*') if p.is_file()})
             self.assertEqual(0,installer.install(root))
             self.assertEqual(0,installer.install(root,True))
+            self.assertEqual('Operator instructions\n', (root/'SOUL.md').read_text())
+            for lane in ('head-coordinator', 'project-auditor'):
+                self.assertIn(installer.START,
+                              (root/'profiles'/lane/'SOUL.md').read_text())
             self.assertEqual(0o640,config.stat().st_mode & 0o777)
             config.write_text('model: {provider: custom, default: local}\n')
             (native/'kanban_db_dispatch.py').write_text('incompatible native source')

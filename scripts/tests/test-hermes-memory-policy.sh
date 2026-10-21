@@ -229,7 +229,11 @@ class InstallerTest(unittest.TestCase):
                 home=root if role=='default' else root/'profiles'/role
                 home.mkdir(parents=True,exist_ok=True)
                 (home/'config.yaml').write_text('model: {default: local}\nmemory:\n  nudge_interval: 10\n')
-                (home/'SOUL.md').write_text('Operator instructions remain.\n')
+                # The retired default profile only routes: a stale learning
+                # block there is removed, never rewritten.
+                (home/'SOUL.md').write_text('Operator instructions remain.\n' + (
+                    '\n'+self.installer.START+'\nOld learning block.\n'+self.installer.END+'\n'
+                    if role=='default' else ''))
             before={p:p.read_bytes() for p in root.rglob('*') if p.is_file()}
             self.assertEqual(1,self.installer.install(root,True))
             self.assertEqual(before,{p:p.read_bytes() for p in root.rglob('*') if p.is_file()})
@@ -253,7 +257,13 @@ class InstallerTest(unittest.TestCase):
                 consent=json.loads((home/'shell-hooks-allowlist.json').read_text())
                 self.assertEqual(1,len(consent['approvals']))
                 self.assertEqual('pre_tool_call',consent['approvals'][0]['event'])
-                self.assertTrue((home/'SOUL.md').read_text().startswith('Operator instructions remain.'))
+                soul=(home/'SOUL.md').read_text()
+                self.assertTrue(soul.startswith('Operator instructions remain.'))
+                self.assertNotIn('Old learning block', soul)
+                if role=='default':
+                    self.assertNotIn(self.installer.START, soul)
+                else:
+                    self.assertIn(self.installer.START, soul)
             native.write_text('incompatible native source')
             config=root/'config.yaml';config.write_text('model: {default: still-unchanged}\n')
             with self.assertRaises(ValueError):self.installer.install(root)

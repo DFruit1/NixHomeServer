@@ -13,13 +13,17 @@ import sys
 
 import yaml
 
-from hermes_common import backup_file
+from hermes_common import backup_file, remove_block
 from hermes_config import document
 from worker_runtime_adapter import adapt
 
 SOURCE = Path(__file__).resolve().parent
 WORKERS = ('head-coordinator', 'feature-reviewer', 'project-auditor',
            'standard-implementer', 'local-implementer')
+# Commissioning and recovering worker cards is lane work. The retired default
+# profile only routes, so it carries no budget block; an older copy is removed.
+BUDGETED_SOULS = ('profiles/head-coordinator/SOUL.md',
+                  'profiles/project-auditor/SOUL.md')
 START, END = '<!-- hermes-worker-budgets -->', '<!-- /hermes-worker-budgets -->'
 
 
@@ -71,10 +75,13 @@ def install(root, check=False):
         path = root / 'profiles' / profile / 'config.yaml'
         if path.exists():
             pending[path] = derived_titles(path.read_text())
-    for path in (root / 'SOUL.md', root / 'profiles/head-coordinator/SOUL.md',
-                 root / 'profiles/project-auditor/SOUL.md'):
+    for relative in BUDGETED_SOULS:
+        path = root / relative
         if path.exists():
             pending[path] = instruction(path.read_text())
+    default = root / 'SOUL.md'
+    if default.exists():
+        pending[default] = remove_block(default.read_text(), START, END, 'worker instruction')
     pending[root / 'scripts/hermes-worker-budgets.md'] = (SOURCE / 'instructions/worker-budgets.md').read_text()
     native = root / 'hermes-agent/hermes_cli'
     pending[native / 'nixhomeserver_worker_policy.py'] = (SOURCE / 'worker-policy.py').read_text()
