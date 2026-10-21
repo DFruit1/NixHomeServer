@@ -37,6 +37,11 @@ failed run needs a new receipt. The guard checks provenance and fields; it
 cannot judge whether a claimed improvement is true. The coordinator owns that
 judgment and must stop unchanged loops. Keep task-specific receipts on cards.
 
+Hitting the iteration or timeout limit means the assigned slice is too large,
+not that the attempt was unlucky. Narrow or split the slice and record the
+split on the card; do not treat exhaustion as a retryable failure. Re-running
+the same slice still needs the receipt above for that exact run.
+
 Worker sessions retain instant derived titles and manual renames, with
 `auxiliary.title_generation.model_upgrade_enabled: false`. The board steward's
 interactive/report configuration is unchanged.
