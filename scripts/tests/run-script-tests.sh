@@ -123,6 +123,9 @@ test_scripts=(
   scripts/tests/test-ipfs-swarm-binding.sh
   scripts/tests/test-nix-store-capacity-gc.sh
   scripts/tests/test-disk-space-cleanup.sh
+  scripts/tests/test-temp-cleanup.sh
+  scripts/tests/test-install-temp-cleanup.sh
+  scripts/tests/test-temp-cleanup-module.sh
   scripts/tests/test-shutdown-guard.sh
   scripts/tests/test-offline-media-reliability.sh
   scripts/tests/test-opencloud-module.sh

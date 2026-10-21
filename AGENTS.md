@@ -44,6 +44,10 @@ temporary task receipts on their cards/jobs, not in standing instructions.
   files in the repo root, app/module trees or `$HOME`, or hunt for cleanup targets.
 * Never stage plaintext secrets in temp files. `secrets/` contains encrypted
   `.age` only; never read or print `secrets/unencrypted/`.
+* A scheduled `temp-cleanup` reclaims aged Hermes caches, logs and development
+  scratch on the server (timer) and workstation (installer). It keeps boards,
+  backups, secrets, models and worktrees; worktrees go only through the audited
+  Hermes prune and kanban reaper path. Prefer it over hand-deleting temp trees.
 
 ---
 

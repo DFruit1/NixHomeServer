@@ -789,10 +789,74 @@ emits `disk_cleanup_action_failed` (with the final 8 KiB of its output as
 base64) and a final `disk_cleanup_failed`, which uses the normal systemd
 failure alert path.
 
+## Hermes and Development Temp Cleanup
+
+`scripts/admin/temp-cleanup.sh` is the regular, conservative pass for Hermes
+and development temporary files. The server runs it daily as the local admin
+through `nixhomeserver-temp-cleanup.timer`; workstations install the same job
+with `scripts/admin/install-temp-cleanup.sh`.
+
+It removes only entries directly inside these roots, and only when they are
+older than the configured age:
+
+| Root | Default age | What it holds |
+| --- | --- | --- |
+| `~/.hermes/cache/*`, `~/.hermes/profiles/*/cache/*` | 14 days | Regenerable model, browser, token-cost and schema caches |
+| `~/.hermes/logs/*.log`, `~/.hermes/profiles/*/logs/*.log` | 14 days | Rotated or stale diagnostic logs |
+| `~/.hermes/profiles/*/scratch/*` (with `--include-scratch`) | 30 days | Dormant agent scratch, including test environments |
+| `/tmp/nixhomeserver-*`, `/tmp/hermes-*` | 7 days | Test fixtures and tool scratch owned by this tooling |
+| `<repo>/.tmp/*` | 7 days | Agent task scratch described in `AGENTS.md` |
+| `<repo>/output/*`, `test-results/*`, `playwright-report/*` | 14 days | Generated render and test artifacts |
+
+`~/.hermes/installs` and `~/.hermes/tools` are always reported and never
+auto-deleted; project environments are expensive to rebuild and managed
+runtimes are pinned. `--include-installs` opts into the 30-day project
+environment cleanup. Worktrees are never deleted by this script: with
+`--include-worktrees` it runs Hermes' audited `hermes worktree prune` (which
+keeps uncommitted and unpushed work) and the kanban worktree reaper, whose own
+safety contract is described in `AGENTS.md`.
+
+An entry is preserved when it is a symlink, a mount point, or contains `.git`,
+`SOUL.md`, a database (`*.db`, `*.sqlite*`), an encrypted archive (`*.age`,
+`*.kdbx`), model weights (`*.gguf*`), `models/`, credentials (`*.env`, `*.pem`,
+`*.key`, `.ssh`) or any archive. The filesystem boundary is never crossed
+(`find -xdev`, `rm --one-file-system`), so a bind mount or network share under
+a cache root cannot be deleted through it. The default action is a dry run.
+
 ```bash
-systemctl status nixhomeserver-disk-cleanup.timer
-journalctl -u nixhomeserver-disk-cleanup.service --output=cat
-sudo systemctl start nixhomeserver-disk-cleanup.service
+# Review what would be removed, including byte accounting.
+scripts/admin/temp-cleanup.sh --bytes
+
+# Apply the same policy to Hermes scratch and both worktree tools.
+scripts/admin/temp-cleanup.sh --apply --include-scratch --include-worktrees
+```
+
+On the server, `system.tempCleanup` controls the job:
+
+```nix
+system.tempCleanup = {
+  enable = true;         # daily, as the local admin
+  maxAgeDays = 14;       # caches, logs, and generated output
+  scratchAgeDays = 30;   # dormant Hermes profile scratch
+};
+```
+
+```bash
+systemctl list-timers nixhomeserver-temp-cleanup.timer
+journalctl -u nixhomeserver-temp-cleanup.service --output=cat
+sudo systemctl start nixhomeserver-temp-cleanup.service
+```
+
+On a workstation (including Void/runit hosts without a systemd user manager),
+the installer writes a daily cron block or, when available, a systemd user
+timer. It is idempotent, preserves unrelated crontab entries, and logs to
+`~/.local/state/nixhomeserver/temp-cleanup.log` on the cron path.
+
+```bash
+scripts/admin/install-temp-cleanup.sh --dry-run   # show the planned job
+scripts/admin/install-temp-cleanup.sh             # install at 04:10 daily
+scripts/admin/install-temp-cleanup.sh --no-worktrees --time 05:00
+scripts/admin/install-temp-cleanup.sh --uninstall
 ```
 
 ## Storage Capacity Alerts
