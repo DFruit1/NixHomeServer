@@ -45,11 +45,12 @@ older unresolved blockers:
 - Current features being worked on: enumerate the active feature trackers
   (not their execution cards). For each, report its purpose, how it progressed
   since the previous daily report, and what done looks like. This section is
-  a required report section; compress unchanged detail first. Within the 3000-character
-  phone budget, prioritize complete owner asks, then changed feature lines, changed
-  stalls and usage risks. State any omitted feature count explicitly; never imply
-  complete coverage when details did not fit. Send technical detail through the
-  existing internal coordinator handoff, without extra phone messages.
+  a required report section; compress unchanged detail first. Within the
+  2500-character phone budget, prioritize complete owner asks, then changed
+  feature lines, changed stalls and usage risks. State any omitted feature count
+  explicitly; never imply complete coverage when details did not fit. Send
+  technical detail through the existing internal coordinator handoff, without
+  extra phone messages.
 
 - Repeated permission denials, grouped by profile, tool, refusing policy and
   affected instruction or goal. Include standing goals outside cards. Compare
@@ -59,14 +60,17 @@ older unresolved blockers:
 
 The daily report has a fixed five-section summary — *Needs you*, *Moved*,
 *Stuck*, *Health* and *Budget* — in that order, one short line per item, with a
-separate *Unblock prompts* section only when a full prompt is due. Owner decisions
-use Blocking / Why owner / Unblock. Feature lines name the stage (building /
-review / changes requested / accepted / deployed / stopped) and what done means.
-The report carries no optional technical handoff; the four-hourly stall job owns
-technical detail. On a day with no new owner decision, feature stage change,
-long-blocked card or failure cause, and no budget trip, send only a compact
-quiet report: the header, "No material change since yesterday.", the
-open-decision count, the stuck count and oldest age, and the budget line.
+separate *Unblock prompts* section only when a full prompt is due. The header
+carries the baseline inline: `Daily steward — <day> <time> (since <baseline>)`.
+Owner decisions use Blocking / Why owner / Unblock. Feature lines lead with the
+owner-visible outcome, then the stage (building / review / changes requested /
+accepted / deployed / stopped) and what done means. The stage implies deployment
+state, so `not deployed` is filler unless surprising. Do not repeat a fact in
+two sections or explain the report, board or evidence limits. The report carries
+no optional technical handoff; the four-hourly stall job owns technical detail.
+On a day with no new owner decision, feature stage change, long-blocked card or
+failure cause, and no budget trip, send one line: the header plus
+`Nothing new; N decisions open; N long-blocked (oldest X); budget <state>.`
 
 Start with summaries and inspect only relevant, redacted evidence excerpts.
 Track feature stalls across related cards and older history, including work in
@@ -82,14 +86,14 @@ Prioritise unresolved requested fixes and recurring stalls. Carry them forward
 briefly until resolution is evidenced, stating what changed or that nothing did;
 do not repeat full unchanged handoffs or count replacement cards as progress.
 
-Prioritise at most five summary findings. Each check reports findings, no
-findings in inspected evidence, or unknown with the missing evidence. Missing
+Prioritise at most three changed features and the oldest stuck cards. Each check
+reports findings, no findings in inspected evidence, or unknown with the missing
+evidence. Missing
 usage data is never reported as zero. Keep unresolved blockers visible while
 avoiding repeated unchanged handoffs. Reporting must not launch inference
 probes, replay failed work or run expensive validation.
 
-Each full outside-agent prompt (and any internal coordinator handoff) provides a
-copyable handoff:
+Each internal coordinator handoff provides a complete copyable handoff:
 
 ```text
 Goal: <concrete outcome>
@@ -100,10 +104,14 @@ Verify: <read-only check and expected result>
 Constraints: <existing approvals and work to preserve>
 ```
 
-Commands are proposals, never reported as executed. Include exact known targets;
-identify missing prerequisites rather than inventing values. The owner can pass
-the prompt unchanged to Codex. Sensitive or irreversible operations still need
-their existing authorization; a report does not supply it.
+An owner-facing outside-agent prompt is shorter: `Stuck` (what is stuck and for
+how long), `Fix` (the exact cause, files and commands) and `Verify` (the
+read-only check), plus the shared constraints footer. Both forms name exact known
+targets and identify missing prerequisites rather than inventing values. The
+owner can pass the prompt unchanged to Codex.
+
+Commands are proposals, never reported as executed. Sensitive or irreversible
+operations still need their existing authorization; a report does not supply it.
 
 ## Long-blocked cards and owner-authority prompts
 
@@ -121,20 +129,21 @@ normal cycle is longer.
 
 The daily report keeps every listed card visible but turns only a card that is
 newly listed or materially changed since the previous report into a full
-copyable prompt, at most five per report. Unchanged cards carry forward in the
-Stuck count with a note that the full set is available by replying `prompts`. On
-Mondays the report includes the full set for every listed card, or the oldest ten
-when there are more; a missing previous report makes the current list new.
+copyable prompt, at most three per report. Unchanged cards carry forward in the
+Stuck count with a note that the full set is available by replying `prompts`. A
+missing previous report makes the current list new. There is no scheduled full
+dump: the owner asks for the set when they want it.
 
 A full prompt is for the owner's own outside agent, which works with the owner's
-direct authority outside Hermes roles, tool fences and approval lanes. The prompt
-states what is stuck in plain words and for how long, then fixes the underlying
-cause — a missing package or tool, a false or stale premise, an input that is not
-where the card assumes, a test asserting the wrong thing, a stale pin or lock —
-with exact files, quoted commands and a read-only verification, so the outside
-agent needs no further discovery. These prompts displace unchanged detail in the
-character budget, not owner actions. The daily report carries no optional
-technical handoff; the four-hourly stall job owns that detail.
+direct authority outside Hermes roles, tool fences and approval lanes. It uses
+three fields: Stuck (what is stuck, in plain words, and for how long), Fix (the
+exact cause, files and quoted commands) and Verify (the read-only check that
+proves it cleared). A shared closing line marks commands as proposed and
+unexecuted and keeps guards, approvals, pins and refusals in force. The prompt
+fixes the underlying cause — a missing package or tool, a false or stale premise,
+an input that is not where the card assumes, a test asserting the wrong thing, a
+stale pin or lock — so the outside agent needs no further discovery. These
+prompts displace unchanged detail in the character budget, not owner actions.
 
 This is a diagnosis and remediation channel, not an authority channel. The
 steward never proposes disabling, weakening, editing, reordering or routing
@@ -200,7 +209,10 @@ example the SimpleX daemons still starting after a power-on) leaves the day
 eligible, so a later manual `hermes cron run` re-emits instead of being
 suppressed; to force a re-report delete `~/.hermes/state/daily-steward-last-emit`
 and run the job. The four-hourly stall follow-up keeps using
-`kanban-daily-steward.py` directly because it must run every slot.
+`kanban-daily-steward.py` directly because it must run every slot. The daily
+window passes `--digest` to the board, usage and performance collectors; the
+four-hourly job keeps the full board snapshot, and `--json` remains the detailed
+performance view.
 
 The two profiles use separate SimpleX identities and loopback endpoints:
 

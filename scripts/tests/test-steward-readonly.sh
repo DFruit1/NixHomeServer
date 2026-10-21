@@ -322,7 +322,11 @@ class StewardTest(unittest.TestCase):
         self.assertIn('*Moved*', jobs[0]['prompt'])
         self.assertIn('*Stuck*', jobs[0]['prompt'])
         self.assertIn('newly listed or materially changed', jobs[0]['prompt'])
-        self.assertIn('No material change since yesterday.', jobs[0]['prompt'])
+        self.assertIn('at most three', jobs[0]['prompt'])
+        self.assertIn('Stuck —', jobs[0]['prompt'])
+        self.assertIn('Fix —', jobs[0]['prompt'])
+        self.assertIn('Verify —', jobs[0]['prompt'])
+        self.assertIn('Nothing new;', jobs[0]['prompt'])
         self.assertTrue((self.root / 'backups/steward-readonly').is_dir())
         # Cron owns a separate SOUL section. Refreshing the steward must retain
         # it so the two installers converge in either order.
@@ -459,6 +463,54 @@ class StewardTest(unittest.TestCase):
         self.assertEqual(1, output.count('owner_gate=yes'))
         self.assertEqual(1, output.count('owner_gate=no'))
 
+    def test_daily_digest_rolls_up_completions_and_deduplicates_blocked(self):
+        boards = self.root / 'kanban/boards'
+        board = boards / 'one'
+        board.mkdir(parents=True)
+        now = int(time.time())
+        with closing(sqlite3.connect(board / 'kanban.db')) as db:
+            db.executescript('''
+                CREATE TABLE tasks (id, title, assignee, status, block_kind,
+                    block_recurrences, consecutive_failures, last_failure_error,
+                    completed_at, worker_pid, last_heartbeat_at, body, created_at);
+                CREATE TABLE task_runs (task_id, profile, status, outcome,
+                    summary, error, started_at, ended_at);
+                CREATE TABLE task_events (id, task_id, run_id, kind, payload, created_at);
+            ''')
+            columns = ('id,title,assignee,status,block_kind,block_recurrences,'
+                       'consecutive_failures,completed_at,worker_pid,last_heartbeat_at,body,created_at')
+            db.execute(f'INSERT INTO tasks ({columns}) VALUES (?,?,?,?,?,0,0,?,?,?,?,?)',
+                       ('short-task', 'Short block', 'worker', 'blocked', 'capability',
+                        None, None, None, None, now - 3600))
+            db.execute(f'INSERT INTO tasks ({columns}) VALUES (?,?,?,?,?,1,0,?,?,?,?,?)',
+                       ('long-task', 'Long block', 'worker', 'blocked', 'capability',
+                        None, None, None, '', now - 30 * 3600))
+            db.execute(f'INSERT INTO tasks ({columns}) VALUES (?,?,?,?,?,0,0,?,?,?,?,?)',
+                       ('impl-task', 'Implement the feature', 'standard-implementer', 'done',
+                        None, now - 3600, None, None, None, now - 7200))
+            db.execute(f'INSERT INTO tasks ({columns}) VALUES (?,?,?,?,?,0,0,?,?,?,?,?)',
+                       ('review-task', 'Review the change', 'feature-reviewer', 'done',
+                        None, now - 1800, None, None, None, now - 7200))
+            db.execute(f'INSERT INTO tasks ({columns}) VALUES (?,?,?,?,?,0,0,?,?,?,?,?)',
+                       ('run-task', 'Running work', 'worker', 'running',
+                        None, None, 4242, now - 60, None, now))
+            db.execute('INSERT INTO task_events VALUES (NULL, ?, NULL, ?, ?, ?)',
+                       ('short-task', 'blocked', json.dumps({'reason': 'short reason'}), now - 3600))
+            db.execute('INSERT INTO task_events VALUES (NULL, ?, NULL, ?, ?, ?)',
+                       ('long-task', 'blocked', json.dumps({'reason': 'long reason'}), now - 30 * 3600))
+            db.commit()
+        with patch.object(snapshot, 'BOARDS', boards):
+            output = '\n'.join(snapshot.snapshot_board('one', digest=True))
+        self.assertIn('LAST 24H DONE (2): implementation=1 review/routing=1 other=0', output)
+        self.assertIn('- Implement the feature', output)
+        self.assertNotIn('Review the change', output)
+        self.assertIn('BLOCKED (short):', output)
+        short_section = output[output.index('BLOCKED (short):'):output.index('LONG BLOCKED')]
+        self.assertIn('short-task', short_section)
+        self.assertNotIn('long-task', short_section)
+        self.assertIn('long-task', output[output.index('LONG BLOCKED'):output.index('LAST 24H DONE')])
+        self.assertIn('RUNNING: 1', output)
+
     def test_daily_window_catches_up_only_in_window_and_once_per_day(self):
         # 07:00 is the only scheduled slot; a missed run catches up inside
         # 07:00-17:00 exactly once and stays silent outside the window.
@@ -506,12 +558,14 @@ class StewardTest(unittest.TestCase):
     def test_daily_window_emit_runs_collectors_and_records_marker(self):
         loaded, calls = [], []
         class FakeCollector:
-            def main(self):
-                calls.append('main')
+            def __init__(self, name):
+                self.name = name
+            def main(self, args=()):
+                calls.append((self.name, tuple(args)))
                 print('=== KANBAN DAILY SNAPSHOT fixture ===')
         def fake_load(name):
             loaded.append(name)
-            return FakeCollector()
+            return FakeCollector(name)
         with patch.dict(window.os.environ, {'HERMES_ROOT': str(self.root)}):
             with patch.object(window, 'should_emit', return_value=True):
                 with patch.object(window, 'load_collector', fake_load):
@@ -519,7 +573,8 @@ class StewardTest(unittest.TestCase):
                     with contextlib.redirect_stdout(buf):
                         window.main()
         self.assertEqual(list(window.COLLECTORS), loaded)
-        self.assertEqual(['main'] * len(window.COLLECTORS), calls)
+        self.assertEqual([(name, window.COLLECTOR_ARGS.get(name, ()))
+                          for name in window.COLLECTORS], calls)
         self.assertIn('KANBAN DAILY SNAPSHOT', buf.getvalue())
         self.assertEqual(datetime.date.today(), window.last_emit_date(self.root))
 
@@ -555,6 +610,18 @@ class StewardTest(unittest.TestCase):
         self.assertIn('hermes 24h', out)
         self.assertIn('opencode 24h', out)
         self.assertIn('unavailable', out)
+
+    def test_usage_digest_collapses_a_healthy_budget(self):
+        healthy = ['- Weekly: 80% left, resets in 5d 13h (On pace)']
+        spend = {'24h': [1, 2_000_000, 0.0], '7d': [1, 14_000_000, 0.0]}
+        with patch.object(usage, 'account_limit_lines', return_value=healthy):
+            with patch.object(usage, 'hermes_spend', return_value=spend):
+                with patch.object(usage, 'opencode_spend',
+                                  return_value={'24h': [0, 0, 0.0], '7d': [0, 0, 0.0]}):
+                    buf = io.StringIO()
+                    with contextlib.redirect_stdout(buf):
+                        usage.main(['--digest'])
+        self.assertEqual('BUDGET: on pace; 24h 2.0M tok; no spike', buf.getvalue().strip())
 
     def test_usage_pace_reports_opencode_go_windows_from_zen(self):
         # Same source the T3 Code usage tab reads: the opencode-go key in the

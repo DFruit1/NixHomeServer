@@ -25,6 +25,13 @@ from pathlib import Path
 START_HOUR = 7   # 07:00 local, inclusive
 END_HOUR = 17    # 17:00 local, exclusive: a later power-on waits for the next 07:00
 COLLECTORS = ("kanban-daily-steward.py", "kanban-blockers.py", "usage-pace.py", "kanban-performance.py")
+# The owner report needs a compact digest; the four-hour stall job keeps the
+# full board snapshot because it does the per-card investigation.
+COLLECTOR_ARGS = {
+    "kanban-daily-steward.py": ("--digest",),
+    "usage-pace.py": ("--digest",),
+    "kanban-performance.py": ("--digest",),
+}
 DAILY_JOB_NAME = "hermes daily steward"
 
 
@@ -119,7 +126,9 @@ def main() -> None:
     # Board snapshot first, then usage pace and the local performance cohort.
     # The last line stays report content, never the wake gate.
     for name in COLLECTORS:
-        load_collector(name).main()
+        collector = load_collector(name)
+        args = COLLECTOR_ARGS.get(name)
+        collector.main(args) if args else collector.main()
     record_emit(root, now)
 
 

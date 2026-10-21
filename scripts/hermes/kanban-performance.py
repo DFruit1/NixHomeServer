@@ -321,29 +321,81 @@ def report(root, since, until):
             'profiles': profiles, 'boards': boards, 'warnings': warnings}
 
 
-def render(data):
+def profile_lines(name, profile, digest=False):
+    sessions, runs = profile['sessions'], profile['runs']
+    usage = ('usage unknown' if sessions is None else
+             f"sessions={sessions['count']} usage={sessions['usage_reported_sessions']}/{sessions['count']} "
+             f"input/output={sessions['input_tokens']}/{sessions['output_tokens']} api={sessions['api_call_count']}")
+    work = ('runs unknown' if runs is None else
+            f"runs={runs['count']} failed={runs['failures']} repeat-cards={runs['repeat_attempt_tasks']} "
+            f"run-seconds p50/p95={runs['elapsed_seconds']['p50']}/{runs['elapsed_seconds']['p95']} "
+            f"session-links={runs['worker_session_id_matched']}/{runs['worker_session_id_present']} "
+            f"failure-causes={json.dumps(runs['failure_causes'],sort_keys=True,separators=(',',':'))}")
+    lines = [f'@{name}: {usage}; {work}']
+    if (cron:=profile.get('scheduled_inspections')) is not None:
+        if not digest or cron.get('status') != 'ok':
+            lines.append('  scheduled-inspections='+json.dumps(cron,sort_keys=True,separators=(',',':')))
+    if (memory:=profile.get('memory')) is not None:
+        if digest and memory.get('status') == 'ok' and not (memory.get('pending') or {}).get('older_than_seven_days'):
+            return lines
+        stores=memory.get('stores') or {}
+        counts=' '.join(f"{key}={store['chars']}/{store['limit']}" for key,store in stores.items() if store['enabled'])
+        pending=memory.get('pending') or {}
+        lines.append(f"  learning={memory['status']} {counts} pending={pending.get('count','unknown')} "
+                     f"pending-over-7d={pending.get('older_than_seven_days','unknown')} "
+                     f"guard={memory.get('guard_present','unknown')} event-driven={memory.get('event_driven','unknown')}")
+    return lines
+
+
+def digest_attention(profile):
+    """True when a profile carries something the owner may need to act on."""
+    runs = profile.get('runs') or {}
+    cron = profile.get('scheduled_inspections') or {}
+    memory = profile.get('memory') or {}
+    pending = memory.get('pending') or {}
+    return bool(runs.get('failures')
+                or cron.get('status') == 'attention'
+                or memory.get('status') == 'attention'
+                or pending.get('older_than_seven_days'))
+
+
+def render_digest(data):
+    """One fleet line plus only profiles with failures or attention."""
+    stamp = lambda value: dt.datetime.fromtimestamp(value, dt.timezone.utc).isoformat(timespec='seconds')
+    profiles = data['profiles']
+    lines = [f"HERMES PERFORMANCE {stamp(data['since'])} .. {stamp(data['until'])} (digest)"]
+    session_counts = [p['sessions']['count'] for p in profiles.values() if p.get('sessions') is not None]
+    unknown_sessions = sum(p.get('sessions') is None for p in profiles.values())
+    failures = sum((p.get('runs') or {}).get('failures', 0) for p in profiles.values())
+    repeats = sum((p.get('runs') or {}).get('repeat_attempt_tasks', 0) for p in profiles.values())
+    budget_stops = sum((p.get('scheduled_inspections') or {}).get('budget_stops', 0)
+                       for p in profiles.values())
+    learning = [p.get('memory') for p in profiles.values() if p.get('memory')]
+    memory_status = ('attention' if any(m.get('status') == 'attention' for m in learning)
+                     else 'unknown' if any(m.get('status') == 'unknown' for m in learning)
+                     else 'ok')
+    lines.append(f"fleet: sessions={sum(session_counts)}"
+                 + (f"+{unknown_sessions} unknown" if unknown_sessions else '')
+                 + f" failed={failures} repeat-cards={repeats}"
+                 f" budget-stops={budget_stops} learning={memory_status}")
+    attention = [(name, profile) for name, profile in sorted(profiles.items())
+                 if digest_attention(profile)]
+    for name, profile in attention:
+        lines.extend(profile_lines(name, profile, digest=True))
+    if not attention:
+        lines.append('profiles=ok')
+    if data['warnings']:
+        lines.append(f"Coverage warnings: {len(data['warnings'])}; inspect --json before drawing conclusions.")
+    return '\n'.join(lines)
+
+
+def render(data, digest=False):
+    if digest:
+        return render_digest(data)
     stamp = lambda value: dt.datetime.fromtimestamp(value, dt.timezone.utc).isoformat(timespec='seconds')
     lines = [f"HERMES PERFORMANCE {stamp(data['since'])} .. {stamp(data['until'])} (start cohorts; lifetime counters)"]
     for name, profile in sorted(data['profiles'].items()):
-        sessions, runs = profile['sessions'], profile['runs']
-        usage = ('usage unknown' if sessions is None else
-                 f"sessions={sessions['count']} usage={sessions['usage_reported_sessions']}/{sessions['count']} "
-                 f"input/output={sessions['input_tokens']}/{sessions['output_tokens']} api={sessions['api_call_count']}")
-        work = ('runs unknown' if runs is None else
-                f"runs={runs['count']} failed={runs['failures']} repeat-cards={runs['repeat_attempt_tasks']} "
-                f"run-seconds p50/p95={runs['elapsed_seconds']['p50']}/{runs['elapsed_seconds']['p95']} "
-                f"session-links={runs['worker_session_id_matched']}/{runs['worker_session_id_present']} "
-                f"failure-causes={json.dumps(runs['failure_causes'],sort_keys=True,separators=(',',':'))}")
-        lines.append(f'@{name}: {usage}; {work}')
-        if (cron:=profile.get('scheduled_inspections')) is not None:
-            lines.append('  scheduled-inspections='+json.dumps(cron,sort_keys=True,separators=(',',':')))
-        if (memory:=profile.get('memory')) is not None:
-            stores=memory.get('stores') or {}
-            counts=' '.join(f"{key}={store['chars']}/{store['limit']}" for key,store in stores.items() if store['enabled'])
-            pending=memory.get('pending') or {}
-            lines.append(f"  learning={memory['status']} {counts} pending={pending.get('count','unknown')} "
-                         f"pending-over-7d={pending.get('older_than_seven_days','unknown')} "
-                         f"guard={memory.get('guard_present','unknown')} event-driven={memory.get('event_driven','unknown')}")
+        lines.extend(profile_lines(name, profile))
     completions = sum(b['completed_cards'] for b in data['boards'].values()) if data['boards'] else 'unknown'
     lines.append('Card completions (not features; readable boards only): ' + str(completions))
     if data['warnings']:
@@ -367,13 +419,15 @@ def main(argv=()):
     parser.add_argument('--since', type=instant)
     parser.add_argument('--until', type=instant)
     parser.add_argument('--json', action='store_true')
+    parser.add_argument('--digest', action='store_true',
+                        help='One fleet line plus only profiles with failures or attention')
     args = parser.parse_args(argv)
     until = args.until if args.until is not None else time.time()
     since = args.since if args.since is not None else until-args.days*86400
     if not math.isfinite(since) or not math.isfinite(until) or not 0<until-since<=90*86400:
         parser.error('Use an increasing window of at most 90 days')
     data = report(Path(os.environ.get('HERMES_ROOT', str(Path.home()/'.hermes'))), since, until)
-    print(json.dumps(data, sort_keys=True) if args.json else render(data))
+    print(json.dumps(data, sort_keys=True) if args.json else render(data, digest=args.digest))
 
 
 if __name__ == '__main__':

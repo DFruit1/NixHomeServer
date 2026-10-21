@@ -8,11 +8,14 @@ Python/SQLite operations glue; no new backend or dependency. Output is compact t
 
 from __future__ import annotations
 
+import argparse
 import datetime as dt
 import json
 import os
 import sqlite3
+import sys
 import time
+from collections import Counter
 from pathlib import Path
 
 # Boards live under the shared/default root (HERMES_ROOT), not a profile home:
@@ -30,6 +33,19 @@ DEFAULT_LONG_BLOCKED_HOURS = 4.0
 # a fresh block, and a spell-only threshold hides exactly the work the owner
 # wants surfaced.
 DEFAULT_STALE_CARD_HOURS = 20.0
+
+# Assignee roles used to roll up completions in the owner-facing digest. A
+# review or routing card is a receipt, not a delivered feature.
+IMPLEMENTATION_ROLES = {"standard-implementer", "local-implementer"}
+REVIEW_ROLES = {"feature-reviewer", "project-auditor", "head-coordinator"}
+
+
+def done_role(who: str | None) -> str:
+    if who in IMPLEMENTATION_ROLES:
+        return "implementation"
+    if who in REVIEW_ROLES:
+        return "review/routing"
+    return "other"
 
 
 def _hours(name: str, default: float) -> float:
@@ -112,8 +128,8 @@ def _age(seconds: int) -> str:
     return f"{seconds // 60}m" if seconds < 3600 else f"{seconds // 3600}h"
 
 
-def long_blocked_lines(conn: sqlite3.Connection, blocked: list) -> list[str]:
-    """Report blocked work that has stayed blocked too long.
+def stale_blocked(conn: sqlite3.Connection, blocked: list) -> list:
+    """Qualified long-blocked rows, longest-standing first.
 
     Two independent bases qualify a card, because they mean different things
     and a spell-only threshold hides the second:
@@ -123,10 +139,6 @@ def long_blocked_lines(conn: sqlite3.Connection, blocked: list) -> list[str]:
     * ``card`` - the card itself outlived the longer stale threshold even
       though it was unblocked since. The feature keeps being re-blocked, so
       the stall outlives any single block.
-
-    Each line carries the age, the UTC instant the current spell started, the
-    recorded cause, whether an owner gate already exists and the repeat count.
-    Longest-standing first: that card is the finding.
     """
     if not blocked:
         return []
@@ -167,9 +179,27 @@ def long_blocked_lines(conn: sqlite3.Connection, blocked: list) -> list[str]:
                 spell_age, card_age, started, "+".join(bases), history, reason,
             )
         )
+    stale.sort(reverse=True)
+    return stale
+
+
+def long_blocked_ids(conn: sqlite3.Connection, blocked: list) -> set:
+    """Task ids that the LONG BLOCKED section will list."""
+    return {row[1] for row in stale_blocked(conn, blocked)}
+
+
+def long_blocked_lines(conn: sqlite3.Connection, blocked: list, limit: int = 200) -> list[str]:
+    """Report blocked work that has stayed blocked too long.
+
+    Each line carries the age, the UTC instant the current spell started, the
+    recorded cause, whether an owner gate already exists and the repeat count.
+    Longest-standing first: that card is the finding.
+    """
+    stale = stale_blocked(conn, blocked)
     if not stale:
         return []
-    stale.sort(reverse=True)
+    spell_limit = long_blocked_hours() * 3600
+    card_limit = stale_card_hours() * 3600
     hours = int(spell_limit // 3600) or 1
     card_hours = int(card_limit // 3600) or 1
     lines = [
@@ -193,7 +223,7 @@ def long_blocked_lines(conn: sqlite3.Connection, blocked: list) -> list[str]:
     return lines
 
 
-def snapshot_board(slug: str) -> list[str]:
+def snapshot_board(slug: str, digest: bool = False) -> list[str]:
     db = BOARDS / slug / "kanban.db"
     if not db.exists():
         return []
@@ -217,9 +247,11 @@ def snapshot_board(slug: str) -> list[str]:
             f" coalesce(last_failure_error,''), {created}, coalesce(body,'')"
             " from tasks where status='blocked' order by id",
         )
-        if blocked:
-            out.append("BLOCKED:")
-            for tid, who, kind, rec, cf, err, _created, _body in blocked:
+        long_ids = long_blocked_ids(conn, blocked) if digest else set()
+        visible = [row for row in blocked if row[0] not in long_ids]
+        if visible:
+            out.append("BLOCKED (short):" if digest else "BLOCKED:")
+            for tid, who, kind, rec, cf, err, _created, _body in visible:
                 reason = (err or kind or "").strip().replace("\n", " ")[:160]
                 out.append(
                     f"- {tid} @{who or '?'} kind={kind or '?'} recur={rec} fails={cf} :: {reason}"
@@ -235,7 +267,7 @@ def snapshot_board(slug: str) -> list[str]:
             for tid, title, who in hard:
                 out.append(f"- {tid} @{who or '?'} :: {title}")
 
-        out.extend(long_blocked_lines(conn, blocked))
+        out.extend(long_blocked_lines(conn, blocked, 120 if digest else 200))
 
         done = one(
             conn,
@@ -243,9 +275,22 @@ def snapshot_board(slug: str) -> list[str]:
             " order by completed_at",
             (since,),
         )
-        out.append(f"LAST 24H DONE ({len(done)}):")
-        for tid, who, title in done:
-            out.append(f"- {tid} @{who or '?'} :: {title}")
+        if digest:
+            roles = Counter(done_role(who) for _tid, who, _title in done)
+            out.append(
+                f"LAST 24H DONE ({len(done)}): implementation={roles['implementation']}"
+                f" review/routing={roles['review/routing']} other={roles['other']}"
+            )
+            implementation = [title for _tid, who, title in done
+                              if done_role(who) == "implementation"]
+            for title in implementation[:5]:
+                out.append(f"- {title.strip().replace(chr(10), ' ')[:120]}")
+            if len(implementation) > 5:
+                out.append(f"- +{len(implementation) - 5} more implementation cards")
+        else:
+            out.append(f"LAST 24H DONE ({len(done)}):")
+            for tid, who, title in done:
+                out.append(f"- {tid} @{who or '?'} :: {title}")
 
         runs = one(
             conn,
@@ -256,16 +301,21 @@ def snapshot_board(slug: str) -> list[str]:
             (since,),
         )
         out.append(f"LAST 24H FAILED RUNS ({len(runs)}):")
-        for tid, prof, status, outcome, summary, err in runs:
+        shown_runs = runs[:5] if digest else runs
+        for tid, prof, status, outcome, summary, err in shown_runs:
             detail = (err or summary or "").strip().replace("\n", " ")[:160]
             out.append(f"- {tid} @{prof or '?'} status={status} outcome={outcome or '?'} :: {detail}")
+        if digest and len(runs) > len(shown_runs):
+            out.append(f"- +{len(runs) - len(shown_runs)} more")
 
         running = one(
             conn,
             "select id, assignee, worker_pid, coalesce(last_heartbeat_at,0) from tasks"
             " where status='running' order by id",
         )
-        if running:
+        if running and digest:
+            out.append(f"RUNNING: {len(running)}")
+        elif running:
             now = int(time.time())
             out.append("RUNNING:")
             for tid, who, pid, hb in running:
@@ -276,7 +326,11 @@ def snapshot_board(slug: str) -> list[str]:
     return out
 
 
-def main() -> None:
+def main(argv=()) -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--digest", action="store_true",
+                        help="Compact owner-report form; the default is the full stall snapshot")
+    args = parser.parse_args(argv)
     now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="minutes")
     print(f"=== KANBAN DAILY SNAPSHOT {now} ===")
     slugs = board_slugs()
@@ -285,7 +339,7 @@ def main() -> None:
         return
     for slug in slugs:
         try:
-            lines = snapshot_board(slug)
+            lines = snapshot_board(slug, digest=args.digest)
         except sqlite3.Error as exc:
             # One corrupt, locked or schema-drifted board must not take the
             # whole daily report down with it: the healthy boards still
@@ -298,4 +352,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])

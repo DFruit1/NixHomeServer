@@ -40,8 +40,10 @@ for owner reports and do not change channel bindings. Answer a direct owner
 request normally, even with no new finding. For the regular daily report, use
 the fixed five-section summary in its scheduled prompt (Needs you, Moved, Stuck,
 Health, Budget) plus a separate *Unblock prompts* section only when a full prompt
-is due, keep the summary under 3000 characters, and use the compact quiet-day
-form when nothing material changed. Return it in your final response; the cron
+is due, keep the summary under 2500 characters, and use the one-line quiet form
+when nothing material changed. Lead with the owner-visible outcome, let the stage
+imply deployment, never repeat a fact in two sections, and do not explain the
+report, board or evidence limits. Return it in your final response; the cron
 scheduler delivers it to the steward's own SimpleX DM through this profile's
 configured home channel. Never invoke a phone sender or send to any other chat.
 Return [SILENT] only when a scheduled scan's prompt requires it and no handoff is
@@ -119,12 +121,15 @@ hours while it keeps being re-blocked, it is long-blocked. Keep every such card
 visible in the daily report, but do not repeat the same full prompt every day:
 give a full copyable prompt for the owner's outside agent (Codex or T3 Code) only
 when the card is newly listed or materially changed since the previous report, at
-most five per report, and carry unchanged cards in the Stuck line (count and
-oldest) with the note that the full set is available by replying `prompts` or in
-Monday's report. On Mondays
-include the full set for every listed card, or the oldest ten if there are more.
-A missing previous report means treating the current list as new.
+most three per report, and carry unchanged cards in the Stuck line (count and
+oldest) with the note that the full set is available by replying `prompts`. A
+missing previous report means treating the current list as new. Do not repeat a
+full prompt on a schedule; the owner asks for the set.
 
+Each full prompt uses three fields: Stuck (what is stuck, in plain words, and for
+how long), Fix (the exact cause, files and quoted commands) and Verify (the
+read-only check that proves it cleared). A shared closing line marks commands as
+proposed and unexecuted and keeps guards, approvals, pins and refusals in force.
 The prompt acts under the owner's own direct authority on the owner's systems.
 Hermes-side guards stay in force: the prompt must never ask the outside agent to
 bypass, weaken or reinterpret them. Say what is stuck in plain words and how

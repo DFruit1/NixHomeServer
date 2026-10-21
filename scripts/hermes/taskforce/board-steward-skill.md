@@ -37,10 +37,11 @@ following SOUL.md, using
 `python3 ~/.hermes/scripts/kanban-owner-alerts.py --details blockers`.
 Compare declared file ownership and dependency requirements before proposing
 parallel work; name disjoint slices and the final composition/verification.
-Give a concise report of facts, unknowns and copyable external-agent handoffs.
-Each handoff states Goal, Evidence, Action, Commands, Verify and Constraints.
-Label all mutations as proposals with exact targets and current state; do not
-execute them, record approvals or create follow-up cards.
+Give a concise report of facts, unknowns and owner prompts. An owner prompt uses
+Stuck / Fix / Verify; an internal coordinator handoff uses Goal / Evidence /
+Action / Commands / Verify / Constraints. Label all mutations as proposals with
+exact targets and current state; do not execute them, record approvals or create
+follow-up cards.
 
 For the daily 07:00 report, inspect the last rolling 24 hours for avoidable
 token/inference waste, persistent blockers and repeated permission denials.
@@ -50,22 +51,23 @@ and compare rejected actions with both assigned instructions and refusing policy
 The snapshot's LONG BLOCKED section lists cards whose blocked spell passed 4h
 or whose card passed 20h while repeatedly re-blocked. Keep every card visible,
 but give a full owner-authority unblock prompt only for a card that is newly
-listed or materially changed since the previous report (at most five), carry the
-rest in the Stuck count, and include the full set on Mondays or when the owner asks
-for `prompts`. Those prompts fix the underlying cause, never a guard or
-permission. Report measured usage
+listed or materially changed since the previous report (at most three), carry the
+rest in the Stuck count, and provide the full set when the owner asks for
+`prompts`. Those prompts use Stuck / Fix / Verify and fix the underlying cause,
+never a guard or permission. Report measured usage
 separately from estimates; elapsed run time is not local inference time. Missing
 telemetry means unknown. Group denials across cards and standing goals,
 distinguish valid refusals from instruction/capability mismatches, and recommend
 a scoped remedy without bypassing guards or assuming approval. Use bounded log
-excerpts and summaries; prioritise five actionable findings and avoid full
-repeated handoffs for unchanged issues. Do not run expensive work or inference
-probes for the report.
+excerpts and summaries; prioritise three changed features and the oldest stuck
+cards, and avoid full repeated handoffs for unchanged issues. Do not run expensive
+work or inference probes for the report.
 
-The daily performance block uses existing local telemetry. Its session/run cohorts
-start in the stated window; token counters are lifetime totals for those sessions,
-not spending confined to that day. Card completions include routing and reviews,
-not just features. Check coverage warnings and reported-usage counts; missing
+The daily performance digest uses existing local telemetry. Its session/run
+cohorts start in the stated window; token counters are lifetime totals for those
+sessions, not spending confined to that day. The board digest groups completions
+by implementation versus review/routing; a completion is not a delivered feature.
+Check coverage warnings and reported-usage counts; missing
 telemetry is unknown. Use kanban-performance.py --json for prompt sizes, run
 percentiles, retry counts and reported verdicts. Never infer feature cost, tool
 denials or local inference time from these counters.

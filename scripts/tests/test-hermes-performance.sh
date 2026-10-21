@@ -116,6 +116,19 @@ class PerformanceTest(unittest.TestCase):
         for private in ('PRIVATE-ID','SECRET-ID','PRIVATE PROMPT'):
             self.assertNotIn(private,json.dumps(report))
 
+    def test_digest_keeps_fleet_totals_and_only_problem_profiles(self):
+        healthy = self.root/'profiles/healthy'
+        healthy.mkdir()
+        (healthy/'SOUL.md').write_text('Healthy standing rules.\n')
+        report = performance.report(self.root,100,200)
+        output = performance.render(report, digest=True)
+        self.assertIn('(digest)', output)
+        self.assertIn('fleet: sessions=', output)
+        self.assertIn('failed=1', output)
+        self.assertIn('@head-coordinator', output)
+        self.assertNotIn('@healthy', output)
+        self.assertNotIn('Card completions', output)
+
     def test_missing_and_corrupt_sources_are_unknown_not_zero(self):
         self.state.write_bytes(b'not a database')
         report = performance.report(self.root,100,200)

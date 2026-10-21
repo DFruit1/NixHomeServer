@@ -79,11 +79,12 @@ tokens-per-accepted-feature or credits-saved claim. It also cannot reliably coun
 all tool denials without additional structured guard telemetry. Those are explicit
 measurement gaps, rather than reasons to read private transcripts or add retries.
 
-The existing daytime daily-steward collector includes a compact performance block
-after its board and usage reports. No cron record or delivery destination changes.
-The steward uses its existing evidence/output budget and can inspect --json for
-details; do not repeat a full table in the owner's daily message without a useful
-finding. The four-hour stall collector remains unchanged.
+The existing daytime daily-steward collector includes a performance digest: one
+fleet line plus only profiles with failures, budget stops, pending work or
+attention. No cron record or delivery destination changes. The steward uses its
+existing evidence/output budget and can inspect --json for details; do not repeat
+a full table in the owner's daily message without a useful finding. The four-hour
+stall collector remains unchanged.
 
 Validation: `bash scripts/tests/test-hermes-performance.sh` covers cohort bounds,
 counter coverage, failure attribution, actual session joins, separate auxiliary

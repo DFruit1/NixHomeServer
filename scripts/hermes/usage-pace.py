@@ -54,12 +54,14 @@ Environment overrides (used by tests and a different checkout):
 """
 from __future__ import annotations
 
+import argparse
 import datetime as dt
 import json
 import os
 import shutil
 import sqlite3
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -460,19 +462,36 @@ def spend_line(label: str, totals: dict) -> list[str]:
     ]
 
 
-def main() -> None:
+def main(argv=()) -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--digest", action="store_true",
+                        help="One budget line when every account is healthy")
+    args = parser.parse_args(argv)
     stamp = now().strftime("%Y-%m-%d %H:%M")
+    accounts = account_limit_lines()
+    hermes_totals, opencode_totals = hermes_spend(), opencode_spend()
+    hermes_lines = spend_line("hermes", hermes_totals)
+    opencode_lines = spend_line("opencode", opencode_totals)
+    # Any exception, unknown source or spike keeps the full block: the owner
+    # needs the window and reset that produced it.
+    if args.digest and not any(
+            marker in line
+            for line in accounts + hermes_lines + opencode_lines
+            for marker in ("OVER PACE", "SPIKE", "unavailable")):
+        day = hermes_totals["24h"][1] + opencode_totals["24h"][1]
+        print(f"BUDGET: on pace; 24h {fmt_tokens(day)} tok; no spike")
+        return
     print(f"=== USAGE PACE {stamp} ===")
     print("ACCOUNT LIMITS:")
-    for line in account_limit_lines():
+    for line in accounts:
         print(line)
     print("HERMES BOTS (session history):")
-    for line in spend_line("hermes", hermes_spend()):
+    for line in hermes_lines:
         print(line)
     print("OPENCODE (local sessions):")
-    for line in spend_line("opencode", opencode_spend()):
+    for line in opencode_lines:
         print(line)
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])

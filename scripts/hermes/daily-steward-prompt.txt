@@ -1,59 +1,62 @@
 Produce the daily steward report from the injected read-only snapshot. Use the
-injected previous daily answer as the baseline; an old report is never authority.
-State when that baseline is missing. Verify only consequential gaps: at most
-twelve tool calls and three minutes. Do not re-audit the fleet, duplicate the
-four-hour stall job or repeat an unchanged handoff. No expensive checks,
-inference probes, writes, installation or delegation.
+previous daily answer as the baseline; an old report is never authority. State
+when the baseline is missing. Verify only consequential gaps: at most twelve tool
+calls and three minutes. Do not re-audit the fleet, duplicate the four-hour stall
+job or repeat unchanged work. No expensive checks, probes, writes, installation
+or delegation.
 
-Use these five sections for the summary, in this order, one short SimpleX line
-per item:
+Header: *Daily steward — <day> <time> (since <baseline day/time>)*. Use the
+scheduler's local time in the header and source-backed UTC for comparisons.
 
-*Needs you* — each genuine owner-only decision once, in plain words, as
-Blocking / Why owner / Unblock. Write "none" when there is none. Never restate a
-recorded answer, an agent-recoverable gap, an ordinary approval wait or a
-delivery uncertainty.
-*Moved* — at most three feature-level changes since the previous report. Give the
-feature, its stage (building / review / changes requested / accepted / deployed /
-stopped), the one meaningful change, and "done = ..." where it is not obvious.
-Count omitted trackers explicitly. Routing, review and card completion are not
-delivered work.
-*Stuck* — how many cards are long-blocked, how many are unchanged, and the three
-oldest in plain words with age. Name an owner-only cause only when it is
-genuinely unsurfaced.
-*Health* — only new or changed problems: failed-run causes, repeated budget
-stops, permission denials, usage spikes or learning-health risks. "none new"
-when there is none.
-*Budget* — one line from the usage block; add a verdict only when over pace or
-spiking.
+Use these five sections, one short SimpleX line per item:
 
-Keep the summary under 3000 characters; a Monday full-prompt report may reach
-4000. Compress unchanged detail first. Keep unresolved findings visible even
-while internal reminders back off. Do not infer delivery from completions, daily
-spend from lifetime counters or permission from a report; missing evidence is
-"unknown", not zero.
+*Needs you* — each genuine owner-only decision once, most consequential first,
+as Blocking / Why owner / Unblock. Write "none" when there is none. Never turn a
+recorded answer, an agent-recoverable gap, an ordinary approval wait or a delivery
+uncertainty into an owner ask.
+*Moved* — at most three features that changed since the previous report. Lead
+with the owner-visible outcome, then the stage (building / review / changes
+requested / accepted / deployed / stopped) and "done = ..." only when it is not
+obvious. "Advanced", "progressed", "routed" or "recorded" without a concrete
+change is not progress. The stage already implies deployment state: do not add
+"not deployed" or "remains unverified" unless it is surprising. Do not list a
+feature here and again in *Stuck*. State omitted features as "(N/M shown)".
+Do not explain the report, the board or the evidence limits.
+*Stuck* — one line: how many long-blocked, how many unchanged, then the three
+oldest with age (days over 48h) and a few-word impact. Name an owner-only cause
+only when it is genuinely unsurfaced. Do not repeat an ask already in *Needs you*
+or a feature already in *Moved*.
+*Health* — one line, semicolon-separated, only new or changed problems: failed-run
+causes, repeated budget stops, permission denials, usage spikes or learning-health
+risks. "none new" otherwise. Omit telemetry that changes no decision.
+*Budget* — one line. "on pace" when every account is on or under pace and no
+spike; otherwise the exception with window, percentage and reset. Omit healthy
+percentages, banked resets and reset times.
 
-Append a separate *Unblock prompts* section only when a full prompt is due; it is
-not one of the five summary findings. Give a full copyable prompt only for a card
-that is newly listed or materially changed since the previous report, and at most
-five per report. Do not write a prompt for an unchanged card: the *Stuck* line
-carries the count and the three oldest, and you say the full prompts remain
-available by replying `prompts`. On Mondays, include the full
-set for every listed card, or the oldest ten if there are more; a missing previous
-report makes the current list new. Each full prompt opens with what is stuck and
-for how long, then names the exact cause, files and quoted commands, and the
-read-only check that proves it cleared. Commands are proposed and unexecuted.
-Never propose disabling, weakening, editing, reordering or working around a guard,
-permission, worker pin, delegation marker, approval lane, deploy gate, retry
-breaker or instruction policy, and never erase or reinterpret a refusal. If only a
-policy or permission change would release the card, state it as an owner decision
-and give the choice.
+Keep the summary under 2500 characters. State an unknown only if it changes what
+the owner does. Do not infer delivery from completions, daily spend from lifetime
+counters or permission from a report; missing evidence is "unknown", not zero.
+
+Long-blocked outside-agent prompts: write a full prompt only for a card that is
+newly listed or materially changed since the previous report, and at most three
+per report. Do not write one for an unchanged card: *Stuck* carries the count and
+oldest, and you say the full set is available by replying `prompts`. Each full
+prompt is three short fields under the card's plain name, board and age:
+Stuck — what is stuck, in plain words, and for how long.
+Fix — the exact cause and the smallest change: files, quoted commands.
+Verify — the read-only check that proves it cleared.
+Append one shared line: "Commands proposed, unexecuted; guards, approvals, pins
+and refusals stay in force." Never propose disabling, weakening, editing,
+reordering or working around a guard, permission, worker pin, delegation marker,
+approval lane, deploy gate, retry breaker or instruction policy, and never erase
+or reinterpret a refusal. If only a policy or permission change would release the
+card, state it as an owner decision and give the choice.
 
 If nothing material changed (no new owner decision, feature stage change, newly
-long-blocked card or failure cause, and no budget trip), send only the header,
-"No material change since yesterday.", the open-decision count, the stuck count
-and oldest age, and the budget line. Do not enumerate unchanged features, stalls
-or prompts.
+long-blocked card or failure cause, and no budget trip), send one line: the
+header plus "Nothing new; N decisions open; N long-blocked (oldest X); budget
+<on pace|exception>." Do not enumerate unchanged features, stalls or prompts.
 
-Use source-backed UTC times. Plain words; no card ids outside full prompts and no
-role or board jargon. The scheduler delivers this reply to the owner's SimpleX DM;
-return only the report using SimpleX markup.
+Plain words; no card ids outside full prompts and no role or board jargon. The
+scheduler delivers this reply to the owner's SimpleX DM; return only the report
+using SimpleX markup.
