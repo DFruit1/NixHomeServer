@@ -305,8 +305,12 @@ Task-specific receipt predicates remain on their owning cards/jobs, not in stand
 role prompts. Preserve current idle-recovery conditions and anti-loop backoff.
 
 `scripts/hermes/reap-kanban-worktrees.sh` is a dry run unless --apply is supplied.
-It reclaims only terminal-card workspaces that are clean and wholly represented
-on remote-tracking refs. Never remove active, dirty or unpublished worktrees.
+It reclaims only workspaces positively owned by a terminal card (archived
+included) that are clean, hold no non-reproducible ignored content, and are
+wholly represented on remote-tracking refs. Unowned trees, gitignored evidence
+and unregistered directories are reported and kept unless `--include-unowned`
+or `--accept-ignored` explicitly opts in. Never remove active, dirty or
+unpublished worktrees.
 
 ---
 
