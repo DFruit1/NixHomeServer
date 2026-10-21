@@ -2,9 +2,13 @@
 set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 python3 -B - "$repo" <<'PY'
+import contextlib
 import importlib.util
+import io
 import json
+import os
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 import sys
@@ -14,9 +18,17 @@ source = Path(sys.argv[1]) / 'scripts/hermes'
 # The installers import sibling helpers (hermes_common, hermes_config) by
 # module name; loading them from this suite needs their directory on sys.path.
 sys.path.insert(0, str(source))
-spec = importlib.util.spec_from_file_location('instructions', source / 'install-instruction-policy.py')
-policy = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(policy)
+
+
+def load(name, filename):
+    spec = importlib.util.spec_from_file_location(name, source / filename)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+policy = load('instructions', 'install-instruction-policy.py')
+
 
 
 class InstructionPolicyTest(unittest.TestCase):
@@ -293,6 +305,138 @@ class InstructionPolicyTest(unittest.TestCase):
         self.assertEqual((source / 'instructions/offline-state-probe.md').read_bytes(),
                          (audit / 'references/offline-state-probe.md').read_bytes())
         self.assertEqual(0, policy.install(self.root, check=True))
+
+
+class InstallerConvergenceTest(unittest.TestCase):
+    """The four role-scoping installers converge on one isolated root.
+
+    The H4a acceptance requires every owning installer's `--check` to exit 0.
+    On a live tree owned by an older install, `--check` stays 1 until that
+    installer runs, which is an installation gap rather than a source defect.
+    This suite therefore proves the source contract where it belongs: on a
+    fixture HERMES_ROOT the same four commands exit 1 (drift, never 2) before
+    the install and 0 after it, and a second install pass changes nothing.
+
+    Order is part of that contract because the installers own different
+    artifacts: the instruction installer supplies the maintained skills that
+    the memory installer pins in each skills/.usage.json, so memory follows it.
+    """
+
+    SCRIPTS = ('install-instruction-policy.py', 'install-worker-policy.py',
+               'install-memory-policy.py', 'install-steward-readonly.py')
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix='nixhomeserver-installer-convergence-')
+        self.addCleanup(self.tmp.cleanup)
+        base = Path(self.tmp.name)
+        self.root = base / 'hermes'
+        self.repo = base / 'repo'
+        self.repo.mkdir()
+        self.instruction = load('convergence_instruction', 'install-instruction-policy.py')
+        self.worker = load('convergence_worker', 'install-worker-policy.py')
+        self.memory = load('convergence_memory', 'install-memory-policy.py')
+        self.steward = load('convergence_steward', 'install-steward-readonly.py')
+        (self.root / 'profiles').mkdir(parents=True)
+        (self.root / 'SOUL.md').write_text('Retired routing profile; preserve.\n')
+        (self.root / 'config.yaml').write_text('model: {default: test}\n')
+        for name in policy.PROFILES:
+            home = self.root / 'profiles' / name
+            home.mkdir(parents=True)
+            (home / 'SOUL.md').write_text('# ' + name + '\n')
+            (home / 'config.yaml').write_text('model: {default: test}\n')
+            (home / 'profile.yaml').write_text('description: Old scope\n')
+        native = self.root / 'hermes-agent/hermes_cli'
+        native.mkdir(parents=True)
+        (native / 'kanban_db.py').write_text(
+            'def create():\n    assignee = _canonical_assignee(assignee)\n'
+            '    if not title:\n        raise ValueError()\n'
+            'def unblock():\n    with write_txn(conn):\n        resume_status = (\n            "ready"\n        )\n')
+        (native / 'kanban_db_dispatch.py').write_text(
+            'def dispatch():\n'
+            "    # Per-profile cap: one profile's local model / API quota / browser pool\n"
+            '    if claimed is None:\n        return False\n    try:\n        resolved_branch_name = None\n'
+            '    except Exception:\n        pass\n    return True\n')
+        review = self.root / 'hermes-agent/agent/background_review.py'
+        review.parent.mkdir(parents=True)
+        review.write_text('\n'.join('PROMPT' + str(index) + ' = (\n' + before + '\n)'
+                                    for index, (before, _) in enumerate(self.memory.PROMPT_EDITS)))
+        # Stored report jobs are owned by the native scheduler, so the fixture
+        # records what `hermes cron create` would store without running it.
+        self.jobs = []
+        self.jobs_path = self.root / 'profiles/board-steward/cron/jobs.json'
+
+    def cron(self, command, **kwargs):
+        if command[4] == 'create':
+            job = {'id': 'job%d' % len(self.jobs), 'name': command[command.index('--name') + 1],
+                   'prompt': command[6].strip(),
+                   'schedule': {'kind': 'cron', 'expr': command[5]}, 'enabled': True}
+            self.jobs.append(job)
+        else:
+            job = next(entry for entry in self.jobs if entry['id'] == command[5])
+        for flag, key in (('--prompt', 'prompt'), ('--script', 'script'),
+                          ('--monitor-script', 'monitor_script'),
+                          ('--workdir', 'workdir'), ('--deliver', 'deliver')):
+            if flag in command:
+                job[key] = command[command.index(flag) + 1]
+        job['skills'] = ['board-steward']
+        if '--continuity' in command:
+            job['context_from'] = ['self']
+        elif '--no-continuity' in command:
+            job['context_from'] = []
+        self.jobs_path.parent.mkdir(parents=True, exist_ok=True)
+        self.jobs_path.write_text(json.dumps({'jobs': self.jobs}))
+
+    def install(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(0, self.instruction.install(self.root))
+            self.assertEqual(0, self.worker.install(self.root))
+            with patch.object(self.steward.subprocess, 'run', self.cron):
+                self.assertEqual(0, self.steward.install(self.root, self.repo))
+            self.assertEqual(0, self.memory.install(self.root))
+
+    def check(self, script):
+        environment = {key: value for key, value in os.environ.items()
+                       if key not in ('HERMES_KANBAN_TASK', 'HERMES_KANBAN_RUN_ID',
+                                      'HERMES_DELEGATED_CHILD_CONTEXT')}
+        environment.update(HERMES_ROOT=str(self.root), REPO_DIR=str(self.repo))
+        return subprocess.run([sys.executable, '-B', str(source / script), '--check'],
+                              env=environment, capture_output=True, text=True)
+
+    def snapshot(self):
+        return {path: path.read_bytes() for path in self.root.rglob('*')
+                if path.is_file() and 'backups' not in path.parts}
+
+    def test_installer_checks_are_red_before_and_green_after_one_install(self):
+        for script in self.SCRIPTS:
+            result = self.check(script)
+            self.assertEqual(1, result.returncode, script + result.stderr + result.stdout)
+            self.assertIn('drift', result.stdout, script)
+        self.install()
+        for script in self.SCRIPTS:
+            result = self.check(script)
+            self.assertEqual(0, result.returncode, script + result.stderr + result.stdout)
+            self.assertEqual('', result.stdout.strip(), script)
+        # Root scope is routing-only: the taskforce routing block is installed
+        # and the stale worker-budget and memory blocks converge to absence.
+        root_soul = (self.root / 'SOUL.md').read_text()
+        self.assertIn('Retired routing profile; preserve.', root_soul)
+        self.assertIn('<!-- hermes-review-taskforce -->', root_soul)
+        self.assertNotIn('<!-- hermes-worker-budgets -->', root_soul)
+        self.assertNotIn('<!-- hermes-memory-policy -->', root_soul)
+        # The steward keeps the bounded boundary and the lanes keep the fleets.
+        steward_soul = (self.root / 'profiles/board-steward/SOUL.md').read_text()
+        self.assertIn('Fleet boundary', steward_soul)
+        self.assertNotIn('Never remove worker pins', steward_soul)
+        for name in policy.PROFILES:
+            if name != 'board-steward':
+                self.assertIn('## Hermes fleet rules',
+                              (self.root / 'profiles' / name / 'SOUL.md').read_text())
+        # A second pass is a fixed point, so re-running any installer is safe.
+        before = self.snapshot()
+        self.install()
+        self.assertEqual(before, self.snapshot())
+        for script in self.SCRIPTS:
+            self.assertEqual(0, self.check(script).returncode, script)
 
 
 unittest.main(argv=['instruction-policy'], verbosity=2)

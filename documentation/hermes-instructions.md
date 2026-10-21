@@ -14,6 +14,32 @@ points at the installed full policy, never the commit, publication,
 block-authoring or acceptance procedures it cannot use. Every installer that
 rewrites a profile SOUL composes the same per-role block.
 
+### Per-profile inline inventory
+
+Four installers scope these blocks: `install-instruction-policy.py`,
+`install-worker-policy.py`, `install-memory-policy.py` and
+`install-steward-readonly.py`. This inventory was recorded on 2026-10-22 against
+revision `89ccc1a`, after the role-scoping removal commit had already landed on
+2026-10-21 at 23:22:21 AEDT. The intended pre-removal inventory was posted at
+23:31:15 AEDT, after that commit, so it is recorded here as a sequencing miss and
+never backdated; removal on the live tree stays gated behind the coordinator's
+apply.
+
+| Scope | Blocks that remain inline |
+|---|---|
+| root/default `SOUL.md` | taskforce routing block only |
+| head-coordinator | fleet, worker budget, memory policy, task skills, coordinator role and operations, owner alert, taskforce routing |
+| project-auditor | fleet, worker budget, memory policy, task skills |
+| standard-implementer | fleet, role text, memory policy, task skills |
+| local-implementer | fleet, taskforce routing, memory policy, task skills |
+| feature-reviewer | fleet, memory policy, task skills |
+| board-steward | the steward fleet boundary, which reuses the fleet marker pair, and memory policy; its role text comes from the steward installer |
+
+Each removed block's rules stay reachable: the steward boundary points at the
+installed full policy, and root keeps the routing block it needs to route.
+Record this inventory before a removal lands in source; a rule stranded by an
+earlier removal is much harder to spot afterwards.
+
 ## Sources and precedence
 
 | Source | Responsibility |
@@ -101,6 +127,32 @@ operations glue for existing files; a Rust backend or new dependency is unnecess
 It refreshes the sender/authoring guard implementation without ticking the sender,
 and replaces the standard implementer's stale model promise in profile metadata.
 It does not restart Hermes, send messages or declare active sessions refreshed.
+
+Role-scoping spans four installers, and they converge in a fixed order:
+instruction, worker, steward, memory. The instruction installer supplies the
+maintained skills that the memory installer pins in each profile's
+`skills/.usage.json`, so it runs first on a fresh root; a second pass over all
+four changes nothing. Check them in any order afterwards:
+
+```bash
+for installer in install-instruction-policy install-worker-policy \
+                 install-steward-readonly install-memory-policy; do
+  python3 -B "scripts/hermes/$installer.py"
+done
+for installer in install-instruction-policy install-worker-policy \
+                 install-memory-policy install-steward-readonly; do
+  python3 -B "scripts/hermes/$installer.py" --check
+done
+```
+
+`--check` exiting 1 on the live tree after a source change means that tree is
+still owned by an earlier install; it is drift awaiting the owning installer, not
+a source defect. The source contract is verified on an isolated `HERMES_ROOT`:
+`test-hermes-instruction-policy.sh` asserts all four checks exit 1 (drift, never
+2) before one install pass and 0 after it, that root scope converges to routing
+only, and that a second pass is a fixed point. Applying that pass to the live tree
+is the coordinator's gated step, so a green fixture check is evidence about the
+source only.
 
 The taskforce installer composes these same transformations; the steward and
 owner-alert installers compose the same per-role fleet block, so the steward's
