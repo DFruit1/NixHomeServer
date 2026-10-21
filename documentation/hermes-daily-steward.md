@@ -46,15 +46,27 @@ older unresolved blockers:
   (not their execution cards). For each, report its purpose, how it progressed
   since the previous daily report, and what done looks like. This section is
   a required report section; compress unchanged detail first. Within the 3000-character
-  phone budget, prioritize complete owner asks, then feature lines, changed stalls,
-  usage risks and one optional handoff. State any omitted feature count explicitly;
-  never imply complete coverage when details did not fit. Send technical detail
-  through the existing internal coordinator handoff, without extra phone messages.
+  phone budget, prioritize complete owner asks, then changed feature lines, changed
+  stalls and usage risks. State any omitted feature count explicitly; never imply
+  complete coverage when details did not fit. Send technical detail through the
+  existing internal coordinator handoff, without extra phone messages.
+
 - Repeated permission denials, grouped by profile, tool, refusing policy and
   affected instruction or goal. Include standing goals outside cards. Compare
   rejected actions with both the task and its policy; distinguish valid refusals
   from a capability mismatch. Propose scoped remedies without bypassing guards
   or assuming that a task grants permission.
+
+The daily report has a fixed five-section summary — *Needs you*, *Moved*,
+*Stuck*, *Health* and *Budget* — in that order, one short line per item, with a
+separate *Unblock prompts* section only when a full prompt is due. Owner decisions
+use Blocking / Why owner / Unblock. Feature lines name the stage (building /
+review / changes requested / accepted / deployed / stopped) and what done means.
+The report carries no optional technical handoff; the four-hourly stall job owns
+technical detail. On a day with no new owner decision, feature stage change,
+long-blocked card or failure cause, and no budget trip, send only a compact
+quiet report: the header, "No material change since yesterday.", the
+open-decision count, the stuck count and oldest age, and the budget line.
 
 Start with summaries and inspect only relevant, redacted evidence excerpts.
 Track feature stalls across related cards and older history, including work in
@@ -70,13 +82,14 @@ Prioritise unresolved requested fixes and recurring stalls. Carry them forward
 briefly until resolution is evidenced, stating what changed or that nothing did;
 do not repeat full unchanged handoffs or count replacement cards as progress.
 
-Prioritise at most five actionable findings. Each check reports findings, no
+Prioritise at most five summary findings. Each check reports findings, no
 findings in inspected evidence, or unknown with the missing evidence. Missing
 usage data is never reported as zero. Keep unresolved blockers visible while
 avoiding repeated unchanged handoffs. Reporting must not launch inference
 probes, replay failed work or run expensive validation.
 
-Each useful recommendation provides a copyable handoff:
+Each full outside-agent prompt (and any internal coordinator handoff) provides a
+copyable handoff:
 
 ```text
 Goal: <concrete outcome>
@@ -89,8 +102,8 @@ Constraints: <existing approvals and work to preserve>
 
 Commands are proposals, never reported as executed. Include exact known targets;
 identify missing prerequisites rather than inventing values. The owner can pass
-the whole handoff unchanged to Codex. Sensitive or irreversible operations still
-need their existing authorization; a report does not supply it.
+the prompt unchanged to Codex. Sensitive or irreversible operations still need
+their existing authorization; a report does not supply it.
 
 ## Long-blocked cards and owner-authority prompts
 
@@ -106,15 +119,22 @@ cause, the repeat count and whether an owner gate already exists. Override
 `STEWARD_LONG_BLOCKED_HOURS` and `STEWARD_STALE_CARD_HOURS` when a board's
 normal cycle is longer.
 
-The daily report turns each listed card into one copyable prompt for the
-owner's own outside agent, which works with the owner's direct authority outside
-Hermes roles, tool fences and approval lanes. The prompt states what is stuck in
-plain words and for how long, then fixes the underlying cause — a missing
-package or tool, a false or stale premise, an input that is not where the card
-assumes, a test asserting the wrong thing, a stale pin or lock — with exact
-files, quoted commands and a read-only verification, so the outside agent needs
-no further discovery. These prompts displace the optional technical handoff in
-the character budget, not owner actions.
+The daily report keeps every listed card visible but turns only a card that is
+newly listed or materially changed since the previous report into a full
+copyable prompt, at most five per report. Unchanged cards carry forward in the
+Stuck count with a note that the full set is available by replying `prompts`. On
+Mondays the report includes the full set for every listed card, or the oldest ten
+when there are more; a missing previous report makes the current list new.
+
+A full prompt is for the owner's own outside agent, which works with the owner's
+direct authority outside Hermes roles, tool fences and approval lanes. The prompt
+states what is stuck in plain words and for how long, then fixes the underlying
+cause — a missing package or tool, a false or stale premise, an input that is not
+where the card assumes, a test asserting the wrong thing, a stale pin or lock —
+with exact files, quoted commands and a read-only verification, so the outside
+agent needs no further discovery. These prompts displace unchanged detail in the
+character budget, not owner actions. The daily report carries no optional
+technical handoff; the four-hourly stall job owns that detail.
 
 This is a diagnosis and remediation channel, not an authority channel. The
 steward never proposes disabling, weakening, editing, reordering or routing

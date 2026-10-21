@@ -186,8 +186,9 @@ def long_blocked_lines(conn: sqlite3.Connection, blocked: list) -> list[str]:
             f" recur={recur} fails={fails} owner_gate={gate} :: {reason}"
         )
     lines.append(
-        "  (each needs an owner-authority unblock prompt; the remedy is the"
-        " underlying cause, never a guard or permission change)"
+        "  (new or materially changed cards need a full owner-authority prompt;"
+        " unchanged cards carry forward; the remedy is the underlying cause,"
+        " never a guard or permission change)"
     )
     return lines
 

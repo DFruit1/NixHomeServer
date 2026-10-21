@@ -29,9 +29,7 @@ readiness, and connections may migrate state. Use the reader or snapshot collect
 instead. The reader refuses writes and returns at most 200 rows; use an explicit
 WHERE or LIMIT/OFFSET for further evidence. Existing reference documents may guide
 evidence gathering, but their native commands and older mutation grants do not
-override this rule. For the steward role, native board tools and Hermes CLI
-reads are forbidden: listing can promote jobs and a native connection can
-migrate state. Do not write scratch scripts to bypass the boundary.
+override this rule. Do not write scratch scripts to bypass the boundary.
 
 Identify the precise root blockers, stale premises and existing decisions. Flag
 owner-dependent blockers that were not surfaced and their delivery status
@@ -50,9 +48,12 @@ Include older blockers still unresolved. Follow the scheduled prompt's evidence
 rules: establish avoidable repetition, derive blocked age from status events,
 and compare rejected actions with both assigned instructions and refusing policy.
 The snapshot's LONG BLOCKED section lists cards whose blocked spell passed 4h
-or whose card passed 20h while repeatedly re-blocked; each one gets its own
-owner-authority unblock prompt under SOUL.md, and those prompts fix the
-underlying cause rather than any guard or permission. Report measured usage
+or whose card passed 20h while repeatedly re-blocked. Keep every card visible,
+but give a full owner-authority unblock prompt only for a card that is newly
+listed or materially changed since the previous report (at most five), carry the
+rest in the Stuck count, and include the full set on Mondays or when the owner asks
+for `prompts`. Those prompts fix the underlying cause, never a guard or
+permission. Report measured usage
 separately from estimates; elapsed run time is not local inference time. Missing
 telemetry means unknown. Group denials across cards and standing goals,
 distinguish valid refusals from instruction/capability mismatches, and recommend

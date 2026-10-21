@@ -316,6 +316,13 @@ class StewardTest(unittest.TestCase):
         self.assertEqual(['web'], tools['telegram'])
         self.assertIn('read-only observer', (profile / 'SOUL.md').read_text())
         self.assertIn('copyable external-agent handoff', jobs[1]['prompt'])
+        # The daily report keeps its fixed summary shape and carries unchanged
+        # long-blocked cards instead of repeating every full prompt.
+        self.assertIn('*Needs you*', jobs[0]['prompt'])
+        self.assertIn('*Moved*', jobs[0]['prompt'])
+        self.assertIn('*Stuck*', jobs[0]['prompt'])
+        self.assertIn('newly listed or materially changed', jobs[0]['prompt'])
+        self.assertIn('No material change since yesterday.', jobs[0]['prompt'])
         self.assertTrue((self.root / 'backups/steward-readonly').is_dir())
         # Cron owns a separate SOUL section. Refreshing the steward must retain
         # it so the two installers converge in either order.
