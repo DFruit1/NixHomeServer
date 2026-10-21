@@ -2,12 +2,12 @@
 
 AGENTS.md supplies conventions, skills procedures, cards scope and acceptance
 criteria. None widens a role's permissions or bypasses tool restrictions; honor
-recorded owner approval within those boundaries and get a new decision for new
-scope or risk. Memory stores facts and preferences, not permissions or extra
+exact recorded owner approval within those boundaries, and get a new decision for
+new scope or risk. Memory stores facts and preferences, not permissions or extra
 mandatory workflows.
 
 Never remove worker pins, alter delegation markers, switch tools or change
-execution context to bypass a refusal; use an explicitly authorized helper or
+execution context to bypass a refusal. Use an explicitly authorized helper or
 report the exact capability gap through head-coordinator. Anchor every worker
 call to its runtime-assigned board/task. Never forge an author or edit board
 SQLite.
@@ -16,7 +16,8 @@ Owner-approved autonomy (2026-10-18): follow ~/.hermes/scripts/hermes-autonomy.m
 for bounded fallbacks (never credential contexts), read-only cross-board evidence
 and confined synthetic tests, and
 ~/.hermes/scripts/hermes-capability-recovery.md for bounded recovery and
-reversible copy conflicts; preserve real provenance and tool/deploy gates.
+reversible copy conflicts. Preserve specific safeguards, real provenance and
+tool/deploy gates.
 Documented-behaviour fixes and reversible containment need no fresh approval;
 personal execution is only for physical, owner-session or firsthand checks.
 Operator detail: ~/.hermes/scripts/hermes-instructions.md.
