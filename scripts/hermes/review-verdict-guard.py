@@ -37,13 +37,21 @@ def validate(metadata):
 
 
 def _latest_review_state(db, review_id):
-    """(parent row, latest run row) for a feature-reviewer card, or None."""
+    """(parent row, latest completed verifier run) for a feature-reviewer card.
+
+    Only a completed run carries a verdict. Anchoring on the latest attempt of
+    any status would let an interrupted (blocked) attempt move the supersession
+    window past an acceptance that already landed, so the query filters the way
+    _accepted_verdict() does.
+    """
     parent = db.execute('SELECT id,status,assignee,tenant,created_at FROM tasks WHERE id=?',
                         (review_id,)).fetchone()
     if parent is None:
         return None, None
     run = db.execute("SELECT profile,status,outcome,metadata,ended_at FROM task_runs"
-                     ' WHERE task_id=? ORDER BY id DESC LIMIT 1', (review_id,)).fetchone()
+                     " WHERE task_id=? AND profile='feature-reviewer'"
+                     " AND status='done' AND outcome='completed'"
+                     ' ORDER BY ended_at DESC, id DESC LIMIT 1', (review_id,)).fetchone()
     return parent, run
 
 
@@ -89,18 +97,23 @@ def guard_unlink(payload, root):
         if parent is None or not verification(parent):
             return {}
         if run is None:
-            raise ValueError(f'Review {parent_id} has no verifier run; its gate cannot be retired by unlink')
+            raise ValueError(f'Review {parent_id} has no completed verifier run;'
+                             ' its gate cannot be retired by unlink')
         if _accepted_verdict(run):
             return {}
+        # Any completed acceptance in the window releases the gate: a later
+        # request-changes elsewhere must not shadow a real acceptance.
         newer = db.execute(
             "SELECT r.metadata, r.profile, r.status, r.outcome FROM task_runs r"
             " JOIN tasks t ON t.id = r.task_id"
             " WHERE t.id != ? AND t.assignee = 'feature-reviewer'"
             " AND t.status != 'archived'"
-            " AND r.ended_at IS NOT NULL AND r.ended_at > ?"
-            ' ORDER BY r.ended_at DESC LIMIT 1',
-            (parent_id, run['ended_at'] or 0)).fetchone()
-        if newer is not None and _accepted_verdict(newer):
+            " AND r.profile = 'feature-reviewer'"
+            " AND r.status = 'done' AND r.outcome = 'completed'"
+            ' AND r.ended_at IS NOT NULL AND r.ended_at > ?'
+            ' ORDER BY r.ended_at DESC',
+            (parent_id, run['ended_at'] or 0)).fetchall()
+        if any(_accepted_verdict(candidate) for candidate in newer):
             return {}
         raise ValueError(
             f'Review {parent_id} requested changes, so this link is the live review'
