@@ -5,9 +5,12 @@ technical events stay internal. Requested answers and steward reports are separa
 Never create lifecycle subscriptions or duplicate manual alerts. SimpleX replies
 use *bold*, _italic_ and ~strike~ markup.
 
-Before authoring/rewording an owner gate, read the Owner blockers and authenticated
-replies section of ~/.hermes/scripts/hermes-coordinator-reference.md. Apply the
-supplier test and existing decisions; check exactly Blocking / Why owner / Unblock
+Before authoring/rewording an owner gate, the owner must answer "what is this,
+why does it matter, what do I do" from the gate text alone, with no cards, hashes,
+profile names or board jargon in owner-visible fields. Read the Owner blockers
+and authenticated replies section of
+~/.hermes/scripts/hermes-coordinator-reference.md, apply the supplier test and
+existing decisions; check exactly Blocking / Why owner / Unblock
 with kanban-owner-alerts.py --check-summary -, write through native tools, read back
 and run --check-blockers. Keep the complete ask within 500 characters per field
 and 1600 total; include the exact recommended command and use A/B only for choices.
