@@ -47,6 +47,36 @@ REVIEW_SKILLS = (
 )
 REVIEW_SKILL_PROFILES = ('standard-implementer', 'local-implementer',
                          'feature-reviewer', 'head-coordinator')
+# Role-specific reference files this installer owns. Sources live beside the
+# skills they extend; targets are relative to a role home.
+ROLE_SKILL_FILES = {
+    'head-coordinator': [('kanban-orchestration.md', 'devops/kanban-orchestration/SKILL.md'),
+                         ('activation-handoffs.md', 'devops/kanban-orchestration/references/activation-handoffs.md'),
+                         ('queue-recovery.md', 'devops/kanban-orchestration/references/queue-recovery.md'),
+                         ('source-to-service-planning.md', 'devops/kanban-orchestration/references/source-to-service-planning.md')],
+    'board-steward': [('blocker-triage.md', 'devops/board-steward/references/blocker-triage.md')],
+    'feature-reviewer': [('taskforce-feature-audit.md', 'autonomous-ai-agents/taskforce-feature-audit/SKILL.md'),
+                         ('kanban-board-inspection.md', 'autonomous-ai-agents/taskforce-feature-audit/references/kanban-board-inspection.md'),
+                         ('offline-state-probe.md', 'autonomous-ai-agents/taskforce-feature-audit/references/offline-state-probe.md')],
+}
+
+
+def skill_targets(name):
+    """Skill file targets tracked for one home, in the same shape as installation.
+
+    `name` is a profile name, or 'default' for the root scope. Callers that only
+    need the skill names (the memory installer's ownership ledger) derive them
+    from the target path, so this table stays the single source of placement
+    truth instead of being restated.
+    """
+    if name == 'default':
+        # Root scope always carries the fleet-adapted debugging skill.
+        return {SKILL_SOURCES['systematic-debugging'][1]}
+    targets = {SKILL_SOURCES[skill][1] for skill in ROLE_SKILLS.get(name, ())}
+    if name in REVIEW_SKILL_PROFILES:
+        targets |= {target for _, target in REVIEW_SKILLS}
+    targets |= {target for _, target in ROLE_SKILL_FILES.get(name, ())}
+    return targets
 
 
 def block(text, start, end, content):
@@ -222,17 +252,7 @@ def changes(root, pending=None):
             continue
         for skill, target in REVIEW_SKILLS:
             result[home / 'skills' / target] = (SOURCE / 'instructions' / skill).read_text()
-    targets = {
-        'head-coordinator': [('kanban-orchestration.md', 'devops/kanban-orchestration/SKILL.md'),
-                             ('activation-handoffs.md', 'devops/kanban-orchestration/references/activation-handoffs.md'),
-                             ('queue-recovery.md', 'devops/kanban-orchestration/references/queue-recovery.md'),
-                             ('source-to-service-planning.md', 'devops/kanban-orchestration/references/source-to-service-planning.md')],
-        'board-steward': [('blocker-triage.md', 'devops/board-steward/references/blocker-triage.md')],
-        'feature-reviewer': [('taskforce-feature-audit.md', 'autonomous-ai-agents/taskforce-feature-audit/SKILL.md'),
-                             ('kanban-board-inspection.md', 'autonomous-ai-agents/taskforce-feature-audit/references/kanban-board-inspection.md'),
-                             ('offline-state-probe.md', 'autonomous-ai-agents/taskforce-feature-audit/references/offline-state-probe.md')],
-    }
-    for name, files in targets.items():
+    for name, files in ROLE_SKILL_FILES.items():
         if (root / 'profiles' / name).is_dir():
             for source, target in files:
                 result[root / 'profiles' / name / 'skills' / target] = (

@@ -48,6 +48,16 @@ Use the [behaviour trials](hermes-behavior-trials.md) for bounded model checks
 after instruction changes; deterministic installer checks alone do not prove
 agents follow the installed procedures.
 
+The four role-scoping installers (`install-instruction-policy.py`,
+`install-worker-policy.py`, `install-memory-policy.py`,
+`install-steward-readonly.py`) write into one root, so a single install pass must
+leave every one of their `--check` commands green in any install order. Skill
+placement belongs to the instruction and steward installers; the memory installer
+only records ownership, so it pins the skills a role is entitled to in tracked
+source rather than the copies already on disk. A per-installer suite proves that
+installer alone; `scripts/tests/test-hermes-installer-convergence.sh` proves the
+shared root they actually run against.
+
 ## Ownership decisions
 
 Workers commit locally after the owning gate; they never publish. The durability
@@ -157,6 +167,7 @@ bash scripts/tests/test-hermes-instruction-policy.sh
 bash scripts/tests/test-hermes-review-taskforce.sh
 bash scripts/tests/test-kanban-owner-alerts.sh
 bash scripts/tests/test-steward-readonly.sh
+bash scripts/tests/test-hermes-installer-convergence.sh
 bash scripts/tests/test-hermes-coordination.sh
 bash scripts/tests/test-hermes-owner-chat-policy.sh
 ```

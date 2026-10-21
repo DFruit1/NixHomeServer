@@ -109,6 +109,11 @@ def install(root, check=False):
     hooks=importlib.util.module_from_spec(spec);spec.loader.exec_module(hooks)
     spec=importlib.util.spec_from_file_location('admission',SOURCE/'memory-policy.py')
     admission=importlib.util.module_from_spec(spec);spec.loader.exec_module(admission)
+    # Skill placement is owned by the instruction and steward installers; this
+    # installer only records ownership, so it asks them what a role is entitled
+    # to instead of restating their tables.
+    spec=importlib.util.spec_from_file_location('instruction',SOURCE/'install-instruction-policy.py')
+    instruction=importlib.util.module_from_spec(spec);spec.loader.exec_module(instruction)
     pending={root/'scripts/memory-policy.py':(SOURCE/'memory-policy.py').read_text(),
              root/'scripts/hermes-memory-policy.md':(SOURCE/'instructions/memory-policy.md').read_text()}
     for profile in ROLES:
@@ -154,8 +159,19 @@ def install(root, check=False):
             pending[soul]=(remove_block(soul.read_text(),START,END,'memory policy')
                            if profile=='default' else instructions(soul.read_text(),profile))
         usage=home/'skills/.usage.json'
+        # Pin the maintained skills this role is entitled to from tracked
+        # source, not only the copies already on disk: the instruction and
+        # steward installers place skills too, so a pin computed from disk
+        # alone depended on install order and left the ledger drifting until
+        # the next run. Entitlement names come from the placement tables, so
+        # the ledger cannot disagree with them.
+        entitled={Path(target).parent.name for target in instruction.skill_targets(profile)}
+        if profile=='board-steward':
+            # The steward skill itself belongs to the read-only installer.
+            entitled.add('board-steward')
         installed={name for name in admission.MANAGED_SKILLS
-                   if (home/'skills'/name/'SKILL.md').is_file()
+                   if name in entitled
+                   or (home/'skills'/name/'SKILL.md').is_file()
                    or any((home/'skills').glob('*/'+name+'/SKILL.md'))}
         if installed:
             data=json.loads(usage.read_text()) if usage.exists() else {}
