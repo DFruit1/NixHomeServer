@@ -37,6 +37,16 @@ def _json(value):
     return json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False)
 
 
+def _content_identity(stat):
+    """The stat fields that change only when a file's content changes.
+
+    ``atime`` moves on every read (tmpfs honours it), so comparing the whole
+    stat result made hashing a scratch fixture look like concurrent
+    modification. Ownership and mode changes are not content changes either.
+    """
+    return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+
+
 def _file(path):
     path = Path(path).resolve(strict=True)
     before = path.stat()
@@ -46,7 +56,7 @@ def _file(path):
     with path.open('rb') as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b''):
             digest.update(chunk)
-    if before != path.stat():
+    if _content_identity(before) != _content_identity(path.stat()):
         raise ValueError('Input changed while hashing')
     return {'path': str(path), 'sha256': digest.hexdigest()}
 

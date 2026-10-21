@@ -17,6 +17,7 @@ import unittest
 import subprocess
 import signal
 import time
+import types
 from unittest.mock import patch
 
 source = Path(sys.argv[1]) / 'scripts/hermes/autonomy-policy.py'
@@ -181,6 +182,25 @@ class ApprovedExecutionTest(unittest.TestCase):
         self.input.write_text('changed after owner review\n')
         with self.assertRaises(ValueError):
             policy.check(self.root, manifest['sha256'], profile='head-coordinator')
+
+    def test_access_time_is_not_content_drift(self):
+        # Reading a file updates atime on tmpfs, so a whole-stat comparison
+        # reported "Input changed while hashing" for an unmodified fixture.
+        base = dict(st_dev=1, st_ino=2, st_size=3, st_mtime_ns=4)
+        first = types.SimpleNamespace(st_atime=5.0, **base)
+        second = types.SimpleNamespace(st_atime=999.0, **base)
+        self.assertEqual(policy._content_identity(first),
+                         policy._content_identity(second))
+        self.assertNotEqual(policy._content_identity(first),
+                            policy._content_identity(
+                                types.SimpleNamespace(st_atime=5.0,
+                                                      **{**base, 'st_mtime_ns': 9})))
+
+    def test_file_hash_survives_an_atime_update(self):
+        st = self.input.stat()
+        os.utime(self.input, ns=(1, st.st_mtime_ns))
+        self.assertEqual(policy._file(self.input)['sha256'],
+                         hashlib.sha256(self.input.read_bytes()).hexdigest())
 
     def test_changed_executable_invalidates_approval(self):
         manifest = self.prepare()
