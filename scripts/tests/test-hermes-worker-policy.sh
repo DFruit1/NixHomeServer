@@ -136,12 +136,34 @@ class InstallerTest(unittest.TestCase):
     def test_learning_trials_are_opt_in_and_refuse_worker_context(self):
         import os
         script=source.parent/'background-learning-trials.py'
-        listed=subprocess.run([sys.executable,'-B',str(script)],capture_output=True,text=True)
-        self.assertEqual(0,listed.returncode)
-        env=dict(os.environ,HERMES_KANBAN_TASK='t_fixture')
-        refused=subprocess.run([sys.executable,'-B',str(script),'--live'],env=env,capture_output=True,text=True)
-        self.assertEqual(2,refused.returncode)
-        self.assertIn('worker pins remain binding',refused.stderr)
+        pins=('HERMES_KANBAN_TASK','HERMES_KANBAN_RUN_ID',
+              'HERMES_DELEGATED_CHILD_CONTEXT','HERMES_KANBAN_CLAIM_LOCK')
+        def child_env(**overrides):
+            # The fixture supplies its own synthetic environment to the child so
+            # the assertion does not depend on whether the suite itself was
+            # started by a pinned worker. Pin values of this process are
+            # captured below and asserted unchanged: this fixture never clears
+            # the worker context that runs the gate.
+            env={k:v for k,v in os.environ.items() if k not in pins}
+            env.update(overrides)
+            return env
+        outer={pin:os.environ.get(pin) for pin in pins}
+        listed=subprocess.run([sys.executable,'-B',str(script)],
+                              env=child_env(),capture_output=True,text=True,timeout=60)
+        self.assertEqual(0,listed.returncode,listed.stderr)
+        self.assertIn('Opt in with --live',listed.stdout)
+        for pin in pins:
+            with self.subTest(pin=pin):
+                try:
+                    refused=subprocess.run([sys.executable,'-B',str(script),'--live'],
+                                           env=child_env(**{pin:'fixture'}),
+                                           capture_output=True,text=True,timeout=60)
+                except subprocess.TimeoutExpired:
+                    self.fail(f'{pin} did not refuse --live before running a trial')
+                self.assertEqual(2,refused.returncode,refused.stdout)
+                self.assertIn('worker pins remain binding',refused.stderr)
+                self.assertEqual('',refused.stdout)
+        self.assertEqual(outer,{pin:os.environ.get(pin) for pin in pins})
 
     def test_install_check_is_readonly_and_install_converges(self):
         with tempfile.TemporaryDirectory(prefix='hermes-worker-policy-') as directory, contextlib.redirect_stdout(io.StringIO()):
