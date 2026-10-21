@@ -237,6 +237,23 @@ successful mirror clears the line on the next tick. Inspect the cron job
 (`hermes -p default cron list`), its failure log and the SSH path; report
 failed mirrors internally.
 
+**Installed-instruction drift.** Installed prompts that lag tracked source are
+silent: the running profile keeps reading the old text, and an installer nobody
+re-ran looks exactly like one with nothing to do. The board-health monitor
+therefore runs the read-only
+`python3 -B <checkout>/scripts/hermes/install-instruction-policy.py --check` on
+each tick and reports `INSTRUCTION_DRIFT files=N`: one path-free line with the
+count, so the report stays byte-stable. Run the check itself to see which files.
+It uses the checkout's copy, resolved from the board's `default_workdir` or
+`HERMES_REPO`, never the installed copy: the installer compares `$HERMES_ROOT`
+against its own location, so an installed copy would compare the tree with
+itself and always report clean. Exit 1 with drift lines is drift; any other
+non-zero exit, or a 1 with no parsed line (a traceback also exits 1), is
+`INSTRUCTION_DRIFT_UNCHECKED exit=N` and means the check did not run. Repair is
+an installer re-run from the checkout followed by its `--check`; never hand-edit
+installed copies. A board whose recorded workdir has no such checkout reports
+nothing, because not every board carries this repository.
+
 **Board disaster recovery.** Restore in this order: Kopia restores the
 server's `/persist` if the server lost the disk; otherwise copy
 `/persist/home/dsaw/.hermes-durability/<board>/current/` (the newest
