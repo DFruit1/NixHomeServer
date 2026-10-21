@@ -324,14 +324,12 @@ bash scripts/tests/test-hermes-aging-escalation.sh
 
 Known pre-existing failures, not caused by this work:
 
-- `test-validation-build-checks.sh` expects
-  `nixhomeserver-remote-build ... --keep-going`; red at HEAD (verified against a
-  clean `HEAD` archive). Track separately; do not treat as change-caused.
-- `test-deploy-cli.sh` and `test-local-admin-sudo-policy.sh` fail while
-  `documentation/plans/2026-10-21-local-notifications-and-recovery.md` is
-  untracked, because the deploy helper refuses untracked non-ignored files.
-  Owner action: commit or remove that file. Workers must not stage or delete
-  owner work to make these pass.
+- `test-deploy-cli.sh`, `test-local-admin-sudo-policy.sh` and the
+  `test-validation-build-checks.sh` remote-build assertion all failed while the
+  notifications plan was untracked, because the deploy archive helper refuses
+  untracked non-ignored files and the remote build then falls back to local.
+  A clean clone of HEAD passes all three. Resolved 2026-10-21 by tracking both
+  plan files; these were one cause, not three, and no test assertion changed.
 - The instruction budget cap is 1800 in `b7dd063`; it was 1500 and already red
   at HEAD. H5 lowers it back toward 1500.
 
