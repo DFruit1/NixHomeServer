@@ -2,11 +2,13 @@
 set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 python3 -B - "$repo" <<'PY'
+import hashlib
 import importlib.util
 import json
 import os
 from pathlib import Path
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import time
@@ -532,6 +534,80 @@ class AgingEscalationTest(unittest.TestCase):
         db.close()
         self.assertEqual(2, len(groups))
         self.assertEqual(1, len([g for g in groups if len(g) == 2]))
+
+    # --- Install modes -------------------------------------------------
+
+    def run_cli(self, *argv, env_extra=None):
+        env = {key: value for key, value in os.environ.items()
+               if key != 'HERMES_ROOT'}
+        env['HERMES_ROOT'] = str(self.root)
+        env.update(env_extra or {})
+        return subprocess.run([sys.executable, '-B', str(source), *argv],
+                              capture_output=True, text=True, env=env,
+                              timeout=120)
+
+    def fake_hermes(self):
+        # PATH shim so the install modes' cron call is observed, not executed.
+        bin_dir = self.root / 'fake-bin'
+        bin_dir.mkdir()
+        record = self.root / 'hermes-calls.log'
+        shim = bin_dir / 'hermes'
+        shim.write_text('#!/bin/sh\n'
+                        'printf "%s\\n" "$*" >> "$HERMES_CALL_LOG"\n')
+        shim.chmod(0o755)
+        env = {'PATH': f'{bin_dir}{os.pathsep}{os.environ["PATH"]}',
+               'HERMES_CALL_LOG': str(record)}
+        return record, env
+
+    def installed_copy(self):
+        return self.root / 'scripts' / 'kanban-aging-escalation.py'
+
+    def test_install_files_leaves_cron_jobs_byte_identical(self):
+        # The update path must never duplicate the live job: same script file,
+        # same mode, and cron/jobs.json is not even opened for writing.
+        cron = self.root / 'cron' / 'jobs.json'
+        cron.parent.mkdir(parents=True)
+        original = json.dumps({'jobs': [{'id': 'b7dd0630',
+                                         'name': aging.JOB}]}, indent=2)
+        cron.write_text(original)
+        before = hashlib.sha256(cron.read_bytes()).hexdigest()
+
+        result = self.run_cli('--install-files')
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(before, hashlib.sha256(cron.read_bytes()).hexdigest())
+        self.assertEqual(original, cron.read_text())
+        self.assertEqual(source.read_bytes(), self.installed_copy().read_bytes())
+        self.assertEqual(0o700, self.installed_copy().stat().st_mode & 0o777)
+
+    def test_install_files_is_idempotent_and_never_calls_hermes(self):
+        cron = self.root / 'cron' / 'jobs.json'
+        record, env = self.fake_hermes()
+
+        first = self.run_cli('--install-files', env_extra=env)
+        second = self.run_cli('--install-files', env_extra=env)
+
+        self.assertEqual(0, first.returncode, first.stderr)
+        self.assertEqual(0, second.returncode, second.stderr)
+        self.assertFalse(record.exists(), 'hermes was invoked by --install-files')
+        self.assertFalse(cron.exists(), '--install-files created cron state')
+        self.assertEqual(0o700, self.installed_copy().stat().st_mode & 0o777)
+        self.assertEqual(source.read_bytes(), self.installed_copy().read_bytes())
+
+    def test_install_keeps_job_creation_for_a_new_install(self):
+        record, env = self.fake_hermes()
+
+        result = self.run_cli('--install', env_extra=env)
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertTrue(record.exists(), result.stdout)
+        calls = record.read_text()
+        self.assertIn('cron create', calls)
+        self.assertIn('--name ' + aging.JOB, calls)
+        self.assertIn('--script kanban-aging-escalation.py', calls)
+        self.assertIn('--no-agent', calls)
+        self.assertIn('--paused', calls)
+        self.assertEqual(0o700, self.installed_copy().stat().st_mode & 0o777)
 
 
 if __name__ == '__main__':
