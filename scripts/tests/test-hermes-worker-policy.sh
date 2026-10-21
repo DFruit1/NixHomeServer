@@ -136,9 +136,15 @@ class InstallerTest(unittest.TestCase):
     def test_learning_trials_are_opt_in_and_refuse_worker_context(self):
         import os
         script=source.parent/'background-learning-trials.py'
-        listed=subprocess.run([sys.executable,'-B',str(script)],capture_output=True,text=True)
+        # This suite also runs inside worker contexts, so ambient worker pins must
+        # not decide the fixture: strip them for the opt-in listing, then add one
+        # synthetic pin for the refusal case.
+        pins=('HERMES_KANBAN_TASK','HERMES_KANBAN_RUN_ID',
+              'HERMES_DELEGATED_CHILD_CONTEXT','HERMES_KANBAN_CLAIM_LOCK')
+        ambient={k:v for k,v in os.environ.items() if k not in pins}
+        listed=subprocess.run([sys.executable,'-B',str(script)],env=ambient,capture_output=True,text=True)
         self.assertEqual(0,listed.returncode)
-        env=dict(os.environ,HERMES_KANBAN_TASK='t_fixture')
+        env=dict(ambient,HERMES_KANBAN_TASK='t_fixture')
         refused=subprocess.run([sys.executable,'-B',str(script),'--live'],env=env,capture_output=True,text=True)
         self.assertEqual(2,refused.returncode)
         self.assertIn('worker pins remain binding',refused.stderr)

@@ -34,6 +34,69 @@ trap - EXIT
 @NIX_COREUTILS@/bin/install -d -m 0755 -o root -g root @NIX_SFTPAUTHORIZEDKEYSDIR_QUOTED@
 exec 9>"@NIX_SFTPAUTHORIZEDKEYSDIR@/.$username.lock"
 @NIX_UTIL_LINUX@/bin/flock -x 9
+
+# The browser token can outlive a group change, and this helper is
+# reachable by any homepage user (self-service) and by administrators
+# (offboarding), so the target's eligibility must be re-verified against
+# current Kanidm state under the same lock rather than trusted from the
+# OAuth session that started the request. SFTP access is granted by
+# membership in any of the SFTP access groups -- exactly the set the
+# files-sftp-sshd AllowGroups line permits. Every lookup failure fails
+# closed: no authorized-keys file is written.
+#
+# The helper receives only the target username; it has no independent
+# channel to the acting identity, so this is a target-eligibility check,
+# not proof of who is acting. See the task handoff for the residual
+# service-account authority this leaves in a compromised homepage process.
+identity_home="$(@NIX_COREUTILS@/bin/mktemp -d)"
+trap '@NIX_COREUTILS@/bin/rm -rf "$identity_home"' EXIT
+export HOME="$identity_home"
+KANIDM_PASSWORD="$(< @NIX_CONFIG_AGE_SECRETS_KANIDMADMINPASS_PATH@)"
+export KANIDM_PASSWORD
+if ! @NIX_KANIDM_1_11@/bin/kanidm login \
+  -H @NIX_KANIDM_URL_QUOTED@ \
+  -D idm_admin >/dev/null; then
+  echo "unable to verify current SFTP membership; no key was installed" >&2
+  exit 1
+fi
+sftp_access_groups=@NIX_SFTP_ACCESS_GROUPS_QUOTED@
+eligible=0
+for group in $sftp_access_groups; do
+  group_json="$(
+    @NIX_KANIDM_1_11@/bin/kanidm group get "$group" \
+      -H @NIX_KANIDM_URL_QUOTED@ \
+      -D idm_admin \
+      -o json
+  )" || {
+    echo "unable to verify current SFTP membership; no key was installed" >&2
+    exit 1
+  }
+  if @NIX_JQ@/bin/jq -e --arg username "$username" '
+      if ((.attrs.member // []) | type) != "array" then
+        error("invalid member attribute")
+      elif any(.attrs.member[]?; type != "string") then
+        error("member array contains a non-string entry")
+      else
+        any(.attrs.member[]?;
+          (split("@")[0] as $u
+           | if ($u | test("^[a-z][a-z0-9._-]{0,63}$")) then
+               $u
+             else
+               error("invalid local username in member entry")
+             end) == $username)
+      end
+    ' <<<"$group_json" >/dev/null; then
+    eligible=1
+    break
+  fi
+done
+if (( eligible != 1 )); then
+  echo "current Kanidm membership does not permit SFTP access; no key was installed" >&2
+  exit 1
+fi
+@NIX_COREUTILS@/bin/rm -rf "$identity_home"
+trap - EXIT
+
 target="@NIX_SFTPAUTHORIZEDKEYSDIR@/$username"
 if [[ -L "$target" ]]; then
   echo "refusing symlinked authorized-keys file" >&2

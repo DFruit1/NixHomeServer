@@ -147,6 +147,11 @@ let
     SFTPAUTHORIZEDKEYSDIR = sftpAuthorizedKeysDir;
     UTIL_LINUX = pkgs.util-linux;
     SFTPAUTHORIZEDKEYSDIR_SERVICEUSER_XXXXXX_QUOTED = lib.escapeShellArg "${sftpAuthorizedKeysDir}/.${serviceUser}.XXXXXX";
+    JQ = pkgs.jq;
+    KANIDM_1_11 = pkgs.kanidm_1_11;
+    CONFIG_AGE_SECRETS_KANIDMADMINPASS_PATH = config.age.secrets.kanidmAdminPass.path;
+    KANIDM_URL_QUOTED = lib.escapeShellArg "https://${vars.kanidmDomain}:${toString vars.networking.ports.kanidm}";
+    SFTP_ACCESS_GROUPS_QUOTED = lib.escapeShellArg (lib.concatStringsSep " " sftpAccessGroups);
   });
   showSyncthingDeviceId = pkgs.writeShellScript "homepage-show-syncthing-device-id" (renderShell ../../../custom_apps/shell/homepage/homepage-show-syncthing-device-id.sh.in {
     SYNCTHING = pkgs.syncthing;
@@ -178,6 +183,9 @@ let
     SFTPAUTHORIZEDKEYSDIR_QUOTED = lib.escapeShellArg sftpAuthorizedKeysDir;
     SFTPAUTHORIZEDKEYSDIR = sftpAuthorizedKeysDir;
     SFTPAUTHORIZEDKEYSDIR_SERVICEUSER_XXXXXX_QUOTED = lib.escapeShellArg "${sftpAuthorizedKeysDir}/.${serviceUser}.XXXXXX";
+    KANIDM_1_11 = pkgs.kanidm_1_11;
+    CONFIG_AGE_SECRETS_KANIDMADMINPASS_PATH = config.age.secrets.kanidmAdminPass.path;
+    KANIDM_URL_QUOTED = lib.escapeShellArg "https://${vars.kanidmDomain}:${toString vars.networking.ports.kanidm}";
   });
   freshrssApiPasswordHelper = pkgs.writeShellScript "homepage-freshrss-api-password" (renderShell ../../../custom_apps/shell/homepage/homepage-freshrss-api-password.sh.in {
     GNUGREP = pkgs.gnugrep;

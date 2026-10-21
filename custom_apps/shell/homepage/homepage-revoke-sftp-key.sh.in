@@ -14,6 +14,45 @@ fi
 @NIX_COREUTILS@/bin/install -d -m 0755 -o root -g root @NIX_SFTPAUTHORIZEDKEYSDIR_QUOTED@
 exec 9>"@NIX_SFTPAUTHORIZEDKEYSDIR@/.$username.lock"
 @NIX_UTIL_LINUX@/bin/flock -x 9
+
+# The browser token can outlive a group change, and this helper is
+# reachable by any homepage user (self-service) and by administrators
+# (offboarding), so the target must be re-verified against current Kanidm
+# state under the same lock rather than trusted from the OAuth session that
+# started the request.
+#
+# Requiring *current* SFTP group membership here would break legitimate
+# offboarding: an administrator revokes a key for a user who has just been
+# removed from the SFTP groups. Requiring that the target *exists* in
+# Kanidm is the strongest invariant that keeps both self-service (the user
+# exists) and offboarding (the person record survives group removal) working
+# while refusing keys for fabricated, nonexistent usernames. Every lookup
+# failure fails closed: no authorized-keys file is modified.
+#
+# The helper receives only the target username; it has no independent
+# channel to the acting identity, so this is a target-existence check, not
+# proof of who is acting. See the task handoff for the residual
+# service-account authority this leaves in a compromised homepage process.
+identity_home="$(@NIX_COREUTILS@/bin/mktemp -d)"
+trap '@NIX_COREUTILS@/bin/rm -rf "$identity_home"' EXIT
+export HOME="$identity_home"
+KANIDM_PASSWORD="$(< @NIX_CONFIG_AGE_SECRETS_KANIDMADMINPASS_PATH@)"
+export KANIDM_PASSWORD
+if ! @NIX_KANIDM_1_11@/bin/kanidm login \
+  -H @NIX_KANIDM_URL_QUOTED@ \
+  -D idm_admin >/dev/null; then
+  echo "unable to verify current Kanidm state; no key was revoked" >&2
+  exit 1
+fi
+if ! @NIX_KANIDM_1_11@/bin/kanidm person get "$username" \
+  -H @NIX_KANIDM_URL_QUOTED@ \
+  -D idm_admin >/dev/null; then
+  echo "target user is not a current Kanidm person; no key was revoked" >&2
+  exit 1
+fi
+@NIX_COREUTILS@/bin/rm -rf "$identity_home"
+trap - EXIT
+
 target="@NIX_SFTPAUTHORIZEDKEYSDIR@/$username"
 if [[ -L "$target" || ! -f "$target" ]]; then
   echo "authorized-keys file does not exist or is not a regular file" >&2
