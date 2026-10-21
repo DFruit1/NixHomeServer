@@ -32,13 +32,14 @@ BREAKER="$TESTS_REPO_ROOT/scripts/hermes/kanban-retry-breaker.sh"
 HERMES_BIN="${HERMES_BIN:-$(command -v hermes 2>/dev/null || true)}"
 [[ -n "$HERMES_BIN" ]] || HERMES_BIN="$HOME/.local/bin/hermes"
 
-# A fenced worker delegates synthetic mutation to the approved confined executor.
-# The helper retains origin pins and exposes no production state or credentials.
-# Never clear worker/delegation markers in this suite or retry unsandboxed.
-if [[ -n "${HERMES_KANBAN_TASK:-}${HERMES_DELEGATED_CHILD_CONTEXT:-}" ]]; then
-  exec python3 -B "$TESTS_REPO_ROOT/scripts/hermes/fixture-runner.py" \
-    --repo "$TESTS_REPO_ROOT" --suite "${BASH_SOURCE[0]}"
-fi
+# Direct execution in a worker must refuse before any CLI mutation. The
+# repository runner routes this suite through the installed confined helper.
+for pin in HERMES_DELEGATED_CHILD_CONTEXT HERMES_KANBAN_TASK HERMES_KANBAN_DB \
+  HERMES_KANBAN_BOARD HERMES_KANBAN_RUN_ID HERMES_KANBAN_CLAIM_LOCK \
+  HERMES_PROFILE_NAME HERMES_PROFILE; do
+  [[ -z "${!pin:-}" ]] ||
+    { echo "$pin is set; run this suite through scripts/tests/run-script-tests.sh" >&2; exit 1; }
+done
 
 fail() {
   echo "❌ $1" >&2
@@ -52,6 +53,28 @@ pass() { echo "  ✅ $1"; }
 
 fixture="$(mktemp -d)"
 trap 'rm -rf "$fixture"' EXIT
+
+# Pinned direct execution must refuse before reaching the Hermes CLI.
+probe_cli="$fixture/probe-hermes"
+probe_cli_log="$fixture/probe-cli-log"
+probe_output="$fixture/probe-output"
+cat >"$probe_cli" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\\n' called >>"$PROBE_CLI_LOG"
+EOF
+chmod +x "$probe_cli"
+if env PROBE_CLI_LOG="$probe_cli_log" HERMES_BIN="$probe_cli" \
+  HERMES_KANBAN_HOME="$fixture/probe-home" HERMES_DELEGATED_CHILD_CONTEXT=synthetic \
+  HERMES_KANBAN_TASK=t_synthetic HERMES_KANBAN_DB="$fixture/live.db" \
+  HERMES_KANBAN_BOARD=synthetic bash "${BASH_SOURCE[0]}" >"$probe_output" 2>&1; then
+  fail "direct invocation accepted worker identity pins"
+fi
+grep -q 'run this suite through scripts/tests/run-script-tests.sh' "$probe_output" || {
+  cat "$probe_output" >&2
+  fail "pinned direct invocation did not direct the caller to the confined runner"
+}
+[[ ! -s "$probe_cli_log" ]] || fail "pinned direct invocation reached the Hermes CLI"
+pass "direct invocation refuses worker pins before any CLI call"
 
 export HERMES_KANBAN_HOME="$fixture/hermes"
 mkdir -p "$HERMES_KANBAN_HOME"
