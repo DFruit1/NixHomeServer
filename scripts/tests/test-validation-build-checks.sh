@@ -113,8 +113,11 @@ make_test_executable "$test_root/bin/ssh"
 # run below starts from the default remote path, and the one deliberate local
 # probe re-assigns it at its own call site, where the opt-out is visible as the
 # thing under test. Without this isolation an ambient `REMOTE_EVAL=0` silently
-# rewrites every assertion about the remote receipt into a local one.
+# rewrites every assertion about the remote receipt into a local one, and an
+# ambient `REMOTE_BUILD=0` replaces the staged remote build with a local build,
+# so the `nixhomeserver-remote-build` transport assertions never see it.
 export REMOTE_EVAL=1
+export REMOTE_BUILD=1
 export VALIDATION_TEST_BATCH_PAYLOAD='{"batchSystem":"x86_64-linux","batchNames":["repo-policy","media-manager-frontendDist","media-manager-test"]}'
 export VALIDATION_TEST_BUILD_PAYLOAD='[{"outputs":{"out":"/nix/store/00000000000000000000000000000000-check"}}]'
 # The staged remote build is the only build transport now; every "was a build

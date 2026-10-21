@@ -6,6 +6,18 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test-common.sh"
 cd "$TESTS_REPO_ROOT"
 ensure_tools age age-keygen cmp git jq mktemp nix openssl rg sed rm
 
+# A detached `git gc --auto` (or scheduled maintenance) keeps writing into the
+# fixture's object directories after the command that spawned it returns. The
+# EXIT-trap `rm -rf` then races that writer and fails with "Directory not
+# empty", turning a passing suite into a non-zero exit. Pin both auto
+# maintenance switches off for every git invocation in the fixture, including
+# the ones the helper scripts make.
+export GIT_CONFIG_COUNT=2
+export GIT_CONFIG_KEY_0=gc.auto
+export GIT_CONFIG_VALUE_0=0
+export GIT_CONFIG_KEY_1=maintenance.auto
+export GIT_CONFIG_VALUE_1=false
+
 helper="$TESTS_REPO_ROOT/scripts/admin/sync-upstream.sh"
 tmpdir="$(mktemp -d)"
 cleanup() { rm -rf "$tmpdir"; }
