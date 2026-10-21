@@ -200,6 +200,8 @@ does not establish an owner supplier. Reread the native cards and decisions.
 | OWNER_COMMENT_UNACTED | Read the exact owner answer, record/read back the interpretation, unblock only resolved scope. |
 | CAPABILITY_OWNER_INPUT | Assign the missing supplier; surface genuine owner input through the checked gate. |
 | MIRROR_STALE | Inspect the durability-sync cron, its job log and the SSH path; route the repair. Report failed mirrors internally. |
+| INSTRUCTION_DRIFT | Installed prompts lag tracked source; route the installer re-run from the checkout and verify with its --check. Never hand-edit installed copies. |
+| INSTRUCTION_DRIFT_UNCHECKED | The read-only install check could not run (its exit code is on the line); inspect the installer and interpreter, report internally. |
 
 For budget failures, narrow remaining work before a retry. Never raise retry or
 iteration budgets. If narrowed work still fails, investigate the concrete cause

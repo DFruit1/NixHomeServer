@@ -84,6 +84,8 @@ printf '%s\n' \
   '| OWNER_COMMENT_UNACTED | Record the owner answer and unblock. |' \
   '| CAPABILITY_OWNER_INPUT | Classify the supplier or author a gate. |' \
   '| MIRROR_STALE | Inspect the durability-sync cron and route the repair. |' \
+  '| INSTRUCTION_DRIFT | Route the installer re-run and verify with its --check. |' \
+  '| INSTRUCTION_DRIFT_UNCHECKED | Inspect the installer and interpreter, report internally. |' \
   '' \
   'The installed kanban-retry-breaker.sh parks repeated provider failures.' \
   >"$HERMES_FIXTURE/scripts/hermes-coordinator-reference.md"
@@ -386,7 +388,7 @@ grep -q 'MISSING: .*hermes-coordinator-reference.md' <<<"$ref_missing_out" ||
 pass "reports a missing coordinator reference"
 cp "$fixture/reference.bak" "$HERMES_FIXTURE/scripts/hermes-coordinator-reference.md"
 
-for finding in WORKER_FAILED_BLOCKED OWNER_COMMENT_UNACTED CAPABILITY_OWNER_INPUT MIRROR_STALE; do
+for finding in WORKER_FAILED_BLOCKED OWNER_COMMENT_UNACTED CAPABILITY_OWNER_INPUT MIRROR_STALE INSTRUCTION_DRIFT INSTRUCTION_DRIFT_UNCHECKED; do
   grep -v "$finding" "$fixture/reference.bak" \
     >"$HERMES_FIXTURE/scripts/hermes-coordinator-reference.md"
   finding_out="$(run_installer --check)"

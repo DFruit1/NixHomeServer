@@ -16,11 +16,13 @@
 # the "Board health" section of profiles/head-coordinator/SOUL.md.
 #
 # Every finding is scoped to $HERMES_BOARD except OWNER_COMMENT_UNACTED,
-# CAPABILITY_OWNER_INPUT and MIRROR_STALE, which enumerate every board: an
-# owner-answered gate, an owner-sourced capability hold and a board whose
-# durability mirror has gone stale can sit on any board, and the
+# CAPABILITY_OWNER_INPUT, MIRROR_STALE and INSTRUCTION_DRIFT, which enumerate
+# every board or the whole hermes home: an owner-answered gate, an
+# owner-sourced capability hold, a board whose durability mirror has gone stale
+# and installed prompts that lag tracked source can sit anywhere, and the
 # head-coordinator must be woken for them whichever board this cron names.
-# Their lines carry the board slug so the coordinator acts on the right card.
+# Their lines carry the board slug, or the drift count, so the coordinator acts
+# on the right thing.
 #
 # It is wired as a hermes cron `--monitor-script`, which hashes the output
 # byte-for-byte and suppresses the agent run while the hash is unchanged. The
@@ -45,7 +47,9 @@
 # -----------
 #   HERMES_ROOT            hermes state dir   (default: ~/.hermes)
 #   HERMES_BOARD           board slug         (default: nixhomeserver)
-#   HERMES_REPO            repo to audit for unpushed work (default: auto)
+#   HERMES_REPO            repo to audit for unpushed work and to resolve the
+#                          installed-instruction check (default: auto, from the
+#                          board's `default_workdir`)
 #   BOARD_HEALTH_READY_STALE_SEC   ready+unclaimed before reporting (default 900)
 #   BOARD_HEALTH_READY_OLD_SEC     ready at all before reporting hard (default 3600)
 #   BOARD_HEALTH_TRIAGE_RECURRENCES  triage blocks before reporting (default 2)
@@ -411,6 +415,27 @@ sql() {
   printf '%s' "$out"
 }
 
+# The repository this board is worked in: HERMES_REPO when set, else the
+# board's recorded `default_workdir`. Two detectors need it -- the durability
+# audit and the installed-instruction check -- so it is resolved once here
+# rather than once per detector, so they can never disagree about which
+# checkout is authoritative. Always returns 0 and may print an empty string:
+# a board with no recorded workdir is normal, and the callers skip.
+board_repo() {
+  if [[ -n "${HERMES_REPO:-}" ]]; then
+    printf '%s' "$HERMES_REPO"
+    return 0
+  fi
+  python3 - "$HERMES_ROOT/kanban/boards/$HERMES_BOARD/board.json" <<'PY' 2>/dev/null || true
+import json, sys
+try:
+    with open(sys.argv[1]) as fh:
+        print(json.load(fh).get("default_workdir") or "")
+except Exception:
+    print("")
+PY
+}
+
 # ---------------------------------------------------------------------------
 # Board findings
 # ---------------------------------------------------------------------------
@@ -774,18 +799,7 @@ fi
 # A branch that exists locally and on origin is fine; a branch whose commits
 # exist only in this clone dies with the disk.
 
-repo="${HERMES_REPO:-}"
-if [[ -z "$repo" ]]; then
-  repo="$(python3 - "$HERMES_ROOT/kanban/boards/$HERMES_BOARD/board.json" <<'PY' 2>/dev/null || true
-import json, sys
-try:
-    with open(sys.argv[1]) as fh:
-        print(json.load(fh).get("default_workdir") or "")
-except Exception:
-    print("")
-PY
-)"
-fi
+repo="$(board_repo)"
 
 if [[ -n "$repo" ]] && git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
   # Bounded: this runs unattended on a cron tick, and a hung fetch must not
@@ -854,5 +868,54 @@ for mirror_db in "$HERMES_ROOT"/kanban/boards/*/kanban.db; do
   fi
 done
 shopt -u nullglob
+
+# ---------------------------------------------------------------------------
+# Installed-instruction drift (plan item H8)
+# ---------------------------------------------------------------------------
+# Installed prompts that lag tracked source are silent by construction: the
+# running profile keeps reading the old text, the repository keeps the new
+# text, and nothing compares them. Paraphrases have already diverged twice that
+# way, and an installer nobody re-ran looks exactly like an installer that had
+# nothing to do. `install-instruction-policy.py --check` is that comparison and
+# it is read-only (it writes nothing unless the flag is dropped), so board
+# health can run it on every tick and report the result.
+#
+# It runs the *repository* copy from `board_repo`, never an installed copy
+# under $HERMES_ROOT/scripts: the installer resolves its tracked source from
+# its own location and compares it against $HERMES_ROOT, so an installed copy
+# would compare the installed tree with itself and always report clean.
+#
+# The finding is bounded on purpose. The drift list itself names absolute
+# installed paths -- which must not appear in this byte-hashed report -- and it
+# changes whenever any single installed file is applied, so echoing it would
+# wake the coordinator repeatedly on the same drift. One stable line with the
+# number of drifted files is the actionable signal ("the whole fleet" versus
+# "one file"); the coordinator runs the check to see which.
+#
+# Exit codes are load-bearing: 1 with drift lines is drift, and anything else
+# (a broken tracked source, an unreadable installed tree, a missing helper or
+# interpreter) is the check failing to run and is reported separately rather
+# than as drift. The count is also required evidence: the installer returns 1
+# only when it printed at least one drift line, so a bare 1 with no parsed line
+# means the run died before it could report -- a Python traceback exits 1 too,
+# and calling that "drift files=0" would send the coordinator after the wrong
+# thing. A missing repository or installer is not a board condition -- boards
+# differ in whether they carry this checkout -- so it reports nothing.
+instruction_check="$repo/scripts/hermes/install-instruction-policy.py"
+if [[ -n "$repo" && -f "$instruction_check" ]]; then
+  # Bounded: this runs unattended on a cron tick, and the installer reads and
+  # compares the whole installed tree. A hung run must not hold the report open.
+  drift_rc=0
+  drift_out="$(timeout 60 python3 -B "$instruction_check" --check 2>/dev/null)" || drift_rc=$?
+  if ((drift_rc != 0)); then
+    drift_files="$(grep -c '^drift: ' <<<"$drift_out" || true)"
+    [[ -n "$drift_files" ]] || drift_files=0
+    if [[ "$drift_rc" == 1 && "$drift_files" =~ ^[1-9][0-9]*$ ]]; then
+      emit "INSTRUCTION_DRIFT files=$drift_files needs=apply-install-instruction-policy"
+    else
+      emit "INSTRUCTION_DRIFT_UNCHECKED exit=$drift_rc needs=manual-check"
+    fi
+  fi
+fi
 
 exit 0

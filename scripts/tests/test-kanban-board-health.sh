@@ -1233,6 +1233,79 @@ pass "skips underscore and dot prefixed boards entirely"
 
 rm -rf "$fixture/hermes/kanban/boards/_staging" "$fixture/hermes/kanban/boards/.draft" "$state_dir"
 
+# --- installed-instruction drift ----------------------------------------------
+#
+# Installed prompts that lag tracked source are silent by construction: the
+# running profile keeps reading the old text, the repository keeps the new one,
+# and an installer nobody re-ran looks exactly like an installer with nothing to
+# do. The monitor answers that by running install-instruction-policy.py --check
+# from the checkout, which is read-only.
+#
+# The fixture is a real convergence, not a stub: the tracked installer writes a
+# full hermes root here, so "no drift" means the installer agreed with itself
+# file for file. The repository is a symlinked scripts/hermes -- the installer
+# resolves its tracked source through __file__, so it still reads the real
+# source, while the fixture repo is deliberately not a git checkout (the
+# durability detector would otherwise fetch on every case below).
+#
+# What is pinned: the finding appears while the tree has never been installed,
+# disappears once it converges, returns as exactly one file when a single
+# installed file is hand-edited, stays one path-free line so the report remains
+# byte-stable, and never claims drift for a run that died before it could
+# report. A silent miss here is the whole point of the plan item.
+INSTALLER="$TESTS_REPO_ROOT/scripts/hermes/install-instruction-policy.py"
+[[ -f "$INSTALLER" ]] || fail "install-instruction-policy.py is missing from the checkout"
+mkdir -p "$fixture/repo/scripts"
+ln -s "$TESTS_REPO_ROOT/scripts/hermes" "$fixture/repo/scripts/hermes"
+
+run_health_repo() {
+  HERMES_ROOT="$fixture/hermes" HERMES_BOARD=testboard \
+    HERMES_REPO="$fixture/repo" "$HEALTH"
+}
+
+uninstalled_out="$(run_health_repo)"
+grep -q '^INSTRUCTION_DRIFT files=[1-9][0-9]* needs=apply-install-instruction-policy$' \
+  <<<"$uninstalled_out" ||
+  fail "a hermes root with no installed instructions was not reported as drift: $uninstalled_out"
+pass "reports installed prompts that lag tracked source"
+
+HERMES_ROOT="$fixture/hermes" python3 -B "$INSTALLER" >/dev/null 2>&1 ||
+  fail "the tracked installer could not converge the fixture hermes root"
+clean_out="$(run_health_repo)"
+grep -q '^INSTRUCTION_DRIFT' <<<"$clean_out" &&
+  fail "a converged hermes root was still reported as drift"
+pass "a converged hermes root reports no drift"
+
+printf 'hand edit\n' >>"$fixture/hermes/scripts/hermes-fleet-policy.md"
+drifted_out="$(run_health_repo)"
+grep -q '^INSTRUCTION_DRIFT files=1 needs=apply-install-instruction-policy$' <<<"$drifted_out" ||
+  fail "one hand-edited installed file was not reported as exactly one drift: $drifted_out"
+drift_line="$(grep '^INSTRUCTION_DRIFT' <<<"$drifted_out" || true)"
+grep -q '/' <<<"$drift_line" &&
+  fail "the drift finding leaks a path; the report must stay byte-stable: $drift_line"
+pass "reports one bounded path-free line with the drift count"
+
+# Restoring the file clears the finding, so the line is genuinely about the
+# tree and not a once-per-root latch.
+HERMES_ROOT="$fixture/hermes" python3 -B "$INSTALLER" >/dev/null 2>&1 ||
+  fail "the tracked installer could not re-converge the fixture hermes root"
+repaired_out="$(run_health_repo)"
+grep -q '^INSTRUCTION_DRIFT' <<<"$repaired_out" &&
+  fail "a re-installed tree still reported drift"
+pass "clears the finding once the installer is re-run"
+
+# A checkout whose installer cannot run is not drift: a traceback exits 1 too,
+# so the finding must say the check did not run rather than name a count.
+mkdir -p "$fixture/broken-repo/scripts/hermes"
+cp "$INSTALLER" "$fixture/broken-repo/scripts/hermes/install-instruction-policy.py"
+broken_out="$(HERMES_ROOT="$fixture/hermes" HERMES_BOARD=testboard \
+  HERMES_REPO="$fixture/broken-repo" "$HEALTH")"
+grep -q '^INSTRUCTION_DRIFT ' <<<"$broken_out" &&
+  fail "a check that could not run was reported as real drift: $broken_out"
+grep -q '^INSTRUCTION_DRIFT_UNCHECKED exit=1 needs=manual-check$' <<<"$broken_out" ||
+  fail "a check that could not run was not reported as unchecked: $broken_out"
+pass "reports a check that could not run as unchecked, not as drift"
+
 # --- the installed copy runs the same suite ----------------------------------
 #
 # The suite is only evidence about the script it exercised. BOARD_HEALTH_SCRIPT
