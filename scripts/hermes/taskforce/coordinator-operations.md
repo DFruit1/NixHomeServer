@@ -25,4 +25,3 @@ before acting on its recorded-state report.
 
 Narrow failing work; never raise budgets, clear quota-breaker holds or swap
 models/lanes to evade them. Follow recorded provider recovery conditions.
-Workers and coordinator recovery never publish; durability sync is cron-owned.
