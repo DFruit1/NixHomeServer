@@ -237,6 +237,7 @@ test_scripts=(
   scripts/tests/test-zfs-snapshot-freshness.sh
   scripts/tests/test-secret-structure.sh
   scripts/tests/test-secret-generation.sh
+  scripts/tests/test-forgejo-mirror-grants.sh
 )
 
 NIXHOMESERVER_DEFAULT_HOST="$(test_default_host)"
