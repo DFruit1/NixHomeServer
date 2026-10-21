@@ -59,9 +59,19 @@ def block(text, start, end, content):
                   lambda _: wanted, text, flags=re.S)
 
 
-def shared(text):
-    return block(text, FLEET_START, FLEET_END,
-                 (SOURCE / 'taskforce/owner-blocker-authoring.md').read_text())
+def fleet_source(name):
+    """The fleet block tracked for a role.
+
+    The read-only steward cannot use the fleet's implementation, publication,
+    block-authoring or acceptance procedures, so it receives a bounded boundary
+    that points at the full policy instead of the policy itself.
+    """
+    return SOURCE / ('taskforce/steward-fleet-rules.md' if name == 'board-steward'
+                     else 'taskforce/owner-blocker-authoring.md')
+
+
+def shared(text, name=''):
+    return block(text, FLEET_START, FLEET_END, fleet_source(name).read_text())
 
 
 def role(text, name, headings):
@@ -175,7 +185,7 @@ def changes(root, pending=None):
         elif name == 'standard-implementer':
             text = role(text, name, {'What a good card looks like to you', 'How to work',
                         'Handoff evidence', 'Card authoring'})
-        result[soul] = shared(text)
+        result[soul] = shared(text, name)
         metadata = home / 'profile.yaml'
         if name in {'standard-implementer', 'local-implementer', 'head-coordinator'} and metadata.exists():
             description = ('STANDARD IMPLEMENTER. Default for implementation without direct credential-value handling, '

@@ -314,7 +314,13 @@ class StewardTest(unittest.TestCase):
         for platform in ('cli', 'desktop', 'simplex'):
             self.assertEqual(['file', 'terminal', 'skills', 'clarify'], tools[platform])
         self.assertEqual(['web'], tools['telegram'])
-        self.assertIn('read-only observer', (profile / 'SOUL.md').read_text())
+        installed_soul = (profile / 'SOUL.md').read_text()
+        self.assertIn('read-only observer', installed_soul)
+        # The read-only steward keeps the bounded fleet boundary with its
+        # pointer to the full policy, never the lane procedures it cannot use.
+        self.assertIn('Fleet boundary', installed_soul)
+        self.assertIn('~/.hermes/scripts/hermes-fleet-policy.md', installed_soul)
+        self.assertNotIn('Never remove worker pins', installed_soul)
         self.assertIn('copyable external-agent handoff', jobs[1]['prompt'])
         # The daily report keeps its fixed summary shape and carries unchanged
         # long-blocked cards instead of repeating every full prompt.

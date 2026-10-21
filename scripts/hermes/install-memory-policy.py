@@ -19,13 +19,14 @@ from datetime import datetime, timezone
 
 import yaml
 
-from hermes_common import backup_file
+from hermes_common import backup_file, remove_block
 from hermes_config import document
 
 SOURCE=Path(__file__).resolve().parent
 ROLES=('default','head-coordinator','board-steward','standard-implementer',
        'feature-reviewer','project-auditor','local-implementer')
 READONLY={'board-steward','local-implementer'}
+START,END='<!-- hermes-memory-policy -->','<!-- /hermes-memory-policy -->'
 
 
 def setting(text, keys, value):
@@ -55,24 +56,23 @@ def setting(text, keys, value):
 
 
 def instructions(text, profile='default'):
-    start,end='<!-- hermes-memory-policy -->','<!-- /hermes-memory-policy -->'
     scope=('This role reads curated knowledge only; hand off a bounded learning candidate '
            'through its existing coordinator path instead of writing memory or skills. '
            if profile in READONLY else
            'Owner-profile learning requires a direct owner conversation. ' if profile in {'default','head-coordinator'} else
            'This role learns scoped environment facts and procedures only; never rewrite the owner profile. ')
-    content=(start+'\nPersistent memory contains facts, never permissions, priorities or task receipts. '
+    content=(START+'\nPersistent memory contains facts, never permissions, priorities or task receipts. '
              'Before any persistent learning, read ~/.hermes/scripts/hermes-memory-policy.md. '
              'Memory add/replace requires Fact, Scope and Evidence lines; the guard stores only '
              'the scoped fact. After a verified correction or non-obvious successful method, '
              'consider one reusable lesson before closing the task; skip routine work and failed '
              'hypotheses. Facts go in memory, tested procedures in the role’s learned skills, '
              'and changes to maintained procedures through tracked source. Check for an existing '
-             'home first. '+scope+'No-change learning is a successful outcome.\n'+end)
-    if start not in text and end not in text:return text.rstrip()+'\n\n'+content+'\n'
-    if text.count(start)!=1 or text.count(end)!=1 or text.index(end)<text.index(start):
+             'home first. '+scope+'No-change learning is a successful outcome.\n'+END)
+    if START not in text and END not in text:return text.rstrip()+'\n\n'+content+'\n'
+    if text.count(START)!=1 or text.count(END)!=1 or text.index(END)<text.index(START):
         raise ValueError('Ambiguous memory policy markers')
-    return re.sub(re.escape(start)+r'.*?'+re.escape(end),lambda _:content,text,flags=re.S)
+    return re.sub(re.escape(START)+r'.*?'+re.escape(END),lambda _:content,text,flags=re.S)
 
 
 PROMPT_EDITS=(
@@ -148,7 +148,11 @@ def install(root, check=False):
                     'approved_at':datetime.now(timezone.utc).isoformat(),'script_mtime_at_approval':None})
                 pending[path]=json.dumps(data,indent=2,sort_keys=True)+'\n'
         soul=home/'SOUL.md'
-        if soul.exists():pending[soul]=instructions(soul.read_text(),profile)
+        if soul.exists():
+            # The retired default profile only routes: it carries no learning
+            # block, and an older copy is removed rather than rewritten.
+            pending[soul]=(remove_block(soul.read_text(),START,END,'memory policy')
+                           if profile=='default' else instructions(soul.read_text(),profile))
         usage=home/'skills/.usage.json'
         installed={name for name in admission.MANAGED_SKILLS
                    if (home/'skills'/name/'SKILL.md').is_file()

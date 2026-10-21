@@ -680,6 +680,9 @@ class AlertsTest(unittest.TestCase):
         auditor = self.root / 'profiles/project-auditor/SOUL.md'
         auditor.parent.mkdir(parents=True)
         auditor.write_text('# Auditor\nKeep existing assessment policy.\n')
+        steward = self.root / 'profiles/board-steward/SOUL.md'
+        steward.parent.mkdir(parents=True)
+        steward.write_text('# Steward\nKeep existing read-only policy.\n')
         cron = self.root / 'cron/jobs.json'
         cron.parent.mkdir()
         job = {'name': alerts.JOB, 'script': 'kanban-owner-alerts.py', 'no_agent': True,
@@ -693,10 +696,18 @@ class AlertsTest(unittest.TestCase):
         self.assertIn('model: keep-head-model', (soul.parent / 'config.yaml').read_text())
         self.assertIn('sole author', auditor.read_text())
         self.assertIn('Keep existing assessment policy.', auditor.read_text())
+        # The read-only steward gets the bounded boundary, not lane procedures.
+        installed_steward = steward.read_text()
+        self.assertIn('Keep existing read-only policy.', installed_steward)
+        self.assertIn('Fleet boundary', installed_steward)
+        self.assertIn('hermes-fleet-policy.md', installed_steward)
+        self.assertNotIn('Never remove worker pins', installed_steward)
+        self.assertIn('Never remove worker pins', soul.read_text())
         installed_auditor = auditor.read_text()
         alerts.install(self.root)
         self.assertEqual(installed, soul.read_text())
         self.assertEqual(installed_auditor, auditor.read_text())
+        self.assertEqual(installed_steward, steward.read_text())
         # The pre-install head policy is archived, content-addressed, and a
         # no-change reinstall adds no new archive.
         archived = {p.read_bytes() for p in (self.root / 'backups/owner-alerts').rglob('*')

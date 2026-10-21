@@ -5,11 +5,21 @@ both git worktrees and plain-directory projects. They are injected into named
 profiles' SOUL.md rather than relying on a NixOS AGENTS.md being in every workspace.
 The retired default profile still only routes; it does not become a worker.
 
+Blocks are scoped by role. The root/default SOUL carries the routing block only:
+the worker-budget and memory-policy installers remove an older block there instead
+of rewriting it, so root scope converges to routing. Each worker lane carries the
+full fleet block. The read-only board-steward carries
+`taskforce/steward-fleet-rules.md` instead: a boundary that grants nothing and
+points at the installed full policy, never the commit, publication,
+block-authoring or acceptance procedures it cannot use. Every installer that
+rewrites a profile SOUL composes the same per-role block.
+
 ## Sources and precedence
 
 | Source | Responsibility |
 |---|---|
-| taskforce/owner-blocker-authoring.md | Shared fleet permissions, supplier test and lifecycle invariants; installed as hermes-fleet-policy.md and a bounded block in each named SOUL.md |
+| taskforce/owner-blocker-authoring.md | Shared fleet permissions, supplier test and lifecycle invariants; installed as hermes-fleet-policy.md and a bounded block in each worker SOUL.md |
+| taskforce/steward-fleet-rules.md | The read-only steward's narrower fleet boundary and its pointer to the full policy |
 | taskforce/coordinator-role.md and coordinator-operations.md | Coordinator permissions, routing, board recovery and guarded NixOS deploy |
 | Other taskforce role templates | Role-specific work and output contracts |
 | instructions/coordinator-reference.md | Detailed coordinator routing, deploy/recovery and owner-reply procedures, read before those actions |
@@ -93,7 +103,8 @@ and replaces the standard implementer's stale model promise in profile metadata.
 It does not restart Hermes, send messages or declare active sessions refreshed.
 
 The taskforce installer composes these same transformations; the steward and
-owner-alert installers preserve the shared fleet block. The steward installer
+owner-alert installers compose the same per-role fleet block, so the steward's
+bounded boundary survives every one of them. The steward installer
 updates its existing report jobs in place. Apply the owning component installer
 for changes to report prompts or sender implementation, then check convergence.
 Do not run a sender tick or reset delivery state merely to validate wording.

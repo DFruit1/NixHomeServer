@@ -151,12 +151,22 @@ class InstallerTest(unittest.TestCase):
             config=root/'profiles/local-implementer/config.yaml';config.parent.mkdir(parents=True)
             config.write_text('model: {provider: custom, default: local}\n')
             config.chmod(0o640)
-            (root/'SOUL.md').write_text('Operator instructions\n')
+            # The retired default profile only routes: an old budget block is
+            # removed, and lane SOULs receive the block.
+            (root/'SOUL.md').write_text('Operator instructions\n\n' + installer.START
+                                        + '\nOld budget block.\n' + installer.END + '\n')
+            for lane in ('head-coordinator', 'project-auditor'):
+                (root/'profiles'/lane).mkdir(parents=True)
+                (root/'profiles'/lane/'SOUL.md').write_text('# ' + lane + '\n')
             original={p:p.read_bytes() for p in root.rglob('*') if p.is_file()}
             self.assertEqual(1,installer.install(root,True))
             self.assertEqual(original,{p:p.read_bytes() for p in root.rglob('*') if p.is_file()})
             self.assertEqual(0,installer.install(root))
             self.assertEqual(0,installer.install(root,True))
+            self.assertEqual('Operator instructions\n', (root/'SOUL.md').read_text())
+            for lane in ('head-coordinator', 'project-auditor'):
+                self.assertIn(installer.START,
+                              (root/'profiles'/lane/'SOUL.md').read_text())
             self.assertEqual(0o640,config.stat().st_mode & 0o777)
             config.write_text('model: {provider: custom, default: local}\n')
             (native/'kanban_db_dispatch.py').write_text('incompatible native source')
