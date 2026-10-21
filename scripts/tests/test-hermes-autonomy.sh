@@ -361,5 +361,8 @@ class ApprovedExecutionTest(unittest.TestCase):
         self.assertEqual('failed',json.loads(result.stdout)['status'])
 
 
-unittest.main(argv=[sys.argv[0]], verbosity=2)
+with patch.dict(os.environ):
+    os.environ.pop('HERMES_DELEGATED_CHILD_CONTEXT', None)
+    os.environ.pop('HERMES_KANBAN_TASK', None)
+    unittest.main(argv=[sys.argv[0]], verbosity=2)
 PY

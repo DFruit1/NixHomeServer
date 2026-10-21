@@ -708,7 +708,7 @@ def install(root):
     spec.loader.exec_module(installer)
     for profile_soul in sorted((root / 'profiles').glob('*/SOUL.md')):
         text = changes.get(profile_soul, profile_soul.read_text())
-        changes[profile_soul] = instructions.shared(text)
+        changes[profile_soul] = instructions.shared(text, profile_soul.parent.name)
         config = profile_soul.with_name('config.yaml')
         if config.exists():
             command = shlex.join(['python3', str(scripts / 'owner-blocker-authoring-guard.py')])

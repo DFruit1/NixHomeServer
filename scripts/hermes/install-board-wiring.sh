@@ -440,7 +440,7 @@ else
   # One row per finding the monitor emits, so a detector rename cannot leave
   # the policy behind: a finding with no rule behind it means the
   # head-coordinator is woken with the finding and no policy for it.
-  for finding in WORKER_FAILED_BLOCKED OWNER_COMMENT_UNACTED CAPABILITY_OWNER_INPUT MIRROR_STALE; do
+  for finding in WORKER_FAILED_BLOCKED OWNER_COMMENT_UNACTED CAPABILITY_OWNER_INPUT MIRROR_STALE INSTRUCTION_DRIFT INSTRUCTION_DRIFT_UNCHECKED; do
     if grep -q "$finding" "$COORDINATOR_REFERENCE"; then
       ok "coordinator reference has a policy for $finding"
     elif [[ "$check_only" == true ]]; then

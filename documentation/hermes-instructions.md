@@ -5,11 +5,21 @@ both git worktrees and plain-directory projects. They are injected into named
 profiles' SOUL.md rather than relying on a NixOS AGENTS.md being in every workspace.
 The retired default profile still only routes; it does not become a worker.
 
+Blocks are scoped by role. The root/default SOUL carries the routing block only:
+the worker-budget and memory-policy installers remove an older block there instead
+of rewriting it, so root scope converges to routing. Each worker lane carries the
+full fleet block. The read-only board-steward carries
+`taskforce/steward-fleet-rules.md` instead: a boundary that grants nothing and
+points at the installed full policy, never the commit, publication,
+block-authoring or acceptance procedures it cannot use. Every installer that
+rewrites a profile SOUL composes the same per-role block.
+
 ## Sources and precedence
 
 | Source | Responsibility |
 |---|---|
-| taskforce/owner-blocker-authoring.md | Shared fleet permissions, supplier test and lifecycle invariants; installed as hermes-fleet-policy.md and a bounded block in each named SOUL.md |
+| taskforce/owner-blocker-authoring.md | Shared fleet permissions, supplier test and classification invariants; installed as hermes-fleet-policy.md and a compact block in each worker SOUL.md. The block keeps the non-negotiables, supplier naming and the classification table; examples and operator rationale live in this document |
+| taskforce/steward-fleet-rules.md | The read-only steward's narrower fleet boundary and its pointer to the full policy |
 | taskforce/coordinator-role.md and coordinator-operations.md | Coordinator permissions, routing, board recovery and guarded NixOS deploy |
 | Other taskforce role templates | Role-specific work and output contracts |
 | instructions/coordinator-reference.md | Detailed coordinator routing, deploy/recovery and owner-reply procedures, read before those actions |
@@ -38,6 +48,16 @@ Use the [behaviour trials](hermes-behavior-trials.md) for bounded model checks
 after instruction changes; deterministic installer checks alone do not prove
 agents follow the installed procedures.
 
+The four role-scoping installers (`install-instruction-policy.py`,
+`install-worker-policy.py`, `install-memory-policy.py`,
+`install-steward-readonly.py`) write into one root, so a single install pass must
+leave every one of their `--check` commands green in any install order. Skill
+placement belongs to the instruction and steward installers; the memory installer
+only records ownership, so it pins the skills a role is entitled to in tracked
+source rather than the copies already on disk. A per-installer suite proves that
+installer alone; `scripts/tests/test-hermes-installer-convergence.sh` proves the
+shared root they actually run against.
+
 ## Ownership decisions
 
 Workers commit locally after the owning gate; they never publish. The durability
@@ -60,6 +80,12 @@ provider quota do not automatically require owner action. Only the coordinator
 authors owner gates; the steward observes and sends fixed-recipient requests.
 Owner summaries require meaningful problem/input/action fields, not a sentence
 quota. Existing authorship, vocabulary, option and length checks remain active.
+
+The fleet block keeps the four block kinds and their definitions. Representative
+shapes: `capability` — "pnpm not found (exit 127)" with the recovery path named;
+`needs_input` — "owner-held SSH key"; `transient` — "rate limited";
+`dependency` — "waiting on t_abc123", linked to that card. Misclassification
+stalls work, so an agent-resolvable gap is never parked as owner input.
 
 ## Credential-only local routing
 
@@ -93,7 +119,8 @@ and replaces the standard implementer's stale model promise in profile metadata.
 It does not restart Hermes, send messages or declare active sessions refreshed.
 
 The taskforce installer composes these same transformations; the steward and
-owner-alert installers preserve the shared fleet block. The steward installer
+owner-alert installers compose the same per-role fleet block, so the steward's
+bounded boundary survives every one of them. The steward installer
 updates its existing report jobs in place. Apply the owning component installer
 for changes to report prompts or sender implementation, then check convergence.
 Do not run a sender tick or reset delivery state merely to validate wording.
@@ -146,6 +173,7 @@ bash scripts/tests/test-hermes-instruction-policy.sh
 bash scripts/tests/test-hermes-review-taskforce.sh
 bash scripts/tests/test-kanban-owner-alerts.sh
 bash scripts/tests/test-steward-readonly.sh
+bash scripts/tests/test-hermes-installer-convergence.sh
 bash scripts/tests/test-hermes-coordination.sh
 bash scripts/tests/test-hermes-owner-chat-policy.sh
 ```
@@ -209,6 +237,23 @@ successful mirror clears the line on the next tick. Inspect the cron job
 (`hermes -p default cron list`), its failure log and the SSH path; report
 failed mirrors internally.
 
+**Installed-instruction drift.** Installed prompts that lag tracked source are
+silent: the running profile keeps reading the old text, and an installer nobody
+re-ran looks exactly like one with nothing to do. The board-health monitor
+therefore runs the read-only
+`python3 -B <checkout>/scripts/hermes/install-instruction-policy.py --check` on
+each tick and reports `INSTRUCTION_DRIFT files=N`: one path-free line with the
+count, so the report stays byte-stable. Run the check itself to see which files.
+It uses the checkout's copy, resolved from the board's `default_workdir` or
+`HERMES_REPO`, never the installed copy: the installer compares `$HERMES_ROOT`
+against its own location, so an installed copy would compare the tree with
+itself and always report clean. Exit 1 with drift lines is drift; any other
+non-zero exit, or a 1 with no parsed line (a traceback also exits 1), is
+`INSTRUCTION_DRIFT_UNCHECKED exit=N` and means the check did not run. Repair is
+an installer re-run from the checkout followed by its `--check`; never hand-edit
+installed copies. A board whose recorded workdir has no such checkout reports
+nothing, because not every board carries this repository.
+
 **Board disaster recovery.** Restore in this order: Kopia restores the
 server's `/persist` if the server lost the disk; otherwise copy
 `/persist/home/dsaw/.hermes-durability/<board>/current/` (the newest
@@ -225,6 +270,14 @@ so unchanged content is stored once. These archives are not pruned
 automatically; prune old private archive generations manually when they grow,
 keeping at least the most recent content per path. The server mirrors keep
 exactly `DURABILITY_GENERATIONS` (default 3) generations per board.
+
+**Aging-escalation script updates.** The `kanban aging escalation` cron runs
+`~/.hermes/scripts/kanban-aging-escalation.py`, not the checkout copy. After
+editing it, refresh the installed file with
+`python3 -B scripts/hermes/kanban-aging-escalation.py --install-files`: it
+writes the copy with mode 0700 and leaves cron state alone. `--install` is for a
+new install only, because it also creates the paused job and would duplicate an
+existing one.
 
 **Provider credential rotation.** Credentials live in the profile `.env`
 files and config.yaml and are owner-scoped decisions. After rotating one, run

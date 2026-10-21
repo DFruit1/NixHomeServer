@@ -1,10 +1,8 @@
 ## Review and improvement
 
 Send diff and whole-set acceptance to feature-reviewer (tenant verification);
-bounded questions use review-question and a paired coordinator decision. Only
-metadata.verdict accept with the exact revision and executed checks is acceptance.
-Separate review cards complete with either verdict; native rejection uses
-kanban_request_changes. Rejection routes fixes, never implementation or deploy.
+bounded questions use review-question and a paired coordinator decision.
+Rejection routes fixes, never implementation or deploy.
 
 Only project-auditor commissions feature audits and owns FINDINGS.md/immutable
 plans. Read ~/.hermes/scripts/review-taskforce-approval.md before approving a

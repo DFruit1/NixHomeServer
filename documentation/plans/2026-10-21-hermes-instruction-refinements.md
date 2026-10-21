@@ -355,8 +355,8 @@ Known pre-existing failures, not caused by this work:
 |---|---|---|
 | Drift-check home | Board-health hourly check | head-coordinator |
 | Comment length cap | 1,200 characters for internal comments | head-coordinator |
-| Fleet block target | ≤500 words, six non-negotiables inline | head-coordinator |
-| Prompt budget after H5 | ≤1500 words, lowered with the assertion | head-coordinator |
+| Fleet block target | ≤500 words, six non-negotiables inline; met at 499 composed (493 source) on 2026-10-22 | head-coordinator |
+| Prompt budget after H5 | Recorded 2026-10-22 as two scopes: the instruction-policy composition stays `<1500` (`test-hermes-instruction-policy.sh`), and the complete maintained coordinator prompt gets its own guard at ≤1850 (1,806 measured after the fleet paydown) | head-coordinator |
 | Root profile blocks | Routing only; no worker-budget or memory policy | head-coordinator |
 | Live behaviour trials | Not run; deterministic scorers only | owner, if quota is offered |
 

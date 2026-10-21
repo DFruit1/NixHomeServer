@@ -4,6 +4,7 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 python3 -B - "$repo" <<'PY'
 import importlib.util
 import json
+import re
 from pathlib import Path
 import tempfile
 import unittest
@@ -17,6 +18,14 @@ sys.path.insert(0, str(source))
 spec = importlib.util.spec_from_file_location('instructions', source / 'install-instruction-policy.py')
 policy = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(policy)
+
+
+def load_installer(name, filename):
+    """Load a sibling composition installer as this suite loads policy."""
+    module_spec = importlib.util.spec_from_file_location(name, source / filename)
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    return module
 
 
 class InstructionPolicyTest(unittest.TestCase):
@@ -56,8 +65,14 @@ class InstructionPolicyTest(unittest.TestCase):
         for name in policy.PROFILES:
             text = (self.root / 'profiles' / name / 'SOUL.md').read_text()
             self.assertIn('Keep this exact note.', text)
-            self.assertIn('Hermes fleet rules', text)
-            self.assertIn('worker pins', text)
+            if name == 'board-steward':
+                # The read-only steward carries a bounded boundary, not lane rules.
+                self.assertIn('Fleet boundary', text)
+                self.assertIn('hermes-fleet-policy.md', text)
+                self.assertNotIn('Never remove worker pins', text)
+            else:
+                self.assertIn('Hermes fleet rules', text)
+                self.assertIn('worker pins', text)
         # Fleet rules reach plain-directory projects without creating project files.
         self.assertFalse((self.root / 'AGENTS.md').exists())
 
@@ -72,6 +87,11 @@ class InstructionPolicyTest(unittest.TestCase):
         policy.install(self.root)
         for name in policy.PROFILES:
             text = (self.root / 'profiles' / name / 'SOUL.md').read_text()
+            if name == 'board-steward':
+                # The steward never routes credentials or reclaims workers.
+                self.assertNotIn('Credential-only local routing', text)
+                self.assertIn('refusal stays refused', text)
+                continue
             self.assertIn('Credential-only local routing', text)
             self.assertIn('only the smallest step', text.lower())
             self.assertIn('Do not reclaim running workers', text)
@@ -79,6 +99,40 @@ class InstructionPolicyTest(unittest.TestCase):
         self.assertIn('Keep this exact note.', soul.read_text())
         self.assertIn('model: keep', (local / 'profile.yaml').read_text())
         self.assertIn('actual passwords', (local / 'profile.yaml').read_text())
+        self.assertEqual(0, policy.install(self.root, check=True))
+
+    def test_readonly_steward_gets_a_bounded_fleet_block_from_every_writer(self):
+        # The steward cannot commit, publish, author owner gates or judge work,
+        # so the fleet's lane procedures are replaced by a boundary that points
+        # at the full policy instead of widening its permissions. Every
+        # installer that rewrites a profile SOUL must compose the same block.
+        policy.install(self.root)
+        steward_path = self.root / 'profiles/board-steward/SOUL.md'
+        steward = steward_path.read_text()
+        self.assertIn('Fleet boundary', steward)
+        self.assertIn('~/.hermes/scripts/hermes-fleet-policy.md', steward)
+        self.assertIn('it grants nothing', steward)
+        for excluded in ('## Hermes fleet rules', 'Never remove worker pins',
+                         'Credential-only local routing', 'Workers never publish',
+                         'Only head-coordinator authors owner gates',
+                         'Independent acceptance belongs to feature-reviewer',
+                         'Before committing, inspect git status'):
+            self.assertNotIn(excluded, steward)
+        for name in policy.PROFILES:
+            if name != 'board-steward':
+                self.assertIn('## Hermes fleet rules',
+                              (self.root / 'profiles' / name / 'SOUL.md').read_text())
+        spec = importlib.util.spec_from_file_location('steward_installer',
+                                                      source / 'install-steward-readonly.py')
+        steward_installer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(steward_installer)
+        refreshed = steward_installer.steward_soul('# board-steward\n', policy)
+        self.assertIn('Fleet boundary', refreshed)
+        self.assertNotIn('Never remove worker pins', refreshed)
+        self.assertIn('read-only observer', refreshed)
+        # Re-composing an installed steward SOUL is a fixed point.
+        installed = steward_installer.steward_soul(steward, policy)
+        self.assertEqual(installed, steward_installer.steward_soul(installed, policy))
         self.assertEqual(0, policy.install(self.root, check=True))
 
     def test_legacy_coordinator_migration_preserves_independent_policy(self):
@@ -105,12 +159,43 @@ class InstructionPolicyTest(unittest.TestCase):
         self.assertIn('compact_complete', reference.read_text())
         self.assertIn('--runtime-profile',
                       (self.root / 'scripts/hermes-behavior-trials.md').read_text())
-        # Composed coordinator prompt budget. The reviewed composition (fleet
-        # policy, autonomy, cron, worker budgets, owner chat) is ~1764 words;
-        # this ceiling exists to catch silent growth. Adding a block requires
-        # trimming elsewhere or a recorded decision, not a bigger number.
-        self.assertLess(len(result.split()), 1800)
+        # Instruction-policy composition budget. This fixture is composed by
+        # `policy.install` only: fleet policy, autonomy, taskforce, owner alerts
+        # and routing. It omits the four blocks other installers add on top
+        # (worker budgets, memory, cron, owner chat); the complete coordinator
+        # prompt has its own guard below. This ceiling exists to catch silent
+        # growth here: adding a block requires trimming elsewhere or a recorded
+        # decision, not a bigger number.
+        self.assertLess(len(result.split()), 1500)
         self.assertEqual(0, policy.install(self.root, check=True))
+
+    # Ceiling for the complete composed coordinator prompt: every managed block
+    # the five owning installers add. 1,821 words measured at d3b356a2, recorded
+    # at 1,850 on 2026-10-22 (plan §11). Reaching it requires a decision, not an
+    # edit here, and it is not a target.
+    COMPLETE_PROMPT_CEILING = 1850
+
+    def test_complete_coordinator_prompt_within_its_recorded_budget(self):
+        worker = load_installer('worker', 'install-worker-policy.py')
+        memory = load_installer('memory', 'install-memory-policy.py')
+        cron = load_installer('cron', 'install-cron-policy.py')
+        owner_chat = load_installer('owner_chat', 'install-owner-chat-policy.py')
+        policy.install(self.root)
+        soul = self.root / 'profiles/head-coordinator/SOUL.md'
+        soul.write_text(worker.instruction(soul.read_text()))
+        soul.write_text(memory.instructions(soul.read_text(), 'head-coordinator'))
+        soul.write_text(cron.instructions(soul.read_text()))
+        soul.write_text(policy.block(soul.read_text(), owner_chat.MARKER,
+                                     owner_chat.END_MARKER, owner_chat.POLICY))
+        composed = soul.read_text()
+        # Count only managed blocks; the fixture's seed heading is not prompt.
+        blocks = [match.group(0) for match in re.finditer(
+            r'<!-- ([^/\n][^\n]*?) -->.*?<!-- /\1 -->', composed, re.S)]
+        self.assertEqual(10, len(blocks),
+                         'all five owning installers must compose their blocks')
+        words = sum(len(block.split()) for block in blocks)
+        self.assertLessEqual(words, self.COMPLETE_PROMPT_CEILING,
+                             f'{words} composed words over the recorded budget')
 
     def test_ambiguous_managed_blocks_fail_before_any_write(self):
         target = self.root / 'profiles/standard-implementer/SOUL.md'

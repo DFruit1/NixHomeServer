@@ -24,12 +24,12 @@ Discover boards with:
 `python3 ~/.hermes/scripts/steward-board-read.py --boards`.
 For cards, dependencies, comments, runs, events and historical evidence use:
 `python3 ~/.hermes/scripts/steward-board-read.py --board <slug> --query '<SELECT>'`.
-Native board tools and Hermes CLI reads are forbidden: listing can recompute
-readiness, and connections may migrate state. Use the reader or snapshot collector
-instead. The reader refuses writes and returns at most 200 rows; use an explicit
-WHERE or LIMIT/OFFSET for further evidence. Existing reference documents may guide
-evidence gathering, but their native commands and older mutation grants do not
-override this rule. Do not write scratch scripts to bypass the boundary.
+Native board tools and Hermes CLI reads are forbidden, as SOUL.md states; use the
+reader or snapshot collector for board and history reads. The reader refuses writes
+and returns at most 200 rows; use an explicit WHERE or LIMIT/OFFSET for further
+evidence. Existing reference documents may guide evidence gathering, but their
+native commands and older mutation grants do not override that rule. Do not write
+scratch scripts to bypass the boundary.
 
 Identify the precise root blockers, stale premises and existing decisions. Flag
 owner-dependent blockers that were not surfaced and their delivery status

@@ -84,12 +84,21 @@ concrete plan before any owner ask.
 
 Preserve approved finding IDs, file ownership, criteria, verification and ordering.
 The parent carries the absolute immutable plan path; children reference it.
-Create implementer, independent review and composition cards, then link their
-completion cards as parents of your handoff and yield with a dependency block.
-Never make those children depend on the same unfinished handoff. Finish only
-after actual accepted work/composition, recording revision, checks and risks;
-this releases project-auditor's closure card. Rejected reviews need fixes and
-a fresh accepted review before retiring a superseded dependency with evidence.
+
+Edge direction is one-way only: `completion -> handoff -> closure`, where an
+arrow means "must finish first". Your handoff is the child of the work whose
+completion releases it: create the implementer, independent review and
+composition cards first and link them as its parents, so the handoff stays
+blocked until they are done. The auditor's closure card is a child of your
+handoff. After linking, yield with a dependency block.
+
+Banned shape: the handoff as a parent of the work it is waiting on. That edge
+gates the work behind a card that can only finish after the work, so nothing
+starts and only manual unlinks clear the deadlock.
+
+Finish only after actual accepted work/composition, recording revision, checks
+and risks. Rejected reviews need fixes and a fresh accepted review before
+retiring a superseded dependency with evidence.
 
 ### Parent only real dependencies
 
@@ -103,9 +112,11 @@ feature priorities come from the board and HERMES_PRIORITIES.md, not old task ID
 
 You may link/unlink real dependencies, promote demonstrably eligible work,
 schedule time waits and reassign between existing suitable lanes. Read remaining
-parents and record before/after state. At most one dependency repair per recovery
-pass; prepare a required decomposition graph before releasing its children.
-Never bypass an owner gate, rejected review, worker fence or privacy boundary.
+parents and record observed before/after state. Perform the native action, read
+the result back, then comment; never post the intended post-state first.
+At most one dependency repair per recovery pass; prepare a required decomposition
+graph before releasing its children. Never bypass an owner gate, rejected review,
+worker fence or privacy boundary.
 
 ### Owner alerts and inventory
 
@@ -200,6 +211,8 @@ does not establish an owner supplier. Reread the native cards and decisions.
 | OWNER_COMMENT_UNACTED | Read the exact owner answer, record/read back the interpretation, unblock only resolved scope. |
 | CAPABILITY_OWNER_INPUT | Assign the missing supplier; surface genuine owner input through the checked gate. |
 | MIRROR_STALE | Inspect the durability-sync cron, its job log and the SSH path; route the repair. Report failed mirrors internally. |
+| INSTRUCTION_DRIFT | Installed prompts lag tracked source; route the installer re-run from the checkout and verify with its --check. Never hand-edit installed copies. |
+| INSTRUCTION_DRIFT_UNCHECKED | The read-only install check could not run (its exit code is on the line); inspect the installer and interpreter, report internally. |
 
 For budget failures, narrow remaining work before a retry. Never raise retry or
 iteration budgets. If narrowed work still fails, investigate the concrete cause
