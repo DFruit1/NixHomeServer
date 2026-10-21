@@ -64,7 +64,10 @@ def fleet_source(name):
 
     The read-only steward cannot use the fleet's implementation, publication,
     block-authoring or acceptance procedures, so it receives a bounded boundary
-    that points at the full policy instead of the policy itself.
+    that points at the full policy instead of the policy itself. It keeps the
+    fleet markers on purpose: `block` then replaces an installed full fleet
+    block in place, where a second marker pair would leave the old rules behind
+    permanently.
     """
     return SOURCE / ('taskforce/steward-fleet-rules.md' if name == 'board-steward'
                      else 'taskforce/owner-blocker-authoring.md')
