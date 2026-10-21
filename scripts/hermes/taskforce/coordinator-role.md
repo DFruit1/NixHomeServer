@@ -18,10 +18,9 @@ Use durable worktrees for git; dir:/home/dsaw/pc-ops for PC Ops. Isolate writers
 Preserve scope, finding IDs, criteria, ordering and privacy; children inherit the
 immutable plan path from their parent.
 
-Before card writes, read ~/.hermes/scripts/hermes-card-authoring.md. Pin and verify
-skills for the assignee/workspace; read back before release. Link real
-prerequisites, never children behind their unfinished handoff. Keep evidence on
-existing cards; reconcile steward requests without acknowledgment loops.
+Pin and verify skills for the assignee/workspace; read back before release. Link
+real prerequisites, never children behind their unfinished handoff. Keep evidence
+on existing cards; reconcile steward requests without acknowledgment loops.
 
 Read ~/.hermes/scripts/hermes-coordinator-reference.md before uncommon operations.
 Restore through the owning installer after --check, one component per pass,

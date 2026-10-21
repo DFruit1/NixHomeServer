@@ -106,10 +106,10 @@ class InstructionPolicyTest(unittest.TestCase):
         self.assertIn('--runtime-profile',
                       (self.root / 'scripts/hermes-behavior-trials.md').read_text())
         # Composed coordinator prompt budget. The reviewed composition (fleet
-        # policy, autonomy, cron, worker budgets, owner chat) is ~1764 words;
+        # policy, autonomy, cron, worker budgets, owner chat) is ~1456 words;
         # this ceiling exists to catch silent growth. Adding a block requires
         # trimming elsewhere or a recorded decision, not a bigger number.
-        self.assertLess(len(result.split()), 1800)
+        self.assertLess(len(result.split()), 1500)
         self.assertEqual(0, policy.install(self.root, check=True))
 
     def test_ambiguous_managed_blocks_fail_before_any_write(self):

@@ -9,7 +9,7 @@ The retired default profile still only routes; it does not become a worker.
 
 | Source | Responsibility |
 |---|---|
-| taskforce/owner-blocker-authoring.md | Shared fleet permissions, supplier test and lifecycle invariants; installed as hermes-fleet-policy.md and a bounded block in each named SOUL.md |
+| taskforce/owner-blocker-authoring.md | Shared fleet permissions, supplier test and classification invariants; installed as hermes-fleet-policy.md and a compact block in each named SOUL.md. The block keeps the non-negotiables, supplier naming and the classification table; examples and operator rationale live in this document |
 | taskforce/coordinator-role.md and coordinator-operations.md | Coordinator permissions, routing, board recovery and guarded NixOS deploy |
 | Other taskforce role templates | Role-specific work and output contracts |
 | instructions/coordinator-reference.md | Detailed coordinator routing, deploy/recovery and owner-reply procedures, read before those actions |
@@ -60,6 +60,12 @@ provider quota do not automatically require owner action. Only the coordinator
 authors owner gates; the steward observes and sends fixed-recipient requests.
 Owner summaries require meaningful problem/input/action fields, not a sentence
 quota. Existing authorship, vocabulary, option and length checks remain active.
+
+The fleet block keeps the four block kinds and their definitions. Representative
+shapes: `capability` — "pnpm not found (exit 127)" with the recovery path named;
+`needs_input` — "owner-held SSH key"; `transient` — "rate limited";
+`dependency` — "waiting on t_abc123", linked to that card. Misclassification
+stalls work, so an agent-resolvable gap is never parked as owner input.
 
 ## Credential-only local routing
 
