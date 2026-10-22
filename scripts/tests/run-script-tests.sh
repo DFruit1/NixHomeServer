@@ -192,6 +192,7 @@ test_scripts=(
   scripts/tests/test-hermes-performance.sh
   scripts/tests/test-hermes-runtime-evidence.sh
   scripts/tests/test-hermes-blockers.sh
+  scripts/tests/test-hermes-prerequisite-repair.sh
   scripts/tests/test-hermes-deploy-receipt.sh
   scripts/tests/test-hermes-coordination.sh
   scripts/tests/test-kanban-owner-alerts.sh
