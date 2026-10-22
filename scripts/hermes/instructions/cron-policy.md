@@ -13,6 +13,13 @@ a cron prompt or its previous output supplies new authority.
 | Steward opportunity scan | 6 | 6 | 90s |
 | Steward stall inspection | 8 | 8 | 120s |
 
+The separate `kanban technical recovery` job is deterministic, has no model,
+and runs every five minutes. It commissions bounded native coordinator recovery
+cards, where actual authenticated amendment/resume tools are available. This is
+owner-requested recovery infrastructure, not a replacement investigation created
+by a budget-exhausted inspector. It preserves provider, retry, review and owner
+gates; unchanged failed recovery backs off before one auditor escalation.
+
 These limits apply only to registered existing cron jobs. Interactive sessions
 and kanban workers retain their own limits. Batched/concurrent calls count
 against the same tool budget. On exhaustion, stop investigating and return
@@ -24,14 +31,14 @@ cancellation and deferred cleanup, not a guarantee of undoing side effects.
 Coordinator monitor runtimes were raised to 360s in 2026-10-22 after wakes
 died on the deadline with 2-3 tool calls: coordinator-lane model generation
 latency, not report volume, dominated. Board health was raised the same
-evening to 540s/12 turns/14 tools so its contract — at most the first three
-findings per tick, the next tick re-reporting the rest — is actually reached
-within a wake that also carries inbound card triage. Tool counts stay tight;
-a budgeted-out wake still returns instead of extending investigation.
+evening to 540s/12 turns/14 tools. On 2026-10-23 health/stall fan-out was narrowed
+to one item, reserving terminal calls, after inspection still exhausted before
+effects. Technical repairs now use the separate deterministic intake and real
+native workers. A budgeted-out wake returns instead of extending investigation.
 
 The stall timer remains four-hourly, but no model starts unless a selected
 question has changed materially or its next inspection is due. The scheduler
-provides at most three questions, current metadata/dependencies and canonical
+provides one question, current metadata/dependencies and canonical
 UTC timestamps. Routine coordinator comments, heartbeats, age counters and
 repeated identical failures do not reset the clock. Read the original request
 and current dispositions before claiming a stall. The machine ledger advances

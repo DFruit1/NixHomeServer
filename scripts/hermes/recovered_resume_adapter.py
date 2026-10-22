@@ -53,17 +53,29 @@ EDITS = {
     'tools/kanban_tools_schemas.py': (
         ('        "task_id": _prop("string", "Blocked task id to move to ready or parent-gated todo."),',
          '        "task_id": _prop("string", "Blocked task id to move to ready or parent-gated todo."),\n'
-         '        "recovery_version": _prop("string", "Exact 64-hex capability-recovery hold version; only authenticated head-coordinator may resume repaired triage."),\n'
+         '        "recovery_version": _prop("string", "Exact 64-hex capability-recovery hold version; authenticated head-coordinator resumes repaired parked capability without resetting failures."),\n'
          '        "recovery_reason": _prop("string", "Nonempty verified repair evidence or native comment reference for this exact hold."),'),
         ('        "dispatcher-spawned task workers never see this tool."',
          '        "only an authenticated native head-coordinator worker can route its own board. "\n'
          '        "Ordinary workers cannot unblock siblings. recovery_version plus recovery_reason "\n'
-         '        "resumes a repaired technical triage hold once, retaining its gates and budgets."'),
+         '        "resumes a repaired parked capability hold once, retaining gates and failure budgets."'),
     ),
 }
 
 
+def migrate_legacy(text):
+    for old,new in (
+        ('Exact 64-hex capability-recovery hold version; only authenticated head-coordinator may resume repaired triage.',
+         'Exact 64-hex capability-recovery hold version; authenticated head-coordinator resumes repaired parked capability without resetting failures.'),
+        ('resumes a repaired technical triage hold once, retaining its gates and budgets.',
+         'resumes a repaired parked capability hold once, retaining gates and failure budgets.'),
+    ):
+        text=text.replace(old,new)
+    return text
+
+
 def adapt(name, text):
+    text=migrate_legacy(text)
     for before, after in EDITS[name]:
         if text.count(after) == 1:
             continue

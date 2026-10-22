@@ -26,6 +26,21 @@ parked task's exact checkout. Preserve old work and receipts, verify the actual
 destination, deliver the real inputs, then resume through native lifecycle tools.
 Never claim that creating a directory or naming a donor checkout delivered it.
 
+The five-minute deterministic technical-recovery job commissions real native
+head-coordinator workers independently of global idle. The coordinator may
+inspect and amend parked technical cards with `kanban_amend` (exact version,
+allowlisted fields, supersession evidence and readback), then resume through the
+existing guarded lifecycle. For the amendment version, call the native tool
+`kanban_amend({"task_id":"t_CARD"})` with `changes` and `expected_version`
+omitted; its read-only response returns `version`. Pass that value as
+`expected_version` in the next amendment call. There is no CLI version command
+or task-table version column. The capability hold `recovery_version` is a
+separate token inspected after the amendment. It does not edit active work, reset counters or
+accept reviews. See the coordinator reference for the measured runtime and
+assignee skill-catalog contracts. A blocked recovery handoff owns its productive
+remedy; routine comments never cause duplicate recovery. Repeated unchanged
+failed recovery attempts back off, then go once to project-auditor.
+
 An exact-source or tool-identity mismatch invalidates that attempt's old receipt;
 it does not require endless preservation of an obsolete technical contract.
 The coordinator may scope a reversible source/tooling correction or reconstruct
@@ -93,8 +108,9 @@ For each existing hold:
    cards, remove both gate paths, create coordinator chains or bypass a refusal
    through another tool. Native link operations retain their cycle checks.
    After verified material recovery, an authenticated native head-coordinator
-   worker may use `kanban_unblock` on a blocked/scheduled sibling on its own
-   pinned board. For an agent-supplied capability episode routed to triage,
+   worker may use `kanban_unblock` on a sibling on its own pinned board.
+   Ordinary unblock replenishes native failure counters: for repaired
+   agent-supplied capability episodes in blocked, scheduled or triage,
    inspect `python3 ~/.hermes/scripts/capability_recovery.py --inspect`, then
    provide the exact `recovery_version` and a nonempty `recovery_reason` naming
    the verified repair or native evidence comment to `kanban_unblock`. The

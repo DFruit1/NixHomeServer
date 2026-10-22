@@ -177,6 +177,8 @@ class SharedRootTest(unittest.TestCase):
             '    if claimed is None:\n        return False\n    try:\n'
             '        resolved_branch_name = None\n'
             '    except Exception:\n        pass\n'
+            '    try:\n        pid = _call_spawn_fn(spawn)\n'
+            '    except Exception:\n        pass\n'
             '    return True\n')
         review = self.root / 'hermes-agent/agent/background_review.py'
         review.parent.mkdir(parents=True)

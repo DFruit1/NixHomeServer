@@ -1060,7 +1060,7 @@ fi
 # reports nothing, like the instruction check.
 cron_script_drift_names=(kanban-aging-escalation.py kanban-owner-alerts.py
                          kanban-durability-sync.sh kanban-retry-breaker.sh
-                         usage-pace.py)
+                         usage-pace.py deadlock_recovery.py capability_recovery.py)
 if [[ -n "$repo" ]]; then
   script_drift_files=0
   for drift_name in "${cron_script_drift_names[@]}"; do

@@ -37,6 +37,15 @@ EDITS = {
          '        result.respawn_guarded.append((task_id, "worker_policy"))\n'
          '        return False\n'
          '    try:\n        resolved_branch_name = None\n'),
+        ('    try:\n        pid = _call_spawn_fn(',
+         '    try:\n'
+         '        # Validate skills at the actual prepared workspace, inside native cleanup.\n'
+         '        policy_reason = worker_policy.reason(conn, task_id, assignee)\n'
+         '        if policy_reason is not None:\n'
+         '            _kb.block_task(conn, task_id, reason=policy_reason, kind="capability")\n'
+         '            result.respawn_guarded.append((task_id, "worker_policy"))\n'
+         '            return False\n'
+         '        pid = _call_spawn_fn('),
     ),
 }
 

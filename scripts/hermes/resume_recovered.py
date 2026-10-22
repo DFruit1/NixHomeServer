@@ -1,4 +1,4 @@
-"""Bounded native API for a repaired technical hold routed to triage.
+"""Bounded native API for a repaired parked technical capability hold.
 
 Python reuses the owning Hermes transaction, policy and lifecycle APIs. Only the
 native kanban tool calls the effect; a terminal subprocess cannot shed its
@@ -127,13 +127,13 @@ def _hold(conn, root, board, tid):
 
 
 def _eligible(conn, task, hold):
-    if task.status != 'triage' or '[FEATURE TRACKER' in task.title.upper():
-        raise ValueError('Only a previously held non-tracker triage task may resume')
+    if task.status not in {'triage','blocked','scheduled'} or '[FEATURE TRACKER' in task.title.upper():
+        raise ValueError('Only a parked non-tracker technical capability task may resume')
     event = conn.execute("SELECT kind,payload FROM task_events WHERE task_id=? "
                          "AND kind IN ('blocked','block_loop_detected','unblocked','completed',"
-                         "'scheduled','block_reclassified') ORDER BY id DESC LIMIT 1", (task.id,)).fetchone()
+                         "'block_reclassified') ORDER BY id DESC LIMIT 1", (task.id,)).fetchone()
     if not event or event['kind'] not in {'blocked', 'block_loop_detected', 'block_reclassified'}:
-        raise ValueError('Triage has no current native technical block episode')
+        raise ValueError('Task has no current native technical block episode')
     if hold['supplier'] not in {'agent', 'model/provider'} or task.block_kind != 'capability':
         raise ValueError('Only agent-recoverable capability triage is eligible')
     row = conn.execute('SELECT worker_pid,claim_lock,claim_expires FROM tasks WHERE id=?', (task.id,)).fetchone()
@@ -162,7 +162,7 @@ def _reserve(journal, board, tid, version, evidence):
 
 
 def resume_recovered(kb, conn, tid, version, reason):
-    """One exact triage transition, with native gates and a consumed hold version.
+    """One exact parked capability transition, preserving consumed allowances.
 
     A reservation survives interruption or transaction failure. It never claims
     success; the committed native ``unblocked`` event records an actual release.
@@ -176,7 +176,7 @@ def resume_recovered(kb, conn, tid, version, reason):
     actor = coordinator_origin()
     root, board = require_actor_board(conn, actor)
     if actor['task_id'] == tid:
-        raise ValueError('A running coordinator cannot resume itself from triage')
+        raise ValueError('A running coordinator cannot resume itself')
     journal = _journal(root)
     lock = _lock(journal)
     try:
@@ -207,7 +207,7 @@ def resume_recovered(kb, conn, tid, version, reason):
             reservation['intended_status'] = reservation.pop('status')
             _reserve(journal, board, tid, version, reservation)
             # Maintained native API: one exact target, no board-wide recomputation.
-            changed = conn.execute("UPDATE tasks SET status=? WHERE id=? AND status='triage'", (status, tid))
+            changed = conn.execute("UPDATE tasks SET status=? WHERE id=? AND status=?", (status, tid, task.status))
             if changed.rowcount != 1:
                 raise ValueError('Recovery task changed before its transition; version consumed')
             kb._append_event(conn, tid, 'unblocked', evidence)

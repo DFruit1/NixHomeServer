@@ -110,6 +110,18 @@ temporary task receipts on their cards/jobs, not in standing instructions.
   Follow the maintained capability-recovery procedure through actual readback
   and supported resume; an acknowledgment or another waiting card is not repair.
 
+* Coordinator recovery (owner instruction 2026-10-23): the maintained no-agent
+  technical-recovery job checks every five minutes, including during unrelated
+  active work, and commissions bounded native coordinator repairs or one auditor
+  assessment after repeated unchanged failure. head-coordinator may amend parked
+  technical cards through native `kanban_amend` with exact version, supersession
+  evidence and readback; body, priority, available skills and one measured finite
+  runtime correction are permitted. Preserve active workers, retry/provider
+  limits; an untyped blocked native failure may be classified as capability
+  with explicit agent/model supplier evidence, without retyping existing gates.
+  Preserve historical verdicts and original consumer gates. Repair semantic waits
+  as well as native cycles; a waiting recovery card alone is not progress.
+
 ---
 
 ## Git Tracking and Committing

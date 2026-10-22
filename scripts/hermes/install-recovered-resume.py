@@ -13,6 +13,7 @@ import sys
 
 from hermes_common import atomic_write, backup_file
 from recovered_resume_adapter import adapt
+from coordinator_repair_adapter import adapt as amend_adapt
 from resume_recovered import validate_native_source
 
 SOURCE = Path(__file__).resolve().parent
@@ -37,7 +38,8 @@ def install(root, check=False):
     validate_native_source(phase_source)
     pending = []
     for source, relative in (
-            ('resume_recovered.py', 'hermes_cli/nixhomeserver_resume_recovered.py'),):
+            ('resume_recovered.py', 'hermes_cli/nixhomeserver_resume_recovered.py'),
+            ('coordinator_repair.py', 'hermes_cli/nixhomeserver_coordinator_repair.py')):
         code = (SOURCE / source).read_text()
         compile(code, source, 'exec')
         target = native / relative
@@ -57,7 +59,7 @@ def install(root, check=False):
         before = _read(target)
         if before is None:
             raise ValueError('Native recovered-resume tool source is missing')
-        pending.append((target, before, adapt(name, before)))
+        pending.append((target, before, amend_adapt(name, adapt(name, before))))
     changes = [(path, before, after) for path, before, after in pending if before != after]
     if check:
         for path, _, _ in changes:

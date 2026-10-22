@@ -294,12 +294,17 @@ def guard_complete(payload, root):
             validate(metadata, allow_unknown=allow_unknown, profile=task['assignee'])
             if native and metadata['verdict'] == 'accept':
                 _independent_native_acceptance(db, task)
-            if metadata['verdict'] == 'request-changes':
-                if native:
+            if metadata['verdict'] != 'accept':
+                if native and metadata['verdict'] == 'request-changes':
                     raise ValueError('Native review rejection uses kanban_request_changes, not completion')
                 children = db.execute("SELECT c.assignee FROM task_links l JOIN tasks c ON c.id=l.child_id WHERE l.parent_id=? AND c.status NOT IN ('done','archived')", (task_id,)).fetchall()
                 if any(c['assignee'] != 'head-coordinator' for c in children):
-                    raise ValueError('Rejection would release non-coordinator work; ask the coordinator to repair those dependencies first')
+                    raise ValueError('Non-acceptance would release non-coordinator work; ask the coordinator to repair those dependencies first')
+                # Reporting rejection or absent inputs cannot require acceptance
+                # of a previous rejected revision. Only parked coordinator
+                # routing may follow; its own completion still checks every
+                # inherited review gate below.
+                return {}
         parents = db.execute('SELECT p.* FROM task_links l JOIN tasks p ON p.id=l.parent_id WHERE l.child_id=?', (task_id,)).fetchall()
         for parent in parents:
             if not verification(parent, db):

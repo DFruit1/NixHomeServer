@@ -30,6 +30,37 @@ rewrites a profile SOUL composes the same per-role block.
 | Cards, plans and cron state | Exact scope, existing approvals, temporary receipt conditions and evidence |
 | Memory | Facts and preferences; no permission grants or extra mandatory workflows |
 
+The owner-requested technical recovery loop is installed with
+`python3 scripts/hermes/install-deadlock-recovery.py`; `--check` verifies source
+and the native five-minute, local-only, no-agent schedule. It commissions real
+coordinator workers even while unrelated work runs. It deduplicates existing
+recovery owners, retains per-input attempt ceilings, backs off repeated failures
+and commissions one auditor assessment after three unchanged failed attempts.
+It never declares acceptance or directly clears a hold.
+
+The native coordinator's `kanban_amend` capability is installed by
+`install-recovered-resume.py`, alongside the guarded resume API. Install matching
+canonical monitor dependencies with `install-cron-policy.py` first, then the
+recovery API and `install-worker-policy.py` skill preflight. Every installer has
+a drift check and preserves replaced bytes. Refresh the existing gateway through
+its supported graceful restart when idle; fresh worker processes then load the
+installed native tools. Never start a second gateway or interrupt active workers.
+
+Amendments require an authenticated native coordinator on its own board, an
+exact current version and a parked target with no worker/lease. Only body,
+priority, skills and finite runtime can change. An untyped blocked native failure
+may additionally be classified as capability with an agent/model supplier;
+existing typed blocks and owner gates cannot be reclassified by this API.
+Native events retain before,
+after, supersession reason and actor run; readback precedes any resume. Skills
+resolve through the assignee's catalog in an isolated interpreter. The native
+installed dependency generation is leased without provisioning or publication
+recovery (pending publication refuses); project
+quarantine may refresh its scan cache. No skill code is executed.
+The amendment cannot alter reviews, results, retry counters, owner gates or
+active work. A measured runtime correction requires the latest actual timeout
+and is allowed once per card; comments alone never change execution limits.
+
 Paths in the first three rows are relative to scripts/hermes/.
 
 ### Authority contract

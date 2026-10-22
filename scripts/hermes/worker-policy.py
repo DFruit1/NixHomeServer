@@ -4,6 +4,9 @@ Python is operations glue loaded by the small tracked native-runtime adapter.
 No new service or dependency; callers retain their existing authority checks.
 """
 import re
+import json
+from pathlib import Path
+import subprocess
 
 EVIDENCE = re.compile(r'^Recovery mode: evidence-only\s*$', re.M)
 FAILURES = {'failed', 'crashed', 'timed_out', 'spawn_failed', 'gave_up'}
@@ -40,6 +43,27 @@ def reason(db, task_id, assignee=None):
                                 task['max_runtime_seconds'], task['max_retries'])
     if problem:
         return problem
+    columns = {r[1] for r in db.execute('PRAGMA table_info(tasks)')}
+    if {'skills','workspace_path'} <= columns:
+        row = db.execute('SELECT skills,workspace_path FROM tasks WHERE id=?',(task_id,)).fetchone()
+        skills = json.loads(row['skills'] or '[]')
+        kind = (db.execute('SELECT workspace_kind FROM tasks WHERE id=?',(task_id,)).fetchone()[0]
+                if 'workspace_kind' in columns else None)
+        if skills and not (kind == 'worktree' and not row['workspace_path']):
+            try:
+                from hermes_cli.kanban_db_connect import _main_db_file
+                from hermes_cli.nixhomeserver_coordinator_repair import available_skills
+                path = Path(_main_db_file(db))
+                root = path.parents[3]
+                workspace = row['workspace_path']
+                if not workspace:
+                    workspace = json.loads(path.with_name('board.json').read_text()).get('default_workdir')
+                missing = set(skills) - available_skills(root, assignee or task['assignee'], workspace)
+                if missing:
+                    return ('Worker policy: skill unavailable to assigned profile: '+', '.join(sorted(missing))+
+                            '. Coordinator must amend the preload list or repair the scoped installation. Input supplier: agent.')
+            except (ImportError,OSError,ValueError,TypeError,subprocess.TimeoutExpired):
+                return 'Worker policy: assignee skill catalog unavailable; repair scoped catalog before launch. Input supplier: agent.'
     if not EVIDENCE.search(task['body'] or ''):
         return None
     run = db.execute('SELECT id,status,outcome,ended_at FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1',
