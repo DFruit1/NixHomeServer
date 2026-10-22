@@ -37,8 +37,17 @@ if [[ "$inventory_program" != /nix/store/*-nixhomeserver-storage-inventory ]]; t
   echo "The evaluated server does not install exactly one storage inventory command." >&2
   exit 1
 fi
-rg -Fq -- '--config-json-file /nix/store/' "$inventory_program/bin/nixhomeserver-storage-inventory"
-if rg -Fq 'scripts/helpers/repo-common.sh' "$inventory_program/bin/nixhomeserver-storage-inventory"; then
+
+# The inventory command was built on the server, so its contents are read there:
+# strict mode never realises or copies a remote output onto this workstation.
+output_consume "$inventory_program" \
+  'rg -Fq -- "--config-json-file /nix/store/" "$output/bin/nixhomeserver-storage-inventory"' \
+  || {
+    echo "Installed storage inventory command lost its store-bound configuration argument." >&2
+    exit 1
+  }
+if output_consume "$inventory_program" \
+  'rg -Fq "scripts/helpers/repo-common.sh" "$output/bin/nixhomeserver-storage-inventory"'; then
   echo "Installed storage inventory command regained a live repository dependency." >&2
   exit 1
 fi

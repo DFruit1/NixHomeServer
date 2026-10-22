@@ -121,7 +121,7 @@ transport="${STRICT_SSH_TRANSPORT:-0}"
 case "$args" in
   *'hostname -f'*)
     [[ "${STRICT_SSH_HOSTNAME_FAIL:-0}" == 0 ]] || exit 1
-    printf '%s\n' "${STRICT_SSH_HOSTNAME:-remote.example.invalid}"
+    printf '%s\n' "${STRICT_SSH_HOSTNAME-remote.example.invalid}"
     ;;
   *'uname -srm'*) printf '%s\n' 'Linux 6.1.0 x86_64' ;;
   *' true'*) exit "${STRICT_SSH_REACHABLE:-0}" ;;
@@ -129,6 +129,16 @@ case "$args" in
   *' stage '*)
     [[ "$transport" == 1 ]] || exit "${STRICT_SSH_OTHER_STATUS:-1}"
     cat >/dev/null
+    if [[ "${STRICT_SSH_ARCHIVE_EMPTY:-0}" == 1 ]]; then
+      printf '\n'
+      exit 0
+    fi
+    # A drift injected at this point lands between the pre-staging and
+    # pre-execution identity checks, which is exactly where a real concurrent
+    # edit would land: after the archive was verified, before execution.
+    if [[ "${STRICT_MUTATE_ON_STAGE:-0}" == 1 ]]; then
+      printf 'drift during staging\n' >>"${STRICT_MUTATE_REPO:?}/tracked.txt"
+    fi
     printf '%s\n' "${STRICT_SSH_ARCHIVE:?}"
     ;;
   *' remove '*)
@@ -141,6 +151,11 @@ case "$args" in
     printf '%s  %s\n' "$(cat "${STRICT_SSH_ARCHIVE_SHA_FILE:?}")" \
       "${args#*sha256sum -- }"
     ;;
+  *'missing build output'*)
+    [[ "$transport" == 1 ]] || exit "${STRICT_SSH_OTHER_STATUS:-1}"
+    cat >/dev/null
+    exit "${STRICT_SSH_OUTPUT_PRESENT:-0}"
+    ;;
   *'! -e '*)
     [[ "$transport" == 1 ]] || exit "${STRICT_SSH_OTHER_STATUS:-1}"
     exit "${STRICT_SSH_ABSENT_STATUS:-0}"
@@ -149,10 +164,24 @@ case "$args" in
     [[ "$transport" == 1 ]] || exit "${STRICT_SSH_OTHER_STATUS:-1}"
     exit "${STRICT_SSH_REMOVE_STATUS:-0}"
     ;;
-  *'cat > '*) cat >/dev/null; exit "${STRICT_SSH_UPLOAD_STATUS:-0}" ;;
+  *'cat > '*)
+    # Capture the transferred query when a case needs to compare the receipt's
+    # digest with the bytes that actually travelled.
+    if [[ -n "${STRICT_SSH_CAT_SINK:-}" && "$args" == *query.nix* ]]; then
+      cat >"$STRICT_SSH_CAT_SINK"
+    else
+      cat >/dev/null
+    fi
+    exit "${STRICT_SSH_UPLOAD_STATUS:-0}"
+    ;;
   *'bash -s -- '*)
     cat >/dev/null
     sleep "${STRICT_SSH_RUN_SLEEP:-0}"
+    # A drift injected here lands after the execution the receipt describes, so
+    # the post-execution check is the only thing that can still catch it.
+    if [[ "${STRICT_MUTATE_ON_RUN:-0}" == 1 ]]; then
+      printf 'drift during execution\n' >>"${STRICT_MUTATE_REPO:?}/tracked.txt"
+    fi
     printf '%s' "${STRICT_SSH_RUN_OUT:-}"
     exit "${STRICT_SSH_RUN_STATUS:-0}"
     ;;
@@ -246,7 +275,27 @@ set -euo pipefail
 printf '%s\n' "$*" >>"${STRICT_NIXSTORE_LOG:?}"
 root="${2:-}"
 [[ "$root" == */current/* ]] || [[ "${STRICT_ALLOW_PENDING_ROOT:-0}" == 1 ]] || exit 9
+
+# A model of a concurrent collection: every store path that is not the target of
+# an indirect root registered under current/ is dropped. Rolling the previous
+# generation aside is therefore observable as its deletion, which is what makes
+# the promotion window testable without a real store.
+gc_collect() {
+  local live name store_path
+  live="${STRICT_GC_LIVE:?}"
+  find "${STRICT_GC_ROOT_STATE:?}/current" -mindepth 1 -maxdepth 1 -type l -print0 |
+    xargs -0 -r -n1 readlink | sed 's#^/nix/store/##' | sort -u >"$live"
+  for store_path in "${STRICT_GC_STORE:?}"/*; do
+    [[ -e "$store_path" ]] || continue
+    name="$(basename "$store_path")"
+    grep -Fxq -- "$name" "$live" || rm -rf -- "$store_path"
+  done
+}
+
 if [[ -n "${STRICT_NIXSTORE_FAIL_ON:-}" && "$root" == *"$STRICT_NIXSTORE_FAIL_ON"* ]]; then
+  if [[ "${STRICT_NIXSTORE_GC:-0}" == 1 ]]; then
+    gc_collect
+  fi
   exit 1
 fi
 ln -sfn "${5:-}" "$root"
@@ -312,6 +361,7 @@ echo "  ✅ release empties current/ and drops staging"
 cat >"$spy_root/bin/nix" <<'EOF'
 #!/usr/bin/env bash
 printf 'nix %s\n' "$*" >>"${STRICT_NIX_LOG:?}"
+[[ -n "${STRICT_NIX_STATUS:-}" ]] && exit "$STRICT_NIX_STATUS"
 echo '{"local":"ran"}'
 EOF
 chmod +x "$spy_root/bin/nix"
@@ -594,5 +644,390 @@ cache_hit="$(strict_cached_eval)" || fail "the shared cache helper failed on a c
   || fail "a cache hit re-ran the remote evaluation"
 
 echo "  ✅ the shared cache helper cannot fall back to a workstation evaluation"
+
+# --- mandatory strict negative matrix -----------------------------------------
+#
+# Everything below pins the refusals the strict contract promises and never shows
+# in a passing run. Each case asserts the same three things: the attempt fails,
+# it says why, and it did not quietly do the heavy work on this workstation.
+
+reset_local_heavy_logs() {
+  : >"$STRICT_NIX_LOG"
+  : >"$STRICT_NIXSTORE_LOG"
+}
+
+require_zero_local_heavy() {
+  local label="$1"
+  if [[ -s "$STRICT_NIX_LOG" ]]; then
+    fail "${label}: the workstation's nix ran: $(tr '\n' ';' <"$STRICT_NIX_LOG")"
+  fi
+  if [[ -s "$STRICT_NIXSTORE_LOG" ]]; then
+    fail "${label}: the workstation's nix-store ran: $(tr '\n' ';' <"$STRICT_NIXSTORE_LOG")"
+  fi
+}
+
+receipt_count() {
+  find "$NIXHOMESERVER_EVIDENCE_DIR" -maxdepth 1 -name '*.receipt.json' -print 2>/dev/null | wc -l
+}
+
+# Run one strict expression and assert it refused. The expression runs in its own
+# subshell with the recorded transport, so an env prefix selects the failure
+# under test without leaking into the next case.
+strict_case_status=0
+expect_strict_refusal() {
+  local label="$1" fragment="$2"
+  shift 2
+  strict_case_status=0
+  : >"$spy_root/ssh.log"
+  reset_local_heavy_logs
+  (eval "$(strict_env_exports)"; eval "$*") >"$spy_root/refusal.out" 2>"$spy_root/refusal.err" ||
+    strict_case_status=$?
+  ((strict_case_status != 0)) || fail "${label}: the strict attempt reported success"
+  if [[ -n "$fragment" ]]; then
+    grep -q -- "$fragment" "$spy_root/refusal.err" ||
+      fail "${label}: the refusal did not mention '${fragment}': $(cat "$spy_root/refusal.err" 2>/dev/null)"
+  fi
+  require_zero_local_heavy "$label"
+}
+
+# --- finding 2: a malformed strict-mode value never falls through ------------
+# Every public entry point chooses between "strict" and "ordinary" from one
+# value. A value that is neither must abort there; reading it as "off" would
+# route the call down the ordinary path, which is the local fallback strict mode
+# exists to forbid.
+public_callers=(
+  "remote_eval_batch_json 'value=1'"
+  "remote_build_flake '.#checks.x86_64-linux.example'"
+  "remote_run 'true'"
+  "nix eval --json '.#anything'"
+  "flake_eval 'value=1'"
+  "flake_eval_json 'value=1'"
+  "nix_eval_uncached raw '1 + 1'"
+)
+for caller in "${public_callers[@]}"; do
+  for value in '' 'yes' 'on'; do
+    : >"$spy_root/ssh.log"
+    reset_local_heavy_logs
+    invalid_status=0
+    (
+      NIXHOMESERVER_REQUIRE_REMOTE="$value"
+      export NIXHOMESERVER_REQUIRE_REMOTE
+      eval "$caller"
+    ) >"$spy_root/invalid.out" 2>"$spy_root/invalid.err" || invalid_status=$?
+    [[ "$invalid_status" == 2 ]] ||
+      fail "NIXHOMESERVER_REQUIRE_REMOTE='${value}' made '${caller}' exit ${invalid_status} instead of refusing with 2"
+    grep -q 'must be 0 or 1' "$spy_root/invalid.err" ||
+      fail "the malformed-value refusal did not explain itself for '${caller}': $(cat "$spy_root/invalid.err")"
+    [[ ! -s "$spy_root/ssh.log" ]] ||
+      fail "a malformed strict-mode value still contacted the server for '${caller}'"
+    require_zero_local_heavy "malformed value ('${value}') in ${caller}"
+  done
+done
+
+# The public validator is the entry point a whole gate uses; it must refuse the
+# same value before it evaluates, builds, or runs any suite.
+invalid_status=0
+(
+  cd "$TESTS_REPO_ROOT"
+  NIXHOMESERVER_REQUIRE_REMOTE=2 bash scripts/validate-repo.sh
+) >"$spy_root/validator-invalid.out" 2>"$spy_root/validator-invalid.err" || invalid_status=$?
+[[ "$invalid_status" == 2 ]] ||
+  fail "the validator exited ${invalid_status} for a malformed require-remote value instead of 2"
+grep -q 'must be 0 or 1' "$spy_root/validator-invalid.err" ||
+  fail "the validator refusal did not explain itself: $(cat "$spy_root/validator-invalid.err")"
+
+echo "  ✅ a malformed strict-mode value refuses at every public caller and in the validator"
+
+# --- all three explicit local opt-outs conflict with strict mode -------------
+receipts_before="$(receipt_count)"
+expect_strict_refusal 'REMOTE_EVAL=0 under strict mode' \
+  'strict mode conflicts with REMOTE_EVAL=0' \
+  "REMOTE_EVAL=0 remote_eval_batch_json 'value=1'"
+[[ "$strict_case_status" == 2 ]] || fail "an evaluation opt-out did not refuse with exit 2"
+expect_strict_refusal 'REMOTE_BUILD=0 under strict mode' \
+  'strict mode conflicts with REMOTE_BUILD=0' \
+  "REMOTE_BUILD=0 remote_build_flake '.#checks.x86_64-linux.example'"
+[[ "$strict_case_status" == 2 ]] || fail "a build opt-out did not refuse with exit 2"
+expect_strict_refusal 'REMOTE_RUN=0 under strict mode' \
+  'strict mode conflicts with REMOTE_RUN=0' \
+  "REMOTE_RUN=0 remote_run 'true'"
+[[ "$strict_case_status" == 2 ]] || fail "a run opt-out did not refuse with exit 2"
+[[ ! -s "$spy_root/ssh.log" ]] || fail "an explicit opt-out still contacted the server"
+[[ "$(receipt_count)" == "$receipts_before" ]] ||
+  fail "an opt-out conflict wrote a receipt for work that never started"
+
+echo "  ✅ all three explicit local opt-outs conflict with strict mode before any work"
+
+# --- unreachable or malformed transport answers ------------------------------
+receipts_before="$(receipt_count)"
+expect_strict_refusal 'an unresolvable target' 'could not resolve a target host' \
+  'unset REMOTE_EVAL_HOST; _remote_eval_resolve_host() { return 1; }; remote_eval_batch_json "value=1"'
+[[ ! -s "$spy_root/ssh.log" ]] || fail "an unresolved target still contacted a host"
+
+wrong_tree="$(printf 'b%.0s' $(seq 40))"
+wrong_commit="$(printf 'c%.0s' $(seq 40))"
+expect_strict_refusal 'a declared tree that is not HEAD' \
+  'declared source identity does not match HEAD/tree' \
+  "NIXHOMESERVER_EXPECTED_TREE='$wrong_tree' remote_eval_batch_json 'value=1'"
+expect_strict_refusal 'a declared commit that is not HEAD' \
+  'declared source identity does not match HEAD/tree' \
+  "NIXHOMESERVER_EXPECTED_HEAD='$wrong_commit' remote_build_flake '.#checks.x86_64-linux.example'"
+
+# An endpoint that answers without an identity cannot be attested.
+expect_strict_refusal 'a host with no attested hostname' '' \
+  "STRICT_SSH_HOSTNAME='' remote_eval_batch_json 'value=1'"
+
+# A blank staging reply is not a usable archive path, and the attempt still owes
+# an outcome for whatever the server may have acquired.
+expect_strict_refusal 'a blank staging reply' 'did not return a usable path' \
+  "STRICT_SSH_ARCHIVE_EMPTY=1 remote_eval_batch_json 'value=1'"
+receipt="$(latest_receipt eval)"
+jq -e '.exit_status != 0 and .cleanup == "unknown"' "$receipt" >/dev/null ||
+  fail "a blank staging reply was not receipted as an unknown cleanup: $(cat "$receipt")"
+
+echo "  ✅ resolution, declared-identity, attestation and staging failures fail closed"
+
+# --- finding 1: source drift at each boundary of the attempt -----------------
+# The preflight binds the attempt once, but staging, transfer and execution all
+# take time. Each boundary check is proven by mutating the fixture at exactly
+# that moment, so the refusal cannot be satisfied by the preflight alone.
+use_mutating_archive_producer() {
+  create_deploy_repo_archive() {
+    _real_create_deploy_repo_archive "$@" || return
+    printf 'drift after the archive was produced\n' >>"$fixture/tracked.txt"
+  }
+}
+
+use_mutating_archive_producer
+: >"$spy_root/ssh.log"
+reset_local_heavy_logs
+drift_status=0
+(
+  eval "$(strict_env_exports)"
+  remote_build_flake '.#checks.x86_64-linux.example'
+) >/dev/null 2>"$spy_root/drift-pre-staging.err" || drift_status=$?
+((drift_status != 0)) || fail "a source that drifted before staging was accepted"
+grep -q 'pre-staging boundary' "$spy_root/drift-pre-staging.err" ||
+  fail "the pre-staging drift refusal did not name its boundary: $(cat "$spy_root/drift-pre-staging.err")"
+if grep -q ' stage ' "$spy_root/ssh.log"; then
+  fail "a source that drifted before staging was still shipped"
+fi
+require_zero_local_heavy 'pre-staging drift'
+git -C "$fixture" checkout -- tracked.txt
+receipt="$(latest_receipt build)"
+jq -e '.source_identity == "drift" and .source_identity_checks == 1 and .exit_status != 0' "$receipt" >/dev/null ||
+  fail "a pre-staging drift was not recorded as such: $(cat "$receipt")"
+
+use_digest_archive_producer
+: >"$spy_root/ssh.log"
+drift_status=0
+(
+  eval "$(strict_env_exports)"
+  export STRICT_MUTATE_ON_STAGE=1 STRICT_MUTATE_REPO="$fixture"
+  remote_build_flake '.#checks.x86_64-linux.example'
+) >/dev/null 2>"$spy_root/drift-pre-execution.err" || drift_status=$?
+((drift_status != 0)) || fail "a source that drifted during staging was executed"
+grep -q 'pre-execution boundary' "$spy_root/drift-pre-execution.err" ||
+  fail "the pre-execution drift refusal did not name its boundary: $(cat "$spy_root/drift-pre-execution.err")"
+if grep -q 'bash -s -- ' "$spy_root/ssh.log"; then
+  fail "a source that drifted after staging was still executed"
+fi
+require_zero_local_heavy 'pre-execution drift'
+git -C "$fixture" checkout -- tracked.txt
+receipt="$(latest_receipt build)"
+jq -e '.source_identity == "drift" and .source_identity_checks == 2 and .cleanup == "success"' \
+  "$receipt" >/dev/null || fail "a pre-execution drift was not recorded as such: $(cat "$receipt")"
+
+: >"$spy_root/ssh.log"
+drift_status=0
+(
+  eval "$(strict_env_exports)"
+  export STRICT_MUTATE_ON_RUN=1 STRICT_MUTATE_REPO="$fixture"
+  export STRICT_SSH_RUN_OUT='[{"outputs":{"out":"/nix/store/strict-build-out"}}]'
+  remote_build_flake '.#checks.x86_64-linux.example'
+) >/dev/null 2>"$spy_root/drift-post-execution.err" || drift_status=$?
+((drift_status != 0)) || fail "a source that drifted during execution was certified"
+grep -q 'post-execution boundary' "$spy_root/drift-post-execution.err" ||
+  fail "the post-execution drift refusal did not name its boundary: $(cat "$spy_root/drift-post-execution.err")"
+grep -q 'bash -s -- ' "$spy_root/ssh.log" ||
+  fail "the post-execution drift check was reached without executing anything"
+require_zero_local_heavy 'post-execution drift'
+git -C "$fixture" checkout -- tracked.txt
+receipt="$(latest_receipt build)"
+jq -e '.source_identity == "drift" and .source_identity_checks == 3 and .exit_status != 0' "$receipt" >/dev/null ||
+  fail "a post-execution drift was not recorded as such: $(cat "$receipt")"
+
+# The same boundary contract has to hold for the other two entry points.
+for entry in 'remote_eval_batch_json value=1' 'remote_run true'; do
+  : >"$spy_root/ssh.log"
+  drift_status=0
+  (
+    eval "$(strict_env_exports)"
+    export STRICT_MUTATE_ON_STAGE=1 STRICT_MUTATE_REPO="$fixture"
+    # shellcheck disable=SC2086
+    $entry
+  ) >/dev/null 2>"$spy_root/drift-entry.err" || drift_status=$?
+  ((drift_status != 0)) || fail "'${entry}' executed source that drifted during staging"
+  grep -q 'pre-execution boundary' "$spy_root/drift-entry.err" ||
+    fail "'${entry}' did not name the pre-execution boundary: $(cat "$spy_root/drift-entry.err")"
+  if grep -q 'bash -s -- ' "$spy_root/ssh.log"; then
+    fail "'${entry}' executed source that drifted after staging"
+  fi
+  require_zero_local_heavy "'${entry}' source drift"
+  git -C "$fixture" checkout -- tracked.txt
+done
+receipt="$(latest_receipt run)"
+jq -e '.source_identity == "drift" and .source_identity_checks == 2' "$receipt" >/dev/null ||
+  fail "a remote-run drift did not reach its receipt: $(cat "$receipt")"
+
+# A clean attempt records that every boundary was checked, so a receipt that
+# says "unchecked" is distinguishable from one that observed the source.
+: >"$spy_root/ssh.log"
+(
+  eval "$(strict_env_exports)"
+  export STRICT_SSH_RUN_OUT='[{"outputs":{"out":"/nix/store/strict-build-out"}}]'
+  remote_build_flake '.#checks.x86_64-linux.example'
+) >/dev/null || fail "a clean strict build did not succeed"
+receipt="$(latest_receipt build)"
+jq -e '.source_identity == "verified" and .source_identity_checks == 3' "$receipt" >/dev/null ||
+  fail "a clean attempt did not record the identity checks it performed: $(cat "$receipt")"
+
+echo "  ✅ source drift is refused at the pre-staging, pre-execution and post-execution boundaries"
+
+# --- remote failures are results, never a local retry ------------------------
+expect_strict_refusal 'a failed remote build' 'the strict build failed' \
+  "STRICT_SSH_RUN_STATUS=7 remote_build_flake '.#checks.x86_64-linux.example'"
+[[ "$strict_case_status" == 7 ]] || fail "a failed remote build exited ${strict_case_status} instead of 7"
+receipt="$(latest_receipt build)"
+jq -e '.exit_status == 7 and (.cleanup == "success" or .cleanup == "failed" or .cleanup == "unknown")' \
+  "$receipt" >/dev/null || fail "a failed remote build was not receipted: $(cat "$receipt")"
+
+expect_strict_refusal 'an evaluation whose session died' 'remote evaluation failed' \
+  "STRICT_SSH_RUN_STATUS=255 remote_eval_batch_json 'value=1'"
+[[ "$strict_case_status" == 255 ]] ||
+  fail "a dead evaluation session exited ${strict_case_status} instead of 255"
+
+expect_strict_refusal 'a failed remote snippet' 'the strict run failed' \
+  "STRICT_SSH_RUN_STATUS=3 remote_run 'true'"
+[[ "$strict_case_status" == 3 ]] || fail "a failed remote snippet exited ${strict_case_status} instead of 3"
+
+echo "  ✅ nonzero and 255 remote results propagate without a local retry"
+
+# --- finding 5: an evaluation receipt identifies the query it ran -------------
+# Two evaluations of one commit are different claims. The receipt therefore
+# carries the digest of the bytes that actually travelled, not just a phase.
+strict_eval_receipt_digest() {
+  local query="$1"
+  : >"$spy_root/ssh.log"
+  (
+    eval "$(strict_env_exports)"
+    export STRICT_SSH_CAT_SINK="$spy_root/query-upload.nix"
+    export STRICT_SSH_RUN_OUT='{"value":1}'
+    remote_eval_batch_json "$query"
+  ) >/dev/null || fail "a strict evaluation of '${query}' failed"
+  local uploaded receipt
+  uploaded="$(sha256sum "$spy_root/query-upload.nix" | awk '{print $1}')"
+  receipt="$(latest_receipt eval)"
+  jq -e --arg sha "$uploaded" '.query_sha256 == $sha and .source_identity == "verified"
+    and .source_identity_checks == 3' "$receipt" >/dev/null ||
+    fail "the receipt did not identify the query that travelled: $(cat "$receipt")"
+  jq -r '.query_sha256' "$receipt"
+}
+
+digest_a="$(strict_eval_receipt_digest 'value=1')"
+digest_b="$(strict_eval_receipt_digest 'value=2')"
+digest_a_again="$(strict_eval_receipt_digest 'value=1')"
+[[ "$digest_a" =~ ^[0-9a-f]{64}$ ]] || fail "the recorded query identity is not a sha256: ${digest_a}"
+[[ "$digest_a" != "$digest_b" ]] || fail "two different queries recorded the same identity"
+[[ "$digest_a" == "$digest_a_again" ]] || fail "the same query recorded two different identities"
+
+echo "  ✅ an evaluation receipt identifies the exact query it ran"
+
+# --- finding 3: a strict result is never realised on this workstation --------
+# The suite's build wrapper hands back a store path, and a test that read it
+# would need it here. Strict mode replaces that with a server-side existence
+# check plus server-side consumption, so no local realisation or copy happens.
+: >"$spy_root/ssh.log"
+reset_local_heavy_logs
+strict_build_out="$(
+  eval "$(strict_env_exports)"
+  export STRICT_SSH_RUN_OUT='[{"outputs":{"out":"/nix/store/strict-build-out"}}]'
+  export STRICT_SSH_OUTPUT_PRESENT=0
+  nix build --json '.#checks.x86_64-linux.example'
+)" || fail "a strict build through the suite wrapper failed"
+jq -e '.[0].outputs.out == "/nix/store/strict-build-out"' <<<"$strict_build_out" >/dev/null ||
+  fail "the strict build output changed: ${strict_build_out}"
+grep -q 'bash -s -- ' "$spy_root/ssh.log" ||
+  fail "the suite wrapper did not use the remote boundary for a build"
+require_zero_local_heavy 'a strict build through the suite wrapper'
+
+: >"$spy_root/ssh.log"
+reset_local_heavy_logs
+missing_status=0
+(
+  eval "$(strict_env_exports)"
+  export STRICT_SSH_RUN_OUT='[{"outputs":{"out":"/nix/store/strict-build-out"}}]'
+  export STRICT_SSH_OUTPUT_PRESENT=1
+  nix build --json '.#checks.x86_64-linux.example'
+) >/dev/null 2>"$spy_root/missing-output.err" || missing_status=$?
+((missing_status != 0)) || fail "the suite wrapper published an output the server does not hold"
+grep -q 'did not leave its outputs' "$spy_root/missing-output.err" ||
+  fail "a missing remote output did not explain itself: $(cat "$spy_root/missing-output.err")"
+require_zero_local_heavy 'a missing remote output'
+
+# Consuming an output runs the reader where the output lives. The snippet would
+# leave a marker here if it ran on this workstation, which is what the assertion
+# below looks for; the ordinary-mode control proves the marker logic works.
+consume_marker="$spy_root/consumed-on-workstation"
+consume_snippet="printf '%s' \"\$output\" > '$consume_marker'"
+rm -f "$consume_marker"
+: >"$spy_root/ssh.log"
+consumed="$(
+  eval "$(strict_env_exports)"
+  export STRICT_SSH_RUN_OUT='consumed-remotely'
+  output_consume '/nix/store/strict-build-out' "$consume_snippet"
+)" || fail "output_consume failed in strict mode"
+[[ "$consumed" == 'consumed-remotely' ]] || fail "output_consume returned '${consumed}'"
+[[ ! -e "$consume_marker" ]] || fail "the output-consuming snippet ran on this workstation"
+grep -q 'bash -s -- ' "$spy_root/ssh.log" ||
+  fail "output_consume did not use the remote boundary"
+NIXHOMESERVER_REQUIRE_REMOTE=0 output_consume '/nix/store/local-control' "$consume_snippet" ||
+  fail "the ordinary-mode consumption control failed"
+[[ "$(cat "$consume_marker" 2>/dev/null)" == '/nix/store/local-control' ]] ||
+  fail "the ordinary-mode control did not run the snippet against the output"
+rm -f "$consume_marker"
+
+echo "  ✅ a strict output is verified and consumed on the server, never realised here"
+
+# --- finding 4: promotion keeps the previous generation registered -----------
+# An indirect root protects a store path only at the pathname it was registered
+# for. The spy store below models a collection that runs in the promotion window
+# and drops every path with no live root, so moving the previous generation
+# aside is observable as its deletion.
+gc_state="$spy_root/gc-roots"
+gc_store="$spy_root/gc-store"
+mkdir -p "$gc_state/current" "$gc_state/pending.0009" "$gc_store"
+ln -sfn /nix/store/old-generation "$gc_state/current/old-generation"
+ln -sfn /nix/store/new-check "$gc_state/pending.0009/new-check"
+: >"$gc_store/old-generation"
+: >"$gc_store/new-check"
+: >"$gc_store/unrelated"
+gc_status=0
+PATH="$spy_root/bin:$PATH" STRICT_NIXSTORE_FAIL_ON='new-check' STRICT_NIXSTORE_GC=1 \
+  STRICT_GC_ROOT_STATE="$gc_state" STRICT_GC_STORE="$gc_store" \
+  STRICT_GC_LIVE="$spy_root/gc-live" \
+  bash -c "$(strict_root_commit_snippet)" -- "$fixture" "$gc_state" 0009 1 "$outputs_json" \
+  >"$spy_root/gc.out" 2>&1 || gc_status=$?
+((gc_status != 0)) || fail "promotion reported success while its root registration failed"
+[[ ! -e "$gc_store/unrelated" ]] ||
+  fail "the collection model never ran, so the interleaving was not exercised"
+[[ -e "$gc_store/old-generation" ]] ||
+  fail "a concurrent collection dropped the previous generation while promotion could still fail"
+[[ "$(readlink "$gc_state/current/old-generation" 2>/dev/null)" == '/nix/store/old-generation' ]] ||
+  fail "a failed promotion did not restore the previous generation's root"
+[[ ! -e "$gc_state/current/new-check" ]] ||
+  fail "a failed promotion left the unregistered output behind"
+
+echo "  ✅ the previous generation stays registered through a failed promotion"
 
 echo "✅ strict remote-execution layer regression test passed"

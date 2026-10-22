@@ -35,14 +35,38 @@ strict_remote_worktree_root() {
   printf '%s\n' "$strict_repo_root"
 }
 
+# One reading of NIXHOMESERVER_REQUIRE_REMOTE, so "off", "on" and "not a value
+# this layer understands" stay distinguishable. Only an unset value means "off":
+# an explicit empty value is indistinguishable from a wrapper that expanded a
+# missing setting, and reading it as "off" would silently drop every guarantee
+# strict mode exists to make. A malformed value is a configuration error.
+strict_remote_mode() {
+  case "${NIXHOMESERVER_REQUIRE_REMOTE-0}" in
+    0) printf 'off\n' ;;
+    1) printf 'on\n' ;;
+    *) printf 'invalid\n' ;;
+  esac
+}
+
+strict_remote_mode_error() {
+  echo "strict-remote: NIXHOMESERVER_REQUIRE_REMOTE must be 0 or 1 (got '${NIXHOMESERVER_REQUIRE_REMOTE:-}')" >&2
+  return 2
+}
+
+# Every public entry point calls this before it chooses between the strict and
+# ordinary route. 0 admits the configured value; 2 rejects a malformed one, and
+# the caller must propagate that 2 instead of treating the setting as disabled.
+strict_remote_admit_mode() {
+  case "$(strict_remote_mode)" in
+    invalid) strict_remote_mode_error ;;
+    *) return 0 ;;
+  esac
+}
+
 strict_remote_enabled() {
-  case "${NIXHOMESERVER_REQUIRE_REMOTE:-0}" in
-    0) return 1 ;;
-    1) return 0 ;;
-    *)
-      echo "strict-remote: NIXHOMESERVER_REQUIRE_REMOTE must be 0 or 1" >&2
-      return 2
-      ;;
+  case "$(strict_remote_mode)" in
+    on) return 0 ;;
+    *) return 1 ;;
   esac
 }
 
@@ -69,13 +93,10 @@ strict_remote_preflight() {
   local mode="${1:-}" conflicting="${2:-}" head tree evidence actual_head actual_tree
   local untracked_entry hidden
   local -a unexpected_untracked=()
-  case "${NIXHOMESERVER_REQUIRE_REMOTE:-0}" in
-    0) return 1 ;;
-    1) ;;
-    *)
-      echo "strict-remote: NIXHOMESERVER_REQUIRE_REMOTE must be 0 or 1" >&2
-      return 2
-      ;;
+  case "$(strict_remote_mode)" in
+    off) return 1 ;;
+    on) ;;
+    *) strict_remote_mode_error ;;
   esac
   if [[ "$mode" == 0 ]]; then
     echo "strict-remote: strict mode conflicts with ${conflicting}" >&2
@@ -184,6 +205,36 @@ strict_verify_staged_archive() {
   actual="$(strict_remote_archive_digest "$remote_host" "$remote_archive")" || return 1
   if [[ "$actual" != "$expected" ]]; then
     echo "strict-remote: the staged archive is not the source archive that was verified" >&2
+    return 1
+  fi
+}
+
+# A strict build's outputs stay in the server's store, and strict mode never
+# brings them back: realising or copying one here would be a workstation build
+# of a remote result. The path a caller receives is therefore only honest if the
+# server actually holds it, so every printed output is checked there first. A
+# missing path is a broken answer, not a reason to materialise anything locally.
+strict_remote_verify_build_outputs() {
+  local remote_host="$1" payload="$2" path
+  local -a paths=()
+
+  [[ -n "$payload" ]] || return 0
+  if jq -e 'type == "array"' <<<"$payload" >/dev/null 2>&1; then
+    mapfile -t paths < <(jq -r '.[].outputs[]?' <<<"$payload")
+  else
+    mapfile -t paths < <(printf '%s\n' "$payload" | grep -E '^/nix/store/')
+  fi
+  ((${#paths[@]} > 0)) || return 0
+  [[ -n "$remote_host" ]] || {
+    echo "strict-remote: cannot verify build outputs without the host that built them" >&2
+    return 1
+  }
+  if ! printf '%s\n' "${paths[@]}" | ssh -o BatchMode=yes "$remote_host" '
+set -e
+while IFS= read -r output_path; do
+  [ -e "$output_path" ] || { echo "missing build output: $output_path" >&2; exit 1; }
+done'; then
+    echo "strict-remote: the strict build did not leave its outputs on ${remote_host}" >&2
     return 1
   fi
 }
@@ -433,6 +484,9 @@ strict_write_phase_receipt() {
   local status="$9" stdout_path="${10}" stderr_path="${11}" cleanup="${12}"
   local task="${HERMES_KANBAN_TASK:-}" board="${HERMES_KANBAN_BOARD:-}" run="${HERMES_KANBAN_RUN_ID:-}"
   local output_sha="" error_sha="" snippet_path="" snippet_sha="" receipt_tmp
+  local identity="${_strict_identity_state:-unchecked}" identity_checks="${_strict_identity_checks:-0}"
+  local query_sha="${_strict_query_sha:-}"
+  [[ "$identity_checks" =~ ^[0-9]+$ ]] || identity_checks=0
   [[ "$phase" =~ ^[A-Za-z0-9-]+$ && "$status" =~ ^[0-9]+$ ]] || return 1
   [[ -n "$task" && -n "$board" && -n "$run" ]] || {
     echo "strict-remote: task, board, and run provenance are required for receipts" >&2
@@ -465,12 +519,16 @@ strict_write_phase_receipt() {
     --arg host "$selected_host" --arg status "$status" \
     --arg cleanup "$cleanup" --arg output "$output_sha" --arg error "$error_sha" \
     --arg snippet_path "$snippet_path" --arg snippet_sha "$snippet_sha" \
+    --arg identity "$identity" --argjson identity_checks "$identity_checks" \
+    --arg query_sha "$query_sha" \
     --argjson host_facts "$host_facts_json" --argjson argv "$argv_json" \
     '{task:$task,board:$board,run:$run,phase:$phase,commit:$head,tree:$tree,
       canonical_manifest_sha256:$manifest,archive_sha256:$archive,helper_sha256:$helper,
       selected_host:$host,actual_host:$host_facts.hostname,actual_system:$host_facts.system,
       argv:$argv,snippet_path:(if $snippet_path == "" then null else $snippet_path end),
       snippet_sha256:(if $snippet_sha == "" then null else $snippet_sha end),
+      source_identity:$identity,source_identity_checks:$identity_checks,
+      query_sha256:(if $query_sha == "" then null else $query_sha end),
       exit_status:($status|tonumber),cleanup:$cleanup,
       output_sha256:(if $output == "" then null else $output end),
       stderr_sha256:(if $error == "" then null else $error end)}' >"$receipt_tmp"; then
@@ -611,6 +669,41 @@ print(hashlib.sha256(encoded).hexdigest())
 PY
 }
 
+# --- boundary identity checks -------------------------------------------------
+#
+# The preflight binds the attempt to the declared source once, but the attempt
+# then stages, transfers and executes over several seconds. Each of those
+# boundaries is where a drift between the declared commit and the live worktree
+# would make the receipt a claim about source nobody ran. The state is
+# attempt-scoped so a receipt can say what was checked instead of implying a
+# check that never happened.
+_strict_identity_checks=0
+_strict_identity_state="unchecked"
+_strict_query_sha=""
+
+strict_attempt_reset() {
+  _strict_identity_checks=0
+  _strict_identity_state="unchecked"
+  _strict_query_sha=""
+}
+
+# Verify the declared identity at one named boundary of an attempt. A refusal
+# here is a source-drift refusal, never a transport or build error, so callers
+# stop the phase and record it.
+strict_remote_check_identity() {
+  local boundary="$1"
+
+  _strict_identity_checks=$((_strict_identity_checks + 1))
+  if strict_remote_verify_identity 2>/dev/null; then
+    _strict_identity_state="verified"
+    return 0
+  fi
+  _strict_identity_state="drift"
+  echo "strict-remote: source identity drifted from the declared commit at the ${boundary} boundary" >&2
+  strict_remote_verify_identity >&2 || true
+  return 1
+}
+
 strict_remote_verify_identity() {
   local actual_head actual_tree untracked_entry hidden
   local evidence="${NIXHOMESERVER_EVIDENCE_DIR:-}"
@@ -621,12 +714,12 @@ strict_remote_verify_identity() {
   actual_tree="$(git -C "$strict_repo_root" rev-parse 'HEAD^{tree}')" || return 1
   if [[ "$actual_head" != "$NIXHOMESERVER_EXPECTED_HEAD" ||
     "$actual_tree" != "$NIXHOMESERVER_EXPECTED_TREE" ]]; then
-    echo "strict-remote: source identity changed during execution" >&2
+    echo "strict-remote: source identity no longer matches the declared commit" >&2
     return 1
   fi
   if ! git -C "$strict_repo_root" diff --quiet --ignore-submodules -- ||
     ! git -C "$strict_repo_root" diff --cached --quiet --ignore-submodules --; then
-    echo "strict-remote: source became dirty during execution" >&2
+    echo "strict-remote: source no longer matches the declared commit" >&2
     return 1
   fi
   if ! hidden="$(strict_index_hidden_paths "$strict_repo_root")"; then
@@ -634,7 +727,7 @@ strict_remote_verify_identity() {
     return 1
   fi
   if [[ -n "$hidden" ]]; then
-    echo "strict-remote: tracked paths became index-hidden during execution" >&2
+    echo "strict-remote: tracked paths became index-hidden after the attempt started" >&2
     return 1
   fi
   while IFS= read -r -d '' untracked_entry; do
@@ -732,16 +825,7 @@ outputs_json="$4"
 [[ "$token" =~ ^[0-9]{4}$ ]] || { echo "invalid root token" >&2; exit 2; }
 pending="$root_state/pending.$token"
 current="$root_state/current"
-previous="$root_state/previous.$token"
-
-rollback() {
-  local status=$?
-  rm -rf "$current"
-  if [[ -d "$previous" ]]; then
-    mv -- "$previous" "$current"
-  fi
-  exit "$status"
-}
+journal="$root_state/rollback.$token"
 
 install -d -m 0700 "$root_state"
 
@@ -754,26 +838,73 @@ if [[ "$retain" != 1 || "$(jq -r 'length' <<<"$outputs_json")" == 0 ]]; then
     fi
     rm -f -- "$existing_root"
   done < <(find "$current" -mindepth 1 -maxdepth 1 -type l -print)
-  rm -rf -- "$pending"
+  rm -rf -- "$pending" "$journal"
   printf 'released\n'
   exit 0
 fi
 
+# Promotion rewrites the roots in place. An indirect GC root protects a store
+# path only at the pathname it was registered for -- the auto-root entry points
+# at that symlink -- so moving the previous generation aside would unregister
+# every earlier output for the whole window in which the promotion could still
+# fail, and a concurrent collection could then delete a path rollback is about
+# to restore. Each step is journalled first and either swaps a link's target at
+# a stable pathname (which keeps its registration valid) or, for a genuinely new
+# output, registers a new pathname; the previous generation is released only
+# after every new root is registered and nothing can fail any more.
 mkdir -p "$current"
-if [[ -n "$(find "$current" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
-  rm -rf -- "$previous"
-  mv -- "$current" "$previous"
-fi
-mkdir -p "$current"
+while IFS= read -r foreign; do
+  echo "refusing to promote next to a non-symlink validation root: $foreign" >&2
+  exit 1
+done < <(find "$current" -mindepth 1 -maxdepth 1 ! -type l -print)
+: >"$journal"
+chmod 0600 "$journal"
+
+rollback() {
+  local status=$? action path target
+  trap - ERR
+  while IFS=$'\t' read -r action path target; do
+    case "$action" in
+      keep | drop)
+        nix-store --add-root "$path" --indirect --realise "$target" >/dev/null ||
+          echo "strict roots: could not restore $path during rollback" >&2
+        ;;
+      create) rm -f -- "$path" ;;
+    esac
+  done < <(tac "$journal")
+  rm -f -- "$journal"
+  exit "$status"
+}
 trap rollback ERR
 
+declare -A desired=()
 while IFS= read -r output_path; do
   [[ "$output_path" == /nix/store/* ]] || { echo "non-store validation output: $output_path" >&2; exit 1; }
-  nix-store --add-root "$current/$(basename "$output_path")" --indirect --realise "$output_path" >/dev/null
+  desired["$current/$(basename "$output_path")"]="$output_path"
 done < <(jq -r '[.[].outputs[]] | unique[]' <<<"$outputs_json")
 
+for root_path in "${!desired[@]}"; do
+  output_path="${desired[$root_path]}"
+  if [[ -L "$root_path" ]]; then
+    previous_target="$(readlink -- "$root_path")"
+    printf 'keep\t%s\t%s\n' "$root_path" "$previous_target" >>"$journal"
+    [[ "$previous_target" == "$output_path" ]] && continue
+  else
+    printf 'create\t%s\t-\n' "$root_path" >>"$journal"
+  fi
+  nix-store --add-root "$root_path" --indirect --realise "$output_path" >/dev/null
+done
+
+# Everything a rollback could still need is registered, so the superseded roots
+# can now be released. Nothing below this line can fail the promotion.
 trap - ERR
-rm -rf -- "$previous" "$pending"
+while IFS= read -r existing_root; do
+  [[ -n "${desired[$existing_root]:-}" ]] && continue
+  printf 'drop\t%s\t%s\n' "$existing_root" "$(readlink -- "$existing_root")" >>"$journal"
+  rm -f -- "$existing_root"
+done < <(find "$current" -mindepth 1 -maxdepth 1 -type l -print)
+rm -f -- "$journal"
+rm -rf -- "$pending"
 printf 'committed\n'
 SNIPPET
 }

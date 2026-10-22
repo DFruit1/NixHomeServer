@@ -140,6 +140,12 @@ kopia_package="$(nix build --impure --no-link --print-out-paths --expr '
     settings = builtins.getAttr (builtins.head (builtins.attrNames f.lib.nixhomeserverSettings)) f.lib.nixhomeserverSettings;
   in f.inputs.nixpkgs.legacyPackages.${settings.hostPlatform}.kopia
 ')"
+# The fixture is one behavioural block so both modes execute the same code. In
+# strict mode Kopia was built on the server, so the block runs there against its
+# own scratch space instead of realising or copying that output here.
+model_artifact_kopia_behaviour() {
+scratch="$(mktemp -d /tmp/nixhomeserver-model-kopia-test.XXXXXX)"
+trap 'rm -rf -- "$scratch"' EXIT
 kopia() {
   KOPIA_PASSWORD=public-fixture-only \
     KOPIA_CHECK_FOR_UPDATES=false \
@@ -167,3 +173,16 @@ jq -e '
   exit 1
 }
 echo 'Real Kopia snapshots exclude nested GGUF/partial files from both roots and retain metadata.'
+}
+
+if strict_remote_enabled; then
+  remote_run 'set -euo pipefail
+tree="$1"; shift
+kopia_package="$1"; shift
+model_json="$1"; shift
+cd "$tree"
+eval "$1"
+model_artifact_kopia_behaviour' "$kopia_package" "$model_json" "$(declare -f model_artifact_kopia_behaviour)"
+else
+  model_artifact_kopia_behaviour
+fi

@@ -43,4 +43,8 @@ fi
 # host has realised yet; nix build does, and is cheap once cached.
 nix build --no-link "$interpreter" >/dev/null
 
-bash "$helper/run-helper-tests.sh" "$interpreter/bin/python3"
+# The helper's own tests need the interpreter *and* the helper sources on one
+# machine. In strict mode the interpreter was built on the server, so the tests
+# run there against the staged tree instead of pulling a build output back onto
+# this workstation.
+output_consume "$interpreter" 'bash "$tree/custom_apps/rust/apps/ai-tools/helper/run-helper-tests.sh" "$output/bin/python3"'

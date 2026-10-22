@@ -194,7 +194,12 @@ if [[ "${NIXHOMESERVER_SKIP_NESTED_BUILDS:-0}" != "1" ]]; then
       in f.nixosConfigurations.${host}.config.systemd.services.homepage.environment.HOMEPAGE_CONFIG_FILE
     "
   )"
-  current_homepage_commands="$(jq -r ".adminGuide[].command" "$current_homepage_config")"
+  current_homepage_commands="$(
+    output_consume "$current_homepage_config" 'jq -r ".adminGuide[].command" "$output"'
+  )" || {
+    echo "❌ Could not read the current Homepage admin commands on their build host."
+    exit 1
+  }
 
   if [[ "$(jq -r '.storageProfile' <<<"$current_profile_json")" == "zfs-mirror" ]]; then
     for command in "zpool status -v" "btrfs filesystem usage /persist"; do
@@ -215,7 +220,12 @@ if [[ "${NIXHOMESERVER_SKIP_NESTED_BUILDS:-0}" != "1" ]]; then
       in cfg.systemd.services.homepage.environment.HOMEPAGE_CONFIG_FILE
     "
   )"
-  synthetic_homepage_commands="$(jq -r ".adminGuide[].command" "$synthetic_homepage_config")"
+  synthetic_homepage_commands="$(
+    output_consume "$synthetic_homepage_config" 'jq -r ".adminGuide[].command" "$output"'
+  )" || {
+    echo "❌ Could not read the synthetic Homepage admin commands on their build host."
+    exit 1
+  }
 
   if rg -q "zpool|btrfs" <<<"$synthetic_homepage_commands"; then
     echo "❌ Single-disk Homepage admin commands must not include ZFS or Btrfs commands."

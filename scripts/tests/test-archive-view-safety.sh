@@ -37,7 +37,17 @@ if ((run_behavior == 1)); then
       nix eval --raw "${helper_attr}.ARCHIVE_VIEW_HELPER" \
         --apply 'helper: builtins.head (builtins.attrNames (builtins.getContext helper))'
     )"
-    helper_output="$(nix-store --realise "$helper_drv")"
+    # `nix build` on a bare .drv path hands back the derivation itself, not its
+    # output, so realise the helper where its derivation lives: on the server in
+    # strict mode, and here only in ordinary mode. Strict mode never brings the
+    # output back onto this workstation.
+    if strict_remote_enabled; then
+      helper_output="$(remote_run 'set -euo pipefail
+shift
+nix-store --realise "$1"' "$helper_drv")"
+    else
+      helper_output="$(command nix-store --realise "$helper_drv")"
+    fi
   fi
 
 case "$helper" in
@@ -52,7 +62,7 @@ esac
 
 # A user namespace gives the behavioral test UID 0 and root-owned test files
 # without touching any real host files or requiring sudo.
-  unshare -Ur -- bash -s <<'ARCHIVE_TEST'
+read -r -d '' archive_view_test_body <<'ARCHIVE_TEST' || true
 set -euo pipefail
 
 helper="$ARCHIVE_VIEW_TEST_HELPER"
@@ -278,6 +288,16 @@ if find "$archive_root" -type d -name '.nixhomeserver-archive-stage-*' -print -q
   exit 1
 fi
 ARCHIVE_TEST
+
+# The helper was built on the server, so the behavioural run happens there with
+# it: strict mode never realises or copies the output onto this workstation.
+if strict_remote_enabled; then
+  output_consume "$helper_output" \
+    'ARCHIVE_VIEW_TEST_HELPER="$output/bin/files-archive-view-helper" unshare -Ur -- bash -c "$1"' \
+    "$archive_view_test_body"
+else
+  ARCHIVE_VIEW_TEST_HELPER="$helper" unshare -Ur -- bash -c "$archive_view_test_body"
+fi
 fi
 
 require_fixed modules/files/archives.nix 'O_NOFOLLOW' \

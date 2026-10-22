@@ -326,16 +326,26 @@ caddy_package="$(
     in f.nixosConfigurations.${host}.config.services.caddy.package
   "
 )"
-require_fixed "$freshrss_package/config.default.php" "'http_auth_auto_register' => true" \
-  "The pinned FreshRSS release must auto-create unknown HTTP-auth users on first login."
-require_fixed "$freshrss_package/config.default.php" "'http_auth_auto_register_email_field' => ''" \
-  "FreshRSS auto-registration must not substitute an email field for the authenticated username."
+# The package was built on the server in strict mode, so its contents are read
+# there instead of realising or copying that output onto this workstation.
+output_consume "$freshrss_package" '
+for fragment in "$@"; do
+  rg -Fq -- "$fragment" "$output/config.default.php" || exit 1
+done' "'http_auth_auto_register' => true" \
+  "'http_auth_auto_register_email_field' => ''" || {
+  echo "❌ The pinned FreshRSS release must auto-create unknown HTTP-auth users without substituting an email field."
+  exit 1
+}
 if rg -q 'X-Auth-Request-Email|REMOTE_USER_EMAIL' \
   <<<"$(jq -r .protectedApp.authenticatedCaddyConfig <<<"$freshrss_json")"; then
   echo "❌ FreshRSS's FastCGI identity mapping must use Kanidm preferred_username, not email."
   exit 1
 fi
 
+# The fixture is one behavioural block so both modes execute the same code. In
+# strict mode PHP and Caddy were built on the server, so the block runs there
+# instead of realising or copying those outputs onto this workstation.
+freshrss_runtime_behaviour() {
 test_tmp="$(mktemp -d)"
 trap 'rm -rf -- "$test_tmp"' EXIT
 reconcile_state="$test_tmp/reconcile-state"
@@ -488,5 +498,20 @@ FRESHRSS_DATA_PATH="$reconcile_state" \
   ls -la "$reconcile_state/users" "$reconcile_state/.retired-users" 2>/dev/null
   exit 1
 }
+}
+
+if strict_remote_enabled; then
+  remote_run 'set -euo pipefail
+tree="$1"; shift
+php_package="$1"; shift
+caddy_package="$1"; shift
+domain="$1"; shift
+freshrss_json="$1"; shift
+cd "$tree"
+eval "$1"
+freshrss_runtime_behaviour' "$php_package" "$caddy_package" "$domain" "$freshrss_json" "$(declare -f freshrss_runtime_behaviour)"
+else
+  freshrss_runtime_behaviour
+fi
 
 echo "✅ FreshRSS OIDC module tests passed."

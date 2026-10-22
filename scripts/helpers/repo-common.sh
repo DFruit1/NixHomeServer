@@ -381,6 +381,10 @@ stage_archive_on_remote() {
 nix_eval_uncached() {
   local eval_output_mode="$1" expr="$2"
 
+  # A malformed require-remote value must abort here too: this is the seam every
+  # configuration query in the repository funnels through, so reading it as
+  # "disabled" would evaluate locally under a setting strict mode rejects.
+  strict_remote_admit_mode || return 2
   command nix eval "--${eval_output_mode}" --impure --expr "$expr"
 }
 

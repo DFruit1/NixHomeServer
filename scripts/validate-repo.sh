@@ -176,8 +176,10 @@ need nix jq rg flock
 
 # Strict mode is admitted once, before any work: the declared commit/tree, a
 # clean index (including index-hidden paths), and an evidence directory inside
-# the assigned task root are prerequisites for every strict path below.
+# the assigned task root are prerequisites for every strict path below. A
+# malformed require-remote value is a refusal here, never an implicit "off".
 strict_mode=false
+strict_remote_admit_mode || exit $?
 if strict_remote_enabled; then
   strict_remote_preflight "" "" || exit $?
   strict_mode=true

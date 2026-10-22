@@ -220,7 +220,13 @@ operator_helper_expr='
 '
 NIXHOMESERVER_TEST_HOST="$host" nix build --impure --no-link --expr "$operator_helper_expr"
 operator_helper_path="$(jq -r '.operatorHelperOutPath' <<<"$host_probe_json")"
-operator_help_output="$("$operator_helper_path/bin/kanidm-operator-bootstrap" --help)"
+# The helper lives in the server's store, so its own interface check runs there:
+# the output is never realised or copied onto this workstation.
+operator_help_output="$(output_consume "$operator_helper_path" \
+  '"$output/bin/kanidm-operator-bootstrap" --help')" || {
+  echo "❌ The built Kanidm operator helper could not be inspected on its build host." >&2
+  exit 1
+}
 if ! rg -Fq 'issue [--ttl <seconds>] [--recovery]' <<<"$operator_help_output"; then
   echo "❌ The built Kanidm operator helper does not expose its safe enrollment/recovery workflow."
   exit 1

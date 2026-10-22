@@ -22,7 +22,9 @@ if [[ "${NIXHOMESERVER_SKIP_NESTED_BUILDS:-0}" != "1" ]]; then
     "
   )"
 
-  jq -e '
+  # The config lives in the server's store when strict mode built it, so the
+  # assertion runs there: no build output is realised or copied onto this host.
+  homepage_guidance_program='
   (.adminUsers | type == "array" and length == 1)
   and (.adminGroups | type == "array")
   and (.sftp.enabled == true)
@@ -68,29 +70,30 @@ if [[ "${NIXHOMESERVER_SKIP_NESTED_BUILDS:-0}" != "1" ]]; then
   and (.adminGuide[] | select(.title == "Allow Jellyfin discovery on Apple devices")
     | (.detail | contains("Local Network"))
     and (.detail | contains("Block all incoming connections")))
-' "$homepage_config" >/dev/null || {
+'
+  output_consume "$homepage_config" 'jq -e "$1" "$output"' "$homepage_guidance_program" >/dev/null || {
     echo "Homepage evaluated guidance/access contract regressed." >&2
-    jq . "$homepage_config" >&2
     exit 1
   }
 
-  for required_fragment in 'flock -x 9' 'registered-keys=' 'at most 10 SFTP device keys' 'ssh-keygen -l -f'; do
-    if ! rg -Fq "$required_fragment" "$sftp_installer"; then
-      echo "SFTP multi-device key safety regressed: missing $required_fragment" >&2
-      exit 1
-    fi
-  done
+  output_consume "$sftp_installer" '
+for fragment in "$@"; do
+  rg -Fq -- "$fragment" "$output" || { echo "missing $fragment" >&2; exit 1; }
+done' 'flock -x 9' 'registered-keys=' 'at most 10 SFTP device keys' 'ssh-keygen -l -f' || {
+    echo "SFTP multi-device key safety regressed." >&2
+    exit 1
+  }
 
-  key_validation_line="$(rg -n -F 'ssh-keygen -l -f' "$sftp_installer" | head -n 1 | cut -d: -f1)"
-  key_storage_line="$(rg -n -F 'install -d -m 0755' "$sftp_installer" | head -n 1 | cut -d: -f1)"
-  if [[ -z "$key_validation_line" || -z "$key_storage_line" || "$key_validation_line" -ge "$key_storage_line" ]]; then
+  output_consume "$sftp_installer" '
+validation_line="$(rg -n -F "ssh-keygen -l -f" "$output" | head -n 1 | cut -d: -f1)"
+storage_line="$(rg -n -F "install -d -m 0755" "$output" | head -n 1 | cut -d: -f1)"
+[[ -n "$validation_line" && -n "$storage_line" && "$validation_line" -lt "$storage_line" ]]' || {
     echo "SFTP key structure must be verified before the authorized-keys directory or file is changed." >&2
     exit 1
-  fi
-  if invalid_key_output="$(
-    printf '%s\n' 'ssh-ed25519 AAAA syntactically-plausible-but-corrupt' \
-      | "$sftp_installer" homepage-validation-user 2>&1
-  )"; then
+  }
+  if invalid_key_output="$(output_consume "$sftp_installer" \
+    '"$output" homepage-validation-user <<<"$1" 2>&1' \
+    'ssh-ed25519 AAAA syntactically-plausible-but-corrupt')"; then
     echo "SFTP installer accepted a structurally invalid public key." >&2
     exit 1
   fi

@@ -72,6 +72,9 @@ remote_build_flake() {
     return 1
   fi
 
+  if ! strict_remote_admit_mode; then
+    return 2
+  fi
   if strict_remote_enabled; then
     _remote_build_strict_run "$@"
     return
@@ -217,6 +220,7 @@ _remote_build_strict_run() {
   local stdout_file stderr_file argv_json
 
   strict_remote_preflight "${REMOTE_BUILD:-1}" "REMOTE_BUILD=0" || return $?
+  strict_attempt_reset
 
   repo_root="$(strict_remote_worktree_root)" || return 1
   if [[ -z "$remote_build_host" ]]; then
@@ -264,6 +268,17 @@ _remote_build_strict_run() {
     echo "strict-remote: the build archive does not match the declared committed tree" >&2
     return 1
   fi
+  # The archive verified against the declared commit; the worktree that would
+  # keep moving behind it is re-checked at each boundary, so no receipt can
+  # describe source the build did not receive.
+  if ! strict_remote_check_identity pre-staging 2>>"$stderr_file"; then
+    strict_guard_release
+    strict_write_phase_receipt "$phase" "$remote_build_host" "$host_facts" "$manifest" \
+      "" "$helper_sha" "$argv_json" "" 1 "$stdout_file" "$stderr_file" "none" || true
+    cat "$stderr_file" >&2
+    rm -f "$archive" "$stdout_file" "$stderr_file"
+    return 1
+  fi
   if ! archive_sha="$(sha256sum "$archive" | awk '{print $1}')"; then
     strict_guard_release
     rm -f "$archive" "$stdout_file" "$stderr_file"
@@ -300,6 +315,17 @@ _remote_build_strict_run() {
     rm -f "$stdout_file" "$stderr_file"
     return 1
   fi
+  # The server now holds the verified source. Re-check before the build that the
+  # receipt will describe.
+  if ! strict_remote_check_identity pre-execution 2>>"$stderr_file"; then
+    cleanup="$(strict_remote_cleanup "$remote_build_host" "" "$remote_archive")"
+    strict_guard_release
+    strict_write_phase_receipt "$phase" "$remote_build_host" "$host_facts" "$manifest" \
+      "$archive_sha" "$helper_sha" "$argv_json" "" 1 "$stdout_file" "$stderr_file" "$cleanup" || true
+    cat "$stderr_file" >&2
+    rm -f "$stdout_file" "$stderr_file"
+    return 1
+  fi
 
   if ! remote_dir="$(ssh -o BatchMode=yes "$remote_build_host" \
     "mktemp -d /tmp/nixhomeserver-remote-build.XXXXXX" 2>>"$stderr_file")"; then
@@ -330,6 +356,18 @@ _remote_build_strict_run() {
     fi
     rm -f "$stdout_file" "$stderr_file"
     return "$status"
+  fi
+
+  # The build returned; the receipt is about to certify which source produced
+  # it, so the worktree must still be that source.
+  if ! strict_remote_check_identity post-execution 2>>"$stderr_file"; then
+    cleanup="$(strict_remote_settle_cleanup "$remote_build_host" "$remote_dir" "$remote_archive")"
+    strict_guard_release
+    strict_write_phase_receipt "$phase" "$remote_build_host" "$host_facts" "$manifest" \
+      "$archive_sha" "$helper_sha" "$argv_json" "" 1 "$stdout_file" "$stderr_file" "$cleanup" || true
+    cat "$stderr_file" >&2
+    rm -f "$stdout_file" "$stderr_file"
+    return 1
   fi
 
   # Record what the filesystem says, not what the remote trap was supposed to do.

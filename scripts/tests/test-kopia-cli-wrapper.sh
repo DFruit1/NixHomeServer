@@ -96,14 +96,25 @@ let
 in (builtins.getAttr host f.nixosConfigurations).config.security.wrappers.nixhomeserver-kopia.source
 ')"
 
-rg -q 'EUID != 0' "$wrapper_path"
-rg -Fq 'KOPIA_PASSWORD="$(tr -d '\''\r\n'\'' < "$secret_file")"' "$wrapper_path"
-rg -Fq 'KOPIA_CONFIG_PATH="$config_file"' "$wrapper_path"
-rg -Fq 'KOPIA_CACHE_DIRECTORY="$cache_dir"' "$wrapper_path"
-if rg -q -- '--password=' "$wrapper_path"; then
+# The wrapper was built on the server, so its contents are inspected there:
+# strict mode never realises or copies a remote output onto this workstation.
+# The wrapper's credential line contains a literal backslash escape. Build it
+# outside the argument list so the shell does not consume it as an escape.
+kopia_password_line='KOPIA_PASSWORD="$(tr -d '\''\r\n'\'' < "$secret_file")"'
+output_consume "$wrapper_path" '
+rg -q "EUID != 0" "$output" || exit 1
+for fragment in "$@"; do
+  rg -Fq -- "$fragment" "$output" || exit 1
+done
+if rg -q -- "--password=" "$output"; then
   echo "Managed Kopia CLI exposes its repository password in argv." >&2
   exit 1
-fi
+fi' "$kopia_password_line" \
+  'KOPIA_CONFIG_PATH="$config_file"' \
+  'KOPIA_CACHE_DIRECTORY="$cache_dir"' || {
+  echo "Managed Kopia CLI wrapper lost its root-only, argv-safe credential handling." >&2
+  exit 1
+}
 
 credential_wrapper_path="$(nix build --impure --no-link --print-out-paths --expr '
 let
@@ -112,13 +123,20 @@ let
 in (builtins.getAttr host f.nixosConfigurations).config.security.wrappers.nixhomeserver-kopia-browser-credential.source
 ')"
 
-rg -q 'EUID != 0' "$credential_wrapper_path"
-rg -Fq 'Username: kopia-admin' "$credential_wrapper_path"
-rg -Fq 'password="$(tr -d '\''\r\n'\'' < "$secret_file")"' "$credential_wrapper_path"
-if rg -q -- '--password=' "$credential_wrapper_path"; then
+credential_password_line='password="$(tr -d '\''\r\n'\'' < "$secret_file")"'
+output_consume "$credential_wrapper_path" '
+rg -q "EUID != 0" "$output" || exit 1
+for fragment in "$@"; do
+  rg -Fq -- "$fragment" "$output" || exit 1
+done
+if rg -q -- "--password=" "$output"; then
   echo "Kopia browser credential helper exposes the password in argv." >&2
   exit 1
-fi
+fi' 'Username: kopia-admin' \
+  "$credential_password_line" || {
+  echo "Kopia browser credential helper lost its argv-safe password handling." >&2
+  exit 1
+}
 
 health_json="$(nix eval --json '.#nixosConfigurations.server.config' --apply 'cfg: {
   bootstrapScript = cfg.systemd.services.kopia-repository-bootstrap.script;

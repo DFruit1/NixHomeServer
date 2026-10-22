@@ -99,6 +99,9 @@ remote_eval_batch_json() {
 in {
 ${built}}"
 
+  if ! strict_remote_admit_mode; then
+    return 2
+  fi
   if strict_remote_enabled; then
     _remote_eval_strict_run "$all"
     return
@@ -221,6 +224,7 @@ _remote_eval_strict_run() {
   local stdout_file stderr_file remote_err remote_expr stage_status_file
 
   strict_remote_preflight "${REMOTE_EVAL:-1}" "REMOTE_EVAL=0" || return $?
+  strict_attempt_reset
 
   repo_root="$(strict_remote_worktree_root)" || return 1
   selected_host="$(remote_eval_host_context)" || return 1
@@ -235,6 +239,10 @@ _remote_eval_strict_run() {
   helper_sha="$(strict_helper_digest)" || return 1
   attempt="$(strict_next_attempt eval)" || return 1
   phase="eval-${attempt}"
+  # The receipt has to identify the query that actually ran, not merely the
+  # phase it ran in: two evaluations of one commit are different claims.
+  _strict_query_sha="$(printf '%s' "$expression" | sha256sum | awk '{print $1}')" || return 1
+  [[ "$_strict_query_sha" =~ ^[0-9a-f]{64}$ ]] || return 1
 
   stdout_file="$(mktemp "${TMPDIR:-/tmp}/nixhomeserver-strict-eval-out.XXXXXX")" || return 1
   stderr_file="$(mktemp "${TMPDIR:-/tmp}/nixhomeserver-strict-eval-err.XXXXXX")" || {
@@ -255,7 +263,7 @@ _remote_eval_strict_run() {
   # From here on remote paths may exist, so a signal has to be able to clean them
   # and leave a receipt instead of stranding an unattributed attempt.
   strict_guard_context "$phase" "$remote_eval_host" "$host_facts" "$manifest" "$helper_sha" \
-    '[]' "" "$stdout_file" "$stderr_file" "$archive"
+    '[]' "$expression" "$stdout_file" "$stderr_file" "$archive"
   strict_guard_arm
 
   # Bind execution to the source that actually ships: the archive's extracted
@@ -266,6 +274,17 @@ _remote_eval_strict_run() {
     cat "$stderr_file" >&2
     rm -f "$archive" "$stdout_file" "$stderr_file"
     echo "strict-remote: the source archive does not match the declared committed tree" >&2
+    return 1
+  fi
+  # The archive verified against the declared commit; the worktree that would
+  # keep changing behind it is checked at every boundary from here on, so a
+  # receipt can never describe source this attempt did not receive.
+  if ! strict_remote_check_identity pre-staging 2>>"$stderr_file"; then
+    strict_guard_release
+    strict_write_phase_receipt "$phase" "$remote_eval_host" "$host_facts" "$manifest" \
+      "" "$helper_sha" '[]' "$expression" 1 "$stdout_file" "$stderr_file" "none" || true
+    cat "$stderr_file" >&2
+    rm -f "$archive" "$stdout_file" "$stderr_file"
     return 1
   fi
   if ! archive_sha="$(sha256sum "$archive" | awk '{print $1}')"; then
@@ -284,7 +303,7 @@ _remote_eval_strict_run() {
     strict_guard_release
     rm -f "$archive" "$stage_status_file"
     strict_write_phase_receipt "$phase" "$remote_eval_host" "$host_facts" "$manifest" \
-      "" "$helper_sha" '[]' "" 1 "$stdout_file" "$stderr_file" "$cleanup" || true
+      "" "$helper_sha" '[]' "$expression" 1 "$stdout_file" "$stderr_file" "$cleanup" || true
     cat "$stderr_file" >&2
     echo "strict-remote: could not stage the source archive (cleanup: ${cleanup})" >&2
     rm -f "$stdout_file" "$stderr_file"
@@ -298,9 +317,20 @@ _remote_eval_strict_run() {
     cleanup="$(strict_remote_cleanup "$remote_eval_host" "" "$remote_archive")"
     strict_guard_release
     strict_write_phase_receipt "$phase" "$remote_eval_host" "$host_facts" "$manifest" \
-      "$archive_sha" "$helper_sha" '[]' "" 1 "$stdout_file" "$stderr_file" "$cleanup" || true
+      "$archive_sha" "$helper_sha" '[]' "$expression" 1 "$stdout_file" "$stderr_file" "$cleanup" || true
     cat "$stderr_file" >&2
     echo "strict-remote: the staged source archive is not the verified source (cleanup: ${cleanup})" >&2
+    rm -f "$stdout_file" "$stderr_file"
+    return 1
+  fi
+  # Staging is complete and the server holds the verified source: re-check the
+  # worktree before the evaluation that the receipt will describe.
+  if ! strict_remote_check_identity pre-execution 2>>"$stderr_file"; then
+    cleanup="$(strict_remote_cleanup "$remote_eval_host" "" "$remote_archive")"
+    strict_guard_release
+    strict_write_phase_receipt "$phase" "$remote_eval_host" "$host_facts" "$manifest" \
+      "$archive_sha" "$helper_sha" '[]' "$expression" 1 "$stdout_file" "$stderr_file" "$cleanup" || true
+    cat "$stderr_file" >&2
     rm -f "$stdout_file" "$stderr_file"
     return 1
   fi
@@ -310,7 +340,7 @@ _remote_eval_strict_run() {
     cleanup="$(strict_remote_cleanup "$remote_eval_host" "" "$remote_archive")"
     strict_guard_release
     strict_write_phase_receipt "$phase" "$remote_eval_host" "$host_facts" "$manifest" \
-      "$archive_sha" "$helper_sha" '[]' "" 1 "$stdout_file" "$stderr_file" "$cleanup" || true
+      "$archive_sha" "$helper_sha" '[]' "$expression" 1 "$stdout_file" "$stderr_file" "$cleanup" || true
     cat "$stderr_file" >&2
     echo "strict-remote: could not create a remote staging directory (cleanup: ${cleanup})" >&2
     rm -f "$stdout_file" "$stderr_file"
@@ -324,7 +354,7 @@ _remote_eval_strict_run() {
     cleanup="$(strict_remote_cleanup "$remote_eval_host" "$remote_dir" "$remote_archive")"
     strict_guard_release
     strict_write_phase_receipt "$phase" "$remote_eval_host" "$host_facts" "$manifest" \
-      "$archive_sha" "$helper_sha" '[]' "" 1 "$stdout_file" "$stderr_file" "$cleanup" || true
+      "$archive_sha" "$helper_sha" '[]' "$expression" 1 "$stdout_file" "$stderr_file" "$cleanup" || true
     cat "$stderr_file" >&2
     echo "strict-remote: could not transfer the query to ${remote_eval_host} (cleanup: ${cleanup})" >&2
     rm -f "$stdout_file" "$stderr_file"
@@ -338,7 +368,7 @@ _remote_eval_strict_run() {
     cleanup="$(strict_remote_cleanup "$remote_eval_host" "$remote_dir" "$remote_archive")"
     strict_guard_release
     strict_write_phase_receipt "$phase" "$remote_eval_host" "$host_facts" "$manifest" \
-      "$archive_sha" "$helper_sha" '[]' "" 1 "$stdout_file" "$stderr_file" "$cleanup" || true
+      "$archive_sha" "$helper_sha" '[]' "$expression" 1 "$stdout_file" "$stderr_file" "$cleanup" || true
     echo "strict-remote: could not prepare a diagnostic file after staging (cleanup: ${cleanup})" >&2
     rm -f "$stdout_file" "$stderr_file"
     return 1
@@ -351,7 +381,7 @@ _remote_eval_strict_run() {
     cleanup="$(strict_remote_cleanup "$remote_eval_host" "$remote_dir" "$remote_archive")"
     strict_guard_release
     strict_write_phase_receipt "$phase" "$remote_eval_host" "$host_facts" "$manifest" \
-      "$archive_sha" "$helper_sha" '[]' "" "$status" "$stdout_file" "$stderr_file" "$cleanup" || true
+      "$archive_sha" "$helper_sha" '[]' "$expression" "$status" "$stdout_file" "$stderr_file" "$cleanup" || true
     cat "$remote_err" >&2
     echo "strict-remote: remote evaluation failed on ${remote_eval_host} (cleanup: ${cleanup})" >&2
     rm -f "$remote_err" "$stdout_file" "$stderr_file"
@@ -360,11 +390,23 @@ _remote_eval_strict_run() {
   rm -f "$remote_err"
   printf '%s\n' "$output" >"$stdout_file"
 
+  # The evaluation returned; the receipt is about to certify which source it
+  # evaluated, so the worktree must still be that source.
+  if ! strict_remote_check_identity post-execution 2>>"$stderr_file"; then
+    cleanup="$(strict_remote_settle_cleanup "$remote_eval_host" "$remote_dir" "$remote_archive")"
+    strict_guard_release
+    strict_write_phase_receipt "$phase" "$remote_eval_host" "$host_facts" "$manifest" \
+      "$archive_sha" "$helper_sha" '[]' "$expression" 1 "$stdout_file" "$stderr_file" "$cleanup" || true
+    cat "$stderr_file" >&2
+    rm -f "$stdout_file" "$stderr_file"
+    return 1
+  fi
+
   # Record what the filesystem says, not what the remote trap was supposed to do.
   cleanup="$(strict_remote_settle_cleanup "$remote_eval_host" "$remote_dir" "$remote_archive")"
   strict_guard_release
   strict_write_phase_receipt "$phase" "$remote_eval_host" "$host_facts" "$manifest" \
-    "$archive_sha" "$helper_sha" '[]' "" 0 "$stdout_file" "$stderr_file" "$cleanup" || {
+    "$archive_sha" "$helper_sha" '[]' "$expression" 0 "$stdout_file" "$stderr_file" "$cleanup" || {
     rm -f "$stdout_file" "$stderr_file"
     return 1
   }

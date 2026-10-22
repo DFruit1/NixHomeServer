@@ -177,6 +177,11 @@ fixture_runtime="$(nix build --impure --no-link --print-out-paths --expr "
     paths = with pkgs; [ acl coreutils findutils gnugrep util-linux ];
   }
 ")"
+
+# The fixture is one behavioural block so both modes execute the same code. In
+# strict mode the runtime closure lives in the server's store, so the block runs
+# there instead of realising or copying that output onto this workstation.
+ai_tools_acl_behaviour() {
 export PATH="$fixture_runtime/bin:$PATH"
 for tool in setfacl getfacl find setpriv unshare mount install; do
   if ! command -v "$tool" >/dev/null 2>&1; then
@@ -289,3 +294,16 @@ if ! unshare --user --map-auto --map-root-user --mount \
 fi
 
 echo "AI Tools public host, egress confinement, shared-root ACL, workspace-only writes and data-pool guard passed."
+}
+
+if strict_remote_enabled; then
+  remote_run 'set -euo pipefail
+tree="$1"; shift
+fixture_runtime="$1"; shift
+acl_script="$1"; shift
+cd "$tree"
+eval "$1"
+ai_tools_acl_behaviour' "$fixture_runtime" "$acl_script" "$(declare -f ai_tools_acl_behaviour)"
+else
+  ai_tools_acl_behaviour
+fi

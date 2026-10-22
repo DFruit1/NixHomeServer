@@ -68,6 +68,11 @@ remote_run() {
   local snippet="$1"
   shift
 
+  # A malformed require-remote value is a configuration error, not "disabled":
+  # reading it as off would send this call to the local fallback below.
+  if ! strict_remote_admit_mode; then
+    return 2
+  fi
   if strict_remote_enabled; then
     _remote_run_strict_run "$snippet" "$@"
     return
@@ -269,6 +274,7 @@ _remote_run_strict_run() {
   local stdout_file stderr_file argv_json stage_status_file
 
   strict_remote_preflight "${REMOTE_RUN:-1}" "REMOTE_RUN=0" || return $?
+  strict_attempt_reset
   if [[ -n "${REMOTE_RUN_PERSIST_DIR:-}" ]]; then
     echo "strict-remote: a durable REMOTE_RUN_PERSIST_DIR is not accountable staging; unset it for a strict run" >&2
     return 1
@@ -318,6 +324,16 @@ _remote_run_strict_run() {
     cat "$stderr_file" >&2
     rm -f "$archive" "$stdout_file" "$stderr_file"
     echo "strict-remote: the run archive does not match the declared committed tree" >&2
+    return 1
+  fi
+  # The archive verified against the declared commit; the worktree is re-checked
+  # at each boundary so no receipt describes source the run did not receive.
+  if ! strict_remote_check_identity pre-staging 2>>"$stderr_file"; then
+    strict_guard_release
+    strict_write_phase_receipt "$phase" "$remote_run_host" "$host_facts" "$manifest" \
+      "" "$helper_sha" "$argv_json" "$snippet" 1 "$stdout_file" "$stderr_file" "none" || true
+    cat "$stderr_file" >&2
+    rm -f "$archive" "$stdout_file" "$stderr_file"
     return 1
   fi
   if ! archive_sha="$(sha256sum "$archive" | awk '{print $1}')"; then
@@ -383,6 +399,18 @@ _remote_run_strict_run() {
     return 1
   fi
 
+  # Staging and the snippet transfer are done. Re-check the source immediately
+  # before the execution whose receipt will name it.
+  if ! strict_remote_check_identity pre-execution 2>>"$stderr_file"; then
+    cleanup="$(strict_remote_cleanup "$remote_run_host" "$remote_dir" "$remote_archive")"
+    strict_guard_release
+    strict_write_phase_receipt "$phase" "$remote_run_host" "$host_facts" "$manifest" \
+      "$archive_sha" "$helper_sha" "$argv_json" "$snippet" 1 "$stdout_file" "$stderr_file" "$cleanup" || true
+    cat "$stderr_file" >&2
+    rm -f "$stdout_file" "$stderr_file"
+    return 1
+  fi
+
   remote_cmd="bash -s -- $(printf '%q ' "$remote_dir" "$remote_archive" "$remote_snippet" "${forward[@]}")"
   ssh -o BatchMode=yes "$remote_run_host" "$remote_cmd" \
     >"$stdout_file" 2> >(tee -a "$stderr_file" >&2) <<<"$(_remote_run_script)" || status=$?
@@ -399,6 +427,18 @@ _remote_run_strict_run() {
     fi
     rm -f "$stdout_file" "$stderr_file"
     return "$status"
+  fi
+
+  # The snippet returned; the receipt is about to certify which source ran, so
+  # the worktree must still be that source.
+  if ! strict_remote_check_identity post-execution 2>>"$stderr_file"; then
+    cleanup="$(strict_remote_settle_cleanup "$remote_run_host" "$remote_dir" "$remote_archive")"
+    strict_guard_release
+    strict_write_phase_receipt "$phase" "$remote_run_host" "$host_facts" "$manifest" \
+      "$archive_sha" "$helper_sha" "$argv_json" "$snippet" 1 "$stdout_file" "$stderr_file" "$cleanup" || true
+    cat "$stderr_file" >&2
+    rm -f "$stdout_file" "$stderr_file"
+    return 1
   fi
 
   # Record what the filesystem says, not what the remote trap was supposed to do.

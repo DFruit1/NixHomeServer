@@ -112,6 +112,9 @@ require_json_equal() {
 # (drvPath and other single strings) is printed to stdout.
 flake_eval() {
   local body="$1"
+  if ! strict_remote_admit_mode; then
+    return 2
+  fi
   if strict_remote_enabled; then
     remote_eval_batch_json "value=(let ${body})" | jq -r '.value'
     return
@@ -127,6 +130,9 @@ flake_eval() {
 # JSON variant of flake_eval.
 flake_eval_json() {
   local body="$1"
+  if ! strict_remote_admit_mode; then
+    return 2
+  fi
   if strict_remote_enabled; then
     remote_eval_batch_json "value=(let ${body})" | jq -c '.value'
     return
@@ -153,7 +159,10 @@ flake_eval_json() {
 # arguments, never as an environment bridge. Inside the remote snippet `nix`
 # resolves to the server's own binary, so this cannot recurse.
 nix() {
-  local subcommand="${1:-}" context status=0 output path
+  local subcommand="${1:-}" context status=0 output
+  if ! strict_remote_admit_mode; then
+    return 2
+  fi
   if ! strict_remote_enabled; then
     command nix "$@"
     return
@@ -167,8 +176,15 @@ nix() {
   esac
 
   context="$(remote_eval_host_context)" || return 1
-  output="$(
-    remote_run 'set -euo pipefail
+  # The remote half runs with stdout redirected to a file rather than captured
+  # in a command substitution: resolving the host is remote_run's job, and a
+  # variable it sets inside a substitution would be lost with the subshell --
+  # leaving the build-output verification below without the host that built the
+  # outputs it is asked to confirm.
+  local out_file
+  out_file="$(mktemp "${TMPDIR:-/tmp}/nixhomeserver-run-out.XXXXXX")" || return 1
+  status=0
+  remote_run 'set -euo pipefail
 tree="$1"
 shift
 host="${1:-}"
@@ -179,30 +195,56 @@ if [[ -n "$host" ]]; then
 fi
 export NIXHOMESERVER_FLAKE_REF_FOR_EVAL="path:$tree"
 export NIXHOMESERVER_REPO_ROOT_FOR_EVAL="$tree"
-nix "$@"' "$context" "$@"
-  )" || status=$?
+nix "$@"' "$context" "$@" >"$out_file" || status=$?
   if ((status != 0)); then
+    rm -f "$out_file"
     return "$status"
   fi
+  output="$(cat "$out_file")"
+  rm -f "$out_file"
   printf '%s\n' "$output"
 
-  # A remote build leaves its outputs in the server's store. Materialise the
-  # ones a caller was handed -- substitution only, never evaluation -- so a test
-  # that reads `$out/bin/...` keeps working.
+  # A remote build leaves its outputs in the server's store, and strict mode
+  # never brings them back: `nix-store --realise` here would be a workstation
+  # build or copy of a remote result, which is exactly what the boundary
+  # forbids. The path handed back is therefore only published once the server
+  # has confirmed it holds it, and any suite that needs to read or run inside an
+  # output does so through output_consume, on that same server.
   if [[ "$subcommand" == build ]]; then
-    if jq -e 'type == "array"' <<<"$output" >/dev/null 2>&1; then
-      while IFS= read -r path; do
-        [[ -n "$path" ]] || continue
-        command nix-store --realise "$path" >/dev/null || return 1
-      done < <(jq -r '.[].outputs[]?' <<<"$output")
-    else
-      while IFS= read -r path; do
-        [[ "$path" == /nix/store/* ]] || continue
-        command nix-store --realise "$path" >/dev/null || return 1
-      done <<<"$output"
-    fi
+    strict_remote_verify_build_outputs "${remote_run_host:-}" "$output" || return 1
   fi
   return 0
+}
+
+# Consume a build output on the machine that produced it.
+#
+# Under strict mode the output lives in the server's store and its contents
+# never have to exist here, so the reader runs there: the snippet receives the
+# staged repository tree as `$tree`, the output as `$output`, and the caller's
+# arguments after them, and only its result travels back. Ordinary mode runs the
+# same snippet here against the same positional contract, so a suite keeps one
+# behavioural path and no output is ever realised or copied onto this machine.
+output_consume() {
+  local output="$1" snippet="$2"
+  shift 2
+  if ! strict_remote_admit_mode; then
+    return 2
+  fi
+  if strict_remote_enabled; then
+    remote_run "set -euo pipefail
+tree=\"\$1\"
+shift
+output=\"\$1\"
+shift
+cd \"\$tree\"
+$snippet" "$output" "$@"
+    return
+  fi
+  bash -c "set -euo pipefail
+tree=\"\$1\"
+output=\"\$2\"
+shift 2
+$snippet" output-consume "$PWD" "$output" "$@"
 }
 
 # The shared cache helper in repo-common.sh amortizes whole-module configuration
@@ -217,7 +259,10 @@ nix "$@"' "$context" "$@"
 nix_eval_uncached() {
   local eval_output_mode="$1" expr="$2"
 
-  if strict_remote_enabled 2>/dev/null; then
+  if ! strict_remote_admit_mode; then
+    return 2
+  fi
+  if strict_remote_enabled; then
     nix eval "--${eval_output_mode}" --impure --expr "$expr"
     return
   fi

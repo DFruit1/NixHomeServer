@@ -83,7 +83,10 @@ if [[ "${NIXHOMESERVER_SKIP_NESTED_BUILDS:-0}" != "1" ]]; then
     exit 1
   fi
 
-  jq -e '
+  # The config and helper scripts live in the server's store when strict mode
+  # built them, so every content assertion runs there: no build output is
+  # realised or copied onto this workstation.
+  vault_contract_program='
     (.vault.enabled == true)
     and (.vault.kanidmBaseUrl | startswith("https://"))
     and (.vault.sessionTtlSeconds == 900)
@@ -100,58 +103,55 @@ if [[ "${NIXHOMESERVER_SKIP_NESTED_BUILDS:-0}" != "1" ]]; then
     and (.vault.features.kavitaApiKeys.requiredAnyGroups == ["kavita-users"])
     and ([.. | objects | to_entries[] | select(.key | test("password|secret|apiKey"; "i")) | .key]
       | unique | sort) == ["freshrssApiPassword", "kavitaApiKeys", "syncthingApiKey"]
-  ' "$homepage_config" >/dev/null || {
+  '
+  output_consume "$homepage_config" 'jq -e "$1" "$output"' "$vault_contract_program" >/dev/null || {
     echo "Homepage evaluated vault contract regressed." >&2
-    jq .vault "$homepage_config" >&2
     exit 1
   }
 
-  for required_fragment in \
+  helper_has_fragments() {
+    local helper_path="$1" failure="$2"
+    shift 2
+    output_consume "$helper_path" '
+for fragment in "$@"; do
+  rg -Fq -- "$fragment" "$output" || { echo "missing: $fragment" >&2; exit 1; }
+done' "$@" || {
+      echo "$failure" >&2
+      exit 1
+    }
+  }
+
+  helper_has_fragments "$syncthing_key_helper" "Syncthing API key helper safety regressed." \
     'systemctl stop syncthing.service' \
     'openssl rand -hex 32' \
     'syncthing:syncthing' \
     'xmllint --noout' \
     'flock -x 8' \
-    'configuration/gui/apikey'; do
-    if ! rg -Fq -- "$required_fragment" "$syncthing_key_helper"; then
-      echo "Syncthing API key helper safety regressed: missing $required_fragment" >&2
-      exit 1
-    fi
-  done
-  stop_line="$(rg -n -F 'systemctl stop syncthing.service' "$syncthing_key_helper" | head -n 1 | cut -d: -f1)"
-  move_line="$(rg -n -F 'homepage-vault-new' "$syncthing_key_helper" | head -n 1 | cut -d: -f1)"
-  if [[ -z "$stop_line" || -z "$move_line" || "$move_line" -le "$stop_line" ]]; then
+    'configuration/gui/apikey'
+  output_consume "$syncthing_key_helper" '
+stop_line="$(rg -n -F "systemctl stop syncthing.service" "$output" | head -n 1 | cut -d: -f1)"
+move_line="$(rg -n -F "homepage-vault-new" "$output" | head -n 1 | cut -d: -f1)"
+[[ -n "$stop_line" && -n "$move_line" && "$move_line" -gt "$stop_line" ]]' || {
     echo "Syncthing config edits must happen only after the service is stopped." >&2
     exit 1
-  fi
-  show_exit_line="$(rg -n -F 'exit 0' "$syncthing_key_helper" | head -n 1 | cut -d: -f1)"
-  stop_line_check="$(rg -n -F 'systemctl stop syncthing.service' "$syncthing_key_helper" | head -n 1 | cut -d: -f1)"
-  if [[ -z "$show_exit_line" || "$show_exit_line" -ge "$stop_line_check" ]]; then
+  }
+  output_consume "$syncthing_key_helper" '
+show_exit_line="$(rg -n -F "exit 0" "$output" | head -n 1 | cut -d: -f1)"
+stop_line="$(rg -n -F "systemctl stop syncthing.service" "$output" | head -n 1 | cut -d: -f1)"
+[[ -n "$show_exit_line" && "$show_exit_line" -lt "$stop_line" ]]' || {
     echo "Syncthing show action must not stop the service." >&2
     exit 1
-  fi
+  }
 
-  for required_fragment in 'root:root' '644' 'ssh-keygen -lf' 'invalid username'; do
-    if ! rg -Fq -- "$required_fragment" "$sftp_list_helper"; then
-      echo "SFTP key list helper safety regressed: missing $required_fragment" >&2
-      exit 1
-    fi
-  done
+  helper_has_fragments "$sftp_list_helper" "SFTP key list helper safety regressed." \
+    'root:root' '644' 'ssh-keygen -lf' 'invalid username'
 
-  for required_fragment in 'setpriv --reuid freshrss' 'FRESHRSS_DATA_PATH=' 'A-Za-z0-9]{16,128}' 'update-user.php' '--api-password'; do
-    if ! rg -Fq -- "$required_fragment" "$freshrss_helper"; then
-      echo "FreshRSS API password helper safety regressed: missing $required_fragment" >&2
-      exit 1
-    fi
-  done
+  helper_has_fragments "$freshrss_helper" "FreshRSS API password helper safety regressed." \
+    'setpriv --reuid freshrss' 'FRESHRSS_DATA_PATH=' 'A-Za-z0-9]{16,128}' 'update-user.php' '--api-password'
 
-  for required_fragment in 'mode=ro' 'HS512' '"role": ["Login"]' '/api/Users/auth-keys' 'create-auth-key' 'rotate-auth-key' 'urlopen' 'Kavita account not found'; do
-    if ! rg -Fq -- "$required_fragment" "$kavita_helper"; then
-      echo "Kavita API key helper safety regressed: missing $required_fragment" >&2
-      exit 1
-    fi
-  done
-  if rg -Fq '"role": ["Admin"' "$kavita_helper"; then
+  helper_has_fragments "$kavita_helper" "Kavita API key helper safety regressed." \
+    'mode=ro' 'HS512' '"role": ["Login"]' '/api/Users/auth-keys' 'create-auth-key' 'rotate-auth-key' 'urlopen' 'Kavita account not found'
+  if output_consume "$kavita_helper" 'rg -Fq "\"role\": [\"Admin\"" "$output"'; then
     echo "Kavita helper must not mint administrator tokens for vault users." >&2
     exit 1
   fi
