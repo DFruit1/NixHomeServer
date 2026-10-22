@@ -56,6 +56,10 @@
 #   BOARD_HEALTH_MIRROR_STALE_SEC   board mirror age before reporting (default 3600)
 #   BOARD_HEALTH_OWNER_AUTHORS     comment authors treated as the owner speaking
 #                                  on a card (default: owner,desktop,user)
+#   BOARD_HEALTH_UNMERGED_TOP_N    named unmerged-accepted branches before the
+#                                  count line takes over (default 6)
+#   BOARD_HEALTH_CLASSIFICATION_TOP_N  named classification findings before
+#                                  the count line takes over (default 4)
 
 set -euo pipefail
 
@@ -65,6 +69,14 @@ READY_STALE_SEC="${BOARD_HEALTH_READY_STALE_SEC:-900}"
 READY_OLD_SEC="${BOARD_HEALTH_READY_OLD_SEC:-3600}"
 TRIAGE_RECURRENCES="${BOARD_HEALTH_TRIAGE_RECURRENCES:-2}"
 MIRROR_STALE_SEC="${BOARD_HEALTH_MIRROR_STALE_SEC:-3600}"
+# Per-category finding cap for the list-shaped detectors. The report exists to
+# wake the head-coordinator once per material change, and that wake owns one
+# bounded turn budget (see hermes-cron-policy.md). Listing every backlog item
+# turns the detector into a loop: the wake cannot process the list, the retry
+# re-arms, and every tick burns the budget again. The capped name list plus a
+# count line keeps the backlog visible without exceeding one wake.
+UNMERGED_TOP_N="${BOARD_HEALTH_UNMERGED_TOP_N:-6}"
+CLASSIFICATION_TOP_N="${BOARD_HEALTH_CLASSIFICATION_TOP_N:-4}"
 # Comment authors that are the owner speaking on a card. The owner writes through
 # three clients and the board records each with its own author: the desktop app
 # as `desktop`, the owner's own CLI as `user`, and an owner-recorded decision
@@ -100,6 +112,8 @@ require_positive_int BOARD_HEALTH_READY_STALE_SEC "$READY_STALE_SEC"
 require_positive_int BOARD_HEALTH_READY_OLD_SEC "$READY_OLD_SEC"
 require_positive_int BOARD_HEALTH_TRIAGE_RECURRENCES "$TRIAGE_RECURRENCES"
 require_positive_int BOARD_HEALTH_MIRROR_STALE_SEC "$MIRROR_STALE_SEC"
+require_positive_int BOARD_HEALTH_UNMERGED_TOP_N "$UNMERGED_TOP_N"
+require_positive_int BOARD_HEALTH_CLASSIFICATION_TOP_N "$CLASSIFICATION_TOP_N"
 
 if [[ ! -f "$DB" ]]; then
   echo "BOARD_MISSING $HERMES_BOARD (no kanban.db under $HERMES_ROOT)"
@@ -784,12 +798,35 @@ shopt -u nullglob
 # Run the periodic classification audit and emit one line per finding.
 # Misclassified blocks route cards to the wrong queue and stall work that
 # could proceed. This detector surfaces them for the coordinator.
+#
+# Findings (the audit's 3-line groups, not raw lines) are capped at
+# CLASSIFICATION_TOP_N with one additional= counter, like the unmerged list:
+# a finding flood must stay triageable inside the coordinator wake's turn
+# budget instead of re-arming the budget-exhaustion retry it would otherwise
+# cause. The audit script itself is unchanged and always runs.
 classification_audit="$HERMES_ROOT/scripts/kanban-classification-audit.py"
 if [[ -f "$classification_audit" ]]; then
+  classification_emitted=0
+  classification_excess=0
+  audit_text="$(python3 "$classification_audit" 2>/dev/null || true)"
+  skipping_finding=false
   while IFS= read -r line; do
     [[ -n "$line" ]] || continue
+    # A finding group starts at the `  [board] task` line; its detail lines
+    # belong to the same finding and follow its fate.
+    if [[ "$line" == "  ["* ]]; then
+      if ((classification_emitted < CLASSIFICATION_TOP_N)); then
+        classification_emitted=$((classification_emitted + 1))
+        skipping_finding=false
+      else
+        classification_excess=$((classification_excess + 1))
+        skipping_finding=true
+      fi
+    fi
+    [[ "$skipping_finding" == true ]] && continue
     emit "CLASSIFICATION_AUDIT $line"
-  done < <(python3 "$classification_audit" 2>/dev/null | head -20)
+  done <<<"$audit_text"
+  ((classification_excess > 0)) && emit "CLASSIFICATION_AUDIT_EXCESS additional=$classification_excess needs=resolve-and-recheck"
 fi
 
 # ---------------------------------------------------------------------------
@@ -869,6 +906,16 @@ if [[ -n "$repo" ]] && git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
   # so the audit trail and this detector read the same fact: the branch may
   # stay unmerged, but a recorded disposition stops the finding, exactly as a
   # merge would. Other authors do not carry the marker.
+  #
+  # The per-item list is capped at UNMERGED_TOP_N (default 6) with one
+  # additional= counter, the same shape as the other bounded detectors. A
+  # backlog cannot fit in the coordinator wake's turn budget when the report
+  # lists all of it: the 2026-10-21/22 loop had every tick re-detect a backlog
+  # its one agent pass could not process, so the wake exhausted its budget,
+  # left a pending retry, and re-burned itself on the next tick. The report
+  # must stay small enough to triage in one wake; the count line keeps the
+  # backlog honest while only the oldest items are named. Progress retires
+  # names in order, so the hash changes exactly when a finding actually moves.
   disposed="$(sql "
     SELECT DISTINCT task_id FROM task_comments
      WHERE author = 'head-coordinator' AND body LIKE 'merge-back disposition:%';")" || disposed=""
@@ -884,7 +931,7 @@ if [[ -n "$repo" ]] && git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
     unapplied="$(git -C "$repo" cherry master "$sha" 2>/dev/null | grep -c '^+' || true)"
     [[ "$unapplied" =~ ^[0-9]+$ ]] || { emit "UNMERGED_UNKNOWN $task_id branch=$branch needs=manual-check"; continue; }
     ((unapplied > 0)) || continue
-    if ((emitted_unmerged < 20)); then
+    if ((emitted_unmerged < UNMERGED_TOP_N)); then
       emit "UNMERGED_ACCEPTED_WORK $task_id branch=$branch commits=$unapplied needs=merge-or-dispose"
       emitted_unmerged=$((emitted_unmerged + 1))
     else

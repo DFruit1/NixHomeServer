@@ -208,6 +208,21 @@ local-worker memory/skill writes, background learning and curator maintenance
 are disabled. Other roles retain foreground and explicit learning under their
 existing ownership rules. No new cron, model or memory backend is installed.
 
+## Standard-implementer lane model pin (owner decision 2026-10-22)
+
+`profiles/standard-implementer/config.yaml` runs only the paid
+`deepseek-v4.1-flash` on the OpenCode Go endpoint (`custom:opencode-go`), with
+the OpenAI Codex subscription (`gpt-6-luna`) as the sole fallback. Free-tier
+models (`space-bunny-free`, `step-5-preview-free`) are banned on this lane: an
+earlier default routed them ~14,000 calls before 2026-10-17. Task-level
+`set-model` overrides may pin only a paid model or codex. Its deepseek
+reasoning effort is `medium`: the lane's prior `high` setting made reasoning
+~52% of output tokens on step-level implementation work, while review/audit
+lanes keep `high`. The pin and the lower reasoning effort live as comments in
+the profile config; verify with the sqlite `session_model_usage` ledger
+(`SELECT model, billing_provider ... GROUP BY 1,2`) that only those two
+model/provider rows appear per week.
+
 The native fail-closed pre-tool hook checks `memory` and `skill_manage`. Memory
 adds/replacements use a temporary Fact/Scope/Evidence envelope; only the short
 scoped fact reaches storage. Owner statements must match the current owner

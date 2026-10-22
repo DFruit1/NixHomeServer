@@ -1477,11 +1477,21 @@ for i in $(seq 25); do
 done
 
 out="$(run_merge_health)"
-[[ "$(grep -c '^UNMERGED_ACCEPTED_WORK ' <<<"$out")" == "20" ]] ||
-  fail "the finding cap is not 20: $out"
-grep -q '^UNMERGED_EXCESS additional=[1-9][0-9]* needs=reduce-backlog$' <<<"$out" ||
+[[ "$(grep -c '^UNMERGED_ACCEPTED_WORK ' <<<"$out")" == "6" ]] ||
+  fail "the finding cap is not 6: $out"
+grep -q '^UNMERGED_EXCESS additional=21 needs=reduce-backlog$' <<<"$out" ||
   fail "finding excess above the cap was not summarised: $out"
 pass "caps the per-line findings and summarises the excess"
+
+# The cap is a knob, not a constant: a smaller override names fewer items and
+# the counter follows, so a tighter report never loses the backlog itself.
+out="$(HERMES_ROOT="$fixture/hermes" HERMES_BOARD=mergetest \
+       BOARD_HEALTH_UNMERGED_TOP_N=2 "$HEALTH")"
+[[ "$(grep -c '^UNMERGED_ACCEPTED_WORK ' <<<"$out")" == "2" ]] ||
+  fail "the top-N override was not honoured: $out"
+grep -q '^UNMERGED_EXCESS additional=25 ' <<<"$out" ||
+  fail "the excess counter does not follow the override: $out"
+pass "the top-N override bounds the name list and moves the rest to the counter"
 
 for i in $(seq 25); do sqlite3 "$merge_board_dir/kanban.db" "DELETE FROM tasks WHERE id='t_x$i';"; done
 
@@ -1510,6 +1520,51 @@ out="$(run_merge_health)"
 grep -q '^UNMERGED_ACCEPTED_WORK t_m5 ' <<<"$out" ||
   fail "a non-coordinator comment released the branch as if dispositioned"
 pass "only the head-coordinator authored marker is authoritative"
+
+# --- classification-audit findings are capped like the unmerged list ----------
+#
+# The audit runs on every board each tick; a backlog of misclassified blocks
+# must stay triageable in one coordinator wake, so the groups are capped at
+# CLASSIFICATION_TOP_N (default 4) and the remainder is one count line. A
+# dedicated single-board fixture keeps the group arithmetic exact.
+
+cls_board_dir="$fixture/clshermes/kanban/boards/clstest"
+mkdir -p "$cls_board_dir" "$fixture/clshermes/scripts"
+cp "$TESTS_REPO_ROOT/scripts/hermes/kanban-classification-audit.py" \
+   "$fixture/clshermes/scripts/kanban-classification-audit.py"
+sqlite3 "$cls_board_dir/kanban.db" <<'SQL'
+CREATE TABLE tasks (id TEXT PRIMARY KEY, title TEXT, assignee TEXT, status TEXT, body TEXT,
+  created_at INTEGER, started_at INTEGER, workspace_path TEXT, branch_name TEXT,
+  completed_at INTEGER, claim_lock TEXT, worker_pid INTEGER, last_heartbeat_at INTEGER,
+  block_recurrences INTEGER DEFAULT 0, block_kind TEXT, consecutive_failures INTEGER DEFAULT 0);
+CREATE TABLE task_comments (id INTEGER PRIMARY KEY, task_id TEXT, body TEXT, created_at INTEGER, author TEXT);
+CREATE TABLE task_events (id INTEGER PRIMARY KEY, task_id TEXT, kind TEXT, created_at INTEGER, payload TEXT);
+CREATE TABLE task_runs (id INTEGER PRIMARY KEY, task_id TEXT, outcome TEXT, started_at INTEGER, ended_at INTEGER);
+CREATE TABLE task_links (parent_id TEXT, child_id TEXT, PRIMARY KEY (parent_id, child_id));
+SQL
+printf '{"slug": "clstest", "default_workdir": ""}\n' >"$cls_board_dir/board.json"
+for i in $(seq 7); do
+  sqlite3 "$cls_board_dir/kanban.db" "INSERT INTO tasks
+    (id,title,assignee,status,block_kind) VALUES
+    ('t_c$i','orphan dependency $i','standard-implementer','blocked','dependency');"
+done
+
+cls_out="$(HERMES_ROOT="$fixture/clshermes" HERMES_BOARD=clstest "$HEALTH")"
+[[ "$(grep -c '^CLASSIFICATION_AUDIT   \[' <<<"$cls_out")" == "4" ]] ||
+  fail "the classification finding cap is not 4: $cls_out"
+(( $(grep -c '^CLASSIFICATION_AUDIT ' <<<"$cls_out") == 13 )) ||
+  fail "audit output line count does not match the 4-finding cap: $cls_out"
+grep -q '^CLASSIFICATION_AUDIT_EXCESS additional=3 needs=resolve-and-recheck$' <<<"$cls_out" ||
+  fail "excess classification findings were not summarised: $cls_out"
+pass "caps classification findings and summarises the excess"
+
+cls_out="$(HERMES_ROOT="$fixture/clshermes" HERMES_BOARD=clstest \
+           BOARD_HEALTH_CLASSIFICATION_TOP_N=1 "$HEALTH")"
+[[ "$(grep -c '^CLASSIFICATION_AUDIT   \[' <<<"$cls_out")" == "1" ]] ||
+  fail "the classification top-N override was not honoured: $cls_out"
+grep -q '^CLASSIFICATION_AUDIT_EXCESS additional=6 ' <<<"$cls_out" ||
+  fail "the classification excess counter does not follow its override: $cls_out"
+pass "the classification top-N override bounds the findings"
 
 # --- the installed copy runs the same suite ----------------------------------
 #

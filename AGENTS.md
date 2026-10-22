@@ -202,11 +202,12 @@ supplies permission. "Planner" means `head-coordinator`; retired lane names must
 be routed to a live profile, not recreated.
 
 Before creating or editing cards, read
-[documentation/hermes-card-authoring.md](documentation/hermes-card-authoring.md).
-A copy is installed at `~/.hermes/scripts/hermes-card-authoring.md` for other
-projects. Specifications belong on parents; dependencies represent required
-results, not shared context. Do not create dependency cycles or gate implementation
-behind its own unfinished routing handoff.
+[documentation/hermes-card-authoring.md](documentation/hermes-card-authoring.md)
+(installed copy for other projects: `~/.hermes/scripts/hermes-card-authoring.md`;
+scheduling and persisted state: [the taskforce runbook](documentation/hermes-review-taskforce.md)).
+Specifications belong on parents; dependencies represent required results, not
+shared context. Do not create dependency cycles or gate implementation behind
+its own unfinished routing handoff.
 
 ### Continuous improvement taskforce
 
@@ -214,22 +215,19 @@ behind its own unfinished routing handoff.
 reviews; it never implements or deploys. Only `project-auditor` commissions its
 feature audits and owns each board's persisted FINDINGS.md and immutable plans.
 `head-coordinator` routes approved plans into implementation, review and composition
-work, keeping its handoff open until those results actually land. The auditor's
+work, keeping its handoff open until those results actually land; the auditor's
 closure follows that handoff. Clean audits are valid; do not invent cosmetic work,
-repeat unchanged coverage or interrupt active implementation/rework.
+repeat unchanged coverage or interrupt active implementation/rework. Each audit
+names one feature, one question, explicit scope and a stopping condition;
+`HERMES_PRIORITIES.md` guides selection; reviewers load `taskforce-feature-audit`
+for procedures and format.
 
-Each audit names one feature, one question, explicit scope and a stopping condition.
-HERMES_PRIORITIES.md guides selection without limiting eligible existing features.
-Reviewers load `taskforce-feature-audit` for audit procedures and report format;
-follow the [taskforce runbook](documentation/hermes-review-taskforce.md) for
-scheduling and persisted state.
-
-The scheduler can also leave the head-coordinator a low-priority self-improvement
+The scheduler can leave the head-coordinator a low-priority self-improvement
 sweep card for one whole-system improvement. The coordinator routes a small
-classify-clean fix to implementers with an independent feature-reviewer check, or
+classify-clean fix to implementers with independent feature-reviewer check, or
 sends investigation/gated work to project-auditor; it never implements. It
 records each sweep outcome with `record-sweep`; consecutive no-candidate sweeps
-pause scheduling until FINDINGS.md changes. The sweep interval and backoff are
+pause scheduling until FINDINGS.md changes. Sweep interval and backoff are
 operator-owned (`configure --sweep-interval-hours --sweep-suppress-streak`).
 
 Apply [the implementation approval policy](scripts/hermes/taskforce/approval-policy.md)
@@ -256,25 +254,19 @@ The gate is a workflow convention, not a check enforced by deploy.sh.
 
 ### Aging escalation
 
-Open cards escalate by quiet time, not card age alone. Idle ≥2 days raises
-dispatch priority (≥50; the dispatcher orders lanes by `priority DESC`). Idle
-≥3 days raises it further (≥100), commissions one project-auditor deep-dive
-per dependency cluster, and posts a coordinator clearing directive: obtain the
-missing input, supersede with evidence, or close with a reason. A card older
-than 7 days escalates on age even when holding comments keep the idle clock
-fresh. Running cards, owner gates and `[FEATURE TRACKER` cards are exempt from
-per-card escalation; gates receive the directive only, since only
-head-coordinator touches gate state, and trackers are reported as one aggregate
-triage line so a parking-lot backlog stays visible without burying the real
-signal. A card the auditor reviewed 5+ days ago that is still unresolved gets a
-one-shot clearance directive to head-coordinator; the job never reclassifies it
-to `needs_input`, because only the coordinator authors owner gates.
-`scripts/hermes/kanban-aging-escalation.py` runs the policy as the
-`kanban aging escalation` cron job; `--dry-run` previews, and thresholds are
-`AGING_PRIORITY_HOURS` / `AGING_ESCALATION_HOURS`. Each run also rechecks
-blocked cards for a verifiably stale condition (a named review whose verdict
-flipped to accept) and posts a damped evidence comment — it never unblocks;
-unblocking stays the decision owner's move.
+Open cards escalate by quiet time, not card age alone: idle ≥2 days raises
+dispatch priority (≥50), idle ≥3 days raises it further (≥100), commissions one
+project-auditor deep-dive per dependency cluster, and posts a coordinator
+clearing directive; a card older than 7 days escalates on age even with fresh
+holding comments. Running cards, owner gates and `[FEATURE TRACKER` cards are
+exempt from per-card escalation (trackers report as one aggregate triage line);
+gates receive the directive only. An auditor-reviewed card still unresolved 5+
+days gets a one-shot clearance directive; the job never reclassifies anything to
+`needs_input` — only the coordinator authors owner gates. It also rechecks
+blocked cards for verifiably stale conditions and posts damped evidence
+comments, never unblocking. `scripts/hermes/kanban-aging-escalation.py` is the
+policy (cron job `kanban aging escalation`); `--dry-run` previews; thresholds
+are `AGING_PRIORITY_HOURS` / `AGING_ESCALATION_HOURS`.
 
 ### Reaching the owner
 
@@ -291,8 +283,7 @@ follows the [owner-alert runbook](documentation/hermes-owner-alerts.md) for chec
 Blocking / Why owner / Unblock authoring, native writes, readback, --check-blockers,
 authentication and delivery. Include an exact command when applicable; A/B is
 only for real choices. Only genuine owner-action blockers go to the phone;
-technical events stay internal. The steward's requested/scheduled reports remain
-separate. Inconclusive investigation alone is not owner input.
+technical events stay internal. Inconclusive investigation alone is not owner input.
 
 Owner decisions are delivered to the coordinator-owned `Hermes Decisions`
 SimpleX group, which is kept as current state: open decisions are posted, edited
