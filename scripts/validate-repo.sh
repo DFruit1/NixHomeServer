@@ -14,6 +14,10 @@ source "$script_dir/helpers/remote-eval.sh"
 # every `nix build` after the worklist query.
 # shellcheck source=scripts/helpers/remote-build.sh
 source "$script_dir/helpers/remote-build.sh"
+# remote-run.sh runs the remaining flake check on the server in strict mode, so
+# a strict gate never falls back to evaluating on the workstation.
+# shellcheck source=scripts/helpers/remote-run.sh
+source "$script_dir/helpers/remote-run.sh"
 init_repo_root
 cd_repo_root
 ensure_default_nix_config
@@ -164,6 +168,24 @@ while (($# > 0)); do
       ;;
   esac
 done
+
+# Strict mode (NIXHOMESERVER_REQUIRE_REMOTE=1) means this gate produces
+# server-only evidence: every helper refuses rather than falling back, so the
+# gate must not carry on with a locally produced result. The preflights run
+# before any expensive work, and they all share one source contract, so a strict
+# run that cannot honour it stops here instead of half-way through the gate.
+strict_status=0
+strict_remote_preflight "${REMOTE_EVAL:-1}" "REMOTE_EVAL=0" || strict_status=$?
+if ((strict_status == 2)); then
+  exit 1
+fi
+if ((strict_status == 0)); then
+  strict_validation=1
+  strict_remote_preflight "${REMOTE_BUILD:-1}" "REMOTE_BUILD=0" || exit 1
+  strict_remote_preflight "${REMOTE_RUN:-1}" "REMOTE_RUN=0" || exit 1
+else
+  strict_validation=0
+fi
 
 need nix jq rg flock
 
@@ -638,7 +660,13 @@ fi
 if [[ "$skip_flake_check" == false ]]; then
   if [[ "$full_mode" == true || "$run_flake_check" == true ]]; then
     echo "ℹ️ Running flake checks (no build)…"
-    nix flake check --no-build
+    # Strict mode: the flake check is part of the server-only evidence, so it
+    # runs through remote_run, which refuses instead of falling back locally.
+    if ((strict_validation)); then
+      remote_run 'set -euo pipefail; cd "$1"; nix flake check --no-build'
+    else
+      nix flake check --no-build
+    fi
   fi
 fi
 

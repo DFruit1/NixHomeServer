@@ -49,6 +49,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/remote-eval.sh"
 remote_build_host=""
 remote_build_reason=""
 remote_build_exit=""
+remote_build_strict=0
 
 # remote_build_flake [nix build args...]
 #
@@ -62,7 +63,22 @@ remote_build_exit=""
 # falls back to the local build. A build that ran on the server and failed is a
 # build *result*, not a transport problem: it is propagated so a failing check
 # fails the caller instead of being silently retried on the workstation.
+#
+# Strict mode (NIXHOMESERVER_REQUIRE_REMOTE=1) removes the local build entirely:
+# a refusal, a transport failure, or a build that cannot be shown to have run
+# against the declared source all fail this helper instead of running on the
+# workstation. The declared commit/tree is re-checked before the archive is
+# staged and again after the build, and the archive's checksum travels with it
+# so the remote side builds exactly the bytes this workstation hashed.
 remote_build_flake() {
+  local strict_status=0
+  strict_remote_preflight "${REMOTE_BUILD:-1}" "REMOTE_BUILD=0" || strict_status=$?
+  # A preflight refusal (bad env, dirty/different source, unusable evidence
+  # dir, or strict mode conflicting with REMOTE_BUILD=0) is never retried
+  # locally: it is the caller's contract that is wrong.
+  ((strict_status != 2)) || return 1
+  remote_build_strict=$((strict_status == 0))
+
   if (($# == 0)); then
     echo "remote-build: no build arguments given" >&2
     return 1
@@ -79,6 +95,10 @@ remote_build_flake() {
         return "${remote_build_exit:-1}"
         ;;
       *)
+        if ((remote_build_strict)); then
+          echo "remote-build: strict remote build failed (${remote_build_reason})" >&2
+          return 1
+        fi
         echo "remote-build: falling back to local build (${remote_build_reason})" >&2
         ;;
     esac
@@ -90,6 +110,7 @@ remote_build_flake() {
 _remote_build_run() {
   local -a build_args=("$@")
   local repo_root archive remote_archive remote_dir remote_cmd remote_out remote_err output
+  local archive_sha=""
 
   init_repo_root
   repo_root="$(cd "$repo_root" && pwd)"
@@ -116,6 +137,23 @@ _remote_build_run() {
     return 1
   fi
 
+  # Strict mode pins the bytes that are built: the declared source identity must
+  # still hold now that the archive exists, and its checksum travels to the
+  # remote side so a corrupted or truncated transfer fails instead of building a
+  # tree nobody reviewed.
+  if ((remote_build_strict)); then
+    strict_remote_verify_identity || {
+      rm -f "$archive"
+      remote_build_reason="source identity changed before staging"
+      return 1
+    }
+    archive_sha="$(sha256sum "$archive" | cut -d' ' -f1)" || {
+      rm -f "$archive"
+      remote_build_reason="could not hash the source archive"
+      return 1
+    }
+  fi
+
   remote_archive="$(stage_archive_on_remote "$archive" "$remote_build_host" "nixhomeserver-remote-build")" || {
     rm -f "$archive"
     remote_build_reason="could not transfer the archive to ${remote_build_host}"
@@ -132,7 +170,9 @@ _remote_build_run() {
   # Build the remote command string with every argument individually quoted, so
   # the remote shell reconstructs the exact argument vector. Passing the
   # arguments as separate SSH operands would let the remote shell re-split them.
-  remote_cmd="bash -s -- $(printf '%q ' "$remote_dir" "$remote_archive" "${build_args[@]}")"
+  # The strict-mode archive checksum (empty when ordinary) travels as a fixed
+  # argument, so the remote side needs no environment contract to verify it.
+  remote_cmd="bash -s -- $(printf '%q ' "$remote_dir" "$remote_archive" "$archive_sha" "${build_args[@]}")"
 
   remote_out="$(mktemp /tmp/nixhomeserver-remote-build-out.XXXXXX)" || {
     remote_build_reason="could not create a local output file"
@@ -153,8 +193,16 @@ _remote_build_run() {
 set -euo pipefail
 remote_dir="$1"
 remote_archive="$2"
-shift 2
+expected_archive_sha="$3"
+shift 3
 trap 'rm -rf "$remote_dir" "$remote_archive"' EXIT
+if [[ -n "$expected_archive_sha" ]]; then
+  actual_archive_sha="$(sha256sum "$remote_archive" | cut -d' ' -f1)"
+  [[ "$actual_archive_sha" == "$expected_archive_sha" ]] || {
+    echo "archive checksum mismatch" >&2
+    exit 1
+  }
+fi
 mkdir -p "$remote_dir"
 tar -C "$remote_dir" -xf "$remote_archive"
 cd "$remote_dir"
@@ -183,6 +231,17 @@ REMOTE_EOF
     echo "remote-build: ${remote_build_reason}" >&2
     rm -f "$remote_err"
     return 2
+  fi
+
+  # Strict mode: the build only counts if the source it was staged from is still
+  # the source the caller declared. A concurrent edit means the result is no
+  # longer evidence for that revision.
+  if ((remote_build_strict)); then
+    strict_remote_verify_identity || {
+      rm -f "$remote_out" "$remote_err"
+      remote_build_reason="source identity changed during the remote build"
+      return 1
+    }
   fi
 
   output="$(cat "$remote_out")"

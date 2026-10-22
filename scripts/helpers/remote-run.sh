@@ -30,6 +30,13 @@
 # SensitivePrivateSecrets and any untracked non-ignored file, so only ciphertext
 # crosses the wire and the staged tree cannot diverge from the tracked one.
 #
+# Strict mode (NIXHOMESERVER_REQUIRE_REMOTE=1) removes the local run entirely: a
+# refusal, a transport failure, or a run that cannot be shown to have executed
+# against the declared source all fail this helper instead of running the
+# snippet on the workstation. The declared commit/tree is re-checked before the
+# archive is staged and again after the snippet exits, and the archive checksum
+# travels to the remote side so the executed tree is the hashed one.
+#
 # Durable stages
 # --------------
 # A snippet that realizes dependencies (pnpm/cargo) normally throws that work
@@ -50,9 +57,18 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/remote-eval.sh"
 remote_run_host=""
 remote_run_reason=""
 remote_run_exit=""
+remote_run_strict=0
 
 # remote_run <snippet> [args...]
 remote_run() {
+  local strict_status=0
+  strict_remote_preflight "${REMOTE_RUN:-1}" "REMOTE_RUN=0" || strict_status=$?
+  # A preflight refusal (bad env, dirty/different source, unusable evidence
+  # dir, or strict mode conflicting with REMOTE_RUN=0) is never retried
+  # locally: it is the caller's contract that is wrong.
+  ((strict_status != 2)) || return 1
+  remote_run_strict=$((strict_status == 0))
+
   if (($# == 0)); then
     echo "remote-run: no snippet given" >&2
     return 1
@@ -79,6 +95,10 @@ remote_run() {
         return "${remote_run_exit:-1}"
         ;;
       *)
+        if ((remote_run_strict)); then
+          echo "remote-run: strict remote execution failed (${remote_run_reason})" >&2
+          return 1
+        fi
         echo "remote-run: falling back to local execution (${remote_run_reason})" >&2
         ;;
     esac
@@ -127,6 +147,17 @@ _remote_run_run() {
     return 1
   fi
   archive_hash="$(sha256sum "$archive" | cut -d' ' -f1)"
+
+  # Strict mode pins the bytes that execute: the declared source identity must
+  # still hold now that the archive exists, and its checksum travels to the
+  # remote side so a corrupted or truncated transfer fails the run.
+  if ((remote_run_strict)); then
+    strict_remote_verify_identity || {
+      rm -f "$archive"
+      remote_run_reason="source identity changed before staging"
+      return 1
+    }
+  fi
 
   remote_archive="$(stage_archive_on_remote "$archive" "$remote_run_host" "nixhomeserver-remote-run")" || {
     rm -f "$archive"
@@ -179,7 +210,13 @@ _remote_run_run() {
   if [[ -n "$persist_dir" ]]; then
     persist_mode="keep"
   fi
-  remote_cmd="bash -s -- $(printf '%q ' "$remote_dir" "$remote_archive" "$remote_snippet" "$persist_mode" "$archive_hash" "${forward[@]}")"
+  # The strict-mode marker is a fixed arg too: the remote side verifies the
+  # archive checksum only when the caller demanded a pinned source.
+  local strict_mode="ordinary"
+  if ((remote_run_strict)); then
+    strict_mode="strict"
+  fi
+  remote_cmd="bash -s -- $(printf '%q ' "$remote_dir" "$remote_archive" "$remote_snippet" "$persist_mode" "$archive_hash" "$strict_mode" "${forward[@]}")"
 
   # The snippet's own stdin is left alone; only this wrapper script travels on
   # stdin, so a snippet that reads stdin still sees the terminal.
@@ -190,7 +227,15 @@ remote_archive="$2"
 remote_snippet="$3"
 persist_mode="$4"
 archive_hash="$5"
-shift 5
+strict_mode="$6"
+shift 6
+if [[ "$strict_mode" == "strict" ]]; then
+  actual_archive_sha="$(sha256sum "$remote_archive" | cut -d' ' -f1)"
+  [[ "$actual_archive_sha" == "$archive_hash" ]] || {
+    echo "archive checksum mismatch" >&2
+    exit 1
+  }
+fi
 if [[ "$persist_mode" == "keep" ]]; then
   # Keep the realized tree; only the archive and the helper-written snippet
   # are transient. The tree-hash pin was checked host-side before staging.
@@ -231,5 +276,15 @@ REMOTE_EOF
     remote_run_exit="$ssh_status"
     echo "remote-run: remote execution failed on ${remote_run_host} (exit ${ssh_status})" >&2
     return 2
+  fi
+
+  # Strict mode: the run only counts if the source it staged from is still the
+  # source the caller declared. A concurrent edit means the result is no longer
+  # evidence for that revision.
+  if ((remote_run_strict)); then
+    strict_remote_verify_identity || {
+      remote_run_reason="source identity changed during remote execution"
+      return 1
+    }
   fi
 }

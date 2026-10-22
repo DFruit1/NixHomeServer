@@ -235,6 +235,78 @@ plaintext_staging_is_empty() {
   [[ -z "$first_entry" ]]
 }
 
+strict_remote_enabled() {
+  case "${NIXHOMESERVER_REQUIRE_REMOTE:-0}" in
+    0) return 1 ;;
+    1) return 0 ;;
+    *) echo "strict-remote: NIXHOMESERVER_REQUIRE_REMOTE must be 0 or 1" >&2; return 2 ;;
+  esac
+}
+
+strict_remote_preflight() {
+  local mode="${1:-}" head tree evidence actual_head actual_tree
+  case "${NIXHOMESERVER_REQUIRE_REMOTE:-0}" in
+    0) return 1 ;;
+    1) ;;
+    *) echo "strict-remote: NIXHOMESERVER_REQUIRE_REMOTE must be 0 or 1" >&2; return 2 ;;
+  esac
+  if [[ "$mode" == 0 ]]; then
+    echo "strict-remote: strict mode conflicts with ${2}" >&2
+    return 2
+  fi
+  head="${NIXHOMESERVER_EXPECTED_HEAD:-}"
+  tree="${NIXHOMESERVER_EXPECTED_TREE:-}"
+  evidence="${NIXHOMESERVER_EVIDENCE_DIR:-}"
+  if [[ ! "$head" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ || ! "$tree" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then
+    echo "strict-remote: expected full lowercase Git commit and tree IDs" >&2
+    return 2
+  fi
+  init_repo_root || return 2
+  if [[ "$evidence" != "$repo_root"/.tmp/* ]]; then
+    echo "strict-remote: evidence directory must be inside the assigned task root" >&2
+    return 2
+  fi
+  mkdir -p -- "$evidence" || return 2
+  evidence="$(cd "$evidence" && pwd -P)" || return 2
+  if [[ "$evidence" != "$repo_root"/.tmp/* ]]; then
+    echo "strict-remote: evidence directory resolves outside the assigned task root" >&2
+    return 2
+  fi
+  if ! git -C "$repo_root" diff --quiet --ignore-submodules -- ||
+     ! git -C "$repo_root" diff --cached --quiet --ignore-submodules -- ||
+     [[ -n "$(git -C "$repo_root" ls-files --others --exclude-standard)" ]]; then
+    echo "strict-remote: source must have no tracked, indexed, or untracked changes" >&2
+    return 2
+  fi
+  actual_head="$(git -C "$repo_root" rev-parse HEAD)" || return 2
+  actual_tree="$(git -C "$repo_root" rev-parse 'HEAD^{tree}')" || return 2
+  if [[ "$actual_head" != "$head" || "$actual_tree" != "$tree" ]]; then
+    echo "strict-remote: declared source identity does not match HEAD/tree" >&2
+    return 2
+  fi
+  return 0
+}
+
+strict_remote_verify_identity() {
+  local actual_head actual_tree
+  actual_head="$(git -C "$repo_root" rev-parse HEAD)" || return 1
+  actual_tree="$(git -C "$repo_root" rev-parse 'HEAD^{tree}')" || return 1
+  [[ "$actual_head" == "$NIXHOMESERVER_EXPECTED_HEAD" &&
+    "$actual_tree" == "$NIXHOMESERVER_EXPECTED_TREE" ]] || {
+    echo "strict-remote: source identity changed during execution" >&2
+    return 1
+  }
+  git -C "$repo_root" diff --quiet --ignore-submodules -- &&
+    git -C "$repo_root" diff --cached --quiet -- || {
+      echo "strict-remote: source became dirty during execution" >&2
+      return 1
+    }
+  [[ -z "$(git -C "$repo_root" ls-files --others --exclude-standard)" ]] || {
+    echo "strict-remote: untracked source appeared during execution" >&2
+    return 1
+  }
+}
+
 create_deploy_repo_archive() {
   local archive_path="$1"
   local manifest git_manifest untracked_manifest refused_path tar_status

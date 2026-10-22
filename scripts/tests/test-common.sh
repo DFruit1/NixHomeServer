@@ -5,8 +5,11 @@ set -euo pipefail
 TESTS_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$TESTS_REPO_ROOT/scripts/helpers/repo-common.sh"
 source "$TESTS_REPO_ROOT/scripts/helpers/remote-eval.sh"
+# remote-build.sh is sourced so a suite can exercise the strict build contract;
 # remote-run.sh lets a heavy test (cargo compile, Playwright browser) execute on
-# the server; it falls back to running locally when the server is unreachable.
+# the server; both fall back to running locally when the server is unreachable.
+# shellcheck source=scripts/helpers/remote-build.sh
+source "$TESTS_REPO_ROOT/scripts/helpers/remote-build.sh"
 # shellcheck source=scripts/helpers/remote-run.sh
 source "$TESTS_REPO_ROOT/scripts/helpers/remote-run.sh"
 init_repo_root
