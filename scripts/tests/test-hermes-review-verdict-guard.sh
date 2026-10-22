@@ -55,12 +55,13 @@ class VerdictGuardTest(unittest.TestCase):
         self.db.executescript(SCHEMA)
         self.addCleanup(self.db.close)
 
-    def card(self, tid, assignee=None, status='done', created=None, tenant=None):
+    def card(self, tid, assignee=None, status='done', created=None, tenant=None,
+             body=''):
         self.db.execute(
-            "INSERT INTO tasks (id, title, assignee, status, created_at, tenant)"
-            " VALUES (?,?,?,?,?,?)",
-            (tid, 'x', assignee, status, created if created is not None else NOW - DAY,
-             tenant))
+            "INSERT INTO tasks (id, title, assignee, status, created_at, tenant,"
+            " body) VALUES (?, 'x', ?, ?, ?, ?, ?)",
+            (tid, assignee, status, created if created is not None else NOW - DAY,
+             tenant, body))
         self.db.commit()
 
     def add_run(self, tid, verdict, ended, rid="r0"):
@@ -210,6 +211,61 @@ class VerdictGuardTest(unittest.TestCase):
         self.assertIn('kanban_link', result['message'])
         self.assertIn('kanban_unlink', result['message'])
         self.assertNotIn('coordinator-only', result['message'])
+
+    def complete_payload(self, tid, metadata, board='testboard'):
+        return {'tool_name': 'kanban_complete',
+                'tool_input': {'board': board, 'task_id': tid,
+                               'metadata': metadata}}
+
+    def test_sanctioned_unknown_verdict_completes(self):
+        # Live incident t_cd6d2128: the body permits verdict=unknown for a
+        # first-missing-input outcome, but completion refused it, forcing the
+        # verifier into a dishonest request-changes and a rework loop.
+        self.card('t_ver', assignee='feature-reviewer', status='review',
+                  body='Report the prepared packet; a first-missing-input outcome'
+                       ' completes with metadata.verdict="unknown" (verdict=unknown).')
+        result = guard_mod.guard(self.complete_payload(
+            't_ver', {'verdict': 'unknown',
+                      'missing_inputs': ['prepared packet absent from its workspace']}),
+            self.root)
+        self.assertEqual({}, result)
+
+    def test_unknown_verdict_needs_concrete_missing_inputs(self):
+        self.card('t_ver', assignee='feature-reviewer', body='verdict=unknown permitted')
+        result = guard_mod.guard(self.complete_payload(
+            't_ver', {'verdict': 'unknown'}), self.root)
+        self.assertEqual('block', result.get('action'))
+        self.assertIn('missing_inputs', result.get('message', ''))
+        result = guard_mod.guard(self.complete_payload(
+            't_ver', {'verdict': 'unknown', 'missing_inputs': ['', ' ']}), self.root)
+        self.assertEqual('block', result.get('action'))
+        self.assertIn('missing_inputs', result.get('message', ''))
+
+    def test_unsanctioned_unknown_verdict_is_refused(self):
+        self.card('t_ver', assignee='feature-reviewer')
+        result = guard_mod.guard(self.complete_payload(
+            't_ver', {'verdict': 'unknown', 'missing_inputs': ['x']}), self.root)
+        self.assertEqual('block', result.get('action'))
+        self.assertIn('accept or request-changes', result.get('message', ''))
+
+    def test_unknown_review_does_not_release_a_child_gate(self):
+        # An unknown verdict is never an acceptance: a child behind it still
+        # needs a real accepted review before it may complete.
+        self.card('t_parent_body', assignee='standard-implementer')
+        self.card('t_rev', assignee='feature-reviewer',
+                  body='verdict=unknown permitted')
+        self.db.execute(
+            "INSERT INTO task_runs (task_id, profile, status, outcome, metadata,"
+            " ended_at) VALUES (?, 'feature-reviewer', 'done', 'completed', ?, ?)",
+            ('t_rev', json.dumps({'verdict': 'unknown',
+                                  'missing_inputs': ['prepared packet absent']}), NOW))
+        self.db.commit()
+        self.card('t_impl', assignee='standard-implementer', status='running')
+        self.link('t_rev', 't_impl')
+        result = guard_mod.guard(self.complete_payload(
+            't_impl', {'verdict': 'accept', 'revision': 'r',
+                       'checks': [{'command': 'c', 'exit_code': 0}]}), self.root)
+        self.assertEqual('block', result.get('action'))
 
 
 if __name__ == '__main__':

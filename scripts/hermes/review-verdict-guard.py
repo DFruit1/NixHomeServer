@@ -17,9 +17,27 @@ def verification(task):
     return task['assignee'] == 'feature-reviewer' and task['tenant'] not in {'continuous-improvement', 'review-question'}
 
 
-def validate(metadata):
-    if not isinstance(metadata, dict) or metadata.get('verdict') not in {'accept', 'request-changes'}:
-        raise ValueError('Set metadata.verdict to accept or request-changes, in lowercase')
+def validate(metadata, allow_unknown=False):
+    """verdict contract for a completed verification card.
+
+    `unknown` is the first-missing-input outcome: the verifier could not reach
+    a verdict because a required input is absent. It is only valid when the
+    task body sanctions it, and it must carry the concrete missing inputs so
+    the coordinator consumes an evidence-backed signal rather than manufacturing
+    a rework loop from a refusal.
+    """
+    allowed = {'accept', 'request-changes'}
+    if allow_unknown:
+        allowed = allowed | {'unknown'}
+    if not isinstance(metadata, dict) or metadata.get('verdict') not in allowed:
+        raise ValueError('Set metadata.verdict to accept or request-changes, in lowercase'
+                         + (' (or unknown when the card body permits a first-missing-input outcome)'
+                            if allow_unknown else ''))
+    if metadata.get('verdict') == 'unknown':
+        fixes = metadata.get('missing_inputs')
+        if not isinstance(fixes, list) or not fixes or any(not isinstance(f, str) or not f.strip() for f in fixes):
+            raise ValueError('An unknown verdict needs the concrete absent inputs in metadata.missing_inputs')
+        return
     if not isinstance(metadata.get('revision'), str) or not metadata['revision'].strip():
         raise ValueError('Name the exact reviewed source revision in metadata.revision')
     checks = metadata.get('checks')
@@ -149,12 +167,17 @@ def guard_complete(payload, root):
         db.row_factory = sqlite3.Row
         db.execute('PRAGMA query_only=ON')
         db.execute('BEGIN')
-        task = db.execute('SELECT id,status,assignee,tenant FROM tasks WHERE id=?', (task_id,)).fetchone()
+        task = db.execute('SELECT id,status,assignee,tenant,body FROM tasks WHERE id=?', (task_id,)).fetchone()
         if task is None:
             raise ValueError('Unknown task; do not infer review acceptance')
         metadata = args.get('metadata')
         if verification(task):
-            validate(metadata)
+            # The body sanction: a verifier card may complete with
+            # metadata.verdict=unknown for a first-missing-input outcome only
+            # when its body states that contract. Parent review evidence below
+            # stays strict: an unknown verdict never releases a child.
+            allow_unknown = bool(re.search(r'verdict[=:]\s*unknown', task['body'] or ''))
+            validate(metadata, allow_unknown=allow_unknown)
             if metadata['verdict'] == 'request-changes':
                 claim = db.execute("SELECT payload FROM task_events WHERE task_id=? AND kind='claimed' ORDER BY id DESC LIMIT 1", (task_id,)).fetchone()
                 provenance = json.loads(claim['payload'] or '{}') if claim else {}

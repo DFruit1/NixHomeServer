@@ -21,6 +21,11 @@ fallback routes to that profile. Existing plan attachments remain valid evidence
 
 Separate downstream verification cards return `metadata.verdict: accept` or
 `request-changes` through `kanban_complete`; both outcomes finish the review card.
+`verdict: unknown` is the first-missing-input outcome: valid only when the card
+body permits it, and completed with concrete `metadata.missing_inputs`. The
+coordinator consumes it as evidence that an input is absent — one bounded
+provisioning route, not a rework loop.
+
 The coordinator must read that verdict before treating the work as accepted.
 Rejection routes fixes and a fresh review. `kanban_request_changes` is reserved
 for native review runs claimed from `review` with an implementer's

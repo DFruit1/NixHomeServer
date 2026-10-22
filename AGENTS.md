@@ -267,6 +267,25 @@ verifier never does. Changed source or mutable inputs require fresh review/test.
 Freeze only that source and its writers; unrelated isolated work may continue.
 The gate is a workflow convention, not a check enforced by deploy.sh.
 
+#### Custody loss and re-derivation
+
+When a decision card's frozen deploy source is lost (a reaped, moved or deleted
+worktree), custody is re-established from content, not from history: if the
+decision's recorded commit SHA still resolves (`git cat-file -t`) and a fresh
+detached worktree at that exact SHA is clean with the recorded tree hash, the
+frozen source requirement is satisfied. Proceed with one bounded verifier
+qualification run against that fresh tree before any switch. A historical
+provenance/attribution investigation is only warranted when the recorded SHA no
+longer resolves or a review demands more than content equality; such work is one
+bounded card with a stopping condition, never a series of evolving plan
+versions. A verifier's first-missing-input answer completes with
+`metadata.verdict: unknown` plus concrete `missing_inputs` when the card body
+sanctions it (the review-verdict guard accepts it); do not convert a missing
+input into a request-changes rework loop. The kanban worktree reaper preserves
+any workspace an open card cites, and `reap-kanban-worktrees.sh --dry-run` is
+the check of record before trusting that a deploy decision's anchored source
+still exists.
+
 ### Aging escalation
 
 Open cards escalate by quiet time, not card age alone: idle ≥2 days raises
