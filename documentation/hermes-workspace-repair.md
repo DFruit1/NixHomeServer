@@ -5,7 +5,15 @@ bounded recovery authority. Source preparation precedes independent review; it
 never substitutes for acceptance, verified artifact transfer or a live deploy gate.
 Use the exact candidate commit and tree commissioned on the existing card.
 
-`repair-task-workspace.py` uses the supported native CLI for board/task/run reads.
+`repair-task-workspace.py` uses the supported native CLI for interactive operator
+reads. A coordinator terminal uses the maintained query-only board-evidence
+reader instead: the native CLI preserves worker board pins and refuses child
+commands, so it cannot provide a complete cross-board alias inventory. The
+helper authenticates the actual top-level native coordinator, run, session and
+kernel-bound launch, deriving its root from that proof rather than `HERMES_ROOT`
+or `HERMES_BIN`. It reads other boards only to protect workspace ownership;
+repair targets stay on the actor's own board. Delegated or unassociated callers
+refuse, and the native read-only fence and every inherited pin remain intact.
 The current native `kanban edit` interface has no workspace field. The helper
 therefore preserves the recorded binding and repairs its filesystem checkout;
 it never writes the board database, fabricates a run or changes task status.

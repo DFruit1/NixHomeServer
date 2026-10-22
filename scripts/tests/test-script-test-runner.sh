@@ -82,7 +82,7 @@ route_log="$tmpdir/route-log"
 direct_log="$tmpdir/direct-log"
 for suite in test-kanban-owner-alerts.sh test-steward-readonly.sh \
   test-steward-opportunity-scan.sh test-kanban-retry-breaker.sh \
-  test-hermes-autonomy.sh test-hermes-autonomy-runtime.sh test-hermes-worker-origin.sh test-hermes-recovered-resume.sh \
+  test-hermes-autonomy.sh test-hermes-autonomy-runtime.sh test-hermes-worker-origin.sh test-hermes-recovered-resume.sh test-hermes-workspace-repair.sh \
   test-hermes-worker-policy.sh test-other-control.sh; do
   printf 'scripts/tests/%s\n' "$suite" >>"$routes"
   cat >"$fixture_repo/scripts/tests/$suite" <<'EOF'
@@ -128,7 +128,8 @@ root = sys.argv[3]
 expected = ('test-kanban-owner-alerts.sh', 'test-steward-readonly.sh',
             'test-steward-opportunity-scan.sh', 'test-kanban-retry-breaker.sh',
             'test-hermes-autonomy.sh', 'test-hermes-autonomy-runtime.sh',
-            'test-hermes-worker-origin.sh', 'test-hermes-recovered-resume.sh')
+            'test-hermes-worker-origin.sh', 'test-hermes-recovered-resume.sh',
+            'test-hermes-workspace-repair.sh')
 assert len(routes) == len(expected), routes
 for suite in expected:
     argv = [f'{root}/scripts/fixture-runner.py', '--repo', root, '--suite', f'{root}/scripts/tests/{suite}', '--timeout', '300']
@@ -142,7 +143,7 @@ if [[ -z "${HERMES_KANBAN_TASK:-}${HERMES_KANBAN_DB:-}${HERMES_KANBAN_BOARD:-}${
     ROUTE_LOG="$route_log" DIRECT_LOG="$direct_log" \
     bash "$fixture_repo/scripts/tests/run-script-tests.sh" >"$tmpdir/unpinned-output" 2>&1
   [[ ! -s "$route_log" ]] || { echo "Unpinned synthetic runner routed through the helper." >&2; exit 1; }
-  [[ "$(wc -l <"$direct_log")" -eq 10 ]] || {
+  [[ "$(wc -l <"$direct_log")" -eq 11 ]] || {
     echo "Unpinned synthetic runner did not preserve all direct suite paths." >&2
     exit 1
   }
@@ -161,7 +162,7 @@ if env NIXHOMESERVER_DEFAULT_HOST=fixture-host HERMES_ROOT="$fixture_repo" ROUTE
   echo "A nonzero confined-helper result was treated as success." >&2
   exit 1
 fi
-[[ "$(wc -l <"$route_log")" -eq 8 && "$(wc -l <"$direct_log")" -eq 2 ]] || {
+[[ "$(wc -l <"$route_log")" -eq 9 && "$(wc -l <"$direct_log")" -eq 2 ]] || {
   echo "A nonzero helper result changed route count or retried directly." >&2
   exit 1
 }
@@ -175,11 +176,11 @@ if env NIXHOMESERVER_DEFAULT_HOST=fixture-host HERMES_ROOT="$fixture_repo" ROUTE
   echo "A timeout-status confined-helper result was treated as success." >&2
   exit 1
 fi
-[[ "$(wc -l <"$route_log")" -eq 8 && "$(wc -l <"$direct_log")" -eq 2 ]] || {
+[[ "$(wc -l <"$route_log")" -eq 9 && "$(wc -l <"$direct_log")" -eq 2 ]] || {
   echo "A timeout-status helper result changed route count or retried directly." >&2
   exit 1
 }
-grep -Fq '8 test script(s) failed' "$tmpdir/timeout-output" || {
+grep -Fq '9 test script(s) failed' "$tmpdir/timeout-output" || {
   echo "Timeout-status failure did not propagate through all required routes." >&2
   cat "$tmpdir/timeout-output" >&2
   exit 1
@@ -199,10 +200,10 @@ fi
   echo "A missing helper caused a confined suite to run directly." >&2
   exit 1
 }
-grep -Fq '8 test script(s) failed' "$tmpdir/missing-output" || {
-  echo "Missing helper did not fail all eight required routes." >&2
+grep -Fq '9 test script(s) failed' "$tmpdir/missing-output" || {
+  echo "Missing helper did not fail all nine required routes." >&2
   cat "$tmpdir/missing-output" >&2
   exit 1
 }
 
-echo "✅ Parallel runner preserves failures and confines exactly eight pinned suites."
+echo "✅ Parallel runner preserves failures and confines exactly nine pinned suites."

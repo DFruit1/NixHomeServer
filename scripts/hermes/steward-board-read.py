@@ -17,8 +17,10 @@ import time
 def query(root, board, sql):
     if not re.fullmatch(r'[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*', board):
         raise ValueError('Invalid board slug')
-    path = root / 'kanban/boards' / board / 'kanban.db'
-    if not path.resolve().is_relative_to((root / 'kanban/boards').resolve()):
+    root = Path(root).resolve()
+    legacy = root / 'kanban.db'
+    path = legacy if board == 'default' and os.path.lexists(legacy) else root / 'kanban/boards' / board / 'kanban.db'
+    if (path == legacy and path.resolve() != legacy) or (path != legacy and not path.resolve().is_relative_to((root / 'kanban/boards').resolve())):
         raise ValueError('Board path leaves the board directory')
     with closing(sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True)) as db:
         db.row_factory = sqlite3.Row

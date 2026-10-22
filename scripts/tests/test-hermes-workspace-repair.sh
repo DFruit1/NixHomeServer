@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+if [[ "${HERMES_FIXTURE_ACTIVE:-}" != 1 ]]; then
+  exec python3 -B "$repo/scripts/hermes/fixture-runner.py" --repo "$repo" --suite "$repo/scripts/tests/test-hermes-workspace-repair.sh"
+fi
 fixture="$(mktemp -d /tmp/hermes-workspace-repair.XXXXXX)"
 trap 'rm -rf "$fixture"' EXIT
 python3 -B - "$repo" "$fixture" <<'PY'
 import copy
+from contextlib import closing
 import importlib.util
 import json
 from pathlib import Path
@@ -183,6 +187,20 @@ class WorkspaceRepairTest(unittest.TestCase):
             self.run_repair()
         self.assertFalse(self.target.exists())
 
+    def test_readonly_evidence_legacy_default_and_symlink_escape(self):
+        import sqlite3
+        reader=repair.NativeBoards._module('steward-board-read.py')
+        root=self.root/'read-root';root.mkdir();legacy=root/'kanban.db'
+        with closing(sqlite3.connect(legacy)) as db:
+            db.execute('CREATE TABLE evidence(value TEXT)');db.execute("INSERT INTO evidence VALUES('original')");db.commit()
+        before=legacy.read_bytes()
+        self.assertEqual([{'value':'original'}],reader.query(root,'default','SELECT * FROM evidence')['rows'])
+        with self.assertRaises(sqlite3.DatabaseError):reader.query(root,'default',"UPDATE evidence SET value='changed'")
+        self.assertEqual(before,legacy.read_bytes())
+        outside=self.root/'outside.db';legacy.rename(outside);legacy.symlink_to(outside)
+        with self.assertRaises(ValueError):reader.query(root,'default','SELECT * FROM evidence')
+        self.assertEqual(before,outside.read_bytes())
+
     def test_worker_profile_identity_is_preserved_and_refused_for_effects(self):
         with patch.dict(repair.os.environ,{'HERMES_PROFILE_NAME':'feature-reviewer',
                                          'HERMES_KANBAN_TASK':'t_one'}):
@@ -199,5 +217,153 @@ class WorkspaceRepairTest(unittest.TestCase):
         self.assertEqual('original',(Path(caught.exception.receipt['preserved_path'])/'evidence').read_text())
         self.assertEqual('blocked',self.task['status'])
 
-unittest.main(argv=['workspace-repair-tests'])
+
+_NATIVE_PARENT = r'''
+import importlib.util,json,os,sqlite3,subprocess,sys,time
+from pathlib import Path
+source,root,child=sys.argv[1:];source=Path(source);root=Path(root)
+sys.path.insert(0,str(source));import worker_origin as origin
+path=Path(os.environ['HERMES_KANBAN_DB']);pid=os.getpid();fingerprint=origin.process_fingerprint()
+with sqlite3.connect(path) as db:
+ db.execute("UPDATE tasks SET worker_pid=?,worker_started_at=?,claim_expires=? WHERE id='t_actor'",(pid,fingerprint,int(time.time())+600))
+ db.execute("UPDATE task_runs SET worker_pid=?,worker_started_at=?,claim_expires=? WHERE id=42",(pid,fingerprint,int(time.time())+600))
+binding=origin._native_binding();assert binding is not None
+from hermes_cli import kanban_db as kb
+assert 'two' in {row['slug'] for row in kb.list_boards(include_archived=True)},'Actual native catalog missed board two'
+probe=subprocess.run([os.environ['HERMES_BIN'],'kanban','--board','two','list','--archived','--json'],capture_output=True,text=True)
+assert probe.returncode==0,probe.stderr
+assert any(x['id']=='t_one' for x in json.loads(probe.stdout)),'Native worker pin did not constrain explicit foreign board'
+profile=os.environ['HERMES_PROFILE']
+state=root/'hermes/profiles'/profile/'state.db';state.parent.mkdir(parents=True,exist_ok=True)
+with sqlite3.connect(state) as db:
+ db.execute('CREATE TABLE sessions(id TEXT,source TEXT,profile_name TEXT,started_at REAL,ended_at REAL,origin_json TEXT)')
+ db.execute('INSERT INTO sessions VALUES (?,?,?,?,?,?)',('fixture-session','kanban',profile,time.time()-1,None,json.dumps({'native_worker':binding})))
+env=dict(os.environ)
+for key in ('HERMES_KANBAN_TASK','HERMES_KANBAN_RUN_ID','HERMES_KANBAN_CLAIM_LOCK'):env.pop(key,None)
+env.update(HERMES_DELEGATED_CHILD_CONTEXT=str(root/'hermes'),HERMES_SESSION_ID='fixture-session')
+# Native top-level launcher records a real, kernel-bound terminal launch.
+proc=subprocess.Popen([sys.executable,'-B','-c','import sys;sys.stdin.readline();\n'+child,str(source),str(root)],env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+if (root/'delegated').exists():
+ from agent.delegation_context import delegated_child_context
+ with delegated_child_context():origin.record_launch(proc)
+else:origin.record_launch(proc)
+out,err=proc.communicate('go\n',timeout=60)
+if proc.returncode:raise RuntimeError(err)
+print(out.strip())
+'''
+_NATIVE_CHILD = r'''
+import importlib.util,json,os,subprocess,sys
+from pathlib import Path
+source,root=map(Path,sys.argv[1:]);sys.path.insert(0,str(source))
+spec=importlib.util.spec_from_file_location('repair',source/'repair-task-workspace.py');repair=importlib.util.module_from_spec(spec);spec.loader.exec_module(repair)
+plan=json.loads((root/'plan.json').read_text())
+# The scrubbed field-tool CLI refuses even list. The native parent above also
+# proves explicit --board two remains pinned to one in the actual worker.
+probe=subprocess.run([os.environ['HERMES_BIN'],'kanban','--board','two','list','--archived','--json'],capture_output=True,text=True)
+assert probe.returncode!=0 and 'delegate_task child contexts' in probe.stderr,probe.stderr
+before={name:(root/'hermes/kanban/boards'/name/'kanban.db').read_bytes() for name in ('one','two')}
+try:
+ # Caller overrides must not choose board metadata or a fake CLI.
+ os.environ['HERMES_BIN']=str(root/'forged-hermes')
+ os.environ['HERMES_ROOT']=str(root/'forged-root')
+ native=repair.NativeBoards(repair.Runner())
+ preview=repair.repair_workspace(plan['repo'],'one','t_one',plan['revision'],plan['tree'],native,apply=False)
+ result=repair.repair_workspace(plan['repo'],'one','t_one',plan['revision'],plan['tree'],native,apply=True)
+ print(json.dumps({'status':result['status'],'preview':preview['status'],'forged_cli_called':(root/'forged-called').exists(),'preserved_pins':os.environ.get('HERMES_KANBAN_TASK') is None and os.environ['HERMES_DELEGATED_CHILD_CONTEXT']==str(root/'hermes')}))
+except repair.Refused as exc:print(json.dumps({'status':'refused','reason':str(exc)}))
+assert all((root/'hermes/kanban/boards'/name/'kanban.db').read_bytes()==value for name,value in before.items()),'Board bytes changed'
+'''
+
+
+class NativePinnedWorkspaceTest(unittest.TestCase):
+    def probe(self,alias=False,profile='head-coordinator',delegated=False,legacy_alias=False,symlink_board=False,archive_alias=False,nested_artifact=False):
+        import os,sqlite3,time
+        native=Path(os.environ['HERMES_FIXTURE_NATIVE_PYTHON']).parents[2]
+        sys.path.insert(0,str(native))
+        from hermes_cli import kanban_db_connect as kbc, kanban_db as kb
+        fixture=WorkspaceRepairTest('test_missing_checkout_is_created_at_exact_pinned_source')
+        fixture._testMethodName='native-'+self._testMethodName
+        fixture.setUp();root=fixture.root
+        hermes=root/'hermes';dbpath=hermes/'kanban/boards/one/kanban.db'
+        now=int(time.time());work=root/'coordinator';work.mkdir()
+        for board in ('default','one','two'):
+            path=hermes/'kanban.db' if board=='default' else hermes/'kanban/boards'/board/'kanban.db'
+            path.parent.mkdir(parents=True,exist_ok=True)
+            with closing(kbc.connect(db_path=path)) as db:
+                if board=='one':
+                    db.execute("INSERT INTO tasks(id,title,status,assignee,created_at,workspace_kind,workspace_path,branch_name) VALUES('t_one','Parked repair','blocked','feature-reviewer',?,'worktree',?,'wt/t_one')",(now,str(fixture.target)))
+                    kb._append_event(db,'t_one','blocked',{'reason':'Input supplier: agent. Fixture source missing','kind':'capability'})
+                    db.execute("INSERT INTO tasks(id,title,status,assignee,created_at,workspace_kind,workspace_path,current_run_id,claim_lock,claim_expires) VALUES('t_actor','Native coordinator','running','head-coordinator',?,'dir',?,42,'fixture',?)",(now,str(work),now+600))
+                    db.execute("INSERT INTO task_runs(id,task_id,status,profile,started_at,claim_lock,claim_expires) VALUES(42,'t_actor','running','head-coordinator',?,'fixture',?)",(now-5,now+600))
+                elif (board=='two' and alias) or (board=='default' and legacy_alias):
+                    if board=='two':
+                        db.executemany("INSERT INTO tasks(id,title,status,created_at,workspace_kind) VALUES(?,'Other historical card','archived',?,'scratch')",[(f't_a{i:03d}',now) for i in range(200)])
+                    db.execute("INSERT INTO tasks(id,title,status,created_at,workspace_kind,workspace_path) VALUES('t_foreign','Retained foreign alias','archived',?,'dir',?)",(now,str(fixture.target)))
+                db.commit()
+        if archive_alias:
+            original=hermes/'kanban/boards/two';archived=hermes/'kanban/boards/_archived/two-1790000000';archived.parent.mkdir();original.rename(archived);original.mkdir()
+            with closing(kbc.connect(db_path=original/'kanban.db')):pass
+        if nested_artifact:
+            fake=hermes/'kanban/boards/one/workspaces/fixture/kanban.db';fake.parent.mkdir(parents=True);fake.write_bytes(b'not a board database')
+        if symlink_board:
+            original=hermes/'kanban/boards/two';moved=root/'outside-board';original.rename(moved);original.symlink_to(moved,target_is_directory=True)
+        if profile!='head-coordinator':
+            with sqlite3.connect(dbpath) as db:
+                db.execute("UPDATE tasks SET assignee=? WHERE id='t_actor'",(profile,));db.execute('UPDATE task_runs SET profile=? WHERE id=42',(profile,))
+        if delegated:(root/'delegated').touch()
+        forged=root/'forged-hermes';forged.write_text('#!/bin/sh\ntouch '+str(root/'forged-called')+'\nprintf \'[]\\n\'\n');forged.chmod(0o700)
+        (root/'plan.json').write_text(json.dumps(dict(repo=str(fixture.repo),revision=fixture.commit,tree=fixture.tree)))
+        cli=root/'native-hermes';cli.write_text('#!'+str(Path(os.environ['HERMES_FIXTURE_NATIVE_PYTHON']))+'\nimport runpy,sys\nsys.path.insert(0,'+repr(str(native))+')\nrunpy.run_module("hermes_cli.main",run_name="__main__",alter_sys=True)\n');cli.chmod(0o700)
+        env=dict(os.environ,HERMES_ROOT=str(hermes),HERMES_HOME=str(hermes/'profiles/head-coordinator'),HERMES_KANBAN_HOME=str(hermes),HERMES_KANBAN_TASK='t_actor',HERMES_KANBAN_RUN_ID='42',HERMES_KANBAN_CLAIM_LOCK='fixture',HERMES_KANBAN_BOARD='one',HERMES_KANBAN_DB=str(dbpath),HERMES_KANBAN_WORKSPACE=str(work),HERMES_PROFILE=profile,HERMES_SESSION_ID='fixture-session',HERMES_BIN=str(cli))
+        result=subprocess.run([str(Path(os.environ['HERMES_FIXTURE_NATIVE_PYTHON'])),'-B','-c',_NATIVE_PARENT,str(ROOT/'scripts/hermes'),str(root),_NATIVE_CHILD],env=env,capture_output=True,text=True,timeout=90)
+        self.assertEqual(0,result.returncode,result.stderr)
+        return json.loads(result.stdout),fixture
+
+    def test_native_coordinator_unique_workspace_can_preview_and_apply_without_pin_changes(self):
+        result,fixture=self.probe()
+        self.assertEqual('prepared',result['status'],result)
+        self.assertEqual('repair_needed',result['preview']);self.assertTrue(result['preserved_pins'])
+        self.assertFalse(result['forged_cli_called'])
+        fixture.assert_exact()
+
+    def test_native_untrusted_role_and_actual_delegated_launch_refuse_before_effects(self):
+        for profile,delegated in (('standard-implementer',False),('head-coordinator',True)):
+            with self.subTest(profile=profile,delegated=delegated):
+                # Each probe has an exclusive native board/worker process.
+                self._testMethodName += '-'+profile
+                result,fixture=self.probe(profile=profile,delegated=delegated)
+                self.assertEqual('refused',result['status'],result)
+                self.assertIn('AUTHENTICATED_COORDINATOR_REQUIRED',result['reason'])
+                self.assertFalse(fixture.target.exists())
+
+    def test_native_legacy_default_board_alias_is_not_missed(self):
+        result,fixture=self.probe(legacy_alias=True)
+        self.assertEqual('refused',result['status'],result)
+        self.assertIn('SHARED_WORKSPACE default/t_foreign',result['reason'])
+        self.assertFalse(fixture.target.exists())
+
+    def test_native_archive_container_preserves_retained_alias_ownership(self):
+        result,fixture=self.probe(alias=True,archive_alias=True)
+        self.assertEqual('refused',result['status'],result)
+        self.assertIn('SHARED_WORKSPACE _archived/two-1790000000/t_foreign',result['reason'])
+        self.assertFalse(fixture.target.exists())
+
+    def test_workspace_artifact_named_database_is_not_a_native_board(self):
+        result,fixture=self.probe(nested_artifact=True)
+        self.assertEqual('prepared',result['status'],result)
+        fixture.assert_exact()
+
+    def test_native_visible_symlink_board_cannot_hide_foreign_workspace_alias(self):
+        result,fixture=self.probe(alias=True,symlink_board=True)
+        self.assertEqual('refused',result['status'],result)
+        self.assertIn('BOARD_DIRECTORY_SYMLINK',result['reason'])
+        self.assertFalse(fixture.target.exists())
+
+    def test_native_coordinator_foreign_archived_alias_is_seen_and_refused(self):
+        result,fixture=self.probe(alias=True)
+        self.assertEqual('refused',result['status'],result)
+        self.assertIn('SHARED_WORKSPACE two/t_foreign',result['reason'])
+        self.assertFalse(fixture.target.exists())
+
+unittest.main(argv=['workspace-repair-tests'],verbosity=2)
 PY

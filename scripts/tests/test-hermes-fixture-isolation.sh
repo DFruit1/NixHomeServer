@@ -201,7 +201,7 @@ with tempfile.TemporaryDirectory(prefix='hermes-fixture-isolation-',dir='/tmp') 
     argv,env=runner.command(repo,repo/'scripts/tests/test-script-test-runner.sh',runtime,routing_scratch)
     routing=subprocess.run(argv,env=env,capture_output=True,text=True,timeout=180)
     assert routing.returncode==0,routing.stdout+'\\n'+routing.stderr
-    assert 'confines exactly eight pinned suites' in routing.stdout,routing.stdout
+    assert 'confines exactly nine pinned suites' in routing.stdout,routing.stdout
     install_root=task/'install-root';target=install_root/'scripts/fixture-runner.py'
     target.parent.mkdir(parents=True);target.write_text('previous helper bytes\\n');target.chmod(0o640)
     old=target.read_bytes();old_mode=target.stat().st_mode & 0o777
