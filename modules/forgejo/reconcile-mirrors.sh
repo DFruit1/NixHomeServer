@@ -138,16 +138,39 @@ ensure_mirror() {
     return 1
   fi
 
-  local user
+  local user status curl_exit
+  local grant_failures=0
   local IFS=','
   for user in $collaborators; do
     [[ -n "$user" && "$user" != "$owner" ]] || continue
-    curl -s -o /dev/null --max-time 30 -X PUT \
+    # Capture the HTTP status together with curl's exit code: an HTTP error
+    # response still exits 0 because this request does not use curl -f.
+    if status="$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 -X PUT \
       -H "Authorization: token ${token}" \
       -H "Content-Type: application/json" \
       -d '{"permission":"read"}' \
-      "${api}/api/v1/repos/${owner}/${name}/collaborators/${user}" || true
+      "${api}/api/v1/repos/${owner}/${name}/collaborators/${user}")"; then
+      curl_exit=0
+    else
+      curl_exit=$?
+      status=""
+    fi
+    # Forgejo answers 204 No Content once the grant is applied, including a
+    # repeated grant for an existing collaborator. Anything else is a failure.
+    if [[ "$curl_exit" == "0" && "$status" == "204" ]]; then
+      continue
+    fi
+    grant_failures=$((grant_failures + 1))
+    if [[ "$curl_exit" != "0" ]]; then
+      log "Failed to grant read access to ${owner}/${name} for ${user}: transport failure (curl exit ${curl_exit})"
+    else
+      log "Failed to grant read access to ${owner}/${name} for ${user}: HTTP ${status:-none}"
+    fi
   done
+  if ((grant_failures > 0)); then
+    log "${owner}/${name}: ${grant_failures} collaborator grant(s) failed"
+    return 1
+  fi
   return 0
 }
 

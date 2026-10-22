@@ -398,6 +398,18 @@ Forgejo database live under `/var/lib/forgejo`, which is persisted centrally and
 captured by Kopia as `forgejo.sqlite` plus the state root. Removing or disabling
 the module leaves `/var/lib/forgejo` and its backups intact.
 
+Read access for the configured collaborators is confirmed per repository: only
+Forgejo's `204 No Content` from the collaborator endpoint counts as an applied
+grant, including a repeat grant for an existing collaborator. A rejected or
+unreachable grant (for example HTTP 403, 404 or 500, or a transport failure) is
+reported with the mirror, collaborator and HTTP status or curl exit code. The
+reconciler keeps applying the remaining grants and mirrors, then exits nonzero
+instead of printing the all-reconciled message, so `forgejo-mirrors.service`
+records the failure and the six-hour timer retries it. A configured user who has
+not signed in to Forgejo yet surfaces as a failed grant until their account
+exists from a first Kanidm login; grants are retried on the next run and a
+failed grant is not sticky.
+
 ## Local-Console Administrator Recovery
 
 The generated `serverBootstrapSudoPassword` is reconciled as the password for
