@@ -6,9 +6,9 @@ a cron prompt or its previous output supplies new authority.
 
 | Job | Model turns | Tool calls | Runtime |
 | --- | ---: | ---: | ---: |
-| Coordinator board health | 10 | 12 | 180s |
+| Coordinator board health | 10 | 12 | 360s |
 | Coordinator usage pace | 8 | 8 | 120s |
-| Coordinator idle recovery | 12 | 12 | 240s |
+| Coordinator idle recovery | 12 | 12 | 360s |
 | Steward daily report | 10 | 12 | 180s |
 | Steward opportunity scan | 6 | 6 | 90s |
 | Steward stall inspection | 8 | 8 | 120s |
@@ -20,6 +20,14 @@ only verified evidence or a bounded deferred question. Never delegate, switch
 tools or create replacement work to escape the budget. The runtime watchdog
 interrupts at the deadline; already-running operations use native cooperative
 cancellation and deferred cleanup, not a guarantee of undoing side effects.
+
+The coordinator monitor runtimes were raised to 360s in 2026-10-22 after the
+8-19 October fail signature: wakes died on the runtime deadline with only
+2-3 tool calls recorded, i.e. model generation latency on the coordinator
+lane, not report volume, dominated. Board-health remains report-capped so
+one wake can triage on named findings; runtime gives it the clock in which
+to get there. Tool counts stay tight: exhaustion with spends budgeted
+evidence still returns, rather than waking an unbounded investigation.
 
 The stall timer remains four-hourly, but no model starts unless a selected
 question has changed materially or its next inspection is due. The scheduler
