@@ -264,7 +264,11 @@ touch "$test_root/allow-completion"
   echo "❌ Restarted conversion did not complete from its durable plan." >&2
   exit 1
 }
-jq -e '.sources["Restartable_2001.iso"] == null' "$test_root/state/queue.json" >/dev/null
+jq -e '.sources["Restartable_2001.iso"] == null' "$test_root/state/queue.json" >/dev/null || {
+  echo "❌ Restarted conversion left its source entry in the queue." >&2
+  jq '.sources' "$test_root/state/queue.json" >&2
+  exit 1
+}
 
 cp "$test_root/inbox/_Processed/Restartable_2001.iso" \
   "$test_root/inbox/Restartable_2001_again.iso"
@@ -346,8 +350,16 @@ jq -e '
   echo "❌ Duplicate cleanup did not preserve the duplicate output for review." >&2
   exit 1
 }
-jq -e '.sources["Restartable_2001_again.iso"] == null' "$test_root/state/queue.json" >/dev/null
-jq -e '.processed_hashes["Restartable_2001.iso"] != null' "$test_root/state/queue.json" >/dev/null
+jq -e '.sources["Restartable_2001_again.iso"] == null' "$test_root/state/queue.json" >/dev/null || {
+  echo "❌ Duplicate ISO stayed in the queue after quarantine." >&2
+  jq '.sources' "$test_root/state/queue.json" >&2
+  exit 1
+}
+jq -e '.processed_hashes["Restartable_2001.iso"] != null' "$test_root/state/queue.json" >/dev/null || {
+  echo "❌ Duplicate check did not cache the canonical ISO hash." >&2
+  jq '.processed_hashes' "$test_root/state/queue.json" >&2
+  exit 1
+}
 [[ "$(wc -l <"$test_root/converter-invocations")" == 2 ]] || {
   echo "❌ Byte-identical ISO reached the converter." >&2
   exit 1
@@ -407,9 +419,20 @@ state["sources"][source.name] = {
 }
 state_path.write_text(json.dumps(state), encoding="utf-8")
 PY
+# A long backoff keeps this assertion deterministic. With the shared 1s retry
+# interval, a duplicate check that takes longer than a second expires its own
+# backoff mid-run, the loop re-claims the same ISO, and the attempts count this
+# block asserts depends on how fast the machine hashed _Processed.
+retry_flag_index=$(( ${#auto_import[@]} - 2 ))
+[[ "${auto_import[$retry_flag_index]}" == "--retry-seconds" ]] || {
+  echo "❌ Test setup error: expected --retry-seconds as the last auto_import flag." >&2
+  exit 1
+}
+unverifiable_import=("${auto_import[@]:0:$retry_flag_index}")
+unverifiable_import+=(--retry-seconds 3600)
 chmod 000 "$test_root/inbox/_Processed/Restartable_2001.iso"
 set +e
-"${auto_import[@]}" >/dev/null 2>&1
+"${unverifiable_import[@]}" >/dev/null 2>&1
 unverifiable_status=$?
 set -e
 chmod 0644 "$test_root/inbox/_Processed/Restartable_2001.iso"
@@ -424,7 +447,12 @@ chmod 0644 "$test_root/inbox/_Processed/Restartable_2001.iso"
 jq -e '
   (.sources["Unverifiable.iso"].status == "duplicate-check-failed")
   and (.sources["Unverifiable.iso"].attempts == 1)
-' "$test_root/state/queue.json" >/dev/null
+  and (.sources["Unverifiable.iso"].retry_after > now)
+' "$test_root/state/queue.json" >/dev/null || {
+  echo "❌ Unavailable duplicate hashing did not record one retry with backoff." >&2
+  jq '.sources["Unverifiable.iso"]' "$test_root/state/queue.json" >&2
+  exit 1
+}
 [[ "$(wc -l <"$test_root/converter-invocations")" == 2 ]] || {
   echo "❌ Unverifiable ISO reached the converter." >&2
   exit 1
