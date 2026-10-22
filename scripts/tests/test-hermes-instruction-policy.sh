@@ -29,6 +29,19 @@ def load_installer(name, filename):
 
 
 class InstructionPolicyTest(unittest.TestCase):
+    def test_installed_review_instructions_deliver_exact_completion_scope(self):
+        policy.install(self.root)
+        text = (self.root / 'scripts/hermes-review-evidence.md').read_text()
+        self.assertIn('Pass explicit `board` and `task_id` to `kanban_complete`', text)
+        self.assertIn('shell-hook subprocess removes worker task/run identity', text)
+        self.assertIn('stop-on-refusal', text)
+        self.assertIn('never infer scope from cwd', text)
+        rule = 'Pass explicit `board` and `task_id` to `kanban_complete`'
+        for name in policy.REVIEW_SKILL_PROFILES:
+            self.assertIn(rule, (self.root / 'profiles' / name / 'SOUL.md').read_text(), name)
+        self.assertIn(rule, (self.root / 'scripts/hermes-fleet-policy.md').read_text())
+        self.assertNotIn(rule, (self.root / 'profiles/board-steward/SOUL.md').read_text())
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='nixhomeserver-instruction-policy-test-')
         self.addCleanup(self.tmp.cleanup)

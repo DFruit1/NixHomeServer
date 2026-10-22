@@ -65,6 +65,25 @@ and cron. `--policy-only` deliberately excludes profile configuration: installin
 the guard script through that mode alone does not install its effective matcher.
 Fresh workers load the updated profile hooks; do not interrupt active work.
 
+Completion scope is delivered explicitly through native tool arguments. Hermes'
+shell-hook spawn uses `build_subprocess_env`, whose descendant isolation removes
+worker task/run pins even without secret scrubbing; the hook payload does not
+resolve the native dispatcher's defaults. The maintained review evidence reference
+therefore requires explicit `board` and `task_id`, checked against the worker's
+own context. The shared fleet rules carry the same completion rule directly in
+every worker lane's SOUL, including implementers and coordinator, without another
+required read. `install-instruction-policy.py` installs the rules and reference;
+use the reviewed fleet release path for adoption. Keep the
+guard fail-closed rather than restoring worker identity to subprocesses. A
+previous stop-on-refusal still requires supported coordinator resume, never a
+worker retry or reinterpretation of the original verdict.
+
+The real transport regression runs with the native Hermes Python on `PATH` and
+`HERMES_REVIEW_GUARD_NATIVE_REPO` set to its checkout:
+`bash scripts/tests/test-hermes-review-verdict-guard.sh`. It uses synthetic board
+state, disables lazy installation and never executes a native board mutation.
+Without that opt-in, the repository gate runs the portable guard tests.
+
 The native coordinator's `kanban_amend` capability is installed by
 `install-recovered-resume.py`, alongside the guarded resume API. Install matching
 canonical monitor dependencies with `install-cron-policy.py` first, then the

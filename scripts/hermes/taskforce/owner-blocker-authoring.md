@@ -13,6 +13,10 @@ report the exact capability gap through head-coordinator. Anchor every worker
 call to its runtime-assigned board/task. Never forge an author or edit board
 SQLite.
 
+Pass explicit `board` and `task_id` to `kanban_complete`, matching the
+runtime-assigned board and own card; the read-only shell hook cannot use native
+task defaults. Missing or conflicting scope stays blocked; preserve stop-on-refusal.
+
 Owner-approved autonomy (2026-10-18): ~/.hermes/scripts/hermes-autonomy.md
 covers bounded fallbacks (never credential contexts), read-only cross-board
 evidence and confined synthetic tests;
