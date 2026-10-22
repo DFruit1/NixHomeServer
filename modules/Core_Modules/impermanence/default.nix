@@ -56,6 +56,7 @@ let
     "/var/lib/kavita"
     "/var/lib/kiwix"
     "/var/lib/mkvmaker"
+    "/var/lib/ntfy"
     "/var/lib/paperless"
     "/var/lib/postgresql"
     "/var/lib/power-schedule"

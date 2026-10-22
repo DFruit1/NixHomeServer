@@ -36,6 +36,7 @@ let
         "mail-archive-ui"
         "mkvmaker"
         "offline-music"
+        "ntfy"
         "opencloud"
         "paperless"
         "prowlarr"
