@@ -13,6 +13,12 @@ source "$_repo_lib_dir/deploy-archive-cleanup.sh"
 # silently resolve against whatever sourced repo-common.sh.
 deploy_archive_helper_path="$_repo_lib_dir/deploy-archive-cleanup.sh"
 
+# Strict remote-execution boundary: source binding, host attestation, receipts
+# and bounded cleanup. Kept in its own file so the ordinary helpers stay
+# readable and the strict contract has exactly one home.
+# shellcheck source=scripts/helpers/strict-remote.sh
+source "$_repo_lib_dir/strict-remote.sh"
+
 init_repo_root() {
   local override_var="${1:-}"
   local requested_root git_root
@@ -312,6 +318,11 @@ stage_archive_on_remote() {
   local helper_path="$deploy_archive_helper_path"
   local remote_archive
 
+  # What became of anything this call acquired on the server. A caller that
+  # fails to stage still has to say whether the transfer it started was cleaned
+  # up, so the receipt can distinguish "nothing left behind" from "unknown".
+  stage_archive_cleanup_status="none"
+
   if [[ ! -r "$helper_path" ]]; then
     echo "blocked: deploy archive staging helper is missing: $helper_path" >&2
     return 1
@@ -333,12 +344,15 @@ stage_archive_on_remote() {
   # a wrapped error, or a blank line is not a usable archive path.
   if [[ ! "$remote_archive" == /* ]] || [[ "$remote_archive" == *$'\n'* ]]; then
     echo "blocked: remote deploy archive staging did not return a usable path" >&2
+    # The helper traps its own EXIT, but a session that died mid-call cannot
+    # confirm that, so the honest outcome is unknown rather than cleaned.
+    stage_archive_cleanup_status="unknown"
     return 1
   fi
 
   if ! ssh -T "$remote_host" "cat > $(printf '%q' "$remote_archive")" \
       <"$archive_path"; then
-    remove_remote_archive "$remote_host" "$remote_archive"
+    stage_archive_cleanup_status="$(remove_remote_archive_status "$remote_host" "$remote_archive")"
     return 1
   fi
   printf '%s\n' "$remote_archive"
@@ -365,13 +379,13 @@ nix_eval_with_optional_cache() (
       fi
       tmp_file="$(mktemp "${cache_file}.tmp.XXXXXX")" || return
       trap 'rm -f "$tmp_file"' EXIT
-      nix eval "--${eval_output_mode}" --impure --expr "$expr" >"$tmp_file" || return
+      command nix eval "--${eval_output_mode}" --impure --expr "$expr" >"$tmp_file" || return
       mv "$tmp_file" "$cache_file" || return
       cat "$cache_file"
       return
     fi
   fi
-  nix eval "--${eval_output_mode}" --impure --expr "$expr"
+  command nix eval "--${eval_output_mode}" --impure --expr "$expr"
 )
 
 nix_json() {

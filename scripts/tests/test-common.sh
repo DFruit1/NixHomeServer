@@ -112,6 +112,10 @@ require_json_equal() {
 # (drvPath and other single strings) is printed to stdout.
 flake_eval() {
   local body="$1"
+  if strict_remote_enabled; then
+    remote_eval_batch_json "value=(let ${body})" | jq -r '.value'
+    return
+  fi
   nix_eval_with_optional_cache raw "
     let
       f = builtins.getFlake (builtins.getEnv \"NIXHOMESERVER_FLAKE_REF_FOR_EVAL\");
@@ -123,12 +127,82 @@ flake_eval() {
 # JSON variant of flake_eval.
 flake_eval_json() {
   local body="$1"
+  if strict_remote_enabled; then
+    remote_eval_batch_json "value=(let ${body})" | jq -c '.value'
+    return
+  fi
   nix_eval_with_optional_cache json "
     let
       f = builtins.getFlake (builtins.getEnv \"NIXHOMESERVER_FLAKE_REF_FOR_EVAL\");
       lib = f.inputs.nixpkgs.lib;
       ${body}
     "
+}
+
+# Strict-mode process boundary for registered workstation tests.
+#
+# The suite's promise in strict mode is that heavy evaluation happens on the
+# server. The suite is also decades of accumulated test scripts, most of which
+# call `nix eval` directly; rewriting every call site would mean either dropping
+# coverage or moving whole suites to the server, and neither is acceptable. So
+# the boundary is enforced once, where every script already converges: bash's
+# command lookup. A heavy subcommand is re-executed on the server against the
+# staged committed tree; cheap store and configuration commands stay local.
+#
+# Variables the Nix expressions read for query context travel as bounded
+# arguments, never as an environment bridge. Inside the remote snippet `nix`
+# resolves to the server's own binary, so this cannot recurse.
+nix() {
+  local subcommand="${1:-}" context status=0 output path
+  if ! strict_remote_enabled; then
+    command nix "$@"
+    return
+  fi
+  case "$subcommand" in
+    eval|flake|develop|shell|run|print-dev-env|build) ;;
+    *)
+      command nix "$@"
+      return
+      ;;
+  esac
+
+  context="$(remote_eval_host_context)" || return 1
+  output="$(
+    remote_run 'set -euo pipefail
+tree="$1"
+shift
+host="${1:-}"
+shift
+cd "$tree"
+if [[ -n "$host" ]]; then
+  export NIXHOMESERVER_TEST_HOST="$host"
+fi
+export NIXHOMESERVER_FLAKE_REF_FOR_EVAL="path:$tree"
+export NIXHOMESERVER_REPO_ROOT_FOR_EVAL="$tree"
+nix "$@"' "$context" "$@"
+  )" || status=$?
+  if ((status != 0)); then
+    return "$status"
+  fi
+  printf '%s\n' "$output"
+
+  # A remote build leaves its outputs in the server's store. Materialise the
+  # ones a caller was handed -- substitution only, never evaluation -- so a test
+  # that reads `$out/bin/...` keeps working.
+  if [[ "$subcommand" == build ]]; then
+    if jq -e 'type == "array"' <<<"$output" >/dev/null 2>&1; then
+      while IFS= read -r path; do
+        [[ -n "$path" ]] || continue
+        command nix-store --realise "$path" >/dev/null || return 1
+      done < <(jq -r '.[].outputs[]?' <<<"$output")
+    else
+      while IFS= read -r path; do
+        [[ "$path" == /nix/store/* ]] || continue
+        command nix-store --realise "$path" >/dev/null || return 1
+      done <<<"$output"
+    fi
+  fi
+  return 0
 }
 
 # Evaluate a body that is expected to fail. Prints the captured output to stdout

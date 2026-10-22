@@ -176,6 +176,7 @@ test_scripts=(
   scripts/tests/test-remote-eval-helper.sh
   scripts/tests/test-remote-build-helper.sh
   scripts/tests/test-remote-run-helper.sh
+  scripts/tests/test-strict-remote.sh
   scripts/tests/test-reap-kanban-worktrees.sh
   scripts/tests/test-hermes-workspace-preflight.sh
   scripts/tests/test-hermes-workspace-repair.sh

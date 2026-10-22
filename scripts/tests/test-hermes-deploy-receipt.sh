@@ -224,7 +224,7 @@ class ReceiptTest(unittest.TestCase):
     def test_capture_hashes_canonical_extracted_archive_and_rejects_dirty_checkout(self):
         checkout=self.root/'checkout'; checkout.mkdir()
         helpers=checkout/'scripts/helpers'; helpers.mkdir(parents=True)
-        for name in ('repo-common.sh','deploy-archive-cleanup.sh'):
+        for name in ('repo-common.sh','strict-remote.sh','deploy-archive-cleanup.sh'):
             shutil.copyfile(PROJECT/'scripts/helpers'/name,helpers/name)
         (checkout/'tracked').write_text('reviewed content')
         (checkout/'.gitignore').write_text('ignored\n')

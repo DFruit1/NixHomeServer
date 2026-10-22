@@ -27,6 +27,11 @@
 # Fails closed. Any staging, transfer, or remote-evaluation failure returns
 # non-zero with no output, so a caller cannot read a transport error as an empty
 # result. Set REMOTE_EVAL=0 to force local evaluation.
+#
+# NIXHOMESERVER_REQUIRE_REMOTE=1 turns that failure into the result: no local
+# fallback, the source must be the declared commit, the endpoint must not be
+# this workstation, and every attempt leaves a receipt naming the commit, tree,
+# canonical manifest, the host actually reached, and its cleanup outcome.
 
 remote_eval_host=""
 remote_eval_reason=""
@@ -44,6 +49,24 @@ _remote_eval_resolve_host() {
     serverLanIP = vars.serverLanIP;
   }')" || return 1
   jq -er '"\(.localAdminUser)@\(.serverLanIP)"' <<<"$config"
+}
+
+# The selected configuration host travels with the query. Tests select a host
+# through NIXHOMESERVER_TEST_HOST and read it back inside the Nix expression with
+# builtins.getEnv, so a remote shell without it evaluates `f.nixosConfigurations.""`
+# -- or, worse, silently evaluates a different host. Only a bounded identifier is
+# transmitted: this is query context, not an environment bridge.
+remote_eval_host_context() {
+  local host="${NIXHOMESERVER_TEST_HOST:-}"
+  if [[ -z "$host" ]]; then
+    printf '\n'
+    return 0
+  fi
+  if [[ ! "$host" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+    echo "remote-eval: NIXHOMESERVER_TEST_HOST is not a bounded host identifier" >&2
+    return 1
+  fi
+  printf '%s\n' "$host"
 }
 
 # remote_eval_batch_json <name>=<body> [<name>=<body> ...]
@@ -76,6 +99,11 @@ remote_eval_batch_json() {
 in {
 ${built}}"
 
+  if strict_remote_enabled; then
+    _remote_eval_strict_run "$all"
+    return
+  fi
+
   if [[ "${REMOTE_EVAL:-1}" != "0" ]]; then
     if _remote_eval_run "$all"; then
       return 0
@@ -86,15 +114,39 @@ ${built}}"
   # The local fallback needs the same flake reference the repo's own helpers
   # use, so bind it here too rather than relying on _remote_eval_run having run.
   init_repo_root
-  nix eval --json --impure --expr "$all"
+  command nix eval --json --impure --expr "$all"
+}
+
+_remote_eval_remote_script() {
+  # Positional arguments come from the ssh command line; the Nix body arrives as
+  # a file and is read on the server, never re-parsed by the remote shell.
+  cat <<'REMOTE_EOF'
+set -euo pipefail
+remote_dir="$1"
+remote_archive="$2"
+remote_expr="$3"
+selected_host="${4:-}"
+trap 'rm -rf "$remote_dir" "$remote_archive"' EXIT
+mkdir -p "$remote_dir"
+tar -C "$remote_dir" -xf "$remote_archive"
+cd "$remote_dir"
+# path:, not git+file:// -- the staged tree is a plain directory with no .git.
+# Safe here precisely because create_deploy_repo_archive already reduced it to
+# committed files; a path: reference to the live working tree would drag in the
+# ~69 GB of gitignored build output under custom_apps.
+NIXHOMESERVER_FLAKE_REF_FOR_EVAL="path:$remote_dir" \
+  NIXHOMESERVER_REPO_ROOT_FOR_EVAL="$remote_dir" \
+  NIXHOMESERVER_TEST_HOST="$selected_host" \
+  nix eval --json --impure --expr "$(cat "$remote_expr")"
+REMOTE_EOF
 }
 
 _remote_eval_run() {
   local expression="$1"
-  local repo_root archive remote_archive remote_dir output
+  local repo_root archive remote_archive remote_dir output selected_host
 
-  init_repo_root
-  repo_root="$(cd "$repo_root" && pwd)"
+  repo_root="$(strict_remote_worktree_root)" || return 1
+  selected_host="$(remote_eval_host_context)" || return 1
 
   if [[ -z "$remote_eval_host" ]]; then
     remote_eval_host="$(_remote_eval_resolve_host)" || {
@@ -108,7 +160,7 @@ _remote_eval_run() {
     return 1
   fi
 
-  archive="$(mktemp /tmp/nixhomeserver-remote-eval.XXXXXX.tar)" || {
+  archive="$(mktemp "${TMPDIR:-/tmp}/nixhomeserver-remote-eval.XXXXXX.tar")" || {
     remote_eval_reason="could not create a local archive"
     return 1
   }
@@ -135,7 +187,7 @@ _remote_eval_run() {
   # stdin as the remote script, and it must never be interpolated into the
   # remote command line, where operator-supplied Nix text would be re-parsed by
   # the remote shell.
-  remote_expr="${remote_dir}/query.nix"
+  local remote_expr="${remote_dir}/query.nix"
   if ! printf '%s' "$expression" | ssh -o BatchMode=yes "$remote_eval_host" \
     "cat > $(printf '%q' "$remote_expr")"; then
     ssh -o BatchMode=yes "$remote_eval_host" "rm -rf $(printf '%q' "$remote_dir")" 2>/dev/null || true
@@ -144,31 +196,125 @@ _remote_eval_run() {
   fi
 
   local remote_err
-  remote_err="$(mktemp /tmp/nixhomeserver-remote-eval-err.XXXXXX)" || return 1
+  remote_err="$(mktemp "${TMPDIR:-/tmp}/nixhomeserver-remote-eval-err.XXXXXX")" || return 1
 
   if ! output="$(ssh -o BatchMode=yes "$remote_eval_host" bash -s -- \
-    "$remote_dir" "$remote_archive" "$remote_expr" 2>"$remote_err" <<'REMOTE_EOF'
-set -euo pipefail
-remote_dir="$1"
-remote_archive="$2"
-remote_expr="$3"
-trap 'rm -rf "$remote_dir" "$remote_archive"' EXIT
-mkdir -p "$remote_dir"
-tar -C "$remote_dir" -xf "$remote_archive"
-cd "$remote_dir"
-# path:, not git+file:// -- the staged tree is a plain directory with no .git.
-# Safe here precisely because create_deploy_repo_archive already reduced it to
-# tracked files; a path: reference to the live working tree would drag in the
-# ~69 GB of gitignored build output under custom_apps.
-NIXHOMESERVER_FLAKE_REF_FOR_EVAL="path:$remote_dir" \
-  nix eval --json --impure --expr "$(cat "$remote_expr")"
-REMOTE_EOF
-  )"; then
+    "$remote_dir" "$remote_archive" "$remote_expr" "$selected_host" 2>"$remote_err" \
+    <<<"$(_remote_eval_remote_script)")"; then
     remote_eval_reason="remote evaluation failed on ${remote_eval_host}: $(tail -n 3 "$remote_err" | tr '\n' ' ')"
     rm -f "$remote_err"
     return 1
   fi
   rm -f "$remote_err"
 
+  printf '%s\n' "$output"
+}
+
+# Strict evaluation: one receipted attempt bound to the declared commit, with no
+# local fallback. The remote directory and archive are cleaned through bounded
+# paths even when the session dies, and the receipt records the outcome that was
+# actually observed rather than assuming the remote trap ran.
+_remote_eval_strict_run() {
+  local expression="$1"
+  local repo_root archive remote_archive="" remote_dir="" output status=0 selected_host
+  local cleanup="none" archive_cleanup attempt phase host_facts manifest helper_sha
+  local stdout_file stderr_file remote_err remote_expr
+
+  strict_remote_preflight "${REMOTE_EVAL:-1}" "REMOTE_EVAL=0" || return $?
+
+  repo_root="$(strict_remote_worktree_root)" || return 1
+  selected_host="$(remote_eval_host_context)" || return 1
+  if [[ -z "$remote_eval_host" ]]; then
+    remote_eval_host="$(_remote_eval_resolve_host)" || {
+      echo "strict-remote: could not resolve a target host from vars.nix" >&2
+      return 1
+    }
+  fi
+  host_facts="$(strict_remote_host_facts "$remote_eval_host")" || return 1
+  manifest="$(strict_tree_manifest "$repo_root")" || return 1
+  helper_sha="$(strict_helper_digest)" || return 1
+  attempt="$(strict_next_attempt eval)" || return 1
+  phase="eval-${attempt}"
+
+  stdout_file="$(mktemp "${TMPDIR:-/tmp}/nixhomeserver-strict-eval-out.XXXXXX")" || return 1
+  stderr_file="$(mktemp "${TMPDIR:-/tmp}/nixhomeserver-strict-eval-err.XXXXXX")" || {
+    rm -f "$stdout_file"
+    return 1
+  }
+  archive="$(mktemp "${TMPDIR:-/tmp}/nixhomeserver-remote-eval.XXXXXX.tar")" || {
+    rm -f "$stdout_file" "$stderr_file"
+    return 1
+  }
+  if ! create_deploy_repo_archive "$archive" >"$stderr_file" 2>&1; then
+    cat "$stderr_file" >&2
+    rm -f "$archive" "$stdout_file" "$stderr_file"
+    echo "strict-remote: the working tree is not admissible for strict evaluation" >&2
+    return 1
+  fi
+  if ! remote_archive="$(stage_archive_on_remote "$archive" "$remote_eval_host" "nixhomeserver-remote-eval" 2>>"$stderr_file")"; then
+    cleanup="${stage_archive_cleanup_status:-unknown}"
+    rm -f "$archive"
+    strict_write_phase_receipt "$phase" "$remote_eval_host" "$host_facts" "$manifest" \
+      "" "$helper_sha" '[]' "" 1 "$stdout_file" "$stderr_file" "$cleanup" || true
+    cat "$stderr_file" >&2
+    echo "strict-remote: could not stage the source archive (cleanup: ${cleanup})" >&2
+    rm -f "$stdout_file" "$stderr_file"
+    return 1
+  fi
+  rm -f "$archive"
+
+  if ! remote_dir="$(ssh -o BatchMode=yes "$remote_eval_host" \
+    "mktemp -d /tmp/nixhomeserver-remote-eval.XXXXXX" 2>>"$stderr_file")"; then
+    cleanup="$(remove_remote_archive_status "$remote_eval_host" "$remote_archive")"
+    strict_write_phase_receipt "$phase" "$remote_eval_host" "$host_facts" "$manifest" \
+      "" "$helper_sha" '[]' "" 1 "$stdout_file" "$stderr_file" "$cleanup" || true
+    cat "$stderr_file" >&2
+    echo "strict-remote: could not create a remote staging directory (cleanup: ${cleanup})" >&2
+    rm -f "$stdout_file" "$stderr_file"
+    return 1
+  fi
+
+  remote_expr="${remote_dir}/query.nix"
+  if ! printf '%s' "$expression" | ssh -o BatchMode=yes "$remote_eval_host" \
+    "cat > $(printf '%q' "$remote_expr")" 2>>"$stderr_file"; then
+    cleanup="$(remove_remote_staging_path "$remote_eval_host" "$remote_dir")"
+    archive_cleanup="$(remove_remote_archive_status "$remote_eval_host" "$remote_archive")"
+    [[ "$cleanup" == "success" ]] || archive_cleanup="$cleanup"
+    strict_write_phase_receipt "$phase" "$remote_eval_host" "$host_facts" "$manifest" \
+      "" "$helper_sha" '[]' "" 1 "$stdout_file" "$stderr_file" "$archive_cleanup" || true
+    cat "$stderr_file" >&2
+    echo "strict-remote: could not transfer the query to ${remote_eval_host} (cleanup: ${archive_cleanup})" >&2
+    rm -f "$stdout_file" "$stderr_file"
+    return 1
+  fi
+
+  remote_err="$(mktemp "${TMPDIR:-/tmp}/nixhomeserver-strict-eval-remote.XXXXXX")" || {
+    rm -f "$stdout_file" "$stderr_file"
+    return 1
+  }
+  output="$(ssh -o BatchMode=yes "$remote_eval_host" bash -s -- \
+    "$remote_dir" "$remote_archive" "$remote_expr" "$selected_host" 2>"$remote_err" \
+    <<<"$(_remote_eval_remote_script)")" || status=$?
+  if ((status != 0)); then
+    cat "$remote_err" >>"$stderr_file"
+    cleanup="$(remove_remote_staging_path "$remote_eval_host" "$remote_dir")"
+    archive_cleanup="$(remove_remote_archive_status "$remote_eval_host" "$remote_archive")"
+    [[ "$cleanup" == "success" ]] || archive_cleanup="$cleanup"
+    strict_write_phase_receipt "$phase" "$remote_eval_host" "$host_facts" "$manifest" \
+      "" "$helper_sha" '[]' "" "$status" "$stdout_file" "$stderr_file" "$archive_cleanup" || true
+    cat "$remote_err" >&2
+    echo "strict-remote: remote evaluation failed on ${remote_eval_host} (cleanup: ${archive_cleanup})" >&2
+    rm -f "$remote_err" "$stdout_file" "$stderr_file"
+    return "$status"
+  fi
+  rm -f "$remote_err"
+  printf '%s\n' "$output" >"$stdout_file"
+
+  strict_write_phase_receipt "$phase" "$remote_eval_host" "$host_facts" "$manifest" \
+    "" "$helper_sha" '[]' "" 0 "$stdout_file" "$stderr_file" "success" || {
+    rm -f "$stdout_file" "$stderr_file"
+    return 1
+  }
+  rm -f "$stdout_file" "$stderr_file"
   printf '%s\n' "$output"
 }

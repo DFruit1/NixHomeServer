@@ -68,6 +68,11 @@ remote_run() {
   local snippet="$1"
   shift
 
+  if strict_remote_enabled; then
+    _remote_run_strict_run "$snippet" "$@"
+    return
+  fi
+
   if [[ "${REMOTE_RUN:-1}" != "0" ]]; then
     local remote_status=0
     _remote_run_run "$snippet" "$@" || remote_status=$?
@@ -232,4 +237,129 @@ REMOTE_EOF
     echo "remote-run: remote execution failed on ${remote_run_host} (exit ${ssh_status})" >&2
     return 2
   fi
+}
+
+_remote_run_script() {
+  cat <<'REMOTE_EOF'
+set -euo pipefail
+remote_dir="$1"
+remote_archive="$2"
+remote_snippet="$3"
+shift 3
+trap 'rm -rf "$remote_dir" "$remote_archive"' EXIT
+mkdir -p "$remote_dir"
+tar -C "$remote_dir" -xf "$remote_archive"
+export NIXHOMESERVER_RUN_FLAKE_REF="path:$remote_dir"
+cd "$remote_dir"
+bash "$remote_snippet" "$remote_dir" "$@"
+REMOTE_EOF
+}
+
+# Strict execution: no local fallback, a verified non-workstation endpoint, and
+# a receipt that records the exact snippet, its arguments, and what became of
+# the staging the attempt acquired. A persisted stage is refused here: strict
+# mode promises that every path it creates is accounted for on the way out,
+# and a caller-owned durable stage deliberately outlives the run.
+_remote_run_strict_run() {
+  local snippet="$1"
+  shift
+  local -a forward=("$@")
+  local repo_root archive remote_archive="" remote_dir="" remote_snippet remote_cmd
+  local status=0 cleanup="none" archive_cleanup attempt phase host_facts manifest helper_sha
+  local stdout_file stderr_file argv_json
+
+  strict_remote_preflight "${REMOTE_RUN:-1}" "REMOTE_RUN=0" || return $?
+  if [[ -n "${REMOTE_RUN_PERSIST_DIR:-}" ]]; then
+    echo "strict-remote: a durable REMOTE_RUN_PERSIST_DIR is not accountable staging; unset it for a strict run" >&2
+    return 1
+  fi
+
+  repo_root="$(strict_remote_worktree_root)" || return 1
+  if [[ -z "$remote_run_host" ]]; then
+    remote_run_host="$(_remote_eval_resolve_host)" || {
+      echo "strict-remote: could not resolve a target host from vars.nix" >&2
+      return 1
+    }
+  fi
+  host_facts="$(strict_remote_host_facts "$remote_run_host")" || return 1
+  manifest="$(strict_tree_manifest "$repo_root")" || return 1
+  helper_sha="$(strict_helper_digest)" || return 1
+  attempt="$(strict_next_attempt run)" || return 1
+  phase="run-${attempt}"
+  argv_json="$(printf '%s\n' "${forward[@]}" | jq -R . | jq -sc .)" || return 1
+
+  stdout_file="$(mktemp "${TMPDIR:-/tmp}/nixhomeserver-strict-run-out.XXXXXX")" || return 1
+  stderr_file="$(mktemp "${TMPDIR:-/tmp}/nixhomeserver-strict-run-err.XXXXXX")" || {
+    rm -f "$stdout_file"
+    return 1
+  }
+  archive="$(mktemp "${TMPDIR:-/tmp}/nixhomeserver-remote-run.XXXXXX.tar")" || {
+    rm -f "$stdout_file" "$stderr_file"
+    return 1
+  }
+  if ! create_deploy_repo_archive "$archive" >"$stderr_file" 2>&1; then
+    cat "$stderr_file" >&2
+    rm -f "$archive" "$stdout_file" "$stderr_file"
+    echo "strict-remote: the working tree is not admissible for a strict run" >&2
+    return 1
+  fi
+  if ! remote_archive="$(stage_archive_on_remote "$archive" "$remote_run_host" "nixhomeserver-remote-run" 2>>"$stderr_file")"; then
+    cleanup="${stage_archive_cleanup_status:-unknown}"
+    rm -f "$archive"
+    strict_write_phase_receipt "$phase" "$remote_run_host" "$host_facts" "$manifest" \
+      "" "$helper_sha" "$argv_json" "$snippet" 1 "$stdout_file" "$stderr_file" "$cleanup" || true
+    cat "$stderr_file" >&2
+    echo "strict-remote: could not stage the run archive (cleanup: ${cleanup})" >&2
+    rm -f "$stdout_file" "$stderr_file"
+    return 1
+  fi
+  rm -f "$archive"
+
+  if ! remote_dir="$(ssh -o BatchMode=yes "$remote_run_host" \
+    "mktemp -d /tmp/nixhomeserver-remote-run.XXXXXX" 2>>"$stderr_file")"; then
+    cleanup="$(remove_remote_archive_status "$remote_run_host" "$remote_archive")"
+    strict_write_phase_receipt "$phase" "$remote_run_host" "$host_facts" "$manifest" \
+      "" "$helper_sha" "$argv_json" "$snippet" 1 "$stdout_file" "$stderr_file" "$cleanup" || true
+    cat "$stderr_file" >&2
+    echo "strict-remote: could not create a remote run directory (cleanup: ${cleanup})" >&2
+    rm -f "$stdout_file" "$stderr_file"
+    return 1
+  fi
+
+  remote_snippet="$remote_dir/run.sh"
+  if ! printf '%s\n' "$snippet" | ssh -o BatchMode=yes "$remote_run_host" \
+    "mkdir -p $(printf '%q' "$remote_dir") && cat > $(printf '%q' "$remote_snippet")" 2>>"$stderr_file"; then
+    cleanup="$(remove_remote_staging_path "$remote_run_host" "$remote_dir")"
+    archive_cleanup="$(remove_remote_archive_status "$remote_run_host" "$remote_archive")"
+    [[ "$cleanup" == "success" ]] || archive_cleanup="$cleanup"
+    strict_write_phase_receipt "$phase" "$remote_run_host" "$host_facts" "$manifest" \
+      "" "$helper_sha" "$argv_json" "$snippet" 1 "$stdout_file" "$stderr_file" "$archive_cleanup" || true
+    cat "$stderr_file" >&2
+    echo "strict-remote: could not transfer the snippet to ${remote_run_host} (cleanup: ${archive_cleanup})" >&2
+    rm -f "$stdout_file" "$stderr_file"
+    return 1
+  fi
+
+  remote_cmd="bash -s -- $(printf '%q ' "$remote_dir" "$remote_archive" "$remote_snippet" "${forward[@]}")"
+  ssh -o BatchMode=yes "$remote_run_host" "$remote_cmd" \
+    >"$stdout_file" 2> >(tee -a "$stderr_file" >&2) <<<"$(_remote_run_script)" || status=$?
+
+  if ((status != 0)); then
+    cleanup="$(remove_remote_staging_path "$remote_run_host" "$remote_dir")"
+    archive_cleanup="$(remove_remote_archive_status "$remote_run_host" "$remote_archive")"
+    [[ "$cleanup" == "success" ]] || archive_cleanup="$cleanup"
+    strict_write_phase_receipt "$phase" "$remote_run_host" "$host_facts" "$manifest" \
+      "" "$helper_sha" "$argv_json" "$snippet" "$status" "$stdout_file" "$stderr_file" "$archive_cleanup" || true
+    echo "strict-remote: the strict run failed on ${remote_run_host} (status ${status}, cleanup: ${archive_cleanup})" >&2
+    rm -f "$stdout_file" "$stderr_file"
+    return "$status"
+  fi
+
+  strict_write_phase_receipt "$phase" "$remote_run_host" "$host_facts" "$manifest" \
+    "" "$helper_sha" "$argv_json" "$snippet" 0 "$stdout_file" "$stderr_file" "success" || {
+    rm -f "$stdout_file" "$stderr_file"
+    return 1
+  }
+  cat "$stdout_file"
+  rm -f "$stdout_file" "$stderr_file"
 }

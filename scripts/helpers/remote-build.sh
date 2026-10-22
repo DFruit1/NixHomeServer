@@ -37,6 +37,10 @@
 # Fails closed. Any staging, transfer, or remote-build failure prints a
 # diagnostic and falls back to the local build, so an unreachable server never
 # turns into a false failure. Set REMOTE_BUILD=0 to force the local build.
+#
+# NIXHOMESERVER_REQUIRE_REMOTE=1 removes the fallback: a build that did not run
+# on a verified server is a failure, and every attempt leaves a receipt whose
+# cleanup field says what happened to the staging it acquired.
 
 # shellcheck source=scripts/helpers/repo-common.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/repo-common.sh"
@@ -68,6 +72,11 @@ remote_build_flake() {
     return 1
   fi
 
+  if strict_remote_enabled; then
+    _remote_build_strict_run "$@"
+    return
+  fi
+
   if [[ "${REMOTE_BUILD:-1}" != "0" ]]; then
     local remote_status=0
     _remote_build_run "$@" || remote_status=$?
@@ -84,7 +93,27 @@ remote_build_flake() {
     esac
   fi
 
-  nix build "$@"
+  command nix build "$@"
+}
+
+# The remote side of a build. Kept in one place so the strict and adaptive paths
+# execute byte-identical code: the difference between them is the admission
+# checks and the receipts, never the build itself.
+_remote_build_script() {
+  cat <<'REMOTE_EOF'
+set -euo pipefail
+remote_dir="$1"
+remote_archive="$2"
+shift 2
+trap 'rm -rf "$remote_dir" "$remote_archive"' EXIT
+mkdir -p "$remote_dir"
+tar -C "$remote_dir" -xf "$remote_archive"
+cd "$remote_dir"
+# A path flake (no .git in the staged tree), exactly like the evaluator helper:
+# the archive is already reduced to tracked files, so this cannot drag ignored
+# build output into the store.
+nix build "$@"
+REMOTE_EOF
 }
 
 _remote_build_run() {
@@ -106,7 +135,7 @@ _remote_build_run() {
     return 1
   fi
 
-  archive="$(mktemp /tmp/nixhomeserver-remote-build.XXXXXX.tar)" || {
+  archive="$(mktemp "${TMPDIR:-/tmp}/nixhomeserver-remote-build.XXXXXX.tar")" || {
     remote_build_reason="could not create a local archive"
     return 1
   }
@@ -134,11 +163,11 @@ _remote_build_run() {
   # arguments as separate SSH operands would let the remote shell re-split them.
   remote_cmd="bash -s -- $(printf '%q ' "$remote_dir" "$remote_archive" "${build_args[@]}")"
 
-  remote_out="$(mktemp /tmp/nixhomeserver-remote-build-out.XXXXXX)" || {
+  remote_out="$(mktemp "${TMPDIR:-/tmp}/nixhomeserver-remote-build-out.XXXXXX")" || {
     remote_build_reason="could not create a local output file"
     return 1
   }
-  remote_err="$(mktemp /tmp/nixhomeserver-remote-build-err.XXXXXX)" || {
+  remote_err="$(mktemp "${TMPDIR:-/tmp}/nixhomeserver-remote-build-err.XXXXXX")" || {
     rm -f "$remote_out"
     remote_build_reason="could not create a local diagnostic file"
     return 1
@@ -149,21 +178,7 @@ _remote_build_run() {
   # rather than a command substitution so the exit status is ssh's alone.
   local ssh_status=0
   if ssh -o BatchMode=yes "$remote_build_host" "$remote_cmd" \
-      >"$remote_out" 2> >(tee -a "$remote_err" >&2) <<'REMOTE_EOF'
-set -euo pipefail
-remote_dir="$1"
-remote_archive="$2"
-shift 2
-trap 'rm -rf "$remote_dir" "$remote_archive"' EXIT
-mkdir -p "$remote_dir"
-tar -C "$remote_dir" -xf "$remote_archive"
-cd "$remote_dir"
-# A path flake (no .git in the staged tree), exactly like the evaluator helper:
-# the archive is already reduced to tracked files, so this cannot drag ignored
-# build output into the store.
-nix build "$@"
-REMOTE_EOF
-  then
+    >"$remote_out" 2> >(tee -a "$remote_err" >&2) <<<"$(_remote_build_script)"; then
     ssh_status=0
   else
     ssh_status=$?
@@ -188,4 +203,97 @@ REMOTE_EOF
   output="$(cat "$remote_out")"
   rm -f "$remote_out" "$remote_err"
   printf '%s\n' "$output"
+}
+
+# Strict build: one receipted attempt bound to the declared commit and a
+# verified non-workstation endpoint. Nothing about acquiring the build's inputs
+# may leak: each failure after a remote path exists cleans that path through a
+# bounded helper, and the receipt records success, failure or unknown rather
+# than assuming the remote trap ran.
+_remote_build_strict_run() {
+  local -a build_args=("$@")
+  local repo_root archive remote_archive="" remote_dir="" remote_cmd status=0
+  local cleanup="none" archive_cleanup attempt phase host_facts manifest helper_sha
+  local stdout_file stderr_file argv_json
+
+  strict_remote_preflight "${REMOTE_BUILD:-1}" "REMOTE_BUILD=0" || return $?
+
+  repo_root="$(strict_remote_worktree_root)" || return 1
+  if [[ -z "$remote_build_host" ]]; then
+    remote_build_host="$(_remote_eval_resolve_host)" || {
+      echo "strict-remote: could not resolve a target host from vars.nix" >&2
+      return 1
+    }
+  fi
+  host_facts="$(strict_remote_host_facts "$remote_build_host")" || return 1
+  manifest="$(strict_tree_manifest "$repo_root")" || return 1
+  helper_sha="$(strict_helper_digest)" || return 1
+  attempt="$(strict_next_attempt build)" || return 1
+  phase="build-${attempt}"
+  argv_json="$(printf '%s\n' "${build_args[@]}" | jq -R . | jq -sc .)" || return 1
+
+  stdout_file="$(mktemp "${TMPDIR:-/tmp}/nixhomeserver-strict-build-out.XXXXXX")" || return 1
+  stderr_file="$(mktemp "${TMPDIR:-/tmp}/nixhomeserver-strict-build-err.XXXXXX")" || {
+    rm -f "$stdout_file"
+    return 1
+  }
+  archive="$(mktemp "${TMPDIR:-/tmp}/nixhomeserver-remote-build.XXXXXX.tar")" || {
+    rm -f "$stdout_file" "$stderr_file"
+    return 1
+  }
+  if ! create_deploy_repo_archive "$archive" >"$stderr_file" 2>&1; then
+    cat "$stderr_file" >&2
+    rm -f "$archive" "$stdout_file" "$stderr_file"
+    echo "strict-remote: the working tree is not admissible for a strict build" >&2
+    return 1
+  fi
+  if ! remote_archive="$(stage_archive_on_remote "$archive" "$remote_build_host" "nixhomeserver-remote-build" 2>>"$stderr_file")"; then
+    cleanup="${stage_archive_cleanup_status:-unknown}"
+    rm -f "$archive"
+    strict_write_phase_receipt "$phase" "$remote_build_host" "$host_facts" "$manifest" \
+      "" "$helper_sha" "$argv_json" "" 1 "$stdout_file" "$stderr_file" "$cleanup" || true
+    cat "$stderr_file" >&2
+    echo "strict-remote: could not stage the build archive (cleanup: ${cleanup})" >&2
+    rm -f "$stdout_file" "$stderr_file"
+    return 1
+  fi
+  rm -f "$archive"
+
+  if ! remote_dir="$(ssh -o BatchMode=yes "$remote_build_host" \
+    "mktemp -d /tmp/nixhomeserver-remote-build.XXXXXX" 2>>"$stderr_file")"; then
+    cleanup="$(remove_remote_archive_status "$remote_build_host" "$remote_archive")"
+    strict_write_phase_receipt "$phase" "$remote_build_host" "$host_facts" "$manifest" \
+      "" "$helper_sha" "$argv_json" "" 1 "$stdout_file" "$stderr_file" "$cleanup" || true
+    cat "$stderr_file" >&2
+    echo "strict-remote: could not create a remote build directory (cleanup: ${cleanup})" >&2
+    rm -f "$stdout_file" "$stderr_file"
+    return 1
+  fi
+
+  remote_cmd="bash -s -- $(printf '%q ' "$remote_dir" "$remote_archive" "${build_args[@]}")"
+  ssh -o BatchMode=yes "$remote_build_host" "$remote_cmd" \
+    >"$stdout_file" 2> >(tee -a "$stderr_file" >&2) <<<"$(_remote_build_script)" || status=$?
+
+  if ((status != 0)); then
+    cleanup="$(remove_remote_staging_path "$remote_build_host" "$remote_dir")"
+    archive_cleanup="$(remove_remote_archive_status "$remote_build_host" "$remote_archive")"
+    [[ "$cleanup" == "success" ]] || archive_cleanup="$cleanup"
+    strict_write_phase_receipt "$phase" "$remote_build_host" "$host_facts" "$manifest" \
+      "" "$helper_sha" "$argv_json" "" "$status" "$stdout_file" "$stderr_file" "$archive_cleanup" || true
+    if ((status == 130 || status == 143)); then
+      echo "strict-remote: the strict build was interrupted (status ${status}, cleanup: ${archive_cleanup})" >&2
+    else
+      echo "strict-remote: the strict build failed on ${remote_build_host} (status ${status}, cleanup: ${archive_cleanup})" >&2
+    fi
+    rm -f "$stdout_file" "$stderr_file"
+    return "$status"
+  fi
+
+  strict_write_phase_receipt "$phase" "$remote_build_host" "$host_facts" "$manifest" \
+    "" "$helper_sha" "$argv_json" "" 0 "$stdout_file" "$stderr_file" "success" || {
+    rm -f "$stdout_file" "$stderr_file"
+    return 1
+  }
+  cat "$stdout_file"
+  rm -f "$stdout_file" "$stderr_file"
 }
