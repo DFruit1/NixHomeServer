@@ -8,8 +8,12 @@
 # tree holding gitignored evidence, a broken worktree, a stale admin entry and
 # an unregistered directory must all survive. It also pins that an unreadable or
 # unexpected board aborts without removing anything, that archived cards are
-# read, and that relative card paths resolve against the repository. Runs
-# hermetically against a throwaway repo with a stub `hermes`.
+# read, that relative card paths resolve against the repository, and that
+# archived board copies stay outside the citation scan. The open-
+# card citation guard keeps any tree an open card names in its title, body,
+# comments or attachment names, and an unusable board database under HERMES_ROOT
+# aborts the run instead of reaping unprotected. Runs hermetically against a
+# throwaway repo with a stub `hermes`.
 
 set -euo pipefail
 
@@ -53,6 +57,8 @@ add_tree t_unpublished     # unique commit not on a remote ref -> preserve
 add_tree t_broken          # git status fails inside it -> preserve
 add_tree t_ignored_evidence # gitignored evidence file -> preserve
 add_tree t_unowned         # clean, published, but no card -> preserve
+add_tree t_cited           # terminal card, clean, published, but an open card
+                           # elsewhere cites the tree as retained evidence
 add_tree t_stale           # registered but its directory is gone -> report
 
 # t_unpublished: a commit only this branch knows about.
@@ -92,6 +98,7 @@ jq -n --arg root "$root" '
     card("t_unpublished"; "done"; "\($root)/.worktrees/t_unpublished"),
     card("t_broken"; "done"; "\($root)/.worktrees/t_broken"),
     card("t_ignored_evidence"; "done"; "\($root)/.worktrees/t_ignored_evidence"),
+    card("t_cited"; "done"; "\($root)/.worktrees/t_cited"),
     card("t_stale"; "done"; "\($root)/.worktrees/t_stale")
   ]' >"$board"
 
@@ -131,7 +138,24 @@ EOF
 make_test_executable "$root/bin/hermes-empty"
 
 reap="$root/scripts/hermes/reap-kanban-worktrees.sh"
-run_reap() { HERMES_BIN="$root/bin/hermes" BOARD="$board" bash "$reap" "$@"; }
+run_reap() { HERMES_BIN="$root/bin/hermes" HERMES_ROOT="$root/hermes-home" BOARD="$board" bash "$reap" "$@"; }
+
+# The citation guard reads board databases under HERMES_ROOT, cross-board.
+hermes_home="$root/hermes-home"
+mkdir -p "$hermes_home/kanban/boards/evidenceboard"
+python3 - <<'PY' "$hermes_home/kanban/boards/evidenceboard/kanban.db"
+import sqlite3, sys
+db = sqlite3.connect(sys.argv[1])
+db.executescript("""
+CREATE TABLE tasks (id TEXT PRIMARY KEY, title TEXT, body TEXT, status TEXT);
+CREATE TABLE task_comments (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT, body TEXT);
+CREATE TABLE task_attachments (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT, filename TEXT, stored_path TEXT);
+""")
+db.execute("INSERT INTO tasks VALUES ('t_opener', 'Verify retained producer evidence', ?, 'todo')",
+           ("The frozen producer source lives at .worktrees/t_cited; consume it before any switch.",))
+db.execute("INSERT INTO task_comments (task_id, body) VALUES ('t_opener', 'evidence packet expected in the t_cited workspace')")
+db.commit()
+PY
 
 # Launch from outside every checkout. A relative .git lock must not be resolved
 # against the caller's cwd (which may itself be a linked worktree's .git file),
@@ -162,6 +186,10 @@ grep -q 'Preserve (ignored content): *1$' <<<"$dry" \
   || { echo "$dry" >&2; echo "❌ expected the ignored evidence tree to be preserved" >&2; exit 1; }
 grep -q 'preserve (ignored content): .worktrees/t_ignored_evidence \[local-only-evidence.md\]' <<<"$dry" \
   || { echo "$dry" >&2; echo "❌ the ignored evidence tree was not reported with its path" >&2; exit 1; }
+grep -q 'preserve (cited by open card evidenceboard/t_opener): .worktrees/t_cited' <<<"$dry" \
+  || { echo "$dry" >&2; echo "❌ the cited tree was not preserved with its citing card" >&2; exit 1; }
+grep -q 'Preserve (cited by open card): *1$' <<<"$dry" \
+  || { echo "$dry" >&2; echo "❌ expected one cited tree to be preserved" >&2; exit 1; }
 grep -q 'Stale admin entry (directory missing): *1$' <<<"$dry" \
   || { echo "$dry" >&2; echo "❌ expected the stale admin entry to be reported" >&2; exit 1; }
 grep -q 'Stray directory (unregistered): *1$' <<<"$dry" \
@@ -170,7 +198,32 @@ grep -q 'GiB' <<<"$dry" \
   && { echo "$dry" >&2; echo "❌ the default dry run walked du for byte accounting" >&2; exit 1; }
 [[ -d "$root/.worktrees/t_merged" ]] || { echo "❌ dry run deleted a tree" >&2; exit 1; }
 
-echo "  ✅ dry run classifies every case and deletes nothing, without du walks"
+echo "  ✅ dry run classifies every case, keeps the cited tree and deletes nothing, without du walks"
+
+# --- a broken board database fails the citation guard closed ------------------
+
+mkdir -p "$hermes_home/kanban/boards/broken"
+printf 'not a database' >"$hermes_home/kanban/boards/broken/kanban.db"
+if broken_out="$(run_reap --apply 2>&1)"; then
+  echo "$broken_out" >&2
+  echo "❌ a broken board database was accepted by the citation guard" >&2
+  exit 1
+fi
+grep -q 'Could not read open-card citations' <<<"$broken_out" \
+  || { echo "$broken_out" >&2; echo "❌ the citation-guard failure was not reported" >&2; exit 1; }
+[[ -d "$root/.worktrees/t_merged" && -d "$root/.worktrees/t_cited" ]] \
+  || { echo "❌ a tree was removed while the citation source was unusable" >&2; exit 1; }
+rm "$hermes_home/kanban/boards/broken/kanban.db" && rmdir "$hermes_home/kanban/boards/broken"
+
+# An archived board copy is legacy-shape by design and cannot hold open cards.
+mkdir -p "$hermes_home/kanban/boards/_archived"
+printf 'legacy-archive' >"$hermes_home/kanban/boards/_archived/kanban.db"
+archived_out="$(run_reap)"
+grep -q 'Reapable (terminal card, clean, published): *3$' <<<"$archived_out" \
+  || { echo "$archived_out" >&2; echo "❌ a legacy archived board copy failed the citation guard" >&2; exit 1; }
+rm "$hermes_home/kanban/boards/_archived/kanban.db" && rmdir "$hermes_home/kanban/boards/_archived"
+
+echo "  ✅ an unusable citation source aborts without removing anything; archived board copies are skipped"
 
 # --- --bytes adds the accounting the cheap default leaves out -----------------
 
@@ -206,7 +259,7 @@ grep -q 'Another reap run holds the lock; skipping' <<<"$lock_out" \
 linked="$root/.worktrees/t_active"
 mkdir -p "$linked/scripts/hermes" "$linked/.worktrees"
 cp "$reap" "$linked/scripts/hermes/"
-linked_out="$(HERMES_BIN="$root/bin/hermes" BOARD="$board" bash "$linked/scripts/hermes/reap-kanban-worktrees.sh" 2>&1)"
+linked_out="$(HERMES_BIN="$root/bin/hermes" HERMES_ROOT="$root/hermes-home" BOARD="$board" bash "$linked/scripts/hermes/reap-kanban-worktrees.sh" 2>&1)"
 grep -q 'Another reap run holds the lock; skipping' <<<"$linked_out" \
   || { echo "$linked_out" >&2; echo "❌ a linked checkout did not share the repository lock" >&2; exit 1; }
 exec 9>&-
@@ -214,7 +267,7 @@ exec 9>&-
 # A linked checkout's copy must still target the primary checkout's .worktrees.
 # Its own .worktrees/ is empty, so a script-relative root would silently reap
 # nothing while real trees accumulate.
-linked_dry="$(HERMES_BIN="$root/bin/hermes" BOARD="$board" bash "$linked/scripts/hermes/reap-kanban-worktrees.sh" 2>&1)"
+linked_dry="$(HERMES_BIN="$root/bin/hermes" HERMES_ROOT="$root/hermes-home" BOARD="$board" bash "$linked/scripts/hermes/reap-kanban-worktrees.sh" 2>&1)"
 grep -q 'Reapable (terminal card, clean, published): *3$' <<<"$linked_dry" \
   || { echo "$linked_dry" >&2; echo "❌ a run from a linked checkout did not target the primary .worktrees" >&2; exit 1; }
 
@@ -228,7 +281,7 @@ run_reap --apply >/dev/null
 for gone in t_merged t_archived t_scratch; do
   [[ ! -d "$root/.worktrees/$gone" ]] || { echo "❌ $gone was not reaped" >&2; exit 1; }
 done
-for kept in t_active t_relactive t_dirty t_unpublished t_broken t_ignored_evidence t_unowned; do
+for kept in t_active t_relactive t_dirty t_cited t_unpublished t_broken t_ignored_evidence t_unowned; do
   [[ -d "$root/.worktrees/$kept" ]] || { echo "❌ $kept was reaped" >&2; exit 1; }
 done
 [[ -f "$root/.worktrees/t_ignored_evidence/local-only-evidence.md" ]] \

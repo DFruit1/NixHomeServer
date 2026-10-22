@@ -21,11 +21,17 @@
 #     preserved, matching hermes);
 #   * any ignored content is reproducible scratch/build output, so a gitignored
 #     evidence file, dataset or credential document is never destroyed;
-#   * every commit is reachable from a remote-tracking ref (fully published).
+#   * every commit is reachable from a remote-tracking ref (fully published);
+#   * no open card on any board cites the tree's path or workspace ID, so a
+#     workspace a finished producer card left behind stays while an open
+#     decision, review or audit card still references it as retained evidence
+#     (citation guard).
 # The board read includes archived cards and its shape is validated: an
 # unreadable or unexpected board fails the run instead of silently treating
-# every tree as unowned. The default action is a dry run; pass --apply to
-# remove. Local `wt/<id>` branches are kept; only the directory is reclaimed.
+# every tree as unowned. The citation guard reads every board database under
+# HERMES_ROOT (default ~/.hermes) the same fail-closed way. The default action
+# is a dry run; pass --apply to remove. Local `wt/<id>` branches are kept; only
+# the directory is reclaimed.
 #
 # Ownership is the only path to deletion. A clean, published tree that no card
 # on the selected board owns is reported as unowned and preserved, because it
@@ -108,8 +114,9 @@ Classify and reclaim stale kanban worktrees under .worktrees/.
   -h, --help          Show this help.
 
 A tree is reapable only when a terminal card owns it, the tree is clean, its
-ignored content is disposable, and every commit is reachable from a
-remote-tracking ref. Everything else is preserved and reported with its reason.
+ignored content is disposable, every commit is reachable from a
+remote-tracking ref, and no open card on any board cites its path or workspace
+ID. Everything else is preserved and reported with its reason.
 EOF
 }
 
@@ -191,6 +198,69 @@ read_board() {
   local out
   out="$("$hermes_bin" kanban "${board_args[@]}" list --json --archived 2>/dev/null)" || return 1
   load_board "$out" || return 1
+}
+
+# Open-card citation guard. A finished producer card's workspace can still be
+# load-bearing evidence for a decision, review or audit card that cites its
+# path or workspace ID, and losing it mid-decision triggers the fail-closed
+# deploy gate, which then demands a provenance investigation (the 2026-10
+# deploy d52f1cf..aedbce9 saga). Scan every board's open cards — title, body,
+# comments and attachment names — and keep any tree they mention.
+load_citations() { # sets citation_blob; nonzero when the data is unusable
+  local root="${HERMES_ROOT:-$HOME/.hermes}"
+  citation_blob="$(python3 - "$root" <<'PY'
+import sqlite3
+import sys
+from contextlib import closing
+from pathlib import Path
+
+BOARD_ROOT = Path(sys.argv[1]) / 'kanban' / 'boards'
+OPEN = "('done', 'archived', 'failed', 'cancelled')"
+
+try:
+    if not BOARD_ROOT.is_dir():
+        sys.exit(3)
+    for db_path in sorted(BOARD_ROOT.glob('*/kanban.db')):
+        # Archived board copies cannot hold open cards, and their legacy
+        # schemas are not worth keeping current; only active boards count.
+        if db_path.parent.name.startswith('_archived'):
+            continue
+        board = db_path.parent.name
+        with closing(sqlite3.connect(db_path.as_uri() + '?mode=ro', uri=True, timeout=5)) as db:
+            db.row_factory = sqlite3.Row
+            db.execute('PRAGMA query_only=ON')
+            cards = db.execute(
+                'SELECT id, title, body FROM tasks'
+                f' WHERE status NOT IN {OPEN}').fetchall()
+            for card in cards:
+                parts = [card['title'] or '', card['body'] or '']
+                for row in db.execute(
+                        'SELECT body FROM task_comments WHERE task_id=?',
+                        (card['id'],)):
+                    parts.append(row['body'] or '')
+                for row in db.execute(
+                        'SELECT filename, stored_path FROM task_attachments'
+                        ' WHERE task_id=?', (card['id'],)):
+                    parts.append(row['filename'] or '')
+                    parts.append(row['stored_path'] or '')
+                text = ' '.join(parts).replace('\n', ' ').strip()
+                if text:
+                    print(f"{board}/{card['id']}\t{text}")
+except (sqlite3.Error, OSError) as exc:
+    print(f'citation scan failed: {exc}', file=sys.stderr)
+    sys.exit(2)
+PY
+)" || return 1
+}
+
+# Print the citing card label when a tree is cited by an open card; the blob is
+# line-oriented: "<board>/<card id>\t<searchable text>".
+first_citation() { # <path> -> label via stdout; return 1 when uncited
+  local needle="$1" base="${1##*/}" hit
+  hit="$(awk -v a="$needle" -v b="$base" '
+      index($0, a) || index($0, b) { print $1; exit }' <<<"${citation_blob:-}")"
+  [[ -n "$hit" ]] || return 1
+  printf '%s' "$hit"
 }
 
 if ! read_board; then
@@ -303,6 +373,30 @@ while IFS= read -r line; do
   reap_paths+=("$path")
 done <<<"$worktree_list"
 
+# Citation guard pass: partition the otherwise-reapable trees against open
+# cards on every board. Fail closed when the citation data is unusable — an
+# unreadable intersection means the run tells nothing about what is safe.
+cited=0
+if ((${#reap_paths[@]} > 0)); then
+  citation_blob=""
+  if ! load_citations; then
+    echo "❌ Could not read open-card citations under ${HERMES_ROOT:-$HOME/.hermes}/kanban/boards;" >&2
+    echo "   a tree cited by an open card could not be distinguished. Nothing was removed." >&2
+    exit 1
+  fi
+  keep_paths=()
+  for path in "${reap_paths[@]}"; do
+    if cited_label="$(first_citation "$path")"; then
+      cited=$((cited+1))
+      echo "  preserve (cited by open card $cited_label): ${path#"$repo_root"/}"
+    else
+      keep_paths+=("$path")
+    fi
+  done
+  reap=$((reap - cited))
+  reap_paths=("${keep_paths[@]}")
+fi
+
 # Directories under .worktrees/ that git does not track as worktrees and that
 # do not contain one. They are never deleted (a full manual clone or a pruned
 # worktree's leftovers look the same), but they must not pile up unseen.
@@ -327,6 +421,7 @@ printf '%-44s %d%s\n' 'Preserve (uncommitted changes):' "$dirty" "$(sum "$dirty_
 printf '%-44s %d%s\n' 'Preserve (ignored content):' "$ignored" "$(sum "$ignored_bytes")"
 printf '%-44s %d%s\n' 'Preserve (unpublished commits):' "$unpublished" "$(sum "$unpublished_bytes")"
 printf '%-44s %d\n' 'Preserve (git status failed):' "$unknown"
+printf '%-44s %d\n' 'Preserve (cited by open card):' "$cited"
 printf '%-44s %d%s\n' 'Preserve (active card):' "$keep" "$(sum "$keep_bytes")"
 printf '%-44s %d\n' 'Stale admin entry (directory missing):' "$stale"
 printf '%-44s %d\n' 'Stray directory (unregistered):' "$stray"
@@ -342,6 +437,9 @@ if ((stale > 0 || stray > 0)); then
 fi
 
 if [[ "$apply" != true ]]; then
+  for path in "${reap_paths[@]}"; do
+    echo "  reapable (dry run would remove): ${path#"$repo_root"/}"
+  done
   echo "ℹ️  Dry run. Re-run with --apply to remove the ${reap} reapable tree(s)."
   exit 0
 fi
@@ -357,6 +455,26 @@ if ((board_count == 0)); then
   echo "❌ The board returned no cards, so tree ownership cannot be verified." >&2
   echo "   Refusing to remove anything; check --board and the board database." >&2
   exit 1
+fi
+
+# Re-read citations after classification: a card may have started citing a
+# tree while the git checks ran, exactly like the ownership re-read above.
+became_cited=0
+if ((${#reap_paths[@]} > 0)); then
+  if ! load_citations; then
+    echo "❌ Citation re-read failed; refusing to remove anything." >&2
+    exit 1
+  fi
+  keep_paths=()
+  for path in "${reap_paths[@]}"; do
+    if cited_label="$(first_citation "$path")"; then
+      became_cited=$((became_cited+1))
+      echo "  keep (card cites tree): ${path#"$repo_root"/} ($cited_label)"
+    else
+      keep_paths+=("$path")
+    fi
+  done
+  reap_paths=("${keep_paths[@]}")
 fi
 
 removed=0 failed=0 became_active=0
@@ -386,6 +504,9 @@ fi
 echo "✅ Removed ${removed} worktree(s); local wt/* branches were kept."
 if ((became_active > 0)); then
   echo "ℹ️  Kept ${became_active} tree(s) whose card became active during the run."
+fi
+if ((became_cited > 0)); then
+  echo "ℹ️  Kept ${became_cited} tree(s) that an open card cited during the run."
 fi
 if ((failed > 0)); then
   echo "❌ ${failed} tree(s) could not be removed and remain on disk; inspect the warnings above." >&2
