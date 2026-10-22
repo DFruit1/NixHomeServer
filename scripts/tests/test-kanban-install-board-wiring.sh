@@ -36,6 +36,30 @@ set -euo pipefail
 TESTS_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 INSTALLER="$TESTS_REPO_ROOT/scripts/hermes/install-board-wiring.sh"
 
+# Detach from any inherited dispatcher worker identity and credential fallback
+# before the fixture is built.
+#
+# The installer is driven with an explicit HERMES_ROOT and a fake `hermes` first
+# on PATH, so the fixture already outranks the ambient environment. These unsets
+# are the belt to that pair of braces: they keep a future reader from having to
+# reason about whether an inherited pin can redirect the fixture, and the guard
+# below fails loudly if one is re-added.
+#
+#   HERMES_DELEGATED_CHILD_CONTEXT / HERMES_KANBAN_TASK  the worker write fence
+#   HERMES_KANBAN_DB / HERMES_KANBAN_BOARD               board-resolution pins that
+#                                                        outrank an explicit --board
+#   OPENCODE_API_KEY                                     a live credential fallback
+#
+# These are worker-identity and credential-fallback settings, not locations or
+# fixtures, so dropping them can only reach this test's own mktemp tree.
+unset HERMES_DELEGATED_CHILD_CONTEXT HERMES_KANBAN_TASK HERMES_KANBAN_DB \
+  HERMES_KANBAN_BOARD OPENCODE_API_KEY
+for pin in HERMES_DELEGATED_CHILD_CONTEXT HERMES_KANBAN_TASK HERMES_KANBAN_DB \
+  HERMES_KANBAN_BOARD OPENCODE_API_KEY; do
+  [[ -z "${!pin:-}" ]] ||
+    { echo "❌ $pin is still set; the fixture is not isolated from the ambient worker environment" >&2; exit 1; }
+done
+
 fail() {
   echo "❌ $1" >&2
   exit 1

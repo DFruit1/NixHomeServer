@@ -1,6 +1,30 @@
 #!/usr/bin/env bash
 set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+# Detach from any inherited dispatcher worker identity and credential fallback
+# before the fixture runs.
+#
+# The load-bearing setting here is OPENCODE_API_KEY: usage-pace.py:192 falls back
+# to it when the auth file carries no key, so an inherited value makes
+# usage.opencode_go_windows() issue a live, credentialed Zen request instead of
+# reporting "no OpenCode credential" -- the suite would both read a credential it
+# never supplied and depend on the ambient environment for its answer.
+#
+# HERMES_DELEGATED_CHILD_CONTEXT / HERMES_KANBAN_TASK carry the worker write fence,
+# and HERMES_KANBAN_DB / HERMES_KANBAN_BOARD are the hermes CLI's board-resolution
+# pins (kanban_db._explicit_board_intent_pinned); a fixture must not be one export
+# away from resolving onto the live operator board. These are worker-identity and
+# credential-fallback settings, not locations or fixtures, so dropping them can
+# only reach this test's own mktemp tree.
+unset HERMES_DELEGATED_CHILD_CONTEXT HERMES_KANBAN_TASK HERMES_KANBAN_DB \
+  HERMES_KANBAN_BOARD OPENCODE_API_KEY
+for pin in HERMES_DELEGATED_CHILD_CONTEXT HERMES_KANBAN_TASK HERMES_KANBAN_DB \
+  HERMES_KANBAN_BOARD OPENCODE_API_KEY; do
+  [[ -z "${!pin:-}" ]] ||
+    { echo "❌ $pin is still set; the fixture is not isolated from the ambient worker environment" >&2; exit 1; }
+done
+
 python3 -B - "$repo" <<'PY'
 from contextlib import closing
 import contextlib
