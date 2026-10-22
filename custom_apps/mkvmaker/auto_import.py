@@ -1406,7 +1406,11 @@ def run(args: argparse.Namespace) -> int:
                     entry["last_error"] = (
                         f"Duplicate check unavailable: {duplicate_error}"[-4000:]
                     )
-                    entry["retry_after"] = now + args.retry_seconds * entry["attempts"]
+                    # Backoff starts when the failure is recorded, not when the
+                    # ISO was claimed: duplicate detection can read every
+                    # same-sized ISO in _Processed, so a claim-time stamp has
+                    # already expired by the time it is persisted.
+                    entry["retry_after"] = int(time.time()) + args.retry_seconds * entry["attempts"]
                     entry.pop("lease", None)
                     print(
                         f"Refusing to convert {source.name} because duplicate detection "
