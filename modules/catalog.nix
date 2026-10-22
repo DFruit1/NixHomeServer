@@ -15,6 +15,7 @@ rec {
       "absClientSecret"
     ] [ ];
     bonsai = app ./bonsai "Bonsai AI" "automation" [ ] [
+      "bonsai-storage-layout"
       "bonsai-gate"
       "bonsai-llama"
       "bonsai-model-prepare"
@@ -76,9 +77,9 @@ rec {
       "kiwix-serve"
       "kiwix-serve-archives"
     ];
-    langfuse = app ./langfuse "Agent Traces" "automation" [ "langfuseServerEnv" ] [
+    langfuse = app ./langfuse "Agent Traces" "automation" [ "langfuseServerEnv" "langfuseClientSecret" ] [
       "langfuse-prepare" "langfuse-db-bootstrap" "langfuse-web" "langfuse-worker"
-      "redis-langfuse" "clickhouse" "langfuse-minio"
+      "redis-langfuse" "clickhouse" "langfuse-minio" "langfuse-ingestion-freshness"
     ];
     mail-archive-ui = app ./mail-archive-ui "Mail Archive" "productivity" [
       "mailArchiveOauth2ProxyClientSecret"
@@ -95,6 +96,7 @@ rec {
       "mkvmaker-import"
       "mkvmaker-import-worker"
     ];
+    ntfy = app ./ntfy "ntfy" "automation" [ ] [ ];
     offline-music = app ./offline-music "Offline Music" "media" [ ] [
       "offline-media-reconcile"
     ];

@@ -27,7 +27,7 @@ in
 
     modelName = lib.mkOption {
       type = lib.types.str;
-      default = "qwen3.8-27b-q4_km";
+      default = "qwen3.8-27b-iq4_xs";
       readOnly = true;
       description = "Stable API model alias for local application integrations.";
     };

@@ -18,15 +18,24 @@ bonsai_enabled="$(NIXHOMESERVER_TEST_HOST="$host" nix eval --impure --raw --expr
 ' 2>/dev/null || echo 0)"
 
 if [[ "$bonsai_enabled" == "1" ]]; then
-  # Rust unit tests: queue boundary, settings validation, query encoding. Reuse
-  # a persistent, incremental target dir so repeated runs do not recompile the
-  # crate graph from scratch (the ops shell does not set CARGO_BUILD_TARGET_DIR).
-  target_dir="${XDG_CACHE_HOME:-$HOME/.cache}/nixhomeserver-cargo/ai-gate-check"
-  mkdir -p "$target_dir"
+  # Rust unit tests: queue boundary, settings validation, query encoding. Run
+  # them on the server so the crate graph compiles on the 16-core host, not the
+  # four-core workstation; remote_run falls back locally if it is unreachable.
+  # A persistent, incremental target dir on the server keeps repeated runs from
+  # recompiling the crate graph from scratch (the ops shell does not set
+  # CARGO_BUILD_TARGET_DIR).
+  ai_gate_snippet='
+set -euo pipefail
+tree="$1"
+cd "$tree"
+target_dir="/tmp/nixhomeserver-cargo/ai-gate-check"
+mkdir -p "$target_dir"
+CARGO_TARGET_DIR="$target_dir" CARGO_INCREMENTAL=1 nix develop "$NIXHOMESERVER_RUN_FLAKE_REF#ops" --command cargo test \
+  --manifest-path custom_apps/Cargo.toml -p ai-gate --locked
+'
   cargo_log="$(mktemp)"
   trap 'rm -f "$cargo_log"' EXIT
-  if ! CARGO_TARGET_DIR="$target_dir" CARGO_INCREMENTAL=1 nix develop .#ops --command cargo test \
-    --manifest-path custom_apps/Cargo.toml -p ai-gate --locked >"$cargo_log" 2>&1; then
+  if ! remote_run "$ai_gate_snippet" >"$cargo_log" 2>&1; then
     cat "$cargo_log" >&2
     exit 1
   fi

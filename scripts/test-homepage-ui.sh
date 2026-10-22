@@ -1,20 +1,36 @@
 #!/usr/bin/env bash
+# Homepage Playwright end-to-end suite.
+#
+# The browser harness builds the homepage check, launches its server, and drives
+# Chromium — all of it CPU- and RAM-heavy. It runs on the server through
+# `remote_run`, which stages the tracked tree and leaves the workstation out of
+# the build, the server process, and the browser. When the server is
+# unreachable, remote_run falls back to running the same snippet locally, so the
+# suite still works on a workstation-only checkout.
 
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
-homepage_dir="$repo_root/custom_apps/node/apps/homepage"
-system="$(nix eval --raw --impure --expr builtins.currentSystem)"
-homepage_out="$(nix build --no-link --print-out-paths "$repo_root#checks.${system}.homepage")"
+# shellcheck source=scripts/helpers/remote-run.sh
+source "$repo_root/scripts/helpers/remote-run.sh"
 
-cd "$homepage_dir"
+# The snippet runs with the tree root as $1 and the flake reference exported as
+# NIXHOMESERVER_RUN_FLAKE_REF. Remaining args are forwarded to Playwright.
+homepage_ui_snippet="$(
+  cat <<'SNIPPET'
+set -euo pipefail
+tree="$1"
+shift
+cd "$tree/custom_apps/node/apps/homepage"
+system="$(nix eval --raw --impure --expr builtins.currentSystem)"
+homepage_out="$(nix build --no-link --print-out-paths "$NIXHOMESERVER_RUN_FLAKE_REF#checks.${system}.homepage")"
 
 export CI=1
 export HOMEPAGE_E2E_SERVER_COMMAND="$homepage_out/bin/homepage"
 export HOMEPAGE_E2E_STATIC_DIR="$homepage_out/share/homepage/client"
 
-exec nix shell --inputs-from "$repo_root" nixpkgs#playwright-test -c bash -lc '
+nix shell --inputs-from "$NIXHOMESERVER_RUN_FLAKE_REF" nixpkgs#playwright-test nixpkgs#nodejs -c bash -lc '
   set -euo pipefail
   playwright_bin="$(command -v playwright)"
   playwright_prefix="$(dirname "$(dirname "$playwright_bin")")"
@@ -56,3 +72,7 @@ exec nix shell --inputs-from "$repo_root" nixpkgs#playwright-test -c bash -lc '
 
   playwright test --config tests/e2e/playwright.config.mjs "$@"
 ' bash "$@"
+SNIPPET
+)"
+
+remote_run "$homepage_ui_snippet" "$@"

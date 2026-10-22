@@ -36,6 +36,7 @@ let
         "mail-archive-ui"
         "mkvmaker"
         "offline-music"
+        "ntfy"
         "opencloud"
         "paperless"
         "prowlarr"
@@ -59,6 +60,7 @@ let
       }; # Optional email map for extra app users.
       adminEmail = "dsaw@tuta.io"; # Single contact address used for both ACME and the Kanidm admin account.
       sshPublicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDECt+GBZcPahwDCtWiMgn24qGdqMOJhP/pHo/pKsHAF From PC desktop into Home Server"; # Public key authorized for the local Unix administrator.
+      sshExtraPublicKeys = [ ]; # Additional single-line public keys (for example a phone SSH client) authorized for the local Unix administrator alongside sshPublicKey.
       localAdminUser = "dsaw"; # Local Unix SSH/sudo account retained for this existing server.
       authSessionExpirySeconds = 7776000; # 90 days: how long Kanidm keeps users logged in (auth session lifetime in seconds). Also caps how long the native app can silently refresh.
     };
@@ -81,7 +83,7 @@ let
       cpuVendor = "auto"; # Microcode vendor: "auto" trusts the generated hardware module, or force "intel"/"amd".
       timeZone = "Australia/Sydney"; # IANA time zone for timers, logs, and local maintenance windows.
       hostId = "84e8c12a"; # Stable 8-character hexadecimal host ID required by ZFS.
-      buildMode = "balanced"; # Build allocation: "local", "remote", "balanced" (2 slots each with 1 requested core/job), or "maximum-effort" (all slots on both).
+      buildMode = "remote"; # Build allocation: "local", "remote", "balanced" (2 slots each with 1 requested core/job), or "maximum-effort" (all slots on both). "remote" puts every build slot on the 16-core/125 GB server and leaves the 4-core/11 GB workstation out of build work.
       nixStoreMaxSizeGiB = 80; # Soft Nix store cap in GiB; collection starts at 90% of this size or 90% usage on the filesystem containing /nix/store.
       nixGcRetentionDays = 45; # Delete profile generations older than this many days, sacrificing older rollback points.
       localNixGCMode = "capacity"; # Collect unreachable workstation store paths before each deploy: "capacity" (only when the main SSD is under pressure; preserves local build reuse) or "always" (full `nix-store --gc` every deploy, discarding cached Rust/Nix build outputs).
@@ -95,6 +97,11 @@ let
         triggerPercent = 85; # Reclaim logs, aged tmpfiles, and Nix store generations at 85% used; user data is never touched.
         monitorPaths = [ "/" ]; # Filesystems watched for capacity; user-data pools are intentionally excluded.
         journalVacuumTime = "7d"; # Journal retention kept while under pressure; normal journald retention is 30 days.
+      };
+      tempCleanup = {
+        enable = true; # Daily reclaim of Hermes caches, logs, and dormant scratch on the server.
+        maxAgeDays = 14; # Retention for caches, logs, and generated development output.
+        scratchAgeDays = 30; # Retention for dormant Hermes profile scratch directories.
       };
       storageCapacityAlerts = {
         enable = true; # Alert when watched filesystems cross capacity thresholds; this never deletes anything.

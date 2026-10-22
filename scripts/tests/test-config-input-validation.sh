@@ -427,6 +427,8 @@ done
 
 require_fixed scripts/admin/validate-config-readiness.sh 'ipaddress.IPv4Address' \
   "Readiness checks must validate IPv4 values numerically, not only by text shape."
+require_fixed scripts/admin/validate-config-readiness.sh 'identity.sshExtraPublicKeys entry' \
+  "Readiness checks must validate every additional authorized SSH key."
 require_fixed scripts/admin/validate-config-readiness.sh 'ipaddress.IPv4Network(sys.argv[5], strict=True)' \
   "Readiness checks must reject non-canonical NetBird CIDRs."
 require_fixed modules/Core_Modules/validation/default.nix 'if builtins.isInt kopiaPort then kopiaPort + 1 else -1' \
@@ -437,5 +439,71 @@ require_fixed modules/Core_Modules/auth-gateway/default.nix 'if builtins.isInt k
   "Auth gateway evaluation must defer mistyped-port reporting to central validation."
 require_fixed modules/Core_Modules/unbound/default.nix 'if builtins.isAttrs lanDnsHostsRaw then' \
   "Unbound evaluation must defer mistyped LAN host reporting to central validation."
+
+invalid_ssh_extra_keys_log="$(capture_eval_failure '
+  base = import ./vars.nix { inherit lib; };
+  vars = base // {
+    identity = base.identity // {
+      sshExtraPublicKeys = [ "not-an-ssh-key" base.identity.sshPublicKey ];
+    };
+    serverSSHExtraPubKeys = [ "not-an-ssh-key" base.identity.sshPublicKey ];
+  };
+  pkgs = f.inputs.nixpkgs.legacyPackages.${base.hostPlatform};
+  packages = import ./flake/packages.nix {
+    inherit lib pkgs;
+    crane = f.inputs.crane;
+  };
+  system = import ./flake/system.nix {
+    inputs = f.inputs;
+    inherit lib vars pkgs;
+    system = base.hostPlatform;
+    appPackages = packages.appPackages;
+  };
+in system.nixosConfigurations.${base.hostname}.config.system.build.toplevel.drvPath
+')"
+for expected_message in \
+  'identity.sshExtraPublicKeys entries must each be one OpenSSH public-key line' \
+  'identity.sshExtraPublicKeys must not repeat identity.sshPublicKey'; do
+  if ! rg -Fq "$expected_message" <<<"$invalid_ssh_extra_keys_log"; then
+    echo "❌ Invalid identity.sshExtraPublicKeys values failed without actionable guidance: $expected_message"
+    printf '%s\n' "$invalid_ssh_extra_keys_log"
+    exit 1
+  fi
+done
+
+ssh_extra_key_json="$(flake_eval_json '
+  base = import ./vars.nix { inherit lib; };
+  extraKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPhoneClientValidationOnly phone";
+  vars = base // {
+    identity = base.identity // { sshExtraPublicKeys = [ extraKey ]; };
+    serverSSHExtraPubKeys = [ extraKey ];
+  };
+  pkgs = f.inputs.nixpkgs.legacyPackages.${base.hostPlatform};
+  packages = import ./flake/packages.nix {
+    inherit lib pkgs;
+    crane = f.inputs.crane;
+  };
+  system = import ./flake/system.nix {
+    inputs = f.inputs;
+    inherit lib vars pkgs;
+    system = base.hostPlatform;
+    appPackages = packages.appPackages;
+  };
+  cfg = system.nixosConfigurations.${base.hostname}.config;
+in {
+  authorizedKeys = cfg.users.users.${base.localAdminUser}.openssh.authorizedKeys.keys;
+  expectedKeys = [ base.serverSSHPubKey extraKey ];
+  rootKeys = cfg.users.users.root.openssh.authorizedKeys.keys;
+  expectedRootKeys = [ base.serverSSHPubKey ];
+}
+')"
+if ! jq -e '
+  .authorizedKeys == .expectedKeys
+  and .rootKeys == .expectedRootKeys
+' <<<"$ssh_extra_key_json" >/dev/null; then
+  echo "❌ identity.sshExtraPublicKeys is not authorized for the local admin only, alongside the primary key."
+  jq . <<<"$ssh_extra_key_json"
+  exit 1
+fi
 
 echo "✅ Network, DNS, Kanidm-adjacent name, ZFS pool, and managed-filesystem validation passed."

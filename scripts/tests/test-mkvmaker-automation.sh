@@ -264,7 +264,11 @@ touch "$test_root/allow-completion"
   echo "❌ Restarted conversion did not complete from its durable plan." >&2
   exit 1
 }
-jq -e '.sources["Restartable_2001.iso"] == null' "$test_root/state/queue.json" >/dev/null
+jq -e '.sources["Restartable_2001.iso"] == null' "$test_root/state/queue.json" >/dev/null || {
+  echo "❌ Restarted conversion left its source entry in the queue." >&2
+  jq '.sources' "$test_root/state/queue.json" >&2
+  exit 1
+}
 
 cp "$test_root/inbox/_Processed/Restartable_2001.iso" \
   "$test_root/inbox/Restartable_2001_again.iso"
@@ -346,8 +350,16 @@ jq -e '
   echo "❌ Duplicate cleanup did not preserve the duplicate output for review." >&2
   exit 1
 }
-jq -e '.sources["Restartable_2001_again.iso"] == null' "$test_root/state/queue.json" >/dev/null
-jq -e '.processed_hashes["Restartable_2001.iso"] != null' "$test_root/state/queue.json" >/dev/null
+jq -e '.sources["Restartable_2001_again.iso"] == null' "$test_root/state/queue.json" >/dev/null || {
+  echo "❌ Duplicate ISO stayed in the queue after quarantine." >&2
+  jq '.sources' "$test_root/state/queue.json" >&2
+  exit 1
+}
+jq -e '.processed_hashes["Restartable_2001.iso"] != null' "$test_root/state/queue.json" >/dev/null || {
+  echo "❌ Duplicate check did not cache the canonical ISO hash." >&2
+  jq '.processed_hashes' "$test_root/state/queue.json" >&2
+  exit 1
+}
 [[ "$(wc -l <"$test_root/converter-invocations")" == 2 ]] || {
   echo "❌ Byte-identical ISO reached the converter." >&2
   exit 1
@@ -407,9 +419,20 @@ state["sources"][source.name] = {
 }
 state_path.write_text(json.dumps(state), encoding="utf-8")
 PY
+# A long backoff keeps this assertion deterministic. With the shared 1s retry
+# interval, a duplicate check that takes longer than a second expires its own
+# backoff mid-run, the loop re-claims the same ISO, and the attempts count this
+# block asserts depends on how fast the machine hashed _Processed.
+retry_flag_index=$(( ${#auto_import[@]} - 2 ))
+[[ "${auto_import[$retry_flag_index]}" == "--retry-seconds" ]] || {
+  echo "❌ Test setup error: expected --retry-seconds as the last auto_import flag." >&2
+  exit 1
+}
+unverifiable_import=("${auto_import[@]:0:$retry_flag_index}")
+unverifiable_import+=(--retry-seconds 3600)
 chmod 000 "$test_root/inbox/_Processed/Restartable_2001.iso"
 set +e
-"${auto_import[@]}" >/dev/null 2>&1
+"${unverifiable_import[@]}" >/dev/null 2>&1
 unverifiable_status=$?
 set -e
 chmod 0644 "$test_root/inbox/_Processed/Restartable_2001.iso"
@@ -424,10 +447,132 @@ chmod 0644 "$test_root/inbox/_Processed/Restartable_2001.iso"
 jq -e '
   (.sources["Unverifiable.iso"].status == "duplicate-check-failed")
   and (.sources["Unverifiable.iso"].attempts == 1)
-' "$test_root/state/queue.json" >/dev/null
+  and (.sources["Unverifiable.iso"].retry_after > now)
+' "$test_root/state/queue.json" >/dev/null || {
+  echo "❌ Unavailable duplicate hashing did not record one retry with backoff." >&2
+  jq '.sources["Unverifiable.iso"]' "$test_root/state/queue.json" >&2
+  exit 1
+}
 [[ "$(wc -l <"$test_root/converter-invocations")" == 2 ]] || {
   echo "❌ Unverifiable ISO reached the converter." >&2
   exit 1
 }
+
+# A duplicate check that fails slowly must still pay its full retry backoff.
+# The stamp is written when the failure is recorded, so a failure that takes
+# longer than the whole backoff interval must not leave retry_after in the
+# past and hand the ISO straight back to the next claim. The fake clock makes
+# the slow read deterministic instead of a sleep.
+backoff_root="$test_root/backoff"
+mkdir -p "$backoff_root/inbox/_Processed" "$backoff_root/state" \
+  "$backoff_root/movies" "$backoff_root/shows"
+printf 'slow fake iso data\n' >"$backoff_root/inbox/Slow_1999.iso"
+printf 'slow fake iso data\n' >"$backoff_root/inbox/_Processed/Slow_1999.iso"
+BACKOFF_ROOT="$backoff_root" python3 - <<'PY'
+import importlib.util
+import json
+import os
+import sys
+from pathlib import Path
+
+root = Path(os.environ["BACKOFF_ROOT"])
+retry_seconds = 60
+slow_read = retry_seconds * 3
+
+# Importing the importer would otherwise leave a __pycache__ in the tree.
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location(
+    "mkvmaker_auto_import", "custom_apps/mkvmaker/auto_import.py"
+)
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module  # dataclass resolution requires the registration
+spec.loader.exec_module(module)
+
+# Pre-seed the queue the way a settled upload looks, so the run reaches
+# duplicate detection instead of only waiting out the settle window.
+source = root / "inbox/Slow_1999.iso"
+stat = source.stat()
+(root / "state/queue.json").write_text(
+    json.dumps(
+        {
+            "version": 1,
+            "sources": {
+                source.name: {
+                    "signature": {
+                        "size": stat.st_size,
+                        "mtime_ns": stat.st_mtime_ns,
+                        "ctime_ns": stat.st_ctime_ns,
+                    },
+                    "unchanged_since": 0,
+                    "attempts": 0,
+                }
+            },
+        }
+    ),
+    encoding="utf-8",
+)
+
+# A fake clock makes a slow duplicate check deterministic: each observation
+# advances time, and the slow whole-ISO read advances it past the whole
+# backoff interval. No sleeps and no wall-clock sensitivity.
+clock = {"now": 1_700_000_000}
+failure_clock: dict[str, int] = {}
+
+
+class FakeClock:
+    def time(self) -> int:
+        clock["now"] += 1
+        return clock["now"]
+
+    def monotonic(self) -> float:
+        return float(clock["now"])
+
+
+def slow_failing_hash(path: Path) -> str:
+    # Reading the whole ISO is what makes duplicate detection slow.
+    clock["now"] += slow_read
+    failure_clock["now"] = clock["now"]
+    raise OSError(f"simulated read failure for {path.name}")
+
+
+module.time = FakeClock()
+module.iso_sha256 = slow_failing_hash
+
+sys.argv = [
+    "auto_import.py",
+    "--input-dir", str(root / "inbox"),
+    "--movies-dir", str(root / "movies"),
+    "--shows-dir", str(root / "shows"),
+    "--state-dir", str(root / "state"),
+    "--progress-file", str(root / "progress.json"),
+    "--converter", "/bin/true",
+    "--settle-seconds", "1",
+    "--retry-seconds", str(retry_seconds),
+]
+args = module.parse_args()
+status = module.run(args)
+
+assert status == 1, f"duplicate-check failure returned {status}, expected 1"
+state = json.loads((root / "state/queue.json").read_text(encoding="utf-8"))
+entry = state["sources"].get("Slow_1999.iso")
+# With a claim-time stamp the backoff is already expired when it is written, so
+# the loop re-claims the same ISO within the one run and burns every attempt.
+assert entry is not None, (
+    "Slow_1999.iso left the queue after a single run: its backoff had already "
+    f"expired, so all attempts were consumed back to back ({state['sources']})"
+)
+assert entry["attempts"] == 1, entry
+assert entry["status"] == "duplicate-check-failed", entry
+assert "lease" not in entry, entry
+# The whole backoff must still be ahead of the failure. A claim-time stamp
+# would be retry_seconds * attempts after a claim that happened slow_read
+# seconds earlier, so it lands in the past here and the ISO is retried at once.
+recorded = entry["retry_after"]
+assert recorded >= failure_clock["now"] + retry_seconds, (
+    f"retry_after {recorded} is less than "
+    f"{failure_clock['now']} + {retry_seconds}; the slow duplicate check "
+    "consumed its own backoff, so the ISO is retried without any delay"
+)
+PY
 
 echo "✅ Mkvmaker queue, title-selection, path scope, deduplication, and service policy are valid."

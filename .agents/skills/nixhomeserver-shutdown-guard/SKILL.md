@@ -11,6 +11,13 @@ can see critical work. Extend the timer yourself when the work is something the
 watcher cannot see, such as a long command you launched, or when you want extra
 runway before a task starts.
 
+Use the current skill in the assigned NixHomeServer checkout when available.
+For Hermes, checking or extending the live timer requires existing operational
+authority. Implementers use an explicitly approved helper or ask head-coordinator
+to protect the timer before starting the long task; this is an agent handoff,
+not an owner gate. Reviewers and auditors do not gain server-administration
+authority from a validation or planning card. Preserve existing tool fences.
+
 ## When to act
 
 Check the timer and extend it before starting any task that could outlast the

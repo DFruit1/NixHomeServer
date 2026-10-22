@@ -44,12 +44,13 @@ in {
 ')"
 
 if ! jq -e '
-  # The committed default is the committed vars.nix mode; balanced here means
-  # the two-slot, four-core bound on both hosts.
-  (.configured.buildMode == "balanced")
-  and (.configured.local == 2)
-  and (.configured.remote == 2)
-  and (.configured.cores == { local: 4, remote: 4 })
+  # The committed default is the committed vars.nix mode; remote here means the
+  # workstation contributes no slots and the server takes all of its own, with
+  # unbounded per-derivation cores.
+  (.configured.buildMode == "remote")
+  and (.configured.local == 0)
+  and (.configured.remote == "auto")
+  and (.configured.cores == { local: 0, remote: 0 })
 
   and (.balanced.slots == { local: 2, remote: 2 })
   and (.balanced.cores == { local: 4, remote: 4 })
@@ -69,8 +70,8 @@ if ! jq -e '
   exit 1
 fi
 
-# The evaluated server daemon must consume the same policy: bounded cores and
-# the two-slot limit in balanced mode, still build-capable if slots are zero.
+# The evaluated server daemon must consume the same policy: all of the server's
+# slots with unbounded cores in remote mode, still build-capable if slots are zero.
 daemon_json="$(NIXHOMESERVER_TEST_HOST="$host" flake_eval_json '
   host = builtins.getEnv "NIXHOMESERVER_TEST_HOST";
   cfg = (builtins.getAttr host f.nixosConfigurations).config;
@@ -80,8 +81,8 @@ in {
 }
 ')"
 
-if ! jq -e '.cores == 4 and .maxJobs == 2' <<<"$daemon_json" >/dev/null; then
-  echo "❌ The server Nix daemon does not apply the balanced allocation."
+if ! jq -e '.cores == 0 and .maxJobs == "auto"' <<<"$daemon_json" >/dev/null; then
+  echo "❌ The server Nix daemon does not apply the remote allocation."
   jq . <<<"$daemon_json" >&2
   exit 1
 fi

@@ -92,6 +92,8 @@ Set the operator-facing block first:
 - `identity.adminUser`: the dedicated Kanidm operator account.
 - `identity.localAdminUser`: the local Unix SSH/sudo account.
 - `identity.sshPublicKey`: the public SSH key for root and the local admin.
+- `identity.sshExtraPublicKeys`: optional additional keys for the local admin
+  (for example a phone SSH client); leave `[ ]` when one workstation key is enough.
 - `network`: hostname, domain, LAN interface, LAN IP, prefix, gateway, and NetBird IP.
 - `network.lanMode`: `"static"` (default) pins the LAN IP; `"dhcp"` leases it, but then `network.lanIp` must be the router's reservation because DNS and firewall scoping still use it.
 - `system.cpuVendor`: `"auto"` (default) trusts the generated hardware module; force `"intel"` or `"amd"` only to override it.

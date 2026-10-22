@@ -124,6 +124,12 @@ let
     monitorPaths = configuredLocalDiskCleanup.monitorPaths or [ "/nix" ];
     journalVacuumTime = configuredLocalDiskCleanup.journalVacuumTime or "7d";
   };
+  configuredTempCleanup = settings.system.tempCleanup or { };
+  tempCleanup = {
+    enable = configuredTempCleanup.enable or true;
+    maxAgeDays = configuredTempCleanup.maxAgeDays or 14;
+    scratchAgeDays = configuredTempCleanup.scratchAgeDays or 30;
+  };
   configuredStorageCapacityAlerts = settings.system.storageCapacityAlerts or { };
 in
 rec {
@@ -137,6 +143,7 @@ rec {
     monitoringAccess
     offlineMedia
     storage
+    tempCleanup
     ;
   hostname = network.hostname;
   applications = configuredApplications;
@@ -208,6 +215,8 @@ rec {
   kanidmAdminMailAddresses = identityAccessModel.adminMailAddresses;
   kanidmAdminEmail = identity.adminEmail;
   serverSSHPubKey = identity.sshPublicKey;
+  # Extra keys are optional so an existing vars.nix keeps evaluating unchanged.
+  serverSSHExtraPubKeys = identity.sshExtraPublicKeys or [ ];
   localAdminUser = identity.localAdminUser;
   # vars.nix is merge=ours and never updated from upstream, so an existing
   # host's file predates identity.localAdminSudo. Default to the pre-change

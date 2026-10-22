@@ -64,6 +64,23 @@ let
       [ ];
   allowPlaceholders = vars.validation.allowPlaceholders or false;
   containsChangeMe = value: lib.hasInfix "CHANGE_ME" (toString value);
+  sshExtraKeysRaw = vars.identity.sshExtraPublicKeys or [ ];
+  sshExtraKeysAreList = builtins.isList sshExtraKeysRaw;
+  sshExtraKeys = if sshExtraKeysAreList then sshExtraKeysRaw else [ ];
+  validSshPublicKeyLine = value:
+    builtins.isString value
+    && builtins.stringLength value > 0
+    && builtins.stringLength value <= 8192
+    && !lib.hasInfix "\n" value
+    && !lib.hasInfix "\r" value
+    && builtins.match
+      "^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521|sk-ssh-ed25519@openssh\\.com|sk-ecdsa-sha2-nistp256@openssh\\.com) [A-Za-z0-9+/]+={0,3}( .*)?$"
+      value
+    != null;
+  invalidSshExtraKeys = builtins.filter (key: !validSshPublicKeyLine key) sshExtraKeys;
+  duplicateSshExtraKeys = lib.filter
+    (key: key == vars.serverSSHPubKey || builtins.length (builtins.filter (other: other == key) sshExtraKeys) > 1)
+    sshExtraKeys;
   externallyBoundPorts = lib.filterAttrs (name: _: !(lib.hasSuffix "Container" name)) vars.networking.ports;
   kopiaPort = vars.networking.ports.kopia;
   kopiaAuthProxyPort = if builtins.isInt kopiaPort then kopiaPort + 1 else -1;
@@ -654,6 +671,22 @@ in
     {
       assertion = allowPlaceholders || !containsChangeMe vars.serverSSHPubKey;
       message = "nixhomeserver: replace serverSSHPubKey with a real SSH public key.";
+    }
+    {
+      assertion = sshExtraKeysAreList;
+      message = "nixhomeserver: identity.sshExtraPublicKeys must be a list of OpenSSH public-key strings, for example [ \"ssh-ed25519 AAAA... phone\" ].";
+    }
+    {
+      assertion = invalidSshExtraKeys == [ ];
+      message = "nixhomeserver: identity.sshExtraPublicKeys entries must each be one OpenSSH public-key line (ssh-ed25519, ssh-rsa, ecdsa-sha2-*, or sk-*); invalid entries: ${builtins.toJSON invalidSshExtraKeys}";
+    }
+    {
+      assertion = allowPlaceholders || !(lib.any containsChangeMe sshExtraKeys);
+      message = "nixhomeserver: replace placeholder values in identity.sshExtraPublicKeys.";
+    }
+    {
+      assertion = duplicateSshExtraKeys == [ ];
+      message = "nixhomeserver: identity.sshExtraPublicKeys must not repeat identity.sshPublicKey or another entry; duplicate entries: ${builtins.toJSON duplicateSshExtraKeys}";
     }
     {
       assertion = allowPlaceholders || !containsChangeMe vars.netIface;

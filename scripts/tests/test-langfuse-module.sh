@@ -43,8 +43,21 @@ in {
   redisOnFailure = cfg.systemd.services.redis-langfuse.unitConfig.OnFailure;
   unitOnFailure = map (name: cfg.systemd.services.\${name}.unitConfig.OnFailure)
     [ \"langfuse-prepare\" \"langfuse-db-bootstrap\" \"langfuse-web\" \"langfuse-worker\" \"langfuse-minio\" ];
+  freshnessExec = cfg.systemd.services.langfuse-ingestion-freshness.serviceConfig.ExecStart or null;
+  freshnessCredential = cfg.systemd.services.langfuse-ingestion-freshness.serviceConfig.LoadCredential or [];
+  freshnessOnFailure = cfg.systemd.services.langfuse-ingestion-freshness.unitConfig.OnFailure or [];
+  freshnessTimer = cfg.systemd.timers.\"langfuse-ingestion-freshness\".timerConfig or {};
   prepareTriggers = cfg.systemd.services.langfuse-prepare.restartTriggers;
   bootstrapTriggers = cfg.systemd.services.langfuse-db-bootstrap.restartTriggers;
+  consumerTriggers = map (name: cfg.systemd.services.\${name}.restartTriggers)
+    [ \"langfuse-web\" \"langfuse-worker\" \"langfuse-minio\" \"clickhouse\" \"redis-langfuse\" ];
+  webEnvironment = containers.langfuse-web.environment;
+  webEnvironmentFiles = containers.langfuse-web.environmentFiles;
+  oauth2Client = cfg.services.kanidm.provision.systems.oauth2.langfuse;
+  oauth2SecretMode = cfg.age.secrets.langfuseClientSecret.mode;
+  expectedOwnerEmail = vars.kanidmAppUserEmails.\${vars.localAdminUser} or vars.kanidmAdminEmail;
+  backupWants = cfg.systemd.services.backup-prepare.wants;
+  backupRequires = cfg.systemd.services.backup-prepare.requires;
   containerOptions = map (name: containers.\${name}.extraOptions)
     [ \"langfuse-web\" \"langfuse-worker\" \"langfuse-minio\" ];
   postgresTimezone = cfg.services.postgresql.settings.timezone or null;
@@ -59,6 +72,13 @@ jq -e '
   and .clickhouse.listen_host == "127.0.0.1"
   and .clickhouse.timezone == "UTC"
   and .clickhouse.tcp_port == 19140 and .clickhouse.http_port == 18140
+  and .clickhouse.trace_log.database == "system"
+  and .clickhouse.trace_log.ttl == "event_date + INTERVAL 3 DAY DELETE"
+  and .clickhouse.query_log.ttl == "event_date + INTERVAL 7 DAY DELETE"
+  and ([ .clickhouse | to_entries[] | select(.key | endswith("_log")) | (.value.ttl // .value.engine) ]
+       | length == 15 and all(. != null))
+  and (.clickhouse.opentelemetry_span_log.engine | contains("ttl finish_date + INTERVAL 7 DAY delete"))
+  and (.clickhouse.processors_profile_log | not)
   and (.bootstrapAfter | index("postgresql-setup.service")) != null
   and (.bootstrapRequires | index("postgresql-setup.service")) != null
   and (.minioArgs | index("127.0.0.1:9040")) != null
@@ -75,7 +95,27 @@ jq -e '
   and (.redisInterval | length > 0) and (.redisBurst | length > 0)
   and (.onFailure | length) == 1 and (.redisOnFailure | length) == 1
   and all(.unitOnFailure[]; length == 1)
-  and (.prepareTriggers | length) == 1 and (.bootstrapTriggers | length) == 1
+  and (.freshnessExec | test("/bin/langfuse-ingestion-freshness$") != null)
+  and .freshnessCredential == ["redis-password:/run/langfuse-redis/password"]
+  and (.freshnessOnFailure | length) == 1
+  and .freshnessTimer.OnUnitActiveSec == "15min"
+  and .freshnessTimer.Persistent == true
+  and (.prepareTriggers | length) == 2 and (.bootstrapTriggers | length) == 1
+  and (.consumerTriggers[0] | length) == 2
+  and all(.consumerTriggers[1:][]; length == 1)
+  and .webEnvironment.AUTH_CUSTOM_CLIENT_ID == "langfuse"
+  and .webEnvironment.AUTH_CUSTOM_NAME == "Kanidm"
+  and (.webEnvironment.AUTH_CUSTOM_ISSUER | startswith("https://id."))
+  and (.webEnvironment.AUTH_CUSTOM_ISSUER | endswith("/oauth2/openid/langfuse"))
+  and .webEnvironment.AUTH_CUSTOM_ALLOW_ACCOUNT_LINKING == "true"
+  and .webEnvironment.LANGFUSE_INIT_USER_EMAIL == .expectedOwnerEmail
+  and (.webEnvironmentFiles | index("/run/langfuse/oidc.env")) != null
+  and .oauth2Client.basicSecretFile == "/run/agenix/langfuseClientSecret"
+  and (.oauth2Client.originUrl | endswith("/api/auth/callback/custom"))
+  and .oauth2Client.scopeMaps."langfuse-users" == ["openid","profile","email"]
+  and .oauth2SecretMode == "0440"
+  and (.backupWants | index("clickhouse.service")) != null
+  and ((.backupRequires | index("clickhouse.service")) == null)
   and all(.containerOptions[]; index("--cap-drop=ALL") != null)
   and .postgresTimezone == "UTC"
   and (.rebuildable | index("var/lib/clickhouse") != null)

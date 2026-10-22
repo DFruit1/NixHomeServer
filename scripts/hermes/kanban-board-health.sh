@@ -15,6 +15,15 @@
 # prints one line per finding. The head-coordinator is the decision half; see
 # the "Board health" section of profiles/head-coordinator/SOUL.md.
 #
+# Every finding is scoped to $HERMES_BOARD except OWNER_COMMENT_UNACTED,
+# CAPABILITY_OWNER_INPUT, MIRROR_STALE and INSTRUCTION_DRIFT, which enumerate
+# every board or the whole hermes home: an owner-answered gate, an
+# owner-sourced capability hold, a board whose durability mirror has gone stale
+# and installed prompts that lag tracked source can sit anywhere, and the
+# head-coordinator must be woken for them whichever board this cron names.
+# Their lines carry the board slug, or the drift count, so the coordinator acts
+# on the right thing.
+#
 # It is wired as a hermes cron `--monitor-script`, which hashes the output
 # byte-for-byte and suppresses the agent run while the hash is unchanged. The
 # output is therefore sorted and free of timestamps, ages are reported as
@@ -38,10 +47,19 @@
 # -----------
 #   HERMES_ROOT            hermes state dir   (default: ~/.hermes)
 #   HERMES_BOARD           board slug         (default: nixhomeserver)
-#   HERMES_REPO            repo to audit for unpushed work (default: auto)
+#   HERMES_REPO            repo to audit for unpushed work and to resolve the
+#                          installed-instruction check (default: auto, from the
+#                          board's `default_workdir`)
 #   BOARD_HEALTH_READY_STALE_SEC   ready+unclaimed before reporting (default 900)
 #   BOARD_HEALTH_READY_OLD_SEC     ready at all before reporting hard (default 3600)
 #   BOARD_HEALTH_TRIAGE_RECURRENCES  triage blocks before reporting (default 2)
+#   BOARD_HEALTH_MIRROR_STALE_SEC   board mirror age before reporting (default 3600)
+#   BOARD_HEALTH_OWNER_AUTHORS     comment authors treated as the owner speaking
+#                                  on a card (default: owner,desktop,user)
+#   BOARD_HEALTH_UNMERGED_TOP_N    named unmerged-accepted branches before the
+#                                  count line takes over (default 6)
+#   BOARD_HEALTH_CLASSIFICATION_TOP_N  named classification findings before
+#                                  the count line takes over (default 4)
 
 set -euo pipefail
 
@@ -50,6 +68,24 @@ HERMES_BOARD="${HERMES_BOARD:-nixhomeserver}"
 READY_STALE_SEC="${BOARD_HEALTH_READY_STALE_SEC:-900}"
 READY_OLD_SEC="${BOARD_HEALTH_READY_OLD_SEC:-3600}"
 TRIAGE_RECURRENCES="${BOARD_HEALTH_TRIAGE_RECURRENCES:-2}"
+MIRROR_STALE_SEC="${BOARD_HEALTH_MIRROR_STALE_SEC:-3600}"
+# Per-category finding cap for the list-shaped detectors. The report exists to
+# wake the head-coordinator once per material change, and that wake owns one
+# bounded turn budget (see hermes-cron-policy.md). Listing every backlog item
+# turns the detector into a loop: the wake cannot process the list, the retry
+# re-arms, and every tick burns the budget again. The capped name list plus a
+# count line keeps the backlog visible without exceeding one wake.
+UNMERGED_TOP_N="${BOARD_HEALTH_UNMERGED_TOP_N:-6}"
+CLASSIFICATION_TOP_N="${BOARD_HEALTH_CLASSIFICATION_TOP_N:-4}"
+# Comment authors that are the owner speaking on a card. The owner writes through
+# three clients and the board records each with its own author: the desktop app
+# as `desktop`, the owner's own CLI as `user`, and an owner-recorded decision
+# marker as `owner`. All three are the owner, and omitting any one hides that
+# client's answer from this detector -- recreating the "owner spoke, nobody
+# acted" silence the finding exists to break. Agents author their profile slug.
+# A comma-separated list so a further owner client can be admitted without a
+# code change. Not a positive-integer knob, so it is validated separately.
+OWNER_AUTHORS="${BOARD_HEALTH_OWNER_AUTHORS:-owner,desktop,user}"
 
 DB="$HERMES_ROOT/kanban/boards/$HERMES_BOARD/kanban.db"
 CONFIG="$HERMES_ROOT/config.yaml"
@@ -75,6 +111,9 @@ require_positive_int() {
 require_positive_int BOARD_HEALTH_READY_STALE_SEC "$READY_STALE_SEC"
 require_positive_int BOARD_HEALTH_READY_OLD_SEC "$READY_OLD_SEC"
 require_positive_int BOARD_HEALTH_TRIAGE_RECURRENCES "$TRIAGE_RECURRENCES"
+require_positive_int BOARD_HEALTH_MIRROR_STALE_SEC "$MIRROR_STALE_SEC"
+require_positive_int BOARD_HEALTH_UNMERGED_TOP_N "$UNMERGED_TOP_N"
+require_positive_int BOARD_HEALTH_CLASSIFICATION_TOP_N "$CLASSIFICATION_TOP_N"
 
 if [[ ! -f "$DB" ]]; then
   echo "BOARD_MISSING $HERMES_BOARD (no kanban.db under $HERMES_ROOT)"
@@ -114,36 +153,246 @@ if ! probe_err="$(sqlite3 "$DB" "$probe_sql" 2>&1)"; then
   exit 3
 fi
 
-# Read a scalar nested under the top-level `kanban:` block of config.yaml.
-# Deliberately not a YAML parser: hermes owns the config format and this only
-# needs two integers, and a missing key must degrade to a default rather than
-# fail the report.
-kanban_config_scalar() {
-  local key="$1" default="$2" value=""
-  if [[ -r "$CONFIG" ]]; then
-    value="$(awk -v key="$key" '
-      /^[^[:space:]#]/ { inblock = ($0 ~ /^kanban:/) ? 1 : 0 }
-      inblock && $1 == key":" {
-        sub(/^[^:]*:[[:space:]]*/, "", $0); gsub(/[[:space:]#].*$/, "", $0); print $0; exit
-      }
-    ' "$CONFIG")"
+# ---------------------------------------------------------------------------
+# Per-profile concurrency caps
+# ---------------------------------------------------------------------------
+# `max_in_progress_per_profile` used to be read as one scalar and applied to
+# every lane. That was right for a scalar and wrong the moment the key became a
+# `{profile: cap}` map: the scalar reader gets nothing back from a nested map, so
+# every lane fell through to the fallback. On a board whose real caps are
+# standard-implementer=4, local-implementer=1 and project-auditor=1, three
+# healthy standard-implementer workers were reported as an over-cap lane every
+# tick while a genuinely capped local-implementer lane was never reported at all.
+#
+# `kanban.max_in_progress_per_profile` has exactly two shapes, and
+# `normalize_per_profile_caps` / `per_profile_cap_for` / `_canonical_cap_profile`
+# in hermes_cli/kanban_db_dispatch.py are the contract reproduced here:
+#
+#   * one int  -> one cap for every lane, held under the `*` key
+#   * a map    -> {profile: cap} with an optional fallback for lanes the map does
+#                 not name
+#
+# Lookup order is the lane's own cap, then the wildcard fallback, then the
+# conservative default. Map keys are canonicalized the way the dispatcher does
+# it: trimmed, lowercased, `default` and `*` folded onto the wildcard, and a name
+# that is not a valid profile id dropped -- it could never match a lane, so
+# honouring it would silently apply an unrelated lane's cap.
+#
+# A map entry is only a cap when it is a positive integer written plainly, which
+# is exactly the dispatcher's own test (`isinstance(int) and > 0`). A `0` in a
+# map is therefore *dropped* and the lane falls through to the wildcard or the
+# default -- it is not a cap of zero. A quoted `"4"` is a YAML string, which the
+# dispatcher rejects, so it is not a cap here either.
+#
+# The scalar form is the one deliberate divergence, and it is preserved rather
+# than repaired: a scalar `0` still resolves to a cap of 0, exactly as this
+# script always did. Making the scalar positive-only would be a cap-policy
+# change, not a reporting correction.
+
+declare -A CAP_MAP=()
+CAPS_READ=0
+
+# The value every unresolvable cap degrades to: absent, unreadable, malformed or
+# unrecognised. It is what a fresh install gets, and it is deliberately the
+# conservative one -- a monitor that under-reports a saturated lane is silent,
+# and silence is the failure this script exists to catch. Nothing here rewrites
+# it to a value that suppresses a finding.
+CAP_FALLBACK=2
+
+# Bash arithmetic is signed 64-bit, so a config value that does not fit wraps
+# instead of erroring, and a wrapped cap turns `running > cap` into a finding
+# about a lane that is actually uncapped. A lane cap is a worker count, so a
+# value longer than nine digits is already far past anything a board can reach;
+# it is *clamped*, not dropped, because dropping it would fall back to the
+# conservative default and report the uncapped lane as an overage -- the same
+# false-alarm class this repair removes.
+CAP_MAX_DIGITS=9
+CAP_MAX=999999999
+
+# A cap as it may safely be held and compared: a plain integer no longer than
+# CAP_MAX_DIGITS, with anything larger clamped to CAP_MAX. Callers validate the
+# shape first; this only bounds the magnitude.
+bound_cap() {
+  local value="$1"
+  if ((${#value} > CAP_MAX_DIGITS)); then
+    printf '%s\n' "$CAP_MAX"
+  else
+    printf '%s\n' "$value"
   fi
-  [[ "$value" =~ ^[0-9]+$ ]] && printf '%s\n' "$value" || printf '%s\n' "$default"
 }
 
-MAX_PER_PROFILE="$(kanban_config_scalar max_in_progress_per_profile 2)"
-
-# The cap is compared with `(( ))`, so a non-integer here is arithmetic on the
-# empty string rather than an error: every comparison goes false and the
-# saturation detectors go quiet, which reads as a healthy board. Unlike the
-# environment knobs above, this one comes from a config file this script does not
-# own and must not refuse to run over, so degrade to the conservative default.
-# The default is 2 because that is what a fresh install gets and the number only
-# ever appears in output.
-[[ "$MAX_PER_PROFILE" =~ ^[0-9]+$ ]] || {
-  echo "board-health: max_in_progress_per_profile '$MAX_PER_PROFILE' is not an integer; using 2" >&2
-  MAX_PER_PROFILE=2
+# A canonical cap-map key for one key read out of config.yaml, or nothing when
+# the key names no lane. Always returns 0: the caller filters on the emitted
+# string, and a non-zero status here would abort the report under `set -e`.
+canonical_cap_key() {
+  local key="$1"
+  key="${key#"${key%%[![:space:]]*}"}"
+  key="${key%"${key##*[![:space:]]}"}"
+  key="${key%\"}"; key="${key#\"}"
+  key="${key%\'}"; key="${key#\'}"
+  key="${key#"${key%%[![:space:]]*}"}"
+  key="${key%"${key##*[![:space:]]}"}"
+  key="${key,,}"
+  case "$key" in
+    # `default` and `*` are the aliased wildcard the dispatcher folds onto the
+    # default key, not lanes.
+    default|'*') printf '%s\n' '*' ;;
+    # A reserved name passes the id grammar but is rejected by
+    # validate_profile_name, so it can never name a lane (profiles.py:275).
+    hermes|test|tmp|root|sudo) ;;
+    *) [[ "$key" =~ ^[a-z0-9][a-z0-9_-]{0,63}$ ]] && printf '%s\n' "$key" ;;
+  esac
+  return 0
 }
+
+# Canonicalise an assignee through the same normalisation, so a lane stored as a
+# title-cased label still matches a lowercase config key.
+canonical_assignee() {
+  local name="$1"
+  name="${name#"${name%%[![:space:]]*}"}"
+  name="${name%"${name##*[![:space:]]}"}"
+  printf '%s\n' "${name,,}"
+}
+
+# Read `kanban.max_in_progress_per_profile` from config.yaml into CAP_MAP.
+#
+# Both the scalar spelling and the map key are anchored to an *immediate child*
+# of the top-level `kanban:` mapping: the setting is read only at the depth of
+# kanban's first child. A key of the same name nested inside some unrelated
+# kanban key (`unrelated: {max_in_progress_per_profile: 9}`) is that key's value,
+# not this setting, and reading it would apply an unrelated number to every lane.
+#
+# A plain integer on the key's own line is one cap for every lane. Otherwise the
+# key's entries are walked: the walk is bounded by the next non-blank line at an
+# equal or lower indentation, so a sibling key under `kanban:` can never
+# masquerade as an entry of this one. The first child line fixes the entry
+# indentation and only lines at exactly that depth are entries -- a line nested
+# deeper belongs to an entry's own value and is ignored, which is what keeps
+# `unrelated: {standard-implementer: 9}` from becoming a cap for that lane. A
+# comment line is skipped wherever it sits, because YAML ignores it and a
+# two-space comment between two entries must not end the map. Every entry is
+# validated as a plain positive integer before it is stored, and anything that
+# does not parse is dropped rather than guessed at.
+read_config_caps() {
+  [[ "$CAPS_READ" == 1 ]] && return 0
+  CAPS_READ=1
+  [[ -r "$CONFIG" ]] || return 0
+
+  # The scalar form keeps the historic acceptance of `0`, but only in canonical
+  # decimal. A leading-zero spelling is not read here at all: YAML resolves it
+  # as an octal int (or as a string, for `08`), and `(( ))` reads it as octal
+  # too -- and errors outright on `08`, which would silently turn every
+  # comparison false and make the board look healthy. Guessing between those
+  # readings is worse than degrading to the documented fallback.
+  local scalar=""
+  scalar="$(awk '
+    # A line at the mapping root opens or closes the top-level kanban block.
+    /^[^[:space:]#]/ {
+      inblock = ($0 ~ /^kanban:/) ? 1 : 0; childind = -1; next
+    }
+    !inblock { next }
+    /^[[:space:]]*#/ { next }
+    $1 == "" { next }
+    {
+      thisind = index($0, $1) - 1
+      # The first child of kanban fixes the depth of an immediate-child setting.
+      if (childind < 0) { childind = thisind }
+      # A same-named key nested inside an unrelated kanban key is that key value,
+      # not this setting; reading it would lift the cap for the whole board.
+      if (thisind != childind) { next }
+      if ($1 != "max_in_progress_per_profile:") { next }
+      sub(/^[^:]*:[[:space:]]*/, "", $0); gsub(/[[:space:]#].*$/, "", $0); print $0; exit
+    }
+  ' "$CONFIG")"
+
+  if [[ "$scalar" =~ ^(0|[1-9][0-9]*)$ ]]; then
+    CAP_MAP['*']="$(bound_cap "$scalar")"
+    return 0
+  fi
+
+  local line key value canon
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    [[ "$line" == *:* ]] || continue
+    key="${line%%:*}"
+    value="${line#*:}"
+    canon="$(canonical_cap_key "$key")"
+    [[ -n "$canon" ]] || continue
+    # Strip an inline comment before trimming. A plain YAML scalar ends at a `#`
+    # that follows whitespace, and `standard-implementer: 4  # note` has more
+    # than one space before the comment: trimming first leaves the earlier spaces
+    # behind as `4 `, which then fails the integer test and drops a valid cap to
+    # the fallback. Strip the comment, then trim whatever is left.
+    value="${value%%[[:space:]]#*}"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    # No quote stripping: only a plain integer is a cap, matching the
+    # dispatcher's `isinstance(int)` test. `"9"` is a string, not a cap.
+    [[ "$value" =~ ^[1-9][0-9]*$ ]] || continue
+    CAP_MAP["$canon"]="$(bound_cap "$value")"
+  done < <(awk '
+    # A line at the mapping root opens or closes the top-level kanban block.
+    /^[^[:space:]#]/ {
+      inblock = ($0 ~ /^kanban:/) ? 1 : 0; childind = -1; next
+    }
+    !inblock { next }
+    /^[[:space:]]*#/ { next }
+    $1 == "" { next }
+    {
+      thisind = index($0, $1) - 1
+      if (childind < 0) { childind = thisind }
+      if (after) {
+        # Entries are the immediate children of the setting key, and the map
+        # ends at the first line indented no deeper than that key.
+        if (thisind <= keyind) { exit }
+        if (entryind < 0) { entryind = thisind }
+        if (thisind == entryind) { print $0 }
+        next
+      }
+      # Only an immediate child of kanban is this setting. A same-named key
+      # nested inside an unrelated kanban key is that key value, not a cap map.
+      if (thisind != childind) { next }
+      if ($1 != "max_in_progress_per_profile:") { next }
+      # Only a key with no value on its own line opens a nested map. `key: 5`
+      # and `key: {a: 1}` are the scalar and flow shapes, which this bounded scan
+      # does not read as a block map (the latter degrades to the fallback, as
+      # documented). A value spelled only as a comment is still "no value".
+      rest = $0
+      sub(/^[^:]*:/, "", rest)
+      sub(/^[[:space:]]+/, "", rest)
+      if (rest == "" || rest ~ /^#/) {
+        keyind = thisind; entryind = -1; after = 1
+      }
+      next
+    }
+  ' "$CONFIG")
+}
+
+# The cap that governs one assignee: its own entry, else the wildcard fallback,
+# else the conservative default. Always emits a plain non-negative integer; the
+# map only ever holds values validated and bounded on the way in.
+cap_for() {
+  local assignee="$1" resolved="" canon
+  # A no-op after the priming read below (CAPS_READ is inherited as 1), so this
+  # costs nothing in the loops and still resolves correctly if it is ever called
+  # before the priming line.
+  read_config_caps
+  canon="$(canonical_assignee "$assignee")"
+  if [[ -n "$canon" && -n "${CAP_MAP["$canon"]+set}" ]]; then
+    resolved="${CAP_MAP["$canon"]}"
+  elif [[ -n "${CAP_MAP['*']+set}" ]]; then
+    resolved="${CAP_MAP['*']}"
+  else
+    resolved="$CAP_FALLBACK"
+  fi
+  printf '%s\n' "$resolved"
+}
+
+# Prime the map in this shell. `cap_for` is called inside `$(...)`, so a read it
+# triggered there would populate a subshell-local copy and be thrown away -- the
+# config would be re-parsed for every row. Reading it here is what makes "the
+# config is read exactly once" true, and this runs on a 30-minute cron tick.
+read_config_caps
 
 # Age buckets, not exact ages: exact seconds change every run, which would make
 # the monitor hash unstable and wake the head-coordinator on every single tick.
@@ -160,11 +409,9 @@ bucket() {
 
 # Coarse age of a card's last sign of life.
 age_of() {
-  local ts="$1"
-  [[ "$ts" =~ ^[0-9]+$ ]] || { printf 'unknown'; return; }
-  local d=$((NOW - ts))
-  ((d < 0)) && d=0
-  bucket "$d"
+  local age="$1"
+  [[ "$age" =~ ^[0-9]+$ ]] || { printf 'unknown'; return; }
+  bucket "$age"
 }
 
 emit() { printf '%s\n' "$*"; }
@@ -180,6 +427,27 @@ sql() {
     exit 4
   fi
   printf '%s' "$out"
+}
+
+# The repository this board is worked in: HERMES_REPO when set, else the
+# board's recorded `default_workdir`. Two detectors need it -- the durability
+# audit and the installed-instruction check -- so it is resolved once here
+# rather than once per detector, so they can never disagree about which
+# checkout is authoritative. Always returns 0 and may print an empty string:
+# a board with no recorded workdir is normal, and the callers skip.
+board_repo() {
+  if [[ -n "${HERMES_REPO:-}" ]]; then
+    printf '%s' "$HERMES_REPO"
+    return 0
+  fi
+  python3 - "$HERMES_ROOT/kanban/boards/$HERMES_BOARD/board.json" <<'PY' 2>/dev/null || true
+import json, sys
+try:
+    with open(sys.argv[1]) as fh:
+        print(json.load(fh).get("default_workdir") or "")
+except Exception:
+    print("")
+PY
 }
 
 # ---------------------------------------------------------------------------
@@ -244,8 +512,12 @@ saturated_rows="$(sql "
 while IFS='|' read -r assignee ready_n running_n; do
   [[ -n "$assignee" ]] || continue
   ((ready_n > 0)) || continue
-  if ((running_n >= MAX_PER_PROFILE)); then
-    emit "PROFILE_SATURATED $assignee ready=$ready_n running=$running_n cap=$MAX_PER_PROFILE"
+  # Resolved per lane rather than against one global number: that is the whole
+  # point. A standard-implementer lane at four workers is healthy while a
+  # local-implementer lane at two is not.
+  cap="$(cap_for "$assignee")"
+  if ((running_n >= cap)); then
+    emit "PROFILE_SATURATED $assignee ready=$ready_n running=$running_n cap=$cap"
   fi
 done <<<"$saturated_rows"
 
@@ -255,18 +527,26 @@ done <<<"$saturated_rows"
 # the rate-limit path and respawned faster than the running count reflected.
 # It matters independently of queueing: several workers sharing one local model
 # endpoint is the mechanism behind the "quota wall" rate-limit churn.
+#
+# The cap does not appear in the query any more. A single integer in WHERE or
+# HAVING is the same scalar assumption in a second place, and with one in the
+# query a lane whose real cap is 1 was filtered out of the result set before its
+# own count was ever compared against it -- the exact case this repair is for.
+# The count therefore comes back per assignee and every row is compared against
+# that lane's cap, so a cap-1 lane with two workers is caught even when nothing
+# is queued behind it.
 overcap_rows="$(sql "
   SELECT assignee, COUNT(*)
     FROM tasks
    WHERE status = 'running' AND assignee IS NOT NULL
    GROUP BY assignee
-  HAVING COUNT(*) > $MAX_PER_PROFILE
    ORDER BY assignee;")"
 
 while IFS='|' read -r assignee running_n; do
   [[ -n "$assignee" ]] || continue
-  ((running_n > MAX_PER_PROFILE)) || continue
-  emit "PROFILE_OVER_CAP $assignee running=$running_n cap=$MAX_PER_PROFILE needs=reduce-inflight"
+  cap="$(cap_for "$assignee")"
+  ((running_n > cap)) || continue
+  emit "PROFILE_OVER_CAP $assignee running=$running_n cap=$cap needs=reduce-inflight"
 done <<<"$overcap_rows"
 
 # Cards the block-loop detector gave up on. `block_recurrences` hits the limit
@@ -391,24 +671,172 @@ while IFS='|' read -r id assignee failures outcome since_ts block_ts comment_ts 
 done <<<"$failed_block_rows"
 
 # ---------------------------------------------------------------------------
+# Owner comment awaiting a coordinator decision (EVERY board)
+# ---------------------------------------------------------------------------
+# A gate card is blocked on the owner; the owner answers by commenting on the
+# card (the desktop app authors those comments `desktop`). A comment does not
+# change a card's status, so an answered gate stays `blocked` and nothing
+# dispatches it -- the answer is recorded on the board and then sits there. This
+# detector is the wake-up for that gap: it fires when the *latest* comment on a
+# blocked card is the owner's, which is exactly "the owner spoke last and no
+# agent has responded".
+#
+# It is deliberately board-agnostic, unlike every other finding here. A gate can
+# be answered on any board, and the head-coordinator must be woken for it
+# whichever board this cron names, so the detector enumerates every board's DB
+# and names the board on each line. Every other detector stays scoped to
+# $HERMES_BOARD, whose policy the cron prompt carries; only this one is
+# cross-board, so its line carries the board the coordinator must act on.
+#
+# It is self-clearing, which the monitor requires: the head-coordinator reads the
+# owner's comment, records its reading (its own comment becomes the latest), and
+# unblocks when the answer resolves the gate. Either action makes the latest
+# author non-owner, so the finding drops out on the next tick and the hash
+# settles. The unblock itself still obeys every existing rule -- an owner comment
+# is a decision, not authority to release a rejected change, an absent
+# capability, or a question the comment does not answer.
+shopt -s nullglob
+for owner_db in "$HERMES_ROOT"/kanban/boards/*/kanban.db; do
+  [[ -f "$owner_db" ]] || continue
+  owner_board="$(basename "$(dirname "$owner_db")")"
+  case "$owner_board" in
+    _*|.*) continue ;;
+  esac
+  if ! owner_rows="$(sqlite3 -separator '|' "$owner_db" "
+        SELECT t.id,
+               COALESCE(t.assignee, ''),
+               COALESCE(t.block_kind, ''),
+               COALESCE((SELECT c.author FROM task_comments c
+                          WHERE c.task_id = t.id
+                          ORDER BY c.created_at DESC, c.id DESC LIMIT 1), ''),
+               COALESCE((SELECT MAX(c.created_at) FROM task_comments c
+                          WHERE c.task_id = t.id), t.created_at)
+          FROM tasks t
+         WHERE t.status = 'blocked'
+         ORDER BY 5, t.id;" 2>/dev/null)"; then
+    # A board that will not answer must not silently drop out of a byte-hashed
+    # report: emit a stable marker line so the gap is visible rather than absent.
+    emit "OWNER_COMMENT_SCAN_UNAVAILABLE $owner_board"
+    continue
+  fi
+  while IFS='|' read -r id assignee block_kind last_author comment_ts; do
+    [[ -n "$id" ]] || continue
+    [[ -n "$last_author" ]] || continue
+    case ",${OWNER_AUTHORS}," in
+      *",${last_author},"*) ;;
+      *) continue ;;
+    esac
+    emit "OWNER_COMMENT_UNACTED $owner_board $id ${assignee:-unassigned} block=${block_kind:-none} age=$(age_of "$((NOW - comment_ts))") needs=read-comment-and-decide"
+  done <<<"$owner_rows"
+done
+shopt -u nullglob
+
+# ---------------------------------------------------------------------------
+# Capability hold that names no input supplier (EVERY board)
+# ---------------------------------------------------------------------------
+# The retry breaker parks quota-walled cards with kind=capability, and the same
+# kind is the tempting place to park anything that feels technical. That is how
+# four genuinely owner-sourced gaps -- a missing installed-identity binding, a
+# missing interface description, and a custody release only the source owner
+# could publish -- sat parked as `capability` and were never surfaced.
+#
+# The instruction rule requires every capability hold to name the supplier of
+# its missing input in the block reason:
+#     Input supplier: owner | agent | external-source-owner(<who>) | model/provider
+# So a capability card whose recorded reason carries no `Input supplier:` line is
+# either a quota park that predates the convention or an owner ask parked as
+# technical. Either way the coordinator must look: classify the supplier, and
+# when it is the owner, author a gate instead of leaving it parked. The retry
+# breaker writes `Input supplier: model/provider` into its own reason, so a
+# correctly classified quota park is never reported here.
+#
+# Cross-board for the same reason as the owner-comment detector: these holds sit
+# on nixhomeserver and pcops alike, and the coordinator must be woken whichever
+# board this cron names. Self-clearing on classification: the finding is emitted
+# only while the reason carries no `Input supplier:` line, so adding it, or
+# reclassifying the card away from `capability`, drops the line on the next tick.
+#
+# The line carries no age bucket on purpose. An age that advances would change
+# the byte-hashed output as the bucket rolls over and wake the coordinator again
+# and again on a card it has already been shown. A time-stable line means the
+# monitor wakes it once, and stays quiet until the card is actually classified.
+shopt -s nullglob
+for cap_db in "$HERMES_ROOT"/kanban/boards/*/kanban.db; do
+  [[ -f "$cap_db" ]] || continue
+  cap_board="$(basename "$(dirname "$cap_db")")"
+  case "$cap_board" in
+    _*|.*) continue ;;
+  esac
+  if ! cap_rows="$(sqlite3 -separator '|' "$cap_db" "
+        SELECT t.id,
+               COALESCE(t.assignee, ''),
+               CASE WHEN instr(COALESCE((SELECT e.payload FROM task_events e
+                                           WHERE e.task_id = t.id AND e.kind = 'blocked'
+                                           ORDER BY e.created_at DESC, e.id DESC LIMIT 1), ''),
+                               'Input supplier:') > 0 THEN 1 ELSE 0 END
+          FROM tasks t
+         WHERE t.status = 'blocked'
+           AND COALESCE(t.block_kind, '') = 'capability'
+         ORDER BY t.id;" 2>/dev/null)"; then
+    # A board that will not answer must not drop silently out of a byte-hashed
+    # report: emit a stable marker so the gap is visible rather than absent.
+    emit "CAPABILITY_SCAN_UNAVAILABLE $cap_board"
+    continue
+  fi
+  while IFS='|' read -r id assignee has_supplier; do
+    [[ -n "$id" ]] || continue
+    # A hold that names its supplier is classified; leave it alone.
+    [[ "$has_supplier" == 0 ]] || continue
+    emit "CAPABILITY_OWNER_INPUT $cap_board $id ${assignee:-unassigned} needs=classify-supplier-or-owner-ask"
+  done <<<"$cap_rows"
+done
+shopt -u nullglob
+
+# ---------------------------------------------------------------------------
+# Classification audit (EVERY board)
+# ---------------------------------------------------------------------------
+# Run the periodic classification audit and emit one line per finding.
+# Misclassified blocks route cards to the wrong queue and stall work that
+# could proceed. This detector surfaces them for the coordinator.
+#
+# Findings (the audit's 3-line groups, not raw lines) are capped at
+# CLASSIFICATION_TOP_N with one additional= counter, like the unmerged list:
+# a finding flood must stay triageable inside the coordinator wake's turn
+# budget instead of re-arming the budget-exhaustion retry it would otherwise
+# cause. The audit script itself is unchanged and always runs.
+classification_audit="$HERMES_ROOT/scripts/kanban-classification-audit.py"
+if [[ -f "$classification_audit" ]]; then
+  classification_emitted=0
+  classification_excess=0
+  audit_text="$(python3 "$classification_audit" 2>/dev/null || true)"
+  skipping_finding=false
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    # A finding group starts at the `  [board] task` line; its detail lines
+    # belong to the same finding and follow its fate.
+    if [[ "$line" == "  ["* ]]; then
+      if ((classification_emitted < CLASSIFICATION_TOP_N)); then
+        classification_emitted=$((classification_emitted + 1))
+        skipping_finding=false
+      else
+        classification_excess=$((classification_excess + 1))
+        skipping_finding=true
+      fi
+    fi
+    [[ "$skipping_finding" == true ]] && continue
+    emit "CLASSIFICATION_AUDIT $line"
+  done <<<"$audit_text"
+  ((classification_excess > 0)) && emit "CLASSIFICATION_AUDIT_EXCESS additional=$classification_excess needs=resolve-and-recheck"
+fi
+
+# ---------------------------------------------------------------------------
 # Durability findings
 # ---------------------------------------------------------------------------
 # Worktree branches hold the only copy of their commits until they are pushed.
 # A branch that exists locally and on origin is fine; a branch whose commits
 # exist only in this clone dies with the disk.
 
-repo="${HERMES_REPO:-}"
-if [[ -z "$repo" ]]; then
-  repo="$(python3 - "$HERMES_ROOT/kanban/boards/$HERMES_BOARD/board.json" <<'PY' 2>/dev/null || true
-import json, sys
-try:
-    with open(sys.argv[1]) as fh:
-        print(json.load(fh).get("default_workdir") or "")
-except Exception:
-    print("")
-PY
-)"
-fi
+repo="$(board_repo)"
 
 if [[ -n "$repo" ]] && git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
   # Bounded: this runs unattended on a cron tick, and a hung fetch must not
@@ -441,6 +869,201 @@ if [[ -n "$repo" ]] && git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
     fi
   else
     emit "MASTER_UNTRACKED needs=push-master"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Completed accepted work left unmerged (content, not durability)
+# ---------------------------------------------------------------------------
+# A `done` or `archived` card is the board's own record that the work passed
+# the required review. A card branch under refs/heads/wt whose commits are
+# still not on master is work the review accepted but nothing integrated: it
+# lingers in the worktree and in the durability mirror only, and nothing
+# deploys from either, so the acceptance quietly decays. The durability
+# detectors above already keep that work disk-safe; this one keeps the
+# *merge-back cadence* honest, so accepted work reaches master promptly.
+#
+# Reads only, never merges: the decision stays with the head-coordinator,
+# including the choice to dispose (disposition already consumed elsewhere).
+# Patch-equivalent commits -- applied under another shape by a composition
+# merge -- count as integrated, so a branch whose every commit is a duplicate
+# does not flicker: git marks it '-' and the count drops to zero.
+
+if [[ -n "$repo" ]] && git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
+  # A board whose schema does not track branches has nothing for this detector
+  # to read; skip rather than fail the whole report. Probed with plain sqlite3:
+  # `sql` treats any query failure as fatal, and an old schema is a normal
+  # state, not a report gap.
+  if sqlite3 "$DB" "SELECT branch_name, id FROM tasks LIMIT 0;" >/dev/null 2>&1; then
+  if ! rows="$(sql "
+    SELECT branch_name, MIN(id) FROM tasks
+     WHERE status IN ('done','archived') AND branch_name LIKE 'wt/%'
+     GROUP BY branch_name ORDER BY branch_name;")"; then
+    printf 'BOARD_HEALTH_QUERY_ERROR board=%s db=%s (unmerged scan)\n' "$HERMES_BOARD" "$DB" >&2
+    exit 4
+  fi
+  # The coordinator's merge-back disposition is a comment on the owning card,
+  # so the audit trail and this detector read the same fact: the branch may
+  # stay unmerged, but a recorded disposition stops the finding, exactly as a
+  # merge would. Other authors do not carry the marker.
+  #
+  # The per-item list is capped at UNMERGED_TOP_N (default 6) with one
+  # additional= counter, the same shape as the other bounded detectors. A
+  # backlog cannot fit in the coordinator wake's turn budget when the report
+  # lists all of it: the 2026-10-21/22 loop had every tick re-detect a backlog
+  # its one agent pass could not process, so the wake exhausted its budget,
+  # left a pending retry, and re-burned itself on the next tick. The report
+  # must stay small enough to triage in one wake; the count line keeps the
+  # backlog honest while only the oldest items are named. Progress retires
+  # names in order, so the hash changes exactly when a finding actually moves.
+  disposed="$(sql "
+    SELECT DISTINCT task_id FROM task_comments
+     WHERE author = 'head-coordinator' AND body LIKE 'merge-back disposition:%';")" || disposed=""
+  emitted_unmerged=0
+  excess_unmerged=0
+  while IFS='|' read -r branch task_id; do
+    [[ -n "$branch" ]] || continue
+    case "|$disposed|" in *"|$task_id|"*) continue ;; esac
+    sha="$(git -C "$repo" rev-parse --verify --quiet "$branch" 2>/dev/null)" || continue
+    ahead="$(git -C "$repo" rev-list --count "$sha" --not master 2>/dev/null)"
+    [[ "$ahead" =~ ^[0-9]+$ ]] || { emit "UNMERGED_UNKNOWN $task_id branch=$branch needs=manual-check"; continue; }
+    ((ahead > 0)) || continue
+    unapplied="$(git -C "$repo" cherry master "$sha" 2>/dev/null | grep -c '^+' || true)"
+    [[ "$unapplied" =~ ^[0-9]+$ ]] || { emit "UNMERGED_UNKNOWN $task_id branch=$branch needs=manual-check"; continue; }
+    ((unapplied > 0)) || continue
+    if ((emitted_unmerged < UNMERGED_TOP_N)); then
+      emit "UNMERGED_ACCEPTED_WORK $task_id branch=$branch commits=$unapplied needs=merge-or-dispose"
+      emitted_unmerged=$((emitted_unmerged + 1))
+    else
+      excess_unmerged=$((excess_unmerged + 1))
+    fi
+  done <<<"$rows"
+  ((excess_unmerged > 0)) && emit "UNMERGED_EXCESS additional=$excess_unmerged needs=reduce-backlog"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Durability mirror staleness (EVERY board)
+# ---------------------------------------------------------------------------
+# The durability-sync cron records the epoch of each board's last successful
+# mirror under $HERMES_ROOT/state/durability-sync/<board>.epoch. A mirror that
+# has gone stale -- a cron a hermes upgrade dropped, a workstation-to-server
+# SSH outage, a failing rotation -- leaves the boards workstation-only, and
+# the sync's own failure delivery is local, so nothing wakes anyone. The
+# sync's per-tick failures also self-clear from the job log; this line stays
+# until a mirror actually succeeds again, so the coordinator sees a
+# persistent outage once, and sees it resolved when it clears.
+#
+# No age bucket on the line, for the same reason as the capability detector:
+# an advancing age would re-wake the coordinator at every bucket rollover on
+# a card it has already been shown. The line is time-stable and self-clearing
+# on the next successful mirror.
+shopt -s nullglob
+for mirror_db in "$HERMES_ROOT"/kanban/boards/*/kanban.db; do
+  [[ -f "$mirror_db" ]] || continue
+  mirror_board="$(basename "$(dirname "$mirror_db")")"
+  case "$mirror_board" in
+    _*|.*) continue ;;
+  esac
+  mirror_epoch_file="$HERMES_ROOT/state/durability-sync/$mirror_board.epoch"
+  mirror_epoch=""
+  if [[ -r "$mirror_epoch_file" ]]; then
+    mirror_epoch="$(tr -cd '0-9' <"$mirror_epoch_file")"
+  fi
+  if [[ -z "$mirror_epoch" ]] || ((NOW - mirror_epoch >= MIRROR_STALE_SEC)); then
+    emit "MIRROR_STALE $mirror_board needs=verify-durability-sync-cron"
+  fi
+done
+shopt -u nullglob
+
+# ---------------------------------------------------------------------------
+# Installed-instruction drift (plan item H8)
+# ---------------------------------------------------------------------------
+# Installed prompts that lag tracked source are silent by construction: the
+# running profile keeps reading the old text, the repository keeps the new
+# text, and nothing compares them. Paraphrases have already diverged twice that
+# way, and an installer nobody re-ran looks exactly like an installer that had
+# nothing to do. `install-instruction-policy.py --check` is that comparison and
+# it is read-only (it writes nothing unless the flag is dropped), so board
+# health can run it on every tick and report the result.
+#
+# It runs the *repository* copy from `board_repo`, never an installed copy
+# under $HERMES_ROOT/scripts: the installer resolves its tracked source from
+# its own location and compares it against $HERMES_ROOT, so an installed copy
+# would compare the installed tree with itself and always report clean.
+#
+# The finding is bounded on purpose. The drift list itself names absolute
+# installed paths -- which must not appear in this byte-hashed report -- and it
+# changes whenever any single installed file is applied, so echoing it would
+# wake the coordinator repeatedly on the same drift. One stable line with the
+# number of drifted files is the actionable signal ("the whole fleet" versus
+# "one file"); the coordinator runs the check to see which.
+#
+# Exit codes are load-bearing: 1 with drift lines is drift, and anything else
+# (a broken tracked source, an unreadable installed tree, a missing helper or
+# interpreter) is the check failing to run and is reported separately rather
+# than as drift. The count is also required evidence: the installer returns 1
+# only when it printed at least one drift line, so a bare 1 with no parsed line
+# means the run died before it could report -- a Python traceback exits 1 too,
+# and calling that "drift files=0" would send the coordinator after the wrong
+# thing. A missing repository or installer is not a board condition -- boards
+# differ in whether they carry this checkout -- so it reports nothing.
+instruction_check="$repo/scripts/hermes/install-instruction-policy.py"
+if [[ -n "$repo" && -f "$instruction_check" ]]; then
+  # Bounded: this runs unattended on a cron tick, and the installer reads and
+  # compares the whole installed tree. A hung run must not hold the report open.
+  drift_rc=0
+  drift_out="$(timeout 60 python3 -B "$instruction_check" --check 2>/dev/null)" || drift_rc=$?
+  if ((drift_rc != 0)); then
+    drift_files="$(grep -c '^drift: ' <<<"$drift_out" || true)"
+    [[ -n "$drift_files" ]] || drift_files=0
+    if [[ "$drift_rc" == 1 && "$drift_files" =~ ^[1-9][0-9]*$ ]]; then
+      emit "INSTRUCTION_DRIFT files=$drift_files needs=apply-install-instruction-policy"
+    else
+      emit "INSTRUCTION_DRIFT_UNCHECKED exit=$drift_rc needs=manual-check"
+    fi
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Installed cron-script drift
+# ---------------------------------------------------------------------------
+#
+# INSTRUCTION_DRIFT above covers the instruction installers' outputs, but the
+# cron-owned scripts have a second installation path with the same silent-drift
+# failure mode: the aging escalator runs ~/.hermes/scripts/kanban-aging-escalation.py,
+# refreshed only by a manual `--install-files`, and the owner-alert/one-off
+# self-installers behave the same way. Stale wording there directly changes
+# dispatch behavior, and nothing compares it. This check hashes every known
+# cron-owned installed copy against the checkout's tracked source.
+#
+# The report is bounded and stable like the rest: one counter, no absolute
+# paths. `files=` counts installed copies that exist but differ, so an
+# unchanged finding does not wake the coordinator repeatedly; adding, editing
+# or deleting a copy changes the count and does. A *missing* installed script
+# is not counted here: the cron engine surfaces that itself on every tick (the
+# failure-deliver path), and a fresh hermes root legitimately lacks parts of
+# this list until their own installers run -- an uninstalled-tree clock must
+# not read as drift. And "empty" is a valid state -- a checkout-less board
+# reports nothing, like the instruction check.
+cron_script_drift_names=(kanban-aging-escalation.py kanban-owner-alerts.py
+                         kanban-durability-sync.sh kanban-retry-breaker.sh
+                         usage-pace.py)
+if [[ -n "$repo" ]]; then
+  script_drift_files=0
+  for drift_name in "${cron_script_drift_names[@]}"; do
+    tracked="$repo/scripts/hermes/$drift_name"
+    [[ -f "$tracked" ]] || continue
+    installed_hit=false
+    for installed in "$HERMES_ROOT/scripts/$drift_name" \
+                     "$HERMES_ROOT"/profiles/*/scripts/"$drift_name"; do
+      [[ -f "$installed" ]] || continue
+      cmp -s "$tracked" "$installed" || installed_hit=true
+    done
+    [[ "$installed_hit" == true ]] && script_drift_files=$((script_drift_files + 1))
+  done
+  if ((script_drift_files > 0)); then
+    emit "SCRIPT_DRIFT files=$script_drift_files needs=apply-owning-installer"
   fi
 fi
 

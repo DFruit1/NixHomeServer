@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# Offline transport double for the cohesive-capture suite.
+#
+# It never touches the network and never runs a real ssh or curl. It replays a
+# synthetic frame that mirrors the frozen remote script in
+# readiness-evidence/cohesive/cohesive-lib.sh: the frame header, then the
+# already server-side-narrowed scalars, then every pipeline exit. The suite
+# separately asserts that the real remote command it receives carries that same
+# header, the frozen endpoint and every approved leaf path.
+#
+# Environment:
+#   COHESIVE_STUB_LOG        file to append the received argv to (required)
+#   COHESIVE_STUB_COUNT      file incremented per invocation (required)
+#   COHESIVE_STUB_FRAME      file whose lines are the narrowed payload
+#   COHESIVE_STUB_SSH_EXIT   ssh-level exit; nonzero emits no frame
+#   COHESIVE_STUB_BANNER     line emitted before the frame header
+#   COHESIVE_STUB_STDERR     line emitted on stderr
+#   COHESIVE_STUB_SLEEP      seconds to sleep before emitting (deadline tests)
+#   COHESIVE_STUB_OMIT_HEADER=1  suppress the frame header
+#   COHESIVE_STUB_EXTRA      extra literal line emitted after the header
+
+set -u
+
+log_file="${COHESIVE_STUB_LOG:?COHESIVE_STUB_LOG is required}"
+count_file="${COHESIVE_STUB_COUNT:?COHESIVE_STUB_COUNT is required}"
+
+printf 'argc=%s\n' "$#" >>"$log_file"
+for arg in "$@"; do
+  printf 'arg=%s\n' "$arg" >>"$log_file"
+done
+printf 'x' >>"$count_file"
+
+if [[ -n "${COHESIVE_STUB_SLEEP:-}" ]]; then
+  sleep "$COHESIVE_STUB_SLEEP"
+fi
+
+if [[ -n "${COHESIVE_STUB_STDERR:-}" ]]; then
+  printf '%s\n' "$COHESIVE_STUB_STDERR" >&2
+fi
+
+if [[ -n "${COHESIVE_STUB_SSH_EXIT:-}" ]]; then
+  exit "$COHESIVE_STUB_SSH_EXIT"
+fi
+
+if [[ -n "${COHESIVE_STUB_BANNER:-}" ]]; then
+  printf '%s\n' "$COHESIVE_STUB_BANNER"
+fi
+
+if [[ "${COHESIVE_STUB_OMIT_HEADER:-0}" != '1' ]]; then
+  printf '%s\n' 'LWRCOHESIVE-V1'
+fi
+
+if [[ -n "${COHESIVE_STUB_EXTRA:-}" ]]; then
+  printf '%s\n' "$COHESIVE_STUB_EXTRA"
+fi
+
+if [[ -n "${COHESIVE_STUB_FRAME:-}" ]]; then
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    printf '%s\n' "$line"
+  done <"$COHESIVE_STUB_FRAME"
+fi
+
+exit 0

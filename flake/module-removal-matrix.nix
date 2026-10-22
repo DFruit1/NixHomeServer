@@ -195,9 +195,9 @@ let
         removedGuardedServicesAbsent = lib.all
           (name: !(builtins.elem name guardedServices))
           (moduleGuardedServices.${removed} or [ ]);
-        removedBackupExclusionsAbsent =
+        removedBackupExclusionsValid =
           (removed != "bonsai"
-          || !(builtins.elem "var/lib/bonsai/models" host.config.repo.backups.rebuildableSnapshotPaths))
+          || builtins.elem "var/lib/bonsai/models" host.config.repo.backups.rebuildableSnapshotPaths)
           && (removed != "attic"
           || !(builtins.elem "var/lib/atticd/storage" host.config.repo.backups.rebuildableSnapshotPaths));
       in
@@ -215,7 +215,7 @@ let
           guardedServices
           guardedServicesValid
           removedGuardedServicesAbsent
-          removedBackupExclusionsAbsent
+          removedBackupExclusionsValid
           ;
         selected = selectedApps;
         caddyHostCount = builtins.length (builtins.attrNames host.config.services.caddy.virtualHosts);
@@ -226,7 +226,7 @@ let
           && removedOwnedSecretsAbsent
           && guardedServicesValid
           && removedGuardedServicesAbsent
-          && removedBackupExclusionsAbsent
+          && removedBackupExclusionsValid
           && builtins.length (builtins.attrNames host.config.services.caddy.virtualHosts) >= 3
           && builtins.length (builtins.attrNames host.config.services.kanidm.provision.systems.oauth2) >= 3
           && mediaAutomationValid

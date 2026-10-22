@@ -4,6 +4,10 @@
       description = "Langfuse infrastructure, bootstrap owner, and Hermes project credentials.";
       bytes = 32;
     };
+    langfuseClientSecret = {
+      description = "OIDC client secret for Langfuse sign-in through Kanidm.";
+      bytes = 32;
+    };
     atticServerEnv = {
       description = "Systemd environment containing Attic's JWT signing secret.";
       bytes = 64;

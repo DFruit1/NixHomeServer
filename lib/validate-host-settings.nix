@@ -95,6 +95,22 @@ let
       message = "system.localDiskCleanup.journalVacuumTime must look like 30s, 30m, 24h, or 7d";
     }
     {
+      valid = builtins.isBool (settings.tempCleanup.enable or true);
+      message = "system.tempCleanup.enable must be a boolean";
+    }
+    {
+      valid = builtins.isInt (settings.tempCleanup.maxAgeDays or 14)
+        && (settings.tempCleanup.maxAgeDays or 14) >= 1
+        && (settings.tempCleanup.maxAgeDays or 14) <= 3650;
+      message = "system.tempCleanup.maxAgeDays must be an integer from 1 through 3650";
+    }
+    {
+      valid = builtins.isInt (settings.tempCleanup.scratchAgeDays or 30)
+        && (settings.tempCleanup.scratchAgeDays or 30) >= 1
+        && (settings.tempCleanup.scratchAgeDays or 30) <= 3650;
+      message = "system.tempCleanup.scratchAgeDays must be an integer from 1 through 3650";
+    }
+    {
       valid = builtins.elem settings.storageProfile [ "zfs-mirror" "single-disk-ext4" ];
       message = "storage.profile must be zfs-mirror or single-disk-ext4";
     }

@@ -460,8 +460,8 @@ in
               && status_class="$(${pkgs.jq}/bin/jq -er '.failureClass | select(type == "string")' ${lib.escapeShellArg preflightResultFile})" \
               && status_reason="$(${pkgs.jq}/bin/jq -er '.reason | select(type == "string")' ${lib.escapeShellArg preflightResultFile})" \
               && status_message="$(${pkgs.jq}/bin/jq -er '.message | select(type == "string")' ${lib.escapeShellArg preflightResultFile})" \
-              && status_retryable="$(${pkgs.jq}/bin/jq -er '.retryable | select(type == "boolean")' ${lib.escapeShellArg preflightResultFile})" \
-              && status_operator_action="$(${pkgs.jq}/bin/jq -er '.operatorActionRequired | select(type == "boolean")' ${lib.escapeShellArg preflightResultFile})"; then
+              && status_retryable="$(${pkgs.jq}/bin/jq -er '.retryable | if type == "boolean" then tostring else error("retryable must be a boolean") end' ${lib.escapeShellArg preflightResultFile})" \
+              && status_operator_action="$(${pkgs.jq}/bin/jq -er '.operatorActionRequired | if type == "boolean" then tostring else error("operatorActionRequired must be a boolean") end' ${lib.escapeShellArg preflightResultFile})"; then
               case "$preflight_exit" in
                 75) status_state=retrying ;;
                 76) status_state=blocked ;;

@@ -1,8 +1,8 @@
-{ config, lib, pkgs, ... }:
+{ config, lib, pkgs, vars, ... }:
 
 let
   cfg = config.repo.bonsai;
-  modelDir = "${cfg.stateDir}/models";
+  modelDir = "${vars.dataRoot}/bonsai/models";
   modelFile = "${modelDir}/${cfg.model.fileName}";
   projectorFile = "${modelDir}/${cfg.model.projectorFileName}";
   resolveUrl = fileName:
@@ -110,7 +110,7 @@ in
       type = lib.types.str;
       default = "/var/lib/bonsai";
       readOnly = true;
-      description = "Persistent Bonsai state and downloaded model directory.";
+      description = "Persistent Bonsai metadata; model artifacts live on the data pool.";
     };
 
     model = {
@@ -202,10 +202,36 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    repo.storage.dataPool.guardedServices = [
+      "bonsai-storage-layout"
+      "bonsai-model-prepare"
+      "bonsai-llama"
+    ];
+
+    systemd.services.bonsai-storage-layout = {
+      description = "Provision Bonsai model storage on the data pool";
+      requires = [ "bonsai-model-archive.service" ];
+      after = [ "bonsai-model-archive.service" ];
+      before = [ "bonsai-model-prepare.service" ];
+      unitConfig.RequiresMountsFor = [ vars.dataRoot ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+      };
+      script = ''
+        set -euo pipefail
+        ${pkgs.coreutils}/bin/install -d -m 0750 -o bonsai -g bonsai ${lib.escapeShellArg "${vars.dataRoot}/bonsai"} ${lib.escapeShellArg modelDir}
+        # The archive preserves numeric ownership while Bonsai is disabled;
+        # restore access if its dynamically allocated UID changed on re-enable.
+        ${pkgs.coreutils}/bin/chown -R bonsai:bonsai ${lib.escapeShellArg modelDir}
+      '';
+    };
+
     systemd.services.bonsai-model-prepare = {
       description = "Download and verify Ternary Bonsai 27B model artifacts";
       wants = [ "network-online.target" ];
-      after = [ "network-online.target" ];
+      requires = [ "bonsai-storage-layout.service" ];
+      after = [ "network-online.target" "bonsai-storage-layout.service" ];
       unitConfig = {
         StartLimitIntervalSec = "1h";
         StartLimitBurst = 4;
@@ -241,7 +267,7 @@ in
           "AF_UNIX"
         ];
         SystemCallArchitectures = "native";
-        ReadWritePaths = [ cfg.stateDir ];
+        ReadWritePaths = [ cfg.stateDir modelDir ];
       };
     };
   };

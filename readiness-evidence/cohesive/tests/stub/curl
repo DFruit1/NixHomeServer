@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# Offline double for curl, used only by the frozen-remote-script section of the
+# cohesive suite. It never opens a socket: it prints a configured fixture body
+# for the requested URL, or a configured HTTP status code for the
+# `-o /dev/null -w '%{http_code}'` health form.
+#
+# Environment:
+#   COHESIVE_STUB_CURL_LOG          file to append the received argv to (required)
+#   COHESIVE_STUB_CURL_COUNT        file incremented per invocation (required)
+#   COHESIVE_STUB_CURL_PROPS        body printed for a /props URL
+#   COHESIVE_STUB_CURL_METRICS      body printed for a /metrics URL
+#   COHESIVE_STUB_CURL_HEALTH_CODE  http code for the health form (default 200)
+#   COHESIVE_STUB_CURL_EXIT         exit code (default 0; nonzero prints no body)
+
+set -u
+
+log_file="${COHESIVE_STUB_CURL_LOG:?COHESIVE_STUB_CURL_LOG is required}"
+count_file="${COHESIVE_STUB_CURL_COUNT:?COHESIVE_STUB_CURL_COUNT is required}"
+
+printf 'argc=%s\n' "$#" >>"$log_file"
+for arg in "$@"; do
+  printf 'arg=%s\n' "$arg" >>"$log_file"
+done
+printf 'x' >>"$count_file"
+
+url=''
+code_form=0
+for arg in "$@"; do
+  case "$arg" in
+    http://* | https://*) url="$arg" ;;
+  esac
+  if [[ "$arg" == *'{http_code}'* ]]; then
+    code_form=1
+  fi
+done
+
+exit_code="${COHESIVE_STUB_CURL_EXIT:-0}"
+
+if ((code_form)); then
+  if ((exit_code != 0)); then
+    printf '000'
+  else
+    printf '%s' "${COHESIVE_STUB_CURL_HEALTH_CODE:-200}"
+  fi
+  exit "$exit_code"
+fi
+
+if ((exit_code != 0)); then
+  exit "$exit_code"
+fi
+
+case "$url" in
+  */props)
+    [[ -n "${COHESIVE_STUB_CURL_PROPS:-}" ]] && cat -- "$COHESIVE_STUB_CURL_PROPS"
+    ;;
+  */metrics)
+    [[ -n "${COHESIVE_STUB_CURL_METRICS:-}" ]] && cat -- "$COHESIVE_STUB_CURL_METRICS"
+    ;;
+esac
+
+exit 0

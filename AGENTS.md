@@ -8,7 +8,21 @@ This repository defines a reproducible NixOS home-server focused on:
 * Self-hosted apps (Immich, Paperless, Audiobookshelf, Filestash)
 * Edge routing (Caddy, Cloudflared, Netbird, Unbound)
 
----
+## Task Skills
+
+Load the matching skill before the relevant work; prefer the version in the
+assigned checkout. Skills supply procedures within existing role permissions.
+
+| Work | Skill |
+| --- | --- |
+| Validation, builds, deployment or recovery | [nixhomeserver-safe-change](.agents/skills/nixhomeserver-safe-change/SKILL.md) |
+| Application module boundaries, integrations or removal | [nixhomeserver-module-change](.agents/skills/nixhomeserver-module-change/SKILL.md) |
+| Long work that may outlast a server shutdown | [nixhomeserver-shutdown-guard](.agents/skills/nixhomeserver-shutdown-guard/SKILL.md) |
+| Rendered frontend implementation or review | [frontend-design](.agents/skills/frontend-design/SKILL.md) |
+
+Hermes agents use the installed `systematic-debugging` skill for failures and
+`~/.hermes/scripts/hermes-skill-routing.md` for role-specific selection. Keep
+temporary task receipts on their cards/jobs, not in standing instructions.
 
 ## Implementation Language
 
@@ -21,39 +35,74 @@ This repository defines a reproducible NixOS home-server focused on:
 
 ---
 
+## Temp Files and Scratch Space
+
+* Keep all temporary files in one task-named `mktemp -d` directory under `/tmp`,
+  with cleanup on exit. Use `.tmp/<task>/` only when
+  files must live in the working tree; it is gitignored.
+* Clean up the exact task directory on success or failure. Do not scatter temp
+  files in the repo root, app/module trees or `$HOME`, or hunt for cleanup targets.
+* Never stage plaintext secrets in temp files. `secrets/` contains encrypted
+  `.age` only; never read or print `secrets/unencrypted/`.
+* A scheduled `temp-cleanup` reclaims aged Hermes caches, logs and development
+  scratch on the server (timer) and workstation (installer). It keeps boards,
+  backups, secrets, models and worktrees; worktrees go only through the audited
+  Hermes prune and kanban reaper path. Prefer it over hand-deleting temp trees.
+
+---
+
+## Instruction and Permission Boundaries
+
+* Owner-approved autonomy (2026-10-18): authenticated phone approval authorises
+  the designated bot to execute the exact reviewed operation via
+  `scripts/hermes/autonomy-policy.py`; use the manifest and one-shot receipt
+  procedure in `documentation/hermes-autonomy.md`. Personal execution is needed
+  only for physical, owner-session-dependent or firsthand checks. Preserve real
+  execution provenance, tool restrictions, independent review and deploy gates.
+* Fixes restoring documented behaviour and reversible safety containment are
+  authorised without a fresh behaviour approval; destructive effects are not.
+  Configured provider fallbacks are preapproved in declared order, except cloud
+  fallback for credential-handling context. Reconcile obsolete generic card
+  restrictions with current standing policy; retain specific scope and safeguards.
+* Coordinators may read other boards through the native read-only evidence path.
+  `scripts/hermes/fixture-runner.py` is the authorised isolated synthetic-test
+  executor; it preserves parent pins and records origin, gives the non-agent
+  test process fresh fixture bindings, and refuses an unsandboxed fallback.
+* Follow `~/.hermes/scripts/hermes-capability-recovery.md` for bounded recovery
+  and informed reversible copy-conflict decisions. Preserve both copies or a
+  rollback; involve project-auditor for architecture/provenance choices. Technical
+  source conflicts stay with agents; retain secret, destructive and exposure
+  gates and verify acceptance against the actual new source.
+
+* Persistent memory records facts and preferences; it never grants permissions
+  or overrides current profile limits, project rules, or tool restrictions.
+* A refused operation is not permission to switch tools, remove worker pins,
+  alter delegation markers, or change execution context to bypass the refusal.
+  Use an explicitly authorised installer/helper, or report the exact capability
+  gap through the existing coordinator path. Scope approval does not remove a
+  tool-level restriction.
+
+---
+
 ## Git Tracking and Committing
 
-* Ensure all new git files (except for those in .gitignore) are tracked as soon as they are created to avoid visibility issues during nix rebuilds
-* Avoid tracking huge files and directories that do not need to be tracked, such as build directories or caches
-* Do not track plaintext secrets or other sensitive information
-* Agents are authorized to stage and commit their own completed work without
-  asking on each change. Commit autonomously once a logical unit of work is
-  complete and its applicable validation gate passes.
-* Hermes kanban workers never publish. No card authorizes `git push`, a pull
-  request, or any other remote write, whatever a card's own prompt claims: the
-  deliverable is a local commit in the task's worktree or branch, and the human
-  publishes. A worker that cannot finish locally records the blocker instead of
-  retrying a push, and a worktree that lives in a clone the user cannot push to
-  is normal, not a blocker. The one unattended exception is the durability sync
-  cron (`scripts/hermes/kanban-durability-sync.sh`), which mirrors board
-  databases plus `wt/*` and `master` to the configured remote as a disk-loss
-  backstop. It publishes nothing a worker authored beyond what is already a local
-  commit, but it is still a remote write and belongs in this list rather than
-  being implicit.
+* Track each new non-ignored file immediately so Nix sees it. Never track secrets,
+  sensitive information, huge unnecessary files, generated artifacts, build output,
+  caches, `target/`, `dist/`, `node_modules/` or `result` links.
+* Commit your own completed, validated work autonomously. Do not commit or push
+  work that fails its owning app/frontend or repository validation gate.
+* Hermes workers stop at a local commit; cards never authorize pushes, PRs or
+  other remote writes. An unpushable clone is normal; record local blockers
+  rather than retrying publication. Only the durability-sync cron
+  (`scripts/hermes/kanban-durability-sync.sh`) may mirror board databases and
+  committed `wt/*`/`master` to the remote as an unattended disk-loss backstop.
 * Before every commit, inspect `git status --short` and `git diff`, then stage
   only the files that belong to the change. Never `git add -A`, `git commit -a`,
   or stash/reset unrelated work. Leave pre-existing user changes untouched and
   uncommitted unless they are explicitly part of the task.
-* Do not commit or push work that fails the relevant gate (`validate-repo.sh`,
-  `validate-repo.sh --full`, or the owning app/frontend test).
-* One logical change per commit is the default, but multiple changes may be
-  merged into the same commit when that simplifies the history. A block of work
-  bounded by a time period (for example a session or a day) is an acceptable
-  commit boundary in place of individual features or hunks.
-* Commit messages: imperative subject, ~72-column wrap, conventional prefix
-  where it fits (`feat:`, `fix:`, `docs:`, `test:`, `refactor:`, `chore:`) or a
-  domain prefix (`opencloud:`, `media-manager:`, `kanidm:`). Add a body when the
-  reason is not obvious from the subject.
+* Prefer one logical change per commit; a coherent session/day is also an
+  acceptable boundary. Use an imperative conventional or domain-prefixed subject,
+  ~72-column wrapping, and a body when the reason is not obvious. No empty commits.
 * Prefer committing validated work before starting a guarded deploy so the
   helper's recorded tested source hash corresponds to a commit.
 * Interactive agents push to the configured upstream after committing. If the
@@ -62,36 +111,38 @@ This repository defines a reproducible NixOS home-server focused on:
   Hermes kanban workers, which stop at the local commit.
 * Never amend, rebase, force-push, skip hooks, or rewrite published history
   unless the user explicitly asks. Never force-push a shared branch.
-* Do not create empty commits, and do not commit generated artifacts, caches,
-  `target/`, `dist/`, `node_modules/`, or `result` links.
 
 ---
 
-## Rebuild Command
+## Validation, Builds and Deployment
 
-* Prefer the guarded deploy helper for rebuild. 
-* Use the guarded helper's default allocation so the dashboard-selected build
-  mode applies: run `nix run .#deploy -- --action test|switch` (or
-  `scripts/deploy.sh` with the same arguments) without `--build-mode`,
-  `--build-locally`, or `--build-host`. Do not run raw `nixos-rebuild` for an
-  ordinary rebuild; it bypasses the dashboard and silently falls back to the
-  `vars.nix` default.
-* Rebuilds including nix drv and rust build artifacts should be done on the remote server when possible.
-* The deployed bootstrap sudo password is stored as the root-only agenix
-secret `serverBootstrapSudoPassword`, which materializes at
-`/run/agenix/serverBootstrapSudoPassword` on the server. If an interactive sudo
-prompt is unavoidable, refer to that secret rather than relying on memory.
+Load `nixhomeserver-safe-change` for gate selection, guarded deployment and
+recovery. Use its existing remote evaluation/build/run helpers; allocation and
+measurement details live in [Compute Offload](documentation/operations.md#compute-offload-workstation-and-server).
+
+* Ordinary rebuilds use `nix run .#deploy` with the dashboard's default allocation;
+  never raw `nixos-rebuild` or build-mode/build-host overrides.
+* Changing `buildMode`, `max-jobs`, the `repo-policy` sandbox exclusion or
+  credential placement requires its own explicit owner decision.
+* Editing or validating does not authorize live activation. Preserve the deploy
+  gate below, and commit validated source before deploying where possible.
+* If deployed-server sudo interaction is unavoidable, use the root-only agenix
+  `serverBootstrapSudoPassword` at `/run/agenix/serverBootstrapSudoPassword`.
+  Never display it or rely on a remembered password.
 
 ---
 
 ## Android Releases
 
-* After validating a release build of any Android APK, publish it to the private
-  F-Droid repository and its IPFS mirror. Use the app's `pnpm release:android`
-  command, which builds, signs, publishes, and verifies both indexes. Use
-  `--build-only` only for intermediate validation builds; it does not complete
-  a release. Do not leave a completed release APK unpublished or ask whether to
-  publish it.
+* The external interactive release operator (an authorized interactive agent or
+  the human owner) completes Android releases with the app's `pnpm release:android`
+  command: build, sign, publish to private F-Droid and IPFS, then verify both
+  indexes. Existing authorization for that release includes publication; do not
+  ask again. Hermes workers cannot publish: use `--build-only` for authorized
+  intermediate validation, then hand off the exact revision and results through
+  head-coordinator to the release operator. The coordinator routes this handoff;
+  its NixOS deploy authority does not authorize Android publication. A validated
+  build is not a completed release, and must not be reported as one.
 * Keep the Android version code higher than the published version and sign with
   the existing app key so phones can update the installed app.
 
@@ -112,218 +163,154 @@ prompt is unavoidable, refer to that secret rather than relying on memory.
 
 ## Phone Wi-Fi Access Troubleshooting
 
-Private application hosts such as Photos and Videos are served through the
-LAN/NetBird DNS and are not public Cloudflare routes. If a phone can reach an
-application over NetBird but a host that previously worked stops responding on
-home Wi-Fi, first suspect the phone's resolver or VPN state rather than the
-NixOS service. Toggle Wi-Fi off and on; if needed, connect NetBird, confirm the
-application works, disconnect NetBird, and retry. This can force the phone to
-reinitialize its VPN/DNS state and restore the normal Wi-Fi resolver.
-
-If the reset helps, check that the phone's Wi-Fi DNS is the home router or the
-server's LAN DNS, and that the phone is not on a guest or client-isolated SSID.
-Do not publish a private application hostname or alter the Cloudflare tunnel as
-a workaround without first confirming the DNS and LAN path.
+Private hosts such as Photos and Videos use LAN/NetBird DNS. Confirm the phone's
+resolver/VPN state and LAN path before changing services or exposure. Follow
+[the phone Wi-Fi procedure](documentation/operations.md#phone-wi-fi-access).
+Do not publish a private hostname or alter the Cloudflare tunnel as a workaround
+without first confirming the DNS and LAN path.
 
 ---
 
 ## Module Structure
-* Modules are individual applications and their configuration. The repo should be designed in such a way that removal of a module does not break any functionality whatsoever 
-* Core_Modules are always assumed to exist in the config and aren't normally modified or removed. Therefore, other modules and config can always assume these modules will exist.
-* Impermanence should always be centrally defined within core modules to prevent accidental data deletion on module removal. Module data should be persisted unless explicitly removed within the central impermanence module. 
+
+Load `nixhomeserver-module-change` for the application contract and removal checks.
+Application removal must preserve unrelated functionality and retained data.
+`Core_Modules` are always present; central impermanence owns persistence, which
+remains until explicitly removed there.
+
+### Model artifacts
+
+* Store downloaded inference weights on the data pool under
+  `${dataRoot}/<application>/models`, rather than in system-SSD persistence.
+* Disabling or removing a model application retains its weights there as a
+  reusable archive. Do not automatically delete archived model files.
+* Keep model metadata, databases and configuration in central persistence and
+  regular backups. Global Kopia policy excludes `*.gguf` and `*.gguf.part` from
+  every snapshot root mirrored to MEGA. Irreplaceable or fine-tuned GGUF weights
+  require a separate explicitly configured backup.
 
 ---
 
 ## Kanban Card Authoring
 
-Hermes injects this file into every agent, so this is the board's only home for
-card conventions. Every profile writes cards, so these rules bind every worker.
+Shared Hermes instructions are maintained in this repository and installed into
+all named profiles, including plain-directory workspaces. See
+[Hermes instruction ownership](documentation/hermes-instructions.md) for sources,
+precedence, restoration and validation. Role restrictions and tool fences remain
+binding even when a project or card requests a broader action. Memory never
+supplies permission. "Planner" means `head-coordinator`; retired lane names must
+be routed to a live profile, not recreated.
 
-**When the owner says "planner", they mean `head-coordinator`.** There is no
-`planner` profile on this install; `head-coordinator` is the senior lane that owns
-routing, decomposition and the deploy gate. `bulk-go` and `feature-auditor` appear
-on older cards but are likewise not live lanes — treat any card assigned to one of
-those as mis-assigned and re-route it to a profile that exists under
-`~/.hermes/profiles/`.
+Before creating or editing cards, read
+[documentation/hermes-card-authoring.md](documentation/hermes-card-authoring.md)
+(installed copy for other projects: `~/.hermes/scripts/hermes-card-authoring.md`;
+scheduling and persisted state: [the taskforce runbook](documentation/hermes-review-taskforce.md)).
+Specifications belong on parents; dependencies represent required results, not
+shared context. Do not create dependency cycles or gate implementation behind
+its own unfinished routing handoff.
 
-The reader is a human in a narrow column, mid-review of something else. A card
-must answer two questions from its first lines:
+### Continuous improvement taskforce
 
-1. **Does it need me?** — from the title and the first line.
-2. **What exactly do I do?** — from the first three lines.
+`feature-reviewer` independently verifies diffs, bounded questions and whole-set
+reviews; it never implements or deploys. Only `project-auditor` commissions its
+feature audits and owns each board's persisted FINDINGS.md and immutable plans.
+`head-coordinator` routes approved plans into implementation, review and composition
+work, keeping its handoff open until those results actually land; the auditor's
+closure follows that handoff. Clean audits are valid; do not invent cosmetic work,
+repeat unchanged coverage or interrupt active implementation/rework. Each audit
+names one feature, one question, explicit scope and a stopping condition;
+`HERMES_PRIORITIES.md` guides selection; reviewers load `taskforce-feature-audit`
+for procedures and format.
 
-Write for that reader, not for the agent who executes the card.
+The scheduler can leave the head-coordinator a low-priority self-improvement
+sweep card for one whole-system improvement. The coordinator routes a small
+classify-clean fix to implementers with independent feature-reviewer check, or
+sends investigation/gated work to project-auditor; it never implements. It
+records each sweep outcome with `record-sweep`; consecutive no-candidate sweeps
+pause scheduling until FINDINGS.md changes. Sweep interval and backoff are
+operator-owned (`configure --sweep-interval-hours --sweep-suppress-streak`).
 
-### First line
-
-| The card | First line |
-|---|---|
-| needs the owner to decide (a gate) | `ASK: <the decision, as a choice>` |
-| is work an agent executes | `Goal: <outcome in one line, <90 chars>` |
-| asks an agent one question | `Goal: <the question>` |
-
-**Title** — imperative, under 60 characters, names the outcome. It is the card's
-label in every column, so make it distinguishable at a glance:
-`Fix: expire orphaned deploy archives in a private staging dir`, not
-`Address M6 from audit t_d05010f1`.
-
-### Work body
-
-**At most 15 lines and 1000 characters.** Over budget means split the card with
-`parents=`, never compress prose to fit. If the `Goal:` needs "and", it is two
-cards. Slots, always in this order:
-
-```
-Goal: <outcome in one line, <90 chars>
-Change: <file:line> — <what changes>
-Verify: <exact command> — <expected exit code>
-Constraints:
-- <one per line, <90 chars>
-Notes:  (optional — drop rather than pad)
-- <a supporting fact, never reasoning or a second ask>
-```
-
-### Gate body
-
-A gate asks the owner to authorise something, so the ask is the first thing on
-the card. Always this shape:
-
-```
-ASK: <the one decision, as a choice>
-  A) <option> — <consequence in a few words>
-  B) <option> — <consequence in a few words>
-NEEDED FROM YOU: <approve / choose / confirm>
-IF UNANSWERED: <what stays blocked>
-Context: <one or two sentences, file:line>
-Must not change: <the guardrail>
-```
-
-The owner must be able to answer from the first three lines. Evidence goes below
-the ask, never above it and never inside the question.
-
-### Hard limits
-
-* **One idea per line.** "Do A, and B, but never C" is three lines, not one
-  200-character sentence.
-* **Under 90 characters per line**, or it runs off the narrow detail pane.
-* **Code and figures get their own line.** A path, hash, count, mode, or command
-  never sits inside a sentence.
-* **Say it once.** A constraint restated in prose and in `Constraints:` means the
-  prose is deletable. A specification path belongs on the parent card; a child
-  names its parent instead of repeating the path on every card in the graph.
-
-### Never in a body
-
-* Provenance — `Decision t_258bbbce from audit t_d05010f1:` says nothing the
-  `blocked by` field does not already show.
-* The audit's reasoning — it lives in the audit report. One clause, then stop.
-* Call-site dumps — name the file and say how many, not `:324, :327, :491, :533…`.
-* Commit-hash lists or dependency prose — `git log` knows the hashes, and the
-  board renders parents and `blocked by` on its own.
-* Rules already in this file — the commit gate, local-only publication, the test
-  tiers, and workspace discipline are injected into every agent anyway.
-* A restated acceptance checklist. `Verify:` plus at most four `Constraints:`
-  lines are the whole definition of done.
-
-### Card shape per lane
-
-| Lane | Shape |
-|---|---|
-| `head-coordinator` | Work body. An audit card is the **question** + evidence, never a proposed solution. A plan card: `Goal:` is the plan's outcome, its absolute path in `Notes:`. A decision card: the verdict first, routing rules below. |
-| `feature-reviewer` | One question: the slice and the single thing to answer. No solution, no fix plan. |
-| `project-auditor` | Diff review: verdict in `Goal:`, commits in `Notes:`. `Change:` names a revision, range or `file:line` — never "the revision the parent reported". Question card: `Goal:` is the question, `Notes:` the evidence and what it changes. |
-| `standard-implementer`, `local-implementer` | One-line `Goal:` plus the single acceptance criterion. The parent card holds the context. |
-| `principal-consultant` | Never assign. Its handoff goes **to** `head-coordinator` with the plan attached; `Change:` names the plan path, never re-derives it. |
-| any lane, gate | The gate body above. |
-
-### Delegating implementation cards
-
-Concurrency caps are not a throughput lever. `max_in_progress_per_profile` bounds
-how many workers a lane may hold at once; it does not make dependent cards
-independent. Board peaks run at one or two workers, so the host-wide cap is a
-memory backstop, not a queue to fill.
-
-Before cutting implementer cards, decide serial or parallel per slice:
-
-* **Chain** when two slices touch the same crate, module or test file, or when
-  the second needs the first's type, option or commit to exist. Each child bases
-  on its parent's commit and says so.
-* **Fan out** when slices own disjoint files. Make them siblings under one
-  parent rather than a chain, and state each card's file ownership so a parallel
-  worker stays out of its sibling's way.
-* **Compose last.** A card that merges parallel branches is the one place the
-  conflicts surface; it names the branches and runs the full gate.
-
-A chain of cards that each touch one app is the right shape, not a defect. Do
-not serialise independent work to look tidy, and do not parallelise work that
-shares a file to look busy.
+Apply [the implementation approval policy](scripts/hermes/taskforce/approval-policy.md)
+before releasing gated work. Tiered autonomy (owner decision 2026-10-18):
+architecture, stack and frontend changes are approved autonomously by
+`head-coordinator` under the delegated conditions — recorded immutable plan
+with rollback, bounded blast radius, independent verifier evidence and a
+FINDINGS.md decision record. Exact owner approval remains required for
+irreversible or destructive data operations, secret/credential changes,
+public exposure and routing, priority trades, and deliberate unrequested product/workflow
+changes. Existing exact-scope approval remains valid; urgency and
+path-classifier output never substitute for it. Prepare the concrete plan
+before asking.
 
 ### Deploy gate
 
-A deploy applies a whole change set, so it is reviewed as a whole and carried
-out by `head-coordinator`, never by the reviewer.
+Review the exact last-deployed-source..HEAD range and intended action as one
+feature-reviewer verification card, with a paired head-coordinator decision.
+Accepted whole-set review plus a matching green guarded test authorizes routine
+switching within the recorded scope. The coordinator runs test then switch; the
+verifier never does. Changed source or mutable inputs require fresh review/test.
+Freeze only that source and its writers; unrelated isolated work may continue.
+The gate is a workflow convention, not a check enforced by deploy.sh.
 
-This gate is a convention, not a mechanical check: nothing in `deploy.sh`,
-`validate-repo.sh` or `flake/checks.nix` verifies that a review card exists or
-that it covered the range being switched. `head-coordinator` is what makes it
-real, by reading the range before switching and refusing an unreviewed one.
+### Aging escalation
 
-```
-Review: <range>          assignee project-auditor, workspace worktree
-Decide: deploy <range>   assignee head-coordinator, parents=[review]
-```
+Open cards escalate by quiet time, not card age alone: idle ≥2 days raises
+dispatch priority (≥50), idle ≥3 days raises it further (≥100), commissions one
+project-auditor deep-dive per dependency cluster, and posts a coordinator
+clearing directive; a card older than 7 days escalates on age even with fresh
+holding comments. Running cards, owner gates and `[FEATURE TRACKER` cards are
+exempt from per-card escalation (trackers report as one aggregate triage line);
+gates receive the directive only. An auditor-reviewed card still unresolved 5+
+days gets a one-shot clearance directive; the job never reclassifies anything to
+`needs_input` — only the coordinator authors owner gates. It also rechecks
+blocked cards for verifiably stale conditions and posts damped evidence
+comments, never unblocking. `scripts/hermes/kanban-aging-escalation.py` is the
+policy (cron job `kanban aging escalation`); `--dry-run` previews; thresholds
+are `AGING_PRIORITY_HOURS` / `AGING_ESCALATION_HOURS`.
 
-* The review body names the revision range (`<last deployed hash>`..`HEAD`) and
-  the intended action; the review covers the whole range at once.
-* Clean review -> `head-coordinator` runs the guarded test then switch itself.
-  Rejected -> it routes fixes and opens a fresh review of the new range.
-* A human gate is only for a dangerous or architecturally/functionally
-  unintended change; a green test is otherwise authority to switch.
-* The guarded deploy is the one action `head-coordinator` performs; it never
-  implements. Reviewers never run the test or switch.
+### Reaching the owner
 
-### Worked example
+Classify missing input by supplier, not difficulty. Name one in every block reason:
+`Input supplier: owner | agent | external-source-owner(<who>) | model/provider`.
+Technical evidence gaps, provider failures and agent-recoverable faults stay with
+agents. Owner decisions, credentials, physical actions and unrecorded owner-system
+facts that agents cannot legitimately obtain become owner asks. An external source
+only the owner can obtain/replace is an owner ask to obtain it or descope.
 
-A real gate was one 470-word paragraph opening `HUMAN APPROVAL GATE; do not
-implement…`, mixing the question, the evidence, six constraints, and the
-follow-up plan into a wall. Same content, rewritten:
+Only head-coordinator authors owner gates, needs_input blocks and standalone
+Hard Blocker markers. It checks existing decisions and agent-side recovery, then
+follows the [owner-alert runbook](documentation/hermes-owner-alerts.md) for checked
+Blocking / Why owner / Unblock authoring, native writes, readback, --check-blockers,
+authentication and delivery. Include an exact command when applicable; A/B is
+only for real choices. Only genuine owner-action blockers go to the phone;
+technical events stay internal. Inconclusive investigation alone is not owner input.
 
-```
-ASK: Is localAdminUser intentionally root-equivalent, or must a separate
-  deploy principal be stopped from reaching arbitrary root?
-  A) Keep it fully trusted — accept and document the exposure
-  B) Add a restricted principal — keep an authenticated recovery path
-NEEDED FROM YOU: pick A or B, and say which emergency recovery stays allowed
-IF UNANSWERED: no sudo-policy change is made
-Context: modules/Core_Modules/base-system/default.nix:178-192 grants
-  localAdminUser NOPASSWD ALL; deploy-executor.sh calls sudo at 12 sites.
-Must not change: no plaintext secrets; no stamp wrapper; no live deploy
-```
+Owner decisions are delivered to the coordinator-owned `Hermes Decisions`
+SimpleX group, which is kept as current state: open decisions are posted, edited
+when the ask changes, and deleted when answered, revised or closed. The general
+DM remains the conversation channel. Decisions still waiting on the coordinator,
+a reviewer, a worker or another agent stay internal and are never posted.
 
-The decision is answerable from line 1; the evidence sits below it. Nothing was
-dropped — only the prose was.
+The steward observes all boards read-only. It may send actionable requests only
+to head-coordinator through Bot Chat or the fixed-recipient coordinator helper;
+requests confer no approval or execution authority. It never edits cards/files,
+implements, commits, restores configuration or authors owner gates. Follow the
+[steward runbook](documentation/hermes-daily-steward.md).
 
-### Answering a gate
+### Scheduler and worktree hygiene
 
-A comment does not change card status. Record the decision as a comment, then
-unblock — the dispatcher only claims `ready` cards, so an unanswered `blocked`
-card never runs, and a commented-but-still-blocked card never runs either. A
-`running` card needs only the comment: the dispatcher live-steals new operator
-comments into the worker.
+Keep `kanban.auto_decompose: false`: upstream auto-decomposition cannot read this
+repository's card conventions. Do not use specify/decompose to bypass them.
+Task-specific receipt predicates remain on their owning cards/jobs, not in standing
+role prompts. Preserve current idle-recovery conditions and anti-loop backoff.
 
-### Pre-flight check
-
-Title ≤ 60 chars and names the outcome. First line is the ask, goal, or question.
-Body ≤ 15 lines, ≤ 1000 chars, ≤ 90 chars per line. A gate gives options and says
-what stays blocked.
-
-### Triage auto-decompose is off
-
-The gateway can write cards from a hardcoded prompt inside the upstream hermes
-clone, which cannot read this file. That path is disabled with
-`kanban.auto_decompose: false` in `~/.hermes/config.yaml`, so every card on the
-board is written by an agent that has read this section. Leave it off; the
-`hermes kanban specify` and `decompose` verbs have the same blind spot.
+`scripts/hermes/reap-kanban-worktrees.sh` is a dry run unless --apply is supplied.
+It reclaims only workspaces positively owned by a terminal card (archived
+included) that are clean, hold no non-reproducible ignored content, and are
+wholly represented on remote-tracking refs. Unowned trees, gitignored evidence
+and unregistered directories are reported and kept unless `--include-unowned`
+or `--accept-ignored` explicitly opts in. Never remove active, dirty or
+unpublished worktrees.
 
 ---
 
@@ -340,6 +327,7 @@ board is written by an agent that has read this section. Leave it off; the
 * `DESIGN_SYSTEM.md` — living record of frontend surfaces and deliberate design decisions; the precedent Impeccable detectors must respect.
 * `.impeccable/config.json` — shared Impeccable config; narrowly scoped detector exceptions live here.
 * `scripts/` — deploy, admin, helpers, and `tests/` (shell regression suite). `tests/test-common.sh` holds shared helpers; `validate-repo.sh` is the gate.
+* `documentation/hermes-analytics.md` — the read-only historical analytics lens (`scripts/hermes/kanban-analytics.py`) over board state: flow waits, rework, review value, escalation effectiveness and cost per card.
 * `secrets/` — agenix-managed encrypted `.age` files only. Never read or print plaintext `secrets/unencrypted/`.
 * `documentation/` — operator runbooks. `operations.md` is the most commonly relevant.
 
@@ -359,30 +347,11 @@ If a broad search is needed, prefer `rg`/`glob` (they skip gitignored files) ove
 
 ## Frontend Design Workflow
 
-* One skill owns all frontend work: `.agents/skills/frontend-design/SKILL.md`. Its
-  project-level anti-slop rules take priority over both vendored packages below.
-* UI/UX Kit (`.agents/vendor/ux-ui-kit/`, vendored from `plugin87/ux-ui-agent-skills`,
-  MIT) is the primary design/build discipline: design tokens, components,
-  accessibility, frameworks (Qwik adapter included), taste/anti-slop doctrine.
-* Impeccable (`.agents/skills/impeccable/`, vendored from `pbakaus/impeccable`,
-  Apache-2.0) is the post-implementation critic/QA layer: `critique` and
-  `audit`/detector run after the main implementation is rendered; `layout` and
-  `distill` run conditionally; stylistic enhancement commands (bolder, delight,
-  animate, overdrive, ...) only on explicit user request.
-* Deliberate project design decisions live in `DESIGN_SYSTEM.md` and win over
-  generic kit/detector preferences; narrowly scoped detector exceptions go in
-  `.impeccable/config.json`.
-* The default target is consistently competent frontend quality — verify at one
-  desktop and one mobile viewport, fix objective defects, then stop. Do not
-  enter open-ended visual refinement loops.
-* Always check frontends for out-of-bounds and unscrollable areas. Long lists,
-  forms and editors must not be clipped by an `overflow: hidden` ancestor, and
-  every scroll region must actually scroll: confirm in the rendered page that
-  the page itself fits its viewport (`scrollHeight` vs `clientHeight`), that
-  each scroll container has a bounded height with reachable content
-  (`scrollHeight` vs `clientHeight`, scrolled to the end), and that the last
-  element sits inside its container. Do this at a desktop and a mobile
-  viewport; a green layout in the source is not evidence.
+Load `frontend-design` for every rendered UI change or review. It owns UI/UX Kit
+implementation, Impeccable review, desktop/mobile rendering and scroll checks,
+media-manager coverage and the stopping condition. Project anti-slop rules and
+`DESIGN_SYSTEM.md` take precedence over generic toolkit preferences. Impeccable
+stylistic enhancement commands still require an explicit user request.
 
 ---
 
@@ -411,54 +380,22 @@ If a broad search is needed, prefer `rg`/`glob` (they skip gitignored files) ove
 
 ## Test Tiers
 
-### Lean (default: `validate-repo.sh`)
-Quick validation targeting newly added modules or large structural changes to the config.
-Runs in 2-3 min against enabled applications only. Includes: module structure, removal
-evaluation, hardening, config validation, bootstrap safety, secret structure, and
-app-specific module tests for enabled apps.
-
-Use `--all-apps` to test the complete application catalog.
-
-### Full (`validate-repo.sh --full`)
-Complete validation including heavy Nix evaluation, deploy transaction tests,
-first-boot convergence, secret generation flows, Kopia wrapper validation, and
-Playwright e2e. Runs in 10-15 min. Run before merging significant changes or when
-diagnosing persistent integration issues.
-
-Extend the guarded shutdown timer before starting this tier, and while it runs:
-
-```bash
-sudo nixhomeserver-shutdown-guard extend --minutes 30 --reason "validate-repo.sh --full"
-```
-
-A run cut short by the shutdown timer is not a pass. Report it as interrupted,
-never as green.
-
-### VM (`validate-repo.sh --run-vm-tests`)
-Integration tests requiring VM boot (failure-alert, jellyfin-oidc).
-Requires `/dev/kvm`. Runs in 5-15 min. **Only run when diagnosing persistent bugs
-where integration test coverage would be severely hampered without VM validation,
-or with explicit user permission.**
+`nixhomeserver-safe-change` selects the focused, lean or full gate and documents
+their scope. Use `--all-apps` for the whole catalog. Significant changes and
+persistent integration issues require `scripts/validate-repo.sh --full`; protect
+the shutdown timer with `nixhomeserver-shutdown-guard`. Interrupted runs are never
+a pass. VM tests (`--run-vm-tests`, requiring `/dev/kvm`) are allowed only for
+persistent bugs severely lacking integration coverage, or explicit user permission.
 
 ## Service-Access Canary
 
-The authenticated Homepage canary (`modules/Core_Modules/homepage/canary.nix`)
-logs in as `canary-user` and verifies every enabled private application host
-after deploy. It is the only check that catches broken routing, DNS, or Kanidm
-access for a newly added service.
-
-* Every new user-facing app or other private browser host must have a canary
-  target in `canary.nix`.
+* Every new user-facing app or private browser host needs a target in
+  `modules/Core_Modules/homepage/canary.nix`; follow `nixhomeserver-module-change`.
 * `scripts/tests/test-canary-target-coverage.sh` (lean tier) fails when an
   enabled Caddy host is neither covered nor listed in
   `repo.canary.coverageExemptHosts`. Add an exemption only for surfaces that are
   not independently browser-loginable (identity provider, gateway login,
   embedded editors, public shares, API-only or device-local UIs) and document
   the reason.
-* After deploying a new app, run the canary and inspect the rendered result:
-  `sudo systemctl start homepage-canary.service && sudo homepage-canary-assert`.
-  A green deploy is not proof of access.
-
-## Media App UI Changes
-
-* Any change to media-manager text or UI layout must consider mobile phone screens as well as desktop screens. Verify the rendered library and metadata views at a phone width (about 390px) and a desktop width (about 1280px), including long titles and folder names, wrapped labels, image placeholders, upload controls, and subtitle management. Fix clipping, horizontal overflow, and inaccessible touch controls before considering the change complete.
+* After deploying a new app, run and inspect the authenticated canary as required
+  by `nixhomeserver-safe-change`. A green deploy is not proof of access.

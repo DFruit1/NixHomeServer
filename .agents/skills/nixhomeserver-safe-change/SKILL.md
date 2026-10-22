@@ -8,6 +8,20 @@ description: Select and execute the safe validation, build, deployment, or recov
 Choose evidence proportional to risk while preserving the guarded deployment,
 rollback, secret, and recovery boundaries.
 
+## Project and role boundaries
+
+Resolve repository paths in the assigned NixHomeServer checkout; prefer its
+current skill over an installed copy. Do not apply these gates to other projects.
+Honor existing exact-scope approval without asking again.
+
+For Hermes, apply only the steps allowed by the role and card: implementers run
+approved validation and commit locally; feature-reviewer independently verifies
+without implementing or deploying, and preserves an audit card's offline limits;
+project-auditor uses this guidance for plans, not execution. head-coordinator
+routes source questions and implementation tests, and runs guarded test/switch
+only after accepted whole-set review of the exact source and intended action.
+The steward remains read-only. A loaded skill grants no operational authority.
+
 ## Start safely
 
 1. Read `AGENTS.md`, `README.md`, `documentation/operations.md`, and the
@@ -36,7 +50,25 @@ repository gate:
 - Change needing explicit flake-output evaluation: run
   `scripts/validate-repo.sh --run-flake-check`.
 - Broad, security-sensitive, storage, identity, backup/restore, deployment, or
-  release-candidate change: run `scripts/validate-repo.sh --full`.
+  release-candidate change, or persistent integration issues: run
+  `scripts/validate-repo.sh --full`.
+
+The default lean gate checks enabled applications; add `--all-apps` for the whole
+catalog. The full gate adds heavy evaluation, deploy transaction and first-boot
+checks, secret generation, Kopia wrapper coverage, derivation builds and Homepage
+Playwright e2e. VM tests (`--run-vm-tests`) need `/dev/kvm` and are allowed only
+for persistent bugs severely lacking integration coverage, or explicit user
+permission. Do not interpret an interrupted run as a pass.
+
+Before `--full`, use the shutdown-guard skill to extend a pending shutdown by
+30 minutes and maintain that protection while validation runs. If none is
+scheduled, do not create or extend one.
+
+Batch full-system evaluation with `remote_eval_batch_json` from
+`scripts/helpers/remote-eval.sh`; keep settings-level evaluation local. Use the
+existing remote-build and remote-run helpers for their documented workloads.
+Before long-running work, load `nixhomeserver-shutdown-guard` and protect the
+pending timer through an already-authorized helper or the coordinator.
 
 Do not weaken or skip a failing check merely to obtain a green result. Diagnose
 the failure, distinguish change-caused failures from pre-existing failures, and
@@ -44,12 +76,17 @@ report the evidence.
 
 ## Build and deploy
 
-1. A request to edit or validate does not authorize deployment. Deploy only
-   when the user explicitly requests live or target-system activation.
+1. A request to edit or validate does not authorize deployment. Require existing
+   explicit authority for live activation and satisfy the project's deploy gate.
+   Hermes follows `documentation/hermes-deployment-receipts.md` (installed under
+   `~/.hermes/scripts/`) to check whole-set review/decision/source/test consistency.
+   The read-only receipt helper grants no permission and does not replace the
+   guarded deployer's live stamp, health or rollback checks.
 2. Prefer remote-server builds for Nix derivations and Rust artifacts when the
    guarded helper supports them.
-3. Use the repository's guarded deploy surface (`nix run .#deploy` and its
-   documented arguments). Do not use direct `nixos-rebuild switch` except for a
+3. Use `nix run .#deploy -- --action test|switch` with the helper's default
+   allocation; do not override build mode or build host. Do not use direct
+   `nixos-rebuild switch` except for a
    documented console-recovery procedure explicitly in scope.
 4. Preserve the helper's evaluate, build, test-activate, route/unit/canary
    checks, tested-closure stamp, boot commit, and rollback sequence. Do not
@@ -60,6 +97,10 @@ report the evidence.
 6. After activation, verify the exact units, routes, authenticated canaries,
    persistence mounts, or backup health affected by the change. On failure,
    preserve evidence and allow the guarded rollback path to complete.
+   After deploying a new app, run `sudo systemctl start homepage-canary.service`
+   then `sudo homepage-canary-assert` and inspect the rendered authenticated
+   result. The canary logs in as `canary-user` and checks private-host access;
+   a green deploy alone does not prove it.
 
 ## Destructive and recovery work
 

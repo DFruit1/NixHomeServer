@@ -158,9 +158,11 @@ replay_last_ssh() {
 }
 
 remote_paths() {
+  # Dot-prefixed entries are the rotation's bookkeeping (.rotation.lock), not
+  # generations; the generation assertions care about current/previous.* only.
   python3 -c 'import os,sys
 try:
-    print(" ".join(sorted(os.listdir(sys.argv[1]))))
+    print(" ".join(sorted(p for p in os.listdir(sys.argv[1]) if not p.startswith("."))))
 except OSError:
     print("")' "$REMOTE_ROOT/${1:-.}"
 }
@@ -264,9 +266,18 @@ pass "enumerates every live board when HERMES_BOARD is unset"
 # --- each board lands under its own directory ------------------------------
 
 new_remote_root nixhomeserver
+mkdir -p "$HERMES_FIXTURE/kanban/boards/nixhomeserver/review-taskforce/plans"
+printf '# Accepted findings\n' >"$HERMES_FIXTURE/kanban/boards/nixhomeserver/review-taskforce/FINDINGS.md"
+printf '{"cadence":"daily","interval_hours":24}\n' >"$HERMES_FIXTURE/kanban/boards/nixhomeserver/review-taskforce/config.json"
+printf '# Immutable plan\n' >"$HERMES_FIXTURE/kanban/boards/nixhomeserver/review-taskforce/plans/batch-1.md"
 mirror_board nixhomeserver
 mirror_has nixhomeserver/current/kanban.db ||
   fail "the nixhomeserver board was not mirrored"
+[[ "$(mirror_file nixhomeserver/current/review-taskforce/FINDINGS.md)" == '# Accepted findings' ]] ||
+  fail "the reviewer's persisted findings were not mirrored"
+[[ "$(mirror_file nixhomeserver/current/review-taskforce/plans/batch-1.md)" == '# Immutable plan' ]] ||
+  fail "the approved implementation plan was not mirrored"
+pass "mirrors taskforce findings, cadence and immutable plans with the board"
 [[ "$(mirror_file nixhomeserver/current/MANIFEST)" == *"board=nixhomeserver"* ]] ||
   fail "the nixhomeserver manifest names the wrong board"
 [[ "$(mirror_file nixhomeserver/current/MANIFEST)" == *"tasks=3"* ]] ||
@@ -512,6 +523,66 @@ grep -q 'no board resolved to a git checkout' "$fixture/no-repo.log" ||
 pass "fails loudly when no board resolves to a git checkout"
 rm -rf "$HERMES_FIXTURE/kanban/boards/nowhere"
 
+# --- a rejected push is a failure, not a log line --------------------------
+#
+# The failure this pins: a branch push the remote refuses was logged and the run
+# still exited 0, so a cron tick that silently kept every commit inside this one
+# clone looked identical to a tick where everything was safe. The board mirror
+# must still happen -- the data is what matters -- but the exit status has to
+# disagree with a success that did not occur.
+new_remote_root rejected
+
+# A dedicated checkout whose origin refuses every push, so the rejection is the
+# remote's decision and not a typo. Still a local bare repo: nothing leaves the
+# machine.
+git -c init.defaultBranch=master init --quiet "$fixture/repo-c"
+git --git-dir="$fixture/origin-repo-c" init --quiet --bare
+git -C "$fixture/repo-c" remote add origin "$fixture/origin-repo-c"
+printf 'base\n' >"$fixture/repo-c/README"
+git -C "$fixture/repo-c" add -A
+git -C "$fixture/repo-c" commit --quiet -m initial
+git -C "$fixture/repo-c" push --quiet origin master
+# A pre-receive hook is how a real remote refuses a push: the client's push
+# command exits non-zero and no ref moves.
+printf '#!/bin/sh\nexit 1\n' >"$fixture/origin-repo-c/hooks/pre-receive"
+chmod +x "$fixture/origin-repo-c/hooks/pre-receive"
+
+mkdir -p "$HERMES_FIXTURE/kanban/boards/rejectboard"
+printf '{"slug":"rejectboard","default_workdir":"%s","archived":false}\n' \
+  "$fixture/repo-c" >"$HERMES_FIXTURE/kanban/boards/rejectboard/board.json"
+sqlite3 "$HERMES_FIXTURE/kanban/boards/rejectboard/kanban.db" \
+  "CREATE TABLE tasks (id TEXT PRIMARY KEY, title TEXT, status TEXT);
+   CREATE TABLE task_comments (id INTEGER PRIMARY KEY, task_id TEXT, body TEXT);
+   INSERT INTO tasks VALUES ('t_reject_1','card 1','done');"
+
+# One rejected branch and one rejected master, so both push sites are covered by
+# a single run.
+git -C "$fixture/repo-c" checkout --quiet -b wt/beta
+printf 'work\n' >"$fixture/repo-c/only-here.txt"
+git -C "$fixture/repo-c" add -A
+git -C "$fixture/repo-c" commit --quiet -m "branch commit only this clone holds"
+git -C "$fixture/repo-c" checkout --quiet master
+printf 'more\n' >>"$fixture/repo-c/README"
+git -C "$fixture/repo-c" add -A
+git -C "$fixture/repo-c" commit --quiet -m "master commit only this clone holds"
+
+if out="$(cd "$elsewhere" && HERMES_BOARD=rejectboard "$SYNC" 2>&1)"; then
+  fail "exited 0 although every push was rejected; the commits exist nowhere else"
+fi
+grep -q 'push FAILED for wt/beta' <<<"$out" ||
+  fail "did not report the rejected branch push: $out"
+grep -q 'push FAILED for master' <<<"$out" ||
+  fail "did not report the rejected master push: $out"
+[[ "$(git --git-dir="$fixture/origin-repo-c" rev-parse --verify --quiet refs/heads/wt/beta || printf 'absent')" == absent ]] ||
+  fail "the fixture's origin accepted a push it was told to refuse"
+# The data protection still runs: a failed push must not abort the mirror.
+replay_last_ssh
+mirror_has rejectboard/current/kanban.db ||
+  fail "a rejected push stopped the board from being mirrored; the board copy is the data"
+[[ "$(mirror_rows rejectboard)" == 1 ]] ||
+  fail "the mirrored rejectboard database does not read back its rows"
+pass "reports a rejected push as a failure while still mirroring the board"
+
 # --- check mode changes nothing ---------------------------------------------
 
 new_remote_root check-mode
@@ -530,5 +601,54 @@ awk '/^umask 077$/ { found = NR }
      END { exit 0 }' "$SYNC" ||
   fail "mktemp -d runs before umask 077; the board copy would be world-readable"
 pass "sets umask 077 before creating the snapshot directory"
+
+# --- a successful mirror records the epoch the staleness detector reads ---------
+#
+# The board-health monitor reports MIRROR_STALE from
+# state/durability-sync/<board>.epoch. A mirror that does not record it looks
+# stale forever; a check-only run must not record it, because no mirror
+# happened.
+new_remote_root epoch-mode
+HERMES_BOARD=nixhomeserver run_sync >/dev/null 2>&1 || true
+replay_last_ssh
+epoch_file="$HERMES_FIXTURE/state/durability-sync/nixhomeserver.epoch"
+[[ -r "$epoch_file" ]] ||
+  fail "a successful mirror did not record its epoch for the staleness detector"
+epoch_value="$(cat "$epoch_file")"
+if ! [[ "$epoch_value" =~ ^[0-9]+$ ]] || (( epoch_value <= 0 )); then
+  fail "the recorded mirror epoch is not a positive epoch: '$epoch_value'"
+fi
+pass "records the mirror epoch after a successful mirror"
+
+rm -f "$epoch_file"
+HERMES_BOARD=nixhomeserver run_sync --check >/dev/null 2>&1 || true
+[[ ! -e "$epoch_file" ]] ||
+  fail "a check-only run recorded a mirror epoch without mirroring"
+pass "a check-only run records no mirror epoch"
+
+# --- an overlapping tick skips rather than racing the rotation -----------------
+#
+# Two concurrent syncs interleave their remote generation rotations; the local
+# flock makes the second tick skip the work entirely rather than queue behind
+# it or race it.
+lock_dir="$HERMES_FIXTURE/state/durability-sync"
+mkdir -p "$lock_dir"
+exec 9>"$lock_dir/sync.lock"
+flock 9
+calls_before="$(ssh_calls)"
+skip_out="$(run_sync 2>&1)" || true
+grep -q 'another durability sync holds the lock; skipping this tick' <<<"$skip_out" ||
+  fail "an overlapping tick did not skip: $skip_out"
+[[ "$(ssh_calls)" == "$calls_before" ]] ||
+  fail "an overlapping tick still contacted the durability target"
+pass "an overlapping tick skips without contacting the target"
+exec 9>&-
+
+# --- --help -------------------------------------------------------------------
+
+help_out="$("$SYNC" --help)"
+grep -q 'Usage: scripts/hermes/kanban-durability-sync.sh' <<<"$help_out" ||
+  fail "--help did not print usage"
+pass "prints usage for --help"
 
 echo "▶ kanban durability sync: all checks passed"

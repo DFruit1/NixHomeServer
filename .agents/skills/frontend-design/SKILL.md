@@ -122,6 +122,18 @@ browser at a normal desktop viewport (~1280px) and a mobile viewport (~390px).
 For single-file UIs (`custom_apps/rust/apps/search/src/ui.html`), open the file
 directly. Screenshot or inspect the render — do not skip this step.
 
+At both viewports, check out-of-bounds and unscrollable areas in the rendered
+page: compare page and scroll-container `scrollHeight`/`clientHeight`, confirm
+bounded scroll regions actually reach their end, and check that each last
+element stays inside its container. Long lists, forms and editors must remain
+reachable; an `overflow: hidden` ancestor must not clip them. Source inspection
+alone is not evidence that scrolling works.
+
+For media-manager text or layout changes, verify the library and metadata views
+at about 390px and 1280px, including long titles/folder names, wrapped labels,
+image placeholders, upload controls and subtitle management. Fix clipping,
+horizontal overflow and inaccessible touch controls before completion.
+
 ## Completion — do not enter an open-ended visual refinement loop
 
 The goal is a clean, coherent, reusable, responsive, non-sloppy implementation,

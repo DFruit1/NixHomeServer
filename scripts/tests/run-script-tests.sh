@@ -52,6 +52,19 @@ else
   export NIXHOMESERVER_TEST_ALL_APPS=0
 fi
 
+# The Hermes policy tests import PyYAML directly or through the installers
+# they exercise. A delegated worker's terminal resolves python3 to Hermes'
+# managed runtime, which does not ship PyYAML; without this preflight that
+# surfaces as many unrelated ModuleNotFoundError failures instead of one
+# actionable message (2026-10-19: eight policy tests red for one cause).
+if ! python3 -c 'import yaml' >/dev/null 2>&1; then
+  echo "❌ PyYAML is unavailable to the resolved python3: $(command -v python3 || echo 'not found')" >&2
+  echo "   Repository script tests import yaml. Install PyYAML for that interpreter" >&2
+  echo "   (e.g. 'python3 -m pip install pyyaml', or transplant the distro package" >&2
+  echo "   into the interpreter's site-packages when pip has no reachable index)." >&2
+  exit 1
+fi
+
 all_app_only_test() {
   case "${1##*/}" in
     test-module-structure.sh | \
@@ -89,10 +102,21 @@ lean_skip_test() {
 }
 
 test_scripts=(
+  scripts/tests/test-hermes-opencode-acp.sh
+  scripts/tests/test-hermes-cron-policy.sh
+  scripts/tests/test-hermes-memory-policy.sh
+  scripts/tests/test-hermes-worker-policy.sh
+  scripts/tests/test-hermes-autonomy.sh
+  scripts/tests/test-hermes-autonomy-runtime.sh
+  scripts/tests/test-hermes-fixture-isolation.sh
+  scripts/tests/test-hermes-capability-recovery.sh
+  scripts/tests/test-hermes-aging-escalation.sh
+  scripts/tests/test-hermes-analytics.sh
   scripts/tests/test-module-structure.sh
   scripts/tests/test-langfuse-secrets.sh
   scripts/tests/test-langfuse-module.sh
   scripts/tests/test-searxng-module.sh
+  scripts/tests/test-ntfy-module.sh
   scripts/tests/test-attic-cache.sh
   scripts/tests/test-kanidm-group-owned-access.sh
   scripts/tests/test-module-removal-evaluation.sh
@@ -101,6 +125,9 @@ test_scripts=(
   scripts/tests/test-ipfs-swarm-binding.sh
   scripts/tests/test-nix-store-capacity-gc.sh
   scripts/tests/test-disk-space-cleanup.sh
+  scripts/tests/test-temp-cleanup.sh
+  scripts/tests/test-install-temp-cleanup.sh
+  scripts/tests/test-temp-cleanup-module.sh
   scripts/tests/test-shutdown-guard.sh
   scripts/tests/test-offline-media-reliability.sh
   scripts/tests/test-opencloud-module.sh
@@ -147,10 +174,32 @@ test_scripts=(
   scripts/tests/test-frontend-build-isolation.sh
   scripts/tests/test-nix-eval-cache.sh
   scripts/tests/test-remote-eval-helper.sh
+  scripts/tests/test-remote-build-helper.sh
+  scripts/tests/test-remote-run-helper.sh
+  scripts/tests/test-reap-kanban-worktrees.sh
+  scripts/tests/test-hermes-workspace-preflight.sh
   scripts/tests/test-kanban-board-health.sh
+  scripts/tests/test-quiescence-inventory.sh
   scripts/tests/test-kanban-retry-breaker.sh
   scripts/tests/test-kanban-durability-sync.sh
   scripts/tests/test-kanban-install-board-wiring.sh
+  scripts/tests/test-kanban-decision-reply.sh
+  scripts/tests/test-hermes-review-taskforce.sh
+  scripts/tests/test-hermes-instruction-policy.sh
+  scripts/tests/test-hermes-installer-convergence.sh
+  scripts/tests/test-hermes-behavior-trials.sh
+  scripts/tests/test-hermes-config-policy.sh
+  scripts/tests/test-hermes-performance.sh
+  scripts/tests/test-hermes-runtime-evidence.sh
+  scripts/tests/test-hermes-blockers.sh
+  scripts/tests/test-hermes-prerequisite-repair.sh
+  scripts/tests/test-hermes-deploy-receipt.sh
+  scripts/tests/test-hermes-coordination.sh
+  scripts/tests/test-kanban-owner-alerts.sh
+  scripts/tests/test-simplex-decisions.sh
+  scripts/tests/test-hermes-owner-chat-policy.sh
+  scripts/tests/test-steward-readonly.sh
+  scripts/tests/test-steward-opportunity-scan.sh
   scripts/tests/test-auth-gateway-compression.sh
   scripts/tests/test-app-registration.sh
   scripts/tests/test-shell-template.sh
@@ -184,6 +233,7 @@ test_scripts=(
   scripts/tests/test-mkvmaker-tool-resolution.sh
   scripts/tests/test-platform-storage-profiles.sh
   scripts/tests/test-runtime-reliability.sh
+  scripts/tests/test-model-artifact-storage.sh
   scripts/tests/test-rclone-safety.sh
   scripts/tests/test-rclone-mega-capacity-check.sh
   scripts/tests/test-rclone-mega-preflight.sh
@@ -198,6 +248,7 @@ test_scripts=(
   scripts/tests/test-zfs-snapshot-freshness.sh
   scripts/tests/test-secret-structure.sh
   scripts/tests/test-secret-generation.sh
+  scripts/tests/test-forgejo-mirror-grants.sh
 )
 
 NIXHOMESERVER_DEFAULT_HOST="$(test_default_host)"

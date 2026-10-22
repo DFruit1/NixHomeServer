@@ -81,6 +81,7 @@
 # -----
 #   scripts/hermes/kanban-durability-sync.sh            # push + mirror
 #   scripts/hermes/kanban-durability-sync.sh --check    # report only, push nothing
+#   scripts/hermes/kanban-durability-sync.sh --help     # usage
 #
 # Environment
 # -----------
@@ -107,10 +108,35 @@ REMOTE_DIR="${DURABILITY_REMOTE_DIR:-/persist/home/dsaw/.hermes-durability}"
 GENERATIONS="${DURABILITY_GENERATIONS:-3}"
 
 check_only=false
-[[ "${1:-}" == "--check" ]] && check_only=true
+case "${1:-}" in
+  --check) check_only=true ;;
+  --help|-h)
+    cat <<'EOF'
+Usage: scripts/hermes/kanban-durability-sync.sh [--check]
+
+  --check    Report what a run would push and mirror; change nothing.
+  -h, --help Show this help.
+
+Environment: HERMES_ROOT, HERMES_BOARD, DURABILITY_TARGET,
+DURABILITY_REMOTE_DIR, DURABILITY_GENERATIONS (see the header comments).
+EOF
+    exit 0 ;;
+esac
 
 failures=0
 log() { printf 'durability: %s\n' "$*" >&2; }
+
+# One sync at a time. A run slower than the 15-minute cron cadence (several
+# boards, per-board SSH mirrors) must not overlap the next tick: two
+# concurrent remote generation rotations interleave their rm -rf / mv and can
+# drop generations. A held lock skips this tick rather than queueing.
+STATE_DIR="$HERMES_ROOT/state/durability-sync"
+mkdir -p "$STATE_DIR"
+exec 9>"$STATE_DIR/sync.lock"
+if ! flock -n 9; then
+  log "another durability sync holds the lock; skipping this tick"
+  exit 0
+fi
 
 # A step that failed. Keeps going wherever later work still protects data, and
 # makes the job's exit status disagree with a success that never happened.
@@ -246,11 +272,16 @@ push_branches() {
     ahead="$(git -C "$work_repo" rev-list --count "$sha" --not --remotes 2>/dev/null || printf '?')"
     [[ "$ahead" =~ ^[0-9]+$ ]] || { log "cannot count commits on $refname; skipping"; continue; }
     ((ahead > 0)) || continue
-    if git -C "$work_repo" push --quiet origin "$sha:refs/heads/$refname" 2>/dev/null; then
+    if timeout 60 git -C "$work_repo" push --quiet origin "$sha:refs/heads/$refname" 2>/dev/null; then
       log "pushed $refname ($ahead commit(s))"
       pushed=$((pushed + 1))
     else
-      log "push FAILED for $refname; left untouched for the operator"
+      # Counted, not merely logged. A rejected push means commits this clone is
+      # the only holder of were not written anywhere, which is the whole reason
+      # this job exists; reporting success for it is the same silent false
+      # negative as the other failure paths above. The mirror still runs, so the
+      # board data is protected either way.
+      fail "push FAILED for $refname; $ahead commit(s) exist only in this clone"
     fi
   done < <(git -C "$work_repo" for-each-ref \
              --format='%(refname:short) %(objectname)' \
@@ -268,11 +299,11 @@ push_branches() {
       log "master has diverged from origin/master; not pushing, operator must reconcile"
     elif [[ "$(git -C "$work_repo" rev-list --count origin/master..master 2>/dev/null || echo 0)" != 0 ]]; then
       ahead="$(git -C "$work_repo" rev-list --count origin/master..master)"
-      if git -C "$work_repo" push --quiet origin master:master 2>/dev/null; then
+      if timeout 60 git -C "$work_repo" push --quiet origin master:master 2>/dev/null; then
         log "pushed master ($ahead commit(s) ahead of origin/master)"
         pushed=$((pushed + 1))
       else
-        log "push FAILED for master; left untouched for the operator"
+        fail "push FAILED for master; $ahead commit(s) ahead of origin/master exist only in this clone"
       fi
     fi
   fi
@@ -345,6 +376,14 @@ remote_rotation_body="$(cat <<'REMOTE'
 set -eu
 
 mkdir -p "$remotedir"
+# One rotation at a time even on the server side: the local lock stops this
+# script's own overlapping ticks, but an operator run or any other writer on
+# the server must not interleave a second rm -rf / mv through the generations.
+exec 9>"$remotedir/.rotation.lock"
+if ! flock -n 9; then
+  echo "durability: another rotation holds the server lock; aborting" >&2
+  exit 75
+fi
 incoming="$(mktemp -d "$remotedir/.incoming.XXXXXX")"
 trap 'rm -rf "$incoming"' EXIT
 # The workstation and the server clocks differ by a fraction of a second, which
@@ -453,8 +492,11 @@ stage_board() {
   fi
 
   # `.backup` is the online backup API: safe against a database being written by
-  # the gateway. The plain file copy this replaces could tear under WAL.
-  if ! sqlite3 "$board_dir/kanban.db" ".backup '$stage_dir/kanban.db'" 2>/dev/null; then
+  # the gateway. The plain file copy this replaces could tear under WAL. The
+  # 5-second busy timeout stops a concurrent write from failing the backup
+  # immediately -- the gateway holds the database open in WAL mode, so a
+  # lock contention window is expected rather than exceptional.
+  if ! sqlite3 "$board_dir/kanban.db" ".timeout 5000" ".backup '$stage_dir/kanban.db'" 2>/dev/null; then
     fail "board $board: sqlite online backup failed; not mirrored"
     return 1
   fi
@@ -463,6 +505,16 @@ stage_board() {
   # rows belong to without needing this script's naming scheme.
   if [[ -f "$board_dir/board.json" ]]; then
     cp "$board_dir/board.json" "$stage_dir/board.json"
+  fi
+
+  # The reviewer's findings and immutable plans are board state too. Share its
+  # file lock so a cadence/ledger write cannot tear this filesystem snapshot.
+  if [[ -d "$board_dir/review-taskforce" ]]; then
+    if ! flock -w 30 -s "$board_dir/review-taskforce/.lock" \
+      cp -a "$board_dir/review-taskforce" "$stage_dir/"; then
+      fail "board $board: taskforce snapshot failed; not mirrored"
+      return 1
+    fi
   fi
 
   # Integrity gate: a snapshot that will not read back is worse than none,
@@ -486,6 +538,16 @@ stage_board() {
   } >"$stage_dir/MANIFEST"
 }
 
+# Record the epoch of this board's last successful mirror, so the
+# board-health monitor can report a mirror that has gone stale (a cron the
+# hermes upgrade dropped, an SSH outage, a server disk problem) instead of
+# the boards quietly becoming workstation-only. The write is atomic and local;
+# check-only runs record nothing.
+record_mirror_epoch() {
+  printf '%s\n' "$(date +%s)" >"$STATE_DIR/$1.epoch.tmp" &&
+    mv "$STATE_DIR/$1.epoch.tmp" "$STATE_DIR/$1.epoch"
+}
+
 mirrored=0
 for board in "${boards[@]}"; do
   board_snapshot="$snapshot_root/$board"
@@ -505,6 +567,7 @@ for board in "${boards[@]}"; do
      timeout 120 ssh -o BatchMode=yes -o ConnectTimeout=10 "$target" \
        "$(remote_command "$board_target")" 2>&1; then
     log "board $board mirrored to $target:$board_target/current (Kopia covers /persist)"
+    record_mirror_epoch "$board" || fail "board $board: could not record the mirror epoch"
     mirrored=$((mirrored + 1))
   else
     # The remote script only touches an older generation after the incoming

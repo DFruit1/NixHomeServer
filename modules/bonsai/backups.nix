@@ -1,7 +1,6 @@
 { ... }:
 
 {
-  # Keep this exclusion while Bonsai is disabled because impermanence retains
-  # the pinned, hash-verified model artifacts for a later re-enable.
-  repo.backups.rebuildableSnapshotPaths = [ "var/lib/bonsai/models" ];
+  # Model artifacts live on the data pool and the core backup policy excludes
+  # GGUF files and the legacy SSD location even after this module is removed.
 }

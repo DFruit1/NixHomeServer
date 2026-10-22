@@ -32,15 +32,16 @@ BREAKER="$TESTS_REPO_ROOT/scripts/hermes/kanban-retry-breaker.sh"
 HERMES_BIN="${HERMES_BIN:-$(command -v hermes 2>/dev/null || true)}"
 [[ -n "$HERMES_BIN" ]] || HERMES_BIN="$HOME/.local/bin/hermes"
 
-# A worker/delegated shell must run this real native-CLI suite only inside the
-# installed confined fixture runner. Ignore HERMES_FIXTURE_ACTIVE as authority:
-# the runner's clean child environment has no outer identity pins, so it will
-# naturally continue below without trusting a caller-controlled bypass flag.
+# A fenced worker delegates synthetic mutation to the approved confined executor.
+# The helper retains origin pins and exposes no production state or credentials.
+# Never clear worker/delegation markers in this suite or retry unsandboxed. The
+# pin list is every identity a worker can carry, and HERMES_FIXTURE_ACTIVE is
+# not authority: the runner's clean child environment has no outer identity
+# pins, so it naturally continues below without trusting a caller-set flag.
 if [[ -n "${HERMES_KANBAN_TASK:-}${HERMES_KANBAN_RUN_ID:-}${HERMES_KANBAN_CLAIM_LOCK:-}${HERMES_PROFILE_NAME:-}${HERMES_PROFILE:-}${HERMES_SESSION_ID:-}${HERMES_KANBAN_DB:-}${HERMES_KANBAN_BOARD:-}${HERMES_DELEGATED_CHILD_CONTEXT:-}" ]]; then
-  exec python3 /home/dsaw/.hermes/scripts/fixture-runner.py \
-    --repo "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)" \
-    --suite "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/$(basename "${BASH_SOURCE[0]}")" \
-    --timeout 300
+  suite_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/$(basename "${BASH_SOURCE[0]}")"
+  exec python3 -B "$TESTS_REPO_ROOT/scripts/hermes/fixture-runner.py" \
+    --repo "$TESTS_REPO_ROOT" --suite "$suite_path" --timeout 300
 fi
 
 fail() {
@@ -53,14 +54,136 @@ pass() { echo "  ✅ $1"; }
 [[ -x "$BREAKER" ]] || fail "kanban-retry-breaker.sh is not executable"
 [[ -x "$HERMES_BIN" ]] || fail "hermes CLI not found (set HERMES_BIN)"
 
-fixture="$(mktemp -d)"
+# --- worker-fence-safe fixture setup ---------------------------------------
+#
+# This test runs in three contexts: an operator shell, a cron tick, and a
+# dispatcher worker (which is how the repo's own lean and full gates reach it).
+# In a worker the hermes CLI refuses to mutate any board whose path lies inside
+# the fenced root `HERMES_DELEGATED_CHILD_CONTEXT` carries -- the descendant
+# fence that stops a worker writing to the board it was not given. That is
+# correct behaviour, and this test does not touch it. Two separate pins make
+# the naive fixture fail, and both are setup, not policy:
+#
+#   1. Location. The fence covers $TMPDIR on this profile (the profile's
+#      scratch dir lives under the hermes root), so a `mktemp -d` fixture is
+#      inside the fence and every CLI call is refused.
+#   2. Resolution. The dispatcher injects HERMES_KANBAN_DB and friends, and a
+#      pinned path outranks an explicit `--board`, so `--board testboard` would
+#      resolve to the LIVE board rather than the fixture even if a write were
+#      allowed. That direction is the dangerous one, so the fixture must not
+#      depend on it resolving the right way.
+#
+# The fix is therefore: put the fixture outside the fenced root, and drop the
+# dispatcher's LOCATION pins so board resolution reaches the fixture.
+#
+# The marker itself is never unset, weakened or bypassed, and dropping
+# HERMES_KANBAN_DB does not narrow the fence: the live board is still under the
+# marker's root, so it is still denied. `live board is still fenced` below
+# asserts exactly that in every run, so a future change that traded the
+# fixture for the live board fails here rather than in production.
+
+# The total-fence marker ("1", set when the fenced root cannot be resolved)
+# denies every board, so there is no safe location for a fixture and no
+# legitimate way to make one. Fail loudly rather than reaching for the marker.
+FENCE_MARKER="${HERMES_DELEGATED_CHILD_CONTEXT:-}"
+if [[ "$FENCE_MARKER" == "1" ]]; then
+  fail "HERMES_DELEGATED_CHILD_CONTEXT=1 fences every board; cannot build a fixture"
+fi
+
+# True when $1 lies under the fenced root this process carries.
+under_fence() {
+  local resolved root
+  [[ -n "$FENCE_MARKER" ]] || return 1
+  resolved="$(cd -P -- "$1" 2>/dev/null && pwd -P)" || return 1
+  root="$(cd -P -- "$FENCE_MARKER" 2>/dev/null && pwd -P)" || return 1
+  [[ "$resolved" == "$root" || "$resolved" == "$root"/* ]]
+}
+
+# First writable fixture parent that is not under the fence. The scratch and
+# runtime dirs come first so an ordinary operator run keeps its fixture in a
+# temp dir; the repo root is a last resort for a box with no usable temp dir,
+# and it is only reached when nothing else is writable.
+fixture_parent() {
+  local candidate
+  for candidate in \
+      "${RETRY_BREAKER_FIXTURE_TMPDIR:-}" \
+      "${XDG_RUNTIME_DIR:-}" \
+      "${TMPDIR:-}" \
+      /tmp \
+      /var/tmp \
+      "$TESTS_REPO_ROOT"; do
+    [[ -n "$candidate" && -d "$candidate" && -w "$candidate" ]] || continue
+    under_fence "$candidate" && continue
+    printf '%s\n' "$candidate"
+    return 0
+  done
+  return 1
+}
+
+fixture_parent_dir="$(fixture_parent)" ||
+  fail "no writable directory outside the fenced root ($FENCE_MARKER) for a fixture"
+fixture="$(mktemp -d --tmpdir="$fixture_parent_dir" kanban-retry-breaker.XXXXXXXX)"
 trap 'rm -rf "$fixture"' EXIT
 
 export HERMES_KANBAN_HOME="$fixture/hermes"
 mkdir -p "$HERMES_KANBAN_HOME"
+
+# The breaker's own board location and profile identity are untouched -- only
+# the dispatcher's board LOCATION pins go, so `--board testboard` resolves
+# into the fixture above. This is hermes's own descendant scrub
+# (agent/delegation_context.scrub_kanban_env) minus the marker: TASK, so a
+# fixture card is never mistaken for this process's own card, and the DB /
+# workspaces / board-slug pins, so resolution follows HERMES_KANBAN_HOME.
+unset HERMES_KANBAN_DB HERMES_KANBAN_WORKSPACES_ROOT HERMES_KANBAN_BOARD HERMES_KANBAN_TASK
+
+# The fence must survive the fixture's existence: pointed back at the real
+# hermes root, with this same environment, a mutation must still be refused BY
+# THE FENCE. The refusal text is matched rather than the exit status, because a
+# bare non-zero would also mean "no such task" -- and the task id below does not
+# exist, so even a fence that had somehow regressed could only fail to find it,
+# never write to a real card. It fails this assertion instead.
+#
+# The probe board is configurable only so it can be pointed at the board that
+# exists on this host. A root with no such board has nothing to protect, so the
+# probe reports "skipped" and this assertion does not run rather than failing
+# for a board that was never there.
+fence_probe_result=skipped
+live_board_is_still_fenced() {
+  local out board="${RETRY_BREAKER_FENCE_PROBE_BOARD:-nixhomeserver}"
+  fence_probe_result=checked
+  out="$(HERMES_KANBAN_HOME="$FENCE_MARKER" "$HERMES_BIN" kanban --board "$board" \
+    block t_00000000 --kind capability "fixture isolation probe; must be refused" 2>&1)"
+  if [[ "$out" == *"does not exist"* ]]; then
+    fence_probe_result=skipped
+    return 0
+  fi
+  [[ "$out" == *"cannot mutate Kanban tasks via the CLI"* ]]
+}
+
+if [[ -n "$FENCE_MARKER" ]]; then
+  if ! live_board_is_still_fenced; then
+    fail "the worker mutation fence no longer denies the live board; the fixture is not isolated"
+  fi
+  [[ "$fence_probe_result" == "skipped" ]] ||
+    pass "the worker mutation fence still denies the live board"
+fi
+
 "$HERMES_BIN" kanban boards create testboard >/dev/null
 DB="$HERMES_KANBAN_HOME/kanban/boards/testboard/kanban.db"
 [[ -f "$DB" ]] || fail "fixture board database was not created at $DB"
+
+# State the invariant this test now depends on, rather than letting a re-added
+# pin show up later as an unexplained fence or an off-fixture board. Both failure
+# modes above are silent from the call sites that trip them: the marker aborts
+# every CLI call identically, and a stale HERMES_KANBAN_DB simply resolves the
+# board somewhere else and leaves this file asserting against an untouched path.
+for pin in HERMES_DELEGATED_CHILD_CONTEXT HERMES_KANBAN_TASK HERMES_KANBAN_DB \
+  HERMES_KANBAN_BOARD; do
+  [[ -z "${!pin:-}" ]] ||
+    fail "$pin is set; the fixture board is unreachable from a pinned worker context"
+done
+[[ "$HERMES_KANBAN_HOME" == "$fixture/hermes" ]] ||
+  fail "HERMES_KANBAN_HOME does not point into this test's own fixture"
 
 now="$(date +%s)"
 
@@ -68,8 +191,8 @@ now="$(date +%s)"
 # requires, then drive its status directly. Using the CLI for creation keeps the
 # fixture honest about NOT NULL columns and defaults.
 new_card() {
-  "$HERMES_BIN" kanban --board testboard create "$1" \
-    --assignee "${2:-local-implementer}" --max-runtime 5m 2>/dev/null |
+  # Local workers require a positive runtime cap, including fixture cards.
+  "$HERMES_BIN" kanban --board testboard create "$1" --assignee "${2:-local-implementer}" --max-runtime 5m 2>/dev/null |
     grep -oE 't_[0-9a-f]+' | head -1
 }
 
@@ -295,6 +418,78 @@ if RETRY_BREAKER_THRESHOLD=0 run_breaker >/dev/null 2>&1; then
 fi
 pass "a nonsensical threshold fails instead of parking everything"
 
+# --- a hard-failure streak parks too -----------------------------------------
+#
+# The dispatcher respawns a card whose runs keep timing out or exiting without a
+# terminal kanban call, the same way it respawns a quota wall. The worker
+# assignment budgets doc is explicit that hitting a runtime or iteration limit
+# means the slice is too large, so the breaker parks that streak after two
+# attempts instead of burning a 15-minute worker slot on every respawn.
+
+hard_card="$(new_card 'timeout loop')"
+add_run_at "$hard_card" timed_out $((now - 1200))
+add_run_at "$hard_card" timed_out $((now - 1100))
+
+out="$(run_breaker --check)"
+grep -q "^HARD_FAILURE_LOOP $hard_card local-implementer streak=2 threshold=2 would-park" <<<"$out" ||
+  fail "did not report the card with two consecutive timed-out runs: $out"
+pass "reports a card whose every recent run was a hard failure"
+
+run_breaker >/dev/null
+[[ "$(status_of "$hard_card")" == "blocked" ]] ||
+  fail "a ready card with a hard-failure streak was not parked"
+[[ "$(kind_of "$hard_card")" == "capability" ]] ||
+  fail "hard-failure streak parked with the wrong block kind"
+sqlite3 "$DB" "SELECT body FROM task_comments WHERE task_id = '$hard_card';" |
+  grep -q 'Hard-failure retry breaker' ||
+  fail "the hard-failure parked card has no comment naming the class and remedy"
+pass "parks a hard-failure streak with kind=capability and a comment naming the remedy"
+
+# One hard failure short of the threshold must be left alone.
+lonely_card="$(new_card 'one timeout')"
+add_run_at "$lonely_card" timed_out $((now - 1100))
+run_breaker >/dev/null
+[[ "$(status_of "$lonely_card")" == "ready" ]] ||
+  fail "parked a card with a single hard-failure run"
+pass "leaves a card one hard failure short of the threshold alone"
+
+# A single completed run in the window still exempts the card: progress is
+# progress, and mixed rate_limited/timed_out windows stay untouched rather than
+# parking something a quota-wall reader would misread.
+for tail_outcome in completed blocked scheduled; do
+  guard_card="$(new_card "hard exempt $tail_outcome")"
+  add_run_at "$guard_card" timed_out $((now - 1150))
+  add_run_at "$guard_card" "$tail_outcome" $((now - 1100))   # newest, breaks the streak
+  run_breaker >/dev/null
+  [[ "$(status_of "$guard_card")" == "ready" ]] ||
+    fail "parked a card whose newest run was '$tail_outcome'"
+done
+pass "a completed, blocked or scheduled run exempts a hard-failure streak"
+
+# A card whose window mixes rate_limited with hard outcomes belongs to neither
+# class; parking it would post a reason about one cause over a mixed record.
+mixed_wall_card="$(new_card 'mixed walls')"
+add_run_at "$mixed_wall_card" rate_limited $((now - 1150))
+add_run_at "$mixed_wall_card" timed_out $((now - 1100))
+run_breaker >/dev/null
+[[ "$(status_of "$mixed_wall_card")" == "ready" ]] ||
+  fail "parked a card whose failure window mixes rate_limited with hard outcomes"
+pass "a mixed failure window is parked by neither class"
+
+# The hard threshold is independently configurable, and 0 must fail.
+wide_hard="$(new_card 'wide hard threshold')"
+add_run_at "$wide_hard" crashed $((now - 1200))
+add_run_at "$wide_hard" crashed $((now - 1100))
+RETRY_BREAKER_HARD_THRESHOLD=3 run_breaker >/dev/null
+[[ "$(status_of "$wide_hard")" == "ready" ]] ||
+  fail "RETRY_BREAKER_HARD_THRESHOLD=3 did not raise the bar"
+pass "the hard threshold is configurable"
+
+if RETRY_BREAKER_HARD_THRESHOLD=0 run_breaker >/dev/null 2>&1; then
+  fail "a zero hard threshold was accepted; it must fail rather than park everything"
+fi
+pass "a nonsensical hard threshold fails instead of parking everything"
+
 # --- cards the breaker has no business touching ---------------------------
 
 done_card="$(new_card 'finished')"
@@ -336,6 +531,30 @@ if HERMES_BIN="$missing_cli/hermes" run_breaker >/dev/null 2>&1; then
   fail "exited 0 with no hermes CLI available; it cannot have parked anything"
 fi
 pass "refuses loudly when the hermes CLI is unavailable"
+
+# --- an overlapping tick skips rather than racing the same block ---------------
+#
+# Two overlapping ticks double-attempt the same block; the flock makes the
+# second skip. The lock lives under HERMES_ROOT/state, so a test holds it the
+# same way the script does.
+state_dir="$HERMES_KANBAN_HOME/state"
+mkdir -p "$state_dir"
+exec 9>"$state_dir/kanban-retry-breaker-testboard.lock"
+flock 9
+lock_out="$(run_breaker 2>&1)" || true
+grep -q 'RETRY_BREAKER_LOCKED' <<<"$lock_out" ||
+  fail "an overlapping tick did not skip while the lock was held: $lock_out"
+grep -q 'PARKED' <<<"$lock_out" &&
+  fail "an overlapping tick still parked a card while the lock was held"
+pass "an overlapping tick skips while the lock is held"
+exec 9>&-
+
+# --- --help -------------------------------------------------------------------
+
+help_out="$("$BREAKER" --help)"
+grep -q 'Usage: scripts/hermes/kanban-retry-breaker.sh' <<<"$help_out" ||
+  fail "--help did not print usage"
+pass "prints usage for --help"
 
 # The runner deletes its temporary origin file on exit. Emit only non-secret
 # identity fields while still inside the confined child, never host paths.

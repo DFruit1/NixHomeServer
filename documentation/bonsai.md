@@ -48,7 +48,7 @@ model eviction or the large Qwen model load. Qwen has its own separate,
 loopback-only server and never appears in the UI.
 
 The Ryzen 7 5700X / 128 GB / Arc Pro B60 profile runs Bonsai with Vulkan, 8
-inference threads, one slot, and 32,768 context tokens. Qwen3.8-27B at Q4_K_M
+inference threads, one slot, and 32,768 context tokens. Qwen3.8-27B at IQ4_XS
 also fits inside the 24 GiB card on its own, but two full models still do not,
 so the background integration keeps the existing arrangement: starting Qwen
 stops the Bonsai server and restarts Bonsai afterwards, and the UI model and
@@ -69,10 +69,21 @@ Both files come from the official
 object hashes are declared in the NixOS module. A partial download resumes, a
 completed file must pass its checksum, and replacement is atomic.
 
-Artifacts live below `/var/lib/bonsai/models`. The core impermanence module
-persists `/var/lib/bonsai` even if the application module is later removed.
-Kopia intentionally does not back up these approximately 8.2 GB of reproducible
-public artifacts.
+Artifacts live below `/mnt/data/bonsai/models` (derived from `vars.dataRoot`).
+Disabling or removing Bonsai leaves its model files on the data pool as an
+archive; re-enabling it verifies and reuses them. The core impermanence module
+still persists `/var/lib/bonsai` for metadata and configuration, but model
+weights do not belong on the system SSD or in regular Kopia/MEGA backups.
+
+The core `bonsai-model-archive.service` migrates legacy files from
+`/persist/var/lib/bonsai/models` even when Bonsai is disabled or removed. It
+requires the mounted data pool, refuses symlinks or conflicting archive files,
+and verifies and flushes the entire copy before removing any source files.
+Interrupted copying or verification leaves originals intact. An interruption
+during source removal retains the verified archive copies; retries reuse them.
+Stop any legacy Bonsai downloader/server before a manual
+migration restart. The service uses the existing rsync/coreutils tools because
+this is a one-time filesystem migration, rather than a new backend service.
 
 Monitor the initial download with:
 

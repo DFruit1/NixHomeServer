@@ -29,7 +29,35 @@
 set -euo pipefail
 
 TESTS_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-HEALTH="$TESTS_REPO_ROOT/scripts/hermes/kanban-board-health.sh"
+# The seam for installed copies. The whole suite exercises exactly the script
+# this names -- the executable check below makes a typo in the override a loud
+# failure rather than a silent fallback to the source copy -- so an installed
+# copy is held to the same contract without editing it or rewriting this file.
+HEALTH="${BOARD_HEALTH_SCRIPT:-$TESTS_REPO_ROOT/scripts/hermes/kanban-board-health.sh}"
+
+# Detach from any inherited dispatcher worker identity and credential fallback
+# before the fixture is built.
+#
+# Every case below already selects its own root with an explicit HERMES_ROOT,
+# HERMES_BOARD and HERMES_REPO, so the fixture outranks the ambient environment.
+# These unsets are the belt to that pair of braces: they keep a future reader from
+# having to reason about whether an inherited pin can redirect the fixture, and
+# the guard below fails loudly if one is re-added.
+#
+#   HERMES_DELEGATED_CHILD_CONTEXT / HERMES_KANBAN_TASK  the worker write fence
+#   HERMES_KANBAN_DB / HERMES_KANBAN_BOARD               board-resolution pins that
+#                                                        outrank an explicit --board
+#   OPENCODE_API_KEY                                     a live credential fallback
+#
+# These are worker-identity and credential-fallback settings, not locations or
+# fixtures, so dropping them can only reach this test's own mktemp tree.
+unset HERMES_DELEGATED_CHILD_CONTEXT HERMES_KANBAN_TASK HERMES_KANBAN_DB \
+  HERMES_KANBAN_BOARD OPENCODE_API_KEY
+for pin in HERMES_DELEGATED_CHILD_CONTEXT HERMES_KANBAN_TASK HERMES_KANBAN_DB \
+  HERMES_KANBAN_BOARD OPENCODE_API_KEY; do
+  [[ -z "${!pin:-}" ]] ||
+    { echo "❌ $pin is still set; the fixture is not isolated from the ambient worker environment" >&2; exit 1; }
+done
 
 fail() {
   echo "❌ $1" >&2
@@ -62,8 +90,8 @@ CREATE TABLE tasks (
   block_kind TEXT,
   consecutive_failures INTEGER DEFAULT 0
 );
-CREATE TABLE task_comments (id INTEGER PRIMARY KEY, task_id TEXT, body TEXT, created_at INTEGER);
-CREATE TABLE task_events (id INTEGER PRIMARY KEY, task_id TEXT, kind TEXT, created_at INTEGER);
+CREATE TABLE task_comments (id INTEGER PRIMARY KEY, task_id TEXT, body TEXT, created_at INTEGER, author TEXT);
+CREATE TABLE task_events (id INTEGER PRIMARY KEY, task_id TEXT, kind TEXT, created_at INTEGER, payload TEXT);
 CREATE TABLE task_runs (id INTEGER PRIMARY KEY, task_id TEXT, outcome TEXT, started_at INTEGER, ended_at INTEGER);
 CREATE TABLE task_links (parent_id TEXT, child_id TEXT, PRIMARY KEY (parent_id, child_id));
 SQL
@@ -73,7 +101,9 @@ now="$(date +%s)"
 # A card the dispatcher cannot spawn into: ready, unclaimed, stale past the
 # threshold. This is the exact shape of the bug that went unnoticed for hours.
 sqlite3 "$DB" "INSERT INTO tasks VALUES
-  ('t_stale','stale ready card','local-implementer','ready',$now-7200,$now-7200,NULL,NULL,$now-7200,0,'',0);"
+  ('t_stale','stale ready card','local-implementer','ready',$now-7200,$now-7200,NULL,NULL,$now-7200,0,'',0);
+INSERT INTO tasks VALUES
+  ('t_mid_age','mid-age unclaimed ready card','local-implementer','ready',$now-2100,$now-2100,NULL,NULL,$now-2100,0,'',0);"
 
 # A card a worker is actively heartbeating. Must never be reported. Its worker
 # pid is this test's own shell, which is definitionally alive.
@@ -125,8 +155,8 @@ sqlite3 "$DB" "INSERT INTO tasks VALUES
   ('t_gaveup','worker ran out of budget','standard-implementer','blocked',$now-7200,$now-7200,NULL,NULL,$now-7200,0,'',2);
 INSERT INTO task_runs VALUES (163,'t_gaveup','timed_out',$now-7200,$now-3600);
 INSERT INTO task_runs VALUES (164,'t_gaveup','gave_up',$now-3600,$now-1800);
-INSERT INTO task_events VALUES (1,'t_gaveup','timed_out',$now-3600);
-INSERT INTO task_events VALUES (2,'t_gaveup','gave_up',$now-1800);
+INSERT INTO task_events VALUES (1,'t_gaveup','timed_out',$now-3600,NULL);
+INSERT INTO task_events VALUES (2,'t_gaveup','gave_up',$now-1800,NULL);
 INSERT INTO task_links VALUES ('t_gaveup','t_dep1'),('t_gaveup','t_dep2');"
 
 # A crash with no `blocked` event: the cause still has to surface, keyed on the
@@ -140,14 +170,16 @@ INSERT INTO task_runs VALUES (165,'t_crash','crashed',$now-3600,$now-3000);"
 sqlite3 "$DB" "INSERT INTO tasks VALUES
   ('t_gate','waiting on the owner','standard-implementer','blocked',$now-3600,$now-3600,NULL,NULL,$now-3600,0,'needs_input',3);
 INSERT INTO task_runs VALUES (166,'t_gate','timed_out',$now-3600,$now-3000);
-INSERT INTO task_events VALUES (3,'t_gate','blocked',$now-3000);"
+INSERT INTO task_events VALUES (3,'t_gate','blocked',$now-3000,NULL);"
 
 # Must NOT be reported: parked by the retry breaker, which owns this class and
-# escalates to triage itself after a second park.
+# escalates to triage itself after a second park. Its reason carries the supplier
+# line the breaker now writes, so the capability detector leaves it alone -- a
+# quota park is a model/provider hold, not an owner ask.
 sqlite3 "$DB" "INSERT INTO tasks VALUES
   ('t_parked','breaker-parked quota wall','local-implementer','blocked',$now-3600,$now-3600,NULL,NULL,$now-3600,1,'capability',4);
 INSERT INTO task_runs VALUES (167,'t_parked','rate_limited',$now-3600,$now-3000);
-INSERT INTO task_events VALUES (4,'t_parked','blocked',$now-3000);"
+INSERT INTO task_events VALUES (4,'t_parked','blocked',$now-3000,'{\"reason\":\"Rate-limit retry breaker: provider quota wall. Input supplier: model/provider.\"}');"
 
 # Must NOT be reported: blocked *and* rate-limited, not yet parked. The breaker
 # is the component that gives this class a stopping condition, so a second
@@ -156,7 +188,7 @@ INSERT INTO task_events VALUES (4,'t_parked','blocked',$now-3000);"
 sqlite3 "$DB" "INSERT INTO tasks VALUES
   ('t_quota','quota wall before the breaker parks it','standard-implementer','blocked',$now-3600,$now-3600,NULL,NULL,$now-3600,0,'',5);
 INSERT INTO task_runs VALUES (168,'t_quota','rate_limited',$now-3600,$now-3000);
-INSERT INTO task_events VALUES (5,'t_quota','blocked',$now-3000);"
+INSERT INTO task_events VALUES (5,'t_quota','blocked',$now-3000,NULL);"
 
 # Must NOT be reported: a blocked worker failure somebody has already ruled on.
 # Without this guard the monitor would wake the head-coordinator every 30 minutes
@@ -165,16 +197,85 @@ INSERT INTO task_events VALUES (5,'t_quota','blocked',$now-3000);"
 sqlite3 "$DB" "INSERT INTO tasks VALUES
   ('t_handled','already ruled on','standard-implementer','blocked',$now-7200,$now-7200,NULL,NULL,$now-7200,0,'',2);
 INSERT INTO task_runs VALUES (169,'t_handled','gave_up',$now-7200,$now-3600);
-INSERT INTO task_events VALUES (6,'t_handled','gave_up',$now-3600);
-INSERT INTO task_comments VALUES (1,'t_handled','re-scoped, re-dispatching',$now-1800);"
+INSERT INTO task_events VALUES (6,'t_handled','gave_up',$now-3600,NULL);
+INSERT INTO task_comments VALUES (1,'t_handled','re-scoped, re-dispatching',$now-1800,'head-coordinator');"
 
 # Must be reported: a comment *before* the block does not count as handling it.
 # The decision predates the failure and cannot have been about it.
 sqlite3 "$DB" "INSERT INTO tasks VALUES
   ('t_stale_comment','comment predates the block','standard-implementer','blocked',$now-7200,$now-7200,NULL,NULL,$now-7200,0,'',2);
 INSERT INTO task_runs VALUES (170,'t_stale_comment','gave_up',$now-7200,$now-3600);
-INSERT INTO task_events VALUES (7,'t_stale_comment','gave_up',$now-3600);
-INSERT INTO task_comments VALUES (2,'t_stale_comment','starting on this now',$now-7000);"
+INSERT INTO task_events VALUES (7,'t_stale_comment','gave_up',$now-3600,NULL);
+INSERT INTO task_comments VALUES (2,'t_stale_comment','starting on this now',$now-7000,'head-coordinator');"
+
+# --- a capability hold that names no input supplier ---------------------------
+#
+# The instruction rule requires every capability hold to name the supplier of its
+# missing input. A capability card whose reason carries no `Input supplier:` line
+# is exactly the shape that hid four owner asks -- parked as "technical" and never
+# surfaced. These pin detection, the explicit-classification exemption, and the
+# self-clearing comment guard.
+sqlite3 "$DB" "INSERT INTO tasks VALUES
+  ('t_cap_owner','owner-sourced gap parked as capability','head-coordinator','blocked',$now-3600,$now-3600,NULL,NULL,$now-3600,0,'capability',0);
+INSERT INTO task_events VALUES (20,'t_cap_owner','blocked',$now-3000,'{\"reason\":\"Runtime STOP: the original owner must supply the exact installed binding; no repository records it.\"}');"
+
+# Must NOT be reported: the hold named its supplier, so it is already classified.
+sqlite3 "$DB" "INSERT INTO tasks VALUES
+  ('t_cap_classified','capability hold that named its supplier','head-coordinator','blocked',$now-3600,$now-3600,NULL,NULL,$now-3600,0,'capability',0);
+INSERT INTO task_events VALUES (21,'t_cap_classified','blocked',$now-3000,'{\"reason\":\"Deferred scope. Input supplier: agent.\"}');"
+
+# A hold is cleared by classification, not by a comment: adding the
+# `Input supplier:` line (t_cap_classified) or reclassifying it away from
+# `capability`. A comment alone leaves it reported, which is the point -- the
+# coordinator's own "parking this" comment is what hid the four owner asks.
+
+# --- the owner answered a gate by commenting on the card ----------------------
+#
+# A comment does not change a card's status, so an answered gate stays `blocked`
+# and nothing dispatches it. These two pin the wake-up for that gap, and its
+# self-clearing property: the owner speaks last -> report; an agent replies ->
+# the finding drops out so the monitor goes quiet.
+sqlite3 "$DB" "INSERT INTO tasks VALUES
+  ('t_owner_last','owner answered, nobody replied','project-auditor','blocked',$now-3600,$now-3600,NULL,NULL,$now-3600,0,'needs_input',0);
+INSERT INTO task_comments VALUES (3,'t_owner_last','I choose A',$now-1800,'desktop');"
+
+sqlite3 "$DB" "INSERT INTO tasks VALUES
+  ('t_owner_handled','owner answered, agent replied','project-auditor','blocked',$now-3600,$now-3600,NULL,NULL,$now-3600,0,'needs_input',0);
+INSERT INTO task_comments VALUES (4,'t_owner_handled','I choose A',$now-2400,'desktop');
+INSERT INTO task_comments VALUES (5,'t_owner_handled','recorded A; unblocking',$now-1800,'head-coordinator');"
+
+# The owner has three author spellings on the board, and `desktop` is only one
+# of them: an owner answering from the CLI writes `user`, and an owner-recorded
+# decision marker writes `owner`. A detector that knows only `desktop` misses
+# those answers and the gate starves -- the exact silence this finding breaks.
+sqlite3 "$DB" "INSERT INTO tasks VALUES
+  ('t_owner_cli','owner answered from the CLI','project-auditor','blocked',$now-3600,$now-3600,NULL,NULL,$now-3600,0,'needs_input',0);
+INSERT INTO task_comments VALUES (6,'t_owner_cli','Owner decision: A',$now-1800,'user');
+INSERT INTO tasks VALUES
+  ('t_owner_marker','owner recorded a decision marker','project-auditor','blocked',$now-3600,$now-3600,NULL,NULL,$now-3600,0,'needs_input',0);
+INSERT INTO task_comments VALUES (7,'t_owner_marker','Decision owner: head-coordinator - delegate','$now-1800','owner');"
+
+# A second board. The owner-comment detector is cross-board, so a gate answered
+# on a board other than $HERMES_BOARD must still surface -- that is the whole
+# point of enumerating every board's DB.
+OTHER_DIR="$fixture/hermes/kanban/boards/otherboard"
+mkdir -p "$OTHER_DIR"
+sqlite3 "$OTHER_DIR/kanban.db" <<'SQL'
+CREATE TABLE tasks (id TEXT PRIMARY KEY, title TEXT, assignee TEXT, status TEXT, created_at INTEGER, started_at INTEGER, claim_lock TEXT, worker_pid INTEGER, last_heartbeat_at INTEGER, block_recurrences INTEGER DEFAULT 0, block_kind TEXT, consecutive_failures INTEGER DEFAULT 0);
+CREATE TABLE task_comments (id INTEGER PRIMARY KEY, task_id TEXT, body TEXT, created_at INTEGER, author TEXT);
+CREATE TABLE task_events (id INTEGER PRIMARY KEY, task_id TEXT, kind TEXT, created_at INTEGER, payload TEXT);
+CREATE TABLE task_runs (id INTEGER PRIMARY KEY, task_id TEXT, outcome TEXT, started_at INTEGER, ended_at INTEGER);
+CREATE TABLE task_links (parent_id TEXT, child_id TEXT, PRIMARY KEY (parent_id, child_id));
+SQL
+sqlite3 "$OTHER_DIR/kanban.db" "INSERT INTO tasks VALUES
+  ('t_other','owner answered on another board','project-auditor','blocked',$now-3600,$now-3600,NULL,NULL,$now-3600,0,'needs_input',0);
+INSERT INTO task_comments VALUES (1,'t_other','I choose B',$now-1800,'desktop');"
+
+# The capability detector is cross-board too: an unclassified hold on another
+# board must surface, because the owner ask it hides is not board-scoped.
+sqlite3 "$OTHER_DIR/kanban.db" "INSERT INTO tasks VALUES
+  ('t_cap_other','owner-sourced capability on another board','head-coordinator','blocked',$now-3600,$now-3600,NULL,NULL,$now-3600,0,'capability',0);
+INSERT INTO task_events VALUES (1,'t_cap_other','blocked',$now-3000,'{\"reason\":\"needs the original owner\"}');"
 
 cat >"$fixture/hermes/config.yaml" <<'YAML'
 kanban:
@@ -200,11 +301,14 @@ grep -q '^READY_NO_WORKER t_stale local-implementer ' <<<"$out" ||
   fail "did not report the stale unclaimed ready card"
 pass "reports a stale unclaimed ready card"
 
-grep -q 'age=gt4h hard=yes' <<<"$out" ||
-  fail "a 2h-old card should be past the hard threshold"
-pass "flags a card past the hard threshold as hard=yes"
+grep -q 'age=1-4h hard=yes' <<<"$out" ||
+  fail "a 2h-old card should report its real age and be past the hard threshold"
+pass "reports the real age and flags a card past the hard threshold"
 
-grep -q 'hard=no' <<<"$out" && fail "the only stale card here is old; hard=no should not appear"
+grep -q '^READY_NO_WORKER t_mid_age local-implementer age=30-60m hard=no$' <<<"$out" ||
+  fail "a ~35m-old card should report age=30-60m"
+pass "reports the 30-60m age bucket"
+
 pass "hard threshold boundary behaves"
 
 grep -q '^DEAD_WORKER t_dead ' <<<"$out" ||
@@ -264,6 +368,50 @@ grep -q 't_handled' <<<"$out" &&
   fail "reported a block somebody already ruled on; the monitor would never go quiet"
 pass "leaves gates, breaker-parked cards and already-handled blocks alone"
 
+# --- the owner comment the head-coordinator must act on -----------------------
+#
+# The owner answers a gate by commenting on the card, but a comment does not
+# change status, so the answered gate stays blocked and nothing dispatches it.
+# The finding is self-clearing: once the coordinator records its reading the
+# latest author is no longer the owner, and the monitor goes quiet.
+grep -q '^OWNER_COMMENT_UNACTED testboard t_owner_last project-auditor block=needs_input ' <<<"$out" ||
+  fail "did not report a blocked card whose latest comment is the owner's"
+pass "reports a blocked card the owner answered but nobody acted on"
+
+grep -q '^OWNER_COMMENT_UNACTED otherboard t_other project-auditor block=needs_input ' <<<"$out" ||
+  fail "the owner-comment detector is not cross-board: a finding on another board was missed"
+pass "reports an owner-answered gate on every board, not just HERMES_BOARD"
+
+grep -q 't_owner_handled' <<<"$out" &&
+  fail "reported a card an agent already replied to; the monitor would never go quiet"
+pass "clears the owner-comment finding once an agent has replied"
+
+grep -q '^OWNER_COMMENT_UNACTED testboard t_owner_cli project-auditor block=needs_input ' <<<"$out" ||
+  fail "did not report an owner answer written by the owner's CLI client (author=user)"
+pass "reports an owner answer recorded as user"
+
+grep -q '^OWNER_COMMENT_UNACTED testboard t_owner_marker project-auditor block=needs_input ' <<<"$out" ||
+  fail "did not report an owner-recorded decision marker (author=owner)"
+pass "reports an owner answer recorded as owner"
+
+# --- capability holds that name no input supplier -----------------------------
+#
+# A capability card whose reason carries no `Input supplier:` line may be an owner
+# ask parked as technical -- the exact failure this detector exists for. An
+# explicitly classified hold, and one the coordinator already commented on, must
+# not be reported, or the monitor would never go quiet.
+grep -q '^CAPABILITY_OWNER_INPUT testboard t_cap_owner head-coordinator ' <<<"$out" ||
+  fail "did not report an unclassified capability hold"
+pass "reports a capability hold that names no input supplier"
+
+grep -q '^CAPABILITY_OWNER_INPUT otherboard t_cap_other head-coordinator ' <<<"$out" ||
+  fail "the capability detector is not cross-board: a hold on another board was missed"
+pass "reports an unclassified capability hold on every board"
+
+grep -q 't_cap_classified' <<<"$out" &&
+  fail "reported a capability hold that named its supplier"
+pass "leaves a classified capability hold alone"
+
 # An outcome outside the known vocabulary must not put arbitrary text into a
 # byte-hashed line.
 sqlite3 "$DB" "INSERT INTO task_runs VALUES (171,'t_crash','Crashed (pid 12345)',$now-3000,$now-2900);"
@@ -316,7 +464,15 @@ pass "output is byte-stable across runs"
 # woken forever on a board that has nothing wrong with it.
 
 sqlite3 "$DB" "DELETE FROM tasks;"
+# The owner-comment detector is cross-board, so the second board must be cleared
+# too or its finding keeps the report non-empty. A fresh mirror epoch for every
+# board is part of the healthy case since the staleness detector was added.
+sqlite3 "$OTHER_DIR/kanban.db" "DELETE FROM tasks;"
+mkdir -p "$fixture/hermes/state/durability-sync"
+printf '%s\n' "$now" >"$fixture/hermes/state/durability-sync/testboard.epoch"
+printf '%s\n' "$now" >"$fixture/hermes/state/durability-sync/otherboard.epoch"
 [[ -z "$(run_health)" ]] || fail "a clean board still produced findings"
+rm -rf "$fixture/hermes/state/durability-sync"
 pass "a clean board produces no findings"
 
 # --- graceful behaviour on a broken install ---------------------------------
@@ -325,5 +481,1103 @@ if [[ "$(HERMES_ROOT=/nonexistent HERMES_BOARD=nope "$HEALTH")" != "BOARD_MISSIN
   fail "did not report a missing board clearly"
 fi
 pass "reports a missing board instead of failing"
+
+# --- per-profile caps: the repair this suite exists to pin --------------------
+#
+# `max_in_progress_per_profile` is a map on this board, and the scalar reader
+# could not see one. It resolved to nothing, fell back to 2 for every lane, and
+# the monitor then reported a healthy four-worker standard-implementer lane as
+# over-cap while never reporting the genuinely capped one-at-a-time
+# local-implementer lane. Both halves are pinned below, plus every fallback
+# shape and every way a nested map can be misread, so a regression cannot hide
+# behind a config the test never writes.
+#
+# A fresh, clean board is used per case: the cap belongs to the config, and a
+# leftover row from an earlier case would make the count assertions mean
+# something they do not.
+#
+# Output is captured into a variable rather than piped into `grep -q`: under
+# `set -o pipefail`, grep's early exit on first match sends SIGPIPE to the
+# script, whose failure would then be read as "the assertion did not hold".
+
+write_config() { cat >"$fixture/hermes/config.yaml"; }
+
+reset_board() {
+  sqlite3 "$DB" "DELETE FROM tasks;"
+  sqlite3 "$DB" "DELETE FROM task_runs;"
+  sqlite3 "$DB" "DELETE FROM task_events;"
+  sqlite3 "$DB" "DELETE FROM task_comments;"
+  sqlite3 "$DB" "DELETE FROM task_links;"
+}
+
+# One running row for an assignee. `$$` keeps every worker pid alive: a dead pid
+# would surface as a DEAD_WORKER finding and make the case about the wrong thing.
+add_running() {
+  sqlite3 "$DB" "INSERT INTO tasks VALUES
+    ('$1','running $3','$2','running',$now-600,$now-600,'dsaw:1',$$,$now-30,0,'',0);"
+}
+add_ready() {
+  sqlite3 "$DB" "INSERT INTO tasks VALUES
+    ('$1','ready $3','$2','ready',$now-600,$now-600,NULL,NULL,$now-30,0,'',0);"
+}
+
+# case: a map whose standard lane holds cap 4. Three running workers is head
+# room, not an alarm -- this is the false positive that started all of this.
+write_config <<'YAML'
+kanban:
+  review_dispatch: true
+  max_in_progress_per_profile:
+    default: 2
+    local-implementer: 1
+    standard-implementer: 4
+    project-auditor: 1
+cron:
+  catch_up_missed: true
+YAML
+reset_board
+add_running t_map_std1 standard-implementer a
+add_running t_map_std2 standard-implementer b
+add_running t_map_std3 standard-implementer c
+map_out="$(run_health)"
+grep -q '^PROFILE_SATURATED standard-implementer' <<<"$map_out" &&
+  fail "three of four standard-implementer workers were reported as saturated"
+grep -q '^PROFILE_OVER_CAP standard-implementer' <<<"$map_out" &&
+  fail "three of four standard-implementer workers were reported as over cap"
+pass "a map lane under its own cap emits neither cap alarm"
+
+# Same lane at exactly its cap with work queued behind it: equality is
+# saturation, because the dispatcher will not spend a slot that is taken.
+add_running t_map_std4 standard-implementer d
+add_ready t_map_stdq standard-implementer q
+map_out="$(run_health)"
+grep -q '^PROFILE_SATURATED standard-implementer ready=1 running=4 cap=4' <<<"$map_out" ||
+  fail "four of four standard-implementer workers with a queued card is saturation"
+pass "reports saturation at the lane's own cap with the resolved cap printed"
+
+# And one past it, with nothing queued: over-cap is independent of queueing.
+add_running t_map_std5 standard-implementer e
+map_out="$(run_health)"
+grep -q '^PROFILE_OVER_CAP standard-implementer running=5 cap=4 ' <<<"$map_out" ||
+  fail "five standard-implementer workers must be reported as over cap 4"
+pass "reports over-cap past the lane's own cap"
+
+# case: equality at cap 1, the smallest cap there is. One running worker plus a
+# queued card is saturation, and one worker alone must not be anything. A test
+# that only ever observes two workers in a cap-1 lane never proves the boundary,
+# because two is already past it.
+reset_board
+write_config <<'YAML'
+kanban:
+  max_in_progress_per_profile:
+    default: 2
+    local-implementer: 1
+YAML
+add_running t_map_eq1 local-implementer a
+map_out="$(run_health)"
+grep -q 'PROFILE_SATURATED local-implementer' <<<"$map_out" &&
+  fail "one worker in a cap-1 lane with nothing queued is not saturation"
+grep -q 'PROFILE_OVER_CAP local-implementer' <<<"$map_out" &&
+  fail "one worker at a cap of 1 is not over cap"
+add_ready t_map_eq1q local-implementer q
+map_out="$(run_health)"
+grep -q '^PROFILE_SATURATED local-implementer ready=1 running=1 cap=1' <<<"$map_out" ||
+  fail "one worker at a cap of 1 with a queued card is equality, which is saturation"
+pass "reports saturation at equality in a cap-1 lane"
+
+# Two workers in the same cap-1 lane, still with nothing queued: this is the
+# case the old global SQL `HAVING COUNT(*) > cap` deleted before the loop could
+# compare it, so the assertion proves the per-lane comparison is really per lane.
+reset_board
+write_config <<'YAML'
+kanban:
+  max_in_progress_per_profile:
+    default: 2
+    local-implementer: 1
+YAML
+add_running t_map_loc1 local-implementer a
+add_running t_map_loc2 local-implementer b
+map_out="$(run_health)"
+grep -q '^PROFILE_OVER_CAP local-implementer running=2 cap=1 ' <<<"$map_out" ||
+  fail "two workers in a cap-1 lane must be over cap even with nothing queued"
+pass "a cap-1 lane over cap is reported without the global SQL cutoff"
+
+# case: an assignee the map does not name uses the `default` fallback. The
+# default is written different from the hardcoded 2, so a resolver that just
+# prints its own constant without reading the config still fails here.
+reset_board
+write_config <<'YAML'
+kanban:
+  max_in_progress_per_profile:
+    default: 3
+    standard-implementer: 4
+YAML
+add_running t_map_def1 feature-reviewer a
+add_running t_map_def2 feature-reviewer b
+add_running t_map_def3 feature-reviewer c
+add_running t_map_def4 feature-reviewer d
+map_out="$(run_health)"
+grep -q '^PROFILE_OVER_CAP feature-reviewer running=4 cap=3 ' <<<"$map_out" ||
+  fail "an unlisted lane must use the map default, not the hardcoded fallback"
+pass "an assignee absent from the map falls back to its default entry"
+
+# case: a quoted wildcard `*` instead of `default`. Same role, different
+# spelling, and the fallback value differs from 2 for the same reason.
+reset_board
+write_config <<'YAML'
+kanban:
+  max_in_progress_per_profile:
+    "*": 4
+    local-implementer: 1
+YAML
+add_running t_map_star1 project-auditor a
+add_running t_map_star2 project-auditor b
+add_running t_map_star3 project-auditor c
+add_running t_map_star4 project-auditor d
+add_ready t_map_starq project-auditor q
+map_out="$(run_health)"
+grep -q '^PROFILE_OVER_CAP project-auditor' <<<"$map_out" &&
+  fail "four workers under a quoted wildcard cap of 4 is not over cap"
+grep -q '^PROFILE_SATURATED project-auditor ready=1 running=4 cap=4' <<<"$map_out" ||
+  fail "a quoted wildcard fallback was not resolved for the unlisted lane"
+pass "a quoted wildcard key resolves as the map fallback"
+
+# case: no fallback at all. An unlisted lane then has no cap to resolve and
+# keeps the conservative default, which is exactly what this asserts: three
+# running workers cross cap 2, and the emitted cap names that 2 rather than any
+# number the config might have supplied.
+reset_board
+write_config <<'YAML'
+kanban:
+  max_in_progress_per_profile:
+    local-implementer: 1
+YAML
+add_running t_map_nodef1 feature-reviewer a
+add_running t_map_nodef2 feature-reviewer b
+add_running t_map_nodef3 feature-reviewer c
+map_out="$(run_health)"
+grep -q '^PROFILE_OVER_CAP feature-reviewer running=3 cap=2 ' <<<"$map_out" ||
+  fail "a lane with no entry and no default must fall back to 2"
+pass "a map entry with no fallback keeps the conservative default"
+
+# case: an absent config must not invent a cap for a lane the map named, and
+# must not take the whole report down with it.
+reset_board
+rm -f "$fixture/hermes/config.yaml"
+add_running t_map_abs1 standard-implementer a
+add_running t_map_abs2 standard-implementer b
+add_running t_map_abs3 standard-implementer c
+add_ready t_map_absq standard-implementer q
+sqlite3 "$DB" "INSERT INTO tasks VALUES
+  ('t_map_absdead','gone','local-implementer','running',$now-600,$now-600,'dsaw:1',99998,$now-30,0,'',0);"
+map_out="$(run_health)"
+grep -q '^PROFILE_SATURATED standard-implementer ready=1 running=3 cap=2' <<<"$map_out" ||
+  fail "a missing config must fall back to the default cap rather than to the map"
+# A cap-config failure must not take the other detectors down with it: this one
+# is age-independent, so it cannot be blamed on a threshold that has not elapsed.
+grep -q '^DEAD_WORKER t_map_absdead local-implementer needs=re-dispatch' <<<"$map_out" ||
+  fail "a missing cap config must not disable the other detectors"
+pass "a missing config falls back without disabling the report"
+
+# case: an *unreadable* config behaves exactly like an absent one, which is the
+# only thing a monitor that runs as its own user can honestly promise. (A mode
+# 000 file is still readable to a root shell, so if this suite is ever run as
+# root the case reports itself as skipped instead of failing falsely.)
+reset_board
+write_config <<'YAML'
+kanban:
+  max_in_progress_per_profile:
+    default: 7
+    standard-implementer: 4
+YAML
+chmod 000 "$fixture/hermes/config.yaml"
+if [[ -r "$fixture/hermes/config.yaml" ]]; then
+  echo "  ⏭ unreadable-config case skipped: mode 000 is still readable here"
+  chmod 600 "$fixture/hermes/config.yaml"
+else
+  add_running t_map_unread1 standard-implementer a
+  add_running t_map_unread2 standard-implementer b
+  add_running t_map_unread3 standard-implementer c
+  add_ready t_map_unreadq standard-implementer q
+  sqlite3 "$DB" "INSERT INTO tasks VALUES
+    ('t_map_unreaddead','gone','project-auditor','running',$now-600,$now-600,'dsaw:1',99998,$now-30,0,'',0);"
+  map_out="$(run_health)"
+  chmod 600 "$fixture/hermes/config.yaml"
+  grep -q '^PROFILE_SATURATED standard-implementer ready=1 running=3 cap=2' <<<"$map_out" ||
+    fail "an unreadable config must fall back to the default cap, not guess at the file"
+  grep -q 'cap=7' <<<"$map_out" && fail "an unreadable config still supplied a cap"
+  grep -q '^DEAD_WORKER t_map_unreaddead project-auditor needs=re-dispatch' <<<"$map_out" ||
+    fail "an unreadable cap config must not disable the other detectors"
+  pass "an unreadable config falls back without disabling the report"
+fi
+
+# case: a malformed cap value. The entry is dropped, not half-parsed into a
+# number, and the rest of the map still resolves.
+reset_board
+write_config <<'YAML'
+kanban:
+  max_in_progress_per_profile:
+    default: two
+    standard-implementer: 4
+YAML
+add_running t_map_broke1 standard-implementer a
+add_running t_map_broke2 standard-implementer b
+add_running t_map_broke3 standard-implementer c
+add_running t_map_broke4 standard-implementer d
+add_ready t_map_brokeq standard-implementer q
+map_out="$(run_health)"
+grep -q '^PROFILE_SATURATED standard-implementer ready=1 running=4 cap=4' <<<"$map_out" ||
+  fail "a valid lane cap must survive a malformed sibling entry"
+pass "a malformed cap value is dropped, not trusted"
+
+reset_board
+write_config <<'YAML'
+kanban:
+  max_in_progress_per_profile:
+    default: two
+YAML
+add_running t_map_broke2x standard-implementer a
+add_running t_map_broke2y standard-implementer b
+add_ready t_map_broke2q standard-implementer q
+map_out="$(run_health)"
+grep -q '^PROFILE_SATURATED standard-implementer ready=1 running=2 cap=2' <<<"$map_out" ||
+  fail "a malformed default must fall back to the conservative default"
+pass "a malformed fallback keeps the conservative default"
+
+# case: malformed nesting. The entries are written at the key's own indentation
+# instead of nested under it, so they are not entries of this map at all. A
+# bounded scan that reads "the next indented lines" would take them anyway; the
+# right answer is the conservative fallback.
+reset_board
+write_config <<'YAML'
+kanban:
+  max_in_progress_per_profile:
+  default: 2
+  standard-implementer: 4
+cron:
+  catch_up_missed: true
+YAML
+add_running t_map_nestbad1 standard-implementer a
+add_running t_map_nestbad2 standard-implementer b
+add_running t_map_nestbad3 standard-implementer c
+map_out="$(run_health)"
+grep -q 'cap=4' <<<"$map_out" &&
+  fail "entries at the key's own indentation are not a nested map"
+grep -q '^PROFILE_OVER_CAP standard-implementer running=3 cap=2 ' <<<"$map_out" ||
+  fail "malformed nesting must degrade to the conservative default"
+pass "malformed nesting degrades to the conservative default"
+
+# case: a valid map with a deeper-nested, unrelated block inside it. The
+# descendants of `unrelated` are that key's value, not lane caps of this map, so
+# `standard-implementer` must keep the `default` cap instead of inheriting 9.
+reset_board
+write_config <<'YAML'
+kanban:
+  max_in_progress_per_profile:
+    default: 2
+    unrelated:
+      standard-implementer: 9
+YAML
+add_running t_map_deep1 standard-implementer a
+add_running t_map_deep2 standard-implementer b
+add_running t_map_deep3 standard-implementer c
+map_out="$(run_health)"
+grep -q 'cap=9' <<<"$map_out" && fail "a deeper-nested key became a lane cap"
+grep -q '^PROFILE_OVER_CAP standard-implementer running=3 cap=2 ' <<<"$map_out" ||
+  fail "a nested descendant must not displace the immediate map entry"
+pass "only immediate map entries are caps; deeper nested keys are ignored"
+
+# case: the setting's own name reused as a *scalar* nested inside an unrelated
+# kanban key. That scalar is `unrelated`'s value, not this board's cap; reading
+# it at any depth lifted the cap to 9 for every lane and suppressed a real cap-2
+# overage. The setting is only read as an immediate child of `kanban:`.
+reset_board
+write_config <<'YAML'
+kanban:
+  unrelated:
+    max_in_progress_per_profile: 9
+  max_in_progress_per_profile:
+    default: 2
+YAML
+add_running t_map_ns1 standard-implementer a
+add_running t_map_ns2 standard-implementer b
+add_running t_map_ns3 standard-implementer c
+map_out="$(run_health)"
+grep -q 'cap=9' <<<"$map_out" && fail "a nested same-named scalar became the board cap"
+grep -q '^PROFILE_OVER_CAP standard-implementer running=3 cap=2 ' <<<"$map_out" ||
+  fail "a nested same-named scalar suppressed the real cap-2 overage"
+pass "a nested same-named scalar is not the board cap"
+
+# case: the setting's own name reused as a *map* nested inside an unrelated
+# kanban key. Its lane entries are that key's value, so the walk must not
+# descend into them; reading the nested map first resolved
+# `standard-implementer` to 9 and suppressed the real cap-2 overage.
+reset_board
+write_config <<'YAML'
+kanban:
+  unrelated:
+    max_in_progress_per_profile:
+      standard-implementer: 9
+  max_in_progress_per_profile:
+    default: 2
+YAML
+add_running t_map_nm1 standard-implementer a
+add_running t_map_nm2 standard-implementer b
+add_running t_map_nm3 standard-implementer c
+map_out="$(run_health)"
+grep -q 'cap=9' <<<"$map_out" && fail "a nested same-named map supplied a lane cap"
+grep -q '^PROFILE_OVER_CAP standard-implementer running=3 cap=2 ' <<<"$map_out" ||
+  fail "a nested same-named map suppressed the real cap-2 overage"
+pass "a nested same-named map is not the board cap"
+
+# case: a quoted numeric value is a YAML string, and the dispatcher's
+# normalization skips any entry that is not `isinstance(int)`. Accepting `"9"`
+# would silently lift the cap to 9 and suppress a real cap-2 overage.
+reset_board
+write_config <<'YAML'
+kanban:
+  max_in_progress_per_profile:
+    default: 2
+    standard-implementer: "9"
+YAML
+add_running t_map_q1 standard-implementer a
+add_running t_map_q2 standard-implementer b
+add_running t_map_q3 standard-implementer c
+map_out="$(run_health)"
+grep -q 'cap=9' <<<"$map_out" && fail "a quoted string value became a numeric cap"
+grep -q '^PROFILE_OVER_CAP standard-implementer running=3 cap=2 ' <<<"$map_out" ||
+  fail "a quoted value must be dropped so the default applies"
+pass "a quoted cap value is not an integer cap"
+
+# case: a comment line inside the block. YAML ignores comments wherever they
+# sit, so one between two entries must not end the map -- ending it left the
+# second lane at `default` and raised a false over-cap alarm.
+reset_board
+write_config <<'YAML'
+kanban:
+  max_in_progress_per_profile:
+    default: 2
+  # this comment sits at the key's indentation and must not end the map
+    standard-implementer: 4
+YAML
+add_running t_map_cmt1 standard-implementer a
+add_running t_map_cmt2 standard-implementer b
+add_running t_map_cmt3 standard-implementer c
+add_running t_map_cmt4 standard-implementer d
+add_ready t_map_cmtq standard-implementer q
+map_out="$(run_health)"
+grep -q 'cap=2' <<<"$map_out" && fail "a comment line ended the cap map"
+grep -q '^PROFILE_SATURATED standard-implementer ready=1 running=4 cap=4' <<<"$map_out" ||
+  fail "the entry after the comment was not read"
+pass "a comment line does not end the cap map"
+
+# case: more than one space before an inline comment. YAML ends a plain scalar
+# at the `#`, so the cap is 4; trimming before the comment was stripped left the
+# earlier spaces behind as `4 `, which failed the integer test, dropped the
+# valid entry and raised a false cap-2 overage.
+reset_board
+write_config <<'YAML'
+kanban:
+  max_in_progress_per_profile:
+    default: 2
+    standard-implementer: 4  # two spaces before this comment
+YAML
+add_running t_map_ms1 standard-implementer a
+add_running t_map_ms2 standard-implementer b
+add_running t_map_ms3 standard-implementer c
+add_running t_map_ms4 standard-implementer d
+add_ready t_map_msq standard-implementer q
+map_out="$(run_health)"
+grep -q 'cap=2' <<<"$map_out" && fail "a multi-space comment dropped a valid cap"
+grep -q '^PROFILE_SATURATED standard-implementer ready=1 running=4 cap=4' <<<"$map_out" ||
+  fail "the cap before a multi-space comment was not read"
+pass "multiple spaces before an inline comment keep the cap"
+
+# case: tabs in the separation before an inline comment. Strict YAML forbids a
+# tab there (PyYAML: "found character '\t' that cannot start any token"), so
+# neither spelling can come out of a config hermes itself loaded; what is pinned
+# is that the comment strip uses a whitespace class rather than literal spaces,
+# and that the whitespace it leaves behind is trimmed. The lane whose tab is
+# followed by spaces is the one the rejected code dropped to the fallback; the
+# tab-only lane fails any fix that hardcodes spaces. The tab is written with
+# $'...' because a heredoc would keep it invisible.
+reset_board
+tab_cap_config=$'kanban:\n  max_in_progress_per_profile:\n    default: 2\n    standard-implementer: 4\t  # tab then spaces\n    project-auditor: 3\t# tab only\n'
+write_config <<<"$tab_cap_config"
+add_running t_map_tab1 standard-implementer a
+add_running t_map_tab2 standard-implementer b
+add_running t_map_tab3 standard-implementer c
+add_running t_map_tab4 standard-implementer d
+add_ready t_map_tabq standard-implementer q
+add_running t_map_tabp1 project-auditor a
+add_running t_map_tabp2 project-auditor b
+add_running t_map_tabp3 project-auditor c
+add_ready t_map_tabpq project-auditor q
+map_out="$(run_health)"
+grep -q 'cap=2' <<<"$map_out" && fail "a tab comment dropped a valid cap"
+grep -q '^PROFILE_SATURATED standard-implementer ready=1 running=4 cap=4' <<<"$map_out" ||
+  fail "the cap before a tab and spaces was not read"
+grep -q '^PROFILE_SATURATED project-auditor ready=1 running=3 cap=3' <<<"$map_out" ||
+  fail "the cap before a tab comment was not read"
+pass "a tab before an inline comment keeps the cap"
+
+# case: a quoted value followed by an inline comment. It is still a YAML string,
+# not a number, and stripping the comment must not leave a bare `"9` that the
+# integer test then accepts.
+reset_board
+write_config <<'YAML'
+kanban:
+  max_in_progress_per_profile:
+    default: 2
+    standard-implementer: "9"  # quoted, so still not an int
+YAML
+add_running t_map_qc1 standard-implementer a
+add_running t_map_qc2 standard-implementer b
+add_running t_map_qc3 standard-implementer c
+map_out="$(run_health)"
+grep -q 'cap=9' <<<"$map_out" && fail "a quoted value with a comment became a numeric cap"
+grep -q '^PROFILE_OVER_CAP standard-implementer running=3 cap=2 ' <<<"$map_out" ||
+  fail "a quoted value must still be dropped so the default applies"
+pass "quoted-value rejection survives inline-comment handling"
+
+# case: a cap magnitude that cannot fit Bash's signed 64-bit arithmetic. Left
+# unbounded it wraps, and a wrapped cap turns an uncapped lane into a finding;
+# it is bounded instead, so the lane simply is not over cap.
+reset_board
+write_config <<'YAML'
+kanban:
+  max_in_progress_per_profile:
+    default: 2
+    standard-implementer: 18446744073709551615
+YAML
+add_running t_map_big1 standard-implementer a
+add_running t_map_big2 standard-implementer b
+add_running t_map_big3 standard-implementer c
+map_out="$(run_health)"
+grep -q '18446744073709551615' <<<"$map_out" && fail "a wrapped magnitude reached the report"
+grep -q '^PROFILE_OVER_CAP standard-implementer' <<<"$map_out" &&
+  fail "an effectively unlimited cap must not report the lane as over cap"
+pass "a cap too large for Bash arithmetic is bounded, not wrapped"
+
+# The scalar form is bounded the same way. It applies to every lane, so nothing
+# may be reported as over cap while it is in effect.
+reset_board
+write_config <<'YAML'
+kanban:
+  max_in_progress_per_profile: 99999999999999999999
+YAML
+add_running t_map_bigscalar1 standard-implementer a
+add_running t_map_bigscalar2 feature-reviewer b
+add_running t_map_bigscalar3 project-auditor c
+map_out="$(run_health)"
+grep -q '99999999999999999999' <<<"$map_out" && fail "a wrapped scalar reached the report"
+grep -q '^PROFILE_OVER_CAP' <<<"$map_out" &&
+  fail "a bounded scalar cap must not report any lane as over cap"
+pass "an oversized scalar cap is bounded, not wrapped"
+
+# case: a scalar cap inside a config that otherwise looks nested still applies
+# to every lane -- this is the shape, not the nesting depth, that decides.
+reset_board
+write_config <<'YAML'
+kanban:
+  max_in_progress_per_profile: 5
+YAML
+add_running t_map_nest1 feature-reviewer a
+add_running t_map_nest2 feature-reviewer b
+add_running t_map_nest3 feature-reviewer c
+add_running t_map_nest4 feature-reviewer d
+add_running t_map_nest5 feature-reviewer e
+add_ready t_map_nestq feature-reviewer q
+map_out="$(run_health)"
+grep -q '^PROFILE_SATURATED feature-reviewer ready=1 running=5 cap=5' <<<"$map_out" ||
+  fail "a scalar cap inside a config that otherwise looks nested must still apply"
+pass "a scalar cap still applies to every lane"
+
+# case: numeric zero splits by shape, matching the dispatcher rather than an
+# intuition about it. In a *map* the dispatcher skips any entry that is not
+# `int and > 0` (kanban_db_dispatch.py:2289), so a 0 there is not a cap: it is
+# dropped and the lane falls through to the wildcard. Reporting cap=0 would be
+# an over-cap alarm for a lane the dispatcher runs at full speed.
+reset_board
+write_config <<'YAML'
+kanban:
+  max_in_progress_per_profile:
+    default: 2
+    standard-implementer: 0
+YAML
+add_running t_map_zero1 standard-implementer a
+add_running t_map_zero2 standard-implementer b
+add_running t_map_zero3 standard-implementer c
+map_out="$(run_health)"
+grep -q '^PROFILE_OVER_CAP standard-implementer running=3 cap=0 ' <<<"$map_out" &&
+  fail "a map entry of 0 is dropped by the dispatcher, not honoured as cap 0"
+grep -q '^PROFILE_OVER_CAP standard-implementer running=3 cap=2 ' <<<"$map_out" ||
+  fail "a dropped map entry must fall through to the wildcard fallback"
+pass "a map entry of 0 is dropped and falls back, as the dispatcher does"
+
+# A *scalar* zero is the historic behaviour and is deliberately preserved: the
+# base script accepted it, and making it positive-only would be a cap-policy
+# change rather than this reporting repair.
+reset_board
+write_config <<'YAML'
+kanban:
+  max_in_progress_per_profile: 0
+YAML
+add_running t_map_scalarzero standard-implementer a
+map_out="$(run_health)"
+grep -q '^PROFILE_OVER_CAP standard-implementer running=1 cap=0 ' <<<"$map_out" ||
+  fail "a scalar zero cap must keep its historic meaning"
+pass "a scalar zero cap is preserved"
+
+# A leading-zero scalar is not a canonical decimal and is not read as one:
+# `(( ))` reads `011` as octal, and errors outright on `08` -- which would turn
+# every comparison false and make a capped lane look healthy. Rather than guess
+# between YAML's reading and Bash's, it degrades to the documented fallback, so
+# the assertion is that the lane is not silently uncapped by an octal misread.
+reset_board
+write_config <<'YAML'
+kanban:
+  max_in_progress_per_profile: 011
+YAML
+add_running t_map_octal1 feature-reviewer a
+add_running t_map_octal2 feature-reviewer b
+add_running t_map_octal3 feature-reviewer c
+map_out="$(run_health)"
+grep -q 'cap=9' <<<"$map_out" && fail "a leading-zero scalar was read as octal"
+grep -q '^PROFILE_OVER_CAP feature-reviewer running=3 cap=2 ' <<<"$map_out" ||
+  fail "a non-canonical scalar must degrade to the conservative default"
+pass "a leading-zero scalar degrades rather than being read as octal"
+
+# case: unrelated keys must not masquerade as cap entries. A sibling kanban key
+# and a key in another top-level block that both happen to name a profile have
+# to leave the lane's cap alone.
+reset_board
+write_config <<'YAML'
+kanban:
+  review_dispatch: true
+  max_in_progress_per_profile:
+    default: 2
+  dispatch_stale_timeout_seconds: 5400
+cron:
+  standard-implementer: 9
+other:
+  local-implementer: 8
+YAML
+add_running t_map_key1 standard-implementer a
+add_running t_map_key2 standard-implementer b
+add_ready t_map_keyq standard-implementer q
+map_out="$(run_health)"
+grep -q 'cap=9' <<<"$map_out" && fail "a key from another top-level block became a cap"
+grep -q 'cap=8' <<<"$map_out" && fail "a key from an unrelated block became a cap"
+grep -q '^PROFILE_SATURATED standard-implementer ready=1 running=2 cap=2' <<<"$map_out" ||
+  fail "a sibling kanban key was consumed as a cap entry"
+pass "unrelated and out-of-block keys do not masquerade as caps"
+
+# case: a reserved profile name is not a lane. It passes the id grammar but
+# `validate_profile_name` rejects it (profiles.py:275), so the dispatcher drops
+# the key; keeping it would let a name that can never name a lane impose its
+# cap. The check is made on a lane actually named `root`/`sudo`, because that is
+# the only reading under which a retained entry changes a finding -- asserting
+# on an unrelated lane cannot detect retention at all.
+reset_board
+write_config <<'YAML'
+kanban:
+  max_in_progress_per_profile:
+    default: 3
+    root: 1
+    sudo: 1
+YAML
+add_running t_map_root1 root a
+add_running t_map_root2 root b
+add_running t_map_root3 root c
+add_running t_map_root4 root d
+add_running t_map_sudo1 sudo a
+add_running t_map_sudo2 sudo b
+add_running t_map_sudo3 sudo c
+add_running t_map_sudo4 sudo d
+map_out="$(run_health)"
+grep -q 'cap=1' <<<"$map_out" && fail "a reserved name was retained as a cap key"
+grep -q '^PROFILE_OVER_CAP root running=4 cap=3 ' <<<"$map_out" ||
+  fail "a dropped reserved key must fall through to the wildcard fallback"
+grep -q '^PROFILE_OVER_CAP sudo running=4 cap=3 ' <<<"$map_out" ||
+  fail "a dropped reserved key must fall through to the wildcard fallback"
+pass "reserved profile names are dropped rather than used as cap keys"
+
+# case: both wildcard aliases at once. The dispatcher folds `default` and `*`
+# onto the same key while iterating the mapping in document order, so the later
+# spelling wins; the fallback must track the same rule in both orders.
+reset_board
+write_config <<'YAML'
+kanban:
+  max_in_progress_per_profile:
+    default: 3
+    "*": 4
+YAML
+add_running t_map_alias1 project-auditor a
+add_running t_map_alias2 project-auditor b
+add_running t_map_alias3 project-auditor c
+add_running t_map_alias4 project-auditor d
+add_ready t_map_aliasq project-auditor q
+map_out="$(run_health)"
+grep -q 'cap=3' <<<"$map_out" && fail "the later wildcard alias did not win"
+grep -q '^PROFILE_SATURATED project-auditor ready=1 running=4 cap=4' <<<"$map_out" ||
+  fail "the later wildcard alias must supply the fallback"
+pass "the later wildcard alias wins"
+
+reset_board
+write_config <<'YAML'
+kanban:
+  max_in_progress_per_profile:
+    "*": 4
+    default: 3
+YAML
+add_running t_map_alias5 project-auditor a
+add_running t_map_alias6 project-auditor b
+add_running t_map_alias7 project-auditor c
+add_running t_map_alias8 project-auditor d
+add_ready t_map_alias2q project-auditor q
+map_out="$(run_health)"
+grep -q 'cap=4' <<<"$map_out" && fail "the later wildcard alias did not win"
+grep -q '^PROFILE_SATURATED project-auditor ready=1 running=4 cap=3' <<<"$map_out" ||
+  fail "the later wildcard alias must supply the fallback"
+pass "wildcard alias precedence follows document order"
+
+# case: a canonical-spelling key. The dispatcher lowercases a config key before
+# matching it to a lane (`normalize_profile_name`), so `Standard-Implementer`
+# bounds the standard-implementer lane; not doing so would leave that lane
+# uncapped and silently widen it to the wildcard.
+reset_board
+write_config <<'YAML'
+kanban:
+  max_in_progress_per_profile:
+    default: 2
+    Standard-Implementer: 4
+YAML
+add_running t_map_case1 standard-implementer a
+add_running t_map_case2 standard-implementer b
+add_running t_map_case3 standard-implementer c
+add_running t_map_case4 standard-implementer d
+add_ready t_map_caseq standard-implementer q
+map_out="$(run_health)"
+grep -q 'cap=2' <<<"$map_out" && fail "a title-cased lane key did not bound its lane"
+grep -q '^PROFILE_SATURATED standard-implementer ready=1 running=4 cap=4' <<<"$map_out" ||
+  fail "a title-cased config key must resolve to its lowercase lane"
+pass "a title-cased cap key resolves to its lane"
+
+# --- output stability with a map config --------------------------------------
+#
+# The scalar byte-stability check above runs against the legacy shape. The map
+# is the shape the cron actually reads, and it must hash the same way: this is
+# the property the whole monitor wiring depends on.
+
+reset_board
+write_config <<'YAML'
+kanban:
+  max_in_progress_per_profile:
+    default: 2
+    local-implementer: 1
+    standard-implementer: 4
+    project-auditor: 1
+YAML
+add_running t_stable_std standard-implementer a
+add_running t_stable_loc local-implementer b
+add_ready t_stable_q local-implementer q
+map_first="$(run_health | sha256sum)"
+sleep 2
+map_second="$(run_health | sha256sum)"
+[[ "$map_first" == "$map_second" ]] ||
+  fail "the map-config report is not byte-stable; the cron monitor would never suppress"
+pass "the map-config report is byte-stable across runs"
+
+# --- durability mirror staleness -----------------------------------------------
+#
+# The durability-sync cron records each board's last successful mirror as an
+# epoch under state/durability-sync/. A mirror that has gone stale leaves the
+# board workstation-only with no wake-up anywhere else: the sync's failure
+# delivery is local and its per-tick failures self-clear from the job log, so
+# this line is the only persistent signal. It must appear for a missing epoch
+# (never mirrored, or the cron stopped before its first success) and for a
+# stale one, carry no age (a time-stable line wakes the coordinator once, not
+# at every bucket rollover), and self-clear on the next successful mirror.
+state_dir="$fixture/hermes/state/durability-sync"
+mirror_out="$(run_health)"
+grep -q '^MIRROR_STALE testboard needs=verify-durability-sync-cron' <<<"$mirror_out" ||
+  fail "a board with no recorded mirror epoch was not reported as stale"
+grep -q '^MIRROR_STALE otherboard ' <<<"$mirror_out" ||
+  fail "the mirror-staleness detector is not cross-board"
+pass "reports a board whose mirror has never succeeded"
+
+mkdir -p "$state_dir"
+printf '%s\n' "$now" >"$state_dir/testboard.epoch"
+printf '%s\n' "$now" >"$state_dir/otherboard.epoch"
+fresh_out="$(run_health)"
+grep -q 'MIRROR_STALE' <<<"$fresh_out" &&
+  fail "a freshly mirrored board was reported as stale"
+pass "a fresh mirror epoch silences the finding"
+
+printf '%s\n' "$((now - 3601))" >"$state_dir/testboard.epoch"
+stale_out="$(run_health)"
+grep -q '^MIRROR_STALE testboard ' <<<"$stale_out" ||
+  fail "a mirror an hour stale (default threshold) was not reported"
+grep -q '^MIRROR_STALE otherboard ' <<<"$stale_out" &&
+  fail "a fresh epoch on another board leaked into a stale report"
+pass "reports a mirror past the default staleness threshold"
+
+# The boundary is inclusive, and the knob is honoured, so an operator can
+# tighten the threshold without editing the script.
+printf '%s\n' "$((now - 99))" >"$state_dir/testboard.epoch"
+boundary_out="$(BOARD_HEALTH_MIRROR_STALE_SEC=100 run_health)"
+grep -q '^MIRROR_STALE testboard ' <<<"$boundary_out" ||
+  fail "the staleness boundary is not inclusive at the configured threshold"
+printf '%s\n' "$((now - 100))" >"$state_dir/testboard.epoch"
+exact_out="$(BOARD_HEALTH_MIRROR_STALE_SEC=100 run_health)"
+grep -q '^MIRROR_STALE testboard ' <<<"$exact_out" ||
+  fail "an epoch exactly at the threshold must still count as stale"
+grep -q 'age=' <<<"$stale_out" &&
+  fail "the MIRROR_STALE line carries an age; it must be time-stable"
+pass "honours the threshold knob with an inclusive boundary, without ages"
+
+# --- underscore and dot prefixed boards are not boards -------------------------
+#
+# Every board enumerator in this script used to skip exactly `_archived`, while
+# the rest of the fleet skips any `_` or `.` prefixed slug. A hypothetical
+# `_staging` or `.draft` board would have been reported by the steward but
+# never mirrored or monitored. The cross-board detectors must agree with the
+# durability sync's rule.
+mkdir -p "$fixture/hermes/kanban/boards/_staging" "$fixture/hermes/kanban/boards/.draft"
+: >"$fixture/hermes/kanban/boards/_staging/kanban.db"
+: >"$fixture/hermes/kanban/boards/.draft/kanban.db"
+prefixed_out="$(run_health)"
+grep -q '_staging' <<<"$prefixed_out" &&
+  fail "an underscore-prefixed board leaked into the report"
+grep -q '\.draft' <<<"$prefixed_out" &&
+  fail "a dot-prefixed board leaked into the report"
+grep -q 'SCAN_UNAVAILABLE' <<<"$prefixed_out" &&
+  fail "a bookkeeping board produced a scan-unavailable line; it must be skipped entirely"
+pass "skips underscore and dot prefixed boards entirely"
+
+rm -rf "$fixture/hermes/kanban/boards/_staging" "$fixture/hermes/kanban/boards/.draft" "$state_dir"
+
+# --- installed-instruction drift ----------------------------------------------
+#
+# Installed prompts that lag tracked source are silent by construction: the
+# running profile keeps reading the old text, the repository keeps the new one,
+# and an installer nobody re-ran looks exactly like an installer with nothing to
+# do. The monitor answers that by running install-instruction-policy.py --check
+# from the checkout, which is read-only.
+#
+# The fixture is a real convergence, not a stub: the tracked installer writes a
+# full hermes root here, so "no drift" means the installer agreed with itself
+# file for file. The repository is a symlinked scripts/hermes -- the installer
+# resolves its tracked source through __file__, so it still reads the real
+# source, while the fixture repo is deliberately not a git checkout (the
+# durability detector would otherwise fetch on every case below).
+#
+# What is pinned: the finding appears while the tree has never been installed,
+# disappears once it converges, returns as exactly one file when a single
+# installed file is hand-edited, stays one path-free line so the report remains
+# byte-stable, and never claims drift for a run that died before it could
+# report. A silent miss here is the whole point of the plan item.
+INSTALLER="$TESTS_REPO_ROOT/scripts/hermes/install-instruction-policy.py"
+[[ -f "$INSTALLER" ]] || fail "install-instruction-policy.py is missing from the checkout"
+mkdir -p "$fixture/repo/scripts"
+ln -s "$TESTS_REPO_ROOT/scripts/hermes" "$fixture/repo/scripts/hermes"
+
+run_health_repo() {
+  HERMES_ROOT="$fixture/hermes" HERMES_BOARD=testboard \
+    HERMES_REPO="$fixture/repo" "$HEALTH"
+}
+
+uninstalled_out="$(run_health_repo)"
+grep -q '^INSTRUCTION_DRIFT files=[1-9][0-9]* needs=apply-install-instruction-policy$' \
+  <<<"$uninstalled_out" ||
+  fail "a hermes root with no installed instructions was not reported as drift: $uninstalled_out"
+pass "reports installed prompts that lag tracked source"
+
+HERMES_ROOT="$fixture/hermes" python3 -B "$INSTALLER" >/dev/null 2>&1 ||
+  fail "the tracked installer could not converge the fixture hermes root"
+clean_out="$(run_health_repo)"
+grep -q '^INSTRUCTION_DRIFT' <<<"$clean_out" &&
+  fail "a converged hermes root was still reported as drift"
+pass "a converged hermes root reports no drift"
+
+printf 'hand edit\n' >>"$fixture/hermes/scripts/hermes-fleet-policy.md"
+drifted_out="$(run_health_repo)"
+grep -q '^INSTRUCTION_DRIFT files=1 needs=apply-install-instruction-policy$' <<<"$drifted_out" ||
+  fail "one hand-edited installed file was not reported as exactly one drift: $drifted_out"
+drift_line="$(grep '^INSTRUCTION_DRIFT' <<<"$drifted_out" || true)"
+grep -q '/' <<<"$drift_line" &&
+  fail "the drift finding leaks a path; the report must stay byte-stable: $drift_line"
+pass "reports one bounded path-free line with the drift count"
+
+# Restoring the file clears the finding, so the line is genuinely about the
+# tree and not a once-per-root latch.
+HERMES_ROOT="$fixture/hermes" python3 -B "$INSTALLER" >/dev/null 2>&1 ||
+  fail "the tracked installer could not re-converge the fixture hermes root"
+repaired_out="$(run_health_repo)"
+grep -q '^INSTRUCTION_DRIFT' <<<"$repaired_out" &&
+  fail "a re-installed tree still reported drift"
+pass "clears the finding once the installer is re-run"
+
+# A checkout whose installer cannot run is not drift: a traceback exits 1 too,
+# so the finding must say the check did not run rather than name a count.
+mkdir -p "$fixture/broken-repo/scripts/hermes"
+cp "$INSTALLER" "$fixture/broken-repo/scripts/hermes/install-instruction-policy.py"
+broken_out="$(HERMES_ROOT="$fixture/hermes" HERMES_BOARD=testboard \
+  HERMES_REPO="$fixture/broken-repo" "$HEALTH")"
+grep -q '^INSTRUCTION_DRIFT ' <<<"$broken_out" &&
+  fail "a check that could not run was reported as real drift: $broken_out"
+grep -q '^INSTRUCTION_DRIFT_UNCHECKED exit=1 needs=manual-check$' <<<"$broken_out" ||
+  fail "a check that could not run was not reported as unchecked: $broken_out"
+pass "reports a check that could not run as unchecked, not as drift"
+
+# --- installed cron-script drift (SCRIPT_DRIFT) -------------------------------
+#
+# A second installation path with the same silent-drift failure mode: the
+# cron-owned scripts (owner alerts, aging escalator, durability sync, retry
+# breaker, usage pace) are refreshed only manually by their self-installers, so
+# an installed copy nobody re-deployed runs forever unreported. The same
+# converged fixture root answers this one too, because the instruction
+# installer deploys one of those scripts (kanban-owner-alerts.py) itself.
+clean_scripts_out="$(run_health_repo)"
+grep -q '^SCRIPT_DRIFT' <<<"$clean_scripts_out" &&
+  fail "a converged hermes root was still reported as script drift: $clean_scripts_out"
+pass "a converged hermes root reports no script drift"
+
+printf 'hand edit\n' >"$fixture/hermes/scripts/kanban-owner-alerts.py"
+scripts_drifted_out="$(run_health_repo)"
+grep -q '^SCRIPT_DRIFT files=1 needs=apply-owning-installer$' <<<"$scripts_drifted_out" ||
+  fail "one hand-edited installed cron script was not reported as exactly one drift: $scripts_drifted_out"
+scripts_drift_line="$(grep '^SCRIPT_DRIFT' <<<"$scripts_drifted_out" || true)"
+grep -q '/' <<<"$scripts_drift_line" &&
+  fail "the script-drift finding leaks a path; the report must stay byte-stable: $scripts_drift_line"
+pass "reports a drifted installed cron script as one bounded line"
+
+# Re-converging clears the finding, the same repair wrap the instruction
+# finding uses: the owning installer re-runs and re-deploys, never a hand edit.
+# (Per-profile copies of this script do not exist on this fleet: the shared
+# scripts dir is the path the cron engine executes from, so the shared copy is
+# the whole surface.)
+HERMES_ROOT="$fixture/hermes" python3 -B "$INSTALLER" >/dev/null 2>&1 ||
+  fail "the tracked installer could not re-converge the fixture hermes root"
+scripts_repaired_out="$(run_health_repo)"
+grep -q '^SCRIPT_DRIFT' <<<"$scripts_repaired_out" &&
+  fail "a re-installed tree still reported script drift: $scripts_repaired_out"
+pass "clears the script-drift finding once the owning installer re-runs"
+
+# --- completed accepted work left unmerged (UNMERGED_ACCEPTED_WORK) -----------
+#
+# A done/archived card whose wt branch still carries non-equivalent commits is
+# accepted work nothing integrated: the durability checks above keep it
+# disk-safe, but only a merge or an explicit disposition closes it. The
+# detector reads the board's recorded default_workdir, never merges, and
+# counts patch-equivalent commits as integrated, so a branch already applied
+# under another shape goes quiet instead of flickering.
+
+merge_board_dir="$fixture/hermes/kanban/boards/mergetest"
+mkdir -p "$merge_board_dir"
+sqlite3 "$merge_board_dir/kanban.db" <<'SQL'
+CREATE TABLE tasks (
+  id TEXT PRIMARY KEY,
+  title TEXT,
+  assignee TEXT,
+  status TEXT,
+  created_at INTEGER,
+  started_at INTEGER,
+  workspace_path TEXT,
+  branch_name TEXT,
+  completed_at INTEGER,
+  claim_lock TEXT,
+  worker_pid INTEGER,
+  last_heartbeat_at INTEGER,
+  block_recurrences INTEGER DEFAULT 0,
+  block_kind TEXT,
+  consecutive_failures INTEGER DEFAULT 0
+);
+CREATE TABLE task_comments (id INTEGER PRIMARY KEY, task_id TEXT, body TEXT, created_at INTEGER, author TEXT);
+CREATE TABLE task_events (id INTEGER PRIMARY KEY, task_id TEXT, kind TEXT, created_at INTEGER, payload TEXT);
+CREATE TABLE task_runs (id INTEGER PRIMARY KEY, task_id TEXT, outcome TEXT, started_at INTEGER, ended_at INTEGER);
+CREATE TABLE task_links (parent_id TEXT, child_id TEXT, PRIMARY KEY (parent_id, child_id));
+SQL
+wt_repo="$fixture/wtrepo"
+mkdir -p "$wt_repo"
+git -C "$wt_repo" init --quiet --initial-branch master 2>/dev/null ||
+  git -C "$wt_repo" init --quiet
+git -C "$wt_repo" commit --allow-empty -m base --quiet
+printf '{"slug": "mergetest", "default_workdir": "%s"}\n' "$wt_repo" >"$merge_board_dir/board.json"
+
+run_merge_health() {
+  HERMES_ROOT="$fixture/hermes" HERMES_BOARD=mergetest "$HEALTH"
+}
+
+# Card with two non-equivalent commits ahead of master.
+git -C "$wt_repo" checkout --quiet -b wt/t_m1
+printf 'one\n' >"$wt_repo/m1.txt"; git -C "$wt_repo" add m1.txt
+git -C "$wt_repo" commit -m 'm1 one' --quiet
+printf 'two\n' >"$wt_repo/m1.txt"; git -C "$wt_repo" add m1.txt
+git -C "$wt_repo" commit -m 'm1 two' --quiet
+git -C "$wt_repo" checkout --quiet master
+sqlite3 "$merge_board_dir/kanban.db" "INSERT INTO tasks
+  (id,title,assignee,status,completed_at,branch_name) VALUES
+  ('t_m1','accepted and unmerged','standard-implementer','done',$now,'wt/t_m1');"
+
+out="$(run_merge_health)"
+grep -q '^UNMERGED_ACCEPTED_WORK t_m1 branch=wt/t_m1 commits=2 needs=merge-or-dispose$' <<<"$out" ||
+  fail "did not report the done card's unmerged branch: $out"
+pass "reports a done card with an unmerged branch as one bounded line"
+
+# A branch whose changes were also applied to master as a patch-equivalent
+# commit is integrated: the finding must stay silent rather than flicker.
+git -C "$wt_repo" checkout --quiet -b wt/t_m2
+printf 'reuse\n' >"$wt_repo/m2.txt"; git -C "$wt_repo" add m2.txt
+git -C "$wt_repo" commit -m 'm2 reuse' --quiet
+git -C "$wt_repo" checkout --quiet master
+GIT_COMMITTER_DATE="@$((now + 3))" GIT_AUTHOR_DATE="@$((now + 3))" \
+  git -C "$wt_repo" cherry-pick wt/t_m2 --quiet 2>/dev/null
+[[ "$(git -C "$wt_repo" rev-parse master)" != "$(git -C "$wt_repo" rev-parse wt/t_m2)" ]] ||
+  fail "setup: cherry-pick created a fast-forward, so the patch-equivalence case is untested"
+[[ -z "$(git -C "$wt_repo" cherry master wt/t_m2 | grep '^+')" ]] ||
+  fail "setup: the picked commit is not patch-equivalent"
+sqlite3 "$merge_board_dir/kanban.db" "INSERT INTO tasks
+  (id,title,assignee,status,completed_at,branch_name) VALUES
+  ('t_m2','applied under another shape','standard-implementer','done',$now,'wt/t_m2');"
+
+out="$(run_merge_health)"
+grep -q '^UNMERGED_ACCEPTED_WORK t_m2 ' <<<"$out" &&
+  fail "a patch-equivalent branch was reported as unmerged: $out"
+pass "a patch-equivalent branch counts as integrated"
+
+# An archived card and a reaped branch.
+git -C "$wt_repo" checkout --quiet -b wt/t_m3
+printf 'arch\n' >"$wt_repo/m3.txt"; git -C "$wt_repo" add m3.txt
+git -C "$wt_repo" commit -m 'm3 arch' --quiet
+git -C "$wt_repo" checkout --quiet master
+sqlite3 "$merge_board_dir/kanban.db" "INSERT INTO tasks
+  (id,title,assignee,status,completed_at,branch_name) VALUES
+  ('t_m3','archived unmerged','standard-implementer','archived',$now,'wt/t_m3');
+INSERT INTO tasks
+  (id,title,assignee,status,completed_at,branch_name) VALUES
+  ('t_m4','branch reaped','standard-implementer','done',$now,'wt/t_m4_gone');"
+
+out="$(run_merge_health)"
+grep -q '^UNMERGED_ACCEPTED_WORK t_m3 branch=wt/t_m3 commits=1 needs=merge-or-dispose$' <<<"$out" ||
+  fail "did not report an archived card's unmerged branch: $out"
+grep -q 't_m4' <<<"$out" &&
+  fail "reported a card whose branch ref no longer exists: $out"
+pass "reports archived cards and ignores reaped branches"
+
+# More findings than the line cap: the excess is summarised as one stable line.
+for i in $(seq 25); do
+  git -C "$wt_repo" checkout --quiet -b "wt/t_x$i"
+  printf "%s\n" "$i" >"$wt_repo/x.txt"; git -C "$wt_repo" add x.txt
+  git -C "$wt_repo" commit -m "x$i" --quiet
+  git -C "$wt_repo" checkout --quiet master
+  sqlite3 "$merge_board_dir/kanban.db" "INSERT INTO tasks
+    (id,title,assignee,status,completed_at,branch_name) VALUES
+    ('t_x$i','bulk $i','standard-implementer','done',$now,'wt/t_x$i');"
+done
+
+out="$(run_merge_health)"
+[[ "$(grep -c '^UNMERGED_ACCEPTED_WORK ' <<<"$out")" == "6" ]] ||
+  fail "the finding cap is not 6: $out"
+grep -q '^UNMERGED_EXCESS additional=21 needs=reduce-backlog$' <<<"$out" ||
+  fail "finding excess above the cap was not summarised: $out"
+pass "caps the per-line findings and summarises the excess"
+
+# The cap is a knob, not a constant: a smaller override names fewer items and
+# the counter follows, so a tighter report never loses the backlog itself.
+out="$(HERMES_ROOT="$fixture/hermes" HERMES_BOARD=mergetest \
+       BOARD_HEALTH_UNMERGED_TOP_N=2 "$HEALTH")"
+[[ "$(grep -c '^UNMERGED_ACCEPTED_WORK ' <<<"$out")" == "2" ]] ||
+  fail "the top-N override was not honoured: $out"
+grep -q '^UNMERGED_EXCESS additional=25 ' <<<"$out" ||
+  fail "the excess counter does not follow the override: $out"
+pass "the top-N override bounds the name list and moves the rest to the counter"
+
+for i in $(seq 25); do sqlite3 "$merge_board_dir/kanban.db" "DELETE FROM tasks WHERE id='t_x$i';"; done
+
+# A recorded merge-back disposition stops the finding without touching the
+# branch: the comment is the decision, and the branch evidence stays put.
+sqlite3 "$merge_board_dir/kanban.db" "INSERT INTO task_comments
+  (id, task_id, body, author) VALUES (1, 't_m1', 'merge-back disposition: superseded by composition merge, keep evidence only', 'head-coordinator');"
+
+out="$(run_merge_health)"
+grep -q '^UNMERGED_ACCEPTED_WORK t_m1 ' <<<"$out" &&
+  fail "a dispositioned branch was still reported: $out"
+pass "a coordinator disposition suppresses the finding"
+
+# Someone else's comment does not carry the marker's authority.
+git -C "$wt_repo" checkout --quiet -b wt/t_m5
+printf 'other\n' >"$wt_repo/m5.txt"; git -C "$wt_repo" add m5.txt
+git -C "$wt_repo" commit -m 'm5 other' --quiet
+git -C "$wt_repo" checkout --quiet master
+sqlite3 "$merge_board_dir/kanban.db" "INSERT INTO tasks
+  (id,title,assignee,status,completed_at,branch_name) VALUES
+  ('t_m5','implementer claim only','standard-implementer','done',$now,'wt/t_m5');
+INSERT INTO task_comments
+  (id, task_id, body, author) VALUES (2, 't_m5', 'merge-back disposition: let me handle it', 'standard-implementer');"
+
+out="$(run_merge_health)"
+grep -q '^UNMERGED_ACCEPTED_WORK t_m5 ' <<<"$out" ||
+  fail "a non-coordinator comment released the branch as if dispositioned"
+pass "only the head-coordinator authored marker is authoritative"
+
+# --- classification-audit findings are capped like the unmerged list ----------
+#
+# The audit runs on every board each tick; a backlog of misclassified blocks
+# must stay triageable in one coordinator wake, so the groups are capped at
+# CLASSIFICATION_TOP_N (default 4) and the remainder is one count line. A
+# dedicated single-board fixture keeps the group arithmetic exact.
+
+cls_board_dir="$fixture/clshermes/kanban/boards/clstest"
+mkdir -p "$cls_board_dir" "$fixture/clshermes/scripts"
+cp "$TESTS_REPO_ROOT/scripts/hermes/kanban-classification-audit.py" \
+   "$fixture/clshermes/scripts/kanban-classification-audit.py"
+sqlite3 "$cls_board_dir/kanban.db" <<'SQL'
+CREATE TABLE tasks (id TEXT PRIMARY KEY, title TEXT, assignee TEXT, status TEXT, body TEXT,
+  created_at INTEGER, started_at INTEGER, workspace_path TEXT, branch_name TEXT,
+  completed_at INTEGER, claim_lock TEXT, worker_pid INTEGER, last_heartbeat_at INTEGER,
+  block_recurrences INTEGER DEFAULT 0, block_kind TEXT, consecutive_failures INTEGER DEFAULT 0);
+CREATE TABLE task_comments (id INTEGER PRIMARY KEY, task_id TEXT, body TEXT, created_at INTEGER, author TEXT);
+CREATE TABLE task_events (id INTEGER PRIMARY KEY, task_id TEXT, kind TEXT, created_at INTEGER, payload TEXT);
+CREATE TABLE task_runs (id INTEGER PRIMARY KEY, task_id TEXT, outcome TEXT, started_at INTEGER, ended_at INTEGER);
+CREATE TABLE task_links (parent_id TEXT, child_id TEXT, PRIMARY KEY (parent_id, child_id));
+SQL
+printf '{"slug": "clstest", "default_workdir": ""}\n' >"$cls_board_dir/board.json"
+for i in $(seq 7); do
+  sqlite3 "$cls_board_dir/kanban.db" "INSERT INTO tasks
+    (id,title,assignee,status,block_kind) VALUES
+    ('t_c$i','orphan dependency $i','standard-implementer','blocked','dependency');"
+done
+
+cls_out="$(HERMES_ROOT="$fixture/clshermes" HERMES_BOARD=clstest "$HEALTH")"
+[[ "$(grep -c '^CLASSIFICATION_AUDIT   \[' <<<"$cls_out")" == "4" ]] ||
+  fail "the classification finding cap is not 4: $cls_out"
+(( $(grep -c '^CLASSIFICATION_AUDIT ' <<<"$cls_out") == 13 )) ||
+  fail "audit output line count does not match the 4-finding cap: $cls_out"
+grep -q '^CLASSIFICATION_AUDIT_EXCESS additional=3 needs=resolve-and-recheck$' <<<"$cls_out" ||
+  fail "excess classification findings were not summarised: $cls_out"
+pass "caps classification findings and summarises the excess"
+
+cls_out="$(HERMES_ROOT="$fixture/clshermes" HERMES_BOARD=clstest \
+           BOARD_HEALTH_CLASSIFICATION_TOP_N=1 "$HEALTH")"
+[[ "$(grep -c '^CLASSIFICATION_AUDIT   \[' <<<"$cls_out")" == "1" ]] ||
+  fail "the classification top-N override was not honoured: $cls_out"
+grep -q '^CLASSIFICATION_AUDIT_EXCESS additional=6 ' <<<"$cls_out" ||
+  fail "the classification excess counter does not follow its override: $cls_out"
+pass "the classification top-N override bounds the findings"
+
+# --- the installed copy runs the same suite ----------------------------------
+#
+# The suite is only evidence about the script it exercised. BOARD_HEALTH_SCRIPT
+# resolved HEALTH before the first fixture ran, so every case above is exactly
+# the contract of that file. This prints which one it was, so a receipt is not
+# ambiguous about what was actually verified.
+if [[ "$HEALTH" != "$TESTS_REPO_ROOT/scripts/hermes/kanban-board-health.sh" ]]; then
+  echo "▶ exercised copy: $HEALTH"
+  echo "  ✅ every map/scalar check above ran against this file"
+else
+  echo "  (set BOARD_HEALTH_SCRIPT=<path> to run this suite against an installed"
+  echo "   copy of the monitor)"
+fi
 
 echo "▶ kanban board health: all checks passed"

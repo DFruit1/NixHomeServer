@@ -139,9 +139,9 @@ in
     isNormalUser = true;
     extraGroups = [ "wheel" ];
     shell = pkgs.bashInteractive;
-    openssh.authorizedKeys.keys = [
-      vars.serverSSHPubKey
-    ];
+    # sshExtraPublicKeys carries additional operator devices (for example a phone
+    # SSH client) without replacing the workstation key in sshPublicKey.
+    openssh.authorizedKeys.keys = [ vars.serverSSHPubKey ] ++ vars.serverSSHExtraPubKeys;
   };
 
   # Keep the generated recovery credential functional for local-console login

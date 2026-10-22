@@ -28,6 +28,7 @@ let
       appUserEmails = { }; # Optional email map for extra app users, for example { alice = "alice@example.test"; }.
       adminEmail = "admin@example.test"; # Single contact address used for both ACME and the Kanidm admin account.
       sshPublicKey = "ssh-ed25519 CHANGE_ME example-admin-key"; # Public key authorized for the local Unix administrator.
+      sshExtraPublicKeys = [ ]; # Additional single-line public keys (for example a phone SSH client) authorized for the local Unix administrator alongside sshPublicKey.
       localAdminUser = "admin"; # Local Unix SSH/sudo account for bootstrap and operations.
       localAdminSudo = "bootstrap-nopasswd"; # Sudo policy for that account: "bootstrap-nopasswd" grants NOPASSWD ALL (the only mode the unattended deploy flow supports); "password-authenticated" removes that grant and keeps sudo behind the reconciled local-console password.
       authSessionExpirySeconds = 7776000; # Maximum Kanidm authentication-session lifetime in seconds (90 days). Also caps native-app silent refresh.
@@ -65,6 +66,11 @@ let
         triggerPercent = 85; # Reclaim logs, aged tmpfiles, and Nix store generations at 85% used; user data is never touched.
         monitorPaths = [ "/" ]; # Filesystems watched for capacity; user-data pools are intentionally excluded.
         journalVacuumTime = "7d"; # Journal retention kept while under pressure; normal journald retention is 30 days.
+      };
+      tempCleanup = {
+        enable = true; # Daily reclaim of Hermes caches, logs, and dormant scratch on the server.
+        maxAgeDays = 14; # Retention for caches, logs, and generated development output.
+        scratchAgeDays = 30; # Retention for dormant Hermes profile scratch directories.
       };
       storageCapacityAlerts = {
         enable = true; # Alert when watched filesystems cross capacity thresholds; this never deletes anything.

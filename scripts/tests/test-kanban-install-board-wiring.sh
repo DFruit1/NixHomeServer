@@ -36,6 +36,30 @@ set -euo pipefail
 TESTS_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 INSTALLER="$TESTS_REPO_ROOT/scripts/hermes/install-board-wiring.sh"
 
+# Detach from any inherited dispatcher worker identity and credential fallback
+# before the fixture is built.
+#
+# The installer is driven with an explicit HERMES_ROOT and a fake `hermes` first
+# on PATH, so the fixture already outranks the ambient environment. These unsets
+# are the belt to that pair of braces: they keep a future reader from having to
+# reason about whether an inherited pin can redirect the fixture, and the guard
+# below fails loudly if one is re-added.
+#
+#   HERMES_DELEGATED_CHILD_CONTEXT / HERMES_KANBAN_TASK  the worker write fence
+#   HERMES_KANBAN_DB / HERMES_KANBAN_BOARD               board-resolution pins that
+#                                                        outrank an explicit --board
+#   OPENCODE_API_KEY                                     a live credential fallback
+#
+# These are worker-identity and credential-fallback settings, not locations or
+# fixtures, so dropping them can only reach this test's own mktemp tree.
+unset HERMES_DELEGATED_CHILD_CONTEXT HERMES_KANBAN_TASK HERMES_KANBAN_DB \
+  HERMES_KANBAN_BOARD OPENCODE_API_KEY
+for pin in HERMES_DELEGATED_CHILD_CONTEXT HERMES_KANBAN_TASK HERMES_KANBAN_DB \
+  HERMES_KANBAN_BOARD OPENCODE_API_KEY; do
+  [[ -z "${!pin:-}" ]] ||
+    { echo "❌ $pin is still set; the fixture is not isolated from the ambient worker environment" >&2; exit 1; }
+done
+
 fail() {
   echo "❌ $1" >&2
   exit 1
@@ -58,8 +82,20 @@ for lane in "${LANES[@]}"; do
 done
 
 # The two SOUL.md files the installer inspects, already carrying every section it
-# looks for, so a clean fixture is genuinely clean.
-printf '## Board health\n\nSee scripts/hermes/kanban-board-health.sh.\n' \
+# looks for, so a clean fixture is genuinely clean: the compact post-shortening
+# design where the SOUL keeps the pointer and the standing rules and the
+# installed coordinator reference carries the Board health finding table.
+mkdir -p "$HERMES_FIXTURE/scripts"
+printf '%s\n' \
+  '## Deployment and recovery' \
+  '' \
+  'Before deployment, read the reference. Run:' \
+  '' \
+  '    nix run .#deploy -- --action test' \
+  '' \
+  'Health output is a wake signal; consult the reference Board health table' \
+  '(including WORKER_FAILED_BLOCKED) before graph repair. Never clear' \
+  'quota-breaker holds or swap models/lanes to evade them.' \
   >"$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md"
 # One grouped append: the retry-breaker rule and the WORKER_FAILED_BLOCKED policy
 # the drift check below looks for.
@@ -70,8 +106,41 @@ printf '%s\n' \
   'scripts/hermes/kanban-retry-breaker.sh parks a card; do not move it.' \
   '8. **WORKER_FAILED_BLOCKED** - re-scope the card and re-dispatch it.' \
   >>"$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md"
-printf '## Whole-change-set deploy review\n' \
-  >"$HERMES_FIXTURE/profiles/project-auditor/SOUL.md"
+# The coordinator reference is the detail half: its Board health table carries a
+# row per finding the monitor emits, and the feature-reviewer SOUL keeps the
+# whole-set deploy review section the installer checks for.
+printf '%s\n' \
+  '# Coordinator procedures' \
+  '' \
+  '## Board health' \
+  '' \
+  '| Finding | Action |' \
+  '|---|---|' \
+  '| WORKER_FAILED_BLOCKED | Re-scope the card and re-dispatch it. |' \
+  '| OWNER_COMMENT_UNACTED | Record the owner answer and unblock. |' \
+  '| CAPABILITY_OWNER_INPUT | Classify the supplier or author a gate. |' \
+  '| MIRROR_STALE | Inspect the durability-sync cron and route the repair. |' \
+  '| INSTRUCTION_DRIFT | Route the installer re-run and verify with its --check. |' \
+  '| INSTRUCTION_DRIFT_UNCHECKED | Inspect the installer and interpreter, report internally. |' \
+  '| SCRIPT_DRIFT | Re-run the owning installer and verify with its --check. |' \
+  '' \
+  'The installed kanban-retry-breaker.sh parks repeated provider failures.' \
+  >"$HERMES_FIXTURE/scripts/hermes-coordinator-reference.md"
+printf '### Whole-set deploy review\n' \
+  >"$HERMES_FIXTURE/profiles/feature-reviewer/SOUL.md"
+
+# The local-implementer profile config carries the context pin this installer
+# verifies against the repo's served slot size (contextSize / parallel from
+# the real configuration.nix, so the expected value is genuine, not mirrored).
+cat >"$HERMES_FIXTURE/profiles/local-implementer/config.yaml" <<'YAML'
+model:
+  context_length: 98304
+kanban:
+  max_in_progress: 8
+  max_in_progress_per_profile:
+    default: 2
+    local-implementer: 1
+YAML
 
 write_config() {
   cat >"$HERMES_FIXTURE/config.yaml" <<YAML
@@ -120,6 +189,18 @@ if [[ "${1:-}" == cron && "${2:-}" == list ]]; then
   printf '    Monitor:   %s\n' "${FAKE_H_MONITOR:-kanban-board-health.sh}"
   printf '    Workdir:   %s\n' "${FAKE_H_WORKDIR:?}"
   printf '    Next run:  2026-10-04T18:46:30+11:00\n'
+  if [[ "$profile" == head-coordinator ]]; then
+    # The coordinator usage-pace monitor. 60m matches the installer's wiring
+    # check; the default must not cite $TESTS_REPO_ROOT here because this fake
+    # runs as a separate process where that plain shell variable is unbound
+    # (set -u) and the render would die mid-list, tripping the installer's
+    # preflight into "Cannot inspect cron jobs".
+    printf '\n  %s [active]\n' "35cd46e68e0d2"
+    printf '    Name:      usage pace check\n'
+    printf '    Schedule:  %s\n' "${FAKE_U_SCHEDULE:-every 60m}"
+    printf '    Monitor:   %s\n' "${FAKE_U_MONITOR:-usage-pace.py}"
+    printf '    Workdir:   %s\n' "${FAKE_U_WORKDIR:-$(pwd)}"
+  fi
   if [[ "$profile" == default ]]; then
     printf '\n  %s [active]\n' "a4290015937b"
     printf '    Name:      %s\n' "kanban durability sync"
@@ -130,6 +211,13 @@ if [[ "${1:-}" == cron && "${2:-}" == list ]]; then
     printf '    Name:      %s\n' "kanban retry breaker"
     printf '    Schedule:  %s\n' "${FAKE_B_SCHEDULE:-every 15m}"
     printf '    Script:    %s\n' "${FAKE_B_SCRIPT:-kanban-retry-breaker.sh}"
+    printf '    Workdir:   %s\n' "${FAKE_B_WORKDIR:?}"
+  fi
+  if [[ "$profile" == "${FAKE_DUPLICATE_PROFILE:-}" ]]; then
+    printf '\n  %s [active]\n' "deadbeef1234"
+    printf '    Name:      %s\n' "${FAKE_DUPLICATE_NAME:?}"
+    printf '    Schedule:  every 15m\n'
+    printf '    Script:    kanban-retry-breaker.sh\n'
     printf '    Workdir:   %s\n' "${FAKE_B_WORKDIR:?}"
   fi
   exit 0
@@ -224,6 +312,59 @@ grep -q 'cron edit' "$FAKE_HERMES_LOG" &&
   fail "--check edited a cron job; the log shows: $(cat "$FAKE_HERMES_LOG")"
 pass "--check creates and edits nothing"
 
+# --- duplicate managed jobs must stop before any installation writes ---------
+#
+# A name-to-id map used to silently keep the last matching job. Both schedules
+# then remained enabled while --check claimed the wiring was healthy. Refuse an
+# ambiguous singleton in either mode; choosing a survivor is an operator action.
+# Leave a separate config repair pending to prove refusal happens before writes.
+fixture_snapshot() {
+  python3 - "$HERMES_FIXTURE" <<'PY'
+import hashlib
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+for path in sorted(root.rglob('*')):
+    kind = 'directory' if path.is_dir() else hashlib.sha256(path.read_bytes()).hexdigest()
+    print(path.relative_to(root), path.stat().st_mode, kind)
+PY
+}
+
+cp "$HERMES_FIXTURE/config.yaml" "$fixture/duplicate-config.bak"
+sed -i 's/dispatch_stale_timeout_seconds: 5400/dispatch_stale_timeout_seconds: 123/' \
+  "$HERMES_FIXTURE/config.yaml"
+for singleton in \
+  'head-coordinator|kanban board health|3a860e9db444' \
+  'default|kanban durability sync|a4290015937b' \
+  'default|kanban retry breaker|101dd0d6f734'; do
+  IFS='|' read -r duplicate_profile duplicate_name original_id <<<"$singleton"
+  for mode in check apply; do
+    args=()
+    [[ "$mode" == check ]] && args=(--check)
+    before="$(fixture_snapshot)"
+    : >"$FAKE_HERMES_LOG"
+    if duplicate_out="$(FAKE_DUPLICATE_PROFILE="$duplicate_profile" \
+      FAKE_DUPLICATE_NAME="$duplicate_name" run_installer "${args[@]}" 2>&1)"; then
+      fail "$mode accepted duplicate '$duplicate_name' jobs in $duplicate_profile"
+    fi
+    if ! grep -qi 'duplicate' <<<"$duplicate_out" ||
+      ! grep -qF "$duplicate_name" <<<"$duplicate_out" ||
+      ! grep -qF "$duplicate_profile" <<<"$duplicate_out" ||
+      ! grep -qF "$original_id" <<<"$duplicate_out" ||
+      ! grep -qF 'deadbeef1234' <<<"$duplicate_out"; then
+      fail "$mode duplicate diagnostic omitted the profile, name or job IDs: $duplicate_out"
+    fi
+    [[ "$(fixture_snapshot)" == "$before" ]] ||
+      fail "$mode changed the fixture before refusing duplicate '$duplicate_name' jobs"
+    if grep -Eq 'cron (create|edit|delete|remove|pause|resume)' "$FAKE_HERMES_LOG"; then
+      fail "$mode mutated cron while refusing duplicate '$duplicate_name' jobs"
+    fi
+  done
+done
+cp "$fixture/duplicate-config.bak" "$HERMES_FIXTURE/config.yaml"
+pass "refuses every duplicate managed cron name before check or apply mutates anything"
+
 # --- a drifted cron job is reported, with the command that fixes it ---------
 #
 # Presence was detected by a grep on the job name, so a job running the wrong
@@ -261,29 +402,101 @@ grep -q -- "--monitor-script 'kanban-board-health.sh'" <<<"$monitor_out" ||
 pass "names --monitor-script for the monitored job"
 
 # The board-health detector and the policy that tells the head-coordinator what
-# to do about it live in two different files, one in the repo and one in the
-# profile directory. Nothing connects them at runtime, so if the policy is lost
-# the finding still fires and the coordinator has no rule to follow -- which is
-# the same gap as a missing cron job: the work happens and nothing is acted on.
-# Pin the drift check so the two cannot be edited apart.
+# to do about it live in two different files: the detector in the repo, the
+# policy in the installed coordinator reference, and the SOUL pointer between
+# them. Nothing connects them at runtime, so if the policy is lost the finding
+# still fires and the coordinator has no rule to follow -- which is the same gap
+# as a missing cron job: the work happens and nothing is acted on. Pin all
+# three halves so they cannot be edited apart: the SOUL pointer, the reference
+# section, and one reference row per finding the monitor emits.
 cp "$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md" "$fixture/soul.bak"
-grep -v 'WORKER_FAILED_BLOCKED' "$fixture/soul.bak" \
+cp "$HERMES_FIXTURE/scripts/hermes-coordinator-reference.md" "$fixture/reference.bak"
+
+grep -v 'Board health table' "$fixture/soul.bak" \
   >"$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md"
-soul_out="$(run_installer --check)"
-grep -q 'would change: head-coordinator SOUL.md has no policy for WORKER_FAILED_BLOCKED' <<<"$soul_out" ||
-  fail "a SOUL.md with no policy for the finding was not reported: $soul_out"
-pass "reports a missing policy for the board-health finding"
-
-# It is prose, not code: apply mode must tell the operator to add it rather than
-# implying it installed something, and must not rewrite the file itself.
-apply_out="$(run_installer)"
-grep -q 'ACTION: add a WORKER_FAILED_BLOCKED rule' <<<"$apply_out" ||
-  fail "apply mode did not tell the operator to add the prose policy by hand: $apply_out"
-grep -q 'WORKER_FAILED_BLOCKED' "$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md" &&
-  fail "apply mode rewrote SOUL.md, which is prose policy rather than installed code"
-pass "apply mode asks for the prose policy instead of pretending to install it"
-
+pointer_out="$(run_installer --check)"
+grep -q 'would change: head-coordinator SOUL.md is missing the Board health table pointer' \
+  <<<"$pointer_out" ||
+  fail "a SOUL.md with no Board health pointer was not reported: $pointer_out"
+pass "reports a SOUL.md missing the Board health table pointer"
 cp "$fixture/soul.bak" "$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md"
+
+grep -v 'quota-breaker' "$fixture/soul.bak" \
+  >"$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md"
+quota_out="$(run_installer --check)"
+grep -q 'would change: head-coordinator SOUL.md has no quota-breaker hold policy' \
+  <<<"$quota_out" ||
+  fail "a SOUL.md with no quota-breaker rule was not reported: $quota_out"
+pass "reports a SOUL.md missing the quota-breaker hold policy"
+cp "$fixture/soul.bak" "$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md"
+
+rm -f "$HERMES_FIXTURE/scripts/hermes-coordinator-reference.md"
+ref_missing_out="$(run_installer --check)"
+grep -q 'MISSING: .*hermes-coordinator-reference.md' <<<"$ref_missing_out" ||
+  fail "a missing coordinator reference was not reported: $ref_missing_out"
+pass "reports a missing coordinator reference"
+cp "$fixture/reference.bak" "$HERMES_FIXTURE/scripts/hermes-coordinator-reference.md"
+
+for finding in WORKER_FAILED_BLOCKED OWNER_COMMENT_UNACTED CAPABILITY_OWNER_INPUT MIRROR_STALE INSTRUCTION_DRIFT INSTRUCTION_DRIFT_UNCHECKED; do
+  grep -v "$finding" "$fixture/reference.bak" \
+    >"$HERMES_FIXTURE/scripts/hermes-coordinator-reference.md"
+  finding_out="$(run_installer --check)"
+  grep -q "would change: coordinator reference has no policy for $finding" \
+    <<<"$finding_out" ||
+    fail "a reference with no $finding row was not reported: $finding_out"
+done
+grep -v 'kanban-retry-breaker.sh' "$fixture/reference.bak" \
+  >"$HERMES_FIXTURE/scripts/hermes-coordinator-reference.md"
+breaker_out="$(run_installer --check)"
+grep -q 'would change: coordinator reference does not mention kanban-retry-breaker.sh' \
+  <<<"$breaker_out" ||
+  fail "a reference with no breaker mention was not reported: $breaker_out"
+pass "reports a reference missing any finding row or the breaker mention"
+cp "$fixture/reference.bak" "$HERMES_FIXTURE/scripts/hermes-coordinator-reference.md"
+
+# The deploy duty: the compact SOUL keeps the 'Deployment and recovery' section.
+grep -v '## Deployment and recovery' "$fixture/soul.bak" \
+  >"$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md"
+deploy_out="$(run_installer --check)"
+grep -q "would change: head-coordinator SOUL.md is missing the '## Deployment and recovery' section" \
+  <<<"$deploy_out" ||
+  fail "a SOUL.md with no Deployment and recovery section was not reported: $deploy_out"
+pass "reports a SOUL.md missing the Deployment and recovery section"
+cp "$fixture/soul.bak" "$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md"
+
+# --- the local-implementer context pin must match the served slot -----------
+#
+# The pin is the only guard against a contextSize/parallel change on the server
+# silently breaking every local-inference request, and both ends of the
+# invariant live in files this repo does not edit. The check computes the
+# expected slot from the real configuration.nix and reports a drifted or
+# missing pin; it must never edit the profile config itself.
+
+pin_file="$HERMES_FIXTURE/profiles/local-implementer/config.yaml"
+cp "$pin_file" "$fixture/pin.bak"
+
+sed -i 's/context_length: 98304/context_length: 131072/' "$pin_file"
+pin_out="$(run_installer --check)"
+grep -q "local-implementer context_length is 131072, want 98304" <<<"$pin_out" ||
+  fail "a drifted context pin was not reported against the repo slot size: $pin_out"
+grep -q 'change configuration.nix and the pin in the same commit' <<<"$pin_out" ||
+  fail "the context-pin report does not name the same-commit rule: $pin_out"
+
+grep -v 'context_length:' "$fixture/pin.bak" >"$pin_file"
+nopin_out="$(run_installer --check)"
+grep -q 'local-implementer config.yaml pins no context_length' <<<"$nopin_out" ||
+  fail "a missing context pin was not reported: $nopin_out"
+cp "$fixture/pin.bak" "$pin_file"
+pin_ok_out="$(run_installer --check)"
+grep -q 'wiring is up to date' <<<"$pin_ok_out" ||
+  fail "a matching context pin was reported as drift: $pin_ok_out"
+pass "verifies the local-implementer context pin against the repo slot size"
+
+rm -f "$pin_file"
+nopinconfig_out="$(run_installer --check)"
+grep -q 'skip: no local-implementer config.yaml' <<<"$nopinconfig_out" ||
+  fail "an absent local-implementer config must be skipped, not drift: $nopinconfig_out"
+cp "$fixture/pin.bak" "$pin_file"
 
 # --- a missing cron job is still created in apply mode -----------------------
 
@@ -308,10 +521,10 @@ PATH="$fixture/bin-missing:$PATH" HERMES_ROOT="$HERMES_FIXTURE" "$INSTALLER" \
 grep -q 'created cron' "$fixture/create.log" ||
   fail "an absent cron job was not created: $(cat "$fixture/create.log")"
 created="$(grep -c 'cron create' "$FAKE_HERMES_LOG" || true)"
-[[ "$created" == 3 ]] ||
-  fail "expected three cron jobs to be created, the log shows $created:
+[[ "$created" == 4 ]] ||
+  fail "expected four cron jobs to be created, the log shows $created:
 $(cat "$FAKE_HERMES_LOG")"
-pass "creates all three cron jobs when they are absent"
+pass "creates all four cron jobs when they are absent"
 
 # --- the dispatcher claim allowlist must name every lane profile --------------
 #
@@ -361,5 +574,56 @@ unreadable_out="$(run_installer --check)"
 grep -q 'could not read kanban.dispatch_profiles as a lane list' <<<"$unreadable_out" ||
   fail "an allowlist in an unexpected form was silently accepted: $unreadable_out"
 pass "reports an allowlist it cannot read rather than assuming it is correct"
+
+# --- per-profile concurrency caps must be mirrored into profile configs -------
+#
+# The dashboard's dispatch nudge resolves the caps from the ACTIVE profile's
+# config, so a profile without them dispatches uncapped: unblocking a card in the
+# desktop dashboard put four local-implementer workers on a lane capped at one.
+# The installer must add the root's cap keys to a profile that lacks them.
+
+write_config
+cat >"$HERMES_FIXTURE/profiles/feature-reviewer/config.yaml" <<'YAML'
+kanban:
+  review_dispatch: true
+YAML
+
+caps_check="$(run_installer --check)"
+grep -q 'feature-reviewer config is missing max_in_progress_per_profile' <<<"$caps_check" ||
+  fail "a profile config without the caps was not reported: $caps_check"
+pass "reports a profile config that is missing the per-profile caps"
+
+run_installer >/dev/null 2>&1
+grep -q 'max_in_progress_per_profile:' "$HERMES_FIXTURE/profiles/feature-reviewer/config.yaml" ||
+  fail "apply mode did not add the caps to the profile config"
+grep -q 'local-implementer: 1' "$HERMES_FIXTURE/profiles/feature-reviewer/config.yaml" ||
+  fail "the mirrored caps do not carry the local-implementer bound"
+awk '/^kanban:/{k=NR} /max_in_progress_per_profile:/{p=NR} END{exit !(p>k)}' \
+  "$HERMES_FIXTURE/profiles/feature-reviewer/config.yaml" ||
+  fail "the caps were not inserted under the kanban: block"
+pass "mirrors the per-profile caps into a profile config under kanban:"
+
+# A config file this installer edits is archived under the private backups tree
+# first, content-addressed, so a bad edit has an undo: ~/.hermes is not
+# otherwise backed up and these edits change live configuration in place.
+pre_caps_sha="$(printf 'kanban:\n  review_dispatch: true\n' | sha256sum | cut -d' ' -f1)"
+[[ -f "$HERMES_FIXTURE/backups/board-wiring/$pre_caps_sha" ]] ||
+  fail "the pre-edit profile config was not archived before the caps edit"
+cmp -s <(printf 'kanban:\n  review_dispatch: true\n') \
+  "$HERMES_FIXTURE/backups/board-wiring/$pre_caps_sha" ||
+  fail "the archived pre-edit profile config does not match the original"
+pass "archives a config file before editing it in place"
+
+# Re-running must be idempotent: a config that already carries the key is left
+# alone, and a second --check is clean.
+before="$(sha256sum <"$HERMES_FIXTURE/profiles/feature-reviewer/config.yaml")"
+run_installer >/dev/null 2>&1
+after="$(sha256sum <"$HERMES_FIXTURE/profiles/feature-reviewer/config.yaml")"
+[[ "$before" == "$after" ]] ||
+  fail "a second apply rewrote a profile config that already carried the caps"
+caps_recheck="$(run_installer --check)"
+grep -q 'wiring is up to date' <<<"$caps_recheck" ||
+  fail "a second --check reported drift after the caps were installed: $caps_recheck"
+pass "does not re-add caps to a profile config that already has them"
 
 echo "▶ hermes board wiring installer: all checks passed"

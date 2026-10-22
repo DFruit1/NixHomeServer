@@ -91,6 +91,16 @@ in
       PROXY_USER_OIDC_CLAIM = "preferred_username";
       PROXY_USER_CS3_CLAIM = "username";
       PROXY_AUTOPROVISION_ACCOUNTS = "true";
+      # Kanidm is the only account source. Disable OpenCloud's own HTTP Basic
+      # and app-token auth: `PROXY_ENABLE_APP_AUTH` defaults to true and makes
+      # the proxy advertise a `WWW-Authenticate: Basic` challenge on every 401
+      # (`proxy.EnableBasicAuth || AuthMiddleware.AllowAppAuth`). Browsers then
+      # show a native username/password dialog on legacy paths such as
+      # `/index.php/login`, and native clients fall back to a password prompt
+      # instead of opening Kanidm. With both off the proxy offers only the
+      # Bearer challenge, so every client is driven through OIDC.
+      PROXY_ENABLE_BASIC_AUTH = "false";
+      PROXY_ENABLE_APP_AUTH = "false";
       PROXY_ROLE_ASSIGNMENT_DRIVER = "oidc";
       PROXY_ROLE_ASSIGNMENT_OIDC_CLAIM = "opencloud_roles";
       GRAPH_ASSIGN_DEFAULT_USER_ROLE = "false";

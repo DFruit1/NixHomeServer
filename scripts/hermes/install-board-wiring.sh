@@ -7,8 +7,9 @@
 # The durable half of the board-health and durability arrangement is three
 # scripts and two tests, all tracked in this repository. The live half is not:
 # the hermes cron jobs, the copied scripts under ~/.hermes/scripts/, the
-# head-coordinator's "Board health" and "Deploy gate" sections and the
-# project-auditor's "Whole-change-set deploy review" section in their SOUL.md
+# head-coordinator's "Deployment and recovery" section (whose Board health and
+# deploy detail lives in the installed coordinator reference) and the
+# feature-reviewer's "Whole-set deploy review" section in their SOUL.md
 # files, and one key in ~/.hermes/config.yaml. All of that lives under ~/.hermes,
 # which is not tracked and not backed up -- Kopia only snapshots the *server's*
 # /persist. So a rebuilt workstation, a wiped profile, or a fresh hermes upgrade
@@ -41,7 +42,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HERMES_ROOT="${HERMES_ROOT:-$HOME/.hermes}"
 HERMES_BOARD="${HERMES_BOARD:-nixhomeserver}"
 COORDINATOR_SOUL="$HERMES_ROOT/profiles/head-coordinator/SOUL.md"
-AUDITOR_SOUL="$HERMES_ROOT/profiles/project-auditor/SOUL.md"
+REVIEWER_SOUL="$HERMES_ROOT/profiles/feature-reviewer/SOUL.md"
 CONFIG="$HERMES_ROOT/config.yaml"
 
 # Stale detection is off by default upstream (0), which means a worker that is
@@ -52,12 +53,13 @@ STALE_TIMEOUT_SEC="${STALE_TIMEOUT_SEC:-5400}"
 
 # Profile directories that must not appear in the dispatcher's claim allowlist,
 # with the reason each is absent. `default` runs cron jobs and infrastructure and
-# is never a card worker; principal-consultant is invoked by a human in a
-# conversation and must never be spawned. Everything else that exists as a
+# is never a card worker; principal-consultant is retired and must never be
+# restored as a worker; board-steward is the independent daily
+# watchdog, which reports over SimpleX and claims no cards. Everything else that exists as a
 # profile directory and is missing from the allowlist is drift, because a card
 # assigned to such a lane is skipped as nonspawnable and starves in `ready` in
 # silence -- which is the whole failure the lane rename had to be careful about.
-DISPATCH_EXCLUDED_PROFILES="${DISPATCH_EXCLUDED_PROFILES:-default principal-consultant}"
+DISPATCH_EXCLUDED_PROFILES="${DISPATCH_EXCLUDED_PROFILES:-default principal-consultant board-steward}"
 
 check_only=false
 [[ "${1:-}" == "--check" ]] && check_only=true
@@ -83,6 +85,47 @@ unrepaired() { drift=$((drift + 1)); note "  needs manual repair: $*"; }
   note "STALE_TIMEOUT_SEC must be a positive integer, got '$STALE_TIMEOUT_SEC'"
   exit 2
 }
+
+# Every config file this installer edits is archived first, under the same
+# private backups tree the Python installers use, content-addressed so a re-run
+# does not accumulate copies. The sed and awk edits below change the live
+# ~/.hermes/config.yaml and profile configs in place; without this archive a
+# bad edit has no undo, because ~/.hermes is not otherwise backed up.
+backup_config() {
+  local file="$1" dir hash
+  dir="$HERMES_ROOT/backups/board-wiring"
+  mkdir -p "$dir"
+  hash="$(sha256sum <"$file" | cut -d' ' -f1)"
+  [[ -f "$dir/$hash" ]] || cp -p "$file" "$dir/$hash"
+}
+
+# Reject ambiguous singleton jobs before touching any files or configuration.
+# The later field checks still report drift; preflight never removes a job.
+declare -A PREFLIGHT_CRON_IDS=()
+for cron_profile in head-coordinator default; do
+  cron_listing="$(timeout 30 hermes -p "$cron_profile" cron list 2>/dev/null)" || {
+    note "Cannot inspect $cron_profile cron jobs; no wiring changed"
+    exit 2
+  }
+  cron_id=''
+  while IFS= read -r cron_line; do
+    if [[ "$cron_line" =~ ^[[:space:]]+([0-9a-f]{8,})[[:space:]]+\[ ]]; then
+      cron_id="${BASH_REMATCH[1]}"
+    elif [[ "$cron_line" =~ ^[[:space:]]+Name:[[:space:]]*(.*)$ ]]; then
+      cron_name="${BASH_REMATCH[1]}"
+      case "$cron_profile/$cron_name" in
+        'head-coordinator/kanban board health'|'head-coordinator/usage pace check'|'default/kanban durability sync'|'default/kanban retry breaker') ;;
+        *) continue ;;
+      esac
+      cron_key="$cron_profile/$cron_name"
+      if [[ -n "${PREFLIGHT_CRON_IDS[$cron_key]:-}" ]]; then
+        note "Duplicate cron '$cron_name' in $cron_profile: ${PREFLIGHT_CRON_IDS[$cron_key]} $cron_id; no wiring changed"
+        exit 2
+      fi
+      PREFLIGHT_CRON_IDS["$cron_key"]="$cron_id"
+    fi
+  done <<<"$cron_listing"
+done
 
 note "▶ hermes board wiring ($HERMES_ROOT)"
 
@@ -125,7 +168,7 @@ fi
 for dest_dir in "${install_targets[@]}"; do
   mkdir -p "$dest_dir"
   rel="${dest_dir#"$HERMES_ROOT/"}"
-  for script in kanban-board-health.sh kanban-durability-sync.sh kanban-retry-breaker.sh; do
+  for script in kanban-board-health.sh kanban-durability-sync.sh kanban-retry-breaker.sh usage-pace.py; do
     src="$REPO_ROOT/scripts/hermes/$script"
     dest="$dest_dir/$script"
     [[ -f "$src" ]] || { note "  MISSING SOURCE: $src"; drift=$((drift + 1)); continue; }
@@ -159,6 +202,7 @@ elif grep -qE '^[[:space:]]*dispatch_stale_timeout_seconds:' "$CONFIG"; then
   else
     # Rewrite in place rather than appending a second key, which YAML would take
     # as a duplicate and which the dispatcher would resolve unpredictably.
+    backup_config "$CONFIG"
     sed -i -E "s/^([[:space:]]*)dispatch_stale_timeout_seconds:[[:space:]]*[0-9]+[[:space:]]*$/\1dispatch_stale_timeout_seconds: $STALE_TIMEOUT_SEC/" "$CONFIG"
     changed "set dispatch_stale_timeout_seconds=$STALE_TIMEOUT_SEC"
   fi
@@ -168,6 +212,7 @@ else
   else
     # Anchor it under the existing kanban: block so it lands in the right scope.
     if grep -qE '^kanban:' "$CONFIG"; then
+      backup_config "$CONFIG"
       sed -i "0,/^kanban:/s//kanban:\n  # 0 (the upstream default) disables stale detection, so a wedged worker\n  # holds its claim slot until a human notices.\n  dispatch_stale_timeout_seconds: $STALE_TIMEOUT_SEC/" "$CONFIG"
       changed "added dispatch_stale_timeout_seconds=$STALE_TIMEOUT_SEC under kanban:"
     else
@@ -262,66 +307,154 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 3. Planner board-health duty
+# 2c. Per-profile concurrency caps must exist in every profile config
 # ---------------------------------------------------------------------------
 #
-# The cron job prompts the head-coordinator to follow its SOUL.md. Without
-# that section the head-coordinator has the findings and no policy for them,
-# and the most likely
-# outcome is that it re-runs the detection itself or asks a human what to do --
-# which is the behaviour this wiring exists to replace.
+# Why this check exists
+# ---------------------
+# `kanban.max_in_progress_per_profile` bounds a lane (one local model endpoint,
+# one API quota). Every dispatch entry point resolves it from the ACTIVE
+# profile's config -- the dashboard plugin's POST /dispatch nudge, `hermes
+# kanban dispatch`, and a per-profile gateway all call
+# `configured_max_in_progress_per_profile()` -> `load_config_readonly()`, which
+# reads `get_config_path()` for the active profile. Only the root
+# (~/.hermes/config.yaml) is guaranteed to carry it.
+#
+# The desktop app runs `hermes -p <profile> serve`, and its kanban dashboard
+# nudges dispatch from THAT profile's config. On a profile with no caps the
+# nudge spawns with no lane bound: unblocking a card in the dashboard put four
+# `local-implementer` workers on a lane capped at one, because the nudge read
+# the head-coordinator profile config (no caps) instead of the root. The gateway
+# dispatcher is not the leak -- the dashboard nudge bypasses the singleton
+# dispatcher lock. Mirror the root's cap keys into every profile so whichever
+# profile the dashboard is viewing still enforces them.
+#
+# The values below are the root's; change both together. A profile that already
+# carries the key is left alone (this installer edits, it does not rewrite), and
+# a profile with no config.yaml at all is skipped rather than fabricated.
+CAPS_MAX_IN_PROGRESS="${CAPS_MAX_IN_PROGRESS:-8}"
+CAPS_CAP_DEFAULT="${CAPS_CAP_DEFAULT:-2}"
+CAPS_CAP_LOCAL="${CAPS_CAP_LOCAL:-1}"
+CAPS_CAP_STANDARD="${CAPS_CAP_STANDARD:-4}"
+CAPS_CAP_AUDITOR="${CAPS_CAP_AUDITOR:-1}"
+for _cap_value in "$CAPS_MAX_IN_PROGRESS" "$CAPS_CAP_DEFAULT" "$CAPS_CAP_LOCAL" \
+  "$CAPS_CAP_STANDARD" "$CAPS_CAP_AUDITOR"; do
+  [[ "$_cap_value" =~ ^[1-9][0-9]*$ ]] || {
+    note "CAPS_* values must be positive integers, got '$_cap_value'"
+    exit 2
+  }
+done
+
+caps_block() {
+  printf '%s\n' \
+    "  max_in_progress: $CAPS_MAX_IN_PROGRESS" \
+    "  max_in_progress_per_profile:" \
+    "    default: $CAPS_CAP_DEFAULT" \
+    "    local-implementer: $CAPS_CAP_LOCAL" \
+    "    standard-implementer: $CAPS_CAP_STANDARD" \
+    "    project-auditor: $CAPS_CAP_AUDITOR"
+}
+
+for profile_dir in "$HERMES_ROOT"/profiles/*/; do
+  [[ -d "$profile_dir" ]] || continue
+  profile="${profile_dir%/}"
+  profile="${profile##*/}"
+  pconfig="${profile_dir%/}/config.yaml"
+  [[ -f "$pconfig" ]] || { skip "$profile has no config.yaml; caps not installed"; continue; }
+  if grep -qE '^[[:space:]]*max_in_progress_per_profile:' "$pconfig"; then
+    ok "$profile config carries max_in_progress_per_profile"
+    continue
+  fi
+  if ! grep -qE '^kanban:[[:space:]]*$' "$pconfig"; then
+    unrepaired "$profile config has no top-level 'kanban:' block; add the per-profile caps by hand"
+    continue
+  fi
+  if [[ "$check_only" == true ]]; then
+    changed "$profile config is missing max_in_progress_per_profile (dashboard dispatch would be uncapped)"
+    continue
+  fi
+  backup_config "$pconfig"
+  awk -v block="$(caps_block)" '
+    /^kanban:[[:space:]]*$/ && !done { print; print block; done = 1; next }
+    { print }
+  ' "$pconfig" >"$pconfig.tmp" && mv "$pconfig.tmp" "$pconfig"
+  changed "added per-profile caps under kanban: in $profile config"
+done
+
+# ---------------------------------------------------------------------------
+# 3. Head-coordinator board-health duty
+# ---------------------------------------------------------------------------
+#
+# The cron job prompts the head-coordinator to work through every finding. The
+# standing SOUL keeps only the compact rules plus a pointer; the decision
+# detail -- the Board health finding table, the deploy-gate procedure and the
+# retry-breaker policy -- lives in the installed coordinator reference
+# (~/.hermes/scripts/hermes-coordinator-reference.md, installed from
+# scripts/hermes/instructions/coordinator-reference.md by
+# install-instruction-policy.py). Both halves are prose, so they are checked,
+# not installed, from here: the SOUL must carry the pointer and the standing
+# quota-breaker rule, and the reference must carry a table row for every
+# finding the monitor emits, so the detector and the policy cannot drift
+# apart silently -- a detector rename that leaves the policy behind is the
+# exact gap this wiring exists to close.
+
+COORDINATOR_REFERENCE="$HERMES_ROOT/scripts/hermes-coordinator-reference.md"
 
 if [[ ! -f "$COORDINATOR_SOUL" ]]; then
   note "  MISSING: $COORDINATOR_SOUL"
   drift=$((drift + 1))
-elif grep -q '^## Board health' "$COORDINATOR_SOUL"; then
-  ok "head-coordinator SOUL.md has the Board health section"
 else
-  if [[ "$check_only" == true ]]; then
-    changed "head-coordinator SOUL.md is missing the '## Board health' section"
+  # The standing pointer: the SOUL directs the coordinator to the reference's
+  # Board health table.
+  if grep -q 'Board health table' "$COORDINATOR_SOUL"; then
+    ok "head-coordinator SOUL.md points at the reference's Board health table"
+  elif [[ "$check_only" == true ]]; then
+    changed "head-coordinator SOUL.md is missing the Board health table pointer"
   else
-    note "  ACTION: add the '## Board health' section to $COORDINATOR_SOUL by hand."
-    note "  It is prose policy rather than code, so it is not installed from here;"
-    note "  the decision rules it must contain are documented in the header of"
-    note "  scripts/hermes/kanban-board-health.sh and in the cron job prompt."
+    note "  ACTION: restore the '## Deployment and recovery' section from the taskforce"
+    note "  template (scripts/hermes/taskforce/coordinator-operations.md) with"
+    note "  scripts/hermes/install-instruction-policy.py; it carries the pointer."
     drift=$((drift + 1))
+  fi
+  # The standing rule the reference's breaker policy depends on: never clear
+  # quota-breaker holds. Without it the coordinator reads a parked quota-wall
+  # card as an undispatchable lane and moves it, restarting the streak.
+  if ! grep -q 'quota-breaker' "$COORDINATOR_SOUL"; then
+    changed "head-coordinator SOUL.md has no quota-breaker hold policy"
   fi
 fi
 
-# The breaker is mechanical, so the head-coordinator's job is narrower than for
-# the other findings: recognise a card the breaker parked, and never re-create
-# the loop by reassigning it. Without this rule the head-coordinator reads a
-# parked quota-wall card as an undispatchable lane and moves it, which restarts
-# the streak from zero.
-if [[ -f "$COORDINATOR_SOUL" ]] && ! grep -q 'kanban-retry-breaker.sh' "$COORDINATOR_SOUL"; then
-  changed "head-coordinator SOUL.md does not mention kanban-retry-breaker.sh"
-fi
-
-# The same reasoning applies to a worker lane that lost its card. The detector
-# exists in kanban-board-health.sh and reports WORKER_FAILED_BLOCKED, but a
-# finding with no policy behind it is the exact gap this wiring was written to
-# close: the head-coordinator would have the finding and no rule telling it to
-# re-scope rather than comment, and commenting does not move a card out of
-# `blocked`. Pin the finding name so the policy and the detector cannot drift
-# apart silently -- one can be renamed or deleted without the other.
-#
-# Shaped like the Board health section check above rather than like the
-# breaker reminder, because this one is prose: there is nothing to install, so
-# apply mode tells the operator what to add instead of implying a fix.
-if [[ ! -f "$COORDINATOR_SOUL" ]]; then
-  :
-elif grep -q 'WORKER_FAILED_BLOCKED' "$COORDINATOR_SOUL"; then
-  ok "head-coordinator SOUL.md has a policy for WORKER_FAILED_BLOCKED"
+if [[ ! -f "$COORDINATOR_REFERENCE" ]]; then
+  note "  MISSING: $COORDINATOR_REFERENCE (installed by install-instruction-policy.py)"
+  drift=$((drift + 1))
 else
-  if [[ "$check_only" == true ]]; then
-    changed "head-coordinator SOUL.md has no policy for WORKER_FAILED_BLOCKED; a blocked worker lane would be reported and then ignored"
+  if grep -q '^## Board health' "$COORDINATOR_REFERENCE"; then
+    ok "coordinator reference has the '## Board health' section"
+  elif [[ "$check_only" == true ]]; then
+    changed "coordinator reference is missing the '## Board health' section"
   else
-    note "  ACTION: add a WORKER_FAILED_BLOCKED rule to $COORDINATOR_SOUL by hand."
-    note "  It is prose policy rather than code, so it is not installed from here."
-    note "  Without it the board-health monitor reports a card whose worker died"
-    note "  and the head-coordinator has no rule telling it to re-scope and"
-    note "  re-dispatch, so the card and everything behind it stay stopped."
+    note "  ACTION: re-run scripts/hermes/install-instruction-policy.py to restore"
+    note "  the reference from its tracked source."
     drift=$((drift + 1))
+  fi
+  # One row per finding the monitor emits, so a detector rename cannot leave
+  # the policy behind: a finding with no rule behind it means the
+  # head-coordinator is woken with the finding and no policy for it.
+  for finding in WORKER_FAILED_BLOCKED OWNER_COMMENT_UNACTED CAPABILITY_OWNER_INPUT MIRROR_STALE INSTRUCTION_DRIFT INSTRUCTION_DRIFT_UNCHECKED SCRIPT_DRIFT; do
+    if grep -q "$finding" "$COORDINATOR_REFERENCE"; then
+      ok "coordinator reference has a policy for $finding"
+    elif [[ "$check_only" == true ]]; then
+      changed "coordinator reference has no policy for $finding; the finding would be reported and then ignored"
+    else
+      note "  ACTION: restore the $finding row in the reference's Board health table"
+      note "  (tracked source: scripts/hermes/instructions/coordinator-reference.md)."
+      drift=$((drift + 1))
+    fi
+  done
+  # The breaker script itself is named in the reference, not the SOUL: it is
+  # the detail half of the quota-breaker policy above.
+  if ! grep -q 'kanban-retry-breaker.sh' "$COORDINATOR_REFERENCE"; then
+    changed "coordinator reference does not mention kanban-retry-breaker.sh"
   fi
 fi
 
@@ -333,8 +466,10 @@ fi
 # creates ONE whole-change-set review card for project-auditor plus the paired
 # decision card assigned to itself, then on a clean review runs the guarded test
 # and switch itself. Neither section is code, so it is not installed from here;
-# the canonical wording is the "### Deploy gate" subsection of the "Kanban Card
-# Authoring" section in AGENTS.md. These checks exist so a wiped profile or a
+# the canonical wording is the taskforce role templates composed into the
+# SOULs by install-instruction-policy.py / install-review-taskforce.py, and the
+# detailed protocol is the "Deploy gate (guarded test & switch)" section of the
+# installed coordinator reference. These checks exist so a wiped profile or a
 # hermes upgrade that drops the sections is caught, instead of the fleet quietly
 # reverting to deploying on the sum of per-card audits.
 
@@ -349,16 +484,53 @@ check_deploy_section() {
     changed "$label is missing the '$heading' section"
   else
     note "  ACTION: add the '$heading' section to $soul by hand."
-    note "  Canonical wording: '### Deploy gate' in AGENTS.md (repo)."
+    note "  Canonical wording: the taskforce role templates composed by the"
+    note "  Hermes installers (scripts/hermes/install-*-*.py)."
     drift=$((drift + 1))
   fi
 }
 
-check_deploy_section "$COORDINATOR_SOUL" '## Deploy gate' "head-coordinator SOUL.md"
-check_deploy_section "$AUDITOR_SOUL" '## Whole-change-set deploy review' "project-auditor SOUL.md"
+check_deploy_section "$COORDINATOR_SOUL" '## Deployment and recovery' "head-coordinator SOUL.md"
+check_deploy_section "$REVIEWER_SOUL" '### Whole-set deploy review' "feature-reviewer SOUL.md"
 
 if [[ -f "$COORDINATOR_SOUL" ]] && ! grep -q 'nix run .#deploy' "$COORDINATOR_SOUL"; then
   changed "head-coordinator SOUL.md does not name the guarded deploy command"
+fi
+
+# ---------------------------------------------------------------------------
+# 3c. local-implementer context pin must match the served slot size
+# ---------------------------------------------------------------------------
+#
+# llama.cpp serves contextSize TOTAL across `parallel` slots, and the
+# local-implementer profile pins context_length to one slot: a longer context
+# than its slot is rejected per request, a shorter one silently truncates. The
+# invariant is documented on both sides (configuration.nix and the profile
+# config) but nothing connected them, so changing contextSize or parallel alone
+# breaks every local-implementer request while both files still look correct.
+# This check computes the expected slot from the repo and compares the live
+# pin; it reports only -- the profile config carries models and credentials, so
+# it is never edited from here. Change both in the same commit.
+
+LOCAL_PIN_CONFIG="$HERMES_ROOT/profiles/local-implementer/config.yaml"
+
+if [[ ! -f "$LOCAL_PIN_CONFIG" ]]; then
+  skip "no local-implementer config.yaml; no context pin to verify"
+else
+  context_size="$(sed -n 's/^[[:space:]]*contextSize = \([0-9][0-9]*\);.*$/\1/p' "$REPO_ROOT/configuration.nix" | head -n1)"
+  parallel_slots="$(sed -n 's/^[[:space:]]*parallel = \([0-9][0-9]*\);.*$/\1/p' "$REPO_ROOT/configuration.nix" | head -n1)"
+  if [[ -z "$context_size" || -z "$parallel_slots" ]]; then
+    unrepaired "could not read contextSize/parallel from $REPO_ROOT/configuration.nix; verify the local-implementer context pin by hand"
+  else
+    expected_slot=$((context_size / parallel_slots))
+    pinned="$(sed -n 's/^[[:space:]]*context_length:[[:space:]]*\([0-9][0-9]*\).*$/\1/p' "$LOCAL_PIN_CONFIG" | head -n1)"
+    if [[ -z "$pinned" ]]; then
+      unrepaired "local-implementer config.yaml pins no context_length; set it to $expected_slot (contextSize $context_size / parallel $parallel_slots)"
+    elif [[ "$pinned" != "$expected_slot" ]]; then
+      unrepaired "local-implementer context_length is $pinned, want $expected_slot (contextSize $context_size / parallel $parallel_slots); change configuration.nix and the pin in the same commit"
+    else
+      ok "local-implementer context_length=$pinned matches contextSize $context_size / parallel $parallel_slots"
+    fi
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -376,11 +548,23 @@ fi
 # wrong interval, was invisible to `--check`. It is reported, not repaired; see
 # the header for why.
 
-board_health_prompt="Board health check. Run 'hermes kanban --board $HERMES_BOARD list' and 'hermes kanban --board $HERMES_BOARD diagnostics' to see current state. The attached MONITOR CHANGE DETECTED block lists findings from scripts/hermes/kanban-board-health.sh.
+board_health_prompt="Board health check. The attached MONITOR CHANGE DETECTED block is the authoritative finding set: those cards are the only ones in scope. Read only the boards and cards that block names -- one 'hermes kanban --board <slug> show <card>' per finding is enough to act on it, so do not rescan every board with list/diagnostics.
 
-Work through every finding using the 'Board health' section of your SOUL.md. For each one decide: is it truly blocked, or merely undispatchable? If undispatchable, reassign it to a lane with headroom. If it is genuinely waiting on the owner, block it with kind=needs_input and a comment stating the exact question -- do not leave human-decision cards sitting in 'ready', where they falsely advertise that a worker is about to pick them up. Free saturated lanes. For UNPUSHED/MASTER_AHEAD findings run scripts/hermes/kanban-durability-sync.sh and report anything it could not push.
+Address at most the first three findings, highest-priority first, and stop if room runs short: state the findings you did not reach instead of pushing on. The next tick re-reports anything you did not clear, so clearing every finding in one pass is neither required nor safe -- a run that exhausts its budget leaves the snapshot unprocessed and the identical set returns unchanged.
+
+Use the Board health table in ~/.hermes/scripts/hermes-coordinator-reference.md, which your SOUL.md's Deployment and recovery section directs you to. Classify the actual missing input and existing recovery conditions before routing. Reassign eligible non-sensitive work only within the recorded limits; never evade quota-breaker holds. Only genuine owner-only input warrants a checked needs_input gate, authored through native tools after summary validation. UNPUSHED/MASTER_AHEAD belongs to the existing no-agent durability-sync cron; never publish worker branches or run a remote-writing sync from coordinator recovery. Report failed durability internally.
 
 Do not implement anything yourself and do not re-audit. Report in prose what you changed and what still needs the owner."
+
+# Quota trouble used to surface only in the 07:00 steward report. The failure
+# chain in between is expensive: workers park, the retry breaker keeps
+# requeueing unchanged cards, and idle recovery wakes the coordinator on that
+# churn. This job wakes the coordinator directly on a pace exception instead,
+# monitor-gated so a healthy fleet costs nothing. Findings are stable
+# identities by design (see usage-pace.py --monitor); the percentages live in
+# the coordinator-run report and the model-job budget in install-cron-policy.py,
+# whose prompts machinery also owns this prompt between upgrades.
+usage_pace_prompt="$(<"$REPO_ROOT/scripts/hermes/usage-pace-prompt.txt")"
 
 # One `cron list` per profile, parsed once. hermes renders a boxed table whose
 # payload is a set of `Label:  value` lines under a job id line; only those lines
@@ -392,7 +576,7 @@ scan_cron_jobs() {
   local profile="$1" line job='' id='' out
   CRON_JOB_ID=()
   CRON_FIELD=()
-  out="$(hermes -p "$profile" cron list 2>/dev/null || true)"
+  out="$(timeout 30 hermes -p "$profile" cron list 2>/dev/null || true)"
   while IFS= read -r line; do
     if [[ "$line" =~ ^[[:space:]]+([0-9a-f]{8,})[[:space:]]+\[ ]]; then
       id="${BASH_REMATCH[1]}"
@@ -464,11 +648,68 @@ if cron_has_job "kanban board health"; then
 else
   changed "cron 'kanban board health' missing from the head-coordinator profile"
   if [[ "$check_only" != true ]]; then
-    hermes -p head-coordinator cron create "every 30m" "$board_health_prompt" \
+    timeout 60 hermes -p head-coordinator cron create "every 30m" "$board_health_prompt" \
       --name "kanban board health" \
       --monitor-script kanban-board-health.sh \
       --workdir "$REPO_ROOT" >/dev/null
     changed "created cron 'kanban board health' (head-coordinator, every 30m)"
+  fi
+fi
+
+# The board-health prompt is prose, so `hermes cron list` cannot show it and the
+# field checks above cannot see it drift. That is how the live job kept an older
+# prompt whose "work through every finding" instruction cannot fit its
+# 12-tool/180s inspection budget, so every change-wakeup ran past the deadline
+# and failed, leaving the snapshot unprocessed (recurring incident, detected
+# 2026-10-19 21:21 and still open on 2026-10-20). Unlike the field checks, the
+# prompt is read and written through profiles/head-coordinator/cron/jobs.json --
+# not the cron-list renderer -- so it can be repaired in place with the same
+# `hermes cron edit --prompt` path install-cron-policy.py already trusts.
+BOARD_HEALTH_JOBS="$HERMES_ROOT/profiles/head-coordinator/cron/jobs.json"
+if cron_has_job "kanban board health" && [[ -f "$BOARD_HEALTH_JOBS" ]]; then
+  board_health_state="$(python3 - "$BOARD_HEALTH_JOBS" "$board_health_prompt" <<'PY' 2>/dev/null || true
+import json, sys
+jobs = json.load(open(sys.argv[1]))
+jobs = jobs.get('jobs', jobs) if isinstance(jobs, dict) else jobs
+for job in jobs:
+    if job.get('name') == 'kanban board health':
+        print(job.get('id', ''))
+        print('match' if (job.get('prompt') or '') == sys.argv[2] else 'drift')
+        sys.exit(0)
+sys.exit(1)
+PY
+)"
+  board_health_id="$(sed -n 1p <<<"$board_health_state")"
+  board_health_verdict="$(sed -n 2p <<<"$board_health_state")"
+  if [[ "$board_health_verdict" == match ]]; then
+    ok "cron 'kanban board health' carries the tracked prompt"
+  elif [[ -n "$board_health_id" && "$check_only" != true ]]; then
+    timeout 60 hermes -p head-coordinator cron edit "$board_health_id" --prompt "$board_health_prompt" >/dev/null
+    changed "updated cron 'kanban board health' prompt to the tracked text"
+  else
+    changed "cron 'kanban board health' prompt differs from the tracked text"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Quota check: coordinator wakes only on a real pace exception
+# ---------------------------------------------------------------------------
+#
+# The monitor output is the finding set (USAGE_PACE lines from usage-pace.py
+# --monitor); empty output is a healthy fleet and costs no model. Owned by the
+# head-coordinator because the response is a lane/coverage decision, and the
+# same profile already carries the other coordinator cron jobs.
+if cron_has_job "usage pace check"; then
+  ok "cron 'usage pace check' present (head-coordinator)"
+  check_cron_wiring head-coordinator "usage pace check" "every 60m" Monitor usage-pace.py
+else
+  changed "cron 'usage pace check' missing from the head-coordinator profile"
+  if [[ "$check_only" != true ]]; then
+    timeout 60 hermes -p head-coordinator cron create "every 60m" "$usage_pace_prompt" \
+      --name "usage pace check" \
+      --monitor-script usage-pace.py \
+      --workdir "$REPO_ROOT" >/dev/null
+    changed "created cron 'usage pace check' (head-coordinator, every 60m)"
   fi
 fi
 
@@ -482,7 +723,7 @@ if cron_has_job "kanban durability sync"; then
 else
   changed "cron 'kanban durability sync' missing from the default profile"
   if [[ "$check_only" != true ]]; then
-    hermes -p default cron create "every 15m" \
+    timeout 60 hermes -p default cron create "every 15m" \
       --name "kanban durability sync" \
       --script kanban-durability-sync.sh \
       --no-agent \
@@ -507,7 +748,7 @@ if cron_has_job "kanban retry breaker"; then
 else
   changed "cron 'kanban retry breaker' missing from the default profile"
   if [[ "$check_only" != true ]]; then
-    hermes -p default cron create "every 15m" \
+    timeout 60 hermes -p default cron create "every 15m" \
       --name "kanban retry breaker" \
       --script kanban-retry-breaker.sh \
       --no-agent \

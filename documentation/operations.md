@@ -2,6 +2,9 @@
 
 Use this as the maintained day-2 operations guide for validation, guarded deploys, rollback, service health, SMART monitoring, and first-response troubleshooting.
 
+For workstation agents, see the [Hermes review taskforce](hermes-review-taskforce.md)
+for audit ownership, project cadence, persisted findings and owner approval rules.
+
 Routine rebuilds and deployment tests use only the guarded helper: run
 `nix run .#deploy -- --action test` before the matching `--action switch` from
 unchanged reviewed source, with dashboard-selected allocation and no overrides.
@@ -146,6 +149,12 @@ present, and a guarded test deploy passes:
 ```bash
 ./scripts/deploy.sh --debug --action test
 ```
+
+SSH access for `vars.localAdminUser` accepts `vars.identity.sshPublicKey` plus
+every single-line key in `vars.identity.sshExtraPublicKeys` — for example a phone
+SSH client reaching the host over NetBird. Extra keys must not repeat the primary
+key or each other; root login, password and keyboard-interactive authentication
+stay disabled for all of them.
 
 After that point, do not return to installer-time disk provisioning for normal
 work. Routine changes use the guarded deploy path:
@@ -388,6 +397,18 @@ stored token is rejected. Repository data, LFS objects, local accounts, and the
 Forgejo database live under `/var/lib/forgejo`, which is persisted centrally and
 captured by Kopia as `forgejo.sqlite` plus the state root. Removing or disabling
 the module leaves `/var/lib/forgejo` and its backups intact.
+
+Read access for the configured collaborators is confirmed per repository: only
+Forgejo's `204 No Content` from the collaborator endpoint counts as an applied
+grant, including a repeat grant for an existing collaborator. A rejected or
+unreachable grant (for example HTTP 403, 404 or 500, or a transport failure) is
+reported with the mirror, collaborator and HTTP status or curl exit code. The
+reconciler keeps applying the remaining grants and mirrors, then exits nonzero
+instead of printing the all-reconciled message, so `forgejo-mirrors.service`
+records the failure and the six-hour timer retries it. A configured user who has
+not signed in to Forgejo yet surfaces as a failed grant until their account
+exists from a first Kanidm login; grants are retried on the next run and a
+failed grant is not sticky.
 
 ## Local-Console Administrator Recovery
 
@@ -780,10 +801,74 @@ emits `disk_cleanup_action_failed` (with the final 8 KiB of its output as
 base64) and a final `disk_cleanup_failed`, which uses the normal systemd
 failure alert path.
 
+## Hermes and Development Temp Cleanup
+
+`scripts/admin/temp-cleanup.sh` is the regular, conservative pass for Hermes
+and development temporary files. The server runs it daily as the local admin
+through `nixhomeserver-temp-cleanup.timer`; workstations install the same job
+with `scripts/admin/install-temp-cleanup.sh`.
+
+It removes only entries directly inside these roots, and only when they are
+older than the configured age:
+
+| Root | Default age | What it holds |
+| --- | --- | --- |
+| `~/.hermes/cache/*`, `~/.hermes/profiles/*/cache/*` | 14 days | Regenerable model, browser, token-cost and schema caches |
+| `~/.hermes/logs/*.log`, `~/.hermes/profiles/*/logs/*.log` | 14 days | Rotated or stale diagnostic logs |
+| `~/.hermes/profiles/*/scratch/*` (with `--include-scratch`) | 30 days | Dormant agent scratch, including test environments |
+| `/tmp/nixhomeserver-*`, `/tmp/hermes-*` | 7 days | Test fixtures and tool scratch owned by this tooling |
+| `<repo>/.tmp/*` | 7 days | Agent task scratch described in `AGENTS.md` |
+| `<repo>/output/*`, `test-results/*`, `playwright-report/*` | 14 days | Generated render and test artifacts |
+
+`~/.hermes/installs` and `~/.hermes/tools` are always reported and never
+auto-deleted; project environments are expensive to rebuild and managed
+runtimes are pinned. `--include-installs` opts into the 30-day project
+environment cleanup. Worktrees are never deleted by this script: with
+`--include-worktrees` it runs Hermes' audited `hermes worktree prune` (which
+keeps uncommitted and unpushed work) and the kanban worktree reaper, whose own
+safety contract is described in `AGENTS.md`.
+
+An entry is preserved when it is a symlink, a mount point, or contains `.git`,
+`SOUL.md`, a database (`*.db`, `*.sqlite*`), an encrypted archive (`*.age`,
+`*.kdbx`), model weights (`*.gguf*`), `models/`, credentials (`*.env`, `*.pem`,
+`*.key`, `.ssh`) or any archive. The filesystem boundary is never crossed
+(`find -xdev`, `rm --one-file-system`), so a bind mount or network share under
+a cache root cannot be deleted through it. The default action is a dry run.
+
 ```bash
-systemctl status nixhomeserver-disk-cleanup.timer
-journalctl -u nixhomeserver-disk-cleanup.service --output=cat
-sudo systemctl start nixhomeserver-disk-cleanup.service
+# Review what would be removed, including byte accounting.
+scripts/admin/temp-cleanup.sh --bytes
+
+# Apply the same policy to Hermes scratch and both worktree tools.
+scripts/admin/temp-cleanup.sh --apply --include-scratch --include-worktrees
+```
+
+On the server, `system.tempCleanup` controls the job:
+
+```nix
+system.tempCleanup = {
+  enable = true;         # daily, as the local admin
+  maxAgeDays = 14;       # caches, logs, and generated output
+  scratchAgeDays = 30;   # dormant Hermes profile scratch
+};
+```
+
+```bash
+systemctl list-timers nixhomeserver-temp-cleanup.timer
+journalctl -u nixhomeserver-temp-cleanup.service --output=cat
+sudo systemctl start nixhomeserver-temp-cleanup.service
+```
+
+On a workstation (including Void/runit hosts without a systemd user manager),
+the installer writes a daily cron block or, when available, a systemd user
+timer. It is idempotent, preserves unrelated crontab entries, and logs to
+`~/.local/state/nixhomeserver/temp-cleanup.log` on the cron path.
+
+```bash
+scripts/admin/install-temp-cleanup.sh --dry-run   # show the planned job
+scripts/admin/install-temp-cleanup.sh             # install at 04:10 daily
+scripts/admin/install-temp-cleanup.sh --no-worktrees --time 05:00
+scripts/admin/install-temp-cleanup.sh --uninstall
 ```
 
 ## Storage Capacity Alerts
@@ -2295,6 +2380,11 @@ with an instruction to rerun `--action test`; they are never silently upgraded
 or assumed to have been debug-validated. Run `./scripts/deploy.sh --action test`
 once after upgrading to record a new stamp before switching.
 
+Hermes coordinators also follow the [deployment receipt procedure](hermes-deployment-receipts.md)
+to compare whole-set review, coordinator decision, clean source and supplied test
+stamp evidence before each action. This read-only check does not enforce the
+workflow inside deploy.sh or replace its live target stamp validation.
+
 The regular deploy path stays intentionally focused. It evaluates the target,
 checks build and target capacity, uses the build allocation selected in
 `vars.nix`, and runs the runtime health gates described above.
@@ -2352,6 +2442,124 @@ DEPLOY_DRY_RUN=1 ./scripts/deploy.sh --action test
 
 Use `--build-mode <value>` for a one-shot override. The older
 `--build-locally` flag remains an alias for `--build-mode local`.
+
+## Compute Offload (workstation and server)
+
+Both offload paths already exist and are verified against this server. The
+committed `vars.nix` default is `system.buildMode = "remote"`: the workstation
+contributes no build slots and the server takes all of its own. A guarded
+deploy still uses the dashboard-selected build mode and still exports its own
+`NIX_CONFIG`, which overrides any ambient user config; changing the committed
+default is an owner-gated policy decision.
+
+| Workload | Where to run it | Why |
+| --- | --- | --- |
+| Full `nixosConfigurations` evaluation | server, batched | 74 s local → 19 s remote, identical drvPath |
+| Settings-level `nix eval` | workstation | already served from the local eval cache; the SSH round trip costs more than the eval |
+| Rust / frontend compilations | server, as a Nix `builders` target | 16 cores, sandboxed, RAM headroom; in `remote` mode the workstation contributes no build slots |
+| `validate-repo.sh` check derivation builds | server, via `remote-build.sh` | moves the flake evaluation as well as the compilation off the four-core workstation |
+| Heavy cargo and Playwright tests | server, via `remote-run.sh` | `nix develop`/`nix shell` supply the toolchain, so the compile and the browser run on 16 cores |
+| `scripts/tests/*` shell suite | workstation | a remote sandbox has no `PATH` into the invoking user's tools |
+| Reproducible Nix derivation builds | either | the Attic cache serves both ends over the `127.0.0.1:8080` forward |
+
+### Evaluation
+
+`scripts/helpers/remote-eval.sh` provides `remote_eval_batch_json`. It stages
+the *tracked* tree with `create_deploy_repo_archive`, transfers it, evaluates on
+the server against `path:<staged dir>`, and removes the staged directory through
+a remote `trap … EXIT`. Query bodies travel on stdin, never interpolated into
+the remote command line, and only ciphertext crosses the wire because the
+archive builder refuses `secrets/unencrypted`.
+
+It fails closed: a staging, transfer or remote-evaluation failure returns
+non-zero with no payload and prints
+`remote-eval: falling back to local evaluation (…)` on stderr. A transport
+error can never be read as an empty result. Set `REMOTE_EVAL=0` to force local
+evaluation.
+
+**Batch every evaluation query into one `remote_eval_batch_json` call.** Nix
+shares nothing between separate `nix eval` processes, so a script asking three
+thin questions pays three full module-system instantiations; one batch pays one.
+Batching matters more than offloading. `scripts/tests/test-common.sh` sources
+the helper, so a test that needs several config values should use the batch
+helper rather than calling `flake_eval_json` repeatedly.
+
+### Builds
+
+`~/.config/nix/nix.conf` on the workstation already declares the server as an
+`ssh-ng://` builder with a pinned identity and host key, so an ordinary
+`nix build` of a reproducible derivation already offloads without any flag.
+That path still evaluates on the workstation, though: Nix evaluates in the
+local client, so only the compilation moves.
+
+`scripts/helpers/remote-build.sh` provides `remote_build_flake`. It stages the
+same *tracked* tree `remote-eval.sh` uses, runs `nix build` on the server
+against `path:<staged dir>`, and streams the build logs back. It is what
+`scripts/validate-repo.sh` uses for its check derivation builds, so the flake
+evaluation leaves the workstation as well. A build that fails on the server is
+propagated — a failing check must fail the gate — and only an ssh transport
+failure falls back to a local build. Set `REMOTE_BUILD=0` to force a local
+build.
+
+Two limits belong with that statement:
+
+* **The sandbox has no user `PATH`.** A derivation that shells out to `cargo`,
+  `hermes`, `systemd-tmpfiles`, `jq`-adjacent workstation tooling or anything
+  in `~/.local/bin` fails on the server and passes on the workstation. This is
+  why `scripts/validate-repo.sh` excludes `repo-policy` from `--build-checks`
+  and runs the script suite directly. Do not widen that exclusion list from
+  this note; the broader sandbox-`PATH` rule is a separate decision.
+* **The server's deployed `max-jobs` is the real ceiling.** In the committed
+  `remote` mode the server runs `max-jobs = auto` (all sixteen cores) with
+  `cores = 0`; under `balanced` it is two jobs of four requested cores. The
+  workstation's builder entry is a request, not a grant. Changing the deployed
+  value is a policy change applied by a guarded deploy, not a documentation or
+  ambient `nix.conf` change.
+
+### What these numbers are and are not
+
+The 3.9x evaluation ratio was measured with a sibling card holding a 48-check
+build, so both hosts were loaded. The evaluation ratio is large enough to be
+directional, but the `max-jobs` and load-average numbers from the previous
+`balanced` window are **not throughput benchmarks** and must not be quoted as
+capacity headroom. Re-measure on an idle pair before drawing a scaling
+conclusion.
+
+### What offload does not cover
+
+The Hermes kanban board is single-host by design and its crash detection
+assumes host-local PIDs, so kanban workers do not run remotely. The SSH
+terminal backend is a global per-profile flip that would also move the guarded
+deploy helpers; it is not the offload mechanism. Tool jobs that only need the
+repo's own scripts stay local; the auditable patterns are the `remote-eval.sh`,
+`remote-build.sh` and `remote-run.sh` helpers described above.
+
+## Manual Hermes Kanban Dispatch
+
+The gateway dispatcher runs as `hermes -p default gateway run` and enforces the
+`kanban.max_in_progress_per_profile` caps in the default profile's configuration
+(`~/.hermes/config.yaml`). A manual `hermes kanban dispatch` must name that
+profile explicitly:
+
+```bash
+hermes -p default kanban dispatch
+```
+
+A bare `hermes kanban dispatch`, or one run under a worker profile, resolves the
+*sticky active* profile's own configuration instead. Every per-profile config
+has a `kanban:` block with no caps, so such a pass is uncapped and will spawn
+past the `local-implementer: 1` limit, breaking the serialized local lane.
+Always select the default profile; `--profile` is the long form of `-p`.
+
+`--dry-run` is not read-only. It still runs the reclaim phase and can write (a
+dead running PID produces a `protocol_violation` event), so probe only against a
+*copied* board database, never the live board.
+
+A manual pass spawns workers only and changes none of the surrounding policy:
+local work stays local-only, the serialized owner-alert (SimpleX-first) local
+capacity dependencies are untouched, and the separate guarded test/switch deploy
+gates remain unchanged. Treat this as an operational mitigation for the
+config-source divergence, not a repair of it.
 
 ## Upstream Sync
 
@@ -2573,6 +2781,22 @@ curl -kI --resolve <passwords-domain>:443:<server-lan-ip> https://<passwords-dom
 
 - if the forced-resolution check succeeds while normal resolution fails, troubleshoot workstation DNS, LAN resolver reachability, or NetBird instead of changing Vaultwarden exposure
 
+## Phone Wi-Fi Access
+
+Private application hosts such as Photos and Videos use LAN/NetBird DNS, not
+public Cloudflare routes. If a phone can reach an app over NetBird but a host
+that previously worked stops responding on home Wi-Fi, first check the phone's
+resolver or VPN state:
+
+1. Toggle Wi-Fi off and on, then retry.
+2. If needed, connect NetBird and confirm the app works, disconnect NetBird,
+   then retry on Wi-Fi. This can reinitialize the phone's VPN/DNS state.
+3. If the reset helps, verify that Wi-Fi DNS is the home router or server's LAN
+   DNS and that the phone is not on a guest or client-isolated SSID.
+
+Do not publish a private hostname or alter the Cloudflare tunnel as a workaround
+without first confirming the DNS and LAN path.
+
 ## Unbound Ad-Block
 
 The resolver filters advertising, tracker, and known-malware domains from a
@@ -2692,13 +2916,34 @@ concurrency and storage-consistency safeguards. See
 The Kopia policy is deliberately bounded to 7 latest, 14 daily, 4 weekly, and
 2 monthly snapshots (with no hourly or annual tier). Runtime caches, application
 logs, retired Restic/pool-migration copies, and reproducible download/cache data
-under `/persist` are excluded from the offsite snapshot. In particular, only
-`/persist/var/lib/bonsai/models` and `/persist/var/lib/atticd/storage` are
-excluded for Bonsai and Attic; their databases, metadata, configuration, and key
-material remain backed up. The managed `/persist` policy is cleared and rebuilt
+under `/persist` are excluded from the offsite snapshot. A global Kopia rule
+excludes `*.gguf` model weights and `*.gguf.part` partial downloads at every depth
+in every snapshot root, including `/persist` and Paperless. These patterns follow
+[Kopia's documented ignore rules](https://kopia.io/docs/advanced/kopiaignore/).
+Exclude them in Kopia rather than rclone: MEGA receives encrypted repository
+packs, so a filename filter on the mirror cannot identify model weights.
+
+Keep downloaded model artifacts on the data pool under
+`${dataRoot}/<application>/models`, whether the application is active or disabled.
+Bonsai uses `/mnt/data/bonsai/models`; Qwen uses `/mnt/data/qwen-27b/models`.
+Disabling or removing a model application leaves those files in place as a
+reusable archive. Model metadata, databases and configuration remain in central
+persistence and regular backups. Archive retention never deletes model files
+automatically. Fine-tuned or otherwise irreplaceable GGUF weights need a separate
+explicit backup, since the global rule excludes them too.
+
+The core model-archive unit safely migrates legacy Bonsai models from the SSD;
+see [Bonsai model storage](bonsai.md#model-artifacts-and-persistence). The legacy
+`/persist/var/lib/bonsai/models` exclusion remains centrally defined even when
+Bonsai is removed. Attic excludes `/persist/var/lib/atticd/storage`; its databases,
+metadata, configuration and key material remain backed up.
+The managed global and `/persist` policies are cleared and rebuilt
 by an active-exited reconciliation unit on activation. Because NixOS restarts
 that unit when its generated policy changes, enabling, disabling, removing, or
-re-adding a module cannot leave a stale exclusion behind.
+re-adding a module cannot leave a stale exclusion behind. Exclusions affect new
+snapshots. Existing snapshots keep their model chunks until normal retention
+and safe maintenance release them; changing this rule does not immediately
+shrink the repository or unblock an over-capacity MEGA mirror.
 
 MEGA synchronization uses permanent, delete-before semantics for this dedicated
 Kopia mirror. This is important because the MEGA backend otherwise puts deleted

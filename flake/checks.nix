@@ -27,7 +27,7 @@ let
     nix
     nodejs
     openssl
-    python3
+    (python3.withPackages (python: [ python.pyyaml ]))
     ripgrep
     sqlite
     util-linux
