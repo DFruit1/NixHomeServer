@@ -475,6 +475,81 @@ class TaskforceTest(unittest.TestCase):
                        'body': 'Scope: modules/immich/\nNotes:\n- unrelated', 'title': 'Fix Immich'}]
         self.assertEqual(['t_running'], [t['task_id'] for t in tf.scope_conflicts(self.root, 'daily', ['modules/immich/'])])
 
+    def write_board(self, board, workdir, tasks):
+        """Create an active board with a real read-only-inventory database."""
+        directory = self.root / 'kanban/boards' / board
+        directory.mkdir(parents=True, exist_ok=True)
+        workdir.mkdir(parents=True, exist_ok=True)
+        (directory / 'board.json').write_text(json.dumps({'default_workdir': str(workdir)}))
+        fields = 'id TEXT, title TEXT, body TEXT, assignee TEXT, status TEXT, tenant TEXT, created_by TEXT'
+        with closing(sqlite3.connect(directory / 'kanban.db')) as db:
+            db.execute('CREATE TABLE tasks (' + fields + ')')
+            for task_id, assignee, status, body in tasks:
+                db.execute('INSERT INTO tasks VALUES (?, ?, ?, ?, ?, ?, ?)',
+                           (task_id, task_id, body, assignee, status, 'normal', 'user'))
+            db.commit()
+
+    def test_check_ownership_flags_pairs_across_boards_and_workdirs(self):
+        # check-ownership is board-global: unlike check-scope it must flag a
+        # pair whose cards live on boards with different default_workdir. It is
+        # detection only, so the card databases stay byte-for-byte unchanged.
+        self.inventory.stop()
+        self.write_board('alpha', self.root / 'repo-alpha', [
+            ('t_alpha', 'standard-implementer', 'running',
+             'Change: scripts/hermes/review-taskforce.py — add the check'),
+        ])
+        self.write_board('beta', self.root / 'repo-beta', [
+            ('t_beta', 'local-implementer', 'review',
+             'Scope: scripts/hermes/review-taskforce.py'),
+        ])
+        before = {p: p.read_bytes() for p in self.root.glob('kanban/boards/*/kanban.db')}
+        pairs = tf.ownership_conflicts(self.root)
+        self.assertEqual(1, len(pairs))
+        first, second = pairs[0]['a'], pairs[0]['b']
+        self.assertEqual({'alpha', 'beta'}, {first['board'], second['board']})
+        self.assertEqual({'t_alpha', 't_beta'}, {first['task_id'], second['task_id']})
+        self.assertEqual({'scripts/hermes/review-taskforce.py'},
+                         set(first['paths']) | set(second['paths']))
+        self.assertEqual(before, {p: p.read_bytes() for p in before})
+
+    def test_check_ownership_skips_terminal_and_disjoint_cards(self):
+        self.inventory.stop()
+        self.write_board('alpha', self.root / 'repo-a', [
+            ('t_done', 'standard-implementer', 'done', 'Change: modules/immich/default.nix'),
+            ('t_one', 'standard-implementer', 'running', 'Change: modules/immich/default.nix'),
+            ('t_two', 'feature-reviewer', 'ready', 'Change: modules/paperless/default.nix'),
+        ])
+        self.assertEqual([], tf.ownership_conflicts(self.root))
+
+    def test_check_ownership_unscoped_card_guards_the_whole_project(self):
+        self.inventory.stop()
+        self.write_board('alpha', self.root / 'repo-a', [
+            ('t_unscoped', 'head-coordinator', 'running', 'Implement the requested changes'),
+            ('t_scoped', 'standard-implementer', 'running', 'Change: modules/immich/default.nix'),
+        ])
+        pairs = tf.ownership_conflicts(self.root)
+        self.assertEqual(1, len(pairs))
+        self.assertEqual({'t_unscoped', 't_scoped'},
+                         {pairs[0]['a']['task_id'], pairs[0]['b']['task_id']})
+
+    def test_check_ownership_cli_exits_one_on_overlap(self):
+        self.inventory.stop()
+        self.write_board('alpha', self.root / 'repo-a', [
+            ('t_one', 'standard-implementer', 'running', 'Change: modules/immich/default.nix'),
+        ])
+        self.write_board('beta', self.root / 'repo-b', [
+            ('t_two', 'local-implementer', 'todo', 'Change: modules/immich/default.nix'),
+        ])
+        self.write_board('gamma', self.root / 'repo-c', [
+            ('t_three', 'standard-implementer', 'running', 'Change: modules/paperless/default.nix'),
+        ])
+        with patch.dict(os.environ, {'HERMES_ROOT': str(self.root)}):
+            with patch.object(sys, 'argv', ['review-taskforce.py', 'check-ownership']):
+                self.assertEqual(1, tf.main())
+            (self.root / 'kanban/boards/beta/kanban.db').unlink()
+            with patch.object(sys, 'argv', ['review-taskforce.py', 'check-ownership']):
+                self.assertEqual(0, tf.main())
+
     def test_policy_refresh_preserves_independent_sections(self):
         foreign = ('<!-- kanban-owner-blocker-author -->\n'
                    '## Owner-facing blocker authorship\nOnly the coordinator writes gates.\n'
