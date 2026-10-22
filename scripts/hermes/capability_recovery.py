@@ -94,7 +94,8 @@ def read_board(db, root, board, helpers):
         if not re.fullmatch(r't_[a-z0-9_]{1,64}', tid):
             raise ValueError('Unsupported task identity')
         event = (db.execute("SELECT kind,payload FROM task_events WHERE task_id=? "
-                            "AND kind IN ('blocked','block_loop_detected','unblocked','completed','scheduled') ORDER BY id DESC LIMIT 1",
+                            "AND kind IN ('blocked','block_loop_detected','unblocked','completed',"
+                            "'scheduled','block_reclassified') ORDER BY id DESC LIMIT 1",
                             (tid,)).fetchone() if 'task_events' in tables else None)
         block = json.loads(event['payload'] or '{}') if event else {}
         if not isinstance(block, dict):
@@ -105,13 +106,24 @@ def read_board(db, root, board, helpers):
         if event and event['kind'] == 'scheduled' and not technical_wait:
             # Scheduling does not itself release the preceding capability block.
             event = db.execute("SELECT kind,payload FROM task_events WHERE task_id=? "
-                               "AND kind IN ('blocked','block_loop_detected','unblocked','completed') ORDER BY id DESC LIMIT 1",
+                               "AND kind IN ('blocked','block_loop_detected','unblocked','completed','block_reclassified') ORDER BY id DESC LIMIT 1",
                                (tid,)).fetchone()
             block = json.loads(event['payload'] or '{}') if event else {}
             if not isinstance(block, dict):
                 raise ValueError('Unsupported block event')
         if event and event['kind'] in {'unblocked', 'completed'}:
             continue  # A later successful release ends the historical hold episode.
+        if event and event['kind'] == 'block_reclassified':
+            # A reclassification renames the current hold episode in place; the
+            # newest kind is authoritative. A capability hold that an owner-
+            # directed audit reclassified to another kind is not a capability
+            # hold any more, and re-queuing its stale pre-reclassification
+            # version would reproduce a request the disposition already
+            # consumed (the repeat-request loop).
+            new_kind = block.get('new_kind')
+            if not isinstance(new_kind, str) or not re.fullmatch(r'[a-z][a-z_]{0,31}', new_kind):
+                raise ValueError('Unsupported block reclassification')
+            block['kind'] = new_kind
         if not technical_wait and block.get('kind', task['block_kind']) != 'capability':
             continue
         reason = block.get('reason') or 'No recorded capability reason; coordinator must reconcile.'

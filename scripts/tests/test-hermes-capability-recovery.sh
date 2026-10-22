@@ -174,6 +174,32 @@ class RecoveryTest(unittest.TestCase):
         os.mkfifo(scripts / 'fixture-runner.py')
         self.assertEqual(first, self.report())
 
+    def test_reclassification_to_another_kind_ends_the_capability_hold(self):
+        self.db.execute("INSERT INTO task_events(task_id,kind,payload) VALUES('t_one','block_reclassified',?)",
+                        (json.dumps({'old_kind': 'capability', 'new_kind': 'dependency',
+                                     'reason': 'Waiting on parent review/approval',
+                                     'source': 'owner_directed_audit'}),))
+        self.db.commit()
+        self.assertEqual([], self.report()['holds'])
+
+    def test_reclassification_back_to_capability_keeps_the_hold_current(self):
+        self.db.execute("INSERT INTO task_events(task_id,kind,payload) VALUES('t_one','block_reclassified',?)",
+                        (json.dumps({'old_kind': 'dependency', 'new_kind': 'capability',
+                                     'reason': 'Input supplier: agent. Restored capability hold.',
+                                     'source': 'coordinator'}),))
+        self.db.commit()
+        hold = self.report()['holds'][0]
+        self.assertEqual('agent', hold['supplier'])
+        self.assertIn('Restored capability hold.', hold['reason'])
+
+    def test_an_unsupported_reclassification_kind_fails_closed(self):
+        self.db.execute("INSERT INTO task_events(task_id,kind,payload) VALUES('t_one','block_reclassified',?)",
+                        (json.dumps({'old_kind': 'capability', 'new_kind': 'Needs Input'}),))
+        self.db.commit()
+        report = recovery.report(self.root)
+        self.assertEqual(report['holds'], [])
+        self.assertTrue(report['warnings'])
+
     def test_plain_python_observation_does_not_create_bytecode_or_write_state(self):
         scripts = self.root / 'scripts'
         scripts.mkdir()
