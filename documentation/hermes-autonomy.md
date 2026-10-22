@@ -159,6 +159,18 @@ stop installation. New workers import the new code. Let active turns finish;
 refresh the existing supervised gateway at an idle boundary using its native
 graceful restart path, never killing workers or launching another gateway.
 
+For the common fixture helper only, a genuine native head-coordinator worker may
+use `install-autonomy-policy.py --fixture-runner-only --review-card t_REVIEW`.
+The source checkout must be clean and committed. The latest completed independent
+review must accept that exact full commit with executed zero-exit checks and
+`metadata.installation_scope: ["scripts/hermes/fixture-runner.py"]` on its own
+board. The installer authenticates current native worker provenance and reads
+review evidence through the pinned native installation. Delegated children and
+ordinary sessions cannot obtain this maintenance authority by naming a profile
+or session. This mode changes only the common helper, retaining private backups
+and readback; it cannot install native adapters, configuration or broader policy.
+Read-only `--check` remains available without installation authority.
+
 Rollback restores only this installer's changed native seams and managed files
 from the matching backups, preserving intervening edits. Do not remove a native
 module while its import sites remain. Operation evidence and start markers are

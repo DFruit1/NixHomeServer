@@ -178,6 +178,9 @@ test_scripts=(
   scripts/tests/test-remote-run-helper.sh
   scripts/tests/test-reap-kanban-worktrees.sh
   scripts/tests/test-hermes-workspace-preflight.sh
+  scripts/tests/test-hermes-workspace-repair.sh
+  scripts/tests/test-hermes-worker-origin.sh
+  scripts/tests/test-hermes-recovered-resume.sh
   scripts/tests/test-kanban-board-health.sh
   scripts/tests/test-quiescence-inventory.sh
   scripts/tests/test-kanban-retry-breaker.sh
@@ -254,6 +257,27 @@ test_scripts=(
 NIXHOMESERVER_DEFAULT_HOST="$(test_default_host)"
 export NIXHOMESERVER_DEFAULT_HOST
 
+fixture_origin_pinned=false
+fixture_helper="${HERMES_ROOT:-${HOME}/.hermes}/scripts/fixture-runner.py"
+for origin_var in HERMES_KANBAN_TASK HERMES_KANBAN_DB HERMES_KANBAN_BOARD \
+                  HERMES_KANBAN_RUN_ID HERMES_KANBAN_CLAIM_LOCK \
+                  HERMES_DELEGATED_CHILD_CONTEXT HERMES_PROFILE_NAME HERMES_PROFILE; do
+  if [[ -n "${!origin_var:-}" ]]; then
+    fixture_origin_pinned=true
+    break
+  fi
+done
+
+fixture_suite() {
+  case "${1##*/}" in
+    test-kanban-owner-alerts.sh | test-steward-readonly.sh | \
+    test-steward-opportunity-scan.sh | test-kanban-retry-breaker.sh | \
+    test-hermes-autonomy.sh | test-hermes-autonomy-runtime.sh | \
+    test-hermes-worker-origin.sh | test-hermes-recovered-resume.sh) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 active=0
 max_jobs=$(nproc 2>/dev/null || echo 2)
 failures=0
@@ -285,9 +309,16 @@ for test_script in "${test_scripts[@]}"; do
   log_file="${test_tmp}/test-${test_script//\//_}.log"
   (
     printf '==> %s\n' "$test_script"
-    if ! bash "$test_script" > "$log_file" 2>&1; then
+    if [[ "$fixture_origin_pinned" == true ]] && fixture_suite "$test_script"; then
+      python3 -B "$fixture_helper" --repo "$TESTS_REPO_ROOT" \
+        --suite "$TESTS_REPO_ROOT/$test_script" --timeout 300 > "$log_file" 2>&1 || {
+        echo "❌ $test_script failed in required confined fixture; output follows:" >&2
+        cat "$log_file" >&2
+        exit 1
+      }
+    elif ! bash "$test_script" > "$log_file" 2>&1; then
       echo "❌ $test_script failed; output follows:" >&2
-      cat "$log_file"
+      cat "$log_file" >&2
       exit 1
     fi
   ) &
