@@ -1,0 +1,29 @@
+{
+  "schema": "lwracq-metrics-availability/v1",
+  "finding": "CI-LWR-001",
+  "boundary": "LWRACQ-20261014-v2#3.2",
+  "status": "ACCEPTED",
+  "reason": "none",
+  "get_performed": true,
+  "attempt_id": "attempt-20261014T125615Z-19181",
+  "capture_time_utc": "2026-10-14T12:56:15Z",
+  "transport": {
+    "label": "dsaw@192.168.8.12",
+    "ssh_exit": 0,
+    "elapsed_ms": 118,
+    "deadline_s": 29,
+    "total_limit_s": 30
+  },
+  "wire": {
+    "endpoint": "http://127.0.0.1:8093/metrics",
+    "connect_timeout_s": 3,
+    "request_timeout_s": 10,
+    "retries": 0
+  },
+  "curl_exit": 0,
+  "filter_exit": 0,
+  "requests_processing": 1,
+  "requests_deferred": 0,
+  "runner_sha256": "8104124f1e1d287ea0aa8f047e8627a5f358cb5cdf564a195c096389ecb01626",
+  "lib_sha256": "f8fff9509c69c2f1b9f74bffdadaec58346cda09af79e8ea2b746e768501a3c8"
+}
