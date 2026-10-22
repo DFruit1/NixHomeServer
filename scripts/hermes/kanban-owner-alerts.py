@@ -629,7 +629,13 @@ def check_ownership(root):
                     coordinator_summary = db.execute(
                         "SELECT id FROM task_comments WHERE task_id=? AND author=? AND instr(body,'Blocking:')>0"
                         ' ORDER BY created_at DESC, id DESC LIMIT 1', (task['id'], PROFILE)).fetchone()
-                    if not gate and re.search(r'Input supplier:[ \t]*owner\b', reason or '', re.I):
+                    # An answered owner episode followed by a native dependency
+                    # hold is history, not a current approval request. Without
+                    # that answer, dependency metadata must not hide a malformed
+                    # owner gate. Keep needs_input/Hard Blocker checks below and
+                    # match the supplier token so "owner-decision" is not an ask.
+                    if (not gate and not (task['block_kind'] == 'dependency' and owner_spoke_since)
+                            and re.search(r'Input supplier:[ \t]*owner(?![\w-])', reason or '', re.I)):
                         if owner_spoke_since:
                             problems.append(f'{key}: {task["status"]} still carries a stale supplier=owner hold,'
                                             ' but the owner has commented since it was recorded; coordinator: rework'

@@ -114,6 +114,51 @@ class AlertsTest(unittest.TestCase):
         self.assertFalse(any('t_ownerhold' in p and 'author the ASK' in p for p in problems),
                          problems)
 
+    def test_current_dependency_hold_supersedes_historical_owner_reason(self):
+        with closing(sqlite3.connect(self.boards['one'])) as db:
+            db.execute('INSERT INTO tasks (id,title,body,status,block_kind) VALUES (?,?,?,?,?)',
+                       ('t_reclassified', 'Route accepted work', 'Goal: finish reviewed work',
+                        'todo', 'dependency'))
+            db.execute('INSERT INTO task_events VALUES (?,?,?,?,?)',
+                       (10, 't_reclassified', 'blocked',
+                        json.dumps({'reason': 'Input supplier: owner\nApproval is needed.'}), 1))
+            db.commit()
+        # Dependency metadata alone must not hide an unanswered owner input.
+        self.assertTrue(any('t_reclassified' in p and 'author the ASK' in p
+                            for p in alerts.check_ownership(self.root)))
+        with closing(sqlite3.connect(self.boards['one'])) as db:
+            db.execute('INSERT INTO task_comments (task_id,author,body,created_at) VALUES (?,?,?,?)',
+                       ('t_reclassified', 'owner', 'Approved exact option A.', 2))
+            db.commit()
+        before = self.board_bytes()
+        self.assertFalse(any('t_reclassified' in p for p in alerts.check_ownership(self.root)))
+        self.assertEqual(before, self.board_bytes())
+        # A real current owner gate still needs its authoring checks, even if
+        # an old native dependency marker or an owner comment survives.
+        with closing(sqlite3.connect(self.boards['one'])) as db:
+            db.execute("UPDATE tasks SET body='Hard Blocker' WHERE id='t_reclassified'")
+            db.commit()
+        self.assertTrue(any('t_reclassified' in p and 'stuck gate' in p
+                            for p in alerts.check_ownership(self.root)))
+
+    def test_supplier_token_does_not_misread_owner_decision_prose(self):
+        with closing(sqlite3.connect(self.boards['one'])) as db:
+            db.execute('INSERT INTO tasks (id,title,body,status,block_kind) VALUES (?,?,?,?,?)',
+                       ('t_agenthold', 'Continue technical recovery',
+                        'Goal: finish agent recovery\nInput supplier: agent.', 'blocked', 'capability'))
+            db.execute('INSERT INTO task_events VALUES (?,?,?,?,?)',
+                       (10, 't_agenthold', 'blocked', json.dumps({'reason':
+                        'Input supplier: owner-decision A delegates this technical recovery.'}), 1))
+            db.commit()
+        self.assertFalse(any('t_agenthold' in p for p in alerts.check_ownership(self.root)))
+        with closing(sqlite3.connect(self.boards['one'])) as db:
+            db.execute('UPDATE task_events SET payload=? WHERE task_id=?',
+                       (json.dumps({'reason': 'Input supplier: owner. A physical action is needed.'}),
+                        't_agenthold'))
+            db.commit()
+        self.assertTrue(any('t_agenthold' in p and 'author the ASK' in p
+                            for p in alerts.check_ownership(self.root)))
+
     def test_worker_cannot_turn_a_technical_block_into_an_owner_decision(self):
         request = {'profile': 'standard-implementer', 'tool_name': 'kanban_block',
                    'tool_input': {'board': 'one', 'task_id': 't_12345678', 'kind': 'needs_input',
