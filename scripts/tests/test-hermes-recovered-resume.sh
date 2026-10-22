@@ -30,8 +30,21 @@ import worker_origin
 sys.modules['hermes_cli.nixhomeserver_worker_origin']=worker_origin
 sys.modules['cron.nixhomeserver_capability_recovery']=capability_recovery
 import resume_recovered as resume
-from recovered_resume_adapter import adapt
+from recovered_resume_adapter import adapt, EDITS
 sys.modules['hermes_cli.nixhomeserver_resume_recovered']=resume
+
+
+def fixture_native_preimage(name, text):
+    """Undo only our exact maintained seams in fixture bytes, never live code."""
+    for before, after in reversed(EDITS[name]):
+        if text.count(after) == 1:
+            text = text.replace(after, before, 1)
+        elif text.count(before) != 1:
+            raise ValueError('Native fixture source drift')
+    if any(text.count(before) != 1 or after in text for before,after in EDITS[name]):
+        raise ValueError('Native fixture source is ambiguous')
+    compile(text, name, 'exec')
+    return text
 
 
 class RecoveryTest(unittest.TestCase):
@@ -175,7 +188,9 @@ class InstallerTest(unittest.TestCase):
         self.temp=tempfile.TemporaryDirectory(prefix='hermes-recovered-install-');self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name)
         for name in ('tools/kanban_tools.py','tools/kanban_tools_schemas.py','hermes_cli/kanban_db.py'):
-            target=self.root/'hermes-agent'/name;target.parent.mkdir(parents=True,exist_ok=True);target.write_text((NATIVE/name).read_text())
+            text=(NATIVE/name).read_text()
+            if name in EDITS:text=fixture_native_preimage(name,text)
+            target=self.root/'hermes-agent'/name;target.parent.mkdir(parents=True,exist_ok=True);target.write_text(text)
         (self.root/'hermes-agent/hermes_cli/nixhomeserver_worker_origin.py').write_text((SOURCE/'worker_origin.py').read_text())
         canonical=self.root/'hermes-agent/cron/nixhomeserver_capability_recovery.py';canonical.parent.mkdir();canonical.write_text((SOURCE/'capability_recovery.py').read_text())
         spec=importlib.util.spec_from_file_location('recovered_installer',SOURCE/'install-recovered-resume.py')
@@ -190,6 +205,18 @@ class InstallerTest(unittest.TestCase):
         backups=list((self.root/'backups/recovered-resume').glob('*/*'))
         self.assertTrue(backups);self.assertTrue(all(p.stat().st_mode & 0o077 == 0 for p in backups))
         self.assertEqual((SOURCE/'resume_recovered.py').read_text(),(self.root/'hermes-agent/hermes_cli/nixhomeserver_resume_recovered.py').read_text())
+
+    def test_already_installed_fixture_is_unchanged_without_backups(self):
+        expected={}
+        for name in EDITS:
+            target=self.root/'hermes-agent'/name
+            target.write_text(adapt(name,target.read_text()));expected[target]=target.read_bytes()
+        helper=self.root/'hermes-agent/hermes_cli/nixhomeserver_resume_recovered.py'
+        helper.write_bytes((SOURCE/'resume_recovered.py').read_bytes());expected[helper]=helper.read_bytes()
+        self.assertEqual(0,self.installer.install(self.root,True))
+        self.assertEqual(0,self.installer.install(self.root))
+        self.assertFalse((self.root/'backups').exists())
+        self.assertTrue(all(path.read_bytes()==content for path,content in expected.items()))
 
     def test_worker_installer_effects_refused_before_native_changes(self):
         env=dict(os.environ,HERMES_ROOT=str(self.root),HERMES_KANBAN_TASK='t_fixture',HERMES_KANBAN_RUN_ID='99')
@@ -209,10 +236,22 @@ class InstallerTest(unittest.TestCase):
 class AdapterTest(unittest.TestCase):
     def test_pinned_native_seams_idempotent_and_drift_refused(self):
         for name in ('tools/kanban_tools.py','tools/kanban_tools_schemas.py'):
-            original=(NATIVE/name).read_text();updated=adapt(name,original)
+            original=fixture_native_preimage(name,(NATIVE/name).read_text());updated=adapt(name,original)
             self.assertNotEqual(original,updated);self.assertEqual(updated,adapt(name,updated))
             with self.assertRaises(ValueError):adapt(name,'# incompatible source')
             compile(updated,name,'exec')
+
+    def test_fixture_preimages_accept_both_native_states_and_reject_drift(self):
+        for name in EDITS:
+            original=fixture_native_preimage(name,(NATIVE/name).read_text())
+            installed=adapt(name,original)
+            with self.subTest(name=name):
+                self.assertEqual(original,fixture_native_preimage(name,original))
+                self.assertEqual(original,fixture_native_preimage(name,installed))
+                with self.assertRaises(ValueError):fixture_native_preimage(name,'# incompatible native source')
+                for before,after in EDITS[name]:
+                    with self.assertRaises(ValueError):fixture_native_preimage(name,installed.replace(after,'# missing exact seam',1))
+                    with self.assertRaises(ValueError):fixture_native_preimage(name,installed+'\n'+before)
 
     def test_real_native_registry_and_handler_preserve_other_worker_guards(self):
         # Execute maintained native source in memory; production files stay untouched.
