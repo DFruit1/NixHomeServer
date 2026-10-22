@@ -1,0 +1,3 @@
+llamacpp:requests_processing 0
+llamacpp:kv_cache_usage_ratio 0.42
+llamacpp:requests_deferred 0

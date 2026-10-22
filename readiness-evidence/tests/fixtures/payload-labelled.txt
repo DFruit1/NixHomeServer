@@ -1,0 +1,2 @@
+llamacpp:requests_processing{model_name="qwen"} 3
+llamacpp:requests_deferred 0
