@@ -836,6 +836,58 @@ if [[ -n "$repo" ]] && git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
 fi
 
 # ---------------------------------------------------------------------------
+# Completed accepted work left unmerged (content, not durability)
+# ---------------------------------------------------------------------------
+# A `done` or `archived` card is the board's own record that the work passed
+# the required review. A card branch under refs/heads/wt whose commits are
+# still not on master is work the review accepted but nothing integrated: it
+# lingers in the worktree and in the durability mirror only, and nothing
+# deploys from either, so the acceptance quietly decays. The durability
+# detectors above already keep that work disk-safe; this one keeps the
+# *merge-back cadence* honest, so accepted work reaches master promptly.
+#
+# Reads only, never merges: the decision stays with the head-coordinator,
+# including the choice to dispose (disposition already consumed elsewhere).
+# Patch-equivalent commits -- applied under another shape by a composition
+# merge -- count as integrated, so a branch whose every commit is a duplicate
+# does not flicker: git marks it '-' and the count drops to zero.
+
+if [[ -n "$repo" ]] && git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
+  # A board whose schema does not track branches has nothing for this detector
+  # to read; skip rather than fail the whole report. Probed with plain sqlite3:
+  # `sql` treats any query failure as fatal, and an old schema is a normal
+  # state, not a report gap.
+  if sqlite3 "$DB" "SELECT branch_name, id FROM tasks LIMIT 0;" >/dev/null 2>&1; then
+  if ! rows="$(sql "
+    SELECT branch_name, MIN(id) FROM tasks
+     WHERE status IN ('done','archived') AND branch_name LIKE 'wt/%'
+     GROUP BY branch_name ORDER BY branch_name;")"; then
+    printf 'BOARD_HEALTH_QUERY_ERROR board=%s db=%s (unmerged scan)\n' "$HERMES_BOARD" "$DB" >&2
+    exit 4
+  fi
+  emitted_unmerged=0
+  excess_unmerged=0
+  while IFS='|' read -r branch task_id; do
+    [[ -n "$branch" ]] || continue
+    sha="$(git -C "$repo" rev-parse --verify --quiet "$branch" 2>/dev/null)" || continue
+    ahead="$(git -C "$repo" rev-list --count "$sha" --not master 2>/dev/null)"
+    [[ "$ahead" =~ ^[0-9]+$ ]] || { emit "UNMERGED_UNKNOWN $task_id branch=$branch needs=manual-check"; continue; }
+    ((ahead > 0)) || continue
+    unapplied="$(git -C "$repo" cherry master "$sha" 2>/dev/null | grep -c '^+' || true)"
+    [[ "$unapplied" =~ ^[0-9]+$ ]] || { emit "UNMERGED_UNKNOWN $task_id branch=$branch needs=manual-check"; continue; }
+    ((unapplied > 0)) || continue
+    if ((emitted_unmerged < 20)); then
+      emit "UNMERGED_ACCEPTED_WORK $task_id branch=$branch commits=$unapplied needs=merge-or-dispose"
+      emitted_unmerged=$((emitted_unmerged + 1))
+    else
+      excess_unmerged=$((excess_unmerged + 1))
+    fi
+  done <<<"$rows"
+  ((excess_unmerged > 0)) && emit "UNMERGED_EXCESS additional=$excess_unmerged needs=reduce-backlog"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # Durability mirror staleness (EVERY board)
 # ---------------------------------------------------------------------------
 # The durability-sync cron records the epoch of each board's last successful

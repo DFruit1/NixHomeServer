@@ -390,6 +390,16 @@ stale pre-reclassification version must not re-queue a deterministic
 steward-coordinator handoff the disposition already consumed (the
 repeat-request loop this policy fixes).
 
+The same monitor closes the merge-back cadence: a `done`/`archived` card's
+`wt/` branch that still carries non-patch-equivalent, non-master commits is
+reported as `UNMERGED_ACCEPTED_WORK` (line cap 20 with an `UNMERGED_EXCESS`
+summary) until it is merged or the coordinator records a disposition. It
+resolves the checkout through the board's `default_workdir`, ignores boards
+whose schema does not track branches, and counts patch-equivalent commits as
+integrated so an already-applied branch never flickers. The merge decision
+and any conflict resolution stay with the head-coordinator; acceptance must
+not re-open a gate.
+
 The existing hourly no-agent taskforce tick uses `cron_sweep.py` to retain the
 weekly sweep cadence while suppressing new sweeps behind open improvement work.
 Future sweep cards require a benefit, scope, stopping condition and delivered

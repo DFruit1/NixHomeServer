@@ -1364,6 +1364,127 @@ grep -q '^SCRIPT_DRIFT' <<<"$scripts_repaired_out" &&
   fail "a re-installed tree still reported script drift: $scripts_repaired_out"
 pass "clears the script-drift finding once the owning installer re-runs"
 
+# --- completed accepted work left unmerged (UNMERGED_ACCEPTED_WORK) -----------
+#
+# A done/archived card whose wt branch still carries non-equivalent commits is
+# accepted work nothing integrated: the durability checks above keep it
+# disk-safe, but only a merge or an explicit disposition closes it. The
+# detector reads the board's recorded default_workdir, never merges, and
+# counts patch-equivalent commits as integrated, so a branch already applied
+# under another shape goes quiet instead of flickering.
+
+merge_board_dir="$fixture/hermes/kanban/boards/mergetest"
+mkdir -p "$merge_board_dir"
+sqlite3 "$merge_board_dir/kanban.db" <<'SQL'
+CREATE TABLE tasks (
+  id TEXT PRIMARY KEY,
+  title TEXT,
+  assignee TEXT,
+  status TEXT,
+  created_at INTEGER,
+  started_at INTEGER,
+  workspace_path TEXT,
+  branch_name TEXT,
+  completed_at INTEGER,
+  claim_lock TEXT,
+  worker_pid INTEGER,
+  last_heartbeat_at INTEGER,
+  block_recurrences INTEGER DEFAULT 0,
+  block_kind TEXT,
+  consecutive_failures INTEGER DEFAULT 0
+);
+CREATE TABLE task_comments (id INTEGER PRIMARY KEY, task_id TEXT, body TEXT, created_at INTEGER, author TEXT);
+CREATE TABLE task_events (id INTEGER PRIMARY KEY, task_id TEXT, kind TEXT, created_at INTEGER, payload TEXT);
+CREATE TABLE task_runs (id INTEGER PRIMARY KEY, task_id TEXT, outcome TEXT, started_at INTEGER, ended_at INTEGER);
+CREATE TABLE task_links (parent_id TEXT, child_id TEXT, PRIMARY KEY (parent_id, child_id));
+SQL
+wt_repo="$fixture/wtrepo"
+mkdir -p "$wt_repo"
+git -C "$wt_repo" init --quiet --initial-branch master 2>/dev/null ||
+  git -C "$wt_repo" init --quiet
+git -C "$wt_repo" commit --allow-empty -m base --quiet
+printf '{"slug": "mergetest", "default_workdir": "%s"}\n' "$wt_repo" >"$merge_board_dir/board.json"
+
+run_merge_health() {
+  HERMES_ROOT="$fixture/hermes" HERMES_BOARD=mergetest "$HEALTH"
+}
+
+# Card with two non-equivalent commits ahead of master.
+git -C "$wt_repo" checkout --quiet -b wt/t_m1
+printf 'one\n' >"$wt_repo/m1.txt"; git -C "$wt_repo" add m1.txt
+git -C "$wt_repo" commit -m 'm1 one' --quiet
+printf 'two\n' >"$wt_repo/m1.txt"; git -C "$wt_repo" add m1.txt
+git -C "$wt_repo" commit -m 'm1 two' --quiet
+git -C "$wt_repo" checkout --quiet master
+sqlite3 "$merge_board_dir/kanban.db" "INSERT INTO tasks
+  (id,title,assignee,status,completed_at,branch_name) VALUES
+  ('t_m1','accepted and unmerged','standard-implementer','done',$now,'wt/t_m1');"
+
+out="$(run_merge_health)"
+grep -q '^UNMERGED_ACCEPTED_WORK t_m1 branch=wt/t_m1 commits=2 needs=merge-or-dispose$' <<<"$out" ||
+  fail "did not report the done card's unmerged branch: $out"
+pass "reports a done card with an unmerged branch as one bounded line"
+
+# A branch whose changes were also applied to master as a patch-equivalent
+# commit is integrated: the finding must stay silent rather than flicker.
+git -C "$wt_repo" checkout --quiet -b wt/t_m2
+printf 'reuse\n' >"$wt_repo/m2.txt"; git -C "$wt_repo" add m2.txt
+git -C "$wt_repo" commit -m 'm2 reuse' --quiet
+git -C "$wt_repo" checkout --quiet master
+GIT_COMMITTER_DATE="@$((now + 3))" GIT_AUTHOR_DATE="@$((now + 3))" \
+  git -C "$wt_repo" cherry-pick wt/t_m2 --quiet 2>/dev/null
+[[ "$(git -C "$wt_repo" rev-parse master)" != "$(git -C "$wt_repo" rev-parse wt/t_m2)" ]] ||
+  fail "setup: cherry-pick created a fast-forward, so the patch-equivalence case is untested"
+[[ -z "$(git -C "$wt_repo" cherry master wt/t_m2 | grep '^+')" ]] ||
+  fail "setup: the picked commit is not patch-equivalent"
+sqlite3 "$merge_board_dir/kanban.db" "INSERT INTO tasks
+  (id,title,assignee,status,completed_at,branch_name) VALUES
+  ('t_m2','applied under another shape','standard-implementer','done',$now,'wt/t_m2');"
+
+out="$(run_merge_health)"
+grep -q '^UNMERGED_ACCEPTED_WORK t_m2 ' <<<"$out" &&
+  fail "a patch-equivalent branch was reported as unmerged: $out"
+pass "a patch-equivalent branch counts as integrated"
+
+# An archived card and a reaped branch.
+git -C "$wt_repo" checkout --quiet -b wt/t_m3
+printf 'arch\n' >"$wt_repo/m3.txt"; git -C "$wt_repo" add m3.txt
+git -C "$wt_repo" commit -m 'm3 arch' --quiet
+git -C "$wt_repo" checkout --quiet master
+sqlite3 "$merge_board_dir/kanban.db" "INSERT INTO tasks
+  (id,title,assignee,status,completed_at,branch_name) VALUES
+  ('t_m3','archived unmerged','standard-implementer','archived',$now,'wt/t_m3');
+INSERT INTO tasks
+  (id,title,assignee,status,completed_at,branch_name) VALUES
+  ('t_m4','branch reaped','standard-implementer','done',$now,'wt/t_m4_gone');"
+
+out="$(run_merge_health)"
+grep -q '^UNMERGED_ACCEPTED_WORK t_m3 branch=wt/t_m3 commits=1 needs=merge-or-dispose$' <<<"$out" ||
+  fail "did not report an archived card's unmerged branch: $out"
+grep -q 't_m4' <<<"$out" &&
+  fail "reported a card whose branch ref no longer exists: $out"
+pass "reports archived cards and ignores reaped branches"
+
+# More findings than the line cap: the excess is summarised as one stable line.
+for i in $(seq 25); do
+  git -C "$wt_repo" checkout --quiet -b "wt/t_x$i"
+  printf "%s\n" "$i" >"$wt_repo/x.txt"; git -C "$wt_repo" add x.txt
+  git -C "$wt_repo" commit -m "x$i" --quiet
+  git -C "$wt_repo" checkout --quiet master
+  sqlite3 "$merge_board_dir/kanban.db" "INSERT INTO tasks
+    (id,title,assignee,status,completed_at,branch_name) VALUES
+    ('t_x$i','bulk $i','standard-implementer','done',$now,'wt/t_x$i');"
+done
+
+out="$(run_merge_health)"
+[[ "$(grep -c '^UNMERGED_ACCEPTED_WORK ' <<<"$out")" == "20" ]] ||
+  fail "the finding cap is not 20: $out"
+grep -q '^UNMERGED_EXCESS additional=[1-9][0-9]* needs=reduce-backlog$' <<<"$out" ||
+  fail "finding excess above the cap was not summarised: $out"
+pass "caps the per-line findings and summarises the excess"
+
+for i in $(seq 25); do sqlite3 "$merge_board_dir/kanban.db" "DELETE FROM tasks WHERE id='t_x$i';"; done
+
 # --- the installed copy runs the same suite ----------------------------------
 #
 # The suite is only evidence about the script it exercised. BOARD_HEALTH_SCRIPT
