@@ -656,7 +656,7 @@ class TaskforceTest(unittest.TestCase):
         self.assertTrue((self.root / 'scripts/review-taskforce-approval.md').is_file())
         config = self.root / 'profiles/head-coordinator/config.yaml'
         self.assertEqual(1, config.read_text().count('# nixhomeserver-review-verdict:start'))
-        self.assertIn('^kanban_(complete|unlink)$', config.read_text())
+        self.assertIn('^kanban_(complete|unlink|create|link)$', config.read_text())
         from hermes_config import document
         self.assertIn('kanban', document(config.read_text())['platform_toolsets']['desktop'])
         jobs = self.root / 'profiles/head-coordinator/cron/jobs.json'
@@ -667,6 +667,40 @@ class TaskforceTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             installer.install(self.root, cron=False)
         self.assertEqual('Unrestored old policy.\n', default.read_text())
+
+    def test_hooks_only_repairs_effective_matcher_without_other_configuration(self):
+        from hermes_config import document
+        directory = self.root / 'profiles/head-coordinator'
+        directory.mkdir(parents=True)
+        config = directory / 'config.yaml'
+        unchanged = ('model:\n  default: keep-model\nkanban:\n  max_in_progress: 7\n'
+                     'platform_toolsets:\n  cli: [file]\n')
+        config.write_text(unchanged)
+        metadata = directory / 'profile.yaml'
+        metadata.write_text('description: preserve custom role\n')
+        jobs = self.root / 'cron/jobs.json'
+        jobs.parent.mkdir()
+        jobs.write_text('{"jobs": [{"name": "unrelated"}]}')
+        before = {p: p.read_bytes() for p in (metadata, jobs)}
+        with patch.object(installer.subprocess, 'run', side_effect=AssertionError('no cron writes')):
+            self.assertEqual(1, installer.install(self.root, check=True, hooks_only=True))
+            self.assertEqual(unchanged, config.read_text())
+            self.assertEqual(0, installer.install(self.root, hooks_only=True))
+            self.assertEqual(0, installer.install(self.root, check=True, hooks_only=True))
+        actual = document(config.read_text())
+        self.assertEqual('keep-model', actual['model']['default'])
+        self.assertEqual(7, actual['kanban']['max_in_progress'])
+        self.assertEqual(['file'], actual['platform_toolsets']['cli'])
+        hook = actual['hooks']['pre_tool_call'][0]
+        self.assertEqual('^kanban_(complete|unlink|create|link)$', hook['matcher'])
+        self.assertTrue(hook['fail_closed'])
+        self.assertEqual(before, {p: p.read_bytes() for p in before})
+        self.assertFalse((self.root / 'SOUL.md').exists())
+        for name in ('review-verdict-guard.py', 'capability_recovery.py'):
+            self.assertEqual((installer.SOURCE / name).read_bytes(),
+                             (self.root / 'scripts' / name).read_bytes())
+        with self.assertRaises(ValueError):
+            installer.install(self.root, hooks_only=True, policy_only=True)
 
 
 unittest.main(argv=['taskforce'], verbosity=2)

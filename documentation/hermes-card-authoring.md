@@ -79,6 +79,21 @@ writes or guard removal.
 
 ### Task skills
 
+Feature execution and routing cards carry a standalone
+`Feature tracker: BOARD:t_CARD` line, naming the canonical tracker. Backfill an
+existing member with that exact line in a native comment. This is scheduling
+membership, never a permission grant or dependency: keep the tracker parked and
+do not parent-link it to execution. Preserve its specification and update actual
+source, independent review, integration and live stages separately. Routing or
+planning acceptance is not product delivery.
+
+A coordinator waiting for a feature's implementation/review uses the standalone
+`Feature handoff: delivery` line. Its input producers/reviewers precede it;
+they cannot depend on this unfinished handoff. A real approval decision or
+input-producing coordinator has a different role and may precede consumers.
+Post-delivery auditor recordkeeping uses `Feature role: documentary-closure`.
+These explicit contracts prevent semantic waits without removing real gates.
+
 When commissioning work, pin the procedures the assignee needs in the native
 `skills` field. Hermes persists these names and preloads them into the worker;
 a skill name in the body alone does not preload it. Keep the body for scope and
@@ -133,6 +148,17 @@ a new task checkout); it does not pin the prepared base or deliver inputs.
 A misprovisioned task stops rather than entering another checkout; the
 coordinator supplies lawful preparation or continuation. Preserve original
 branches, active/dirty work and rollback copies.
+
+The native `kanban_create` tool takes separate `workspace_kind` and
+`workspace_path` arguments; CLI `worktree:/path` syntax is not a tool argument.
+For repository edits use a native project, or `workspace_kind: worktree` with
+the exact existing repository root. A prepared `dir` must be an exclusive linked
+worktree at the accepted source. Omitting these fields can create empty scratch,
+which is suitable for a standalone synthetic prototype, not existing repo edits.
+Read back the assignment and exact source before release. A malformed unused
+assignment requires explicit disposition through the authorized operator/helper
+path; a comment saying it will fail harmlessly is not repair. Never repeat the
+same invalid create or leave a mistaken duplicate eligible for dispatch.
 
 ### Gate body
 

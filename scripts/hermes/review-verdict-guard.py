@@ -11,6 +11,96 @@ from pathlib import Path
 import re
 import sqlite3
 import sys
+import subprocess
+
+FEATURE = re.compile(r'^Feature tracker:\s*([A-Za-z0-9_-]+):(t_[A-Za-z0-9_]+)\s*$', re.M)
+
+
+def _feature_contract(db, task):
+    if not task:
+        return ''
+    comments = db.execute("SELECT body FROM task_comments WHERE task_id=? AND "
+                          "(body LIKE '%Feature tracker:%' OR body LIKE '%Feature handoff:%' OR body LIKE '%Feature role:%') "
+                          'ORDER BY id LIMIT 101', (task['id'],)).fetchall()
+    if len(comments) > 100:
+        raise ValueError('Feature contract history exceeds bound; reconcile its maintained body')
+    fields = {}
+    for text in [task['body'] or ''] + [r['body'] for r in comments]:
+        for line in text.splitlines():
+            for key in ('Feature tracker:', 'Feature handoff:', 'Feature role:'):
+                if line.startswith(key):
+                    fields[key] = line  # Explicit latest native marker supersedes its old field.
+    body = re.sub(r'(?m)^Feature (?:tracker|handoff|role):[^\n]*', '', task['body'] or '')
+    return body + '\n' + '\n'.join(fields.values())
+
+
+def guard_feature_routing(payload, root):
+    """Reject demonstrated delivery waits and malformed source assignments.
+
+    These are preflight refusals, never lifecycle edits or release authority.
+    Native project/worktree, cycle and lease checks still own actual effects.
+    """
+    args = payload.get('tool_input') or {}
+    board = args.get('board') or os.environ.get('HERMES_KANBAN_BOARD')
+    if not isinstance(board, str) or not re.fullmatch(r'[A-Za-z0-9_-]+', board):
+        if payload['tool_name'] == 'kanban_create' and re.search(r'^Feature tracker:', args.get('body') or '', re.M):
+            raise ValueError('Exact board required for feature routing')
+        return {}  # Unscoped/non-feature calls retain their native semantics.
+    path = root/'kanban/boards'/board/'kanban.db'
+    with closing(sqlite3.connect(path.resolve().as_uri()+'?mode=ro', uri=True, timeout=5)) as db:
+        db.row_factory = sqlite3.Row
+        db.execute('PRAGMA query_only=ON'); db.execute('BEGIN')
+        if payload['tool_name'] == 'kanban_create':
+            child = args
+            body = args.get('body') or ''
+            parents = args.get('parents') or []
+            if not isinstance(parents, list):
+                raise ValueError('Parents must be explicit task IDs')
+        else:
+            child = db.execute('SELECT * FROM tasks WHERE id=?', (args.get('child_id'),)).fetchone()
+            if not child:
+                raise ValueError('Unknown feature dependency child')
+            child = dict(child)
+            body = _feature_contract(db, child)
+            parents = [args.get('parent_id')]
+        feature = FEATURE.search(body)
+        if re.search(r'^Feature tracker:', body, re.M) and not feature:
+            raise ValueError('Use a standalone Feature tracker: BOARD:t_CARD line; no trailing prose')
+        for pid in parents:
+            parent = db.execute('SELECT * FROM tasks WHERE id=?', (pid,)).fetchone()
+            contract = _feature_contract(db, parent)
+            if (parent and parent['assignee'] == 'head-coordinator' and parent['status'] not in {'done', 'archived'}
+                    and FEATURE.search(contract) and re.search(r'^Feature handoff: delivery\s*$', contract, re.M)
+                    and child.get('assignee') in {'standard-implementer', 'local-implementer', 'feature-reviewer', 'project-auditor'}
+                    and not (child.get('assignee') == 'project-auditor' and re.search(r'^Feature role: documentary-closure\s*$', body, re.M))):
+                raise ValueError('An unfinished feature delivery handoff cannot precede its input producer/reviewer. '
+                                 'Use the completed plan/decision as producer parent; producer/reviewer precedes delivery. '
+                                 'Only documentary auditor closure follows delivery')
+        source_edit = re.search(r'(?m)^(?:Change|Source):[^\n]*(?:custom_apps/|modules/|scripts/)|\bbaseline commit [0-9a-f]{7,64}\b', body, re.I)
+        if (payload['tool_name'] != 'kanban_create' or not feature or not source_edit
+                or child.get('assignee') not in {'standard-implementer', 'local-implementer'}):
+            return {}
+        kind, raw = args.get('workspace_kind'), args.get('workspace_path')
+        current_id = os.environ.get('HERMES_KANBAN_TASK')
+        current = db.execute('SELECT * FROM tasks WHERE id=?', (current_id,)).fetchone()
+        project = args['project'] if 'project' in args else args.get('project_id')
+        if project is None and kind is None and raw is None and current:
+            project = dict(current).get('project_id')
+        if kind is None and raw is None and project:
+            return {}  # Native project inheritance provisions an isolated worktree.
+        work = Path(raw or '')
+        if kind not in {'worktree', 'dir'} or not work.is_absolute() or not work.is_dir() or work.resolve() != work:
+            raise ValueError('Repository feature edits require a native project or explicit workspace_kind=worktree, '
+                             'workspace_path=/absolute/existing/repository; omitted fields create scratch, not source')
+        from capability_recovery import workspace_identity
+        if workspace_identity(str(work), {}).get('state') != 'git-root':
+            raise ValueError('Feature workspace must be the exact Git repository/worktree root')
+        if kind == 'dir':
+            if not (work/'.git').is_file():
+                raise ValueError('Prepared dir must be an exclusive linked worktree, not the main checkout')
+            if db.execute("SELECT 1 FROM tasks WHERE workspace_path=? AND status NOT IN ('done','archived') LIMIT 1", (str(work),)).fetchone():
+                raise ValueError('Prepared feature worktree already belongs to unfinished work; preserve its owner')
+    return {}
 
 
 def verification(task, db=None):
@@ -257,13 +347,15 @@ def guard_unlink(payload, root):
 def guard(payload, root):
     """Fail-closed dispatch: any guard error blocks the handoff it guards."""
     tool = payload.get('tool_name')
-    if tool not in ('kanban_complete', 'kanban_unlink'):
+    if tool not in ('kanban_complete', 'kanban_unlink', 'kanban_create', 'kanban_link'):
         return {}
     try:
+        if tool in ('kanban_create', 'kanban_link'):
+            return guard_feature_routing(payload, root)
         if tool == 'kanban_unlink':
             return guard_unlink(payload, root)
         return guard_complete(payload, root)
-    except (ValueError, TypeError, OSError, sqlite3.Error) as exc:
+    except (ValueError, TypeError, OSError, sqlite3.Error, subprocess.TimeoutExpired) as exc:
         return {'action': 'block',
                 'message': f'{tool} refused by the review-verdict guard: {exc}.'
                            ' Keep the handoff open; never treat done as'

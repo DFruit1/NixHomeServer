@@ -16,6 +16,7 @@ import stat
 import time
 
 import capability_recovery as recovery
+from feature_flow import observe_features
 from hermes_common import atomic_write
 
 CREATOR = 'deadlock-recovery-monitor'
@@ -109,7 +110,7 @@ def observe(root, board, now=None):
                                'reason':hold['reason'] if hold else ('Latest native run failed' if failure else 'Body requests downstream result'),
                                'parents':[[p['id'],p['status']] for p in parents],
                                'downstream':downstream,'semantic_candidates':semantic})
-        return sorted(candidates,key=lambda c:(-c['priority'],c['key']))
+        return sorted(candidates + observe_features(db, board, now),key=lambda c:(-c['priority'],c['key']))
 
 
 def recovery_body(board, issue, audit=False):
@@ -128,7 +129,31 @@ def recovery_body(board, issue, audit=False):
             'Do not execute the original repair here, create another repair writer, transfer ownership implicitly, remove protected review edges or manufacture a changed input.',
             'If no material repair is available, retain the old parked state and return one exact auditor question through native block/schedule. No unchanged retry or owner ask.',
         ])
-    return '\n'.join([
+    if issue['kind'] == 'feature-delivery-gap' and not audit:
+        return '\n'.join([
+            'Goal: Give one requested feature a productive next step or qualified disposition.',
+            'Decision owner: head-coordinator',
+            'Feature tracker: '+board+':'+issue['task_id'],
+            'Observation: '+json.dumps(issue,sort_keys=True),
+            'Tracker is an evidence anchor only: never dispatch, complete, unblock or parent-link it to execution.',
+            'Read the original request, latest material update and named existing owners. Reconcile the existing handoff; never duplicate its audit or active/queued implementation.',
+            'Separate implemented, independently reviewed, integrated and live stages. Routing/cards-created/design acceptance alone is not product delivery.',
+            'If no executable next action exists, commission one bounded result: project-auditor selects a first requested slice or missing mechanism; only that auditor commissions feature audits. Reuse qualified prior evidence instead of repeating unchanged audits.',
+            'Use current tiered autonomy for reviewed reversible technical/architecture/frontend decisions. Unrelated desktop adoption, tracker automation, deployment or another project must not gate isolated planning/implementation.',
+            'Preserve actual secret/destructive/exposure/spending/material outcome, independent acceptance and deploy gates. Planning-only requests (e.g. groundwater) do not authorize implementation; reduce missing requirements to the smallest real owner question without sending a message here.',
+            'An agent technical deferral needs one finite input-producing experiment/proposal or an independent bounded auditor assessment with a precise material wake condition; generic unknowns are not a permanent owner gate.',
+            'Bind every new productive task and handoff with the exact Feature tracker: '+board+':'+issue['task_id']+' line; annotate existing members with that line in a native comment. Do not link the tracker as a prerequisite.',
+            'Update the single tracker with dated actual evidence and exact next-task IDs. Keep the existing delivery handoff open through accepted work and merge-back disposition; new verifiers/input producers precede their waiting consumer.',
+            'Before recording a disposition, inspect CURRENT evidence_version with python3 ~/.hermes/scripts/feature_flow.py --inspect '+board+':'+issue['task_id']+' after actual member results and tracker updates. Do not copy a stale observation version.',
+            'For delivered requested scope or qualified deferral, native complete this reconciliation with metadata.feature_delivery={tracker:"'+issue['task_id']+'",evidence_version:"fresh_inspected_version",state:"delivered_scope"|"assessed_defer",evidence_task_id:"t_...",wake_condition:"exact missing input for deferral"}. Cite the actual independent completed acceptance/assessment. Never claim a plan as implemented/live.',
+            'A concrete productive task suppresses duplicate intake while it progresses; completion of this routing card alone does not. If its original recovery owner is parked, repair/resume that same owner through maintained native tools.',
+            'No source implementation, runtime/credential operations, installs, messages, publication or deployment in this reconciliation. Auditor assessment remains independent; no self-acceptance.',
+        ])
+    return '\n'.join(([
+        'Feature tracker: '+board+':'+issue['task_id'],
+        'This is a repeatedly unresolved feature delivery gap. Assess one finite next-result mechanism or qualified deferral; never repeat an unchanged feature audit or implement the feature.',
+        'Inspect current scope with python3 ~/.hermes/scripts/feature_flow.py --inspect '+board+':'+issue['task_id']+'. For a finite deferral, complete with metadata.feature_assessment={tracker:"'+issue['task_id']+'",scope_sha256:"fresh inspector scope hash",outcome:"defer",missing_inputs:["exact missing fact/mechanism"],supplier:"actual supplier",wake_condition:"precise material input that reopens it"}. Report actual source/checks separately; this assessment is not implementation or acceptance.',
+    ] if issue['kind']=='feature-delivery-gap' else []) + [
         'Goal: '+('Independently resolve a repeatedly stuck recovery cluster.' if audit else 'Repair one technical recovery cluster and verify actual progress.'),
         'Input supplier: agent. This is an internal technical assignment, not an owner gate.',
         'Scope: '+board+'/'+issue['task_id']+' and only its directly necessary prerequisites/consumers.',
@@ -216,6 +241,9 @@ def tick(root, *, dry_run=False, now=None, create=None):
             board = info.parent.name
             if board.startswith(('_','.')):
                 continue
+            # Alternate classes after eligibility filtering, not before it:
+            # an exhausted/owned technical issue cannot consume a feature turn.
+            selected=[]
             for issue in observe(root,board,now):
                 entry = state.get(issue['key'],{})
                 owner_id=entry.get('owner_task_id',entry.get('task_id'))
@@ -235,6 +263,12 @@ def tick(root, *, dry_run=False, now=None, create=None):
                 if count > MAX_ATTEMPTS or (count and now-prior['last_at'] < BACKOFF[min(count-1,2)]):
                     continue
                 audit = count == MAX_ATTEMPTS
+                selected.append((issue, owner_id, owner, versions, prior, count, audit))
+            last_class=state.get('_fairness',{}).get(board)
+            selected.sort(key=lambda item: (
+                (('feature' if item[0]['kind']=='feature-delivery-gap' else 'technical') == last_class),
+                -item[0]['priority'],item[0]['key']))
+            for issue,owner_id,owner,versions,prior,count,audit in selected[:1]:
                 action = dict(board=board,issue=issue,audit=audit,attempt=count+1)
                 actions.append(action)
                 if dry_run:
@@ -251,7 +285,7 @@ def tick(root, *, dry_run=False, now=None, create=None):
                 card = create(board,'create','[RECOVERY] '+issue['kind']+' '+issue['task_id'],
                               '--assignee','project-auditor' if audit else 'head-coordinator',
                               '--created-by',CREATOR,'--tenant','technical-recovery',
-                              '--priority','75','--workspace','dir:'+str(work),
+                              '--priority','100' if issue['kind']=='feature-delivery-gap' else '75','--workspace','dir:'+str(work),
                               '--max-runtime','900','--max-retries','1',
                               '--idempotency-key','deadlock:'+issue['key']+':'+issue['version']+':'+str(count+1),
                               '--body',recovery_body(board,issue,audit))
@@ -260,6 +294,7 @@ def tick(root, *, dry_run=False, now=None, create=None):
                 state[issue['key']]={'task_id':card['id'],
                                      'owner_task_id':owner_id if owner or audit else card['id'],
                                      'versions':versions}
+                state.setdefault('_fairness',{})[board]='feature' if issue['kind']=='feature-delivery-gap' else 'technical'
                 atomic_write(path,json.dumps(state,sort_keys=True)+'\n',mode=0o600)
                 break  # At most one new bounded worker per board per tick.
         return actions

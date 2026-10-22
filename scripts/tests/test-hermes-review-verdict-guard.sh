@@ -9,8 +9,12 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+import os
+import subprocess
+from unittest.mock import patch
 
 source = Path(sys.argv[1]) / 'scripts/hermes/review-verdict-guard.py'
+sys.path.insert(0, str(source.parent))
 spec = importlib.util.spec_from_file_location('verdict_guard', source)
 guard_mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(guard_mod)
@@ -21,8 +25,10 @@ SCHEMA = """
 CREATE TABLE tasks (
     id TEXT PRIMARY KEY, title TEXT, body TEXT, assignee TEXT, status TEXT,
     priority INTEGER DEFAULT 0, created_at INTEGER, block_kind TEXT,
-    idempotency_key TEXT, consecutive_failures INTEGER DEFAULT 0, tenant TEXT, current_run_id INTEGER
+    idempotency_key TEXT, consecutive_failures INTEGER DEFAULT 0, tenant TEXT, current_run_id INTEGER,
+    workspace_kind TEXT, workspace_path TEXT, project_id TEXT
 );
+CREATE TABLE task_comments (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT, body TEXT);
 CREATE TABLE task_events (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT,
     kind TEXT, payload TEXT, created_at INTEGER);
 CREATE TABLE task_links (parent_id TEXT, child_id TEXT);
@@ -44,6 +50,75 @@ def changes_run(rid, ended):
 
 
 class VerdictGuardTest(unittest.TestCase):
+    def feature_create(self, **extra):
+        return {'tool_name':'kanban_create','tool_input':{'board':'testboard',
+                'title':'Feature slice','assignee':'standard-implementer',
+                'body':'Feature tracker: testboard:t_tracker\nChange: custom_apps/app/source.rs only.',**extra}}
+
+    def test_delivery_handoff_cannot_gate_its_own_input_but_decision_and_closure_can(self):
+        self.card('t_delivery',assignee='head-coordinator',status='running',body='Feature tracker: testboard:t_tracker\nFeature handoff: delivery')
+        for role in ('standard-implementer','feature-reviewer','project-auditor'):
+            payload=self.feature_create(assignee=role,parents=['t_delivery'])
+            self.assertEqual('block',guard_mod.guard(payload,self.root).get('action'))
+        closure=self.feature_create(assignee='project-auditor',parents=['t_delivery'],body='Feature tracker: testboard:t_tracker\nFeature role: documentary-closure')
+        self.assertEqual({},guard_mod.guard(closure,self.root))
+        self.card('t_decision',assignee='head-coordinator',status='running',body='Feature tracker: testboard:t_tracker\nExact independent approval decision')
+        self.assertEqual({},guard_mod.guard(self.feature_create(parents=['t_decision'],project='native-project'),self.root))
+        self.card('t_input',assignee='feature-reviewer',status='todo',body='Feature tracker: testboard:t_tracker')
+        self.assertEqual('block',guard_mod.guard({'tool_name':'kanban_link','tool_input':{'board':'testboard','parent_id':'t_delivery','child_id':'t_input'}},self.root).get('action'))
+
+    def test_existing_repo_feature_cannot_launch_in_scratch_or_a_mistyped_root(self):
+        for kwargs in ({},{'workspace_kind':'scratch','workspace_path':'/home/Projects/NixOS'},
+                       {'workspace_kind':'worktree','workspace_path':str(self.root/'missing')},
+                       {'workspace_kind':'worktree','workspace_path':str(self.root)}):
+            self.assertEqual('block',guard_mod.guard(self.feature_create(**kwargs),self.root).get('action'))
+        self.assertEqual({},guard_mod.guard(self.feature_create(body='Feature tracker: testboard:t_tracker\nDeliverable: standalone synthetic Rust prototype',workspace_kind='scratch'),self.root))
+        self.assertEqual('block',guard_mod.guard(self.feature_create(body='Feature tracker: testboard:t_tracker. Trailing prose',project='native-project'),self.root).get('action'))
+
+    def test_feature_source_assignment_uses_actual_git_root_exclusive_worktree_or_native_project(self):
+        repo=self.root/'repo';repo.mkdir()
+        subprocess.run(['git','init',str(repo)],check=True,capture_output=True)
+        subprocess.run(['git','-C',str(repo),'-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','--allow-empty','-m','Fixture'],check=True,capture_output=True)
+        self.assertEqual({},guard_mod.guard(self.feature_create(workspace_kind='worktree',workspace_path=str(repo)),self.root))
+        nested=repo/'nested';nested.mkdir()
+        self.assertEqual('block',guard_mod.guard(self.feature_create(workspace_kind='worktree',workspace_path=str(nested)),self.root).get('action'))
+        self.assertEqual('block',guard_mod.guard(self.feature_create(workspace_kind='dir',workspace_path=str(repo)),self.root).get('action'))
+        work=self.root/'prepared'
+        subprocess.run(['git','-C',str(repo),'worktree','add','--detach',str(work)],check=True,capture_output=True)
+        payload=self.feature_create(workspace_kind='dir',workspace_path=str(work))
+        self.assertEqual({},guard_mod.guard(payload,self.root))
+        self.card('t_owner',assignee='standard-implementer',status='running')
+        self.db.execute('UPDATE tasks SET workspace_path=? WHERE id=?',(str(work),'t_owner'));self.db.commit()
+        self.assertEqual('block',guard_mod.guard(payload,self.root).get('action'))
+        self.assertEqual({},guard_mod.guard(self.feature_create(project='native-project'),self.root))
+        self.card('t_creator',assignee='head-coordinator',status='running')
+        self.db.execute("UPDATE tasks SET project_id='native-project' WHERE id='t_creator'");self.db.commit()
+        with patch.dict(os.environ,{'HERMES_KANBAN_TASK':'t_creator'}):
+            self.assertEqual({},guard_mod.guard(self.feature_create(),self.root))
+            for optout in ({'project':''},{'project_id':''}):
+                self.assertEqual('block',guard_mod.guard(self.feature_create(**optout),self.root).get('action'))
+
+    def test_feature_source_timeout_and_ambient_git_overrides_fail_closed(self):
+        import capability_recovery
+        repo=self.root/'repo';repo.mkdir()
+        subprocess.run(['git','init',str(repo)],check=True,capture_output=True)
+        subprocess.run(['git','-C',str(repo),'-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','--allow-empty','-m','Fixture'],check=True,capture_output=True)
+        payload=self.feature_create(workspace_kind='worktree',workspace_path=str(repo))
+        with patch.object(capability_recovery.subprocess,'run',side_effect=subprocess.TimeoutExpired('git',.5)):
+            self.assertEqual('block',guard_mod.guard(payload,self.root).get('action'))
+        with patch.dict(os.environ,{'GIT_DIR':str(self.root/'wrong'),'GIT_WORK_TREE':str(self.root/'wrong'),'GIT_COMMON_DIR':str(self.root/'wrong')}):
+            self.assertEqual({},guard_mod.guard(payload,self.root))
+
+    def test_feature_comment_contract_survives_chatter_and_explicit_supersession(self):
+        self.card('t_route',assignee='head-coordinator',status='running')
+        self.db.execute('INSERT INTO task_comments(task_id,body) VALUES(?,?)',('t_route','Feature tracker: testboard:t_tracker\nFeature handoff: delivery'))
+        for _ in range(25):self.db.execute('INSERT INTO task_comments(task_id,body) VALUES(?,?)',('t_route','Routine waiting comment'))
+        self.db.commit()
+        payload=self.feature_create(assignee='feature-reviewer',parents=['t_route'])
+        self.assertEqual('block',guard_mod.guard(payload,self.root).get('action'))
+        self.db.execute('INSERT INTO task_comments(task_id,body) VALUES(?,?)',('t_route','Feature handoff: approval-decision'));self.db.commit()
+        self.assertEqual({},guard_mod.guard(payload,self.root))
+
     def test_negative_verifier_can_report_despite_rejected_review_parent(self):
         self.card('t_old', assignee='feature-reviewer', tenant='verification')
         self.add_run('t_old', 'request-changes', NOW-1)
