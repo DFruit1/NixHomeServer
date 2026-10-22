@@ -162,6 +162,52 @@ tests and type dependencies remain serial. Name the final composition and gate,
 and distinguish work released immediately from the chain that follows it. The
 steward never changes concurrency caps, priorities or dependency edges.
 
+## Transient mirrors in the decisions group
+
+The daily report may also mirror transient owner-action items into the
+coordinator-owned `Hermes Decisions` SimpleX group, so the owner can act on
+them from the phone and each message stops existing once it is no longer
+needed. A transient item is run-once content: an *Unblock prompts* full prompt
+(Stuck / Fix / Verify) or a *Needs you* item whose Unblock line carries a
+command, obsolete once it has been run or the underlying issue is dealt with.
+An owner decision that already exists as a live D-label gate is never mirrored:
+the gate is the one copy.
+
+The steward never posts to the group itself. Its daily coordinator handoff
+carries the keyed request, and the coordinator authors the group message with
+the decisions-ledger CLI under a stable key, in this shape:
+
+```text
+*Run once*
+
+<plain name> · <board> · <age>
+Stuck: <what is stuck, plain words, for how long>
+Fix: <exact cause, files, quoted commands>
+Verify: <the read-only check that proves it cleared>
+Key: steward-<slug> — reply done or delete this message when handled.
+
+Commands proposed, unexecuted; guards, approvals, pins and refusals stay in force.
+```
+
+Keys are `steward-` plus a short slug naming the underlying issue (for example
+`steward-immich-upload-quota`), stable across days so one item edits one
+message instead of accumulating transcripts. Only new or materially changed
+items are requested, matching the report's own prompt rule; unchanged wording
+means no request. The first version is `simplex-decisions.sh post <key>`, a
+wording change is `edit <key>`, and `--list` shows the live mirrors. The CLI
+rejects keys that look like `D1`/`B1` labels, and `reconcile` only manages
+`alert:` keys, so mirrors never collide with or delete live decisions.
+
+Deletion is the resolution signal, in either direction. The coordinator deletes
+the key when the underlying card unblocks, the steward retracts the item, or
+the owner replies `done`; an owner who deletes the group message directly is
+treated as having handled it — the coordinator clears the stale ledger record
+with `delete` and does not repost that item. Mirrors confer no approval:
+commands stay proposed and unexecuted, the constraints footer stays in the
+message, and the steward-side limits above (no guard weakening, no authority
+channel) apply unchanged. Mirror requests ride the existing internal
+coordinator handoff and add no phone messages.
+
 ## Tools and enforcement
 
 The profile uses the existing Hermes `pre_tool_call` shell-hook protocol. The

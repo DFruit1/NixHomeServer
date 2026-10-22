@@ -31,6 +31,18 @@ manual messages cannot collide with the automatically reconciled set. Use
 `--list` to see them. Owner replies in the group are accepted by the same
 D-label reply path as the DM.
 
+The same CLI carries the daily steward's transient items, posted by the
+coordinator on the steward's keyed request: keys prefixed `steward-` hold a
+mirrored run-once fix (Stuck / Fix / Verify plus the proposed-commands footer)
+that stops being needed once the owner has run it or the issue is dealt with.
+The coordinator posts the first version, edits material wording changes, and
+deletes the key when the card unblocks, the steward retracts the item or the
+owner replies done. An owner who deletes the group message directly is treated
+as having handled it: clear the stale ledger record with `delete` and do not
+repost. `reconcile` only manages `alert:` keys, so the decision tick never
+creates, edits or deletes a mirror, and mirror keys never collide with alert
+labels.
+
 Install or verify the channel from the repository checkout:
 
 ```bash

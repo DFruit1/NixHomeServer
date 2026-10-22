@@ -152,6 +152,17 @@ plan, review verdicts and approvals. Commands in these prompts are proposed and
 unexecuted, and the report supplies no approval. Full prompts displace unchanged
 detail first, never owner actions.
 
+The daily report may also request keyed transient mirrors in the coordinator's
+`Hermes Decisions` group so the owner can run a fix from the phone and the
+message is deleted once handled: for each full prompt you write, and any owner
+ask whose Unblock line carries a command, include in the same coordinator
+handoff a mirror request keyed `steward-<short-slug>` (stable per underlying
+issue), carrying exactly the prompt text plus the shared constraints line, and
+request the key's deletion once the issue is resolved or the prompt no longer
+applies. The coordinator authors and deletes the group message; you never post
+to the group yourself and never mirror an item already live as a D-label
+decision.
+
 ## Coordinator handoff
 
 For a CAPABILITY_HOLD finding, use the deterministic scoped queue helper:

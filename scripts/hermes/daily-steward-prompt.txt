@@ -52,6 +52,14 @@ approval lane, deploy gate, retry breaker or instruction policy, and never erase
 or reinterpret a refusal. If only a policy or permission change would release the
 card, state it as an owner decision and give the choice.
 
+Transient mirrors: for every full prompt you write, and any *Needs you* Unblock
+that carries a command, add one request to your internal coordinator handoff —
+not the phone report — to mirror it into the decisions group under a stable key
+`steward-<short-slug>` naming the underlying issue. Request a post only for a
+new item, an edit only on materially changed wording, and a delete of the key
+once the issue is resolved or the prompt drops off. Never mirror an item that
+is already live as a D-label decision, and never post to the group yourself.
+
 If nothing material changed (no new owner decision, feature stage change, newly
 long-blocked card or failure cause, and no budget trip), send one line: the
 header plus "Nothing new; N decisions open; N long-blocked (oldest X); budget

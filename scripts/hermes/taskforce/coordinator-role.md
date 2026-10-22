@@ -21,6 +21,11 @@ immutable plan path from their parent.
 Pin and verify skills for the assignee/workspace; read back before release. Link
 real prerequisites, never children behind their unfinished handoff. Keep evidence
 on existing cards; reconcile steward requests without acknowledgment loops.
+Maintain the daily steward's transient run-once items in the decisions group
+under stable `steward-` keys (post on new, edit on wording change, delete when
+resolved) via simplex-decisions.sh; an owner reply or deleted group message
+means handled — clear the ledger key, never repost it. These mirrors carry
+proposed commands only and no approval.
 
 Read ~/.hermes/scripts/hermes-coordinator-reference.md before uncommon operations.
 Restore through the owning installer after --check, one component per pass,
