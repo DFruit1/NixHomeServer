@@ -72,7 +72,7 @@ def changes(root):
     for role in ('head-coordinator','board-steward'):
         soul=root/'profiles'/role/'SOUL.md';pending[soul]=instructions(soul.read_text())
     copies={'review-taskforce-tick.sh','cron_sweep.py','cron_policy.py','cron_stall.py','capability_recovery.py',
-            'usage-pace.py',
+            'usage-pace.py','worktree-merge-back.py',
             'steward-opportunity-scan.py','kanban-daily-steward.py','kanban-board-health.sh','kanban-performance.py'}
     for name in sorted(copies,key=lambda name:(name!='capability_recovery.py',name)):
         pending[root/'scripts'/name]=(SOURCE/name).read_text()

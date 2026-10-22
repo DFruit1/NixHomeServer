@@ -207,6 +207,7 @@ does not establish an owner supplier. Reread the native cards and decisions.
 | TRIAGE_EXHAUSTED | Narrow the remaining work or identify the actual missing input. |
 | PROFILE_OVER_CAP | Preserve partial work and contain surplus claims; route dispatcher repair. |
 | UNPUSHED / MASTER_AHEAD | Durability belongs to the no-agent sync cron; never push worker branches yourself. |
+| UNMERGED_ACCEPTED_WORK / UNMERGED_EXCESS | Accepted work left unintegrated. Per card: `python3 -B ~/.hermes/scripts/worktree-merge-back.py --plan <branch>` for evidence, then `--merge <branch>` (it validates; it reverts master green on a failing gate and reports conflict files but never auto-resolves). Handle one card per run; route a conflicting branch as a fresh repair card if the conflict needs real resolution, or `--dispose` with a same-card comment when a recorded disposition makes the work obsolete. Never hand-edit installed copies and never push. |
 | WORKER_FAILED_BLOCKED | Inspect bounded git status/log or report artifacts; route finishing work from retained output. |
 | OWNER_COMMENT_UNACTED | Read the exact owner answer, record/read back the interpretation, unblock only resolved scope. |
 | CAPABILITY_OWNER_INPUT | Assign the missing supplier; surface genuine owner input through the checked gate. |
@@ -215,7 +216,14 @@ does not establish an owner supplier. Reread the native cards and decisions.
 | INSTRUCTION_DRIFT_UNCHECKED | The read-only install check could not run (its exit code is on the line); inspect the installer and interpreter, report internally. |
 | SCRIPT_DRIFT | Installed cron scripts lag the checkout; re-run the owning installer, never hand-edit installed copies. |
 
-For budget failures, narrow remaining work before a retry. Never raise retry or
+For budget failures, narrow remaining work before a retry; hitting the
+limit means the assigned slice is too large, not that the attempt was
+unlucky. The merge-back cadence above is deliberately one helper invocation
+per card: batch inventory with `--list`, then a single `--plan` or
+`--merge` before ending the run, always leaving a terminal kanban call or a
+scheduled continuation, because a sweep that never reaches a terminal call
+reproduces the protocol-violation crash class. Never raise retry or runtime
+caps to make the batch fit. Never raise retry or
 iteration budgets. If narrowed work still fails, investigate the concrete cause
 through the verifier/implementer; a failure alone does not require owner input.
 

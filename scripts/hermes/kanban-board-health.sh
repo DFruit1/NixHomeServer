@@ -865,10 +865,18 @@ if [[ -n "$repo" ]] && git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
     printf 'BOARD_HEALTH_QUERY_ERROR board=%s db=%s (unmerged scan)\n' "$HERMES_BOARD" "$DB" >&2
     exit 4
   fi
+  # The coordinator's merge-back disposition is a comment on the owning card,
+  # so the audit trail and this detector read the same fact: the branch may
+  # stay unmerged, but a recorded disposition stops the finding, exactly as a
+  # merge would. Other authors do not carry the marker.
+  disposed="$(sql "
+    SELECT DISTINCT task_id FROM task_comments
+     WHERE author = 'head-coordinator' AND body LIKE 'merge-back disposition:%';")" || disposed=""
   emitted_unmerged=0
   excess_unmerged=0
   while IFS='|' read -r branch task_id; do
     [[ -n "$branch" ]] || continue
+    case "|$disposed|" in *"|$task_id|"*) continue ;; esac
     sha="$(git -C "$repo" rev-parse --verify --quiet "$branch" 2>/dev/null)" || continue
     ahead="$(git -C "$repo" rev-list --count "$sha" --not master 2>/dev/null)"
     [[ "$ahead" =~ ^[0-9]+$ ]] || { emit "UNMERGED_UNKNOWN $task_id branch=$branch needs=manual-check"; continue; }

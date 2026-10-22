@@ -1485,6 +1485,32 @@ pass "caps the per-line findings and summarises the excess"
 
 for i in $(seq 25); do sqlite3 "$merge_board_dir/kanban.db" "DELETE FROM tasks WHERE id='t_x$i';"; done
 
+# A recorded merge-back disposition stops the finding without touching the
+# branch: the comment is the decision, and the branch evidence stays put.
+sqlite3 "$merge_board_dir/kanban.db" "INSERT INTO task_comments
+  (id, task_id, body, author) VALUES (1, 't_m1', 'merge-back disposition: superseded by composition merge, keep evidence only', 'head-coordinator');"
+
+out="$(run_merge_health)"
+grep -q '^UNMERGED_ACCEPTED_WORK t_m1 ' <<<"$out" &&
+  fail "a dispositioned branch was still reported: $out"
+pass "a coordinator disposition suppresses the finding"
+
+# Someone else's comment does not carry the marker's authority.
+git -C "$wt_repo" checkout --quiet -b wt/t_m5
+printf 'other\n' >"$wt_repo/m5.txt"; git -C "$wt_repo" add m5.txt
+git -C "$wt_repo" commit -m 'm5 other' --quiet
+git -C "$wt_repo" checkout --quiet master
+sqlite3 "$merge_board_dir/kanban.db" "INSERT INTO tasks
+  (id,title,assignee,status,completed_at,branch_name) VALUES
+  ('t_m5','implementer claim only','standard-implementer','done',$now,'wt/t_m5');
+INSERT INTO task_comments
+  (id, task_id, body, author) VALUES (2, 't_m5', 'merge-back disposition: let me handle it', 'standard-implementer');"
+
+out="$(run_merge_health)"
+grep -q '^UNMERGED_ACCEPTED_WORK t_m5 ' <<<"$out" ||
+  fail "a non-coordinator comment released the branch as if dispositioned"
+pass "only the head-coordinator authored marker is authoritative"
+
 # --- the installed copy runs the same suite ----------------------------------
 #
 # The suite is only evidence about the script it exercised. BOARD_HEALTH_SCRIPT

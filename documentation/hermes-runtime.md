@@ -400,6 +400,23 @@ integrated so an already-applied branch never flickers. The merge decision
 and any conflict resolution stay with the head-coordinator; acceptance must
 not re-open a gate.
 
+The mechanical half is `scripts/hermes/worktree-merge-back.py`, the
+coordinator's bounded merge-back helper (`--list`, `--plan`, `--merge`,
+`--dispose`): one card per invocation, receipt JSON with deterministic exit
+codes (0 merged/integrated/disposed, 2 refused with a marker, 3 conflict or
+validation failure). A clean merge runs `scripts/validate-repo.sh` in the
+helper, and a failing gate leaves master exactly as found (the revert commit
+is the audit trail) while the branch keeps its acceptance. Dispositions are
+head-coordinator-authored card comments starting exactly with
+`merge-back disposition: ` — written through the native CLI by the helper's
+`--dispose`, so the detector, the card history and any follow-up audit read
+one fact. The helper never pushes, never resolves a conflict itself and
+never edits installed copies; the coordinator routes genuinely conflicting
+branches as fresh repair cards rather than re-acceptance. The one-card-per
+-run discipline is deliberate: it is the documented counter-measure to the
+2026-10-21 coordinator failure cascade, where an unbounded merge sweep hit
+its runtime limit and its successors exited without a terminal call.
+
 The existing hourly no-agent taskforce tick uses `cron_sweep.py` to retain the
 weekly sweep cadence while suppressing new sweeps behind open improvement work.
 Future sweep cards require a benefit, scope, stopping condition and delivered
