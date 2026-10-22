@@ -45,6 +45,13 @@ class InstructionPolicyTest(unittest.TestCase):
         self.metadata = self.root / 'profiles/standard-implementer/profile.yaml'
         self.metadata.write_text('description: Old fixed-model promise\ndescription_auto: false\nprevious_names: [bulk-go]\n')
 
+    def test_workspace_repair_and_readonly_inventory_ship_together(self):
+        pending=policy.changes(self.root)
+        for filename in ('repair-task-workspace.py','steward-board-read.py'):
+            self.assertEqual((source/filename).read_text(),pending[self.root/'scripts'/filename])
+        self.assertEqual((source.parents[1]/'documentation/hermes-workspace-repair.md').read_text(),
+                         pending[self.root/'scripts/hermes-workspace-repair.md'])
+
     def test_install_is_reversible_idempotent_and_keeps_runtime_settings(self):
         settings = {p: p.read_bytes() for p in self.root.glob('profiles/*/config.yaml')}
         settings[self.jobs] = self.jobs.read_bytes()

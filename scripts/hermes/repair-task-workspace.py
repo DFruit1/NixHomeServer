@@ -23,6 +23,7 @@ import uuid
 sys.dont_write_bytecode = True
 PARKED = {'blocked', 'scheduled'}
 IDENTITY_FIELDS = ('id', 'status', 'workspace_kind', 'workspace_path', 'branch_name')
+ACTIVITY_FIELDS = ('worker_pid', 'claim_expires')
 HASH = re.compile(r'(?:[0-9a-f]{40}|[0-9a-f]{64})')
 
 
@@ -80,9 +81,44 @@ class NativeBoards:
         except ValueError as exc:
             raise Refused('AUTHENTICATED_COORDINATOR_REQUIRED: ' + str(exc)) from None
 
+    def _cli_root(self, board):
+        boards = self.read(['boards', 'list', '--json', '--all'])
+        if not isinstance(boards, list) or len(boards) > 64:
+            raise Refused('BOARD_INVENTORY_UNBOUNDED')
+        matches = [row for row in boards if isinstance(row, dict) and row.get('slug') == board]
+        if len(matches) != 1 or not isinstance(matches[0].get('db_path'), str):
+            raise Refused('NATIVE_ROOT_PROVENANCE_REQUIRED')
+        path = Path(matches[0]['db_path'])
+        if not path.is_absolute() or len(path.parents) < 4 or path != path.resolve() or not path.is_file():
+            raise Refused('NATIVE_ROOT_PROVENANCE_REQUIRED')
+        root = path.parents[3]
+        if path != root/'kanban/boards'/board/'kanban.db':
+            raise Refused('NATIVE_ROOT_PROVENANCE_REQUIRED')
+        return root
+
+    def scratch_root(self, board):
+        if self.origin is not None:
+            self._recheck()
+            if board != self.origin['board']:
+                raise Refused('COORDINATOR_BOARD_REQUIRED')
+            path = Path(self.origin['db'])
+            if path != self.root/'kanban/boards'/board/'kanban.db' or not path.is_file() \
+                    or path != path.resolve():
+                raise Refused('NATIVE_ROOT_PROVENANCE_REQUIRED')
+        else:
+            self.root = self._cli_root(board)
+            self._operator_board = board
+            self._reader = self._module('steward-board-read.py')
+        if not self.root.is_dir() or self.root != self.root.resolve():
+            raise Refused('NATIVE_ROOT_PROVENANCE_REQUIRED')
+        return self.root
+
     def _recheck(self):
-        if self._authenticate() != self.origin:
-            raise Refused('COORDINATOR_BINDING_CHANGED')
+        if self.origin is not None:
+            if self._authenticate() != self.origin:
+                raise Refused('COORDINATOR_BINDING_CHANGED')
+        elif self._cli_root(self._operator_board) != self.root:
+            raise Refused('NATIVE_ROOT_CHANGED')
 
     def _query(self, board, sql):
         if time.monotonic() >= self.runner.deadline:
@@ -136,7 +172,7 @@ class NativeBoards:
         tasks = []
         for board in boards:
             for offset in range(0, 20001, 200):
-                rows = self._query(board, 'SELECT id,status,workspace_kind,workspace_path,branch_name '
+                rows = self._query(board, 'SELECT id,status,workspace_kind,workspace_path,branch_name,worker_pid,claim_expires '
                                    'FROM tasks ORDER BY id LIMIT 200 OFFSET ' + str(offset))
                 if offset + len(rows) > 20000:
                     raise Refused('TASK_INVENTORY_UNBOUNDED ' + board)
@@ -152,7 +188,7 @@ class NativeBoards:
         return json.loads(self.runner.call([self.binary, 'kanban', *args]))
 
     def inventory(self):
-        if self.origin is not None:
+        if self.origin is not None or hasattr(self, '_operator_board'):
             return self._readonly_inventory()
         boards = self.read(['boards', 'list', '--json', '--all'])
         if not isinstance(boards, list) or len(boards) > 64:
@@ -174,16 +210,18 @@ class NativeBoards:
         return tasks
 
     def details(self, board, task_id):
-        if self.origin is not None:
+        if self.origin is not None or hasattr(self, '_operator_board'):
             self._recheck()
-            if board != self.origin['board'] or not re.fullmatch(r't_[A-Za-z0-9_]+', task_id):
+            own_board = self.origin['board'] if self.origin is not None else self._operator_board
+            if board != own_board or not re.fullmatch(r't_[A-Za-z0-9_]+', task_id):
                 raise Refused('COORDINATOR_BOARD_REQUIRED')
             # Fixed read-only statements; the task literal is validated above.
-            tasks = self._query(board, "SELECT id,status,workspace_kind,workspace_path,branch_name "
+            tasks = self._query(board, "SELECT id,status,workspace_kind,workspace_path,branch_name,worker_pid,claim_expires "
                                 "FROM tasks WHERE id='" + task_id + "'")
-            runs = self._query(board, "SELECT id,status,worker_pid FROM task_runs WHERE task_id='" +
-                               task_id + "' AND (status='running' OR id=(SELECT max(id) FROM task_runs "
-                               "WHERE task_id='" + task_id + "')) ORDER BY id DESC")
+            runs = self._query(board, "SELECT id,status,worker_pid,claim_expires FROM task_runs WHERE task_id='" +
+                               task_id + "' AND (status='running' OR claim_expires>" + str(int(time.time())) +
+                               " OR id=(SELECT max(id) FROM task_runs WHERE task_id='" +
+                               task_id + "')) ORDER BY id DESC")
             self._recheck()
             return {'task': tasks[0] if len(tasks) == 1 else None, 'runs': runs}
         return self.read(['--board', board, 'show', task_id, '--json'])
@@ -242,14 +280,19 @@ def binding(native, board, task_id, target):
         raise Refused('TASK_BINDING_CHANGED')
     if task.get('status') not in PARKED:
         raise Refused('OWNER_NOT_PARKED ' + str(task.get('status')))
+    if task.get('worker_pid') or (task.get('claim_expires') or 0) > time.time():
+        raise Refused('OWNER_PROCESS_OR_LEASE_NOT_CLEARED')
     runs = details.get('runs', [])
     if not isinstance(runs, list) or any(not isinstance(run, dict) or type(run.get('id')) is not int for run in runs):
         raise Refused('RUN_INVENTORY_UNKNOWN')
+    if any((run.get('claim_expires') or 0) > time.time() for run in runs):
+        raise Refused('OWNER_LEASE_NOT_CLEARED')
     if any(run.get('status') == 'running' for run in runs):
         raise Refused('OWNER_RUN_ACTIVE')
     if runs and max(runs, key=lambda run: run['id']).get('worker_pid'):
         raise Refused('OWNER_PROCESS_NOT_CLEARED')
     return {**{key: task.get(key) for key in IDENTITY_FIELDS},
+            **{key: task.get(key) for key in ACTIVITY_FIELDS},
             'latest_run_id': max((run['id'] for run in runs), default=None)}
 
 
@@ -298,10 +341,19 @@ def repair_workspace(repo, board, task_id, revision, tree, native, *, apply=Fals
     if not isinstance(raw_path, str) or not Path(raw_path).is_absolute():
         raise Refused('ABSOLUTE_RECORDED_PATH_REQUIRED')
     target = Path(raw_path)
-    if target != target.resolve() or target == repo/'.worktrees' or repo/'.worktrees' not in target.parents:
-        raise Refused('EXCLUSIVE_WORKTREE_PATH_REQUIRED')
-    if task.get('workspace_kind') not in {'dir', 'worktree'}:
-        raise Refused('PREPARED_WORKSPACE_KIND_REQUIRED')
+    if target != target.resolve():
+        raise Refused('CANONICAL_WORKSPACE_PATH_REQUIRED')
+    if task.get('workspace_kind') == 'scratch':
+        root = native.scratch_root(board)
+        if target != root/'kanban/boards'/board/'workspaces'/task_id:
+            raise Refused('EXACT_NATIVE_SCRATCH_PATH_REQUIRED')
+        if repo.is_relative_to(root) or '.hermes' in repo.parts:
+            raise Refused('HERMES_SOURCE_REPOSITORY_REFUSED')
+    else:
+        if target == repo/'.worktrees' or repo/'.worktrees' not in target.parents:
+            raise Refused('EXCLUSIVE_WORKTREE_PATH_REQUIRED')
+        if task.get('workspace_kind') not in {'dir', 'worktree'}:
+            raise Refused('PREPARED_WORKSPACE_KIND_REQUIRED')
     # Native worktree resolution redirects noncanonical detached paths to the
     # task's own branch. Static dir bindings and canonical worktree paths are
     # honored without altering native board rows or branch ownership.

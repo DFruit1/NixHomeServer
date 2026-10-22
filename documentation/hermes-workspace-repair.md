@@ -30,10 +30,26 @@ python3 ~/.hermes/scripts/repair-task-workspace.py \
 ```
 
 The task must be blocked or scheduled with no active run or uncleared latest
-worker PID. The helper reads all boards, including archived tasks, and refuses
-another recorded workspace alias or a task nested inside the target. It refuses
-symlinked paths, primary checkouts, foreign repositories and targets outside the
-repository's `.worktrees/` tree. Git probes require the exact checkout root;
+worker PID. Scratch recovery also requires no task PID or unexpired task/run
+lease. The helper reads all boards, including archived tasks, and refuses another
+recorded workspace alias or a task nested inside the target. It refuses
+symlinked paths, primary checkouts and foreign repositories. Targets must be
+inside the repository's `.worktrees/` tree, or an explicit `scratch` binding at
+exactly `<authentic-root>/kanban/boards/<own-board>/workspaces/<task-id>`.
+Scratch root provenance comes from the authenticated coordinator's existing
+native database origin, or the interactive operator's supported
+`hermes kanban boards list --json --all` `db_path` for that board. No root or
+workspace override is accepted as proof. Root/database/target spellings must
+be canonical, with no symlink components; the database must already exist.
+After CLI root qualification, interactive scratch details and inventory both
+use the same query-only reader, including actual task/run PID and lease fields
+omitted by CLI JSON and removed boards in `_archived/`. This grants no native
+coordinator identity. The instruction
+installer ships that reader beside the helper. Donor project repositories
+inside the authentic Hermes root or a `.hermes` directory are refused.
+Other scratch paths, task IDs, boards, nested paths and prefix lookalikes are
+unsupported; there is no arbitrary scratch-path option.
+Git probes require the exact checkout root;
 a parent repository discovered above an empty directory is never source proof.
 Actual worker pins, current profile identity and tool fences remain binding;
 a refused native read is not permission to switch profile or use direct SQL.
@@ -48,7 +64,16 @@ and clean status. Nothing is reset, deleted, force-moved, pushed or activated.
 Preserved worktrees remain subject to the audited reaper rules; never delete them
 as temporary scratch.
 
-`dir` bindings remain static. The native dispatcher may redirect a noncanonical
+`dir` bindings remain static. Explicit canonical `scratch` bindings also remain
+static: native `hermes_cli.kanban_db_workspace.resolve_workspace` uses the recorded
+absolute scratch path and `mkdir(exist_ok=True)`, without worktree branch
+resolution. Preparing a detached Git worktree there does not redirect redispatch;
+the focused regression calls the real native resolver twice and verifies the
+same root, revision and tree. This support does not change the task's scratch
+kind or its native terminal cleanup semantics. Preserve required review inputs
+and evidence through the existing durable transfer procedure before completion.
+
+The native dispatcher may redirect a noncanonical
 `worktree` binding to a different branch, so that kind is supported only at
 `<repo>/.worktrees/<task-id>`. A missing checkout with a stale Git registration,
 broken Git metadata or an unsupported binding needs bounded native metadata or

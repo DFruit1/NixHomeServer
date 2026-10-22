@@ -74,6 +74,142 @@ class WorkspaceRepairTest(unittest.TestCase):
         self.assertFalse(result['unblocked'])
         self.assertEqual('blocked',self.native.task['status'])
 
+    def scratch_binding(self):
+        self.hermes = self.root/'hermes'
+        self.target = self.hermes/'kanban/boards/one/workspaces/t_one'
+        self.target.parent.mkdir(parents=True)
+        self.task.update(workspace_kind='scratch',workspace_path=str(self.target))
+        self.native.scratch_root = lambda board: self.hermes
+
+    def test_native_scratch_preserves_bytes_and_resolver_reuses_exact_source(self):
+        self.scratch_binding()
+        self.target.mkdir(); (self.target/'evidence').write_bytes(b'original')
+        result = self.run_repair()
+        self.assert_exact()
+        self.assertEqual(b'original',(Path(result['preserved_path'])/'evidence').read_bytes())
+        native=Path(__import__('os').environ['HERMES_FIXTURE_NATIVE_PYTHON']).parents[2]
+        sys.path.insert(0,str(native))
+        from hermes_cli import kanban_db_workspace as kb
+        from types import SimpleNamespace
+        task=SimpleNamespace(**self.task)
+        for _ in range(2):
+            self.assertEqual(self.target,kb.resolve_workspace(task,board='one'))
+            self.assert_exact()
+        self.assertEqual('already_prepared',self.run_repair()['status'])
+        self.assertEqual('blocked',self.task['status'])
+
+    def test_scratch_refuses_noncanonical_task_board_root_and_source(self):
+        self.scratch_binding()
+        for target in (self.target.with_name('t_other'),
+                       self.hermes/'kanban/boards/two/workspaces/t_one',
+                       self.hermes/'kanban/boards/one/workspaces-lookalike/t_one',
+                       self.repo/'.worktrees/t_one', self.target/'nested'):
+            with self.subTest(target=target):
+                self.task['workspace_path']=str(target)
+                with self.assertRaises(repair.Refused): self.run_repair()
+                self.assertFalse(target.exists())
+        self.task['workspace_path']=str(self.target)
+        self.native.tasks.append(('_archived/two-123',
+            {**self.task,'id':'t_alias','status':'archived'}))
+        with self.assertRaisesRegex(repair.Refused,'SHARED_WORKSPACE'): self.run_repair()
+        self.assertFalse(self.target.exists())
+
+    def test_scratch_active_task_lease_or_pid_refuses(self):
+        self.scratch_binding()
+        for field,value in (('worker_pid',123),('claim_expires',__import__('time').time()+600)):
+            self.task[field]=value
+            with self.assertRaises(repair.Refused): self.run_repair()
+            self.task.pop(field)
+        self.assertFalse(self.target.exists())
+
+    def test_scratch_symlink_foreign_repository_and_hermes_source_refuse(self):
+        self.scratch_binding()
+        self.target.symlink_to(self.repo,target_is_directory=True)
+        with self.assertRaises(repair.Refused): self.run_repair()
+        self.target.unlink();self.target.mkdir()
+        self.git(self.target,'init','-q')
+        with self.assertRaisesRegex(repair.Refused,'FOREIGN_REPOSITORY'): self.run_repair()
+        # A donor under the authentic Hermes root is not a project source.
+        donor=self.hermes/'donor'
+        self.git(self.repo,'worktree','add','--detach',str(donor),self.commit)
+        self.repo=donor
+        with self.assertRaisesRegex(repair.Refused,'HERMES_SOURCE_REPOSITORY_REFUSED'): self.run_repair()
+
+    def test_interactive_scratch_root_comes_from_native_cli_and_archives_are_checked(self):
+        import os,time
+        from hermes_cli import kanban_db_connect as kbc
+        self.scratch_binding()
+        for name in ('one','_archived/two-123'):
+            path=self.hermes/'kanban/boards'/name/'kanban.db'
+            path.parent.mkdir(parents=True,exist_ok=True)
+            with closing(kbc.connect(db_path=path)) as db:
+                db.execute("INSERT INTO tasks(id,title,status,created_at,workspace_kind,workspace_path) VALUES(?,?,?,?,?,?)",
+                           ('t_one' if name=='one' else 't_alias','Fixture','blocked' if name=='one' else 'archived',int(time.time()),'scratch',str(self.target)))
+                db.commit()
+        native=Path(os.environ['HERMES_FIXTURE_NATIVE_PYTHON']).parents[2]
+        cli=self.root/'cli'
+        cli.write_text('#!'+os.environ['HERMES_FIXTURE_NATIVE_PYTHON']+'\nimport runpy,sys\nsys.path.insert(0,'+repr(str(native))+')\nrunpy.run_module("hermes_cli.main",run_name="__main__",alter_sys=True)\n')
+        cli.chmod(0o700)
+        with patch.dict(os.environ,dict(HERMES_BIN=str(cli),HERMES_ROOT=str(self.hermes),HERMES_KANBAN_HOME=str(self.hermes))):
+            self.native=repair.NativeBoards(repair.Runner())
+            cli_details=self.native.details('one','t_one')
+            for field in ('worker_pid','claim_expires','current_run_id'):
+                self.assertNotIn(field,cli_details['task'])
+            self.assertEqual(self.hermes,self.native.scratch_root('one'))
+            with self.assertRaisesRegex(repair.Refused,'SHARED_WORKSPACE _archived/'):
+                self.run_repair()
+            self.assertFalse(self.target.exists())
+            archive=self.hermes/'kanban/boards/_archived/two-123/kanban.db'
+            with closing(kbc.connect(db_path=archive)) as db:
+                db.execute("DELETE FROM tasks WHERE id='t_alias'");db.commit()
+            owner=self.hermes/'kanban/boards/one/kanban.db'
+            with closing(kbc.connect(db_path=owner)) as db:
+                db.execute("INSERT INTO task_runs(id,task_id,status,profile,started_at,claim_expires) VALUES(1,'t_one','blocked','feature-reviewer',?,?)",(int(time.time())-10,int(time.time())+600))
+                db.commit()
+            # Real CLI run JSON also omits leases. The qualified reader must
+            # refuse this parked card even though the CLI has no lease field.
+            cli_runs=self.native.read(['--board','one','show','t_one','--json'])['runs']
+            self.assertNotIn('claim_expires',cli_runs[0])
+            self.assertIn('claim_expires',self.native.details('one','t_one')['runs'][0])
+            with self.assertRaisesRegex(repair.Refused,'OWNER_LEASE_NOT_CLEARED'):
+                self.run_repair()
+            self.assertFalse(self.target.exists())
+            with closing(kbc.connect(db_path=owner)) as db:
+                db.execute('UPDATE task_runs SET claim_expires=NULL')
+                db.execute("UPDATE tasks SET worker_pid=123 WHERE id='t_one'");db.commit()
+            with self.assertRaisesRegex(repair.Refused,'OWNER_PROCESS_OR_LEASE_NOT_CLEARED'):
+                self.run_repair()
+            with closing(kbc.connect(db_path=owner)) as db:
+                db.execute("UPDATE tasks SET worker_pid=NULL,claim_expires=? WHERE id='t_one'",(int(time.time())+600,));db.commit()
+            with self.assertRaisesRegex(repair.Refused,'OWNER_PROCESS_OR_LEASE_NOT_CLEARED'):
+                self.run_repair()
+            with closing(kbc.connect(db_path=owner)) as db:
+                db.execute("UPDATE tasks SET claim_expires=NULL WHERE id='t_one'");db.commit()
+            self.assertEqual('prepared',self.run_repair()['status'])
+            self.assert_exact()
+
+    def test_operator_root_requires_existing_canonical_own_board_database(self):
+        self.scratch_binding()
+        native=repair.NativeBoards(repair.Runner())
+        correct=self.hermes/'kanban/boards/one/kanban.db'
+        for path in (correct,self.root/'kanban.db',self.hermes/'kanban/boards/two/kanban.db'):
+            with patch.object(native,'read',return_value=[dict(slug='one',db_path=str(path))]):
+                with self.assertRaisesRegex(repair.Refused,'NATIVE_ROOT_PROVENANCE_REQUIRED'):
+                    native.scratch_root('one')
+        correct.touch()
+        alias=self.root/'alias';alias.symlink_to(self.hermes,target_is_directory=True)
+        with patch.object(native,'read',return_value=[dict(slug='one',db_path=str(alias/'kanban/boards/one/kanban.db'))]):
+            with self.assertRaisesRegex(repair.Refused,'NATIVE_ROOT_PROVENANCE_REQUIRED'):
+                native.scratch_root('one')
+
+    def test_scratch_failed_creation_retains_preimage(self):
+        self.scratch_binding(); self.target.mkdir()
+        (self.target/'input').write_text('retained')
+        with patch.object(repair,'create_workspace',side_effect=repair.Refused('fixture failure')):
+            with self.assertRaises(repair.PartialRepair) as caught: self.run_repair()
+        self.assertEqual('retained',(Path(caught.exception.receipt['preserved_path'])/'input').read_text())
+        self.assertEqual('blocked',self.task['status'])
+
     def test_parent_git_discovery_never_counts_as_valid_checkout(self):
         self.target.mkdir()
         (self.target/'evidence').write_bytes(b'keep exact old bytes')
@@ -276,7 +412,7 @@ assert all((root/'hermes/kanban/boards'/name/'kanban.db').read_bytes()==value fo
 
 
 class NativePinnedWorkspaceTest(unittest.TestCase):
-    def probe(self,alias=False,profile='head-coordinator',delegated=False,legacy_alias=False,symlink_board=False,archive_alias=False,nested_artifact=False):
+    def probe(self,alias=False,profile='head-coordinator',delegated=False,legacy_alias=False,symlink_board=False,archive_alias=False,nested_artifact=False,scratch=False):
         import os,sqlite3,time
         native=Path(os.environ['HERMES_FIXTURE_NATIVE_PYTHON']).parents[2]
         sys.path.insert(0,str(native))
@@ -285,13 +421,16 @@ class NativePinnedWorkspaceTest(unittest.TestCase):
         fixture._testMethodName='native-'+self._testMethodName
         fixture.setUp();root=fixture.root
         hermes=root/'hermes';dbpath=hermes/'kanban/boards/one/kanban.db'
+        if scratch:
+            fixture.scratch_binding()
+            fixture.target.mkdir();(fixture.target/'evidence').write_text('native preimage')
         now=int(time.time());work=root/'coordinator';work.mkdir()
         for board in ('default','one','two'):
             path=hermes/'kanban.db' if board=='default' else hermes/'kanban/boards'/board/'kanban.db'
             path.parent.mkdir(parents=True,exist_ok=True)
             with closing(kbc.connect(db_path=path)) as db:
                 if board=='one':
-                    db.execute("INSERT INTO tasks(id,title,status,assignee,created_at,workspace_kind,workspace_path,branch_name) VALUES('t_one','Parked repair','blocked','feature-reviewer',?,'worktree',?,'wt/t_one')",(now,str(fixture.target)))
+                    db.execute("INSERT INTO tasks(id,title,status,assignee,created_at,workspace_kind,workspace_path,branch_name) VALUES('t_one','Parked repair','blocked','feature-reviewer',?,?,?,'wt/t_one')",(now,fixture.task['workspace_kind'],str(fixture.target)))
                     kb._append_event(db,'t_one','blocked',{'reason':'Input supplier: agent. Fixture source missing','kind':'capability'})
                     db.execute("INSERT INTO tasks(id,title,status,assignee,created_at,workspace_kind,workspace_path,current_run_id,claim_lock,claim_expires) VALUES('t_actor','Native coordinator','running','head-coordinator',?,'dir',?,42,'fixture',?)",(now,str(work),now+600))
                     db.execute("INSERT INTO task_runs(id,task_id,status,profile,started_at,claim_lock,claim_expires) VALUES(42,'t_actor','running','head-coordinator',?,'fixture',?)",(now-5,now+600))
@@ -318,6 +457,22 @@ class NativePinnedWorkspaceTest(unittest.TestCase):
         result=subprocess.run([str(Path(os.environ['HERMES_FIXTURE_NATIVE_PYTHON'])),'-B','-c',_NATIVE_PARENT,str(ROOT/'scripts/hermes'),str(root),_NATIVE_CHILD],env=env,capture_output=True,text=True,timeout=90)
         self.assertEqual(0,result.returncode,result.stderr)
         return json.loads(result.stdout),fixture
+
+    def test_authenticated_native_scratch_root_ignores_forged_environment(self):
+        result,fixture=self.probe(scratch=True)
+        self.assertEqual('prepared',result['status'],result)
+        self.assertFalse(result['forged_cli_called'])
+        fixture.assert_exact()
+        preserved=list(fixture.target.parent.glob('t_one.preserved-*'))
+        self.assertEqual(1,len(preserved))
+        self.assertEqual('native preimage',(preserved[0]/'evidence').read_text())
+
+    def test_authenticated_scratch_archived_alias_refuses_before_preserving(self):
+        result,fixture=self.probe(scratch=True,alias=True,archive_alias=True)
+        self.assertEqual('refused',result['status'],result)
+        self.assertIn('SHARED_WORKSPACE _archived/',result['reason'])
+        self.assertEqual('native preimage',(fixture.target/'evidence').read_text())
+        self.assertFalse(list(fixture.target.parent.glob('t_one.preserved-*')))
 
     def test_native_coordinator_unique_workspace_can_preview_and_apply_without_pin_changes(self):
         result,fixture=self.probe()

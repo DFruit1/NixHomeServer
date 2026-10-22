@@ -217,7 +217,7 @@ def changes(root, pending=None):
     for filename in ('hermes_common.py', 'kanban-owner-alerts.py', 'owner-blocker-authoring-guard.py',
                      'kanban-performance.py', 'kanban-blockers.py', 'deployment-receipt.py',
                      'review-verdict-guard.py', 'fleet_workflow.py', 'daily-steward-window.py', 'steward-readonly-guard.py',
-                     'repair-task-workspace.py'):
+                     'repair-task-workspace.py', 'steward-board-read.py'):
         result[root / 'scripts' / filename] = (SOURCE / filename).read_text()
     if (root / 'profiles/board-steward/SOUL.md').exists():
         for filename in ('daily-steward-window.py','kanban-performance.py','kanban-blockers.py'):
