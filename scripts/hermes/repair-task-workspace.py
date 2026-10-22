@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 """Prepare one parked task's recorded checkout without discarding prior work.
 
-Python operations glue uses the existing native Hermes CLI and Git worktree
-operations; it introduces no backend, dependency or board-state writer. A
+Python operations glue uses native operator CLI or authenticated query-only
+coordinator evidence and Git worktree operations; it introduces no backend, dependency or board-state writer. A
 source receipt never implies verified input transfer, acceptance or unblock.
 """
 import argparse
 from contextlib import contextmanager, nullcontext
 import fcntl
+import importlib.util
+from itertools import islice
 import json
 import os
 from pathlib import Path
 import re
+import sqlite3
 import subprocess
 import sys
 import time
@@ -52,11 +55,105 @@ class NativeBoards:
     def __init__(self, runner):
         self.runner = runner
         self.binary = os.environ.get('HERMES_BIN', 'hermes')
+        self.origin = None
+        if any(os.environ.get(key) for key in ('HERMES_KANBAN_TASK', 'HERMES_KANBAN_RUN_ID',
+                'HERMES_KANBAN_CLAIM_LOCK', 'HERMES_DELEGATED_CHILD_CONTEXT')):
+            # A genuine terminal descendant retains its marker and board pins.
+            # Native CLI routing is pinned (and its child list command refuses),
+            # so use the already-authorised query-only coordinator evidence path.
+            self._origin_module = self._module('worker_origin.py')
+            self._reader = self._module('steward-board-read.py')
+            self.origin = self._authenticate()
+            self.root = Path(self.origin['db']).parents[3]
+
+    @staticmethod
+    def _module(filename):
+        path = Path(__file__).resolve().with_name(filename)
+        spec = importlib.util.spec_from_file_location('workspace_' + filename.replace('-', '_'), path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def _authenticate(self):
+        try:
+            return self._origin_module.authenticated_current_origin(expected_profile='head-coordinator')
+        except ValueError as exc:
+            raise Refused('AUTHENTICATED_COORDINATOR_REQUIRED: ' + str(exc)) from None
+
+    def _recheck(self):
+        if self._authenticate() != self.origin:
+            raise Refused('COORDINATOR_BINDING_CHANGED')
+
+    def _query(self, board, sql):
+        if time.monotonic() >= self.runner.deadline:
+            raise Refused('REPAIR_DEADLINE 180 seconds')
+        try:
+            result = self._reader.query(self.root, board, sql)
+        except (OSError, ValueError, sqlite3.Error):
+            raise Refused('NATIVE_BOARD_EVIDENCE_UNAVAILABLE ' + board) from None
+        if result['truncated']:
+            raise Refused('NATIVE_EVIDENCE_TRUNCATED ' + board)
+        return result['rows']
+
+    def _readonly_inventory(self):
+        self._recheck()
+        base = self.root / 'kanban/boards'
+        # Match native board roots and remove_board's documented archive
+        # container. Never descend into a board's workspaces or attachments.
+        # Native list_boards sees directory symlinks; refusing them explicitly
+        # prevents an unseen alias outside the authorised evidence root.
+        def entries(directory):
+            if directory.is_symlink():
+                raise Refused('BOARD_DIRECTORY_SYMLINK ' + str(directory.relative_to(base)))
+            if not directory.exists():
+                return []
+            values = list(islice(directory.iterdir(), 129))
+            if len(values) > 128:
+                raise Refused('BOARD_INVENTORY_UNBOUNDED')
+            return values
+
+        paths = []
+        def candidate(path):
+            if path.is_symlink():
+                raise Refused('BOARD_DIRECTORY_SYMLINK ' + str(path.relative_to(base)))
+            if path.is_dir() and any(os.path.lexists(path / name) for name in ('kanban.db', 'board.json')):
+                paths.append(path)
+
+        for path in entries(base):
+            if path.name == '_archived':
+                for archived in entries(path):
+                    if re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]*', archived.name):
+                        candidate(archived)
+            elif re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}', path.name):
+                candidate(path)
+        boards = sorted(str(path.relative_to(base)) for path in paths)
+        if os.path.lexists(self.root / 'kanban.db'):
+            if 'default' in boards:
+                raise Refused('AMBIGUOUS_DEFAULT_BOARD')
+            boards.insert(0, 'default')
+        if len(boards) > 64:
+            raise Refused('BOARD_INVENTORY_UNBOUNDED')
+        tasks = []
+        for board in boards:
+            for offset in range(0, 20001, 200):
+                rows = self._query(board, 'SELECT id,status,workspace_kind,workspace_path,branch_name '
+                                   'FROM tasks ORDER BY id LIMIT 200 OFFSET ' + str(offset))
+                if offset + len(rows) > 20000:
+                    raise Refused('TASK_INVENTORY_UNBOUNDED ' + board)
+                if any(not isinstance(row.get('id'), str) for row in rows):
+                    raise Refused('NATIVE_TASK_INVENTORY_SCHEMA ' + board)
+                tasks.extend((board, row) for row in rows)
+                if len(rows) < 200:
+                    break
+        self._recheck()
+        return tasks
 
     def read(self, args):
         return json.loads(self.runner.call([self.binary, 'kanban', *args]))
 
     def inventory(self):
+        if self.origin is not None:
+            return self._readonly_inventory()
         boards = self.read(['boards', 'list', '--json', '--all'])
         if not isinstance(boards, list) or len(boards) > 64:
             raise Refused('BOARD_INVENTORY_UNBOUNDED')
@@ -77,6 +174,18 @@ class NativeBoards:
         return tasks
 
     def details(self, board, task_id):
+        if self.origin is not None:
+            self._recheck()
+            if board != self.origin['board'] or not re.fullmatch(r't_[A-Za-z0-9_]+', task_id):
+                raise Refused('COORDINATOR_BOARD_REQUIRED')
+            # Fixed read-only statements; the task literal is validated above.
+            tasks = self._query(board, "SELECT id,status,workspace_kind,workspace_path,branch_name "
+                                "FROM tasks WHERE id='" + task_id + "'")
+            runs = self._query(board, "SELECT id,status,worker_pid FROM task_runs WHERE task_id='" +
+                               task_id + "' AND (status='running' OR id=(SELECT max(id) FROM task_runs "
+                               "WHERE task_id='" + task_id + "')) ORDER BY id DESC")
+            self._recheck()
+            return {'task': tasks[0] if len(tasks) == 1 else None, 'runs': runs}
         return self.read(['--board', board, 'show', task_id, '--json'])
 
 

@@ -274,7 +274,7 @@ fixture_suite() {
     test-kanban-owner-alerts.sh | test-steward-readonly.sh | \
     test-steward-opportunity-scan.sh | test-kanban-retry-breaker.sh | \
     test-hermes-autonomy.sh | test-hermes-autonomy-runtime.sh | \
-    test-hermes-worker-origin.sh | test-hermes-recovered-resume.sh) return 0 ;;
+    test-hermes-worker-origin.sh | test-hermes-recovered-resume.sh | test-hermes-workspace-repair.sh) return 0 ;;
     *) return 1 ;;
   esac
 }
