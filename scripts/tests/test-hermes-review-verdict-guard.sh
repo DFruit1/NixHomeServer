@@ -44,6 +44,24 @@ def changes_run(rid, ended):
 
 
 class VerdictGuardTest(unittest.TestCase):
+    def test_negative_verifier_can_report_despite_rejected_review_parent(self):
+        self.card('t_old', assignee='feature-reviewer', tenant='verification')
+        self.add_run('t_old', 'request-changes', NOW-1)
+        self.card('t_fresh', assignee='feature-reviewer', status='running',
+                  tenant='verification', body='First missing input: verdict=unknown')
+        self.card('t_route', assignee='head-coordinator', status='todo')
+        self.link('t_old', 't_fresh'); self.link('t_fresh', 't_route')
+        for metadata in (json.loads(changes_run('fresh', NOW)[0]),
+                         {'verdict':'unknown','missing_inputs':['exact source receipt']}):
+            with self.subTest(verdict=metadata['verdict']):
+                self.assertEqual({}, guard_mod.guard(self.complete_payload('t_fresh', metadata),self.root))
+                self.card('t_consumer', assignee='standard-implementer', status='todo')
+                self.link('t_fresh', 't_consumer')
+                self.assertEqual('block', guard_mod.guard(self.complete_payload('t_fresh',metadata),self.root).get('action'))
+                self.db.execute("DELETE FROM task_links WHERE child_id='t_consumer'")
+                self.db.execute("DELETE FROM tasks WHERE id='t_consumer'"); self.db.commit()
+        self.assertEqual('block', guard_mod.guard(self.complete_payload('t_fresh',json.loads(accept_run('fresh',NOW)[0])),self.root).get('action'))
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='verdict-guard-test-')
         self.addCleanup(self.tmp.cleanup)

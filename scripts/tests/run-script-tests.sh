@@ -182,6 +182,7 @@ test_scripts=(
   scripts/tests/test-hermes-workspace-repair.sh
   scripts/tests/test-hermes-worker-origin.sh
   scripts/tests/test-hermes-recovered-resume.sh
+  scripts/tests/test-hermes-coordinator-repair.sh
   scripts/tests/test-kanban-board-health.sh
   scripts/tests/test-quiescence-inventory.sh
   scripts/tests/test-kanban-retry-breaker.sh
@@ -274,7 +275,7 @@ fixture_suite() {
     test-kanban-owner-alerts.sh | test-steward-readonly.sh | \
     test-steward-opportunity-scan.sh | test-kanban-retry-breaker.sh | \
     test-hermes-autonomy.sh | test-hermes-autonomy-runtime.sh | \
-    test-hermes-worker-origin.sh | test-hermes-recovered-resume.sh | test-hermes-workspace-repair.sh) return 0 ;;
+    test-hermes-worker-origin.sh | test-hermes-recovered-resume.sh | test-hermes-coordinator-repair.sh | test-hermes-workspace-repair.sh) return 0 ;;
     *) return 1 ;;
   esac
 }

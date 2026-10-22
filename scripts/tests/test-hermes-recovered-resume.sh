@@ -30,12 +30,14 @@ import worker_origin
 sys.modules['hermes_cli.nixhomeserver_worker_origin']=worker_origin
 sys.modules['cron.nixhomeserver_capability_recovery']=capability_recovery
 import resume_recovered as resume
-from recovered_resume_adapter import adapt, EDITS
+from recovered_resume_adapter import adapt, EDITS, migrate_legacy
+from coordinator_repair_adapter import adapt as amend_adapt
 sys.modules['hermes_cli.nixhomeserver_resume_recovered']=resume
 
 
 def fixture_native_preimage(name, text):
     """Undo only our exact maintained seams in fixture bytes, never live code."""
+    text=migrate_legacy(text)
     for before, after in reversed(EDITS[name]):
         if text.count(after) == 1:
             text = text.replace(after, before, 1)
@@ -79,6 +81,21 @@ class RecoveryTest(unittest.TestCase):
         self.assertEqual('triage',kb.get_task(self.conn,self.target).status)
         result=self.apply()
         self.assertEqual('review',result['status'])
+
+    def test_blocked_capability_resume_preserves_exhausted_counter_and_error(self):
+        self.conn.execute("UPDATE tasks SET status='blocked',max_retries=1,consecutive_failures=1 WHERE id=?",(self.target,));self.conn.commit()
+        before=dict(self.conn.execute('SELECT * FROM tasks WHERE id=?',(self.target,)).fetchone())
+        result=self.apply();self.assertEqual('review',result['status'])
+        after=dict(self.conn.execute('SELECT * FROM tasks WHERE id=?',(self.target,)).fetchone())
+        before['status']='review';self.assertEqual(before,after)
+        self.assertIsNotNone(kb.claim_review_task(self.conn,self.target))
+
+    def test_scheduled_capability_resume_preserves_counter_and_refuses_noncapability(self):
+        self.conn.execute("UPDATE tasks SET status='scheduled',block_kind='needs_input' WHERE id=?",(self.target,));self.conn.commit()
+        with self.assertRaises(ValueError):self.apply()
+        self.conn.execute("UPDATE tasks SET block_kind='capability' WHERE id=?",(self.target,));self.conn.commit()
+        self.conn.execute("UPDATE tasks SET status='scheduled' WHERE id=?",(self.target,));self.conn.commit()
+        self.assertEqual('review',self.apply()['status'])
 
     def test_real_native_coordinator_and_counter_scope_preservation(self):
         before=dict(self.conn.execute('SELECT * FROM tasks WHERE id=?',(self.target,)).fetchone())
@@ -210,9 +227,11 @@ class InstallerTest(unittest.TestCase):
         expected={}
         for name in EDITS:
             target=self.root/'hermes-agent'/name
-            target.write_text(adapt(name,target.read_text()));expected[target]=target.read_bytes()
+            target.write_text(amend_adapt(name,adapt(name,target.read_text())));expected[target]=target.read_bytes()
         helper=self.root/'hermes-agent/hermes_cli/nixhomeserver_resume_recovered.py'
         helper.write_bytes((SOURCE/'resume_recovered.py').read_bytes());expected[helper]=helper.read_bytes()
+        helper=self.root/'hermes-agent/hermes_cli/nixhomeserver_coordinator_repair.py'
+        helper.write_bytes((SOURCE/'coordinator_repair.py').read_bytes());expected[helper]=helper.read_bytes()
         self.assertEqual(0,self.installer.install(self.root,True))
         self.assertEqual(0,self.installer.install(self.root))
         self.assertFalse((self.root/'backups').exists())

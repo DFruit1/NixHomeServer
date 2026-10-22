@@ -40,7 +40,9 @@ hermes-instructions.md.
    references/source-to-service-planning.md rather than ad-hoc reader cards.
 4. Preserve failed workers' partial trees, commits and artifacts. Inspect bounded
    status/log and structured errors, narrow remaining work, then route finishing
-   work. Never raise budgets or repeat an unchanged failed investigation. Recover
+   work. Do not repeat an unchanged failed investigation. One measured finite
+   runtime correction is allowed by hermes-worker-budgets.md; persist the actual
+   field with kanban_amend and verify readback before resume. Recover
    sufficient existing receipts for output-only completion when reruns are banned;
    missing evidence remains unverified rather than fabricated.
 5. Provision isolated workspaces at the intended base and lawfully deliver required

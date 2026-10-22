@@ -229,6 +229,41 @@ Android publication is an external operator's release handoff, not this deploy.
 Use the installed kanban-board-health.sh monitor and current native board state.
 Its output is a wake signal; unchanged conditions need no repeated comment.
 
+The deterministic `kanban technical recovery` job checks every five minutes,
+including while unrelated work runs. It creates at most one bounded native
+recovery assignment per board per pass, deduplicates pending recovery and backs
+off unchanged failed attempts before one auditor escalation. It grants no
+acceptance or execution through its observation. Finish the assigned repair
+through actual readback and a supported resume; an acknowledgment is not repair.
+
+Use native `kanban_amend` to change a parked technical card's body, priority,
+preloaded skills or finite runtime. First call with task_id to inspect its
+version; then pass `expected_version`, `changes` and a `reason` naming the
+superseded premise and evidence. Verify the returned fields. A measured runtime
+increase additionally needs `runtime_evidence` with latest timed-out `run_id`,
+`remaining_work`, `expected_completion` and `stop_condition`; only one increase
+is allowed. No retry reset, assignee change, result/verdict edit or active card
+mutation is available. A prose comment does not change the runtime field.
+An untyped blocked card whose latest real run failed may be classified once
+with `changes.block_kind=capability` and an explicit `Input supplier: agent`
+or `model/provider` reason. This records native classification without changing
+status or spent failure counters; it cannot retype an existing gate or block.
+For repaired capability holds use `kanban_unblock` with exact recovery_version
+and recovery_reason in blocked/scheduled/triage; this preserves failure counters
+and consumes one hold version. Ordinary unblock resets the native failure
+counter and cannot satisfy a recovery contract that preserves spent allowances.
+Preloaded skills must resolve in the assigned profile's actual catalog; remove
+an irrelevant coordinator-only preload from a reviewer, rather than granting
+the reviewer routing powers. Skills never grant tools or permission.
+
+Inspect semantic waits as well as native cycles: a coordinator awaiting a
+result from its own downstream producer must separate that corrective producer
+from the original gated acceptance/rollout consumer. Supply existing qualified
+receipts directly. Preserve rejection history and inherited review gates;
+negative verifier reporting is permitted only with coordinator routing children.
+Route substantive architecture/provenance questions to one bounded auditor
+assignment, then apply its resulting technical routing. Never self-accept.
+
 Use `python3 ~/.hermes/scripts/kanban-blockers.py` to prioritize prerequisite
 roots by unique downstream impact; `--board BOARD --task t_CARD` shows paths.
 Read ~/.hermes/scripts/hermes-prerequisites.md before graph repair. Only done

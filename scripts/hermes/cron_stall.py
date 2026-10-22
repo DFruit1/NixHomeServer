@@ -102,7 +102,7 @@ def collect(root,state,now):
                 if hold:due[-1]['capability_recovery']=hold
     # Resolved tasks leave the scheduler ledger; no card, memory or report is written.
     state['issues']={key:value for key,value in issues.items() if key in live}
-    selected=sorted(due,key=lambda item:item['_order'])[:3]
+    selected=sorted(due,key=lambda item:item['_order'])[:1]
     for item in selected:item.pop('_order')
     return selected
 

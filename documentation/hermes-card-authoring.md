@@ -109,9 +109,11 @@ For example: `kanban_create(..., skills=["systematic-debugging",
 "nixhomeserver-module-change", "nixhomeserver-safe-change"])`, or repeated
 `--skill` flags on the CLI. Read back the created card with `kanban_show`
 and verify its `skills`, assignee, workspace and prerequisites before release.
-Set skills at creation: the installed native API does not expose a task-skills
-update operation. Do not edit board SQLite or recreate an active graph just to
-backfill this field. Existing workers keep using on-demand skill loading; a
+Set skills at creation. An authenticated native head-coordinator may repair a
+parked technical card with `kanban_amend`: inspect its version, pass exact CAS,
+the smallest available skill list and supersession evidence, then read back.
+Do not edit board SQLite or recreate an active graph just to backfill this
+field. Existing workers keep using on-demand skill loading; a
 changed card never proves its already-started worker refreshed instructions.
 
 Native lifecycle review already injects `sdlc-review`; do not add it to a separate

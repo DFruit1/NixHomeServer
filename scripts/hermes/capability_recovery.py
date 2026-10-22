@@ -26,6 +26,9 @@ HELPERS = ('scripts/fixture-runner.py', 'scripts/autonomy-policy.py',
            'scripts/worker_origin.py',
            'hermes-agent/hermes_cli/nixhomeserver_worker_origin.py',
            'hermes-agent/hermes_cli/nixhomeserver_resume_recovered.py',
+           'hermes-agent/hermes_cli/nixhomeserver_coordinator_repair.py',
+           'hermes-agent/hermes_cli/nixhomeserver_worker_policy.py',
+           'hermes-agent/tools/kanban_tools_schemas.py',
            'scripts/steward-coordinator-request.py',
            'scripts/hermes-capability-recovery.md', 'scripts/hermes-coordinator-reference.md',
            'hermes-agent/hermes_cli/nixhomeserver_autonomy.py',
@@ -151,7 +154,7 @@ def read_board(db, root, board, helpers, workspaces=None):
     columns = {r[1] for r in db.execute('PRAGMA table_info(tasks)')}
     if not {'id', 'status', 'assignee', 'block_kind'} <= columns:
         raise ValueError('Unsupported task schema')
-    extras = ','.join(k if k in columns else 'NULL AS ' + k for k in ('body', 'workspace_path'))
+    extras = ','.join(k if k in columns else 'NULL AS ' + k for k in ('body', 'workspace_path', 'skills', 'max_runtime_seconds'))
     rows = db.execute("SELECT id,status,assignee,block_kind," + extras +
                       " FROM tasks WHERE status NOT IN ('done','archived') ORDER BY id LIMIT ?",
                       (MAX_OPEN + 1,)).fetchall()
