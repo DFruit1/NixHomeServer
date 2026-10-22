@@ -4,6 +4,19 @@ Use the lifecycle that actually dispatched the run. Read claim/handoff history
 when the mode is unclear. Never retry a rejected `kanban_request_changes` call
 or change task state to make it admissible.
 
+Pass explicit `board` and `task_id` to `kanban_complete`, using the exact
+dispatcher-assigned board and own card from the worker context, checked against
+`kanban_show`. The native tool advertises dispatcher defaults, but the pre-tool
+shell-hook subprocess removes worker task/run identity to preserve descendant
+write isolation; its payload carries the supplied arguments, session and profile,
+not those defaults. Explicit scope lets the read-only guard inspect the same
+card before the native tool enforces worker/run ownership. Never export pins,
+remove descendant markers or use the CLI to complete. If identity is missing or
+contradictory, stop and return the evidence to the coordinator; never infer scope from cwd,
+the global current board or another session. This instruction does not authorize
+retrying a refused call: preserve any card's stop-on-refusal condition and wait
+for a supported coordinator resume with that exact scope supplied.
+
 For a separate downstream verification card, complete your own card with
 `kanban_complete` for either verdict. Set `metadata.verdict` to `accept` or
 `request-changes`, `revision` to the exact reviewed source and `checks` to the

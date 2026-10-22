@@ -50,6 +50,68 @@ def changes_run(rid, ended):
 
 
 class VerdictGuardTest(unittest.TestCase):
+    @unittest.skipUnless(os.environ.get('HERMES_REVIEW_GUARD_NATIVE_REPO'),
+                         'opt-in real Hermes hook transport requires its Python environment')
+    def test_native_hook_requires_explicit_scope_without_donating_worker_identity(self):
+        # Run with the native Hermes Python and HERMES_REVIEW_GUARD_NATIVE_REPO.
+        # Only synthetic board state is opened; no native mutation is executed.
+        import hashlib
+        import shlex
+        self.card('t_old', assignee='feature-reviewer', tenant='verification')
+        self.add_run('t_old', 'request-changes', NOW-1)
+        self.card('t_fresh', assignee='feature-reviewer', status='running', tenant='verification')
+        self.card('t_route', assignee='head-coordinator', status='todo')
+        self.link('t_old', 't_fresh'); self.link('t_fresh', 't_route')
+        before = hashlib.sha256(self.db_path.read_bytes()).hexdigest()
+        home = self.root / 'profiles/feature-reviewer'; home.mkdir(parents=True)
+        env = {'HERMES_ROOT': str(self.root), 'HERMES_HOME': str(home),
+               'HERMES_DISABLE_LAZY_INSTALLS': '1',
+               'HERMES_KANBAN_BOARD': 'testboard', 'HERMES_KANBAN_DB': str(self.db_path),
+               'HERMES_KANBAN_TASK': 't_fresh', 'HERMES_KANBAN_RUN_ID': '1335'}
+        with patch.dict(os.environ, env):
+            sys.path.insert(0, os.environ['HERMES_REVIEW_GUARD_NATIVE_REPO'])
+            import hermes_bootstrap
+            from agent import shell_hooks
+            from tools import kanban_tools
+            from tools.environments.local import build_subprocess_env
+            from agent.delegation_context import delegated_child_context
+            self.assertEqual('t_fresh', kanban_tools._default_task_id(None))
+            with self.assertRaises(kanban_tools._Reject):
+                kanban_tools._enforce_worker_task_ownership('t_route')
+            with delegated_child_context():
+                self.assertIsNone(kanban_tools._default_task_id(None))
+            spec = shell_hooks.ShellHookSpec(event='pre_tool_call',
+                command=shlex.join([sys.executable, '-B', str(source)]),
+                matcher='^kanban_complete$', timeout=10, fail_closed=True)
+            callback = shell_hooks._make_callback(spec)
+            metadata = json.loads(changes_run('rejected-revision', NOW)[0])
+            for multiplex in (False, True):
+                with self.subTest(multiplex=multiplex), patch('agent.secret_scope.is_multiplex_active', return_value=multiplex):
+                    child_env = build_subprocess_env(scrub_secrets=multiplex)
+                    self.assertNotIn('HERMES_KANBAN_TASK', child_env)
+                    self.assertNotIn('HERMES_KANBAN_RUN_ID', child_env)
+                    self.assertEqual('testboard', child_env['HERMES_KANBAN_BOARD'])
+                    self.assertTrue(child_env['HERMES_DELEGATED_CHILD_CONTEXT'])
+                    def call(**scope):
+                        return callback(tool_name='kanban_complete', session_id='fixture-review',
+                            args={'summary': 'Preserved rejection', 'metadata': metadata, 'artifacts': [], **scope})
+                    missing = call()
+                    self.assertEqual('block', missing['action'])
+                    self.assertIn('exact board and task_id', missing['message'])
+                    self.assertIsNone(call(board='testboard', task_id='t_fresh'))
+                    for scope in ({'board': 'testboard'},
+                                  {'board': '../testboard', 'task_id': 't_fresh'},
+                                  {'board': 'testboard', 'task_id': 't_unknown'},
+                                  {'board': 'wrongboard', 'task_id': 't_fresh'}):
+                        self.assertEqual('block', call(**scope)['action'])
+                    # Explicit delivery must not turn a previous rejection into acceptance.
+                    metadata = json.loads(accept_run('rejected-revision', NOW)[0])
+                    self.assertEqual('block', call(board='testboard', task_id='t_fresh')['action'])
+                    metadata = json.loads(changes_run('rejected-revision', NOW)[0])
+            self.assertEqual('t_fresh', os.environ['HERMES_KANBAN_TASK'])
+            self.assertEqual('1335', os.environ['HERMES_KANBAN_RUN_ID'])
+        self.assertEqual(before, hashlib.sha256(self.db_path.read_bytes()).hexdigest())
+
     def feature_create(self, **extra):
         return {'tool_name':'kanban_create','tool_input':{'board':'testboard',
                 'title':'Feature slice','assignee':'standard-implementer',
