@@ -115,7 +115,7 @@ let
       secrets = [ ];
       backupApps = [ ];
       guardedServices = [ ];
-      persistencePaths = [ "var/lib/searxng" ];
+      persistencePaths = [ "/var/lib/searxng" ];
     };
     ntfy = {
       modules = [ ../../modules/ntfy ];
