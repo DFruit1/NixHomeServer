@@ -73,7 +73,7 @@ fi
 # Pinned worker runs must route each exact synthetic suite through the confined
 # helper. Replace that executable in a copy so the test records dispatches.
 routes="$tmpdir/routes.txt"
-printf '%s\n' scripts/tests/test-kanban-owner-alerts.sh scripts/tests/test-steward-readonly.sh scripts/tests/test-steward-opportunity-scan.sh scripts/tests/test-kanban-retry-breaker.sh >"$routes"
+printf '%s\n' scripts/tests/test-kanban-owner-alerts.sh scripts/tests/test-steward-readonly.sh scripts/tests/test-steward-opportunity-scan.sh scripts/tests/test-kanban-retry-breaker.sh scripts/tests/test-hermes-worker-policy.sh >"$routes"
 route_runner="$tmpdir/route-runner.sh"
 awk -v fixture_list="$routes" '
   /^test_scripts=\($/ {
@@ -100,7 +100,7 @@ if ! env NIXHOMESERVER_DEFAULT_HOST=fixture-host ROUTE_LOG="$route_log" HERMES_K
   cat "$tmpdir/routes-output" >&2
   exit 1
 fi
-[[ "$(wc -l <"$route_log")" -eq 4 ]] || { echo "Expected four confined suite invocations." >&2; cat "$route_log" >&2; exit 1; }
+[[ "$(wc -l <"$route_log")" -eq 5 ]] || { echo "Expected five confined suite invocations." >&2; cat "$route_log" >&2; exit 1; }
 python3 - "$route_log" "$TESTS_REPO_ROOT" <<'PY'
 import json
 from pathlib import Path
@@ -108,8 +108,9 @@ import sys
 rows = [json.loads(line) for line in Path(sys.argv[1]).read_text().splitlines()]
 root = sys.argv[2]
 suites = ('test-kanban-owner-alerts.sh', 'test-steward-readonly.sh',
-          'test-steward-opportunity-scan.sh', 'test-kanban-retry-breaker.sh')
-assert len(rows) == 4, rows
+          'test-steward-opportunity-scan.sh', 'test-kanban-retry-breaker.sh',
+          'test-hermes-worker-policy.sh')
+assert len(rows) == 5, rows
 for suite in suites:
     assert any(row == ['--repo', root, '--suite', f'{root}/scripts/tests/{suite}',
                        '--timeout', '300'] for row in rows), (suite, rows)
@@ -120,7 +121,7 @@ if env NIXHOMESERVER_DEFAULT_HOST=fixture-host ROUTE_LOG="$route_log" ROUTE_STAT
   echo "A refused helper was treated as success." >&2
   exit 1
 fi
-if ! grep -Eq '4 test script\(s\) failed' "$tmpdir/refused-output"; then
+if ! grep -Eq '5 test script\(s\) failed' "$tmpdir/refused-output"; then
   echo "A refused helper did not propagate through the runner." >&2
   cat "$tmpdir/refused-output" >&2
   exit 1
@@ -132,7 +133,8 @@ direct_log="$tmpdir/direct-log"
 ordinary_routes="$tmpdir/ordinary-routes.txt"
 : >"$ordinary_routes"
 for suite in test-kanban-owner-alerts.sh test-steward-readonly.sh \
-  test-steward-opportunity-scan.sh test-kanban-retry-breaker.sh; do
+  test-steward-opportunity-scan.sh test-kanban-retry-breaker.sh \
+  test-hermes-worker-policy.sh; do
   direct_suite="$tmpdir/$suite"
   cat >"$direct_suite" <<'EOF'
 #!/usr/bin/env bash
@@ -165,9 +167,9 @@ if ! env -u HERMES_KANBAN_TASK -u HERMES_KANBAN_DB -u HERMES_KANBAN_BOARD \
   exit 1
 fi
 [[ ! -s "$route_log" ]] || { echo "Unpinned CI invoked the confined helper." >&2; cat "$route_log" >&2; exit 1; }
-[[ "$(wc -l <"$direct_log")" -eq 4 ]] || { echo "Unpinned CI did not directly execute all suites." >&2; exit 1; }
+[[ "$(wc -l <"$direct_log")" -eq 5 ]] || { echo "Unpinned CI did not directly execute all suites." >&2; exit 1; }
 
-# A missing required helper fails all four routed suites without direct fallback.
+# A missing required helper fails all five routed suites without direct fallback.
 : >"$direct_log"
 missing_runner="$tmpdir/missing-runner.sh"
 sed "s|$tmpdir/missing-fixture-runner[.]py|$tmpdir/absent-fixture-runner.py|g" \
@@ -178,7 +180,7 @@ if env NIXHOMESERVER_DEFAULT_HOST=fixture-host DIRECT_LOG="$direct_log" \
   echo "A missing required helper was treated as success." >&2
   exit 1
 fi
-if ! grep -Eq '4 test script\(s\) failed' "$tmpdir/missing-output"; then
+if ! grep -Eq '5 test script\(s\) failed' "$tmpdir/missing-output"; then
   echo "A missing helper did not propagate through the runner." >&2
   cat "$tmpdir/missing-output" >&2
   exit 1
