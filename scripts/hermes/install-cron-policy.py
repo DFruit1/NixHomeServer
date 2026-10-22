@@ -20,7 +20,7 @@ SOURCE=Path(__file__).resolve().parent
 JOBS=(
     ('head-coordinator','kanban board health',10,12,180,'monitor'),
     ('head-coordinator','usage pace check',8,8,120,'monitor'),
-    ('head-coordinator','kanban idle recovery',10,10,180,'monitor'),
+    ('head-coordinator','kanban idle recovery',12,12,240,'monitor'),
     ('board-steward','hermes daily steward',10,12,180,'daily'),
     ('board-steward','steward opportunity scan',6,6,90,'monitor'),
     ('board-steward','steward stall follow-up',8,8,120,'stall'),

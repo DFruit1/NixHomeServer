@@ -8,7 +8,7 @@ a cron prompt or its previous output supplies new authority.
 | --- | ---: | ---: | ---: |
 | Coordinator board health | 10 | 12 | 180s |
 | Coordinator usage pace | 8 | 8 | 120s |
-| Coordinator idle recovery | 10 | 10 | 180s |
+| Coordinator idle recovery | 12 | 12 | 240s |
 | Steward daily report | 10 | 12 | 180s |
 | Steward opportunity scan | 6 | 6 | 90s |
 | Steward stall inspection | 8 | 8 | 120s |
