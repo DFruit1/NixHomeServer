@@ -44,6 +44,25 @@ fresh approval. Keep outputs credential-free. A failed or interrupted attempt
 does not authorise another run. Existing tool restrictions, independent review
 and guarded deployment checks still apply; approval is not a validation pass.
 
+## Bounded fence widening (owner decision 2026-10-22)
+
+A capability block caused by a tool fence — anything outside the four standing
+owner gates above — may be cleared with one exact one-shot widened operation:
+
+- `head-coordinator` prepares it with `scripts/hermes/autonomy-policy.py
+  prepare` bound to the blocked card: exact argv, cwd, declared effects,
+  timeout, inputs and recovery, executed as the designated bot.
+- Before the run, a `feature-reviewer` or `project-auditor` card records that
+  the fenced action is safe at that scope. The coordinator never countersigns
+  its own widening.
+- The card carries the decision and evidence; `project-auditor` persists the
+  record in FINDINGS.md. A widening covers that exact bound operation only;
+  recurring need means the fence itself should be re-specified, not widened per
+  run.
+- Never available for the reserved classes: secret/credential change,
+  destructive or irreversible data effects, public exposure/routing. A refusal
+  citing those classes is final.
+
 ## Reconcile older instructions
 
 Current authenticated standing policy supersedes obsolete GENERIC approval,
