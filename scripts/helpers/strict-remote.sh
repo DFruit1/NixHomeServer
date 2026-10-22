@@ -17,9 +17,22 @@
 # regression seam: it lets the suite drive the real receipts and transactions
 # against a throwaway repository instead of the checkout under test. Production
 # never sets it.
+#
+# Resolution deliberately does not reuse init_repo_root: that helper rewrites
+# the caller's global repo_root and flake reference, so a strict run from a
+# validator would silently repoint the caller's own repository. Strict keeps its
+# answer in strict_repo_root and leaves the caller's state alone.
+strict_repo_root=""
+
 strict_remote_worktree_root() {
-  init_repo_root NIXHOMESERVER_STRICT_REPO_ROOT || return 1
-  printf '%s\n' "$repo_root"
+  local requested
+  if [[ -n "${NIXHOMESERVER_STRICT_REPO_ROOT:-}" ]]; then
+    requested="$NIXHOMESERVER_STRICT_REPO_ROOT"
+  else
+    requested="${_repo_lib_dir}/../.."
+  fi
+  strict_repo_root="$(cd "$requested" && pwd -P)" || return 1
+  printf '%s\n' "$strict_repo_root"
 }
 
 strict_remote_enabled() {
@@ -33,8 +46,10 @@ strict_remote_enabled() {
   esac
 }
 
-# Paths the restricted Git index can hide worktree divergence behind. With
-# either bit set, `git diff` reports nothing even though the archive ships
+# Paths the restricted Git index can hide worktree divergence behind. `git
+# ls-files -v` reports an assume-unchanged path with a lowercase tag (`h`) and a
+# skip-worktree path with an uppercase `S`; a plain cached entry is `H`. With
+# either bit set `git diff` reports nothing even though the archive would ship
 # different bytes or modes than the declared commit, so the byte/mode check has
 # to be explicit instead of inferred from a clean `git diff`.
 strict_index_hidden_paths() {
@@ -44,7 +59,7 @@ strict_index_hidden_paths() {
     flag="${entry%% *}"
     path="${entry#* }"
     case "$flag" in
-      [a-z]) printf '%s\n' "$path" ;;
+      [a-z] | S) printf '%s\n' "$path" ;;
     esac
   done < <(git -C "$repo" ls-files -v) || return 1
   return 0
@@ -74,28 +89,28 @@ strict_remote_preflight() {
     return 2
   fi
   strict_remote_worktree_root >/dev/null || return 2
-  if [[ "$evidence" != "$repo_root"/.tmp/* ]]; then
+  if [[ "$evidence" != "$strict_repo_root"/.tmp/* ]]; then
     echo "strict-remote: evidence directory must be inside the assigned task root" >&2
     return 2
   fi
   mkdir -p -- "$evidence" || return 2
   evidence="$(cd "$evidence" && pwd -P)" || return 2
-  if [[ "$evidence" != "$repo_root"/.tmp/* ]]; then
+  if [[ "$evidence" != "$strict_repo_root"/.tmp/* ]]; then
     echo "strict-remote: evidence directory resolves outside the assigned task root" >&2
     return 2
   fi
   while IFS= read -r -d '' untracked_entry; do
-    if [[ "$repo_root/$untracked_entry" != "$evidence" && "$repo_root/$untracked_entry" != "$evidence"/* ]]; then
+    if [[ "$strict_repo_root/$untracked_entry" != "$evidence" && "$strict_repo_root/$untracked_entry" != "$evidence"/* ]]; then
       unexpected_untracked+=("$untracked_entry")
     fi
-  done < <(git -C "$repo_root" ls-files --others --exclude-standard -z) || return 2
-  if ! git -C "$repo_root" diff --quiet --ignore-submodules -- ||
-    ! git -C "$repo_root" diff --cached --quiet --ignore-submodules -- ||
+  done < <(git -C "$strict_repo_root" ls-files --others --exclude-standard -z) || return 2
+  if ! git -C "$strict_repo_root" diff --quiet --ignore-submodules -- ||
+    ! git -C "$strict_repo_root" diff --cached --quiet --ignore-submodules -- ||
     ((${#unexpected_untracked[@]} > 0)); then
     echo "strict-remote: source must have no tracked, indexed, or untracked changes outside its evidence directory" >&2
     return 2
   fi
-  if ! hidden="$(strict_index_hidden_paths "$repo_root")"; then
+  if ! hidden="$(strict_index_hidden_paths "$strict_repo_root")"; then
     echo "strict-remote: could not read the Git index flags" >&2
     return 2
   fi
@@ -104,13 +119,234 @@ strict_remote_preflight() {
     printf '   %s\n' "$hidden" >&2
     return 2
   fi
-  actual_head="$(git -C "$repo_root" rev-parse HEAD)" || return 2
-  actual_tree="$(git -C "$repo_root" rev-parse 'HEAD^{tree}')" || return 2
+  actual_head="$(git -C "$strict_repo_root" rev-parse HEAD)" || return 2
+  actual_tree="$(git -C "$strict_repo_root" rev-parse 'HEAD^{tree}')" || return 2
   if [[ "$actual_head" != "$head" || "$actual_tree" != "$tree" ]]; then
     echo "strict-remote: declared source identity does not match HEAD/tree" >&2
     return 2
   fi
   return 0
+}
+
+# The archive is the bytes that actually travel, so *its* contents must equal the
+# declared commit -- a filename plus a separate worktree check is not the same
+# claim. Extract the archive locally and hash it with the committed-tree
+# algorithm, so a divergence caused by anything that happened between preflight
+# and tar (an index flag flipping, a concurrent edit, a tar partial) is a refusal
+# instead of a receipt that certifies the wrong source.
+strict_verify_archive_manifest() {
+  local archive="$1" expected="$2" extract_dir actual status=0
+
+  extract_dir="$(mktemp -d "${TMPDIR:-/tmp}/nixhomeserver-strict-verify.XXXXXX")" || return 1
+  if ! tar -C "$extract_dir" -xf "$archive"; then
+    rm -rf -- "$extract_dir"
+    echo "strict-remote: the source archive could not be extracted for verification" >&2
+    return 1
+  fi
+  actual="$(strict_extracted_manifest "$extract_dir")" || status=$?
+  rm -rf -- "$extract_dir"
+  if ((status != 0)) || [[ -z "$actual" ]]; then
+    echo "strict-remote: could not hash the extracted source archive" >&2
+    return 1
+  fi
+  if [[ "$actual" != "$expected" ]]; then
+    echo "strict-remote: the source archive does not match the declared committed tree" >&2
+    return 1
+  fi
+}
+
+# Hash the staged archive on the server. The remote copy is what execution
+# extracts, so it has to be the same bytes that were just verified locally; a
+# truncated or substituted upload is a refusal, not a silent difference.
+strict_remote_archive_digest() {
+  local remote_host="$1" path="$2" digest
+
+  if deploy_archive_shape_is_rejected "$path" >/dev/null 2>&1 ||
+    deploy_archive_entry_name_is_rejected "$path" >/dev/null 2>&1; then
+    echo "strict-remote: refused to hash an unrecognised deploy archive path" >&2
+    return 1
+  fi
+  if ! digest="$(ssh -T "$remote_host" "sha256sum -- $(printf '%q' "$path")" 2>/dev/null)"; then
+    echo "strict-remote: could not hash the staged archive on ${remote_host}" >&2
+    return 1
+  fi
+  digest="${digest%% *}"
+  [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || {
+    echo "strict-remote: the staged archive digest is not a sha256" >&2
+    return 1
+  }
+  printf '%s\n' "$digest"
+}
+
+strict_verify_staged_archive() {
+  local remote_host="$1" remote_archive="$2" expected="$3" actual
+
+  actual="$(strict_remote_archive_digest "$remote_host" "$remote_archive")" || return 1
+  if [[ "$actual" != "$expected" ]]; then
+    echo "strict-remote: the staged archive is not the source archive that was verified" >&2
+    return 1
+  fi
+}
+
+# Combine the per-path cleanup outcomes into the one field a receipt carries.
+# Any unknown dominates (the host never answered, so nothing can be claimed),
+# then any failure (a removal the host refused), and only then success.
+strict_cleanup_outcome() {
+  local outcome="none" state
+
+  for state in "$@"; do
+    case "$state" in
+      unknown) printf 'unknown\n'; return 0 ;;
+      failed) outcome="failed" ;;
+      success)
+        if [[ "$outcome" == "none" ]]; then
+          outcome="success"
+        fi
+        ;;
+    esac
+  done
+  printf '%s\n' "$outcome"
+}
+
+# Clean every remote path this attempt created, each through the bounded removal
+# path for its kind, and report one combined outcome.
+strict_remote_cleanup() {
+  local remote_host="$1" remote_dir="$2" remote_archive="$3"
+  local -a states=()
+
+  if [[ -n "$remote_dir" ]]; then
+    states+=("$(remove_remote_staging_path "$remote_host" "$remote_dir")")
+  fi
+  if [[ -n "$remote_archive" ]]; then
+    states+=("$(remove_remote_archive_status "$remote_host" "$remote_archive")")
+  fi
+  if ((${#states[@]} == 0)); then
+    printf 'none\n'
+    return 0
+  fi
+  strict_cleanup_outcome "${states[@]}"
+}
+
+# Ask the server whether the paths this attempt created are gone. The remote
+# EXIT trap usually removes them, but a session that died -- or a trap that never
+# ran -- leaves them behind, and a receipt that reports the intent instead of the
+# filesystem is exactly the kind of claim strict mode exists to prevent.
+strict_remote_verify_absent() {
+  local remote_host="$1" remote_dir="$2" remote_archive="$3" remote_cmd="set -e" status=0 path
+
+  for path in "$remote_dir" "$remote_archive"; do
+    [[ -n "$path" ]] || continue
+    remote_cmd+="; { [ ! -e $(printf '%q' "$path") ] && [ ! -L $(printf '%q' "$path") ]; }"
+  done
+  ssh -T "$remote_host" "$remote_cmd" >/dev/null 2>&1 || status=$?
+  case "$status" in
+    0) printf 'success\n' ;;
+    255 | 124) printf 'unknown\n' ;;
+    *) printf 'failed\n' ;;
+  esac
+}
+
+# Settle the cleanup field of a completed attempt: verify first, and only when
+# something is still there remove it through the bounded path and verify again,
+# so the receipt never records a cleanup it has not observed.
+strict_remote_settle_cleanup() {
+  local remote_host="$1" remote_dir="$2" remote_archive="$3" outcome
+
+  outcome="$(strict_remote_verify_absent "$remote_host" "$remote_dir" "$remote_archive")"
+  case "$outcome" in
+    success | unknown)
+      printf '%s\n' "$outcome"
+      return 0
+      ;;
+  esac
+  strict_remote_cleanup "$remote_host" "$remote_dir" "$remote_archive" >/dev/null
+  strict_remote_verify_absent "$remote_host" "$remote_dir" "$remote_archive"
+}
+
+# Read what the staging helper recorded about anything it acquired. The helper
+# runs inside a command substitution, so a variable set there can never reach the
+# caller; without this file the caller would report its own untouched default and
+# call an unknown outcome "nothing left behind".
+strict_stage_cleanup_status() {
+  local status_file="$1" recorded=""
+
+  if [[ -n "$status_file" && -s "$status_file" ]]; then
+    recorded="$(tail -n 1 "$status_file" || true)"
+  fi
+  case "$recorded" in
+    none | success | failed | unknown) printf '%s\n' "$recorded" ;;
+    *) printf 'unknown\n' ;;
+  esac
+}
+
+# --- interruption guard -------------------------------------------------------
+#
+# Strict attempts acquire remote paths one at a time, so a signal between
+# acquisition and execution would otherwise strand them and abandon the attempt
+# without a receipt. The runner publishes what it acquired in these globals as it
+# goes; the guard cleans only those paths, through the same bounded removals, and
+# records the interruption. The traps that were already installed are restored on
+# release so a sourcing script keeps its own INT/TERM/HUP handling.
+_strict_guard_armed=""
+_strict_guard_saved_traps=""
+_strict_guard_remote_dir=""
+_strict_guard_remote_archive=""
+
+strict_guard_context() {
+  _strict_guard_phase="$1"
+  _strict_guard_host="$2"
+  _strict_guard_host_facts="$3"
+  _strict_guard_manifest="$4"
+  _strict_guard_helper="$5"
+  _strict_guard_argv="$6"
+  _strict_guard_snippet="$7"
+  _strict_guard_stdout="$8"
+  _strict_guard_stderr="$9"
+  _strict_guard_archive="${10}"
+  _strict_guard_remote_dir=""
+  _strict_guard_remote_archive=""
+}
+
+strict_guard_arm() {
+  [[ -z "$_strict_guard_armed" ]] || return 0
+  _strict_guard_saved_traps="$(trap -p INT TERM HUP)"
+  trap 'strict_guard_abort 130' INT
+  trap 'strict_guard_abort 143' TERM
+  trap 'strict_guard_abort 129' HUP
+  _strict_guard_armed=1
+}
+
+strict_guard_release() {
+  [[ -n "$_strict_guard_armed" ]] || return 0
+  trap - INT TERM HUP
+  if [[ -n "$_strict_guard_saved_traps" ]]; then
+    eval "$_strict_guard_saved_traps"
+  fi
+  _strict_guard_saved_traps=""
+  _strict_guard_armed=""
+  _strict_guard_remote_dir=""
+  _strict_guard_remote_archive=""
+}
+
+strict_guard_abort() {
+  local status="$1" cleanup="none"
+
+  trap - INT TERM HUP
+  _strict_guard_armed=""
+  if [[ -n "${_strict_guard_remote_dir:-}" || -n "${_strict_guard_remote_archive:-}" ]]; then
+    cleanup="$(strict_remote_cleanup "${_strict_guard_host:-}" \
+      "${_strict_guard_remote_dir:-}" "${_strict_guard_remote_archive:-}")"
+  fi
+  # The abandoned attempt still owes an attributable receipt. A receipt failure
+  # must not mask the interruption, so it stays best-effort and loud.
+  strict_write_phase_receipt "${_strict_guard_phase:-interrupted}" "${_strict_guard_host:-}" \
+    "${_strict_guard_host_facts:-{\}}" "${_strict_guard_manifest:-}" "" \
+    "${_strict_guard_helper:-}" "${_strict_guard_argv:-[]}" "${_strict_guard_snippet:-}" \
+    "$status" "${_strict_guard_stdout:-}" "${_strict_guard_stderr:-}" "$cleanup" \
+    >/dev/null 2>&1 || echo "strict-remote: could not write the interruption receipt" >&2
+  rm -f -- "${_strict_guard_archive:-}"
+  echo "strict-remote: ${_strict_guard_phase:-attempt} was interrupted (status ${status}, cleanup: ${cleanup})" >&2
+  exit "$status"
 }
 
 strict_validation_check_names() {
@@ -380,19 +616,20 @@ strict_remote_verify_identity() {
   local evidence="${NIXHOMESERVER_EVIDENCE_DIR:-}"
   local -a unexpected_untracked=()
 
-  actual_head="$(git -C "$repo_root" rev-parse HEAD)" || return 1
-  actual_tree="$(git -C "$repo_root" rev-parse 'HEAD^{tree}')" || return 1
+  strict_remote_worktree_root >/dev/null || return 1
+  actual_head="$(git -C "$strict_repo_root" rev-parse HEAD)" || return 1
+  actual_tree="$(git -C "$strict_repo_root" rev-parse 'HEAD^{tree}')" || return 1
   if [[ "$actual_head" != "$NIXHOMESERVER_EXPECTED_HEAD" ||
     "$actual_tree" != "$NIXHOMESERVER_EXPECTED_TREE" ]]; then
     echo "strict-remote: source identity changed during execution" >&2
     return 1
   fi
-  if ! git -C "$repo_root" diff --quiet --ignore-submodules -- ||
-    ! git -C "$repo_root" diff --cached --quiet --ignore-submodules --; then
+  if ! git -C "$strict_repo_root" diff --quiet --ignore-submodules -- ||
+    ! git -C "$strict_repo_root" diff --cached --quiet --ignore-submodules --; then
     echo "strict-remote: source became dirty during execution" >&2
     return 1
   fi
-  if ! hidden="$(strict_index_hidden_paths "$repo_root")"; then
+  if ! hidden="$(strict_index_hidden_paths "$strict_repo_root")"; then
     echo "strict-remote: could not read the Git index flags" >&2
     return 1
   fi
@@ -401,10 +638,10 @@ strict_remote_verify_identity() {
     return 1
   fi
   while IFS= read -r -d '' untracked_entry; do
-    if [[ "$repo_root/$untracked_entry" != "$evidence" && "$repo_root/$untracked_entry" != "$evidence"/* ]]; then
+    if [[ "$strict_repo_root/$untracked_entry" != "$evidence" && "$strict_repo_root/$untracked_entry" != "$evidence"/* ]]; then
       unexpected_untracked+=("$untracked_entry")
     fi
-  done < <(git -C "$repo_root" ls-files --others --exclude-standard -z) || return 1
+  done < <(git -C "$strict_repo_root" ls-files --others --exclude-standard -z) || return 1
   if ((${#unexpected_untracked[@]} > 0)); then
     echo "strict-remote: untracked source appeared outside its evidence directory" >&2
     return 1

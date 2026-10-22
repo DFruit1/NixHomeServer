@@ -217,8 +217,8 @@ _remote_eval_run() {
 _remote_eval_strict_run() {
   local expression="$1"
   local repo_root archive remote_archive="" remote_dir="" output status=0 selected_host
-  local cleanup="none" archive_cleanup attempt phase host_facts manifest helper_sha
-  local stdout_file stderr_file remote_err remote_expr
+  local cleanup="none" attempt phase host_facts manifest helper_sha archive_sha=""
+  local stdout_file stderr_file remote_err remote_expr stage_status_file
 
   strict_remote_preflight "${REMOTE_EVAL:-1}" "REMOTE_EVAL=0" || return $?
 
@@ -251,9 +251,38 @@ _remote_eval_strict_run() {
     echo "strict-remote: the working tree is not admissible for strict evaluation" >&2
     return 1
   fi
-  if ! remote_archive="$(stage_archive_on_remote "$archive" "$remote_eval_host" "nixhomeserver-remote-eval" 2>>"$stderr_file")"; then
-    cleanup="${stage_archive_cleanup_status:-unknown}"
-    rm -f "$archive"
+
+  # From here on remote paths may exist, so a signal has to be able to clean them
+  # and leave a receipt instead of stranding an unattributed attempt.
+  strict_guard_context "$phase" "$remote_eval_host" "$host_facts" "$manifest" "$helper_sha" \
+    '[]' "" "$stdout_file" "$stderr_file" "$archive"
+  strict_guard_arm
+
+  # Bind execution to the source that actually ships: the archive's extracted
+  # contents must equal the declared commit, and the copy the server will extract
+  # must be those same bytes.
+  if ! strict_verify_archive_manifest "$archive" "$manifest" 2>>"$stderr_file"; then
+    strict_guard_release
+    cat "$stderr_file" >&2
+    rm -f "$archive" "$stdout_file" "$stderr_file"
+    echo "strict-remote: the source archive does not match the declared committed tree" >&2
+    return 1
+  fi
+  if ! archive_sha="$(sha256sum "$archive" | awk '{print $1}')"; then
+    strict_guard_release
+    rm -f "$archive" "$stdout_file" "$stderr_file"
+    return 1
+  fi
+  if ! stage_status_file="$(mktemp "${TMPDIR:-/tmp}/nixhomeserver-strict-eval-stage.XXXXXX")"; then
+    strict_guard_release
+    rm -f "$archive" "$stdout_file" "$stderr_file"
+    return 1
+  fi
+  if ! remote_archive="$(stage_archive_on_remote "$archive" "$remote_eval_host" \
+    "nixhomeserver-remote-eval" "$stage_status_file" 2>>"$stderr_file")"; then
+    cleanup="$(strict_stage_cleanup_status "$stage_status_file")"
+    strict_guard_release
+    rm -f "$archive" "$stage_status_file"
     strict_write_phase_receipt "$phase" "$remote_eval_host" "$host_facts" "$manifest" \
       "" "$helper_sha" '[]' "" 1 "$stdout_file" "$stderr_file" "$cleanup" || true
     cat "$stderr_file" >&2
@@ -261,57 +290,81 @@ _remote_eval_strict_run() {
     rm -f "$stdout_file" "$stderr_file"
     return 1
   fi
-  rm -f "$archive"
+  rm -f "$archive" "$stage_status_file"
+  _strict_guard_remote_archive="$remote_archive"
+
+  if ! strict_verify_staged_archive "$remote_eval_host" "$remote_archive" "$archive_sha" \
+    2>>"$stderr_file"; then
+    cleanup="$(strict_remote_cleanup "$remote_eval_host" "" "$remote_archive")"
+    strict_guard_release
+    strict_write_phase_receipt "$phase" "$remote_eval_host" "$host_facts" "$manifest" \
+      "$archive_sha" "$helper_sha" '[]' "" 1 "$stdout_file" "$stderr_file" "$cleanup" || true
+    cat "$stderr_file" >&2
+    echo "strict-remote: the staged source archive is not the verified source (cleanup: ${cleanup})" >&2
+    rm -f "$stdout_file" "$stderr_file"
+    return 1
+  fi
 
   if ! remote_dir="$(ssh -o BatchMode=yes "$remote_eval_host" \
     "mktemp -d /tmp/nixhomeserver-remote-eval.XXXXXX" 2>>"$stderr_file")"; then
-    cleanup="$(remove_remote_archive_status "$remote_eval_host" "$remote_archive")"
+    cleanup="$(strict_remote_cleanup "$remote_eval_host" "" "$remote_archive")"
+    strict_guard_release
     strict_write_phase_receipt "$phase" "$remote_eval_host" "$host_facts" "$manifest" \
-      "" "$helper_sha" '[]' "" 1 "$stdout_file" "$stderr_file" "$cleanup" || true
+      "$archive_sha" "$helper_sha" '[]' "" 1 "$stdout_file" "$stderr_file" "$cleanup" || true
     cat "$stderr_file" >&2
     echo "strict-remote: could not create a remote staging directory (cleanup: ${cleanup})" >&2
     rm -f "$stdout_file" "$stderr_file"
     return 1
   fi
+  _strict_guard_remote_dir="$remote_dir"
 
   remote_expr="${remote_dir}/query.nix"
   if ! printf '%s' "$expression" | ssh -o BatchMode=yes "$remote_eval_host" \
     "cat > $(printf '%q' "$remote_expr")" 2>>"$stderr_file"; then
-    cleanup="$(remove_remote_staging_path "$remote_eval_host" "$remote_dir")"
-    archive_cleanup="$(remove_remote_archive_status "$remote_eval_host" "$remote_archive")"
-    [[ "$cleanup" == "success" ]] || archive_cleanup="$cleanup"
+    cleanup="$(strict_remote_cleanup "$remote_eval_host" "$remote_dir" "$remote_archive")"
+    strict_guard_release
     strict_write_phase_receipt "$phase" "$remote_eval_host" "$host_facts" "$manifest" \
-      "" "$helper_sha" '[]' "" 1 "$stdout_file" "$stderr_file" "$archive_cleanup" || true
+      "$archive_sha" "$helper_sha" '[]' "" 1 "$stdout_file" "$stderr_file" "$cleanup" || true
     cat "$stderr_file" >&2
-    echo "strict-remote: could not transfer the query to ${remote_eval_host} (cleanup: ${archive_cleanup})" >&2
+    echo "strict-remote: could not transfer the query to ${remote_eval_host} (cleanup: ${cleanup})" >&2
     rm -f "$stdout_file" "$stderr_file"
     return 1
   fi
 
-  remote_err="$(mktemp "${TMPDIR:-/tmp}/nixhomeserver-strict-eval-remote.XXXXXX")" || {
+  if ! remote_err="$(mktemp "${TMPDIR:-/tmp}/nixhomeserver-strict-eval-remote.XXXXXX")"; then
+    # The staging is already acquired. Reporting this as a plain local failure
+    # would abandon it without a receipt, which is the one thing strict mode
+    # cannot do, so the attempt is settled like every other acquisition failure.
+    cleanup="$(strict_remote_cleanup "$remote_eval_host" "$remote_dir" "$remote_archive")"
+    strict_guard_release
+    strict_write_phase_receipt "$phase" "$remote_eval_host" "$host_facts" "$manifest" \
+      "$archive_sha" "$helper_sha" '[]' "" 1 "$stdout_file" "$stderr_file" "$cleanup" || true
+    echo "strict-remote: could not prepare a diagnostic file after staging (cleanup: ${cleanup})" >&2
     rm -f "$stdout_file" "$stderr_file"
     return 1
-  }
+  fi
   output="$(ssh -o BatchMode=yes "$remote_eval_host" bash -s -- \
     "$remote_dir" "$remote_archive" "$remote_expr" "$selected_host" 2>"$remote_err" \
     <<<"$(_remote_eval_remote_script)")" || status=$?
   if ((status != 0)); then
     cat "$remote_err" >>"$stderr_file"
-    cleanup="$(remove_remote_staging_path "$remote_eval_host" "$remote_dir")"
-    archive_cleanup="$(remove_remote_archive_status "$remote_eval_host" "$remote_archive")"
-    [[ "$cleanup" == "success" ]] || archive_cleanup="$cleanup"
+    cleanup="$(strict_remote_cleanup "$remote_eval_host" "$remote_dir" "$remote_archive")"
+    strict_guard_release
     strict_write_phase_receipt "$phase" "$remote_eval_host" "$host_facts" "$manifest" \
-      "" "$helper_sha" '[]' "" "$status" "$stdout_file" "$stderr_file" "$archive_cleanup" || true
+      "$archive_sha" "$helper_sha" '[]' "" "$status" "$stdout_file" "$stderr_file" "$cleanup" || true
     cat "$remote_err" >&2
-    echo "strict-remote: remote evaluation failed on ${remote_eval_host} (cleanup: ${archive_cleanup})" >&2
+    echo "strict-remote: remote evaluation failed on ${remote_eval_host} (cleanup: ${cleanup})" >&2
     rm -f "$remote_err" "$stdout_file" "$stderr_file"
     return "$status"
   fi
   rm -f "$remote_err"
   printf '%s\n' "$output" >"$stdout_file"
 
+  # Record what the filesystem says, not what the remote trap was supposed to do.
+  cleanup="$(strict_remote_settle_cleanup "$remote_eval_host" "$remote_dir" "$remote_archive")"
+  strict_guard_release
   strict_write_phase_receipt "$phase" "$remote_eval_host" "$host_facts" "$manifest" \
-    "" "$helper_sha" '[]' "" 0 "$stdout_file" "$stderr_file" "success" || {
+    "$archive_sha" "$helper_sha" '[]' "" 0 "$stdout_file" "$stderr_file" "$cleanup" || {
     rm -f "$stdout_file" "$stderr_file"
     return 1
   }

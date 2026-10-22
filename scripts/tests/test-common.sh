@@ -205,6 +205,25 @@ nix "$@"' "$context" "$@"
   return 0
 }
 
+# The shared cache helper in repo-common.sh amortizes whole-module configuration
+# queries across a validation run, and its cache-miss path deliberately used
+# `command nix eval` so deployment tooling could not be intercepted by a function.
+# That is exactly the workstation evaluation strict mode forbids, and a
+# registered suite reaches it directly rather than through `nix` -- for example
+# test-rclone-safety.sh asks for the generated service script with it. Redefine
+# the single seam the helper now calls, so a miss goes through the remote
+# boundary and a hit stays a pure cache read. Ordinary mode is unchanged, and no
+# suite or registration is dropped or relocated.
+nix_eval_uncached() {
+  local eval_output_mode="$1" expr="$2"
+
+  if strict_remote_enabled 2>/dev/null; then
+    nix eval "--${eval_output_mode}" --impure --expr "$expr"
+    return
+  fi
+  command nix eval "--${eval_output_mode}" --impure --expr "$expr"
+}
+
 # Evaluate a body that is expected to fail. Prints the captured output to stdout
 # and exits non-zero if the evaluation unexpectedly succeeds.
 capture_eval_failure() {

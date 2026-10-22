@@ -54,6 +54,12 @@ cat >"$test_root/tests/run-script-tests.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf 'scripts %s\n' "$*" >>"$VALIDATION_TEST_LOG"
+if [[ "${NIXHOMESERVER_REQUIRE_REMOTE:-0}" == 1 ]]; then
+  # The registered-suite consumer of the shared cache helper: this is the call
+  # test-rclone-safety.sh makes, and in strict mode it may not evaluate here.
+  source "$VALIDATION_TEST_TEST_COMMON"
+  nix_eval_with_optional_cache raw '1 + 1' >"${VALIDATION_TEST_SUITE_OUT:?}"
+fi
 [[ "${VALIDATION_TEST_SCRIPT_FAIL:-0}" == 0 ]]
 EOF
 make_test_executable "$test_root/bin/nix" "$test_root/tests/run-script-tests.sh"
@@ -83,14 +89,69 @@ if [[ "$args" == *' bash -s -- '* ]]; then
   cat >/dev/null
   # The build transport and the evaluation transport share the `bash -s --`
   # shape; the staging labels are what tell them apart. A build answers with a
-  # `nix build --json` manifest, an evaluation with the batched worklist.
+  # `nix build --json` manifest, an evaluation with the batched worklist, and a
+  # strict snippet run (roots, the suite's boundary) with its own value.
   if [[ "$args" == *'nixhomeserver-remote-build'* ]]; then
     [[ "${VALIDATION_TEST_BUILD_FAIL:-0}" == 0 ]] || exit 42
     printf '%s\n' "$VALIDATION_TEST_BUILD_PAYLOAD"
     exit "${VALIDATION_TEST_REMOTE_BUILD_STATUS:-0}"
   fi
+  if [[ "$args" == *'nixhomeserver-remote-run'* ]]; then
+    printf '%s\n' "${VALIDATION_TEST_RUN_PAYLOAD:-strict-remote-snippet-value}"
+    exit "${VALIDATION_TEST_RUN_STATUS:-0}"
+  fi
   printf '%s\n' "$VALIDATION_TEST_BATCH_PAYLOAD"
   exit "${VALIDATION_TEST_REMOTE_EVAL_STATUS:-0}"
+fi
+if [[ "${VALIDATION_TEST_STRICT_TRANSPORT:-0}" == 1 ]]; then
+  # A strict attempt asks the endpoint to attest itself and then binds the
+  # transferred bytes by digest; both answers are emulated here so the public
+  # validator's strict path can be asserted end to end.
+  case "$args" in
+    *'hostname -f'*) printf '%s\n' 'strict-buildhost.example.invalid'; exit 0 ;;
+    *'uname -srm'*) printf '%s\n' 'Linux 6.1.0 x86_64'; exit 0 ;;
+    *' stage nixhomeserver-remote-build'*)
+      cat >/dev/null
+      [[ "${VALIDATION_TEST_STAGE_STATUS:-0}" == 0 ]] || exit 1
+      printf '%s\n' '/var/lib/nixhomeserver-deploy-archives/nixhomeserver-remote-build.a1b2c3d4.tar'
+      exit 0
+      ;;
+    *' stage nixhomeserver-remote-run'*)
+      cat >/dev/null
+      [[ "${VALIDATION_TEST_STAGE_STATUS:-0}" == 0 ]] || exit 1
+      printf '%s\n' '/var/lib/nixhomeserver-deploy-archives/nixhomeserver-remote-run.a1b2c3d4.tar'
+      exit 0
+      ;;
+    *' stage '*)
+      cat >/dev/null
+      [[ "${VALIDATION_TEST_STAGE_STATUS:-0}" == 0 ]] || exit 1
+      printf '%s\n' '/var/lib/nixhomeserver-deploy-archives/nixhomeserver-remote-eval.a1b2c3d4.tar'
+      exit 0
+      ;;
+    *' remove '*) cat >/dev/null; exit "${VALIDATION_TEST_REMOVE_STATUS:-0}" ;;
+    *'sha256sum -- '*)
+      target="${args#*sha256sum -- }"
+      target="${target#\'}"
+      target="${target%\'}"
+      staged="${VALIDATION_TEST_STAGED_DIR:?}/$(basename "$target")"
+      [[ -f "$staged" ]] || exit 1
+      printf '%s  %s\n' "$(sha256sum "$staged" | cut -d" " -f1)" "$target"
+      exit 0
+      ;;
+    *'! -e '*) exit "${VALIDATION_TEST_ABSENT_STATUS:-0}" ;;
+    *'rm -rf -- '*) exit "${VALIDATION_TEST_REMOVE_STATUS:-0}" ;;
+    *'cat >'*)
+      target="${args#*cat > }"
+      target="${target#\'}"
+      target="${target%\'}"
+      case "$target" in
+        /*) mkdir -p "${VALIDATION_TEST_STAGED_DIR:?}"
+            cat >"${VALIDATION_TEST_STAGED_DIR}/$(basename "$target")" ;;
+        *) cat >/dev/null ;;
+      esac
+      exit 0
+      ;;
+  esac
 fi
 case "$args" in
   *' true'*) exit 0 ;;
@@ -453,5 +514,143 @@ require_fixed "$VALIDATION_TEST_LOG" '.#checks.x86_64-linux.media-manager-test' 
 require_fixed "$VALIDATION_TEST_LOG" '.#checks.x86_64-linux.media-manager-frontendDist' \
   'A local fallback must still build every check the worklist named.'
 mv "$test_root/bin/ssh.stub-unreachable" "$test_root/bin/ssh"
+
+# --- the strict route through the same public validator ----------------------
+#
+# Strict mode is a promise about the whole gate: the source is the declared
+# commit, and no heavy step runs on this workstation. The checks above already
+# prove the ordinary selection, batching and failure behaviour, so this section
+# composes the strict route on top of it -- suite, worklist evaluation, build,
+# and root staging -- against the same hermetic transport.
+export VALIDATION_TEST_TEST_COMMON="$TESTS_REPO_ROOT/scripts/tests/test-common.sh"
+
+strict_repo="$test_root/strict-repo"
+mkdir -p "$strict_repo/scripts" "$strict_repo/.tmp"
+printf '.tmp/\n' >"$strict_repo/.gitignore"
+printf 'strict fixture\n' >"$strict_repo/tracked.txt"
+git -C "$strict_repo" init -q
+git -C "$strict_repo" -c user.email=strict@example.invalid -c user.name=strict add -A
+git -C "$strict_repo" -c user.email=strict@example.invalid -c user.name=strict \
+  commit -qm 'strict fixture source'
+strict_head="$(git -C "$strict_repo" rev-parse HEAD)"
+strict_tree="$(git -C "$strict_repo" rev-parse 'HEAD^{tree}')"
+strict_evidence="$strict_repo/.tmp/evidence"
+mkdir -p "$strict_evidence" "$test_root/staged"
+export REMOTE_RUN=1
+
+run_strict_gate() {
+  : >"$VALIDATION_TEST_LOG"
+  NIXHOMESERVER_REQUIRE_REMOTE=1 \
+    NIXHOMESERVER_STRICT_REPO_ROOT="$strict_repo" \
+    NIXHOMESERVER_EXPECTED_HEAD="$strict_head" \
+    NIXHOMESERVER_EXPECTED_TREE="$strict_tree" \
+    NIXHOMESERVER_EVIDENCE_DIR="$strict_evidence" \
+    NIXHOMESERVER_TEST_HOST='server' \
+    VALIDATION_TEST_STRICT_TRANSPORT=1 \
+    VALIDATION_TEST_STAGED_DIR="$test_root/staged" \
+    VALIDATION_TEST_SUITE_OUT="$test_root/suite-eval.out" \
+    REMOTE_EVAL_HOST='dsaw@127.0.0.1' \
+    HERMES_KANBAN_TASK='t_validation_strict' \
+    HERMES_KANBAN_BOARD='nixhomeserver' \
+    HERMES_KANBAN_RUN_ID='1' \
+    bash "$TESTS_REPO_ROOT/scripts/validate-repo.sh" "$@" \
+    >"$test_root/output" 2>&1
+}
+
+strict_receipts() {
+  find "$strict_evidence" -maxdepth 1 -name '*.receipt.json' -print | sort
+}
+
+strict_manifest="$(NIXHOMESERVER_EXPECTED_HEAD="$strict_head" \
+  NIXHOMESERVER_STRICT_REPO_ROOT="$strict_repo" strict_tree_manifest "$strict_repo")" \
+  || { echo '❌ Could not compute the strict fixture manifest.' >&2; exit 1; }
+
+if ! run_strict_gate --build-checks; then
+  cat "$test_root/output" >&2
+  echo '❌ The strict route must pass the same gate the ordinary route passes.' >&2
+  exit 1
+fi
+
+# Every heavy step is remote: the workstation's own nix may only answer cheap
+# configuration questions.
+forbid_match "$VALIDATION_TEST_LOG" '^nix eval ' \
+  'Strict mode must not evaluate the configuration on this workstation.'
+forbid_match "$VALIDATION_TEST_LOG" '^nix build ' \
+  'Strict mode must not build on this workstation.'
+forbid_match "$VALIDATION_TEST_LOG" '^nix flake ' \
+  'Strict mode must not run flake checks on this workstation.'
+require_fixed "$VALIDATION_TEST_LOG" 'stage nixhomeserver-remote-eval' \
+  'Strict evaluation must stage its source through the receipted transport.'
+require_fixed "$VALIDATION_TEST_LOG" 'stage nixhomeserver-remote-build' \
+  'Strict builds must stage their source through the receipted transport.'
+
+# The selected configuration host has to travel with the query: the remote shell
+# does not inherit it, so a query that silently evaluated another host would look
+# exactly like a passing one.
+require_match "$VALIDATION_TEST_LOG" 'query\.nix server' \
+  'The selected configuration host must travel with the strict query.'
+
+# Strict root staging only runs for a full gate, which this fixture deliberately
+# does not request: the remote `remote_run` transport it uses is covered directly
+# by test-strict-remote.sh, so asserting it here would only test a branch this
+# run never takes.
+
+# Each attempt leaves a receipt that names the commit, the manifest it verified
+# and the cleanup it observed.
+receipt_count=0
+receipt_phases=""
+while IFS= read -r receipt_file; do
+  [[ -n "$receipt_file" ]] || continue
+  receipt_count=$((receipt_count + 1))
+  receipt_phases+="$(jq -r '.phase // "unknown"' "$receipt_file") "
+  jq -e --arg manifest "$strict_manifest" --arg head "$strict_head" --arg tree "$strict_tree" '
+    .commit == $head
+    and .tree == $tree
+    and .canonical_manifest_sha256 == $manifest
+    and .exit_status == 0
+    and .cleanup == "success"
+    and (.archive_sha256 | test("^[0-9a-f]{64}$"))
+  ' "$receipt_file" >/dev/null \
+    || { echo "❌ A strict receipt is not attributable: $(cat "$receipt_file")" >&2; exit 1; }
+done < <(strict_receipts)
+if ((receipt_count < 2)); then
+  echo "❌ The strict route wrote only ${receipt_count} receipts (${receipt_phases:-none}); evaluation and build must be accounted for." >&2
+  exit 1
+fi
+for phase_family in eval build; do
+  [[ " $receipt_phases " == *" ${phase_family}-"* ]] || {
+    echo "❌ No ${phase_family} receipt was written; strict phases were: ${receipt_phases}" >&2
+    exit 1
+  }
+done
+
+# The registered suite's shared-cache query is the exact call the rclone safety
+# suite makes, and it must have been answered remotely.
+require_fixed "$test_root/suite-eval.out" 'strict-remote-snippet-value' \
+  'A registered suite query must be answered by the remote boundary in strict mode.'
+# The stub runner writes this marker, so its presence proves the registered
+# suite path ran under the strict gate.
+require_fixed "$VALIDATION_TEST_LOG" 'scripts ' \
+  'Strict mode must still run the registered suites.'
+
+echo '  ✅ the strict route composes through the public validator'
+
+# A staging failure is a refusal, never a local fallback: the gate stops, and no
+# receipt claims a success it never observed.
+export VALIDATION_TEST_STAGE_STATUS=1
+if run_strict_gate --build-checks; then
+  echo '❌ A strict gate whose staging failed must not report a pass.' >&2
+  cat "$test_root/output" >&2
+  exit 1
+fi
+forbid_match "$VALIDATION_TEST_LOG" '^nix eval ' \
+  'A strict staging failure must not fall back to a workstation evaluation.'
+forbid_match "$test_root/output" 'falling back to local evaluation' \
+  'A strict staging failure must be a refusal, not a silent local fallback.'
+require_match "$test_root/output" 'could not stage|staging' \
+  'A strict staging failure must say what failed.'
+unset VALIDATION_TEST_STAGE_STATUS
+
+echo '  ✅ a strict staging failure refuses instead of falling back'
 
 echo '✅ Validation build-check selection, batching, and failure propagation passed.'

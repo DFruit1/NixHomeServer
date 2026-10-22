@@ -311,17 +311,28 @@ create_deploy_repo_archive() {
   return 1
 }
 
+# Record what became of anything a staging attempt acquired. The value appends,
+# so the last line is the most recent observation a receipt should report.
+stage_archive_cleanup_record() {
+  local status_file="${1:-}" value="${2:-}"
+
+  [[ -n "$status_file" ]] || return 0
+  printf '%s\n' "$value" >>"$status_file"
+}
+
 stage_archive_on_remote() {
   local archive_path="$1"
   local remote_host="$2"
   local archive_label="$3"
+  # Optional. A caller that runs this function inside a command substitution
+  # cannot read a variable it set here; passing a status file is the only way the
+  # cleanup outcome it observed can reach the receipt that reports it.
+  local status_file="${4:-}"
   local helper_path="$deploy_archive_helper_path"
   local remote_archive
 
-  # What became of anything this call acquired on the server. A caller that
-  # fails to stage still has to say whether the transfer it started was cleaned
-  # up, so the receipt can distinguish "nothing left behind" from "unknown".
   stage_archive_cleanup_status="none"
+  stage_archive_cleanup_record "$status_file" "none"
 
   if [[ ! -r "$helper_path" ]]; then
     echo "blocked: deploy archive staging helper is missing: $helper_path" >&2
@@ -336,9 +347,12 @@ stage_archive_on_remote() {
   # The helper payload redirect belongs *inside* the command substitution.
   # As `x="$(ssh ...)" <file` it attaches to the assignment statement instead,
   # and the substitution's ssh receives an empty stdin.
-  remote_archive="$(ssh -T "$remote_host" \
+  if ! remote_archive="$(ssh -T "$remote_host" \
     "set -e; helper=\$(mktemp); trap 'rm -f \"\$helper\"' EXIT; cat >\"\$helper\"; chmod 0700 \"\$helper\"; bash \"\$helper\" stage $(printf '%q' "$archive_label")" \
-    <"$helper_path")" || return 1
+    <"$helper_path")"; then
+    stage_archive_cleanup_record "$status_file" "unknown"
+    return 1
+  fi
 
   # The helper prints exactly one absolute path; a remote diagnostic on stdout,
   # a wrapped error, or a blank line is not a usable archive path.
@@ -346,16 +360,28 @@ stage_archive_on_remote() {
     echo "blocked: remote deploy archive staging did not return a usable path" >&2
     # The helper traps its own EXIT, but a session that died mid-call cannot
     # confirm that, so the honest outcome is unknown rather than cleaned.
-    stage_archive_cleanup_status="unknown"
+    stage_archive_cleanup_record "$status_file" "unknown"
     return 1
   fi
 
   if ! ssh -T "$remote_host" "cat > $(printf '%q' "$remote_archive")" \
       <"$archive_path"; then
-    stage_archive_cleanup_status="$(remove_remote_archive_status "$remote_host" "$remote_archive")"
+    stage_archive_cleanup_record "$status_file" \
+      "$(remove_remote_archive_status "$remote_host" "$remote_archive")"
     return 1
   fi
   printf '%s\n' "$remote_archive"
+}
+
+# The one heavy-evaluation seam for cached configuration queries. `command nix`
+# is deliberate: repo-common.sh is sourced by deployment tooling, where a shell
+# function must never intercept the real binary. Suites that run under strict
+# mode redefine this seam (see scripts/tests/test-common.sh), because a cache
+# miss here is exactly the workstation evaluation strict mode forbids.
+nix_eval_uncached() {
+  local eval_output_mode="$1" expr="$2"
+
+  command nix eval "--${eval_output_mode}" --impure --expr "$expr"
 }
 
 # Callers own the cache directory's lifetime and keying: a directory that
@@ -364,10 +390,15 @@ stage_archive_on_remote() {
 # stale results. Coalesce concurrent identical requests.
 nix_eval_with_optional_cache() (
   local eval_output_mode="$1" expr="$2" cache_dir="${REPO_NIX_EVAL_CACHE_DIR:-}"
-  local cache_key cache_file tmp_file lock_fd environment_hash
+  local cache_key cache_file tmp_file lock_fd environment_hash strict_identity=""
+  # A strict result is bound to the commit it evaluated, so it must never share a
+  # key with an ordinary local run of the same expression.
+  if strict_remote_enabled 2>/dev/null; then
+    strict_identity="${NIXHOMESERVER_EXPECTED_HEAD:-}:${NIXHOMESERVER_EXPECTED_TREE:-}"
+  fi
   if [[ -n "$cache_dir" ]]; then
     environment_hash="$(env -0 | LC_ALL=C sort -z | sha256sum)" || return
-    cache_key="$(nix_cache_hash "${eval_output_mode}"$'\n'"${repo_root}"$'\n'"${NIXHOMESERVER_FLAKE_REF_FOR_EVAL:-}"$'\n'"${NIXHOMESERVER_REPO_ROOT_FOR_EVAL:-}"$'\n'"${environment_hash}"$'\n'"${expr}")" || cache_key=""
+    cache_key="$(nix_cache_hash "${eval_output_mode}"$'\n'"${repo_root}"$'\n'"${NIXHOMESERVER_FLAKE_REF_FOR_EVAL:-}"$'\n'"${NIXHOMESERVER_REPO_ROOT_FOR_EVAL:-}"$'\n'"${strict_identity}"$'\n'"${environment_hash}"$'\n'"${expr}")" || cache_key=""
     if [[ -n "$cache_key" ]]; then
       mkdir -p "$cache_dir" || return
       cache_file="${cache_dir}/${cache_key}.${eval_output_mode}"
@@ -379,13 +410,13 @@ nix_eval_with_optional_cache() (
       fi
       tmp_file="$(mktemp "${cache_file}.tmp.XXXXXX")" || return
       trap 'rm -f "$tmp_file"' EXIT
-      command nix eval "--${eval_output_mode}" --impure --expr "$expr" >"$tmp_file" || return
+      nix_eval_uncached "$eval_output_mode" "$expr" >"$tmp_file" || return
       mv "$tmp_file" "$cache_file" || return
       cat "$cache_file"
       return
     fi
   fi
-  command nix eval "--${eval_output_mode}" --impure --expr "$expr"
+  nix_eval_uncached "$eval_output_mode" "$expr"
 )
 
 nix_json() {

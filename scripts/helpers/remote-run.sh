@@ -265,8 +265,8 @@ _remote_run_strict_run() {
   shift
   local -a forward=("$@")
   local repo_root archive remote_archive="" remote_dir="" remote_snippet remote_cmd
-  local status=0 cleanup="none" archive_cleanup attempt phase host_facts manifest helper_sha
-  local stdout_file stderr_file argv_json
+  local status=0 cleanup="none" attempt phase host_facts manifest helper_sha archive_sha=""
+  local stdout_file stderr_file argv_json stage_status_file
 
   strict_remote_preflight "${REMOTE_RUN:-1}" "REMOTE_RUN=0" || return $?
   if [[ -n "${REMOTE_RUN_PERSIST_DIR:-}" ]]; then
@@ -303,9 +303,38 @@ _remote_run_strict_run() {
     echo "strict-remote: the working tree is not admissible for a strict run" >&2
     return 1
   fi
-  if ! remote_archive="$(stage_archive_on_remote "$archive" "$remote_run_host" "nixhomeserver-remote-run" 2>>"$stderr_file")"; then
-    cleanup="${stage_archive_cleanup_status:-unknown}"
-    rm -f "$archive"
+
+  # From here on remote paths may exist, so a signal has to be able to clean them
+  # and leave a receipt instead of stranding an unattributed attempt.
+  strict_guard_context "$phase" "$remote_run_host" "$host_facts" "$manifest" "$helper_sha" \
+    "$argv_json" "$snippet" "$stdout_file" "$stderr_file" "$archive"
+  strict_guard_arm
+
+  # Bind execution to the source that actually ships: the archive's extracted
+  # contents must equal the declared commit, and the copy the server will extract
+  # must be those same bytes.
+  if ! strict_verify_archive_manifest "$archive" "$manifest" 2>>"$stderr_file"; then
+    strict_guard_release
+    cat "$stderr_file" >&2
+    rm -f "$archive" "$stdout_file" "$stderr_file"
+    echo "strict-remote: the run archive does not match the declared committed tree" >&2
+    return 1
+  fi
+  if ! archive_sha="$(sha256sum "$archive" | awk '{print $1}')"; then
+    strict_guard_release
+    rm -f "$archive" "$stdout_file" "$stderr_file"
+    return 1
+  fi
+  if ! stage_status_file="$(mktemp "${TMPDIR:-/tmp}/nixhomeserver-strict-run-stage.XXXXXX")"; then
+    strict_guard_release
+    rm -f "$archive" "$stdout_file" "$stderr_file"
+    return 1
+  fi
+  if ! remote_archive="$(stage_archive_on_remote "$archive" "$remote_run_host" \
+    "nixhomeserver-remote-run" "$stage_status_file" 2>>"$stderr_file")"; then
+    cleanup="$(strict_stage_cleanup_status "$stage_status_file")"
+    strict_guard_release
+    rm -f "$archive" "$stage_status_file"
     strict_write_phase_receipt "$phase" "$remote_run_host" "$host_facts" "$manifest" \
       "" "$helper_sha" "$argv_json" "$snippet" 1 "$stdout_file" "$stderr_file" "$cleanup" || true
     cat "$stderr_file" >&2
@@ -313,29 +342,43 @@ _remote_run_strict_run() {
     rm -f "$stdout_file" "$stderr_file"
     return 1
   fi
-  rm -f "$archive"
+  rm -f "$archive" "$stage_status_file"
+  _strict_guard_remote_archive="$remote_archive"
+
+  if ! strict_verify_staged_archive "$remote_run_host" "$remote_archive" "$archive_sha" \
+    2>>"$stderr_file"; then
+    cleanup="$(strict_remote_cleanup "$remote_run_host" "" "$remote_archive")"
+    strict_guard_release
+    strict_write_phase_receipt "$phase" "$remote_run_host" "$host_facts" "$manifest" \
+      "$archive_sha" "$helper_sha" "$argv_json" "$snippet" 1 "$stdout_file" "$stderr_file" "$cleanup" || true
+    cat "$stderr_file" >&2
+    echo "strict-remote: the staged run archive is not the verified source (cleanup: ${cleanup})" >&2
+    rm -f "$stdout_file" "$stderr_file"
+    return 1
+  fi
 
   if ! remote_dir="$(ssh -o BatchMode=yes "$remote_run_host" \
     "mktemp -d /tmp/nixhomeserver-remote-run.XXXXXX" 2>>"$stderr_file")"; then
-    cleanup="$(remove_remote_archive_status "$remote_run_host" "$remote_archive")"
+    cleanup="$(strict_remote_cleanup "$remote_run_host" "" "$remote_archive")"
+    strict_guard_release
     strict_write_phase_receipt "$phase" "$remote_run_host" "$host_facts" "$manifest" \
-      "" "$helper_sha" "$argv_json" "$snippet" 1 "$stdout_file" "$stderr_file" "$cleanup" || true
+      "$archive_sha" "$helper_sha" "$argv_json" "$snippet" 1 "$stdout_file" "$stderr_file" "$cleanup" || true
     cat "$stderr_file" >&2
     echo "strict-remote: could not create a remote run directory (cleanup: ${cleanup})" >&2
     rm -f "$stdout_file" "$stderr_file"
     return 1
   fi
+  _strict_guard_remote_dir="$remote_dir"
 
   remote_snippet="$remote_dir/run.sh"
   if ! printf '%s\n' "$snippet" | ssh -o BatchMode=yes "$remote_run_host" \
     "mkdir -p $(printf '%q' "$remote_dir") && cat > $(printf '%q' "$remote_snippet")" 2>>"$stderr_file"; then
-    cleanup="$(remove_remote_staging_path "$remote_run_host" "$remote_dir")"
-    archive_cleanup="$(remove_remote_archive_status "$remote_run_host" "$remote_archive")"
-    [[ "$cleanup" == "success" ]] || archive_cleanup="$cleanup"
+    cleanup="$(strict_remote_cleanup "$remote_run_host" "$remote_dir" "$remote_archive")"
+    strict_guard_release
     strict_write_phase_receipt "$phase" "$remote_run_host" "$host_facts" "$manifest" \
-      "" "$helper_sha" "$argv_json" "$snippet" 1 "$stdout_file" "$stderr_file" "$archive_cleanup" || true
+      "$archive_sha" "$helper_sha" "$argv_json" "$snippet" 1 "$stdout_file" "$stderr_file" "$cleanup" || true
     cat "$stderr_file" >&2
-    echo "strict-remote: could not transfer the snippet to ${remote_run_host} (cleanup: ${archive_cleanup})" >&2
+    echo "strict-remote: could not transfer the snippet to ${remote_run_host} (cleanup: ${cleanup})" >&2
     rm -f "$stdout_file" "$stderr_file"
     return 1
   fi
@@ -345,18 +388,24 @@ _remote_run_strict_run() {
     >"$stdout_file" 2> >(tee -a "$stderr_file" >&2) <<<"$(_remote_run_script)" || status=$?
 
   if ((status != 0)); then
-    cleanup="$(remove_remote_staging_path "$remote_run_host" "$remote_dir")"
-    archive_cleanup="$(remove_remote_archive_status "$remote_run_host" "$remote_archive")"
-    [[ "$cleanup" == "success" ]] || archive_cleanup="$cleanup"
+    cleanup="$(strict_remote_cleanup "$remote_run_host" "$remote_dir" "$remote_archive")"
+    strict_guard_release
     strict_write_phase_receipt "$phase" "$remote_run_host" "$host_facts" "$manifest" \
-      "" "$helper_sha" "$argv_json" "$snippet" "$status" "$stdout_file" "$stderr_file" "$archive_cleanup" || true
-    echo "strict-remote: the strict run failed on ${remote_run_host} (status ${status}, cleanup: ${archive_cleanup})" >&2
+      "$archive_sha" "$helper_sha" "$argv_json" "$snippet" "$status" "$stdout_file" "$stderr_file" "$cleanup" || true
+    if ((status == 130 || status == 143 || status == 129)); then
+      echo "strict-remote: the strict run was interrupted (status ${status}, cleanup: ${cleanup})" >&2
+    else
+      echo "strict-remote: the strict run failed on ${remote_run_host} (status ${status}, cleanup: ${cleanup})" >&2
+    fi
     rm -f "$stdout_file" "$stderr_file"
     return "$status"
   fi
 
+  # Record what the filesystem says, not what the remote trap was supposed to do.
+  cleanup="$(strict_remote_settle_cleanup "$remote_run_host" "$remote_dir" "$remote_archive")"
+  strict_guard_release
   strict_write_phase_receipt "$phase" "$remote_run_host" "$host_facts" "$manifest" \
-    "" "$helper_sha" "$argv_json" "$snippet" 0 "$stdout_file" "$stderr_file" "success" || {
+    "$archive_sha" "$helper_sha" "$argv_json" "$snippet" 0 "$stdout_file" "$stderr_file" "$cleanup" || {
     rm -f "$stdout_file" "$stderr_file"
     return 1
   }
