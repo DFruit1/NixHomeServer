@@ -71,22 +71,59 @@ for group in $sftp_access_groups; do
     echo "unable to verify current SFTP membership; no key was installed" >&2
     exit 1
   }
-  if @NIX_JQ@/bin/jq -e --arg username "$username" '
-      if ((.attrs.member // []) | type) != "array" then
-        error("invalid member attribute")
-      elif any(.attrs.member[]?; type != "string") then
-        error("member array contains a non-string entry")
+  # A well-formed group response answers the membership question through jq's
+  # exit status: 0 for a match and 1 for an authoritative nonmatch. Any other
+  # status -- unparseable JSON, an unexpected response shape, or any other jq
+  # error -- is not an answer, so it refuses outright. Falling through to the
+  # next group would let a malformed response be masked by a later match.
+  #
+  # The response shape is checked before the membership question is asked. A
+  # group with no members legitimately omits the member attribute, which reads
+  # as an empty membership list; a response without an attrs object is a
+  # protocol surprise and refuses instead of reading as "no members".
+  #
+  # A present member attribute is validated in full before any membership
+  # answer is produced: jq's `//` cannot be used to default it, because it
+  # treats false like null and would read `"member": false` as an empty list.
+  # Every entry is checked (type, then local-username shape) independently of
+  # the target, so a matching early entry cannot short-circuit validation of a
+  # later malformed one. Only a fully valid array answers the membership
+  # question.
+  membership_status=0
+  @NIX_JQ@/bin/jq -e --arg username "$username" '
+      if type != "object" then
+        error("group response is not a JSON object")
+      elif (.attrs | type) != "object" then
+        error("group response has no attrs object")
+      elif (.attrs | has("member")) then
+        .attrs.member as $members
+        | if ($members | type) != "array" then
+            error("member attribute is not an array")
+          elif any($members[]; type != "string") then
+            error("member array contains a non-string entry")
+          elif any($members[];
+            (split("@")[0] | test("^[a-z][a-z0-9._-]{0,63}$")) | not) then
+            error("invalid local username in member entry")
+          else
+            any($members[]; split("@")[0] == $username)
+          end
       else
-        any(.attrs.member[]?;
-          (split("@")[0] as $u
-           | if ($u | test("^[a-z][a-z0-9._-]{0,63}$")) then
-               $u
-             else
-               error("invalid local username in member entry")
-             end) == $username)
+        false
       end
-    ' <<<"$group_json" >/dev/null; then
-    eligible=1
+    ' <<<"$group_json" >/dev/null || membership_status=$?
+  case "$membership_status" in
+    0)
+      eligible=1
+      ;;
+    1)
+      : # authoritative nonmatch for this group
+      ;;
+    *)
+      echo "unable to verify current SFTP membership; no key was installed" >&2
+      exit 1
+      ;;
+  esac
+  if (( eligible == 1 )); then
     break
   fi
 done
