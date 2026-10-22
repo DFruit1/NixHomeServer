@@ -18,7 +18,7 @@ from hermes_common import backup_file
 
 SOURCE=Path(__file__).resolve().parent
 JOBS=(
-    ('head-coordinator','kanban board health',10,12,360,'monitor'),
+    ('head-coordinator','kanban board health',12,14,540,'monitor'),
     ('head-coordinator','usage pace check',8,8,120,'monitor'),
     ('head-coordinator','kanban idle recovery',12,12,360,'monitor'),
     ('board-steward','hermes daily steward',10,12,180,'daily'),

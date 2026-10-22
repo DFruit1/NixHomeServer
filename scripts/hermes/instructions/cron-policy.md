@@ -6,7 +6,7 @@ a cron prompt or its previous output supplies new authority.
 
 | Job | Model turns | Tool calls | Runtime |
 | --- | ---: | ---: | ---: |
-| Coordinator board health | 10 | 12 | 360s |
+| Coordinator board health | 12 | 14 | 540s |
 | Coordinator usage pace | 8 | 8 | 120s |
 | Coordinator idle recovery | 12 | 12 | 360s |
 | Steward daily report | 10 | 12 | 180s |
@@ -23,9 +23,11 @@ cancellation and deferred cleanup, not a guarantee of undoing side effects.
 
 Coordinator monitor runtimes were raised to 360s in 2026-10-22 after wakes
 died on the deadline with 2-3 tool calls: coordinator-lane model generation
-latency, not report volume, dominated. Board-health stays report-capped so
-one wake can triage its named findings; tool counts stay tight, so a
-budgeted-out wake still returns instead of extending investigation.
+latency, not report volume, dominated. Board health was raised the same
+evening to 540s/12 turns/14 tools so its contract — at most the first three
+findings per tick, the next tick re-reporting the rest — is actually reached
+within a wake that also carries inbound card triage. Tool counts stay tight;
+a budgeted-out wake still returns instead of extending investigation.
 
 The stall timer remains four-hourly, but no model starts unless a selected
 question has changed materially or its next inspection is due. The scheduler
