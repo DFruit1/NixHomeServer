@@ -168,6 +168,29 @@ class AlertsTest(unittest.TestCase):
         self.assertFalse(self.sent)
         self.assertFalse((self.root / 'kanban/owner-alerts').exists())
 
+    def test_summary_length_checks_record_a_bounded_counter(self):
+        # The CLI validation path records one aggregate outcome per check:
+        # totals and per-limit rejections, a latest stamp, and no message text.
+        valid = ('Blocking: The phone test is waiting for confirmation.\n'
+                 'Why owner: Only you can see whether the message reached your phone.\n'
+                 'Unblock: Reply yes if it arrived, or no if it did not.')
+        environment = {**os.environ, 'HERMES_ROOT': str(self.root), 'HERMES_DELEGATED_CHILD_CONTEXT': '1'}
+        result = subprocess.run([sys.executable, '-B', alerts.__file__, '--check-summary', '-'],
+                                input=valid, env=environment, text=True, capture_output=True)
+        self.assertEqual(0, result.returncode, result.stderr)
+        result = subprocess.run([sys.executable, '-B', alerts.__file__, '--check-summary', '-'],
+                                input=valid.replace('Reply yes if it arrived, or no if it did not.', 'x' * 501),
+                                env=environment, text=True, capture_output=True)
+        self.assertEqual(2, result.returncode, result.stdout)
+        path = self.root / 'state/owner-alerts/limit-checks.json'
+        state = json.loads(path.read_text())
+        self.assertEqual(2, state['total'], state)
+        self.assertEqual(1, state['rejections'].get('summary'), state)
+        self.assertFalse(state['latest']['ok'])
+        rendered = json.dumps(state)
+        self.assertNotIn('phone test', rendered)
+        self.assertNotIn('Blocking:', rendered)
+
     def test_concrete_single_sentence_fields_need_no_padding(self):
         summary = ('Blocking: Phone delivery cannot be verified until the message is seen.\n'
                    'Why owner: Only you can see whether the message appeared on your phone.\n'

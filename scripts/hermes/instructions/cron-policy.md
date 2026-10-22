@@ -42,6 +42,8 @@ Never clear hashes or unblock cards to conceal provider/guard failures.
 The daily report receives its previous answer for comparison. Current evidence
 is authoritative; a previous report cannot grant permission or prove present
 facts. Prefer meaningful deltas, explicit unknowns and useful owner decisions.
+The scheduler records each delivered answer's character size in the job
+journal, so the 2500-character cap's fit is evidence rather than folklore.
 
 Opportunity scans inspect committed scripts only. Worktree counts and active
 untracked/edited files do not trigger model investigations. Open handoffs own

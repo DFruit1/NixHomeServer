@@ -36,16 +36,40 @@ def cron_health(root,name):
         jobs=[key for key,value in entries.items() if value['profile']==name]
         if not jobs:return None
         observed=pending=exhausted=errors=0
-        for key in jobs:
+        report_chars={}
+        for key,value in entries.items():
+            if value['profile']!=name:continue
             if not re.fullmatch(r'[a-f0-9]+',key):raise ValueError('Invalid journal key')
             journal=root/'state/cron-policy'/(key+'.json')
             if not journal.exists():continue
             state=json.loads(journal.read_text());observed+=1
             pending+=bool(state.get('pending') or state.get('stall_pending'))
             exhausted+=bool(state.get('budget_exhausted'));errors+=bool(state.get('collection_error'))
+            if value.get('kind') in ('daily','stall'):
+                latest=int(state.get('last_chars') or 0)
+                if latest:report_chars[value['kind']]=max(report_chars.get(value['kind'],0),latest)
         return {'status':'attention' if pending or exhausted or errors else 'ok' if observed==len(jobs) else 'unobserved',
-                'jobs':len(jobs),'observed':observed,'pending':pending,'budget_stops':exhausted,'collection_errors':errors}
+                'jobs':len(jobs),'observed':observed,'pending':pending,'budget_stops':exhausted,'collection_errors':errors,
+                'chars':report_chars or None}
     except (ValueError,OSError,KeyError,TypeError):return {'status':'unknown'}
+
+
+def owner_alert_limit_checks(root):
+    """Fleet counter for owner-summary/gate length validations (owned by
+    kanban-owner-alerts's note_limit_check). Totals only; never message text.
+    Unknown stays None, never zero."""
+    path = root / 'state' / 'owner-alerts' / 'limit-checks.json'
+    if not path.exists():
+        return None
+    try:
+        state = json.loads(path.read_text())
+    except (ValueError, OSError):
+        return None
+    total = state.get('total')
+    rejections = state.get('rejections')
+    return {'checks': total if isinstance(total, int) and total >= 0 else None,
+            'rejections': rejections if isinstance(rejections, dict) else None,
+            'latest': state.get('latest') if isinstance(state.get('latest'), dict) else None}
 
 
 def memory_health(home):
@@ -319,7 +343,11 @@ def report(root, since, until):
         for name in sorted(set(profiles) | set(runs_by_profile)):
             profile = profiles.setdefault(name, {'standing_prompt': None, 'sessions': None})
             profile['runs'] = run_stats(runs_by_profile[name], until,session_ids.get(name))
-    return {'schema_version': 2, 'generated_at': time.time(), 'since': since, 'until': until,
+    # Fleet-level, but mentally owned by head-coordinator: it is the sole author
+    # of owner-facing blocker summaries and gates, and the guard checks its writes.
+    profiles.setdefault('head-coordinator', {'standing_prompt': None, 'sessions': None})[
+        'owner_alert_limit_checks'] = owner_alert_limit_checks(root)
+    return {'schema_version': 3, 'generated_at': time.time(), 'since': since, 'until': until,
             'collection_seconds': time.monotonic()-collection_started,
             'profiles': profiles, 'boards': boards, 'warnings': warnings}
 
@@ -356,10 +384,13 @@ def digest_attention(profile):
     cron = profile.get('scheduled_inspections') or {}
     memory = profile.get('memory') or {}
     pending = memory.get('pending') or {}
+    blocks = profile.get('owner_alert_limit_checks') or {}
+    rejected = blocks.get('rejections') or {}
     return bool(runs.get('failures')
                 or cron.get('status') == 'attention'
                 or memory.get('status') == 'attention'
-                or pending.get('older_than_seven_days'))
+                or pending.get('older_than_seven_days')
+                or any(int(v or 0) > 0 for v in rejected.values()))
 
 
 def render_digest(data):

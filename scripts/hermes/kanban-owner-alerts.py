@@ -28,6 +28,7 @@ import re
 import shlex
 import sqlite3
 import subprocess
+import time
 import sys
 import tempfile
 
@@ -49,6 +50,37 @@ SUMMARY_FIELD_LIMIT = 500
 SUMMARY_TOTAL_LIMIT = 1600
 OWNER_GATE_LIMIT = 2000
 OWNER_GATE_LINES = 30
+
+
+def note_limit_check(root, ok, which):
+    """Record one authoring-length validation outcome, never its text.
+
+    The limits above are enforced the moment a summary or gate body is written,
+    and nothing previously counted those checks — so whether these caps are
+    tight (coordinator keeps rewriting against them) or loose (never engaged)
+    was pure folklore. The counter is aggregate: totals, rejection counts by
+    limit and one latest-outcome stamp. It must not carry message text, card
+    ids or author identities; it is read into the performance report elsewhere.
+    """
+    path = root / 'state' / 'owner-alerts' / 'limit-checks.json'
+    try:
+        state = json.loads(path.read_text())
+    except (ValueError, OSError):
+        state = {}
+    state['total'] = int(state.get('total') or 0) + 1
+    rejected = not ok
+    rejections = state.setdefault('rejections', {})
+    if rejected:
+        rejections[which] = int(rejections.get(which) or 0) + 1
+    state['rejections'] = rejections
+    state['latest'] = {'at': time.time(), 'ok': ok, 'limit': None if ok else which}
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        path.write_text(json.dumps(state, sort_keys=True) + '\n')
+    except OSError:
+        # The validation result is the product here; losing a counter must not
+        # block or skew an owner-facing answer.
+        pass
 # A standalone line an agent adds to mark a card it did not block as a decision.
 # Case-insensitive and its own line; prose mentioning it does not count. A card
 # carrying it is a Hard Blocker and belongs to the decision (D) category.
@@ -757,7 +789,13 @@ if __name__ == '__main__':
     root = Path(os.environ.get('HERMES_ROOT', str(Path.home() / '.hermes')))
     try:
         if args.check_summary:
-            check_summary(sys.stdin.read() if args.check_summary == '-' else Path(args.check_summary).read_text())
+            text = sys.stdin.read() if args.check_summary == '-' else Path(args.check_summary).read_text()
+            try:
+                check_summary(text)
+            except Exception:
+                note_limit_check(root, False, 'summary')
+                raise
+            note_limit_check(root, True, 'summary')
             print('Blocker summary OK')
         elif args.check_blockers:
             errors = []

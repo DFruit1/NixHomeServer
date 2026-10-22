@@ -30,6 +30,8 @@ It adds no service, schedule, provider request or owner notification.
 | sessions | Sessions **started** in the selected window. Usage counters are those sessions' lifetime totals as observed now, including cached-token counters separately. They are not spending restricted to that window. |
 | usage_reported_sessions | Sessions with positive recorded API/token counters. Zero/default counters cannot distinguish missing telemetry from no usage; do not treat uncovered sessions as free. |
 | persisted_prompt_bytes | Retired: the native sessions table carries the column but no write path populates it, so the field was permanently null (`n=0`) in every cohort. Reinstate only if the runtime begins persisting stored system prompts. |
+| scheduled_inspections | Per-profile scheduled-job health (observed/pending, budget stops, collection errors) plus `chars`: the largest recorded answer size per `daily`/`stall` job. The daily prompt caps its report at 2500 characters and the stall findings at 2400; `chars` is the evidence for whether those caps fit real reports. Unknown stays null, never zero. |
+| owner_alert_limit_checks | Fleet totals from `~/.hermes/state/owner-alerts/limit-checks.json` (counters only, never message text): how many owner-summary and owner-gate length validations ran and by which limit each was rejected (`summary` = 500 chars/field and 1600 total, `gate_body` = 2000 chars/30 lines). Zero rejections means the caps are not binding; a climbing count means the coordinator keeps rewriting against them. |
 | all_stored_sessions | Cumulative counters for every stored session, including long-lived conversations that predate the cohort. As observed now, independently of --until. Useful for snapshots; deletions, rewinds and accounting resets can invalidate subtraction. |
 | runs | Runs started in the window, attributed by the run's profile rather than the card's current assignee. Outcomes reflect their recorded state now. |
 | elapsed_seconds | Nearest-rank p50/p95 wall time for cohort runs with valid end times before until. Includes tool waits and scheduling; it is not model inference latency. n is the qualifying sample size. |
@@ -46,6 +48,15 @@ It adds no service, schedule, provider request or owner notification.
 | reported_verdicts | Recorded accept/request-changes values, not independently authenticated acceptance or deployed features. |
 | completed_cards/events | Distinct cards with completion events and selected event counts in the window, per readable active board. Routing, audits and reviews are included. Never label this feature throughput. |
 | warnings | Missing, incompatible, unreadable, timed-out or shared sources. Missing data is null/unknown rather than fabricated zero. Shared DB inodes are read once. Board aggregates cover readable sources only. |
+
+## Limit metrics
+
+Four previously unmeasured length caps now leave an evidence trail: the two
+report caps via `scheduled_inspections.chars`, and the two authoring caps via
+`owner_alert_limit_checks`. Collect a week of JSON snapshots under
+`~/.hermes/state/performance/` before deciding to raise or tighten any of these
+numbers. A rejection-heavy cap first points at trimming the reviewed wording,
+not at a bigger number, unless reports genuinely need the space.
 
 ## Baselines and comparison
 
@@ -89,4 +100,5 @@ stall collector remains unchanged.
 Validation: `bash scripts/tests/test-hermes-performance.sh` covers cohort bounds,
 counter coverage, failure attribution, actual session joins, separate auxiliary
 accounting, percentile arithmetic, missing/corrupt sources, shared databases,
+limit metrics (report-size journals and owner-summary/gate counters, text-free),
 no private payload in output and byte-preserving reads.

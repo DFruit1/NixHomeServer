@@ -129,6 +129,33 @@ class PerformanceTest(unittest.TestCase):
         self.assertNotIn('@healthy', output)
         self.assertNotIn('Card completions', output)
 
+    def test_limit_metrics_read_report_chars_and_owner_summary_counters(self):
+        # The four length limits with no counter before this change: report
+        # size rides the scheduled-inspection journal, owner summary/gate
+        # checks ride kanban-owner-alerts's own journal. Text must not appear.
+        with tempfile.TemporaryDirectory(prefix='hermes-limit-metrics-') as directory:
+            root=Path(directory);scripts=root/'scripts';scripts.mkdir(parents=True)
+            (scripts/'hermes-cron-policy.json').write_text(json.dumps({'jobs':{
+                'aabbccdd':{'profile':'board-steward','turns':4,'tools':2,'seconds':30,'kind':'daily'},
+                'ffeeddcc':{'profile':'board-steward','turns':4,'tools':2,'seconds':30,'kind':'daily'}}}))
+            journal=root/'state/cron-policy';journal.mkdir(parents=True)
+            (journal/'aabbccdd.json').write_text(json.dumps({'last_chars':2499,'last_checked_at':1}))
+            # A journal without a recorded answer contributes nothing.
+            (journal/'ffeeddcc.json').write_text(json.dumps({'last_checked_at':1}))
+            checks={'total':7,'rejections':{'gate_body':2,'summary':1},'latest':{'at':1,'ok':False,'limit':'gate_body'}}
+            (root/'state/owner-alerts').mkdir(parents=True)
+            (root/'state/owner-alerts/limit-checks.json').write_text(json.dumps(checks))
+            stale={p:p.read_bytes() for p in root.rglob('*') if p.is_file()}
+            digests=performance.cron_health(root,'board-steward')
+            self.assertEqual(2499,digests['chars']['daily'])
+            inspected=performance.owner_alert_limit_checks(root)
+            self.assertEqual(7,inspected['checks'])
+            self.assertEqual(2,inspected['rejections']['gate_body'])
+            self.assertFalse(inspected['latest']['ok'])
+            # A silent tree answers None, never zero.
+            self.assertIsNone(performance.owner_alert_limit_checks(root/'nowhere-root'))
+            self.assertEqual(stale,{p:p.read_bytes() for p in root.rglob('*') if p.is_file()})
+
     def test_missing_and_corrupt_sources_are_unknown_not_zero(self):
         self.state.write_bytes(b'not a database')
         report = performance.report(self.root,100,200)

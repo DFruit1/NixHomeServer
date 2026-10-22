@@ -197,5 +197,12 @@ def run(original,job,**kwargs):
         state['last_checked_at']=now
         if context['agent'] is not None:
             state['last_tools']=len(budget['calls']);state['budget_exhausted']=budget['exhausted']
+            # Character size of the delivered answer, one integer, no text.
+            # The daily (2500) and stall (2400) prompts cap report length by
+            # model self-discipline; without this counter, whether those caps
+            # fit real reports was unmeasured folklore.
+            head=answer.splitlines()[0] if answer else ''
+            if head not in ('[SILENT]','[CRON_FAILURE]') and 'no_change' not in head:
+                state['last_chars']=len(answer)
         save(path,state)
         return result

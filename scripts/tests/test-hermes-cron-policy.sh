@@ -46,6 +46,26 @@ class CronPolicyTest(unittest.TestCase):
             policy.run(success,self.job)
         self.assertIsNone(json.loads(policy.state_path(self.job).read_text()).get('pending'))
 
+    def test_report_chars_are_recorded_bounded_but_silent_passes_are_not(self):
+        # The daily (2500) and stall (2400) prompts cap report length by model
+        # self-discipline; this counter is what makes that enforceable claim
+        # measurable. Text never goes into the journal, only its length.
+        current=lambda _:self.job
+        (self.root/'scripts/hermes-cron-policy.json').write_text(json.dumps(
+            {'jobs':{'abc123':{'profile':'head-coordinator','turns':4,'tools':2,'seconds':30,'kind':'daily'}}}))
+        def success(job,**kwargs):
+            policy.bind(SimpleNamespace(interrupt=lambda _:None),job)
+            return True,'completed','Report of useful bounded length.',None
+        def silent(job,**kwargs):
+            policy.bind(SimpleNamespace(interrupt=lambda _:None),job)
+            return True,'completed','[SILENT]',None
+        with patch.object(policy,'current_job',current),patch.object(policy,'identity',return_value='same'),patch.object(policy.time,'time',return_value=7000):
+            policy.run(success,self.job)
+            policy.run(silent,self.job)
+        state=json.loads(policy.state_path(self.job).read_text())
+        self.assertEqual(len('Report of useful bounded length.'),state['last_chars'])
+        self.assertFalse(state.get('budget_exhausted'))
+
     def test_configuration_change_allows_a_bounded_recovery_without_clearing_native_state(self):
         with patch.object(policy,'current_job',lambda _:self.job),patch.object(policy,'identity',return_value='old'):
             policy.run(lambda *a,**k:(False,'failed','','error'),self.job)

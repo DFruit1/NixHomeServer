@@ -118,12 +118,26 @@ def guard(payload, root, alerts):
         if not isinstance(board, str) or not re.fullmatch(r'[A-Za-z0-9_-]+', board):
             raise ValueError('Provide the explicit board for an owner-facing write')
         if owner_create:
-            if len(body) > alerts.OWNER_GATE_LIMIT or len(body.splitlines()) > alerts.OWNER_GATE_LINES:
-                raise ValueError('Owner gate body is too long; keep the ask and summary concise')
+            gate_ok = True
+            try:
+                if len(body) > alerts.OWNER_GATE_LIMIT or len(body.splitlines()) > alerts.OWNER_GATE_LINES:
+                    raise ValueError('Owner gate body is too long; keep the ask and summary concise')
+            finally:
+                alerts.note_limit_check(root, len(body) <= alerts.OWNER_GATE_LIMIT
+                                        and len(body.splitlines()) <= alerts.OWNER_GATE_LINES, 'gate_body')
             task = {'title': args.get('title') or 'Owner gate', 'body': body,
                     'created_by': PROFILE, 'comment': '', 'reason': ''}
         elif owner_comment:
-            alerts.check_summary(body)
+            check_ok = True
+            try:
+                alerts.check_summary(body)
+            except Exception:
+                check_ok = False
+                raise
+            finally:
+                # Count even a rejecting check: a kept counter is what tells us
+                # whether the 500/1600 caps are tight or rarely engaged.
+                alerts.note_limit_check(root, check_ok, 'summary')
             task = {'title': 'Owner gate', 'body': '', 'comment': body, 'reason': ''}
         else:
             task_id = args.get('task_id')
