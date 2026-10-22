@@ -129,6 +129,49 @@ class VerdictGuardTest(unittest.TestCase):
         self.card('t_input',assignee='feature-reviewer',status='todo',body='Feature tracker: testboard:t_tracker')
         self.assertEqual('block',guard_mod.guard({'tool_name':'kanban_link','tool_input':{'board':'testboard','parent_id':'t_delivery','child_id':'t_input'}},self.root).get('action'))
 
+    def test_generated_delivery_recovery_requires_inputs_before_handoff(self):
+        from deadlock_recovery import recovery_body
+        issue = {'kind':'feature-delivery-gap', 'task_id':'t_tracker'}
+        self.card('t_recovery', assignee='head-coordinator', status='running',
+                  body=recovery_body('testboard', issue))
+        self.card('t_plan', assignee='project-auditor', status='done')
+        for role in ('standard-implementer', 'local-implementer', 'feature-reviewer', 'project-auditor'):
+            with self.subTest(role=role):
+                child = 't_' + role.replace('-', '_')
+                body = 'Feature tracker: testboard:t_tracker\nDeliverable: bounded input'
+                self.card(child, assignee=role, status='todo', body=body)
+                payload = self.feature_create(assignee=role, body=body, parents=['t_recovery'])
+                refused = guard_mod.guard(payload, self.root)
+                self.assertEqual('block', refused.get('action'))
+                self.assertIn('unfinished feature delivery handoff', refused['message'])
+                payload['tool_input']['parents'] = ['t_plan']
+                self.assertEqual({}, guard_mod.guard(payload, self.root))
+                for parent, dependent, blocked in (('t_recovery', child, True),
+                                                   ('t_plan', child, False),
+                                                   (child, 't_recovery', False)):
+                    linked = guard_mod.guard({'tool_name':'kanban_link', 'tool_input':{
+                        'board':'testboard', 'parent_id':parent, 'child_id':dependent}}, self.root)
+                    self.assertEqual('block' if blocked else None, linked.get('action'))
+        closure_body = 'Feature tracker: testboard:t_tracker\nFeature role: documentary-closure'
+        self.assertEqual({}, guard_mod.guard(self.feature_create(
+            assignee='project-auditor', body=closure_body, parents=['t_recovery']), self.root))
+        self.card('t_closure', assignee='project-auditor', status='todo', body=closure_body)
+        self.assertEqual({}, guard_mod.guard({'tool_name':'kanban_link', 'tool_input':{
+            'board':'testboard', 'parent_id':'t_recovery', 'child_id':'t_closure'}}, self.root))
+
+    def test_generated_assessment_and_owner_repair_are_not_delivery_handoffs(self):
+        from deadlock_recovery import recovery_body
+        issue = {'kind':'feature-delivery-gap', 'task_id':'t_tracker'}
+        for task, role, body in (
+                ('t_assessment', 'project-auditor', recovery_body('testboard', issue, audit=True)),
+                ('t_controller', 'head-coordinator', recovery_body(
+                    'testboard', dict(issue, recovery_owner='t_existing')))):
+            with self.subTest(task=task):
+                self.assertNotIn('Feature handoff: delivery', body)
+                self.card(task, assignee=role, status='running', body=body)
+                self.assertEqual({}, guard_mod.guard(self.feature_create(
+                    parents=[task], project='native-project'), self.root))
+
     def test_existing_repo_feature_cannot_launch_in_scratch_or_a_mistyped_root(self):
         for kwargs in ({},{'workspace_kind':'scratch','workspace_path':'/home/Projects/NixOS'},
                        {'workspace_kind':'worktree','workspace_path':str(self.root/'missing')},
