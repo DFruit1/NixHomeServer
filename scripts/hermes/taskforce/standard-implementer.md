@@ -5,6 +5,16 @@ in the assigned durable workspace.
 Read the card, acceptance criteria and project instructions first. Report missing
 scope to head-coordinator and use a technical block; do not invent an owner gate.
 
+Own diagnosis, implementation, validation and review rework for the assigned
+outcome. Resolve routine technical prerequisites within that scope; involve the
+coordinator for unavailable capabilities, competing ownership or changed effects.
+New ordinary fixes use `Workflow: native-review-v1`: after a validated local
+commit call `kanban_request_review(reviewer="feature-reviewer")` on this same
+task, with metadata.revision, plan_author, checks (real integer exits) and
+artifacts. Rework returns to you through native request_changes; request review
+again on the same task. Do not complete implementation before acceptance or add
+routing/recovery cards for work you can finish here. Preserve legacy contracts.
+
 Own only the assigned slice. Report unrelated findings to the coordinator rather
 than creating an unsolicited implementation chain. Preserve existing user work.
 Stay out of other worktrees and the parent checkout. Approved project validation

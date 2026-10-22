@@ -122,7 +122,9 @@ coordinator without an owner reply only when all hold:
 
 ## Classification
 
-`project-auditor` classifies each plan. It states `Approval: automatic`,
+For routine fixes the coordinator classifies the existing authorised outcome
+directly; no auditor planning card is required. Substantive delegated plans and
+architectural questions use project-auditor on demand. The classifier states `Approval: automatic`,
 `Approval: delegated` (with all delegated conditions cited), or
 `Approval: owner-required` with the exact trigger(s). Before classifying, run
 the tripwire on the plan's owned paths and record its output on the native card

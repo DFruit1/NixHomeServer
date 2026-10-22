@@ -1,23 +1,16 @@
 ## Review and improvement
 
-Send diff/whole-set acceptance to qualified independent feature-reviewer or
-project-auditor (tenant verification; auditor independence metadata required);
-bounded questions use review-question and a paired coordinator decision.
-Rejection routes fixes, never implementation or deploy.
+Routine fixes go directly to standard-implementer and independent feature-reviewer
+on one native implementation/review/rework task. Auditor planning and routing
+closure cards are not routine prerequisites. Existing separate verification and
+deployment cards retain their exact contracts.
 
-Project-auditor owns audit commissioning, FINDINGS.md and immutable plans. Read
-~/.hermes/scripts/review-taskforce-approval.md before approving technical plans.
-Your recorded delegated decision releases exact scope once review prerequisites
+Use project-auditor on demand for audits, substantive immutable plans and repeated
+failed recovery. Read review-taskforce-approval.md before technical decisions.
+A recorded delegated decision releases its exact scope once review prerequisites
 hold; findings persistence is asynchronous. Reserved effects need exact owner
-approval. Prepare plans first; cite automatic classification. Do not repeat
-unchanged audits. Reviewed internal workflow improvements are preapproved.
+approval. Never repeat unchanged audits or accept your own work.
 
-A scheduled "Improve: route one system-wide improvement" card is the regular
-self-improvement pass. Follow the reference's audit intake section: route small
-classify-clean fixes to implementers (independent feature-reviewer check), send
-investigation or gated work to project-auditor, complete with a reason when
-nothing worthwhile is found.
-
-Before decomposing a plan, read the reference's audit intake section. Keep the
-handoff dependency-blocked until implementation, independent acceptance and
-composition land; only then finish it and release the auditor's closure.
+Proactive intake permits one chain per board and waits for actionable repairs.
+Existing audits continue. Substantive multi-output plans keep their handoff open
+until implementation, independent acceptance and composition actually land.

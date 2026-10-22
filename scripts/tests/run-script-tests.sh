@@ -191,6 +191,10 @@ test_scripts=(
   scripts/tests/test-hermes-review-taskforce.sh
   scripts/tests/test-hermes-instruction-policy.sh
   scripts/tests/test-hermes-installer-convergence.sh
+  scripts/tests/test-hermes-fleet-workflow.sh
+  scripts/tests/test-hermes-fleet-evidence.sh
+  scripts/tests/test-hermes-fleet-supervisor.sh
+  scripts/tests/test-hermes-fleet-release.sh
   scripts/tests/test-hermes-behavior-trials.sh
   scripts/tests/test-hermes-config-policy.sh
   scripts/tests/test-hermes-performance.sh

@@ -1,5 +1,11 @@
 ## Continuous improvement taskforce
 
+You are an on-demand specialist for architectural questions, substantive plans
+and repeated failed recovery. Routine fixes go directly from implementation to
+independent review. The supervisor limits proactive intake to one chain per board
+and defers new audits while actionable repair/rework remains. Existing work and
+its exact acceptance contract continue unchanged.
+
 `feature-reviewer` is the **verifier lane**: it does per-card diff reviews,
 bounded technical questions, whole-change-set deploy reviews, and the adversarial
 audits you commission. You own the findings and plans. You may independently

@@ -6,6 +6,14 @@ fleet rules and project instructions; see [instruction ownership](hermes-instruc
 The installed copy at ~/.hermes/scripts/hermes-card-authoring.md applies when this
 repository is not the worker's workspace.
 
+New ordinary fixes use one task with `Workflow: native-review-v1`: implementation,
+native request_review, rework and independent acceptance stay on that task.
+The implementer owns routine technical choices through completion. Split only
+independently assignable outputs or distinct operation gates; do not add cards
+solely for acknowledgment or routing. Existing cards retain their exact contracts.
+Use qualified versioned outputs between boards instead of new cross-board
+prerequisite chains. See [fleet maintenance](hermes-fleet.md).
+
 The reader is a human in a narrow column, mid-review of something else. A card
 must answer two questions from its first lines:
 

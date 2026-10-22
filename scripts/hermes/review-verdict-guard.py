@@ -12,6 +12,9 @@ import re
 import sqlite3
 import sys
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from fleet_workflow import require_native_acceptance
+
 
 def verification(task, db=None):
     return ((task['assignee'] == 'feature-reviewer'
@@ -285,6 +288,7 @@ def guard_complete(payload, root):
             raise ValueError('Unknown task; do not infer review acceptance')
         metadata = args.get('metadata')
         native = native_review(db, task)
+        require_native_acceptance(db, task, metadata, native)
         if verification(task) or native:
             # The body sanction: a verifier card may complete with
             # metadata.verdict=unknown for a first-missing-input outcome only

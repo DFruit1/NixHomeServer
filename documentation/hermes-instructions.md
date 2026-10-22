@@ -1,5 +1,14 @@
 # Hermes instruction ownership
 
+The owner-approved 2026-10-23 simplification is maintained in
+[fleet maintenance](hermes-fleet.md). The everyday roles are coordinator,
+implementer and independent reviewer; auditor work is on demand and the scheduled
+steward report is generated. New ordinary fixes use one native review lifecycle;
+legacy exact contracts drain intact. `fleet-release.py` is the combined
+plan/apply/check/status/rollback entrypoint. Lower-level installers remain its
+implementation and native-upgrade tools; do not independently resurrect paused
+monitor schedules after migrating to the fleet supervisor.
+
 The owner authorized harmonizing the fleet on 2026-10-16. Shared rules must reach
 both git worktrees and plain-directory projects. They are injected into named
 profiles' SOUL.md rather than relying on a NixOS AGENTS.md being in every workspace.

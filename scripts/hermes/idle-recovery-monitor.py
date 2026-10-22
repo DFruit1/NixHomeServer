@@ -29,11 +29,15 @@ def snapshot(root):
         with closing(sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True, timeout=5)) as db:
             db.execute('PRAGMA query_only=ON')
             busy |= bool(db.execute("SELECT 1 FROM tasks WHERE status='running' LIMIT 1").fetchone())
-            tasks = db.execute("SELECT id,status,assignee,tenant,priority,block_kind,body,result FROM tasks WHERE status!='archived' ORDER BY id").fetchall()
-            links = db.execute('SELECT parent_id,child_id FROM task_links ORDER BY parent_id,child_id').fetchall()
+            columns = {r[1] for r in db.execute('PRAGMA table_info(tasks)')}
+            external = ("SELECT id FROM tasks WHERE coalesce(created_by,'')!='fleet-supervisor'"
+                        if 'created_by' in columns else 'SELECT id FROM tasks')
+            tasks = db.execute("SELECT id,status,assignee,tenant,priority,block_kind,body,result FROM tasks WHERE status!='archived' AND id IN ("+external+") ORDER BY id").fetchall()
+            links = db.execute('SELECT parent_id,child_id FROM task_links WHERE parent_id IN ('+external+
+                               ') AND child_id IN ('+external+') ORDER BY parent_id,child_id').fetchall()
             # Owner replies can supply new authority without changing task state.
-            comments = db.execute("SELECT c.id,c.task_id,c.author,c.body FROM task_comments c JOIN tasks t ON t.id=c.task_id WHERE c.author!='head-coordinator' OR t.status='done' ORDER BY c.id").fetchall()
-            runs = db.execute("SELECT task_id,id,status,outcome,metadata FROM task_runs WHERE id IN (SELECT MAX(id) FROM task_runs GROUP BY task_id) ORDER BY task_id").fetchall()
+            comments = db.execute("SELECT c.id,c.task_id,c.author,c.body FROM task_comments c JOIN tasks t ON t.id=c.task_id WHERE (c.author!='head-coordinator' OR t.status='done') AND t.id IN ("+external+") ORDER BY c.id").fetchall()
+            runs = db.execute("SELECT task_id,id,status,outcome,metadata FROM task_runs WHERE id IN (SELECT MAX(id) FROM task_runs GROUP BY task_id) AND task_id IN ("+external+") ORDER BY task_id").fetchall()
             summaries.append((board.parent.name, digest([tasks, links, comments, runs])))
     # Running work may change continuously. Only its end should wake recovery.
     if busy:

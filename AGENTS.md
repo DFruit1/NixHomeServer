@@ -233,6 +233,26 @@ remains until explicitly removed there.
 
 ## Kanban Card Authoring
 
+### Simplified fleet (owner instruction 2026-10-23)
+
+The everyday team is head-coordinator, standard-implementer and feature-reviewer.
+Use project-auditor on demand for architecture, substantive plans and repeated
+failed recovery; retain local-implementer for actual credential values. Ordinary
+new fixes use one `Workflow: native-review-v1` task through native independent
+review/rework. The implementer owns routine technical prerequisites and rework.
+Separate cards represent independently assignable outputs or distinct operation
+gates. Consume qualified versioned outputs across boards; avoid new cross-board
+handoff chains. Preserve existing cards, profiles and exact acceptance contracts.
+
+Use [fleet maintenance](documentation/hermes-fleet.md) and the unified
+`scripts/hermes/fleet-release.py` entrypoint. One no-agent supervisor owns
+maintenance cadence and generated reports; keep durability publication and owner
+decision delivery separate. Preserve deliberate pauses, per-handler eligibility,
+native failure/provider limits and the deploy gate. Proactive intake permits one
+chain per board and waits for actionable repair/rework. This instruction replaces
+generic routine auditor-planning/routing requirements below, never reserved gates
+or a specific existing acceptance contract.
+
 Shared Hermes instructions are maintained in this repository and installed into
 all named profiles, including plain-directory workspaces. See
 [Hermes instruction ownership](documentation/hermes-instructions.md) for sources,

@@ -32,6 +32,14 @@ on the card. Do not guess, and do not invent a broad review.
 
 ## Verifying: judge the work against its spec
 
+New `Workflow: native-review-v1` tasks use the same card throughout. Accept with
+the handed-off metadata.revision and checks plus independence:
+{"plan_author":false,"implementer":false}; both must be truthful. Correctable
+defects use native kanban_request_changes, returning to the original implementer.
+Do not create a separate review card for this lifecycle. Attach any versioned
+outputs to completion metadata only after independently checking their artifacts.
+Preserve existing separate-card and deployment acceptance contracts.
+
 The card's acceptance criteria are the specification. Hold the work to them, and
 nothing more.
 

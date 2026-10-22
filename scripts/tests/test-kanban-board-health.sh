@@ -1332,6 +1332,23 @@ grep -q '^INSTRUCTION_DRIFT_UNCHECKED exit=1 needs=manual-check$' <<<"$broken_ou
   fail "a check that could not run was not reported as unchecked: $broken_out"
 pass "reports a check that could not run as unchecked, not as drift"
 
+# A versioned release uses its manifest, not another checkout's development
+# instructions. Failed checks still route one stable technical recovery finding.
+mkdir -p "$fixture/hermes/state/fleet"
+printf '{}\n' >"$fixture/hermes/state/fleet/current.json"
+printf 'raise SystemExit(0)\n' >"$fixture/hermes/scripts/fleet-release.py"
+fleet_clean="$(HERMES_ROOT="$fixture/hermes" HERMES_BOARD=testboard \
+  HERMES_REPO="$fixture/broken-repo" "$HEALTH")"
+if grep -Eq '^(INSTRUCTION_DRIFT|FLEET_RELEASE_DRIFT)' <<<"$fleet_clean"; then
+  fail "release health used an unrelated checkout baseline"
+fi
+printf 'raise SystemExit(1)\n' >"$fixture/hermes/scripts/fleet-release.py"
+fleet_drift="$(run_health_repo)"
+grep -q '^FLEET_RELEASE_DRIFT exit=1 needs=check-fleet-release$' <<<"$fleet_drift" ||
+  fail "release drift did not route through the unified check"
+rm "$fixture/hermes/state/fleet/current.json" "$fixture/hermes/scripts/fleet-release.py"
+pass "versioned releases use the recorded manifest and unified recovery path"
+
 # --- installed cron-script drift (SCRIPT_DRIFT) -------------------------------
 #
 # A second installation path with the same silent-drift failure mode: the

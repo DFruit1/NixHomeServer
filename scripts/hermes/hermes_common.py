@@ -31,7 +31,8 @@ PROFILE_DESCRIPTIONS = {
         'perform mechanical integration repairs with independent acceptance. Records delegated decisions, '
         'integrates accepted work and runs guarded deployments. Preserves exact owner scope, reserved effects, '
         'credential isolation and independent review; never self-approves.'),
-    'project-auditor': ('PROJECT AUDITOR AND TASKFORCE LEAD. Owns persisted FINDINGS.md and immutable plans. '
+    'project-auditor': ('ON-DEMAND PROJECT AUDITOR. Architectural questions, substantive plans and repeated failed recovery. '
+        'Routine fixes use implementer and independent reviewer directly. Owns persisted FINDINGS.md and immutable plans. '
         'Commissions focused audits, assesses findings and technical plans. May provide independent source and '
         'whole-set verification when qualified and neither plan author nor implementer. Never implements or deploys.'),
     'feature-reviewer': ('FEATURE-REVIEWER. Independently verifies source, bounded questions and whole deployment '

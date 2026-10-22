@@ -27,8 +27,11 @@ context to a remote model.
    staged diff before a local commit. Never use git add -A, git commit -a,
    stash/reset unrelated work, rewrite published history, or skip hooks.
 6. Hand the exact candidate revision, changed files, commands/exits and residual
-   risks to independent review. In the Hermes fleet, head-coordinator routes this
-   to feature-reviewer. Do not spawn extra reviewer/fixer agents around that
+   risks to independent review. For `Workflow: native-review-v1`, call native
+   kanban_request_review on this task with reviewer="feature-reviewer" and
+   metadata.revision, plan_author, checks and durable artifacts. Correctable
+   rework returns to the implementer on this same task. Legacy cards retain
+   their recorded coordinator/separate-review route. Do not spawn extra reviewer/fixer agents around that
    lifecycle or label a self-check independently verified.
 
 If working interactively outside the fleet, an independently authorized reviewer

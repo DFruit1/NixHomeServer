@@ -132,6 +132,7 @@ class TaskforceTest(unittest.TestCase):
         tf.tick(self.root, self.now + 86400)
         creates = [c for c in self.calls if c[1][0] == 'create']
         self.assertEqual(['daily'], [c[0] for c in creates])
+        self.assertEqual('head-coordinator',creates[0][1][creates[0][1].index('--assignee')+1])
         body = creates[0][1][creates[0][1].index('--body') + 1]
         self.assertLessEqual(len(body.splitlines()), 15)
         self.assertLessEqual(len(body), 1000)
@@ -383,9 +384,9 @@ class TaskforceTest(unittest.TestCase):
                        'title': tf.SWEEP_TITLE, 'status': 'ready'}]
         tf.tick(self.root, self.now)
         self.assertFalse(any(c[1][0] == 'create' and tf.SWEEP_TITLE in c[1] for c in self.calls))
-        # A pending sweep must not suppress the auditor's own opportunity card.
-        self.assertTrue(any(c[1][0] == 'create' and c[1][1] == tf.OPPORTUNITY_TITLE
-                            for c in self.calls))
+        # Both optional schedules share one proactive-chain budget.
+        self.assertFalse(any(c[1][0] == 'create' and c[1][1] == tf.OPPORTUNITY_TITLE
+                             for c in self.calls))
 
     def test_clean_streak_suppresses_audits_but_not_sweeps(self):
         tf.configure(self.root, 'off', 'off', sweep_interval_hours=24)
@@ -412,10 +413,10 @@ class TaskforceTest(unittest.TestCase):
         self.calls.clear()
         with patch.dict(os.environ, {'HERMES_PROFILE': 'head-coordinator'}):
             tf.record_sweep(self.root, 'daily', 't_sweep2', 'no_candidate')
-        # Two consecutive no-candidate sweeps pause the sweep only.
+        # Both intake paths respect coordinator no-candidate backoff.
         tf.tick(self.root, self.now + 2 * 24 * 3600)
         self.assertFalse(any(c[1][0] == 'create' and tf.SWEEP_TITLE in c[1] for c in self.calls))
-        self.assertTrue(any(c[0] == 'daily' and c[1][0] == 'create' for c in self.calls))
+        self.assertFalse(any(c[0] == 'daily' and c[1][0] == 'create' for c in self.calls))
         # A newly assessed finding lifts the pause at the next tick.
         (tf.review_dir(self.root, 'daily') / 'FINDINGS.md').write_text('# New finding assessed\n')
         tf.tick(self.root, self.now + 3 * 24 * 3600)

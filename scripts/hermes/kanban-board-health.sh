@@ -1021,7 +1021,16 @@ shopt -u nullglob
 # thing. A missing repository or installer is not a board condition -- boards
 # differ in whether they carry this checkout -- so it reports nothing.
 instruction_check="$repo/scripts/hermes/install-instruction-policy.py"
-if [[ -n "$repo" && -f "$instruction_check" ]]; then
+if [[ -f "$HERMES_ROOT/state/fleet/current.json" ]]; then
+  # A versioned release is compared with its recorded installed manifest. An
+  # unrelated checkout can be newer or under active development; it is not the
+  # baseline for a running release or a reason to rerun individual installers.
+  fleet_rc=0
+  timeout 60 python3 -B "$HERMES_ROOT/scripts/fleet-release.py" check >/dev/null 2>&1 || fleet_rc=$?
+  if ((fleet_rc != 0)); then
+    emit "FLEET_RELEASE_DRIFT exit=$fleet_rc needs=check-fleet-release"
+  fi
+elif [[ -n "$repo" && -f "$instruction_check" ]]; then
   # Bounded: this runs unattended on a cron tick, and the installer reads and
   # compares the whole installed tree. A hung run must not hold the report open.
   drift_rc=0

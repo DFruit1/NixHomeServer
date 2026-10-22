@@ -55,7 +55,13 @@ budget expires. Keep the server-deploy gate and reserved owner decisions.
 
 ## Continuous improvement intake
 
-Send per-card diff and whole-set deploy reviews to feature-reviewer with tenant
+Ordinary new fixes use one `Workflow: native-review-v1` implementation/review/rework
+task, with independent native completion. The implementer owns technical choices
+and rework; no routine auditor-planning or routing closure card is required.
+Distinct operation gates and legacy exact contracts retain separate reviews.
+Use versioned accepted outputs across boards and fleet-release.py for maintenance.
+
+Send distinct diff and whole-set deploy reviews to feature-reviewer with tenant
 verification. Bounded technical questions use review-question and are not an
 acceptance gate. You may inspect source and run gates; independent acceptance
 must come from another qualified agent who did not author the plan or source.

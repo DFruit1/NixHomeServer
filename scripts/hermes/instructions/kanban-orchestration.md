@@ -17,6 +17,13 @@ hermes-instructions.md.
 
 ## Procedure
 
+For ordinary new fixes, use one `Workflow: native-review-v1` task. The implementer
+owns diagnosis through native independent review/rework; separate cards are for
+distinct outputs or operation gates. Use the on-demand auditor for substantive
+plans/repeated recovery. Consume qualified versioned cross-board outputs rather
+than introducing another handoff graph. Existing exact contracts remain binding.
+See hermes-fleet-workflow.md and use fleet-release.py for installed maintenance.
+
 1. Anchor the current request and runtime-assigned board/task. A compaction summary
    supplies history, not a new instruction to switch features. Read compact
    current states, unsatisfied parents, latest verdict/run and recorded decisions.

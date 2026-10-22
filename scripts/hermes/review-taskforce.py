@@ -269,8 +269,16 @@ def board_tasks(root, board):
                                    timeout=10)) as connection:
         connection.row_factory = sqlite3.Row
         connection.execute('PRAGMA query_only = ON')
+        columns = {r[1] for r in connection.execute('PRAGMA table_info(tasks)')}
+        extras = ''.join(', ' + (key if key in columns else 'NULL AS ' + key)
+                         for key in ('block_kind', 'consecutive_failures'))
+        tables = {r[0] for r in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        outcome = (", (SELECT outcome FROM task_runs r WHERE r.task_id=tasks.id"
+                   " AND r.ended_at IS NOT NULL ORDER BY r.id DESC LIMIT 1) AS last_outcome"
+                   if 'task_runs' in tables else ', NULL AS last_outcome')
         return [dict(row) for row in connection.execute(
-            'SELECT id, title, body, assignee, status, tenant, created_by FROM tasks')]
+            'SELECT id, title, body, assignee, status, tenant, created_by'
+            + extras + outcome + ' FROM tasks')]
 
 
 def tick(root, now=None):
@@ -301,16 +309,16 @@ def board_state_line(root, board):
 
 def opportunity_body(root, board):
     return '\n'.join([
-        'Goal: Choose one worthwhile question about an existing, idle feature.',
-        'Change: review-taskforce/FINDINGS.md:1 — assess coverage and pending findings.',
+        'Goal: Triage one worthwhile improvement to an existing, idle feature.',
+        'Scope: Read review-taskforce/FINDINGS.md and existing work before routing.',
         'Verify: python3 ~/.hermes/scripts/review-taskforce.py status — report real exit.',
         board_state_line(root, board),
         'Constraints:',
-        '- Follow the Continuous improvement taskforce policy in your SOUL.md.',
-        '- Commission at most one focused audit, or close with a reason to do nothing.',
-        '- Assess urgency; forward any already-approved worthwhile batch.',
-        '- Preserve findings; do not implement or deploy.',
-        '- Run chain-check before any follow-up audit of a known finding.',
+        '- Route an ordinary fix on one native implementation/review task.',
+        '- Request project-auditor only for a concrete audit or substantive question.',
+        '- Route at most one chain, or close with a reason to do nothing.',
+        '- Preserve findings, active writers and independent acceptance.',
+        '- Record record-sweep --task <id> --outcome routed|no_candidate.',
     ])
 
 
@@ -407,7 +415,7 @@ def tick_board(root, board_file, now):
         # Decide due-ness before touching the board DB, the workdir or git: the
         # hourly no-agent tick must stay cheap on ticks with nothing to do.
         opportunity_due = bool(hours) and now - state.get('last_created_at', 0) >= hours * 3600 \
-            and not suppressed_by_clean_streak(root, board)
+            and not suppressed_by_clean_streak(root, board) and not sweep_suppressed(root, board)
         sweep_due = bool(sweep_hours) and now - state.get('last_sweep_at', 0) >= sweep_hours * 3600 \
             and not sweep_suppressed(root, board)
         if not opportunity_due and not sweep_due:
@@ -420,12 +428,17 @@ def tick_board(root, board_file, now):
                                 capture_output=True, timeout=10).returncode == 0
         workspace = 'worktree' if is_git else f'dir:{workdir}'
         tasks = board_tasks(root, board)
+        from fleet_workflow import proactive_allowed
+        if not proactive_allowed(tasks):
+            return
 
-        if opportunity_due and not opportunity_pending(tasks):
+        # One intake result per board: the coordinator sweep takes precedence
+        # when both optional schedules are due. Do not create a second chain.
+        if opportunity_due and not sweep_due and not opportunity_pending(tasks):
             body = bounded_body(opportunity_body(root, board), board_state_line(root, board))
             # Hermes deduplicates retries even if creation succeeded but our state write failed.
             key = f'taskforce-opportunity:{board}:{now // (hours * 3600)}'
-            created = hermes(board, 'create', OPPORTUNITY_TITLE, '--assignee', 'project-auditor',
+            created = hermes(board, 'create', OPPORTUNITY_TITLE, '--assignee', 'head-coordinator',
                              '--tenant', TENANT, '--created-by', 'review-taskforce-scheduler',
                              '--priority', '-10', '--workspace', workspace,
                              '--idempotency-key', key, '--body', body)
