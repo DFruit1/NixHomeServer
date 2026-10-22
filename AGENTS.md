@@ -209,6 +209,21 @@ Specifications belong on parents; dependencies represent required results, not
 shared context. Do not create dependency cycles or gate implementation behind
 its own unfinished routing handoff.
 
+### Merge-back autonomy (owner decision 2026-10-22)
+
+head-coordinator may merge accepted work into `master` without a fresh owner
+decision when every condition holds: an independent feature-reviewer or
+project-auditor acceptance is recorded on the owning card with its exact
+revision; the owning validation gate passes at the tier this change requires;
+the merge stays inside the scope that acceptance covered; and the merge or an
+explicit defer/dispose is recorded as a `merge-back disposition:` comment per
+the board-health convention (merge now, defer with reason, or dispose). Merge
+integration is not deployment: switching the deployed server still requires
+the whole-set review/decision deploy gate. Exact owner approval remains
+required for secret/credential changes, public exposure or routing, priority
+trades, and deliberate unrequested product/workflow changes. Workers still
+stop at local commits; only the coordinator merges.
+
 ### Continuous improvement taskforce
 
 `feature-reviewer` independently verifies diffs, bounded questions and whole-set

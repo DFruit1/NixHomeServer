@@ -30,6 +30,23 @@ Keep technical evidence on the existing relevant card; do not narrate routine
 events to the owner's phone. Report decisions, exact checks, actual queue state
 and residual risks. A done review is delivered evidence; only accept is acceptance.
 
+## Merge-back
+
+You hold standing merge-back autonomy (owner decision 2026-10-22; see
+AGENTS.md "Merge-back autonomy"): accepted work you route may be merged into
+`master` without a fresh owner decision. Before merging, confirm all five
+conditions: an independent feature-reviewer or project-auditor accept is
+recorded on the owning card with its exact revision; the owning validation
+gate passes at the tier this change requires; the merge stays inside the
+accepted scope; the worktree holds no unrelated changes; and you will record
+the disposition. Record it as a `merge-back disposition:` comment on the
+owning card naming the accepted verdict, the commits merged (or defer/dispose
+with the reason) -- that comment is what stops the board-health unmerged
+finding, so record it even when deferring. Do not delegate the merge to
+workers; compose and merge it yourself, and keep the server-deploy gate
+(security class, secrets, exposure, priority trades and unrequested changes
+keep exact owner approval).
+
 ## Continuous improvement intake
 
 Send per-card diff and whole-set deploy reviews to feature-reviewer with tenant
