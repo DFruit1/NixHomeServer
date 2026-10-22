@@ -39,6 +39,15 @@ trap 'rm -rf "$fixture"' EXIT
 export HERMES_ROOT="$fixture/hermes"
 now="$(date +%s)"
 
+# The fixture must name a PID that provably does not exist: quiescence-inventory
+# reports "gone" only when kill(pid, 0) raises ProcessLookupError. A literal
+# number is environment-sensitive (any unrelated live process that owns it would
+# make the receipt say "unknown"), so spawn a short-lived process and reap it.
+sleep 30 &
+reaped_pid=$!
+kill "$reaped_pid" 2>/dev/null || true
+wait "$reaped_pid" 2>/dev/null || true
+
 mkdir -p "$fixture/hermes/kanban/boards/testboard"
 sqlite3 "$fixture/hermes/kanban/boards/testboard/kanban.db" <<SQL
 CREATE TABLE tasks (
@@ -50,7 +59,7 @@ CREATE TABLE tasks (
 );
 INSERT INTO tasks VALUES
   ('t_writing', 'writing card', 'local-implementer', 'running', 0,
-   $((now-60)), $((now-60)), 'lock-abc', 1347, $((now-30)), '', 0, 0),
+   $((now-60)), $((now-60)), 'lock-abc', $reaped_pid, $((now-30)), '', 0, 0),
   ('t_queued', 'queued card', 'head-coordinator', 'ready', 0,
    $((now-600)), NULL, NULL, 0, $((now-600)), '', 0, 0),
   ('t_wait', 'wait card', 'feature-reviewer', 'blocked', 0,
@@ -61,7 +70,7 @@ CREATE TABLE task_runs (
   ended_at INTEGER
 );
 INSERT INTO task_runs VALUES (851, 't_writing', 'local-implementer', NULL,
-  'running', NULL, 1347, $((now-60)), NULL);
+  'running', NULL, $reaped_pid, $((now-60)), NULL);
 SQL
 
 # Empty named board: consumed as "missing", never as silence.
@@ -71,11 +80,12 @@ SQL
 "$INVENTORY" >/dev/null || fail "board discovery pass failed"
 "$INVENTORY" >/dev/null || fail "second pass must cleanly replace the first receipt"
 
-python3 - "$fixture" <<'PY' || fail "receipt contents wrong"
+python3 - "$fixture" "$reaped_pid" <<'PY' || fail "receipt contents wrong"
 import json, sys
 from pathlib import Path
 
 fixture = Path(sys.argv[1])
+reaped_pid = int(sys.argv[2])
 document = json.loads((fixture / "hermes/state/quiescence-receipts/receipt.json").read_text())
 assert document.get("receipt_schema") == 1, list(document.keys())
 boards = {entry["board"]: entry for entry in document["boards"]}
@@ -84,8 +94,8 @@ live = boards["testboard"]
 assert live["status_counts"] == {"running": 1, "ready": 1, "blocked": 1}, live["status_counts"]
 active = {row["id"]: row for row in live["active"]}
 writing = active["t_writing"]
-assert writing["claim_present"] is True and writing["worker_pid"] == 1347, writing
-assert writing["worker_liveness"] == "gone", writing  # pid 1347 does not exist
+assert writing["claim_present"] is True and writing["worker_pid"] == reaped_pid, writing
+assert writing["worker_liveness"] == "gone", writing  # the reaped pid no longer exists
 idle = active["t_queued"]
 assert idle["claim_present"] is False and idle["worker_liveness"] == "no-worker", idle
 hold = active["t_wait"]
