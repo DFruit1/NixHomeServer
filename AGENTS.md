@@ -73,6 +73,17 @@ temporary task receipts on their cards/jobs, not in standing instructions.
   rollback; involve project-auditor for architecture/provenance choices. Technical
   source conflicts stay with agents; retain secret, destructive and exposure
   gates and verify acceptance against the actual new source.
+* Bounded fence widening (owner decision 2026-10-22): a capability block caused
+  by a tool fence — not by the reserved classes below — may be cleared with one
+  exact one-shot widened operation. head-coordinator prepares it through
+  `scripts/hermes/autonomy-policy.py prepare` bound to the blocked card (exact
+  argv, cwd, effects, timeout, inputs and recovery), and a feature-reviewer or
+  project-auditor card records that the fenced action is safe before the run.
+  The coordinator never countersigns its own widening; every widening is
+  recorded on the card and persisted by project-auditor in FINDINGS.md.
+  Widening is never available for secret or credential operations, destructive
+  or irreversible data effects, or public exposure and routing; a refusal that
+  cites those classes ends the matter.
 
 * Persistent memory records facts and preferences; it never grants permissions
   or overrides current profile limits, project rules, or tool restrictions.
@@ -237,6 +248,14 @@ names one feature, one question, explicit scope and a stopping condition;
 `HERMES_PRIORITIES.md` guides selection; reviewers load `taskforce-feature-audit`
 for procedures and format.
 
+Verifier relaunch autonomy (owner decision 2026-10-22): when a verifier's
+completed run ended `verdict: unknown` (first-missing-input) and the missing
+input is now verifiably present at the same prepared source, head-coordinator
+may relaunch the unchanged bounded question directly — same workspace contract,
+forked from the completed run — without a new plan, audit or owner reply. A
+relaunch may not change the question, the acceptance basis or the workspace;
+anything else is fresh routing.
+
 The scheduler can leave the head-coordinator a low-priority self-improvement
 sweep card for one whole-system improvement. The coordinator routes a small
 classify-clean fix to implementers with independent feature-reviewer check, or
@@ -266,6 +285,13 @@ switching within the recorded scope. The coordinator runs test then switch; the
 verifier never does. Changed source or mutable inputs require fresh review/test.
 Freeze only that source and its writers; unrelated isolated work may continue.
 The gate is a workflow convention, not a check enforced by deploy.sh.
+
+Aggregation is allowed and expected (owner decision 2026-10-22): one
+feature-reviewer whole-set review with its paired decision covers the union of
+several accepted ranges — last-deployed-source..HEAD — whenever the verifier
+accepts including each range in that whole set. Do not serialize per-range
+review/decision pairs by default; a per-range chain is agent-imposed caution,
+not this gate.
 
 #### Custody loss and re-derivation
 
