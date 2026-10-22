@@ -147,6 +147,24 @@ def idle_recovery_prompt(text):
     return text
 
 
+def review_hook_files(root, pending=None):
+    """Compose only the managed review hook and its standalone dependencies."""
+    changes = {}
+    pending = pending or {}
+    spec = importlib.util.spec_from_file_location('steward_installer', SOURCE / 'install-steward-readonly.py')
+    hooks = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hooks)
+    for name in (*DESCRIPTIONS, 'standard-implementer'):
+        config = root / 'profiles' / name / 'config.yaml'
+        if config.exists():
+            text = pending.get(config, config.read_text())
+            command = 'python3 ' + shlex.quote(str(root / 'scripts/review-verdict-guard.py'))
+            changes[config] = hooks.readonly_hook(text, command, 'review-verdict', '^kanban_(complete|unlink|create|link)$')
+    for name in ('review-verdict-guard.py', 'capability_recovery.py', 'fleet_workflow.py'):
+        changes[root / 'scripts' / name] = (SOURCE / name).read_text()
+    return {p: t for p, t in changes.items() if not p.exists() or p.read_text() != t}
+
+
 def changed_files(root, policy_only=False):
     default = root / 'SOUL.md'
     changes = {default: policy(default.read_text() if default.exists() else '',
@@ -177,17 +195,7 @@ def changed_files(root, policy_only=False):
     for config in configs:
         if config.exists() and (config == root / 'config.yaml' or not config.parent.name.startswith('.')):
             changes[config] = worker_cap(changes.get(config, config.read_text()))
-    # Reuse the existing bounded hook editor; keep unrelated hooks verbatim.
-    spec = importlib.util.spec_from_file_location('steward_installer', SOURCE / 'install-steward-readonly.py')
-    hooks = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(hooks)
-    for name in (*DESCRIPTIONS, 'standard-implementer'):
-        config = root / 'profiles' / name / 'config.yaml'
-        if config.exists():
-            text = changes.get(config, config.read_text())
-            command = 'python3 ' + shlex.quote(str(root / 'scripts/review-verdict-guard.py'))
-            changes[config] = hooks.readonly_hook(text, command, 'review-verdict', '^kanban_(complete|unlink)$')
-    changes[root / 'scripts/review-verdict-guard.py'] = (SOURCE / 'review-verdict-guard.py').read_text()
+    changes.update(review_hook_files(root, changes))
     changes[root / 'profiles/head-coordinator/scripts/idle-recovery-monitor.py'] = (SOURCE / 'idle-recovery-monitor.py').read_text()
     skill = root / 'profiles/feature-reviewer/skills/devops/sdlc-review/SKILL.md'
     if skill.exists():
@@ -209,7 +217,19 @@ def changed_files(root, policy_only=False):
             if not (policy_only and path.name in {'config.yaml', 'profile.yaml'})}
 
 
-def install(root, check=False, cron=True, policy_only=False):
+def install(root, check=False, cron=True, policy_only=False, hooks_only=False):
+    if hooks_only and policy_only:
+        raise ValueError('Choose hooks-only or policy-only, not both')
+    if hooks_only:
+        changes = review_hook_files(root)
+        for path, text in changes.items():
+            print(f'{"drift" if check else "install"}: {path}')
+            if not check:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                hermes_common.backup_file(root, 'review-taskforce', path)
+                mode = path.stat().st_mode & 0o777 if path.exists() else 0o700
+                hermes_common.atomic_write(path, text, mode=mode)
+        return int(check and bool(changes))
     changes = changed_files(root, policy_only=policy_only)  # Validate all transformations before writing.
     idle_changed = False
     idle_jobs_file = root / 'profiles/head-coordinator/cron/jobs.json'
@@ -269,10 +289,12 @@ def install(root, check=False, cron=True, policy_only=False):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--check', action='store_true')
-    parser.add_argument('--policy-only', action='store_true', help='Refresh tracked-source scripts/policies without configuration, metadata or cron writes')
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--policy-only', action='store_true', help='Refresh tracked-source scripts/policies without configuration, metadata or cron writes')
+    mode.add_argument('--hooks-only', action='store_true', help='Refresh only managed review hooks and guard dependencies; preserve models, caps, role metadata and cron')
     args = parser.parse_args()
     root = Path(os.environ.get('HERMES_ROOT', str(Path.home() / '.hermes')))
-    return install(root, check=args.check, policy_only=args.policy_only)
+    return install(root, check=args.check, policy_only=args.policy_only, hooks_only=args.hooks_only)
 
 
 if __name__ == '__main__':

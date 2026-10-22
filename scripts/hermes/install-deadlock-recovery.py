@@ -26,7 +26,7 @@ def install(root,check=False):
     if len(matches)>1:
         raise ValueError('Duplicate recovery jobs; reconcile native identities')
     changed=False
-    for name in ('deadlock_recovery.py','capability_recovery.py','hermes_common.py','review-taskforce.py'):
+    for name in ('deadlock_recovery.py','feature_flow.py','review-verdict-guard.py','capability_recovery.py','hermes_common.py','review-taskforce.py'):
         target=root/'scripts'/name
         if target.is_symlink():
             raise ValueError('Recovery install target must not be a symlink')

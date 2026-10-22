@@ -47,6 +47,24 @@ recovery owners, retains per-input attempt ceilings, backs off repeated failures
 and commissions one auditor assessment after three unchanged failed attempts.
 It never declares acceptance or directly clears a hold.
 
+The same collector also reconciles orphaned or stalled feature requests after
+48 hours. `feature_flow.py` reads tracker scope, exact `Feature tracker:
+BOARD:t_CARD` membership and actual member verdicts; arbitrary context references
+do not declare ownership. It never executes a tracker or infers implementation
+authority from age. Existing producers, real owner gates and qualified scoped
+delivery/deferral dispositions prevent duplicate work. Supplied owner facts and
+native receipts wake reconciliation without clearing owner gates. Eligible feature and
+technical classes alternate, retaining the per-board worker ceiling and retry
+backoff. The coordinator reference defines the native disposition contract.
+
+Install the native routing guard with `python3 scripts/hermes/install-review-taskforce.py
+--hooks-only` and verify with the same command plus `--check`. This updates the
+managed `kanban_create`, `kanban_link`, `kanban_complete` and `kanban_unlink` hook
+and its dependencies while preserving model settings, lane caps, profile metadata
+and cron. `--policy-only` deliberately excludes profile configuration: installing
+the guard script through that mode alone does not install its effective matcher.
+Fresh workers load the updated profile hooks; do not interrupt active work.
+
 The native coordinator's `kanban_amend` capability is installed by
 `install-recovered-resume.py`, alongside the guarded resume API. Install matching
 canonical monitor dependencies with `install-cron-policy.py` first, then the

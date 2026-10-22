@@ -126,7 +126,8 @@ def check_files(root, revision, *, dependencies=True):
 
 
 def runtime_dependencies(root):
-    relatives=['scripts/deadlock_recovery.py','scripts/capability_recovery.py',
+    relatives=['scripts/deadlock_recovery.py','scripts/feature_flow.py',
+               'scripts/capability_recovery.py','scripts/worker_origin.py','scripts/autonomy-policy.py',
                'scripts/cron_sweep.py','scripts/kanban-retry-breaker.sh',
                'scripts/kanban-aging-escalation.py','scripts/cron-loop-monitor.py',
                'hermes-agent/hermes_cli/kanban_db.py','hermes-agent/hermes_cli/kanban_db_dispatch.py',

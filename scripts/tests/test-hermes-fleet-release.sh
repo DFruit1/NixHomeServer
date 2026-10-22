@@ -79,6 +79,17 @@ class ReleaseTest(unittest.TestCase):
         self.assertIs(before,sys.modules['hermes_common'])
         self.assertEqual(before_path,sys.path)
 
+    def test_retained_native_helper_drift_is_visible_and_rollback_preserves_it(self):
+        helper=self.root/'scripts/feature_flow.py';helper.write_text('version=1\n')
+        release.install_files(self.root,self.pending,'a'*64,
+                              context={'dependencies':release.runtime_dependencies(self.root)})
+        self.assertEqual([],release.check_files(self.root,'a'*64))
+        helper.write_text('version=2\n')
+        self.assertIn('dependency:scripts/feature_flow.py',release.check_files(self.root,'a'*64))
+        self.assertEqual([],release.check_files(self.root,'a'*64,dependencies=False))
+        release.rollback_files(self.root,'a'*64)
+        self.assertEqual('version=2\n',helper.read_text())
+
     def test_rollback_preserves_other_writers_and_preflights_entire_set(self):
         release.install_files(self.root, self.pending, 'a' * 40)
         self.file.write_text('unrelated = 4\n')

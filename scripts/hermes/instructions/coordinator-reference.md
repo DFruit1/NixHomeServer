@@ -242,6 +242,52 @@ off unchanged failed attempts before one auditor escalation. It grants no
 acceptance or execution through its observation. Finish the assigned repair
 through actual readback and a supported resume; an acknowledgment is not repair.
 
+The same job detects feature trackers older than 48 hours with no productive
+next step or qualified current-scope disposition. Trackers remain parked evidence
+anchors, never execution tasks or prerequisites. Bind productive cards with the
+standalone `Feature tracker: BOARD:t_CARD` body line (a native comment backfills
+existing members). Reconcile existing owners instead of duplicating audits or
+implementation. Feature and technical intake alternate after eligibility checks,
+with the same one-new-worker-per-board limit and existing profile budgets.
+
+Explicit owner-requested feature work need not appear in HERMES_PRIORITIES.md;
+that file guides unsolicited audits, not whether to fulfil a recorded request.
+Unrelated rollout, desktop adoption or tracker automation cannot gate isolated
+feature planning/implementation. Use current delegated technical approval after
+independent prerequisites, preserve reserved effects, and keep the delivery
+handoff open through actual accepted implementation and merge-back disposition.
+Mark that waiting card `Feature handoff: delivery`; its required implementer,
+reviewer and input-auditor cards precede it. Only post-delivery auditor
+recordkeeping (`Feature role: documentary-closure`) follows it. Approval decision
+and input-producing coordinator roles remain valid prerequisites. The native
+pre-tool guard rejects the contradictory direction for an explicit delivery
+handoff. Source-edit cards need native project inheritance, or explicit
+`workspace_kind: worktree` plus the verified existing repo root; exclusive
+prepared linked worktrees use `dir`. Omitted fields may create empty scratch.
+Native tool arguments differ from CLI `--workspace worktree:/path` syntax.
+An agent-only unknown needs one bounded input producer/experiment or independent
+finite assessment. Preserve planning-only scope until requirements authorize the
+next product step; reduce an owner questionnaire to the actual next decision.
+
+Completed routing alone never resolves feature intake. A reconciliation's native
+completion may record `metadata.feature_delivery` with `tracker`, current
+`evidence_version`, `state`, and a real independent `evidence_task_id` referenced
+by the tracker. After real member results and tracker updates, inspect the fresh
+version with `python3 ~/.hermes/scripts/feature_flow.py --inspect BOARD:t_CARD`;
+this read-only inspection works while reconciliation is active. `delivered_scope` requires completed independent ACCEPT and
+means only the requested scope (e.g. a plan); `assessed_defer` requires a completed
+project-auditor assessment and a precise nonempty `wake_condition`. Changed
+tracker scope, supplied owner facts, native receipt attachments or actual member
+verification evidence reopens intake; routine comments and completed recovery
+wrappers do not replenish its attempt budget. Mirror an authenticated owner answer
+on the tracker with `Feature input: <actual answer/evidence>`; it triggers checked
+reconciliation and never grants permission or automatically clears an owner gate.
+For deferral, the auditor's actual completed run must carry
+`metadata.feature_assessment` with `tracker`, the inspector's `scope_sha256`,
+`outcome: defer`, nonempty `missing_inputs`, `supplier` and the same precise
+`wake_condition`. A generic done audit is insufficient. These records
+affect scheduling only and grant no implementation, acceptance or deploy authority.
+
 Use native `kanban_amend` to change a parked technical card's body, priority,
 preloaded skills or finite runtime. First call with task_id to inspect its
 version; then pass `expected_version`, `changes` and a `reason` naming the

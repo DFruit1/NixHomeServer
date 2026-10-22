@@ -354,6 +354,188 @@ def recover_publication(native):
         self.conn.execute("UPDATE tasks SET status='todo' WHERE id=?",(owner,));self.conn.commit()
         self.assertTrue(monitor.previous_owner_active(self.root,'testboard',owner,self.now+10000))
 
+    def feature(self, body='Goal: Requested search improvements.\nStable key: testboard/search'):
+        tid=kb.create_task(self.conn,title='[FEATURE TRACKER] Search',body=body,assignee='head-coordinator',triage=True,workspace_kind='scratch')
+        self.conn.execute('UPDATE tasks SET created_at=? WHERE id=?',(self.now-3*86400,tid));self.conn.commit()
+        return tid
+
+    def test_feature_tracker_orphan_is_intake_only_and_recent_demand_waits(self):
+        from feature_flow import observe_features
+        tracker=self.feature()
+        issue=observe_features(self.conn,'testboard',self.now)[0]
+        self.assertEqual(tracker,issue['task_id']);self.assertEqual('feature-delivery-gap',issue['kind'])
+        self.assertEqual('triage',kb.get_task(self.conn,tracker).status)
+        self.conn.execute('UPDATE tasks SET created_at=? WHERE id=?',(self.now,tracker));self.conn.commit()
+        self.assertEqual([],observe_features(self.conn,'testboard',self.now))
+
+    def test_feature_explicit_producer_suppresses_but_context_reference_does_not(self):
+        from feature_flow import observe_features
+        unrelated=kb.create_task(self.conn,title='Unrelated old context',assignee='standard-implementer',workspace_kind='scratch')
+        tracker=self.feature('Goal: Search. Context: '+unrelated)
+        self.assertEqual(1,len(observe_features(self.conn,'testboard',self.now)))
+        producer=kb.create_task(self.conn,title='Search first slice',body='Feature tracker: testboard:'+tracker,assignee='standard-implementer',workspace_kind='scratch')
+        self.assertEqual([],observe_features(self.conn,'testboard',self.now))
+        self.conn.execute("UPDATE tasks SET status='done' WHERE id=?",(producer,));self.conn.commit()
+        self.assertEqual(1,len(observe_features(self.conn,'testboard',self.now)))
+
+    def test_stalled_feature_owner_reconciled_and_routing_churn_does_not_reset_inputs(self):
+        from feature_flow import observe_features
+        tracker=self.feature();initial=observe_features(self.conn,'testboard',self.now)[0]['version']
+        route=kb.create_task(self.conn,title='Old feature routing',body='Feature tracker: testboard:'+tracker,assignee='head-coordinator',triage=True,workspace_kind='scratch')
+        self.conn.execute("UPDATE tasks SET created_at=?,status='scheduled' WHERE id=?",(self.now-4*86400,route));self.conn.commit()
+        issue=observe_features(self.conn,'testboard',self.now)[0]
+        self.assertEqual([route],issue['existing_owners']);self.assertEqual(initial,issue['version'])
+        kb.add_comment(self.conn,tracker,author='aging-escalation',body='Still waiting; new timestamp')
+        self.assertEqual(initial,observe_features(self.conn,'testboard',self.now)[0]['version'])
+        self.conn.execute("UPDATE tasks SET status='done' WHERE id=?",(route,));self.conn.commit()
+        self.assertEqual(initial,observe_features(self.conn,'testboard',self.now)[0]['version'])
+
+    def test_feature_disposition_requires_exact_scope_and_independent_evidence(self):
+        from feature_flow import observe_features
+        tracker=self.feature();version=observe_features(self.conn,'testboard',self.now)[0]['version']
+        review=kb.create_task(self.conn,title='Accepted requested plan',assignee='feature-reviewer',triage=True,workspace_kind='scratch')
+        route=kb.create_task(self.conn,title='Groundwater plan delivered',body='Feature tracker: testboard:'+tracker,assignee='head-coordinator',triage=True,workspace_kind='scratch')
+        self.conn.execute("UPDATE tasks SET status='done' WHERE id IN (?,?)",(route,review))
+        disposition={'tracker':tracker,'evidence_version':version,'state':'delivered_scope','evidence_task_id':review}
+        self.conn.execute("INSERT INTO task_runs(id,task_id,status,profile,started_at,ended_at,outcome,metadata) VALUES(43,?,'done','head-coordinator',?,?,'completed',?)",(route,self.now-10,self.now,json.dumps({'feature_delivery':disposition})))
+        self.conn.commit()
+        kb.add_comment(self.conn,tracker,author='head-coordinator',body='Independent planning verdict '+review)
+        self.assertEqual(1,len(observe_features(self.conn,'testboard',self.now)))
+        self.conn.execute("INSERT INTO task_runs(id,task_id,status,profile,started_at,ended_at,outcome,metadata) VALUES(44,?,'done','feature-reviewer',?,?,'completed',?)",(review,self.now-20,self.now-15,json.dumps({'verdict':'accept','revision':'exact-plan-sha','checks':[{'command':'sha256sum accepted-plan','exit_code':0}]})));self.conn.commit()
+        self.assertEqual([],observe_features(self.conn,'testboard',self.now))
+        kb.edit_task(self.conn,tracker,body='Goal: Now implement a selected new requirement.')
+        self.assertEqual(1,len(observe_features(self.conn,'testboard',self.now)))
+
+    def test_feature_and_technical_intake_alternate_after_eligibility_and_survive_restart(self):
+        self.hold();technical=monitor.observe(self.root,'testboard',self.now)[0]
+        feature=dict(technical,key='testboard:t_feature:feature-delivery-gap',task_id='t_feature',kind='feature-delivery-gap',priority=-10)
+        created=[]
+        def create(board,*args):
+            tid=kb.create_task(self.conn,title=args[1],assignee='head-coordinator',created_by=monitor.CREATOR,workspace_kind='scratch')
+            created.append(tid);return {'id':tid}
+        with patch.object(monitor,'observe',return_value=[technical,feature]):
+            self.assertEqual('technical-hold',monitor.tick(self.root,now=self.now,create=create)[0]['issue']['kind'])
+            # Ready owner blocks only its own candidate; feature is eligible.
+            self.assertEqual('feature-delivery-gap',monitor.tick(self.root,now=self.now+1000,create=create)[0]['issue']['kind'])
+            journal=json.loads((self.root/'runtime/deadlock-intake/state.json').read_text())
+            self.assertEqual('feature',journal['_fairness']['testboard'])
+            self.assertEqual([],monitor.tick(self.root,now=self.now+2000,create=create))
+            self.assertEqual(2,len(created))
+            # Completing the technical controller leaves that class eligible;
+            # feature remains queued and must not consume a turn or duplicate.
+            self.conn.execute("UPDATE tasks SET status='done' WHERE id=?",(created[0],));self.conn.commit()
+            self.assertEqual('technical-hold',monitor.tick(self.root,now=self.now+3000,create=create)[0]['issue']['kind'])
+
+    def test_feature_fairness_is_not_consumed_by_dry_run_or_failed_creation(self):
+        self.feature()
+        def fail(*args):raise RuntimeError('native create unavailable')
+        with self.assertRaises(RuntimeError):monitor.tick(self.root,now=self.now,create=fail)
+        self.assertFalse((self.root/'runtime/deadlock-intake/state.json').exists())
+        self.assertEqual('feature-delivery-gap',monitor.tick(self.root,dry_run=True,now=self.now)[0]['issue']['kind'])
+        self.assertFalse((self.root/'runtime/deadlock-intake/state.json').exists())
+
+    def test_feature_owner_gate_and_actual_legacy_writer_are_preserved(self):
+        from feature_flow import observe_features
+        tracker=self.feature()
+        gate=kb.create_task(self.conn,title='Real owner requirement',body='Feature tracker: testboard:'+tracker,assignee='head-coordinator',workspace_kind='scratch')
+        kb.block_task(self.conn,gate,kind='needs_input',reason='Input supplier: owner. Physical calibration fact')
+        self.assertEqual([],observe_features(self.conn,'testboard',self.now))
+        self.conn.execute("UPDATE tasks SET status='done' WHERE id=?",(gate,));self.conn.commit()
+        writer=kb.create_task(self.conn,title='Legacy writer',assignee='standard-implementer',workspace_kind='scratch')
+        kb.add_comment(self.conn,tracker,author='head-coordinator',body='Actual source owner '+writer)
+        self.conn.execute("UPDATE tasks SET status='running',worker_pid=123 WHERE id=?",(writer,));self.conn.commit()
+        self.assertEqual([],observe_features(self.conn,'testboard',self.now))
+
+    def test_failed_feature_reconciliation_uses_existing_owner_retry_without_48h_suppression(self):
+        tracker=self.feature();created=[]
+        def create(board,*args):
+            tid=kb.create_task(self.conn,title=args[1],body=args[args.index('--body')+1],assignee='head-coordinator',created_by=monitor.CREATOR,workspace_kind='scratch')
+            created.append(tid);return {'id':tid}
+        action=monitor.tick(self.root,now=self.now,create=create)[0]
+        owner=created[0]
+        self.conn.execute("UPDATE tasks SET status='blocked' WHERE id=?",(owner,))
+        self.conn.execute("INSERT INTO task_runs(id,task_id,status,profile,started_at,ended_at,outcome) VALUES(43,?,'crashed','head-coordinator',?,?,'crashed')",(owner,self.now,self.now+900));self.conn.commit()
+        retry=monitor.tick(self.root,now=self.now+1000,create=create)[0]
+        self.assertEqual(action['issue']['version'],retry['issue']['version'])
+        self.assertEqual(owner,retry['issue']['recovery_owner'])
+        self.assertIn('Do not execute the original repair here',kb.get_task(self.conn,created[1]).body)
+
+    def test_feature_material_owner_inputs_and_receipts_wake_but_routine_chatter_does_not(self):
+        from feature_flow import inspect_feature
+        tracker=self.feature();initial=inspect_feature(self.conn,'testboard',tracker)['evidence_version']
+        kb.add_comment(self.conn,tracker,author='head-coordinator',body='Still waiting; unchanged routing')
+        self.assertEqual(initial,inspect_feature(self.conn,'testboard',tracker)['evidence_version'])
+        kb.add_comment(self.conn,tracker,author='desktop',body='Use the installed sensor variant and private telemetry first.')
+        answered=inspect_feature(self.conn,'testboard',tracker)['evidence_version'];self.assertNotEqual(initial,answered)
+        self.conn.execute("INSERT INTO task_attachments(task_id,filename,stored_path,size,uploaded_by,created_at) VALUES(?,'new-receipt.json','/fixture/receipt',17,'head-coordinator',?)",(tracker,self.now));self.conn.commit()
+        self.assertNotEqual(answered,inspect_feature(self.conn,'testboard',tracker)['evidence_version'])
+
+    def test_fresh_material_input_reconciles_owner_gate_without_clearing_it(self):
+        from feature_flow import observe_features
+        tracker=self.feature()
+        gate=kb.create_task(self.conn,title='Owner physical input',body='Feature tracker: testboard:'+tracker,assignee='head-coordinator',workspace_kind='scratch')
+        kb.block_task(self.conn,gate,kind='needs_input',reason='Input supplier: owner. Installed hardware fact')
+        self.assertEqual([],observe_features(self.conn,'testboard',self.now))
+        comment=kb.add_comment(self.conn,tracker,author='owner',body='Actual hardware fact supplied.')
+        self.conn.execute('UPDATE task_comments SET created_at=? WHERE task_id=? AND author=?',(self.now+10,tracker,'owner'));self.conn.commit()
+        self.assertEqual(1,len(observe_features(self.conn,'testboard',self.now+20)))
+        self.assertEqual('needs_input',kb.get_task(self.conn,gate).block_kind)
+        self.assertEqual('blocked',kb.get_task(self.conn,gate).status)
+
+    def test_disposition_cannot_use_bare_accept_wrong_profile_or_nonverification_question(self):
+        from feature_flow import observe_features,inspect_feature
+        tracker=self.feature()
+        review=kb.create_task(self.conn,title='Question, not a verification',assignee='feature-reviewer',tenant='review-question',workspace_kind='scratch')
+        route=kb.create_task(self.conn,title='Reconciliation',body='Feature tracker: testboard:'+tracker,assignee='head-coordinator',workspace_kind='scratch')
+        kb.add_comment(self.conn,tracker,author='head-coordinator',body='Evidence '+review)
+        self.conn.execute("UPDATE tasks SET status='done' WHERE id IN (?,?)",(route,review));self.conn.commit()
+        self.conn.execute("INSERT INTO task_runs(id,task_id,status,profile,started_at,ended_at,outcome,metadata) VALUES(43,?,'done','head-coordinator',?,?,'completed','{}')",(route,self.now-10,self.now))
+        self.conn.execute("INSERT INTO task_runs(id,task_id,status,profile,started_at,ended_at,outcome,metadata) VALUES(44,?,'done','feature-reviewer',?,?,'completed','{}')",(review,self.now-10,self.now));self.conn.commit()
+        for tenant,profile,meta in [('verification','feature-reviewer',{'verdict':'accept'}),('review-question','feature-reviewer',{'verdict':'accept','revision':'sha','checks':[{'command':'check','exit_code':0}]}),('verification','standard-implementer',{'verdict':'accept','revision':'sha','checks':[{'command':'check','exit_code':0}]})]:
+            self.conn.execute('UPDATE tasks SET tenant=? WHERE id=?',(tenant,review))
+            self.conn.execute('UPDATE task_runs SET profile=?,metadata=? WHERE id=44',(profile,json.dumps(meta)));self.conn.commit()
+            current=inspect_feature(self.conn,'testboard',tracker)['evidence_version']
+            self.conn.execute('UPDATE task_runs SET metadata=? WHERE id=43',(json.dumps({'feature_delivery':{'tracker':tracker,'evidence_version':current,'state':'delivered_scope','evidence_task_id':review}}),));self.conn.commit()
+            self.assertEqual(1,len(observe_features(self.conn,'testboard',self.now)))
+
+    def test_assessed_deferral_binds_actual_auditor_scope_and_new_inputs_wake_it(self):
+        from feature_flow import inspect_feature,observe_features
+        tracker=self.feature()
+        auditor=kb.create_task(self.conn,title='Finite mechanism assessment',body='Feature tracker: testboard:'+tracker,assignee='project-auditor',created_by=monitor.CREATOR,workspace_kind='scratch')
+        route=kb.create_task(self.conn,title='Feature disposition',body='Feature tracker: testboard:'+tracker,assignee='head-coordinator',created_by=monitor.CREATOR,workspace_kind='scratch')
+        self.conn.execute("UPDATE tasks SET status='done' WHERE id IN (?,?)",(auditor,route))
+        self.conn.execute("INSERT INTO task_runs(id,task_id,status,profile,started_at,ended_at,outcome,metadata) VALUES(43,?,'done','project-auditor',?,?,'completed','{}')",(auditor,self.now-10,self.now))
+        self.conn.execute("INSERT INTO task_runs(id,task_id,status,profile,started_at,ended_at,outcome,metadata) VALUES(44,?,'done','head-coordinator',?,?,'completed','{}')",(route,self.now-10,self.now));self.conn.commit()
+        inspected=inspect_feature(self.conn,'testboard',tracker)
+        disposition={'tracker':tracker,'evidence_version':inspected['evidence_version'],'state':'assessed_defer','evidence_task_id':auditor,'wake_condition':'Exact byte-preserving broker proposal supplied'}
+        self.conn.execute('UPDATE task_runs SET metadata=? WHERE id=44',(json.dumps({'feature_delivery':disposition}),));self.conn.commit()
+        self.assertEqual(1,len(observe_features(self.conn,'testboard',self.now)))
+        assessment={'tracker':tracker,'scope_sha256':inspected['scope_sha256'],'outcome':'defer','missing_inputs':['Broker input contract'],'supplier':'agent','wake_condition':disposition['wake_condition']}
+        self.conn.execute('UPDATE task_runs SET metadata=? WHERE id=43',(json.dumps({'feature_assessment':assessment,'revision':'assessment-sha','checks':[{'command':'bounded-probe','exit_code':0}]}),));self.conn.commit()
+        actual=inspect_feature(self.conn,'testboard',tracker)['evidence_version']
+        self.assertNotEqual(inspected['evidence_version'],actual)
+        disposition['evidence_version']=actual
+        self.conn.execute('UPDATE task_runs SET metadata=? WHERE id=44',(json.dumps({'feature_delivery':disposition}),));self.conn.commit()
+        self.assertEqual([],observe_features(self.conn,'testboard',self.now))
+        assessment['missing_inputs']=['New bounded probe result']
+        self.conn.execute('UPDATE task_runs SET metadata=? WHERE id=43',(json.dumps({'feature_assessment':assessment}),));self.conn.commit()
+        self.assertNotEqual(actual,inspect_feature(self.conn,'testboard',tracker)['evidence_version'])
+        self.assertEqual(1,len(observe_features(self.conn,'testboard',self.now)))
+        kb.add_comment(self.conn,tracker,author='head-coordinator',body='Feature input: the missing broker proposal is now supplied.')
+        self.assertEqual(1,len(observe_features(self.conn,'testboard',self.now)))
+
+    def test_public_feature_inspector_returns_current_version_while_reconciliation_active(self):
+        from feature_flow import inspect_feature,observe_features
+        tracker=self.feature()
+        route=kb.create_task(self.conn,title='Active reconciliation',body='Feature tracker: testboard:'+tracker,assignee='head-coordinator',created_by=monitor.CREATOR,workspace_kind='scratch')
+        self.conn.execute("UPDATE tasks SET status='running',worker_pid=345 WHERE id=?",(route,));self.conn.commit()
+        self.assertEqual([],observe_features(self.conn,'testboard',self.now))
+        count=self.conn.execute('SELECT COUNT(*) FROM task_events').fetchone()[0]
+        run=subprocess.run([sys.executable,str(source/'feature_flow.py'),'--inspect','testboard:'+tracker],capture_output=True,text=True,check=True)
+        self.assertEqual(inspect_feature(self.conn,'testboard',tracker)['evidence_version'],json.loads(run.stdout)['evidence_version'])
+        self.assertEqual(count,self.conn.execute('SELECT COUNT(*) FROM task_events').fetchone()[0])
+        self.assertEqual('running',kb.get_task(self.conn,route).status)
+
     def test_recovery_cron_installer_create_edit_resume_readback_and_idempotence(self):
         spec=importlib.util.spec_from_file_location('fixture_recovery_installer',source/'install-deadlock-recovery.py')
         installer=importlib.util.module_from_spec(spec);spec.loader.exec_module(installer)
