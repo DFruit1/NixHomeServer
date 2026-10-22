@@ -20,6 +20,23 @@ FIX = BUG.replace('now > deadline', 'now >= deadline')
 SKILLS = ['systematic-debugging', 'test-driven-development',
           'nixhomeserver-module-change', 'nixhomeserver-safe-change']
 CASES = {
+    'approval-precedence': ('head-coordinator', ['kanban-orchestration'],
+        'Task t_trial: an authenticated owner request and recorded delegated '
+        'coordinator decision already authorize one standard-implementer slice: '
+        'correct a misleading module comment, validate it, and return a local '
+        'commit for independent acceptance. The immutable auditor plan is '
+        'attached and its independent plan review accepted this exact scope. '
+        'No credentials, data changes, exposure, new spending or deployment. '
+        'FINDINGS.md persistence is pending; an old generic card constraint says '
+        '"wait for owner approval and FINDINGS.md readback before dispatch". '
+        'Current standing policy supersedes that generic constraint. Use the '
+        'existing authorization to release exactly one implementation card in a '
+        'durable worktree and read it back. t_trial is the release decision, '
+        'which may complete after release/readback; it is not a handoff waiting '
+        'for the implementation to finish. The assignee/workspace skill catalog '
+        f'is checked: {", ".join(SKILLS)} are available and enabled. '
+        'Record any supersession on this existing task; do not create another '
+        'approval, audit or findings prerequisite.'),
     'skill-selection': ('head-coordinator', [],
         'Commission one standard-implementer card for an approved optional NixOS '
         'module regression in modules/example/services.nix. Disabling the module '
@@ -192,7 +209,7 @@ class Fixture:
                 run = subprocess.run([str(path / 'expiry-test')], capture_output=True, text=True, timeout=10)
                 return {'command': 'run_tests', 'exit_code': run.returncode, 'output': run.stdout}
         if name == 'kanban_create':
-            if self.role != 'head-coordinator' or self.name != 'skill-selection':
+            if self.role != 'head-coordinator' or self.name not in ('skill-selection', 'approval-precedence'):
                 return {'error': 'card creation outside trial scope'}
             if not set(args.get('skills', [])) <= set(SKILLS):
                 return {'error': 'unknown or unavailable skill'}
@@ -246,7 +263,21 @@ class Fixture:
                 problems.append(message)
         calls = self.events
         own = self.cards['t_trial']
-        if self.name == 'skill-selection':
+        if self.name == 'approval-precedence':
+            cards = [c for tid, c in self.cards.items() if tid != 't_trial']
+            require(len(cards) == 1, 'approved work was not released')
+            if len(cards) == 1:
+                c = cards[0]
+                require(c.get('assignee') == 'standard-implementer' and c.get('workspace_kind') == 'worktree',
+                        'approved slice assigned to wrong lane or workspace')
+                require(any(n == 'kanban_show' and r.get('task') == c for n, a, r in calls),
+                        'missing approved release readback')
+                require(all(self.cards.get(parent, {}).get('status') == 'done'
+                            for parent in c.get('parents', [])),
+                        'approved work still has an unfinished prerequisite')
+            require(not any(n == 'kanban_block' for n, a, r in calls),
+                    'existing approval blocked by a second gate')
+        elif self.name == 'skill-selection':
             cards = [c for tid, c in self.cards.items() if tid != 't_trial']
             require(len(cards) == 1, 'expected one implementation card')
             if len(cards) == 1:

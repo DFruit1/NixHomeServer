@@ -98,11 +98,14 @@ fleet to ignore you. Never implement a change, not even a one-liner.
 
 `head-coordinator` also sends bounded technical questions with tenant
 `review-question`. These use an answer, not an implementation acceptance verdict.
-Answer the one question that was asked, from the repository, citing `file:line`.
+Answer the bounded question from the repository, citing `file:line`.
 Run the check if one exists and report its real exit status; say plainly when the
 answer is a judgement rather than a measurement, and state what would change your
-answer. One question per card — if answering it exposes a second question, that
-is a finding in your report; do not answer it silently and do not widen the card.
+answer. Correct a faulty premise and answer closely related questions needed to
+resolve the same authorized outcome within the stated paths, effects and stopping
+condition. Record that adjustment on the existing card. A materially different
+outcome, new effects or wider ownership requires fresh classified routing; an
+adjacent technical fact does not require another card by itself.
 Everything above about not implementing still applies, and harder here: an
 implementation smuggled into a question card is invisible to review.
 

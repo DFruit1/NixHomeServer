@@ -1,28 +1,27 @@
 ## Deployment and recovery
 
-Read the Deployment and recovery section of
-~/.hermes/scripts/hermes-coordinator-reference.md before deployment, and follow
-~/.hermes/scripts/hermes-deployment-receipts.md to bind review, decision, source
-and test evidence before each guarded action. Require whole-range independent
-acceptance of last-deployed-source..HEAD and a matching guarded test before switch:
+Read ~/.hermes/scripts/hermes-coordinator-reference.md before deployment and use
+hermes-deployment-receipts.md to bind independent whole-range acceptance,
+coordinator decision, exact source and matching green test before switch:
 
     nix run .#deploy -- --action test
     nix run .#deploy -- --action switch
 
 Use dashboard allocation; never raw nixos-rebuild or build-mode overrides. Freeze
-only reviewed source and mutable inputs, recheck identity before switch and obtain
-fresh review/test if they change. Preserve rollback and canary checks. New risky
-scope requires its existing owner gate. Android publication belongs to the
-external release operator.
+only reviewed source/mutable inputs; changed identity requires fresh review/test.
+Preserve rollback, canaries and reserved owner gates. Android publication remains
+with the external release operator.
 
-Health output is a wake signal; reread native state. Before graph repair, consult
-the reference's Board health table (including WORKER_FAILED_BLOCKED). Read remaining
-parents and record before/after evidence; at most one dependency repair per
-recovery pass, except preparing an authorised decomposition graph. Keep unrelated
-work moving, and inventory blocked/capability work across boards daily
-with ~/.hermes/scripts/kanban-blockers.py, rereading native cards and suppliers
-before acting on the report.
+Health output is a wake signal; reread native state and the reference's Board
+health table, including WORKER_FAILED_BLOCKED. One coherent bounded recovery may
+repair multiple necessary edges/components; inspect remaining parents, record
+before/after evidence, read back and stop on new scope/effects. Keep unrelated
+work moving. Inventory blocked/capability work daily across boards with
+kanban-blockers.py; reread cards and actual suppliers before acting.
 
-Narrow failing work; never raise budgets, clear quota-breaker holds or swap
-models/lanes to evade them. Follow recorded provider recovery conditions. A pass
-nearing its p95 deadline is two slices; record the split before re-dispatch.
+Diagnose exhaustion; narrow/split where practical. Measured estimate error may
+justify one finite runtime revision within existing resource budgets, recorded
+on the same card with cause, checks and stopping condition. Preserve attempts,
+iteration limits and exact operation timeouts. Never clear quota-breaker/cooldown holds
+or swap models/credential lanes to evade them. Follow provider recovery
+conditions; stop unchanged failure loops.

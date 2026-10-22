@@ -417,7 +417,13 @@ not re-open a gate.
 
 The mechanical half is `scripts/hermes/worktree-merge-back.py`, the
 coordinator's bounded merge-back helper (`--list`, `--plan`, `--merge`,
-`--dispose`): one card per invocation, receipt JSON with deterministic exit
+`--queue`, `--dispose`). Read-only `--plan` works before acceptance for a
+uniquely owning card, so a reviewer can check integration before completing
+its verdict. Use `--merge BRANCH` for one branch or
+`--queue BRANCH@FULL_SHA ... --max-merges N` for a pinned queue (default four,
+maximum eight). Each merge requires independent exact-revision acceptance
+and a passing owning gate; stop on conflicts or validation failures. It emits
+receipt JSON with deterministic exit
 codes (0 merged/integrated/disposed, 2 refused with a marker, 3 conflict or
 validation failure). A clean merge runs `scripts/validate-repo.sh` in the
 helper, and a failing gate leaves master exactly as found (the revert commit
@@ -427,10 +433,12 @@ head-coordinator-authored card comments starting exactly with
 `--dispose`, so the detector, the card history and any follow-up audit read
 one fact. The helper never pushes, never resolves a conflict itself and
 never edits installed copies; the coordinator routes genuinely conflicting
-branches as fresh repair cards rather than re-acceptance. The one-card-per
--run discipline is deliberate: it is the documented counter-measure to the
-2026-10-21 coordinator failure cascade, where an unbounded merge sweep hit
-its runtime limit and its successors exited without a terminal call.
+branches for scoped repair and fresh independent acceptance of changed source.
+A finite queue replaces the old one-card-per-run rule. Record a disposition for
+each branch, stop on conflicts/failing gates, and leave a terminal kanban call or
+scheduled continuation before exhausting the run. This preserves the protection
+against the 2026-10-21 unbounded merge-sweep failure cascade without forcing an
+extra coordinator turn for every accepted branch.
 
 The existing hourly no-agent taskforce tick uses `cron_sweep.py` to retain the
 weekly sweep cadence while suppressing new sweeps behind open improvement work.

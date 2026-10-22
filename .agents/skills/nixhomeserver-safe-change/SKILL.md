@@ -17,8 +17,10 @@ Honor existing exact-scope approval without asking again.
 For Hermes, apply only the steps allowed by the role and card: implementers run
 approved validation and commit locally; feature-reviewer independently verifies
 without implementing or deploying, and preserves an audit card's offline limits;
-project-auditor uses this guidance for plans, not execution. head-coordinator
-routes source questions and implementation tests, and runs guarded test/switch
+project-auditor may independently verify candidates it did not author or
+implement, using the verifier evidence contract. head-coordinator may inspect
+source, run diagnostics/validation and author bounded mechanical integration
+repairs with another qualified agent's acceptance. It runs guarded test/switch
 only after accepted whole-set review of the exact source and intended action.
 The steward remains read-only. A loaded skill grants no operational authority.
 
@@ -107,7 +109,11 @@ report the evidence.
 Treat Disko, filesystem creation, pool replacement, restore, secret rotation,
 bootstrap, and data deletion as separate high-risk workflows:
 
-- Require an explicit user request covering the exact target and outcome.
+- Apply reserved owner gates to actual destructive/irreversible data effects
+  and credential changes. Require exact owner authority for those effects;
+  existing exact-scope approval remains valid. Reversible technical preparation,
+  isolated recovery rehearsal and preservation of failed state may proceed under
+  reviewed delegated authority without a new owner ask.
 - Follow the authoritative runbook in full.
 - Resolve device targets through stable `/dev/disk/by-id` identities and verify
   each independently before destructive storage work.

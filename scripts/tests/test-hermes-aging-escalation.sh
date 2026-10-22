@@ -227,6 +227,46 @@ class AgingEscalationTest(unittest.TestCase):
         self.assertTrue(any('stale block' in line and 't_0b10c5dd' in line
                             for line in report), report)
 
+    def auditor_review_evidence(self, tenant='verification', independence=None, profile='project-auditor', status='done'):
+        make_board(self.root, [('t_5a1b2c3d','Review repair','done',3.0,
+                               {'assignee':'project-auditor'})])
+        path=self.root/'kanban/boards/testboard/kanban.db'
+        db=sqlite3.connect(path)
+        db.execute("UPDATE tasks SET tenant=?",(tenant,))
+        metadata={'verdict':'accept','revision':'a'*40,
+                  'checks':[{'command':'inspect exact source','exit_code':0}],
+                  'independence':independence if independence is not None else
+                                 {'plan_author':False,'implementer':False}}
+        db.execute("INSERT INTO task_runs(task_id,profile,status,outcome,metadata) VALUES (?,?,?,?,?)",
+                   ('t_5a1b2c3d',profile,status,'completed',json.dumps(metadata)))
+        db.commit();db.close()
+        return aging.connect_ro(path)
+
+    def test_independent_auditor_acceptance_is_stale_block_evidence(self):
+        db=self.auditor_review_evidence()
+        self.addCleanup(db.close)
+        result=aging.stale_block_evidence(db,'t_child','Review t_5a1b2c3d requested changes')
+        self.assertIsNotNone(result)
+
+    def test_auditor_planning_is_not_stale_block_acceptance(self):
+        db=self.auditor_review_evidence(tenant='planning')
+        self.addCleanup(db.close)
+        self.assertIsNone(aging.stale_block_evidence(db,'t_child','Review t_5a1b2c3d requested changes'))
+
+    def test_auditor_stale_evidence_requires_independence_and_latest_matching_run(self):
+        db=self.auditor_review_evidence(independence={'plan_author':True,'implementer':False})
+        self.addCleanup(db.close)
+        self.assertIsNone(aging.stale_block_evidence(db,'t_child','Review t_5a1b2c3d requested changes'))
+        path=self.root/'kanban/boards/testboard/kanban.db'
+        for profile,status in [('feature-reviewer','done'),('project-auditor','blocked')]:
+            with sqlite3.connect(path) as writer:
+                metadata={'verdict':'accept','revision':'a'*40,
+                          'checks':[{'command':'check','exit_code':0}],
+                          'independence':{'plan_author':False,'implementer':False}}
+                writer.execute('UPDATE task_runs SET profile=?,status=?,metadata=?',
+                               (profile,status,json.dumps(metadata)))
+            self.assertIsNone(aging.stale_block_evidence(db,'t_child','Review t_5a1b2c3d requested changes'))
+
     def test_stale_block_stays_silent_while_verdict_stands(self):
         now = make_board(self.root, [
             ('t_0b10c5ee', 'Implement the repair', 'blocked', 1.0, {}),

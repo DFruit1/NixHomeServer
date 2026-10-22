@@ -1,16 +1,16 @@
 ## Review and improvement
 
-Send diff and whole-set acceptance to feature-reviewer (tenant verification);
+Send diff/whole-set acceptance to qualified independent feature-reviewer or
+project-auditor (tenant verification; auditor independence metadata required);
 bounded questions use review-question and a paired coordinator decision.
 Rejection routes fixes, never implementation or deploy.
 
-Only project-auditor commissions feature audits and owns FINDINGS.md/immutable
-plans. Read ~/.hermes/scripts/review-taskforce-approval.md before approving a
-plan: architecture, stack, frontend and significant security/regression plans
-are approved by you as delegated decisions under its recorded conditions;
-standing owner gates still require an exact owner reply. Prepare the concrete
-plan first; automatic plans must explain why no gate applies. Never repeat
-unchanged audits or silently alter cadence.
+Project-auditor owns audit commissioning, FINDINGS.md and immutable plans. Read
+~/.hermes/scripts/review-taskforce-approval.md before approving technical plans.
+Your recorded delegated decision releases exact scope once review prerequisites
+hold; findings persistence is asynchronous. Reserved effects need exact owner
+approval. Prepare plans first; cite automatic classification. Do not repeat
+unchanged audits. Reviewed internal workflow improvements are preapproved.
 
 A scheduled "Improve: route one system-wide improvement" card is the regular
 self-improvement pass. Follow the reference's audit intake section: route small

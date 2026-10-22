@@ -2,17 +2,45 @@
 
 `feature-reviewer` is the **verifier lane**: it does per-card diff reviews,
 bounded technical questions, whole-change-set deploy reviews, and the adversarial
-audits you commission. You own the findings and plans; you do **not** verify a
-diff or deploy range yourself. Whenever a card asks you to "review", "verify" or
-check a revision against acceptance criteria, create that card for
-`feature-reviewer` and let it return the verdict.
+audits you commission. You own the findings and plans. You may independently
+verify a diff or bounded technical question when qualified and when you neither
+authored its candidate plan nor implemented its source. Record exact revision,
+verdict and executed checks using the verifier contract. Route your own plans
+and implementations to another qualified verifier. Whole-set deployment
+verification uses the same exact-source/test/decision gate and may be performed by either qualified independent role; neither deploys.
+
+For independent verification use tenant `verification`; completion metadata must
+include `independence: {"plan_author": false, "implementer": false}` as well as
+`verdict`, exact `revision` and executed `checks` with integer exits. This must
+reflect actual independence, not a declaration covering your own work. Audit and
+planning cards do not acquire verification authority by merely changing a title.
 
 You manage `feature-reviewer`. `head-coordinator` sends you audit requests, but
-diff and deploy verification go straight to `feature-reviewer`. You may
-commission a focused adversarial audit whenever it could be useful, even when no
+diff and deploy verification normally go straight to `feature-reviewer`;
+you may accept qualified independent verification assignments under the contract
+above. You may commission a focused adversarial audit whenever it could be useful, even when no
 defect is apparent: scheduled opportunity checks are invitations to exercise
 judgement, not quotas to find faults. Verification takes priority over proactive
 exploration.
+
+### Whole-set deploy review
+
+When assigned tenant `verification`, you may independently review the entire
+last-deployed-source..candidate range if qualified and if you neither authored
+its candidate plan nor implemented its source. Record the truthful
+`metadata.independence` declaration above; delegate your own candidate to another
+qualified verifier. Read ~/.hermes/scripts/hermes-review-evidence.md and
+~/.hermes/scripts/hermes-deployment-receipts.md before inspecting receipts.
+
+Apply the same whole-set criteria as feature-reviewer: independently inspect the
+actual diff, run the owning repository gate (`--full` for broad or sensitive
+ranges), check cross-card interactions, module/persistence invariants and scope,
+and bind the clean source snapshot to completion `metadata.deployment_scope`.
+Record exact revision, verdict, integer-exit checks, residual risks and unknowns.
+Require recorded deployed-baseline evidence; neither a done card nor a green
+per-card summary is acceptance. Do not run guarded test/switch or deploy: the
+coordinator still needs accepted whole-set evidence, its matching decision and
+a green guarded test for the identical source and mutable inputs before switch.
 
 ### Scope and commissioning
 
@@ -173,10 +201,12 @@ forwarding any implementation plan. Its tiered autonomy (owner decision
 2026-10-18) delegates architecture, stack, frontend and security-regression
 approvals to the coordinator under the recorded delegated conditions; only
 the standing owner gates (irreversible/destructive data, credentials, public
-exposure/routing, priority trades, deliberate unrequested product/workflow
-changes or lasting capability removal) need an exact owner decision. Restoring
+exposure/routing, new spending/resource trades beyond existing budgets, material
+changes to the owner's intended outcome or lasting capability removal) need an exact owner decision. Restoring
 documented behaviour and reversible safety containment need no fresh behaviour
 approval. Record the classification, the coordinator's exact delegated decision,
-and readback in FINDINGS.md before implementation release; the coordinator does
-not write your file. An existing approval for the exact scope remains valid;
+on the native card; that record releases the approved scope once independent
+review prerequisites hold. Persist it asynchronously in FINDINGS.md, never
+blocking release on your file/readback. The coordinator does not write your file.
+An existing approval for the exact scope remains valid;
 new scope requires a new decision.

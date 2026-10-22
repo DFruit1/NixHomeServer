@@ -9,7 +9,7 @@
 # the hermes cron jobs, the copied scripts under ~/.hermes/scripts/, the
 # head-coordinator's "Deployment and recovery" section (whose Board health and
 # deploy detail lives in the installed coordinator reference) and the
-# feature-reviewer's "Whole-set deploy review" section in their SOUL.md
+# qualified verifiers' "Whole-set deploy review" sections in their SOUL.md
 # files, and one key in ~/.hermes/config.yaml. All of that lives under ~/.hermes,
 # which is not tracked and not backed up -- Kopia only snapshots the *server's*
 # /persist. So a rebuilt workstation, a wiped profile, or a fresh hermes upgrade
@@ -43,6 +43,7 @@ HERMES_ROOT="${HERMES_ROOT:-$HOME/.hermes}"
 HERMES_BOARD="${HERMES_BOARD:-nixhomeserver}"
 COORDINATOR_SOUL="$HERMES_ROOT/profiles/head-coordinator/SOUL.md"
 REVIEWER_SOUL="$HERMES_ROOT/profiles/feature-reviewer/SOUL.md"
+AUDITOR_SOUL="$HERMES_ROOT/profiles/project-auditor/SOUL.md"
 CONFIG="$HERMES_ROOT/config.yaml"
 
 # Stale detection is off by default upstream (0), which means a worker that is
@@ -406,7 +407,7 @@ if [[ ! -f "$COORDINATOR_SOUL" ]]; then
 else
   # The standing pointer: the SOUL directs the coordinator to the reference's
   # Board health table.
-  if grep -q 'Board health table' "$COORDINATOR_SOUL"; then
+  if grep -qzE 'Board[[:space:]]+health[[:space:]]+table' "$COORDINATOR_SOUL"; then
     ok "head-coordinator SOUL.md points at the reference's Board health table"
   elif [[ "$check_only" == true ]]; then
     changed "head-coordinator SOUL.md is missing the Board health table pointer"
@@ -463,7 +464,8 @@ fi
 # ---------------------------------------------------------------------------
 #
 # The guarded-deploy gate is a card workflow, not a cron job: head-coordinator
-# creates ONE whole-change-set review card for project-auditor plus the paired
+# creates ONE whole-change-set review card for a qualified independent verifier
+# (feature-reviewer or project-auditor) plus the paired
 # decision card assigned to itself, then on a clean review runs the guarded test
 # and switch itself. Neither section is code, so it is not installed from here;
 # the canonical wording is the taskforce role templates composed into the
@@ -492,6 +494,7 @@ check_deploy_section() {
 
 check_deploy_section "$COORDINATOR_SOUL" '## Deployment and recovery' "head-coordinator SOUL.md"
 check_deploy_section "$REVIEWER_SOUL" '### Whole-set deploy review' "feature-reviewer SOUL.md"
+check_deploy_section "$AUDITOR_SOUL" '### Whole-set deploy review' "project-auditor SOUL.md"
 
 if [[ -f "$COORDINATOR_SOUL" ]] && ! grep -q 'nix run .#deploy' "$COORDINATOR_SOUL"; then
   changed "head-coordinator SOUL.md does not name the guarded deploy command"

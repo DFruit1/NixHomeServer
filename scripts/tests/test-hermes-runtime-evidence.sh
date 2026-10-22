@@ -143,6 +143,24 @@ class InstallerTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.installer.enable('plugins: {enabled: [], enabled: [observability/langfuse]}')
 
+    def test_installer_refreshes_both_qualified_verifier_roles(self):
+        with tempfile.TemporaryDirectory(prefix='hermes-runtime-auditor-test-') as tmp:
+            root=Path(tmp)
+            for profile in ('feature-reviewer','project-auditor'):
+                soul=root/'profiles'/profile/'SOUL.md'
+                soul.parent.mkdir(parents=True)
+                soul.write_text('Owner note\n<!-- hermes-review-taskforce -->\nStale role\n'
+                                '<!-- /hermes-review-taskforce -->\nPreserved section\n')
+            self.assertEqual(1,self.installer.install(root,check=True))
+            self.assertEqual(0,self.installer.install(root))
+            for profile in ('feature-reviewer','project-auditor'):
+                text=(root/'profiles'/profile/'SOUL.md').read_text()
+                self.assertNotIn('Stale role',text)
+                self.assertIn('Owner note',text)
+                self.assertIn('Preserved section',text)
+                self.assertIn('hermes-review-evidence.md',text)
+            self.assertEqual(0,self.installer.install(root,check=True))
+
     def test_check_mode_does_not_write_and_install_converges(self):
         with tempfile.TemporaryDirectory(prefix='hermes-runtime-installer-test-') as tmp:
             root=Path(tmp)

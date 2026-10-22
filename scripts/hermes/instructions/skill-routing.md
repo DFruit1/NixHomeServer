@@ -16,8 +16,8 @@ assigned checkout's current instructions or prove a running turn refreshed.
 | --- | --- | --- |
 | Failing test/build, unexpected behavior, regression | `systematic-debugging` | Implementers investigate and fix; feature-reviewer investigates and reports within the card's verification or offline-audit limits. |
 | Implementing meaningful behavior | Existing bundled `test-driven-development` | Implementers use the test-first cycle with the project's own commands and test policy. Preserve existing code; do not follow blanket delete-and-restart advice or ask permission for project-approved test exemptions. |
-| NixHomeServer validation, build, recovery or deployment evidence | `nixhomeserver-safe-change` | Implementers validate; reviewer verifies; auditor plans; coordinator uses accepted evidence and the existing guarded deploy authority. |
-| Optional application module, integrations or removal | `nixhomeserver-module-change` | Implementers change the module; reviewer checks the contract; auditor uses it for planning. |
+| NixHomeServer validation, build, recovery or deployment evidence | `nixhomeserver-safe-change` | Implementers validate; qualified independent reviewers/auditors verify; coordinator diagnoses, validates and integrates mechanically with independent acceptance, retaining the guarded deploy gate. |
+| Optional application module, integrations or removal | `nixhomeserver-module-change` | Implementers change the module; reviewer checks the contract; auditor uses it for planning and independent verification; coordinator uses it for bounded integration. |
 | Long work that may outlast a pending server shutdown | `nixhomeserver-shutdown-guard` | Use existing operational authority or route the timer action to the coordinator. |
 | Rendered frontend work | Project `.agents/skills/frontend-design/SKILL.md` | Read the existing project workflow and its references; implementers build and reviewers apply its review discipline within their role. |
 | Taskforce feature audit (commissioned only) | `taskforce-feature-audit` | feature-reviewer audits within the audit card's offline limits and report contract. |
@@ -25,8 +25,9 @@ assigned checkout's current instructions or prove a running turn refreshed.
 
 Keep the existing `requesting-code-review`, `sdlc-review`, orchestration, feature
 audit and steward skills as the owners of those workflows. Do not replace them
-with upstream defaults. Coordinators and auditors route debugging questions to
-the verifier rather than taking over source investigation. The steward keeps its
+with upstream defaults. Coordinators may investigate source and run diagnostics;
+qualified independent auditors may verify. Substantive implementation stays in
+implementer lanes, and authored repairs require independent acceptance. The steward keeps its
 existing inspection skill and remains read-only.
 
 Project instructions and role permissions govern every recipe. For generic

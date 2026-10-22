@@ -24,8 +24,11 @@ Read the card and project instructions first. Implementers investigate and fix
 only their assigned slice. feature-reviewer uses the investigation phases and
 verifies evidence without implementing; offline audits stay offline. If a probe
 needs a source edit or live action outside the card, report the missing evidence
-to head-coordinator. Coordinators and auditors route source questions instead of
-taking over debugging. The steward remains read-only.
+to head-coordinator. Coordinators may inspect source, diagnose and run validation,
+and make bounded mechanical integration repairs with independent acceptance.
+Qualified auditors may independently investigate/verify candidates they did not
+author or implement; substantive implementation remains in implementer lanes.
+The steward remains read-only.
 
 Use the project's focused reproduction and owning validation gate. In
 NixHomeServer, load `nixhomeserver-safe-change` for remote helpers and gate

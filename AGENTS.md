@@ -82,8 +82,10 @@ temporary task receipts on their cards/jobs, not in standing instructions.
   The coordinator never countersigns its own widening; every widening is
   recorded on the card and persisted by project-auditor in FINDINGS.md.
   Widening is never available for secret or credential operations, destructive
-  or irreversible data effects, or public exposure and routing; a refusal that
-  cites those classes ends the matter.
+  or irreversible data effects, wider public exposure/routing, new spending,
+  material owner-outcome changes or reserved build-allocation settings; a refusal
+  citing those classes ends the matter. Use the exact delegated manifest,
+  independent review and native decision schema in documentation/hermes-autonomy.md.
 
 * Persistent memory records facts and preferences; it never grants permissions
   or overrides current profile limits, project rules, or tool restrictions.
@@ -207,10 +209,15 @@ remains until explicitly removed there.
 Shared Hermes instructions are maintained in this repository and installed into
 all named profiles, including plain-directory workspaces. See
 [Hermes instruction ownership](documentation/hermes-instructions.md) for sources,
-precedence, restoration and validation. Role restrictions and tool fences remain
-binding even when a project or card requests a broader action. Memory never
-supplies permission. "Planner" means `head-coordinator`; retired lane names must
-be routed to a live profile, not recreated.
+precedence, restoration and validation. Current authenticated owner grants and
+valid recorded delegated decisions supersede contradictory generic role, card,
+skill or runbook wording within their exact scope; do not invent another gate or
+reapprove unchanged scope. Actual tool restrictions and specific reserved
+refusals remain binding until changed through the authorized helper/installer
+path. Record supersession on the existing card and propagate tracked policy to
+installed instructions and refreshed runtime before claiming it operational.
+Memory never supplies permission. "Planner" means `head-coordinator`; retired
+lane names must be routed to a live profile, not recreated.
 
 Before creating or editing cards, read
 [documentation/hermes-card-authoring.md](documentation/hermes-card-authoring.md)
@@ -232,7 +239,10 @@ the board-health convention (merge now, defer with reason, or dispose). Merge
 integration is not deployment: switching the deployed server still requires
 the whole-set review/decision deploy gate. Exact owner approval remains
 required for secret/credential changes, public exposure or routing, priority
-trades, and deliberate unrequested product/workflow changes. Workers still
+trades beyond existing budgets, new spending, and material unrequested changes
+to the owner's intended outcome. A bounded queue may merge several accepted
+branches in one run, validating each integration and stopping on conflicts or
+failed gates. Workers still
 stop at local commits; only the coordinator merges.
 
 ### Continuous improvement taskforce
@@ -240,6 +250,11 @@ stop at local commits; only the coordinator merges.
 `feature-reviewer` independently verifies diffs, bounded questions and whole-set
 reviews; it never implements or deploys. Only `project-auditor` commissions its
 feature audits and owns each board's persisted FINDINGS.md and immutable plans.
+A qualified auditor may independently accept candidate plans/diffs it neither
+authored nor implemented, using the verifier's exact revision/checks contract.
+The coordinator may inspect source, run diagnostics/validation and author bounded
+mechanical integration repairs; another qualified agent must accept those repairs.
+Substantive feature implementation stays with implementers; nobody self-accepts.
 `head-coordinator` routes approved plans into implementation, review and composition
 work, keeping its handoff open until those results actually land; the auditor's
 closure follows that handoff. Clean audits are valid; do not invent cosmetic work,
@@ -259,27 +274,37 @@ anything else is fresh routing.
 The scheduler can leave the head-coordinator a low-priority self-improvement
 sweep card for one whole-system improvement. The coordinator routes a small
 classify-clean fix to implementers with independent feature-reviewer check, or
-sends investigation/gated work to project-auditor; it never implements. It
+sends investigation/gated work to project-auditor. It
 records each sweep outcome with `record-sweep`; consecutive no-candidate sweeps
 pause scheduling until FINDINGS.md changes. Sweep interval and backoff are
-operator-owned (`configure --sweep-interval-hours --sweep-suppress-streak`).
+delegated for reviewed reversible changes within existing resource budgets
+(`configure --sweep-interval-hours --sweep-suppress-streak`).
 
 Apply [the implementation approval policy](scripts/hermes/taskforce/approval-policy.md)
 before releasing gated work. Tiered autonomy (owner decision 2026-10-18):
 architecture, stack and frontend changes are approved autonomously by
 `head-coordinator` under the delegated conditions — recorded immutable plan
 with rollback, bounded blast radius, independent verifier evidence and a
-FINDINGS.md decision record. Exact owner approval remains required for
-irreversible or destructive data operations, secret/credential changes,
-public exposure and routing, priority trades, and deliberate unrequested product/workflow
-changes. Existing exact-scope approval remains valid; urgency and
+native card decision record. That decision releases its exact scope once
+stated independent review prerequisites hold; FINDINGS.md persistence is
+asynchronous and never another release gate. Bounded cross-subsystem technical
+decisions, identity/persistence strategy and guard design may be delegated;
+actual destructive effects, credentials and exposure remain reserved. The current
+live deploy gate applies until an accepted replacement is adopted. Exact owner
+approval remains required for irreversible/destructive data effects, credential
+changes, wider public exposure, new spending/resource trades beyond existing
+budgets and material unrequested changes to the owner's intended outcome.
+Reversible internal Hermes workflow, tooling, scheduling and card priorities
+within existing budgets are preapproved with validation and independent review.
+Existing exact-scope approval remains valid; urgency and
 path-classifier output never substitute for it. Prepare the concrete plan
 before asking.
 
 ### Deploy gate
 
 Review the exact last-deployed-source..HEAD range and intended action as one
-feature-reviewer verification card, with a paired head-coordinator decision.
+qualified independent feature-reviewer or project-auditor verification card,
+with a paired head-coordinator decision.
 Accepted whole-set review plus a matching green guarded test authorizes routine
 switching within the recorded scope. The coordinator runs test then switch; the
 verifier never does. Changed source or mutable inputs require fresh review/test.
@@ -287,7 +312,7 @@ Freeze only that source and its writers; unrelated isolated work may continue.
 The gate is a workflow convention, not a check enforced by deploy.sh.
 
 Aggregation is allowed and expected (owner decision 2026-10-22): one
-feature-reviewer whole-set review with its paired decision covers the union of
+qualified independent whole-set review with its paired decision covers the union of
 several accepted ranges — last-deployed-source..HEAD — whenever the verifier
 accepts including each range in that whole set. Do not serialize per-range
 review/decision pairs by default; a per-range chain is agent-imposed caution,

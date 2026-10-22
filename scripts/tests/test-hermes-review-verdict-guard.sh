@@ -21,7 +21,7 @@ SCHEMA = """
 CREATE TABLE tasks (
     id TEXT PRIMARY KEY, title TEXT, body TEXT, assignee TEXT, status TEXT,
     priority INTEGER DEFAULT 0, created_at INTEGER, block_kind TEXT,
-    idempotency_key TEXT, consecutive_failures INTEGER DEFAULT 0, tenant TEXT
+    idempotency_key TEXT, consecutive_failures INTEGER DEFAULT 0, tenant TEXT, current_run_id INTEGER
 );
 CREATE TABLE task_events (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT,
     kind TEXT, payload TEXT, created_at INTEGER);
@@ -33,7 +33,7 @@ CREATE TABLE task_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT,
 
 
 def accept_run(rid, ended):
-    return json.dumps({'verdict': 'accept', 'revision': rid, 'checks': []}), ended
+    return json.dumps({'verdict': 'accept', 'revision': rid, 'checks': [{'command': 'owning check', 'exit_code': 0}]}), ended
 
 
 def changes_run(rid, ended):
@@ -64,12 +64,13 @@ class VerdictGuardTest(unittest.TestCase):
              tenant, body))
         self.db.commit()
 
-    def add_run(self, tid, verdict, ended, rid="r0"):
+    def add_run(self, tid, verdict, ended, rid="r0", profile='feature-reviewer', **extra):
         row = accept_run(rid, ended) if verdict == 'accept' else changes_run(rid, ended)
+        metadata = {**json.loads(row[0]), **extra}
         self.db.execute(
             "INSERT INTO task_runs (task_id, profile, status, outcome, metadata,"
-            " ended_at) VALUES (?, 'feature-reviewer', 'done', 'completed', ?, ?)",
-            (tid, row[0], row[1]))
+            " ended_at) VALUES (?, ?, 'done', 'completed', ?, ?)",
+            (tid, profile, json.dumps(metadata), row[1]))
         self.db.commit()
 
     def add_blocked_run(self, tid, ended):
@@ -117,6 +118,7 @@ class VerdictGuardTest(unittest.TestCase):
         self.add_run('t_rev_new', 'accept', NOW - 3600)
         self.card('t_child', assignee='standard-implementer', status='running')
         self.link('t_rev_old', 't_child')
+        self.link('t_rev_new', 't_child')
         self.assertEqual({}, guard_mod.guard(self.payload('t_rev_old', 't_child'), self.root))
 
     def test_blocked_attempt_after_an_acceptance_does_not_shut_the_gate(self):
@@ -132,6 +134,7 @@ class VerdictGuardTest(unittest.TestCase):
         self.add_blocked_run('t_rev_old', NOW)
         self.card('t_child', assignee='standard-implementer', status='running')
         self.link('t_rev_old', 't_child')
+        self.link('t_rev_new', 't_child')
         self.assertEqual({}, guard_mod.guard(self.payload('t_rev_old', 't_child'), self.root))
 
     def test_newer_request_changes_does_not_shadow_an_acceptance(self):
@@ -141,15 +144,153 @@ class VerdictGuardTest(unittest.TestCase):
         self.add_run('t_rev_old', 'request-changes', NOW - 3 * DAY)
         self.card('t_rev_accept', assignee='feature-reviewer', created=NOW - 3 * DAY)
         self.add_run('t_rev_accept', 'accept', NOW - 2 * DAY)
-        # Card status is mutable after a review; do not require the accepting
-        # card to remain done when considering its completed run.
-        self.db.execute("UPDATE tasks SET status='blocked' WHERE id='t_rev_accept'")
-        self.db.commit()
         self.card('t_rev_later', assignee='feature-reviewer', created=NOW - 2 * DAY)
         self.add_run('t_rev_later', 'request-changes', NOW - DAY)
         self.card('t_child', assignee='standard-implementer', status='running')
         self.link('t_rev_old', 't_child')
+        self.link('t_rev_accept', 't_child')
         self.assertEqual({}, guard_mod.guard(self.payload('t_rev_old', 't_child'), self.root))
+
+    def rejected_gate_with_replacement(self, linked=True, profile='feature-reviewer'):
+        self.card('t_old', assignee='feature-reviewer')
+        self.add_run('t_old', 'request-changes', NOW - DAY)
+        self.card('t_new', assignee=profile, tenant='verification')
+        extra = {'independence': {'plan_author': False, 'implementer': False}} if profile == 'project-auditor' else {}
+        self.add_run('t_new', 'accept', NOW, profile=profile, **extra)
+        self.card('t_child', assignee='standard-implementer', status='running')
+        self.link('t_old', 't_child')
+        if linked:
+            self.link('t_new', 't_child')
+        return self.payload('t_old', 't_child')
+
+    def test_unrelated_acceptance_cannot_retire_rejected_review(self):
+        payload = self.rejected_gate_with_replacement(linked=False)
+        self.assertEqual('block', guard_mod.guard(payload, self.root).get('action'))
+
+    def test_linked_acceptance_requires_valid_checks(self):
+        payload = self.rejected_gate_with_replacement()
+        self.db.execute("UPDATE task_runs SET metadata=? WHERE task_id='t_new'",
+                        (json.dumps({'verdict': 'accept', 'revision': 'r', 'checks': []}),))
+        self.db.commit()
+        self.assertEqual('block', guard_mod.guard(payload, self.root).get('action'))
+
+    def test_linked_acceptance_is_invalidated_by_newer_failed_run(self):
+        payload = self.rejected_gate_with_replacement()
+        self.add_blocked_run('t_new', NOW + 1)
+        self.assertEqual('block', guard_mod.guard(payload, self.root).get('action'))
+
+    def test_linked_auditor_acceptance_retires_rejected_review(self):
+        payload = self.rejected_gate_with_replacement(profile='project-auditor')
+        self.assertEqual({}, guard_mod.guard(payload, self.root))
+
+    def test_auditor_verification_needs_verdict_and_independence(self):
+        self.card('t_auditor', assignee='project-auditor', tenant='verification')
+        for metadata in ({}, {'verdict': 'accept', 'revision': 'r', 'checks': [{'command': 'check', 'exit_code': 0}]},
+                         {'verdict': 'accept', 'revision': 'r', 'checks': [{'command': 'check', 'exit_code': 0}],
+                          'independence': {'plan_author': True, 'implementer': False}}):
+            with self.subTest(metadata=metadata):
+                self.assertEqual('block', guard_mod.guard(self.complete_payload('t_auditor', metadata), self.root).get('action'))
+        metadata = {'verdict': 'accept', 'revision': 'r', 'checks': [{'command': 'check', 'exit_code': 0}],
+                    'independence': {'plan_author': False, 'implementer': False}}
+        self.assertEqual({}, guard_mod.guard(self.complete_payload('t_auditor', metadata), self.root))
+
+    def native_auditor(self, source_status='review', implementer='standard-implementer'):
+        self.card('t_native', assignee='project-auditor', status='running', tenant='product-work')
+        self.db.execute("INSERT INTO task_runs (task_id,profile,status) VALUES ('t_native','project-auditor','running')")
+        run_id=self.db.execute('SELECT max(id) FROM task_runs').fetchone()[0]
+        self.db.execute("UPDATE tasks SET current_run_id=? WHERE id='t_native'",(run_id,))
+        for kind,metadata in [('review_requested',{'implementer':implementer,'reviewer':'project-auditor'}),
+                              ('claimed',{'source_status':source_status,'run_id':run_id})]:
+            self.db.execute('INSERT INTO task_events(task_id,kind,payload) VALUES (?,?,?)',
+                            ('t_native',kind,json.dumps(metadata)))
+        self.db.commit()
+        return {'verdict':'accept','revision':'a'*40,'checks':[{'command':'owning check','exit_code':0}],
+                'independence':{'plan_author':False,'implementer':False}}
+
+    def test_native_auditor_review_requires_verdict_and_independence(self):
+        valid=self.native_auditor()
+        for invalid in ({},{key:value for key,value in valid.items() if key!='independence'}):
+            self.assertEqual('block',guard_mod.guard(self.complete_payload('t_native',invalid),self.root).get('action'))
+        self.assertEqual({},guard_mod.guard(self.complete_payload('t_native',valid),self.root))
+
+    def test_native_auditor_rejection_requires_native_request_changes(self):
+        valid=self.native_auditor()
+        rejection={**valid,'verdict':'request-changes','requested_changes':['Fix it']}
+        result=guard_mod.guard(self.complete_payload('t_native',rejection),self.root)
+        self.assertEqual('block',result.get('action'))
+        self.assertIn('kanban_request_changes',result.get('message',''))
+
+    def test_native_auditor_self_review_cannot_accept(self):
+        valid=self.native_auditor(implementer='project-auditor')
+        self.assertEqual('block',guard_mod.guard(self.complete_payload('t_native',valid),self.root).get('action'))
+
+    def test_ordinary_auditor_run_after_old_native_review_is_not_verification(self):
+        self.native_auditor(source_status='ready')
+        self.assertEqual({},guard_mod.guard(self.complete_payload('t_native',{'report':'plan closed'}),self.root))
+
+    def test_native_auditor_claim_must_bind_current_reviewer_run(self):
+        valid=self.native_auditor()
+        self.db.execute("UPDATE task_runs SET profile='standard-implementer'")
+        self.db.commit()
+        self.assertEqual('block',guard_mod.guard(self.complete_payload('t_native',valid),self.root).get('action'))
+
+    def test_native_auditor_running_review_cannot_drop_its_current_run(self):
+        valid=self.native_auditor()
+        self.db.execute("UPDATE tasks SET current_run_id=NULL WHERE id='t_native'")
+        self.db.commit()
+        self.assertEqual('block',guard_mod.guard(self.complete_payload('t_native',valid),self.root).get('action'))
+
+    def test_native_auditor_parent_acceptance_requires_independence(self):
+        valid=self.native_auditor()
+        self.db.execute("UPDATE tasks SET status='done',current_run_id=NULL WHERE id='t_native'")
+        self.db.execute("UPDATE task_runs SET status='done',outcome='completed',metadata=?",
+                        (json.dumps({key:value for key,value in valid.items() if key!='independence'}),))
+        self.card('t_child',assignee='head-coordinator',status='running')
+        self.link('t_native','t_child')
+        self.assertEqual('block',guard_mod.guard(self.complete_payload('t_child',{}),self.root).get('action'))
+        self.db.execute('UPDATE task_runs SET metadata=?',(json.dumps(valid),));self.db.commit()
+        self.assertEqual({},guard_mod.guard(self.complete_payload('t_child',{}),self.root))
+
+    def test_auditor_planning_and_closure_are_not_verification(self):
+        for tenant in (None, 'planning', 'continuous-improvement', 'review-question'):
+            tid = 't_' + (tenant or 'none').replace('-', '_')
+            self.card(tid, assignee='project-auditor', tenant=tenant)
+            self.assertEqual({}, guard_mod.guard(self.complete_payload(tid, {'report': 'clean'}), self.root))
+
+    def test_auditor_review_parent_releases_only_after_independent_acceptance(self):
+        self.card('t_auditor', assignee='project-auditor', tenant='verification')
+        self.add_run('t_auditor', 'accept', NOW, profile='project-auditor')
+        self.card('t_child', assignee='head-coordinator', status='running')
+        self.link('t_auditor', 't_child')
+        self.assertEqual('block', guard_mod.guard(self.complete_payload('t_child', {}), self.root).get('action'))
+        self.db.execute("DELETE FROM task_runs WHERE task_id='t_auditor'")
+        self.add_run('t_auditor', 'accept', NOW, profile='project-auditor',
+                     independence={'plan_author': False, 'implementer': False})
+        self.assertEqual({}, guard_mod.guard(self.complete_payload('t_child', {}), self.root))
+        self.db.execute("UPDATE task_runs SET profile='feature-reviewer' WHERE task_id='t_auditor'")
+        self.db.commit()
+        self.assertEqual('block', guard_mod.guard(self.complete_payload('t_child', {}), self.root).get('action'))
+
+    def test_operation_review_binds_request_and_independent_executor(self):
+        self.card('t_operation', assignee='feature-reviewer', tenant='verification')
+        valid = {'verdict': 'accept', 'revision': 'a' * 64,
+                 'checks': [{'command': 'inspect exact request', 'exit_code': 0}],
+                 'operation_scope': {'request_sha256': 'a' * 64, 'executor': 'head-coordinator', 'risk_classes': []}}
+        self.assertEqual({}, guard_mod.guard(self.complete_payload('t_operation', valid), self.root))
+        for changed in ({**valid, 'revision': 'b' * 64},
+                        {**valid, 'operation_scope': {**valid['operation_scope'], 'executor': 'feature-reviewer'}},
+                        {**valid, 'operation_scope': {**valid['operation_scope'], 'risk_classes': ['credentials']}}):
+            with self.subTest(metadata=changed):
+                self.assertEqual('block', guard_mod.guard(self.complete_payload('t_operation', changed), self.root).get('action'))
+
+    def test_operation_rejection_can_report_reserved_effects(self):
+        self.card('t_operation', assignee='feature-reviewer', tenant='verification')
+        metadata={'verdict':'request-changes','revision':'a'*64,
+                  'checks':[{'command':'classify operation effects','exit_code':1}],
+                  'requested_changes':['This changes credentials and needs exact owner approval'],
+                  'operation_scope':{'request_sha256':'a'*64,'executor':'head-coordinator',
+                                     'risk_classes':['credentials']}}
+        self.assertEqual({},guard_mod.guard(self.complete_payload('t_operation',metadata),self.root))
 
     def test_no_acceptance_in_window_still_refuses(self):
         self.card('t_rev_old', assignee='feature-reviewer', created=NOW - 6 * DAY)

@@ -163,7 +163,8 @@ def evidence(root,board,review,decision,repo):
         cards = {row['id']:dict(row) for row in db.execute(
             'SELECT id,status,assignee,tenant FROM tasks WHERE id IN (?,?)',(review,decision))}
         if (review not in cards or cards[review]['status']!='done'
-                or cards[review]['assignee']!='feature-reviewer' or cards[review]['tenant']!='verification'):
+                or cards[review]['assignee'] not in {'feature-reviewer','project-auditor'}
+                or cards[review]['tenant']!='verification'):
             raise ValueError('Expected a completed whole-set verification card')
         if (decision not in cards or cards[decision]['assignee']!='head-coordinator'
                 or cards[decision]['status'] not in ('running','ready')):
@@ -174,11 +175,14 @@ def evidence(root,board,review,decision,repo):
             raise ValueError('Coordinator decision lacks its accepted review or has unfinished/missing prerequisites')
         run = db.execute('SELECT id,profile,status,outcome,metadata FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1',
                          (review,)).fetchone()
-        if (not run or run['profile']!='feature-reviewer' or run['status']!='done'
+        if (not run or run['profile']!=cards[review]['assignee'] or run['status']!='done'
                 or run['outcome']!='completed' or not isinstance(run['metadata'],str) or len(run['metadata'])>65536):
             raise ValueError('The latest review run is not a completed verifier run')
         metadata = strict_json(run['metadata'])
-        guard.validate(metadata)
+        if cards[review]['assignee']=='project-auditor':
+            guard.validate(metadata,profile='project-auditor')
+        else:
+            guard.validate(metadata)
         if metadata['verdict']!='accept':
             raise ValueError('Whole-set review requested changes')
         scope = validate_scope(metadata.get('deployment_scope'))

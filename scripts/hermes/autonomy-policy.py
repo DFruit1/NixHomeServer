@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Execute an exact, owner-approved operation through the existing Hermes workflow.
+"""Execute an exact owner-approved or independently reviewed delegated operation.
 
 Python is integration glue for Hermes' SQLite records and native coordinator
 decisions, matching deployment-receipt.py; no service or dependency is added.
@@ -31,6 +31,8 @@ IDENTITY_ENV = ('HERMES_PROFILE_NAME', 'HERMES_PROFILE', 'HERMES_HOME', 'HERMES_
                 'HERMES_KANBAN_TASK', 'HERMES_KANBAN_RUN_ID', 'HERMES_KANBAN_CLAIM_LOCK',
                 'HERMES_DELEGATED_CHILD_CONTEXT')
 CAPTURE_LIMIT = 4 * 1024 * 1024
+RESERVED_RISKS = {'credentials', 'destructive-data', 'public-exposure',
+                  'new-spending', 'owner-outcome', 'build-allocation'}
 
 
 def _json(value):
@@ -94,7 +96,8 @@ def _board(root, board):
 
 
 def prepare(root, board, task_id, argv, cwd, effects, recovery, executor,
-            timeout=300, inputs=(), environment=None):
+            timeout=300, inputs=(), environment=None, authority='owner', risk_classes=()):
+    _authority(authority, list(risk_classes))
     if not re.fullmatch(r't_[a-z0-9_]{1,64}', task_id):
         raise ValueError('Invalid task id')
     if (not isinstance(argv, list) or not argv or len(argv) > 128
@@ -130,6 +133,7 @@ def prepare(root, board, task_id, argv, cwd, effects, recovery, executor,
                     cwd=str(cwd), cwd_identity=[stat.st_dev, stat.st_ino],
                     effects=effects, recovery=recovery, executor=executor,
                     timeout=timeout, inputs=[_file(p) for p in inputs], environment=controlled)
+    manifest.update(authority=authority, risk_classes=sorted(set(risk_classes)))
     digest = hashlib.sha256(_json(manifest).encode()).hexdigest()
     manifest['sha256'] = digest
     directory = _directory(root, digest)
@@ -146,6 +150,65 @@ def _profile():
     return home.name if home.parent.name == 'profiles' else 'operator'
 
 
+def _authority(authority, risks):
+    if (authority not in {'owner', 'delegated'} or not isinstance(risks, list)
+            or any(not isinstance(risk, str) or risk not in RESERVED_RISKS for risk in risks)):
+        raise ValueError('Declare owner or delegated authority and recognized risk classes')
+    if authority == 'delegated' and risks:
+        raise ValueError('Reserved effects require exact owner approval, not fence widening')
+
+
+def _accepted_review(db, review, executor):
+    task = db.execute('SELECT status,assignee,tenant FROM tasks WHERE id=?', (review,)).fetchone()
+    run = db.execute('SELECT profile,status,outcome,metadata FROM task_runs '
+                     'WHERE task_id=? ORDER BY id DESC LIMIT 1', (review,)).fetchone()
+    if (not task or task['status'] != 'done' or task['tenant'] != 'verification' or not run
+            or run['profile'] not in {'feature-reviewer', 'project-auditor'}
+            or task['assignee'] != run['profile']
+            or run['profile'] == executor or run['status'] != 'done'
+            or run['outcome'] != 'completed' or not isinstance(run['metadata'], str)
+            or len(run['metadata']) > 65536):
+        raise ValueError('Require the latest completed independent operation review')
+    metadata = json.loads(run['metadata'])
+    independence = metadata.get('independence') if isinstance(metadata, dict) else None
+    if run['profile'] == 'project-auditor' and (
+            not isinstance(independence, dict) or independence.get('plan_author') is not False
+            or independence.get('implementer') is not False):
+        raise ValueError('Auditor verification requires explicit independence from plan and implementation')
+    if (not isinstance(metadata, dict) or metadata.get('verdict') != 'accept'
+            or not isinstance(metadata.get('revision'), str) or not metadata['revision'].strip()):
+        raise ValueError('Independent review has no current acceptance')
+    checks = metadata.get('checks')
+    if (not isinstance(checks, list) or not checks
+            or any(not isinstance(item, dict) or not isinstance(item.get('command'), str)
+                   or not item['command'].strip() or type(item.get('exit_code')) is not int
+                   or item['exit_code'] != 0 for item in checks)):
+        raise ValueError('Independent operation acceptance requires executed successful checks')
+    return metadata
+
+
+def _delegated_review(db, manifest, decision):
+    review = decision.get('review_task_id')
+    if not isinstance(review, str) or not re.fullmatch(r't_[a-z0-9_]{1,64}', review):
+        raise ValueError('Name the independent operation review card')
+    parents = list(db.execute('SELECT l.parent_id,t.status,t.assignee,t.tenant FROM task_links l '
+                              'LEFT JOIN tasks t ON t.id=l.parent_id WHERE l.child_id=?',
+                              (manifest['task_id'],)))
+    if review not in {parent['parent_id'] for parent in parents}:
+        raise ValueError('Link the independent review as an operation prerequisite')
+    if any(parent['status'] != 'done' for parent in parents):
+        raise ValueError('Operation has unfinished or missing prerequisites')
+    # A selected older accept cannot override another live review prerequisite.
+    # Supersede rejected edges through the native reviewed replacement lifecycle.
+    for parent in parents:
+        if parent['tenant'] == 'verification' and parent['assignee'] in {'feature-reviewer', 'project-auditor'}:
+            _accepted_review(db, parent['parent_id'], manifest['executor'])
+    metadata = _accepted_review(db, review, manifest['executor'])
+    scope = dict(request_sha256=manifest['sha256'], executor=manifest['executor'], risk_classes=[])
+    if metadata['revision'] != manifest['sha256'] or metadata.get('operation_scope') != scope:
+        raise ValueError('Independent acceptance must match the exact operation and reserved-effect classification')
+
+
 def check(root, digest, profile=None):
     directory = _directory(root, digest)
     manifest = json.loads((directory / 'request.json').read_text())
@@ -153,6 +216,8 @@ def check(root, digest, profile=None):
     if (manifest.get('sha256') != digest or manifest.get('schema_version') != 1
             or hashlib.sha256(_json(payload).encode()).hexdigest() != digest):
         raise ValueError('Request identity changed; obtain a fresh approval')
+    authority = manifest.get('authority', 'owner')  # Existing v1 owner requests remain valid.
+    _authority(authority, manifest.get('risk_classes', []))
     if os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'):
         raise ValueError('Delegated children cannot execute owner-approved operations')
     worker = os.environ.get('HERMES_KANBAN_TASK')
@@ -175,6 +240,7 @@ def check(root, digest, profile=None):
     if (directory / 'running.json').exists() or (directory / 'receipt.json').exists():
         raise ValueError('Operation already started; no automatic repeat')
     with _board(root, manifest['board']) as db:
+        db.execute('BEGIN')
         task = db.execute('SELECT status FROM tasks WHERE id=?', (manifest['task_id'],)).fetchone()
         if task is None or task['status'] in {'done', 'archived'}:
             raise ValueError('Operation gate is no longer open')
@@ -183,18 +249,25 @@ def check(root, digest, profile=None):
                                   (manifest['task_id'],)):
             if comment['author'] in {'user', 'owner', 'desktop'}:
                 decision = None  # Later owner feedback must be reconciled first.
-            if comment['author'] != 'head-coordinator' or 'owner_execution_decision' not in comment['body']:
+            if comment['author'] != 'head-coordinator' or not any(
+                    key in (comment['body'] or '') for key in
+                    ('owner_execution_decision', 'delegated_execution_decision')):
                 continue
             try:
-                decision = json.loads(comment['body'])['owner_execution_decision']
+                key = 'owner_execution_decision' if authority == 'owner' else 'delegated_execution_decision'
+                decision = json.loads(comment['body'])[key]
             except (ValueError, KeyError, TypeError):
                 decision = None
         if (not isinstance(decision, dict) or decision.get('approved') is not True
                 or decision.get('request_sha256') != digest
-                or decision.get('executor') != manifest['executor']
-                or not isinstance(decision.get('owner_reply'), str)
-                or not re.search(r'\bapprove\s+' + digest + r'\b', decision['owner_reply'], re.I)):
-            raise ValueError('No current coordinator-recorded exact owner approval')
+                or decision.get('executor') != manifest['executor']):
+            raise ValueError('No current coordinator-recorded exact ' + authority + ' approval')
+        if authority == 'owner':
+            if (not isinstance(decision.get('owner_reply'), str) or not re.search(
+                    r'\bapprove\s+' + digest + r'\b', decision['owner_reply'], re.I)):
+                raise ValueError('No current coordinator-recorded exact owner approval')
+        else:
+            _delegated_review(db, manifest, decision)
     return manifest
 
 
@@ -270,7 +343,8 @@ def execute(root, digest, profile=None):
                        exit_code=process.returncode,
                        stdout=preview('stdout.txt'), stderr=preview('stderr.txt'),
                        output_sha256={p: _file(directory / p)['sha256'] for p in ('stdout.txt', 'stderr.txt')},
-                       execution_provenance='bot-after-owner-approval')
+                       execution_provenance=('bot-after-delegated-approval' if manifest.get('authority') == 'delegated'
+                                             else 'bot-after-owner-approval'))
         atomic_write(directory / 'receipt.json', _json(receipt) + '\n')
         return receipt
 
@@ -284,6 +358,8 @@ def main():
     prepare_parser.add_argument('--timeout', type=int, default=300)
     prepare_parser.add_argument('--input', action='append', default=[])
     prepare_parser.add_argument('--env', action='append', default=[], metavar='NAME=VALUE')
+    prepare_parser.add_argument('--authority', choices=('owner', 'delegated'), default='owner')
+    prepare_parser.add_argument('--risk-class', action='append', choices=sorted(RESERVED_RISKS), default=[])
     prepare_parser.add_argument('argv', nargs=argparse.REMAINDER)
     for name in ('check', 'execute'):
         actions.add_parser(name).add_argument('sha256')
@@ -294,7 +370,7 @@ def main():
             argv = args.argv[1:] if args.argv[:1] == ['--'] else args.argv
             result = prepare(root, args.board, args.task, argv, Path(args.cwd), args.effects,
                              args.recovery, args.executor, args.timeout, [Path(p) for p in args.input],
-                             dict(item.split('=', 1) for item in args.env))
+                             dict(item.split('=', 1) for item in args.env), args.authority, args.risk_class)
         else:
             result = (check if args.action == 'check' else execute)(root, args.sha256)
         print(json.dumps(result, indent=2))

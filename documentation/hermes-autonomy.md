@@ -71,6 +71,46 @@ every mutable input was declared; the coordinator owns those checks. A command
 receipt proves execution, not source acceptance, physical phone display or safe
 deployment. Existing whole-set review and matching guarded test remain required.
 
+## Independently reviewed delegated execution
+
+An eligible non-reserved tool-fence block may use the same one-shot manifest
+without another owner reply. Prepare with `--authority delegated` and the same
+exact argv, cwd, inputs, effects, executor, timeout and recovery fields. Owner-only
+manifests remain owner-only: a delegated comment cannot authorize one. The
+reserved `--risk-class` values are `credentials`, `destructive-data`,
+`public-exposure`, `new-spending`, `owner-outcome` and `build-allocation`;
+a delegated request must have none. Declaring no risks is an assessment, not
+permission to omit actual reserved effects. Use owner authority for those effects.
+
+Before execution, a completed independent `feature-reviewer` or qualified
+`project-auditor` review card with tenant `verification` must be a parent of the operation gate. Its latest
+run records `verdict: accept`, `revision` equal to the full request SHA256,
+successful integer-exit checks, and this metadata (plus the normal verdict/checks):
+
+```json
+{"operation_scope":{"request_sha256":"FULL_SHA256","executor":"head-coordinator","risk_classes":[]}}
+```
+
+An auditor review uses tenant `verification` and also records
+`metadata.independence={"plan_author":false,"implementer":false}`. Either reviewer
+must actually be independent of the candidate plan and implementation; a role
+label or declaration cannot manufacture independence. The coordinator posts a
+native comment on the operation gate:
+
+```json
+{"delegated_execution_decision":{"approved":true,"request_sha256":"FULL_SHA256","executor":"head-coordinator","review_task_id":"t_REVIEW"}}
+```
+
+That exact recorded decision releases the reviewed operation immediately;
+FINDINGS.md persistence follows asynchronously. The designated executor runs
+`check FULL_SHA256` then `execute FULL_SHA256`. Executor/pins, source/input
+identities, latest decision and one-shot consumption remain enforced. Receipts
+use `bot-after-delegated-approval`, never owner-execution provenance. Changed
+inputs or an interrupted/consumed attempt require reconciliation and a fresh
+exact manifest/review, not replay. An independent refusal or reserved-risk
+refusal remains binding. Recurring eligible blocks should trigger a reviewed
+repair to the owning fence rather than repeated one-shot workarounds.
+
 ## Bounded configured provider fallback
 
 Configured `fallback_providers` are preapproved in their existing order for auth,

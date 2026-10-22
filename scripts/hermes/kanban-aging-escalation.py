@@ -227,32 +227,53 @@ def latest_verdict(db, task_id):
     """The newest verifier run's verdict metadata on a review card, or None."""
     try:
         row = db.execute(
-            'SELECT metadata FROM task_runs WHERE task_id = ?'
-            ' ORDER BY id DESC LIMIT 1', (task_id,)).fetchone()
+            'SELECT r.metadata,r.profile,r.status,r.outcome,t.assignee FROM task_runs r'
+            ' JOIN tasks t ON t.id=r.task_id WHERE r.task_id = ?'
+            ' ORDER BY r.id DESC LIMIT 1', (task_id,)).fetchone()
     except sqlite3.Error:
         return None
-    if not row:
+    if (not row or row['profile'] != row['assignee'] or row['status'] != 'done'
+            or row['outcome'] != 'completed'):
         return None
     try:
         data = json.loads(row['metadata'] or '{}')
     except (ValueError, AttributeError):
         return None
+    if not isinstance(data, dict):
+        return None
+    if row['assignee'] == 'project-auditor':
+        # This job only posts evidence; it never unblocks. Auditor planning
+        # and self-review still cannot become a verified acceptance signal.
+        independence = data.get('independence')
+        checks = data.get('checks')
+        if (not isinstance(independence, dict)
+                or set(independence) != {'plan_author', 'implementer'}
+                or independence['plan_author'] is not False
+                or independence['implementer'] is not False
+                or not isinstance(data.get('revision'), str) or not data['revision'].strip()
+                or not isinstance(checks, list) or not checks
+                or any(not isinstance(check, dict)
+                       or not isinstance(check.get('command'), str) or not check['command'].strip()
+                       or type(check.get('exit_code')) is not int
+                       or (data.get('verdict') == 'accept' and check['exit_code'] != 0)
+                       for check in checks)):
+            return None
     verdict = data.get('verdict')
     return verdict if verdict in ('accept', 'request-changes') else None
 
 
 def reviewer_is_done(db, task_id):
-    """Whether the card is a completed feature-reviewer verification card."""
+    """Whether the card is a completed verification in either qualified role."""
     try:
         row = db.execute(
             "SELECT assignee, tenant, status FROM tasks WHERE id = ?",
             (task_id,)).fetchone()
     except sqlite3.Error:
         return False
-    return bool(row and row['assignee'] == 'feature-reviewer'
-                and (row['tenant'] or '') not in
-                {'continuous-improvement', 'review-question'}
-                and row['status'] == 'done')
+    return bool(row and row['status'] == 'done'
+                and ((row['assignee'] == 'feature-reviewer'
+                      and (row['tenant'] or '') not in {'continuous-improvement', 'review-question'})
+                     or (row['assignee'] == 'project-auditor' and row['tenant'] == 'verification')))
 
 
 def stale_block_evidence(db, task_id, reason):

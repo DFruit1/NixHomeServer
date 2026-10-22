@@ -13,11 +13,53 @@ import sqlite3
 import sys
 
 
-def verification(task):
-    return task['assignee'] == 'feature-reviewer' and task['tenant'] not in {'continuous-improvement', 'review-question'}
+def verification(task, db=None):
+    return ((task['assignee'] == 'feature-reviewer'
+             and task['tenant'] not in {'continuous-improvement', 'review-question'})
+            or (task['assignee'] == 'project-auditor' and task['tenant'] == 'verification')
+            or (db is not None and native_review(db, task)))
 
 
-def validate(metadata, allow_unknown=False):
+def native_review(db, task):
+    """Native review provenance survives the implementation task's tenant.
+
+    Match the latest claimed event to the current reviewer run, just as Hermes'
+    native retry lifecycle does. A later ordinary claim clears this context;
+    an old review_requested event alone never makes planning work verification.
+    """
+    if task['assignee'] not in {'feature-reviewer', 'project-auditor'}:
+        return False
+    claim = db.execute("SELECT payload FROM task_events WHERE task_id=? AND kind='claimed'"
+                       ' ORDER BY id DESC LIMIT 1', (task['id'],)).fetchone()
+    provenance = json.loads(claim['payload'] or '{}') if claim else {}
+    if not isinstance(provenance, dict):
+        raise ValueError('Malformed latest claim provenance')
+    if task['status'] != 'review' and provenance.get('source_status') != 'review':
+        return False
+    current = task['current_run_id'] if 'current_run_id' in task.keys() else None
+    if task['status'] == 'running' and 'current_run_id' in task.keys() and current is None:
+        raise ValueError('A running native review needs its current reviewer run')
+    if current is not None and task['status'] != 'review':
+        run = db.execute('SELECT profile FROM task_runs WHERE task_id=? AND id=?',
+                         (task['id'], current)).fetchone()
+        if provenance.get('run_id') != current or not run or run['profile'] != task['assignee']:
+            raise ValueError('Native review claim does not match the current reviewer run')
+    return True
+
+
+def _independent_native_acceptance(db, task):
+    handoff = db.execute("SELECT payload FROM task_events WHERE task_id=? AND kind='review_requested'"
+                         ' ORDER BY id DESC LIMIT 1', (task['id'],)).fetchone()
+    evidence = json.loads(handoff['payload'] or '{}') if handoff else {}
+    if (not isinstance(evidence, dict)
+            or not isinstance(evidence.get('implementer'), str) or not evidence['implementer'].strip()
+            or evidence['implementer'] == task['assignee']
+            or evidence.get('reviewer', task['assignee']) != task['assignee']):
+        raise ValueError('Native acceptance requires an independent implementer/reviewer handoff')
+    return True
+
+
+def validate(metadata, allow_unknown=False, *, profile=None):
     """verdict contract for a completed verification card.
 
     `unknown` is the first-missing-input outcome: the verifier could not reach
@@ -33,6 +75,14 @@ def validate(metadata, allow_unknown=False):
         raise ValueError('Set metadata.verdict to accept or request-changes, in lowercase'
                          + (' (or unknown when the card body permits a first-missing-input outcome)'
                             if allow_unknown else ''))
+    if profile == 'project-auditor':
+        independence = metadata.get('independence')
+        if (not isinstance(independence, dict)
+                or set(independence) != {'plan_author', 'implementer'}
+                or independence['plan_author'] is not False
+                or independence['implementer'] is not False):
+            raise ValueError('Auditor verification requires metadata.independence with'
+                             ' plan_author=false and implementer=false')
     if metadata.get('verdict') == 'unknown':
         fixes = metadata.get('missing_inputs')
         if not isinstance(fixes, list) or not fixes or any(not isinstance(f, str) or not f.strip() for f in fixes):
@@ -48,6 +98,21 @@ def validate(metadata, allow_unknown=False):
             raise ValueError('Every check needs a command and actual integer exit_code')
         if metadata['verdict'] == 'accept' and check['exit_code'] != 0:
             raise ValueError('A failing check cannot support acceptance; request changes or resolve it')
+    if 'operation_scope' in metadata:
+        scope = metadata['operation_scope']
+        if (not isinstance(scope, dict)
+                or set(scope) != {'request_sha256', 'executor', 'risk_classes'}
+                or not isinstance(scope['request_sha256'], str)
+                or not re.fullmatch(r'[0-9a-f]{64}', scope['request_sha256'])
+                or metadata['revision'] != scope['request_sha256']
+                or scope['executor'] not in {'operator', 'head-coordinator',
+                                             'standard-implementer', 'local-implementer'}
+                or scope['executor'] == profile
+                or not isinstance(scope['risk_classes'], list)
+                or any(not isinstance(risk, str) or not risk.strip() for risk in scope['risk_classes'])
+                or (metadata['verdict'] == 'accept' and scope['risk_classes'] != [])):
+            raise ValueError('Operation review must bind its exact request SHA as revision,'
+                             ' an independent executor and no reserved effects for acceptance')
     if metadata['verdict'] == 'request-changes':
         fixes = metadata.get('requested_changes')
         if not isinstance(fixes, list) or not fixes or any(not isinstance(f, str) or not f.strip() for f in fixes):
@@ -55,31 +120,34 @@ def validate(metadata, allow_unknown=False):
 
 
 def _latest_review_state(db, review_id):
-    """(parent row, latest completed verifier run) for a feature-reviewer card.
+    """(parent row, latest completed verifier run) for a verification card.
 
     Only a completed run carries a verdict. Anchoring on the latest attempt of
     any status would let an interrupted (blocked) attempt move the supersession
     window past an acceptance that already landed, so the query filters the way
     _accepted_verdict() does.
     """
-    parent = db.execute('SELECT id,status,assignee,tenant,created_at FROM tasks WHERE id=?',
+    parent = db.execute('SELECT * FROM tasks WHERE id=?',
                         (review_id,)).fetchone()
     if parent is None:
         return None, None
     run = db.execute("SELECT profile,status,outcome,metadata,ended_at FROM task_runs"
-                     " WHERE task_id=? AND profile='feature-reviewer'"
+                     " WHERE task_id=? AND profile=?"
                      " AND status='done' AND outcome='completed'"
-                     ' ORDER BY ended_at DESC, id DESC LIMIT 1', (review_id,)).fetchone()
+                     ' ORDER BY ended_at DESC, id DESC LIMIT 1',
+                     (review_id, parent['assignee'])).fetchone()
     return parent, run
 
 
-def _accepted_verdict(run):
-    if not run or run['profile'] != 'feature-reviewer' or run['status'] != 'done' \
+def _accepted_verdict(run, profile):
+    if not run or run['profile'] != profile or run['status'] != 'done' \
             or run['outcome'] != 'completed':
         return False
     try:
-        return json.loads(run['metadata'] or '{}').get('verdict') == 'accept'
-    except (ValueError, AttributeError):
+        metadata = json.loads(run['metadata'] or '{}')
+        validate(metadata, profile=profile)
+        return metadata['verdict'] == 'accept'
+    except (ValueError, TypeError, AttributeError):
         return False
 
 
@@ -87,7 +155,7 @@ def guard_unlink(payload, root):
     """Check a kanban_unlink without changing board state.
 
     Unlinking an ordinary prerequisite stays worker-service (the native tool's
-    own contract). A feature-reviewer parent edge is different: it is the
+    own contract). A verification parent edge is different: it is the
     child's review gate. Retiring one while its verdict still stands would
     let the child complete unreviewed, so the unlink must carry its own
     evidence: an accepted verdict on the same review, or a newer accepted
@@ -112,27 +180,37 @@ def guard_unlink(payload, root):
         if child['status'] in ('done', 'archived'):
             return {}
         parent, run = _latest_review_state(db, parent_id)
-        if parent is None or not verification(parent):
+        if parent is None or not verification(parent, db):
             return {}
         if run is None:
             raise ValueError(f'Review {parent_id} has no completed verifier run;'
                              ' its gate cannot be retired by unlink')
-        if _accepted_verdict(run):
+        latest = db.execute('SELECT profile,status,outcome,metadata FROM task_runs'
+                            ' WHERE task_id=? ORDER BY id DESC LIMIT 1', (parent_id,)).fetchone()
+        if parent['status'] == 'done' and _accepted_verdict(latest, parent['assignee']):
+            if native_review(db, parent):
+                _independent_native_acceptance(db, parent)
             return {}
-        # Any completed acceptance in the window releases the gate: a later
-        # request-changes elsewhere must not shadow a real acceptance.
-        newer = db.execute(
-            "SELECT r.metadata, r.profile, r.status, r.outcome FROM task_runs r"
-            " JOIN tasks t ON t.id = r.task_id"
-            " WHERE t.id != ? AND t.assignee = 'feature-reviewer'"
-            " AND t.status != 'archived'"
-            " AND r.profile = 'feature-reviewer'"
-            " AND r.status = 'done' AND r.outcome = 'completed'"
-            ' AND r.ended_at IS NOT NULL AND r.ended_at > ?'
-            ' ORDER BY r.ended_at DESC',
-            (parent_id, run['ended_at'] or 0)).fetchall()
-        if any(_accepted_verdict(candidate) for candidate in newer):
-            return {}
+        # A replacement must be a linked parent of this same child, complete,
+        # and accepted in its latest run. Unrelated board-wide acceptance and
+        # stale acceptance followed by a failed retry cannot release this gate.
+        replacements = db.execute(
+            'SELECT t.* FROM task_links l'
+            ' JOIN tasks t ON t.id=l.parent_id'
+            " WHERE l.child_id=? AND t.id!=? AND t.status='done'",
+            (child_id, parent_id)).fetchall()
+        for replacement in replacements:
+            if not verification(replacement, db):
+                continue
+            candidate = db.execute(
+                'SELECT profile,status,outcome,metadata,ended_at FROM task_runs'
+                ' WHERE task_id=? ORDER BY id DESC LIMIT 1', (replacement['id'],)).fetchone()
+            if (candidate and candidate['ended_at'] is not None
+                    and candidate['ended_at'] > (run['ended_at'] or 0)
+                    and _accepted_verdict(candidate, replacement['assignee'])):
+                if native_review(db, replacement):
+                    _independent_native_acceptance(db, replacement)
+                return {}
         raise ValueError(
             f'Review {parent_id} requested changes, so this link is the live review'
             f' gate for {child_id}: unlinking it now would let the card complete'
@@ -167,36 +245,39 @@ def guard_complete(payload, root):
         db.row_factory = sqlite3.Row
         db.execute('PRAGMA query_only=ON')
         db.execute('BEGIN')
-        task = db.execute('SELECT id,status,assignee,tenant,body FROM tasks WHERE id=?', (task_id,)).fetchone()
+        task = db.execute('SELECT * FROM tasks WHERE id=?', (task_id,)).fetchone()
         if task is None:
             raise ValueError('Unknown task; do not infer review acceptance')
         metadata = args.get('metadata')
-        if verification(task):
+        native = native_review(db, task)
+        if verification(task) or native:
             # The body sanction: a verifier card may complete with
             # metadata.verdict=unknown for a first-missing-input outcome only
             # when its body states that contract. Parent review evidence below
             # stays strict: an unknown verdict never releases a child.
             allow_unknown = bool(re.search(r'verdict[=:]\s*unknown', task['body'] or ''))
-            validate(metadata, allow_unknown=allow_unknown)
+            validate(metadata, allow_unknown=allow_unknown, profile=task['assignee'])
+            if native and metadata['verdict'] == 'accept':
+                _independent_native_acceptance(db, task)
             if metadata['verdict'] == 'request-changes':
-                claim = db.execute("SELECT payload FROM task_events WHERE task_id=? AND kind='claimed' ORDER BY id DESC LIMIT 1", (task_id,)).fetchone()
-                provenance = json.loads(claim['payload'] or '{}') if claim else {}
-                if task['status'] == 'review' or provenance.get('source_status') == 'review':
+                if native:
                     raise ValueError('Native review rejection uses kanban_request_changes, not completion')
                 children = db.execute("SELECT c.assignee FROM task_links l JOIN tasks c ON c.id=l.child_id WHERE l.parent_id=? AND c.status NOT IN ('done','archived')", (task_id,)).fetchall()
                 if any(c['assignee'] != 'head-coordinator' for c in children):
                     raise ValueError('Rejection would release non-coordinator work; ask the coordinator to repair those dependencies first')
-        parents = db.execute('SELECT p.id,p.status,p.assignee,p.tenant FROM task_links l JOIN tasks p ON p.id=l.parent_id WHERE l.child_id=?', (task_id,)).fetchall()
+        parents = db.execute('SELECT p.* FROM task_links l JOIN tasks p ON p.id=l.parent_id WHERE l.child_id=?', (task_id,)).fetchall()
         for parent in parents:
-            if not verification(parent):
+            if not verification(parent, db):
                 continue
             if parent['status'] != 'done':
                 raise ValueError(f"Review {parent['id']} is not complete")
             run = db.execute("SELECT profile,status,outcome,metadata FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1", (parent['id'],)).fetchone()
-            if not run or run['profile'] != 'feature-reviewer' or run['status'] != 'done' or run['outcome'] != 'completed':
+            if not run or run['profile'] != parent['assignee'] or run['status'] != 'done' or run['outcome'] != 'completed':
                 raise ValueError(f"Latest run for review {parent['id']} is not a completed verifier run")
             evidence = json.loads(run['metadata'] or '{}') if run else {}
-            validate(evidence)
+            validate(evidence, profile=parent['assignee'])
+            if evidence['verdict'] == 'accept' and native_review(db, parent):
+                _independent_native_acceptance(db, parent)
             if evidence['verdict'] != 'accept':
                 raise ValueError(
                     f"Review {parent['id']} requested changes. The review gate"

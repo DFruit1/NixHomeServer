@@ -11,8 +11,10 @@ Auditors and reviewers never implement fixes themselves.
 per-card diff, a bounded technical question, or a whole-set deploy range — is
 verified by `feature-reviewer`, which runs the gate and returns accept or
 request-changes. `head-coordinator` routes verification straight to
-`feature-reviewer`; `project-auditor` owns findings and plans and never verifies
-a diff itself. The audit work described below is `feature-reviewer`'s secondary
+`feature-reviewer` by default; a qualified `project-auditor` may also verify a
+candidate plan/diff it neither authored nor implemented, using the same exact
+revision/checks contract. Whole-set deployment reviews use the same exact-source/test/decision gate
+and may be performed by either qualified independent role. The audit work described below is `feature-reviewer`'s secondary
 duty, commissioned by `project-auditor`.
 
 The unused `principal-consultant` profile is retired. Manual large-model
@@ -91,6 +93,9 @@ profiles. Verification uses tenant `verification` (legacy non-audit/non-question
 reviewer cards also qualify), exact lowercase `metadata.verdict`, a reviewed
 `revision`, and executed `checks` containing commands and integer exit codes.
 Acceptance requires passing checks; rejection requires `requested_changes`.
+Auditor verification must use tenant `verification` and include
+`metadata.independence={"plan_author":false,"implementer":false}` reflecting
+actual independence. Planning/audit cards do not inherit verifier authority.
 Audit reports (`continuous-improvement`) and bounded questions (`review-question`)
 retain their own output contracts. A rejected downstream review may release only
 coordinator routing. Consumers cannot complete against rejected/missing review
@@ -139,7 +144,8 @@ Only existing boards with an absolute `default_workdir` can schedule checks.
 Unconfigured boards default to no scheduled reviews. Choose daily for active,
 large, immature or critical projects; weekly or off for stable/less critical ones.
 Changing cadence preserves findings and plans. Off retains on-demand reviews.
-Cadence is operator-owned; the reviewer may recommend changes with evidence.
+Reviewers may recommend cadence changes with evidence; the coordinator may
+approve reviewed reversible changes within existing resource budgets.
 The hourly tick's behaviour is described in full under "Findings, audit
 conflicts and handoffs" below, including clean-streak suppression.
 
@@ -161,7 +167,8 @@ launcher/supervisor; do not install a second per-profile gateway.
 
 The same no-agent tick can leave the **head-coordinator** a low-priority
 `continuous-improvement` card, "Improve: route one system-wide improvement".
-Its interval is a separate, operator-owned `sweep_interval_hours` key (default
+Its interval is a separate `sweep_interval_hours` key, delegated for reviewed
+reversible adjustments within existing resource budgets (default
 `0`, disabled; `--sweep-interval-hours N`; a positive N also schedules on a
 board whose audit cadence is off). It is off until an operator opts a board in,
 so unconfigured boards get no proactive coordinator card. The sweep is
@@ -194,7 +201,9 @@ classify-clean fix to implementers with an independent feature-reviewer
 verification, sends anything needing investigation, a plan or an owner gate to
 `project-auditor`, and completes the card with a recorded reason when nothing
 worthwhile is found — recording the sweep outcome with `record-sweep` first. It
-never implements, reopens a rejected/verified finding or widens an approval.
+delegates substantive implementation; bounded mechanical integration repairs
+require another qualified agent's acceptance. It never reopens a rejected/verified
+finding without changed evidence or silently widens an approval.
 Off leaves on-demand and the auditor opportunity intact.
 
 ## Findings, audit conflicts and handoffs
@@ -203,7 +212,7 @@ State lives outside worktrees and survives completion/restarts:
 
 ```text
 ~/.hermes/kanban/boards/<slug>/review-taskforce/
-  config.json       cadence, audit chain cap, clean-streak suppression, operator-owned
+  config.json       cadence, audit chain cap, clean-streak suppression; reviewed changes within existing budgets delegated
   schedule.json     last successfully created opportunity check
   FINDINGS.md       reviewer-owned decisions and lifecycle
   findings.jsonl    machine-readable finding index (IDs, tasks, statuses)
@@ -248,9 +257,11 @@ python3 ~/.hermes/scripts/review-taskforce.py --board nixhomeserver chain-check 
 ```
 
 `chain-check` counts commissioned audits for a finding (reviewer cards citing it
-plus index links) and exits 1 at the per-finding cap (default 2), so an
-unsatisfied question becomes a bounded new question, an unknown or an escalation
-instead of a repeated audit.
+plus index links) and exits 1 at the per-finding cap (default 2), preventing
+unchanged repeated audits. Correct faulty premises or answer closely related
+questions inside the same authorized scope on the existing card. New effects or
+materially different outcomes require classified routing; missing evidence
+remains an explicit unknown rather than an invented owner gate.
 
 The coordinator creates implementer, review and composition cards independently
 of the unfinished handoff, then makes the final completion cards parents of
@@ -288,7 +299,10 @@ Exit 1 means a rule fired; the plan then cites an approval for exactly that scop
 or records why the rule does not apply. Rules are generic defaults overridable
 per board with `review-taskforce/classify.json`.
 
-Only the reviewer publishes findings, with the hash returned by `status`:
+Only project-auditor publishes central findings/plans, with the hash returned
+by `status`; reviewers publish their commissioned reports. A native delegated
+decision releases reviewed scope immediately; asynchronous FINDINGS.md
+persistence/readback never adds an approval or dispatch gate:
 
 ```bash
 python3 ~/.hermes/scripts/review-taskforce.py --board nixhomeserver write --source <draft> --expected-sha256 <hash>

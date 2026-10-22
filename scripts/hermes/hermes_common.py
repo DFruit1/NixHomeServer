@@ -16,6 +16,30 @@ import tempfile
 from pathlib import Path
 
 
+# Shared by instruction/taskforce installers: a reinstall must not resurrect a
+# narrower role description than the managed instructions it just installed.
+PROFILE_DESCRIPTIONS = {
+    'standard-implementer': ('STANDARD IMPLEMENTER. Default for implementation without direct credential-value handling, '
+        'tests and documentation in the assigned durable workspace. Models and fallbacks come from configuration; '
+        'provider failures follow bounded recovery. Commits locally after the owning gate and hands exact evidence '
+        'to independent acceptance by feature-reviewer or a qualified project-auditor. Never publishes.'),
+    'local-implementer': ('LOCAL IMPLEMENTER. Only the smallest bounded step requiring direct handling of actual '
+        'passwords, API keys, tokens, private keys or equivalent credentials. Explicit secret boundary and runtime '
+        'cap required. Surrounding source, mocks, tests and composition use standard-implementer. Private data, '
+        'paths and telemetry alone do not qualify. Never send credentials to remote models or tools.'),
+    'head-coordinator': ('HEAD COORDINATOR. Routes and decomposes work; may inspect source, run validation and '
+        'perform mechanical integration repairs with independent acceptance. Records delegated decisions, '
+        'integrates accepted work and runs guarded deployments. Preserves exact owner scope, reserved effects, '
+        'credential isolation and independent review; never self-approves.'),
+    'project-auditor': ('PROJECT AUDITOR AND TASKFORCE LEAD. Owns persisted FINDINGS.md and immutable plans. '
+        'Commissions focused audits, assesses findings and technical plans. May provide independent source and '
+        'whole-set verification when qualified and neither plan author nor implementer. Never implements or deploys.'),
+    'feature-reviewer': ('FEATURE-REVIEWER. Independently verifies source, bounded questions and whole deployment '
+        'sets against acceptance criteria; audits idle features on auditor commission. May correct a question premise '
+        'within the same outcome. Never implements, edits FINDINGS.md or batch plans, or deploys.'),
+}
+
+
 def atomic_write(path, content, mode=None):
     """Write text to path via temp file + fsync + rename.
 

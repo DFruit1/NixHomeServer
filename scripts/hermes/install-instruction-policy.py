@@ -32,13 +32,13 @@ ROLE_SKILLS = {
     'local-implementer': tuple(SKILL_SOURCES),
     'feature-reviewer': ('nixhomeserver-safe-change', 'nixhomeserver-module-change',
                          'systematic-debugging'),
-    'head-coordinator': ('nixhomeserver-safe-change', 'nixhomeserver-shutdown-guard'),
-    'project-auditor': ('nixhomeserver-safe-change', 'nixhomeserver-module-change'),
+    'head-coordinator': tuple(SKILL_SOURCES),
+    'project-auditor': ('nixhomeserver-safe-change', 'nixhomeserver-module-change',
+                        'systematic-debugging'),
 }
 # sdlc-review and requesting-code-review are card-workflow skills: they drive
 # kanban_complete/kanban_request_changes procedures for roles that implement
-# or review source. The read-only board-steward, the planning-only
-# project-auditor and the routing-only root/default profile must not carry
+# or review source. The read-only board-steward and routing-only root/default must not carry
 # them (the documented task-skill table), and a copy left at root scope would
 # resolve for exactly those profiles, so stale copies are removed below.
 REVIEW_SKILLS = (
@@ -46,7 +46,7 @@ REVIEW_SKILLS = (
     ('sdlc-review.md', 'devops/sdlc-review/SKILL.md'),
 )
 REVIEW_SKILL_PROFILES = ('standard-implementer', 'local-implementer',
-                         'feature-reviewer', 'head-coordinator')
+                         'feature-reviewer', 'head-coordinator', 'project-auditor')
 # Role-specific reference files this installer owns. Sources live beside the
 # skills they extend; targets are relative to a role home.
 ROLE_SKILL_FILES = {
@@ -131,6 +131,19 @@ def coordinator(text):
             text = re.sub(r'^## ' + re.escape(heading) + r'\n.*?(?=^## |^<!-- |\Z)',
                           '', text, flags=re.M | re.S)
     return block(text, start, end, (SOURCE / 'taskforce/coordinator-operations.md').read_text())
+
+
+def auditor(text):
+    # This exact historical installer-owned sentence predates managed role
+    # markers. Migrate it without replacing independent operator sections.
+    return text.replace(
+        'Standing rules: never implement, never verify a\n'
+        'diff or deploy range yourself (that verdict is `feature-reviewer`\'s card, not\n'
+        'yours), never edit source, never forward a plan you have not assessed, and back\n'
+        'every decision with the evidence you actually checked.',
+        'Standing rules: never implement or edit source; independently verify only\n'
+        'when qualified and neither plan author nor implementer. Never forward a\n'
+        'plan you have not assessed; back decisions with checked evidence.')
 
 
 def skill_changes(root, pending=None):
@@ -218,25 +231,17 @@ def changes(root, pending=None):
         elif name == 'standard-implementer':
             text = role(text, name, {'What a good card looks like to you', 'How to work',
                         'Handoff evidence', 'Card authoring'})
+        elif name == 'project-auditor':
+            text = auditor(text)
+            text = block(text, '<!-- hermes-review-taskforce -->', '<!-- /hermes-review-taskforce -->',
+                         (SOURCE / 'taskforce/project-auditor.md').read_text())
+        elif name == 'feature-reviewer':
+            text = block(text, '<!-- hermes-review-taskforce -->', '<!-- /hermes-review-taskforce -->',
+                         (SOURCE / 'taskforce/feature-reviewer.md').read_text())
         result[soul] = shared(text, name)
         metadata = home / 'profile.yaml'
-        if name in {'standard-implementer', 'local-implementer', 'head-coordinator'} and metadata.exists():
-            description = ('STANDARD IMPLEMENTER. Default for implementation without direct credential-value handling, '
-                           'tests and documentation in the assigned durable workspace. '
-                           'Models and fallbacks come from configuration; provider failures '
-                           'follow bounded recovery. Commits locally after the owning gate '
-                           'and hands evidence to independent feature-reviewer acceptance. Never publishes.')
-            if name == 'local-implementer':
-                description = ('LOCAL IMPLEMENTER. Only the smallest bounded step requiring direct handling '
-                               'of actual passwords, API keys, tokens, private keys or equivalent credentials. '
-                               'Explicit secret boundary and runtime cap required. Surrounding source, mocks, '
-                               'tests and composition use standard-implementer. Private data, paths and telemetry '
-                               'alone do not qualify. Never send credentials to remote models or tools.')
-            elif name == 'head-coordinator':
-                description = ('HEAD COORDINATOR. Routes and decomposes work; never implements. '
-                               'Local-implementer handles only the smallest step requiring actual credential values; '
-                               'surrounding implementation uses standard-implementer. Preserves independent review, '
-                               'owner gates and guarded deployment authority.')
+        if name in hermes_common.PROFILE_DESCRIPTIONS and metadata.exists():
+            description = hermes_common.PROFILE_DESCRIPTIONS[name]
             updated, count = re.subn(r'^description:.*?(?=^[A-Za-z_][A-Za-z_0-9]*:|\Z)',
                 lambda _: 'description: ' + json.dumps(description) + '\n',
                 result.get(metadata, metadata.read_text()), flags=re.M | re.S)

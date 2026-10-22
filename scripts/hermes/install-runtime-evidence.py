@@ -50,13 +50,14 @@ def enable(text):
 def install(root,check=False):
     pending={}
     pending[root/'scripts/hermes-review-evidence.md']=(SOURCE/'instructions/review-evidence.md').read_text()
-    reviewer=root/'profiles/feature-reviewer/SOUL.md'
-    if reviewer.exists():
+    for profile in ('feature-reviewer','project-auditor'):
+        reviewer=root/'profiles'/profile/'SOUL.md'
+        if not reviewer.exists():continue
         text=reviewer.read_text()
         start,end='<!-- hermes-review-taskforce -->','<!-- /hermes-review-taskforce -->'
         if text.count(start)!=1 or text.count(end)!=1 or text.index(start)>text.index(end):
-            raise ValueError('Reviewer role markers are ambiguous; preserve and reconcile them')
-        role=(SOURCE/'taskforce/feature-reviewer.md').read_text().rstrip()
+            raise ValueError(f'{profile} role markers are ambiguous; preserve and reconcile them')
+        role=(SOURCE/'taskforce'/f'{profile}.md').read_text().rstrip()
         pending[reviewer]=re.sub(re.escape(start)+r'.*?'+re.escape(end),
                                  lambda _:start+'\n'+role+'\n'+end,text,flags=re.S)
     configs=[root/'config.yaml',*sorted((root/'profiles').glob('*/config.yaml'))]

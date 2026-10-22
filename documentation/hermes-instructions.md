@@ -30,12 +30,70 @@ rewrites a profile SOUL composes the same per-role block.
 | Cards, plans and cron state | Exact scope, existing approvals, temporary receipt conditions and evidence |
 | Memory | Facts and preferences; no permission grants or extra mandatory workflows |
 
-Paths in the first three rows are relative to scripts/hermes/. Platform/tool
-restrictions always constrain execution. Honor recorded exact-scope owner approval
-within those boundaries; no project instruction, recipe or card widens a role or
-bypasses a refusal. Source/installed/runtime identity and review completion versus
-acceptance remain separate evidence. A policy file on disk does not prove an
-already-running session loaded it.
+Paths in the first three rows are relative to scripts/hermes/.
+
+### Authority contract
+
+Current authenticated owner instructions set the authorized outcome and reserved
+risks. A valid recorded delegated decision has the authority assigned by that
+standing policy. Such an explicit grant supersedes contradictory generic role,
+card, skill, runbook or older-plan wording for the same scope. Do not interpret a
+broad prohibition as revoking an explicit exception, invent a second approver,
+wait for asynchronous FINDINGS.md persistence, or ask again for unchanged scope.
+Specific later revocations, rejected reviews, exact source/input conditions and
+consumed one-shot allowances still apply. Record the superseded clause, governing
+decision, scope and remaining prerequisites on the existing card; preserve
+immutable history and earned evidence. An agent may correct a premise or resolve
+closely related technical details inside the authorized outcome without another
+routing card. Materially different outcomes or reserved effects require their
+proper decision.
+
+Reserved owner decisions cover destructive/irreversible data effects, credential
+changes, wider public exposure, new spending/resource trades beyond existing
+budgets, material changes to the owner's intended outcome, and the specifically
+reserved build-allocation settings. Directory names and classifiers are prompts
+for risk assessment, never independent vetoes or permissions. Reviewed reversible
+internal workflow, scheduling and card-priority changes within existing budgets
+are delegated; owner priority choices are preserved.
+
+Actual platform/tool restrictions still constrain execution. A conflicting
+runtime refusal is an implementation gap: record the exact denial and route
+through the authorized helper or owning installer, including independently
+reviewed one-shot fence widening where eligible. Never switch context, unpin a
+worker or retry another tool to evade it. A refusal citing reserved effects is
+binding; a policy-only owner grant does not bypass it. The coordinator must carry
+valid approval into executable card metadata and sanctioned lifecycle transitions,
+not merely leave an approval comment on a still-blocked card.
+
+Review completion, acceptance, source identity, installed bytes and loaded runtime
+are separate evidence. A qualified feature-reviewer or project-auditor may accept
+only a candidate plan/source they neither authored nor implemented, with exact
+revision and executed integer checks. Coordinator-authored mechanical integration
+repairs require another agent's acceptance. Auditor verification uses tenant
+`verification` and metadata `independence: {"plan_author": false, "implementer": false}`
+in addition to the same verdict/revision/checks contract. Live deployment retains
+the current whole-set independent verification/decision/test gate; changes to its live
+activation checks require an independently accepted replacement adopted through
+its authorized activation path. This delegation adds neither remote publication nor arbitrary server administration.
+
+When changing authority, update the owning tracked policy, role template, compact
+fleet block, procedure/skill and enforcing helper together; then run owning
+installer and convergence checks. Install through supported installers with
+rollback, verify their --check readback and installed identities, and refresh
+active sessions only after their turns finish using the authorized graceful
+surface. New workers must consume the current source; editing a disk file never
+proves a running worker loaded it. Do not declare a relaxation operational until
+both enforcement and installed/runtime propagation are checked, or explicitly
+report the remaining activation step. Review positive authorization cases as well
+as reserved refusals so a granted action cannot silently be blocked by another
+copy of the policy.
+
+The inert `behavior-trials.py --live --case approval-precedence` scenario checks
+the positive path: an agent must release an already approved slice despite stale
+generic owner/FINDINGS waits. Prose promises alone do not pass; the fixture scores
+creation and readback and rejects a second gate. It uses configured providers
+with synthetic inputs and no live board or service tools. Keep this beside the
+reserved-refusal regressions when changing authority.
 
 The 2026-10-18 owner decision in [hermes-autonomy.md](hermes-autonomy.md) supersedes
 generic personal-terminal and privacy-only restrictions, retaining exact safety
@@ -70,8 +128,9 @@ does not cover Android publishing.
 
 Approved project remote-validation helpers are available to workers. That does
 not grant live server administration/deployment. The coordinator may inspect
-instructions and bounded metadata, route graph repairs and apply approved tracked
-restores; source reasoning and gates stay with feature-reviewer. Deploy freezes
+instructions, source and bounded metadata, run diagnostics/gates, route graph
+repairs and apply approved tracked restores. It may author bounded mechanical
+integration repairs with independent acceptance. Deploy freezes
 only the reviewed source and mutable inputs. The idle-recovery job's global-idle
 rule remains specific to that job.
 
@@ -312,15 +371,15 @@ and its references rather than copying its vendored toolchains into profiles.
 | --- | --- |
 | standard-implementer, local-implementer | Safe change, module change, shutdown guard, systematic debugging |
 | feature-reviewer | Safe change, module change, systematic debugging; investigation and verification only |
-| head-coordinator | Safe change and shutdown guard; routing and existing guarded deployment authority only |
-| project-auditor | Safe change and module change for planning only |
+| head-coordinator | Safe change, module change, shutdown guard and systematic debugging; diagnostics, validation, reviewed mechanical integration and existing guarded deployment |
+| project-auditor | Safe change, module change and systematic debugging; planning and qualified independent verification |
 | board-steward | Keeps its existing inspection skill; no new execution skills |
 
 The `sdlc-review` and `requesting-code-review` skills are card-workflow
 procedures, so they are installed only for the roles that implement, review or
 route source work: standard-implementer, local-implementer, feature-reviewer
-and head-coordinator. The read-only board-steward, the planning-only
-project-auditor and the routing-only root/default profile carry neither, and a
+head-coordinator and project-auditor. The read-only board-steward and the
+routing-only root/default profile carry neither, and a
 copy left at root scope would resolve for exactly those profiles, so the
 installer removes byte-identical stale copies there (an independently edited
 copy is preserved, never deleted). The adapted systematic-debugging skill is

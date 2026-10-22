@@ -76,6 +76,22 @@ class InstructionPolicyTest(unittest.TestCase):
         # Fleet rules reach plain-directory projects without creating project files.
         self.assertFalse((self.root / 'AGENTS.md').exists())
 
+    def test_auditor_review_authority_reaches_legacy_intro_metadata_and_skills(self):
+        auditor = self.root / 'profiles/project-auditor'
+        old = ('Standing rules: never implement, never verify a\n'
+               'diff or deploy range yourself (that verdict is `feature-reviewer`\'s card, not\n'
+               'yours), never edit source, never forward a plan you have not assessed, and back\n'
+               'every decision with the evidence you actually checked.')
+        (auditor / 'SOUL.md').write_text('# project-auditor\n' + old + '\n\n## Operator note\nKeep this exact note.\n')
+        (auditor / 'profile.yaml').write_text('name: project-auditor\ndescription: Never verifies.\n')
+        policy.install(self.root)
+        soul = (auditor / 'SOUL.md').read_text()
+        self.assertNotIn('never verify a', soul)
+        self.assertIn('Keep this exact note.', soul)
+        self.assertIn('independent', (auditor / 'profile.yaml').read_text().lower())
+        self.assertTrue((auditor / 'skills/devops/sdlc-review/SKILL.md').is_file())
+        self.assertEqual(0, policy.install(self.root, check=True))
+
     def test_credential_only_routing_reaches_every_profile_and_local_role(self):
         local = self.root / 'profiles/local-implementer'
         soul = local / 'SOUL.md'
@@ -94,7 +110,7 @@ class InstructionPolicyTest(unittest.TestCase):
                 continue
             self.assertIn('Credential-only local routing', text)
             self.assertIn('only the smallest step', text.lower())
-            self.assertIn('Do not reclaim running workers', text)
+            self.assertIn('running worker', text)
         self.assertNotIn('Old broad private-data routing', soul.read_text())
         self.assertIn('Keep this exact note.', soul.read_text())
         self.assertIn('model: keep', (local / 'profile.yaml').read_text())
@@ -155,7 +171,7 @@ class InstructionPolicyTest(unittest.TestCase):
         self.assertIn('nix run .#deploy', result)
         self.assertIn('WORKER_FAILED_BLOCKED', result)
         reference = self.root / 'scripts/hermes-coordinator-reference.md'
-        self.assertIn('At most one dependency repair', reference.read_text())
+        self.assertNotIn('At most one dependency repair', reference.read_text())
         self.assertIn('compact_complete', reference.read_text())
         self.assertIn('--runtime-profile',
                       (self.root / 'scripts/hermes-behavior-trials.md').read_text())
@@ -225,9 +241,9 @@ class InstructionPolicyTest(unittest.TestCase):
         self.assertFalse((self.root / 'profiles/board-steward/skills').exists())
         self.assertEqual(before[self.root / 'profiles/board-steward/SOUL.md'],
                          (self.root / 'profiles/board-steward/SOUL.md').read_bytes())
-        self.assertFalse((self.root / 'profiles/head-coordinator/skills/software-development').exists())
+        self.assertTrue((self.root / 'profiles/head-coordinator/skills/software-development/systematic-debugging/SKILL.md').is_file())
         self.assertTrue((self.root / 'profiles/head-coordinator/skills/devops/nixhomeserver-shutdown-guard/SKILL.md').is_file())
-        self.assertFalse((self.root / 'profiles/project-auditor/skills/software-development').exists())
+        self.assertTrue((self.root / 'profiles/project-auditor/skills/software-development/systematic-debugging/SKILL.md').is_file())
         self.assertFalse((self.root / 'scripts/hermes-fleet-policy.md').exists())
 
     def test_skills_install_rejects_ambiguous_routing_before_any_write(self):
@@ -265,10 +281,10 @@ class InstructionPolicyTest(unittest.TestCase):
                 'profiles/local-implementer/skills/devops/nixhomeserver-safe-change/SKILL.md').read_bytes())
 
 
-    def test_review_skills_exclude_readonly_and_planning_profiles_and_root(self):
+    def test_review_skills_exclude_readonly_profiles_and_root(self):
         # Stale copies this installer previously installed at the excluded
-        # scopes: root (routing-only default), board-steward (read-only) and
-        # project-auditor (planning only). Only byte-identical copies are
+        # scopes: root (routing-only default) and board-steward (read-only).
+        # Project-auditor is now independently review-capable. Only identical copies are
         # removed; an independently edited copy is preserved untouched.
         review_sources = {'requesting-code-review.md':
                           source / 'instructions/requesting-code-review.md',
@@ -278,12 +294,11 @@ class InstructionPolicyTest(unittest.TestCase):
             self.root / 'skills/devops/sdlc-review/SKILL.md',
             self.root / 'profiles/board-steward/skills/software-development/requesting-code-review/SKILL.md',
             self.root / 'profiles/board-steward/skills/devops/sdlc-review/SKILL.md',
-            self.root / 'profiles/project-auditor/skills/devops/sdlc-review/SKILL.md',
         ]
         for path in stale:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(review_sources['requesting-code-review.md' if 'requesting-code-review' in path.parts else 'sdlc-review.md'].read_text())
-        edited = self.root / 'profiles/project-auditor/skills/software-development/requesting-code-review/SKILL.md'
+        edited = self.root / 'profiles/board-steward/skills/software-development/independent-recipe/SKILL.md'
         edited.parent.mkdir(parents=True, exist_ok=True)
         edited.write_text('Operator-edited review recipe; never deleted.\n')
         self.assertEqual(1, policy.install(self.root, check=True))

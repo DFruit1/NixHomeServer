@@ -74,6 +74,24 @@ class ReceiptTest(unittest.TestCase):
         self.assertEqual(7,result['review_run_id'])
         self.assertIn('toplevel',result['tested'])
 
+    def test_independent_auditor_can_verify_whole_set(self):
+        self.db.execute("UPDATE tasks SET assignee='project-auditor' WHERE id='t_review'")
+        metadata={**self.metadata,'independence':{'plan_author':False,'implementer':False}}
+        self.db.execute("UPDATE task_runs SET profile='project-auditor',metadata=?",(json.dumps(metadata),))
+        self.assertEqual('reviewed',self.check()['stage'])
+
+    def test_auditor_requires_independence_attestation(self):
+        self.db.execute("UPDATE tasks SET assignee='project-auditor' WHERE id='t_review'")
+        for independence in (None,{'plan_author':True,'implementer':False},
+                             {'plan_author':False,'implementer':True}):
+            metadata={**self.metadata,'independence':independence}
+            self.db.execute("UPDATE task_runs SET profile='project-auditor',metadata=?",(json.dumps(metadata),))
+            with self.subTest(independence=independence), self.assertRaises(ValueError): self.check()
+
+    def test_verification_run_must_match_assigned_verifier(self):
+        self.db.execute("UPDATE task_runs SET profile='project-auditor'")
+        with self.assertRaises(ValueError): self.check()
+
     def test_newer_failed_or_running_review_cannot_resurrect_old_acceptance(self):
         for status in ('running','failed','crashed'):
             self.db.execute('DELETE FROM task_runs WHERE id=8')

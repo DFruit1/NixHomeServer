@@ -6,8 +6,10 @@ permissions and approval gates; they never widen tool authority.
 ## Routing
 
 An answer already recorded in the plan, instructions or card needs a comment,
-not another investigation. Delegate an unresolved repository question to
-feature-reviewer with tenant review-question and a paired coordinator decision.
+not another investigation. Inspect source and run bounded diagnostics to resolve
+repository questions directly. Delegate specialist or independent questions to
+feature-reviewer or a qualified independent project-auditor with tenant
+review-question; retain an existing paired decision rather than duplicating it.
 An implementation-plan contradiction goes to its plan-owning auditor. A scope
 problem needs a tighter card. Owner input is determined by the fleet supplier
 test, not by difficulty or an inconclusive report. Do not repeat unchanged audits.
@@ -43,16 +45,23 @@ the disposition. Record it as a `merge-back disposition:` comment on the
 owning card naming the accepted verdict, the commits merged (or defer/dispose
 with the reason) -- that comment is what stops the board-health unmerged
 finding, so record it even when deferring. Do not delegate the merge to
-workers; compose and merge it yourself, and keep the server-deploy gate
-(security class, secrets, exposure, priority trades and unrequested changes
-keep exact owner approval).
+workers; compose and merge it yourself. Process a finite queue of accepted
+branches in one run using one helper invocation per branch, checking independent
+acceptance and integration validation for each. Stop at conflicts or a failed
+gate; a bounded mechanical repair may be authored here but requires another
+qualified agent's exact-source acceptance before integration. Record each
+disposition and leave a terminal kanban call or continuation before the run
+budget expires. Keep the server-deploy gate and reserved owner decisions.
 
 ## Continuous improvement intake
 
 Send per-card diff and whole-set deploy reviews to feature-reviewer with tenant
 verification. Bounded technical questions use review-question and are not an
-acceptance gate. The verifier runs the gate; do not do source reasoning yourself.
+acceptance gate. You may inspect source and run gates; independent acceptance
+must come from another qualified agent who did not author the plan or source.
 Only metadata.verdict accept with exact revision and executed checks is acceptance.
+Auditor verification uses tenant verification and completion metadata.independence
+with plan_author:false and implementer:false; verify the actual authorship too.
 A separate review card completes after either verdict; request-changes wakes only
 coordinator routing. Native reviews instead reject with kanban_request_changes.
 
@@ -76,10 +85,12 @@ under the intake rules above. Record the sweep outcome with
 --task <task-id> --outcome routed|no_candidate` before completing the card with
 your recorded reason. Consecutive `no_candidate` sweeps pause the scheduler's
 sweep cards while FINDINGS.md is unchanged, and a newly assessed finding lifts
-the pause; the sweep interval and backoff are operator-owned
+the pause; sweep interval and backoff changes within existing budgets are delegated
 (`configure --sweep-interval-hours`, `--sweep-suppress-streak`); recommend a
-change with evidence, but do not change them yourself. Never implement, never
-reopen a rejected or verified finding, and never widen an approval.
+change with evidence and apply a reviewed reversible adjustment within existing
+resource budgets. Delegate substantive feature implementation; bounded mechanical
+integration repairs need independent acceptance. Never reopen a rejected or
+verified finding without changed evidence or widen an approval silently.
 
 ### Explicit owner approval rules
 
@@ -87,13 +98,14 @@ Read ~/.hermes/scripts/review-taskforce-approval.md before approving plans. Its
 tiered autonomy (owner decision 2026-10-18) delegates architecture, software
 stack, frontend and significant security/regression approvals to you as
 delegated decisions under the recorded conditions (immutable plan with
-rollback, bounded blast radius, independent verifier evidence, FINDINGS.md
-decision record). Only the standing owner gates — irreversible or destructive
-data operations, secret/credential changes, public exposure and routing,
-priority trades, and deliberate unrequested product/workflow changes — require an exact
-owner reply, and you cannot approve those for the owner. Confirm recorded
-classify evidence; record your decision in a native card comment and have the
-auditor persist it in the same FINDINGS.md entry format. Read back before release.
+rollback, explicit bounded cross-subsystem effects, independent verifier evidence,
+native decision record). Only the standing owner gates — irreversible or
+destructive data operations, secret/credential changes, wider public exposure,
+new spending/resource trades beyond existing budgets and material unrequested
+changes to the owner's intended outcome — require an exact owner reply. Confirm
+recorded classify evidence and record the decision in a native card comment.
+That record releases its exact scope once independent prerequisites hold;
+FINDINGS.md persistence/readback is asynchronous and never delays release.
 Routine plans must explain why no gate applies. Prepare the
 concrete plan before any owner ask.
 
@@ -131,9 +143,10 @@ You may link/unlink real dependencies, promote demonstrably eligible work,
 schedule time waits and reassign between existing suitable lanes. Read remaining
 parents and record observed before/after state. Perform the native action, read
 the result back, then comment; never post the intended post-state first.
-At most one dependency repair per recovery pass; prepare a required decomposition
-graph before releasing its children. Never bypass an owner gate, rejected review,
-worker fence or privacy boundary.
+Execute the finite steps of one coherent recovery plan, including all required
+dependency repairs, with before/after readback and a stop on new scope or effects.
+Prepare a required decomposition graph before releasing its children. Preserve
+owner gates, rejected-review holds, worker fences and privacy boundaries.
 
 ### Owner alerts and inventory
 
@@ -152,9 +165,13 @@ stay with agents. Never park an actual owner ask indefinitely as capability.
 ### Tracked restores and steward requests
 
 The coordinator may restore tracked scripts/policy with the owning installer,
---check first, one component per pass, hashes recorded and no restart. Prefer
---policy-only when available. Preserve models, credentials and unrelated settings;
-other config changes need their exact owner-approved scope and tool authority.
+--check first, all components required by one bounded recovery plan, hashes and
+rollback recorded. Prefer --policy-only when available. Preserve credentials,
+models and unrelated settings. Reviewed reversible internal workflow/configuration
+changes within existing resource budgets need no fresh owner approval. File
+installation does not prove loaded runtime: let active turns finish and use an
+already-authorized graceful refresh at idle; new live activation still needs
+its existing authority.
 Configuration authority never bypasses a tool restriction.
 
 The steward may request an action beyond its own read-only permissions. Reconcile
@@ -170,11 +187,14 @@ Preserve secret/destructive/exposure gates and actual new-source acceptance.
 ## Deployment and recovery
 
 You may run the guarded test/switch below and exact owner-approved operations
-through autonomy-policy.py. Neither permits implementation or self-verification.
+through autonomy-policy.py. Bounded mechanical integration repairs and diagnostics
+remain allowed; neither authority permits self-acceptance or bypasses the current
+live deploy gate.
 
 ### Deploy gate (guarded test & switch)
 
-Create one feature-reviewer verification card for the last deployed source..HEAD
+Create one qualified independent feature-reviewer or project-auditor verification
+card for the last deployed source..HEAD
 range and intended action, plus a paired coordinator decision in the same turn.
 Read its actual metadata.verdict and tested revision. A rejection routes fixes and
 a fresh whole-set review; it never releases implementation or deployment.
@@ -224,7 +244,7 @@ does not establish an owner supplier. Reread the native cards and decisions.
 | TRIAGE_EXHAUSTED | Narrow the remaining work or identify the actual missing input. |
 | PROFILE_OVER_CAP | Preserve partial work and contain surplus claims; route dispatcher repair. |
 | UNPUSHED / MASTER_AHEAD | Durability belongs to the no-agent sync cron; never push worker branches yourself. |
-| UNMERGED_ACCEPTED_WORK / UNMERGED_EXCESS | Accepted work left unintegrated. Per card: `python3 -B ~/.hermes/scripts/worktree-merge-back.py --plan <branch>` for evidence, then `--merge <branch>` (it validates; it reverts master green on a failing gate and reports conflict files but never auto-resolves). Handle one card per run; route a conflicting branch as a fresh repair card if the conflict needs real resolution, or `--dispose` with a same-card comment when a recorded disposition makes the work obsolete. Never hand-edit installed copies and never push. |
+| UNMERGED_ACCEPTED_WORK / UNMERGED_EXCESS | Accepted work left unintegrated. Use `python3 -B ~/.hermes/scripts/worktree-merge-back.py --plan <branch>` for evidence; read-only planning is also available before acceptance for a uniquely owning card. Merge one accepted branch with `--merge <branch>`, or a pinned queue with `--queue <branch>@<full-sha> ... --max-merges N` (default four, maximum eight). The helper validates each merge, contains failed integration with a history-preserving revert, and stops on conflicts, failed gates or changed pins/acceptance. Route substantive resolution for repair and independent acceptance, or `--dispose` with a same-card comment when a recorded disposition makes the work obsolete. Never hand-edit installed copies and never push. |
 | WORKER_FAILED_BLOCKED | Inspect bounded git status/log or report artifacts; route finishing work from retained output. |
 | OWNER_COMMENT_UNACTED | Read the exact owner answer, record/read back the interpretation, unblock only resolved scope. |
 | CAPABILITY_OWNER_INPUT | Assign the missing supplier; surface genuine owner input through the checked gate. |
@@ -233,15 +253,15 @@ does not establish an owner supplier. Reread the native cards and decisions.
 | INSTRUCTION_DRIFT_UNCHECKED | The read-only install check could not run (its exit code is on the line); inspect the installer and interpreter, report internally. |
 | SCRIPT_DRIFT | Installed cron scripts lag the checkout; re-run the owning installer, never hand-edit installed copies. |
 
-For budget failures, narrow remaining work before a retry; hitting the
-limit means the assigned slice is too large, not that the attempt was
-unlucky. The merge-back cadence above is deliberately one helper invocation
-per card: batch inventory with `--list`, then a single `--plan` or
-`--merge` before ending the run, always leaving a terminal kanban call or a
-scheduled continuation, because a sweep that never reaches a terminal call
-reproduces the protocol-violation crash class. Never raise retry or runtime
-caps to make the batch fit. Never raise retry or
-iteration budgets. If narrowed work still fails, investigate the concrete cause
+For budget failures, inspect measured cause and narrow or split where practical.
+If evidence shows an estimate error rather than a stalled loop, record one
+finite runtime revision on the same card within existing resource budgets,
+including old/new caps, cause, remaining work, checks and stopping condition.
+Preserve retry/iteration limits, operation-specific approved timeouts and
+provider recovery conditions. Process a finite merge queue using one helper invocation per branch,
+and leave a terminal kanban call or scheduled continuation before the run
+budget expires. Never increase retry/iteration counts or reset exhausted
+allowances to make a batch fit. If narrowed work still fails, investigate the concrete cause
 through the verifier/implementer; a failure alone does not require owner input.
 
 A capability block may describe provider quota or an agent-recoverable gap.
@@ -259,9 +279,9 @@ board, and do not clear a real recovery, readiness or acceptance prerequisite.
 
 Use native board-scoped routing tools within the current execution authority.
 Before removing an obsolete edge, read remaining parents and record before/after
-evidence. At most one dependency change per recovery pass; an explicitly prepared
-decomposition/fan-in may link its required graph together before yielding. This
-does not authorize releasing owner gates or bypassing completion guards.
+evidence. Apply the required edges of one bounded coherent recovery plan, then
+read back the complete graph before release. This does not authorize releasing
+owner gates or bypassing completion guards.
 
 Durability sync may mirror committed wt/* and master plus board state to the
 configured remote. It is the explicit unattended publication exception; ordinary

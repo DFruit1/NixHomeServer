@@ -81,7 +81,7 @@ for lane in "${LANES[@]}"; do
   mkdir -p "$HERMES_FIXTURE/profiles/$lane"
 done
 
-# The two SOUL.md files the installer inspects, already carrying every section it
+# The three SOUL.md files the installer inspects, already carrying every section it
 # looks for, so a clean fixture is genuinely clean: the compact post-shortening
 # design where the SOUL keeps the pointer and the standing rules and the
 # installed coordinator reference carries the Board health finding table.
@@ -128,6 +128,8 @@ printf '%s\n' \
   >"$HERMES_FIXTURE/scripts/hermes-coordinator-reference.md"
 printf '### Whole-set deploy review\n' \
   >"$HERMES_FIXTURE/profiles/feature-reviewer/SOUL.md"
+printf '### Whole-set deploy review\n' \
+  >"$HERMES_FIXTURE/profiles/project-auditor/SOUL.md"
 
 # The local-implementer profile config carries the context pin this installer
 # verifies against the repo's served slot size (contextSize / parallel from
@@ -412,6 +414,14 @@ pass "names --monitor-script for the monitored job"
 cp "$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md" "$fixture/soul.bak"
 cp "$HERMES_FIXTURE/scripts/hermes-coordinator-reference.md" "$fixture/reference.bak"
 
+cp "$TESTS_REPO_ROOT/scripts/hermes/taskforce/coordinator-operations.md" \
+  "$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md"
+current_policy_out="$(run_installer --check)"
+! grep -qE 'missing the Board health table pointer|has no quota-breaker hold policy' \
+  <<<"$current_policy_out" || fail "tracked coordinator policy is falsely reported as missing: $current_policy_out"
+pass "recognizes current tracked coordinator policy, including wrapped pointers"
+cp "$fixture/soul.bak" "$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md"
+
 grep -v 'Board health table' "$fixture/soul.bak" \
   >"$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md"
 pointer_out="$(run_installer --check)"
@@ -463,6 +473,15 @@ grep -q "would change: head-coordinator SOUL.md is missing the '## Deployment an
   fail "a SOUL.md with no Deployment and recovery section was not reported: $deploy_out"
 pass "reports a SOUL.md missing the Deployment and recovery section"
 cp "$fixture/soul.bak" "$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md"
+
+# Both qualified independent verifier roles carry the exact deploy contract.
+printf 'Auditor planning instructions only\n' >"$HERMES_FIXTURE/profiles/project-auditor/SOUL.md"
+auditor_deploy_out="$(run_installer --check)"
+grep -q "would change: project-auditor SOUL.md is missing the '### Whole-set deploy review' section" \
+  <<<"$auditor_deploy_out" ||
+  fail "an auditor with no whole-set review contract was not reported: $auditor_deploy_out"
+pass "reports an auditor missing the whole-set deploy review contract"
+printf '### Whole-set deploy review\n' >"$HERMES_FIXTURE/profiles/project-auditor/SOUL.md"
 
 # --- the local-implementer context pin must match the served slot -----------
 #

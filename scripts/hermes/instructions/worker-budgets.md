@@ -37,10 +37,14 @@ failed run needs a new receipt. The guard checks provenance and fields; it
 cannot judge whether a claimed improvement is true. The coordinator owns that
 judgment and must stop unchanged loops. Keep task-specific receipts on cards.
 
-Hitting the iteration or timeout limit means the assigned slice is too large,
-not that the attempt was unlucky. Narrow or split the slice and record the
-split on the card; do not treat exhaustion as a retryable failure. Re-running
-the same slice still needs the receipt above for that exact run.
+Hitting an iteration or timeout limit requires diagnosis, not an unchanged
+retry. Narrow/split when practical. When measurements show a runtime estimate
+error, head-coordinator may record one finite revised runtime cap on the same
+card within existing resource budgets: old/new caps, measured cause, remaining
+work, expected completion and stopping condition. This does not increase retry
+or iteration counts, replenish spent allowances, change an exact approved
+operation timeout or clear provider cooldown/quota holds. A recovery-mode run
+still needs the receipt above for that exact failed run before release.
 
 Worker sessions retain instant derived titles and manual renames, with
 `auxiliary.title_generation.model_upgrade_enabled: false`. The board steward's

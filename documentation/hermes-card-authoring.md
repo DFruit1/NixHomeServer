@@ -51,8 +51,11 @@ consistency read-only with
 
 ### Work body
 
-**At most 15 lines and 1000 characters.** Over budget means split the card with
-`parents=`, never compress prose to fit. If the `Goal:` needs "and", it is two
+**Aim for 15 lines and 1000 characters.** These are writing guidance, not dispatch
+or approval limits. Keep one coherent authorized outcome per card; related steps
+may use "and" and remain together. Split independently deliverable outcomes with
+real `parents=` dependencies when useful. Longer evidence belongs in an attached
+specification when that improves readability; do not manufacture extra routing
 cards. Slots, always in this order:
 
 ```
@@ -249,6 +252,8 @@ comments into the worker.
 ### Pre-flight check
 
 Title ≤ 60 chars and names the outcome. First line is the ask, goal, or question.
-Body ≤ 15 lines, ≤ 1000 chars, normally ≤ 90 chars per line, with copyable command
-exceptions above. An owner gate may use ≤ 30 lines and ≤ 2000 chars to include the
-checked summary; options appear only for genuine choices. State what stays blocked.
+Aim for a body of 15 lines/1000 chars and 90 chars per line; exceed these
+guidelines when needed for a coherent scope, copyable commands or evidence.
+Owner summaries remain complete and checked; options appear only for genuine
+choices. Formatting guidance never creates an approval or dispatch gate. State
+what stays blocked and honor any separate tool transport limit.

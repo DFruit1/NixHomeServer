@@ -47,10 +47,13 @@ class ApprovedExecutionTest(unittest.TestCase):
         self.db = sqlite3.connect(self.db_path)
         self.addCleanup(self.db.close)
         self.db.executescript('''
-            CREATE TABLE tasks(id TEXT PRIMARY KEY, status TEXT);
+            CREATE TABLE tasks(id TEXT PRIMARY KEY, status TEXT, assignee TEXT, tenant TEXT);
             CREATE TABLE task_comments(id INTEGER PRIMARY KEY AUTOINCREMENT,
                 task_id TEXT, author TEXT, body TEXT, created_at REAL);
-            INSERT INTO tasks VALUES('t_fixture', 'blocked');
+            CREATE TABLE task_runs(id INTEGER PRIMARY KEY, task_id TEXT,
+                profile TEXT, status TEXT, outcome TEXT, metadata TEXT);
+            CREATE TABLE task_links(parent_id TEXT, child_id TEXT);
+            INSERT INTO tasks(id,status) VALUES('t_fixture', 'blocked');
         ''')
         self.db.commit()
         # A separately pinned fixture board must never be read or modified.
@@ -89,6 +92,137 @@ class ApprovedExecutionTest(unittest.TestCase):
                         owner_reply='D1 approve ' + manifest['sha256'])
         decision.update(overrides)
         self.comment({'owner_execution_decision': decision})
+
+    def delegated_approve(self, manifest, profile='feature-reviewer', **overrides):
+        metadata = dict(verdict='accept', revision=manifest['sha256'],
+                        checks=[dict(command='verify inert fixture manifest', exit_code=0)],
+                        independence=dict(plan_author=False, implementer=False),
+                        operation_scope=dict(request_sha256=manifest['sha256'],
+                                             executor=manifest['executor'], risk_classes=[]))
+        metadata.update(overrides)
+        self.db.execute("INSERT OR REPLACE INTO tasks VALUES('t_review','done',?,'verification')", (profile,))
+        self.db.execute("INSERT OR IGNORE INTO task_links VALUES('t_review','t_fixture')")
+        self.db.execute('INSERT INTO task_runs(task_id,profile,status,outcome,metadata) VALUES(?,?,?,?,?)',
+                        ('t_review', profile, 'done', 'completed', json.dumps(metadata)))
+        self.db.commit()
+        self.comment({'delegated_execution_decision': dict(
+            approved=True, request_sha256=manifest['sha256'],
+            executor=manifest['executor'], review_task_id='t_review')})
+
+    def test_reviewed_delegated_operation_runs_without_owner_reply(self):
+        manifest = self.prepare(authority='delegated')
+        self.delegated_approve(manifest)
+        receipt = policy.execute(self.root, manifest['sha256'], profile='head-coordinator')
+        self.assertEqual('succeeded', receipt['status'])
+        self.assertEqual('bot-after-delegated-approval', receipt['execution_provenance'])
+        with self.assertRaises(ValueError):
+            policy.execute(self.root, manifest['sha256'], profile='head-coordinator')
+
+    def test_auditor_may_independently_accept_operation(self):
+        manifest = self.prepare(authority='delegated')
+        self.delegated_approve(manifest, profile='project-auditor')
+        self.assertEqual(manifest, policy.check(self.root, manifest['sha256'], profile='head-coordinator'))
+        self.delegated_approve(manifest, profile='project-auditor',
+                               independence=dict(plan_author=0, implementer=False))
+        with self.assertRaises(ValueError):
+            policy.check(self.root, manifest['sha256'], profile='head-coordinator')
+
+    def test_delegated_review_cannot_authorize_owner_only_manifest(self):
+        manifest = self.prepare()
+        self.delegated_approve(manifest)
+        with self.assertRaises(ValueError):
+            policy.check(self.root, manifest['sha256'], profile='head-coordinator')
+
+    def test_reserved_effects_cannot_use_delegated_authority(self):
+        for risk in ('credentials', 'destructive-data', 'public-exposure', 'new-spending',
+                     'owner-outcome', 'build-allocation'):
+            with self.subTest(risk=risk), self.assertRaises(ValueError):
+                self.prepare(authority='delegated', risk_classes=[risk])
+        with self.assertRaises(ValueError):
+            self.prepare(authority='invented')
+        with self.assertRaises(ValueError):
+            self.prepare(risk_classes=['unrecognized-risk'])
+
+    def test_delegated_acceptance_must_be_independent_and_match_exact_scope(self):
+        manifest = self.prepare(authority='delegated')
+        for profile, changes in (
+            ('head-coordinator', {}), ('standard-implementer', {}),
+            ('feature-reviewer', {'verdict': 'unknown'}),
+            ('feature-reviewer', {'revision': 'a' * 64}),
+            ('feature-reviewer', {'checks': [{'command': 'fixture', 'exit_code': 1}]}),
+            ('feature-reviewer', {'checks': [{'command': 'fixture', 'exit_code': True}]}),
+            ('feature-reviewer', {'operation_scope': {'request_sha256': 'a' * 64}}),
+        ):
+            with self.subTest(profile=profile, changes=changes):
+                self.delegated_approve(manifest, profile=profile, **changes)
+                with self.assertRaises(ValueError):
+                    policy.check(self.root, manifest['sha256'], profile='head-coordinator')
+
+    def test_delegated_review_must_be_completed_linked_and_current(self):
+        manifest = self.prepare(authority='delegated')
+        self.delegated_approve(manifest)
+        self.db.execute('DELETE FROM task_links')
+        self.db.commit()
+        with self.assertRaises(ValueError):
+            policy.check(self.root, manifest['sha256'], profile='head-coordinator')
+
+        self.db.execute("INSERT INTO task_links VALUES('t_review','t_fixture')")
+        self.db.execute("UPDATE tasks SET status='blocked' WHERE id='t_review'")
+        self.db.commit()
+        with self.assertRaises(ValueError):
+            policy.check(self.root, manifest['sha256'], profile='head-coordinator')
+        self.db.execute("UPDATE tasks SET status='done' WHERE id='t_review'")
+        self.db.execute("INSERT INTO task_runs(task_id,profile,status,outcome,metadata) VALUES('t_review','feature-reviewer','running',NULL,NULL)")
+        self.db.commit()
+        with self.assertRaises(ValueError):
+            policy.check(self.root, manifest['sha256'], profile='head-coordinator')
+
+    def test_delegated_execution_preserves_other_real_prerequisites(self):
+        manifest = self.prepare(authority='delegated')
+        self.delegated_approve(manifest)
+        self.db.execute("INSERT INTO tasks(id,status) VALUES('t_other', 'blocked')")
+        self.db.execute("INSERT INTO task_links VALUES('t_other','t_fixture')")
+        self.db.commit()
+        with self.assertRaises(ValueError):
+            policy.execute(self.root, manifest['sha256'], profile='head-coordinator')
+
+    def test_only_assigned_verification_reviews_authorize_delegated_execution(self):
+        manifest = self.prepare(authority='delegated')
+        self.delegated_approve(manifest)
+        for column, value in (('tenant', 'review-question'), ('tenant', 'continuous-improvement'),
+                              ('assignee', 'head-coordinator')):
+            with self.subTest(column=column, value=value):
+                self.delegated_approve(manifest)
+                self.db.execute('UPDATE tasks SET ' + column + "=? WHERE id='t_review'", (value,))
+                self.db.commit()
+                with self.assertRaises(ValueError):
+                    policy.check(self.root, manifest['sha256'], profile='head-coordinator')
+
+    def test_older_accept_cannot_override_another_linked_refusal(self):
+        manifest = self.prepare(authority='delegated')
+        self.delegated_approve(manifest)
+        self.db.execute("INSERT INTO tasks VALUES('t_refusal','done','feature-reviewer','verification')")
+        self.db.execute("INSERT INTO task_links VALUES('t_refusal','t_fixture')")
+        self.db.execute('INSERT INTO task_runs(task_id,profile,status,outcome,metadata) VALUES(?,?,?,?,?)',
+                        ('t_refusal','feature-reviewer','done','completed',json.dumps(dict(
+                            verdict='request-changes', revision=manifest['sha256'],
+                            requested_changes=['The command changes a reserved effect.'],
+                            checks=[dict(command='inspect effect',exit_code=0)]))))
+        self.db.commit()
+        with self.assertRaises(ValueError):
+            policy.execute(self.root, manifest['sha256'], profile='head-coordinator')
+
+    def test_delegated_decision_revocation_and_input_drift_remain_binding(self):
+        manifest = self.prepare(authority='delegated')
+        self.delegated_approve(manifest)
+        self.comment({'delegated_execution_decision': dict(approved=False,
+            request_sha256=manifest['sha256'], executor='head-coordinator', review_task_id='t_review')})
+        with self.assertRaises(ValueError):
+            policy.check(self.root, manifest['sha256'], profile='head-coordinator')
+        self.delegated_approve(manifest)
+        self.input.write_text('changed after independent review')
+        with self.assertRaises(ValueError):
+            policy.check(self.root, manifest['sha256'], profile='head-coordinator')
 
     def test_prepare_persists_exact_reviewable_manifest(self):
         before = self.db_path.read_bytes()

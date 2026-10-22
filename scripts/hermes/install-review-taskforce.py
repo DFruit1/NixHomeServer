@@ -19,12 +19,8 @@ MARKER = '<!-- hermes-review-taskforce -->'
 END_MARKER = '<!-- /hermes-review-taskforce -->'
 JOB_NAME = 'kanban review taskforce'
 GLOBAL_WORKER_LIMIT = 4
-DESCRIPTIONS = {
-    'project-auditor': 'PROJECT AUDITOR AND TASKFORCE LEAD. Sole owner of each board\'s persisted FINDINGS.md and immutable batch plans. Commissions focused adversarial audits of idle existing features from feature-reviewer, assesses their evidence, batches worthwhile proposals, immediately escalates urgent credible security/regression findings, and hands approved plans to head-coordinator. Routes diff and deploy-range verification to feature-reviewer; it does not verify work itself. Never implements or deploys.',
-    'feature-reviewer': 'FEATURE-REVIEWER, THE VERIFIER LANE. Judges finished work against its acceptance criteria: per-card diffs, bounded technical questions and whole-change-set deploy reviews, returning accept or request-changes. Also audits idle existing features when project-auditor commissions one, and reports those findings to project-auditor. Never implements, edits FINDINGS.md or batch plans, or deploys.',
-    'head-coordinator': 'HEAD COORDINATOR. Routes and decomposes implementation; never implements. Sends diff, question and whole-set deploy reviews to feature-reviewer, and scoped audit/planning requests to project-auditor, which exclusively manages feature-reviewer audits and the continuous improvement findings. Decomposes approved immutable plans into implementer, review and composition cards; keeps the handoff dependency-blocked until the work finishes. Routes only unavoidable actual credential handling locally; preserves board health and whole-set guarded deploy gate. The owner uses T3 Code for manual large-model consultation.',
-    'local-implementer': 'LOCAL IMPLEMENTER. Only the smallest bounded step requiring actual passwords, API keys, tokens, private keys or equivalent credentials. Explicit secret boundary and runtime cap required. Surrounding source, mocks, tests and composition use standard-implementer. Private data, paths and telemetry alone do not qualify. Never send credentials to remote models or tools.',
-}
+DESCRIPTIONS = {name: hermes_common.PROFILE_DESCRIPTIONS[name] for name in
+                ('project-auditor', 'feature-reviewer', 'head-coordinator', 'local-implementer')}
 
 
 def worker_cap(text):

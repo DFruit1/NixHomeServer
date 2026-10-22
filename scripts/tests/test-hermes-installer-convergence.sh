@@ -31,6 +31,7 @@ worker = module('worker', 'install-worker-policy.py')
 memory = module('memory', 'install-memory-policy.py')
 steward = module('steward', 'install-steward-readonly.py')
 admission = module('admission', 'memory-policy.py')
+taskforce = module('taskforce', 'install-review-taskforce.py')
 
 PROFILES = instruction.PROFILES
 LANES = ('head-coordinator', 'standard-implementer', 'local-implementer',
@@ -44,6 +45,7 @@ FULL_FLEET = (SOURCE / 'taskforce/owner-blocker-authoring.md').read_text()
 ENTITLED = {
     'default': {'systematic-debugging'},
     'head-coordinator': {'nixhomeserver-safe-change', 'nixhomeserver-shutdown-guard',
+                         'nixhomeserver-module-change', 'systematic-debugging',
                          'kanban-orchestration', 'requesting-code-review', 'sdlc-review'},
     STEWARD: {'board-steward'},
     'standard-implementer': {'nixhomeserver-safe-change', 'nixhomeserver-module-change',
@@ -55,7 +57,8 @@ ENTITLED = {
     'feature-reviewer': {'nixhomeserver-safe-change', 'nixhomeserver-module-change',
                          'systematic-debugging', 'requesting-code-review', 'sdlc-review',
                          'taskforce-feature-audit'},
-    'project-auditor': {'nixhomeserver-safe-change', 'nixhomeserver-module-change'},
+    'project-auditor': {'nixhomeserver-safe-change', 'nixhomeserver-module-change',
+                        'systematic-debugging', 'requesting-code-review', 'sdlc-review'},
 }
 ORDERS = (('instruction', 'worker', 'memory', 'steward'),
           ('steward', 'memory', 'worker', 'instruction'),
@@ -91,6 +94,20 @@ def cron_runner(jobs_path):
 
 
 class SharedRootTest(unittest.TestCase):
+    def test_taskforce_refresh_preserves_shared_authority_and_descriptions(self):
+        for name in ('head-coordinator', 'project-auditor', 'feature-reviewer'):
+            config = self.root / 'profiles' / name / 'config.yaml'
+            config.write_text(config.read_text() + '\nplatform_toolsets:\n  cli: [file, terminal]\n')
+        self.pass_over(ORDERS[0])
+        with patch.object(steward.subprocess, 'run', cron_runner(self.jobs_path)):
+            self.assertEqual(0, taskforce.install(self.root, cron=False))
+        self.assertEqual(0, instruction.install(self.root, check=True))
+        for name, description in taskforce.DESCRIPTIONS.items():
+            import yaml
+            actual = yaml.safe_load((self.root / 'profiles' / name / 'profile.yaml').read_text())
+            self.assertEqual(description, actual['description'])
+        self.assertIn('independent', (self.root / 'profiles/project-auditor/profile.yaml').read_text())
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='hermes-installer-convergence-')
         self.addCleanup(self.tmp.cleanup)

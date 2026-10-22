@@ -52,6 +52,32 @@ class BehaviorTrialTest(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertTrue(Fixture(name).failures())
 
+    def test_existing_approval_proceeds_without_findings_or_second_owner_gate(self):
+        f = Fixture('approval-precedence')
+        task = f.call('kanban_create', {'title': 'Implement the accepted slice',
+                     'assignee': 'standard-implementer', 'workspace_kind': 'worktree',
+                     'skills': ['nixhomeserver-safe-change']})['task']
+        f.call('kanban_show', {'task_id': task['id']})
+        self.assertEqual([], f.failures())
+        f.call('kanban_block', {'kind': 'needs_input', 'reason': 'Owner must approve again.'})
+        self.assertIn('existing approval blocked by a second gate', f.failures())
+
+    def test_approval_trial_cannot_pass_without_actual_release_readback(self):
+        f = Fixture('approval-precedence')
+        f.call('kanban_comment', {'comment': 'The native decision supersedes stale wording.'})
+        f.call('kanban_complete', {'summary': 'Approved; implementation may proceed.'})
+        self.assertIn('approved work was not released', f.failures())
+
+    def test_created_card_still_gated_on_routing_task_is_not_released(self):
+        f = Fixture('approval-precedence')
+        task = f.call('kanban_create', {'title': 'Implement accepted comment fix',
+                     'assignee': 'standard-implementer', 'workspace_kind': 'worktree',
+                     'parents': ['t_trial']})['task']
+        f.call('kanban_show', {'task_id': task['id']})
+        self.assertIn('approved work still has an unfinished prerequisite', f.failures())
+        f.call('kanban_complete', {'summary': 'Approved slice released and read back.'})
+        self.assertEqual([], f.failures())
+
     def test_fix_without_reproduction_fails_even_with_green_test(self):
         f = Fixture('reproduce-before-fix')
         f.call('write_file', {'path': 'expiry.rs', 'content': FIX})

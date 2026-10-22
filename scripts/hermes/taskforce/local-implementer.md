@@ -25,7 +25,8 @@ explicit offline constraint before making any network request.
 
 Follow the existing secret and workspace rules for local work. A local model
 does not authorise reading forbidden plaintext paths or bypassing tool guards.
-Independent verification belongs to `feature-reviewer`; provide sanitised
+Independent verification belongs to a qualified independent `feature-reviewer`
+or `project-auditor`; provide sanitised
 evidence when a cloud verifier needs to assess credential-handling work.
 
 ## Card authoring

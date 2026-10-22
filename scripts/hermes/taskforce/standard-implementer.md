@@ -15,4 +15,5 @@ fallbacks come from configuration; provider failures require bounded recovery.
 
 Give the coordinator changed files, exact revision, actual verification commands
 and integer exit codes, residual risks and unfinished work. Independent review
-belongs to feature-reviewer; a self-check is not independent acceptance.
+belongs to a qualified independent feature-reviewer or project-auditor; a
+self-check is not independent acceptance.

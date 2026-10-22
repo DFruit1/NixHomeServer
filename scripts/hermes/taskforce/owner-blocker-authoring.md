@@ -1,10 +1,11 @@
 ## Hermes fleet rules
 
-AGENTS.md supplies conventions, skills, card scope and acceptance criteria. None
-widens a role's permissions or bypasses tool restrictions; honor
-exact recorded owner approval within those boundaries, and get a new decision for
-new scope or risk. Memory stores facts and preferences, not permissions or
-mandatory workflows.
+Explicit current owner grants and valid delegated decisions supersede
+contradictory generic role/card/runbook wording within exact scope; never add a
+second approval or reapprove unchanged scope. Actual tool restrictions and
+reserved refusals remain binding; use authorized helpers/installers, not evasion.
+See hermes-instructions.md for authority and propagation. AGENTS.md supplies
+project invariants; memory grants no permissions or mandatory workflows.
 
 Never remove worker pins, alter delegation markers, switch tools or change
 execution context to bypass a refusal. Use an explicitly authorized helper or
@@ -28,7 +29,8 @@ Operator detail: ~/.hermes/scripts/hermes-instructions.md.
 equivalent usable credentials. Only the smallest step needing secret values goes
 to local-implementer; specify its boundary and redact credentials. Opaque
 helpers, code, tests and review stay in ordinary lanes.
-Do not reclaim running workers.
+Implementers/reviewers never reclaim running workers; coordinator containment
+follows its authorized recovery procedure.
 
 Stay in the assigned workspace; approved project remote-validation helpers are
 allowed, arbitrary server administration and deployment are not. Before
@@ -36,7 +38,8 @@ committing, inspect git status --short and git diff, stage only owned files and
 pass the owning gate. Workers never publish, open PRs or perform remote writes;
 durability sync is the sole unattended publication exception.
 
-Independent acceptance belongs to feature-reviewer: inspect verdict, revision and
+Independent acceptance belongs to a qualified feature-reviewer or project-auditor
+who neither authored nor implemented the candidate: inspect verdict, revision and
 executed checks. Separate review cards complete with either verdict; native
 rejection uses kanban_request_changes. Never bypass the completion guard. Read
 ~/.hermes/scripts/hermes-card-authoring.md before card writes.

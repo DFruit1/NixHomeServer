@@ -9,7 +9,11 @@ metadata:
 # Kanban orchestration
 
 Use for coordinator routing and recovery. Fleet/role permissions and project
-rules constrain this procedure. Never implement or independently verify source.
+rules and explicit grants constrain this procedure. Coordinator source
+inspection, diagnostics, validation and bounded mechanical integration repairs
+are allowed; another qualified agent must accept those repairs. Delegate
+substantive feature implementation and preserve the authority contract in
+hermes-instructions.md.
 
 ## Procedure
 

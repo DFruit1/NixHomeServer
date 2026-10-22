@@ -30,6 +30,9 @@ ROLES = {'head-coordinator': 'coordinator-role.md',
          'standard-implementer': 'standard-implementer.md',
          'feature-reviewer': 'feature-reviewer.md'}
 DOCS = {'hermes-card-authoring.md': REPO / 'documentation/hermes-card-authoring.md',
+        'hermes-instructions.md': REPO / 'documentation/hermes-instructions.md',
+        'hermes-autonomy.md': REPO / 'documentation/hermes-autonomy.md',
+        'review-taskforce-approval.md': SOURCE / 'taskforce/approval-policy.md',
         'hermes-skill-routing.md': SOURCE / 'instructions/skill-routing.md',
         'hermes-fleet-policy.md': SOURCE / 'taskforce/owner-blocker-authoring.md',
         'hermes-review-evidence.md': SOURCE / 'instructions/review-evidence.md',
@@ -228,7 +231,7 @@ def worker(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--live', action='store_true', help='Make bounded model calls using configured role providers.')
-    parser.add_argument('--case', action='append', choices=Fixture.names(), help='Default: all six cases.')
+    parser.add_argument('--case', action='append', choices=Fixture.names(), help='Default: all available cases.')
     parser.add_argument('--hermes-repo', type=Path, default=Path.home() / '.hermes/hermes-agent')
     parser.add_argument('--root', type=Path, default=Path.home() / '.hermes')
     parser.add_argument('--runtime-profile', choices=ROLES,

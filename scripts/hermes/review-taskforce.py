@@ -86,7 +86,7 @@ DEFAULT_CLASSIFY_RULES = {
         'patterns': (r'(secret|credential|oauth|sudo|kanidm|agenix|password|passkey)',),
     },
     '5': {
-        'label': 'owner gate: secrets, public exposure/routing, persistence strategy, irreversible data',
+        'label': 'owner-risk tripwire: inspect actual credentials, public exposure, irreversible data effects',
         'paths': ('secrets', 'modules/Core_Modules/cloudflared', 'modules/Core_Modules/impermanence'),
         'basenames': (),
         'patterns': (r'\.age$', r'(^|/)serverBootstrapSudoPassword'),
@@ -323,10 +323,10 @@ def sweep_body(root, board):
         'Constraints:',
         '- Scan the whole system, not one board feature: security, efficiency, reliability.',
         '- Route small safe fixes to implementers with an independent feature-reviewer check.',
-        '- Send investigations or gated work to project-auditor for a plan and owner gate.',
+        '- Send investigations to project-auditor; classify actual effects before release.',
         '- Do nothing with a recorded reason when no worthwhile candidate exists.',
         '- Record the outcome with record-sweep --task <id> --outcome routed|no_candidate.',
-        '- Never implement; never bypass approval rules, findings or owner gates.',
+        '- Mechanical repairs need independent acceptance; preserve owner gates.',
     ])
 
 
