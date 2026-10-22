@@ -54,11 +54,25 @@
 # Deliberately conservative
 # -------------------------
 # Only `ready` rows with no claim lock are candidates, so a live worker is never
-# interrupted mid-turn. The streak must be *entirely* rate-limited, so a single
-# completed, crashed or blocked run in the window exempts the card -- a card
-# making progress is never touched, however many quota walls preceded it.
-# In-flight runs (`ended_at IS NULL`) are excluded from the count, since their
-# outcome is not yet a fact.
+# interrupted mid-turn. Each streak must be *entirely* within its own failure
+# class, so a single completed, blocked or scheduled run in the window exempts
+# the card -- a card making progress is never touched, however many failures
+# preceded it. In-flight runs (`ended_at IS NULL`) are excluded from the count,
+# since their outcome is not yet a fact.
+#
+# Two classes are owned, because both are respawned indefinitely by dispatcher
+# design and neither converges on its own:
+#
+#   * rate_limited (threshold RETRY_BREAKER_THRESHOLD, default 6) -- the
+#     dispatcher retries a quota wall "forever (spaced by the cooldown)".
+#   * timed_out / crashed / gave_up (threshold RETRY_BREAKER_HARD_THRESHOLD,
+#     default 2) -- the worker assignment budgets doc says hitting a runtime or
+#     iteration limit means the assigned slice is too large, not that the
+#     attempt was unlucky, so respawning the unchanged slice repeats it. Each of
+#     these attempts can burn a 15-minute worker slot, so this class parks after
+#     far fewer attempts. This is the shape that burned a series of 900s
+#     timeouts plus protocol-violation crashes across the head-coordinator's
+#     lanes in one day (2026-10-21), because nothing ever parked them.
 #
 # Usage
 # -----
@@ -91,6 +105,9 @@
 #   HERMES_BOARD               board slug         (default: nixhomeserver)
 #   RETRY_BREAKER_THRESHOLD    consecutive quota-wall attempts before parking
 #                              (default: 6)
+#   RETRY_BREAKER_HARD_THRESHOLD
+#                              consecutive timed_out/crashed/gave_up attempts
+#                              before parking (default: 2)
 #   HERMES_BIN                 hermes executable  (default: resolved on PATH)
 #   KANBAN_DB                  override the board database path, for tests
 
@@ -99,6 +116,7 @@ set -euo pipefail
 HERMES_ROOT="${HERMES_ROOT:-$HOME/.hermes}"
 HERMES_BOARD="${HERMES_BOARD:-nixhomeserver}"
 THRESHOLD="${RETRY_BREAKER_THRESHOLD:-6}"
+HARD_THRESHOLD="${RETRY_BREAKER_HARD_THRESHOLD:-2}"
 HERMES_BIN="${HERMES_BIN:-$(command -v hermes 2>/dev/null || true)}"
 [[ -n "$HERMES_BIN" ]] || HERMES_BIN="$HOME/.local/bin/hermes"
 
@@ -121,13 +139,18 @@ Usage: scripts/hermes/kanban-retry-breaker.sh [--check]
   -h, --help Show this help.
 
 Environment: HERMES_ROOT, HERMES_BOARD, RETRY_BREAKER_THRESHOLD,
-HERMES_BIN, KANBAN_DB (see the header comments for each).
+RETRY_BREAKER_HARD_THRESHOLD, HERMES_BIN, KANBAN_DB (see the header comments
+for each).
 EOF
     exit 0 ;;
 esac
 
 [[ "$THRESHOLD" =~ ^[1-9][0-9]*$ ]] || {
   echo "RETRY_BREAKER_THRESHOLD must be a positive integer, got '$THRESHOLD'" >&2
+  exit 2
+}
+[[ "$HARD_THRESHOLD" =~ ^[1-9][0-9]*$ ]] || {
+  echo "RETRY_BREAKER_HARD_THRESHOLD must be a positive integer, got '$HARD_THRESHOLD'" >&2
   exit 2
 }
 
@@ -183,10 +206,15 @@ if ! probe_err="$(sqlite3 "$DB" "$probe_sql" 2>&1)"; then
   exit 4
 fi
 
-# The candidate query. `ranked` numbers each card's ended runs newest-first over
-# *all* outcomes, so a run with an unknown outcome consumes a rank and breaks the
-# streak rather than being invisible to it. `streaked` then keeps only the cards
-# whose newest `THRESHOLD` ended runs were every one of them a quota wall.
+# The candidate queries. `ranked` numbers each card's ended runs newest-first
+# over *all* outcomes, so a run with an unknown outcome consumes a rank and
+# breaks the streak rather than being invisible to it. `streaked` then keeps
+# only the cards whose newest `THRESHOLD` ended runs were every one of them a
+# quota wall; `hard_streaked` keeps cards whose newest `HARD_THRESHOLD` ended
+# runs were every one of them a hard worker failure (timed_out / crashed /
+# gave_up), which the worker assignment budgets doc says must be narrowed or
+# split rather than respawned. A card can satisfy both; the union keeps one row
+# per (card, class).
 #
 # The task filter is applied last, so the streak is counted over each card's
 # whole history and not over the ready subset.
@@ -208,13 +236,25 @@ streaked AS (
      AND outcome = 'rate_limited'
    GROUP BY task_id
   HAVING COUNT(*) = $THRESHOLD
+),
+hard_streaked AS (
+  SELECT task_id, COUNT(*) AS streak
+    FROM ranked
+   WHERE rank <= $HARD_THRESHOLD
+     AND outcome IN ('timed_out', 'crashed', 'gave_up')
+   GROUP BY task_id
+  HAVING COUNT(*) = $HARD_THRESHOLD
 )
-SELECT t.id, COALESCE(t.assignee, ''), s.streak
+SELECT t.id, COALESCE(t.assignee, ''), s.streak, 'rate_limit'
   FROM tasks t
   JOIN streaked s ON s.task_id = t.id
- WHERE t.status = 'ready'
-   AND t.claim_lock IS NULL
- ORDER BY t.id;
+ WHERE t.status = 'ready' AND t.claim_lock IS NULL
+ UNION ALL
+SELECT t.id, COALESCE(t.assignee, ''), s.streak, 'hard_failure'
+  FROM tasks t
+  JOIN hard_streaked s ON s.task_id = t.id
+ WHERE t.status = 'ready' AND t.claim_lock IS NULL
+ ORDER BY 1, 4;
 SQL
 )"
 
@@ -239,17 +279,31 @@ while IFS= read -r row; do
   # parser cannot make sense of means the query and the parser have disagreed, and
   # the id is what a card gets parked by, so it is fatal rather than skipped: that
   # is the same silent-miss class as an unreadable database.
+  # The row shape is id|assignee|streak|class; class is the query's own constant
+  # and sits outside the parsed fields it identifies.
+  class="${row##*|}"
+  row="${row%|*}"
   id="${row%%|*}"
   streak="${row##*|}"
   middle="${row#*|}"
   assignee="${middle%|*}"
-  [[ "$id" =~ ^[A-Za-z0-9_.:-]+$ ]] || { printf 'RETRY_BREAKER_ROW_MALFORMED %s\n' "$row" >&2; exit 6; }
-  [[ "$streak" =~ ^[0-9]+$ ]] || { printf 'RETRY_BREAKER_ROW_MALFORMED %s\n' "$row" >&2; exit 6; }
+  [[ "$id" =~ ^[A-Za-z0-9_.:-]+$ ]] || { printf 'RETRY_BREAKER_ROW_MALFORMED %s\n' "${row}|$class" >&2; exit 6; }
+  [[ "$streak" =~ ^[0-9]+$ ]] || { printf 'RETRY_BREAKER_ROW_MALFORMED %s\n' "${row}|$class" >&2; exit 6; }
+  [[ "$class" == 'rate_limit' || "$class" == 'hard_failure' ]] ||
+    { printf 'RETRY_BREAKER_ROW_MALFORMED %s\n' "${row}|$class" >&2; exit 6; }
 
-  reason="Rate-limit retry breaker: $streak consecutive runs of this card ended 'rate_limited' (provider quota wall) with no successful run in between, so the dispatcher has been respawning it indefinitely. Parking it instead of letting the loop continue. This is a lane capacity condition, not a defect in the card: the worktree, branch and partial commits are intact and nothing is lost. Resume with 'hermes kanban --board $HERMES_BOARD unblock $id' once endpoint capacity returns; each unblock grants a fresh budget of $streak attempts. If this card keeps hitting the wall, pin a working model for it with 'hermes kanban --board $HERMES_BOARD set-model $id <model> --provider <provider>' rather than reassigning it to dodge the quota. Input supplier: model/provider (provider quota wall)."
+  if [[ "$class" == 'rate_limit' ]]; then
+    threshold="$THRESHOLD"
+    marker="RATE_LIMIT_LOOP"
+    reason="Rate-limit retry breaker: $streak consecutive runs of this card ended 'rate_limited' (provider quota wall) with no successful run in between, so the dispatcher has been respawning it indefinitely. Parking it instead of letting the loop continue. This is a lane capacity condition, not a defect in the card: the worktree, branch and partial commits are intact and nothing is lost. Resume with 'hermes kanban --board $HERMES_BOARD unblock $id' once endpoint capacity returns; each unblock grants a fresh budget of $streak attempts. If this card keeps hitting the wall, pin a working model for it with 'hermes kanban --board $HERMES_BOARD set-model $id <model> --provider <provider>' rather than reassigning it to dodge the quota. Input supplier: model/provider (provider quota wall)."
+  else
+    threshold="$HARD_THRESHOLD"
+    marker="HARD_FAILURE_LOOP"
+    reason="Hard-failure retry breaker: $streak consecutive runs of this card ended 'timed_out', 'crashed' (worker exited without a terminal kanban call) or 'gave_up' (iteration budget exhausted) with no completed, blocked or scheduled run in between, so the dispatcher has been respawning the unchanged slice. Parking it instead of repeating it. Per the worker assignment budgets, hitting a runtime or iteration limit means the assigned slice is too large: narrow or split the slice and record the split on this card, then release one bounded recovery with a 'Recovery run: <id>' receipt naming the changed input; a plain retry request does not release another attempt. The worktree, branch and partial commits are intact and nothing is lost. Resume with 'hermes kanban --board $HERMES_BOARD unblock $id' only with that receipt. Input supplier: agent (too-large or unchanged-retried slice)."
+  fi
 
   if [[ "$check_only" == true ]]; then
-    echo "RATE_LIMIT_LOOP $id ${assignee:-unassigned} streak=$streak threshold=$THRESHOLD would-park"
+    echo "$marker $id ${assignee:-unassigned} streak=$streak threshold=$threshold would-park"
     would_park=$((would_park + 1))
     continue
   fi
@@ -262,10 +316,10 @@ while IFS= read -r row; do
   # still succeeds, rather than parking a card mid-turn or retrying into a lock.
   # Bounded: an unbounded CLI call would hold this tick (and its lock) open.
   if timeout 60 "$HERMES_BIN" kanban --board "$HERMES_BOARD" block "$id" --kind capability "$reason" >/dev/null; then
-    echo "PARKED $id ${assignee:-unassigned} streak=$streak threshold=$THRESHOLD kind=capability"
+    echo "PARKED $id ${assignee:-unassigned} streak=$streak class=$class kind=capability"
     parked=$((parked + 1))
   else
-    echo "SKIPPED $id ${assignee:-unassigned} reason=claim-raced threshold=$THRESHOLD" >&2
+    echo "SKIPPED $id ${assignee:-unassigned} reason=claim-raced class=$class" >&2
   fi
 done <<<"$candidate_rows"
 
@@ -274,7 +328,7 @@ if [[ "$check_only" == true ]]; then
 elif [[ "$parked" -eq 0 ]]; then
   # Only say so when there was a real board to inspect, and keep it to one line so
   # a quiet cron tick stays quiet in the job log.
-  echo "RETRY_BREAKER_CLEAR board=$HERMES_BOARD threshold=$THRESHOLD"
+  echo "RETRY_BREAKER_CLEAR board=$HERMES_BOARD threshold=$THRESHOLD hard=$HARD_THRESHOLD"
 fi
 
 exit 0

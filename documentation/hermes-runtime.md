@@ -371,6 +371,25 @@ The counter names differing copies; the coordinator re-runs the owning
 installer rather than editing installed files. Missing installed scripts are
 not reported here: the engine's failure-delivery surfaces those every tick.
 
+The retry breaker owns two classes of dispatcher-respawned, never-converging
+failure streaks on unclaimed ready cards: `rate_limited`
+(`RETRY_BREAKER_THRESHOLD`, default 6) and `timed_out`/`crashed`/`gave_up`
+(`RETRY_BREAKER_HARD_THRESHOLD`, default 2). The hard class is parked with a
+comment pointing at the worker-budgets remedy — an unchanged slice that hits a
+runtime or iteration limit must be narrowed or split with a recovery receipt,
+not respawned — because that unchanged-respawn shape burned a series of 900s
+timeouts plus protocol-violation crashes on coordinator lanes (2026-10-21).
+Each streak counts backwards only through its own class, so any completed,
+blocked or scheduled run in the window exempts the card, and each unblock
+grants a fresh budget.
+
+Capability-hold observation treats an in-place `block_reclassified` event as
+the episode's authoritative kind: a capability hold that an owner-directed
+audit reclassified to another kind is no longer a capability hold, and its
+stale pre-reclassification version must not re-queue a deterministic
+steward-coordinator handoff the disposition already consumed (the
+repeat-request loop this policy fixes).
+
 The existing hourly no-agent taskforce tick uses `cron_sweep.py` to retain the
 weekly sweep cadence while suppressing new sweeps behind open improvement work.
 Future sweep cards require a benefit, scope, stopping condition and delivered

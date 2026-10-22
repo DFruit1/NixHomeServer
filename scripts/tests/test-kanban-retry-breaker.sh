@@ -305,6 +305,78 @@ if RETRY_BREAKER_THRESHOLD=0 run_breaker >/dev/null 2>&1; then
 fi
 pass "a nonsensical threshold fails instead of parking everything"
 
+# --- a hard-failure streak parks too -----------------------------------------
+#
+# The dispatcher respawns a card whose runs keep timing out or exiting without a
+# terminal kanban call, the same way it respawns a quota wall. The worker
+# assignment budgets doc is explicit that hitting a runtime or iteration limit
+# means the slice is too large, so the breaker parks that streak after two
+# attempts instead of burning a 15-minute worker slot on every respawn.
+
+hard_card="$(new_card 'timeout loop')"
+add_run_at "$hard_card" timed_out $((now - 1200))
+add_run_at "$hard_card" timed_out $((now - 1100))
+
+out="$(run_breaker --check)"
+grep -q "^HARD_FAILURE_LOOP $hard_card local-implementer streak=2 threshold=2 would-park" <<<"$out" ||
+  fail "did not report the card with two consecutive timed-out runs: $out"
+pass "reports a card whose every recent run was a hard failure"
+
+run_breaker >/dev/null
+[[ "$(status_of "$hard_card")" == "blocked" ]] ||
+  fail "a ready card with a hard-failure streak was not parked"
+[[ "$(kind_of "$hard_card")" == "capability" ]] ||
+  fail "hard-failure streak parked with the wrong block kind"
+sqlite3 "$DB" "SELECT body FROM task_comments WHERE task_id = '$hard_card';" |
+  grep -q 'Hard-failure retry breaker' ||
+  fail "the hard-failure parked card has no comment naming the class and remedy"
+pass "parks a hard-failure streak with kind=capability and a comment naming the remedy"
+
+# One hard failure short of the threshold must be left alone.
+lonely_card="$(new_card 'one timeout')"
+add_run_at "$lonely_card" timed_out $((now - 1100))
+run_breaker >/dev/null
+[[ "$(status_of "$lonely_card")" == "ready" ]] ||
+  fail "parked a card with a single hard-failure run"
+pass "leaves a card one hard failure short of the threshold alone"
+
+# A single completed run in the window still exempts the card: progress is
+# progress, and mixed rate_limited/timed_out windows stay untouched rather than
+# parking something a quota-wall reader would misread.
+for tail_outcome in completed blocked scheduled; do
+  guard_card="$(new_card "hard exempt $tail_outcome")"
+  add_run_at "$guard_card" timed_out $((now - 1150))
+  add_run_at "$guard_card" "$tail_outcome" $((now - 1100))   # newest, breaks the streak
+  run_breaker >/dev/null
+  [[ "$(status_of "$guard_card")" == "ready" ]] ||
+    fail "parked a card whose newest run was '$tail_outcome'"
+done
+pass "a completed, blocked or scheduled run exempts a hard-failure streak"
+
+# A card whose window mixes rate_limited with hard outcomes belongs to neither
+# class; parking it would post a reason about one cause over a mixed record.
+mixed_wall_card="$(new_card 'mixed walls')"
+add_run_at "$mixed_wall_card" rate_limited $((now - 1150))
+add_run_at "$mixed_wall_card" timed_out $((now - 1100))
+run_breaker >/dev/null
+[[ "$(status_of "$mixed_wall_card")" == "ready" ]] ||
+  fail "parked a card whose failure window mixes rate_limited with hard outcomes"
+pass "a mixed failure window is parked by neither class"
+
+# The hard threshold is independently configurable, and 0 must fail.
+wide_hard="$(new_card 'wide hard threshold')"
+add_run_at "$wide_hard" crashed $((now - 1200))
+add_run_at "$wide_hard" crashed $((now - 1100))
+RETRY_BREAKER_HARD_THRESHOLD=3 run_breaker >/dev/null
+[[ "$(status_of "$wide_hard")" == "ready" ]] ||
+  fail "RETRY_BREAKER_HARD_THRESHOLD=3 did not raise the bar"
+pass "the hard threshold is configurable"
+
+if RETRY_BREAKER_HARD_THRESHOLD=0 run_breaker >/dev/null 2>&1; then
+  fail "a zero hard threshold was accepted; it must fail rather than park everything"
+fi
+pass "a nonsensical hard threshold fails instead of parking everything"
+
 # --- cards the breaker has no business touching ---------------------------
 
 done_card="$(new_card 'finished')"
