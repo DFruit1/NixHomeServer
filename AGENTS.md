@@ -336,6 +336,7 @@ unpublished worktrees.
 * `DESIGN_SYSTEM.md` — living record of frontend surfaces and deliberate design decisions; the precedent Impeccable detectors must respect.
 * `.impeccable/config.json` — shared Impeccable config; narrowly scoped detector exceptions live here.
 * `scripts/` — deploy, admin, helpers, and `tests/` (shell regression suite). `tests/test-common.sh` holds shared helpers; `validate-repo.sh` is the gate.
+* `documentation/hermes-analytics.md` — the read-only historical analytics lens (`scripts/hermes/kanban-analytics.py`) over board state: flow waits, rework, review value, escalation effectiveness and cost per card.
 * `secrets/` — agenix-managed encrypted `.age` files only. Never read or print plaintext `secrets/unencrypted/`.
 * `documentation/` — operator runbooks. `operations.md` is the most commonly relevant.
 
