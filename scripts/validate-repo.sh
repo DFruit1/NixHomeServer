@@ -14,6 +14,10 @@ source "$script_dir/helpers/remote-eval.sh"
 # every `nix build` after the worklist query.
 # shellcheck source=scripts/helpers/remote-build.sh
 source "$script_dir/helpers/remote-build.sh"
+# remote-run.sh owns the strict flake check and the validation-root transaction:
+# under strict mode both are snippets executed on the server, never here.
+# shellcheck source=scripts/helpers/remote-run.sh
+source "$script_dir/helpers/remote-run.sh"
 init_repo_root
 cd_repo_root
 ensure_default_nix_config
@@ -709,7 +713,11 @@ run_full_e2e_checks() {
   fi
 
   echo "ℹ️ Running Homepage Playwright end-to-end tests…"
-  "$repo_root/scripts/test-homepage-ui.sh"
+  # The suite is a separate process this gate must reach and order, not a shell
+  # snippet. VALIDATE_REPO_E2E_SCRIPT is the regression seam: it lets a test
+  # drive the transaction without launching a browser, exactly as
+  # VALIDATE_REPO_TESTS_DIR and VALIDATE_REPO_ROOTS_DIR do for their steps.
+  "${VALIDATE_REPO_E2E_SCRIPT:-"$repo_root/scripts/test-homepage-ui.sh"}"
 }
 
 if [[ "$print_sandbox_exclusions" == true ]]; then

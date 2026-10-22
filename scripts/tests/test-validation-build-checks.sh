@@ -74,6 +74,41 @@ run_gate() {
     >"$test_root/output" 2>&1
 }
 
+# --- heavy-step stand-ins ----------------------------------------------------
+# A local `nix-store` must never run: registering a GC root is the one store
+# operation full validation performs, and strict mode performs it on the server.
+# The spy fails loudly so an accidental local realisation cannot pass silently.
+cat >"$test_root/bin/nix-store" <<'EOF'
+#!/usr/bin/env bash
+printf 'nix-store %s\n' "$*" >>"$VALIDATION_TEST_LOG"
+exit 91
+EOF
+# The root snippets run for real below, as they would on the server, so they
+# need their own store stand-in: it is only reachable from the emulated remote
+# side and its calls are logged apart from the workstation's.
+mkdir -p "$test_root/remote/bin"
+cat >"$test_root/remote/bin/nix-store" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'nix-store %s\n' "$*" >>"${VALIDATION_TEST_REMOTE_LOG:?}"
+[[ "$1" == '--add-root' && -n "${2:-}" && -n "${5:-}" ]] || exit 2
+ln -sfn "$5" "$2"
+EOF
+# The Playwright suite is the one full-mode step that is not a shell snippet:
+# it launches a browser. The seam keeps this transaction hermetic while still
+# proving the gate reaches and orders the step.
+cat >"$test_root/tests/homepage-e2e.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'e2e %s\n' "$*" >>"$VALIDATION_TEST_LOG"
+exit "${VALIDATION_TEST_E2E_STATUS:-0}"
+EOF
+export VALIDATION_TEST_REMOTE_BIN="$test_root/remote/bin"
+export VALIDATION_TEST_REMOTE_LOG="$test_root/remote-calls"
+export VALIDATE_REPO_E2E_SCRIPT="$test_root/tests/homepage-e2e.sh"
+make_test_executable "$test_root/bin/nix-store" "$test_root/remote/bin/nix-store" \
+  "$test_root/tests/homepage-e2e.sh"
+
 # Emulates every step of the remote-eval transport so the *remote* receipt can
 # be asserted hermetically. Each arm answers one command the helper issues:
 # the reachability probe, the namespace staging claim, the archive and
@@ -85,21 +120,59 @@ cat >"$test_root/bin/ssh" <<'EOF'
 set -euo pipefail
 printf 'ssh %s\n' "$*" >>"$VALIDATION_TEST_LOG"
 args="$*"
+# Which of the strict run snippets this transfer is. The root transactions are
+# the only ones whose filesystem effect is the thing under test, so they are the
+# only ones the fixture replays; everything else is answered with a payload.
+snippet_kind() {
+  local file="$1"
+  if grep -q 'nix flake check --no-build' "$file"; then
+    echo flake-check
+  elif grep -q -- '--add-root' "$file" && grep -q 'committed' "$file"; then
+    echo roots-commit
+  elif grep -q -- '--add-root' "$file"; then
+    echo roots-stage
+  elif grep -q 'pending\.\$token' "$file" && grep -q 'rm -rf' "$file"; then
+    echo roots-cleanup
+  elif grep -q 'nix "\$@"' "$file"; then
+    echo suite-query
+  else
+    echo other
+  fi
+}
 if [[ "$args" == *' bash -s -- '* ]]; then
-  cat >/dev/null
-  # The build transport and the evaluation transport share the `bash -s --`
-  # shape; the staging labels are what tell them apart. A build answers with a
-  # `nix build --json` manifest, an evaluation with the batched worklist, and a
-  # strict snippet run (roots, the suite's boundary) with its own value.
   if [[ "$args" == *'nixhomeserver-remote-build'* ]]; then
+    cat >/dev/null
     [[ "${VALIDATION_TEST_BUILD_FAIL:-0}" == 0 ]] || exit 42
     printf '%s\n' "$VALIDATION_TEST_BUILD_PAYLOAD"
     exit "${VALIDATION_TEST_REMOTE_BUILD_STATUS:-0}"
   fi
   if [[ "$args" == *'nixhomeserver-remote-run'* ]]; then
+    kind=""
+    if [[ -f "${VALIDATION_TEST_STAGED_DIR:?}/transferred.log" ]]; then
+      kind="$(tail -n 1 "$VALIDATION_TEST_STAGED_DIR/transferred.log")"
+    fi
+    case "$kind" in
+      roots-stage|roots-commit|roots-cleanup)
+        # Replay the root transaction for real, the way the server would: the
+        # transport script arrives on stdin, but the snippet itself is already
+        # staged, and its arguments are the quoted tail of the command line.
+        cat >/dev/null
+        rest="${args#*bash -s -- }"
+        eval "set -- $rest"
+        remote_dir="$1"
+        shift 3
+        mkdir -p "$remote_dir"
+        PATH="${VALIDATION_TEST_REMOTE_BIN:?}:$PATH" \
+          VALIDATION_TEST_REMOTE_LOG="${VALIDATION_TEST_REMOTE_LOG:?}" \
+          bash "${VALIDATION_TEST_STAGED_DIR}/run.sh" "$remote_dir" "$@"
+        exit $?
+        ;;
+    esac
+    cat >/dev/null
     printf '%s\n' "${VALIDATION_TEST_RUN_PAYLOAD:-strict-remote-snippet-value}"
     exit "${VALIDATION_TEST_RUN_STATUS:-0}"
   fi
+  cat >/dev/null
   printf '%s\n' "$VALIDATION_TEST_BATCH_PAYLOAD"
   exit "${VALIDATION_TEST_REMOTE_EVAL_STATUS:-0}"
 fi
@@ -146,7 +219,16 @@ if [[ "${VALIDATION_TEST_STRICT_TRANSPORT:-0}" == 1 ]]; then
       target="${target%\'}"
       case "$target" in
         /*) mkdir -p "${VALIDATION_TEST_STAGED_DIR:?}"
-            cat >"${VALIDATION_TEST_STAGED_DIR}/$(basename "$target")" ;;
+            staged="${VALIDATION_TEST_STAGED_DIR}/$(basename "$target")"
+            cat >"$staged"
+            # Record what kind of run snippet this was, in transfer order: the
+            # order is the validator's own ordering evidence, and the kind is
+            # what tells the run arm whether to replay the snippet.
+            if [[ "$(basename "$target")" == 'run.sh' ]]; then
+              printf '%s\n' "$(snippet_kind "$staged")" \
+                >>"${VALIDATION_TEST_STAGED_DIR}/transferred.log"
+            fi
+            ;;
         *) cat >/dev/null ;;
       esac
       exit 0
@@ -536,10 +618,18 @@ strict_head="$(git -C "$strict_repo" rev-parse HEAD)"
 strict_tree="$(git -C "$strict_repo" rev-parse 'HEAD^{tree}')"
 strict_evidence="$strict_repo/.tmp/evidence"
 mkdir -p "$strict_evidence" "$test_root/staged"
+# The root transaction needs its own state directory: a passing --full run
+# releases, and a retaining one promotes, the GC roots recorded there.
+strict_root_state="$test_root/strict-roots"
+mkdir -p "$strict_root_state/current"
 export REMOTE_RUN=1
 
 run_strict_gate() {
   : >"$VALIDATION_TEST_LOG"
+  : >"$test_root/staged/transferred.log"
+  # A cached suite evaluation would skip the remote boundary this fixture has to
+  # observe, so every strict run starts from a cold cache.
+  rm -rf "$REPO_NIX_EVAL_CACHE_DIR"
   NIXHOMESERVER_REQUIRE_REMOTE=1 \
     NIXHOMESERVER_STRICT_REPO_ROOT="$strict_repo" \
     NIXHOMESERVER_EXPECTED_HEAD="$strict_head" \
@@ -549,6 +639,8 @@ run_strict_gate() {
     VALIDATION_TEST_STRICT_TRANSPORT=1 \
     VALIDATION_TEST_STAGED_DIR="$test_root/staged" \
     VALIDATION_TEST_SUITE_OUT="$test_root/suite-eval.out" \
+    VALIDATE_REPO_ROOTS_DIR="$strict_root_state" \
+    VALIDATE_RETAIN_OUTPUT_ROOTS="${strict_retain_roots:-0}" \
     REMOTE_EVAL_HOST='dsaw@127.0.0.1' \
     HERMES_KANBAN_TASK='t_validation_strict' \
     HERMES_KANBAN_BOARD='nixhomeserver' \
@@ -590,10 +682,8 @@ require_fixed "$VALIDATION_TEST_LOG" 'stage nixhomeserver-remote-build' \
 require_match "$VALIDATION_TEST_LOG" 'query\.nix server' \
   'The selected configuration host must travel with the strict query.'
 
-# Strict root staging only runs for a full gate, which this fixture deliberately
-# does not request: the remote `remote_run` transport it uses is covered directly
-# by test-strict-remote.sh, so asserting it here would only test a branch this
-# run never takes.
+# Strict root staging only runs for a full gate; the --full transaction below
+# exercises it through this same public validator.
 
 # Each attempt leaves a receipt that names the commit, the manifest it verified
 # and the cleanup it observed.
@@ -652,5 +742,160 @@ require_match "$test_root/output" 'could not stage|staging' \
 unset VALIDATION_TEST_STAGE_STATUS
 
 echo '  ✅ a strict staging failure refuses instead of falling back'
+
+# --- the strict --full validator transaction ---------------------------------
+#
+# --full is the mode a whole-gate run uses and the only one that stages, retains
+# and releases the GC roots a passing validation depends on. This drives that
+# transaction through the same public validator and the same hermetic transport:
+# the two root snippets are replayed for real against a scratch root state (their
+# filesystem effect is the thing under test), while every evaluation, build and
+# browser step stays remote or stubbed. Each failure has to propagate and leave
+# the previous passing roots exactly where they are.
+strict_fail() { echo "❌ $*" >&2; exit 1; }
+
+prior_root="$strict_root_state/current/previous-check"
+seed_prior_root() {
+  install -d -m 0700 "$strict_root_state/current"
+  ln -sfn '/nix/store/previous-check-output' "$prior_root"
+}
+pending_roots() {
+  find "$strict_root_state" -mindepth 1 -maxdepth 1 -name 'pending.*' -print 2>/dev/null | wc -l
+}
+transferred_snippets() { cat "$test_root/staged/transferred.log"; }
+require_no_local_heavy() {
+  local label="$1"
+  forbid_match "$VALIDATION_TEST_LOG" '^nix (eval|build|flake|develop|shell) ' \
+    "${label}: a heavy Nix step ran on this workstation"
+  forbid_match "$VALIDATION_TEST_LOG" '^nix-store ' \
+    "${label}: a GC root was registered on this workstation"
+}
+# The registered suite runs here, against the parent checkout. Nothing about
+# this transaction may move that checkout's provenance.
+parent_head="$(git -C "$TESTS_REPO_ROOT" rev-parse HEAD)"
+parent_tree="$(git -C "$TESTS_REPO_ROOT" rev-parse 'HEAD^{tree}')"
+parent_status="$(git -C "$TESTS_REPO_ROOT" status --short -uno)"
+
+# A passing --full run with the default release semantics: the worklist is
+# evaluated and built remotely, the roots are staged and released, the suites run
+# here, and the browser step is reached.
+seed_prior_root
+: >"$VALIDATION_TEST_REMOTE_LOG"
+if ! run_strict_gate --full; then
+  cat "$test_root/output" >&2
+  strict_fail 'The strict --full transaction must pass on the hermetic transport.'
+fi
+require_fixed "$test_root/output" \
+  'media-manager-frontendDist, media-manager-test, repo-policy' \
+  'A strict --full run must evaluate the complete worklist, not a narrowed one.'
+require_fixed "$VALIDATION_TEST_LOG" 'checks.x86_64-linux' \
+  'A strict --full run must build the whole check attr on the server.'
+require_fixed "$VALIDATION_TEST_LOG" 'scripts --full' \
+  'A strict --full run must run the registered suite with full selection.'
+require_match "$VALIDATION_TEST_LOG" '^e2e ' \
+  'A strict --full run must reach the browser step.'
+forbid_match "$VALIDATION_TEST_LOG" 'scripts --full --all-apps' \
+  'A strict --full run without --all-apps must keep the enabled-app scope.'
+require_no_local_heavy 'the strict --full transaction'
+[[ -n "$(transferred_snippets)" ]] || strict_fail 'No run snippet reached the transport.'
+# Ordering: the flake check precedes the build and the root staging; the suite
+# and the browser step follow the build; promotion is last. The suite's own
+# remote query is one more transfer, between staging and promotion.
+order="$(transferred_snippets)"
+[[ "$order" == $'flake-check\nroots-stage\nsuite-query\nroots-commit' ]] ||
+  strict_fail "The strict --full steps ran out of order: $(printf '%s' "$order" | tr '\n' ' ')"
+suite_line="$(grep -n '^scripts --full' "$VALIDATION_TEST_LOG" | head -n1 | cut -d: -f1)"
+e2e_line="$(grep -n '^e2e ' "$VALIDATION_TEST_LOG" | head -n1 | cut -d: -f1)"
+[[ -n "$suite_line" && -n "$e2e_line" && "$suite_line" -lt "$e2e_line" ]] ||
+  strict_fail 'The browser step must run after the registered suite.'
+# The root transaction really happened on the emulated server side, and the
+# release semantics are the recorded ones.
+require_fixed "$VALIDATION_TEST_REMOTE_LOG" 'nix-store --add-root' \
+  'Strict root staging must register the build outputs on the server.'
+require_fixed "$test_root/output" 'Released prior full-validation outputs' \
+  'A passing --full run without retention must release the previous outputs.'
+[[ ! -e "$prior_root" && ! -L "$prior_root" ]] ||
+  strict_fail 'A release must drop the previous generation of validation roots.'
+[[ "$(pending_roots)" == 0 ]] ||
+  strict_fail "A passing --full run left pending root staging behind: $(pending_roots)"
+
+echo '  ✅ a passing strict --full run orders, builds, releases and reaches every step'
+
+# Retention is the other arm of the same transaction: the new outputs are
+# registered and the superseded generation is dropped.
+seed_prior_root
+: >"$VALIDATION_TEST_REMOTE_LOG"
+strict_retain_roots=1
+if ! run_strict_gate --full; then
+  cat "$test_root/output" >&2
+  strict_fail 'A retaining strict --full run must pass.'
+fi
+strict_retain_roots=0
+require_fixed "$test_root/output" 'Retained the latest passing host-scoped validation outputs' \
+  'VALIDATE_RETAIN_OUTPUT_ROOTS=1 must retain the new validation outputs.'
+[[ -L "$strict_root_state/current/00000000000000000000000000000000-check" ]] ||
+  strict_fail 'A retaining run must register the new validation output root.'
+[[ ! -e "$prior_root" && ! -L "$prior_root" ]] ||
+  strict_fail 'A retaining promotion must release the superseded generation it replaced.'
+[[ "$(pending_roots)" == 0 ]] || strict_fail 'A retaining run left pending root staging behind.'
+require_no_local_heavy 'the retaining strict --full transaction'
+
+echo '  ✅ a retaining strict --full run promotes the new roots and releases the old ones'
+
+# A failing suite is a late failure: the roots were already staged, so the run
+# owes exactly one thing to the previous generation -- leave it untouched -- and
+# exactly one thing to itself -- remove only its own pending staging.
+seed_prior_root
+: >"$VALIDATION_TEST_REMOTE_LOG"
+export VALIDATION_TEST_SCRIPT_FAIL=1
+if run_strict_gate --full; then
+  unset VALIDATION_TEST_SCRIPT_FAIL
+  strict_fail 'A failing registered suite must fail the strict --full transaction.'
+fi
+unset VALIDATION_TEST_SCRIPT_FAIL
+[[ -L "$prior_root" ]] ||
+  strict_fail 'A failed strict --full run must leave the previous passing roots in place.'
+[[ "$(pending_roots)" == 0 ]] ||
+  strict_fail "A failed strict --full run must remove only its own pending staging: $(pending_roots)"
+forbid_match "$test_root/staged/transferred.log" '^roots-commit$' \
+  'A failed strict --full run must never promote the roots it did not validate.'
+require_match "$test_root/staged/transferred.log" '^roots-cleanup$' \
+  'A failed strict --full run must clean its own staging through the transport.'
+forbid_match "$VALIDATION_TEST_LOG" '^e2e ' \
+  'A suite failure must stop the run before the browser step.'
+require_no_local_heavy 'a failed suite in the strict --full transaction'
+
+echo '  ✅ a failing suite keeps the previous roots and removes only its own staging'
+
+# The browser step is the last thing before promotion, so its failure proves the
+# final ordering too: everything upstream passed, and nothing was promoted.
+seed_prior_root
+: >"$VALIDATION_TEST_REMOTE_LOG"
+export VALIDATION_TEST_E2E_STATUS=1
+if run_strict_gate --full; then
+  unset VALIDATION_TEST_E2E_STATUS
+  strict_fail 'A failing browser step must fail the strict --full transaction.'
+fi
+unset VALIDATION_TEST_E2E_STATUS
+require_match "$VALIDATION_TEST_LOG" '^e2e ' \
+  'The failing step must be the one this case fails in.'
+[[ -L "$prior_root" ]] ||
+  strict_fail 'A late strict --full failure must leave the previous passing roots in place.'
+[[ "$(pending_roots)" == 0 ]] || strict_fail 'A late failure left pending root staging behind.'
+forbid_match "$test_root/staged/transferred.log" '^roots-commit$' \
+  'A late strict --full failure must never promote the roots.'
+forbid_match "$test_root/output" 'Released prior full-validation outputs' \
+  'A failed strict --full run must not report a release.'
+require_no_local_heavy 'a late failure in the strict --full transaction'
+
+echo '  ✅ a late strict --full failure promotes nothing and keeps the previous roots'
+
+# Nothing above may have touched the checkout the registered suite runs from.
+[[ "$(git -C "$TESTS_REPO_ROOT" rev-parse HEAD)" == "$parent_head" &&
+  "$(git -C "$TESTS_REPO_ROOT" rev-parse 'HEAD^{tree}')" == "$parent_tree" &&
+  "$(git -C "$TESTS_REPO_ROOT" status --short -uno)" == "$parent_status" ]] ||
+  strict_fail 'The strict --full transaction moved the parent checkout provenance.'
+
+echo '  ✅ the local suite kept the parent checkout provenance unchanged'
 
 echo '✅ Validation build-check selection, batching, and failure propagation passed.'

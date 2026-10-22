@@ -913,6 +913,107 @@ expect_strict_refusal 'a failed remote snippet' 'the strict run failed' \
 
 echo "  ✅ nonzero and 255 remote results propagate without a local retry"
 
+# --- a certified reply is a nonempty object, not merely a live session --------
+# `ssh` exiting 0 says the transport finished, not that an answer came back.
+# An empty, truncated or non-object body is a transport fault, and a reply that
+# omits a query that was asked is not an answer: none of them may be recorded
+# as a success or handed to a consumer's jq as if it were data.
+expect_strict_reply_refusal() {
+  local label="$1" fragment="$2" expression="$3" receipts_before receipt
+  receipts_before="$(receipt_count)"
+  expect_strict_refusal "$label" "$fragment" "$expression"
+  receipt="$(latest_receipt eval)"
+  if [[ -z "$receipt" || ! -f "$receipt" ]]; then
+    fail "${label}: the refused evaluation left no receipt of its outcome"
+  fi
+  [[ "$(receipt_count)" -gt "$receipts_before" ]] ||
+    fail "${label}: the refusal wrote no receipt at all"
+  jq -e '.exit_status != 0' "$receipt" >/dev/null ||
+    fail "${label}: a refused reply was certified with a success receipt: $(cat "$receipt")"
+}
+
+expect_strict_reply_refusal 'an empty evaluation reply' \
+  'did not contain one nonempty JSON object' \
+  "STRICT_SSH_RUN_OUT='' remote_eval_batch_json 'value=1'"
+expect_strict_reply_refusal 'a whitespace-only evaluation reply' \
+  'did not contain one nonempty JSON object' \
+  "STRICT_SSH_RUN_OUT=' ' remote_eval_batch_json 'value=1'"
+expect_strict_reply_refusal 'a truncated evaluation reply' \
+  'did not contain one nonempty JSON object' \
+  "STRICT_SSH_RUN_OUT='{\"value\":' remote_eval_batch_json 'value=1'"
+expect_strict_reply_refusal 'an evaluation reply that is not an object' \
+  'did not contain one nonempty JSON object' \
+  "STRICT_SSH_RUN_OUT='[]' remote_eval_batch_json 'value=1'"
+expect_strict_reply_refusal 'an evaluation reply with trailing data' \
+  'did not contain one nonempty JSON object' \
+  "STRICT_SSH_RUN_OUT='{\"value\":1}{\"value\":2}' remote_eval_batch_json 'value=1'"
+expect_strict_reply_refusal 'an empty JSON object' \
+  'did not contain one nonempty JSON object' \
+  "STRICT_SSH_RUN_OUT='{}' remote_eval_batch_json 'value=1'"
+expect_strict_reply_refusal 'a reply missing the requested query' \
+  'missing the requested query: value' \
+  "STRICT_SSH_RUN_OUT='{\"other\":1}' remote_eval_batch_json 'value=1'"
+expect_strict_reply_refusal 'a batch reply missing one of its queries' \
+  'missing the requested query: value' \
+  "STRICT_SSH_RUN_OUT='{\"other\":1}' remote_eval_batch_json 'other=1' 'value=1'"
+
+# The flake wrappers are the consumers that used to pipe an empty result into
+# jq and return its status; they must inherit the refusal instead.
+expect_strict_reply_refusal 'flake_eval with an empty reply' \
+  'did not contain one nonempty JSON object' \
+  "STRICT_SSH_RUN_OUT='' flake_eval '1 + 1'"
+expect_strict_reply_refusal 'flake_eval_json with a missing query' \
+  'missing the requested query: value' \
+  "STRICT_SSH_RUN_OUT='{\"other\":1}' flake_eval_json '1 + 1'"
+
+echo "  ✅ an empty, malformed or incomplete reply is refused, never certified"
+
+# --- the receipt records the configuration context the query ran in ----------
+# The expression reads NIXHOMESERVER_TEST_HOST, so the same bytes describe two
+# different configurations. The receipt must therefore carry the bounded
+# configuration context next to the query digest instead of only the SSH
+# endpoint, or two different claims would share one recorded identity.
+strict_eval_host_context() {
+  local host="$1" receipt
+  : >"$spy_root/ssh.log"
+  (
+    eval "$(strict_env_exports)"
+    export NIXHOMESERVER_TEST_HOST="$host"
+    export STRICT_SSH_RUN_OUT='{"value":1}'
+    remote_eval_batch_json 'value=1'
+  ) >/dev/null || fail "a strict evaluation for configuration host '${host}' failed"
+  receipt="$(latest_receipt eval)"
+  jq -r '[.query_sha256, (.query_test_host // "<none>")] | @tsv' "$receipt"
+}
+
+context_a="$(strict_eval_host_context server-a)"
+context_b="$(strict_eval_host_context server-b)"
+sha_a="${context_a%%$'\t'*}"
+host_a="${context_a#*$'\t'}"
+sha_b="${context_b%%$'\t'*}"
+host_b="${context_b#*$'\t'}"
+[[ "$sha_a" =~ ^[0-9a-f]{64}$ ]] || fail "the query identity is not a sha256: ${sha_a}"
+[[ "$sha_a" == "$sha_b" ]] || fail "the same expression recorded two different query identities"
+[[ "$host_a" == 'server-a' && "$host_b" == 'server-b' ]] ||
+  fail "the receipt did not record the configuration host the query ran for: '${host_a}' and '${host_b}'"
+
+# A refusal attributable to the same query records the same context: the
+# interruption path shares one receipt writer, so it cannot lose this.
+: >"$spy_root/ssh.log"
+context_status=0
+(
+  eval "$(strict_env_exports)"
+  export NIXHOMESERVER_TEST_HOST='server-refused'
+  export STRICT_SSH_RUN_OUT='{}'
+  remote_eval_batch_json 'value=1'
+) >/dev/null 2>&1 || context_status=$?
+((context_status != 0)) || fail "an empty reply was certified"
+receipt="$(latest_receipt eval)"
+jq -e '.exit_status != 0 and .query_test_host == "server-refused"' "$receipt" >/dev/null ||
+  fail "a refused query lost its configuration host context: $(cat "$receipt")"
+
+echo "  ✅ an evaluation receipt records the configuration host context of its query"
+
 # --- finding 5: an evaluation receipt identifies the query it ran -------------
 # Two evaluations of one commit are different claims. The receipt therefore
 # carries the digest of the bytes that actually travelled, not just a phase.

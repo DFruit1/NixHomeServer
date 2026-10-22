@@ -485,7 +485,7 @@ strict_write_phase_receipt() {
   local task="${HERMES_KANBAN_TASK:-}" board="${HERMES_KANBAN_BOARD:-}" run="${HERMES_KANBAN_RUN_ID:-}"
   local output_sha="" error_sha="" snippet_path="" snippet_sha="" receipt_tmp
   local identity="${_strict_identity_state:-unchecked}" identity_checks="${_strict_identity_checks:-0}"
-  local query_sha="${_strict_query_sha:-}"
+  local query_sha="${_strict_query_sha:-}" query_host="${_strict_query_host:-}"
   [[ "$identity_checks" =~ ^[0-9]+$ ]] || identity_checks=0
   [[ "$phase" =~ ^[A-Za-z0-9-]+$ && "$status" =~ ^[0-9]+$ ]] || return 1
   [[ -n "$task" && -n "$board" && -n "$run" ]] || {
@@ -520,7 +520,7 @@ strict_write_phase_receipt() {
     --arg cleanup "$cleanup" --arg output "$output_sha" --arg error "$error_sha" \
     --arg snippet_path "$snippet_path" --arg snippet_sha "$snippet_sha" \
     --arg identity "$identity" --argjson identity_checks "$identity_checks" \
-    --arg query_sha "$query_sha" \
+    --arg query_sha "$query_sha" --arg query_host "$query_host" \
     --argjson host_facts "$host_facts_json" --argjson argv "$argv_json" \
     '{task:$task,board:$board,run:$run,phase:$phase,commit:$head,tree:$tree,
       canonical_manifest_sha256:$manifest,archive_sha256:$archive,helper_sha256:$helper,
@@ -529,6 +529,7 @@ strict_write_phase_receipt() {
       snippet_sha256:(if $snippet_sha == "" then null else $snippet_sha end),
       source_identity:$identity,source_identity_checks:$identity_checks,
       query_sha256:(if $query_sha == "" then null else $query_sha end),
+      query_test_host:(if $query_host == "" then null else $query_host end),
       exit_status:($status|tonumber),cleanup:$cleanup,
       output_sha256:(if $output == "" then null else $output end),
       stderr_sha256:(if $error == "" then null else $error end)}' >"$receipt_tmp"; then
@@ -685,6 +686,7 @@ strict_attempt_reset() {
   _strict_identity_checks=0
   _strict_identity_state="unchecked"
   _strict_query_sha=""
+  _strict_query_host=""
 }
 
 # Verify the declared identity at one named boundary of an attempt. A refusal

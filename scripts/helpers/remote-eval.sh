@@ -103,7 +103,11 @@ ${built}}"
     return 2
   fi
   if strict_remote_enabled; then
-    _remote_eval_strict_run "$all"
+    local -a names=()
+    for spec in "${pairs[@]}"; do
+      names+=("${spec%%=*}")
+    done
+    _remote_eval_strict_run "$all" "${names[@]}"
     return
   fi
 
@@ -118,6 +122,39 @@ ${built}}"
   # use, so bind it here too rather than relying on _remote_eval_run having run.
   init_repo_root
   command nix eval --json --impure --expr "$all"
+}
+
+# A session that exited 0 is not yet a result. The reply is the result: it must
+# be exactly one nonempty JSON object, and it must answer every query that was
+# asked. Anything else is a transport fault, and certifying it would put an
+# empty or truncated body in front of a caller's jq as if it were data. Prints
+# the reason on failure; returns 0 only for a usable reply.
+_remote_eval_reply_error() {
+  local output_file="$1"
+  shift
+  local -a names=("$@") missing=()
+  local name missing_list=""
+
+  if [[ ! -s "$output_file" ]]; then
+    printf 'the evaluation did not contain one nonempty JSON object'
+    return 0
+  fi
+  if ! jq -es 'length == 1 and (.[0] | type == "object") and (.[0] | length > 0)' \
+    "$output_file" >/dev/null 2>&1; then
+    printf 'the evaluation did not contain one nonempty JSON object'
+    return 0
+  fi
+  for name in "${names[@]}"; do
+    if ! jq -es --arg name "$name" '.[0] | has($name)' "$output_file" >/dev/null 2>&1; then
+      missing+=("$name")
+    fi
+  done
+  if ((${#missing[@]} > 0)); then
+    missing_list="$(printf '%s, ' "${missing[@]}")"
+    printf 'the evaluation reply is missing the requested query: %s' "${missing_list%, }"
+    return 0
+  fi
+  return 1
 }
 
 _remote_eval_remote_script() {
@@ -219,9 +256,11 @@ _remote_eval_run() {
 # actually observed rather than assuming the remote trap ran.
 _remote_eval_strict_run() {
   local expression="$1"
+  shift
+  local -a query_names=("$@")
   local repo_root archive remote_archive="" remote_dir="" output status=0 selected_host
   local cleanup="none" attempt phase host_facts manifest helper_sha archive_sha=""
-  local stdout_file stderr_file remote_err remote_expr stage_status_file
+  local stdout_file stderr_file remote_err remote_expr stage_status_file reply_error
 
   strict_remote_preflight "${REMOTE_EVAL:-1}" "REMOTE_EVAL=0" || return $?
   strict_attempt_reset
@@ -240,9 +279,13 @@ _remote_eval_strict_run() {
   attempt="$(strict_next_attempt eval)" || return 1
   phase="eval-${attempt}"
   # The receipt has to identify the query that actually ran, not merely the
-  # phase it ran in: two evaluations of one commit are different claims.
+  # phase it ran in: two evaluations of one commit are different claims. The
+  # configuration host is part of that claim too -- the expression reads
+  # NIXHOMESERVER_TEST_HOST, so identical bytes can describe two different
+  # configurations -- and remote_eval_host_context already bounds it.
   _strict_query_sha="$(printf '%s' "$expression" | sha256sum | awk '{print $1}')" || return 1
   [[ "$_strict_query_sha" =~ ^[0-9a-f]{64}$ ]] || return 1
+  _strict_query_host="$selected_host"
 
   stdout_file="$(mktemp "${TMPDIR:-/tmp}/nixhomeserver-strict-eval-out.XXXXXX")" || return 1
   stderr_file="$(mktemp "${TMPDIR:-/tmp}/nixhomeserver-strict-eval-err.XXXXXX")" || {
@@ -389,6 +432,22 @@ _remote_eval_strict_run() {
   fi
   rm -f "$remote_err"
   printf '%s\n' "$output" >"$stdout_file"
+
+  # A released session that answered nothing certifies nothing: the reply has to
+  # be one nonempty JSON object carrying every query that was asked, or this
+  # attempt is a failure with its own attributable receipt. The receipts for a
+  # refusal keep the observed bytes, so a reader can see what arrived.
+  if reply_error="$(_remote_eval_reply_error "$stdout_file" "${query_names[@]}")"; then
+    printf 'strict-remote: %s\n' "$reply_error" >>"$stderr_file"
+    cleanup="$(strict_remote_settle_cleanup "$remote_eval_host" "$remote_dir" "$remote_archive")"
+    strict_guard_release
+    strict_write_phase_receipt "$phase" "$remote_eval_host" "$host_facts" "$manifest" \
+      "$archive_sha" "$helper_sha" '[]' "$expression" 1 "$stdout_file" "$stderr_file" "$cleanup" || true
+    cat "$stderr_file" >&2
+    echo "strict-remote: the reply was refused (cleanup: ${cleanup})" >&2
+    rm -f "$stdout_file" "$stderr_file"
+    return 1
+  fi
 
   # The evaluation returned; the receipt is about to certify which source it
   # evaluated, so the worktree must still be that source.
