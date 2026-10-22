@@ -1,4 +1,4 @@
-{ lib, craneLib }:
+{ lib, pkgs, craneLib }:
 
 { name
 , packageSrc
@@ -49,6 +49,9 @@ in
   } // lib.optionalAttrs (cargoLock != null) { inherit cargoLock; });
 
   test = craneLib.cargoNextest (commonArgs // checkProfileEnv // {
+    # Client builders load trust roots even when tests only contact loopback.
+    # Sandboxes have no host /etc CA store; retain normal TLS verification.
+    SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
     inherit cargoNextestExtraArgs;
     cargoArtifacts = cargoArtifactsFinal;
     src = checkSrc;

@@ -98,3 +98,31 @@ in { production = app.package.src; validation = app.checks.source; }
 ')"
 jq -e '.production == "/fixture/production" and .validation == "/fixture/validation"' <<<"$routing" >/dev/null
 echo '✅ Rust app assembly routes production and validation to their respective sources.'
+
+# HTTP-client construction still loads trust roots for loopback-only test
+# requests. The Nix sandbox has no host /etc trust store, so every nextest
+# derivation needs the real CA bundle in its environment.
+trust_environment="$(flake_eval_json '
+  pkgs = f.inputs.nixpkgs.legacyPackages.x86_64-linux;
+  mkChecks = import ./custom_apps/rust/lib/mk-rust-checks.nix {
+    inherit lib pkgs;
+    craneLib = {
+      cargoFmt = args: args;
+      cargoClippy = args: args;
+      cargoNextest = args: args;
+    };
+  };
+  checks = mkChecks {
+    name = "fixture";
+    packageSrc = "/fixture/production";
+    checkSrc = "/fixture/validation";
+    commonArgs.version = "0.1.0";
+    cargoArtifacts = "/fixture/dependencies";
+  };
+in {
+  certificateFile = checks.test.SSL_CERT_FILE or null;
+  expectedBundle = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+}
+')"
+jq -e '.certificateFile == .expectedBundle' <<<"$trust_environment" >/dev/null
+echo '✅ Rust nextest checks use the packaged CA trust bundle inside the sandbox.'

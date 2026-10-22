@@ -95,7 +95,7 @@ pass "no open card override routes to a free-tier model"
 
 # The pinned lane keeps its owner decision: the standard-implementer profile
 # exists here (fleet note pinned in hermes-runtime.md), so check its primary.
-pin="$(python3 -c "
+python3 -c "
 import yaml
 db_path='$HERMES_ROOT/profiles/standard-implementer/config.yaml'
 cfg=yaml.safe_load(open(db_path)) or {}
@@ -104,5 +104,5 @@ assert m.get('default')=='deepseek-v4.1-flash', m
 assert m.get('provider')=='custom:opencode-go', m
 fb=cfg.get('fallback_providers') or []
 assert [(e.get('provider'),e.get('model')) for e in fb]==[('openai-codex','gpt-6-luna')], fb
-" )" || fail "the standard-implementer lane pin drifted"
+" || fail "the standard-implementer lane pin drifted"
 pass "standard-implementer lane keeps its deepseek/codex pin"

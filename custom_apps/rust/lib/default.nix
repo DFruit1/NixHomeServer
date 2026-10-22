@@ -10,7 +10,7 @@ let
     inherit lib craneLib toolchain;
   };
   mkRustChecks = import ./mk-rust-checks.nix {
-    inherit lib craneLib;
+    inherit lib pkgs craneLib;
   };
   mkRustApp = import ./mk-rust-app.nix {
     inherit lib craneLib mkRustShell mkRustChecks;

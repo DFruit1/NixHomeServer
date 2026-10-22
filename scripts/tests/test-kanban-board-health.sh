@@ -1437,7 +1437,7 @@ GIT_COMMITTER_DATE="@$((now + 3))" GIT_AUTHOR_DATE="@$((now + 3))" \
   git -C "$wt_repo" cherry-pick wt/t_m2 --quiet 2>/dev/null
 [[ "$(git -C "$wt_repo" rev-parse master)" != "$(git -C "$wt_repo" rev-parse wt/t_m2)" ]] ||
   fail "setup: cherry-pick created a fast-forward, so the patch-equivalence case is untested"
-[[ -z "$(git -C "$wt_repo" cherry master wt/t_m2 | grep '^+')" ]] ||
+! git -C "$wt_repo" cherry master wt/t_m2 | grep -q '^+' ||
   fail "setup: the picked commit is not patch-equivalent"
 sqlite3 "$merge_board_dir/kanban.db" "INSERT INTO tasks
   (id,title,assignee,status,completed_at,branch_name) VALUES

@@ -233,6 +233,7 @@ fn parse_time(token: &str) -> Option<u64> {
     Some(total_ms + fraction_ms)
 }
 
+#[cfg(test)]
 fn render_subtitle(cues: &[SubtitleCue], vtt: bool) -> Result<String, String> {
     const ERROR: &str = "subtitle cues cannot be rendered";
     let mut output = if vtt {
@@ -283,10 +284,12 @@ fn render_subtitle(cues: &[SubtitleCue], vtt: bool) -> Result<String, String> {
     Ok(output)
 }
 
+#[cfg(test)]
 pub(crate) fn render_srt(cues: &[SubtitleCue]) -> Result<String, String> {
     render_subtitle(cues, false)
 }
 
+#[cfg(test)]
 pub(crate) fn render_vtt(cues: &[SubtitleCue]) -> Result<String, String> {
     render_subtitle(cues, true)
 }
