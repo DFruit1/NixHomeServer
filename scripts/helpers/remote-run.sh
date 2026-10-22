@@ -229,6 +229,16 @@ persist_mode="$4"
 archive_hash="$5"
 strict_mode="$6"
 shift 6
+# Install the cleanup trap before any failure path can exit, so a checksum or
+# extraction failure still removes what this invocation created. Ownership is
+# bounded by the persist mode: a caller-owned stage survives, while this
+# invocation's uploaded archive (and, in clean mode, its stage and the
+# helper-written snippet inside it) does not.
+if [[ "$persist_mode" == "keep" ]]; then
+  trap 'rm -rf "$remote_archive"' EXIT
+else
+  trap 'rm -rf "$remote_dir" "$remote_archive"' EXIT
+fi
 if [[ "$strict_mode" == "strict" ]]; then
   actual_archive_sha="$(sha256sum "$remote_archive" | cut -d' ' -f1)"
   [[ "$actual_archive_sha" == "$archive_hash" ]] || {
@@ -239,7 +249,6 @@ fi
 if [[ "$persist_mode" == "keep" ]]; then
   # Keep the realized tree; only the archive and the helper-written snippet
   # are transient. The tree-hash pin was checked host-side before staging.
-  trap 'rm -rf "$remote_archive"' EXIT
   mkdir -p "$remote_dir"
   if [[ -f "$remote_dir/.remote-run-tree-hash" ]] \
       && [[ "$(cat "$remote_dir/.remote-run-tree-hash")" == "$archive_hash" ]]; then
@@ -254,7 +263,6 @@ if [[ "$persist_mode" == "keep" ]]; then
     echo "remote-run: persisted stage at $remote_dir (tree ${archive_hash:0:12})" >&2
   fi
 else
-  trap 'rm -rf "$remote_dir" "$remote_archive"' EXIT
   mkdir -p "$remote_dir"
   tar -C "$remote_dir" -xf "$remote_archive"
 fi

@@ -163,4 +163,90 @@ else
   echo "  ✅ fails closed, with no local run, when a strict run cannot reach the server"
 fi
 
+# --- remote wrapper cleanup contract (hermetic) ------------------------------
+#
+# The remote wrapper shell is the code that physically stages, verifies and
+# extracts the archive. Execute it verbatim against a synthetic task-owned
+# stage: a corrupt transfer must fail the run and still remove everything this
+# invocation created, while a caller-owned persisted stage survives. No SSH,
+# no Nix, no server.
+
+echo "▶ remote-run remote-wrapper cleanup contract"
+
+helper_source="$TESTS_REPO_ROOT/scripts/helpers/remote-run.sh"
+remote_wrapper="$(sed -n "/<<'REMOTE_EOF'\$/,/^REMOTE_EOF\$/p" "$helper_source" | sed '1d;$d')"
+[[ -n "$remote_wrapper" ]] \
+  || fail "could not extract the remote wrapper shell from ${helper_source}"
+
+wrapper_fixture="$(mktemp -d "$spy_dir/wrapper.XXXXXX")"
+bad_sha="$(printf '%064d' 0)"
+good_sha() { sha256sum "$1" | cut -d' ' -f1; }
+
+# Clean mode, corrupt transfer: the stage, the archive and the helper-written
+# snippet are all invocation-owned, so all three are removed on the failure.
+clean_stage="$wrapper_fixture/clean-stage"
+clean_archive="$wrapper_fixture/clean-archive.tar"
+mkdir -p "$clean_stage"
+printf 'stale staged content\n' >"$clean_stage/stale.txt"
+printf 'printf "never runs\\n"\n' >"$clean_stage/run.sh"
+printf 'synthetic corrupt transfer\n' >"$clean_archive"
+clean_err="$wrapper_fixture/clean-err"
+if bash -s -- "$clean_stage" "$clean_archive" "$clean_stage/run.sh" \
+    clean "$bad_sha" strict >/dev/null 2>"$clean_err" <<<"$remote_wrapper"; then
+  fail "the remote wrapper accepted a corrupt archive checksum"
+fi
+grep -q 'archive checksum mismatch' "$clean_err" \
+  || fail "a corrupt transfer did not name the checksum mismatch: $(cat "$clean_err")"
+[[ ! -e "$clean_stage" ]] \
+  || fail "a corrupt transfer left its clean-mode stage behind: $clean_stage"
+[[ ! -e "$clean_archive" ]] \
+  || fail "a corrupt transfer left its uploaded archive behind: $clean_archive"
+
+echo "  ✅ a corrupt transfer fails and removes its clean-mode stage and archive"
+
+# Persist mode, corrupt transfer: the caller-owned stage (realized dependencies,
+# tree-hash pin) must survive, but this invocation's archive must still go.
+keep_stage="$wrapper_fixture/keep-stage"
+keep_archive="$wrapper_fixture/keep-archive.tar"
+mkdir -p "$keep_stage/deps"
+printf 'realized dependencies\n' >"$keep_stage/deps/realized.txt"
+printf '%s\n' "$bad_sha" >"$keep_stage/.remote-run-tree-hash"
+printf 'printf "never runs\\n"\n' >"$keep_stage/run.sh"
+printf 'synthetic corrupt transfer\n' >"$keep_archive"
+keep_err="$wrapper_fixture/keep-err"
+if bash -s -- "$keep_stage" "$keep_archive" "$keep_stage/run.sh" \
+    keep "$bad_sha" strict >/dev/null 2>"$keep_err" <<<"$remote_wrapper"; then
+  fail "the remote wrapper accepted a corrupt archive checksum in persist mode"
+fi
+grep -q 'archive checksum mismatch' "$keep_err" \
+  || fail "a corrupt persist-mode transfer did not name the mismatch: $(cat "$keep_err")"
+[[ -f "$keep_stage/deps/realized.txt" ]] \
+  || fail "a corrupt persist-mode transfer destroyed the caller-owned stage"
+[[ ! -e "$keep_archive" ]] \
+  || fail "a corrupt persist-mode transfer left its uploaded archive behind: $keep_archive"
+
+echo "  ✅ a corrupt persist-mode transfer keeps the caller stage and removes its archive"
+
+# Clean mode, intact transfer: verification must not break the normal path —
+# the snippet runs and the invocation cleans up after itself.
+ok_stage="$wrapper_fixture/ok-stage"
+ok_archive="$wrapper_fixture/ok-archive.tar"
+ok_marker="$wrapper_fixture/ok-marker"
+mkdir -p "$ok_stage"
+printf 'tracked content\n' >"$ok_stage/tracked.txt"
+tar -C "$ok_stage" -cf "$ok_archive" tracked.txt
+mkdir -p "$ok_stage"
+printf 'printf "ran\\n" >"$2"\n' >"$ok_stage/run.sh"
+ok_sha="$(good_sha "$ok_archive")"
+if ! bash -s -- "$ok_stage" "$ok_archive" "$ok_stage/run.sh" \
+    clean "$ok_sha" strict "$ok_marker" >/dev/null 2>"$wrapper_fixture/ok-err" <<<"$remote_wrapper"; then
+  fail "the remote wrapper failed an intact transfer: $(cat "$wrapper_fixture/ok-err")"
+fi
+[[ -f "$ok_marker" ]] \
+  || fail "an intact transfer did not run the snippet"
+[[ ! -e "$ok_stage" && ! -e "$ok_archive" ]] \
+  || fail "an intact clean-mode transfer left its stage or archive behind"
+
+echo "  ✅ an intact transfer runs the snippet and cleans up its stage and archive"
+
 echo "✅ remote-run helper regression test passed"
