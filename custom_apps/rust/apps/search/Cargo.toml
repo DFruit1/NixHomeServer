@@ -14,7 +14,10 @@ homelab-common.workspace = true
 html2text.workspace = true
 mailparse.workspace = true
 rand.workspace = true
-reqwest.workspace = true
+# reqwest 0.13 gates query-string and urlencoded-form bodies behind features
+# (0.12 exposed them unconditionally); the Solr client posts .form() payloads
+# and the paperless source builds .query() lookups.
+reqwest = { workspace = true, features = ["query", "form"] }
 rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true

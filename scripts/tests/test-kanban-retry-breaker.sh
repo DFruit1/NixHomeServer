@@ -34,10 +34,14 @@ HERMES_BIN="${HERMES_BIN:-$(command -v hermes 2>/dev/null || true)}"
 
 # A fenced worker delegates synthetic mutation to the approved confined executor.
 # The helper retains origin pins and exposes no production state or credentials.
-# Never clear worker/delegation markers in this suite or retry unsandboxed.
-if [[ -n "${HERMES_KANBAN_TASK:-}${HERMES_DELEGATED_CHILD_CONTEXT:-}" ]]; then
+# Never clear worker/delegation markers in this suite or retry unsandboxed. The
+# pin list is every identity a worker can carry, and HERMES_FIXTURE_ACTIVE is
+# not authority: the runner's clean child environment has no outer identity
+# pins, so it naturally continues below without trusting a caller-set flag.
+if [[ -n "${HERMES_KANBAN_TASK:-}${HERMES_KANBAN_RUN_ID:-}${HERMES_KANBAN_CLAIM_LOCK:-}${HERMES_PROFILE_NAME:-}${HERMES_PROFILE:-}${HERMES_SESSION_ID:-}${HERMES_KANBAN_DB:-}${HERMES_KANBAN_BOARD:-}${HERMES_DELEGATED_CHILD_CONTEXT:-}" ]]; then
+  suite_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/$(basename "${BASH_SOURCE[0]}")"
   exec python3 -B "$TESTS_REPO_ROOT/scripts/hermes/fixture-runner.py" \
-    --repo "$TESTS_REPO_ROOT" --suite "${BASH_SOURCE[0]}"
+    --repo "$TESTS_REPO_ROOT" --suite "$suite_path" --timeout 300
 fi
 
 fail() {
@@ -551,5 +555,11 @@ help_out="$("$BREAKER" --help)"
 grep -q 'Usage: scripts/hermes/kanban-retry-breaker.sh' <<<"$help_out" ||
   fail "--help did not print usage"
 pass "prints usage for --help"
+
+# The runner deletes its temporary origin file on exit. Emit only non-secret
+# identity fields while still inside the confined child, never host paths.
+if [[ -n "${HERMES_FIXTURE_ORIGIN:-}" ]]; then
+  python3 -c 'import json, os; d=json.load(open(os.environ["HERMES_FIXTURE_ORIGIN"])); o=d["origin"]; print("FIXTURE_ORIGIN " + json.dumps({"board":o.get("HERMES_KANBAN_BOARD"),"task":o.get("HERMES_KANBAN_TASK"),"run":o.get("HERMES_KANBAN_RUN_ID"),"provenance":d.get("provenance")}, sort_keys=True))'
+fi
 
 echo "▶ kanban retry breaker: all checks passed"

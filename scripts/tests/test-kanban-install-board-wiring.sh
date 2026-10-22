@@ -97,6 +97,18 @@ printf '%s\n' \
   '(including WORKER_FAILED_BLOCKED) before graph repair. Never clear' \
   'quota-breaker holds or swap models/lanes to evade them.' \
   >"$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md"
+# One grouped append: the retry-breaker rule and the WORKER_FAILED_BLOCKED policy
+# the drift check below looks for.
+printf '%s\n' \
+  '## Deploy gate' \
+  '' \
+  'nix run .#deploy' \
+  'scripts/hermes/kanban-retry-breaker.sh parks a card; do not move it.' \
+  '8. **WORKER_FAILED_BLOCKED** - re-scope the card and re-dispatch it.' \
+  >>"$HERMES_FIXTURE/profiles/head-coordinator/SOUL.md"
+# The coordinator reference is the detail half: its Board health table carries a
+# row per finding the monitor emits, and the feature-reviewer SOUL keeps the
+# whole-set deploy review section the installer checks for.
 printf '%s\n' \
   '# Coordinator procedures' \
   '' \
