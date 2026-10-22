@@ -3,6 +3,8 @@
 
 No model budget increase, worker interruption, phone delivery or NixOS switch.
 Existing jobs are edited through the native cron API with private backups.
+Use --files-only to update owned helpers without reading or changing cron state
+when fleet supervision already owns the maintenance cadence.
 """
 import argparse
 import json
@@ -17,14 +19,15 @@ SOURCE=Path(__file__).resolve().parent
 NAME='kanban technical recovery'
 
 
-def install(root,check=False):
+def install(root,check=False,files_only=False):
     if root.is_symlink():
         raise ValueError('Recovery install root must not be a symlink')
     jobs_file=root/'cron/jobs.json'
-    jobs=json.loads(jobs_file.read_text()).get('jobs',[])
-    matches=[j for j in jobs if j.get('name')==NAME]
-    if len(matches)>1:
-        raise ValueError('Duplicate recovery jobs; reconcile native identities')
+    if not files_only:
+        jobs=json.loads(jobs_file.read_text()).get('jobs',[])
+        matches=[j for j in jobs if j.get('name')==NAME]
+        if len(matches)>1:
+            raise ValueError('Duplicate recovery jobs; reconcile native identities')
     changed=False
     for name in ('deadlock_recovery.py','feature_flow.py','review-verdict-guard.py','capability_recovery.py','hermes_common.py','review-taskforce.py'):
         target=root/'scripts'/name
@@ -38,6 +41,8 @@ def install(root,check=False):
         if not check:
             backup_file(root,'deadlock-recovery',target)
             atomic_write(target,source)
+    if files_only:
+        return int(check and changed)
     workdir=str(SOURCE.parent.parent)
     expected=dict(script='deadlock_recovery.py',no_agent=True,workdir=workdir,deliver='local')
     job=matches[0] if matches else None
@@ -67,7 +72,9 @@ def install(root,check=False):
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--check',action='store_true')
+    parser.add_argument('--files-only',action='store_true',
+                        help='update/check owned helper files only; preserve all cron state')
     args=parser.parse_args()
     if not args.check and any(os.environ.get(k) for k in ('HERMES_KANBAN_TASK','HERMES_KANBAN_RUN_ID','HERMES_DELEGATED_CHILD_CONTEXT')):
         parser.error('Recovery installation requires the interactive operator')
-    sys.exit(install(Path(os.environ.get('HERMES_ROOT',str(Path.home()/'.hermes'))),args.check))
+    sys.exit(install(Path(os.environ.get('HERMES_ROOT',str(Path.home()/'.hermes'))),args.check,files_only=args.files_only))

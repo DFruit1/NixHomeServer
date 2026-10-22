@@ -71,6 +71,29 @@ turns drain, then use the existing supported graceful gateway refresh described
 in [runtime recovery](hermes-runtime.md). Never launch a second gateway. Report
 source, installed release and running-session evidence separately.
 
+## Updating technical-recovery helpers
+
+When the fleet supervisor owns cadence and the legacy `kanban technical recovery`
+job is deliberately paused, an interactive operator can update the recovery
+installer's owned helper files from the reviewed checkout without touching any
+cron state:
+
+```bash
+HERMES_ROOT="$HOME/.hermes" python3 -B scripts/hermes/install-deadlock-recovery.py --files-only
+HERMES_ROOT="$HOME/.hermes" python3 -B scripts/hermes/install-deadlock-recovery.py --files-only --check
+```
+
+This uses the existing installer's private backups and atomic writes. It neither
+reads nor changes the cron registry, supervisor state or handler cadence, and
+keeps the interactive-operator restriction for installation. It does not install
+or qualify a fleet supervisor; confirm the existing fleet release and cadence
+through `fleet-release.py check`/`status` as part of the owning operation.
+Without `--files-only`, the standalone installer retains its original behavior:
+it creates or repairs the five-minute legacy job and resumes it if paused. Do
+not use that default path on a supervisor-managed installation. Native adapter
+changes still use their existing supported installer; this command updates only
+the recovery helper files that `install-deadlock-recovery.py` owns.
+
 ## One maintenance supervisor
 
 The local no-agent `hermes fleet supervisor` job runs every five minutes. Its

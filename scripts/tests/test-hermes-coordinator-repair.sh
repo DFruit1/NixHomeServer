@@ -536,6 +536,44 @@ def recover_publication(native):
         self.assertEqual(count,self.conn.execute('SELECT COUNT(*) FROM task_events').fetchone()[0])
         self.assertEqual('running',kb.get_task(self.conn,route).status)
 
+    def test_recovery_files_only_updates_helpers_and_preserves_all_cron_state(self):
+        spec=importlib.util.spec_from_file_location('fixture_recovery_installer',source/'install-deadlock-recovery.py')
+        installer=importlib.util.module_from_spec(spec);spec.loader.exec_module(installer)
+        jobs_file=self.root/'cron/jobs.json';jobs_file.parent.mkdir()
+        jobs_file.write_text(json.dumps({'jobs':[
+            {'id':'legacy','name':installer.NAME,'enabled':False,'schedule':{'minutes':5}},
+            {'id':'supervisor','name':'hermes fleet supervisor','enabled':True,'schedule':{'minutes':5}},
+            {'id':'unrelated','enabled':False,'history':['retained']}
+        ]},indent=2)+'\n')
+        cadence=self.root/'state/fleet/cadence.json';cadence.parent.mkdir(parents=True)
+        cadence.write_text('{"technical-recovery":{"interval":300,"last_run":123}}\n')
+        before={p:p.read_bytes() for p in (jobs_file,cadence)}
+        target=self.root/'scripts/deadlock_recovery.py';target.parent.mkdir()
+        target.write_text('# previously installed helper\n')
+        with patch.object(installer.subprocess,'run',side_effect=AssertionError('cron must not run')):
+            self.assertEqual(1,installer.install(self.root,check=True,files_only=True))
+            self.assertEqual('# previously installed helper\n',target.read_text())
+            self.assertEqual(0,installer.install(self.root,files_only=True))
+            self.assertEqual((source/target.name).read_bytes(),target.read_bytes())
+            for name in ('feature_flow.py','review-verdict-guard.py','capability_recovery.py','hermes_common.py','review-taskforce.py'):
+                self.assertEqual((source/name).read_bytes(),(target.parent/name).read_bytes())
+            self.assertEqual(0,installer.install(self.root,check=True,files_only=True))
+            self.assertEqual(0,installer.install(self.root,files_only=True))
+        self.assertEqual(before,{p:p.read_bytes() for p in before})
+        backups=list((self.root/'backups/deadlock-recovery').rglob('*'))
+        self.assertTrue(any(p.is_file() and p.read_text()=='# previously installed helper\n' for p in backups))
+
+    def test_recovery_files_only_does_not_require_or_parse_cron_registry(self):
+        spec=importlib.util.spec_from_file_location('fixture_recovery_installer',source/'install-deadlock-recovery.py')
+        installer=importlib.util.module_from_spec(spec);spec.loader.exec_module(installer)
+        jobs_file=self.root/'cron/jobs.json'
+        with patch.object(installer.subprocess,'run',side_effect=AssertionError('cron must not run')):
+            self.assertEqual(0,installer.install(self.root,files_only=True))
+            self.assertFalse(jobs_file.exists())
+            jobs_file.parent.mkdir();jobs_file.write_text('unavailable cron registry\n')
+            self.assertEqual(0,installer.install(self.root,check=True,files_only=True))
+            self.assertEqual('unavailable cron registry\n',jobs_file.read_text())
+
     def test_recovery_cron_installer_create_edit_resume_readback_and_idempotence(self):
         spec=importlib.util.spec_from_file_location('fixture_recovery_installer',source/'install-deadlock-recovery.py')
         installer=importlib.util.module_from_spec(spec);spec.loader.exec_module(installer)
