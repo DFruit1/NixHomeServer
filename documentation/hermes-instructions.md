@@ -102,6 +102,38 @@ adapters; `install-instruction-policy.py` owns the shared instruction blocks and
 approval-policy mirror. Reconcile older cards with a cited supersession comment
 without rewriting immutable plans or reporting old evidence as new acceptance.
 
+Self-healing source provisioning is owned by the coordinator: use the maintained
+[workspace recovery helper](hermes-workspace-repair.md), deliver verified inputs,
+and resume the existing handoff after native readback. An installed helper hash
+or reconstructed checkout is a wake signal; fresh independent checks still earn
+acceptance. The capability monitor includes installed recovery/origin helpers
+and actual checkout commits and trees, so repairing an existing path is visible.
+Scheduled holds remain in the bounded stall follow-up even when older cards
+omit the input-supplier marker; related task verdict/revision changes wake them
+before the normal reminder deadline. Monitoring never removes their conditions.
+
+`install-worker-origin.py` owns the metadata-only native session and terminal-launch adapters
+and identical `worker_origin.py` copies in root scripts and native `hermes_cli`.
+Private launch receipts bind the actual kernel process and runtime context;
+caller-supplied session labels cannot borrow a parent worker's authority.
+Unavailable attestation preserves ordinary terminal execution and denies the
+maintenance grant.
+Its `--check` is read-only; installation retains private content-addressed
+preimages and checks exact upstream anchors before replacement. New workers load
+the adapter; it neither restarts services nor proves existing sessions refreshed.
+Use its owning test together with the fixture installer tests when changing
+native worker authentication. A claimed profile/session name alone cannot grant
+coordinator authority.
+
+`install-recovered-resume.py` owns the native `kanban_unblock` recovery extension.
+A proven native head-coordinator worker may unblock siblings on its own board;
+ordinary workers and delegated children retain their fences. For a repaired
+technical triage hold, supply its current capability-recovery version and actual
+repair evidence through the native tool. The helper consumes that version once,
+retains failure/retry counters and prerequisite/review gates, and records the
+actual native actor. It cannot specify/decompose cards, complete another agent's
+work or write another board. The terminal remains fenced; use the native tool.
+
 Use the [behaviour trials](hermes-behavior-trials.md) for bounded model checks
 after instruction changes; deterministic installer checks alone do not prove
 agents follow the installed procedures.

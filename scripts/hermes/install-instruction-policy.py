@@ -204,11 +204,16 @@ def changes(root, pending=None):
         SOURCE / 'taskforce/approval-policy.md').read_text()
     result[root / 'scripts/hermes-autonomy.md'] = (
         SOURCE.parent.parent / 'documentation/hermes-autonomy.md').read_text()
+    result[root / 'scripts/hermes-workspace-repair.md'] = (
+        SOURCE.parent.parent / 'documentation/hermes-workspace-repair.md').read_text()
+    result[root / 'scripts/hermes-capability-recovery.md'] = (
+        SOURCE / 'instructions/capability-recovery.md').read_text()
     for filename in ('hermes-prerequisites.md','hermes-deployment-receipts.md','hermes-performance.md'):
         result[root / 'scripts' / filename] = (SOURCE.parent.parent / 'documentation' / filename).read_text()
     for filename in ('hermes_common.py', 'kanban-owner-alerts.py', 'owner-blocker-authoring-guard.py',
                      'kanban-performance.py', 'kanban-blockers.py', 'deployment-receipt.py',
-                     'review-verdict-guard.py', 'daily-steward-window.py', 'steward-readonly-guard.py'):
+                     'review-verdict-guard.py', 'daily-steward-window.py', 'steward-readonly-guard.py',
+                     'repair-task-workspace.py'):
         result[root / 'scripts' / filename] = (SOURCE / filename).read_text()
     if (root / 'profiles/board-steward/SOUL.md').exists():
         for filename in ('daily-steward-window.py','kanban-performance.py','kanban-blockers.py'):

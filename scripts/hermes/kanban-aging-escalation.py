@@ -360,30 +360,9 @@ def recheck_blocks(root, slug, now, dry_run, report):
             report.append(f"[{slug}] {tid} (blocked) stale block: {evidence}")
             if dry_run:
                 continue
-            # Auto-unblock only when the dependency is OBJECTIVELY satisfied:
-            #   1. all parents are done/archived, AND
-            #   2. the block reason references a task ID, AND
-            #   3. the reason does NOT describe a missing deliverable, an owner
-            #      ask, a capability gap, or a deferred scope — those are real
-            #      blockers that auto-unblocking would wrongly release.
-            # Cards failing (3) get the evidence comment instead, so the
-            # coordinator decides.
-            reason = block_reason(db, tid)
-            safe_to_unblock = True
-            for unsafe in ('required', 'missing', 'no attachment', 'not delivered',
-                           'deferred', 'gap', 'owner', 'capability', 'cannot',
-                           'refuses', 'requires', 'outstanding', 'unproven',
-                           'destroyed', 'lifecycle guard'):
-                if unsafe in reason.lower():
-                    safe_to_unblock = False
-                    break
-            if stale_dependency_block(db, tid) and re.search(r't_\d{6,}', reason) \
-                    and safe_to_unblock:
-                run_cli(['kanban', '--board', slug, 'unblock', tid,
-                         '--reason', 'Auto-unblocked: dependency prerequisite '
-                         'is satisfied (all parents done)'], env)
-                report.append(f"  -> auto-unblocked (dependency satisfied)")
-                continue
+            # Terminal parents may contain rejection or missing-input verdicts.
+            # Preserve coordinator authority: evidence is a wake signal, never
+            # sufficient proof that this consumer is safe to resume.
             comment = '\n'.join([
                 STALE_BLOCK_MARKER,
                 f"Stale block check: {evidence}. The stated condition no",

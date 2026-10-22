@@ -311,6 +311,26 @@ class AgingEscalationTest(unittest.TestCase):
                             and 't_0b10c5ff' in line for line in report),
                         report)
 
+    def test_terminal_dependency_never_auto_unblocks_without_coordinator_decision(self):
+        now = make_board(self.root, [
+            ('t_child', 'Consume review', 'blocked', 2.0,
+             {'block_kind': 'dependency'}),
+            ('t_12345678', 'Rejected review', 'done', 4.0,
+             {'assignee': 'feature-reviewer', 'runs': [('request-changes', 1.0)]}),
+        ])
+        db = sqlite3.connect(self.root / 'kanban/boards/testboard/kanban.db')
+        db.execute("INSERT INTO task_links VALUES ('t_12345678','t_child')")
+        db.execute("INSERT INTO task_events(task_id,kind,payload,created_at) VALUES(?,?,?,?)",
+                   ('t_child', 'blocked', json.dumps({'reason': 'Wait for t_12345678'}), now))
+        db.commit(); db.close()
+        calls = []
+        self.addCleanup(setattr, aging, 'run_cli', aging.run_cli)
+        aging.run_cli = lambda args, env: calls.append(args)
+        aging.recheck_blocks(self.root, 'testboard', now, dry_run=False, report=[])
+        self.assertEqual(1, len(calls))
+        self.assertIn('comment', calls[0])
+        self.assertFalse(any('unblock' in call for call in calls))
+
     def test_live_dependency_block_is_not_stale(self):
         now = make_board(self.root, [
             ('t_0b10c6aa', 'Follow-on work', 'blocked', 2.0,

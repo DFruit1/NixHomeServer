@@ -95,6 +95,21 @@ temporary task receipts on their cards/jobs, not in standing instructions.
   gap through the existing coordinator path. Scope approval does not remove a
   tool-level restriction.
 
+* Self-healing (owner instruction 2026-10-22): agents own repair of their
+  technical execution prerequisites, including source copies, worktrees, input
+  delivery, installed helpers and contradictory records. The coordinator may
+  prepare or reconstruct a parked task's exact checkout through the maintained
+  workspace-repair helper, preserving previous bytes and independent acceptance.
+  Implementers may repair source/tooling within assigned scope; newly discovered
+  reversible technical scope gets a bounded amendment and independent review,
+  rather than a new owner ask. Record which old instruction or evidence is
+  superseded and why. An obsolete hash, missing utility or old generic refusal
+  ends that attempt; it does not permanently prohibit a reviewed repair.
+  Never manufacture identity, rewrite historical evidence, overwrite active or
+  shared work, remove worker pins, or turn a rejected review into acceptance.
+  Follow the maintained capability-recovery procedure through actual readback
+  and supported resume; an acknowledgment or another waiting card is not repair.
+
 ---
 
 ## Git Tracking and Committing

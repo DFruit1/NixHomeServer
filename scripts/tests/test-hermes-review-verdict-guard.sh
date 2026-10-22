@@ -91,6 +91,75 @@ class VerdictGuardTest(unittest.TestCase):
                 'tool_input': {'board': 'testboard', 'parent_id': parent,
                                'child_id': child}}
 
+    def routed_rejection(self, *, source_status='running', route_status='todo', child_role='feature-reviewer'):
+        self.card('t_review',assignee='feature-reviewer',status=source_status,tenant='verification')
+        self.card('t_route',assignee='head-coordinator',status=route_status)
+        self.card('t_consumer',assignee=child_role,status='todo')
+        self.link('t_review','t_consumer')
+        self.link('t_review','t_route')
+        self.link('t_route','t_consumer')
+        return self.payload('t_review','t_consumer')
+
+    def test_pending_review_can_be_rerouted_without_dropping_its_gate(self):
+        payload=self.routed_rejection()
+        rejection={'verdict':'request-changes','revision':'r',
+                   'checks':[{'command':'actual failing check','exit_code':1}],
+                   'requested_changes':['repair actual failure']}
+        self.assertEqual('block',guard_mod.guard(self.complete_payload('t_review',rejection),self.root).get('action'))
+        self.assertEqual({},guard_mod.guard(payload,self.root))
+        self.db.execute("DELETE FROM task_links WHERE parent_id='t_review' AND child_id='t_consumer'")
+        self.db.commit()
+        self.assertEqual({},guard_mod.guard(self.complete_payload('t_review',rejection),self.root))
+        self.db.execute("UPDATE tasks SET status='done' WHERE id='t_review'")
+        self.db.commit()
+        self.add_run('t_review','request-changes',NOW)
+        self.assertEqual('block',guard_mod.guard(self.complete_payload('t_route',{}),self.root).get('action'))
+        self.assertEqual('block',guard_mod.guard(self.payload('t_route','t_consumer'),self.root).get('action'))
+        self.assertEqual([('t_route',)],self.db.execute("SELECT parent_id FROM task_links WHERE child_id='t_consumer'").fetchall())
+
+    def test_reroute_requires_both_legs_and_exact_edge(self):
+        payload=self.routed_rejection()
+        for parent,child in [('t_review','t_route'),('t_route','t_consumer'),('t_review','t_consumer')]:
+            self.db.execute('DELETE FROM task_links WHERE parent_id=? AND child_id=?',(parent,child))
+            self.db.commit()
+            self.assertEqual('block',guard_mod.guard(payload,self.root).get('action'))
+            self.link(parent,child)
+
+    def test_reroute_refuses_completed_running_or_dispatchable_intermediary(self):
+        payload=self.routed_rejection()
+        for status in ('done','archived','running','ready'):
+            self.db.execute("UPDATE tasks SET status=? WHERE id='t_route'",(status,))
+            self.db.commit()
+            self.assertEqual('block',guard_mod.guard(payload,self.root).get('action'))
+        self.db.execute("UPDATE tasks SET status='todo' WHERE id='t_route'")
+        self.db.execute("INSERT INTO task_runs(task_id,profile,status) VALUES ('t_route','head-coordinator','running')")
+        self.db.commit()
+        self.assertEqual('block',guard_mod.guard(payload,self.root).get('action'))
+
+    def test_reroute_refuses_wrong_role_and_nested_coordinator_chain(self):
+        payload=self.routed_rejection()
+        self.db.execute("UPDATE tasks SET assignee='standard-implementer' WHERE id='t_route'")
+        self.db.commit()
+        self.assertEqual('block',guard_mod.guard(payload,self.root).get('action'))
+        self.db.execute("UPDATE tasks SET assignee='head-coordinator' WHERE id='t_route'")
+        self.db.execute("UPDATE tasks SET assignee='head-coordinator' WHERE id='t_consumer'")
+        self.db.commit()
+        self.assertEqual('block',guard_mod.guard(payload,self.root).get('action'))
+
+    def test_inherited_gate_can_be_removed_after_acceptance_or_direct_restoration(self):
+        self.routed_rejection(source_status='done')
+        self.db.execute("DELETE FROM task_links WHERE parent_id='t_review' AND child_id='t_consumer'")
+        self.db.commit()
+        self.add_run('t_review','request-changes',NOW)
+        payload=self.payload('t_route','t_consumer')
+        self.assertEqual('block',guard_mod.guard(payload,self.root).get('action'))
+        self.link('t_review','t_consumer')
+        self.assertEqual({},guard_mod.guard(payload,self.root))
+        self.db.execute("DELETE FROM task_links WHERE parent_id='t_review' AND child_id='t_consumer'")
+        self.db.commit()
+        self.add_run('t_review','accept',NOW+1)
+        self.assertEqual({},guard_mod.guard(payload,self.root))
+
     def test_ordinary_prerequisite_unlinks_freely(self):
         self.card('t_p1', assignee='standard-implementer')
         self.card('t_c1', assignee='standard-implementer', status='todo')

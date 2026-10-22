@@ -14,6 +14,30 @@ import time
 def utc(value):return dt.datetime.fromtimestamp(value,dt.timezone.utc).isoformat(timespec='seconds')
 
 
+def related_tasks(db, task_id):
+    """Bounded native graph evidence; completion alone is not acceptance."""
+    rows=db.execute("SELECT l.parent_id,l.child_id,t.id,t.status,t.assignee,r.outcome,r.metadata "
+                    "FROM task_links l JOIN tasks t ON t.id=CASE WHEN l.parent_id=? "
+                    "THEN l.child_id ELSE l.parent_id END LEFT JOIN task_runs r "
+                    "ON r.id=(SELECT max(id) FROM task_runs WHERE task_id=t.id) "
+                    "WHERE l.parent_id=? OR l.child_id=? ORDER BY t.id LIMIT 129",
+                    (task_id,task_id,task_id)).fetchall()
+    if len(rows)>128:raise ValueError('Scheduled dependency observation bound exceeded')
+    result=[]
+    for row in rows:
+        metadata=json.loads(row['metadata'] or '{}')
+        if not isinstance(metadata,dict):raise ValueError('Unsupported related run metadata')
+        verdict=metadata.get('verdict')
+        revision=metadata.get('revision')
+        if revision is not None and (not isinstance(revision,str) or len(revision)>256):
+            raise ValueError('Unsupported related revision')
+        result.append(dict(parent_id=row['parent_id'],child_id=row['child_id'],
+                           task_id=row['id'],status=row['status'],assignee=row['assignee'],
+                           last_outcome=row['outcome'],revision=revision,
+                           verdict=verdict if verdict in ('accept','request-changes','unknown') else None))
+    return result
+
+
 def collect(root,state,now):
     if __package__ == 'cron':
         from cron import nixhomeserver_capability_recovery as recovery
@@ -46,7 +70,9 @@ def collect(root,state,now):
                 unfulfilled=bool(owner and (not run or owner['created_at']>(run['ended_at'] or 0)))
                 owner_requested=task['created_by'] in {'desktop','user','owner','owner-agent'}
                 hold=capability.get(task['id'])
-                if not (hold or task['status']=='blocked' or failed or unfulfilled or owner_requested
+                scheduled=task['status']=='scheduled'
+                related=related_tasks(db,task['id']) if scheduled else None
+                if not (hold or scheduled or task['status']=='blocked' or failed or unfulfilled or owner_requested
                         or (task['block_recurrences'] or 0)>=2 or (task['consecutive_failures'] or 0)>=2):continue
                 metadata=json.loads(run['metadata'] or '{}') if run else {}
                 if not isinstance(metadata,dict):raise ValueError('Unsupported run metadata')
@@ -54,7 +80,7 @@ def collect(root,state,now):
                 evidence['verdict']=evidence['verdict'] if evidence['verdict'] in ('accept','request-changes') else None
                 version=[task['status'],task['assignee'],task['block_kind'],outcome,evidence,
                          [owner['id'],hashlib.sha256(owner['body'].encode()).hexdigest()] if owner else None,
-                         hold['version'] if hold else None]
+                         hold['version'] if hold else None,related]
                 digest=hashlib.sha256(json.dumps(version,sort_keys=True).encode()).hexdigest()
                 previous=issues.get(key,{})
                 if previous.get('version')==digest and now<previous.get('next_due',0):continue
@@ -70,6 +96,9 @@ def collect(root,state,now):
                     'next_due_utc':utc(previous['next_due']) if previous.get('version')==digest and previous.get('next_due') else None,
                     'links':[list(link) for link in links[:20]],'links_truncated':len(links)>20,
                     '_order':(previous.get('next_due',0),key)})
+                if scheduled:
+                    due[-1]['related_tasks']=related[:20]
+                    due[-1]['related_tasks_truncated']=len(related)>20
                 if hold:due[-1]['capability_recovery']=hold
     # Resolved tasks leave the scheduler ledger; no card, memory or report is written.
     state['issues']={key:value for key,value in issues.items() if key in live}

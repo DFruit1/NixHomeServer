@@ -14,6 +14,7 @@ from pathlib import Path
 import re
 import sqlite3
 import stat
+import subprocess
 import sys
 import time
 
@@ -21,11 +22,61 @@ sys.dont_write_bytecode = True
 
 MAX_OPEN = 1000
 HELPERS = ('scripts/fixture-runner.py', 'scripts/autonomy-policy.py',
+           'scripts/repair-task-workspace.py',
+           'scripts/worker_origin.py',
+           'hermes-agent/hermes_cli/nixhomeserver_worker_origin.py',
+           'hermes-agent/hermes_cli/nixhomeserver_resume_recovered.py',
            'scripts/steward-coordinator-request.py',
            'scripts/hermes-capability-recovery.md', 'scripts/hermes-coordinator-reference.md',
            'hermes-agent/hermes_cli/nixhomeserver_autonomy.py',
            'hermes-agent/tools/kanban_tools.py')
 PARKED = {'blocked', 'scheduled', 'todo', 'triage'}
+
+
+def workspace_identity(value, observations):
+    """Observe committed identity only; never run status, hooks, filters or fetch.
+
+    A directory's existence is insufficient: source repairs must wake the
+    consumer even when its path was already present. Git discovery cannot
+    silently borrow an enclosing checkout's identity.
+    """
+    if not value:
+        return {'state': 'unassigned'}
+    if value in observations:
+        return observations[value]
+    if len(observations) >= 64:
+        raise ValueError('Workspace observation bound exceeded')
+    path = Path(value)
+    if path.is_symlink():
+        result = {'state': 'symlink'}
+    elif not path.is_dir():
+        result = {'state': 'missing'}
+    elif not (path / '.git').exists():
+        result = {'state': 'directory'}
+    else:
+        env = dict(os.environ)
+        env.update(GIT_OPTIONAL_LOCKS='0', GIT_TERMINAL_PROMPT='0',
+                   GIT_CEILING_DIRECTORIES=str(path.absolute().parent))
+        # Ignore ambient Git location overrides, never worker/delegation pins.
+        for key in ('GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR'):
+            env.pop(key, None)
+        try:
+            probe = subprocess.run(
+                ['git', '--no-optional-locks', '-C', str(path), 'rev-parse',
+                 '--show-toplevel', 'HEAD', 'HEAD^{tree}'],
+                capture_output=True, text=True, env=env, timeout=.5)
+            lines = probe.stdout.splitlines()
+            if (probe.returncode == 0 and len(lines) == 3
+                    and Path(lines[0]).resolve() == path.resolve()
+                    and all(re.fullmatch(r'[0-9a-f]{40,64}', x) for x in lines[1:])):
+                result = dict(state='git-root', revision=lines[1], tree=lines[2])
+            else:
+                result = {'state': 'unqualified-git-root'}
+        except (OSError, subprocess.TimeoutExpired):
+            # Failure cannot be treated as a missing/unchanged prerequisite.
+            raise ValueError('Workspace Git identity unavailable') from None
+    observations[value] = result
+    return result
 
 
 def digest(value):
@@ -73,8 +124,30 @@ def attachments(root, board, tid):
     return [[p.name, p.lstat().st_size, p.lstat().st_mtime_ns] for p in entries]
 
 
-def read_board(db, root, board, helpers):
+def prerequisite_results(db, parents, tables):
+    """Observe changed decisions even when the prerequisite stays done."""
+    if 'task_runs' not in tables:
+        return []
+    result = []
+    for parent in parents:
+        run = db.execute('SELECT id,status,outcome,metadata FROM task_runs WHERE task_id=? '
+                         'ORDER BY id DESC LIMIT 1', (parent[0],)).fetchone()
+        if run is None:
+            continue
+        raw = run['metadata'] or '{}'
+        if not isinstance(raw, str) or len(raw) > 64000:
+            raise ValueError('Prerequisite result exceeds observation bound')
+        metadata = json.loads(raw)
+        if not isinstance(metadata, dict):
+            raise ValueError('Unsupported prerequisite result')
+        # Hash structured evidence, never expose arbitrary result contents.
+        result.append([parent[0], run['id'], run['status'], run['outcome'], digest(metadata)])
+    return result
+
+
+def read_board(db, root, board, helpers, workspaces=None):
     """Use the caller's query-only transaction so each board is coherent."""
+    workspaces = {} if workspaces is None else workspaces
     columns = {r[1] for r in db.execute('PRAGMA table_info(tasks)')}
     if not {'id', 'status', 'assignee', 'block_kind'} <= columns:
         raise ValueError('Unsupported task schema')
@@ -120,7 +193,10 @@ def read_board(db, root, board, helpers):
             # hold any more, and re-queuing its stale pre-reclassification
             # version would reproduce a request the disposition already
             # consumed (the repeat-request loop).
-            new_kind = block.get('new_kind')
+            # Older native classification records carry only a reason. The
+            # current row supplies that missing field in this same snapshot;
+            # an explicitly malformed new_kind still fails coverage below.
+            new_kind = block.get('new_kind', task['block_kind'])
             if not isinstance(new_kind, str) or not re.fullmatch(r'[a-z][a-z_]{0,31}', new_kind):
                 raise ValueError('Unsupported block reclassification')
             block['kind'] = new_kind
@@ -137,13 +213,16 @@ def read_board(db, root, board, helpers):
             raise ValueError('Prerequisite observation bound exceeded')
         workspace = task['workspace_path']
         inputs = dict(task=task, reason=reason, parents=parents, helpers=helpers,
+                      prerequisite_results=prerequisite_results(db, parents, tables),
                       workspace_present=bool(workspace and Path(workspace).is_dir()),
+                      workspace_identity=workspace_identity(workspace, workspaces),
                       attachments=attachments(root, board, tid))
         result.append(dict(key=board + ':' + tid, board=board, task_id=tid,
                            version=digest(inputs), status=task['status'], assignee=task['assignee'],
                            supplier=supplier[1] if supplier else 'unclassified',
                            reason=' '.join(reason.split())[:1200], parents=parents,
                            workspace_present=inputs['workspace_present'],
+                           workspace_identity=inputs['workspace_identity'],
                            attachment_count=len(inputs['attachments'])))
     return result
 
@@ -155,6 +234,7 @@ def report(root):
                    {p.with_name('kanban.db') for p in base.glob('*/board.json')})
     result = dict(schema_version=1, holds=[], warnings=[])
     helpers = helper_identity(root)
+    workspaces = {}
     boards = [p for p in paths if not p.parent.name.startswith(('_', '.'))]
     if not boards:
         result['warnings'].append('no_active_boards')
@@ -172,7 +252,7 @@ def report(root):
                 deadline = time.monotonic() + 2
                 db.set_progress_handler(lambda: int(time.monotonic() > deadline), 1000)
                 db.execute('BEGIN')
-                result['holds'].extend(read_board(db, root, board, helpers))
+                result['holds'].extend(read_board(db, root, board, helpers, workspaces))
         except (OSError, ValueError, TypeError, sqlite3.Error):
             result['warnings'].append(board + ':missing_unreadable_unsupported_or_oversize')
     return result

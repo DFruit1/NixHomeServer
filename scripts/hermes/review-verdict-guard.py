@@ -151,16 +151,73 @@ def _accepted_verdict(run, profile):
         return False
 
 
-def guard_unlink(payload, root):
-    """Check a kanban_unlink without changing board state.
+def _retained_review_path(db, review_id, removed_parent, child):
+    """Keep the same review gate while inserting a parked routing decision."""
+    child_id = child['id']
+    if not db.execute('SELECT 1 FROM task_links WHERE parent_id=? AND child_id=?',
+                      (removed_parent, child_id)).fetchone():
+        return False
+    # A coordinator edge can be retired once the original direct gate is restored.
+    if removed_parent != review_id and db.execute(
+            'SELECT 1 FROM task_links WHERE parent_id=? AND child_id=?',
+            (review_id, child_id)).fetchone():
+        return True
+    # Do not manufacture nested coordinator chains that would hide the gate.
+    if child['assignee'] == 'head-coordinator':
+        return False
+    return db.execute("""SELECT 1 FROM task_links first
+        JOIN tasks route ON route.id=first.child_id
+        JOIN task_links second ON second.parent_id=route.id
+        WHERE first.parent_id=? AND second.child_id=?
+        AND route.id NOT IN (?,?,?) AND route.assignee='head-coordinator'
+        AND route.status IN ('todo','blocked','scheduled','triage')
+        AND NOT EXISTS (SELECT 1 FROM task_runs r WHERE r.task_id=route.id AND r.status='running')
+        LIMIT 1""", (review_id, child_id, removed_parent, review_id, child_id)).fetchone() is not None
 
-    Unlinking an ordinary prerequisite stays worker-service (the native tool's
-    own contract). A verification parent edge is different: it is the
-    child's review gate. Retiring one while its verdict still stands would
-    let the child complete unreviewed, so the unlink must carry its own
-    evidence: an accepted verdict on the same review, or a newer accepted
-    review generation, or a child that is already done/archived.
-    """
+
+def _review_unlink(db, parent, run, removed_parent, child):
+    parent_id, child_id = parent['id'], child['id']
+    if _retained_review_path(db, parent_id, removed_parent, child):
+        return
+    if run is None:
+        raise ValueError(f'Review {parent_id} has no completed verifier run;'
+                         ' its gate cannot be retired by unlink')
+    latest = db.execute('SELECT profile,status,outcome,metadata FROM task_runs'
+                        ' WHERE task_id=? ORDER BY id DESC LIMIT 1', (parent_id,)).fetchone()
+    if parent['status'] == 'done' and _accepted_verdict(latest, parent['assignee']):
+        if native_review(db, parent):
+            _independent_native_acceptance(db, parent)
+        return
+    # A replacement must remain linked to this same consumer. Unrelated
+    # acceptance and a failed retry cannot release its direct or inherited gate.
+    replacements = db.execute(
+        'SELECT t.* FROM task_links l JOIN tasks t ON t.id=l.parent_id'
+        " WHERE l.child_id=? AND t.id!=? AND t.status='done'",
+        (child_id, parent_id)).fetchall()
+    for replacement in replacements:
+        if not verification(replacement, db):
+            continue
+        candidate = db.execute(
+            'SELECT profile,status,outcome,metadata,ended_at FROM task_runs'
+            ' WHERE task_id=? ORDER BY id DESC LIMIT 1', (replacement['id'],)).fetchone()
+        if (candidate and candidate['ended_at'] is not None
+                and candidate['ended_at'] > (run['ended_at'] or 0)
+                and _accepted_verdict(candidate, replacement['assignee'])):
+            if native_review(db, replacement):
+                _independent_native_acceptance(db, replacement)
+            return
+    raise ValueError(
+        f'Review {parent_id} requested changes, so this link is the live review'
+        f' gate for {child_id}: unlinking it now would let the card complete'
+        ' unreviewed. Link a fresh review card as a second parent and let it'
+        f' accept first; then retiring {parent_id} is bookkeeping. For rejection'
+        ' routing, retain review -> parked coordinator -> child before unlinking'
+        ' the direct review edge. If the work is superseded outright, the'
+        ' coordinator closes it with evidence')
+
+
+def guard_unlink(payload, root):
+    """Protect both direct review gates and their coordinator routing edges."""
     args = payload.get('tool_input') or {}
     board = args.get('board') or os.environ.get('HERMES_KANBAN_BOARD')
     child_id = args.get('child_id')
@@ -174,49 +231,27 @@ def guard_unlink(payload, root):
     with closing(sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True, timeout=5)) as db:
         db.row_factory = sqlite3.Row
         db.execute('PRAGMA query_only=ON')
-        child = db.execute('SELECT status FROM tasks WHERE id=?', (child_id,)).fetchone()
+        db.execute('BEGIN')
+        child = db.execute('SELECT id,status,assignee FROM tasks WHERE id=?', (child_id,)).fetchone()
         if child is None:
             raise ValueError('Unknown child task; do not unlink from an unknown card')
         if child['status'] in ('done', 'archived'):
             return {}
         parent, run = _latest_review_state(db, parent_id)
-        if parent is None or not verification(parent, db):
+        if parent is None:
             return {}
-        if run is None:
-            raise ValueError(f'Review {parent_id} has no completed verifier run;'
-                             ' its gate cannot be retired by unlink')
-        latest = db.execute('SELECT profile,status,outcome,metadata FROM task_runs'
-                            ' WHERE task_id=? ORDER BY id DESC LIMIT 1', (parent_id,)).fetchone()
-        if parent['status'] == 'done' and _accepted_verdict(latest, parent['assignee']):
-            if native_review(db, parent):
-                _independent_native_acceptance(db, parent)
-            return {}
-        # A replacement must be a linked parent of this same child, complete,
-        # and accepted in its latest run. Unrelated board-wide acceptance and
-        # stale acceptance followed by a failed retry cannot release this gate.
-        replacements = db.execute(
-            'SELECT t.* FROM task_links l'
-            ' JOIN tasks t ON t.id=l.parent_id'
-            " WHERE l.child_id=? AND t.id!=? AND t.status='done'",
-            (child_id, parent_id)).fetchall()
-        for replacement in replacements:
-            if not verification(replacement, db):
-                continue
-            candidate = db.execute(
-                'SELECT profile,status,outcome,metadata,ended_at FROM task_runs'
-                ' WHERE task_id=? ORDER BY id DESC LIMIT 1', (replacement['id'],)).fetchone()
-            if (candidate and candidate['ended_at'] is not None
-                    and candidate['ended_at'] > (run['ended_at'] or 0)
-                    and _accepted_verdict(candidate, replacement['assignee'])):
-                if native_review(db, replacement):
-                    _independent_native_acceptance(db, replacement)
-                return {}
-        raise ValueError(
-            f'Review {parent_id} requested changes, so this link is the live review'
-            f' gate for {child_id}: unlinking it now would let the card complete'
-            ' unreviewed. Link a fresh review card as a second parent and let it'
-            f' accept first; then retiring {parent_id} is bookkeeping. If the work'
-            ' is superseded outright, the coordinator closes it with evidence')
+        if verification(parent, db):
+            _review_unlink(db, parent, run, parent_id, child)
+        elif parent['assignee'] == 'head-coordinator':
+            # Moving a review gate through a coordinator must not turn its
+            # outgoing edge into an ordinary freely removable prerequisite.
+            reviews = db.execute('SELECT p.* FROM task_links l JOIN tasks p ON p.id=l.parent_id'
+                                 ' WHERE l.child_id=?', (parent_id,)).fetchall()
+            for review in reviews:
+                if verification(review, db):
+                    _parent, review_run = _latest_review_state(db, review['id'])
+                    _review_unlink(db, review, review_run, parent_id, child)
+        return {}
 
 
 def guard(payload, root):

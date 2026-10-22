@@ -228,6 +228,48 @@ class AlertsTest(unittest.TestCase):
         self.assertEqual('Reply yes if it arrived, or no if it did not.',
                          alerts.check_summary(summary)['Unblock'])
 
+    def test_date_path_exemption_requires_a_literal_absolute_path(self):
+        header = ('Blocking: The dated staging path is needed.\n'
+                  'Why owner: Only you can provide its exact location.\n')
+        accepted = ['/tmp/SXPOL-20261014-v3 holds the copies.',
+                    'Inspect /tmp/SXPOL-20261014-v3.',
+                    'Inspect /tmp/20261014-SXPOL.',
+                    'Inspect (/tmp/20261014-SXPOL/).']
+        for action in accepted:
+            with self.subTest(accept=action):
+                self.assertEqual(action, alerts.check_summary(header + 'Unblock: ' + action)['Unblock'])
+        rejected = ['Run `cd -- ${ROOT}/tmp/SXPOL-20261014-v3`.',
+                    'Run `cd -- $ROOT/tmp/SXPOL-20261014-v3`.',
+                    'Run `cd -- $(pwd)/tmp/SXPOL-20261014-v3`.',
+                    'Run `cd -- "$ROOT"/tmp/20261014-SXPOL`.',
+                    'Run `cd -- `pwd`/tmp/SXPOL-20261014-v3`.',
+                    'Inspect /tmp/20261014-abcdef7.',
+                    'Inspect /tmp/20261014-SXPOL/abcdef7.',
+                    'Inspect /tmp/20261014-SXPOL/20261014.',
+                    'Inspect /tmp/20261014-20310409.']
+        for action in rejected:
+            with self.subTest(reject=action):
+                with self.assertRaises(ValueError):
+                    alerts.check_summary(header + 'Unblock: ' + action)
+
+
+    def test_summary_duplicate_and_reordered_fields_are_refused(self):
+        header = ('Blocking: The staging location is needed.\n'
+                  'Why owner: Only you can provide its exact location.\n')
+        self.assertEqual('Reply yes.',
+                         alerts.check_summary(header + 'Unblock: Reply yes.')['Unblock'])
+        refused = [header + 'Unblock: Reply yes.\nUnblock: Reply no.',
+                   header + 'Unblock:\nUnblock: Reply no.',
+                   header + 'Unblock: Reply yes.\nWhy owner: Only you can confirm it.',
+                   'Why owner: Only you can confirm it.\n'
+                   'Blocking: The staging location is needed.\nUnblock: Reply yes.',
+                   header + 'Unblock:']
+        for text in refused:
+            with self.subTest(text=text):
+                with self.assertRaises(ValueError):
+                    alerts.check_summary(text)
+
+
     def test_worker_summary_cannot_replace_coordinator_summary(self):
         with closing(sqlite3.connect(self.boards['one'])) as db:
             for author, timestamp, problem in [('head-coordinator', 1, 'The phone test needs a reply. Nothing else can proceed.'),

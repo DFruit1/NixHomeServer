@@ -18,6 +18,24 @@ Implementers implement; feature-reviewer independently accepts; project-auditor
 owns substantive plan/provenance decisions, immutable amendments and FINDINGS.md.
 An agent-supplied gap is a work assignment, not an owner approval question.
 
+Self-healing is an execution duty (owner instruction 2026-10-22), not just a
+reporting duty. Reconcile source copies, task/worktree bindings, input transfer,
+maintained installer availability and stale procedural premises within existing
+scope. Use `repair-task-workspace.py` and `hermes-workspace-repair.md` for a
+parked task's exact checkout. Preserve old work and receipts, verify the actual
+destination, deliver the real inputs, then resume through native lifecycle tools.
+Never claim that creating a directory or naming a donor checkout delivered it.
+
+An exact-source or tool-identity mismatch invalidates that attempt's old receipt;
+it does not require endless preservation of an obsolete technical contract.
+The coordinator may scope a reversible source/tooling correction or reconstruct
+missing inputs, obtain independent acceptance, and record a bounded replacement
+binding on the existing handoff. Preserve immutable historical plans and failed
+evidence. Earn fresh checks at the selected source; never relabel historical
+greens, silently change acceptance criteria, or export missing native identity.
+Specific credential/destructive/exposure refusals and actual tool fences retain
+their gates; use the supported reviewed one-shot mechanism for eligible fences.
+
 For each existing hold:
 
 1. Read the latest reason, current standing policy, exact approval, source and
@@ -61,13 +79,38 @@ For each existing hold:
    its real input is available. Preserve rejected history and feature gates;
    retire the superseded rejection edge only after fresh independent acceptance,
    then resume the original implementation receipt and composition.
-   Native unblock handles blocked/scheduled cards, not triage; reassign does
-   not promote triage either. After verified material recovery, an authorised
-   interactive operator can use the board's authenticated Move to Ready action
-   for a nonrunning, eligible triage card. Preserve its scope, prerequisites,
-   counters and identity. Workers still report missing transition capabilities;
-   they must not invoke an operator surface to evade their own restrictions or
-   bounce through artificial states to make an ineligible tool work.
+   If a standalone reviewer cannot record a real rejection because its direct
+   child is another reviewer or implementer, preserve the gate through a parked
+   head-coordinator routing card. Link `review -> routing card` and
+   `routing card -> original child`, read back both edges and a nonrunning
+   todo/blocked/scheduled/triage routing state, then unlink only the original
+   `review -> child` edge through the guarded native tool. Keep the routing card
+   blocked if the review is already done so dispatch cannot race preparation.
+   The reviewer can then record request-changes without releasing product work;
+   the routing card may act on the rejection but cannot complete until a valid
+   independent acceptance releases its review gate. Its outgoing child edge
+   remains protected as an inherited gate. Do not use completed/running routing
+   cards, remove both gate paths, create coordinator chains or bypass a refusal
+   through another tool. Native link operations retain their cycle checks.
+   After verified material recovery, an authenticated native head-coordinator
+   worker may use `kanban_unblock` on a blocked/scheduled sibling on its own
+   pinned board. For an agent-supplied capability episode routed to triage,
+   inspect `python3 ~/.hermes/scripts/capability_recovery.py --inspect`, then
+   provide the exact `recovery_version` and a nonempty `recovery_reason` naming
+   the verified repair or native evidence comment to `kanban_unblock`. The
+   maintained native recovery API permits one exact transition per hold version;
+   it preserves scope, assignee, prerequisites, review phase, failure counters
+   and retry budgets, and never recomputes unrelated board tasks. It refuses
+   trackers, new unspecified triage, owner-input holds, stale evidence and any
+   active worker/run/lease. Native process/run proof is required; inherited role
+   strings or a terminal subprocess cannot invoke this authority. All ordinary
+   workers and delegates remain restricted. A durable private reservation
+   consumes the version before the native transaction; after interruption,
+   inspect the native `unblocked` event and journal rather than retrying that
+   unchanged version. The native helper and exact tool/schema adapters must be
+   installed from reviewed source; an existing worker needs a fresh native
+   process before claiming the new tool is available. Reassigning or bouncing
+   through artificial states never substitutes for this operation.
 6. A failed remedy returns its new evidence to the same owner. Narrow the repair
    or obtain a concrete alternative from the auditor; never repeat unchanged
    audits, manufacture receipts, clear cooldowns or disable a guard. Exhausted
@@ -143,7 +186,7 @@ existing two-hour opportunity monitor includes stable CAPABILITY_HOLD lines for
 parked capability episodes, including scheduled/triage/todo holds without a later
 release and newly recorded scheduled agent-supplied waits. Preserve each wait's
 actual wake conditions; observation never grants execution. Its fingerprint covers reason, runnable scope, relevant prerequisite
-states, workspace presence, attachment metadata and bounded allowlisted installed
+states, actual checkout commit/tree identity, attachment metadata and bounded allowlisted installed
 helper hashes. These are wake signals, not proof an active session loaded a fix
 or an artifact passed verification. It never reads credentials or executes tests.
 Coverage errors fail visibly and never count as resolution.
@@ -160,6 +203,10 @@ one changed task never requeues every unchanged finding. Repeating the same
 handoff is idempotent. Queue delivery remains distinct from completed recovery.
 The existing four-hour stall job inspects unresolved outcomes with its existing
 8h/16h/24h reminder backoff, including the same parked capability episodes and
-material-input versions. It delivers its findings once through the scheduler;
+material-input versions. Scheduled holds remain visible even when old reasons
+omit a supplier marker; changes to related task states and actual verifier
+verdicts/revisions wake the same hold. Preserve its time or acceptance condition.
+The aging job supplies evidence comments, never automatic unblocking from a
+terminal parent: done may carry rejection or an unknown verdict. It delivers its findings once through the scheduler;
 do not duplicate that delivery with another queue call. Routine acknowledgments
 and replacement routing cards are never accepted feature milestones.

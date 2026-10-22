@@ -99,6 +99,35 @@ class RecoveryTest(unittest.TestCase):
         self.db.execute("UPDATE tasks SET body='Approved corrected input boundary.'")
         self.assertNotEqual(second, self.report()['holds'][0]['version'])
 
+    def test_repaired_git_source_wakes_its_consumer_without_a_new_block(self):
+        workspace = self.root / 'candidate'
+        workspace.mkdir()
+        def git(*args):
+            return subprocess.run(['git', '-C', str(workspace), *args], check=True,
+                                  capture_output=True, text=True).stdout.strip()
+        git('init', '-q')
+        git('config', 'user.name', 'Fixture')
+        git('config', 'user.email', 'fixture@example.invalid')
+        (workspace / 'source').write_text('old candidate')
+        git('add', 'source')
+        git('commit', '-qm', 'old candidate')
+        self.db.execute('UPDATE tasks SET workspace_path=?', (str(workspace),))
+        first = self.report()['holds'][0]
+        (workspace / 'source').write_text('repaired candidate')
+        git('commit', '-qam', 'repair candidate')
+        second = self.report()['holds'][0]
+        self.assertNotEqual(first['version'], second['version'])
+        self.assertEqual(git('rev-parse', 'HEAD'), second['workspace_identity']['revision'])
+        self.assertEqual('git-root', second['workspace_identity']['state'])
+
+    def test_plain_directory_never_inherits_its_parent_repository_identity(self):
+        subprocess.run(['git', 'init', '-q', str(self.root)], check=True)
+        workspace = self.root / 'empty-consumer'
+        workspace.mkdir()
+        self.db.execute('UPDATE tasks SET workspace_path=?', (str(workspace),))
+        identity = self.report()['holds'][0]['workspace_identity']
+        self.assertEqual({'state': 'directory'}, identity)
+
     def test_scheduled_historical_capability_holds_are_followed_without_restarting_workers(self):
         self.db.execute("UPDATE tasks SET status='scheduled',block_kind=NULL")
         focus = self.report()['holds']
@@ -174,6 +203,18 @@ class RecoveryTest(unittest.TestCase):
         os.mkfifo(scripts / 'fixture-runner.py')
         self.assertEqual(first, self.report())
 
+    def test_completed_parent_acceptance_changes_wake_existing_hold(self):
+        self.task('t_review','done',None)
+        self.db.execute("INSERT INTO task_links VALUES('t_review','t_one')")
+        self.db.execute("INSERT INTO task_runs VALUES(1,'t_review','done','completed',100,?)",
+                        (json.dumps({'verdict':'request-changes','revision':'a'*40}),))
+        first=self.report()['holds'][0]['version']
+        self.db.execute("UPDATE task_runs SET metadata=? WHERE id=1",
+                        (json.dumps({'verdict':'accept','revision':'b'*40}),))
+        second=self.report()['holds'][0]['version']
+        self.assertNotEqual(first,second)
+        self.assertEqual(second,self.report()['holds'][0]['version'])
+
     def test_reclassification_to_another_kind_ends_the_capability_hold(self):
         self.db.execute("INSERT INTO task_events(task_id,kind,payload) VALUES('t_one','block_reclassified',?)",
                         (json.dumps({'old_kind': 'capability', 'new_kind': 'dependency',
@@ -191,6 +232,16 @@ class RecoveryTest(unittest.TestCase):
         hold = self.report()['holds'][0]
         self.assertEqual('agent', hold['supplier'])
         self.assertIn('Restored capability hold.', hold['reason'])
+
+    def test_legacy_reason_only_reclassification_uses_current_native_kind(self):
+        # Real pcops/t_56e7f21a historical format omitted new_kind entirely.
+        self.db.execute("INSERT INTO task_events(task_id,kind,payload) VALUES('t_one','block_reclassified',?)",
+                        (json.dumps({'reason':'Input supplier: agent. Native lifecycle repair.',
+                                     'source':'owner_directed_classification'}),))
+        hold=self.report()['holds'][0]
+        self.assertIn('Native lifecycle repair.',hold['reason'])
+        self.db.execute("UPDATE tasks SET block_kind='dependency'")
+        self.assertEqual([],self.report()['holds'])
 
     def test_an_unsupported_reclassification_kind_fails_closed(self):
         self.db.execute("INSERT INTO task_events(task_id,kind,payload) VALUES('t_one','block_reclassified',?)",

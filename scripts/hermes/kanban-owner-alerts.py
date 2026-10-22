@@ -243,11 +243,50 @@ SUMMARY_PLACEHOLDER = re.compile(
     r'only you can clear this|cannot self-resolve|choose A or B)\b', re.I)
 
 
+SUMMARY_ABSOLUTE_PATH = re.compile(
+    r'(?<![A-Za-z0-9._~:/-])/(?:[A-Za-z0-9._~-]+/)*[A-Za-z0-9._~-]+')
+
+
+def summary_has_jargon(value):
+    """Keep rejecting jargon/hash tokens except an embedded date in a named literal absolute path.
+
+    Only an eight-digit YYYYMMDD match embedded in a named component of a
+    literal absolute path is exempt, and only that match. A literal path starts
+    at the text or after a separator: a slash following ``}`` from ``${ROOT}``,
+    ``)`` from ``$(pwd)`` or a closing quote belongs to a larger expression and
+    gets no exemption. The whole containing component is examined, so
+    ``20261014-SXPOL`` qualifies while a component made only of digits stays
+    forbidden.
+    """
+    separators = ' \t\n\r\f\v([<|;,>'
+    paths = [path for path in SUMMARY_ABSOLUTE_PATH.finditer(value)
+             if path.start() == 0 or value[path.start() - 1] in separators]
+    for match in SUMMARY_JARGON.finditer(value):
+        token = match.group()
+        if not re.fullmatch(r'[0-9]{8}', token):
+            return True
+        for path in paths:
+            if path.start() > match.start() or path.end() < match.end():
+                continue
+            path_text = path.group()
+            start = match.start() - path.start()
+            end = match.end() - path.start()
+            left = path_text.rfind('/', 0, start) + 1
+            right = path_text.find('/', end)
+            component = path_text[left:right if right != -1 else len(path_text)]
+            if re.search(r'[A-Za-z]', component):
+                break
+        else:
+            return True
+    return False
+
+
 def extract_summary(text):
     """The three owner-facing fields from a gate body or summary comment.
 
     A field runs from its label to the next recognised label, option line or
     blank line, so a value may wrap onto continuation lines without losing text.
+    A repeated label is refused instead of silently overwriting the first value.
     """
     fields = {}
     current = None
@@ -255,8 +294,11 @@ def extract_summary(text):
         line = raw.rstrip()
         match = re.match(r'^(Blocking|Why owner|Unblock):[ \t]*(.*)$', line)
         if match:
-            current = match.group(1)
-            fields[current] = match.group(2).strip()
+            name = match.group(1)
+            if name in fields:
+                raise ValueError('Write exactly Blocking:, Why owner:, Unblock: once each, in that order')
+            current = name
+            fields[name] = match.group(2).strip()
             continue
         if current is None:
             continue
@@ -277,7 +319,7 @@ def check_summary(text):
             raise ValueError(f'{name}: supply a concrete plain-English problem, reason or action')
         if len(value) > SUMMARY_FIELD_LIMIT:
             raise ValueError(f'{name}: keep it within {SUMMARY_FIELD_LIMIT} characters')
-        if SUMMARY_JARGON.search(value) or SUMMARY_PLACEHOLDER.search(value):
+        if summary_has_jargon(value) or SUMMARY_PLACEHOLDER.search(value):
             raise ValueError(f'{name}: supply a concrete plain-English problem, reason or action')
     has_a = bool(re.search(r'\bA\)', fields['Unblock']))
     has_b = bool(re.search(r'\bB\)', fields['Unblock']))

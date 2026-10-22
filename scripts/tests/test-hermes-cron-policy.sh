@@ -114,6 +114,33 @@ class CronPolicyTest(unittest.TestCase):
         self.assertTrue(cron_stall.collect(self.root,{},1006)[0]['owner_requested'])
         db.close()
 
+    def test_scheduled_technical_hold_is_followed_and_dependency_verdict_wakes_it(self):
+        import cron_stall
+        board=self.root/'kanban/boards/test';board.mkdir(parents=True)
+        (board/'board.json').write_text('{}')
+        db=sqlite3.connect(board/'kanban.db')
+        db.executescript("""CREATE TABLE tasks(id TEXT,status TEXT,assignee TEXT,block_kind TEXT,consecutive_failures INTEGER,block_recurrences INTEGER);
+        CREATE TABLE task_runs(id INTEGER,task_id TEXT,status TEXT,outcome TEXT,ended_at REAL,metadata TEXT);
+        CREATE TABLE task_comments(id INTEGER,task_id TEXT,author TEXT,body TEXT,created_at REAL);
+        CREATE TABLE task_links(parent_id TEXT,child_id TEXT);
+        INSERT INTO tasks VALUES('t_hold','scheduled','head-coordinator',NULL,0,0);
+        INSERT INTO tasks VALUES('t_review','done','feature-reviewer',NULL,0,0);
+        INSERT INTO task_runs VALUES(1,'t_hold','scheduled','scheduled',900,'{}');
+        INSERT INTO task_runs VALUES(2,'t_review','done','completed',950,'{"verdict":"request-changes","revision":"aaa"}');
+        INSERT INTO task_links VALUES('t_review','t_hold');""");db.commit()
+        state={};focus=cron_stall.collect(self.root,state,1000)
+        self.assertEqual(['test:t_hold'],[item['key'] for item in focus])
+        self.assertEqual('request-changes',focus[0]['related_tasks'][0]['verdict'])
+        cron_stall.processed(state,focus,1000)
+        self.assertEqual([],cron_stall.collect(self.root,state,1001))
+        db.execute("UPDATE task_runs SET metadata=? WHERE id=2",
+                   (json.dumps({'verdict':'accept','revision':'bbb'}),));db.commit()
+        changed=cron_stall.collect(self.root,state,1002)
+        self.assertEqual('material_change',changed[0]['reason'])
+        self.assertEqual('accept',changed[0]['related_tasks'][0]['verdict'])
+        self.assertEqual('scheduled',db.execute("SELECT status FROM tasks WHERE id='t_hold'").fetchone()[0])
+        db.close()
+
     def test_stall_gate_is_readonly_and_does_not_hide_a_broken_board(self):
         import cron_stall
         board=self.root/'kanban/boards/test';board.mkdir(parents=True);(board/'board.json').write_text('{}')
