@@ -21,13 +21,11 @@ tools or create replacement work to escape the budget. The runtime watchdog
 interrupts at the deadline; already-running operations use native cooperative
 cancellation and deferred cleanup, not a guarantee of undoing side effects.
 
-The coordinator monitor runtimes were raised to 360s in 2026-10-22 after the
-8-19 October fail signature: wakes died on the runtime deadline with only
-2-3 tool calls recorded, i.e. model generation latency on the coordinator
-lane, not report volume, dominated. Board-health remains report-capped so
-one wake can triage on named findings; runtime gives it the clock in which
-to get there. Tool counts stay tight: exhaustion with spends budgeted
-evidence still returns, rather than waking an unbounded investigation.
+Coordinator monitor runtimes were raised to 360s in 2026-10-22 after wakes
+died on the deadline with 2-3 tool calls: coordinator-lane model generation
+latency, not report volume, dominated. Board-health stays report-capped so
+one wake can triage its named findings; tool counts stay tight, so a
+budgeted-out wake still returns instead of extending investigation.
 
 The stall timer remains four-hourly, but no model starts unless a selected
 question has changed materially or its next inspection is due. The scheduler

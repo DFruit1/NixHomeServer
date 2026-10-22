@@ -24,6 +24,5 @@ with ~/.hermes/scripts/kanban-blockers.py, rereading native cards and suppliers
 before acting on the report.
 
 Narrow failing work; never raise budgets, clear quota-breaker holds or swap
-models/lanes to evade them. Follow recorded provider recovery conditions. A
-routed pass whose p95 nears its deadline is two slices, not one; record the
-split before dispatching again.
+models/lanes to evade them. Follow recorded provider recovery conditions. A pass
+nearing its p95 deadline is two slices; record the split before re-dispatch.

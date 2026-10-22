@@ -753,8 +753,12 @@ shopt -u nullglob
 # Cross-board for the same reason as the owner-comment detector: these holds sit
 # on nixhomeserver and pcops alike, and the coordinator must be woken whichever
 # board this cron names. Self-clearing on classification: the finding is emitted
-# only while the reason carries no `Input supplier:` line, so adding it, or
-# reclassifying the card away from `capability`, drops the line on the next tick.
+# only while neither the latest block reason nor the card body carries an
+# `Input supplier:` line, so adding it, or reclassifying the card away from
+# `capability`, drops the line on the next tick. The body counts because a
+# blocked card cannot be re-blocked to amend its reason (the CLI refuses
+# blocked->blocked), and agents classify in place with the supplier in the body,
+# as t_ba29dd71 did on 2026-10-21.
 #
 # The line carries no age bucket on purpose. An age that advances would change
 # the byte-hashed output as the bucket rolls over and wake the coordinator again
@@ -767,13 +771,21 @@ for cap_db in "$HERMES_ROOT"/kanban/boards/*/kanban.db; do
   case "$cap_board" in
     _*|.*) continue ;;
   esac
+  # The body clause is included only when the board schema actually carries a
+  # body column: the same health script runs against fixture/shaped boards
+  # without one, and a scan that would outright fail must stay a scan. The
+  # real boards have body, so there the body declaration counts.
+  body_clause=""
+  if sqlite3 "$cap_db" "SELECT body FROM tasks LIMIT 0;" >/dev/null 2>&1; then
+    body_clause=" OR instr(COALESCE(t.body, ''), 'Input supplier:') > 0"
+  fi
   if ! cap_rows="$(sqlite3 -separator '|' "$cap_db" "
         SELECT t.id,
                COALESCE(t.assignee, ''),
                CASE WHEN instr(COALESCE((SELECT e.payload FROM task_events e
                                            WHERE e.task_id = t.id AND e.kind = 'blocked'
                                            ORDER BY e.created_at DESC, e.id DESC LIMIT 1), ''),
-                               'Input supplier:') > 0 THEN 1 ELSE 0 END
+                               'Input supplier:') > 0$body_clause THEN 1 ELSE 0 END
           FROM tasks t
          WHERE t.status = 'blocked'
            AND COALESCE(t.block_kind, '') = 'capability'

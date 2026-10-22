@@ -228,6 +228,8 @@ INSERT INTO task_events VALUES (21,'t_cap_classified','blocked',$now-3000,'{\"re
 # `Input supplier:` line (t_cap_classified) or reclassifying it away from
 # `capability`. A comment alone leaves it reported, which is the point -- the
 # coordinator's own "parking this" comment is what hid the four owner asks.
+# The body-declared supplier case is covered in the clstest fixture below,
+# where the tasks schema carries a body column.
 
 # --- the owner answered a gate by commenting on the card ----------------------
 #
@@ -1557,6 +1559,33 @@ cls_out="$(HERMES_ROOT="$fixture/clshermes" HERMES_BOARD=clstest "$HEALTH")"
 grep -q '^CLASSIFICATION_AUDIT_EXCESS additional=3 needs=resolve-and-recheck$' <<<"$cls_out" ||
   fail "excess classification findings were not summarised: $cls_out"
 pass "caps classification findings and summarises the excess"
+
+# Capability holds classified in place: a blocked card cannot be re-blocked to
+# amend its reason (the CLI refuses blocked->blocked), so agents may declare
+# the supplier in the card body instead. The detector reads it there when the
+# board schema carries body, and keeps reporting a hold that names no supplier.
+sqlite3 "$cls_board_dir/kanban.db" "INSERT INTO tasks (id,title,assignee,status,body,block_kind)
+  VALUES ('t_cb1','capability hold naming no supplier','head-coordinator','blocked',
+          'Blocked until the staging package exists.','capability');
+INSERT INTO tasks (id,title,assignee,status,body,block_kind)
+  VALUES ('t_cb2','hold whose body classifies it','head-coordinator','blocked',
+          'Capability hold. Input supplier: agent (agent-side reconciliation first; owner only after exhaustion).',
+          'capability');"
+# Both carry typed block reasons so the classification audit does not flag them
+# as unverifiable holds; t_cb2's reason deliberately names no supplier so the
+# assertion proves the body declaration is what clears it.
+sqlite3 "$cls_board_dir/kanban.db" "INSERT INTO task_events (id, task_id, kind, created_at, payload) VALUES
+  (10,'t_cb1','blocked',$now,'{\"reason\":\"Blocked until the staging package exists.\"}'),
+  (11,'t_cb2','blocked',$now,'{\"reason\":\"Classification repair: capability hold, no acceptance or execution.\"}');"
+
+cls_out="$(HERMES_ROOT="$fixture/clshermes" HERMES_BOARD=clstest "$HEALTH")"
+grep -q '^CAPABILITY_OWNER_INPUT clstest t_cb1 ' <<<"$cls_out" ||
+  fail "an unclassified capability hold was not reported: $cls_out"
+grep -q 't_cb2' <<<"$cls_out" &&
+  fail "a hold classified in its body was still reported: $cls_out"
+grep -q 'CAPABILITY_SCAN_UNAVAILABLE clstest' <<<"$cls_out" &&
+  fail "a board with a body column reported an unavailable capability scan: $cls_out"
+pass "accepts a body-declared supplier and reports only unclassified holds"
 
 cls_out="$(HERMES_ROOT="$fixture/clshermes" HERMES_BOARD=clstest \
            BOARD_HEALTH_CLASSIFICATION_TOP_N=1 "$HEALTH")"
