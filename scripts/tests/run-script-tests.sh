@@ -226,7 +226,8 @@ run_test_script() {
     test-kanban-owner-alerts.sh | \
     test-steward-readonly.sh | \
     test-steward-opportunity-scan.sh | \
-    test-kanban-retry-breaker.sh)
+    test-kanban-retry-breaker.sh | \
+    test-hermes-worker-policy.sh)
       for pin in HERMES_KANBAN_TASK HERMES_KANBAN_DB HERMES_KANBAN_BOARD \
         HERMES_KANBAN_RUN_ID HERMES_KANBAN_CLAIM_LOCK \
         HERMES_DELEGATED_CHILD_CONTEXT HERMES_PROFILE_NAME HERMES_PROFILE; do

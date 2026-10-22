@@ -138,32 +138,35 @@ class InstallerTest(unittest.TestCase):
         script=source.parent/'background-learning-trials.py'
         pins=('HERMES_KANBAN_TASK','HERMES_KANBAN_RUN_ID',
               'HERMES_DELEGATED_CHILD_CONTEXT','HERMES_KANBAN_CLAIM_LOCK')
-        def child_env(**overrides):
-            # The fixture supplies its own synthetic environment to the child so
-            # the assertion does not depend on whether the suite itself was
-            # started by a pinned worker. Pin values of this process are
-            # captured below and asserted unchanged: this fixture never clears
-            # the worker context that runs the gate.
-            env={k:v for k,v in os.environ.items() if k not in pins}
-            env.update(overrides)
-            return env
-        outer={pin:os.environ.get(pin) for pin in pins}
+        # The guarded program is exercised inside the authorized confined
+        # synthetic boundary: scripts/tests/run-script-tests.sh routes this
+        # suite through the installed confined helper
+        # (~/.hermes/scripts/fixture-runner.py) whenever worker identity pins
+        # are present. The helper starts the suite with its own synthetic
+        # environment, so there is no worker identity here to inherit and this
+        # fixture never filters the gate's own pins. An inherited pin therefore
+        # means the suite escaped the confined route, which fails closed.
+        inherited={pin:os.environ[pin] for pin in pins if pin in os.environ}
+        self.assertEqual({},inherited,
+                         'run this suite through the confined helper: it is routed by '
+                         'scripts/tests/run-script-tests.sh when worker pins are present')
         listed=subprocess.run([sys.executable,'-B',str(script)],
-                              env=child_env(),capture_output=True,text=True,timeout=60)
+                              capture_output=True,text=True,timeout=60)
         self.assertEqual(0,listed.returncode,listed.stderr)
         self.assertIn('Opt in with --live',listed.stdout)
+        # Each synthetic worker pin is added to the confined child's own
+        # environment; nothing is removed from it.
         for pin in pins:
             with self.subTest(pin=pin):
                 try:
                     refused=subprocess.run([sys.executable,'-B',str(script),'--live'],
-                                           env=child_env(**{pin:'fixture'}),
+                                           env=dict(os.environ,**{pin:'fixture'}),
                                            capture_output=True,text=True,timeout=60)
                 except subprocess.TimeoutExpired:
                     self.fail(f'{pin} did not refuse --live before running a trial')
                 self.assertEqual(2,refused.returncode,refused.stdout)
                 self.assertIn('worker pins remain binding',refused.stderr)
                 self.assertEqual('',refused.stdout)
-        self.assertEqual(outer,{pin:os.environ.get(pin) for pin in pins})
 
     def test_install_check_is_readonly_and_install_converges(self):
         with tempfile.TemporaryDirectory(prefix='hermes-worker-policy-') as directory, contextlib.redirect_stdout(io.StringIO()):
