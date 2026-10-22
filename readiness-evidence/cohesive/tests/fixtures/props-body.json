@@ -1,0 +1,1 @@
+{"default_generation_settings":{"n_ctx": 98304,"n_predict":-1,"model":"qwen3.8-27b-iq4_xs","seed":4294967295,"chat_format":"CANARY_PROPS_BODY_FRAGMENT"},"total_slots":2,"model_path":"/mnt/data/qwen-27b/models/Swift-1.5-Qwen3.8-27B-IQ4_XS.gguf","n_ctx_train":262144,"is_sleeping":false,"modalities":{"vision":false,"audio":false}}
