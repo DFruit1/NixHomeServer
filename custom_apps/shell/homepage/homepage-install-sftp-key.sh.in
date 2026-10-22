@@ -71,8 +71,23 @@ for group in $sftp_access_groups; do
     echo "unable to verify current SFTP membership; no key was installed" >&2
     exit 1
   }
-  if @NIX_JQ@/bin/jq -e --arg username "$username" '
-      if ((.attrs.member // []) | type) != "array" then
+  # A well-formed group response answers the membership question through jq's
+  # exit status: 0 for a match and 1 for an authoritative nonmatch. Any other
+  # status -- unparseable JSON, an unexpected response shape, or any other jq
+  # error -- is not an answer, so it refuses outright. Falling through to the
+  # next group would let a malformed response be masked by a later match.
+  #
+  # The response shape is checked before the membership question is asked. A
+  # group with no members legitimately omits the member attribute, which reads
+  # as an empty membership list; a response without an attrs object is a
+  # protocol surprise and refuses instead of reading as "no members".
+  membership_status=0
+  @NIX_JQ@/bin/jq -e --arg username "$username" '
+      if type != "object" then
+        error("group response is not a JSON object")
+      elif (.attrs | type) != "object" then
+        error("group response has no attrs object")
+      elif ((.attrs.member // []) | type) != "array" then
         error("invalid member attribute")
       elif any(.attrs.member[]?; type != "string") then
         error("member array contains a non-string entry")
@@ -85,8 +100,20 @@ for group in $sftp_access_groups; do
                error("invalid local username in member entry")
              end) == $username)
       end
-    ' <<<"$group_json" >/dev/null; then
-    eligible=1
+    ' <<<"$group_json" >/dev/null || membership_status=$?
+  case "$membership_status" in
+    0)
+      eligible=1
+      ;;
+    1)
+      : # authoritative nonmatch for this group
+      ;;
+    *)
+      echo "unable to verify current SFTP membership; no key was installed" >&2
+      exit 1
+      ;;
+  esac
+  if (( eligible == 1 )); then
     break
   fi
 done
