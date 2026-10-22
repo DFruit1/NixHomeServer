@@ -193,11 +193,14 @@ def distribution(values):
 def session_stats(db, since, until):
     fields = ('input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_write_tokens',
               'api_call_count', 'tool_call_count')
-    rows = db.execute('SELECT ' + ','.join(fields) + ', length(CAST(system_prompt AS BLOB)) '
-                      'FROM sessions WHERE started_at>=? AND started_at<?', (since, until)).fetchall()
+    rows = db.execute('SELECT ' + ','.join(fields) +
+                      ' FROM sessions WHERE started_at>=? AND started_at<?', (since, until)).fetchall()
     result = {'count': len(rows), 'usage_reported_sessions': sum(any((v or 0)>0 for v in r[:5]) for r in rows)}
     result.update({field: sum(r[i] or 0 for r in rows) for i, field in enumerate(fields)})
-    result['persisted_prompt_bytes'] = distribution([r[-1] for r in rows if r[-1] is not None])
+    # Persisted system-prompt bytes were retired: the native sessions table
+    # carries the column but no write path populates it, and a permanently
+    # null distribution in a self-audit report trains readers to skim.
+    # Reinstate only if the runtime begins persisting prompts.
     # Long-lived Bot Chat sessions may predate the cohort. Keep a separate
     # cumulative view for baselines; never label it as spending in the window.
     totals = db.execute('SELECT count(*),' + ','.join(f'sum({field})' for field in fields) + ' FROM sessions').fetchone()

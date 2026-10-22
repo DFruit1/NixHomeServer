@@ -223,6 +223,14 @@ def install(root, check=False, cron=True, policy_only=False):
         raise ValueError('Duplicate idle recovery jobs; repair the existing wiring')
     if cron and not policy_only and idle:
         idle_recovery_prompt(idle[0].get('prompt') or '')  # Reject malformed markers before writes.
+        # The idle-recovery schedule used to be the one cadence this repo did
+        # not pin down, so a re-provision could hand the lane a different one
+        # silently. Pin it the way the taskforce cron drift check does: a
+        # present job with the wrong cadence is a fault to repair with
+        # `hermes cron edit`, not something to re-create or auto-fix.
+        if idle[0].get('schedule', {}).get('minutes') != 15:
+            raise ValueError('Idle recovery cron schedule drift; repair the existing job '
+                             'with: hermes -p head-coordinator cron edit <id> --schedule "every 15m"')
     for path, text in changes.items():
         print(f'{"drift" if check else "install"}: {path}')
         if check:

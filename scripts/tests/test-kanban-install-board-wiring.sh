@@ -86,6 +86,7 @@ printf '%s\n' \
   '| MIRROR_STALE | Inspect the durability-sync cron and route the repair. |' \
   '| INSTRUCTION_DRIFT | Route the installer re-run and verify with its --check. |' \
   '| INSTRUCTION_DRIFT_UNCHECKED | Inspect the installer and interpreter, report internally. |' \
+  '| SCRIPT_DRIFT | Re-run the owning installer and verify with its --check. |' \
   '' \
   'The installed kanban-retry-breaker.sh parks repeated provider failures.' \
   >"$HERMES_FIXTURE/scripts/hermes-coordinator-reference.md"
@@ -152,6 +153,18 @@ if [[ "${1:-}" == cron && "${2:-}" == list ]]; then
   printf '    Monitor:   %s\n' "${FAKE_H_MONITOR:-kanban-board-health.sh}"
   printf '    Workdir:   %s\n' "${FAKE_H_WORKDIR:?}"
   printf '    Next run:  2026-10-04T18:46:30+11:00\n'
+  if [[ "$profile" == head-coordinator ]]; then
+    # The coordinator usage-pace monitor. 60m matches the installer's wiring
+    # check; the default must not cite $TESTS_REPO_ROOT here because this fake
+    # runs as a separate process where that plain shell variable is unbound
+    # (set -u) and the render would die mid-list, tripping the installer's
+    # preflight into "Cannot inspect cron jobs".
+    printf '\n  %s [active]\n' "35cd46e68e0d2"
+    printf '    Name:      usage pace check\n'
+    printf '    Schedule:  %s\n' "${FAKE_U_SCHEDULE:-every 60m}"
+    printf '    Monitor:   %s\n' "${FAKE_U_MONITOR:-usage-pace.py}"
+    printf '    Workdir:   %s\n' "${FAKE_U_WORKDIR:-$(pwd)}"
+  fi
   if [[ "$profile" == default ]]; then
     printf '\n  %s [active]\n' "a4290015937b"
     printf '    Name:      %s\n' "kanban durability sync"
@@ -472,10 +485,10 @@ PATH="$fixture/bin-missing:$PATH" HERMES_ROOT="$HERMES_FIXTURE" "$INSTALLER" \
 grep -q 'created cron' "$fixture/create.log" ||
   fail "an absent cron job was not created: $(cat "$fixture/create.log")"
 created="$(grep -c 'cron create' "$FAKE_HERMES_LOG" || true)"
-[[ "$created" == 3 ]] ||
-  fail "expected three cron jobs to be created, the log shows $created:
+[[ "$created" == 4 ]] ||
+  fail "expected four cron jobs to be created, the log shows $created:
 $(cat "$FAKE_HERMES_LOG")"
-pass "creates all three cron jobs when they are absent"
+pass "creates all four cron jobs when they are absent"
 
 # --- the dispatcher claim allowlist must name every lane profile --------------
 #

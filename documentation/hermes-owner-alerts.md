@@ -16,9 +16,10 @@ Owner decisions live in the coordinator-owned `Hermes Decisions` SimpleX group,
 the third owner-facing channel. The general DM remains a conversation. A group
 is used because one SimpleX contact can have only one direct conversation.
 
-The group is a live ledger, not a transcript. Every five minutes the sender
-reconciles it with the open decision set: it posts a new gate, edits a gate whose
-wording changed and deletes a gate that was answered, revised or closed. A gate
+The group is a live ledger, not a transcript. On every owner-alerts tick (every
+15 minutes) the sender reconciles it with the open decision set: it posts a new
+gate, edits a gate whose wording changed and deletes a gate that was answered,
+revised or closed. A gate
 waiting on the coordinator, a reviewer, a worker or another agent is internal
 and is never posted. If a board read fails, the group is left untouched so an
 incomplete set cannot delete live decisions.

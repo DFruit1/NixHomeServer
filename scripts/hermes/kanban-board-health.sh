@@ -918,4 +918,46 @@ if [[ -n "$repo" && -f "$instruction_check" ]]; then
   fi
 fi
 
+# ---------------------------------------------------------------------------
+# Installed cron-script drift
+# ---------------------------------------------------------------------------
+#
+# INSTRUCTION_DRIFT above covers the instruction installers' outputs, but the
+# cron-owned scripts have a second installation path with the same silent-drift
+# failure mode: the aging escalator runs ~/.hermes/scripts/kanban-aging-escalation.py,
+# refreshed only by a manual `--install-files`, and the owner-alert/one-off
+# self-installers behave the same way. Stale wording there directly changes
+# dispatch behavior, and nothing compares it. This check hashes every known
+# cron-owned installed copy against the checkout's tracked source.
+#
+# The report is bounded and stable like the rest: one counter, no absolute
+# paths. `files=` counts installed copies that exist but differ, so an
+# unchanged finding does not wake the coordinator repeatedly; adding, editing
+# or deleting a copy changes the count and does. A *missing* installed script
+# is not counted here: the cron engine surfaces that itself on every tick (the
+# failure-deliver path), and a fresh hermes root legitimately lacks parts of
+# this list until their own installers run -- an uninstalled-tree clock must
+# not read as drift. And "empty" is a valid state -- a checkout-less board
+# reports nothing, like the instruction check.
+cron_script_drift_names=(kanban-aging-escalation.py kanban-owner-alerts.py
+                         kanban-durability-sync.sh kanban-retry-breaker.sh
+                         usage-pace.py)
+if [[ -n "$repo" ]]; then
+  script_drift_files=0
+  for drift_name in "${cron_script_drift_names[@]}"; do
+    tracked="$repo/scripts/hermes/$drift_name"
+    [[ -f "$tracked" ]] || continue
+    installed_hit=false
+    for installed in "$HERMES_ROOT/scripts/$drift_name" \
+                     "$HERMES_ROOT"/profiles/*/scripts/"$drift_name"; do
+      [[ -f "$installed" ]] || continue
+      cmp -s "$tracked" "$installed" || installed_hit=true
+    done
+    [[ "$installed_hit" == true ]] && script_drift_files=$((script_drift_files + 1))
+  done
+  if ((script_drift_files > 0)); then
+    emit "SCRIPT_DRIFT files=$script_drift_files needs=apply-owning-installer"
+  fi
+fi
+
 exit 0

@@ -114,7 +114,7 @@ for cron_profile in head-coordinator default; do
     elif [[ "$cron_line" =~ ^[[:space:]]+Name:[[:space:]]*(.*)$ ]]; then
       cron_name="${BASH_REMATCH[1]}"
       case "$cron_profile/$cron_name" in
-        'head-coordinator/kanban board health'|'default/kanban durability sync'|'default/kanban retry breaker') ;;
+        'head-coordinator/kanban board health'|'head-coordinator/usage pace check'|'default/kanban durability sync'|'default/kanban retry breaker') ;;
         *) continue ;;
       esac
       cron_key="$cron_profile/$cron_name"
@@ -168,7 +168,7 @@ fi
 for dest_dir in "${install_targets[@]}"; do
   mkdir -p "$dest_dir"
   rel="${dest_dir#"$HERMES_ROOT/"}"
-  for script in kanban-board-health.sh kanban-durability-sync.sh kanban-retry-breaker.sh; do
+  for script in kanban-board-health.sh kanban-durability-sync.sh kanban-retry-breaker.sh usage-pace.py; do
     src="$REPO_ROOT/scripts/hermes/$script"
     dest="$dest_dir/$script"
     [[ -f "$src" ]] || { note "  MISSING SOURCE: $src"; drift=$((drift + 1)); continue; }
@@ -440,7 +440,7 @@ else
   # One row per finding the monitor emits, so a detector rename cannot leave
   # the policy behind: a finding with no rule behind it means the
   # head-coordinator is woken with the finding and no policy for it.
-  for finding in WORKER_FAILED_BLOCKED OWNER_COMMENT_UNACTED CAPABILITY_OWNER_INPUT MIRROR_STALE INSTRUCTION_DRIFT INSTRUCTION_DRIFT_UNCHECKED; do
+  for finding in WORKER_FAILED_BLOCKED OWNER_COMMENT_UNACTED CAPABILITY_OWNER_INPUT MIRROR_STALE INSTRUCTION_DRIFT INSTRUCTION_DRIFT_UNCHECKED SCRIPT_DRIFT; do
     if grep -q "$finding" "$COORDINATOR_REFERENCE"; then
       ok "coordinator reference has a policy for $finding"
     elif [[ "$check_only" == true ]]; then
@@ -555,6 +555,16 @@ Address at most the first three findings, highest-priority first, and stop if ro
 Use the Board health table in ~/.hermes/scripts/hermes-coordinator-reference.md, which your SOUL.md's Deployment and recovery section directs you to. Classify the actual missing input and existing recovery conditions before routing. Reassign eligible non-sensitive work only within the recorded limits; never evade quota-breaker holds. Only genuine owner-only input warrants a checked needs_input gate, authored through native tools after summary validation. UNPUSHED/MASTER_AHEAD belongs to the existing no-agent durability-sync cron; never publish worker branches or run a remote-writing sync from coordinator recovery. Report failed durability internally.
 
 Do not implement anything yourself and do not re-audit. Report in prose what you changed and what still needs the owner."
+
+# Quota trouble used to surface only in the 07:00 steward report. The failure
+# chain in between is expensive: workers park, the retry breaker keeps
+# requeueing unchanged cards, and idle recovery wakes the coordinator on that
+# churn. This job wakes the coordinator directly on a pace exception instead,
+# monitor-gated so a healthy fleet costs nothing. Findings are stable
+# identities by design (see usage-pace.py --monitor); the percentages live in
+# the coordinator-run report and the model-job budget in install-cron-policy.py,
+# whose prompts machinery also owns this prompt between upgrades.
+usage_pace_prompt="$(<"$REPO_ROOT/scripts/hermes/usage-pace-prompt.txt")"
 
 # One `cron list` per profile, parsed once. hermes renders a boxed table whose
 # payload is a set of `Label:  value` lines under a job id line; only those lines
@@ -678,6 +688,28 @@ PY
     changed "updated cron 'kanban board health' prompt to the tracked text"
   else
     changed "cron 'kanban board health' prompt differs from the tracked text"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Quota check: coordinator wakes only on a real pace exception
+# ---------------------------------------------------------------------------
+#
+# The monitor output is the finding set (USAGE_PACE lines from usage-pace.py
+# --monitor); empty output is a healthy fleet and costs no model. Owned by the
+# head-coordinator because the response is a lane/coverage decision, and the
+# same profile already carries the other coordinator cron jobs.
+if cron_has_job "usage pace check"; then
+  ok "cron 'usage pace check' present (head-coordinator)"
+  check_cron_wiring head-coordinator "usage pace check" "every 60m" Monitor usage-pace.py
+else
+  changed "cron 'usage pace check' missing from the head-coordinator profile"
+  if [[ "$check_only" != true ]]; then
+    timeout 60 hermes -p head-coordinator cron create "every 60m" "$usage_pace_prompt" \
+      --name "usage pace check" \
+      --monitor-script usage-pace.py \
+      --workdir "$REPO_ROOT" >/dev/null
+    changed "created cron 'usage pace check' (head-coordinator, every 60m)"
   fi
 fi
 

@@ -685,8 +685,8 @@ class AlertsTest(unittest.TestCase):
         steward.write_text('# Steward\nKeep existing read-only policy.\n')
         cron = self.root / 'cron/jobs.json'
         cron.parent.mkdir()
-        job = {'name': alerts.JOB, 'script': 'kanban-owner-alerts.py', 'no_agent': True,
-               'schedule': {'minutes': 5}, 'enabled': False}
+        job = {"name": alerts.JOB, "script": "kanban-owner-alerts.py", "no_agent": True,
+               "schedule": {"minutes": 15}, "enabled": False}
         cron.write_text(json.dumps({'jobs': [job]}))
         alerts.install(self.root)
         installed = soul.read_text()
@@ -729,7 +729,7 @@ class AlertsTest(unittest.TestCase):
         cron = self.root / 'cron/jobs.json'
         cron.parent.mkdir()
         cron.write_text(json.dumps({'jobs': [{'name': alerts.JOB, 'script': 'kanban-owner-alerts.py',
-            'no_agent': True, 'schedule': {'minutes': 5}, 'enabled': False}]}))
+            'no_agent': True, 'schedule': {'minutes': 15}, 'enabled': False}]}))
         for target, start, end in ((head, alerts.MARKER, alerts.END_MARKER),
                                    (auditor, alerts.AUTHOR_MARKER, alerts.AUTHOR_END_MARKER)):
             for text in (start, end, start + end + end, start + start + end, end + start):

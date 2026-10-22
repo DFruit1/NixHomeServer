@@ -184,7 +184,7 @@ owner-facing ask; do not duplicate a long explanation or choices in both formats
 | Lane | Shape |
 |---|---|
 | `head-coordinator` | Work body. An audit card is the **question** + evidence, never a proposed solution. A plan card: `Goal:` is the plan's outcome, its absolute path in `Notes:`. A decision card: the verdict first, routing rules below. |
-| `feature-reviewer` | Verifier. Diff/deploy review: verdict in `Goal:`, commits or range in `Notes:`, `Change:` names the revision or range. Question card: `Goal:` is the question, `Notes:` the evidence and what it changes. |
+| `feature-reviewer` | Verifier. Diff/deploy review: verdict in `Goal:`, commits or range in `Notes:`, `Change:` names the revision or range. A whole-set deploy review card also carries the effective touched-file set from the deployment receipts, so the verifier starts from the range's own file list instead of re-deriving it. Question card: `Goal:` is the question, `Notes:` the evidence and what it changes. |
 | `project-auditor` | Taskforce. Audit commissioning card: the feature + the single question + scope + stopping condition. Plan card: the plan's outcome, its absolute path in `Notes:`. |
 | `standard-implementer` | One-line `Goal:` plus the single acceptance criterion. The parent card holds the context. |
 | `local-implementer` | Only the smallest step requiring actual passwords, API keys, tokens, private keys or equivalent credentials. State why secret values are unavoidable; set explicit `max_runtime_seconds` (e.g. `3600`). Source changes, mocks, tests, documentation and composition stay in ordinary lanes. Private data, internal paths, telemetry and security subject matter alone do not qualify. Preserve separate approvals and gates. |

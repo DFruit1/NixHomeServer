@@ -1306,6 +1306,40 @@ grep -q '^INSTRUCTION_DRIFT_UNCHECKED exit=1 needs=manual-check$' <<<"$broken_ou
   fail "a check that could not run was not reported as unchecked: $broken_out"
 pass "reports a check that could not run as unchecked, not as drift"
 
+# --- installed cron-script drift (SCRIPT_DRIFT) -------------------------------
+#
+# A second installation path with the same silent-drift failure mode: the
+# cron-owned scripts (owner alerts, aging escalator, durability sync, retry
+# breaker, usage pace) are refreshed only manually by their self-installers, so
+# an installed copy nobody re-deployed runs forever unreported. The same
+# converged fixture root answers this one too, because the instruction
+# installer deploys one of those scripts (kanban-owner-alerts.py) itself.
+clean_scripts_out="$(run_health_repo)"
+grep -q '^SCRIPT_DRIFT' <<<"$clean_scripts_out" &&
+  fail "a converged hermes root was still reported as script drift: $clean_scripts_out"
+pass "a converged hermes root reports no script drift"
+
+printf 'hand edit\n' >"$fixture/hermes/scripts/kanban-owner-alerts.py"
+scripts_drifted_out="$(run_health_repo)"
+grep -q '^SCRIPT_DRIFT files=1 needs=apply-owning-installer$' <<<"$scripts_drifted_out" ||
+  fail "one hand-edited installed cron script was not reported as exactly one drift: $scripts_drifted_out"
+scripts_drift_line="$(grep '^SCRIPT_DRIFT' <<<"$scripts_drifted_out" || true)"
+grep -q '/' <<<"$scripts_drift_line" &&
+  fail "the script-drift finding leaks a path; the report must stay byte-stable: $scripts_drift_line"
+pass "reports a drifted installed cron script as one bounded line"
+
+# Re-converging clears the finding, the same repair wrap the instruction
+# finding uses: the owning installer re-runs and re-deploys, never a hand edit.
+# (Per-profile copies of this script do not exist on this fleet: the shared
+# scripts dir is the path the cron engine executes from, so the shared copy is
+# the whole surface.)
+HERMES_ROOT="$fixture/hermes" python3 -B "$INSTALLER" >/dev/null 2>&1 ||
+  fail "the tracked installer could not re-converge the fixture hermes root"
+scripts_repaired_out="$(run_health_repo)"
+grep -q '^SCRIPT_DRIFT' <<<"$scripts_repaired_out" &&
+  fail "a re-installed tree still reported script drift: $scripts_repaired_out"
+pass "clears the script-drift finding once the owning installer re-runs"
+
 # --- the installed copy runs the same suite ----------------------------------
 #
 # The suite is only evidence about the script it exercised. BOARD_HEALTH_SCRIPT

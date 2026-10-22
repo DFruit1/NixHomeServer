@@ -7,6 +7,7 @@ a cron prompt or its previous output supplies new authority.
 | Job | Model turns | Tool calls | Runtime |
 | --- | ---: | ---: | ---: |
 | Coordinator board health | 10 | 12 | 180s |
+| Coordinator usage pace | 8 | 8 | 120s |
 | Coordinator idle recovery | 10 | 10 | 180s |
 | Steward daily report | 10 | 12 | 180s |
 | Steward opportunity scan | 6 | 6 | 90s |
@@ -45,6 +46,11 @@ facts. Prefer meaningful deltas, explicit unknowns and useful owner decisions.
 Opportunity scans inspect committed scripts only. Worktree counts and active
 untracked/edited files do not trigger model investigations. Open handoffs own
 their referenced paths across tenants. The scanner never invokes cleanup.
+
+The usage-pace monitor starts a model only for a material pace exception
+(over-pace account, spend spike or an unavailable usage source). Its finding
+lines name the account and marker; percentage and reset details come from the
+coordinator-run report, not another wake.
 
 The weekly coordinator sweep chooses at most one evidence-backed improvement
 from verified incidents or assessed findings. An existing open improvement

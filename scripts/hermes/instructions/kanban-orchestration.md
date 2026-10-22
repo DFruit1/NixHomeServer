@@ -83,7 +83,8 @@ owner-alert policy for summary validation, authenticated reply/readback and
 unblocking. Approval covers the exact ask and never bypasses a tool restriction.
 
 Owner decisions are delivered to the coordinator-owned decision group, not the
-general DM. Every five minutes the sender mirrors the current open set there:
+general DM. On every owner-alerts tick (every 15 minutes) the sender mirrors
+the current open set there:
 new decisions are added, changed wording is edited and answered, revised or
 closed decisions are deleted. The group therefore reads as current state, never
 as an accumulating transcript. A decision that is still waiting on the

@@ -19,6 +19,7 @@ from hermes_common import backup_file
 SOURCE=Path(__file__).resolve().parent
 JOBS=(
     ('head-coordinator','kanban board health',10,12,180,'monitor'),
+    ('head-coordinator','usage pace check',8,8,120,'monitor'),
     ('head-coordinator','kanban idle recovery',10,10,180,'monitor'),
     ('board-steward','hermes daily steward',10,12,180,'daily'),
     ('board-steward','steward opportunity scan',6,6,90,'monitor'),
@@ -42,6 +43,7 @@ def instructions(text):
 def changes(root):
     pending={};commands=[];manifest={'version':1,'jobs':{}}
     prompts={'hermes daily steward':'daily-steward-prompt.txt',
+             'usage pace check':'usage-pace-prompt.txt',
              'steward opportunity scan':'steward-opportunity-prompt.txt',
              'steward stall follow-up':'steward-stall-prompt.txt'}
     for role,name,turns,tools,seconds,kind in JOBS:
@@ -70,6 +72,7 @@ def changes(root):
     for role in ('head-coordinator','board-steward'):
         soul=root/'profiles'/role/'SOUL.md';pending[soul]=instructions(soul.read_text())
     copies={'review-taskforce-tick.sh','cron_sweep.py','cron_policy.py','cron_stall.py','capability_recovery.py',
+            'usage-pace.py',
             'steward-opportunity-scan.py','kanban-daily-steward.py','kanban-board-health.sh','kanban-performance.py'}
     for name in sorted(copies,key=lambda name:(name!='capability_recovery.py',name)):
         pending[root/'scripts'/name]=(SOURCE/name).read_text()

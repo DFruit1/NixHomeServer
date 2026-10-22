@@ -29,7 +29,7 @@ It adds no service, schedule, provider request or owner notification.
 | standing_prompt | Current SOUL.md bytes, whitespace-delimited words and SHA-256; excludes project instructions, tools and loaded skills. Words are not model tokens. |
 | sessions | Sessions **started** in the selected window. Usage counters are those sessions' lifetime totals as observed now, including cached-token counters separately. They are not spending restricted to that window. |
 | usage_reported_sessions | Sessions with positive recorded API/token counters. Zero/default counters cannot distinguish missing telemetry from no usage; do not treat uncovered sessions as free. |
-| persisted_prompt_bytes | Nearest-rank p50/p95 of stored system-prompt byte lengths in that session cohort; prompt content is never selected. This is not an exact token count or proof of the active prompt in an existing conversation. |
+| persisted_prompt_bytes | Retired: the native sessions table carries the column but no write path populates it, so the field was permanently null (`n=0`) in every cohort. Reinstate only if the runtime begins persisting stored system prompts. |
 | all_stored_sessions | Cumulative counters for every stored session, including long-lived conversations that predate the cohort. As observed now, independently of --until. Useful for snapshots; deletions, rewinds and accounting resets can invalidate subtraction. |
 | runs | Runs started in the window, attributed by the run's profile rather than the card's current assignee. Outcomes reflect their recorded state now. |
 | elapsed_seconds | Nearest-rank p50/p95 wall time for cohort runs with valid end times before until. Includes tool waits and scheduling; it is not model inference latency. n is the qualifying sample size. |

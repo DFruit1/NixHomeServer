@@ -462,22 +462,57 @@ def spend_line(label: str, totals: dict) -> list[str]:
     ]
 
 
+def monitor_findings(accounts: list[str], hermes_lines: list[str],
+                     opencode_lines: list[str]) -> list[str]:
+    """Stable cron-monitor findings, or nothing when every account is healthy.
+
+    Wired as a ``hermes cron --monitor-script`` (usage pace check): the
+    scheduler hashes stdout and starts the coordinator only when the output
+    changes. Because of that, a healthy fleet prints nothing and an unhealthy
+    one prints *stable* lines: account name and marker only, without the
+    percentage that grows every hour and would wake the model repeatedly for
+    the same finding. The coordinator runs the full report for the numbers.
+    """
+    findings: list[str] = []
+    current = ""
+    for line in accounts:
+        for marker in ("OVER PACE", "unavailable"):
+            if line.rstrip().endswith(f"({marker})"):
+                findings.append(f"USAGE_PACE {current or 'unknown'} {marker.lower()}")
+                break
+        if not line.startswith("- ") and not line.startswith("  "):
+            current = line.strip()
+    for label, lines in (("hermes", hermes_lines), ("opencode", opencode_lines)):
+        if any(line.rstrip().endswith("SPIKE") for line in lines):
+            findings.append(f"USAGE_PACE {label} spend spike")
+    return findings
+
+
 def main(argv=()) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--digest", action="store_true",
                         help="One budget line when every account is healthy")
+    parser.add_argument("--monitor", action="store_true",
+                        help="Print nothing when healthy, stable findings otherwise")
     args = parser.parse_args(argv)
     stamp = now().strftime("%Y-%m-%d %H:%M")
     accounts = account_limit_lines()
     hermes_totals, opencode_totals = hermes_spend(), opencode_spend()
     hermes_lines = spend_line("hermes", hermes_totals)
     opencode_lines = spend_line("opencode", opencode_totals)
+    unhealthy = any(
+        marker in line
+        for line in accounts + hermes_lines + opencode_lines
+        for marker in ("OVER PACE", "SPIKE", "unavailable"))
+    if args.monitor:
+        if unhealthy:
+            for line in monitor_findings(accounts, hermes_lines, opencode_lines):
+                print(line)
+        # Healthy: print nothing so the monitor hash stays stable asleep.
+        return
     # Any exception, unknown source or spike keeps the full block: the owner
     # needs the window and reset that produced it.
-    if args.digest and not any(
-            marker in line
-            for line in accounts + hermes_lines + opencode_lines
-            for marker in ("OVER PACE", "SPIKE", "unavailable")):
+    if args.digest and not unhealthy:
         day = hermes_totals["24h"][1] + opencode_totals["24h"][1]
         print(f"BUDGET: on pace; 24h {fmt_tokens(day)} tok; no spike")
         return

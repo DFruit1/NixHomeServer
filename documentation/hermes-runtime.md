@@ -356,6 +356,21 @@ previous answer as comparison evidence, and the collector prints explicit UTC.
 The stall prompt no longer injects or generates an unreliable narrative clock
 ledger. Scheduled delivery and the steward's read-only restrictions remain intact.
 
+The hourly usage-pace monitor (`usage pace check`, head-coordinator) closes the
+detection gap between the 07:00 steward's quota digest and a mid-day provider
+wall: `usage-pace.py --monitor` prints nothing while every account is on or
+under pace and stable identity lines otherwise, so a healthy fleet never wakes
+the coordinator. Its model-job budget lives in install-cron-policy.py, and its
+read-only repair/mirror counterparts remain paused-safe and unchanged.
+
+Board-health detects a second drift class alongside `INSTRUCTION_DRIFT`:
+`SCRIPT_DRIFT` hashes the installed copies of cron-owned scripts (aging
+escalator, owner alerts, durability sync, retry breaker, usage pace) against
+the checkout source, because their self-installers refresh them only manually.
+The counter names differing copies; the coordinator re-runs the owning
+installer rather than editing installed files. Missing installed scripts are
+not reported here: the engine's failure-delivery surfaces those every tick.
+
 The existing hourly no-agent taskforce tick uses `cron_sweep.py` to retain the
 weekly sweep cadence while suppressing new sweeps behind open improvement work.
 Future sweep cards require a benefit, scope, stopping condition and delivered

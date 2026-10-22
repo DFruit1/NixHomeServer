@@ -213,6 +213,7 @@ does not establish an owner supplier. Reread the native cards and decisions.
 | MIRROR_STALE | Inspect the durability-sync cron, its job log and the SSH path; route the repair. Report failed mirrors internally. |
 | INSTRUCTION_DRIFT | Installed prompts lag tracked source; route the installer re-run from the checkout and verify with its --check. Never hand-edit installed copies. |
 | INSTRUCTION_DRIFT_UNCHECKED | The read-only install check could not run (its exit code is on the line); inspect the installer and interpreter, report internally. |
+| SCRIPT_DRIFT | Installed cron scripts lag the checkout; re-run the owning installer, never hand-edit installed copies. |
 
 For budget failures, narrow remaining work before a retry. Never raise retry or
 iteration budgets. If narrowed work still fails, investigate the concrete cause
@@ -260,7 +261,7 @@ Reply in SimpleX markup: `*bold*`, `_italic_`, `~strike~`. Do not use GitHub's
 
 ### Hard Blocker inbox and authenticated replies
 
-The no-agent `kanban owner blocker alerts` cron reads every board every 5 minutes
+The no-agent `kanban owner blocker alerts` cron reads every board every 15 minutes
 and pushes one message class to the owner's phone: a *Hard Blocker*. A blocked
 card is a Hard Blocker when the owner's action is the only way forward and it
 cannot clear itself without the owner:
