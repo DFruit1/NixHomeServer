@@ -112,6 +112,18 @@ SCHEMA = SCHEMA.replace('"block_kind":{"type":"string","enum":["capability"]},',
 SCHEMA = SCHEMA.replace('"workspace_rebind":{"type":"object", "properties": {',
     '"verification_intake":{"type":"string","enum":["standalone"]},\n        "workspace_rebind":{"type":"object", "properties": {', 1)
 
+# The seam installed before typed-timeout reaffirmation. Migration replaces one
+# exact literal, so an installed native is upgraded instead of duplicated and
+# the verification_intake/workspace_rebind seams survive the upgrade.
+PREVIOUS_TIMEOUT_SCHEMA = SCHEMA
+SCHEMA = SCHEMA.replace('reaffirms one reclaimed capability episode',
+    'reaffirms one reclaimed or elapsed-limit timed-out capability episode', 1)
+SCHEMA = SCHEMA.replace('existing capability reclaimed gave_up episode',
+    'existing capability reclaimed or elapsed-limit timed_out gave_up episode', 1)
+SCHEMA = SCHEMA.replace('reclaim and prior release chronology.',
+    'reclaim and prior release chronology, or -- for an elapsed-limit timeout -- its native claim, '
+    'run-scoped timed_out event over the cap and prior release chronology.', 1)
+
 # The seam installed before the workspace-rebind branch: one exact literal
 # migration, so an installed native is upgraded instead of duplicated.
 PREVIOUS = '''KANBAN_AMEND_SCHEMA = {
@@ -182,7 +194,8 @@ def adapt(name, text):
                 text = text.replace(previous, HANDLER, 1)
                 break
     if name == 'tools/kanban_tools_schemas.py' and SCHEMA not in text:
-        for variant in (PREVIOUS_INTAKE_SCHEMA, PREVIOUS_INSPECTION, PREVIOUS_REBIND, PREVIOUS, LEGACY):
+        for variant in (PREVIOUS_TIMEOUT_SCHEMA, PREVIOUS_INTAKE_SCHEMA, PREVIOUS_INSPECTION,
+                        PREVIOUS_REBIND, PREVIOUS, LEGACY):
             if text.count(variant) == 1:
                 text = text.replace(variant, SCHEMA, 1)
                 break
