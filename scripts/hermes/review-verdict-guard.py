@@ -468,8 +468,11 @@ def guard_complete(payload, root):
             if evidence['verdict'] != 'accept':
                 raise ValueError(
                     f"Review {parent['id']} requested changes. Keep this handoff open."
-                    " Use kanban_block(kind='validation') for missing current-scope acceptance,"
-                    ' naming the exact result and its existing supplier. A dependency wait'
+                    " For non-goal tasks, use kanban_block(kind='validation') for missing current-scope acceptance,"
+                    ' naming the exact result and its existing supplier. Goal-mode tasks must'
+                    ' retain their native terminal constraints and existing coordinator recovery'
+                    ' path; do not change goal_mode or manufacture an owner needs_input hold.'
+                    ' A dependency wait'
                     ' requires a linked unfinished input producer. Do not commission'
                     ' a review merely to close or acknowledge this handoff. A replacement'
                     ' verifier needs actual corrected inputs and must accept the current'
