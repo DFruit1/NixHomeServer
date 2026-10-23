@@ -234,6 +234,65 @@ exec ${real_tar} "\$@"
 EOF
 chmod +x "$spy_root/bin/tar"
 
+# Two more local boundaries own or persist attempt state. The scratch removal is
+# a declared effect of the attempt, so a case can refuse it or interrupt the
+# attempt while it is still pending; the receipt body is written to a named
+# temporary before it is put in place, so a case can interrupt there too.
+real_rm="$(command -v rm)"
+real_jq="$(command -v jq)"
+
+cat >"$spy_root/bin/rm" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+# Only the attempt's own scratch directory is a target: the archive producer's
+# extraction directory lives inside it and must keep working.
+target=0
+for arg in "\$@"; do
+  [[ "\$arg" == *nixhomeserver-required-eval.* ]] || continue
+  [[ "\${arg##*/}" == nixhomeserver-required-eval.* ]] || continue
+  [[ "\$(dirname -- "\$arg")" == "\${TMPDIR:-/tmp}" ]] || continue
+  target=1
+done
+if ((target == 1)); then
+  if [[ "\${REQUIRE_INTERRUPT_ON_SCRATCH_RM:-0}" == 1 && ! -e "\${REQUIRE_INTERRUPT_FLAG:?}" ]]; then
+    : >"\$REQUIRE_INTERRUPT_FLAG"
+    # The removal is still pending: the attempt has not observed whether the
+    # directory is gone, and this invocation does not remove it.
+    kill -TERM "\${REQUIRE_INTERRUPT_PID:?}" 2>/dev/null || true
+    printf 'rm spy: refusing the interrupted scratch removal\n' >&2
+    exit 1
+  fi
+  if [[ "\${REQUIRE_FAIL_SCRATCH_RM:-0}" == 1 ]]; then
+    printf 'rm spy: refusing the scratch removal\n' >&2
+    exit 1
+  fi
+fi
+exec ${real_rm} "\$@"
+EOF
+chmod +x "$spy_root/bin/rm"
+
+cat >"$spy_root/bin/jq" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+# The receipt body is recognisable by its phase argument and is the last step
+# before the receipt is put in place: the interruption therefore lands while the
+# receipt temporary is live and the receipt itself is not yet persisted.
+is_receipt=0
+previous=""
+for arg in "\$@"; do
+  if [[ "\$previous" == '--arg' && "\$arg" == 'phase' ]]; then
+    is_receipt=1
+  fi
+  previous="\$arg"
+done
+if ((is_receipt == 1)) && [[ "\${REQUIRE_INTERRUPT_ON_RECEIPT_JQ:-0}" == 1 && ! -e "\${REQUIRE_INTERRUPT_FLAG:?}" ]]; then
+  : >"\$REQUIRE_INTERRUPT_FLAG"
+  kill -TERM "\${REQUIRE_INTERRUPT_PID:?}" 2>/dev/null || true
+fi
+exec ${real_jq} "\$@"
+EOF
+chmod +x "$spy_root/bin/jq"
+
 # The archive producer is wrapped so the *uploaded bytes'* digest is a recorded
 # fact of this suite rather than an invented one; the tampered and drifting
 # variants below replace the producer for the duration of one check.
@@ -1123,6 +1182,113 @@ leftover_manifest="$(find "$spy_root" -name 'deploy-*manifest.*' -print -quit 2>
   fail "a successful attempt left an archive-production manifest behind: ${leftover_manifest}"
 
 echo "  ✅ receipt persistence and archive production stay inside the guard window"
+
+# --- local finalization is observed, never assumed ---------------------------
+#
+# Removing the attempt's own scratch is a declared effect like any other on this
+# route. A removal that was refused or interrupted must not be reported as a
+# clean attempt: the exact path stays owned and reported, the receipt records the
+# local cleanup it did and did not observe, and the reply stays uncertified.
+: >"$spy_root/ssh.log"
+reset_local_heavy_logs
+scratch_rm_status=0
+(
+  eval "$(spy_env)"
+  export REQUIRE_SSH_RUN_OUT='{"value":1}' REQUIRE_SSH_ABSENT_STATUS=0
+  export REQUIRE_FAIL_SCRATCH_RM=1
+  remote_eval_batch_json 'value=1'
+) >"$spy_root/scratch-rm.out" 2>"$spy_root/scratch-rm.err" || scratch_rm_status=$?
+((scratch_rm_status != 0)) ||
+  fail "an attempt whose scratch removal was refused reported success"
+[[ ! -s "$spy_root/scratch-rm.out" ]] ||
+  fail "an attempt whose scratch removal was refused still emitted its result: $(cat "$spy_root/scratch-rm.out")"
+[[ "$(eval_call_count)" == 1 ]] ||
+  fail "a refused local cleanup caused $(eval_call_count) evaluations"
+require_zero_local_heavy 'a refused local cleanup'
+receipt="$(latest_receipt)"
+jq -e '.outcome == "failure" and .result_certified == false and .local_cleanup == "failed"' \
+  "$receipt" >/dev/null ||
+  fail "a refused local cleanup was not receipted as a failure: $(cat "$receipt")"
+retained_scratch="$(jq -r '.local_cleanup_path // ""' "$receipt")"
+[[ -n "$retained_scratch" && -d "$retained_scratch" ]] ||
+  fail "a refused local cleanup did not retain the exact path it still owns: $(cat "$receipt")"
+grep -qF -- "$retained_scratch" "$spy_root/scratch-rm.err" ||
+  fail "a refused local cleanup did not report the path it still owns: $(cat "$spy_root/scratch-rm.err")"
+pending_receipt="$(find "$receipt_dir" -maxdepth 1 -name '*.receipt.pending.json' -print -quit 2>/dev/null || true)"
+[[ -z "$pending_receipt" ]] ||
+  fail "a refused local cleanup left a receipt temporary behind: ${pending_receipt}"
+"$real_rm" -rf -- "$retained_scratch"
+require_no_owned_scratch 'a refused local cleanup'
+
+# The same removal, interrupted while it is still pending: the attempt must keep
+# the validated path across the signal, settle it from the abort path and record
+# what it observed instead of certifying an attempt it did not finish.
+: >"$spy_root/ssh.log"
+rm -f "$spy_root/scratch-rm.flag"
+reset_local_heavy_logs
+scratch_rm_interrupt_status=0
+(
+  eval "$(spy_env)"
+  export REQUIRE_SSH_RUN_OUT='{"value":1}' REQUIRE_SSH_ABSENT_STATUS=0
+  export REQUIRE_INTERRUPT_ON_SCRATCH_RM=1
+  export REQUIRE_INTERRUPT_FLAG="$spy_root/scratch-rm.flag"
+  export REQUIRE_INTERRUPT_PID="$BASHPID"
+  remote_eval_batch_json 'value=1'
+) >"$spy_root/scratch-rm-interrupt.out" 2>"$spy_root/scratch-rm-interrupt.err" ||
+  scratch_rm_interrupt_status=$?
+[[ "$scratch_rm_interrupt_status" == 143 ]] ||
+  fail "an interruption during local cleanup exited ${scratch_rm_interrupt_status} instead of 143: $(cat "$spy_root/scratch-rm-interrupt.err")"
+[[ -e "$spy_root/scratch-rm.flag" ]] ||
+  fail "the interruption was never placed inside the local scratch removal"
+[[ ! -s "$spy_root/scratch-rm-interrupt.out" ]] ||
+  fail "an interruption during local cleanup emitted a result: $(cat "$spy_root/scratch-rm-interrupt.out")"
+[[ "$(eval_call_count)" == 1 ]] ||
+  fail "an interrupted local cleanup evaluated $(eval_call_count) times"
+require_zero_local_heavy 'an interruption during local cleanup'
+require_no_owned_scratch 'an interruption during local cleanup'
+pending_receipt="$(find "$receipt_dir" -maxdepth 1 -name '*.receipt.pending.json' -print -quit 2>/dev/null || true)"
+[[ -z "$pending_receipt" ]] ||
+  fail "an interrupted local cleanup left a receipt temporary behind: ${pending_receipt}"
+receipt="$(latest_receipt)"
+jq -e '.exit_status == 143 and .outcome == "failure" and .result_certified == false and .local_cleanup == "success"' \
+  "$receipt" >/dev/null ||
+  fail "an interruption during local cleanup was not receipted with the cleanup it observed: $(cat "$receipt")"
+
+# The receipt temporary is attempt-owned state too. The interruption is placed
+# before the move that would persist the receipt, so the temporary exists and the
+# receipt does not; it must not outlive the attempt that created it.
+: >"$spy_root/ssh.log"
+rm -f "$spy_root/receipt-jq.flag"
+reset_local_heavy_logs
+receipt_jq_status=0
+(
+  eval "$(spy_env)"
+  export REQUIRE_SSH_RUN_OUT='{"value":1}' REQUIRE_SSH_ABSENT_STATUS=0
+  export REQUIRE_INTERRUPT_ON_RECEIPT_JQ=1
+  export REQUIRE_INTERRUPT_FLAG="$spy_root/receipt-jq.flag"
+  export REQUIRE_INTERRUPT_PID="$BASHPID"
+  remote_eval_batch_json 'value=1'
+) >"$spy_root/receipt-jq.out" 2>"$spy_root/receipt-jq.err" || receipt_jq_status=$?
+[[ "$receipt_jq_status" == 143 ]] ||
+  fail "an interruption before the receipt was persisted exited ${receipt_jq_status} instead of 143: $(cat "$spy_root/receipt-jq.err")"
+[[ -e "$spy_root/receipt-jq.flag" ]] ||
+  fail "the interruption was never placed before the receipt was put in place"
+[[ ! -s "$spy_root/receipt-jq.out" ]] ||
+  fail "an interruption before the receipt was persisted emitted a result: $(cat "$spy_root/receipt-jq.out")"
+[[ "$(eval_call_count)" == 1 ]] ||
+  fail "an interrupted receipt write evaluated $(eval_call_count) times"
+require_zero_local_heavy 'an interruption before the receipt was persisted'
+require_no_owned_scratch 'an interruption before the receipt was persisted'
+pending_receipt="$(find "$receipt_dir" -maxdepth 1 -name '*.receipt.pending.json' -print -quit 2>/dev/null || true)"
+[[ -z "$pending_receipt" ]] ||
+  fail "an interrupted receipt write abandoned its temporary: ${pending_receipt}"
+receipt="$(latest_receipt)"
+jq -e '.exit_status == 143 and .outcome == "failure" and .result_certified == false' "$receipt" >/dev/null ||
+  fail "an interruption before the receipt was persisted was not receipted: $(cat "$receipt")"
+jq -e '.reply_path != null and (.reply_sha256 | test("^[0-9a-f]{64}$"))' "$receipt" >/dev/null ||
+  fail "an interrupted receipt write discarded its evidence: $(cat "$receipt")"
+
+echo "  ✅ a refused or interrupted local finalization is reported, not certified"
 
 # --- every transport step is bounded, including staging and removal ---------
 #

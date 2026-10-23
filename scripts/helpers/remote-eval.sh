@@ -318,6 +318,17 @@ _remote_eval_required_remote_effects=0
 _remote_eval_required_remote_unnamed=0
 _remote_eval_required_cleanup_outcome=""
 _remote_eval_required_outcome=""
+# Remote effects are settled once: after that observation the interruption path
+# must reuse it rather than issue a second round of transport calls.
+_remote_eval_required_settled=0
+# The receipt describes evidence that has to outlive the scratch it arrived in,
+# so the durable copies are staged before the scratch goes away.
+_remote_eval_required_stdout_path=""
+_remote_eval_required_stdout_sha=""
+_remote_eval_required_stderr_path=""
+_remote_eval_required_stderr_sha=""
+# Observed result of removing the attempt's own scratch: "" until attempted.
+_remote_eval_required_local_cleanup=""
 
 _remote_eval_required_reset() {
   _remote_eval_required_phase=""
@@ -350,6 +361,12 @@ _remote_eval_required_reset() {
   _remote_eval_required_remote_unnamed=0
   _remote_eval_required_cleanup_outcome=""
   _remote_eval_required_outcome=""
+  _remote_eval_required_settled=0
+  _remote_eval_required_stdout_path=""
+  _remote_eval_required_stdout_sha=""
+  _remote_eval_required_stderr_path=""
+  _remote_eval_required_stderr_sha=""
+  _remote_eval_required_local_cleanup=""
 }
 
 # The receipt directory and the deadline are the two inputs that must be
@@ -449,19 +466,32 @@ _remote_eval_required_make_scratch() {
   return 0
 }
 
-_remote_eval_required_clear_scratch() {
+# Remove the attempt's scratch directory exactly once, and only report success
+# when the removal was observed to happen. Ownership is retained in the globals
+# until then: a refused or interrupted removal still has the exact validated
+# path, so the caller can report it and the abort path can retry the same removal
+# instead of certifying an attempt whose local effects are still on disk.
+_remote_eval_required_remove_scratch() {
   local scratch="${_remote_eval_required_scratch:-}" base="${_remote_eval_required_scratch_base:-}"
-  # Clear the bookkeeping first: a caller that retries the removal must not loop
-  # on a path this function already decided not to touch.
+
+  _remote_eval_required_local_cleanup="failed"
+  if [[ -z "$scratch" ]]; then
+    _remote_eval_required_local_cleanup="success"
+    return 0
+  fi
+  if [[ -z "$base" || "$scratch" != "$base"/nixhomeserver-required-eval.* ]]; then
+    echo "remote-eval: refusing to remove an unrecognised local scratch path: ${scratch}" >&2
+    return 1
+  fi
+  if ! rm -rf -- "$scratch"; then
+    echo "remote-eval: the attempt scratch directory could not be removed: ${scratch}" >&2
+    return 1
+  fi
+  _remote_eval_required_local_cleanup="success"
   _remote_eval_required_scratch=""
   _remote_eval_required_reply_file=""
   _remote_eval_required_diag_file=""
-  [[ -n "$scratch" ]] || return 0
-  if [[ -z "$base" || "$scratch" != "$base"/nixhomeserver-required-eval.* ]]; then
-    echo "remote-eval: refusing to remove an unrecognised local scratch path" >&2
-    return 1
-  fi
-  rm -rf -- "$scratch"
+  return 0
 }
 
 # Paths the restricted Git index can hide worktree divergence behind. `git
@@ -776,27 +806,72 @@ _remote_eval_required_cleanup() {
   printf '%s\n' "$outcome"
 }
 
-_remote_eval_required_write_receipt() {
-  local status="$1" cleanup="$2" outcome="$3" message="$4" stdout_src="${5:-}" stderr_src="${6:-}"
+# The receipt temporary is derived from the attempt's phase instead of being
+# allocated from entropy: its exact path has to be known to the interruption path
+# with no bookkeeping value that a signal could arrive between. The phase counter
+# makes it unique per attempt, and the receipt directory is an admitted input.
+_remote_eval_required_receipt_tmp() {
   local dir="$_remote_eval_required_receipt_dir" phase="$_remote_eval_required_phase"
-  local stdout_path="" stdout_sha="" stderr_path="" stderr_sha="" tmp end
+
+  [[ -n "$dir" && -n "$phase" ]] || return 1
+  [[ "$phase" =~ ^[A-Za-z0-9._-]+$ ]] || return 1
+  printf '%s/%s.receipt.pending.json\n' "$dir" "$phase"
+}
+
+_remote_eval_required_discard_receipt_tmp() {
+  local tmp
+
+  tmp="$(_remote_eval_required_receipt_tmp)" || return 0
+  [[ -e "$tmp" || -L "$tmp" ]] || return 0
+  rm -f -- "$tmp"
+}
+
+# Copy the attempt's evidence into the receipt directory before the scratch that
+# holds it is removed, so the receipt can still name and hash the bytes it
+# describes afterwards. A named source that has already gone keeps the copy this
+# attempt staged earlier instead of forgetting its own evidence.
+_remote_eval_required_stage_evidence() {
+  local stdout_src="${1:-}" stderr_src="${2:-}"
+  local dir="$_remote_eval_required_receipt_dir" phase="$_remote_eval_required_phase"
+  local path sha
+
+  [[ -n "$dir" && -d "$dir" && -w "$dir" ]] || return 1
+  [[ "$phase" =~ ^[A-Za-z0-9._-]+$ ]] || return 1
+  if [[ -n "$stdout_src" && -f "$stdout_src" ]]; then
+    path="$dir/${phase}.reply.json"
+    cp -- "$stdout_src" "$path" || return 1
+    chmod 0600 "$path" || return 1
+    sha="$(sha256sum "$path" | awk '{print $1}')" || return 1
+    _remote_eval_required_stdout_path="$path"
+    _remote_eval_required_stdout_sha="$sha"
+  fi
+  if [[ -n "$stderr_src" && -f "$stderr_src" ]]; then
+    path="$dir/${phase}.stderr.log"
+    cp -- "$stderr_src" "$path" || return 1
+    chmod 0600 "$path" || return 1
+    sha="$(sha256sum "$path" | awk '{print $1}')" || return 1
+    _remote_eval_required_stderr_path="$path"
+    _remote_eval_required_stderr_sha="$sha"
+  fi
+  return 0
+}
+
+_remote_eval_required_write_receipt() {
+  local status="$1" cleanup="$2" outcome="$3" message="$4" local_cleanup="$5"
+  local dir="$_remote_eval_required_receipt_dir" phase="$_remote_eval_required_phase"
+  local stdout_path="$_remote_eval_required_stdout_path" stdout_sha="$_remote_eval_required_stdout_sha"
+  local stderr_path="$_remote_eval_required_stderr_path" stderr_sha="$_remote_eval_required_stderr_sha"
+  local local_path="" tmp end
   local task="${HERMES_KANBAN_TASK:-}" board="${HERMES_KANBAN_BOARD:-}" run="${HERMES_KANBAN_RUN_ID:-}"
   local argv_json
 
   [[ "$status" =~ ^[0-9]+$ ]] || return 1
   [[ -n "$dir" && -d "$dir" && -w "$dir" ]] || return 1
   [[ "$phase" =~ ^[A-Za-z0-9._-]+$ ]] || return 1
-  if [[ -n "$stdout_src" && -f "$stdout_src" ]]; then
-    stdout_path="$dir/${phase}.reply.json"
-    cp -- "$stdout_src" "$stdout_path" || return 1
-    chmod 0600 "$stdout_path" || return 1
-    stdout_sha="$(sha256sum "$stdout_path" | awk '{print $1}')" || return 1
-  fi
-  if [[ -n "$stderr_src" && -f "$stderr_src" ]]; then
-    stderr_path="$dir/${phase}.stderr.log"
-    cp -- "$stderr_src" "$stderr_path" || return 1
-    chmod 0600 "$stderr_path" || return 1
-    stderr_sha="$(sha256sum "$stderr_path" | awk '{print $1}')" || return 1
+  # The exact path the attempt still owns is part of the record when its removal
+  # was not observed: that is what makes the failure actionable rather than vague.
+  if [[ "$local_cleanup" != success ]]; then
+    local_path="${_remote_eval_required_scratch:-}"
   fi
   end="$(date +%s)" || return 1
 
@@ -807,7 +882,10 @@ _remote_eval_required_write_receipt() {
     --arg context "$_remote_eval_required_query_test_host" \
     '["ssh", "-o", "BatchMode=yes", $host, "bash", "-s", "--", $dir, $archive, $expr, $context]')" || return 1
 
-  tmp="$(mktemp "$dir/${phase}.XXXXXX.json")" || return 1
+  tmp="$(_remote_eval_required_receipt_tmp)" || return 1
+  # A leftover temporary is not this attempt's receipt; only the receipt that is
+  # moved into place describes it.
+  rm -f -- "$tmp" || return 1
   if ! jq -cn \
     --arg task "$task" --arg board "$board" --arg run "$run" \
     --arg phase "$phase" --arg commit "$_remote_eval_required_head" \
@@ -828,6 +906,7 @@ _remote_eval_required_write_receipt() {
     --argjson started "$_remote_eval_required_started" --argjson deadline "$_remote_eval_required_deadline" \
     --argjson ended "$end" --arg status "$status" --arg cleanup "$cleanup" \
     --arg outcome "$outcome" --arg message "$message" \
+    --arg local_cleanup "$local_cleanup" --arg local_cleanup_path "$local_path" \
     --arg stdout_path "$stdout_path" --arg stdout "$stdout_sha" \
     --arg stderr_path "$stderr_path" --arg stderr "$stderr_sha" \
     '{mode:"required",phase:$phase,task:(if $task == "" then null else $task end),
@@ -843,24 +922,26 @@ _remote_eval_required_write_receipt() {
       endpoint:$host,actual_host:$host_facts.hostname,actual_system:$host_facts.system,
       argv:$argv,interpreter:{local_bash:$local_bash,version:$bash_version,remote:"bash -s"},
       timeout_seconds:$timeout,started_at:$started,deadline_epoch:$deadline,ended_at:$ended,
-      exit_status:($status|tonumber),cleanup:$cleanup,outcome:$outcome,
-      result_certified:($outcome == "success"),
+      exit_status:($status|tonumber),cleanup:$cleanup,local_cleanup:$local_cleanup,
+      local_cleanup_path:(if $local_cleanup_path == "" then null else $local_cleanup_path end),
+      outcome:$outcome,
+      result_certified:($outcome == "success" and $local_cleanup == "success"),
       message:(if $message == "" then null else $message end),
       reply_path:(if $stdout_path == "" then null else $stdout_path end),
       reply_sha256:(if $stdout == "" then null else $stdout end),
       stderr_path:(if $stderr_path == "" then null else $stderr_path end),
       stderr_sha256:(if $stderr == "" then null else $stderr end)}' >"$tmp"; then
-    rm -f "$tmp"
+    rm -f -- "$tmp"
     return 1
   fi
   chmod 0600 "$tmp" || {
-    rm -f "$tmp"
+    rm -f -- "$tmp"
     return 1
   }
   # A receipt that is never put in place is not a receipt: drop the temporary so a
   # failed persistence leaves no partial artifact beside the retained receipts.
   mv -- "$tmp" "$dir/${phase}.receipt.json" || {
-    rm -f "$tmp"
+    rm -f -- "$tmp"
     return 1
   }
 }
@@ -893,69 +974,111 @@ _remote_eval_required_release_guard() {
 }
 
 _remote_eval_required_abort() {
-  local status="$1" cleanup="none"
+  local status="$1" cleanup="none" local_cleanup="failed"
 
   # Finalization must not be cut short. This function observes cleanup, copies
-  # the evidence it still holds and writes the interruption receipt; a second
-  # INT/TERM/HUP arriving inside it would abandon exactly the scratch and the
-  # receipt the guard exists to preserve. Further signals are therefore ignored
-  # for the remainder of the run -- every transport below is still bounded by the
-  # attempt deadline, so this cannot hang the attempt.
+  # the evidence it still holds, settles the local scratch and writes the
+  # interruption receipt; a second INT/TERM/HUP arriving inside it would abandon
+  # exactly the scratch and the receipt the guard exists to preserve. Further
+  # signals are therefore ignored for the remainder of the run -- every transport
+  # below is still bounded by the attempt deadline, so this cannot hang the
+  # attempt.
   trap '' INT TERM HUP
   _remote_eval_required_guard_armed=""
-  # Settle what this attempt may have touched even when no path was named: an
-  # acquisition that was interrupted after the server allocated its slot is
-  # unknown ownership, not "nothing happened".
-  cleanup="$(_remote_eval_required_cleanup "${_remote_eval_required_host:-}" \
-    "${_remote_eval_required_remote_dir:-}" "${_remote_eval_required_remote_archive:-}")"
+  # The receipt temporary is attempt-owned state: an interruption that landed
+  # while the receipt was being written leaves it behind, and only the receipt
+  # that is moved into place describes this attempt.
+  _remote_eval_required_discard_receipt_tmp ||
+    echo "remote-eval: could not remove the abandoned receipt temporary" >&2
+  if ((_remote_eval_required_settled)); then
+    # The remote effects were already observed; a second round of transport calls
+    # would only risk replacing that observation with a worse one.
+    cleanup="$_remote_eval_required_cleanup_outcome"
+  else
+    # Settle what this attempt may have touched even when no path was named: an
+    # acquisition that was interrupted after the server allocated its slot is
+    # unknown ownership, not "nothing happened".
+    cleanup="$(_remote_eval_required_cleanup "${_remote_eval_required_host:-}" \
+      "${_remote_eval_required_remote_dir:-}" "${_remote_eval_required_remote_archive:-}")"
+  fi
+  # The evidence has to be durable before the scratch that holds it is removed,
+  # and the removal itself must be observed rather than assumed.
+  _remote_eval_required_stage_evidence "${_remote_eval_required_reply_file:-}" \
+    "${_remote_eval_required_diag_file:-}" ||
+    echo "remote-eval: could not stage the attempt evidence before interrupting" >&2
+  _remote_eval_required_remove_scratch || true
+  local_cleanup="${_remote_eval_required_local_cleanup:-failed}"
   # An abandoned attempt still owes an attributable receipt, including whatever
   # stdout/stderr it had already captured. A receipt failure must not mask the
   # interruption, so it stays best-effort and loud.
   _remote_eval_required_write_receipt "$status" "$cleanup" "failure" \
-    "the attempt was interrupted (status ${status})" \
-    "${_remote_eval_required_reply_file:-}" "${_remote_eval_required_diag_file:-}" >/dev/null 2>&1 ||
+    "the attempt was interrupted (status ${status})" "$local_cleanup" >/dev/null 2>&1 ||
     echo "remote-eval: could not write the interruption receipt" >&2
-  _remote_eval_required_clear_scratch || true
-  echo "remote-eval: the required evaluation was interrupted (status ${status}, cleanup: ${cleanup})" >&2
+  echo "remote-eval: the required evaluation was interrupted (status ${status}, cleanup: ${cleanup}, local cleanup: ${local_cleanup})" >&2
   exit "$status"
 }
 
-# Settle one finished attempt: observe cleanup, then persist the receipt. The
-# interruption guard stays armed throughout -- this function copies evidence and
-# writes the receipt, and the caller still owns the attempt scratch afterwards,
-# so a signal in this window must reach the abort path rather than take the
-# caller's default disposition. Only the public entry point releases the guard,
-# once nothing attempt-owned is left.
+# Settle one finished attempt: observe the remote cleanup, stage the evidence,
+# remove the local scratch and only then persist the receipt. The interruption
+# guard stays armed throughout -- this function still owns attempt state, so a
+# signal in this window must reach the abort path rather than take the caller's
+# default disposition. Only the public entry point releases the guard, once
+# nothing attempt-owned is left.
+#
+# The order matters. The receipt is written last so that it describes what
+# actually happened locally: the scratch removal is observed before the record is
+# made, and an attempt that could not remove its own directory is a failure with
+# the retained path in its receipt, never a certified result with a missing
+# cleanup. Evidence is copied first because the receipt has to be able to hash
+# bytes that no longer exist in the removed scratch.
 #
 # A receipt that cannot be persisted makes the attempt a failure -- the caller
 # must never read an unrecorded run as green. The persisted outcome is not the
-# observed process status alone: an attempt whose cleanup is `failed` or
+# observed process status alone: an attempt whose remote cleanup is `failed` or
 # `unknown` is recorded as a failure even when the evaluation itself exited 0,
 # because nothing proves the remote state it claims.
 _remote_eval_required_settle() {
-  local status="$1" message="$2" reply_src="${3:-}" stderr_src="${4:-}" cleanup persisted=0 outcome="failure"
+  local status="$1" message="$2" reply_src="${3:-}" stderr_src="${4:-}"
+  local cleanup outcome="failure" persisted=0 evidence=0 local_cleanup
 
   cleanup="$(_remote_eval_required_cleanup "$_remote_eval_required_host" \
     "$_remote_eval_required_remote_dir" "$_remote_eval_required_remote_archive")"
   _remote_eval_required_cleanup_outcome="$cleanup"
+  # From here the remote effect is a recorded observation, not something the
+  # interruption path has to ask the server about a second time.
+  _remote_eval_required_settled=1
   if [[ "$status" == "0" && ( "$cleanup" == success || "$cleanup" == none ) ]]; then
     outcome="success"
   fi
+  # The receipt describes the paths and artifacts this attempt held, so its
+  # evidence is copied while the attempt scratch still exists.
+  _remote_eval_required_stage_evidence "$reply_src" "$stderr_src" || evidence=1
+  # A removal that was not observed is a finalization failure: the exact path
+  # stays owned (and reportable) instead of being forgotten.
+  _remote_eval_required_remove_scratch || true
+  local_cleanup="${_remote_eval_required_local_cleanup:-failed}"
+  if ((evidence != 0)); then
+    echo "remote-eval: could not stage the attempt evidence in $_remote_eval_required_receipt_dir" >&2
+    return 1
+  fi
+  if [[ "$local_cleanup" != success ]]; then
+    outcome="failure"
+  fi
   _remote_eval_required_outcome="$outcome"
-  # The receipt describes the paths and artifacts this attempt held, so it is
-  # written before the attempt-scoped state (and its scratch) is cleared.
-  if _remote_eval_required_write_receipt "$status" "$cleanup" "$outcome" "$message" "$reply_src" "$stderr_src"; then
+  if _remote_eval_required_write_receipt "$status" "$cleanup" "$outcome" "$message" "$local_cleanup"; then
     persisted=1
   fi
-  _remote_eval_required_remote_dir=""
-  _remote_eval_required_remote_archive=""
   if ((persisted == 0)); then
     echo "remote-eval: could not persist the attempt receipt in $_remote_eval_required_receipt_dir" >&2
     return 1
   fi
   if [[ -n "$message" ]]; then
-    printf 'remote-eval: %s (cleanup: %s)\n' "$message" "$cleanup" >&2
+    printf 'remote-eval: %s (cleanup: %s, local cleanup: %s)\n' "$message" "$cleanup" "$local_cleanup" >&2
   fi
+  # The recorded observation is what the interruption path must reuse, so the
+  # attempt's transport parameters stop being live here.
+  _remote_eval_required_remote_dir=""
+  _remote_eval_required_remote_archive=""
   return 0
 }
 
@@ -974,7 +1097,6 @@ _remote_eval_required_refuse() {
     stderr_src="$_remote_eval_required_diag_file"
   fi
   _remote_eval_required_settle "$status" "$message" "$reply_src" "$stderr_src" || settled=1
-  _remote_eval_required_clear_scratch || true
   ((settled == 0)) || return 1
   return "$status"
 }
@@ -1264,18 +1386,19 @@ _remote_eval_required_attempt() {
   fi
 
   if ! _remote_eval_required_settle 0 "" "$output_file" "$_remote_eval_required_diag_file"; then
-    _remote_eval_required_clear_scratch || true
     return 1
   fi
-  # A green exit status is not a green attempt: without an observed cleanup the
-  # remote state this result came from is unproven, so the reply is withheld.
-  if [[ "$_remote_eval_required_outcome" != "success" ]]; then
-    echo "remote-eval: the evaluation completed but the attempt could not confirm cleanup (cleanup: ${_remote_eval_required_cleanup_outcome}); refusing to certify the result" >&2
-    _remote_eval_required_clear_scratch || true
+  # A green exit status is not a green attempt: without an observed remote cleanup
+  # and an observed removal of the attempt's own files, the state this result came
+  # from is unproven, so the reply is withheld.
+  if [[ "$_remote_eval_required_outcome" != "success" || \
+    "${_remote_eval_required_local_cleanup:-}" != "success" ]]; then
+    echo "remote-eval: the evaluation completed but the attempt could not confirm cleanup (cleanup: ${_remote_eval_required_cleanup_outcome}, local cleanup: ${_remote_eval_required_local_cleanup:-unobserved}); refusing to certify the result" >&2
     return 1
   fi
-  cat -- "$output_file"
-  _remote_eval_required_clear_scratch || true
+  # The emitted bytes are the copy the receipt certifies, not the scratch file
+  # that was just removed.
+  cat -- "$_remote_eval_required_stdout_path" || return 1
   return 0
 }
 
@@ -1290,11 +1413,16 @@ _remote_eval_required_run() {
   local status=0
 
   _remote_eval_required_attempt "$@" || status=$?
-  # A failed receipt must not strand the scratch, and a failed removal must not
-  # keep the guard installed over the caller.
+  # Whatever the attempt still owns is settled here. A removal that still cannot
+  # be observed keeps the invocation a failure rather than handing the caller a
+  # green status while attempt-owned state is left on disk.
   if [[ -n "$_remote_eval_required_scratch" ]]; then
-    _remote_eval_required_clear_scratch ||
-      echo "remote-eval: could not remove the attempt scratch directory" >&2
+    if ! _remote_eval_required_remove_scratch; then
+      echo "remote-eval: the attempt scratch directory could not be removed: ${_remote_eval_required_scratch}" >&2
+      if ((status == 0)); then
+        status=1
+      fi
+    fi
   fi
   _remote_eval_required_release_guard
   return "$status"

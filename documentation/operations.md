@@ -2455,10 +2455,11 @@ artifacts. The receipt records the declared and observed commit/tree, the source
 identity state and how many checks it survived, the archive, staged-archive,
 helper and exact-query digests, the query field set and selected host context,
 the endpoint and its attested hostname/system, the remote argv and interpreter,
-the declared and enforced deadline, start/end times, the exit status, the cleanup
-outcome, the attempt outcome and the artifact digests. Attempt numbers are
-allocated from a counter, so a later reader can order attempts and no attempt
-overwrites another.
+the declared and enforced deadline, start/end times, the exit status, the remote
+cleanup outcome, the local cleanup outcome and the path it retained when that
+removal was not observed, the attempt outcome and the artifact digests. Attempt
+numbers are allocated from a counter, so a later reader can order attempts and no
+attempt overwrites another.
 
 Receipt persistence is part of the contract: an attempt whose receipt cannot be
 written fails. Every local file the attempt creates — query bytes, source
@@ -2468,17 +2469,25 @@ before that directory is acquired, not only before the first remote command, so
 an interruption between local acquisition and endpoint attestation still removes
 the owned scratch and leaves a receipt.
 
-The guard also outlives the remote work. Settling a finished attempt still copies
-its evidence, writes the receipt, emits the reply and removes the scratch, so a
-signal in that window is caught by the same guard instead of taking the caller's
-default disposition; it is restored only once the attempt owns nothing, which is
-what keeps a sourcing script's own handlers intact. The abort path itself ignores
-further INT/TERM/HUP while it observes cleanup, writes the interruption receipt
-and removes the scratch — every transport inside it is still deadline-bounded, so
-that cannot hang the attempt. Because the receipt copies what it needs before
-that removal, an interrupted attempt preserves whatever stdout/stderr had already
+The guard also outlives the remote work. Settling a finished attempt copies its
+evidence into the receipt directory, removes the scratch, and only then writes the
+receipt and emits the reply, so a signal in that window is caught by the same
+guard instead of taking the caller's default disposition; it is restored only once
+the attempt owns nothing, which is what keeps a sourcing script's own handlers
+intact. That order is deliberate: the receipt records the local cleanup the attempt
+actually observed. A scratch removal that is refused or interrupted is a
+finalization failure — `local_cleanup: "failed"` with the exact retained path in
+`local_cleanup_path`, a non-zero exit and no result on stdout — and never a
+certified success whose directory is still on disk. The abort path itself ignores
+further INT/TERM/HUP while it observes cleanup, discards any receipt temporary the
+attempt left pending, stages its evidence, settles the scratch and writes the
+interruption receipt — every transport inside it is still deadline-bounded, so
+that cannot hang the attempt. Because the receipt copies what it needs before that
+removal, an interrupted attempt preserves whatever stdout/stderr had already
 arrived instead of discarding its own evidence; it leaves a receipt with status
-130/143/129 and an observed cleanup.
+130/143/129 and an observed cleanup. The receipt temporary is named after the
+attempt phase rather than drawn from entropy, so the interruption path can remove
+the exact file without depending on a value a signal could arrive before.
 
 The archive producer (`create_deploy_repo_archive`) allocates its tracked-file
 manifests under `TMPDIR` and removes them inline, so on this route it runs with
@@ -2501,11 +2510,13 @@ it acquired rather than losing it, and a failed, refused or interrupted
 staging-directory acquisition stays `unknown` even though the already-named
 archive verifiably disappeared.
 
-`outcome` is not the process exit status alone: `success` requires exit 0 **and**
-an observed cleanup of `success` or `none`. An attempt whose cleanup is `failed`
-or `unknown` exits non-zero, is recorded with `outcome: "failure"` and
-`result_certified: false`, and emits nothing on stdout — whatever the evaluation
-returned is preserved as a receipt artifact and left uncertified.
+`outcome` is not the process exit status alone: `success` requires exit 0, an
+observed remote cleanup of `success` or `none`, **and** an observed removal of the
+attempt's own scratch. An attempt whose remote cleanup is `failed` or `unknown`, or
+whose local scratch could not be removed, exits non-zero, is recorded with
+`outcome: "failure"` and `result_certified: false`, and emits nothing on stdout —
+whatever the evaluation returned is preserved as a receipt artifact and left
+uncertified.
 
 Every transport step is bounded by the declared deadline with `timeout(1)` and
 re-checked before each call, including the archive staging allocation, the upload
