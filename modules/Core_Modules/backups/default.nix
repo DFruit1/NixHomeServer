@@ -78,10 +78,16 @@ let
       echo "SQLite integrity check failed for ${dump.outputName}: $integrity" >&2
       exit 1
     fi
-    (
-      cd "$work"
-      sha256sum -- "dumps/$output_name"
-    ) >> "$work/metadata/SHA256SUMS"
+    digest="$(cd "$work" && sha256sum -- "dumps/$output_name")"
+    printf '%s\n' "$digest" >> "$work/metadata/SHA256SUMS"
+    jq -nc \
+      --arg name "$output_name" \
+      --arg kind sqlite \
+      --argjson bytes "$(stat -c %s -- "$output")" \
+      --arg sha256 "''${digest%% *}" \
+      --arg createdAt "$dump_created_at" \
+      '{name:$name,kind:$kind,bytes:$bytes,sha256:$sha256,integrityCheck:"ok",createdAt:$createdAt}' \
+      >> "$work/metadata/dumps.jsonl"
   '';
   postgresqlDumpScript = dump: ''
     echo "Preparing PostgreSQL backup: ${dump.outputName}"
@@ -93,11 +99,21 @@ let
       ${lib.escapeShellArg dump.database} \
       > "$output"
     pg_restore --list "$output" >/dev/null
-    (
-      cd "$work"
-      sha256sum -- "dumps/$output_name"
-    ) >> "$work/metadata/SHA256SUMS"
+    digest="$(cd "$work" && sha256sum -- "dumps/$output_name")"
+    printf '%s\n' "$digest" >> "$work/metadata/SHA256SUMS"
+    jq -nc \
+      --arg name "$output_name" \
+      --arg kind postgresql \
+      --argjson bytes "$(stat -c %s -- "$output")" \
+      --arg sha256 "''${digest%% *}" \
+      --arg createdAt "$dump_created_at" \
+      '{name:$name,kind:$kind,bytes:$bytes,sha256:$sha256,integrityCheck:"ok",createdAt:$createdAt}' \
+      >> "$work/metadata/dumps.jsonl"
   '';
+  expectedDumpsJson = builtins.toJSON (
+    (map (dump: { name = dump.outputName; kind = "sqlite"; }) config.repo.backups.sqliteDumps)
+    ++ (map (dump: { name = dump.outputName; kind = "postgresql"; }) config.repo.backups.postgresqlDumps)
+  );
   dumpOutputNames =
     (map (dump: dump.outputName) config.repo.backups.sqliteDumps)
     ++ (map (dump: dump.outputName) config.repo.backups.postgresqlDumps);
@@ -401,6 +417,10 @@ in
         dumpsRoot="$work/dumps"
         export metadataRoot dumpsRoot
         : > "$work/metadata/SHA256SUMS"
+        : > "$work/metadata/dumps.jsonl"
+        # One timestamp for the generation and every dump record so the
+        # dashboard never mixes clock readings from different phases.
+        dump_created_at="$(date --utc --iso-8601=seconds)"
 
         ${lib.concatMapStringsSep "\n" sqliteDumpScript config.repo.backups.sqliteDumps}
 
@@ -415,8 +435,26 @@ in
           )
         fi
 
+        # Additive, machine-readable per-dump result for the admin dashboard.
+        # Consumers treat a missing file as "this generation predates reporting".
+        expected_dumps=${lib.escapeShellArg expectedDumpsJson}
+        if [[ -s "$work/metadata/dumps.jsonl" ]]; then
+          jq -s \
+            --argjson expected "$expected_dumps" \
+            --arg createdAt "$dump_created_at" \
+            '{schemaVersion:1,createdAt:$createdAt,expected:$expected,dumps:.}' \
+            "$work/metadata/dumps.jsonl" > "$work/metadata/dumps.json"
+        else
+          jq -n \
+            --argjson expected "$expected_dumps" \
+            --arg createdAt "$dump_created_at" \
+            '{schemaVersion:1,createdAt:$createdAt,expected:$expected,dumps:[]}' \
+            > "$work/metadata/dumps.json"
+        fi
+        rm -f "$work/metadata/dumps.jsonl"
+
         jq -n \
-          --arg createdAt "$(date --utc --iso-8601=seconds)" \
+          --arg createdAt "$dump_created_at" \
           --arg host ${lib.escapeShellArg vars.hostname} \
           --argjson sqliteCount ${toString (builtins.length config.repo.backups.sqliteDumps)} \
           --argjson postgresqlDumps ${lib.escapeShellArg (builtins.toJSON (map (dump: dump.database) config.repo.backups.postgresqlDumps))} \

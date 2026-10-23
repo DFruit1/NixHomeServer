@@ -203,6 +203,7 @@ test_scripts=(
   scripts/tests/test-hermes-behavior-trials.sh
   scripts/tests/test-hermes-config-policy.sh
   scripts/tests/test-hermes-performance.sh
+  scripts/tests/test-agent-usage.sh
   scripts/tests/test-hermes-runtime-evidence.sh
   scripts/tests/test-hermes-blockers.sh
   scripts/tests/test-hermes-prerequisite-repair.sh
@@ -221,6 +222,7 @@ test_scripts=(
   scripts/tests/test-node-pnpm-deps-scoping.sh
   scripts/tests/test-homepage-guidance.sh
   scripts/tests/test-homepage-vault.sh
+  scripts/tests/test-admin-dashboard-status.sh
   scripts/tests/test-portal-landing.sh
   scripts/tests/test-identity-reconcile-fail-closed.sh
   scripts/tests/test-integration-dependencies.sh

@@ -100,6 +100,7 @@ test('homepage navigation and SFTP upload flow stay client-side', async ({ page 
     'Getting Started',
     'Detailed Guide',
     'Keys & Secrets',
+    'Dashboard',
     'For Admins',
   ]);
   await expect(page.getByRole('region', { name: 'Services' })).toBeVisible();

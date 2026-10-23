@@ -9,12 +9,13 @@ export const TopNav = component$(() => {
   const isUploads = path.startsWith('/uploads');
   const isGettingStarted = path.startsWith('/getting-started');
   const isAdmins = path.startsWith('/admins');
+  const isAdminDashboard = path.startsWith('/admin-dashboard');
   const isKeys = path.startsWith('/keys');
   const navItems = [
     {
       href: '/',
       label: 'Services',
-      selected: !isUploads && !isGettingStarted && !isAdmins && !isKeys,
+      selected: !isUploads && !isGettingStarted && !isAdmins && !isAdminDashboard && !isKeys,
     },
     {
       href: '/getting-started',
@@ -32,6 +33,10 @@ export const TopNav = component$(() => {
       selected: isKeys,
     },
     ...(homepage.data?.isAdmin ? [{
+      href: '/admin-dashboard',
+      label: 'Dashboard',
+      selected: isAdminDashboard,
+    }, {
       href: '/admins',
       label: 'For Admins',
       selected: isAdmins,

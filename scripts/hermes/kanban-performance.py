@@ -20,6 +20,8 @@ import sqlite3
 import time
 from itertools import islice
 
+from agent_usage_report import read_summary
+
 FAILURE_CATEGORIES = {'provider_unavailable', 'provider_auth', 'provider_quota',
                       'provider_request', 'timeout', 'worker_crash', 'spawn_failure',
                       'tool_denied', 'validation_failed', 'workspace_failure', 'retry_exhausted'}
@@ -349,7 +351,8 @@ def report(root, since, until):
         'owner_alert_limit_checks'] = owner_alert_limit_checks(root)
     return {'schema_version': 3, 'generated_at': time.time(), 'since': since, 'until': until,
             'collection_seconds': time.monotonic()-collection_started,
-            'profiles': profiles, 'boards': boards, 'warnings': warnings}
+            'profiles': profiles, 'boards': boards, 'warnings': warnings,
+            'agent_usage':read_summary(root/'state/agent-usage/summary.json')}
 
 
 def profile_lines(name, profile, digest=False):
@@ -412,6 +415,9 @@ def render_digest(data):
                  + (f"+{unknown_sessions} unknown" if unknown_sessions else '')
                  + f" failed={failures} repeat-cards={repeats}"
                  f" budget-stops={budget_stops} learning={memory_status}")
+    if data.get('agent_usage',{}).get('status')!='unavailable':
+        lines.append('Langfuse usage='+data.get('agent_usage',{}).get('status','unknown')
+                     +'; inspect agent-usage.py --report for native client/engine coverage.')
     attention = [(name, profile) for name, profile in sorted(profiles.items())
                  if digest_attention(profile)]
     for name, profile in attention:

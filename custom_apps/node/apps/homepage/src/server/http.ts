@@ -6,6 +6,7 @@ import { currentUserFromHeaders } from './auth.js';
 import type { AppConfig } from './config.js';
 import { enrollOfflineMediaDevice, getOfflineMediaSetup, OfflineMediaInputError, removeOfflineMediaDevice } from './offlineMedia.js';
 import { applyBuildMode, getBuildMode, BuildModeInputError } from './buildMode.js';
+import { getAdminDashboard } from './adminDashboard.js';
 import { applyPowerSchedule, getPowerSchedule, PowerScheduleInputError } from './power.js';
 import { installSftpPublicKey, normalisePublicKey } from './sftpKey.js';
 import { assertFeatureAccess, buildHomepageData } from './homepageData.js';
@@ -147,6 +148,11 @@ export const handleApiRequest = async (config: AppConfig, request: IncomingMessa
 
     if (request.method === 'GET' && url.pathname === '/api/build-mode') {
       sendJson(response, 200, await getBuildMode(config, request.headers));
+      return true;
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/admin-dashboard') {
+      sendJson(response, 200, await getAdminDashboard(config, request.headers));
       return true;
     }
 

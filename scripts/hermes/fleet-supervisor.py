@@ -25,6 +25,7 @@ HANDLERS = (
     ('retry-breaker', 900, 60, 'bash', 'kanban-retry-breaker.sh', ()),
     ('technical-recovery', 300, 90, 'python', 'deadlock_recovery.py', ()),
     ('evidence', 300, 60, 'python', 'fleet-evidence.py', ('collect',)),
+    ('agent-usage', 300, 90, 'python', 'agent-usage.py', ()),
     # A real recent no-agent aging pass took 96s; retain bounded headroom.
     ('aging', 21600, 180, 'python', 'kanban-aging-escalation.py', ()),
     ('cron-loops', 3600, 60, 'python', 'cron-loop-monitor.py', ()),
