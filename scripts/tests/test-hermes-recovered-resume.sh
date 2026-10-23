@@ -127,6 +127,23 @@ class RecoveryTest(unittest.TestCase):
         self.assertEqual(version,self.hold()['version'])
         with self.assertRaises(ValueError):self.apply(version)
 
+    def test_amendment_cas_is_not_a_recovery_token_and_refusal_names_the_inspector(self):
+        import coordinator_repair
+        amendment = coordinator_repair.amend(kb,self.conn,self.target)['version']
+        recovery = self.hold()['version']
+        self.assertNotEqual(amendment,recovery)
+        failures = kb.get_task(self.conn,self.target).consecutive_failures
+        before = list(self.conn.iterdump())
+        with self.assertRaisesRegex(ValueError,'capability_recovery.py --inspect') as refused:
+            self.apply(amendment)
+        self.assertIn('kanban_amend',str(refused.exception))
+        self.assertEqual(before,list(self.conn.iterdump()))
+        self.assertEqual([],list((self.root/'runtime/recovered-resume').glob('*.json')))
+        # A fresh hold inspection supplies the correct one-shot token. The
+        # invalid CAS token did not consume that episode or reset its counters.
+        self.assertEqual('review',self.apply(self.hold()['version'])['status'])
+        self.assertEqual(failures,kb.get_task(self.conn,self.target).consecutive_failures)
+
     def test_new_triage_tracker_owner_and_malformed_version_refused(self):
         for sql in ("UPDATE tasks SET title='[FEATURE TRACKER] untouched' WHERE id=?", "UPDATE tasks SET block_kind='needs_input' WHERE id=?"):
             with self.subTest(sql=sql):

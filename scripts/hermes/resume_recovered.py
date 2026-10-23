@@ -191,7 +191,11 @@ def resume_recovered(kb, conn, tid, version, reason):
             hold = _hold(conn, root, board, tid)
             _eligible(conn, task, hold)
             if hold['version'] != version:
-                raise ValueError('Recovery hold version changed; observe fresh evidence')
+                raise ValueError('Recovery hold version changed; obtain recovery_version from '
+                                 'python3 ~/.hermes/scripts/capability_recovery.py --inspect '
+                                 'for this exact board/task. kanban_amend.version is a separate '
+                                 'amendment CAS token, not a recovery_version. Re-inspect after '
+                                 'relevant source, helper or task evidence changes; no release applied')
             if time.monotonic() - started > 15 or coordinator_origin() != actor:
                 raise ValueError('Recovery exceeded its bound or native actor changed')
             landing = kb._landing_status_after_parents(conn, tid)
