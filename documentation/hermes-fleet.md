@@ -78,6 +78,15 @@ another writer's changes. It never restores board databases, whole jobs.json
 files or task/provider retry counters. A new supervisor job is retained paused
 on rollback so its execution history survives.
 
+Coordinate native API adoption with active repository gates and reviews: they
+read installed adapter seams even when their application checkout is isolated.
+Keep that installed baseline stable while affected checks run. If an older
+candidate needs the newly accepted API source, merge the compatible accepted
+upstream into its owned checkout, preserving both histories, and run its owning
+gate before review/integration. Arrange that through the existing task owner;
+an installed-runtime downgrade or accepting a red gate cannot substitute for it.
+Implementation may continue while the affected validation/review inputs drain.
+
 Installation does not prove an existing worker loaded new prompts. Let active
 turns drain, then use the existing supported graceful gateway refresh described
 in [runtime recovery](hermes-runtime.md). Never launch a second gateway. Report
