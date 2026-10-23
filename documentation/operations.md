@@ -2463,10 +2463,13 @@ overwrites another.
 Receipt persistence is part of the contract: an attempt whose receipt cannot be
 written fails. Every local file the attempt creates — query bytes, source
 archive, reply, diagnostics — lives in one attempt-scoped scratch directory,
-removed on success, on refusal and on INT/TERM/HUP. The receipt copies what it
-needs before that removal, so an interrupted attempt still preserves whatever
-stdout/stderr had already arrived instead of discarding its own evidence; it
-leaves a receipt with status 130/143/129 and an observed cleanup.
+removed on success, on refusal and on INT/TERM/HUP. The signal guard is armed
+before that directory is acquired, not only before the first remote command, so
+an interruption between local acquisition and endpoint attestation still removes
+the owned scratch and leaves a receipt. The receipt copies what it needs before
+that removal, so an interrupted attempt still preserves whatever stdout/stderr
+had already arrived instead of discarding its own evidence; it leaves a receipt
+with status 130/143/129 and an observed cleanup.
 
 Remote staging paths are cleaned through the same bounded transport, and the
 receipt records the observed outcome — `success`, `failed`, `unknown` or `none`
@@ -2474,9 +2477,13 @@ receipt records the observed outcome — `success`, `failed`, `unknown` or `none
 the remote `EXIT` trap intended. `none` is recorded only when the attempt never
 issued a command that can create a remote file; once it has, an error or a
 missing path is `unknown`, because an acquisition that failed after the server
-allocated its slot cannot be proven absent. The archive slot is recorded as owed
-as soon as the server names it, so a failed upload still cleans and reports the
-archive it acquired rather than losing it.
+allocated its slot cannot be proven absent. Ownership is tracked per acquisition
+and marked unknown *before* the command that can create the path, then cleared
+only when a bounded path is adopted: the archive slot is recorded as owed as soon
+as the server names it, so a failed upload still cleans and reports the archive
+it acquired rather than losing it, and a failed, refused or interrupted
+staging-directory acquisition stays `unknown` even though the already-named
+archive verifiably disappeared.
 
 `outcome` is not the process exit status alone: `success` requires exit 0 **and**
 an observed cleanup of `success` or `none`. An attempt whose cleanup is `failed`

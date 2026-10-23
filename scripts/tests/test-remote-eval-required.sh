@@ -133,6 +133,7 @@ case "$args" in
     ;;
   *'mktemp -d '*)
     [[ "${REQUIRE_SSH_MKTEMP_STATUS:-0}" == 0 ]] || exit "$REQUIRE_SSH_MKTEMP_STATUS"
+    sleep "${REQUIRE_SSH_MKTEMP_SLEEP:-0}"
     printf '%s\n' "${REQUIRE_SSH_DIR:-/tmp/nixhomeserver-remote-eval.abcdefgh}"
     ;;
   *'bash -s -- '*)
@@ -778,6 +779,80 @@ jq -e '.remote_archive == null and .cleanup == "unknown" and .outcome == "failur
 
 echo "  ✅ allocation-then-upload failure keeps its archive, an unnameable one stays UNKNOWN"
 
+# --- the second acquisition is ownership too, not a detail -------------------
+#
+# By the time the staging directory is asked for, the archive already has a
+# name -- so "the named paths are absent" says nothing about a directory the
+# server may have allocated and never named. The attempt must record that
+# ownership before the command that can create it, and clear it only once a
+# bounded path is actually adopted; a refusal, a lost session or an interruption
+# in that window is UNKNOWN, never a clean `success`.
+
+directory_acquisition_refusal() {
+  local label="$1" body="$2" fragment="$3"
+  cleanup_case "$label" "$body"
+  ((case_status != 0)) || fail "${label}: the attempt reported success"
+  [[ ! -s "$spy_root/cleanup.out" ]] ||
+    fail "${label}: the attempt emitted a result: $(cat "$spy_root/cleanup.out")"
+  grep -q -- "$fragment" "$spy_root/cleanup.err" ||
+    fail "${label}: the refusal did not mention '${fragment}': $(cat "$spy_root/cleanup.err")"
+  receipt="$(latest_receipt)"
+  jq -e --arg archive "$spy_archive" '
+    .exit_status != 0
+    and .outcome == "failure"
+    and .result_certified == false
+    and .cleanup == "unknown"
+    and .remote_archive == $archive' "$receipt" >/dev/null ||
+    fail "${label}: a possible unnamed directory was reported as settled: $(cat "$receipt")"
+  if grep -q 'rm -rf -- ' "$spy_root/ssh.log"; then
+    fail "${label}: the attempt guessed at removing a directory it never named"
+  fi
+}
+
+directory_acquisition_refusal 'a lost staging-directory acquisition' \
+  'export REQUIRE_SSH_RUN_OUT="{\"value\":1}" REQUIRE_SSH_MKTEMP_STATUS=255 REQUIRE_SSH_ABSENT_STATUS=0; remote_eval_batch_json "value=1"' \
+  'could not create a remote staging directory'
+[[ "$case_status" == 1 ]] || fail "a lost directory acquisition exited ${case_status} instead of 1"
+
+directory_acquisition_refusal 'a refused staging-directory acquisition' \
+  'export REQUIRE_SSH_RUN_OUT="{\"value\":1}" REQUIRE_SSH_MKTEMP_STATUS=1 REQUIRE_SSH_ABSENT_STATUS=0; remote_eval_batch_json "value=1"' \
+  'could not create a remote staging directory'
+[[ "$case_status" == 1 ]] || fail "a refused directory acquisition exited ${case_status} instead of 1"
+
+# The same window, interrupted: the archive is named by now, and the directory
+# may exist without a name, so the attempt still owes an UNKNOWN cleanup.
+: >"$spy_root/ssh.log"
+(
+  eval "$(spy_env)"
+  export REQUIRE_SSH_RUN_OUT='{"value":1}' REQUIRE_SSH_MKTEMP_SLEEP=3 REQUIRE_SSH_ABSENT_STATUS=0
+  remote_eval_batch_json 'value=1'
+) >"$spy_root/dir-acquisition.out" 2>"$spy_root/dir-acquisition.err" &
+dir_acquisition_pid=$!
+for _ in $(seq 1 300); do
+  grep -q 'mktemp -d' "$spy_root/ssh.log" 2>/dev/null && break
+  sleep 0.05
+done
+kill -TERM "$dir_acquisition_pid" 2>/dev/null || true
+dir_acquisition_status=0
+wait "$dir_acquisition_pid" || dir_acquisition_status=$?
+[[ "$dir_acquisition_status" == 143 ]] ||
+  fail "an interrupted directory acquisition exited ${dir_acquisition_status} instead of 143: $(cat "$spy_root/dir-acquisition.err")"
+[[ ! -s "$spy_root/dir-acquisition.out" ]] || fail "an interrupted directory acquisition emitted a result"
+receipt="$(latest_receipt)"
+jq -e --arg archive "$spy_archive" '
+  .exit_status == 143
+  and .outcome == "failure"
+  and .result_certified == false
+  and .cleanup == "unknown"
+  and .remote_archive == $archive' "$receipt" >/dev/null ||
+  fail "an interrupted directory acquisition was not receipted as unknown: $(cat "$receipt")"
+if grep -q 'rm -rf -- ' "$spy_root/ssh.log"; then
+  fail "an interrupted directory acquisition cleaned a path it never named"
+fi
+require_no_owned_scratch 'an interrupted directory acquisition'
+
+echo "  ✅ a lost, refused or interrupted staging-directory acquisition stays UNKNOWN"
+
 # --- an interruption cleans what it acquired and leaves a receipt -----------
 
 : >"$spy_root/ssh.log"
@@ -830,6 +905,54 @@ if grep -q 'rm -rf -- ' "$spy_root/ssh.log"; then
   fail "an unnamed acquisition was cleaned with a broad removal"
 fi
 require_no_owned_scratch 'an interrupted acquisition'
+
+# An interruption before anything leaves the workstation: the first moment the
+# attempt owns local state is its scratch directory, so a signal there must
+# already find a guard. The interruption is placed deterministically, between
+# owning the scratch and attesting the endpoint, by signalling from the last
+# step of the acquisition itself.
+make_scratch_definition="$(declare -f _remote_eval_required_make_scratch)"
+: >"$spy_root/ssh.log"
+: >"$spy_root/scratch-interrupt.out"
+reset_local_heavy_logs
+scratch_interrupt_status=0
+(
+  eval "$(spy_env)"
+  export REQUIRE_SSH_RUN_OUT='{"value":1}'
+  eval "${make_scratch_definition/_remote_eval_required_make_scratch/_real_make_scratch}"
+  _remote_eval_required_make_scratch() {
+    _real_make_scratch || return 1
+    # Nothing remote has been attempted yet; this is exactly the interval in
+    # which the attempt owns local files but has not attested its endpoint.
+    kill -TERM "$BASHPID"
+    return 1
+  }
+  remote_eval_batch_json 'value=1'
+) >"$spy_root/scratch-interrupt.out" 2>"$spy_root/scratch-interrupt.err" ||
+  scratch_interrupt_status=$?
+[[ "$scratch_interrupt_status" == 143 ]] ||
+  fail "an interruption after local scratch acquisition exited ${scratch_interrupt_status} instead of 143: $(cat "$spy_root/scratch-interrupt.err")"
+[[ ! -s "$spy_root/scratch-interrupt.out" ]] ||
+  fail "an interruption before attestation emitted a result: $(cat "$spy_root/scratch-interrupt.out")"
+[[ ! -s "$spy_root/ssh.log" ]] ||
+  fail "the interruption was not placed before the first remote command: $(cat "$spy_root/ssh.log")"
+require_zero_local_heavy 'an interruption before attestation'
+require_no_owned_scratch 'an interruption before attestation'
+receipt="$(latest_receipt)"
+jq -e '.exit_status == 143 and .outcome == "failure" and .result_certified == false and .cleanup == "none" and .remote_archive == null' \
+  "$receipt" >/dev/null ||
+  fail "an interruption before attestation left no attributable receipt: $(cat "$receipt")"
+
+# The guard is released, so a sourcing script keeps its own signal handling.
+caller_trap="$(
+  eval "$(spy_env)"
+  export REQUIRE_SSH_RUN_OUT='{"value":1}'
+  trap 'echo caller-term' TERM
+  remote_eval_batch_json 'value=1' >/dev/null
+  trap -p TERM
+)" || fail "a required evaluation under a caller TERM trap failed"
+[[ "$caller_trap" == *'caller-term'* ]] ||
+  fail "the attempt did not restore the caller's TERM trap: ${caller_trap}"
 
 echo "  ✅ an interruption is receipted, cleans only what it can name, and leaves no scratch"
 

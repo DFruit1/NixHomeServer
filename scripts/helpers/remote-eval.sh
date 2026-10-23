@@ -1055,6 +1055,12 @@ _remote_eval_required_run() {
     return 2
   fi
 
+  # The guard is armed before the first local file exists, not before the first
+  # remote command: acquiring the scratch directory is already ownership, and an
+  # interruption between that acquisition and attestation would otherwise leak it
+  # and abandon the attempt with no receipt.
+  _remote_eval_required_arm_guard
+
   # Every local file of this attempt lives in one directory, created before the
   # first one is needed and removed as a unit on every exit path.
   if ! _remote_eval_required_make_scratch; then
@@ -1083,7 +1089,6 @@ _remote_eval_required_run() {
     _remote_eval_required_refuse 1 "could not identify the helper sources"
     return 1
   }
-  _remote_eval_required_arm_guard
 
   if ! _remote_eval_required_attest "$host"; then
     _remote_eval_required_refuse 1 "the target endpoint could not be attested as a remote host"
@@ -1154,8 +1159,13 @@ _remote_eval_required_run() {
 
   # A staging directory this attempt created can exist even when the call fails
   # or answers with something unusable, so the effect is recorded before the
-  # command and the path is only adopted once it is the bounded shape.
+  # command and the path is only adopted once it is the bounded shape. Both facts
+  # matter: the archive is already named here, so "the named paths are absent"
+  # would otherwise be reported as a clean cleanup while an unnamed directory the
+  # server allocated survives. Ownership is therefore pending-unnamed from before
+  # the acquisition, and only adopting a bounded path clears it.
   _remote_eval_required_remote_effects=1
+  _remote_eval_required_remote_unnamed=1
   if ! remote_dir="$(_remote_eval_required_ssh -o BatchMode=yes "$host" \
     "mktemp -d /tmp/nixhomeserver-remote-eval.XXXXXX" 2>>"$_remote_eval_required_diag_file")"; then
     _remote_eval_required_refuse 1 "could not create a remote staging directory on ${host}"
@@ -1164,11 +1174,11 @@ _remote_eval_required_run() {
   if [[ ! "$remote_dir" =~ ^/tmp/nixhomeserver-remote-eval\.[A-Za-z0-9]{6,}$ ]]; then
     # Never removed through an unvalidated path, and never reported as absent:
     # the server may have created a directory this attempt cannot name.
-    _remote_eval_required_remote_unnamed=1
     _remote_eval_required_refuse 1 "the remote staging directory is not a bounded staging path"
     return 1
   fi
   _remote_eval_required_remote_dir="$remote_dir"
+  _remote_eval_required_remote_unnamed=0
 
   if ! _remote_eval_required_ssh -o BatchMode=yes "$host" \
     "cat > $(printf '%q' "$_remote_eval_required_remote_dir/query.nix")" \
