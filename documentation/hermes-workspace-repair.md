@@ -102,3 +102,9 @@ Record the receipt on the existing card through native comments. Verify complete
 commission/manifests, attachment bytes, hashes, source-qualified tests and any
 required recovery disposition separately before resuming the task. The original
 review question, rejection history, independent acceptance and deploy gate remain.
+
+A capability-held triage card must be amended with `kanban_amend` and resumed
+through the exact-version guarded `kanban_unblock` operation. CLI `specify` is
+for fresh triage specifications; the maintained native recovery adapter refuses
+it inside the transaction for capability holds, even when no fields change.
+It cannot substitute for source qualification, recovery evidence or retry policy.

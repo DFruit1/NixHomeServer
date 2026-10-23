@@ -200,6 +200,64 @@ class RecoveryTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'consumed'):self.apply(version)
 
 
+class SpecifyHoldTest(unittest.TestCase):
+    def setUp(self):
+        # Execute the real native function with its production transaction and
+        # readiness helpers, changing only the maintained in-memory adapter.
+        import ast
+        source=(NATIVE/'hermes_cli/kanban_db.py').read_text()
+        if 'hermes_cli/kanban_db.py' in EDITS:
+            source=adapt('hermes_cli/kanban_db.py',source)
+        node=next(n for n in ast.parse(source).body
+                  if isinstance(n,ast.FunctionDef) and n.name=='specify_triage_task')
+        namespace=dict(kb.__dict__)
+        exec(compile(ast.get_source_segment(source,node),'fixture-specify','exec'),namespace)
+        self.specify=namespace['specify_triage_task']
+        self.temp=tempfile.TemporaryDirectory(prefix='hermes-specify-hold-')
+        self.addCleanup(self.temp.cleanup)
+        self.conn=kbc.connect(db_path=Path(self.temp.name)/'kanban.db')
+        self.addCleanup(self.conn.close)
+        self.task=kb.create_task(self.conn,title='Held input preparation',
+            body='Original bounded contract',assignee='standard-implementer',
+            triage=True,workspace_kind='scratch')
+
+    def snapshot(self):
+        return list(self.conn.iterdump())
+
+    def test_capability_hold_refuses_all_specify_shapes_without_mutation(self):
+        with kb.write_txn(self.conn):
+            self.conn.execute("UPDATE tasks SET block_kind='capability',block_recurrences=5,"
+                "consecutive_failures=2,max_retries=2,last_failure_error='preserve' WHERE id=?",(self.task,))
+            kb._append_event(self.conn,self.task,'block_loop_detected',
+                {'kind':'capability','reason':'Input supplier: agent. Missing retained input'})
+        for fields in ({},{'title':'Changed'}, {'body':'Changed'},
+                       {'assignee':'feature-reviewer'},
+                       {'body':'Original bounded contract','assignee':'standard-implementer'}):
+            with self.subTest(fields=fields):
+                before=self.snapshot()
+                with self.assertRaisesRegex(ValueError,'guarded recovery'):
+                    self.specify(self.conn,self.task,author='operator',**fields)
+                self.assertEqual(before,self.snapshot())
+
+    def test_fresh_triage_still_specifies_and_preserves_parent_gate(self):
+        parent=kb.create_task(self.conn,title='Required input',triage=True,workspace_kind='scratch')
+        kb.link_tasks(self.conn,parent,self.task)
+        self.assertTrue(self.specify(self.conn,self.task,title='Prepared task',
+            body='Concrete contract',author='operator'))
+        task=kb.get_task(self.conn,self.task)
+        self.assertEqual(('todo','Prepared task','Concrete contract'),(task.status,task.title,task.body))
+        self.assertTrue(self.specify(self.conn,parent))
+        self.assertTrue(kb.complete_task(self.conn,parent,summary="Fixture input delivered"))
+        self.assertEqual('ready',kb.get_task(self.conn,self.task).status)
+
+    def test_unheld_triage_and_nontriage_semantics_remain(self):
+        self.assertTrue(self.specify(self.conn,self.task))
+        self.assertEqual('ready',kb.get_task(self.conn,self.task).status)
+        before=self.snapshot()
+        self.assertFalse(self.specify(self.conn,self.task,body='Must not overwrite ready task'))
+        self.assertEqual(before,self.snapshot())
+
+
 class InstallerTest(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(prefix='hermes-recovered-install-');self.addCleanup(self.temp.cleanup)
@@ -227,7 +285,9 @@ class InstallerTest(unittest.TestCase):
         expected={}
         for name in EDITS:
             target=self.root/'hermes-agent'/name
-            target.write_text(amend_adapt(name,adapt(name,target.read_text())));expected[target]=target.read_bytes()
+            updated=adapt(name,target.read_text())
+            if name != 'hermes_cli/kanban_db.py':updated=amend_adapt(name,updated)
+            target.write_text(updated);expected[target]=target.read_bytes()
         helper=self.root/'hermes-agent/hermes_cli/nixhomeserver_resume_recovered.py'
         helper.write_bytes((SOURCE/'resume_recovered.py').read_bytes());expected[helper]=helper.read_bytes()
         helper=self.root/'hermes-agent/hermes_cli/nixhomeserver_coordinator_repair.py'
@@ -254,11 +314,22 @@ class InstallerTest(unittest.TestCase):
 
 class AdapterTest(unittest.TestCase):
     def test_pinned_native_seams_idempotent_and_drift_refused(self):
-        for name in ('tools/kanban_tools.py','tools/kanban_tools_schemas.py'):
+        for name in EDITS:
             original=fixture_native_preimage(name,(NATIVE/name).read_text());updated=adapt(name,original)
             self.assertNotEqual(original,updated);self.assertEqual(updated,adapt(name,updated))
             with self.assertRaises(ValueError):adapt(name,'# incompatible source')
             compile(updated,name,'exec')
+
+    def test_specify_function_drift_refused_but_unrelated_native_bytes_preserved(self):
+        name='hermes_cli/kanban_db.py'
+        source=fixture_native_preimage(name,(NATIVE/name).read_text())
+        unrelated='\n# Unrelated native adapter remains unchanged.\n'
+        self.assertTrue(adapt(name,source+unrelated).endswith(unrelated))
+        altered=source.replace('sets: list[str] = ["status = \'todo\'"]',
+                               'sets: list[str] = ["status = \'ready\'"]',1)
+        self.assertNotEqual(source,altered)
+        with self.assertRaisesRegex(ValueError,'specify source drift'):
+            adapt(name,altered)
 
     def test_fixture_preimages_accept_both_native_states_and_reject_drift(self):
         for name in EDITS:

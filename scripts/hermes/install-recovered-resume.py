@@ -60,6 +60,9 @@ def install(root, check=False):
         if before is None:
             raise ValueError('Native recovered-resume tool source is missing')
         pending.append((target, before, amend_adapt(name, adapt(name, before))))
+    # Keep the guarded database adapter last: phase_source is a preflight
+    # dependency for every earlier replacement, and its phase APIs are unchanged.
+    pending.append((phase, phase_source, adapt('hermes_cli/kanban_db.py', phase_source)))
     changes = [(path, before, after) for path, before, after in pending if before != after]
     if check:
         for path, _, _ in changes:

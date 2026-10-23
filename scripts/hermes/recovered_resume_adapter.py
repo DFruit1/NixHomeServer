@@ -1,5 +1,8 @@
 """Pin the native recovery tool seam; reject incompatible upstream sources."""
 
+import ast
+import hashlib
+
 _HANDLER = '''    _require_orchestrator_tool("kanban_unblock")
     tid = args.get("task_id")
     _check(tid, "task_id is required")
@@ -41,7 +44,26 @@ def _check_kanban_unblock_mode() -> bool:
 
 
 '''
+
+# Pin both reviewed native function states, including the transaction boundary.
+_SPECIFY_HASHES = (
+    'ed8da929174eeb91df6d94c773054d1f24f26b77deb1f205eba84c56038918c7',
+    'ece60dcb01c3de59830511d9654fd99a41f99f6f75a15843eb0ca220e97d1fef',
+)
+_SPECIFY_BEFORE = '''            "SELECT title, body, assignee FROM tasks WHERE id = ? AND status = 'triage'",
+            (task_id,),
+        ).fetchone()
+        if existing is None:
+            return False
+'''
+_SPECIFY_AFTER = _SPECIFY_BEFORE.replace(
+    'title, body, assignee FROM', 'title, body, assignee, block_kind FROM',
+) + '''        if existing["block_kind"] == "capability":
+            raise ValueError("Capability-held triage requires exact-version guarded recovery, not specify")
+'''
+
 EDITS = {
+    'hermes_cli/kanban_db.py': ((_SPECIFY_BEFORE, _SPECIFY_AFTER),),
     'tools/kanban_tools.py': (
         (_HANDLER, _RECOVERY_HANDLER),
         ('# --- Shared helpers: validation failures raise _Reject; _kanban_handler renders it ---',
@@ -75,6 +97,13 @@ def migrate_legacy(text):
 
 
 def adapt(name, text):
+    if name == 'hermes_cli/kanban_db.py':
+        tree=ast.parse(text)
+        matches=[node for node in tree.body if isinstance(node,ast.FunctionDef)
+                 and node.name == 'specify_triage_task']
+        if len(matches) != 1 or hashlib.sha256(
+                (ast.get_source_segment(text,matches[0])+'\n').encode()).hexdigest() not in _SPECIFY_HASHES:
+            raise ValueError('Native specify source drift; reconcile before installation')
     text=migrate_legacy(text)
     for before, after in EDITS[name]:
         if text.count(after) == 1:
