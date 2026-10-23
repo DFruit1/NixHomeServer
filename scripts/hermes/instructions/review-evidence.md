@@ -38,3 +38,26 @@ and their exact bad links to the coordinator; never release them.
 
 An audit with tenant `continuous-improvement` keeps its own report contract.
 These procedures grant no implementation, deployment or wider review authority.
+
+## Disposable diagnostic errors
+
+Authors must scope first-failure stops to actual policy, identity, capability,
+product or operation failures and spent one-shot commands. Do not impose a blanket
+ban on correcting a reviewer-authored disposable read-only diagnostic's syntax,
+lookup or bounded-range error. A known-safe correction may stay within the same
+qualified review only when it changes no source, identity, pins, acceptance
+assertion or expected result, replays no product command and adds no effect.
+Preserve the original argv, exit and output; label it `harness-error`, record the
+bounded correction, then finish the true independent checks against the same
+source and acceptance contract. Never relabel the historical exit as success.
+A diagnostic bug alone is not product request-changes; if independent checks
+cannot finish, report the infrastructure gap and missing evidence.
+
+Existing explicit no-retry/first-failure cards remain stopped. Only a genuine
+native coordinator continuation supplying the qualified exact correction and
+bounded same-card continuation can release that stop. Never self-reinterpret an
+old restriction, retry a policy refusal, or erase a failed verdict or DONE history.
+
+A retained `worker_started_at` alone is not liveness. Check the current run,
+worker PID, claim lease, active attempt and actual native phase through authorized
+read-only evidence. Preserve history; never clear fields to satisfy a diagnostic.

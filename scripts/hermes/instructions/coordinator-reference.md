@@ -14,6 +14,10 @@ An implementation-plan contradiction goes to its plan-owning auditor. A scope
 problem needs a tighter card. Owner input is determined by the fleet supplier
 test, not by difficulty or an inconclusive report. Do not repeat unchanged audits.
 
+When authoring review stops or qualifying diagnostic recovery, follow
+`hermes-review-evidence.md` (Disposable diagnostic errors); preserve existing
+explicit stops until a qualified exact native same-card continuation.
+
 ## Workspace and handoff
 
 Use explicit durable workspaces: worktree for git projects; dir:/home/dsaw/pc-ops
