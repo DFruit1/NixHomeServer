@@ -101,14 +101,33 @@ def _parked(conn, task):
         raise ValueError('Amendment refuses active or pending native work')
 
 
+def _bare_repository_root(path):
+    """A bare repository keeps HEAD/config/objects/refs at its own root."""
+    head = os.path.join(path, 'HEAD')
+    if os.path.islink(head) or not os.path.isfile(head):
+        return False
+    try:
+        with open(head, 'rb') as stream:
+            target = stream.read(4096).strip()
+    except OSError:
+        return False
+    if re.fullmatch(rb'(?:ref: refs/\S+|[0-9a-f]{40})', target) is None:
+        return False
+    return (os.path.isdir(os.path.join(path, 'objects'))
+            and os.path.isdir(os.path.join(path, 'refs')))
+
+
 def _rebind_binding(task, changes, rebind):
     """Validate the one static directory an existing capability hold may adopt.
 
     The seam records only a binding it verified itself: the directory exists,
-    is one canonical absolute path and is not a repository or worktree root, so
-    the primary checkout stays refused. It never types, releases or re-arms the
-    hold; the coordinator's own workspace-prep receipt in the card thread and
-    the versioned guarded resume remain the gates that follow.
+    is the canonical absolute path itself and is not a working-tree, worktree
+    or bare repository root, so the primary checkout stays refused. It never
+    types, releases or re-arms the hold; the coordinator's own workspace-prep
+    receipt in the card thread and the versioned guarded resume remain the
+    gates that follow. A request for the binding the card already holds is
+    refused instead of recorded: it would append an event that changes no
+    snapshot and would let one expected_version be replayed.
     """
     if not isinstance(rebind, dict) or set(rebind) != REBIND_FIELDS:
         raise ValueError('workspace_rebind must be a closed object of workspace_kind and workspace_path')
@@ -123,8 +142,19 @@ def _rebind_binding(task, changes, rebind):
     if (not isinstance(path, str) or not os.path.isabs(path) or os.path.normpath(path) != path
             or os.path.islink(path) or not os.path.isdir(path)):
         raise ValueError('A rebind needs one existing canonical absolute directory, never a link')
+    if os.path.realpath(path) != path:
+        # A symlinked ancestor is not the directory the handoff attested, so the
+        # coordinator must pass the resolved path it actually verified.
+        raise ValueError('A rebind needs one existing canonical absolute directory, never a link ancestor')
     if os.path.lexists(os.path.join(path, '.git')):
         raise ValueError('PRIMARY: a repository or worktree root cannot become a static workspace')
+    if _bare_repository_root(path):
+        raise ValueError('PRIMARY: a bare repository root cannot become a static workspace')
+    stored = {'workspace_kind': task['workspace_kind'], 'workspace_path': task['workspace_path']}
+    if stored == rebind:
+        # Recording the stored binding again would append an event outside the
+        # snapshot CAS, so the same expected_version could be replayed.
+        raise ValueError('A rebind must change the stored binding; this card already holds that workspace')
     return {'workspace_kind': 'dir', 'workspace_path': path}
 
 
@@ -388,6 +418,10 @@ def amend(kb, conn, tid, *, expected_version=None, changes=None, reason=None, ru
         else:
             kb._append_event(conn, tid, 'coordinator_amended', evidence)
         after, new_version = snapshot(conn, tid)
+        if binding is not None and new_version == version:
+            # A recorded binding must be inside the consumed snapshot; an event
+            # that changes no version would stay replayable forever.
+            raise ValueError('A rebind must consume its exact version')
         for field, value in changes.items():
             if (json.loads(after[field] or '[]') if field == 'skills' else after[field]) != value:
                 raise ValueError('Native amendment readback differs')

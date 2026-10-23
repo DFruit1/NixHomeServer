@@ -734,6 +734,14 @@ class RepairTest(unittest.TestCase):
         linked=self.root/'linked';linked.symlink_to(good,target_is_directory=True)
         primary=self.root/'primary';primary.mkdir();(primary/'.git').mkdir()
         worktree=self.root/'worktree';worktree.mkdir();(worktree/'.git').write_text('gitdir: /elsewhere\n')
+        # A real bare repository keeps HEAD/config/objects/refs at its own root,
+        # so the working-tree .git check alone accepted it.
+        bare=self.root/'bare';subprocess.run(['git','init','--bare',str(bare)],check=True,
+                                             capture_output=True)
+        self.assertEqual('true',subprocess.run(['git','-C',str(bare),'rev-parse','--is-bare-repository'],
+                         check=True,capture_output=True,text=True).stdout.strip())
+        inside=self.root/'canonical';inside.mkdir();(inside/'inner').mkdir()
+        alias=self.root/'alias';alias.symlink_to(inside,target_is_directory=True)
         before=self.dump();holds=self.holds()
         def binding(path,kind='dir'):
             return {'workspace_kind':kind,'workspace_path':str(path)}
@@ -744,8 +752,11 @@ class RepairTest(unittest.TestCase):
                ('noncanonical path','existing canonical absolute directory',
                 {'workspace_kind':'dir','workspace_path':str(good)+'/./'}),
                ('symlinked directory','existing canonical absolute directory',binding(linked)),
+               ('symlinked ancestor','existing canonical absolute directory',
+                binding(alias/'inner')),
                ('primary checkout','PRIMARY',binding(primary)),
                ('worktree root','PRIMARY',binding(worktree)),
+               ('bare repository root','PRIMARY',binding(bare)),
                ('worktree binding','Only a static directory',binding(good,'worktree')),
                ('open object','closed object',dict(good_binding,branch_name='wt/x')))
         for name,expected,rebind in cases:
@@ -813,6 +824,46 @@ class RepairTest(unittest.TestCase):
             repair.amend(kb,self.conn,self.target,expected_version=version,changes=dict(binding),
                          reason='Replay the consumed binding',workspace_rebind=binding)
         self.assertEqual(after,self.dump())
+        self.assertEqual(1,self.conn.execute("SELECT COUNT(*) FROM task_events WHERE task_id=? "
+                         "AND kind='coordinator_workspace_rebind'",(self.target,)).fetchone()[0])
+
+    def test_workspace_rebind_refuses_the_binding_the_card_already_holds(self):
+        # A capability card can already name the requested directory (an earlier
+        # recorded binding, or a coordinator-prepared hold). Recording it again
+        # would append an event outside the snapshot CAS and hand back the same
+        # version, so one expected_version could be replayed indefinitely.
+        self.conn.execute("UPDATE tasks SET skills='[]' WHERE id=?",(self.target,));self.conn.commit()
+        target=self.root/'attested-workspace';target.mkdir()
+        binding={'workspace_kind':'dir','workspace_path':str(target)}
+        self.hold()
+        with kb.write_txn(self.conn):
+            self.conn.execute("UPDATE tasks SET workspace_kind='dir',workspace_path=? WHERE id=?",
+                              (str(target),self.target))
+        before=self.dump();version=repair.amend(kb,self.conn,self.target)['version']
+        row=dict(self.conn.execute('SELECT * FROM tasks WHERE id=?',(self.target,)).fetchone())
+        self.assertEqual(('dir',str(target),'capability','blocked'),
+                         (row['workspace_kind'],row['workspace_path'],row['block_kind'],row['status']))
+        for attempt in ('stored binding is not a new amendment','identical replay keeps the version'):
+            with self.subTest(attempt=attempt):
+                with self.assertRaisesRegex(ValueError,'already holds'):
+                    repair.amend(kb,self.conn,self.target,expected_version=version,
+                                 changes=dict(binding),
+                                 reason='Adopt the attested recovery workspace for this held card',
+                                 workspace_rebind=binding)
+                self.assertEqual(before,self.dump())
+                self.assertEqual(version,repair.amend(kb,self.conn,self.target)['version'])
+        self.assertEqual(0,self.conn.execute("SELECT COUNT(*) FROM task_events WHERE task_id=? "
+                         "AND kind='coordinator_workspace_rebind'",(self.target,)).fetchone()[0])
+        # A genuinely different directory still records normally on this version.
+        other=self.root/'other-workspace';other.mkdir()
+        other_binding={'workspace_kind':'dir','workspace_path':str(other)}
+        applied=repair.amend(kb,self.conn,self.target,expected_version=version,changes=dict(other_binding),
+                             reason='Adopt the attested recovery workspace for this held card',
+                             workspace_rebind=other_binding)
+        self.assertTrue(applied['applied']);self.assertNotEqual(version,applied['version'])
+        row=dict(self.conn.execute('SELECT * FROM tasks WHERE id=?',(self.target,)).fetchone())
+        self.assertEqual(('dir',str(other),'capability','blocked'),
+                         (row['workspace_kind'],row['workspace_path'],row['block_kind'],row['status']))
         self.assertEqual(1,self.conn.execute("SELECT COUNT(*) FROM task_events WHERE task_id=? "
                          "AND kind='coordinator_workspace_rebind'",(self.target,)).fetchone()[0])
 
