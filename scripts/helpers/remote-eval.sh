@@ -857,7 +857,12 @@ _remote_eval_required_write_receipt() {
     rm -f "$tmp"
     return 1
   }
-  mv -- "$tmp" "$dir/${phase}.receipt.json"
+  # A receipt that is never put in place is not a receipt: drop the temporary so a
+  # failed persistence leaves no partial artifact beside the retained receipts.
+  mv -- "$tmp" "$dir/${phase}.receipt.json" || {
+    rm -f "$tmp"
+    return 1
+  }
 }
 
 # --- interruption guard -------------------------------------------------------

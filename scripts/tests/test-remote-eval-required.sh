@@ -184,6 +184,12 @@ real_tar="$(command -v tar)"
 cat >"$spy_root/bin/mv" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
+# An unpersistable receipt is a failed attempt: the case fails the move that
+# would have put the receipt in place.
+if [[ "\${REQUIRE_FAIL_RECEIPT_MV:-0}" == 1 ]]; then
+  printf 'mv spy: refusing to persist the receipt\n' >&2
+  exit 1
+fi
 # The first move of an attempt is the receipt being put in place: it happens
 # after the remote work settled and before the attempt scratch is removed. The
 # interruption fires once, so the interruption receipt's own move can complete.
@@ -1042,6 +1048,32 @@ jq -e '.exit_status == 143 and .outcome == "failure" and .result_certified == fa
   fail "an interruption during receipt persistence was not receipted: $(cat "$receipt")"
 jq -e '.reply_path != null and (.reply_sha256 | test("^[0-9a-f]{64}$"))' "$receipt" >/dev/null ||
   fail "an interruption during receipt persistence discarded its evidence: $(cat "$receipt")"
+
+# An unpersistable receipt is a failed attempt, not a green one with a missing
+# paper trail, and it must not strand the scratch the attempt already owns.
+: >"$spy_root/ssh.log"
+reset_local_heavy_logs
+receipts_before="$(find "$receipt_dir" -maxdepth 1 -name '*.receipt.json' | wc -l)"
+receipt_fail_status=0
+(
+  eval "$(spy_env)"
+  export REQUIRE_SSH_RUN_OUT='{"value":1}' REQUIRE_SSH_ABSENT_STATUS=0
+  export REQUIRE_FAIL_RECEIPT_MV=1
+  remote_eval_batch_json 'value=1'
+) >"$spy_root/receipt-fail.out" 2>"$spy_root/receipt-fail.err" || receipt_fail_status=$?
+[[ "$receipt_fail_status" != 0 ]] ||
+  fail "an attempt whose receipt could not be written reported success"
+[[ ! -s "$spy_root/receipt-fail.out" ]] ||
+  fail "an attempt whose receipt could not be written emitted a result: $(cat "$spy_root/receipt-fail.out")"
+[[ "$(eval_call_count)" == 1 ]] ||
+  fail "a failed receipt caused $(eval_call_count) evaluations"
+require_zero_local_heavy 'an unpersistable receipt'
+require_no_owned_scratch 'an unpersistable receipt'
+[[ "$(find "$receipt_dir" -maxdepth 1 -name '*.receipt.json' | wc -l)" == "$receipts_before" ]] ||
+  fail "a receipt that could not be persisted still produced a receipt file"
+stray_artifact="$(find "$receipt_dir" -maxdepth 1 -type f ! -name '.*' ! -name '*.receipt.json' ! -name '*.reply.json' ! -name '*.stderr.log' -print -quit 2>/dev/null || true)"
+[[ -z "$stray_artifact" ]] ||
+  fail "a failed receipt left a partial artifact behind: ${stray_artifact}"
 
 # The archive producer allocates its manifests under ${TMPDIR:-/tmp} and removes
 # them inline, so they are attempt-owned state too. The interruption is placed at
