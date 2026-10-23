@@ -248,6 +248,19 @@ def parked_owner(root,board,tid):
         return tid if task and task[0] in {'blocked','triage','scheduled'} else None
 
 
+def registered_workspace(info):
+    """Unconfigured boards are visible but cannot commission recovery writers."""
+    try:
+        metadata = json.loads(info.read_text())
+        value = metadata.get('default_workdir') if isinstance(metadata, dict) else None
+        if not isinstance(value, str) or not value or '\x00' in value:
+            return None
+        work = Path(value)
+        return work if work.is_absolute() and work.is_dir() else None
+    except (OSError, ValueError):
+        return None
+
+
 def tick(root, *, dry_run=False, now=None, create=None):
     now = int(time.time()) if now is None else now
     root = Path(root).resolve()
@@ -263,6 +276,11 @@ def tick(root, *, dry_run=False, now=None, create=None):
         for info in sorted((root/'kanban/boards').glob('*/board.json')):
             board = info.parent.name
             if board.startswith(('_','.')):
+                continue
+            work = registered_workspace(info)
+            if work is None:
+                actions.append(dict(board=board, status='ineligible',
+                                    reason='Recovery requires a registered existing absolute board workspace'))
                 continue
             # Alternate classes after eligibility filtering, not before it:
             # an exhausted/owned technical issue cannot consume a feature turn.
@@ -300,9 +318,6 @@ def tick(root, *, dry_run=False, now=None, create=None):
                     spec = importlib.util.spec_from_file_location('recovery_taskforce',Path(__file__).with_name('review-taskforce.py'))
                     scheduler = importlib.util.module_from_spec(spec);spec.loader.exec_module(scheduler)
                     create = scheduler.hermes
-                work = Path(json.loads(info.read_text()).get('default_workdir',''))
-                if not work.is_absolute() or not work.is_dir():
-                    raise ValueError('Recovery requires the registered existing board workspace')
                 # A directory workspace avoids composing into an active branch.
                 # This worker inspects/routes; implementation gets its own checkout.
                 card = create(board,'create','[RECOVERY] '+issue['kind']+' '+issue['task_id'],
