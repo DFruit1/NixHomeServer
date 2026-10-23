@@ -859,6 +859,52 @@ class RepairTest(unittest.TestCase):
         self.assertEqual(1,self.conn.execute("SELECT COUNT(*) FROM task_events WHERE task_id=? "
                          "AND kind='coordinator_workspace_rebind'",(self.target,)).fetchone()[0])
 
+    def test_workspace_rebind_consumed_version_survives_an_aba_round_trip(self):
+        # A valid A -> B -> A round trip restores an earlier snapshot version
+        # byte for byte, so comparing against the current snapshot alone let a
+        # spent version authorize another rebind. The recorded consumption,
+        # not the restored snapshot, decides.
+        self.hold()
+        first=self.root/'first-workspace';first.mkdir()
+        second=self.root/'second-workspace';second.mkdir()
+        def binding(path):
+            return {'workspace_kind':'dir','workspace_path':str(path)}
+        def inspect():
+            return repair.amend(kb,self.conn,self.target)['version']
+        def rebind(token,binding_value):
+            return repair.amend(kb,self.conn,self.target,expected_version=token,
+                                changes=dict(binding_value),workspace_rebind=dict(binding_value),
+                                reason='Adopt the attested recovery workspace for this held card')
+        a,b=binding(first),binding(second)
+        self.assertTrue(rebind(inspect(),a)['applied'])
+        spent=inspect()
+        self.assertTrue(rebind(spent,b)['applied'])
+        self.assertTrue(rebind(inspect(),a)['applied'])
+        # The round trip really restored the consumed version, so the stale
+        # request passes the current-snapshot comparison and only the durable
+        # consumption can refuse it.
+        self.assertEqual(spent,inspect())
+        before=self.dump();holds=self.holds()
+        with self.assertRaisesRegex(ValueError,'already consumed a workspace rebind'):
+            rebind(spent,b)
+        self.assertEqual(before,self.dump())      # task row, runs, events and links identical
+        self.assertEqual(holds,self.holds())
+        self.assertEqual(spent,inspect())         # the token stayed spent, never re-minted
+        row=dict(self.conn.execute('SELECT workspace_kind,workspace_path,status,block_kind,'
+                                   'consecutive_failures FROM tasks WHERE id=?',(self.target,)).fetchone())
+        self.assertEqual(('dir',str(first),'blocked','capability',0),
+                         (row['workspace_kind'],row['workspace_path'],row['status'],
+                          row['block_kind'],row['consecutive_failures']))
+        self.assertEqual(3,self.conn.execute("SELECT COUNT(*) FROM task_events WHERE task_id=? "
+                         "AND kind='coordinator_workspace_rebind'",(self.target,)).fetchone()[0])
+        # Consumption is per token, not a permanent lock: a genuinely fresh
+        # inspection after another amendment can record a later rebind.
+        self.assertTrue(self.apply({'priority':1})['applied'])
+        fresh=inspect();self.assertNotEqual(spent,fresh)
+        self.assertTrue(rebind(fresh,b)['applied'])
+        row=dict(self.conn.execute('SELECT workspace_path FROM tasks WHERE id=?',(self.target,)).fetchone())
+        self.assertEqual(str(second),row['workspace_path'])
+
     def test_workspace_rebind_refuses_the_binding_the_card_already_holds(self):
         # A capability card can already name the requested directory (an earlier
         # recorded binding, or a coordinator-prepared hold). Recording it again

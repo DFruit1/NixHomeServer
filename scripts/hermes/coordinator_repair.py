@@ -117,6 +117,31 @@ def _bare_repository_root(path):
             and os.path.isdir(os.path.join(path, 'refs')))
 
 
+def _rebind_versions(conn, tid):
+    """The workspace-rebind versions this card has already spent.
+
+    A snapshot version binds the row, its links, the newest run and the newest
+    lifecycle episode, but not the rebind history: a valid directory round trip
+    A -> B -> A restores an earlier version byte for byte, so a plain inequality
+    against the current snapshot cannot tell that the version was already
+    consumed. Every recorded rebind keeps the exact version it consumed in its
+    own native payload, which makes the consumption durable in the board's event
+    log and readable again after a restart. The native retention sweep (gc_events)
+    only prunes events of done/archived cards, which can never pass the parked
+    amendment precondition again, so a live token's record is never reclaimed.
+    """
+    spent = set()
+    for payload, in conn.execute("SELECT payload FROM task_events WHERE task_id=? "
+                                 "AND kind='coordinator_workspace_rebind'", (tid,)):
+        try:
+            recorded = json.loads(payload or '{}')
+        except (TypeError, ValueError):
+            continue
+        if isinstance(recorded, dict) and isinstance(recorded.get('expected_version'), str):
+            spent.add(recorded['expected_version'])
+    return spent
+
+
 def _rebind_binding(task, changes, rebind):
     """Validate the one static directory an existing capability hold may adopt.
 
@@ -315,6 +340,12 @@ def amend(kb, conn, tid, *, expected_version=None, changes=None, reason=None, ru
         _parked(conn, task)
         if version != expected_version:
             raise ValueError('Card changed; inspect again before amending')
+        if workspace_rebind is not None and version in _rebind_versions(conn, tid):
+            # A valid A -> B -> A round trip restores a spent version byte for
+            # byte, so the current-snapshot inequality above cannot see it. The
+            # recorded consumption, not the restored snapshot, decides.
+            raise ValueError('This version already consumed a workspace rebind; '
+                             'inspect again before amending')
         branch = None
         binding = None
         resume_status = None
