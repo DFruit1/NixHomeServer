@@ -602,11 +602,155 @@ class RepairTest(unittest.TestCase):
         self.assertEqual(before[1],self.dump()[1])  # Every historical run unchanged.
         self.assertEqual(before[3],self.dump()[3])  # Every prerequisite unchanged.
 
+    def intake_target(self):
+        self.target=kb.create_task(self.conn,title='Independent P2 readiness',body='Goal: One standalone readiness verdict.',
+            assignee='feature-reviewer',parents=(self.actor,),tenant='continuous-improvement',
+            workspace_kind='dir',workspace_path=str(self.work),max_runtime_seconds=900)
+        self.assertEqual('todo',kb.get_task(self.conn,self.target).status)
+        # Native creation inherits the coordinator origin session, including the
+        # actual unstarted pcops P2. Retain it; no claim or run is fabricated.
+        self.conn.execute('UPDATE tasks SET session_id=? WHERE id=?',('creator-origin-session',self.target));self.conn.commit()
+
+    def intake(self,**kwargs):
+        version=repair.amend(kb,self.conn,self.target)['version']
+        args={'expected_version':version,'changes':{'tenant':'verification'},
+              'verification_intake':'standalone',
+              'reason':'Input supplier: agent. Authorized continuation: assessed P2 intake correction; preserve all routing gates.'}
+        args.update(kwargs)
+        return repair.amend(kb,self.conn,self.target,**args)
+
+    def test_standalone_verification_intake_strengthens_guard_without_releasing_work(self):
+        self.intake_target();before=self.dump()
+        result=self.intake()
+        self.assertTrue(result['applied'])
+        task=self.conn.execute('SELECT * FROM tasks WHERE id=?',(self.target,)).fetchone()
+        old=before[0];after=self.dump()
+        for original,current in zip(old,after[0]):
+            expected=dict(original)
+            if original['id']==self.target:expected['tenant']='verification'
+            self.assertEqual(expected,current)
+        self.assertEqual(before[1],after[1]);self.assertEqual(before[3],after[3])
+        self.assertEqual(before[2],after[2][:-1])
+        event=after[2][-1]
+        self.assertEqual('coordinator_verification_intake',event['kind'])
+        proof=json.loads(event['payload'])
+        self.assertEqual(self.actor,proof['actor_task'])
+        self.assertEqual({'tenant':'continuous-improvement'},proof['before'])
+        self.assertEqual({'tenant':'verification'},proof['after'])
+        self.assertEqual('todo',task['status'])
+        spec=importlib.util.spec_from_file_location('intake_guard',source/'review-verdict-guard.py')
+        guard=importlib.util.module_from_spec(spec);spec.loader.exec_module(guard)
+        self.assertTrue(guard.verification(task,self.conn))
+        self.assertFalse(guard.native_review(self.conn,task))
+        payload={'tool_name':'kanban_complete','tool_input':{'board':'testboard','task_id':self.target}}
+        self.assertEqual('block',guard.guard(payload,self.root)['action'])
+        # Even valid verdict metadata cannot bypass a retained rejected parent.
+        self.conn.execute("UPDATE tasks SET status='done',assignee='feature-reviewer',tenant='verification' WHERE id=?",(self.actor,))
+        self.conn.execute("UPDATE task_runs SET profile='feature-reviewer',status='done',outcome='completed',ended_at=?,metadata=? WHERE id=42",
+            (self.now,json.dumps({'verdict':'request-changes','revision':'a'*40,'checks':[{'command':'independent check','exit_code':0}],'requested_changes':['Keep the product held.']})))
+        self.conn.commit()
+        payload['tool_input']['metadata']={'verdict':'accept','revision':'b'*40,'checks':[{'command':'read actual P2 inputs','exit_code':0}]}
+        blocked=guard.guard(payload,self.root)
+        self.assertEqual('block',blocked['action'])
+        self.assertIn('Review '+self.actor+' requested changes',blocked['message'])
+
+    def test_verification_intake_refusals_are_atomic(self):
+        self.intake_target()
+        for changes in ({'tenant':'verification'},{'tenant':'verification','body':'Changed scope'}):
+            before=self.dump()
+            with self.assertRaises(ValueError):self.intake(changes=changes,verification_intake=None)
+            self.assertEqual(before,self.dump())
+        for column,value in (('status','ready'),('assignee','standard-implementer'),('assignee','project-auditor'),
+                ('tenant','review-question'),('tenant','verification'),('block_kind','needs_input'),
+                ('started_at',self.now),('worker_started_at','prior'),
+                ('consecutive_failures',1),('max_runtime_seconds',None),('workspace_kind','scratch')):
+            old=self.conn.execute('SELECT '+column+' FROM tasks WHERE id=?',(self.target,)).fetchone()[0]
+            self.conn.execute('UPDATE tasks SET '+column+'=? WHERE id=?',(value,self.target));self.conn.commit()
+            before=self.dump()
+            with self.subTest(column=column,value=value),self.assertRaises(ValueError):self.intake()
+            self.assertEqual(before,self.dump())
+            self.conn.execute('UPDATE tasks SET '+column+'=? WHERE id=?',(old,self.target));self.conn.commit()
+        for kind,payload in (('claimed',{}),('spawned',{}),('review_requested',{}),('blocked',{}),('unblocked',{})):
+            kb._append_event(self.conn,self.target,kind,payload);self.conn.commit();before=self.dump()
+            with self.subTest(event=kind),self.assertRaises(ValueError):self.intake()
+            self.assertEqual(before,self.dump())
+            self.conn.execute('DELETE FROM task_events WHERE task_id=? AND kind=?',(self.target,kind));self.conn.commit()
+        body=self.conn.execute('SELECT body FROM tasks WHERE id=?',(self.target,)).fetchone()[0]
+        self.conn.execute("UPDATE tasks SET body='ASK: owner decision' WHERE id=?",(self.target,));self.conn.commit()
+        before=self.dump()
+        with self.assertRaises(ValueError):self.intake()
+        self.assertEqual(before,self.dump())
+        self.conn.execute('UPDATE tasks SET body=? WHERE id=?',(body,self.target));self.conn.commit()
+        created=self.conn.execute("SELECT id,payload FROM task_events WHERE task_id=? AND kind='created'",(self.target,)).fetchone()
+        payload=json.loads(created['payload']);payload['workflow']={'version':1,'review':'native-review-v1','plan_author':'owner'}
+        self.conn.execute('UPDATE task_events SET payload=? WHERE id=?',(json.dumps(payload),created['id']));self.conn.commit()
+        before=self.dump()
+        with self.assertRaises(ValueError):self.intake()
+        self.assertEqual(before,self.dump())
+        self.conn.execute('UPDATE task_events SET payload=? WHERE id=?',(created['payload'],created['id']));self.conn.commit()
+        self.conn.execute("INSERT INTO task_runs(task_id,profile,status,outcome,started_at,ended_at) VALUES(?,'feature-reviewer','scheduled','scheduled',?,?)",(self.target,self.now,self.now));self.conn.commit()
+        before=self.dump()
+        with self.assertRaises(ValueError):self.intake()
+        self.assertEqual(before,self.dump())
+
+    def test_native_intake_migration_forwarding_and_explicit_creation_tenant(self):
+        from coordinator_repair_adapter import SCHEMA,PREVIOUS_INTAKE_SCHEMA,HANDLER,PREVIOUS_INTAKE_HANDLER
+        from recovered_resume_adapter import adapt as resume_adapt
+        import tools.kanban_tools_schemas as schemas
+        tools=adapt('tools/kanban_tools.py',resume_adapt('tools/kanban_tools.py',(native/'tools/kanban_tools.py').read_text()))
+        schema_source=adapt('tools/kanban_tools_schemas.py',resume_adapt('tools/kanban_tools_schemas.py',(native/'tools/kanban_tools_schemas.py').read_text()))
+        self.assertEqual(tools,adapt('tools/kanban_tools.py',tools.replace(HANDLER,PREVIOUS_INTAKE_HANDLER,1)))
+        self.assertEqual(schema_source,adapt('tools/kanban_tools_schemas.py',schema_source.replace(SCHEMA,PREVIOUS_INTAKE_SCHEMA,1)))
+        exec(compile(schema_source,'fixture-schemas','exec'),schemas.__dict__)
+        module=types.ModuleType('tools.fixture_verification_intake')
+        exec(compile(tools,'fixture-tools','exec'),module.__dict__)
+        # Exercise the actual native create handler's ambient-tenant behavior.
+        common={'board':'testboard','assignee':'feature-reviewer','parents':[self.actor],
+                'workspace_kind':'dir','workspace_path':str(self.work),'max_runtime_seconds':900}
+        with patch.dict(os.environ,{'HERMES_TENANT':'continuous-improvement'}):
+            inherited=json.loads(module._handle_create({**common,'title':'Inherited verifier'}))
+            explicit=json.loads(module._handle_create({**common,'title':'Explicit verifier','tenant':'verification'}))
+        self.assertNotIn('error',inherited);self.assertNotIn('error',explicit)
+        inherited_id=inherited['task_id'];explicit_id=explicit['task_id']
+        self.assertEqual('continuous-improvement',kb.get_task(self.conn,inherited_id).tenant)
+        self.assertEqual('verification',kb.get_task(self.conn,explicit_id).tenant)
+        self.conn.execute("UPDATE tasks SET tenant='continuous-improvement' WHERE id=?",(self.actor,));self.conn.commit()
+        with patch.dict(os.environ):
+            os.environ.pop('HERMES_TENANT',None)
+            parent_inherited=json.loads(module._handle_create({**common,'title':'Parent inherited verifier'}))
+        self.assertNotIn('error',parent_inherited)
+        self.assertEqual('continuous-improvement',kb.get_task(self.conn,parent_inherited['task_id']).tenant)
+        before=[tuple(r) for r in self.conn.execute('SELECT * FROM task_links ORDER BY parent_id,child_id')]
+        inspected=json.loads(module._handle_amend({'task_id':inherited_id}))
+        applied=json.loads(module._handle_amend({'task_id':inherited_id,'expected_version':inspected['version'],
+            'changes':{'tenant':'verification'},'verification_intake':'standalone',
+            'reason':'Input supplier: agent. Authorized continuation: explicit standalone verdict intake.'}))
+        self.assertTrue(applied.get('applied'),applied)
+        self.assertEqual(before,[tuple(r) for r in self.conn.execute('SELECT * FROM task_links ORDER BY parent_id,child_id')])
+        self.assertEqual('todo',kb.get_task(self.conn,inherited_id).status)
+        self.assertEqual(0,self.conn.execute('SELECT count(*) FROM task_runs WHERE task_id=?',(inherited_id,)).fetchone()[0])
+        self.assertEqual(0,self.conn.execute("SELECT count(*) FROM task_events WHERE task_id=? AND kind='review_requested'",(inherited_id,)).fetchone()[0])
+
+    def test_verification_intake_exact_cas_and_closed_evidence(self):
+        self.intake_target()
+        for args in ({'expected_version':'0'*64},{'verification_intake':True},
+                     {'verification_intake':{'tenant':'verification'}},
+                     {'reason':'Input supplier: agent.'},
+                     {'changes':{'tenant':'verification','body':'different scope'}},
+                     {'terminal_episode':{'run_id':43,'event_id':1}},
+                     {'workspace_rebind':{'workspace_kind':'dir','workspace_path':str(self.work)}}):
+            before=self.dump()
+            with self.subTest(args=args),self.assertRaises(ValueError):self.intake(**args)
+            self.assertEqual(before,self.dump())
+        self.intake();before=self.dump()
+        with self.assertRaises(ValueError):self.intake()
+        self.assertEqual(before,self.dump())
+
     def test_terminal_episode_seam_is_closed_migrated_and_forwarded(self):
         from coordinator_repair_adapter import SCHEMA
         seam={};exec(SCHEMA,seam);schema=seam['KANBAN_AMEND_SCHEMA']
         episode=schema['parameters']['properties']['terminal_episode']
-        self.assertEqual({'terminal_episode','workspace_rebind'},set(schema['parameters']['properties'])-
+        self.assertEqual({'terminal_episode','workspace_rebind','verification_intake'},set(schema['parameters']['properties'])-
                          {'board','task_id','expected_version','changes','reason','runtime_evidence'})
         self.assertEqual({'run_id','event_id'},set(episode['properties']))
         self.assertEqual(['run_id','event_id'],episode['required'])

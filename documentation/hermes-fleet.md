@@ -34,8 +34,8 @@ dependencies must be repaired through their owning installer first. The release
 retains its immutable manifests, preimage checks and rollback protection.
 
 ```bash
-python3 -B scripts/hermes/fleet-release.py plan
-python3 -B scripts/hermes/fleet-release.py apply
+python3 -B scripts/hermes/fleet-release.py --source "$PWD" plan
+python3 -B scripts/hermes/fleet-release.py --source "$PWD" apply
 python3 -B scripts/hermes/fleet-release.py check
 python3 -B scripts/hermes/fleet-release.py status
 python3 -B scripts/hermes/fleet-release.py rollback --revision RELEASE_ID
@@ -43,7 +43,11 @@ python3 -B scripts/hermes/fleet-release.py rollback --revision RELEASE_ID
 
 `HERMES_ROOT` selects the installation. An installed entrypoint can use `--source`
 to select the maintained checkout. A release ID binds the source commit,
-installed files and retained native adapter/helper identities. `check` reads
+installed files and retained native adapter/helper identities. Without --source,
+a previously active installation selects its recorded source checkout even when
+the entrypoint was invoked from another checkout. Always name the reviewed source
+for plan/apply, and read back manifest.source_revision after applying; a green
+check proves consistency with that recorded release, not your intended new source. `check` reads
 actual files, modes, dependencies and native schedule records. A changed native
 dependency needs qualification, never an automatic downgrade to older bytes.
 Native Hermes upgrades still use their owning supported maintenance path; the

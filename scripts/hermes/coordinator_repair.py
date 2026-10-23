@@ -17,7 +17,8 @@ ALLOWED = {'body', 'priority', 'skills', 'max_runtime_seconds', 'block_kind'}
 # re-queues or re-arms that hold. Its independent workspace-prep attestation
 # stays a coordinator obligation; this seam only records what it verified.
 REBIND_FIELDS = {'workspace_kind', 'workspace_path'}
-WRITABLE = ALLOWED | REBIND_FIELDS
+INTAKE_FIELDS = {'tenant'}
+WRITABLE = ALLOWED | REBIND_FIELDS | INTAKE_FIELDS
 PARKED = {'todo', 'blocked', 'scheduled', 'triage'}
 # Native lifecycle kinds that can supersede one terminal episode. The snapshot
 # CAS binds the newest of these, so a consumed or superseded episode id can
@@ -194,6 +195,44 @@ def _rebind_binding(conn, task, changes, rebind):
     return {'workspace_kind': 'dir', 'workspace_path': path}
 
 
+def _verification_intake(conn, task, changes, intake, reason):
+    """Strengthen one untouched legacy verifier's classification, never release it."""
+    if intake != 'standalone' or changes != {'tenant':'verification'}:
+        raise ValueError('Verification intake changes exactly tenant to verification with standalone intent')
+    if SUPPLIER.search(reason or '') is None or MATERIAL.search(reason or '') is None:
+        raise ValueError('Verification intake needs agent/model supplier and material authorized-continuation evidence')
+    if (task['status'] != 'todo' or task['assignee'] != 'feature-reviewer'
+            or task['tenant'] != 'continuous-improvement' or task['block_kind'] is not None
+            or task['consecutive_failures'] != 0
+            or any(task.get(k) is not None for k in ('started_at','completed_at','current_run_id',
+                'worker_started_at','last_heartbeat_at','last_failure_error'))
+            or (task['body'] or '').lstrip().startswith('ASK:')):
+        raise ValueError('Verification intake requires an untouched TODO feature-reviewer with inherited continuous-improvement tenant')
+    if (task['workspace_kind'] != 'dir' or not task['workspace_path']
+            or not os.path.isabs(task['workspace_path'])
+            or os.path.realpath(task['workspace_path']) != task['workspace_path']
+            or not os.path.isdir(task['workspace_path'])
+            or type(task['max_runtime_seconds']) is not int or task['max_runtime_seconds'] <= 0):
+        raise ValueError('Prepare the durable directory and finite runtime before verification intake')
+    # session_id can be inherited from the creating coordinator; it is origin,
+    # not proof of execution. Preserve it and require the actual run/event absence.
+    if conn.execute('SELECT 1 FROM task_runs WHERE task_id=? LIMIT 1',(task['id'],)).fetchone():
+        raise ValueError('Verification intake refuses every previously executed or scheduled run')
+    if conn.execute("SELECT 1 FROM task_events WHERE task_id=? AND kind IN "
+            "('claimed','spawned','review_requested','completed','blocked','scheduled','unblocked','gave_up') LIMIT 1",
+            (task['id'],)).fetchone():
+        raise ValueError('Verification intake refuses prior lifecycle provenance')
+    creation=conn.execute("SELECT payload FROM task_events WHERE task_id=? AND kind='created' ORDER BY id LIMIT 1",
+                          (task['id'],)).fetchone()
+    if creation is None or len(creation['payload'] or '') > 65536:
+        raise ValueError('Verification intake needs the original bounded creation record')
+    created=json.loads(creation['payload'] or '{}')
+    if (not isinstance(created,dict) or 'workflow' in created
+            or re.search(r'(?m)^Workflow:\s*native-review-v1\s*$',task['body'] or '')
+            or task.get('workflow_template_id') is not None or task.get('current_step_key') is not None):
+        raise ValueError('Verification intake never rewrites a structured or native implementation workflow')
+
+
 def _terminal_branch(conn, task, episode, reason):
     """Validate ONE closed terminal episode; name the branch it authorises.
 
@@ -322,12 +361,16 @@ def available_skills(root, profile, workspace):
 
 
 def amend(kb, conn, tid, *, expected_version=None, changes=None, reason=None, runtime_evidence=None,
-          terminal_episode=None, workspace_rebind=None):
+          terminal_episode=None, workspace_rebind=None, verification_intake=None):
     from hermes_cli.nixhomeserver_resume_recovered import coordinator_origin, require_actor_board
     actor = coordinator_origin()
     root, board = require_actor_board(conn, actor)
     if not isinstance(tid, str) or not re.fullmatch(r't_[a-z0-9_]{1,64}', tid):
         raise ValueError('Exact task ID required')
+    if verification_intake is not None and (terminal_episode is not None or workspace_rebind is not None):
+        raise ValueError('Verification intake is separate from terminal episodes and workspace binding')
+    if verification_intake is None and isinstance(changes,dict) and set(changes) & INTAKE_FIELDS:
+        raise ValueError('Tenant changes require the closed standalone verification intake')
     if terminal_episode is not None and (not isinstance(changes, dict) or set(changes) != {'block_kind'}):
         raise ValueError('A terminal episode is valid only with exactly the block_kind capability change')
     if terminal_episode is not None and workspace_rebind is not None:
@@ -335,7 +378,7 @@ def amend(kb, conn, tid, *, expected_version=None, changes=None, reason=None, ru
     if workspace_rebind is None and isinstance(changes, dict) and set(changes) & REBIND_FIELDS:
         raise ValueError('A workspace binding changes only with its own closed rebind evidence')
     if changes is None:
-        if terminal_episode is not None or workspace_rebind is not None:
+        if terminal_episode is not None or workspace_rebind is not None or verification_intake is not None:
             raise ValueError('Inspection takes no amendment evidence')
         task, version = snapshot(conn, tid)
         return {'task_id': tid, 'version': version, 'status': task['status'],
@@ -360,6 +403,8 @@ def amend(kb, conn, tid, *, expected_version=None, changes=None, reason=None, ru
         branch = None
         binding = None
         resume_status = None
+        if verification_intake is not None:
+            _verification_intake(conn,task,changes,verification_intake,reason)
         if workspace_rebind is not None:
             binding = _rebind_binding(conn, task, changes, workspace_rebind)
         if 'block_kind' in changes:
@@ -434,7 +479,9 @@ def amend(kb, conn, tid, *, expected_version=None, changes=None, reason=None, ru
             # closed sets above), never SQL input.
             conn.execute('UPDATE tasks SET '+field+'=? WHERE id=?',
                          (json.dumps(value) if field == 'skills' else value, tid))
-        if binding is not None:
+        if verification_intake is not None:
+            kb._append_event(conn,tid,'coordinator_verification_intake',evidence)
+        elif binding is not None:
             # ONE honest native event for the recorded binding: the preimage it
             # replaced, the verified target, the native actor and its CAS. The
             # sealed hold, its counters and every run are untouched; the
