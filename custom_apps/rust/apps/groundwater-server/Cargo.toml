@@ -12,6 +12,7 @@ homelab-common.workspace = true
 rumqttc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 tokio = { workspace = true, features = ["fs", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-postgres = { workspace = true, features = [
   "with-chrono-0_4",

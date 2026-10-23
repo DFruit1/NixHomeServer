@@ -39,7 +39,8 @@ impl std::error::Error for IdentityError {}
 
 impl Identity {
     pub fn from_headers(headers: &HeaderMap) -> Result<Self, IdentityError> {
-        let forwarded = homelab_common::from_forwarded_headers(headers).map_err(|_| IdentityError::Missing)?;
+        let forwarded =
+            homelab_common::from_forwarded_headers(headers).map_err(|_| IdentityError::Missing)?;
         Ok(Self {
             username: forwarded.username,
             groups: forwarded.groups,
@@ -93,7 +94,10 @@ mod tests {
 
     #[test]
     fn rejects_missing_identity() {
-        assert_eq!(Identity::from_headers(&HeaderMap::new()), Err(IdentityError::Missing));
+        assert_eq!(
+            Identity::from_headers(&HeaderMap::new()),
+            Err(IdentityError::Missing)
+        );
     }
 
     #[test]
@@ -113,6 +117,9 @@ mod tests {
     #[test]
     fn admin_outranks_viewer_in_the_group_list() {
         // Both groups present resolves to the more privileged role.
-        assert_eq!(role_for(&identity_with("groundwater-user,app-admin")), Some(Role::Operator));
+        assert_eq!(
+            role_for(&identity_with("groundwater-user,app-admin")),
+            Some(Role::Operator)
+        );
     }
 }

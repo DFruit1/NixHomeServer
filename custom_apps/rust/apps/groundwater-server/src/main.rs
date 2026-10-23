@@ -1,21 +1,37 @@
 //! Groundwater level platform service.
 //!
-//! Ingests MQTT telemetry from the STM32 groundwater loggers, stores it in
-//! PostgreSQL/TimescaleDB, and serves the multi-user web app behind the shared
-//! authentication gateway.
+//! Ingests MQTT telemetry from the STM32 groundwater loggers, interprets it
+//! against explicit firmware profiles, stores it in plain PostgreSQL, and
+//! serves an authenticated API plus a single-device inspection page behind the
+//! shared authentication gateway.
 //!
-//! The firmware is still in development and its MQTT topic names are
-//! compile-time constants that may change. Topic configuration therefore lives
-//! in the environment rather than in code, and message classification falls
-//! back to payload shape, so a topic rename does not require a new binary.
+//! The pipeline is layered so each part is testable on its own:
+//!
+//! - [`telemetry`] parses the firmware's JSON payload, keeping its text;
+//! - [`clock`] interprets the device timestamp from evidence, never a guess;
+//! - [`topics`] classifies a topic by name only;
+//! - [`adapter`] decides attribution, quarantine and duplicates;
+//! - [`db`] stores deliveries, observations and trust state;
+//! - [`ingest`] is the MQTT transport, and holds no policy.
+//!
+//! Slice 1 is server-side and synthetic-only: the crate builds and tests here,
+//! but nothing is deployed and no broker is contacted by the test suite
+//! (`GWAPP-20261023-slice1` §3). Enabling the application in NixOS stays
+//! opt-in and off by default.
 
+mod adapter;
 mod api;
+mod clock;
 mod config;
 mod db;
+#[cfg(test)]
+mod fixtures;
 mod identity;
 mod ingest;
+mod profiles;
 mod telemetry;
 mod topics;
+mod ui;
 
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -24,7 +40,7 @@ use std::time::Duration;
 use config::Settings;
 use ingest::{EventBus, IngestStats};
 
-/// How often the raw message log is pruned.
+/// How often the raw delivery log is pruned.
 const PRUNE_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 
 fn main() -> ExitCode {
@@ -53,6 +69,16 @@ async fn run() -> Result<(), String> {
     let client = Arc::new(db::connect(&settings.database_url).await?);
     db::migrate(&client).await?;
 
+    // Trust state is loaded once so the first message is decided against real
+    // enrollments; the ingest loop refreshes it on its own timer.
+    let registry = db::load_registry(&client).await?;
+    eprintln!(
+        "groundwater: {} enrollment(s), {} binding(s) loaded",
+        registry.enrollments().count(),
+        registry.bindings().len()
+    );
+    let registry = Arc::new(tokio::sync::RwLock::new(registry));
+
     let retention_days = settings.retention_days;
     let bus = EventBus::new();
     let stats = Arc::new(tokio::sync::Mutex::new(IngestStats::default()));
@@ -69,18 +95,19 @@ async fn run() -> Result<(), String> {
         ),
     }
 
-    // Retention keeps the raw log bounded. Readings are never pruned: at the
-    // firmware's cadence a device adds roughly 175_000 rows a year.
+    // Retention keeps the raw delivery log bounded. Observations are never
+    // pruned, and pruning clears their delivery reference rather than deleting
+    // them.
     let prune_client = client.clone();
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(PRUNE_INTERVAL).await;
-            match db::prune_messages(&prune_client, retention_days).await {
+            match db::prune_deliveries(&prune_client, retention_days).await {
                 Ok(0) => {}
                 Ok(removed) => eprintln!(
-                    "groundwater: pruned {removed} raw message rows older than {retention_days} days"
+                    "groundwater: pruned {removed} raw delivery rows older than {retention_days} days"
                 ),
-                Err(err) => eprintln!("groundwater: message prune failed: {err}"),
+                Err(err) => eprintln!("groundwater: delivery prune failed: {err}"),
             }
         }
     });
@@ -93,13 +120,15 @@ async fn run() -> Result<(), String> {
         let ingest_client = client.clone();
         let ingest_bus = bus.clone();
         let ingest_stats = Arc::clone(&stats);
+        let ingest_registry = Arc::clone(&registry);
         tokio::spawn(async move {
             if let Err(err) = ingest::run(
                 ingest_settings,
                 Arc::new(mqtt),
                 ingest_client,
-                ingest_bus.clone(),
+                ingest_bus,
                 Arc::clone(&ingest_stats),
+                ingest_registry,
             )
             .await
             {
@@ -107,6 +136,10 @@ async fn run() -> Result<(), String> {
                 ingest_stats.lock().await.last_error = Some(err);
             }
         });
+    } else {
+        // No broker: release the registry handle so nothing silently implies
+        // live traffic is refreshing it.
+        drop(registry);
     }
 
     let state = api::AppState {
@@ -115,5 +148,5 @@ async fn run() -> Result<(), String> {
         bus,
         stats,
     };
-    api::serve(state, settings.frontend_dir.clone()).await
+    api::serve(state).await
 }

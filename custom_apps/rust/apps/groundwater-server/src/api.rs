@@ -1,15 +1,17 @@
-//! HTTP API and static frontend hosting.
+//! HTTP API and the inspection page.
 //!
 //! Bound to loopback and reached only through the auth gateway, which
 //! authenticates the caller and forwards identity headers. Every route
 //! re-checks the role locally because the gateway's group check is
-//! host-level, not per-route.
+//! host-level, not per-route (`GWAPP-20261023-slice1` §1).
+//!
+//! Read endpoints answer for the viewer group; the raw delivery log — which
+//! contains unattributed payloads — requires the operator group.
 
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::{Query, State};
+use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
@@ -19,18 +21,28 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::broadcast::error::RecvError;
 
+use crate::adapter::{DUPLICATE_WINDOW_MINUTES, MAX_PAYLOAD_BYTES};
+use crate::clock::MAX_FUTURE_SKEW_HOURS;
 use crate::config::Settings;
 use crate::db;
 use crate::identity::{role_for, Identity, Role};
-use crate::telemetry;
 use crate::ingest::{EventBus, IngestStats};
+use crate::profiles::ALL_PROFILES;
+use crate::telemetry::GWL_ABS_LIMIT_M;
+use crate::ui;
 
-/// Hard cap on message-log rows a single request may return.
+/// Hard cap on delivery-log rows a single request may return.
 const MAX_LOG_ROWS: i64 = 500;
 
 /// Heartbeat interval for the event stream, so proxies do not drop an idle
 /// connection.
 const EVENT_HEARTBEAT_SECONDS: u64 = 15;
+
+/// Hours of history the inspection page shows by default.
+const PAGE_HISTORY_HOURS: i64 = 24;
+
+/// Bucket width the inspection page asks for.
+const PAGE_BUCKET_MINUTES: i64 = 15;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -40,27 +52,22 @@ pub struct AppState {
     pub stats: Arc<tokio::sync::Mutex<IngestStats>>,
 }
 
-pub async fn serve(state: AppState, frontend_dir: Option<PathBuf>) -> Result<(), String> {
+pub async fn serve(state: AppState) -> Result<(), String> {
     let address = state.settings.address.clone();
     let port = state.settings.port;
 
-    let mut router = Router::new()
+    let app = Router::new()
         .route("/healthz", get(health))
+        .route("/", get(page))
         .route("/api/status", get(api_status))
         .route("/api/devices", get(api_devices))
+        .route("/api/devices/{device_id}", get(api_device))
         .route("/api/series", get(api_series))
-        .route("/api/messages", get(api_messages))
-        .route("/api/events", get(api_events));
-
-    // The frontend is a single-page client app, so anything that is not an API
-    // route and not a real asset falls back to index.html and the client-side
-    // router resolves the view.
-    router = match frontend_dir {
-        Some(dir) => router.fallback(get(static_shell).with_state(dir)),
-        None => router.fallback(|| async { (StatusCode::NOT_FOUND, "not found") }),
-    };
-
-    let app = router
+        // The documented raw-log name, plus its delivery-oriented alias.
+        .route("/api/messages", get(api_deliveries))
+        .route("/api/deliveries", get(api_deliveries))
+        .route("/api/events", get(api_events))
+        .fallback(not_found)
         .with_state(state)
         .layer(axum::middleware::from_fn(security_headers));
 
@@ -87,9 +94,18 @@ async fn security_headers(request: axum::extract::Request, next: Next) -> Respon
         header::REFERRER_POLICY,
         HeaderValue::from_static("same-origin"),
     );
+    // The page is a server-rendered document with no inline script; keep it
+    // that way so a payload can never become executable content.
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(
+            "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; base-uri 'none'",
+        ),
+    );
     response
 }
 
+/// Liveness only: no identity, no data. The listener is loopback-bound.
 async fn health() -> &'static str {
     "ok"
 }
@@ -116,12 +132,76 @@ fn gate(headers: &HeaderMap) -> GateResult {
     })
 }
 
-async fn api_status(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
+/// The inspection page: latest plausible event plus history for one device.
+#[derive(Debug, Deserialize)]
+struct PageParams {
+    device: Option<String>,
+    hours: Option<i64>,
+}
+
+async fn page(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<PageParams>,
+) -> Result<Response, Response> {
+    gate(&headers)?;
+    let devices = db::list_devices(&state.db).await.map_err(db_error)?;
+    let selected = params
+        .device
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+        .or_else(|| devices.first().map(|device| device.device_id.clone()));
+
+    let mut view = ui::FleetView::new(devices, selected.clone());
+    if let Some(device_id) = selected.as_deref() {
+        let hours = clamp_hours(params.hours.or(Some(PAGE_HISTORY_HOURS)));
+        let to = chrono::Utc::now() + chrono::Duration::hours(MAX_FUTURE_SKEW_HOURS);
+        let from = to - chrono::Duration::hours(hours);
+        let series = db::device_series(
+            &state.db,
+            device_id,
+            db::SeriesQuery {
+                from,
+                to,
+                bucket_minutes: PAGE_BUCKET_MINUTES,
+            },
+        )
+        .await
+        .map_err(db_error)?;
+        view.history = series.points;
+        view.quarantine_note = view
+            .selected()
+            .map(|device| {
+                format!(
+                    "{} delivery/deliveries quarantined for this device; they are recorded in the delivery log and never joined to the history above",
+                    device.quarantined_deliveries
+                )
+            });
+    }
+
+    Ok((
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        ui::render(&view),
+    )
+        .into_response())
+}
+
+async fn api_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, Response> {
     gate(&headers)?;
     let stats = state.stats.lock().await.clone();
     let devices = db::list_devices(&state.db).await.map_err(db_error)?;
     Ok(Json(json!({
         "service": "groundwater-server",
+        "slice": "server-side-synthetic",
         "broker": {
             "configured": state.settings.mqtt.is_some(),
             "endpoint": state
@@ -133,14 +213,29 @@ async fn api_status(State(state): State<AppState>, headers: HeaderMap) -> Result
             "lastError": stats.last_error,
         },
         "ingest": {
-            "readingsAccepted": stats.readings_accepted,
-            "readingsDuplicate": stats.readings_duplicate,
-            "readingsRejected": stats.readings_rejected,
-            "otherMessages": stats.other_messages,
+            "deliveries": stats.deliveries,
+            "observations": stats.observations,
+            "redeliveryCandidates": stats.redelivery_candidates,
+            "conflicts": stats.conflicts,
+            "quarantined": stats.quarantined,
+            "lastQuarantineReason": stats.last_quarantine_reason,
         },
-        "topics": {
-            "reading": state.settings.topics.reading,
-            "deviceStatus": state.settings.topics.device_status,
+        "adapter": {
+            "interpretationVersions": ALL_PROFILES
+                .iter()
+                .map(|profile| profile.interpretation_version())
+                .collect::<Vec<_>>(),
+            "duplicateWindowMinutes": DUPLICATE_WINDOW_MINUTES,
+            "maxPayloadBytes": MAX_PAYLOAD_BYTES,
+            "gwlAbsLimitM": GWL_ABS_LIMIT_M,
+            "profiles": ALL_PROFILES
+                .iter()
+                .map(|profile| json!({
+                    "id": profile.as_str(),
+                    "label": profile.label(),
+                    "carriesDeviceId": profile.carries_device_id(),
+                }))
+                .collect::<Vec<_>>(),
         },
         "devices": devices.len(),
         "retentionDays": state.settings.retention_days,
@@ -148,10 +243,34 @@ async fn api_status(State(state): State<AppState>, headers: HeaderMap) -> Result
     .into_response())
 }
 
-async fn api_devices(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
+async fn api_devices(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, Response> {
     gate(&headers)?;
     let devices = db::list_devices(&state.db).await.map_err(db_error)?;
     Ok(Json(json!({ "devices": devices })).into_response())
+}
+
+async fn api_device(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    AxumPath(device_id): AxumPath<String>,
+) -> Result<Response, Response> {
+    gate(&headers)?;
+    let device_id = device_id.trim().to_uppercase();
+    let devices = db::list_devices(&state.db).await.map_err(db_error)?;
+    match devices
+        .into_iter()
+        .find(|device| device.device_id == device_id)
+    {
+        Some(device) => Ok(Json(json!({ "device": device })).into_response()),
+        None => Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "unknown device" })),
+        )
+            .into_response()),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -171,20 +290,12 @@ async fn api_series(
     if device.is_empty() {
         return Err(bad_request("device is required"));
     }
-    // Clamp so a wide window or a tiny bucket cannot materialise an unbounded
-    // result set for the browser.
-    let hours = params
-        .hours
-        .unwrap_or(db::DEFAULT_WINDOW_HOURS)
-        .clamp(1, 24 * 365);
-    let bucket = params.bucket.unwrap_or(0).clamp(0, 24 * 60);
+    let hours = clamp_hours(params.hours);
+    let bucket = clamp_bucket(params.bucket);
     // A logger's clock comes from GPS and can sit ahead of this host's clock,
     // so the upper bound is padded. Without this the most recent readings — the
-    // ones an operator is looking at — would be filtered out. The tolerance
-    // matches the plausibility check so the chart can never hide a reading the
-    // ingest side accepted.
-    let to = chrono::Utc::now()
-        + chrono::Duration::days(telemetry::MAX_QUERY_FUTURE_SKEW_DAYS);
+    // ones an operator is looking at — would be filtered out.
+    let to = chrono::Utc::now() + chrono::Duration::hours(MAX_FUTURE_SKEW_HOURS);
     let from = to - chrono::Duration::hours(hours);
     let series = db::device_series(
         &state.db,
@@ -201,19 +312,30 @@ async fn api_series(
 }
 
 #[derive(Debug, Deserialize)]
-struct MessageParams {
+struct DeliveryParams {
     device: Option<String>,
     limit: Option<i64>,
 }
 
-async fn api_messages(
+/// The raw delivery log, including quarantined traffic.
+///
+/// Operator-only: it contains payloads that were deliberately not attributed to
+/// any device, which a plain viewer should not be able to enumerate.
+async fn api_deliveries(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Query(params): Query<MessageParams>,
+    Query(params): Query<DeliveryParams>,
 ) -> Result<Response, Response> {
-    gate(&headers)?;
-    let limit = params.limit.unwrap_or(100).clamp(1, MAX_LOG_ROWS);
-    let messages = db::list_messages(
+    let role = gate(&headers)?;
+    if role != Role::Operator {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "the delivery log requires the operator role" })),
+        )
+            .into_response());
+    }
+    let limit = clamp_limit(params.limit);
+    let deliveries = db::list_deliveries(
         &state.db,
         params
             .device
@@ -224,10 +346,10 @@ async fn api_messages(
     )
     .await
     .map_err(db_error)?;
-    Ok(Json(json!({ "messages": messages })).into_response())
+    Ok(Json(json!({ "deliveries": deliveries })).into_response())
 }
 
-/// Server-sent events stream of live ingest and presence updates.
+/// Server-sent events stream of live ingest updates.
 async fn api_events(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -236,7 +358,10 @@ async fn api_events(
     let receiver = state.bus.subscribe();
 
     let stream = futures_util::stream::unfold(
-        (receiver, tokio::time::interval(Duration::from_secs(EVENT_HEARTBEAT_SECONDS))),
+        (
+            receiver,
+            tokio::time::interval(Duration::from_secs(EVENT_HEARTBEAT_SECONDS)),
+        ),
         move |(mut receiver, mut heartbeat)| async move {
             tokio::select! {
                 event = receiver.recv() => match event {
@@ -268,64 +393,23 @@ async fn api_events(
         .expect("static response builder is valid"))
 }
 
-/// Serves the SPA shell for any non-API path.
-async fn static_shell(
-    State(dir): State<PathBuf>,
-    axum::extract::OriginalUri(uri): axum::extract::OriginalUri,
-) -> Response {
-    serve_asset(&dir, uri.path()).await
+async fn not_found() -> Response {
+    (StatusCode::NOT_FOUND, "not found").into_response()
 }
 
-/// Serves a built asset, falling back to the SPA shell when the path does not
-/// exist so the client router can resolve it.
-async fn serve_asset(dir: &Path, relative: &str) -> Response {
-    if let Some(decoded) = homelab_common::decode_relative_path(relative) {
-        if !decoded.as_os_str().is_empty() {
-            match homelab_common::read_static_file(dir, &decoded).await {
-                Ok(body) => {
-                    let content_type =
-                        homelab_common::content_type_for_path(&decoded);
-                    let cache_control = homelab_common::cache_control_for_path(&decoded);
-                    return (
-                        StatusCode::OK,
-                        [
-                            (header::CONTENT_TYPE, content_type.to_string()),
-                            (header::CACHE_CONTROL, cache_control.to_string()),
-                        ],
-                        body,
-                    )
-                        .into_response();
-                }
-                Err(homelab_common::StaticFileError::NotFound)
-                | Err(homelab_common::StaticFileError::EscapesRoot) => {}
-                Err(homelab_common::StaticFileError::Io(err)) => {
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("frontend asset read failed: {err}"),
-                    )
-                        .into_response();
-                }
-            }
-        }
-    }
+/// Query window in hours, clamped so a wide request stays bounded.
+fn clamp_hours(hours: Option<i64>) -> i64 {
+    hours.unwrap_or(db::DEFAULT_WINDOW_HOURS).clamp(1, 24 * 365)
+}
 
-    match homelab_common::read_static_file(dir, Path::new("index.html")).await {
-        Ok(body) => (
-            StatusCode::OK,
-            [
-                // The shell must revalidate so a new deploy is picked up.
-                (header::CONTENT_TYPE, "text/html; charset=utf-8".to_string()),
-                (header::CACHE_CONTROL, "no-cache".to_string()),
-            ],
-            body,
-        )
-            .into_response(),
-        Err(err) => (
-            StatusCode::NOT_FOUND,
-            format!("frontend asset unavailable: {err}"),
-        )
-            .into_response(),
-    }
+/// Downsampling bucket in minutes, clamped; `0` means raw points.
+fn clamp_bucket(bucket: Option<i64>) -> i64 {
+    bucket.unwrap_or(0).clamp(0, 24 * 60)
+}
+
+/// Raw-log row limit, clamped.
+fn clamp_limit(limit: Option<i64>) -> i64 {
+    limit.unwrap_or(100).clamp(1, MAX_LOG_ROWS)
 }
 
 fn db_error(err: String) -> Response {
@@ -337,9 +421,28 @@ fn db_error(err: String) -> Response {
 }
 
 fn bad_request(message: &str) -> Response {
-    (
-        StatusCode::BAD_REQUEST,
-        Json(json!({ "error": message })),
-    )
-        .into_response()
+    (StatusCode::BAD_REQUEST, Json(json!({ "error": message }))).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn query_bounds_are_clamped_to_the_documented_limits() {
+        assert_eq!(clamp_hours(None), db::DEFAULT_WINDOW_HOURS);
+        assert_eq!(clamp_hours(Some(0)), 1);
+        assert_eq!(clamp_hours(Some(-5)), 1);
+        assert_eq!(clamp_hours(Some(1_000_000)), 24 * 365);
+
+        assert_eq!(clamp_bucket(None), 0);
+        assert_eq!(clamp_bucket(Some(-1)), 0);
+        assert_eq!(clamp_bucket(Some(5)), 5);
+        assert_eq!(clamp_bucket(Some(1_000_000)), 24 * 60);
+
+        assert_eq!(clamp_limit(None), 100);
+        assert_eq!(clamp_limit(Some(0)), 1);
+        assert_eq!(clamp_limit(Some(-1)), 1);
+        assert_eq!(clamp_limit(Some(1_000_000)), MAX_LOG_ROWS);
+    }
 }

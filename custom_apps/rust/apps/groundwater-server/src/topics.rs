@@ -1,14 +1,19 @@
 //! MQTT topic classification.
 //!
-//! The firmware is still in development and its topic names are compile-time
-//! constants that may change. Everything topic-shaped therefore lives in
-//! configuration (see [`super::config::TopicMap`]) rather than in code, and the
-//! classifier degrades instead of failing: a message on an unknown topic whose
-//! payload still carries the telemetry field set is classified as a reading.
+//! Topic names are compile-time constants in the firmware; the canonical
+//! (typo-preserving) spellings live in [`crate::profiles`] and are re-exported
+//! here as the default map. `GROUNDWATER_MQTT_TOPICS_FILE` may override any
+//! subset for a firmware rename, which is why classification is configuration
+//! rather than a `match` on literals.
 //!
-//! That fallback is what lets the platform survive a topic rename without a
-//! firmware-aligned release: the readings keep landing in `readings` even while
-//! `messages` records the new topic verbatim.
+//! Classification is *name only*. An unrecognised topic is
+//! [`MessageKind::Other`] and is quarantined by the intake pipeline; a payload
+//! that merely looks like a reading does not promote its topic. The earlier
+//! scaffold had that promotion, and it is exactly how legacy shared-topic
+//! traffic gets attributed to whichever device published last — removed
+//! deliberately (`GWAPP-20261023-slice1` §1, attribution/quarantine).
+
+use crate::profiles;
 
 /// What a received MQTT message means to the platform.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,7 +24,8 @@ pub enum MessageKind {
     DeviceStatus,
     /// A raw NMEA sentence from the modem's GPS (`azman1/feeds/gps-data`).
     Gps,
-    /// SD card free-space report (`azman1/feeds/remaingsdstorage`).
+    /// SD card free-space report (`azman1/feeds/remaingsdstorage`; the
+    /// firmware's spelling is preserved verbatim).
     Storage,
     /// A self-test result line (`azman1/feeds/testresults`).
     TestResult,
@@ -36,7 +42,7 @@ pub enum MessageKind {
 }
 
 impl MessageKind {
-    /// Stable lowercase name persisted with the raw message log.
+    /// Stable lowercase name persisted with the delivery record.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Reading => "reading",
@@ -66,7 +72,7 @@ pub fn classify(topic: &str, map: &TopicMap) -> MessageKind {
         return kind;
     }
     // Fall back to the final path segment so a namespace change alone does not
-    // stop classification.
+    // stop classification. The payload never participates in this decision.
     let leaf = trimmed.rsplit('/').next().unwrap_or_default();
     if let Some(kind) = map.leaf_kind(leaf) {
         return kind;
@@ -74,35 +80,12 @@ pub fn classify(topic: &str, map: &TopicMap) -> MessageKind {
     MessageKind::Other
 }
 
-/// Whether a payload looks like a telemetry reading, regardless of topic.
-///
-/// This is the tolerance path for an unrecognised topic: the firmware's field
-/// names are the stable contract, the topic is the volatile one.
-pub fn payload_looks_like_reading(payload: &str) -> bool {
-    let trimmed = payload.trim();
-    if !trimmed.starts_with('{') {
-        return false;
-    }
-    let value: serde_json::Value = match serde_json::from_str(trimmed) {
-        Ok(value) => value,
-        Err(_) => return false,
-    };
-    let object = match value.as_object() {
-        Some(object) => object,
-        None => return false,
-    };
-    // DeviceID plus at least one measurement field. GWL alone is enough to
-    // accept a message; the parser still validates the value itself.
-    object.contains_key("DeviceID")
-        || object.contains_key("GWL")
-        || object.contains_key("gwl")
-}
-
 /// The configured topic names the platform recognises.
 ///
-/// Defaults mirror the current firmware. `GROUNDWATER_MQTT_TOPICS_FILE` may
-/// supply a JSON document to override any subset of them, which is the
-/// supported way to follow a firmware topic rename without a code change.
+/// Defaults mirror the current firmware, including the storage topic's
+/// `remaingsdstorage` spelling. `GROUNDWATER_MQTT_TOPICS_FILE` may supply a
+/// JSON document to override any subset of them, which is the supported way to
+/// follow a firmware topic rename without a code change.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TopicMap {
     pub reading: Vec<String>,
@@ -116,25 +99,23 @@ pub struct TopicMap {
 }
 
 impl TopicMap {
-    /// Topic names for firmware `GWL_Firmware_V2.1` (commit `8278b61`).
+    /// Topic names shared by the three inspected firmware profiles.
     pub fn firmware_defaults() -> Self {
+        let topics = profiles::ProfileId::V21.topics();
         Self {
-            reading: vec!["azman1/feeds/gwl-string".to_string()],
-            device_status: vec!["azman1/feeds/device-status".to_string()],
-            gps: vec!["azman1/feeds/gps-data".to_string()],
-            storage: vec!["azman1/feeds/remaingsdstorage".to_string()],
-            test_result: vec!["azman1/feeds/testresults".to_string()],
-            motion: vec!["azman1/feeds/accelerometer-data".to_string()],
-            alert: vec!["azman1/feeds/alerts".to_string()],
-            config_ack: vec![
-                "cfg/desired/applied".to_string(),
-                "cfg/danger_ack".to_string(),
-            ],
+            reading: owned(topics.reading),
+            device_status: owned(topics.device_status),
+            gps: owned(topics.gps),
+            storage: owned(topics.storage),
+            test_result: owned(topics.test_results),
+            motion: owned(topics.motion),
+            alert: owned(topics.alerts),
+            config_ack: owned(topics.config_ack),
         }
     }
 
-    fn exact_kind(&self, topic: &str) -> Option<MessageKind> {
-        let groups = [
+    fn groups(&self) -> [(&[String], MessageKind); 8] {
+        [
             (&self.reading, MessageKind::Reading),
             (&self.device_status, MessageKind::DeviceStatus),
             (&self.gps, MessageKind::Gps),
@@ -143,8 +124,11 @@ impl TopicMap {
             (&self.motion, MessageKind::Motion),
             (&self.alert, MessageKind::Alert),
             (&self.config_ack, MessageKind::ConfigAck),
-        ];
-        groups
+        ]
+    }
+
+    fn exact_kind(&self, topic: &str) -> Option<MessageKind> {
+        self.groups()
             .into_iter()
             .find(|(topics, _)| topics.iter().any(|name| name == topic))
             .map(|(_, kind)| kind)
@@ -154,39 +138,19 @@ impl TopicMap {
         if leaf.is_empty() {
             return None;
         }
-        let all = [
-            (&self.reading, MessageKind::Reading),
-            (&self.device_status, MessageKind::DeviceStatus),
-            (&self.gps, MessageKind::Gps),
-            (&self.storage, MessageKind::Storage),
-            (&self.test_result, MessageKind::TestResult),
-            (&self.motion, MessageKind::Motion),
-            (&self.alert, MessageKind::Alert),
-            (&self.config_ack, MessageKind::ConfigAck),
-        ];
-        all.into_iter()
-            .find_map(|(topics, kind)| {
-                topics
-                    .iter()
-                    .any(|name| name.rsplit('/').next().unwrap_or_default() == leaf)
-                    .then_some(kind)
-            })
+        self.groups().into_iter().find_map(|(topics, kind)| {
+            topics
+                .iter()
+                .any(|name| name.rsplit('/').next().unwrap_or_default() == leaf)
+                .then_some(kind)
+        })
     }
 
     /// Every configured topic, deduplicated, for building the MQTT
     /// subscription set.
     pub fn subscribe_topics(&self) -> Vec<String> {
         let mut topics: Vec<String> = Vec::new();
-        for group in [
-            &self.reading,
-            &self.device_status,
-            &self.gps,
-            &self.storage,
-            &self.test_result,
-            &self.motion,
-            &self.alert,
-            &self.config_ack,
-        ] {
+        for (group, _) in self.groups() {
             for topic in group {
                 if !topics.iter().any(|existing| existing == topic) {
                     topics.push(topic.clone());
@@ -195,6 +159,10 @@ impl TopicMap {
         }
         topics
     }
+}
+
+fn owned(topics: &[&str]) -> Vec<String> {
+    topics.iter().map(|topic| (*topic).to_string()).collect()
 }
 
 impl Default for TopicMap {
@@ -210,40 +178,44 @@ mod tests {
     #[test]
     fn classifies_every_current_firmware_topic() {
         let map = TopicMap::firmware_defaults();
-        assert_eq!(
-            classify("azman1/feeds/gwl-string", &map),
-            MessageKind::Reading
-        );
-        assert_eq!(
-            classify("azman1/feeds/device-status", &map),
-            MessageKind::DeviceStatus
-        );
-        assert_eq!(classify("azman1/feeds/gps-data", &map), MessageKind::Gps);
+        let expected = [
+            (profiles::TOPIC_READING, MessageKind::Reading),
+            (profiles::TOPIC_DEVICE_STATUS, MessageKind::DeviceStatus),
+            (profiles::TOPIC_GPS, MessageKind::Gps),
+            (profiles::TOPIC_STORAGE, MessageKind::Storage),
+            (profiles::TOPIC_TEST_RESULTS, MessageKind::TestResult),
+            (profiles::TOPIC_MOTION, MessageKind::Motion),
+            (profiles::TOPIC_ALERTS, MessageKind::Alert),
+            (profiles::TOPIC_CONFIG_APPLIED, MessageKind::ConfigAck),
+            (profiles::TOPIC_DANGER_ACK, MessageKind::ConfigAck),
+        ];
+        for (topic, kind) in expected {
+            assert_eq!(classify(topic, &map), kind, "topic {topic}");
+        }
+    }
+
+    #[test]
+    fn storage_topic_classifies_with_the_firmware_typo() {
+        let map = TopicMap::firmware_defaults();
         assert_eq!(
             classify("azman1/feeds/remaingsdstorage", &map),
             MessageKind::Storage
         );
+        // The corrected spelling is a different topic and stays unknown.
         assert_eq!(
-            classify("azman1/feeds/testresults", &map),
-            MessageKind::TestResult
+            classify("azman1/feeds/remaining-storage", &map),
+            MessageKind::Other
         );
-        assert_eq!(
-            classify("azman1/feeds/accelerometer-data", &map),
-            MessageKind::Motion
-        );
-        assert_eq!(classify("azman1/feeds/alerts", &map), MessageKind::Alert);
-        assert_eq!(
-            classify("cfg/desired/applied", &map),
-            MessageKind::ConfigAck
-        );
-        assert_eq!(classify("cfg/danger_ack", &map), MessageKind::ConfigAck);
     }
 
     #[test]
     fn survives_a_namespace_change_by_leaf_name() {
         let map = TopicMap::firmware_defaults();
         // Same leaf names under a different namespace.
-        assert_eq!(classify("gwl/bore-3/gwl-string", &map), MessageKind::Reading);
+        assert_eq!(
+            classify("gwl/bore-3/gwl-string", &map),
+            MessageKind::Reading
+        );
         assert_eq!(
             classify("telemetry/bore-3/device-status", &map),
             MessageKind::DeviceStatus
@@ -267,23 +239,23 @@ mod tests {
         map.reading = vec!["gwl/bore-3/level".to_string()];
         assert_eq!(classify("gwl/bore-3/level", &map), MessageKind::Reading);
         // The old topic is no longer treated as a reading by name.
-        assert_eq!(classify("azman1/feeds/gwl-string", &map), MessageKind::Other);
+        assert_eq!(
+            classify("azman1/feeds/gwl-string", &map),
+            MessageKind::Other
+        );
     }
 
     #[test]
-    fn detects_reading_shaped_payloads_for_unknown_topics() {
-        assert!(payload_looks_like_reading(
-            r#"{"DeviceID":"8F3A21C04B9E77A1D25C01FE","GWL":"01.25"}"#
-        ));
-        assert!(payload_looks_like_reading(
-            r#"{"GWL":"01.25","TIME":"2026-10-03T01:33:45"}
-"#
-        ));
-        assert!(!payload_looks_like_reading("Free space 1882 MB out of 7456"));
-        assert!(!payload_looks_like_reading("Ready"));
-        assert!(!payload_looks_like_reading("$GPRMC,,V,,,,,,,,,,N*53"));
-        assert!(!payload_looks_like_reading("{\"other\":\"value\"}"));
-        assert!(!payload_looks_like_reading("{not json"));
+    fn reading_shaped_payloads_do_not_promote_an_unknown_topic() {
+        // Classification takes a topic and nothing else: there is no payload
+        // promotion path left to attribute legacy traffic accidentally.
+        let map = TopicMap::firmware_defaults();
+        assert_eq!(classify("testtopic/9", &map), MessageKind::Other);
+        assert_eq!(
+            classify("qasimiotdev/feeds/gwl-string", &map),
+            MessageKind::Reading,
+            "leaf-name classification is name-based, and the binding still gates it"
+        );
     }
 
     #[test]
@@ -292,10 +264,14 @@ mod tests {
         map.reading.push("azman1/feeds/device-status".to_string());
         let topics = map.subscribe_topics();
         assert_eq!(
-            topics.iter().filter(|t| *t == "azman1/feeds/device-status").count(),
+            topics
+                .iter()
+                .filter(|topic| *topic == "azman1/feeds/device-status")
+                .count(),
             1
         );
         assert!(topics.contains(&"azman1/feeds/gwl-string".to_string()));
         assert!(topics.contains(&"cfg/danger_ack".to_string()));
+        assert_eq!(topics.len(), 9);
     }
 }

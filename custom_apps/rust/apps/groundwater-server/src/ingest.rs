@@ -1,51 +1,59 @@
 //! MQTT ingest.
 //!
-//! The firmware publishes at QoS 1, so the broker may redeliver; and its topic
-//! names are compile-time constants that can change between firmware
-//! revisions. The loop therefore does three things defensively:
+//! The transport is deliberately thin: it subscribes, timestamps each message
+//! on arrival, hands it to [`crate::adapter`] and stores whatever the adapter
+//! decided. All interpretation — topic meaning, attribution, clock, health
+//! fields, duplicates — lives in the adapter so it is testable without a
+//! broker (`GWAPP-20261023-slice1` §1).
 //!
-//! 1. It subscribes to the configured topic set, which an operator can override
-//!    without a new binary.
-//! 2. It re-subscribes on every reconnect, because the firmware re-subscribes
-//!    after each wake cycle and the platform must not depend on session state.
-//! 3. It classifies an unrecognised topic by payload shape, so a renamed
-//!    telemetry topic still lands in `readings`.
+//! The enrollment/binding registry is loaded from PostgreSQL and refreshed on a
+//! timer. Two consequences are intentional:
+//!
+//! - a newly enrolled device starts being attributed within one refresh
+//!   interval, without a restart;
+//! - if the refresh fails the previous registry stays in force, so a database
+//!   hiccup does not turn every reading into a quarantine.
+//!
+//! Delivery is at QoS 1, so a redelivery is expected; the adapter classifies it
+//! as a candidate and the delivery log keeps it. Nothing here decides that a
+//! repeat means "no new sample".
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use rumqttc::{AsyncClient, Event, Incoming, MqttOptions};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, RwLock};
 use tokio_postgres::Client;
 
+use crate::adapter::{self, Delivery, DuplicateOutcome, EnrollmentRegistry, IntakeOutcome};
 use crate::config::{MqttSettings, Settings};
-use crate::db::{self, PresenceEvent};
-use crate::telemetry;
-use crate::topics::{self, MessageKind, TopicMap};
+use crate::db;
+use crate::topics::TopicMap;
 
 /// Broadcast channel capacity for live UI events.
 ///
-/// Small on purpose: a slow browser tab must not grow an unbounded queue, and
-/// the UI already falls back to polling.
+/// Small on purpose: a slow browser tab must not grow an unbounded queue.
 const EVENT_CHANNEL_CAPACITY: usize = 64;
+
+/// How often the enrollment/binding registry is reloaded from PostgreSQL.
+const REGISTRY_REFRESH_SECONDS: u64 = 60;
 
 /// A live event pushed to connected browsers over SSE.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum LiveEvent {
-    /// A reading was accepted and stored.
-    Reading {
+    /// A water observation was stored.
+    Observation {
         device_id: String,
-        recorded_at: chrono::DateTime<chrono::Utc>,
+        recorded_at: Option<chrono::DateTime<chrono::Utc>>,
         gwl: f64,
     },
-    /// A reading arrived but was a duplicate delivery.
-    Duplicate { device_id: String },
-    /// A device changed presence.
-    Presence {
-        device_id: String,
-        status: String,
-    },
+    /// A delivery was identical to one already stored at the same device time.
+    Redelivery { device_id: String },
+    /// A different value at a device time that already has one.
+    Conflict { device_id: String },
+    /// Traffic that was recorded but not attributed to any device.
+    Quarantine { topic: String, reason: String },
     /// The broker connection state changed.
     Broker { connected: bool, detail: String },
 }
@@ -70,28 +78,45 @@ impl EventBus {
     }
 }
 
+impl Default for EventBus {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Counters exposed by the status endpoint.
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct IngestStats {
     pub connected: bool,
-    pub readings_accepted: u64,
-    pub readings_duplicate: u64,
-    pub readings_rejected: u64,
-    pub other_messages: u64,
+    /// Every message the loop received.
+    pub deliveries: u64,
+    /// Deliveries that became a stored water observation.
+    pub observations: u64,
+    /// Identical repeats suppressed as redelivery candidates.
+    pub redelivery_candidates: u64,
+    /// Same-time, different-value observations, stored and flagged.
+    pub conflicts: u64,
+    /// Deliveries recorded but not attributed or not a reading.
+    pub quarantined: u64,
+    /// Most recent quarantine reason code, for a quick look at the status page.
+    pub last_quarantine_reason: Option<String>,
     pub last_error: Option<String>,
 }
 
+/// Shared, refreshable trust state.
+pub type SharedRegistry = Arc<RwLock<EnrollmentRegistry>>;
+
 /// Runs the ingest loop until shutdown.
 ///
-/// The event loop is driven by rumqttc; `poll()` reconnects internally, so the
-/// only handling here is resubscribing after each successful connect. Counters
-/// are shared with the status endpoint through `stats`.
+/// `poll()` reconnects internally, so the only handling here is resubscribing
+/// after each successful connect and reloading the registry on its timer.
 pub async fn run(
     settings: Arc<Settings>,
     mqtt: Arc<MqttSettings>,
     client: Arc<Client>,
     bus: EventBus,
     stats: Arc<tokio::sync::Mutex<IngestStats>>,
+    registry: SharedRegistry,
 ) -> Result<(), String> {
     let password = match &mqtt.password_file {
         Some(path) => Some(homelab_common::read_secret_file(path)?),
@@ -109,10 +134,25 @@ pub async fn run(
     let subscribe_topics = settings.topics.subscribe_topics();
     let topic_map = Arc::new(settings.topics.clone());
     let mut connected = false;
+    let mut refresh = tokio::time::interval(Duration::from_secs(REGISTRY_REFRESH_SECONDS));
 
     loop {
         let event = tokio::select! {
             event = event_loop.poll() => event,
+            _ = refresh.tick() => {
+                match db::load_registry(&client).await {
+                    Ok(loaded) => {
+                        let enrollments = loaded.enrollments().count();
+                        let bindings = loaded.bindings().len();
+                        *registry.write().await = loaded;
+                        eprintln!(
+                            "groundwater: registry refreshed ({enrollments} enrollment(s), {bindings} binding(s))"
+                        );
+                    }
+                    Err(err) => eprintln!("groundwater: registry refresh failed, keeping previous: {err}"),
+                }
+                continue;
+            }
             _ = homelab_common::shutdown_signal() => {
                 bus.emit(LiveEvent::Broker {
                     connected: false,
@@ -148,9 +188,10 @@ pub async fn run(
                     &publish.topic,
                     &publish.payload,
                     publish.qos as i16,
-                    &settings,
+                    chrono::Utc::now(),
                     &topic_map,
                     &client,
+                    &registry,
                     &bus,
                     &stats,
                 )
@@ -163,7 +204,8 @@ pub async fn run(
                 let message = err.to_string();
                 let should_log = {
                     let mut guard = stats.lock().await;
-                    let changed = connected || guard.last_error.as_deref() != Some(message.as_str());
+                    let changed =
+                        connected || guard.last_error.as_deref() != Some(message.as_str());
                     guard.connected = false;
                     guard.last_error = Some(message.clone());
                     changed
@@ -185,200 +227,148 @@ pub async fn run(
 /// Pause between connection failures.
 const RECONNECT_BACKOFF_SECONDS: u64 = 5;
 
+/// Runs one delivery through the adapter and stores the result.
 #[allow(clippy::too_many_arguments)]
-async fn handle_publish(
+pub async fn handle_publish(
     topic: &str,
     payload: &[u8],
     qos: i16,
-    settings: &Settings,
+    received_at: chrono::DateTime<chrono::Utc>,
     topic_map: &TopicMap,
     client: &Client,
+    registry: &SharedRegistry,
     bus: &EventBus,
     stats: &Arc<tokio::sync::Mutex<IngestStats>>,
 ) {
-    let text = String::from_utf8_lossy(payload);
-    let mut kind = topics::classify(topic, topic_map);
+    let delivery = Delivery {
+        topic,
+        payload,
+        qos,
+        received_at,
+    };
+    let registry = registry.read().await.clone();
+    let evaluation = adapter::evaluate(&delivery, &registry, topic_map);
 
-    // Tolerance path: an unknown topic whose payload carries the telemetry
-    // field set is still a reading.
-    if kind == MessageKind::Other && topics::payload_looks_like_reading(&text) {
-        eprintln!(
-            "groundwater: unrecognised topic {topic} carried a telemetry payload; treating it as a reading"
-        );
-        kind = MessageKind::Reading;
-    }
-
-    match kind {
-        MessageKind::Reading => {
-            let offset = peek_device_id(&text)
-                .map_or(telemetry::DEFAULT_LOCAL_OFFSET_MINUTES, |id| {
-                    settings.local_offset_minutes(&id)
-                });
-            match telemetry::parse_reading(&text, offset) {
-                Ok(reading) => {
-                    if let Err(err) = db::upsert_device_presence(
-                        client,
-                        &reading.device_id,
-                        offset,
-                        PresenceEvent::Seen,
-                    )
-                    .await
-                    {
-                        eprintln!("groundwater: {err}");
-                    }
-                    match db::insert_reading(client, &reading).await {
-                        Ok(true) => {
-                            stats.lock().await.readings_accepted += 1;
-                            bus.emit(LiveEvent::Reading {
-                                device_id: reading.device_id.clone(),
-                                recorded_at: reading.recorded_at,
-                                gwl: reading.gwl,
-                            });
-                            bus.emit(LiveEvent::Presence {
-                                device_id: reading.device_id.clone(),
-                                status: "seen".to_string(),
-                            });
-                            let _ = db::insert_message(
-                                client,
-                                topic,
-                                kind.as_str(),
-                                Some(&reading.device_id),
-                                qos,
-                                &reading.raw,
-                                None,
-                            )
-                            .await;
-                        }
-                        Ok(false) => {
-                            // QoS 1 redelivery: already stored.
-                            stats.lock().await.readings_duplicate += 1;
-                            bus.emit(LiveEvent::Duplicate {
-                                device_id: reading.device_id,
-                            });
-                        }
-                        Err(err) => {
-                            eprintln!("groundwater: {err}");
-                            stats.lock().await.last_error = Some(err);
-                        }
-                    }
-                }
-                Err(err) => {
-                    {
-                        let mut guard = stats.lock().await;
-                        guard.readings_rejected += 1;
-                        guard.last_error = Some(err.to_string());
-                    }
-                    eprintln!("groundwater: rejected reading on {topic}: {err}");
-                    // Keep the raw payload so a firmware change is diagnosable.
-                    let _ = db::insert_message(
-                        client,
-                        topic,
-                        kind.as_str(),
-                        None,
-                        qos,
-                        text.trim(),
-                        Some(&err.to_string()),
-                    )
-                    .await;
-                }
-            }
-        }
-        MessageKind::DeviceStatus => {
-            let status = text.trim();
-            let Some(device_id) = peek_device_id_from_status(status) else {
-                // The firmware publishes `Ready`/`sleep` with no device id, so
-                // with several devices sharing one broker the transition cannot
-                // be attributed. Keep the raw message rather than guessing.
-                let _ = db::insert_message(
-                    client,
-                    topic,
-                    kind.as_str(),
-                    None,
-                    qos,
-                    text.trim(),
-                    Some("status message carries no device identity"),
-                )
-                .await;
-                return;
-            };
-            let (event, label) = if status.eq_ignore_ascii_case("sleep") {
-                (PresenceEvent::Asleep, "asleep")
-            } else {
-                (PresenceEvent::Awake, "awake")
-            };
-            let offset = settings.local_offset_minutes(&device_id);
-            let _ = db::upsert_device_presence(client, &device_id, offset, event).await;
-            bus.emit(LiveEvent::Presence {
-                device_id,
-                status: label.to_string(),
-            });
-            let _ = db::insert_message(client, topic, kind.as_str(), None, qos, text.trim(), None).await;
-        }
-        _ => {
-            stats.lock().await.other_messages += 1;
-            let _ = db::insert_message(
-                client,
-                topic,
-                kind.as_str(),
-                peek_device_id(&text).as_deref(),
-                qos,
-                text.trim(),
-                None,
+    let intake = match evaluation {
+        adapter::Evaluation::Quarantined {
+            record,
+            reason,
+            detail,
+        } => {
+            eprintln!(
+                "groundwater: quarantined {topic}: {} ({detail})",
+                reason.code()
+            );
+            adapter::finalize(
+                adapter::Evaluation::Quarantined {
+                    record,
+                    reason,
+                    detail,
+                },
+                adapter::DuplicateDecision::fresh("not evaluated (quarantined)"),
             )
-            .await;
+        }
+        adapter::Evaluation::Candidate {
+            record,
+            observation,
+        } => {
+            // Only now, with a derived device time, is a duplicate lookup
+            // meaningful. A failure here must not drop the observation; it
+            // degrades to "new" with the reason recorded.
+            let history = match db::prior_observations(
+                client,
+                &observation.device_id,
+                observation.recorded_at,
+                observation.received_at,
+            )
+            .await
+            {
+                Ok(history) => history,
+                Err(err) => {
+                    eprintln!("groundwater: duplicate lookup failed: {err}");
+                    stats.lock().await.last_error.replace(err.clone());
+                    Vec::new()
+                }
+            };
+            let decision = adapter::classify_duplicate(&observation, &history);
+            adapter::finalize(
+                adapter::Evaluation::Candidate {
+                    record,
+                    observation,
+                },
+                decision,
+            )
+        }
+    };
+
+    {
+        let mut guard = stats.lock().await;
+        guard.deliveries += 1;
+        if let IntakeOutcome::Quarantined { reason, .. } = &intake.outcome {
+            guard.quarantined += 1;
+            guard.last_quarantine_reason = Some(reason.code().to_string());
         }
     }
-}
 
-/// Best-effort device id extraction used before full parsing, so the correct
-/// per-device time offset can be applied.
-fn peek_device_id(payload: &str) -> Option<String> {
-    let value: serde_json::Value = serde_json::from_str(payload.trim()).ok()?;
-    let object = value.as_object()?;
-    for key in ["DeviceID", "deviceId", "device_id"] {
-        if let Some(text) = object.get(key).and_then(|value| value.as_str()) {
-            if !text.trim().is_empty() {
-                return Some(text.trim().to_ascii_uppercase());
+    if let Err(err) = db::record_intake(client, &intake).await {
+        eprintln!("groundwater: {err}");
+        stats.lock().await.last_error = Some(err);
+        return;
+    }
+
+    match &intake.outcome {
+        IntakeOutcome::Accepted {
+            observation,
+            duplicate,
+        } => {
+            let device_id = intake
+                .record
+                .device_id
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string());
+            match (&observation, duplicate.outcome) {
+                (Some(observation), DuplicateOutcome::Conflict) => {
+                    stats.lock().await.conflicts += 1;
+                    bus.emit(LiveEvent::Conflict {
+                        device_id: device_id.clone(),
+                    });
+                    stats.lock().await.observations += 1;
+                    bus.emit(LiveEvent::Observation {
+                        device_id,
+                        recorded_at: observation.recorded_at,
+                        gwl: observation.gwl,
+                    });
+                }
+                (Some(observation), _) => {
+                    stats.lock().await.observations += 1;
+                    bus.emit(LiveEvent::Observation {
+                        device_id,
+                        recorded_at: observation.recorded_at,
+                        gwl: observation.gwl,
+                    });
+                }
+                (None, DuplicateOutcome::RedeliveryCandidate) => {
+                    stats.lock().await.redelivery_candidates += 1;
+                    bus.emit(LiveEvent::Redelivery { device_id });
+                }
+                (None, _) => {
+                    // Accepted but suppressed for a reason the adapter will
+                    // have recorded on the delivery; nothing to stream.
+                }
             }
         }
+        IntakeOutcome::Quarantined { reason, .. } => {
+            bus.emit(LiveEvent::Quarantine {
+                topic: intake.record.topic.clone(),
+                reason: reason.code().to_string(),
+            });
+        }
     }
-    None
-}
-
-/// The firmware's device-status messages carry no identity. A future revision
-/// may add one; this accepts `{"DeviceID":"..."}` shapes and returns `None` for
-/// the current bare `Ready`/`sleep`, letting the caller record the raw message.
-fn peek_device_id_from_status(status: &str) -> Option<String> {
-    let trimmed = status.trim();
-    if !trimmed.starts_with('{') {
-        return None;
-    }
-    peek_device_id(trimmed)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn extracts_device_id_before_full_parsing() {
-        let payload = r#"{"DeviceID":"8f3a21c0","GWL":"01.25"}"#;
-        assert_eq!(peek_device_id(payload).as_deref(), Some("8F3A21C0"));
-        assert_eq!(peek_device_id(r#"{"other":"x"}"#), None);
-        assert_eq!(peek_device_id("Ready"), None);
-    }
-
-    #[test]
-    fn device_status_without_identity_is_unattributable() {
-        // Current firmware: bare `Ready`/`sleep`.
-        assert_eq!(peek_device_id_from_status("Ready"), None);
-        assert_eq!(peek_device_id_from_status("sleep"), None);
-        // A future revision that adds identity is accepted.
-        assert_eq!(
-            peek_device_id_from_status(r#"{"DeviceID":"abc","state":"Ready"}"#).as_deref(),
-            Some("ABC")
-        );
-    }
 
     #[test]
     fn event_bus_delivers_to_subscribers_and_survives_no_listeners() {
@@ -389,12 +379,21 @@ mod tests {
             detail: "no listeners".to_string(),
         });
         let mut receiver = bus.subscribe();
-        bus.emit(LiveEvent::Reading {
+        bus.emit(LiveEvent::Observation {
             device_id: "ABC".to_string(),
-            recorded_at: chrono::Utc::now(),
+            recorded_at: Some(chrono::Utc::now()),
             gwl: 1.0,
         });
         let event = receiver.try_recv().expect("event delivered");
-        assert!(matches!(event, LiveEvent::Reading { .. }));
+        assert!(matches!(event, LiveEvent::Observation { .. }));
+    }
+
+    #[test]
+    fn fresh_stats_start_at_zero_and_name_no_reason() {
+        let stats = IngestStats::default();
+        assert_eq!(stats.deliveries, 0);
+        assert_eq!(stats.observations, 0);
+        assert_eq!(stats.quarantined, 0);
+        assert_eq!(stats.last_quarantine_reason, None);
     }
 }

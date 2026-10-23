@@ -1,15 +1,19 @@
 //! Runtime configuration, sourced from the environment.
 //!
 //! Everything the firmware might change is an environment variable, not a
-//! compile-time constant: broker details, the topic map, and per-device time
-//! offsets. That is the mechanism for following a firmware topic rename
-//! without shipping a new binary — see [`TopicMap`] overrides.
+//! compile-time constant: broker details and the topic map. That is the
+//! mechanism for following a firmware topic rename without shipping a new
+//! binary — see [`TopicMap`] overrides.
+//!
+//! Trust state is deliberately *not* configuration: enrollments, per-device
+//! bindings and clock policy live in PostgreSQL, because they are statements
+//! about which device is allowed to be which, and those must be auditable and
+//! revocable rather than copied into a unit file.
 
 use std::path::PathBuf;
 
 use serde::Deserialize;
 
-use crate::telemetry::DEFAULT_LOCAL_OFFSET_MINUTES;
 use crate::topics::TopicMap;
 
 /// Service identity presented to the broker.
@@ -19,14 +23,9 @@ use crate::topics::TopicMap;
 /// device's own session.
 pub const DEFAULT_CLIENT_ID: &str = "groundwater-platform";
 
-/// How long a device is considered "awake" after publishing `Ready`. The
-/// firmware listens for roughly eight minutes per cycle
-/// (`peripheral_init.c:361-363`, two 240 s TIM7 periods).
-pub const AWAKE_WINDOW_MINUTES: i64 = 10;
-
-/// After this long without any message a device is reported as `stale`
-/// rather than `asleep`, because the firmware has no LWT and simply stops
-/// publishing while it sleeps between cycles.
+/// After this long without an accepted reading a device is reported as
+/// `stale`: the firmware has no LWT and simply stops publishing while it
+/// sleeps between cycles.
 pub const STALE_AFTER_MINUTES: i64 = 30;
 
 /// MQTT keepalive interval. The firmware's modem keeps its own default; this
@@ -36,9 +35,6 @@ pub const DEFAULT_KEEP_ALIVE_SECONDS: u64 = 30;
 #[derive(Debug, Clone)]
 pub struct Settings {
     pub database_url: String,
-    /// Built Qwik bundle to serve. Absent means API-only, which is how the
-    /// unit runs before a frontend build is present.
-    pub frontend_dir: Option<PathBuf>,
     pub address: String,
     pub port: u16,
     pub topics: TopicMap,
@@ -59,10 +55,6 @@ pub struct MqttSettings {
     /// password never appears in the process environment or the unit file.
     pub password_file: Option<PathBuf>,
     pub keep_alive_seconds: u64,
-    /// Device local-time offsets that override the firmware default. Format:
-    /// `DEVICEID=MINUTES,DEVICEID2=MINUTES2`. Used when a logger's `ltost` is
-    /// known but no config push has been sent.
-    pub device_offsets: Vec<(String, i32)>,
 }
 
 impl Settings {
@@ -85,10 +77,6 @@ impl Settings {
         Ok(Self {
             database_url: homelab_common::env_required("GROUNDWATER_DATABASE_URL")
                 .map_err(|err| format!("{err} (PostgreSQL connection URL)"))?,
-            frontend_dir: std::env::var("GROUNDWATER_FRONTEND_DIR")
-                .ok()
-                .filter(|value| !value.trim().is_empty())
-                .map(PathBuf::from),
             address,
             port,
             topics: load_topics()?,
@@ -97,20 +85,6 @@ impl Settings {
                 .parse()
                 .map_err(|_| "GROUNDWATER_RETENTION_DAYS must be whole days".to_string())?,
         })
-    }
-
-    /// Local offset for a device, falling back to the firmware's `ltost`
-    /// default when the device is not explicitly configured.
-    pub fn local_offset_minutes(&self, device_id: &str) -> i32 {
-        self.mqtt
-            .as_ref()
-            .and_then(|mqtt| {
-                mqtt.device_offsets
-                    .iter()
-                    .find(|(id, _)| id.eq_ignore_ascii_case(device_id))
-                    .map(|(_, minutes)| *minutes)
-            })
-            .unwrap_or(DEFAULT_LOCAL_OFFSET_MINUTES)
     }
 }
 
@@ -147,7 +121,9 @@ fn load_mqtt() -> Result<Option<MqttSettings>, String> {
         &DEFAULT_KEEP_ALIVE_SECONDS.to_string(),
     )
     .parse()
-    .map_err(|_| "GROUNDWATER_MQTT_KEEP_ALIVE_SECONDS must be a whole number of seconds".to_string())?;
+    .map_err(|_| {
+        "GROUNDWATER_MQTT_KEEP_ALIVE_SECONDS must be a whole number of seconds".to_string()
+    })?;
 
     Ok(Some(MqttSettings {
         url,
@@ -157,7 +133,6 @@ fn load_mqtt() -> Result<Option<MqttSettings>, String> {
         username,
         password_file,
         keep_alive_seconds,
-        device_offsets: parse_device_offsets(),
     }))
 }
 
@@ -250,35 +225,6 @@ fn default_port(tls: bool) -> u16 {
     }
 }
 
-/// Parses `GROUNDWATER_MQTT_DEVICE_OFFSETS`, e.g. `ABC123=330,DEF456=0`.
-fn parse_device_offsets() -> Vec<(String, i32)> {
-    let raw = std::env::var("GROUNDWATER_MQTT_DEVICE_OFFSETS").unwrap_or_default();
-    parse_offsets_from(&raw)
-}
-
-/// Parses a `DEVICE=MINUTES` list, skipping entries that are not in that form.
-fn parse_offsets_from(raw: &str) -> Vec<(String, i32)> {
-    let mut offsets = Vec::new();
-    for entry in raw.split(',') {
-        let entry = entry.trim();
-        if entry.is_empty() {
-            continue;
-        }
-        let Some((device, minutes)) = entry.split_once('=') else {
-            eprintln!("groundwater: ignoring device offset without '=': {entry}");
-            continue;
-        };
-        let device = device.trim();
-        match minutes.trim().parse::<i32>() {
-            Ok(minutes) if !device.is_empty() => {
-                offsets.push((device.to_ascii_uppercase(), minutes))
-            }
-            _ => eprintln!("groundwater: ignoring invalid device offset: {entry}"),
-        }
-    }
-    offsets
-}
-
 /// Loads the topic map, applying `GROUNDWATER_MQTT_TOPICS_FILE` overrides on
 /// top of the firmware defaults.
 fn load_topics() -> Result<TopicMap, String> {
@@ -292,8 +238,8 @@ fn load_topics() -> Result<TopicMap, String> {
     };
     let raw = std::fs::read_to_string(&path)
         .map_err(|err| format!("failed to read topic map {}: {err}", path.display()))?;
-    let overrides: TopicOverrides =
-        serde_json::from_str(&raw).map_err(|err| format!("invalid topic map {}: {err}", path.display()))?;
+    let overrides: TopicOverrides = serde_json::from_str(&raw)
+        .map_err(|err| format!("invalid topic map {}: {err}", path.display()))?;
     overrides.apply(&mut topics);
     Ok(topics)
 }
@@ -350,15 +296,6 @@ impl TopicOverrides {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parses_device_offsets_and_skips_malformed_entries() {
-        assert_eq!(
-            parse_offsets_from("abc123=330, DEF456=0 ,,broken,=5,x=notanumber"),
-            vec![("ABC123".to_string(), 330), ("DEF456".to_string(), 0)]
-        );
-        assert!(parse_offsets_from("").is_empty());
-    }
 
     #[test]
     fn mqtt_endpoint_parses_scheme_host_and_port() {
@@ -441,10 +378,7 @@ mod tests {
         let overrides: TopicOverrides = serde_json::from_str(raw).expect("parses");
         let mut topics = TopicMap::firmware_defaults();
         overrides.apply(&mut topics);
-        assert_eq!(
-            topics.reading,
-            vec!["azman1/feeds/gwl-string".to_string()]
-        );
+        assert_eq!(topics.reading, vec!["azman1/feeds/gwl-string".to_string()]);
     }
 
     #[test]
