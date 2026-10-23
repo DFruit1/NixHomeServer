@@ -330,12 +330,31 @@ An untyped blocked card whose latest real run failed may be classified once
 with `changes.block_kind=capability` and an explicit `Input supplier: agent`
 or `model/provider` reason. This records native classification without changing
 status or spent failure counters; it cannot retype an existing gate or block.
-For crashed, timed_out, spawn_failed or gave_up failures, omit terminal_episode.
-That optional object serves two different cases only: an untyped native blocked
-containment, or an existing capability hold's reclaimed gave_up episode. Do not
-infer that every terminal run needs it. A failed-run classification needs no
-invented event ID. Read back block_kind=capability before inspecting its recovery
-version; an untyped failure is not yet a uniquely typed technical hold.
+For ordinary untyped crashed, timed_out, spawn_failed or gave_up failures,
+omit terminal_episode.
+That optional object handles an untyped native blocked containment, an existing
+capability hold's reclaimed or elapsed-limit timed_out gave_up episode, or the
+bounded supplier clarification below. Do not infer that every terminal run needs
+it. A failed-run classification needs no invented event ID. Read back
+block_kind=capability before inspecting its recovery version; an untyped failure is not yet a uniquely typed technical hold.
+For a current same-kind capability TRIAGE block loop whose old reason has no
+supplier marker at all, use `terminal_episode={run_id,event_id}` and changes
+exactly `{block_kind:capability}` to clarify that supplier. First actually verify
+the missing input's delivery at the consumer destination. The new reason must
+contain exactly one canonical `Input supplier: agent` or
+`Input supplier: model/provider` marker and substantive `Repair evidence:`
+naming that verified delivery (at least three words). This is the coordinator's
+attestation, not automated evidence acceptance; `Authorized continuation:` alone
+is insufficient. Explicit old supplier text of any kind, including malformed or
+ambiguously spaced markers, refuses this branch. The latest finished run must
+be blocked/blocked and the latest lifecycle event must be its own run-bound
+block_loop_detected at or after its end, with capability kind and positive
+integer recurrences matching the task and reaching the positive integer limit.
+The amendment appends one honest classification event with actor, CAS, source
+episode and preserved resume phase. Every task column, prior event, run, link,
+counter, budget and review gate stays unchanged. Replays and superseded episodes
+refuse; this neither re-arms nor releases the task. Read back the new hold and
+obtain a fresh recovery token for any separately authorized guarded resume.
 For repaired capability holds use `kanban_unblock` with exact recovery_version
 and recovery_reason in blocked/scheduled/triage; this preserves failure counters
 and consumes one hold version. Ordinary unblock resets the native failure

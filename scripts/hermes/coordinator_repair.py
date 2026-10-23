@@ -233,14 +233,56 @@ def _verification_intake(conn, task, changes, intake, reason):
         raise ValueError('Verification intake never rewrites a structured or native implementation workflow')
 
 
+def _clarify_block_loop(conn, task, run, event, payload, reason):
+    """Clarify a missing supplier on one same-kind native TRIAGE episode.
+
+    The repair statement attests to delivery the coordinator actually verified;
+    this seam records that attestation, never executes or accepts its evidence.
+    Explicit old supplier text, including malformed/ambiguous markers, is a gate
+    to reconcile separately and must never be overwritten by this branch.
+    """
+    # Include native phase/claim/failure events beyond the terminal CAS set.
+    # A later phase event also supersedes this loop, even if a malformed caller
+    # left the task/run rows unchanged. Keep older amendment branches unchanged.
+    lifecycle = EPISODE_KINDS + ('claimed','spawned','changes_requested','review_requested',
+        'review_reopened','status','reclaimed','stale','timed_out','crashed',
+        'spawn_failed','rate_limited','failed')
+    if conn.execute('SELECT 1 FROM task_events WHERE task_id=? AND id>? AND kind IN ('
+                    + ','.join('?' * len(lifecycle)) + ') LIMIT 1',
+                    (task['id'],event['id'],*lifecycle)).fetchone():
+        raise ValueError('A newer native lifecycle event supersedes this supplier episode')
+    marker = re.compile(r'input[\W_]*supplier', re.IGNORECASE)
+    old = payload.get('reason')
+    count, limit = payload.get('recurrences'), payload.get('limit')
+    if (task['status'] != 'triage' or event['run_id'] != run['id']
+            or run['status'] != 'blocked' or run['outcome'] != 'blocked'
+            or payload.get('kind') != 'capability'
+            or type(count) is not int or type(limit) is not int or limit <= 0
+            or type(task['block_recurrences']) is not int
+            or count <= 0 or count != task['block_recurrences'] or count < limit):
+        raise ValueError('Supplier clarification needs the current same-kind capability TRIAGE block loop')
+    if not isinstance(old, str) or marker.search(old):
+        raise ValueError('Supplier clarification refuses every explicit or ambiguous old supplier marker')
+    supplier = re.findall(r'(?<!\w)Input supplier: (agent|model/provider)(?=$|[.;](?:\s|$)|\n)', reason)
+    if len(marker.findall(reason)) != 1 or len(supplier) != 1:
+        raise ValueError('Supplier clarification needs exactly one canonical agent/model supplier marker')
+    # A bare continuation authorisation cannot supply the absent input. Require
+    # a descriptive repair statement, not an empty marker or one-word assertion.
+    repairs = re.findall(r'(?:^|\s)Repair evidence: ([^\n]+)', reason)
+    if len(repairs) != 1 or len(repairs[0].split()) < 3:
+        raise ValueError('Supplier clarification needs substantive Repair evidence naming verified delivery')
+    return 'block-loop-supplier-clarification'
+
+
 def _terminal_branch(conn, task, episode, reason):
     """Validate ONE closed terminal episode; name the branch it authorises.
 
-    Both branches only APPEND one native classification/reaffirmation event.
-    Neither creates a run, moves a counter, rewrites a lease or releases the
-    card: the existing one-version reservation still governs the later release.
-    Both branches also need the same supplier line and material repair or
-    authorized-continuation evidence; a reaffirmation additionally needs the
+    All branches only APPEND one native classification/reaffirmation event.
+    None creates a run, moves a counter, rewrites a lease or releases the card:
+    the existing one-version reservation still governs the later release.
+    Containment/reaffirmation need supplier and repair or authorized-continuation
+    evidence; supplier clarification requires the stricter canonical marker and
+    verified-delivery repair attestation. A reaffirmation additionally needs the
     run's own native claim and prior release plus the breaker's own trip
     (stale-claim reclaim or elapsed-limit timeout) chronology.
     """
@@ -289,6 +331,8 @@ def _terminal_branch(conn, task, episode, reason):
         return 'terminal-containment'
     if task['block_kind'] != 'capability':
         raise ValueError('Only an untyped containment or an existing capability episode can be typed')
+    if event['kind'] == 'block_loop_detected':
+        return _clarify_block_loop(conn, task, run, event, payload, reason)
     return _reaffirm(conn, task, run, event, payload, tid)
 
 
@@ -444,10 +488,12 @@ def amend(kb, conn, tid, *, expected_version=None, changes=None, reason=None, ru
         if 'block_kind' in changes:
             if terminal_episode is not None:
                 # One closed terminal episode, one branch, one appended event.
-                if (changes['block_kind'] != 'capability' or task['status'] != 'blocked'
+                if (changes['block_kind'] != 'capability' or task['status'] not in {'blocked','triage'}
                         or (task['body'] or '').lstrip().startswith('ASK:')):
-                    raise ValueError('A terminal episode only types one blocked technical hold')
+                    raise ValueError('A terminal episode only types one blocked technical hold or clarifies its capability TRIAGE supplier')
                 branch = _terminal_branch(conn, task, terminal_episode, reason)
+                if task['status'] != 'blocked' and branch != 'block-loop-supplier-clarification':
+                    raise ValueError('Only supplier clarification accepts a TRIAGE terminal episode')
                 resume_status = kb._resume_status_from_events(conn, tid)
             else:
                 if (changes['block_kind'] != 'capability' or task['block_kind'] is not None
