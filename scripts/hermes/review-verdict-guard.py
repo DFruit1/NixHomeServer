@@ -47,6 +47,10 @@ def guard_feature_routing(payload, root):
     """
     args = payload.get('tool_input') or {}
     body = args.get('body') or ''
+    if (payload['tool_name'] == 'kanban_create' and native_contract(body)
+            and args.get('assignee') in {'feature-reviewer', 'project-auditor'}):
+        raise ValueError('Workflow: native-review-v1 belongs to a same-card implementation;'
+                         ' omit it on a standalone verifier that qualifies existing evidence')
     if (payload['tool_name'] == 'kanban_create'
             and args.get('assignee') in {'standard-implementer', 'local-implementer'}
             and re.search(r'native-review-v1', body, re.I) and not native_contract(body)):
@@ -114,7 +118,7 @@ def guard_feature_routing(payload, root):
     return {}
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from fleet_workflow import native_contract, require_native_acceptance
+from fleet_workflow import native_contract, require_native_acceptance, validate_handoff_metadata
 
 
 def verification(task, db=None):
@@ -361,19 +365,40 @@ def guard_unlink(payload, root):
 def guard(payload, root):
     """Fail-closed dispatch: any guard error blocks the handoff it guards."""
     tool = payload.get('tool_name')
-    if tool not in ('kanban_complete', 'kanban_unlink', 'kanban_create', 'kanban_link'):
+    if tool not in ('kanban_complete', 'kanban_unlink', 'kanban_create', 'kanban_link', 'kanban_request_review'):
         return {}
     try:
         if tool in ('kanban_create', 'kanban_link'):
             return guard_feature_routing(payload, root)
         if tool == 'kanban_unlink':
             return guard_unlink(payload, root)
+        if tool == 'kanban_request_review':
+            return guard_request_review(payload, root)
         return guard_complete(payload, root)
     except (ValueError, TypeError, OSError, sqlite3.Error, subprocess.TimeoutExpired) as exc:
         return {'action': 'block',
                 'message': f'{tool} refused by the review-verdict guard: {exc}.'
                            ' Keep the handoff open; never treat done as'
                            ' acceptance or bypass this guard with the CLI.'}
+def guard_request_review(payload, root):
+    """Preflight the same provenance contract acceptance will later enforce."""
+    args = payload.get('tool_input') or {}
+    board, task_id = args.get('board'), args.get('task_id')
+    if (not isinstance(board, str) or not re.fullmatch(r'[A-Za-z0-9_-]+', board)
+            or not isinstance(task_id, str) or not re.fullmatch(r't_[A-Za-z0-9_]+', task_id)):
+        raise ValueError('Provide the exact board and task_id for the review handoff check')
+    path = root/'kanban/boards'/board/'kanban.db'
+    with closing(sqlite3.connect(path.resolve().as_uri()+'?mode=ro', uri=True, timeout=5)) as db:
+        db.row_factory = sqlite3.Row
+        db.execute('PRAGMA query_only=ON'); db.execute('BEGIN')
+        task = db.execute('SELECT body FROM tasks WHERE id=?', (task_id,)).fetchone()
+        if task is None:
+            raise ValueError('Unknown task; do not infer review handoff scope')
+        if native_contract(task['body']):
+            validate_handoff_metadata(args.get('metadata'))
+    return {}
+
+
 def guard_complete(payload, root):
     """The kanban_complete check: verdict contracts and review-gate parents."""
     args = payload.get('tool_input') or {}
