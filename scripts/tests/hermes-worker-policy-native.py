@@ -11,6 +11,11 @@ parser.add_argument('--hermes-repo',type=Path,required=True)
 parser.add_argument('--scratch',type=Path,required=True)
 args=parser.parse_args()
 args.scratch.mkdir(parents=True,exist_ok=True)
+# A dispatched worker's own pins must never decide this isolated fixture.
+for key in ('HERMES_KANBAN_TASK','HERMES_KANBAN_RUN_ID','HERMES_KANBAN_DB',
+            'HERMES_KANBAN_BOARD','HERMES_DELEGATED_CHILD_CONTEXT'):
+    os.environ.pop(key,None)
+os.environ['HERMES_DISABLE_LAZY_INSTALLS']='1'
 os.environ['HERMES_HOME']=str(args.scratch/'home')
 os.environ['HERMES_ROOT']=os.environ['HERMES_HOME']
 os.environ['HERMES_KANBAN_WORKSPACES_ROOT']=str(args.scratch/'workspaces')
@@ -22,6 +27,12 @@ overlay=args.scratch/'overlay';overlay.mkdir(exist_ok=True)
 for name in ('kanban_db.py','kanban_db_dispatch.py'):
     (overlay/name).write_text(adapt(name,(args.hermes_repo/'hermes_cli'/name).read_text()))
 (overlay/'nixhomeserver_worker_policy.py').write_text((Path(__file__).resolve().parents[1]/'hermes/worker-policy.py').read_text())
+(overlay/'nixhomeserver_create_board.py').write_text((Path(__file__).resolve().parents[1]/'hermes/create-board-policy.py').read_text())
+tools_overlay=args.scratch/'tools-overlay';tools_overlay.mkdir(exist_ok=True)
+for name in ('kanban_tools.py','kanban_tools_schemas.py'):
+    (tools_overlay/name).write_text(adapt('tools/'+name,(args.hermes_repo/'tools'/name).read_text()))
+import tools  # noqa: E402
+tools.__path__.insert(0,str(tools_overlay))
 import hermes_cli  # noqa: E402
 hermes_cli.__path__.insert(0,str(overlay))
 from hermes_cli import kanban_db as kb,kanban_db_dispatch as dispatch  # noqa: E402
@@ -134,6 +145,67 @@ try:
             spawn_fn=capture,per_profile_caps=None,per_profile_running={})
         assert not spawned and before==list(db.iterdump())
     print('PASS native independent reviewer receives sdlc-review without coordinator pin; rework retains original skills')
+    # --- Model-facing kanban_create names its board ---------------------------
+    # The schema and the handler are the real adapted native seams, exercised
+    # against board files that only exist under --scratch.
+    assert 'tools.kanban_tools' not in sys.modules, 'import the tool seam before another module pins upstream'
+    from tools import kanban_tools as kanban_tools
+    from tools import kanban_tools_schemas as tool_schemas
+    assert list(kanban_tools.registry.get_schema('kanban_create')['parameters']['required'])==[
+        'title','assignee','board']
+    assert 'board' not in kanban_tools.registry.get_schema('kanban_show')['parameters']['required']
+    for name,schema in vars(tool_schemas).items():
+        if name!='KANBAN_CREATE_SCHEMA' and isinstance(schema,dict):
+            required=(schema.get('parameters') or {}).get('required') or []
+            assert 'board' not in required, 'board became mandatory for '+name
+    assert tool_schemas.KANBAN_CREATE_SCHEMA['parameters']['properties']['board']['description'].startswith(
+        'Kanban board slug to target. kanban_create requires it explicitly')
+    def create(**fields):
+        return json.loads(kanban_tools._handle_create(fields))
+    kb.create_board('ownboard'); kb.create_board('otherboard')
+    own_path=kb.kanban_db_path('ownboard'); other_path=kb.kanban_db_path('otherboard')
+    def task_count(path):
+        conn=connect(path)
+        try:
+            return conn.execute('SELECT COUNT(*) FROM tasks').fetchone()[0]
+        finally:
+            conn.close()
+    for fields,expected in (
+            ({'title':'Omitted board','assignee':'standard-implementer'},'board is required'),
+            ({'title':'Blank board','assignee':'standard-implementer','board':'   '},'board is required'),
+            ({'title':'Malformed board','assignee':'standard-implementer','board':'Bad Board'},
+             'valid board slug'),
+            ({'title':'Unknown board','assignee':'standard-implementer','board':'no-such-board'},
+             'does not exist')):
+        result=create(**fields)
+        assert expected in result.get('error',''), (fields,result)
+        assert 'Nothing changed' in result['error'], result
+    assert not kb.board_dir('no-such-board').exists(), 'a refused create must not invent a board'
+    assert task_count(own_path)==0 and task_count(other_path)==0
+    created=create(title='Named board',assignee='standard-implementer',board='ownboard')
+    assert created.get('task_id'), created
+    own=connect(own_path)
+    try:
+        assert kb.get_task(own,created['task_id']).title=='Named board'
+        worker_card=kb.create_task(own,title='Worker card',assignee='standard-implementer',
+            workspace_kind='dir',workspace_path=str(args.scratch))
+    finally:
+        own.close()
+    assert task_count(other_path)==0
+    with patch.dict(os.environ,{'HERMES_KANBAN_BOARD':'ownboard','HERMES_KANBAN_DB':str(own_path),
+                                'HERMES_KANBAN_TASK':worker_card,'HERMES_KANBAN_RUN_ID':'1'}):
+        for board,expected in (('otherboard',"own board 'ownboard'"),(None,'board is required')):
+            fields={'title':'Foreign worker board','assignee':'standard-implementer'}
+            if board is not None:
+                fields['board']=board
+            result=create(**fields)
+            assert expected in result.get('error',''), (board,result)
+        assert task_count(other_path)==0, 'a worker must not write another board'
+        own_before=task_count(own_path)
+        result=create(title='Worker own board',assignee='standard-implementer',board='ownboard')
+        assert result.get('task_id'), result
+        assert task_count(own_path)==own_before+1
+    print('PASS native kanban_create requires an existing explicit board and keeps the worker own-board fence')
     assert db.execute('PRAGMA integrity_check').fetchone()[0]=='ok'
     print('PASS native create, dispatch, first-failure breaker, release receipts and database integrity')
 finally:

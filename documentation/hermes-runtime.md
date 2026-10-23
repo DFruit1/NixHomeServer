@@ -109,7 +109,7 @@ Validation: `bash scripts/tests/test-hermes-runtime-evidence.sh`,
 `bash scripts/tests/test-hermes-behavior-trials.sh`. Native provider recovery is
 covered by Hermes' `test_kanban_db.py` terminal-provider and rate-limit cases.
 
-## Worker budgets and titles
+## Worker budgets, titles and explicit create boards
 
 Install these independent runtime settings and lifecycle checks with:
 
@@ -142,6 +142,16 @@ are checked before any writes; incompatible upstream source stops installation.
 Other native edits are retained. Re-run check/validation after Hermes upgrades;
 this is a maintained local adapter, not an upstream-supported policy hook.
 
+The same installer makes the model-facing `kanban_create` name its board.
+`tools/kanban_tools_schemas.py` marks `board` required for that tool and
+`tools/kanban_tools.py` validates the value before any board file is opened,
+created or written: an omitted, blank, malformed or unknown slug is refused with
+`Nothing changed`, and a dispatched worker may only create on the board its card
+was claimed from. Every other kanban tool keeps `board` optional, and no
+cross-board write becomes possible. The rule lives in `create-board-policy.py`,
+installed as `hermes_cli/nixhomeserver_create_board.py`. Unknown slugs are never
+created implicitly; a board is created with `hermes kanban boards create`.
+
 New processes load these changes. At a verified idle boundary, use the existing
 supervisor's native graceful restart path to refresh the host multiplexer;
 never kill active workers or launch a second gateway. On this supervised Void
@@ -149,8 +159,8 @@ host, SIGUSR1 asks the verified gateway PID to drain and exit 75, and the
 existing supervisor relaunches it. Check the replacement PID, heartbeat and
 startup errors. This is a Hermes runtime refresh, not NixOS activation.
 
-To roll back, remove only this adapter's calls from the two native files before
-removing its installed policy module. Restore only the title setting and
+To roll back, remove only this adapter's calls from the four native files before
+removing its installed policy modules. Restore only the title setting and
 managed instruction block, preserving intervening operator edits. Use private
 backups as references rather than blindly replacing changed files.
 
@@ -159,7 +169,9 @@ For the actual installed native lifecycle, use its Python environment to run
 `scripts/tests/hermes-worker-policy-native.py --hermes-repo <native-checkout>
 --scratch <task-temp-dir>`. The test overlays only the adapted source in its
 isolated home and uses an inert spawn function. It covers first-failure parking,
-legacy assignments, a concurrent budget edit and release receipts.
+legacy assignments, a concurrent budget edit and release receipts, and asserts
+that the installed create schema/handler require an existing explicit board,
+keep the worker own-board fence, and refuse without writing a board.
 
 ## Background learning budget trials
 

@@ -28,6 +28,10 @@ required evidence before releasing cards to automatic dispatch. A path in anothe
 worker's summary does not grant access; use lawful task-local copies/attachments.
 
 Read the installed hermes-card-authoring.md before creating or editing cards.
+Native `kanban_create` requires the board slug: name the board you route on.
+You cannot create on another board from a dispatched worker, and a genuinely
+cross-board card belongs to that board's coordinator rather than a foreign-slug
+retry.
 Keep technical evidence on the existing relevant card; do not narrate routine
 events to the owner's phone. Report decisions, exact checks, actual queue state
 and residual risks. A done review is delivered evidence; only accept is acceptance.

@@ -8,6 +8,7 @@ import types
 import contextlib
 import io
 import os
+import re
 from unittest.mock import patch
 from pathlib import Path
 import sqlite3
@@ -25,6 +26,9 @@ spec = importlib.util.spec_from_file_location('installer', source.parent / 'inst
 installer = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(installer)
 from worker_runtime_adapter import adapt, EDITS
+spec = importlib.util.spec_from_file_location('createboard', source.parent / 'create-board-policy.py')
+createboard = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(createboard)
 
 
 class WorkerPolicyTest(unittest.TestCase):
@@ -183,6 +187,77 @@ class ReviewSkillsTest(unittest.TestCase):
         self.assertEqual(self.skills,self.effective())
 
 
+SLUG = re.compile(r'^[a-z0-9][a-z0-9_-]{0,63}$')
+
+
+def native_normalize(value):
+    """The native slug rule (``kanban_db._normalize_board_slug``), restated here."""
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    if not SLUG.match(text):
+        raise ValueError('invalid board slug')
+    return text
+
+
+class CreateBoardTest(unittest.TestCase):
+    """``kanban_create`` must name a board it is actually allowed to write to."""
+
+    def validate(self, board, *, pinned=None, known=('nixhomeserver', 'pcops')):
+        self.probes = []
+
+        def exists(slug):
+            self.probes.append(slug)
+            return slug in known
+
+        return createboard._validate(board, normalize=native_normalize,
+                                     exists=exists, pinned=pinned)
+
+    def test_missing_blank_or_non_string_board_is_refused(self):
+        for board in (None, '', '   ', 7, True, ['nixhomeserver'], {'board': 'pcops'}):
+            with self.subTest(board=board):
+                with self.assertRaises(ValueError) as caught:
+                    self.validate(board)
+                self.assertIn('Nothing changed', str(caught.exception))
+        self.assertEqual([], self.probes)
+        with self.assertRaises(ValueError) as caught:
+            self.validate(None)
+        self.assertIn('board is required', str(caught.exception))
+
+    def test_malformed_slug_is_refused_before_any_board_is_probed(self):
+        for board in ('Bad Slug', '-pcops', '_pcops', 'pc/ops', 'pcops!', 'a' * 65, '..'):
+            with self.subTest(board=board):
+                with self.assertRaises(ValueError) as caught:
+                    self.validate(board)
+                self.assertIn('valid board slug', str(caught.exception))
+                self.assertEqual([], self.probes)
+
+    def test_explicit_board_is_normalized_like_the_native_resolver(self):
+        self.assertEqual('nixhomeserver', self.validate(' NixHomeServer '))
+        self.assertEqual(['nixhomeserver'], self.probes)
+        self.assertEqual('pcops', self.validate('pcops'))
+
+    def test_unknown_board_is_refused_instead_of_created(self):
+        with self.assertRaises(ValueError) as caught:
+            self.validate('typo-board')
+        self.assertIn('does not exist', str(caught.exception))
+        self.assertEqual(['typo-board'], self.probes)
+
+    def test_worker_may_only_create_on_the_board_it_was_claimed_from(self):
+        self.assertEqual('nixhomeserver', self.validate('nixhomeserver', pinned='nixhomeserver'))
+        self.assertEqual([], self.probes)
+        for board in ('pcops', 'typo-board'):
+            with self.subTest(board=board):
+                with self.assertRaises(ValueError) as caught:
+                    self.validate(board, pinned='nixhomeserver')
+                self.assertIn('own board', str(caught.exception))
+                self.assertIn("'nixhomeserver'", str(caught.exception))
+                self.assertEqual([], self.probes)
+        with self.assertRaises(ValueError) as caught:
+            self.validate(None, pinned='nixhomeserver')
+        self.assertIn('board is required', str(caught.exception))
+
+
 class InstallerTest(unittest.TestCase):
     @staticmethod
     def native_fixtures():
@@ -274,8 +349,58 @@ class InstallerTest(unittest.TestCase):
             if '# Preserve me' in text:self.assertIn('# Preserve me', updated)
             if '# annotation' in text:self.assertIn('# annotation', updated)
 
+    @staticmethod
+    def tool_fixtures():
+        """Minimal native tool/schema seams the create-board adapter anchors on."""
+        return {
+            'tools/kanban_tools.py': (
+                'def _handle_create(args: dict, **kw) -> str:\n'
+                '    parents = _coerce_str_list(args.get("parents") or [], "parents", "task ids")\n'
+                '    with _board(args.get("board")) as (kb, conn):\n'
+                '        from gateway.session_context import get_session_env\n'
+                '        new_tid = kb.create_task(\n'
+                '            conn, title=str(title).strip(), body=args.get("body"), assignee=str(assignee),\n'
+                '            board=args.get("board"),\n'
+                '        )\n'
+                '        return new_tid\n'),
+            'tools/kanban_tools_schemas.py': (
+                '_DESC_BOARD = (\n'
+                '    "Kanban board slug to target. When omitted, the call resolves the "\n'
+                '    "active board the usual way: HERMES_KANBAN_DB env → "\n'
+                '    "HERMES_KANBAN_BOARD env → the \'current\' symlink under the kanban "\n'
+                '    "home → \'default\'. Pass an explicit slug only when the caller (e.g. "\n'
+                '    "a Telegram routing layer) needs to override the env-pinned active "\n'
+                '    "board for this one call."\n'
+                ')\n'
+                'KANBAN_CREATE_SCHEMA = _schema(\n'
+                '    "kanban_create",\n'
+                '    ("Create a new kanban task."),\n'
+                '    {"title": _prop("string", "Short task title (required).")},\n'
+                '    ["title", "assignee"],\n'
+                ')\n'),
+        }
+
+    def test_create_requires_an_explicit_board_before_any_board_is_opened(self):
+        tools, schemas = (self.tool_fixtures()[name]
+                          for name in ('tools/kanban_tools.py', 'tools/kanban_tools_schemas.py'))
+        adapted = adapt('tools/kanban_tools.py', tools)
+        self.assertIn('board = require_explicit_board(args.get("board"))', adapted)
+        self.assertIn('board=board,', adapted)
+        self.assertNotIn('board=args.get("board"),', adapted)
+        # Refusal happens before _board() opens (and can create) a board file.
+        self.assertLess(adapted.index('require_explicit_board'), adapted.index('with _board(board)'))
+        self.assertLess(adapted.index('require_explicit_board'), adapted.index('kb.create_task'))
+        adapted_schemas = adapt('tools/kanban_tools_schemas.py', schemas)
+        namespace = {'_prop': lambda *args: {}, '_schema': lambda *args: {'required': args[3]}}
+        exec(compile(adapted_schemas, 'fixture-schemas', 'exec'), namespace)
+        self.assertEqual(['title', 'assignee', 'board'],
+                         namespace['KANBAN_CREATE_SCHEMA']['required'])
+        self.assertIn('kanban_create requires it explicitly', adapted_schemas)
+        self.assertNotIn('Pass an explicit slug only when the caller', adapted_schemas)
+
     def test_native_adapter_is_idempotent_and_refuses_incompatible_sources(self):
-        for name, text in self.native_fixtures().items():
+        fixtures = dict(self.native_fixtures(), **self.tool_fixtures())
+        for name, text in fixtures.items():
             updated = adapt(name, text)
             self.assertEqual(updated, adapt(name, updated))
             with self.assertRaises(ValueError):adapt(name, 'def unrelated():\n    pass\n')
@@ -317,6 +442,8 @@ class InstallerTest(unittest.TestCase):
             root=Path(directory)
             native=root/'hermes-agent/hermes_cli'; native.mkdir(parents=True)
             for name,text in self.native_fixtures().items():(native/name).write_text(text)
+            for name,text in self.tool_fixtures().items():
+                path=root/'hermes-agent'/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text(text)
             config=root/'profiles/local-implementer/config.yaml';config.parent.mkdir(parents=True)
             config.write_text('model: {provider: custom, default: local}\n')
             config.chmod(0o640)
@@ -332,6 +459,9 @@ class InstallerTest(unittest.TestCase):
             self.assertEqual(original,{p:p.read_bytes() for p in root.rglob('*') if p.is_file()})
             self.assertEqual(0,installer.install(root))
             self.assertEqual(0,installer.install(root,True))
+            self.assertIn('require_explicit_board',
+                          (root/'hermes-agent/tools/kanban_tools.py').read_text())
+            self.assertTrue((root/'hermes-agent/hermes_cli/nixhomeserver_create_board.py').is_file())
             self.assertEqual('Operator instructions\n', (root/'SOUL.md').read_text())
             for lane in ('head-coordinator', 'project-auditor'):
                 self.assertIn(installer.START,

@@ -185,6 +185,32 @@ class SharedRootTest(unittest.TestCase):
             'def reservation():\n    for row in rows:\n'
             '        if check_respawn_guard(conn, row["id"], lane="review") is None:\n'
             '            return True\n    return False\n')
+        # Native model-facing seams the worker installer also adapts.
+        tools = self.root / 'hermes-agent/tools'
+        tools.mkdir(parents=True)
+        (tools / 'kanban_tools.py').write_text(
+            'def _handle_create(args):\n'
+            '    parents = _coerce_str_list(args.get("parents") or [], "parents", "task ids")\n'
+            '    with _board(args.get("board")) as (kb, conn):\n'
+            '        from gateway.session_context import get_session_env\n'
+            '        return kb.create_task(conn, title=title,\n'
+            '            board=args.get("board"),\n'
+            '        )\n')
+        (tools / 'kanban_tools_schemas.py').write_text(
+            '_DESC_BOARD = (\n'
+            '    "Kanban board slug to target. When omitted, the call resolves the "\n'
+            '    "active board the usual way: HERMES_KANBAN_DB env → "\n'
+            '    "HERMES_KANBAN_BOARD env → the \'current\' symlink under the kanban "\n'
+            '    "home → \'default\'. Pass an explicit slug only when the caller (e.g. "\n'
+            '    "a Telegram routing layer) needs to override the env-pinned active "\n'
+            '    "board for this one call."\n'
+            ')\n'
+            'KANBAN_CREATE_SCHEMA = _schema(\n'
+            '    "kanban_create",\n'
+            '    ("Create a task."),\n'
+            '    {},\n'
+            '    ["title", "assignee"],\n'
+            ')\n')
         review = self.root / 'hermes-agent/agent/background_review.py'
         review.parent.mkdir(parents=True)
         review.write_text('\n'.join(f'PROMPT{i} = (\n{old}\n)'
