@@ -141,21 +141,24 @@ run_sync() {
 
 ssh_calls() { cat "$FAKE_SSH_CALLS" 2>/dev/null || printf '0'; }
 
-# Replay the command the last recorded ssh call was handed, in this process, with
+# Replay the command the last recorded ssh call was handed, in a child shell, with
 # the tar stream it was handed. The payload travels base64-encoded inside the
 # command because that is how it crosses the ssh argument boundary.
-replay_last_ssh() {
-  local call
+replay_last_ssh() (
+  local call rc=0
   call="$(ssh_calls)"
   ((call > 0)) || fail "the sync made no ssh call to replay"
   base64 -d < <(sed -n 's/.*printf %s \([A-Za-z0-9+/=]*\) | base64 -d.*/\1/p' \
     "$FAKE_SSH_DIR/remote-$call.cmd") >"$fixture/remote-payload.sh"
   # The payload reports its own progress on stderr; keep it out of the test log
   # and available for diagnosis in the replay log.
-  # shellcheck source=/dev/null
-  source "$fixture/remote-payload.sh" <"$FAKE_SSH_DIR/stdin-$call.tar" \
+  # A real ssh command starts bash. Keep its traps, variables and lock FD out
+  # of the harness too. Do not put this command in an if/||: failures must stop
+  # the payload before any later rotation step can run.
+  trap 'rc=$?; printf "durability replay call %s failed (exit %s); log tail:\n" "$call" "$rc" >&2; tail -n 20 "$fixture/replay.log" >&2; exit "$rc"' ERR
+  bash "$fixture/remote-payload.sh" <"$FAKE_SSH_DIR/stdin-$call.tar" \
     2>>"$fixture/replay.log"
-}
+)
 
 remote_paths() {
   # Dot-prefixed entries are the rotation's bookkeeping (.rotation.lock), not
@@ -262,6 +265,60 @@ grep -q 'check-only: would mirror board pcops' <<<"$enumeration" ||
 [[ "$enumeration" != *_archived* ]] ||
   fail "an archived board was enumerated for mirroring"
 pass "enumerates every live board when HERMES_BOARD is unset"
+
+# The recorded payload owns FD 9 and its EXIT trap. They belong to its remote
+# process, never to the test shell or a later background child.
+new_remote_root replay-isolation
+HERMES_BOARD=pcops run_sync >/dev/null 2>&1
+(
+  trap 'printf cleaned >"$fixture/probe-cleaned"' EXIT
+  outer_trap="$(trap -p EXIT)"
+  exec 9>"$fixture/caller-fd9"
+  outer_fd="$(readlink "/proc/$BASHPID/fd/9")"
+  replay_last_ssh
+  [[ "$(trap -p EXIT)" == "$outer_trap" ]] || fail "replay replaced the caller EXIT trap"
+  [[ "$(readlink "/proc/$BASHPID/fd/9")" == "$outer_fd" ]] || fail "replay replaced caller FD 9"
+)
+[[ "$(cat "$fixture/probe-cleaned")" == cleaned ]] || fail "replay lost caller cleanup"
+pass "replay preserves the caller EXIT trap and FD 9"
+
+# A child started AFTER replay must not inherit the remote rotation lock. Use
+# a pipe-held reader, with explicit release/wait, instead of a timing race.
+(
+  exec 9>&-
+  replay_last_ssh
+  coproc REPLAY_HOLDER { cat >/dev/null; }
+  holder_pid="$REPLAY_HOLDER_PID"
+  holder_write="${REPLAY_HOLDER[1]}"
+  replay_last_ssh
+  exec {holder_write}>&-
+  wait "$holder_pid"
+)
+pass "a later child cannot retain the replay rotation lock"
+
+# Corrupt only the recorded tar input, then invoke the real replay outside any
+# conditional (which would disable errexit). Its nonzero status must reach the
+# caller, diagnostics must survive cleanup, and execution must not continue.
+call="$(ssh_calls)"
+cp "$FAKE_SSH_DIR/stdin-$call.tar" "$fixture/good-replay.tar"
+printf 'invalid tar stream' >"$FAKE_SSH_DIR/stdin-$call.tar"
+set +e
+(
+  set -e
+  trap 'printf cleaned >"$fixture/failed-probe-cleaned"' EXIT
+  replay_last_ssh
+  touch "$fixture/continued-after-failure"
+) >"$fixture/failed-replay.log" 2>&1
+replay_status=$?
+set -e
+mv "$fixture/good-replay.tar" "$FAKE_SSH_DIR/stdin-$call.tar"
+[[ "$replay_status" == 2 ]] || fail "replay did not preserve tar exit 2: $replay_status"
+[[ ! -e "$fixture/continued-after-failure" ]] || fail "replay disabled errexit"
+[[ "$(cat "$fixture/failed-probe-cleaned")" == cleaned ]] || fail "failed replay lost caller cleanup"
+grep -q "durability replay call $call failed (exit 2)" "$fixture/failed-replay.log" || fail "replay failure lacks status diagnostic"
+grep -q 'gzip:' "$fixture/failed-replay.log" || fail "replay failure lost payload stderr"
+[[ -z "$(find "$REMOTE_ROOT" -maxdepth 1 -name '.incoming.*' -print)" ]] || fail "failed payload lost its own cleanup"
+pass "failed replay preserves exit, cleanup and bounded diagnostics"
 
 # --- each board lands under its own directory ------------------------------
 
