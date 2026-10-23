@@ -224,6 +224,31 @@ class VerdictGuardTest(unittest.TestCase):
         self.db.execute('INSERT INTO task_comments(task_id,body) VALUES(?,?)',('t_route','Feature handoff: approval-decision'));self.db.commit()
         self.assertEqual({},guard_mod.guard(payload,self.root))
 
+    def test_prose_tracker_mentions_cannot_erase_delivery_routing_contract(self):
+        self.card('t_route', assignee='head-coordinator', status='running',
+                  body='Feature tracker: testboard:t_tracker\nFeature handoff: delivery')
+        self.card('t_input', assignee='feature-reviewer', status='todo',
+                  body='Feature tracker: testboard:t_tracker')
+        self.db.execute('INSERT INTO task_comments(task_id,body) VALUES(?,?)',
+                        ('t_route', 'Feature tracker: testboard:t_tracker. No owner input needed; supplier is agent.'))
+        self.db.commit()
+        for payload in (self.feature_create(assignee='feature-reviewer', parents=['t_route']),
+                        {'tool_name':'kanban_link', 'tool_input':{
+                            'board':'testboard', 'parent_id':'t_route', 'child_id':'t_input'}}):
+            with self.subTest(tool=payload['tool_name']):
+                refused = guard_mod.guard(payload, self.root)
+                self.assertEqual('block', refused.get('action'))
+                self.assertIn('unfinished feature delivery handoff', refused['message'])
+        # A later valid marker still supersedes the earlier tracker explicitly.
+        self.db.execute('INSERT INTO task_comments(task_id,body) VALUES(?,?)',
+                        ('t_route', 'Feature tracker: testboard:t_new_tracker'))
+        self.db.commit()
+        with sqlite3.connect(self.db_path) as reader:
+            reader.row_factory = sqlite3.Row
+            contract = guard_mod._feature_contract(reader, reader.execute(
+                'SELECT * FROM tasks WHERE id=?', ('t_route',)).fetchone())
+        self.assertEqual('t_new_tracker', guard_mod.FEATURE.search(contract).group(2))
+
     def test_negative_verifier_can_report_despite_rejected_review_parent(self):
         self.card('t_old', assignee='feature-reviewer', tenant='verification')
         self.add_run('t_old', 'request-changes', NOW-1)

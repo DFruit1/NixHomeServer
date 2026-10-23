@@ -29,6 +29,11 @@ def _feature_contract(db, task):
         for line in text.splitlines():
             for key in ('Feature tracker:', 'Feature handoff:', 'Feature role:'):
                 if line.startswith(key):
+                    if key == 'Feature tracker:' and not FEATURE.fullmatch(line):
+                        # Prose mentions are not contract updates. In particular,
+                        # a trailing sentence must not erase a valid tracker and
+                        # silently disable the delivery dependency guard.
+                        continue
                     fields[key] = line  # Explicit latest native marker supersedes its old field.
     body = re.sub(r'(?m)^Feature (?:tracker|handoff|role):[^\n]*', '', task['body'] or '')
     return body + '\n' + '\n'.join(fields.values())
