@@ -165,13 +165,21 @@ managed instruction block, preserving intervening operator edits. Use private
 backups as references rather than blindly replacing changed files.
 
 Run `bash scripts/tests/test-hermes-worker-policy.sh` for policy/installer tests.
-For the actual installed native lifecycle, use its Python environment to run
-`scripts/tests/hermes-worker-policy-native.py --hermes-repo <native-checkout>
---scratch <task-temp-dir>`. The test overlays only the adapted source in its
-isolated home and uses an inert spawn function. It covers first-failure parking,
-legacy assignments, a concurrent budget edit and release receipts, and asserts
-that the installed create schema/handler require an existing explicit board,
-keep the worker own-board fence, and refuse without writing a board.
+The suite re-executes itself inside the maintained synthetic fixture
+(`scripts/hermes/fixture-runner.py`), so the installed native lifecycle is
+exercised with a fresh home, an origin binding and no inherited `HERMES_KANBAN_*`
+pins; a worker or delegated invocation is confined rather than stripped of its
+identity, and `scripts/tests/hermes-worker-policy-native.py` refuses any run
+outside that boundary. The suite interpreter must import PyYAML *inside* the
+sandbox, which a host-only user site-packages tree cannot satisfy, so the suite
+puts `/usr/bin` first and uses the system interpreter; `fixture-runner.py`
+fails closed with exit 125 when it has no yaml. Within the fixture the suite runs
+the native regression against the actual installed seams: it compares `tasks`,
+`task_events` and `task_links` rows on every board, so an omitted, blank,
+malformed or unknown board, a sticky resolution-chain board, a foreign worker
+board and a delegate child each leave the database exactly as it was, while an
+explicit existing board still lands. It also covers first-failure parking, legacy
+assignments, a concurrent budget edit and release receipts.
 
 ## Background learning budget trials
 

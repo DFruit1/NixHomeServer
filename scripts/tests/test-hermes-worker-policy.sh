@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# The native seams import PyYAML, and the fixture sees only /usr, /nix/store and
+# the declared runtime — a host-only user site-packages tree cannot satisfy that
+# import, so select the interpreter that ships yaml under /usr and execute this
+# whole suite inside the maintained fixture boundary. A worker or delegated run
+# is therefore confined rather than stripped of its identity; there is no
+# unsandboxed fallback.
+if [[ "${HERMES_FIXTURE_ACTIVE:-}" != 1 ]]; then
+  export PATH="/usr/bin:$PATH"
+  exec python3 -B "$repo/scripts/hermes/fixture-runner.py" --repo "$repo" \
+    --suite "$repo/scripts/tests/test-hermes-worker-policy.sh"
+fi
 python3 -B - "$repo" <<'PY'
 import importlib.util
 import ast
@@ -472,9 +483,52 @@ class InstallerTest(unittest.TestCase):
             with self.assertRaises(ValueError):installer.install(root)
             self.assertEqual('model: {provider: custom, default: local}\n',config.read_text())
 
+    def test_native_seams_run_only_inside_the_confined_fixture(self):
+        # The adapter assertions above pin source text. This executes the
+        # installed native lifecycle inside the fixture boundary, and proves an
+        # invocation outside it is refused rather than stripped of identity.
+        native=Path(os.environ['HERMES_FIXTURE_NATIVE_PYTHON'])
+        script=source.parents[1]/'tests'/'hermes-worker-policy-native.py'
+        command=[str(native),'-B',str(script),'--hermes-repo',str(native.parents[2])]
+        outside_env={key:value for key,value in os.environ.items()
+                     if key not in ('HERMES_FIXTURE_ACTIVE','HERMES_FIXTURE_SOURCE_SHA256',
+                                    'HERMES_FIXTURE_HELPER_SHA256','HERMES_FIXTURE_ORIGIN_SHA256')}
+        with tempfile.TemporaryDirectory(prefix='hermes-worker-policy-unbounded-') as scratch:
+            unbounded=subprocess.run(command+['--scratch',scratch],env=outside_env,
+                                     capture_output=True,text=True)
+            self.assertEqual(2,unbounded.returncode, unbounded.stderr)
+            self.assertIn('not inside the confined fixture',unbounded.stderr)
+            self.assertEqual([],list(Path(scratch).iterdir()),
+                             'an unconfined run must not prepare a scratch home')
+            for pins,expected in (({'HERMES_KANBAN_TASK':'t_fixture',
+                                    'HERMES_KANBAN_BOARD':'nixhomeserver',
+                                    'HERMES_KANBAN_DB':'/nonexistent/kanban.db'},
+                                   'inherited origin pins HERMES_KANBAN_BOARD, '
+                                   'HERMES_KANBAN_DB, HERMES_KANBAN_TASK'),
+                                  ({'HERMES_DELEGATED_CHILD_CONTEXT':'fixture-child'},
+                                   'inherited origin pins HERMES_DELEGATED_CHILD_CONTEXT')):
+                leaked=subprocess.run(command+['--scratch',scratch],
+                                      env=dict(outside_env,HERMES_FIXTURE_ACTIVE='1',**pins),
+                                      capture_output=True,text=True)
+                self.assertEqual(2,leaked.returncode, leaked.stderr)
+                self.assertIn(expected,leaked.stderr)
+                self.assertEqual([],list(Path(scratch).iterdir()))
+        with tempfile.TemporaryDirectory(prefix='hermes-worker-policy-native-') as scratch:
+            run=subprocess.run(command+['--scratch',scratch],capture_output=True,text=True,
+                               timeout=300)
+            self.assertEqual(0,run.returncode, run.stdout+run.stderr)
+            self.assertIn('PASS native kanban_create requires an explicit existing board',run.stdout)
+            self.assertIn('PASS native create, dispatch, first-failure breaker',run.stdout)
+            boards=sorted(path.name for path in (Path(scratch)/'home/kanban/boards').iterdir()
+                          if path.is_dir())
+            self.assertEqual(['otherboard','ownboard','stickyboard'],boards)
+
 
 with patch.dict(os.environ):
-    os.environ.pop('HERMES_DELEGATED_CHILD_CONTEXT', None)
-    os.environ.pop('HERMES_KANBAN_TASK', None)
+    # The fixture supplies a fresh home and no origin pins; assert that instead
+    # of stripping anything, so a leaked worker identity fails loudly here.
+    for key in ('HERMES_KANBAN_TASK','HERMES_KANBAN_DB','HERMES_KANBAN_BOARD',
+                'HERMES_KANBAN_RUN_ID','HERMES_DELEGATED_CHILD_CONTEXT'):
+        assert not os.environ.get(key), 'the confined fixture inherited '+key
     unittest.main(argv=[sys.argv[0]])
 PY

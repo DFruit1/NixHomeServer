@@ -38,7 +38,8 @@ except ImportError:
     yaml_version = yaml_module = None
 yaml_required = ('test-kanban-owner-alerts.sh', 'test-steward-readonly.sh',
                  'test-steward-opportunity-scan.sh', 'test-kanban-retry-breaker.sh',
-                 'test-hermes-autonomy.sh', 'test-hermes-autonomy-runtime.sh')
+                 'test-hermes-autonomy.sh', 'test-hermes-autonomy-runtime.sh',
+                 'test-hermes-worker-policy.sh')
 if kind == 'suite' and source.rsplit('/', 1)[-1] in yaml_required and yaml_version is None:
     print('Required suite Python lacks yaml', file=sys.stderr)
     raise SystemExit(125)
