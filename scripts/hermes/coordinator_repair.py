@@ -12,6 +12,12 @@ import subprocess
 import sys
 
 ALLOWED = {'body', 'priority', 'skills', 'max_runtime_seconds', 'block_kind'}
+# A static workspace binding is its own closed amendment: it records the exact
+# directory an existing capability hold will run in and never types, releases,
+# re-queues or re-arms that hold. Its independent workspace-prep attestation
+# stays a coordinator obligation; this seam only records what it verified.
+REBIND_FIELDS = {'workspace_kind', 'workspace_path'}
+WRITABLE = ALLOWED | REBIND_FIELDS
 PARKED = {'todo', 'blocked', 'scheduled', 'triage'}
 # Native lifecycle kinds that can supersede one terminal episode. The snapshot
 # CAS binds the newest of these, so a consumed or superseded episode id can
@@ -93,6 +99,33 @@ def _parked(conn, task):
                     "(status IN ('running','pending','claimed','starting') OR "
                     "(ended_at IS NULL AND outcome IS NULL)) LIMIT 1", (task['id'],)).fetchone():
         raise ValueError('Amendment refuses active or pending native work')
+
+
+def _rebind_binding(task, changes, rebind):
+    """Validate the one static directory an existing capability hold may adopt.
+
+    The seam records only a binding it verified itself: the directory exists,
+    is one canonical absolute path and is not a repository or worktree root, so
+    the primary checkout stays refused. It never types, releases or re-arms the
+    hold; the coordinator's own workspace-prep receipt in the card thread and
+    the versioned guarded resume remain the gates that follow.
+    """
+    if not isinstance(rebind, dict) or set(rebind) != REBIND_FIELDS:
+        raise ValueError('workspace_rebind must be a closed object of workspace_kind and workspace_path')
+    if (not isinstance(changes, dict) or set(changes) != REBIND_FIELDS
+            or any(changes[field] != rebind[field] for field in REBIND_FIELDS)):
+        raise ValueError('A workspace rebind changes exactly its own two fields')
+    if task['block_kind'] != 'capability':
+        raise ValueError('Only a parked capability hold can adopt a static workspace')
+    if rebind['workspace_kind'] != 'dir':
+        raise ValueError('Only a static directory binding can be rebound')
+    path = rebind['workspace_path']
+    if (not isinstance(path, str) or not os.path.isabs(path) or os.path.normpath(path) != path
+            or os.path.islink(path) or not os.path.isdir(path)):
+        raise ValueError('A rebind needs one existing canonical absolute directory, never a link')
+    if os.path.lexists(os.path.join(path, '.git')):
+        raise ValueError('PRIMARY: a repository or worktree root cannot become a static workspace')
+    return {'workspace_kind': 'dir', 'workspace_path': path}
 
 
 def _terminal_branch(conn, task, episode, reason):
@@ -223,7 +256,7 @@ def available_skills(root, profile, workspace):
 
 
 def amend(kb, conn, tid, *, expected_version=None, changes=None, reason=None, runtime_evidence=None,
-          terminal_episode=None):
+          terminal_episode=None, workspace_rebind=None):
     from hermes_cli.nixhomeserver_resume_recovered import coordinator_origin, require_actor_board
     actor = coordinator_origin()
     root, board = require_actor_board(conn, actor)
@@ -231,11 +264,17 @@ def amend(kb, conn, tid, *, expected_version=None, changes=None, reason=None, ru
         raise ValueError('Exact task ID required')
     if terminal_episode is not None and (not isinstance(changes, dict) or set(changes) != {'block_kind'}):
         raise ValueError('A terminal episode is valid only with exactly the block_kind capability change')
+    if terminal_episode is not None and workspace_rebind is not None:
+        raise ValueError('A terminal episode and a workspace rebind are separate amendments')
+    if workspace_rebind is None and isinstance(changes, dict) and set(changes) & REBIND_FIELDS:
+        raise ValueError('A workspace binding changes only with its own closed rebind evidence')
     if changes is None:
+        if terminal_episode is not None or workspace_rebind is not None:
+            raise ValueError('Inspection takes no amendment evidence')
         task, version = snapshot(conn, tid)
         return {'task_id': tid, 'version': version, 'status': task['status'],
                 'fields': {k: task[k] for k in sorted(ALLOWED)}}
-    if (not isinstance(changes, dict) or not changes or set(changes) - ALLOWED
+    if (not isinstance(changes, dict) or not changes or set(changes) - WRITABLE
             or not isinstance(reason, str) or not reason.strip() or len(reason) > 4000
             or not isinstance(expected_version, str) or not re.fullmatch(r'[0-9a-f]{64}', expected_version)):
         raise ValueError('Require exact version, allowlisted changes and bounded supersession evidence')
@@ -247,7 +286,10 @@ def amend(kb, conn, tid, *, expected_version=None, changes=None, reason=None, ru
         if version != expected_version:
             raise ValueError('Card changed; inspect again before amending')
         branch = None
+        binding = None
         resume_status = None
+        if workspace_rebind is not None:
+            binding = _rebind_binding(task, changes, workspace_rebind)
         if 'block_kind' in changes:
             if terminal_episode is not None:
                 # One closed terminal episode, one branch, one appended event.
@@ -316,10 +358,22 @@ def amend(kb, conn, tid, *, expected_version=None, changes=None, reason=None, ru
         for field, value in changes.items():
             if branch is not None and field == 'block_kind' and task['block_kind'] is not None:
                 continue  # a reaffirmation keeps the stored kind byte-identical
-            # Field names come exclusively from ALLOWED, never SQL input.
+            # Field names come exclusively from ALLOWED|REBIND_FIELDS (validated
+            # closed sets above), never SQL input.
             conn.execute('UPDATE tasks SET '+field+'=? WHERE id=?',
                          (json.dumps(value) if field == 'skills' else value, tid))
-        if branch is not None:
+        if binding is not None:
+            # ONE honest native event for the recorded binding: the preimage it
+            # replaced, the verified target, the native actor and its CAS. The
+            # sealed hold, its counters and every run are untouched; the
+            # workspace-prep attestation stays with the coordinator.
+            kb._append_event(conn, tid, 'coordinator_workspace_rebind', {
+                'branch':'static-directory-rebind',
+                'before':{k:task[k] for k in sorted(REBIND_FIELDS)}, 'after':dict(binding),
+                'expected_version':version, 'reason':reason.strip(),
+                'actor_task':actor['task_id'], 'actor_run':actor['run_id'], 'board':board,
+                'attestation_required':'independent workspace-prep receipt in the card thread before release'})
+        elif terminal_episode is not None:
             # ONE honest native event: the branch, its source run/event, the
             # native actor, the supplier evidence and the resume phase. The
             # generic amendment audit is folded in rather than duplicated.
