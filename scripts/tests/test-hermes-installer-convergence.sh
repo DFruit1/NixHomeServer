@@ -179,6 +179,8 @@ class SharedRootTest(unittest.TestCase):
             '    except Exception:\n        pass\n'
             '    try:\n        pid = _call_spawn_fn(spawn)\n'
             '    except Exception:\n        pass\n'
+            '    if lane == \"review\":\n'
+            '        claimed.skills = list(dict.fromkeys([*(claimed.skills or []), \"sdlc-review\"]))\n'
             '    return True\n'
             'def reservation():\n    for row in rows:\n'
             '        if check_respawn_guard(conn, row["id"], lane="review") is None:\n'

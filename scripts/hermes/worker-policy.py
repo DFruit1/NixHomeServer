@@ -7,6 +7,7 @@ import re
 import json
 from pathlib import Path
 import subprocess
+import sqlite3
 
 EVIDENCE = re.compile(r'^Recovery mode: evidence-only\s*$', re.M)
 FAILURES = {'failed', 'crashed', 'timed_out', 'spawn_failed', 'gave_up'}
@@ -34,6 +35,54 @@ def assignment_reason(assignee, body, cap, retries):
     return None
 
 
+
+def execution_skills(db, task_id, assignee, skills):
+    """Keep coordinator routing procedures out of a proven independent review.
+
+    The task's original pins remain stored for implementer rework. All other
+    skills, and ambiguous or non-review executions, retain their requirements.
+    """
+    skills = list(skills or [])
+    if ('kanban-orchestration' not in skills
+            or assignee not in {'feature-reviewer', 'project-auditor'}):
+        return skills
+    try:
+        task = db.execute('SELECT assignee,status,current_run_id FROM tasks WHERE id=?',
+                          (task_id,)).fetchone()
+        event = db.execute("SELECT id,kind,run_id,payload,created_at FROM task_events WHERE task_id=? "
+                           "AND kind IN ('review_requested','changes_requested','review_reopened',"
+                           "'completed','assigned','reclaimed') ORDER BY id DESC LIMIT 1", (task_id,)).fetchone()
+        if not task or task['assignee'] != assignee or not event or event['kind'] != 'review_requested':
+            return skills
+        handoff = json.loads(event['payload'] or '{}')
+        if (not isinstance(handoff,dict) or handoff.get('reviewer') != assignee
+                or handoff.get('implementer') != 'head-coordinator'):
+            return skills
+        producer = db.execute('SELECT task_id,profile,status,outcome FROM task_runs WHERE id=?',
+                              (event['run_id'],)).fetchone()
+        if (not producer or producer['task_id'] != task_id or producer['profile'] != 'head-coordinator'
+                or producer['status'] not in {'review','review_requested'} or producer['outcome'] != 'review_requested'):
+            return skills
+        if task['status'] == 'running':
+            run = db.execute('SELECT task_id,profile,status,outcome,ended_at FROM task_runs WHERE id=?',
+                             (task['current_run_id'],)).fetchone()
+            claim = db.execute("SELECT id,payload,created_at FROM task_events WHERE task_id=? "
+                               "AND run_id=? AND kind='claimed' ORDER BY id DESC LIMIT 1",
+                               (task_id,task['current_run_id'])).fetchone()
+            payload = json.loads(claim['payload'] or '{}') if claim else {}
+            if (not run or run['task_id'] != task_id or run['profile'] != assignee
+                    or run['status'] != 'running' or run['outcome'] is not None
+                    or run['ended_at'] is not None or not claim or claim['id'] <= event['id']
+                    or claim['created_at'] < event['created_at'] or not isinstance(payload,dict)
+                    or payload.get('source_status') != 'review'):
+                return skills
+        elif task['status'] != 'review':
+            return skills
+    except (sqlite3.Error,ValueError,TypeError,KeyError):
+        return skills  # Missing or ambiguous provenance never drops a pin.
+    return [skill for skill in skills if skill != 'kanban-orchestration']
+
+
 def reason(db, task_id, assignee=None):
     task = db.execute('SELECT assignee,body,max_runtime_seconds,max_retries FROM tasks WHERE id=?',
                       (task_id,)).fetchone()
@@ -46,7 +95,8 @@ def reason(db, task_id, assignee=None):
     columns = {r[1] for r in db.execute('PRAGMA table_info(tasks)')}
     if {'skills','workspace_path'} <= columns:
         row = db.execute('SELECT skills,workspace_path FROM tasks WHERE id=?',(task_id,)).fetchone()
-        skills = json.loads(row['skills'] or '[]')
+        skills = execution_skills(db, task_id, assignee or task['assignee'],
+                                  json.loads(row['skills'] or '[]'))
         kind = (db.execute('SELECT workspace_kind FROM tasks WHERE id=?',(task_id,)).fetchone()[0]
                 if 'workspace_kind' in columns else None)
         if skills and not (kind == 'worktree' and not row['workspace_path']):

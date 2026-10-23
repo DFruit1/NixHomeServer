@@ -18,6 +18,9 @@ EDITS = {
          '        resume_status = ('),
     ),
     'kanban_db_dispatch.py': (
+        ('        claimed.skills = list(dict.fromkeys([*(claimed.skills or []), "sdlc-review"]))\n',
+         '        claimed.skills = list(dict.fromkeys([*worker_policy.execution_skills(\n'
+         '            conn, task_id, assignee, claimed.skills), "sdlc-review"]))\n'),
         ('        if check_respawn_guard(conn, row["id"], lane="review") is None:\n',
          '        # Reserve capacity only for reviews the dispatch policy admits.\n'
          '        from hermes_cli import nixhomeserver_worker_policy as worker_policy\n'

@@ -56,3 +56,9 @@ failure counter; the versioned recovery path preserves spent allowances.
 Worker sessions retain instant derived titles and manual renames, with
 `auxiliary.title_generation.model_upgrade_enabled: false`. The board steward's
 interactive/report configuration is unchanged.
+
+An independent native review keeps the task's implementation skill pins for
+rework. For a proven head-coordinator handoff, reviewer execution omits only
+`kanban-orchestration`; native dispatch still adds `sdlc-review`. Preclaim,
+postclaim and spawn use the same normalization. Every other missing skill still
+blocks execution, and ambiguous pairing or a ready-lane claim retains all pins.

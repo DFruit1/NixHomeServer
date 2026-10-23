@@ -96,6 +96,93 @@ class WorkerPolicyTest(unittest.TestCase):
         self.assertIsNone(policy.reason(self.db, 't_test'))
 
 
+class ReviewSkillsTest(unittest.TestCase):
+    def setUp(self):
+        self.db=sqlite3.connect(':memory:');self.db.row_factory=sqlite3.Row
+        self.addCleanup(self.db.close)
+        self.db.executescript("""
+            CREATE TABLE tasks(id TEXT,assignee TEXT,status TEXT,current_run_id INTEGER);
+            CREATE TABLE task_runs(id INTEGER,task_id TEXT,profile TEXT,status TEXT,outcome TEXT,ended_at INTEGER);
+            CREATE TABLE task_events(id INTEGER,task_id TEXT,kind TEXT,run_id INTEGER,payload TEXT,created_at INTEGER);
+            INSERT INTO tasks VALUES('t_review','feature-reviewer','review',NULL);
+            INSERT INTO task_runs VALUES(42,'t_review','head-coordinator','review','review_requested',100);
+            INSERT INTO task_events VALUES(10,'t_review','review_requested',42,
+                '{"implementer":"head-coordinator","reviewer":"feature-reviewer"}',100);
+        """)
+        self.skills=['kanban-orchestration','systematic-debugging','unknown-required-skill']
+
+    def effective(self,assignee='feature-reviewer'):
+        before=list(self.db.iterdump())
+        result=policy.execution_skills(self.db,'t_review',assignee,self.skills)
+        self.assertEqual(before,list(self.db.iterdump()))
+        self.assertEqual('kanban-orchestration',self.skills[0])
+        return result
+
+    def running(self):
+        self.db.executescript("""
+            UPDATE tasks SET status='running',current_run_id=43;
+            INSERT INTO task_runs VALUES(43,'t_review','feature-reviewer','running',NULL,NULL);
+            INSERT INTO task_events VALUES(11,'t_review','claimed',43,'{"source_status":"review"}',101);
+        """)
+
+    def test_only_coordinator_skill_removed_and_other_requirements_retained(self):
+        self.assertEqual(self.skills[1:],self.effective())
+        self.assertEqual(self.skills,self.effective('head-coordinator'))
+        self.assertEqual(self.skills,self.effective('standard-implementer'))
+        self.db.execute("UPDATE task_runs SET status='review_requested' WHERE id=42")
+        self.assertEqual(self.skills[1:],self.effective())
+        self.running();self.assertEqual(self.skills[1:],self.effective())
+
+    def test_each_intervening_lifecycle_transition_retains_original_pins(self):
+        for kind in ['changes_requested','review_reopened','completed','assigned','reclaimed']:
+            with self.subTest(kind=kind):
+                self.db.execute('INSERT INTO task_events VALUES(11,?,?,?,?,?)',('t_review',kind,42,'{}',101))
+                self.assertEqual(self.skills,self.effective())
+                self.db.execute('DELETE FROM task_events WHERE id=11')
+
+    def test_invalid_handoff_or_producer_never_drops_a_pin(self):
+        for payload in ['broken','[]','null','{}',
+                '{"implementer":"head-coordinator","reviewer":"project-auditor"}',
+                '{"implementer":"feature-reviewer","reviewer":"feature-reviewer"}']:
+            with self.subTest(payload=payload):
+                before=self.db.execute('SELECT payload FROM task_events').fetchone()[0]
+                self.db.execute('UPDATE task_events SET payload=?',(payload,))
+                self.assertEqual(self.skills,self.effective())
+                self.db.execute('UPDATE task_events SET payload=?',(before,))
+        for clause in ["profile='feature-reviewer'", "task_id='t_other'", "status='done'", "outcome='completed'"]:
+            with self.subTest(clause=clause):
+                self.db.execute('SAVEPOINT producer')
+                self.db.execute('UPDATE task_runs SET '+clause)
+                self.assertEqual(self.skills,self.effective())
+                self.db.execute('ROLLBACK TO producer');self.db.execute('RELEASE producer')
+        self.db.execute('DELETE FROM task_runs')
+        self.assertEqual(self.skills,self.effective())
+
+    def test_running_requires_current_native_review_claim(self):
+        self.running()
+        for clause in ["current_run_id=NULL", "current_run_id=42", "status='ready'", "assignee='head-coordinator'"]:
+            with self.subTest(clause=clause):
+                self.db.execute('SAVEPOINT task')
+                self.db.execute('UPDATE tasks SET '+clause)
+                self.assertEqual(self.skills,self.effective())
+                self.db.execute('ROLLBACK TO task');self.db.execute('RELEASE task')
+        for clause in ["profile='head-coordinator'", "task_id='t_other'", "status='done'", "ended_at=102", "outcome='completed'"]:
+            with self.subTest(clause=clause):
+                self.db.execute('SAVEPOINT run')
+                self.db.execute('UPDATE task_runs SET '+clause+' WHERE id=43')
+                self.assertEqual(self.skills,self.effective())
+                self.db.execute('ROLLBACK TO run');self.db.execute('RELEASE run')
+        for clause in ["payload='{}'", "payload='[]'", "payload='broken'",
+                "payload='{"+'"source_status":"ready"'+"}'", "created_at=99", "id=9", "run_id=42"]:
+            with self.subTest(clause=clause):
+                self.db.execute('SAVEPOINT claim')
+                self.db.execute('UPDATE task_events SET '+clause+' WHERE id=11')
+                self.assertEqual(self.skills,self.effective())
+                self.db.execute('ROLLBACK TO claim');self.db.execute('RELEASE claim')
+        self.db.execute('DELETE FROM task_events WHERE id=11')
+        self.assertEqual(self.skills,self.effective())
+
+
 class InstallerTest(unittest.TestCase):
     @staticmethod
     def native_fixtures():
@@ -110,6 +197,8 @@ class InstallerTest(unittest.TestCase):
                 '    except Exception:\n        pass\n'
                 '    try:\n        pid = _call_spawn_fn(spawn)\n'
                 '    except Exception:\n        pass\n'
+                '    if lane == \"review\":\n'
+                '        claimed.skills = list(dict.fromkeys([*(claimed.skills or []), \"sdlc-review\"]))\n'
                 '    return True\n'
                 'def reservation():\n    for row in rows:\n'
                 '        if check_respawn_guard(conn, row["id"], lane="review") is None:\n'

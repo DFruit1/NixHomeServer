@@ -84,6 +84,56 @@ try:
     kb.add_comment(db,recovery,author='head-coordinator',body=f'Recovery run: {run}\n'
         'Recovery change: The synthetic receipt is now attached.\nRecovery action: Read that receipt only.')
     assert kb.unblock_task(db,recovery)
+    # A coordinator's implementation pin must not prevent its independent
+    # reviewer from executing. Exercise the real transformed native dispatcher.
+    import json
+    from hermes_cli import nixhomeserver_worker_policy as policy
+    from hermes_cli import nixhomeserver_coordinator_repair as repair
+    for claimed_producer in (False,True):
+        review=kb.create_task(db,title='Review coordinator output',assignee='head-coordinator',
+            skills=['kanban-orchestration','systematic-debugging'],
+            workspace_kind='dir',workspace_path=str(args.scratch))
+        producer=kb.claim_task(db,review) if claimed_producer else None
+        assert kb.request_review(db,review,reviewer='feature-reviewer',summary='Synthetic coordinator output',
+            expected_run_id=producer.current_run_id if producer else None)
+        handoff=db.execute("SELECT * FROM task_events WHERE task_id=? AND kind='review_requested'",(review,)).fetchone()
+        handoff_before=dict(handoff)
+        task_before=kb.get_task(db,review)
+        spawned=[]
+        def capture(*values,**kwargs):
+            spawned.append((values[0].assignee,list(values[0].skills)))
+        with patch.object(repair,'available_skills',return_value={'systematic-debugging','sdlc-review'}), \
+             patch.object(dispatch,'_profile_exists_fn',return_value=lambda _:True):
+            row=db.execute('SELECT * FROM tasks WHERE id=?',(review,)).fetchone()
+            result=dispatch.DispatchResult()
+            consumed=dispatch._dispatch_lane_task(db,row,'feature-reviewer',result,
+                lane='review',dry_run=False,ttl_seconds=None,board=None,failure_limit=2,
+                spawn_fn=capture,per_profile_caps=None,per_profile_running={})
+            assert consumed and spawned, ('independent review stranded',result)
+            assert spawned==[('feature-reviewer',['systematic-debugging','sdlc-review'])],spawned
+            assert kb.get_task(db,review).skills==task_before.skills
+            assert dict(db.execute('SELECT * FROM task_events WHERE id=?',(handoff['id'],)).fetchone())==handoff_before
+            # Rework restores the implementer's exact original requirements.
+            active=kb.get_task(db,review)
+            assert kb.request_changes(db,review,reason='Synthetic requested correction',
+                expected_run_id=active.current_run_id)==(True,'head-coordinator')
+            assert kb.get_task(db,review).assignee=='head-coordinator'
+            assert kb.get_task(db,review).skills==task_before.skills
+            assert 'kanban-orchestration' in policy.reason(db,review,'head-coordinator')
+    held=kb.create_task(db,title='Keep other reviewer requirements',assignee='head-coordinator',
+        skills=['kanban-orchestration','required-unavailable'],
+        workspace_kind='dir',workspace_path=str(args.scratch))
+    assert kb.request_review(db,held,reviewer='feature-reviewer',summary='Synthetic output with missing reviewer requirement')
+    before=list(db.iterdump());spawned=[]
+    with patch.object(repair,'available_skills',return_value={'sdlc-review'}), \
+         patch.object(dispatch,'_profile_exists_fn',return_value=lambda _:True):
+        row=db.execute('SELECT * FROM tasks WHERE id=?',(held,)).fetchone()
+        assert 'required-unavailable' in policy.reason(db,held,'feature-reviewer')
+        assert not dispatch._dispatch_lane_task(db,row,'feature-reviewer',dispatch.DispatchResult(),
+            lane='review',dry_run=False,ttl_seconds=None,board=None,failure_limit=2,
+            spawn_fn=capture,per_profile_caps=None,per_profile_running={})
+        assert not spawned and before==list(db.iterdump())
+    print('PASS native independent reviewer receives sdlc-review without coordinator pin; rework retains original skills')
     assert db.execute('PRAGMA integrity_check').fetchone()[0]=='ok'
     print('PASS native create, dispatch, first-failure breaker, release receipts and database integrity')
 finally:
