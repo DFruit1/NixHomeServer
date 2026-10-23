@@ -96,7 +96,11 @@ For each existing hold:
    then resume the original implementation receipt and composition.
    If a standalone reviewer cannot record a real rejection because its direct
    child is another reviewer or implementer, preserve the gate through a parked
-   head-coordinator routing card. Link `review -> routing card` and
+   head-coordinator routing card. Create it with native
+   `initial_status: "blocked"` (CLI `--initial-status blocked`) before linking:
+   the default TODO state can immediately promote to READY when the review
+   parent is already done, so it is not a stable parked state. A retention-only
+   route is not a worker assignment. Link `review -> routing card` and
    `routing card -> original child`, read back both edges and a nonrunning
    todo/blocked/scheduled/triage routing state, then unlink only the original
    `review -> child` edge through the guarded native tool. Keep the routing card
@@ -107,6 +111,11 @@ For each existing hold:
    remains protected as an inherited gate. Do not use completed/running routing
    cards, remove both gate paths, create coordinator chains or bypass a refusal
    through another tool. Native link operations retain their cycle checks.
+   Give a replacement verifier the actual candidate/evidence as inputs; do not
+   parent it on the rejected review merely to carry context. That imports the
+   old acceptance gate into the verifier that must independently assess its
+   replacement. Keep the old rejection on the existing product consumer until
+   qualified fresh acceptance, with its history and other prerequisites intact.
    After verified material recovery, an authenticated native head-coordinator
    worker may use `kanban_unblock` on a sibling on its own pinned board.
    Ordinary unblock replenishes native failure counters: for repaired
