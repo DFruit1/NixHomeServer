@@ -54,6 +54,7 @@
     "health": "ONLINE",
     "managedDatasets": 4,
     "staleDatasets": 0,
+    "unmeasuredDatasets": 0,
     "newestAgeSeconds": 1800,
     "maxAgeSeconds": 172800
   }

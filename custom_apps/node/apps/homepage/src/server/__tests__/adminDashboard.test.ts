@@ -303,6 +303,82 @@ describe('admin dashboard backup freshness widget', () => {
     expect(row?.state).toBe('critical');
     expect(row?.value).toContain('DEGRADED');
   });
+
+  it('does not report a failed ZFS snapshot inventory as healthy', async () => {
+    const directory = await tempDir();
+    await writeStatus(directory, collectorStatus({
+      zfsSnapshots: {
+        pool: 'tank',
+        health: 'ONLINE',
+        error: 'unavailable',
+        detail: 'the automatic-snapshot inventory could not be read',
+        maxAgeSeconds: 48 * 60 * 60,
+      },
+    }));
+    const freshness = widget(await getAdminDashboard(baseConfig(directory), adminHeaders), 'backup-freshness');
+    const row = freshness.rows.find((candidate) => candidate.label === 'ZFS snapshots');
+    // An unmeasured inventory must never look like a healthy one.
+    expect(row?.state).not.toBe('ok');
+    expect(row?.state).toBe('warn');
+    // The pool health that was readable is still reported.
+    expect(row?.value).toContain('ONLINE');
+    expect(row?.value).toContain('inventory');
+    expect(freshness.state).toBe('warn');
+    expect(freshness.summary).toContain('ZFS snapshots');
+    expect(freshness.summary).not.toContain('within their freshness limits');
+  });
+
+  it('warns when some ZFS datasets could not be measured', async () => {
+    const directory = await tempDir();
+    await writeStatus(directory, collectorStatus({
+      zfsSnapshots: {
+        pool: 'tank',
+        health: 'ONLINE',
+        managedDatasets: 2,
+        staleDatasets: 0,
+        unmeasuredDatasets: 1,
+        newestAgeSeconds: 60 * 60,
+        maxAgeSeconds: 48 * 60 * 60,
+      },
+    }));
+    const freshness = widget(await getAdminDashboard(baseConfig(directory), adminHeaders), 'backup-freshness');
+    const row = freshness.rows.find((candidate) => candidate.label === 'ZFS snapshots');
+    expect(row?.state).toBe('warn');
+    expect(row?.value).toContain('could not be measured');
+    expect(freshness.summary).toContain('ZFS snapshots');
+  });
+
+  it('warns when the ZFS pool health itself cannot be read', async () => {
+    const directory = await tempDir();
+    await writeStatus(directory, collectorStatus({
+      zfsSnapshots: { error: 'unavailable', detail: 'the ZFS pool health could not be read' },
+    }));
+    const freshness = widget(await getAdminDashboard(baseConfig(directory), adminHeaders), 'backup-freshness');
+    const row = freshness.rows.find((candidate) => candidate.label === 'ZFS snapshots');
+    expect(row?.state).toBe('warn');
+    expect(row?.value).toContain('could not be read');
+    expect(freshness.summary).toContain('ZFS snapshots');
+  });
+
+  it('keeps a readable but empty ZFS snapshot inventory healthy', async () => {
+    const directory = await tempDir();
+    await writeStatus(directory, collectorStatus({
+      zfsSnapshots: {
+        pool: 'tank',
+        health: 'ONLINE',
+        managedDatasets: 0,
+        staleDatasets: 0,
+        unmeasuredDatasets: 0,
+        newestAgeSeconds: null,
+        maxAgeSeconds: 48 * 60 * 60,
+      },
+    }));
+    const freshness = widget(await getAdminDashboard(baseConfig(directory), adminHeaders), 'backup-freshness');
+    const row = freshness.rows.find((candidate) => candidate.label === 'ZFS snapshots');
+    expect(row?.state).toBe('ok');
+    expect(row?.value).toContain('tank ONLINE');
+    expect(freshness.summary).toContain('within');
+  });
 });
 
 describe('admin dashboard dump verification widget', () => {

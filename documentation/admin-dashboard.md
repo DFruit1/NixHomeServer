@@ -30,6 +30,15 @@ that a root timer writes.
 Missing or corrupt sources degrade one widget section at a time — a widget never
 reports "healthy" for a signal it has no data for.
 
+A failed read is never published as a measurement. When the ZFS
+automatic-snapshot inventory cannot be read, the section carries
+`error: "unavailable"` plus the pool health that was still readable, and the
+widget warns instead of reporting an empty-but-healthy inventory. A dataset
+whose mounted state or snapshot list cannot be read is counted in
+`unmeasuredDatasets` and warns rather than being skipped or pre-judged stale,
+while a dataset explicitly read as not mounted is skipped and a readable
+inventory with nothing opted in stays a valid empty, healthy result.
+
 The cache ages too. Cached ages are observations frozen at `generatedAt`, so the
 API advances every one of them by the time elapsed since collection, states the
 cache age in a `Status cache` row on each widget, and degrades the widgets when

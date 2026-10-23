@@ -213,6 +213,92 @@ ZFS_BIN="$zfs_stub" ZPOOL_BIN="$zpool_stub" \
   run_collector --zfs-pool tank --zfs-max-age-seconds 172800
 jq -e '.zfsSnapshots.staleDatasets == 1' "$output" >/dev/null
 
+# 8a. A failed inventory read is reported as unavailable, not as a successful
+#     empty managed set, while the pool health that was readable is kept.
+cat >"$zfs_stub" <<'STUB'
+#!/usr/bin/env bash
+exit 1
+STUB
+chmod +x "$zfs_stub"
+ZFS_BIN="$zfs_stub" ZPOOL_BIN="$zpool_stub" \
+  run_collector --zfs-pool tank --zfs-max-age-seconds 172800
+jq -e '.zfsSnapshots.pool == "tank" and .zfsSnapshots.health == "ONLINE"' "$output" >/dev/null
+jq -e '.zfsSnapshots.error == "unavailable"' "$output" >/dev/null
+jq -e '.zfsSnapshots | has("managedDatasets") | not' "$output" >/dev/null
+
+# 8b. A failed mounted-property read is an unmeasured dataset, not a skipped one.
+cat >"$zfs_stub" <<STUB
+#!/usr/bin/env bash
+set -euo pipefail
+case "\$*" in
+  "get -H -o name,value -t filesystem -r com.sun:auto-snapshot tank") printf 'tank/core\\ttrue\\ntank/broken\\ttrue\\n' ;;
+  "get -H -o value mounted tank/core") printf 'yes\\n' ;;
+  "get -H -o value mounted tank/broken") exit 1 ;;
+  "list -H -p -d 1 -t snapshot -o creation,name -s creation tank/core")
+    printf '$((now - 1800))\\ttank/core@zfs-auto-snap_hourly-1\\n'
+    ;;
+  *) exit 2 ;;
+esac
+STUB
+chmod +x "$zfs_stub"
+ZFS_BIN="$zfs_stub" ZPOOL_BIN="$zpool_stub" \
+  run_collector --zfs-pool tank --zfs-max-age-seconds 172800
+jq -e '.zfsSnapshots | has("error") | not' "$output" >/dev/null
+jq -e '.zfsSnapshots.managedDatasets == 1' "$output" >/dev/null
+jq -e '.zfsSnapshots.staleDatasets == 0' "$output" >/dev/null
+jq -e '.zfsSnapshots.unmeasuredDatasets == 1' "$output" >/dev/null
+
+# 8c. A dataset read as not mounted is deliberately skipped, not unmeasured.
+cat >"$zfs_stub" <<STUB
+#!/usr/bin/env bash
+set -euo pipefail
+case "\$*" in
+  "get -H -o name,value -t filesystem -r com.sun:auto-snapshot tank") printf 'tank/core\\ttrue\\ntank/archive\\ttrue\\n' ;;
+  "get -H -o value mounted tank/core") printf 'yes\\n' ;;
+  "get -H -o value mounted tank/archive") printf 'no\\n' ;;
+  "list -H -p -d 1 -t snapshot -o creation,name -s creation tank/core")
+    printf '$((now - 1800))\\ttank/core@zfs-auto-snap_hourly-1\\n'
+    ;;
+  *) exit 2 ;;
+esac
+STUB
+chmod +x "$zfs_stub"
+ZFS_BIN="$zfs_stub" ZPOOL_BIN="$zpool_stub" \
+  run_collector --zfs-pool tank --zfs-max-age-seconds 172800
+jq -e '.zfsSnapshots | has("error") | not' "$output" >/dev/null
+jq -e '.zfsSnapshots.managedDatasets == 1' "$output" >/dev/null
+jq -e '.zfsSnapshots.unmeasuredDatasets == 0' "$output" >/dev/null
+
+# 8d. A readable inventory with nothing opted in stays a valid empty result.
+cat >"$zfs_stub" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+chmod +x "$zfs_stub"
+ZFS_BIN="$zfs_stub" ZPOOL_BIN="$zpool_stub" \
+  run_collector --zfs-pool tank --zfs-max-age-seconds 172800
+jq -e '.zfsSnapshots | has("error") | not' "$output" >/dev/null
+jq -e '.zfsSnapshots.managedDatasets == 0' "$output" >/dev/null
+jq -e '.zfsSnapshots.unmeasuredDatasets == 0' "$output" >/dev/null
+jq -e '.zfsSnapshots.newestAgeSeconds == null' "$output" >/dev/null
+
+# 8e. A failed snapshot listing is unmeasured rather than pre-judged stale.
+cat >"$zfs_stub" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$*" in
+  "get -H -o name,value -t filesystem -r com.sun:auto-snapshot tank") printf 'tank/core\ttrue\n' ;;
+  "get -H -o value mounted tank/core") printf 'yes\n' ;;
+  "list -H -p -d 1 -t snapshot -o creation,name -s creation tank/core") exit 1 ;;
+  *) exit 2 ;;
+esac
+STUB
+chmod +x "$zfs_stub"
+ZFS_BIN="$zfs_stub" ZPOOL_BIN="$zpool_stub" \
+  run_collector --zfs-pool tank --zfs-max-age-seconds 172800
+jq -e '.zfsSnapshots.staleDatasets == 0' "$output" >/dev/null
+jq -e '.zfsSnapshots.unmeasuredDatasets == 1' "$output" >/dev/null
+
 # 9. Unknown arguments are rejected instead of silently ignored.
 if bash "$collector" --output "$output" --nonsense 2>"$tmpdir/err"; then
   echo "Collector accepted an unknown argument" >&2

@@ -239,9 +239,13 @@ offsite_section() {
 
 # Attribute overlap with storage-monitoring.nix is intentional: both read the
 # same automatic snapshots. Here a degraded pool or stale dataset is data to
-# render, so nothing fails the collection job.
+# render, so nothing fails the collection job. A *failed read* is different: it
+# is never published as a measurement. An unreadable inventory becomes an
+# `unavailable` section that still carries the pool health that was readable,
+# and a dataset whose mounted state or snapshots cannot be read is counted as
+# unmeasured rather than silently skipped or reported stale.
 zfs_section() {
-  local pool="$1" max_age="$2" health managed stale newest_age dataset enabled
+  local pool="$1" max_age="$2" health managed stale unmeasured newest_age dataset enabled mounted inventory snapshots
   if [[ -z "$pool" ]]; then
     printf '{"disabled":true}\n'
     return 0
@@ -251,17 +255,46 @@ zfs_section() {
     return 0
   fi
 
+  # A missing `zfs` binary or a failed recursion is not the same thing as a
+  # pool with nothing opted in: the difference decides whether the dashboard
+  # may call snapshot freshness healthy.
+  if ! inventory="$($ZFS_BIN get -H -o name,value -t filesystem -r com.sun:auto-snapshot "$pool" 2>/dev/null)"; then
+    $JQ_BIN -nc \
+      --arg pool "$pool" \
+      --arg health "$health" \
+      --argjson maxAgeSeconds "$max_age" \
+      '{
+        pool:$pool,
+        health:$health,
+        error:"unavailable",
+        detail:"the automatic-snapshot inventory could not be read",
+        maxAgeSeconds:$maxAgeSeconds
+      }'
+    return 0
+  fi
+
   managed=0
   stale=0
+  unmeasured=0
   newest_age=null
   while IFS=$'\t' read -r dataset enabled; do
+    [[ -n "$dataset" ]] || continue
     [[ "$enabled" == true ]] || continue
-    [[ "$($ZFS_BIN get -H -o value mounted "$dataset" 2>/dev/null || true)" == yes ]] || continue
+    if ! mounted="$($ZFS_BIN get -H -o value mounted "$dataset" 2>/dev/null)"; then
+      unmeasured=$((unmeasured + 1))
+      continue
+    fi
+    # A dataset read as not mounted is a deliberate opt-in on an unmounted
+    # dataset: skipping it is a known state, not a measurement gap.
+    [[ "$mounted" == yes ]] || continue
     managed=$((managed + 1))
+    if ! snapshots="$($ZFS_BIN list -H -p -d 1 -t snapshot -o creation,name -s creation "$dataset" 2>/dev/null)"; then
+      unmeasured=$((unmeasured + 1))
+      continue
+    fi
     local newest_epoch age
-    newest_epoch="$($ZFS_BIN list -H -p -d 1 -t snapshot -o creation,name -s creation "$dataset" 2>/dev/null || true)"
     newest_epoch="$(
-      printf '%s\n' "$newest_epoch" |
+      printf '%s\n' "$snapshots" |
         awk '$2 ~ /@zfs-auto-snap_/ { print $1 }' | tail -n 1
     )"
     if [[ ! "$newest_epoch" =~ ^[0-9]+$ ]]; then
@@ -276,13 +309,14 @@ zfs_section() {
     if (( age > max_age )); then
       stale=$((stale + 1))
     fi
-  done < <($ZFS_BIN get -H -o name,value -t filesystem -r com.sun:auto-snapshot "$pool" 2>/dev/null || true)
+  done <<<"$inventory"
 
   $JQ_BIN -nc \
     --arg pool "$pool" \
     --arg health "$health" \
     --argjson managedDatasets "$managed" \
     --argjson staleDatasets "$stale" \
+    --argjson unmeasuredDatasets "$unmeasured" \
     --argjson newestAgeSeconds "$newest_age" \
     --argjson maxAgeSeconds "$max_age" \
     '{
@@ -290,6 +324,7 @@ zfs_section() {
       health:$health,
       managedDatasets:$managedDatasets,
       staleDatasets:$staleDatasets,
+      unmeasuredDatasets:$unmeasuredDatasets,
       newestAgeSeconds:$newestAgeSeconds,
       maxAgeSeconds:$maxAgeSeconds
     }'

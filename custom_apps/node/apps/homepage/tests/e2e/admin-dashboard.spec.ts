@@ -96,6 +96,55 @@ test('admin dashboard reports stale and missing items instead of showing healthy
   await expectNoHorizontalOverflow(page);
 });
 
+test('admin dashboard shows an unreadable ZFS inventory as attention, not healthy', async ({ page }) => {
+  await page.route('**/api/admin-dashboard', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        available: true,
+        generatedAt: '2026-10-24T07:00:00+00:00',
+        generatedAgeSeconds: 300,
+        collectionState: 'ok',
+        widgets: [
+          {
+            id: 'backup-freshness',
+            title: 'Backup freshness',
+            state: 'warn',
+            summary: 'ZFS snapshots: tank ONLINE · the automatic-snapshot inventory could not be read',
+            rows: [
+              { label: 'Status cache', value: 'collected 5m\u00A0ago · refreshed every 10m', state: 'ok' },
+              { label: 'Kopia snapshot', value: '2h 0m old, limit 1d 12h', state: 'ok' },
+              {
+                label: 'ZFS snapshots',
+                value: 'tank ONLINE · the automatic-snapshot inventory could not be read',
+                state: 'warn',
+              },
+            ],
+          },
+          {
+            id: 'dump-verification',
+            title: 'Dump verification',
+            state: 'ok',
+            summary: '2/2 dumps verified in the current generation.',
+            rows: [{ label: 'Status cache', value: 'collected 5m\u00A0ago · refreshed every 10m', state: 'ok' }],
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.goto('/admin-dashboard');
+
+  const freshness = page.locator('.dashboard-widget', { hasText: 'Backup freshness' });
+  await expect(freshness.locator('.dashboard-widget__badge')).toHaveText('Attention');
+  await expect(freshness.locator('.dashboard-widget__summary')).toContainText('inventory could not be read');
+  await expect(freshness.locator('.dashboard-widget__row.is-warn').filter({ hasText: 'ZFS snapshots' }))
+    .toContainText('inventory could not be read');
+  await expect(page.locator('.dashboard-widget__badge', { hasText: 'Healthy' })).toHaveCount(1);
+  await expectNoHorizontalOverflow(page);
+});
+
 test('admin dashboard explains when no cached status exists yet', async ({ page }) => {
   await page.route('**/api/admin-dashboard', async (route) => {
     await route.fulfill({

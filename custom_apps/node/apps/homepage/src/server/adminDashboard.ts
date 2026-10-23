@@ -248,20 +248,31 @@ const backupFreshnessRows = (
 
   const zfs = status.zfsSnapshots;
   if (isRecord(zfs) && zfs.disabled !== true) {
+    const pool = boundedString(zfs.pool, MAX_NAME_LENGTH) ?? 'data pool';
+    const publishedHealth = boundedString(zfs.health, MAX_KIND_LENGTH);
     if (zfs.error !== undefined) {
-      rows.push(row('ZFS snapshots', boundedString(zfs.detail, MAX_MESSAGE_LENGTH) ?? 'snapshot health is unavailable', 'unknown'));
+      // A failed read is not a measurement: never render it as healthy, and
+      // keep the pool health that the collector could still read.
+      const detail = boundedString(zfs.detail, MAX_MESSAGE_LENGTH) ?? 'snapshot health is unavailable';
+      const state: AdminDashboardWidgetState = publishedHealth && publishedHealth !== 'ONLINE'
+        ? 'critical'
+        : 'warn';
+      rows.push(row('ZFS snapshots', publishedHealth ? `${pool} ${publishedHealth} · ${detail}` : detail, state));
     } else {
-      const pool = boundedString(zfs.pool, MAX_NAME_LENGTH) ?? 'data pool';
-      const health = boundedString(zfs.health, MAX_KIND_LENGTH) ?? 'unknown';
+      const health = publishedHealth ?? 'unknown';
       const stale = nonNegativeInteger(zfs.staleDatasets) ?? 0;
+      const unmeasured = nonNegativeInteger(zfs.unmeasuredDatasets) ?? 0;
       const newestCached = nonNegativeInteger(zfs.newestAgeSeconds);
       const newest = newestCached === undefined ? undefined : newestCached + elapsedSeconds;
       const details = newest === undefined ? '' : ` · newest snapshot ${formatDuration(newest)}${NBSP}old`;
+      // Datasets whose freshness was never measured are a gap in the signal,
+      // so they degrade the row instead of quietly leaving it healthy.
       const state: AdminDashboardWidgetState = health !== 'ONLINE'
         ? 'critical'
-        : stale > 0 ? 'warn' : 'ok';
+        : stale > 0 || unmeasured > 0 ? 'warn' : 'ok';
       const staleText = stale > 0 ? ` · ${stale} dataset(s) past the snapshot limit` : '';
-      rows.push(row('ZFS snapshots', `${pool} ${health}${staleText}${details}`, state));
+      const unmeasuredText = unmeasured > 0 ? ` · ${unmeasured} dataset(s) could not be measured` : '';
+      rows.push(row('ZFS snapshots', `${pool} ${health}${staleText}${unmeasuredText}${details}`, state));
     }
   }
 
