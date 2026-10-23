@@ -1,18 +1,63 @@
 #!/usr/bin/env python3
-"""Opt-in native lifecycle regression; all boards and homes stay in --scratch."""
+"""Native lifecycle regression; boards and homes stay inside --scratch.
+
+Run only through the maintained fixture boundary
+(``scripts/hermes/fixture-runner.py``), which supplies a fresh home, an origin
+binding and no inherited ``HERMES_KANBAN_*`` pins. This test never clears
+identity: an unsandboxed worker or delegated invocation is refused instead.
+"""
 import argparse
+import hashlib
+import json
 import os
 from pathlib import Path
 import sys
 import time
+from typing import NoReturn
+
+ORIGIN_KEYS=('HERMES_KANBAN_TASK','HERMES_KANBAN_DB','HERMES_KANBAN_BOARD',
+             'HERMES_KANBAN_RUN_ID','HERMES_KANBAN_CLAIM_LOCK',
+             'HERMES_DELEGATED_CHILD_CONTEXT','HERMES_PROFILE_NAME','HERMES_PROFILE')
+SUITE='test-hermes-worker-policy.sh'
+
+def refuse(reason: str) -> NoReturn:
+    print(f'Native fixture refused: {reason}. Run the checked-in suite through '
+          'scripts/hermes/fixture-runner.py; there is no unsandboxed fallback.',
+          file=sys.stderr)
+    raise SystemExit(2)
+
+def fixture_origin():
+    """Verified confined-fixture origin evidence; never inferred or overridden."""
+    if os.environ.get('HERMES_FIXTURE_ACTIVE')!='1':
+        refuse('not inside the confined fixture')
+    inherited=sorted(key for key in ORIGIN_KEYS if os.environ.get(key))
+    if inherited:
+        refuse('inherited origin pins '+', '.join(inherited)+' must not decide this fixture')
+    path=Path(os.environ.get('HERMES_FIXTURE_ORIGIN') or '')
+    try:
+        recorded=json.loads(path.read_text())
+    except (OSError,ValueError):
+        refuse('the fixture origin binding is missing or unreadable')
+    if recorded.get('provenance')!='confined-synthetic-test':
+        refuse('the fixture origin binding has an unexpected provenance')
+    suite=Path(recorded.get('suite') or '').name
+    if suite!=SUITE:
+        refuse(f'the fixture origin binding names {suite or "no suite"}, not {SUITE}')
+    # The launcher's pins stay provenance in the receipt; they are never applied
+    # here, and the sandbox env carries none of them.
+    assert set(recorded.get('origin') or {}) <= set(ORIGIN_KEYS)
+    return path,recorded
 
 parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--hermes-repo',type=Path,required=True)
 parser.add_argument('--scratch',type=Path,required=True)
 args=parser.parse_args()
+origin_path,origin_record=fixture_origin()
 args.scratch.mkdir(parents=True,exist_ok=True)
+os.environ['HERMES_DISABLE_LAZY_INSTALLS']='1'
 os.environ['HERMES_HOME']=str(args.scratch/'home')
 os.environ['HERMES_ROOT']=os.environ['HERMES_HOME']
+os.environ['HERMES_KANBAN_HOME']=os.environ['HERMES_HOME']
 os.environ['HERMES_KANBAN_WORKSPACES_ROOT']=str(args.scratch/'workspaces')
 sys.path.insert(0,str(args.hermes_repo))
 import hermes_bootstrap  # noqa: E402,F401
@@ -22,12 +67,27 @@ overlay=args.scratch/'overlay';overlay.mkdir(exist_ok=True)
 for name in ('kanban_db.py','kanban_db_dispatch.py'):
     (overlay/name).write_text(adapt(name,(args.hermes_repo/'hermes_cli'/name).read_text()))
 (overlay/'nixhomeserver_worker_policy.py').write_text((Path(__file__).resolve().parents[1]/'hermes/worker-policy.py').read_text())
+(overlay/'nixhomeserver_create_board.py').write_text((Path(__file__).resolve().parents[1]/'hermes/create-board-policy.py').read_text())
+tools_overlay=args.scratch/'tools-overlay';tools_overlay.mkdir(exist_ok=True)
+for name in ('kanban_tools.py','kanban_tools_schemas.py'):
+    (tools_overlay/name).write_text(adapt('tools/'+name,(args.hermes_repo/'tools'/name).read_text()))
+import tools  # noqa: E402
+tools.__path__.insert(0,str(tools_overlay))
 import hermes_cli  # noqa: E402
 hermes_cli.__path__.insert(0,str(overlay))
 from hermes_cli import kanban_db as kb,kanban_db_dispatch as dispatch  # noqa: E402
 from hermes_cli.kanban_db_connect import connect  # noqa: E402
 from unittest.mock import patch  # noqa: E402
-db=connect(args.scratch/'board.db')
+scratch=args.scratch.resolve()
+# The supported boundary must be the only reachable kanban home, asserted before
+# the first board is opened. An earlier unsandboxed probe resolved the live home
+# here and created a real card on pcops' sticky board (t_55821319); this check
+# makes that escape fail loudly instead of writing it again.
+live_home=kb.kanban_home().resolve()
+assert live_home.is_relative_to(scratch), (
+    'refusing live kanban home '+str(live_home)+' outside '+str(scratch)+
+    ': run through scripts/hermes/fixture-runner.py')
+db=connect(args.scratch/'kanban'/'boards'/'fixture'/'kanban.db')
 try:
     try:
         kb.create_task(db,title='Unbounded local',assignee='local-implementer')
@@ -134,6 +194,114 @@ try:
             spawn_fn=capture,per_profile_caps=None,per_profile_running={})
         assert not spawned and before==list(db.iterdump())
     print('PASS native independent reviewer receives sdlc-review without coordinator pin; rework retains original skills')
+    # --- Model-facing kanban_create names its board ---------------------------
+    # The schema and the handler are the real adapted native seams, exercised
+    # against board files that only exist under --scratch.
+    assert 'tools.kanban_tools' not in sys.modules, 'import the tool seam before another module pins upstream'
+    from tools import kanban_tools as kanban_tools
+    from tools import kanban_tools_schemas as tool_schemas
+    assert list(kanban_tools.registry.get_schema('kanban_create')['parameters']['required'])==[
+        'title','assignee','board']
+    assert 'board' not in kanban_tools.registry.get_schema('kanban_show')['parameters']['required']
+    for name,schema in vars(tool_schemas).items():
+        if name!='KANBAN_CREATE_SCHEMA' and isinstance(schema,dict):
+            required=(schema.get('parameters') or {}).get('required') or []
+            assert 'board' not in required, 'board became mandatory for '+name
+    assert tool_schemas.KANBAN_CREATE_SCHEMA['parameters']['properties']['board']['description'].startswith(
+        'Kanban board slug to target. kanban_create requires it explicitly')
+    def create(**fields):
+        return json.loads(kanban_tools._handle_create(fields))
+    for board in ('ownboard','otherboard','stickyboard'):
+        kb.create_board(board)
+    # The resolution chain carries a sticky active board: exactly the board an
+    # omitted create used to land on without the caller naming it.
+    kb.current_board_path().write_text('stickyboard')
+    assert kb.get_current_board()=='stickyboard'
+    paths={board:kb.kanban_db_path(board) for board in ('ownboard','otherboard','stickyboard')}
+    assert all(path.resolve().is_relative_to(scratch) for path in paths.values()), paths
+    def rows(board):
+        conn=connect(paths[board])
+        try:
+            return {table:conn.execute('SELECT * FROM '+table+' ORDER BY 1').fetchall()
+                    for table in ('tasks','task_events','task_links')}
+        finally:
+            conn.close()
+    def snapshot(*boards):
+        return {board:rows(board) for board in boards}
+    def board_dirs():
+        return sorted(path.name for path in kb.boards_root().iterdir() if path.is_dir())
+    boards_before=board_dirs()
+    # RED: the pre-fix handler opened ``_board(args.get("board"))`` — literally
+    # connect(board=None) — and created the card there. Run that same native call:
+    # an omitted create still lands on the sticky board nobody named.
+    sticky_before=rows('stickyboard')
+    pre_fix=connect(board=None)
+    try:
+        assert kb.kanban_db_path(None)==paths['stickyboard']
+        kb.create_task(pre_fix,title='Pre-fix omitted board',assignee='standard-implementer',
+                       workspace_kind='dir',workspace_path=str(args.scratch))
+    finally:
+        pre_fix.close()
+    assert len(rows('stickyboard')['tasks'])==len(sticky_before['tasks'])+1
+    assert rows('ownboard')['tasks']==[] and rows('otherboard')['tasks']==[]
+    # GREEN: every refusal leaves tasks/task_events/task_links rows identical on
+    # every board and never invents a board directory.
+    refused_state=snapshot('ownboard','otherboard','stickyboard')
+    for fields,expected in (
+            ({'title':'Omitted board','assignee':'standard-implementer'},'board is required'),
+            ({'title':'Blank board','assignee':'standard-implementer','board':'   '},'board is required'),
+            ({'title':'Malformed board','assignee':'standard-implementer','board':'Bad Board'},
+             'valid board slug'),
+            ({'title':'Unknown board','assignee':'standard-implementer','board':'no-such-board'},
+             'does not exist')):
+        result=create(**fields)
+        assert expected in result.get('error',''), (fields,result)
+        assert 'Nothing changed' in result['error'], result
+        assert snapshot('ownboard','otherboard','stickyboard')==refused_state, fields
+        assert board_dirs()==boards_before, ('a refused create invented a board',fields)
+    assert not kb.board_dir('no-such-board').exists(), 'a refused create must not invent a board'
+    # A named existing board is the one the card lands on, and only that one.
+    created=create(title='Named board',assignee='standard-implementer',board='ownboard')
+    assert created.get('task_id'), created
+    own=connect(paths['ownboard'])
+    try:
+        assert kb.get_task(own,created['task_id']).title=='Named board'
+        worker_card=kb.create_task(own,title='Worker card',assignee='standard-implementer',
+            workspace_kind='dir',workspace_path=str(args.scratch))
+    finally:
+        own.close()
+    assert snapshot('otherboard','stickyboard')=={
+        board:refused_state[board] for board in ('otherboard','stickyboard')}
+    # A dispatched worker stays pinned to its own board. Pre-fix, a foreign board
+    # was silently redirected through the env pin instead of being refused.
+    own_before=rows('ownboard')
+    pinned_state=snapshot('ownboard','otherboard','stickyboard')
+    with patch.dict(os.environ,{'HERMES_KANBAN_BOARD':'ownboard','HERMES_KANBAN_DB':str(paths['ownboard']),
+                                'HERMES_KANBAN_TASK':worker_card,'HERMES_KANBAN_RUN_ID':'1'}):
+        assert kb.kanban_db_path('otherboard')==paths['ownboard'], 'the pin redirect disappeared'
+        for fields,expected in (
+                ({'title':'Foreign worker board','assignee':'standard-implementer','board':'otherboard'},
+                 "own board 'ownboard'"),
+                ({'title':'Omitted worker board','assignee':'standard-implementer'},
+                 'board is required')):
+            result=create(**fields)
+            assert expected in result.get('error',''), (fields,result)
+            assert 'Nothing changed' in result['error'], result
+            assert snapshot('ownboard','otherboard','stickyboard')==pinned_state, fields
+        result=create(title='Worker own board',assignee='standard-implementer',board='ownboard')
+        assert result.get('task_id'), result
+        assert len(rows('ownboard')['tasks'])==len(own_before['tasks'])+1
+    assert snapshot('otherboard','stickyboard')=={
+        board:pinned_state[board] for board in ('otherboard','stickyboard')}
+    # A delegate_task child keeps its own refusal: no card, no row, no board.
+    delegated_state=snapshot('ownboard','otherboard','stickyboard')
+    with patch.dict(os.environ,{'HERMES_DELEGATED_CHILD_CONTEXT':'synthetic-fixture-child'}):
+        result=create(title='Delegated child board',assignee='standard-implementer',board='ownboard')
+        assert 'delegate_task child agents are not Kanban run owners' in result.get('error',''), result
+        assert snapshot('ownboard','otherboard','stickyboard')==delegated_state, result
+    print('PASS native kanban_create requires an explicit existing board, refuses the sticky '
+          'resolution chain and keeps the worker own-board fence (origin '
+          +hashlib.sha256(origin_path.read_bytes()).hexdigest()[:16]+')')
     assert db.execute('PRAGMA integrity_check').fetchone()[0]=='ok'
     print('PASS native create, dispatch, first-failure breaker, release receipts and database integrity')
 finally:

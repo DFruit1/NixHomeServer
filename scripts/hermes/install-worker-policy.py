@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install bounded worker policy and derived titles, preserving unrelated state.
+"""Install bounded worker policy, explicit create boards and derived titles.
 
 Python glue reuses Hermes' runtime language and YAML dependency. Backups are
 private and durable; config bytes never enter temporary files or diagnostics.
@@ -83,10 +83,14 @@ def install(root, check=False):
     if default.exists():
         pending[default] = remove_block(default.read_text(), START, END, 'worker instruction')
     pending[root / 'scripts/hermes-worker-budgets.md'] = (SOURCE / 'instructions/worker-budgets.md').read_text()
-    native = root / 'hermes-agent/hermes_cli'
-    pending[native / 'nixhomeserver_worker_policy.py'] = (SOURCE / 'worker-policy.py').read_text()
-    for name in ('kanban_db.py', 'kanban_db_dispatch.py'):
-        path = native / name
+    native = root / 'hermes-agent'
+    pending[native / 'hermes_cli/nixhomeserver_worker_policy.py'] = (SOURCE / 'worker-policy.py').read_text()
+    pending[native / 'hermes_cli/nixhomeserver_create_board.py'] = (SOURCE / 'create-board-policy.py').read_text()
+    for relative, name in (('hermes_cli/kanban_db.py', 'kanban_db.py'),
+                           ('hermes_cli/kanban_db_dispatch.py', 'kanban_db_dispatch.py'),
+                           ('tools/kanban_tools.py', 'tools/kanban_tools.py'),
+                           ('tools/kanban_tools_schemas.py', 'tools/kanban_tools_schemas.py')):
+        path = native / relative
         pending[path] = adapt(name, path.read_text())
     changes = []
     for path, text in pending.items():
