@@ -98,7 +98,7 @@ For each existing hold:
    child is another reviewer or implementer, preserve the gate through a parked
    head-coordinator routing card. Create it with native
    `initial_status: "blocked"` (CLI `--initial-status blocked`) before linking:
-   the default TODO state can immediately promote to READY when the review
+   an initially TODO task can immediately promote to READY when the review
    parent is already done, so it is not a stable parked state. A retention-only
    route is not a worker assignment. Link `review -> routing card` and
    `routing card -> original child`, read back both edges and a nonrunning
