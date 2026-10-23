@@ -116,6 +116,32 @@ For each existing hold:
    old acceptance gate into the verifier that must independently assess its
    replacement. Keep the old rejection on the existing product consumer until
    qualified fresh acceptance, with its history and other prerequisites intact.
+   Create/link preflight refuses completed standalone review parents without
+   valid current acceptance on implementer/verifier corrections, including a
+   review inherited through one coordinator parent. Pending reviews
+   and native same-card request-changes/re-review retain their lifecycle; a native
+   rework run is not a completed standalone rejection. Missing or malformed
+   review provenance never supplies acceptance.
+   A parked routing card preserves a gate; it does not make its blocked child
+   runnable. Native recovery reapplies unfinished parents and can land in TODO
+   instead of REVIEW. For an already-blocked native same-card correction, guarded
+   unlink may remove only its obsolete direct rejection/context edge or the
+   blocked routing-card edge when native creation events bind both review and
+   correction to the same original coordinator, the correction was created as
+   an implementer with that review parent, and its actual implementation handoff
+   and blocked reviewer claim/run still match. That original unfinished
+   coordinator must retain BOTH rejected-review and correction direct parents.
+   Shared downstream context or a standalone replacement verifier is insufficient;
+   missing/malformed provenance fails closed. Read back the retained gates and
+   removed context edge, then use the existing supported recovery/resume path
+   and verify an actual reviewer claim. The original consumer's rejection gate
+   can retire only after qualified fresh acceptance under the existing guard.
+   For non-goal tasks, an agent-supplied current-acceptance gap can use native
+   `kanban_block(kind="capability")` with the exact evidence and supplier. Native
+   block kinds do not include `validation`. Use a dependency wait only with a
+   linked unfinished input producer. Goal-mode tasks keep their native terminal
+   constraints and existing coordinator recovery path; never change goal_mode
+   or manufacture owner needs_input to escape a completion refusal.
    After verified material recovery, an authenticated native head-coordinator
    worker may use `kanban_unblock` on a sibling on its own pinned board.
    Ordinary unblock replenishes native failure counters: for repaired

@@ -66,7 +66,8 @@ def guard_feature_routing(payload, root):
                          'Workflow: native-review-v1; prose does not activate independent acceptance')
     board = args.get('board') or os.environ.get('HERMES_KANBAN_BOARD')
     if not isinstance(board, str) or not re.fullmatch(r'[A-Za-z0-9_-]+', board):
-        if payload['tool_name'] == 'kanban_create' and re.search(r'^Feature tracker:', args.get('body') or '', re.M):
+        if (payload['tool_name'] == 'kanban_link' or args.get('parents')
+                or re.search(r'^Feature tracker:', args.get('body') or '', re.M)):
             raise ValueError('Exact board required for feature routing')
         return {}  # Unscoped/non-feature calls retain their native semantics.
     path = root/'kanban/boards'/board/'kanban.db'
@@ -93,6 +94,14 @@ def guard_feature_routing(payload, root):
             raise ValueError('Use a standalone Feature tracker: BOARD:t_CARD line; no trailing prose')
         for pid in parents:
             parent = db.execute('SELECT * FROM tasks WHERE id=?', (pid,)).fetchone()
+            if parent is None:
+                raise ValueError('Unknown dependency parent; do not infer review provenance')
+            _review_parent_preflight(db, parent, child)
+            if parent['assignee'] == 'head-coordinator':
+                reviews = db.execute('SELECT p.* FROM task_links l JOIN tasks p ON p.id=l.parent_id'
+                                     ' WHERE l.child_id=?', (parent['id'],)).fetchall()
+                for review in reviews:
+                    _review_parent_preflight(db, review, child)
             contract = _feature_contract(db, parent)
             if (parent and parent['assignee'] == 'head-coordinator' and parent['status'] not in {'done', 'archived'}
                     and FEATURE.search(contract) and re.search(r'^Feature handoff: delivery\s*$', contract, re.M)
@@ -128,9 +137,9 @@ def guard_feature_routing(payload, root):
     return {}
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from fleet_workflow import native_contract, require_native_acceptance, validate_handoff_metadata
+from fleet_workflow import native_contract, require_native_acceptance, validate_handoff_metadata, review_handoff
 from fleet_contract import (load as load_contract, render as render_contract, review_metadata,
-                            completion_metadata, validate_markers, validate_create)
+                            completion_metadata, validate_markers, validate_create, creation)
 
 
 def verification(task, db=None):
@@ -274,6 +283,31 @@ def _accepted_verdict(run, profile):
         return False
 
 
+def _review_parent_preflight(db, parent, child):
+    """Keep a completed standalone non-acceptance out of its correction inputs.
+
+    Pending reviews remain ordinary prerequisites. Native request_changes returns
+    the same card to its implementer, with a changes_requested run; it does not
+    create a completed standalone rejection parent.
+    """
+    role = child.get('assignee')
+    if isinstance(role, str):
+        role = role.strip().lower()  # Match native profile normalization.
+    if (role not in {'standard-implementer', 'local-implementer', 'feature-reviewer', 'project-auditor'}
+            or not verification(parent, db) or parent['status'] not in {'done', 'archived'}):
+        return
+    latest = db.execute('SELECT profile,status,outcome,metadata FROM task_runs'
+                        ' WHERE task_id=? ORDER BY id DESC LIMIT 1', (parent['id'],)).fetchone()
+    if _accepted_verdict(latest, parent['assignee']):
+        if native_review(db, parent):
+            _independent_native_acceptance(db, parent)
+        return
+    raise ValueError(f"Review {parent['id']} has no valid current acceptance; do not parent"
+                     ' a correction implementer/verifier on that review. Supply actual corrected inputs'
+                     ' and cite rejected findings as context; retain the rejected review on the'
+                     ' existing head-coordinator consumer until fresh independent acceptance')
+
+
 def _retained_review_path(db, review_id, removed_parent, child):
     """Keep the same review gate while inserting a parked routing decision."""
     child_id = child['id']
@@ -298,9 +332,80 @@ def _retained_review_path(db, review_id, removed_parent, child):
         LIMIT 1""", (review_id, child_id, removed_parent, review_id, child_id)).fetchone() is not None
 
 
+def _native_correction_context(db, review, removed_parent, child):
+    """Remove only a proven correction's obsolete context prerequisite.
+
+    The commissioning coordinator retains BOTH the rejected review and the
+    corrective native task as direct gates. Creation events bind this original
+    consumer, so an arbitrary shared downstream task cannot qualify an unlink.
+    No verdict is promoted and no consumer acceptance gate is retired here.
+    """
+    if (review['status'] != 'done' or native_review(db, review)
+            or child['assignee'] not in {'feature-reviewer', 'project-auditor'}
+            or child['status'] != 'blocked' or child['current_run_id'] is not None):
+        return False
+    if not db.execute('SELECT 1 FROM task_links WHERE parent_id=? AND child_id=?',
+                      (removed_parent, child['id'])).fetchone():
+        return False
+    if removed_parent != review['id']:
+        route = db.execute('SELECT assignee,status,current_run_id FROM tasks WHERE id=?', (removed_parent,)).fetchone()
+        if (not route or route['assignee'] != 'head-coordinator' or route['status'] != 'blocked'
+                or route['current_run_id'] is not None
+                or db.execute("SELECT 1 FROM task_runs WHERE task_id=? AND status='running'",
+                              (removed_parent,)).fetchone()):
+            return False
+    latest = db.execute('SELECT profile,status,outcome,metadata FROM task_runs'
+                        ' WHERE task_id=? ORDER BY id DESC LIMIT 1', (review['id'],)).fetchone()
+    if (not latest or latest['profile'] != review['assignee']
+            or latest['status'] != 'done' or latest['outcome'] != 'completed'):
+        return False
+    evidence = json.loads(latest['metadata'] or '{}')
+    validate(evidence, profile=review['assignee'])
+    if evidence['verdict'] != 'request-changes':
+        return False
+    origin = creation(db, child['id'])
+    reviewed_origin = creation(db, review['id'])
+    if not origin or not reviewed_origin:
+        return False
+    owner = origin.get('creator_task_id')
+    if (not isinstance(owner, str) or reviewed_origin.get('creator_task_id') != owner
+            or origin.get('assignee') not in {'standard-implementer', 'local-implementer'}
+            or not isinstance(origin.get('parents'), list) or review['id'] not in origin['parents']):
+        return False
+    consumer = db.execute("""SELECT t.id FROM tasks t
+        JOIN task_links rejection ON rejection.child_id=t.id AND rejection.parent_id=?
+        JOIN task_links correction ON correction.child_id=t.id AND correction.parent_id=?
+        WHERE t.id=? AND t.assignee='head-coordinator' AND t.status NOT IN ('done','archived')""",
+        (review['id'], child['id'], owner)).fetchone()
+    if not consumer or owner in {review['id'], child['id'], removed_parent}:
+        return False
+    handoff = review_handoff(db, child['id'])
+    if (handoff['implementer'] != origin['assignee']
+            or handoff.get('reviewer') != child['assignee']
+            or handoff['implementer'] == child['assignee']):
+        return False
+    requested = db.execute("SELECT id,run_id FROM task_events WHERE task_id=? AND kind='review_requested'"
+                           ' ORDER BY id DESC LIMIT 1', (child['id'],)).fetchone()
+    claim = db.execute("SELECT id,run_id,payload FROM task_events WHERE task_id=? AND kind='claimed'"
+                       ' ORDER BY id DESC LIMIT 1', (child['id'],)).fetchone()
+    attempt = db.execute('SELECT id,profile,status,outcome FROM task_runs WHERE task_id=?'
+                         ' ORDER BY id DESC LIMIT 1', (child['id'],)).fetchone()
+    provenance = json.loads(claim['payload'] or '{}') if claim else {}
+    return bool(claim and attempt and isinstance(provenance, dict)
+                and requested['id'] < claim['id'] and requested['run_id'] < attempt['id']
+                and not db.execute("SELECT 1 FROM task_runs WHERE task_id=? AND status='running'",
+                                   (child['id'],)).fetchone()
+                and provenance.get('source_status') == 'review'
+                and claim['run_id'] == provenance.get('run_id') == attempt['id']
+                and attempt['profile'] == child['assignee']
+                and attempt['status'] == 'blocked' and attempt['outcome'] == 'blocked')
+
+
 def _review_unlink(db, parent, run, removed_parent, child):
     parent_id, child_id = parent['id'], child['id']
     if _retained_review_path(db, parent_id, removed_parent, child):
+        return
+    if _native_correction_context(db, parent, removed_parent, child):
         return
     if run is None:
         raise ValueError(f'Review {parent_id} has no completed verifier run;'
@@ -355,7 +460,7 @@ def guard_unlink(payload, root):
         db.row_factory = sqlite3.Row
         db.execute('PRAGMA query_only=ON')
         db.execute('BEGIN')
-        child = db.execute('SELECT id,status,assignee FROM tasks WHERE id=?', (child_id,)).fetchone()
+        child = db.execute('SELECT * FROM tasks WHERE id=?', (child_id,)).fetchone()
         if child is None:
             raise ValueError('Unknown child task; do not unlink from an unknown card')
         if child['status'] in ('done', 'archived'):
@@ -468,7 +573,7 @@ def guard_complete(payload, root):
             if evidence['verdict'] != 'accept':
                 raise ValueError(
                     f"Review {parent['id']} requested changes. Keep this handoff open."
-                    " For non-goal tasks, use kanban_block(kind='validation') for missing current-scope acceptance,"
+                    " For non-goal tasks, use kanban_block(kind='capability') for an agent-supplied acceptance gap,"
                     ' naming the exact result and its existing supplier. Goal-mode tasks must'
                     ' retain their native terminal constraints and existing coordinator recovery'
                     ' path; do not change goal_mode or manufacture an owner needs_input hold.'

@@ -33,7 +33,7 @@ CREATE TABLE tasks (
 );
 CREATE TABLE task_comments (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT, body TEXT);
 CREATE TABLE task_events (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT,
-    kind TEXT, payload TEXT, created_at INTEGER);
+    kind TEXT, payload TEXT, created_at INTEGER, run_id INTEGER);
 CREATE TABLE task_links (parent_id TEXT, child_id TEXT);
 CREATE TABLE task_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT,
     profile TEXT, status TEXT, outcome TEXT, metadata TEXT,
@@ -167,6 +167,121 @@ class VerdictGuardTest(unittest.TestCase):
         self.assertEqual({}, guard_mod.guard({'tool_name':'kanban_link', 'tool_input':{
             'board':'testboard', 'parent_id':'t_parent', 'child_id':'t_legacy'}}, self.root))
 
+    def test_completed_standalone_review_preflight_keeps_rejection_on_coordinator(self):
+        self.card('t_review', assignee='feature-reviewer', tenant='verification')
+        self.add_run('t_review', 'request-changes', NOW)
+        before = list(self.db.iterdump())
+        for role in ('standard-implementer', 'local-implementer', 'feature-reviewer', 'project-auditor', 'head-coordinator'):
+            self.card('t_child', assignee=role, status='todo')
+            for tool in ('kanban_create', 'kanban_link'):
+                with self.subTest(role=role, tool=tool):
+                    payload = (self.feature_create(assignee=role, body='Goal: corrected evidence',
+                               parents=['t_review']) if tool == 'kanban_create' else
+                               {'tool_name':tool, 'tool_input':{'board':'testboard',
+                                'parent_id':'t_review', 'child_id':'t_child'}})
+                    snapshot = list(self.db.iterdump())
+                    result = guard_mod.guard(payload, self.root)
+                    self.assertEqual(None if role == 'head-coordinator' else 'block', result.get('action'))
+                    if role != 'head-coordinator':
+                        self.assertIn('actual corrected inputs', result['message'])
+                    self.assertEqual(snapshot, list(self.db.iterdump()))
+            self.db.execute("DELETE FROM tasks WHERE id='t_child'"); self.db.commit()
+        self.assertEqual(before, list(self.db.iterdump()))
+
+    def test_retained_route_preflight_rejects_inherited_rejection_before_mutation(self):
+        self.card('t_review',assignee='feature-reviewer',tenant='verification')
+        self.card('t_route',assignee='head-coordinator',status='blocked')
+        self.link('t_review','t_route')
+        for verdict, blocked in (('request-changes', True), ('accept', False)):
+            self.db.execute('DELETE FROM task_runs'); self.db.commit()
+            self.add_run('t_review',verdict,NOW)
+            for role in ('standard-implementer','local-implementer','feature-reviewer','project-auditor','head-coordinator'):
+                self.card('t_child',assignee=role,status='todo')
+                for payload in (self.feature_create(assignee=role,body='Goal: correction',parents=['t_route']),
+                        {'tool_name':'kanban_link','tool_input':{'board':'testboard',
+                         'parent_id':'t_route','child_id':'t_child'}}):
+                    with self.subTest(verdict=verdict,role=role,tool=payload['tool_name']):
+                        before=list(self.db.iterdump())
+                        self.assertEqual('block' if blocked and role != 'head-coordinator' else None,
+                                         guard_mod.guard(payload,self.root).get('action'))
+                        self.assertEqual(before,list(self.db.iterdump()))
+                self.db.execute("DELETE FROM tasks WHERE id='t_child'"); self.db.commit()
+        # Pending standalone review and native rework do not import a terminal
+        # standalone non-acceptance into the route.
+        for assignee,status in (('feature-reviewer','todo'),('standard-implementer','ready')):
+            self.db.execute("UPDATE tasks SET assignee=?,status=? WHERE id='t_review'",(assignee,status))
+            self.db.commit()
+            self.assertEqual({},guard_mod.guard(self.feature_create(
+                body='Goal: ordinary workflow',parents=['t_route']),self.root))
+
+    def test_auditor_parent_preflight_requires_independent_acceptance(self):
+        self.card('t_audit',assignee='project-auditor',tenant='verification')
+        for verdict, independence, blocked in (
+                ('request-changes', {'plan_author':False,'implementer':False}, True),
+                ('accept', {'plan_author':True,'implementer':False}, True),
+                ('accept', {'plan_author':False,'implementer':False}, False)):
+            self.db.execute('DELETE FROM task_runs'); self.db.commit()
+            self.add_run('t_audit',verdict,NOW,profile='project-auditor',independence=independence)
+            self.assertEqual('block' if blocked else None,guard_mod.guard(self.feature_create(
+                body='Goal: correction',parents=['t_audit']),self.root).get('action'))
+
+    def test_review_parent_preflight_requires_current_valid_evidence(self):
+        self.card('t_review', assignee='feature-reviewer', tenant='verification')
+        self.card('t_child', assignee='standard-implementer', status='todo')
+        for evidence, blocked in ((None, True), ('{', True), ('[]', True),
+                (json.dumps({'verdict':'accept'}), True),
+                (json.dumps({'verdict':'unknown','missing_inputs':['source']}), True),
+                (accept_run('source', NOW)[0], False), (changes_run('source', NOW)[0], True)):
+            self.db.execute('DELETE FROM task_runs')
+            if evidence is not None:
+                self.db.execute("INSERT INTO task_runs (task_id,profile,status,outcome,metadata) VALUES "
+                                "('t_review','feature-reviewer','done','completed',?)", (evidence,))
+            self.db.commit()
+            for payload in (self.feature_create(body='Goal: correction', parents=['t_review']),
+                    {'tool_name':'kanban_link','tool_input':{'board':'testboard',
+                     'parent_id':'t_review','child_id':'t_child'}}):
+                with self.subTest(evidence=evidence, tool=payload['tool_name']):
+                    self.assertEqual('block' if blocked else None,
+                                     guard_mod.guard(payload,self.root).get('action'))
+        # A past acceptance cannot hide a failed or wrong-profile latest attempt.
+        for profile, status, outcome in (('feature-reviewer','blocked','blocked'),
+                                         ('standard-implementer','done','completed')):
+            self.db.execute('DELETE FROM task_runs'); self.db.commit()
+            self.add_run('t_review', 'accept', NOW)
+            self.db.execute("INSERT INTO task_runs (task_id,profile,status,outcome,metadata) VALUES "
+                            "('t_review',?,?,?,?)", (profile,status,outcome,accept_run('source',NOW)[0]))
+            self.db.commit()
+            self.assertEqual('block', guard_mod.guard(self.feature_create(
+                body='Goal: correction', parents=['t_review']), self.root).get('action'))
+        self.assertEqual('block', guard_mod.guard(self.feature_create(
+            body='Goal: correction', parents=['t_missing']),self.root).get('action'))
+
+    def test_review_preflight_preserves_pending_and_native_same_card_lifecycle(self):
+        self.card('t_pending', assignee='feature-reviewer', status='todo', tenant='verification')
+        self.card('t_native', assignee='standard-implementer', status='ready',
+                  body='Workflow: native-review-v1')
+        # Native request_changes restores implementer ownership and records a
+        # changes_requested run, not a completed standalone rejection verdict.
+        self.db.execute("INSERT INTO task_runs (task_id,profile,status,outcome) VALUES "
+                        "('t_native','feature-reviewer','ready','changes_requested')")
+        self.db.execute("INSERT INTO task_events (task_id,kind,payload) VALUES "
+                        "('t_native','claimed',?)", (json.dumps({'source_status':'review'}),))
+        self.db.commit()
+        self.card('t_dependent',assignee='standard-implementer',status='todo')
+        for parent in ('t_pending','t_native'):
+            self.assertEqual({},guard_mod.guard({'tool_name':'kanban_link','tool_input':{
+                'board':'testboard','parent_id':parent,'child_id':'t_dependent'}},self.root))
+            for role in ('standard-implementer','feature-reviewer','head-coordinator'):
+                self.assertEqual({}, guard_mod.guard(self.feature_create(
+                    assignee=role,body='Goal: ordinary workflow',parents=[parent]),self.root))
+        self.db.execute("UPDATE tasks SET assignee='feature-reviewer', status='running', current_run_id=1 "
+                        "WHERE id='t_native'")
+        self.db.execute("UPDATE task_events SET payload=? WHERE task_id='t_native'",
+                        (json.dumps({'source_status':'review','run_id':1}),))
+        self.db.commit()
+        self.assertEqual({},guard_mod.guard(self.feature_create(
+            body='Goal: ordinary workflow',parents=['t_native']),self.root))
+
     def test_delivery_handoff_cannot_gate_its_own_input_but_decision_and_closure_can(self):
         self.card('t_delivery',assignee='head-coordinator',status='running',body='Feature tracker: testboard:t_tracker\nFeature handoff: delivery')
         for role in ('standard-implementer','feature-reviewer','project-auditor'):
@@ -298,6 +413,87 @@ class VerdictGuardTest(unittest.TestCase):
             contract = guard_mod._feature_contract(reader, reader.execute(
                 'SELECT * FROM tasks WHERE id=?', ('t_route',)).fetchone())
         self.assertEqual('t_new_tracker', guard_mod.FEATURE.search(contract).group(2))
+
+    def correction_context(self, routed=True):
+        self.card('t_old',assignee='feature-reviewer',tenant='verification')
+        self.add_run('t_old','request-changes',NOW-10)
+        self.card('t_owner',assignee='head-coordinator',status='todo')
+        self.card('t_correction',assignee='feature-reviewer',status='blocked')
+        self.card('t_route',assignee='head-coordinator',status='blocked')
+        self.link('t_old','t_owner'); self.link('t_correction','t_owner')
+        for task, assignee, parents in (('t_old','feature-reviewer',[]),
+                ('t_correction','standard-implementer',['t_old'])):
+            self.db.execute('INSERT INTO task_events (task_id,kind,payload) VALUES (?,\'created\',?)',
+                (task,json.dumps({'creator_task_id':'t_owner','assignee':assignee,'parents':parents})))
+        handoff = self.db.execute("INSERT INTO task_runs (task_id,profile,status,outcome,metadata) VALUES "
+            "('t_correction','standard-implementer','review','review_requested','{}')").lastrowid
+        self.db.execute("INSERT INTO task_events (task_id,kind,run_id,payload) VALUES "
+            "('t_correction','review_requested',?,?)", (handoff,json.dumps({
+                'implementer':'standard-implementer','reviewer':'feature-reviewer'})))
+        reviewer = self.db.execute("INSERT INTO task_runs (task_id,profile,status,outcome) VALUES "
+            "('t_correction','feature-reviewer','blocked','blocked')").lastrowid
+        self.db.execute("INSERT INTO task_events (task_id,kind,run_id,payload) VALUES "
+            "('t_correction','claimed',?,?)", (reviewer,json.dumps({'source_status':'review','run_id':reviewer})))
+        self.db.commit()
+        if routed:
+            self.link('t_old','t_route'); self.link('t_route','t_correction')
+        else:
+            self.link('t_old','t_correction')
+        return self.payload('t_route' if routed else 't_old','t_correction')
+
+    def test_native_correction_context_can_unlink_without_releasing_original_consumer(self):
+        payload = self.correction_context()
+        before = list(self.db.iterdump())
+        self.assertEqual({},guard_mod.guard(payload,self.root))
+        self.assertEqual(before,list(self.db.iterdump()))
+        # Both original consumer gates and all completion semantics stay intact.
+        for parent in ('t_old','t_correction'):
+            self.assertEqual('block',guard_mod.guard(self.payload(parent,'t_owner'),self.root).get('action'))
+        for child in ('t_owner','t_route','t_correction'):
+            self.assertEqual('block',guard_mod.guard(self.complete_payload(child,{}),self.root).get('action'))
+
+    def test_direct_native_correction_context_can_unlink(self):
+        self.assertEqual({},guard_mod.guard(self.correction_context(routed=False),self.root))
+
+    def test_shared_consumer_alone_never_proves_native_correction_context(self):
+        payload = self.correction_context()
+        # Every binding is necessary; restore each mutation before the next.
+        for sql in (
+                "DELETE FROM task_links WHERE parent_id='t_old' AND child_id='t_owner'",
+                "DELETE FROM task_links WHERE parent_id='t_correction' AND child_id='t_owner'",
+                "UPDATE tasks SET assignee='standard-implementer' WHERE id='t_owner'",
+                "UPDATE tasks SET status='done' WHERE id='t_owner'",
+                "UPDATE tasks SET status='running' WHERE id='t_route'",
+                "UPDATE tasks SET current_run_id=999 WHERE id='t_route'",
+                "UPDATE tasks SET assignee='head-coordinator' WHERE id='t_correction'",
+                "UPDATE tasks SET status='running' WHERE id='t_correction'",
+                "UPDATE tasks SET current_run_id=3 WHERE id='t_correction'",
+                "DELETE FROM task_events WHERE task_id='t_correction' AND kind='created'",
+                "UPDATE task_events SET payload='[]' WHERE task_id='t_correction' AND kind='created'",
+                'UPDATE task_events SET payload=\'{"creator_task_id":"t_other"}\' WHERE task_id=\'t_correction\' AND kind=\'created\'',
+                "UPDATE task_events SET payload='{}' WHERE task_id='t_correction' AND kind='created'",
+                "UPDATE task_events SET payload='{' WHERE task_id='t_correction' AND kind='created'",
+                "DELETE FROM task_events WHERE task_id='t_old' AND kind='created'",
+                "DELETE FROM task_events WHERE task_id='t_correction' AND kind='review_requested'",
+                "UPDATE task_events SET payload='[]' WHERE kind='review_requested'",
+                "UPDATE task_events SET payload='{' WHERE kind='review_requested'",
+                "UPDATE task_events SET id=999 WHERE kind='review_requested'",
+                "UPDATE task_events SET run_id=999 WHERE kind='review_requested'",
+                "UPDATE task_events SET payload='{}' WHERE kind='claimed'",
+                "UPDATE task_events SET run_id=999 WHERE kind='claimed'",
+                "UPDATE task_runs SET profile='project-auditor' WHERE outcome='blocked'",
+                "UPDATE task_runs SET profile='feature-reviewer' WHERE outcome='review_requested'",
+                'UPDATE task_events SET payload=\'{"implementer":"feature-reviewer","reviewer":"feature-reviewer"}\' WHERE kind=\'review_requested\'',
+                "UPDATE task_runs SET metadata='{}' WHERE task_id='t_old'",
+                'UPDATE task_runs SET metadata=\'{"verdict":"unknown","missing_inputs":["source"]}\' WHERE task_id=\'t_old\'',
+                ):
+            with self.subTest(sql=sql):
+                # The guard reads a separate connection; commit each variant
+                # then restore the exact fixture from its in-memory backup.
+                backup=sqlite3.connect(':memory:'); self.db.backup(backup)
+                self.db.execute(sql); self.db.commit()
+                self.assertEqual('block',guard_mod.guard(payload,self.root).get('action'))
+                backup.backup(self.db); backup.close()
 
     def test_negative_verifier_can_report_despite_rejected_review_parent(self):
         self.card('t_old', assignee='feature-reviewer', tenant='verification')
@@ -754,7 +950,8 @@ class VerdictGuardTest(unittest.TestCase):
         result = guard_mod.guard(self.complete_payload('t_handoff', {}), self.root)
         self.assertEqual('block', result.get('action'))
         self.assertIn('kanban_block', result['message'])
-        self.assertIn("For non-goal tasks, use kanban_block(kind='validation')", result['message'])
+        self.assertIn("For non-goal tasks, use kanban_block(kind='capability')", result['message'])
+        self.assertNotIn("kind='validation'", result['message'])
         self.assertIn('Goal-mode tasks must retain their native terminal constraints', result['message'])
         self.assertIn('existing coordinator recovery path', result['message'])
         self.assertIn('do not change goal_mode or manufacture an owner needs_input hold', result['message'])
