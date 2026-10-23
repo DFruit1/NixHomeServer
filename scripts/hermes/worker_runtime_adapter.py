@@ -18,6 +18,12 @@ EDITS = {
          '        resume_status = ('),
     ),
     'kanban_db_dispatch.py': (
+        ('        if check_respawn_guard(conn, row["id"], lane="review") is None:\n',
+         '        # Reserve capacity only for reviews the dispatch policy admits.\n'
+         '        from hermes_cli import nixhomeserver_worker_policy as worker_policy\n'
+         '        if worker_policy.reason(conn, row["id"], assignee) is not None:\n'
+         '            continue\n'
+         '        if check_respawn_guard(conn, row["id"], lane="review") is None:\n'),
         ('    # Per-profile cap: one profile\'s local model / API quota / browser pool\n',
          '    from hermes_cli import nixhomeserver_worker_policy as worker_policy\n'
          '    policy_reason = worker_policy.reason(conn, task_id, assignee)\n'

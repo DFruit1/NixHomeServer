@@ -179,7 +179,10 @@ class SharedRootTest(unittest.TestCase):
             '    except Exception:\n        pass\n'
             '    try:\n        pid = _call_spawn_fn(spawn)\n'
             '    except Exception:\n        pass\n'
-            '    return True\n')
+            '    return True\n'
+            'def reservation():\n    for row in rows:\n'
+            '        if check_respawn_guard(conn, row["id"], lane="review") is None:\n'
+            '            return True\n    return False\n')
         review = self.root / 'hermes-agent/agent/background_review.py'
         review.parent.mkdir(parents=True)
         review.write_text('\n'.join(f'PROMPT{i} = (\n{old}\n)'

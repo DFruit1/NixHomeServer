@@ -3,6 +3,8 @@ set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 python3 -B - "$repo" <<'PY'
 import importlib.util
+import ast
+import types
 import contextlib
 import io
 import os
@@ -108,8 +110,66 @@ class InstallerTest(unittest.TestCase):
                 '    except Exception:\n        pass\n'
                 '    try:\n        pid = _call_spawn_fn(spawn)\n'
                 '    except Exception:\n        pass\n'
-                '    return True\n'),
+                '    return True\n'
+                'def reservation():\n    for row in rows:\n'
+                '        if check_respawn_guard(conn, row["id"], lane="review") is None:\n'
+                '            return True\n    return False\n'),
         }
+
+    def test_transformed_native_review_reservation_uses_dispatch_policy(self):
+        # Execute the real upstream reservation AND lane-selection functions.
+        # Only effects/profile lookups are replaced; no live board is opened.
+        native = (Path(os.environ['HERMES_FIXTURE_NATIVE_PYTHON']).parents[2]
+                  if os.environ.get('HERMES_FIXTURE_NATIVE_PYTHON')
+                  else Path.home()/'.hermes/hermes-agent')
+        text = adapt('kanban_db_dispatch.py',
+                     (native/'hermes_cli/kanban_db_dispatch.py').read_text())
+        names = {'_any_spawnable_review', '_dispatch_ready_and_review_lanes'}
+        functions = [node for node in ast.parse(text).body
+                     if isinstance(node, ast.FunctionDef) and node.name in names]
+        self.assertEqual(names, {node.name for node in functions})
+        reasons = {'t_held': 'skill unavailable'}
+        calls = []
+        def reason(conn, task_id, assignee):
+            return reasons.get(task_id)
+        def dispatch(conn, row, assignee, result, **kwargs):
+            if reason(conn, row['id'], assignee) is not None:
+                return False
+            calls.append((row['id'], kwargs['lane']))
+            return True
+        namespace = {
+            '_profile_exists_fn': lambda: lambda name: True,
+            'per_profile_cap_for': lambda caps, name: None,
+            '_cap_accounting_key': lambda name: name,
+            'check_respawn_guard': lambda *a, **kw: None,
+            '_resolve_default_assignee': lambda name: name,
+            '_dispatch_lane_task': dispatch,
+        }
+        exec('from __future__ import annotations\n' + ast.unparse(
+            ast.Module(body=functions, type_ignores=[])), namespace)
+        fake = types.ModuleType('hermes_cli')
+        fake.nixhomeserver_worker_policy = types.SimpleNamespace(reason=reason)
+        db = sqlite3.connect(':memory:')
+        self.addCleanup(db.close)
+        db.execute('CREATE TABLE evidence(value TEXT)')
+        db.execute("INSERT INTO evidence VALUES('unchanged')")
+        before = list(db.iterdump())
+        ready = [{'id': 't_ready', 'assignee': 'standard-implementer'}]
+        held = {'id': 't_held', 'assignee': 'feature-reviewer'}
+        admitted = {'id': 't_admitted', 'assignee': 'feature-reviewer'}
+        with patch.dict(sys.modules, {'hermes_cli': fake}):
+            for reviews, expected in [([held], [('t_ready', 'ready')]),
+                    ([admitted], [('t_admitted', 'review')]),
+                    ([held, admitted], [('t_admitted', 'review')])]:
+                with self.subTest(reviews=reviews):
+                    calls.clear()
+                    namespace['_dispatch_ready_and_review_lanes'](db, object(),
+                        ready_rows=ready, review_rows=reviews, dry_run=True,
+                        ttl_seconds=None, board='fixture', failure_limit=2,
+                        spawn_fn=None, per_profile_caps=None, per_profile_running={},
+                        spawn_budget=1, default_assignee=None)
+                    self.assertEqual(expected, calls)
+                    self.assertEqual(before, list(db.iterdump()))
 
     def test_title_edit_preserves_all_other_settings_and_comments(self):
         from hermes_config import document
