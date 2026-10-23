@@ -11,6 +11,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 import stat
 import time
@@ -22,6 +23,26 @@ from hermes_common import atomic_write
 CREATOR = 'deadlock-recovery-monitor'
 MAX_ATTEMPTS = 3
 BACKOFF = (300, 900, 3600)
+
+
+def requests_downstream_input(body, child):
+    """Recognize an explicit input wait, not a mention of its consumer.
+
+    This is a commissioning hint only. A native coordinator still qualifies
+    the dependency; the collector never changes it.
+    """
+    for clause in re.split(r'[\n.;!?]', body or ''):
+        # Match one affirmative request and its named input in the same clause.
+        # Do not let an upstream wait spill across a downstream consumer mention.
+        if re.search(r'\b(?:not|never|no longer|without)\b', clause, re.I):
+            continue
+        request = re.search(
+            r'\b(?:wait(?:ing)?\s+for|await(?:ing)?|blocked\s+on|requires?)\s+'
+            r'(?:(?:the|exact|qualified|current|fresh|input|result|output|evidence|from|of)\s+)*'
+            + re.escape(child) + r'\b', clause, re.I)
+        if request:
+            return True
+    return False
 
 
 def intake_journal(root, dry_run):
@@ -77,7 +98,7 @@ def observe(root, board, now=None):
             # downstream producer. Ask a native coordinator to qualify this;
             # the collector never decides whether to remove a dependency.
             downstream = [r[0] for r in db.execute('SELECT child_id FROM task_links WHERE parent_id=? ORDER BY child_id',(tid,))]
-            semantic = [child for child in downstream if child in (task['body'] or '')]
+            semantic = [child for child in downstream if requests_downstream_input(task['body'], child)]
             if hold and hold['supplier'] == 'owner':
                 continue
             if hold:

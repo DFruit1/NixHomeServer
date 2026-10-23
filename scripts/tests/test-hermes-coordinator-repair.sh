@@ -284,6 +284,39 @@ def recover_publication(native):
         kb.create_task(self.conn,title='Already queued',assignee='head-coordinator',created_by=monitor.CREATOR,workspace_kind='scratch')
         self.assertEqual([],monitor.tick(self.root,dry_run=True,now=self.now))
 
+    def test_monitor_consumer_mentions_do_not_commission_recovery(self):
+        child=kb.create_task(self.conn,title='Consumer',assignee='head-coordinator',triage=True,workspace_kind='scratch')
+        kb.link_tasks(self.conn,self.target,child)
+        bodies=[
+            'Goal: Accept or reject actual scheduled feature tracker maintenance.\n'
+            'Change: Verify installed exact revision and real scheduler receipts; plan slice 4.\n'
+            'Notes:\n- Parent supplies immutable plan, approval, exact hashes and job identity.\n'
+            '- CI-FTP-001; coordinator '+child+' stays held until explicit verdict.',
+            'Wait for upstream input; consumer '+child+' stays held until this verdict.',
+            'Wait for upstream input. Consumer '+child+' needs this result.',
+            'Do not wait for exact result from '+child,
+            'No longer blocked on '+child,
+            'Await upstream input\nConsumer '+child+' stays held.',
+        ]
+        for body in bodies:
+            with self.subTest(body=body):
+                self.conn.execute("UPDATE tasks SET status='todo',body=? WHERE id=?",(body,self.target));self.conn.commit()
+                self.assertEqual([],monitor.tick(self.root,dry_run=True,now=self.now))
+                with patch.object(monitor.recovery,'helper_identity',return_value={'changed':'helper'}):
+                    self.assertEqual([],monitor.tick(self.root,dry_run=True,now=self.now))
+        self.hold()
+        self.assertEqual('technical-hold',monitor.observe(self.root,'testboard')[0]['kind'])
+
+    def test_monitor_explicit_downstream_input_requests(self):
+        child=kb.create_task(self.conn,title='Producer',assignee='standard-implementer',triage=True,workspace_kind='scratch')
+        kb.link_tasks(self.conn,self.target,child)
+        for body in ('Await result from '+child, 'Blocked on '+child+' output',
+                     'Requires qualified input from '+child, 'Waiting for exact result from '+child):
+            with self.subTest(body=body):
+                self.conn.execute("UPDATE tasks SET status='todo',body=? WHERE id=?",(body,self.target));self.conn.commit()
+                actions=monitor.tick(self.root,dry_run=True,now=self.now)
+                self.assertEqual([child],actions[0]['issue']['semantic_candidates'])
+
     def test_real_blocked_recovery_owner_and_noisy_failure_do_not_replenish_attempts(self):
         self.hold()
         def create(board,*args):
