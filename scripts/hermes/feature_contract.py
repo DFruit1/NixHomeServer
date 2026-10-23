@@ -164,5 +164,3 @@ def prepare_delivery(db, task_id, feature, delivery):
     if any(key in delivery and delivery[key] != result[key] for key in ('scope', 'stage', 'revision')):
         raise ValueError('Submitted delivery fields conflict with the actual accepted scope')
     return result
-
-
