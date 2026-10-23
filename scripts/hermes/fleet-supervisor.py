@@ -19,6 +19,7 @@ import sys
 import time
 
 from hermes_common import atomic_write
+from agent_usage_guard import intake_hold, read as read_usage_state
 
 # name, interval seconds, timeout seconds, interpreter, installed script, arguments
 HANDLERS = (
@@ -26,6 +27,7 @@ HANDLERS = (
     ('technical-recovery', 300, 90, 'python', 'deadlock_recovery.py', ()),
     ('evidence', 300, 60, 'python', 'fleet-evidence.py', ('collect',)),
     ('agent-usage', 300, 90, 'python', 'agent-usage.py', ()),
+    ('usage-guard', 300, 15, 'python', 'agent_usage_guard.py', ()),
     # A real recent no-agent aging pass took 96s; retain bounded headroom.
     ('aging', 21600, 180, 'python', 'kanban-aging-escalation.py', ()),
     ('cron-loops', 3600, 60, 'python', 'cron-loop-monitor.py', ()),
@@ -121,6 +123,10 @@ def wake_coordinator(root, board, detector, output):
         if not lines:
             return
         evidence = '\n'.join(sorted(lines))
+    elif detector == 'usage-guard':
+        evidence='\n'.join(line for line in output.splitlines() if re.fullmatch(
+            r'TOKEN_GUARD [A-Za-z0-9_.:/@+\-]+ incident=\d+ hold=proactive-intake',line))
+        if not evidence:return
     elif detector == 'idle-state' and output.startswith('IDLE '):
         evidence = output
     else:
@@ -128,8 +134,24 @@ def wake_coordinator(root, board, detector, output):
     path = root / 'kanban/boards' / board / 'kanban.db'
     with sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=2) as db:
         db.execute('PRAGMA query_only=ON')
-        if db.execute("SELECT 1 FROM tasks WHERE status NOT IN ('done','archived') AND created_by IN"
-                      " ('fleet-supervisor','deadlock-recovery-monitor','aging-escalation','cron-loop-monitor') LIMIT 1").fetchone():
+        existing=db.execute("SELECT id FROM tasks WHERE status NOT IN ('done','archived') AND created_by IN"
+                      " ('fleet-supervisor','deadlock-recovery-monitor','aging-escalation','cron-loop-monitor') LIMIT 1").fetchone()
+        if existing:
+            if detector!='usage-guard':return
+            marker='Token guard incident: '+hashlib.sha256(evidence.encode()).hexdigest()
+            if db.execute('SELECT 1 FROM task_comments WHERE task_id=? AND author=? AND instr(body,?)>0 LIMIT 1',
+                          (existing[0],'fleet-supervisor',marker)).fetchone():return
+            comment=(marker+'\n'+evidence+'\nInput supplier: agent. Inspect ~/.hermes/state/agent-usage/guard.json '
+                     'and summary.json; follow documentation/langfuse.md#token-guards-and-alerts. '
+                     'Optional proactive intake is held. Diagnose the named model/source and original-task '
+                     'progress within this existing recovery task. Preserve active work, budgets and gates; '
+                     'technical usage incidents do not require owner input.')
+            subprocess.run(['hermes','--profile','default','kanban','--board',board,'comment',existing[0],comment,
+                            '--author','fleet-supervisor'],check=True,capture_output=True,text=True,timeout=30,
+                           env=dict(os.environ,HERMES_HOME=str(root),HERMES_KANBAN_HOME=str(root)))
+            if not db.execute('SELECT 1 FROM task_comments WHERE task_id=? AND author=? AND instr(body,?)>0 LIMIT 1',
+                              (existing[0],'fleet-supervisor',marker)).fetchone():
+                raise ValueError('Token incident comment not present after native write')
             return
         if detector == 'idle-state' and not db.execute(
                 "SELECT 1 FROM tasks WHERE status IN ('ready','todo','review','blocked','scheduled','triage')"
@@ -141,7 +163,12 @@ def wake_coordinator(root, board, detector, output):
             'Evidence: ' + evidence[:1200] + '\n'
             'Preserve original receipt waits, owner/provider gates, independent acceptance and active writers.\n'
             'Stop after one supported repair/transition with readback, or retain the exact technical hold.\n'
-            'Use existing task ownership; do not repeat unchanged investigation or create an acknowledgment chain.')
+            'Use existing task ownership; do not repeat unchanged investigation or create an acknowledgment chain.\n'
+            + ('For TOKEN_GUARD: read ~/.hermes/state/agent-usage/guard.json and summary.json; '
+               'follow documentation/langfuse.md#token-guards-and-alerts. Inspect contributing sessions '
+               'and actual original-task progress. Optional proactive intake is already held; preserve '
+               'active work, existing budgets and gates. Technical usage incidents stay internal; '
+               'do not ask the owner for a routine token spike or unavailable telemetry.' if detector=='usage-guard' else ''))
     subprocess.run(['hermes', '--profile', 'default', 'kanban', '--board', board, 'create',
                     'Resolve changed ' + detector + ' finding', '--assignee', 'head-coordinator',
                     '--tenant', 'technical-recovery', '--created-by', 'fleet-supervisor',
@@ -164,7 +191,8 @@ def deliver_wake(root, board, name, result, now):
         result['wake_error']=type(exc).__name__
 
 
-def tick(root, *, now=None, runner=run_handler, dry_run=False):
+def tick(root, *, now=None, runner=run_handler, dry_run=False, clock=None):
+    clock=clock or (time.time if now is None else lambda:now)
     now = int(time.time()) if now is None else now
     directory = root / 'state/fleet'
     if root.is_symlink() or directory.is_symlink() or (root / 'state').is_symlink():
@@ -197,6 +225,10 @@ def tick(root, *, now=None, runner=run_handler, dry_run=False):
                 interval = setting.get('interval')
                 if type(interval) is not int or interval <= 0:
                     raise ValueError('Handler cadence must be a positive finite interval')
+            if name=='proactive-intake' and intake_hold(read_usage_state(root/'state/agent-usage/guard.json'),clock()):
+                # A transient or missing guard never authorizes fresh optional
+                # work. Do not alter configured pauses, active cards or retries.
+                continue
             targets = boards if name in {'retry-breaker','board-health'} else [boards[0]]
             script = root / 'scripts' / filename
             identity = input_identity(root, script)
@@ -227,7 +259,7 @@ def tick(root, *, now=None, runner=run_handler, dry_run=False):
                                      failures=failures, next_due=now + (interval if not failures else
                                                                       (300 if failures == 1 else 900)),
                                      interrupted=result['exit_code'] == 124,
-                                     wake_pending=result['exit_code']==0 and name in {'board-health','idle-state'},
+                                     wake_pending=result['exit_code']==0 and name in {'board-health','idle-state','usage-guard'},
                                      output=result['output'])
                 # Journal each natural exit so a later failed handler does not
                 # repeat a successful mutating detector after a process crash.

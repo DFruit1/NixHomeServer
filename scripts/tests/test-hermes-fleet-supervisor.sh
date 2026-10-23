@@ -55,6 +55,59 @@ class SupervisorTest(unittest.TestCase):
         self.assertEqual([], self.calls)
         self.assertFalse((self.root / 'state').exists())
 
+    def test_token_hold_blocks_optional_intake_but_preserves_recovery(self):
+        directory=self.root/'state/agent-usage';directory.mkdir(parents=True)
+        path=directory/'guard.json'
+        path.write_text(json.dumps({'generated_at':100000,'hold_intake':True}))
+        supervisor.tick(self.root,now=100000,runner=self.runner)
+        self.assertFalse(any('review-taskforce-tick.sh' in str(c) for c in self.calls))
+        self.assertTrue(any('deadlock_recovery.py' in str(c) for c in self.calls))
+        self.calls.clear()
+        path.write_text(json.dumps({'generated_at':100301,'hold_intake':False}))
+        supervisor.tick(self.root,now=100301,runner=self.runner)
+        self.assertTrue(any('review-taskforce-tick.sh' in str(c) for c in self.calls))
+
+    def test_fresh_guard_created_during_tick_uses_actual_decision_time(self):
+        def run(command,**kwargs):
+            if command[-1].endswith('agent_usage_guard.py'):
+                directory=self.root/'state/agent-usage';directory.mkdir(parents=True)
+                (directory/'guard.json').write_text(json.dumps({'generated_at':100010,'hold_intake':False}))
+            return self.runner(command,**kwargs)
+        supervisor.tick(self.root,now=100000,runner=run,clock=lambda:100020)
+        self.assertTrue(any('review-taskforce-tick.sh' in str(c) for c in self.calls))
+
+    def test_usage_alert_wakes_coordinator_with_stable_incident_and_runbook(self):
+        import sqlite3
+        db=self.root/'kanban/boards/test/kanban.db'
+        with sqlite3.connect(db) as con:
+            con.execute('CREATE TABLE tasks(id TEXT,status TEXT,created_by TEXT)')
+        line='TOKEN_GUARD token_spike:example incident=123 hold=proactive-intake'
+        with patch.object(supervisor.subprocess,'run') as run:
+            supervisor.wake_coordinator(self.root,'test','usage-guard',line)
+        self.assertEqual(1,run.call_count)
+        command=run.call_args.args[0]
+        self.assertIn('TOKEN_GUARD',command[command.index('--body')+1])
+        self.assertIn('langfuse.md#token-guards-and-alerts',command[command.index('--body')+1])
+        self.assertIn('usage-guard:test:',command[command.index('--idempotency-key')+1])
+
+    def test_token_alert_attaches_once_to_existing_recovery_instead_of_being_lost(self):
+        import sqlite3
+        path=self.root/'kanban/boards/test/kanban.db'
+        with sqlite3.connect(path) as db:
+            db.executescript('CREATE TABLE tasks(id TEXT,status TEXT,created_by TEXT);'
+                             'CREATE TABLE task_comments(task_id TEXT,author TEXT,body TEXT);')
+            db.execute('INSERT INTO tasks VALUES (?,?,?)',('t_owner','running','deadlock-recovery-monitor'))
+        def native(command,**kwargs):
+            self.assertIn('comment',command)
+            at=command.index('comment')
+            with sqlite3.connect(path) as db:
+                db.execute('INSERT INTO task_comments VALUES (?,?,?)',(command[at+1],'fleet-supervisor',command[at+2]))
+        line='TOKEN_GUARD coverage:codex incident=123 hold=proactive-intake'
+        with patch.object(supervisor.subprocess,'run',side_effect=native) as run:
+            supervisor.wake_coordinator(self.root,'test','usage-guard',line)
+            supervisor.wake_coordinator(self.root,'test','usage-guard',line)
+        self.assertEqual(1,run.call_count)
+
     def test_timeout_and_interruption_never_replay_unchanged(self):
         def timeout(command, **kwargs):
             self.calls.append(command)

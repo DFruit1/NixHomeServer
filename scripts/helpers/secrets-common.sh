@@ -212,11 +212,21 @@ validator_function() {
     acoustid-credentials-json) printf '%s\n' validate_acoustid_credentials ;;
     https-url) printf '%s\n' validate_https_url ;;
     nonempty) printf '%s\n' validate_nonempty_secret ;;
+    langfuse-project-credentials) printf '%s\n' validate_langfuse_project_credentials ;;
     *)
       echo "❌ Unknown external-secret validator '$1' in secrets/manifest.nix" >&2
       return 1
       ;;
   esac
+}
+
+validate_langfuse_project_credentials() {
+  jq -e '
+    type == "object" and (keys == ["baseUrl","publicKey","secretKey"])
+    and (.baseUrl | type == "string" and test("^https://[A-Za-z0-9.-]+(:[0-9]+)?/?$"))
+    and (.publicKey | type == "string" and test("^pk-lf-[A-Za-z0-9_-]{16,160}$"))
+    and (.secretKey | type == "string" and test("^sk-lf-[A-Za-z0-9_-]{16,160}$"))
+  ' "$1" >/dev/null 2>&1
 }
 
 ensure_manual_alias() {

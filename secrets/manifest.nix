@@ -175,6 +175,14 @@
   };
 
   externalSecrets = {
+    langfuseMcpClientEnv = {
+      description = "Project-scoped credential for the desktop read-only Langfuse usage MCP bridge.";
+      format = "JSON object with baseUrl, publicKey and secretKey";
+      settingPath = "secrets/unencrypted/langfuseMcpClientEnv";
+      validator = "langfuse-project-credentials";
+      required = false;
+      consumedBy = "desktop Langfuse usage MCP client (decrypted in memory by the server identity)";
+    };
     netbirdSetupKey = {
       description = "NetBird setup key used to enroll the server.";
       format = "plain text setup key";

@@ -383,11 +383,11 @@ def collect(config, previous, now):
     return spans,state,sources
 
 
-def metrics(config,now):
+def metrics(config,now,*,since=None):
     query={'view':'observations','dimensions':[{'field':'providedModelName'}],
            'metrics':[{'measure':m,'aggregation':a} for m,a in [('count','count'),('inputTokens','sum'),('outputTokens','sum'),('totalTokens','sum')]],
            'filters':[{'column':'type','operator':'=','value':'GENERATION','type':'string'}],
-           'fromTimestamp':dt.datetime.fromtimestamp(now-86400,dt.timezone.utc).isoformat(),
+           'fromTimestamp':dt.datetime.fromtimestamp(now-86400 if since is None else since,dt.timezone.utc).isoformat(),
            'toTimestamp':dt.datetime.fromtimestamp(now,dt.timezone.utc).isoformat(),'config':{'row_limit':1000}}
     payload=json.loads(request(config['base_url']+'/api/public/v2/metrics?'+urllib.parse.urlencode({'query':json.dumps(query)}),
                                headers=credentials(config)))
@@ -416,6 +416,16 @@ def run(config):
         report['error_kind']=type(exc).__name__
     try:report['models']=metrics(config,now);report['metrics_status']='observed'
     except Exception as exc:report['metrics_status']='unavailable';report['metrics_error_kind']=type(exc).__name__
+    # Leave a 15-minute ingestion allowance for older native SDK generations.
+    # Compare a closed 15-minute window with the preceding six hours. Engine
+    # spans cannot enter either GENERATION-only query.
+    end=int(now//300)*300-900
+    try:
+        report['guard_metrics']={'status':'observed','window_end':end,
+            'recent':metrics(config,end,since=end-900),
+            'baseline':metrics(config,end-900,since=end-900-21600)}
+    except Exception as exc:
+        report['guard_metrics']={'status':'unavailable','error_kind':type(exc).__name__}
     atomic_json(directory/'summary.json',report)
     return report
 

@@ -205,6 +205,112 @@ do not establish request latency and must not be used as zero-latency samples.
 
 ## Verification
 
+### Read-only MCP access
+
+The existing private instance serves its native MCP endpoint at
+`https://langfuse.<domain>/api/public/mcp` with project-key authentication.
+The native endpoint offers writes as well as reads. Desktop agents use the
+stdio bridge `python3 ~/.hermes/scripts/langfuse_mcp.py`, which exposes only
+`getHealth`, `getMetricsSchema` and `queryMetrics`. It rejects every other tool
+or method before loading credentials or making a request. Usage queries are
+restricted to generations, seven days and at most 1,000 rows. The collector
+and automated guards continue using the API without model calls.
+
+`langfuseMcpClientEnv` is an optional manifest-managed JSON credential containing
+`baseUrl`, `publicKey` and `secretKey`, owned by the Langfuse catalog entry for
+desktop use. It is not a new server service or NixOS runtime secret. Ciphertext
+is tracked at `secrets/langfuseMcpClientEnv.age` and copied privately to
+`~/.hermes/credentials/langfuse-mcp.age`. The bridge sends ciphertext over SSH
+to the existing server age identity for decryption into process memory. The
+private identity stays on the server, and client configuration contains neither
+the project key nor its Basic Auth header. HTTP redirects are refused.
+
+For an authorized new credential, the local-only credential operator on the
+desktop runs the reviewed helper:
+
+```sh
+python3 scripts/admin/provision-langfuse-mcp.py --apply
+```
+
+Langfuse itself mints and registers the project key through its supported owner
+UI API, using the existing bootstrap owner authentication over server loopback.
+This generates the key on the server; the local model operates the flow from
+the desktop and receives only a sanitized receipt. No owner password or API key
+is returned in model/tool output. The helper realizes the normal
+`generate-secrets` app and evaluates its manifest **before** staging plaintext,
+then runs that same realized entrypoint with `--replace-external` and the server
+identity. Passing the already evaluated manifest avoids copying plaintext into
+the Nix store. Other ciphertext is hash-checked unchanged, staging is cleaned,
+and only encrypted output crosses back to the desktop. Transport failure never
+falls back to executing credential work on the desktop.
+
+A root-only locked receipt at
+`/var/lib/langfuse/credential-provisioning/desktop-usage-mcp-v1/receipt.json`
+persists the exact operation intent and encrypted result before handoff. A
+broken SSH connection or partial desktop handoff replays that ciphertext rather
+than minting another key. Only a never-delivered key matching this operation's
+unique note may be revoked as rollback. Two attempts are the automatic limit;
+unused-key cleanup remains available after the limit. Conflicting desktop files
+are preserved. Ciphertext is published atomically from one ignored task
+directory on the same filesystem, and the new credential must pass native MCP
+health and usage queries before success is reported.
+
+After installation and successful provisioning, enroll the bridge with the
+clients' native commands:
+
+```sh
+codex mcp add langfuse -- python3 "$HOME/.hermes/scripts/langfuse_mcp.py"
+opencode mcp add --global langfuse -- python3 "$HOME/.hermes/scripts/langfuse_mcp.py"
+```
+
+New client sessions load that configuration. The board steward continues using
+credential-free cached reports; its tool permissions and write prohibition
+stay intact. No public route or additional daemon is needed. Native keys remain
+project-scoped; the bridge enforces the smaller read-only interface for callers.
+
+### Token guards and alerts
+
+The existing five-minute fleet supervisor runs `usage-guard` immediately after
+collection. It uses Langfuse generation input plus output tokens (including
+cached input), never engine counters or model-price estimates. A closed
+15-minute window ends 15 minutes behind collection time to accommodate older
+SDK ingestion. The preceding six hours provide a per-model baseline.
+
+A candidate spike must exceed both one million tokens per 15 minutes and three
+times that model's prior mean, with at least 20 baseline requests. This is an
+anomaly threshold for optional work, not an owner-approved spending allowance.
+Three distinct five-minute samples spanning at least ten minutes confirm the
+incident. Sustained failed export, incomplete client coverage or missing guard
+metrics use the same confirmation period. Unknown telemetry is never zero.
+
+A confirmed incident holds **only new proactive intake** in the supervisor.
+It preserves configured pauses, existing cards, active workers, provider
+cooldowns, recovery/review work and deployment gates. A missing or stale guard
+also withholds proactive intake until fresh evidence returns. Two distinct
+healthy samples clear a confirmed hold without modifying scheduling policy.
+
+`~/.hermes/state/agent-usage/guard.json` contains current measurements,
+confirmation state and one stable incident ID. The steward report shows the
+hold and current per-model window/baseline totals. The supervisor uses its
+existing bounded coordinator delivery path to issue a `TOKEN_GUARD` finding;
+changing token amounts do not create fresh incidents or repeated alert cards.
+Technical incidents stay internal rather than becoming owner phone decisions.
+
+On a token spike, read that file and `summary.json`, then inspect the named
+model's generations in Langfuse over the recorded window. Group by source,
+profile and card/run metadata where present. Check original-task progress,
+retries and duplicated recovery work before narrowing the existing task or
+changing priorities within existing budgets. High cached-input volume can be
+legitimate; the guard does not cancel a worker or infer a billing charge.
+For coverage incidents, check collector exit/freshness, read-only source
+availability, authentication and ingestion health. Verify two fresh healthy
+samples before claiming recovery; do not erase guard state to bypass the hold.
+
+`bash scripts/tests/test-agent-usage-guard.sh` covers confirmation, stale
+evidence, recovery and missing-baseline behavior. Supervisor tests verify that
+the hold actually skips proactive intake while recovery continues, and that
+the stable alert reaches the coordinator command with this runbook.
+
 ```sh
 bash scripts/tests/test-langfuse-secrets.sh
 bash scripts/tests/test-langfuse-module.sh
@@ -303,6 +409,7 @@ Langfuse data lives in the separate `default` database and is unaffected.
 - [ClickHouse backups](https://clickhouse.com/docs/operations/backup)
 - [Langfuse OpenTelemetry attribute mapping](https://langfuse.com/integrations/native/opentelemetry)
 - [Langfuse v4 Metrics API](https://langfuse.com/docs/metrics/features/metrics-api)
+- [Langfuse native MCP server](https://langfuse.com/docs/api-and-data-platform/features/mcp-server)
 - [Codex telemetry](https://developers.openai.com/codex/config-advanced)
 - [llama.cpp monitoring endpoints](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md)
 - Hermes's bundled `plugins/observability/langfuse/README.md` documents SDK setup

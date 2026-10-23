@@ -219,6 +219,7 @@ def schedule_plan(root):
     policy = checked(root, root / 'state/fleet/handlers.json')
     handlers = json.loads(policy.read_text()) if policy.exists() else {'evidence': {'enabled': True, 'interval': 300}}
     handlers.setdefault('agent-usage', {'enabled': True, 'interval': 300})
+    handlers.setdefault('usage-guard', {'enabled': True, 'interval': 300})
     result = dict(pause=[], daily=None, supervisor=None, handlers=handlers)
     for profile in ('default', 'head-coordinator', 'board-steward'):
         names = {}
@@ -475,7 +476,7 @@ def pending_files(root, source, plan, *, owners=None):
                  'feature_contract.py', 'fleet_contract.py'):
         merge_owned(pending,owners,{root/'scripts'/name:(directory/name).read_text()},'recovery')
     for name in ('fleet-release.py','fleet-evidence.py','fleet-supervisor.py','fleet-report.py','kanban-analytics.py',
-                 'agent-usage.py','agent_usage_report.py','coordinator_trial.py',
+                 'agent-usage.py','agent_usage_report.py','agent_usage_guard.py','langfuse_mcp.py','coordinator_trial.py',
                  'fleet_workflow.py','idle-recovery-monitor.py','kanban-board-health.sh'):
         merge_owned(pending,owners,{root/'scripts'/name:(directory/name).read_text()},'fleet-runtime')
     merge_owned(pending,owners,{

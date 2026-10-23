@@ -47,7 +47,8 @@ api_key: PRIVATE
     def test_usage_collection_is_enabled_on_upgrade_and_keeps_explicit_pause(self):
         self.assertEqual({'enabled':True,'interval':300},release.schedule_plan(self.root)['handlers']['agent-usage'])
         path=self.root/'state/fleet/handlers.json';path.parent.mkdir(parents=True)
-        paused={'agent-usage':{'enabled':False,'interval':900},'evidence':{'enabled':True,'interval':300}}
+        paused={'agent-usage':{'enabled':False,'interval':900},'evidence':{'enabled':True,'interval':300},
+                'usage-guard':{'enabled':False,'interval':600}}
         path.write_text(json.dumps(paused))
         self.assertEqual(paused,release.schedule_plan(self.root)['handlers'])
 

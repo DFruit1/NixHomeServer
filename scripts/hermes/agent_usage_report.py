@@ -16,7 +16,7 @@ def read_summary(path, *, now=None):
 
 def render_summary(root, *, now=None):
     data=read_summary(Path(root)/'state/agent-usage/summary.json',now=now)
-    if data['status']!='observed':return ['Agent usage: '+data['status']+'; token coverage unknown.']
+    if data['status']!='observed':return ['Agent usage: '+data['status']+'; token coverage unknown.']+render_guard(root,now=now)
     sources=data.get('sources',{})
     lines=['Agent usage: '+', '.join(name+'='+sources.get(name,{}).get('status','unknown')
                                    for name in ('codex','opencode'))+'.']
@@ -31,4 +31,20 @@ def render_summary(root, *, now=None):
                      +'/'.join(str(counters[k]) for k in ('input_tokens','cache_read_tokens','output_tokens'))
                      +'; overlaps agent generations, do not add.')
     lines.append('Usage is not subscription billing; actual cost remains unknown.')
+    return lines+render_guard(root,now=now)
+
+
+def render_guard(root, *, now=None):
+    lines=[]
+    try:
+        guard=json.loads((Path(root)/'state/agent-usage/guard.json').read_text())
+        age=(time.time() if now is None else now)-guard['generated_at']
+        if not 0<=age<=900:raise ValueError('Stale guard')
+        lines.append('Token guard: '+('proactive intake held: '+', '.join(sorted(guard['active']))
+                                    if guard['hold_intake'] else 'no confirmed incident.') )
+        for model,values in sorted(guard.get('measurements',{}).items()):
+            lines.append('  '+model+' 15m tokens='+str(values['tokens_15m'])
+                         +' prior six-hour mean='+str(round(values['baseline_tokens_15m'])))
+    except (OSError,ValueError,KeyError,TypeError):
+        lines.append('Token guard: unavailable or stale; optional proactive intake held.')
     return lines

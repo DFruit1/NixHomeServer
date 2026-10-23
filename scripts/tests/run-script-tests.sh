@@ -204,6 +204,8 @@ test_scripts=(
   scripts/tests/test-hermes-config-policy.sh
   scripts/tests/test-hermes-performance.sh
   scripts/tests/test-agent-usage.sh
+  scripts/tests/test-agent-usage-guard.sh
+  scripts/tests/test-langfuse-mcp.sh
   scripts/tests/test-hermes-runtime-evidence.sh
   scripts/tests/test-hermes-blockers.sh
   scripts/tests/test-hermes-prerequisite-repair.sh
