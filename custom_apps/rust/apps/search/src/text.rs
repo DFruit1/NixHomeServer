@@ -115,13 +115,16 @@ fn decode_entities(input: &str) -> String {
     out
 }
 
-/// Number of leading bytes of a document body scanned when building a snippet.
-/// Bodies can be multi-megabyte (mail threads, OCR output); the snippet only
-/// needs the first query match, so scanning is bounded to protect query latency
-/// and memory without storing anything extra.
+/// Maximum number of leading document bytes examined when building a snippet.
+/// Bodies can be multi-megabyte (mail threads, OCR output); matching is bounded
+/// to protect query latency and memory. The bound is applied *before* matching
+/// and rounded down to a UTF-8 boundary, so no match outside it can be returned
+/// and nothing beyond it is ever scanned.
 const SNIPPET_SCAN_LIMIT: usize = 400_000;
-/// Target number of characters shown in a body snippet.
+/// Maximum number of Unicode scalar values shown in a body snippet.
 const SNIPPET_CHARS: usize = 260;
+/// Maximum number of scalar values of context shown before the selected match.
+const SNIPPET_LEAD: usize = 60;
 
 /// Normalises a query into lowercase alphanumeric terms, in order, deduped.
 pub fn query_terms(query: &str) -> Vec<String> {
@@ -137,39 +140,104 @@ pub fn query_terms(query: &str) -> Vec<String> {
     terms
 }
 
-/// Builds a short plain-text snippet around the first query term and wraps every
-/// query term present in it in `<em>` tags, the same highlight markup Solr used
-/// to emit, so the UI has one rendering path for every source. The text is
-/// HTML-escaped before the markers are inserted, so a body that literally
-/// contains `<em>` cannot masquerade as a highlight and no other markup can leak
-/// through. Returns `None` when no term is present or the text is empty.
-pub fn snippet_from_text(text: &str, query: &str) -> Option<String> {
-    let terms = query_terms(query);
-    let needle = terms.first()?;
-    let text = text
-        .get(..text.len().min(SNIPPET_SCAN_LIMIT))
-        .unwrap_or(text);
-    let text = text.trim();
-    if text.is_empty() {
-        return None;
-    }
-    let (position, needle_len) = find_case_insensitive_from(text, 0, needle)?;
-    let start = position.saturating_sub(60);
-    let end = (position + needle_len + SNIPPET_CHARS).min(text.len());
-    let window = &text[snap_to_boundary(text, start)..snap_to_boundary(text, end)];
-    let window = window.trim();
-    if window.is_empty() {
-        None
-    } else {
-        Some(highlight_terms(window, &terms))
-    }
+/// Returns at most `limit` bytes of `text`, rounded down to a character
+/// boundary. The scan bound is a hard input limit, never a hint: a document that
+/// does not slice cleanly inside the limit is truncated rather than scanned in
+/// full.
+fn bounded_prefix(text: &str, limit: usize) -> &str {
+    &text[..snap_to_boundary(text, limit)]
 }
 
-/// Converts HTML to text (bounded by `html_limit` bytes) then snippets it. Used
-/// by runtime-federated sources that fetch the document body on demand.
+/// Finds the first query-order term that actually occurs in `body`, with its
+/// (start, end) byte span. Terms absent from the body are skipped so a body that
+/// only mentions a later term still gets a snippet; query order still wins when
+/// several terms are present. The bounded body is lowercased once for the whole
+/// selection instead of once per term.
+fn first_present_term_span<'a>(body: &str, terms: &'a [String]) -> Option<(&'a str, usize, usize)> {
+    // `to_lowercase` can expand a scalar value, which would shift byte offsets
+    // away from `body`. In that case fall back to the per-call helper, which
+    // declines to match such text exactly as before.
+    let lowered = body.to_lowercase();
+    let aligned = lowered.len() == body.len();
+    for term in terms {
+        if aligned {
+            if let Some(at) = lowered.find(term.as_str()) {
+                return Some((term.as_str(), at, at + term.len()));
+            }
+        } else if let Some((start, end)) = find_case_insensitive_from(body, 0, term) {
+            return Some((term.as_str(), start, end));
+        }
+    }
+    None
+}
+
+/// Byte range of the presentation window: at most `SNIPPET_CHARS` scalar values
+/// of the original plain text, starting at most `SNIPPET_LEAD` scalar values
+/// before `match_start` (near the start only the available prefix is used).
+/// Both boundaries fall on UTF-8 character boundaries.
+fn snippet_window_bounds(text: &str, match_start: usize) -> (usize, usize) {
+    let match_start = snap_to_boundary(text, match_start);
+    let first = text[..match_start]
+        .chars()
+        .count()
+        .saturating_sub(SNIPPET_LEAD);
+    let mut start = 0;
+    let mut end = text.len();
+    for (index, (byte, _)) in text.char_indices().enumerate() {
+        if index == first {
+            start = byte;
+        }
+        if index == first + SNIPPET_CHARS {
+            end = byte;
+            break;
+        }
+    }
+    (start, end)
+}
+
+/// Builds a short plain-text snippet around the first query-order term present
+/// in the bounded body and wraps every query term present in the window in
+/// `<em>` tags, the same highlight markup Solr used to emit, so the UI has one
+/// rendering path for every source. The visible window is at most
+/// `SNIPPET_CHARS` scalar values, never grows to fit a long term, and the text is
+/// HTML-escaped before the markers are inserted, so a body that literally
+/// contains `<em>` cannot masquerade as a highlight and no other markup can leak
+/// through. Returns `None` when no eligible term is present in the bounded body
+/// or the text is empty.
+pub fn snippet_from_text(text: &str, query: &str) -> Option<String> {
+    let terms = query_terms(query);
+    if terms.is_empty() {
+        return None;
+    }
+    let body = bounded_prefix(text, SNIPPET_SCAN_LIMIT).trim();
+    if body.is_empty() {
+        return None;
+    }
+    let (term, match_start, match_end) = first_present_term_span(body, &terms)?;
+    let match_end = snap_to_boundary(body, match_end);
+    let (start, end) = snippet_window_bounds(body, match_start);
+    let window = body[start..end].trim();
+    if window.is_empty() {
+        return None;
+    }
+    if match_end > end {
+        // A term longer than the window is truncated at the window edge. It is
+        // not marked up as a partial highlight and the window is not extended.
+        let others: Vec<String> = terms
+            .iter()
+            .filter(|candidate| candidate.as_str() != term)
+            .cloned()
+            .collect();
+        return Some(highlight_terms(window, &others));
+    }
+    Some(highlight_terms(window, &terms))
+}
+
+/// Converts HTML to text (bounded by `html_limit` bytes, rounded down to a
+/// character boundary) then snippets it. Used by runtime-federated sources that
+/// fetch the document body on demand.
 pub fn snippet_from_html(html: &str, query: &str, html_limit: usize) -> Option<String> {
-    let truncated = html.get(..html.len().min(html_limit)).unwrap_or(html);
-    snippet_from_text(&html_to_text(truncated), query)
+    snippet_from_text(&html_to_text(bounded_prefix(html, html_limit)), query)
 }
 
 /// Wraps every case-insensitive occurrence of each term in `<em>` tags so
@@ -412,5 +480,203 @@ mod tests {
         assert!(snippet.contains("&lt;em&gt;tag&lt;/em&gt;"));
         assert!(snippet.contains("&amp; more"));
         assert!(!snippet.contains("literal <em>tag"));
+    }
+
+    /// Visible characters of a snippet: the generated markers removed, escaped
+    /// entities still counted as the characters their source form occupies here
+    /// (this helper is only used on snippet text without escapable characters).
+    fn visible_text(snippet: &str) -> String {
+        snippet.replace("<em>", "").replace("</em>", "")
+    }
+
+    #[test]
+    fn snippet_uses_first_query_term_present_in_body() {
+        // Regression: only the first query term was tried, so a body that only
+        // contains a later term returned no snippet at all.
+        let snippet =
+            snippet_from_text("A computing report", "quantum computing").expect("snippet");
+        assert!(snippet.contains("<em>computing</em>"), "got: {snippet}");
+
+        let snippet = snippet_from_text("A quantum report", "quantum computing").expect("snippet");
+        assert!(snippet.contains("<em>quantum</em>"), "got: {snippet}");
+
+        // Single-term, mixed-case, no-match and no-eligible-term controls keep
+        // their existing semantics.
+        let upper = snippet_from_text("A QUANTUM report", "quantum").expect("snippet");
+        assert!(upper.contains("<em>QUANTUM</em>"), "got: {upper}");
+        assert_eq!(snippet_from_text("A quantum report", "zebra"), None);
+        assert_eq!(snippet_from_text("A quantum report", "!!!"), None);
+        assert_eq!(snippet_from_text("", "quantum"), None);
+    }
+
+    #[test]
+    fn snippet_prefers_earlier_query_order_term_when_both_present() {
+        let text = format!("quantum {}computing", "filler ".repeat(100));
+        let forward = snippet_from_text(&text, "quantum computing").expect("snippet");
+        assert!(forward.contains("<em>quantum</em>"), "got: {forward}");
+        assert!(
+            !visible_text(&forward).contains("computing"),
+            "window must centre on the first query-order term: {forward}"
+        );
+        // Reversing the query order centres on the term that is now first.
+        let reversed = snippet_from_text(&text, "computing quantum").expect("snippet");
+        assert!(reversed.contains("<em>computing</em>"), "got: {reversed}");
+        assert!(
+            !visible_text(&reversed).contains("quantum"),
+            "got: {reversed}"
+        );
+    }
+
+    #[test]
+    fn snippet_window_bounds_late_ascii_match() {
+        // Regression: a late match produced a window measured from the match end
+        // as if the match-end offset were a length, inflating the snippet.
+        let text = format!("{}needle {}", "line ".repeat(200), "trailing ".repeat(300));
+        let snippet = snippet_from_text(&text, "needle").expect("snippet");
+        assert!(snippet.contains("<em>needle</em>"), "got: {snippet}");
+        let visible = visible_text(&snippet);
+        assert!(
+            visible.chars().count() <= 260,
+            "visible length {} exceeded the window: {visible}",
+            visible.chars().count()
+        );
+        // The window keeps context on both sides of a late match.
+        assert!(visible.starts_with("line"), "got: {visible}");
+        assert!(visible.contains("needle trailing"), "got: {visible}");
+    }
+
+    #[test]
+    fn snippet_window_handles_multibyte_context_and_edges() {
+        // A match at the very start shows only the available prefix.
+        let at_start = snippet_from_text("needle at the start", "needle").expect("snippet");
+        assert!(at_start.starts_with("<em>needle</em>"), "got: {at_start}");
+
+        // Multibyte context stays valid UTF-8 and inside the scalar budget, with
+        // at most 60 scalar values of lead context.
+        let text = format!("{}needle{}", "é".repeat(300), "ü".repeat(300));
+        let snippet = snippet_from_text(&text, "needle").expect("snippet");
+        let visible = visible_text(&snippet);
+        assert!(snippet.contains("<em>needle</em>"), "got: {snippet}");
+        assert!(
+            !visible.contains('\u{fffd}'),
+            "invalid UTF-8 leaked: {visible}"
+        );
+        assert_eq!(
+            visible.chars().count(),
+            260,
+            "window should use the full budget: {visible}"
+        );
+        let lead = visible.chars().take_while(|ch| *ch == 'é').count();
+        assert!(lead <= 60, "lead context {lead} exceeded 60: {visible}");
+
+        // A match at the very end still shows trailing-free context.
+        let at_end = format!("{}needle", "é".repeat(300));
+        let snippet = snippet_from_text(&at_end, "needle").expect("snippet");
+        assert!(snippet.contains("<em>needle</em>"), "got: {snippet}");
+    }
+
+    #[test]
+    fn snippet_truncates_overlong_match_without_extending_window() {
+        let term = "n".repeat(400);
+        let text = format!("prefix {term} suffix");
+        let snippet = snippet_from_text(&text, &term).expect("snippet");
+        let visible = visible_text(&snippet);
+        assert_eq!(
+            visible.chars().count(),
+            260,
+            "window must not grow for an overlong term: {visible}"
+        );
+        assert!(visible.starts_with("prefix nnn"), "got: {visible}");
+        assert_eq!(
+            snippet.matches("<em>").count(),
+            snippet.matches("</em>").count(),
+            "unbalanced emphasis: {snippet}"
+        );
+        // The truncated match is not presented as a partial highlight.
+        assert!(
+            !snippet.contains("<em>"),
+            "partial-match emphasis: {snippet}"
+        );
+    }
+
+    #[test]
+    fn snippet_scan_limit_rejects_split_multibyte_boundary() {
+        // Regression: a two-byte character straddling the scan cap made the
+        // scanner fall back to the unbounded body, exposing beyond-cap matches.
+        let mut text = "a".repeat(SNIPPET_SCAN_LIMIT - 1);
+        text.push('é');
+        text.push_str(&"z".repeat(1_000));
+        text.push_str("needle");
+        assert!(text.len() > SNIPPET_SCAN_LIMIT);
+        assert_eq!(snippet_from_text(&text, "needle"), None);
+    }
+
+    #[test]
+    fn snippet_scan_limit_keeps_matches_inside_cap() {
+        let mut text = "a".repeat(SNIPPET_SCAN_LIMIT - 6);
+        text.push_str("needle");
+        text.push_str(&"z".repeat(2_000));
+        let snippet = snippet_from_text(&text, "needle").expect("snippet");
+        assert!(snippet.contains("<em>needle</em>"), "got: {snippet}");
+        assert!(visible_text(&snippet).chars().count() <= 260);
+    }
+
+    #[test]
+    fn snippet_from_html_respects_html_limit_boundaries() {
+        // Zero limit converts nothing, so there is nothing to match.
+        let plain = format!("<p>{}</p>", "a".repeat(200));
+        assert_eq!(snippet_from_html(&plain, "a", 0), None);
+
+        let mut html = "<p>".to_string();
+        html.push_str(&"a".repeat(100));
+        html.push('é');
+        html.push_str("needle</p>");
+
+        // Limit landing inside the multibyte character rounds down instead of
+        // converting the unbounded document.
+        let split_limit = 3 + 100 + 1;
+        assert!(html.is_char_boundary(3 + 100));
+        assert!(!html.is_char_boundary(split_limit));
+        assert_eq!(snippet_from_html(&html, "needle", split_limit), None);
+
+        // Exact boundary before the term: the term is still outside the bound.
+        assert_eq!(snippet_from_html(&html, "needle", 3 + 100 + 2), None);
+
+        // Exact boundary that includes the whole term.
+        let inside =
+            snippet_from_html(&html, "needle", 3 + 100 + 2 + "needle".len()).expect("snippet");
+        assert!(inside.contains("<em>needle</em>"), "got: {inside}");
+    }
+
+    #[test]
+    fn snippet_escapes_script_and_literal_markup() {
+        let text = "<script>alert('x')</script> quantum & \"quoted\" <em>fake</em>";
+        let snippet = snippet_from_text(text, "quantum").expect("snippet");
+        assert!(snippet.contains("<em>quantum</em>"), "got: {snippet}");
+        assert!(snippet.contains("&lt;script&gt;"), "got: {snippet}");
+        assert!(snippet.contains("&amp;"), "got: {snippet}");
+        assert!(snippet.contains("&quot;quoted&quot;"), "got: {snippet}");
+        assert!(
+            snippet.contains("&lt;em&gt;fake&lt;/em&gt;"),
+            "got: {snippet}"
+        );
+        assert!(
+            !snippet.contains("<script>"),
+            "raw script leaked: {snippet}"
+        );
+        assert!(
+            !snippet.contains("<em>fake"),
+            "literal em promoted: {snippet}"
+        );
+    }
+
+    #[test]
+    fn snippet_escapes_tag_like_query_terms() {
+        let snippet = snippet_from_text("the <script> tag body", "<script>").expect("snippet");
+        assert!(
+            snippet.contains("&lt;<em>script</em>&gt;"),
+            "got: {snippet}"
+        );
+        assert!(!snippet.contains("<script>"), "raw tag leaked: {snippet}");
     }
 }
