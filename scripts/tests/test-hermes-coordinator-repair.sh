@@ -575,7 +575,7 @@ class RepairTest(unittest.TestCase):
         from coordinator_repair_adapter import SCHEMA
         seam={};exec(SCHEMA,seam);schema=seam['KANBAN_AMEND_SCHEMA']
         episode=schema['parameters']['properties']['terminal_episode']
-        self.assertEqual({'terminal_episode'},set(schema['parameters']['properties'])-
+        self.assertEqual({'terminal_episode','workspace_rebind'},set(schema['parameters']['properties'])-
                          {'board','task_id','expected_version','changes','reason','runtime_evidence'})
         self.assertEqual({'run_id','event_id'},set(episode['properties']))
         self.assertEqual(['run_id','event_id'],episode['required'])
@@ -616,9 +616,335 @@ class RepairTest(unittest.TestCase):
         self.assertIn('error',refused)
         self.assertEqual(before,self.dump())
 
+    def test_workspace_rebind_seam_is_closed_migrated_and_forwarded(self):
+        from coordinator_repair_adapter import SCHEMA,PREVIOUS,LEGACY,PREVIOUS_HANDLER,LEGACY_HANDLER
+        seam={};exec(SCHEMA,seam);schema=seam['KANBAN_AMEND_SCHEMA']
+        rebind=schema['parameters']['properties']['workspace_rebind']
+        self.assertEqual({'workspace_kind','workspace_path'},set(rebind['properties']))
+        self.assertEqual(['workspace_kind','workspace_path'],rebind['required'])
+        self.assertFalse(rebind['additionalProperties'])
+        self.assertEqual(['dir'],rebind['properties']['workspace_kind']['enum'])
+        self.assertNotIn('workspace_rebind',schema['parameters']['required'])
+        self.assertIn('workspace-prep receipt',schema['description'])
+        self.assertLessEqual({'workspace_kind','workspace_path'},
+                             set(schema['parameters']['properties']['changes']['properties']))
+        # Both installed predecessors migrate to the same current seam.
+        tools=(native/'tools/kanban_tools.py').read_text()
+        schemas=(native/'tools/kanban_tools_schemas.py').read_text()
+        self.assertEqual(1,tools.count(PREVIOUS_HANDLER));self.assertEqual(1,schemas.count(PREVIOUS))
+        migrated=adapt('tools/kanban_tools.py',tools)
+        self.assertEqual(1,migrated.count('workspace_rebind=args.get("workspace_rebind")'))
+        self.assertEqual(1,migrated.count('def _handle_amend('))
+        self.assertEqual(migrated,adapt('tools/kanban_tools.py',tools.replace(PREVIOUS_HANDLER,LEGACY_HANDLER,1)))
+        migrated_schemas=adapt('tools/kanban_tools_schemas.py',schemas)
+        self.assertEqual(1,migrated_schemas.count('"workspace_rebind"'))
+        self.assertEqual(migrated_schemas,adapt('tools/kanban_tools_schemas.py',schemas.replace(PREVIOUS,LEGACY,1)))
+        # The registered schema validates the real call, so only a closed object
+        # reaches the handler and a rejected call changes nothing.
+        from recovered_resume_adapter import adapt as resume_adapt
+        import tools.kanban_tools_schemas as seam_schemas
+        exec(compile(adapt('tools/kanban_tools_schemas.py',resume_adapt('tools/kanban_tools_schemas.py',schemas)),
+                     'fixture-schemas','exec'),seam_schemas.__dict__)
+        module=types.ModuleType('tools.fixture_workspace_rebind')
+        exec(compile(adapt('tools/kanban_tools.py',resume_adapt('tools/kanban_tools.py',tools)),
+                     'fixture-tools','exec'),module.__dict__)
+        self.hold()
+        target=self.root/'attested-workspace';target.mkdir()
+        binding={'workspace_kind':'dir','workspace_path':str(target)}
+        inspected=json.loads(module._handle_amend({'task_id':self.target}))
+        applied=json.loads(module._handle_amend({'task_id':self.target,'expected_version':inspected['version'],
+            'changes':dict(binding),'reason':'Independent workspace-prep receipt recorded in the thread',
+            'workspace_rebind':binding}))
+        self.assertTrue(applied['applied'])
+        self.assertEqual(str(target),kb.get_task(self.conn,self.target).workspace_path)
+        before=self.dump()
+        refused=json.loads(module._handle_amend({'task_id':self.target,'expected_version':applied['version'],
+            'changes':dict(binding,extra='no'),'reason':'Not a closed object',
+            'workspace_rebind':dict(binding,extra='no')}))
+        self.assertIn('error',refused)
+        self.assertEqual(before,self.dump())
+
     def containment_reason(self):
         return ('Input supplier: agent. Repair evidence: the missing plan section was restored and read back; '
                 'containment only, unchanged review scope.')
+
+    def rebind(self, workspace, *, changes=None, rebind=None, reason=None):
+        version=repair.amend(kb,self.conn,self.target)['version']
+        binding=rebind or {'workspace_kind':'dir','workspace_path':str(workspace)}
+        return repair.amend(kb,self.conn,self.target,expected_version=version,
+                            changes=changes if changes is not None else dict(binding),
+                            reason=reason or 'Adopt the attested recovery workspace for this held card',
+                            workspace_rebind=binding)
+
+    def refuse_rebind(self, regex, changes, rebind, **kwargs):
+        version=repair.amend(kb,self.conn,self.target)['version']
+        with self.assertRaisesRegex(ValueError,regex):
+            repair.amend(kb,self.conn,self.target,expected_version=version,changes=changes,
+                         reason='Adopt the attested recovery workspace for this held card',
+                         workspace_rebind=rebind,**kwargs)
+
+    def test_workspace_rebind_records_one_preimage_event_and_preserves_the_sealed_hold(self):
+        self.conn.execute("UPDATE tasks SET skills='[]' WHERE id=?",(self.target,));self.conn.commit()
+        self.hold()
+        target=self.root/'attested-workspace';target.mkdir()
+        before=self.dump();version=repair.amend(kb,self.conn,self.target)['version']
+        spent=self.holds();self.assertEqual(1,len(spent))
+        result=self.rebind(target)
+        self.assertTrue(result['applied']);self.assertNotEqual(version,result['version'])
+        after=self.dump()
+        was={r['id']:r for r in before[0]}[self.target];now={r['id']:r for r in after[0]}[self.target]
+        self.assertEqual(dict(was,workspace_kind='dir',workspace_path=str(target)),now)
+        self.assertEqual(before[1],after[1])           # no run created, mutated or ended
+        self.assertEqual(before[2],after[2][:-1])      # exactly one appended native event
+        self.assertEqual(before[3],after[3])           # links untouched
+        added=after[2][-1];payload=json.loads(added['payload'])
+        self.assertEqual('coordinator_workspace_rebind',added['kind'])
+        self.assertEqual('static-directory-rebind',payload['branch'])
+        self.assertEqual({'workspace_kind':'scratch','workspace_path':was['workspace_path']},payload['before'])
+        self.assertEqual({'workspace_kind':'dir','workspace_path':str(target)},payload['after'])
+        self.assertEqual((version,42,self.actor,'testboard'),
+                         (payload['expected_version'],payload['actor_run'],payload['actor_task'],payload['board']))
+        self.assertIn('before release',payload['attestation_required'])
+        # The hold stays sealed: same status/kind/counters and no fresh attempt.
+        self.assertEqual(('blocked','capability',was['consecutive_failures'],was['max_retries']),
+                         (now['status'],now['block_kind'],now['consecutive_failures'],now['max_retries']))
+        # The binding is part of the hold's exact evidence, so the pre-rebind
+        # version is spent: only a re-inspected hold may be released.
+        current=self.current_hold()
+        self.assertEqual('directory',current['workspace_identity']['state'])
+        self.assertNotEqual(spent[0]['version'],current['version'])
+        with self.assertRaisesRegex(ValueError,'changed'):
+            resume_recovered.resume_recovered(kb,self.conn,self.target,spent[0]['version'],
+                                              'Stale pre-rebind hold cannot release')
+        self.assertEqual('ready',resume_recovered.resume_recovered(
+            kb,self.conn,self.target,current['version'],
+            'Independent receipt recorded in the thread; resume the unchanged hold')['status'])
+        final=self.dump()
+        expected={r['id']:r for r in after[0]}
+        expected[self.target]=dict(expected[self.target],status='ready')
+        self.assertEqual(expected,{r['id']:r for r in final[0]})
+        released={r['id']:r for r in final[0]}[self.target]
+        self.assertEqual((str(target),'capability'),(released['workspace_path'],released['block_kind']))
+        self.assertEqual(['unblocked'],[e['kind'] for e in final[2][len(after[2]):]])
+
+    def test_workspace_rebind_refuses_missing_primary_relative_and_bundled_targets(self):
+        self.hold()
+        good=self.root/'good';good.mkdir()
+        other=self.root/'other';other.mkdir()
+        linked=self.root/'linked';linked.symlink_to(good,target_is_directory=True)
+        primary=self.root/'primary';primary.mkdir();(primary/'.git').mkdir()
+        worktree=self.root/'worktree';worktree.mkdir();(worktree/'.git').write_text('gitdir: /elsewhere\n')
+        # A real bare repository keeps HEAD/config/objects/refs at its own root,
+        # so the working-tree .git check alone accepted it.
+        bare=self.root/'bare';subprocess.run(['git','init','--bare',str(bare)],check=True,
+                                             capture_output=True)
+        self.assertEqual('true',subprocess.run(['git','-C',str(bare),'rev-parse','--is-bare-repository'],
+                         check=True,capture_output=True,text=True).stdout.strip())
+        inside=self.root/'canonical';inside.mkdir();(inside/'inner').mkdir()
+        alias=self.root/'alias';alias.symlink_to(inside,target_is_directory=True)
+        before=self.dump();holds=self.holds()
+        def binding(path,kind='dir'):
+            return {'workspace_kind':kind,'workspace_path':str(path)}
+        good_binding=binding(good)
+        cases=(('missing directory','existing canonical absolute directory',binding(self.root/'missing')),
+               ('relative path','existing canonical absolute directory',
+                {'workspace_kind':'dir','workspace_path':'relative/workspace'}),
+               ('noncanonical path','existing canonical absolute directory',
+                {'workspace_kind':'dir','workspace_path':str(good)+'/./'}),
+               ('symlinked directory','existing canonical absolute directory',binding(linked)),
+               ('symlinked ancestor','existing canonical absolute directory',
+                binding(alias/'inner')),
+               ('primary checkout','PRIMARY',binding(primary)),
+               ('worktree root','PRIMARY',binding(worktree)),
+               ('bare repository root','PRIMARY',binding(bare)),
+               ('worktree binding','Only a static directory',binding(good,'worktree')),
+               ('open object','closed object',dict(good_binding,branch_name='wt/x')))
+        for name,expected,rebind in cases:
+            with self.subTest(case=name):
+                self.refuse_rebind(expected,{'workspace_kind':'dir','workspace_path':str(good)}
+                                   if name=='open object' else dict(rebind),rebind)
+                self.assertEqual(before,self.dump());self.assertEqual(holds,self.holds())
+        with self.subTest(case='changes disagree with the closed object'):
+            self.refuse_rebind('exactly its own two fields',binding(other),good_binding)
+            self.assertEqual(before,self.dump())
+        with self.subTest(case='bundled with another amendment'):
+            self.refuse_rebind('exactly its own two fields',dict(good_binding,priority=5),good_binding)
+            self.assertEqual(before,self.dump())
+        with self.subTest(case='binding without its closed rebind evidence'):
+            self.refuse_rebind('closed rebind evidence',dict(good_binding),None)
+            self.assertEqual(before,self.dump())
+        with self.subTest(case='inspection carries no binding'):
+            self.refuse_rebind('Inspection takes no amendment evidence',None,good_binding)
+            self.assertEqual(before,self.dump())
+        with self.subTest(case='binding never rides a terminal episode'):
+            self.refuse_rebind('separate amendments',{'block_kind':'capability'},good_binding,
+                               terminal_episode={'run_id':43,'event_id':1})
+            self.assertEqual(before,self.dump())
+        self.conn.execute("UPDATE tasks SET status='ready' WHERE id=?",(self.target,));self.conn.commit()
+        before=self.dump()
+        with self.subTest(case='ready card is not parked'):
+            self.refuse_rebind('parked technical',dict(good_binding),good_binding)
+            self.assertEqual(before,self.dump())
+        self.conn.execute("UPDATE tasks SET status='triage',block_kind=NULL WHERE id=?",
+                          (self.target,));self.conn.commit();before=self.dump()
+        with self.subTest(case='untyped triage cannot adopt a recovery workspace'):
+            self.refuse_rebind('parked capability hold',dict(good_binding),good_binding)
+            self.assertEqual(before,self.dump())
+        self.conn.execute("UPDATE tasks SET status='blocked',block_kind='needs_input' WHERE id=?",
+                          (self.target,));self.conn.commit();before=self.dump()
+        with self.subTest(case='owner gate stays an owner gate'):
+            self.refuse_rebind('parked technical',dict(good_binding),good_binding)
+            self.assertEqual(before,self.dump())
+
+    def test_workspace_rebind_accepts_every_parked_status(self):
+        self.conn.execute("UPDATE tasks SET skills='[]' WHERE id=?",(self.target,));self.conn.commit()
+        target=self.root/'attested-workspace';target.mkdir()
+        binding={'workspace_kind':'dir','workspace_path':str(target)}
+        for status in ('todo','triage','scheduled','blocked'):
+            with self.subTest(status=status):
+                self.conn.execute("UPDATE tasks SET status=?,block_kind='capability',workspace_kind='scratch',"
+                                  "workspace_path=NULL WHERE id=?",(status,self.target));self.conn.commit()
+                version=repair.amend(kb,self.conn,self.target)['version']
+                self.assertTrue(repair.amend(kb,self.conn,self.target,expected_version=version,
+                    changes=dict(binding),reason='Adopt the attested recovery workspace for this held card',
+                    workspace_rebind=binding)['applied'])
+                row=dict(self.conn.execute('SELECT * FROM tasks WHERE id=?',(self.target,)).fetchone())
+                self.assertEqual((status,'capability','dir',str(target),0),
+                                 (row['status'],row['block_kind'],row['workspace_kind'],
+                                  row['workspace_path'],row['consecutive_failures']))
+
+    def test_workspace_rebind_refuses_sha256_detached_bare_root(self):
+        # Git can detach HEAD as a 64-hex SHA-256 object name. A detector keyed
+        # to the SHA-1 40-hex form read that real repository root as an ordinary
+        # static directory, so the PRIMARY refusal follows the repository layout
+        # instead of one object format.
+        self.hold()
+        target=self.root/'sha256-primary.git'
+        subprocess.run(['git','init','--bare','--object-format=sha256','--quiet',str(target)],
+                       check=True,capture_output=True)
+        def git(*args,input=None):
+            return subprocess.check_output(['git','-C',str(target),'-c','user.name=Synthetic Fixture',
+                '-c','user.email=fixture@example.invalid',*args],input=input,text=True).strip()
+        tree=git('mktree',input='')
+        commit=git('commit-tree',tree,'-m','Synthetic fixture only')
+        git('update-ref','--no-deref','HEAD',commit)
+        self.assertEqual(64,len(commit))
+        self.assertEqual(commit,(target/'HEAD').read_text().strip())
+        self.assertEqual('true',git('rev-parse','--is-bare-repository'))
+        self.assertEqual('sha256',git('rev-parse','--show-object-format'))
+        self.assertTrue(repair._bare_repository_root(str(target)))
+        binding={'workspace_kind':'dir','workspace_path':str(target)}
+        before=self.dump();holds=self.holds()
+        version=repair.amend(kb,self.conn,self.target)['version']
+        with self.assertRaisesRegex(ValueError,'PRIMARY'):
+            repair.amend(kb,self.conn,self.target,expected_version=version,changes=dict(binding),
+                         reason='Adopt the attested recovery workspace for this held card',
+                         workspace_rebind=dict(binding))
+        self.assertEqual(before,self.dump());self.assertEqual(holds,self.holds())
+        self.assertEqual(version,repair.amend(kb,self.conn,self.target)['version'])
+        self.assertEqual(0,self.conn.execute("SELECT COUNT(*) FROM task_events WHERE task_id=? "
+                         "AND kind='coordinator_workspace_rebind'",(self.target,)).fetchone()[0])
+
+    def test_workspace_rebind_is_single_use_and_never_replays(self):
+        self.hold()
+        target=self.root/'attested-workspace';target.mkdir()
+        binding={'workspace_kind':'dir','workspace_path':str(target)}
+        version=repair.amend(kb,self.conn,self.target)['version']
+        self.rebind(target)
+        after=self.dump()
+        with self.assertRaisesRegex(ValueError,'changed'):
+            repair.amend(kb,self.conn,self.target,expected_version=version,changes=dict(binding),
+                         reason='Replay the consumed binding',workspace_rebind=binding)
+        self.assertEqual(after,self.dump())
+        self.assertEqual(1,self.conn.execute("SELECT COUNT(*) FROM task_events WHERE task_id=? "
+                         "AND kind='coordinator_workspace_rebind'",(self.target,)).fetchone()[0])
+
+    def test_workspace_rebind_consumed_version_survives_an_aba_round_trip(self):
+        # A valid A -> B -> A round trip restores an earlier snapshot version
+        # byte for byte, so comparing against the current snapshot alone let a
+        # spent version authorize another rebind. The recorded consumption,
+        # not the restored snapshot, decides.
+        self.hold()
+        first=self.root/'first-workspace';first.mkdir()
+        second=self.root/'second-workspace';second.mkdir()
+        def binding(path):
+            return {'workspace_kind':'dir','workspace_path':str(path)}
+        def inspect():
+            return repair.amend(kb,self.conn,self.target)['version']
+        def rebind(token,binding_value):
+            return repair.amend(kb,self.conn,self.target,expected_version=token,
+                                changes=dict(binding_value),workspace_rebind=dict(binding_value),
+                                reason='Adopt the attested recovery workspace for this held card')
+        a,b=binding(first),binding(second)
+        self.assertTrue(rebind(inspect(),a)['applied'])
+        spent=inspect()
+        self.assertTrue(rebind(spent,b)['applied'])
+        self.assertTrue(rebind(inspect(),a)['applied'])
+        # The round trip really restored the consumed version, so the stale
+        # request passes the current-snapshot comparison and only the durable
+        # consumption can refuse it.
+        self.assertEqual(spent,inspect())
+        before=self.dump();holds=self.holds()
+        with self.assertRaisesRegex(ValueError,'already consumed a workspace rebind'):
+            rebind(spent,b)
+        self.assertEqual(before,self.dump())      # task row, runs, events and links identical
+        self.assertEqual(holds,self.holds())
+        self.assertEqual(spent,inspect())         # the token stayed spent, never re-minted
+        row=dict(self.conn.execute('SELECT workspace_kind,workspace_path,status,block_kind,'
+                                   'consecutive_failures FROM tasks WHERE id=?',(self.target,)).fetchone())
+        self.assertEqual(('dir',str(first),'blocked','capability',0),
+                         (row['workspace_kind'],row['workspace_path'],row['status'],
+                          row['block_kind'],row['consecutive_failures']))
+        self.assertEqual(3,self.conn.execute("SELECT COUNT(*) FROM task_events WHERE task_id=? "
+                         "AND kind='coordinator_workspace_rebind'",(self.target,)).fetchone()[0])
+        # Consumption is per token, not a permanent lock: a genuinely fresh
+        # inspection after another amendment can record a later rebind.
+        self.assertTrue(self.apply({'priority':1})['applied'])
+        fresh=inspect();self.assertNotEqual(spent,fresh)
+        self.assertTrue(rebind(fresh,b)['applied'])
+        row=dict(self.conn.execute('SELECT workspace_path FROM tasks WHERE id=?',(self.target,)).fetchone())
+        self.assertEqual(str(second),row['workspace_path'])
+
+    def test_workspace_rebind_refuses_the_binding_the_card_already_holds(self):
+        # A capability card can already name the requested directory (an earlier
+        # recorded binding, or a coordinator-prepared hold). Recording it again
+        # would append an event outside the snapshot CAS and hand back the same
+        # version, so one expected_version could be replayed indefinitely.
+        self.conn.execute("UPDATE tasks SET skills='[]' WHERE id=?",(self.target,));self.conn.commit()
+        target=self.root/'attested-workspace';target.mkdir()
+        binding={'workspace_kind':'dir','workspace_path':str(target)}
+        self.hold()
+        with kb.write_txn(self.conn):
+            self.conn.execute("UPDATE tasks SET workspace_kind='dir',workspace_path=? WHERE id=?",
+                              (str(target),self.target))
+        before=self.dump();version=repair.amend(kb,self.conn,self.target)['version']
+        row=dict(self.conn.execute('SELECT * FROM tasks WHERE id=?',(self.target,)).fetchone())
+        self.assertEqual(('dir',str(target),'capability','blocked'),
+                         (row['workspace_kind'],row['workspace_path'],row['block_kind'],row['status']))
+        for attempt in ('stored binding is not a new amendment','identical replay keeps the version'):
+            with self.subTest(attempt=attempt):
+                with self.assertRaisesRegex(ValueError,'already holds'):
+                    repair.amend(kb,self.conn,self.target,expected_version=version,
+                                 changes=dict(binding),
+                                 reason='Adopt the attested recovery workspace for this held card',
+                                 workspace_rebind=binding)
+                self.assertEqual(before,self.dump())
+                self.assertEqual(version,repair.amend(kb,self.conn,self.target)['version'])
+        self.assertEqual(0,self.conn.execute("SELECT COUNT(*) FROM task_events WHERE task_id=? "
+                         "AND kind='coordinator_workspace_rebind'",(self.target,)).fetchone()[0])
+        # A genuinely different directory still records normally on this version.
+        other=self.root/'other-workspace';other.mkdir()
+        other_binding={'workspace_kind':'dir','workspace_path':str(other)}
+        applied=repair.amend(kb,self.conn,self.target,expected_version=version,changes=dict(other_binding),
+                             reason='Adopt the attested recovery workspace for this held card',
+                             workspace_rebind=other_binding)
+        self.assertTrue(applied['applied']);self.assertNotEqual(version,applied['version'])
+        row=dict(self.conn.execute('SELECT * FROM tasks WHERE id=?',(self.target,)).fetchone())
+        self.assertEqual(('dir',str(other),'capability','blocked'),
+                         (row['workspace_kind'],row['workspace_path'],row['block_kind'],row['status']))
+        self.assertEqual(1,self.conn.execute("SELECT COUNT(*) FROM task_events WHERE task_id=? "
+                         "AND kind='coordinator_workspace_rebind'",(self.target,)).fetchone()[0])
+
 
     def test_actual_native_tool_visibility_and_handler(self):
         from recovered_resume_adapter import adapt as resume_adapt
