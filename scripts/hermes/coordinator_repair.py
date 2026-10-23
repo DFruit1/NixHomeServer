@@ -102,16 +102,16 @@ def _parked(conn, task):
 
 
 def _bare_repository_root(path):
-    """A bare repository keeps HEAD/config/objects/refs at its own root."""
+    """A Git repository root keeps HEAD plus object and ref storage at its root.
+
+    The layout, not the HEAD text, decides. A repository detaches HEAD as a
+    SHA-1 40-hex or a SHA-256 64-hex object name, or keeps it as a symbolic ref,
+    so a detector keyed to one object format read a SHA-256 bare root as an
+    ordinary static directory. Refusing every repository-shaped root keeps the
+    PRIMARY refusal independent of the object format Git was initialised with.
+    """
     head = os.path.join(path, 'HEAD')
-    if os.path.islink(head) or not os.path.isfile(head):
-        return False
-    try:
-        with open(head, 'rb') as stream:
-            target = stream.read(4096).strip()
-    except OSError:
-        return False
-    if re.fullmatch(rb'(?:ref: refs/\S+|[0-9a-f]{40})', target) is None:
+    if not os.path.lexists(head) or os.path.isdir(head):
         return False
     return (os.path.isdir(os.path.join(path, 'objects'))
             and os.path.isdir(os.path.join(path, 'refs')))

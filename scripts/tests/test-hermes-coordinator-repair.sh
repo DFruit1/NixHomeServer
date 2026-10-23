@@ -813,6 +813,38 @@ class RepairTest(unittest.TestCase):
                                  (row['status'],row['block_kind'],row['workspace_kind'],
                                   row['workspace_path'],row['consecutive_failures']))
 
+    def test_workspace_rebind_refuses_sha256_detached_bare_root(self):
+        # Git can detach HEAD as a 64-hex SHA-256 object name. A detector keyed
+        # to the SHA-1 40-hex form read that real repository root as an ordinary
+        # static directory, so the PRIMARY refusal follows the repository layout
+        # instead of one object format.
+        self.hold()
+        target=self.root/'sha256-primary.git'
+        subprocess.run(['git','init','--bare','--object-format=sha256','--quiet',str(target)],
+                       check=True,capture_output=True)
+        def git(*args,input=None):
+            return subprocess.check_output(['git','-C',str(target),'-c','user.name=Synthetic Fixture',
+                '-c','user.email=fixture@example.invalid',*args],input=input,text=True).strip()
+        tree=git('mktree',input='')
+        commit=git('commit-tree',tree,'-m','Synthetic fixture only')
+        git('update-ref','--no-deref','HEAD',commit)
+        self.assertEqual(64,len(commit))
+        self.assertEqual(commit,(target/'HEAD').read_text().strip())
+        self.assertEqual('true',git('rev-parse','--is-bare-repository'))
+        self.assertEqual('sha256',git('rev-parse','--show-object-format'))
+        self.assertTrue(repair._bare_repository_root(str(target)))
+        binding={'workspace_kind':'dir','workspace_path':str(target)}
+        before=self.dump();holds=self.holds()
+        version=repair.amend(kb,self.conn,self.target)['version']
+        with self.assertRaisesRegex(ValueError,'PRIMARY'):
+            repair.amend(kb,self.conn,self.target,expected_version=version,changes=dict(binding),
+                         reason='Adopt the attested recovery workspace for this held card',
+                         workspace_rebind=dict(binding))
+        self.assertEqual(before,self.dump());self.assertEqual(holds,self.holds())
+        self.assertEqual(version,repair.amend(kb,self.conn,self.target)['version'])
+        self.assertEqual(0,self.conn.execute("SELECT COUNT(*) FROM task_events WHERE task_id=? "
+                         "AND kind='coordinator_workspace_rebind'",(self.target,)).fetchone()[0])
+
     def test_workspace_rebind_is_single_use_and_never_replays(self):
         self.hold()
         target=self.root/'attested-workspace';target.mkdir()
