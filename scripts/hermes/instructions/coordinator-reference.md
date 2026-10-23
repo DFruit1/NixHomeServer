@@ -331,6 +331,26 @@ Preloaded skills must resolve in the assigned profile's actual catalog; remove
 an irrelevant coordinator-only preload from a reviewer, rather than granting
 the reviewer routing powers. Skills never grant tools or permission.
 
+Standalone verification cards must be created with explicit tenant verification,
+an independent feature-reviewer, a durable directory and a finite runtime. An
+omitted tenant can inherit continuous-improvement from the worker or parent;
+that classification is deliberately excluded from standalone verdict enforcement.
+Read back actual tenant/workspace/parents before release; a title or body claim
+never establishes the verification lifecycle. Do not add a native implementation
+review handoff to an untouched standalone verifier to manufacture provenance.
+
+For an existing untouched TODO feature-reviewer accidentally inheriting that
+tenant, first prepare and read back its durable directory and finite runtime.
+Then inspect kanban_amend's exact version and use a separate closed amendment:
+changes={"tenant":"verification"}, verification_intake="standalone", with reason
+naming Input supplier: agent and Authorized continuation: plus the assessed
+correction. This refuses any prior run/claim/review, typed hold or structured
+workflow. It preserves every parent, status and budget, appending truthful intake
+history only. Read back the tenant and actual guard recognition; this is neither
+a verdict nor permission to release a routing or product gate. Body/supplier and
+workspace/runtime repairs remain separate amendments. Existing executed or
+reviewing cards retain their original contract and cannot use this correction.
+
 Inspect semantic waits as well as native cycles: a coordinator awaiting a
 result from its own downstream producer must separate that corrective producer
 from the original gated acceptance/rollout consumer. Supply existing qualified

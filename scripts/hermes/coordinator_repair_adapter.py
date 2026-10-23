@@ -52,7 +52,10 @@ def _handle_amend(args: dict, **kwargs):
 
 
 '''
-PREVIOUS_HANDLERS = (PREVIOUS_HANDLER, LEGACY_HANDLER)
+PREVIOUS_INTAKE_HANDLER = HANDLER
+HANDLER = HANDLER.replace('workspace_rebind=args.get("workspace_rebind")))',
+    'workspace_rebind=args.get("workspace_rebind"), verification_intake=args.get("verification_intake")))', 1)
+PREVIOUS_HANDLERS = (PREVIOUS_INTAKE_HANDLER, PREVIOUS_HANDLER, LEGACY_HANDLER)
 SCHEMA = '''KANBAN_AMEND_SCHEMA = {
     "name": "kanban_amend",
     "description": "Native head-coordinator only: inspect version, amend parked technical body/priority/skills/runtime or classify an untyped failed blocked card as capability. An optional terminal_episode {run_id,event_id} classifies one untyped blocked containment or reaffirms one reclaimed capability episode, valid only with changes exactly {block_kind:capability}; both the containment and the same-kind reaffirmation need the agent/model supplier line plus 'Repair evidence:' or 'Authorized continuation:' evidence, and a reaffirmation must match this run's native claim, reclaim and prior release chronology. An optional workspace_rebind {workspace_kind:'dir',workspace_path} alone records one existing canonical absolute directory that is not a repository, worktree or bare repository root for a parked capability hold, valid only with changes exactly {workspace_kind,workspace_path}; it must change the stored binding, consumes the exact version, appends the binding and its preimage, and never types, releases or re-arms the hold, and an independent workspace-prep receipt in the card thread is still required before release. Exact CAS and supplier evidence required. Never releases work or resets retries; use versioned guarded recovery afterwards.",
@@ -99,6 +102,15 @@ SCHEMA = SCHEMA.replace('"changes":{"type":"object", "properties": {',
     '"changes":{"type":"object", "description":"Omit for read-only inspection. Ordinary failed-run classification uses block_kind capability without terminal_episode; preserve counters and typed gates.", "properties": {', 1)
 SCHEMA = SCHEMA.replace('"terminal_episode":{"type":"object", "properties": {',
     '"terminal_episode":{"type":"object", "description":"Only for an untyped native blocked containment or existing capability reclaimed gave_up episode; not for crashed or timed_out failed-run classification. Omit for inspection and ordinary failed-run classification.", "properties": {', 1)
+
+# Retain the inspection-only predecessor for exact migration, never a downgrade.
+PREVIOUS_INTAKE_SCHEMA = SCHEMA
+SCHEMA = SCHEMA.replace('Never releases work or resets retries;',
+    'verification_intake standalone, with changes exactly {tenant:verification}, strengthens only an untouched TODO feature-reviewer inherited continuous-improvement card after durable directory/runtime preparation. It refuses all prior runs, claims, review provenance, typed gates and structured workflows; preserve every prerequisite and record actual preimage/actor without a synthetic handoff. Never releases work or resets retries;', 1)
+SCHEMA = SCHEMA.replace('"block_kind":{"type":"string","enum":["capability"]},',
+    '"block_kind":{"type":"string","enum":["capability"]},\n            "tenant":{"type":"string","enum":["verification"]},', 1)
+SCHEMA = SCHEMA.replace('"workspace_rebind":{"type":"object", "properties": {',
+    '"verification_intake":{"type":"string","enum":["standalone"]},\n        "workspace_rebind":{"type":"object", "properties": {', 1)
 
 # The seam installed before the workspace-rebind branch: one exact literal
 # migration, so an installed native is upgraded instead of duplicated.
@@ -170,7 +182,7 @@ def adapt(name, text):
                 text = text.replace(previous, HANDLER, 1)
                 break
     if name == 'tools/kanban_tools_schemas.py' and SCHEMA not in text:
-        for variant in (PREVIOUS_INSPECTION, PREVIOUS_REBIND, PREVIOUS, LEGACY):
+        for variant in (PREVIOUS_INTAKE_SCHEMA, PREVIOUS_INSPECTION, PREVIOUS_REBIND, PREVIOUS, LEGACY):
             if text.count(variant) == 1:
                 text = text.replace(variant, SCHEMA, 1)
                 break
