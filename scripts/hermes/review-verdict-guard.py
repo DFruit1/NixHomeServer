@@ -333,6 +333,16 @@ def _retained_review_path(db, review_id, removed_parent, child):
 
 
 def _native_correction_context(db, review, removed_parent, child):
+    """Invalid special-permission evidence leaves the ordinary unlink gate intact."""
+    try:
+        return _native_correction_context_evidence(db, review, removed_parent, child)
+    except (ValueError, TypeError, KeyError, AttributeError):
+        # Declining this permission is not an unlink refusal: the existing gate
+        # can still qualify a newer accepted replacement for this same consumer.
+        return False
+
+
+def _native_correction_context_evidence(db, review, removed_parent, child):
     """Remove only a proven correction's obsolete context prerequisite.
 
     The commissioning coordinator retains BOTH the rejected review and the

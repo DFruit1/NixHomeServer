@@ -746,6 +746,54 @@ class VerdictGuardTest(unittest.TestCase):
             self.link('t_new', 't_child')
         return self.payload('t_old', 't_child')
 
+    def test_invalid_historical_context_evidence_defers_to_normal_replacement_gate(self):
+        payload = self.rejected_gate_with_replacement()
+        self.db.execute("UPDATE tasks SET assignee='feature-reviewer',status='blocked' WHERE id='t_child'")
+        self.db.commit()
+        for evidence in ('{', '[]', '{}', json.dumps({
+                'verdict':'unknown','missing_inputs':['old source']})):
+            self.db.execute("UPDATE task_runs SET metadata=? WHERE task_id='t_old'",(evidence,))
+            self.db.commit()
+            for linked in (True,False):
+                with self.subTest(evidence=evidence,linked=linked):
+                    if not linked:
+                        self.db.execute("DELETE FROM task_links WHERE parent_id='t_new'");self.db.commit()
+                    before=list(self.db.iterdump())
+                    self.assertEqual(None if linked else 'block',
+                                     guard_mod.guard(payload,self.root).get('action'))
+                    self.assertEqual(before,list(self.db.iterdump()))
+            self.link('t_new','t_child')
+
+    def test_invalid_native_context_provenance_does_not_shadow_valid_replacement(self):
+        payload=self.correction_context()
+        self.card('t_replacement',assignee='feature-reviewer',tenant='verification')
+        self.add_run('t_replacement','accept',NOW)
+        self.link('t_replacement','t_correction')
+        for sql in (
+                "UPDATE task_runs SET metadata='{' WHERE task_id='t_old'",
+                "DELETE FROM task_events WHERE task_id='t_correction' AND kind='created'",
+                "UPDATE task_events SET payload='[' WHERE task_id='t_correction' AND kind='created'",
+                "UPDATE task_events SET payload='[]' WHERE task_id='t_old' AND kind='created'",
+                "DELETE FROM task_events WHERE kind='review_requested'",
+                "UPDATE task_events SET run_id=999 WHERE kind='review_requested'",
+                "UPDATE task_events SET payload='[]' WHERE kind='review_requested'",
+                "UPDATE task_runs SET metadata='{' WHERE outcome='review_requested'",
+                "UPDATE task_events SET payload='{' WHERE kind='claimed'",
+                "UPDATE task_events SET payload='[]' WHERE kind='claimed'",
+                "DELETE FROM task_events WHERE kind='claimed'",
+                ):
+            with self.subTest(sql=sql):
+                backup=sqlite3.connect(':memory:');self.db.backup(backup)
+                self.db.execute(sql);self.db.commit()
+                for linked in (True,False):
+                    if not linked:
+                        self.db.execute("DELETE FROM task_links WHERE parent_id='t_replacement'");self.db.commit()
+                    before=list(self.db.iterdump())
+                    self.assertEqual(None if linked else 'block',
+                                     guard_mod.guard(payload,self.root).get('action'))
+                    self.assertEqual(before,list(self.db.iterdump()))
+                backup.backup(self.db);backup.close()
+
     def test_unrelated_acceptance_cannot_retire_rejected_review(self):
         payload = self.rejected_gate_with_replacement(linked=False)
         self.assertEqual('block', guard_mod.guard(payload, self.root).get('action'))
