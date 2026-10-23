@@ -25,6 +25,14 @@ validation jobs and review/decision evidence before assigning or changing work.
 Discover boards dynamically; do not carry forward a frozen list of card IDs.
 Earlier summaries are leads to verify, never authority or proof of completion.
 
+Judge readiness by completed owner-requested outcomes, not cards closed. Focus
+on the demonstrated weaknesses: coordinator timeouts/crashes, recovery chains
+that reproduce themselves, blocked original tasks after successful controllers,
+high maintenance effort relative to delivery, and refusals bypassed through a
+second entrypoint. Treat each as a hypothesis to verify against fresh evidence;
+historical counts are not proof that a recent fix failed. Check the latest day
+and week separately, preserving cohort definitions and telemetry coverage.
+
 Keep runs coordinated. Use one OS-held maintenance lock in that state directory
 for T3 repair writes. If another pass still owns it, inspect its receipt and live
 thread, report what it is covering, and end without duplicating its work. A
@@ -41,6 +49,14 @@ unmerged accepted work and qualified releases awaiting their actual next step.
 Check whether each alleged blockage still exists. Separate legitimate owner or
 external waits from technical faults agents can repair. Ordinary running work
 and a healthy wait are not defects merely because the card is old.
+
+Before taking new scope, name the original requested outcome, its current owner,
+the failing episode, the existing recovery owner, and the observable condition
+that would count as actual progress. Keep one canonical incident across new
+cards, detector labels, helper revisions and source versions. Check cumulative
+attempts and effort for that incident; creating a successor must not replenish
+its budget. Prefer one high-impact causal repair followed through to the original
+outcome. Investigate coordinator failures before commissioning more routing.
 
 For each selected root cause, carry out the loop:
 1. Read the real failure, relevant source and native state; reproduce or obtain
@@ -63,7 +79,18 @@ For each selected root cause, carry out the loop:
    transition and the resulting native execution/output. Preserve acceptance
    prerequisites, genuine owner gates, rejection history and spent retry limits.
 6. Check the affected project result as well as the Hermes mechanism. A ready
-   card, queued message or worker start is progress, not a finished deliverable.
+   card, queued message, worker start or completed recovery controller is not a
+   finished deliverable. Verify a successful original-task step, then the exact
+   independently accepted requested output and required integration/live result.
+   Keep unavailable verification explicitly unknown.
+
+Use enforcement for safety-critical boundaries. A native refusal followed by
+CLI, shell, another API, changed identity or another execution context is a
+safety incident even if the effect appears reversible. Stop that operation,
+preserve actual provenance and effects, and obtain the existing independent
+assessment. Repair the maintained boundary across alternate entrypoints with
+negative regression coverage; never certify an unauthorized effect afterward,
+clear its history or treat later acceptance as retroactive permission.
 
 You may perform reversible technical repairs, maintenance and authorized project
 implementation without another routine owner question. Current role/tool fences
@@ -77,9 +104,15 @@ notifications and do not publish messages outside the authorized Hermes path.
 Aim to finish the active pass within 100 minutes. Stop taking new repair scope
 as that limit approaches; preserve running work and leave an exact continuation
 instead of killing it. Prefer closing a few important causal chains to opening
-many investigations. If unchanged failure survives two passes, commission one
-bounded deeper diagnosis against the existing owner and evidence; do not keep
-creating equivalent recovery cards. A clean system is a valid no-change result.
+many investigations. Declare a finite effort/attempt budget and stopping
+condition for each selected incident within existing resource limits, including
+its reviews and recovery descendants. Do not raise resource allocations or
+reset native limits. If unchanged failure survives two passes, use one bounded
+deeper diagnosis against the existing owner and evidence, then retain an explicit
+technical hold until an actual input changes. An earlier completed diagnosis is
+not grounds for another equivalent diagnosis. Never repeat expensive validation
+without changed source, inputs or a concrete unresolved concern. A clean system
+is a valid no-change result.
 
 Before ending, append an immutable, credential-free run receipt in the state
 directory with UTC time, this T3 thread ID, boards/causes examined, actual fixes
@@ -96,6 +129,20 @@ Report this pass's elapsed time separately. Distinguish restored infrastructure
 from requested project delivery and installation from loaded runtime. Unknown
 usage/cost remains unknown. Fewer repeat incidents and more completed requested
 outcomes are the success measures; repair counts alone are not productivity.
+Use existing Langfuse/native usage evidence when available to separate provider,
+model, project/card/run and maintenance versus delivery effort. Report missing
+attribution or coverage instead of invented zero cost. Subscription token
+counts are not invoices. Count external human/T3 interventions separately so
+assisted recovery is not presented as autonomous completion.
+
+As repairs stabilize, qualify the existing workflow with bounded representative
+concurrent project trials: independent acceptance, end-to-end effort/elapsed
+limits, counted human interventions, and safe injected provider failure, missing
+input, review rejection and interrupted-worker cases in the authorized isolated
+fixture. Prove completed outcomes or truthful bounded stops, preserved original
+limits and refusal enforcement. Reuse existing trials and metrics; add no new
+standing monitor or ritual. Passing unit tests or installing prompts alone
+does not establish autonomous multi-project readiness.
 
 Finish with a concise report: outcomes completed, recurring causes permanently
 fixed, work still running elsewhere, remaining genuine owner action, and the

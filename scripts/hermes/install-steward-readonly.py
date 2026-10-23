@@ -153,7 +153,7 @@ def install(root, repo, check=False):
     changes[root / 'scripts/hermes-card-authoring.md'] = (SOURCE.parent.parent / 'documentation/hermes-card-authoring.md').read_text()
     changes[root / 'scripts/hermes-instructions.md'] = (SOURCE.parent.parent / 'documentation/hermes-instructions.md').read_text()
     changes[root / 'scripts/hermes-capability-recovery.md'] = (SOURCE / 'instructions/capability-recovery.md').read_text()
-    for name in ('capability_recovery.py', 'kanban-daily-steward.py', 'daily-steward-window.py', 'usage-pace.py', 'kanban-performance.py', 'kanban-blockers.py',
+    for name in ('capability_recovery.py', 'kanban-daily-steward.py', 'daily-steward-window.py', 'usage-pace.py', 'kanban-performance.py', 'agent_usage_report.py', 'kanban-blockers.py',
                  'steward-opportunity-scan.py',
                  'steward-board-read.py', 'steward-readonly-guard.py', 'steward-coordinator-request.py'):
         changes[root / 'scripts' / name] = (SOURCE / name).read_text()

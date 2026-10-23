@@ -64,6 +64,8 @@ class InstructionPolicyTest(unittest.TestCase):
             self.assertEqual((source/filename).read_text(),pending[self.root/'scripts'/filename])
         self.assertEqual((source.parents[1]/'documentation/hermes-workspace-repair.md').read_text(),
                          pending[self.root/'scripts/hermes-workspace-repair.md'])
+        for directory in (self.root/'scripts',self.root/'profiles/board-steward/scripts'):
+            self.assertEqual((source/'agent_usage_report.py').read_text(),pending[directory/'agent_usage_report.py'])
 
     def test_install_is_reversible_idempotent_and_keeps_runtime_settings(self):
         settings = {p: p.read_bytes() for p in self.root.glob('profiles/*/config.yaml')}

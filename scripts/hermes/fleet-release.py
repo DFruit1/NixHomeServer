@@ -217,6 +217,7 @@ def current_job(root, item):
 def schedule_plan(root):
     policy = checked(root, root / 'state/fleet/handlers.json')
     handlers = json.loads(policy.read_text()) if policy.exists() else {'evidence': {'enabled': True, 'interval': 300}}
+    handlers.setdefault('agent-usage', {'enabled': True, 'interval': 300})
     result = dict(pause=[], daily=None, supervisor=None, handlers=handlers)
     for profile in ('default', 'head-coordinator', 'board-steward'):
         names = {}
@@ -470,11 +471,22 @@ def pending_files(root, source, plan, *, owners=None):
                  'feature_contract.py', 'fleet_contract.py'):
         merge_owned(pending,owners,{root/'scripts'/name:(directory/name).read_text()},'recovery')
     for name in ('fleet-release.py','fleet-evidence.py','fleet-supervisor.py','fleet-report.py','kanban-analytics.py',
+                 'agent-usage.py','agent_usage_report.py',
                  'fleet_workflow.py','idle-recovery-monitor.py','kanban-board-health.sh'):
         merge_owned(pending,owners,{root/'scripts'/name:(directory/name).read_text()},'fleet-runtime')
     merge_owned(pending,owners,{
         root/'profiles/board-steward/scripts/fleet-report.py':(directory/'fleet-report.py').read_text(),
+        root/'profiles/board-steward/scripts/agent_usage_report.py':(directory/'agent_usage_report.py').read_text(),
         root/'state/fleet/handlers.json':json.dumps(plan['handlers'], sort_keys=True, indent=2) + '\n'},'fleet-runtime')
+    native=root/'hermes-agent/plugins/observability/langfuse/__init__.py'
+    if native.is_file():
+        spec=importlib.util.spec_from_file_location('fleet_agent_usage',directory/'agent-usage.py')
+        module=importlib.util.module_from_spec(spec)
+        original_path=sys.path[:]
+        try:
+            sys.path.insert(0,str(directory));spec.loader.exec_module(module)
+            merge_owned(pending,owners,{native:module.patch_native(native.read_text())},'agent-usage')
+        finally:sys.path[:]=original_path
     return pending
 
 

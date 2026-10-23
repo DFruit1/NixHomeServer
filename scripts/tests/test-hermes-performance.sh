@@ -14,6 +14,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+sys.path.insert(0,str(Path(sys.argv[1])/'scripts/hermes'))
 spec = importlib.util.spec_from_file_location('performance', Path(sys.argv[1])/'scripts/hermes/kanban-performance.py')
 performance = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(performance)

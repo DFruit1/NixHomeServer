@@ -72,7 +72,9 @@ def install(root,check=False):
                 pending[path.parent/'plugins'/PLUGIN/name]=(SOURCE/PLUGIN/name).read_text()
         if updated!=old:pending[path]=updated
     for target in (root/'scripts/kanban-performance.py',root/'profiles/board-steward/scripts/kanban-performance.py'):
-        if target.exists():pending[target]=(SOURCE/'kanban-performance.py').read_text()
+        if target.exists():
+            pending[target]=(SOURCE/'kanban-performance.py').read_text()
+            pending[target.with_name('agent_usage_report.py')]=(SOURCE/'agent_usage_report.py').read_text()
     # Preflight all files and retain their exact input to detect another writer.
     changes=[]
     for path,text in pending.items():

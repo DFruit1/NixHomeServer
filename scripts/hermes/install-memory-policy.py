@@ -184,7 +184,9 @@ def install(root, check=False):
                     record['pinned']=True;changed=True
             if changed:pending[usage]=json.dumps(data,indent=2,sort_keys=True)+'\n'
         performance=home/'scripts/kanban-performance.py'
-        if performance.exists():pending[performance]=(SOURCE/'kanban-performance.py').read_text()
+        if performance.exists():
+            pending[performance]=(SOURCE/'kanban-performance.py').read_text()
+            pending[performance.with_name('agent_usage_report.py')]=(SOURCE/'agent_usage_report.py').read_text()
     native=root/'hermes-agent/agent/background_review.py'
     pending[native]=neutral_prompts(native.read_text())
     changes=[]

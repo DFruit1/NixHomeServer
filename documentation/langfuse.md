@@ -75,6 +75,84 @@ Keep each `.env` at mode `0600`. Configure Langfuse Observability through
 for the new SDK and environment to take effect. Metadata capture records model
 usage, latency, failures, and tool timing without exporting conversation text.
 
+## Codex, OpenCode and local inference usage
+
+The existing Hermes Langfuse plugin records requests sent through Codex,
+OpenCode Go and the local llama.cpp endpoint. Fleet releases also install the
+`agent-usage` collector for coding sessions outside Hermes. The existing
+no-agent fleet supervisor runs it every five minutes; it makes no model calls
+and adds no separate cron or service. Python is retained for this operations
+bridge because it shares Hermes/OpenCode's SQLite/JSON interfaces and the
+existing Python release/reporting tools, using only the standard library.
+
+The collector reads Codex's native session index and `token_count` records, and
+OpenCode 2's completed assistant/compaction messages in its local SQLite database
+(or finalized `step-finish` parts on OpenCode 1). The current V2 projection takes
+precedence over the retained V1 tables. Source
+databases open read-only with query deadlines. Only token counters, model,
+native session identity, project label and timestamps are exported. Prompt,
+response, tool and file contents are never exported. Existing project keys are
+read from the root Hermes `.env` in memory; credentials are not copied into a
+new file or supplied to the steward. Authenticated exports use private HTTPS
+and refuse HTTP redirects.
+
+Codex prompt counts include cached input; the collector separates that cache
+from uncached input. Its output count includes reasoning. OpenCode stores text
+and reasoning output separately, so those two fields form its output count.
+Reasoning is retained as metadata, rather than added again to the usage total.
+The fleet-owned native Hermes adapter makes the same correction to future
+Hermes generations and adds `profile`, `provider_route`, `board`, `card_id`,
+`run_id` and `cost_status` where available. Existing historical observations
+are preserved. Old workers retain their loaded plugin until they finish;
+installation alone does not prove their telemetry changed.
+
+Native event identities generate deterministic trace/span IDs. A failed or
+partially rejected upload leaves the checkpoint unchanged; replay targets the
+same observation IDs. Collection is bounded to 512 recent Codex sessions,
+32 MiB of input and 1,000 usage records per source per pass. Initial collection
+has a rolling 24-hour horizon; it does not claim complete historical coverage.
+`bounded`, unavailable and stale sources stay explicit. Checkpoints and the
+credential-free summary live privately at `~/.hermes/state/agent-usage/`.
+
+The collector also reads the local Qwen llama.cpp `/metrics` endpoint. These
+engine lifetime counters cover all clients, including requests outside Hermes.
+They appear as **spans**, with raw uncached/cached/output counts in metadata,
+rather than additional generations: they overlap per-request usage and must
+never be added to it. Engine counters reset when the inference server restarts.
+
+The owner can inspect all streams in the existing Hermes project at
+`https://langfuse.<domain>/project/hermes`. Filter generations by model and by
+metadata `source` (`hermes`, `codex-cli`, `opencode-cli`), `provider_route`,
+`profile`, `board` or `card_id`. Select spans with source `llama.cpp-engine` for
+the independent engine counters. Request-level durations are available for
+native Hermes generations; imported coding records have zero duration because
+their usage event does not establish inference latency.
+
+The existing generated steward report includes the rolling 24-hour Langfuse
+model totals, source coverage and separate engine counters. The performance
+report exposes the same cached evidence under `agent_usage`. Both are read-only
+and require no Langfuse credentials or inference probes:
+
+```sh
+python3 ~/.hermes/scripts/agent-usage.py --report
+python3 ~/.hermes/scripts/kanban-performance.py --json
+python3 ~/.hermes/scripts/fleet-report.py
+```
+
+The summary becomes stale after 15 minutes. Aggregate failure and unavailable
+sources are reported as unknown, never zero. Rolling metrics use the Langfuse
+v4 `/api/public/v2/metrics` API; legacy metrics endpoints return 404 on this
+deployment. Input totals include cache. Model-price estimates in Langfuse are
+API equivalents, not subscription invoices or local electricity/hardware cost.
+Actual billing remains unknown without a separately measured billing source.
+
+Install through the existing committed, reviewed fleet release procedure in
+[Hermes fleet maintenance](hermes-fleet.md). The release owns the native adapter
+and both reporting copies, retains preimages, and refuses unsupported upstream
+plugin shapes before writing. Rollback restores only unchanged owned postimages;
+usage observations and checkpoints are retained. Run
+`bash scripts/tests/test-agent-usage.sh` before the owning repository gate.
+
 ## Verification
 
 ```sh
@@ -173,5 +251,9 @@ Langfuse data lives in the separate `default` database and is unaffected.
 - [Langfuse deployment](https://langfuse.com/self-hosting/deployment/docker-compose)
 - [Headless initialization](https://langfuse.com/self-hosting/administration/headless-initialization)
 - [ClickHouse backups](https://clickhouse.com/docs/operations/backup)
+- [Langfuse OpenTelemetry attribute mapping](https://langfuse.com/integrations/native/opentelemetry)
+- [Langfuse v4 Metrics API](https://langfuse.com/docs/metrics/features/metrics-api)
+- [Codex telemetry](https://developers.openai.com/codex/config-advanced)
+- [llama.cpp monitoring endpoints](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md)
 - Hermes's bundled `plugins/observability/langfuse/README.md` documents SDK setup
   and content-capture modes for the installed Hermes version.
