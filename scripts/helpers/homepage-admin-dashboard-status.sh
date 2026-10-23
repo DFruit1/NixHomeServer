@@ -169,15 +169,19 @@ logical_section() {
   extra='{}'
   dumps_file="$target/metadata/dumps.json"
   if [[ -s "$dumps_file" ]]; then
-    extra="$($JQ_BIN -cs '
+    # A record this collector cannot read is reported as invalid rather than
+    # normalised into an empty configured dump set: the API must not turn
+    # unreadable verification metadata into a false pass.
+    if ! extra="$($JQ_BIN -cs '
       .[0] as $d
-      | if ($d | type) == "object" then
-          {
-            expected: (($d.expected // []) | if type == "array" then .[0:64] else [] end),
-            dumps: (($d.dumps // []) | if type == "array" then .[0:64] else [] end)
-          }
-        else {} end
-    ' "$dumps_file" 2>/dev/null || printf '{}')"
+      | if (($d | type) == "object"
+            and (($d.expected | type) == "array")
+            and (($d.dumps | type) == "array")) then
+          {expected: ($d.expected[0:64]), dumps: ($d.dumps[0:64])}
+        else {verificationMetadata: "invalid"} end
+    ' "$dumps_file" 2>/dev/null)" || [[ -z "$extra" ]]; then
+      extra='{"verificationMetadata":"invalid"}'
+    fi
   fi
   $JQ_BIN -nc --argjson base "$base" --argjson extra "$extra" '$base + $extra'
 }

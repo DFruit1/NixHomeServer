@@ -40,6 +40,7 @@ const generatedAt = (secondsAgo: number): string =>
   new Date(Date.now() - secondsAgo * 1000).toISOString();
 
 type CollectorOverrides = {
+  generatedAt?: unknown;
   kopiaSnapshot?: unknown;
   kopiaVerify?: unknown;
   logicalBackup?: unknown;
@@ -108,6 +109,14 @@ const collectorStatus = (overrides: CollectorOverrides = {}): Record<string, unk
   ...overrides,
 });
 
+const measurement = (ageSeconds: number, maxAgeSeconds: number): Record<string, unknown> => ({
+  completedAt: generatedAt(ageSeconds),
+  ageSeconds,
+  maxAgeSeconds,
+});
+
+const DAY = 24 * 60 * 60;
+
 const writeStatus = async (directory: string, status: unknown): Promise<void> => {
   await writeFile(join(directory, 'status.json'), typeof status === 'string' ? status : JSON.stringify(status));
 };
@@ -163,9 +172,11 @@ describe('admin dashboard backup freshness widget', () => {
     const response = await getAdminDashboard(baseConfig(directory), adminHeaders);
     expect(response.available).toBe(true);
     expect(response.generatedAgeSeconds).toBeGreaterThanOrEqual(0);
+    expect(response.collectionState).toBe('ok');
     const freshness = widget(response, 'backup-freshness');
     expect(freshness.state).toBe('ok');
     expect(freshness.rows.map((row) => row.label)).toEqual([
+      'Status cache',
       'Kopia snapshot',
       'Kopia deep verify',
       'Logical backup',
@@ -269,6 +280,7 @@ describe('admin dashboard backup freshness widget', () => {
     }));
     const freshness = widget(await getAdminDashboard(baseConfig(directory), adminHeaders), 'backup-freshness');
     expect(freshness.rows.map((row) => row.label)).toEqual([
+      'Status cache',
       'Kopia snapshot',
       'Kopia deep verify',
       'Logical backup',
@@ -300,9 +312,9 @@ describe('admin dashboard dump verification widget', () => {
     const verification = widget(await getAdminDashboard(baseConfig(directory), adminHeaders), 'dump-verification');
     expect(verification.state).toBe('ok');
     expect(verification.summary).toContain('2/2');
-    expect(verification.rows.map((row) => row.label)).toEqual(['kanidm.sqlite', 'paperless.sql']);
-    expect(verification.rows[1]?.value).toContain('8.0\u00A0MiB');
-    expect(verification.rows[0]?.value).toContain('integrity\u00A0ok');
+    expect(verification.rows.map((row) => row.label)).toEqual(['Status cache', 'kanidm.sqlite', 'paperless.sql']);
+    expect(verification.rows[2]?.value).toContain('8.0\u00A0MiB');
+    expect(verification.rows[1]?.value).toContain('integrity\u00A0ok');
   });
 
   it('alerts when a configured dump is missing from the generation', async () => {
@@ -327,7 +339,7 @@ describe('admin dashboard dump verification widget', () => {
     await writeStatus(directory, status);
     const verification = widget(await getAdminDashboard(baseConfig(directory), adminHeaders), 'dump-verification');
     expect(verification.state).toBe('critical');
-    expect(verification.rows[0]?.value).toContain('integrity\u00A0failed');
+    expect(verification.rows.find((row) => row.label === 'kanidm.sqlite')?.value).toContain('integrity\u00A0failed');
   });
 
   it('warns when the generation predates per-dump verification data', async () => {
@@ -364,5 +376,198 @@ describe('admin dashboard dump verification widget', () => {
     const verification = widget(await getAdminDashboard(baseConfig(directory), adminHeaders), 'dump-verification');
     expect(verification.rows.some((row) => row.label.length > 128)).toBe(false);
     expect(verification.rows.filter((row) => row.label === 'kanidm.sqlite')).toHaveLength(1);
+  });
+
+  it('marks a dump past the configured age limit as critical', async () => {
+    const directory = await tempDir();
+    const status = collectorStatus();
+    const logical = status.logicalBackup as Record<string, unknown>;
+    logical.completedAt = generatedAt(7 * DAY);
+    logical.ageSeconds = 7 * DAY;
+    for (const dump of logical.dumps as Array<Record<string, unknown>>) dump.createdAt = generatedAt(7 * DAY);
+    await writeStatus(directory, status);
+    const verification = widget(await getAdminDashboard(baseConfig(directory), adminHeaders), 'dump-verification');
+    expect(verification.state).toBe('critical');
+    expect(verification.summary).toContain('Stale dumps');
+    expect(verification.summary).toContain('kanidm.sqlite');
+    const stale = verification.rows.find((row) => row.label === 'kanidm.sqlite');
+    expect(stale?.state).toBe('critical');
+    expect(stale?.value).toContain('limit');
+  });
+
+  it('warns while a dump approaches its age limit', async () => {
+    const directory = await tempDir();
+    const status = collectorStatus();
+    const logical = status.logicalBackup as Record<string, unknown>;
+    logical.completedAt = generatedAt(30 * 60 * 60);
+    logical.ageSeconds = 30 * 60 * 60;
+    for (const dump of logical.dumps as Array<Record<string, unknown>>) dump.createdAt = generatedAt(30 * 60 * 60);
+    await writeStatus(directory, status);
+    const verification = widget(await getAdminDashboard(baseConfig(directory), adminHeaders), 'dump-verification');
+    expect(verification.state).toBe('warn');
+    expect(verification.summary).toContain('approaching');
+    expect(verification.rows.find((row) => row.label === 'kanidm.sqlite')?.state).toBe('warn');
+  });
+
+  it('does not report an unreadable expected dump entry as verified', async () => {
+    const directory = await tempDir();
+    const status = collectorStatus();
+    const logical = status.logicalBackup as Record<string, unknown>;
+    logical.expected = [{ broken: true }];
+    logical.dumps = [];
+    await writeStatus(directory, status);
+    const verification = widget(await getAdminDashboard(baseConfig(directory), adminHeaders), 'dump-verification');
+    expect(verification.state).not.toBe('ok');
+    expect(verification.summary).toContain('unreadable');
+    const metadata = verification.rows.find((row) => row.label === 'Verification metadata');
+    expect(metadata?.state).toBe('warn');
+    expect(verification.summary).not.toContain('dumps verified');
+  });
+
+  it('keeps readable dumps visible alongside an unreadable configured entry', async () => {
+    const directory = await tempDir();
+    const status = collectorStatus();
+    const logical = status.logicalBackup as Record<string, unknown>;
+    logical.expected = [...(logical.expected as unknown[]), { broken: true }];
+    await writeStatus(directory, status);
+    const verification = widget(await getAdminDashboard(baseConfig(directory), adminHeaders), 'dump-verification');
+    expect(verification.state).toBe('warn');
+    expect(verification.rows.find((row) => row.label === 'kanidm.sqlite')?.state).toBe('ok');
+    expect(verification.rows.find((row) => row.label === 'Verification metadata')?.state).toBe('warn');
+  });
+
+  it('reports an empty configured dump set as unknown rather than verified', async () => {
+    const directory = await tempDir();
+    const status = collectorStatus();
+    const logical = status.logicalBackup as Record<string, unknown>;
+    logical.expected = [];
+    logical.dumps = [];
+    await writeStatus(directory, status);
+    const verification = widget(await getAdminDashboard(baseConfig(directory), adminHeaders), 'dump-verification');
+    expect(verification.state).toBe('unknown');
+    expect(verification.summary).toContain('No logical dumps');
+    expect(verification.summary).not.toContain('verified');
+  });
+
+  it('flags malformed verification metadata reported by the collector', async () => {
+    const directory = await tempDir();
+    const status = collectorStatus();
+    const logical = status.logicalBackup as Record<string, unknown>;
+    delete logical.expected;
+    delete logical.dumps;
+    logical.verificationMetadata = 'invalid';
+    await writeStatus(directory, status);
+    const verification = widget(await getAdminDashboard(baseConfig(directory), adminHeaders), 'dump-verification');
+    expect(verification.state).toBe('warn');
+    expect(verification.summary).toContain('unreadable');
+    expect(verification.rows.find((row) => row.label === 'Verification metadata')?.state).toBe('warn');
+  });
+});
+
+describe('admin dashboard collection freshness', () => {
+  it('advances cached ages by the time elapsed since collection', async () => {
+    const directory = await tempDir();
+    const status = collectorStatus({
+      generatedAt: generatedAt(2 * 60 * 60),
+      kopiaSnapshot: measurement(35 * 60 * 60, 36 * 60 * 60),
+    });
+    await writeStatus(directory, status);
+    const response = await getAdminDashboard(baseConfig(directory), adminHeaders);
+    expect(response.generatedAgeSeconds).toBeGreaterThanOrEqual(2 * 60 * 60);
+    const freshness = widget(response, 'backup-freshness');
+    const row = freshness.rows.find((candidate) => candidate.label === 'Kopia snapshot');
+    // 35h cached + 2h elapsed is past the 36h limit, not merely approaching it.
+    expect(row?.state).toBe('critical');
+    expect(row?.value).toContain('1d');
+  });
+
+  it('warns when the collector has missed several refreshes', async () => {
+    const directory = await tempDir();
+    const status = collectorStatus({
+      generatedAt: generatedAt(45 * 60),
+      kopiaSnapshot: measurement(60, 30 * DAY),
+      kopiaVerify: measurement(60, 30 * DAY),
+      logicalBackup: {
+        generation: '20261024T031500-4211',
+        completedAt: generatedAt(45 * 60),
+        ageSeconds: 60,
+        maxAgeSeconds: 30 * DAY,
+        expected: [{ name: 'kanidm.sqlite', kind: 'sqlite' }],
+        dumps: [{
+          name: 'kanidm.sqlite',
+          kind: 'sqlite',
+          bytes: 1024,
+          sha256: 'a'.repeat(64),
+          integrityCheck: 'ok',
+          createdAt: generatedAt(45 * 60),
+        }],
+      },
+      offsiteSync: {
+        state: 'success',
+        reason: 'mirror_verified',
+        message: 'MEGA mirror verified',
+        completedAt: generatedAt(45 * 60),
+        ageSeconds: 60,
+        maxAgeSeconds: 30 * DAY,
+        repositoryBytes: 1024,
+        limitBytes: 2048,
+      },
+      zfsSnapshots: {
+        pool: 'tank',
+        health: 'ONLINE',
+        staleDatasets: 0,
+        newestAgeSeconds: 60,
+        maxAgeSeconds: 30 * DAY,
+      },
+    });
+    await writeStatus(directory, status);
+    const response = await getAdminDashboard(baseConfig(directory), adminHeaders);
+    expect(response.collectionState).toBe('warn');
+    const freshness = widget(response, 'backup-freshness');
+    expect(freshness.state).toBe('warn');
+    const cache = freshness.rows.find((row) => row.label === 'Status cache');
+    expect(cache?.state).toBe('warn');
+    expect(cache?.value).toContain('10m');
+    expect(freshness.summary).toContain('Status cache');
+  });
+
+  it('degrades both widgets when the cache has not been refreshed for days', async () => {
+    const directory = await tempDir();
+    const status = collectorStatus({
+      generatedAt: generatedAt(7 * DAY),
+      kopiaSnapshot: measurement(60, 30 * DAY),
+      kopiaVerify: measurement(60, 30 * DAY),
+      offsiteSync: {
+        state: 'success',
+        reason: 'mirror_verified',
+        message: 'MEGA mirror verified',
+        completedAt: generatedAt(7 * DAY),
+        ageSeconds: 60,
+        maxAgeSeconds: 30 * DAY,
+        repositoryBytes: 1024,
+        limitBytes: 2048,
+      },
+      zfsSnapshots: {
+        pool: 'tank',
+        health: 'ONLINE',
+        staleDatasets: 0,
+        newestAgeSeconds: 60,
+        maxAgeSeconds: 30 * DAY,
+      },
+    });
+    await writeStatus(directory, status);
+    const response = await getAdminDashboard(baseConfig(directory), adminHeaders);
+    expect(response.collectionState).toBe('critical');
+    for (const id of ['backup-freshness', 'dump-verification']) {
+      expect(widget(response, id).state).toBe('critical');
+    }
+  });
+
+  it('clamps a collection timestamp from the future to zero age', async () => {
+    const directory = await tempDir();
+    await writeStatus(directory, collectorStatus({ generatedAt: generatedAt(-5 * 60) }));
+    const response = await getAdminDashboard(baseConfig(directory), adminHeaders);
+    expect(response.generatedAgeSeconds).toBe(0);
+    expect(response.collectionState).toBe('ok');
   });
 });

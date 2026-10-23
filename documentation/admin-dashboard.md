@@ -30,6 +30,13 @@ that a root timer writes.
 Missing or corrupt sources degrade one widget section at a time — a widget never
 reports "healthy" for a signal it has no data for.
 
+The cache ages too. Cached ages are observations frozen at `generatedAt`, so the
+API advances every one of them by the time elapsed since collection, states the
+cache age in a `Status cache` row on each widget, and degrades the widgets when
+the timer stops refreshing the report: three missed ten-minute runs (`warn`) and
+twelve, two hours (`critical`). A stale cache is never rendered as a healthy
+one, and the page shows a notice naming the cache age.
+
 ## Widgets (first slice)
 
 - **Backup freshness** — Kopia snapshot, Kopia deep verification, logical backup
@@ -38,11 +45,19 @@ reports "healthy" for a signal it has no data for.
   `repo.storage.snapshotHealth.maxAgeSeconds` and
   `repo.backups.offsiteMirrorMaxAgeSeconds` (default 26h). Deep verification is a
   weekly job, so it allows one missed window (8 days).
-- **Dump verification** — per-dump kind, size and integrity result written by
+- **Dump verification** — per-dump kind, size, integrity result and age written by
   `backup-prepare` into `metadata/dumps.json`, compared against the configured
   dump list. A configured dump that is missing from the generation, or whose
-  integrity result is not `ok`, is reported as critical. Generations published
-  before this file existed show a warning instead of a false pass.
+  integrity result is not `ok`, is reported as critical. A dump older than the
+  logical generation's configured limit (`repo.backups.kopiaSnapshotHealthMaxAgeSeconds`)
+  is critical too, and approaching it is a warning, so idea 11's stale-dump alert
+  is covered. Generations published before this file existed show a warning
+  instead of a false pass.
+- A per-dump record the collector cannot read — malformed JSON or missing
+  `expected`/`dumps` arrays — is reported as `verificationMetadata: "invalid"`
+  and rendered as a warning, never as an empty configured dump set. An unreadable
+  entry inside `expected` is counted and warned about rather than skipped, and a
+  legitimately empty configured set is shown as `Unknown`, not verified.
 
 A widget whose backing service is disabled is omitted rather than rendered green.
 

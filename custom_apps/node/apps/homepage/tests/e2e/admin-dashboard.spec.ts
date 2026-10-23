@@ -25,14 +25,17 @@ test('admin dashboard renders the backup widgets from cached status', async ({ p
   const freshness = page.locator('.dashboard-widget', { hasText: 'Backup freshness' });
   await expect(freshness.locator('.dashboard-widget__badge')).toHaveText('Healthy');
   await expect(freshness.locator('dt')).toHaveText([
+    'Status cache',
     'Kopia snapshot',
     'Kopia deep verify',
     'Logical backup',
     'Offsite MEGA sync',
     'ZFS snapshots',
   ]);
+  await expect(freshness).toContainText('refreshed every 10m');
   await expect(freshness).toContainText('limit 1d 12h');
   await expect(freshness).toContainText('MEGA mirror verified');
+  await expect(page.locator('.notice')).toHaveCount(0);
 
   const dumps = page.locator('.dashboard-widget', { hasText: 'Dump verification' });
   await expect(dumps.locator('.dashboard-widget__summary')).toContainText('2/2 dumps verified');
@@ -51,7 +54,8 @@ test('admin dashboard reports stale and missing items instead of showing healthy
       body: JSON.stringify({
         available: true,
         generatedAt: '2026-10-24T07:00:00+00:00',
-        generatedAgeSeconds: 120,
+        generatedAgeSeconds: 2700,
+        collectionState: 'warn',
         widgets: [
           {
             id: 'backup-freshness',
@@ -59,6 +63,7 @@ test('admin dashboard reports stale and missing items instead of showing healthy
             state: 'critical',
             summary: 'Kopia snapshot: 2d 0h old, limit 1d 12h',
             rows: [
+              { label: 'Status cache', value: 'collected 45m\u00A0ago · refreshed every 10m', state: 'warn' },
               { label: 'Kopia snapshot', value: '2d 0h old, limit 1d 12h', state: 'critical' },
               { label: 'Offsite MEGA sync', value: 'MEGA mirror verified (last activity 1d 6h ago)', state: 'warn' },
             ],
@@ -82,9 +87,11 @@ test('admin dashboard reports stale and missing items instead of showing healthy
   await page.goto('/admin-dashboard');
 
   await expect(page.locator('.dashboard-widget.is-critical')).toHaveCount(2);
+  await expect(page.locator('.notice')).toContainText('may have stopped');
   await expect(page.locator('.dashboard-widget__badge').first()).toHaveText('Action needed');
   await expect(page.locator('.dashboard-widget__row.is-critical')).toContainText(['2d 0h', 'missing']);
-  await expect(page.locator('.dashboard-widget__row.is-warn')).toContainText('MEGA mirror verified');
+  await expect(page.locator('.dashboard-widget__row.is-warn').filter({ hasText: 'MEGA mirror verified' })).toHaveCount(1);
+  await expect(page.locator('.dashboard-widget__row.is-warn').filter({ hasText: 'Status cache' })).toHaveCount(1);
   await expect(page.locator('.dashboard-widget__summary').nth(1)).toContainText('paperless.dump');
   await expectNoHorizontalOverflow(page);
 });

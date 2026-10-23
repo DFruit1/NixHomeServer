@@ -125,6 +125,37 @@ write_generation no
 run_collector
 jq -e '.logicalBackup | has("dumps") | not' "$output" >/dev/null
 jq -e '.logicalBackup | has("expected") | not' "$output" >/dev/null
+jq -e '.logicalBackup | has("verificationMetadata") | not' "$output" >/dev/null
+
+# 5a. A dumps.json whose verification fields are malformed is reported as such
+#     instead of being silently normalised to an empty configured dump set.
+write_generation
+generation_dumps="$staging/generations/20261024T031500-77/metadata/dumps.json"
+printf '{"schemaVersion":1,"expected":[{"name":"kanidm.sqlite","kind":"sqlite"}]}' >"$generation_dumps"
+run_collector
+jq -e '.logicalBackup.verificationMetadata == "invalid"' "$output" >/dev/null
+jq -e '.logicalBackup | has("dumps") | not' "$output" >/dev/null
+jq -e '.logicalBackup | has("expected") | not' "$output" >/dev/null
+
+# 5b. Non-array verification fields are malformed too, not an empty dump set.
+printf '{"schemaVersion":1,"expected":"kanidm.sqlite","dumps":[]}' >"$generation_dumps"
+run_collector
+jq -e '.logicalBackup.verificationMetadata == "invalid"' "$output" >/dev/null
+
+# 5c. Unparseable dumps.json keeps the generation and marks the detail invalid.
+printf 'not-json' >"$generation_dumps"
+run_collector
+jq -e '.logicalBackup.verificationMetadata == "invalid"' "$output" >/dev/null
+jq -e '.logicalBackup.generation == "20261024T031500-77"' "$output" >/dev/null
+jq -e '.logicalBackup.ageSeconds == 3600' "$output" >/dev/null
+
+# 5d. The valid per-dump record still passes through unchanged after the
+#     malformed cases, and no invalid marker is added.
+write_generation
+run_collector
+jq -e '.logicalBackup.expected | length == 2' "$output" >/dev/null
+jq -e '.logicalBackup.dumps | length == 2' "$output" >/dev/null
+jq -e '.logicalBackup | has("verificationMetadata") | not' "$output" >/dev/null
 
 # 6. An existing offsite status is passed through with its own state and age.
 jq -n --arg timestamp "$(iso $((now - 7200)))" '

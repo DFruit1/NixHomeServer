@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
-import { mkdir, rm } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -14,6 +14,26 @@ const staticDir = process.env.HOMEPAGE_E2E_STATIC_DIR ?? path.join(homepageDir, 
 
 await rm(stateDir, { recursive: true, force: true });
 await mkdir(stateDir, { recursive: true });
+
+// The checked-in status fixture stores ages, not absolute dates. Rebase its
+// timestamps onto the current clock so the dashboard's own collection-freshness
+// check sees a cache the timer has just refreshed, whenever the suite runs.
+const statusSource = path.join(homepageDir, 'tests/e2e/fixtures/admin-dashboard-status.json');
+const statusFile = path.join(stateDir, 'admin-dashboard-status.json');
+const report = JSON.parse(await readFile(statusSource, 'utf8'));
+const now = Date.now();
+const at = (secondsAgo) => new Date(now - secondsAgo * 1000).toISOString();
+report.generatedAt = at(0);
+for (const section of [report.kopiaSnapshot, report.kopiaVerify, report.logicalBackup, report.offsiteSync]) {
+  if (!section || typeof section.ageSeconds !== 'number') {
+    continue;
+  }
+  section.completedAt = at(section.ageSeconds);
+  for (const dump of Array.isArray(section.dumps) ? section.dumps : []) {
+    dump.createdAt = section.completedAt;
+  }
+}
+await writeFile(statusFile, JSON.stringify(report));
 
 const kanidm = spawn(process.execPath, [path.join(homepageDir, 'tests/e2e/bin/fake-kanidm.mjs')], {
   env: { ...process.env, FAKE_KANIDM_PORT: String(kanidmPort) },
@@ -29,7 +49,7 @@ const server = spawn('sh', ['-c', serverCommand], {
     HOMEPAGE_DEV_USER: 'dsaw',
     HOMEPAGE_STATIC_DIR: staticDir,
     HOMEPAGE_CONFIG_FILE: path.join(homepageDir, 'tests/e2e/fixtures/homepage-config.json'),
-    HOMEPAGE_ADMIN_DASHBOARD_STATUS_FILE: path.join(homepageDir, 'tests/e2e/fixtures/admin-dashboard-status.json'),
+    HOMEPAGE_ADMIN_DASHBOARD_STATUS_FILE: statusFile,
     HOMEPAGE_SUDO: path.join(homepageDir, 'tests/e2e/bin/fake-sudo.mjs'),
     HOMEPAGE_SFTP_KEY_INSTALL_COMMAND: path.join(homepageDir, 'tests/e2e/bin/fake-install-sftp-key.mjs'),
     HOMEPAGE_SFTP_KEY_LIST_COMMAND: path.join(homepageDir, 'tests/e2e/bin/fake-sftp-key-list.mjs'),

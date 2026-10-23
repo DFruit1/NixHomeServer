@@ -173,6 +173,9 @@ export type AdminDashboardResponse = {
   reason?: string;
   generatedAt?: string;
   generatedAgeSeconds?: number;
+  // Freshness of the cached report itself. A stale cache means the scheduled
+  // collector is not refreshing the numbers below.
+  collectionState?: AdminDashboardWidgetState;
   widgets: AdminDashboardWidget[];
 };
 
