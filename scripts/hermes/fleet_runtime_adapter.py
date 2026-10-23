@@ -56,6 +56,16 @@ EDITS = {
     ),
 }
 
+# Upgrade the exact installed predecessor in place; repeat installs remain
+# idempotent and unknown native source still refuses before installation.
+PREVIOUS_CREATE = EDITS['kanban_db.py'][1][1]
+CURRENT_CREATE = PREVIOUS_CREATE.replace(
+    '    if workflow is not None:\n',
+    '    fleet_contract.validate_create(conn, body, workflow, assignee, creator_task_id)\n'
+    '    if workflow is not None:\n', 1)
+EDITS['kanban_db.py'] = (EDITS['kanban_db.py'][0],
+    (EDITS['kanban_db.py'][1][0], CURRENT_CREATE), *EDITS['kanban_db.py'][2:])
+
 SCHEMAS = '''
 # Structured fleet inputs; the native transaction validates the same contract.
 KANBAN_CREATE_SCHEMA["parameters"]["properties"]["workflow"] = {
@@ -88,6 +98,8 @@ KANBAN_COMPLETE_SCHEMA["parameters"]["properties"]["delivery"] = {
 
 
 def adapt(name, text):
+    if name == 'kanban_db.py' and text.count(PREVIOUS_CREATE) == 1:
+        text = text.replace(PREVIOUS_CREATE, CURRENT_CREATE, 1)
     if name == 'tools/kanban_tools_schemas.py':
         if SCHEMAS not in text:
             text = text.rstrip() + '\n' + SCHEMAS

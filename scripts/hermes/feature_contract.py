@@ -10,9 +10,9 @@ import os
 import subprocess
 
 if __package__ == 'hermes_cli':
-    from .nixhomeserver_fleet_contract import digest, load, validate_board
+    from .nixhomeserver_fleet_contract import creation, digest, load, validate_board
 else:
-    from fleet_contract import digest, load, validate_board
+    from fleet_contract import creation, digest, load, validate_board
 
 TRACKER = re.compile(r'^\[FEATURE TRACKER', re.I)
 BINDING = re.compile(r'^Feature tracker:\s*([a-zA-Z0-9_-]+):(t_[a-zA-Z0-9_]+)\s*$', re.M)
@@ -99,6 +99,51 @@ def _version(db, tracker, members):
                    'material_inputs': [list(r) for r in inputs], 'receipts': [list(r) for r in receipts]})
 
 
+def _legacy_commissioning(db, task_id, feature, evidence, meta, handoff):
+    """Qualify one historical producer without inventing a creation contract.
+
+    Current membership is separately required. Scope comes only from this
+    immutable structured delivery's own commissioning and original plan, never
+    from a new comment or guessed prose. Missing historical evidence fails shut.
+    """
+    delivery = creation(db, task_id) or {}
+    producer = creation(db, evidence['id']) or {}
+    workflow = load(db, task_id)
+    plan_id = delivery.get('creator_task_id')
+    plan = db.execute('SELECT assignee,status FROM tasks WHERE id=?', (plan_id,)).fetchone()
+    plan_meta, plan_done = _metadata(db, plan_id)
+    handoff_meta = handoff['metadata']
+    plan_hash = plan_meta.get('plan_sha256')
+    comments = db.execute('SELECT body FROM task_comments WHERE task_id=? ORDER BY id LIMIT 101',
+                          (evidence['id'],)).fetchall()
+    markers = [':'.join(marker) for text in [evidence['body'] or ''] + [r['body'] for r in comments]
+               for marker in BINDING.findall(text)]
+    claim = db.execute("SELECT run_id,payload FROM task_events WHERE task_id=? AND kind='claimed' "
+                       'ORDER BY id DESC LIMIT 1', (evidence['id'],)).fetchone()
+    run = db.execute('SELECT id FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1',
+                     (evidence['id'],)).fetchone()
+    if (len(comments) > 100 or not markers or markers[-1] != feature['tracker']
+            or not producer or 'workflow' in producer or producer.get('creator_task_id') != task_id
+            or delivery.get('assignee') != 'head-coordinator'
+            or producer.get('assignee') != handoff.get('implementer')
+            or not re.search(r'^Workflow: native-review-v1\s*$', evidence['body'] or '', re.M)
+            or not isinstance(delivery.get('parents'), list) or plan_id not in delivery['parents']
+            or not isinstance(producer.get('parents'), list) or plan_id not in producer['parents']
+            or not plan or plan['status'] != 'done' or not plan_done
+            or workflow.get('plan_author') != plan['assignee']
+            or handoff_meta.get('plan_author') != plan['assignee']
+            or not isinstance(plan_hash, str) or not re.fullmatch(r'[a-f0-9]{64}', plan_hash)
+            or handoff_meta.get('plan_sha256') != plan_hash or meta.get('plan_sha256') != plan_hash
+            or plan_meta.get('delivery_task') != task_id
+            or plan_meta.get('feature_tracker') != feature['tracker']
+            or meta.get('feature_tracker') != feature['tracker']
+            or evidence['assignee'] not in {'feature-reviewer', 'project-auditor'}
+            or not claim or not run or claim['run_id'] != run['id']
+            or json.loads(claim['payload'] or '{}').get('source_status') != 'review'):
+        raise ValueError('Legacy delivery needs its own persisted commissioning, same original plan '
+                         'and native independent review evidence')
+
+
 def prepare_delivery(db, task_id, feature, delivery):
     if (not isinstance(delivery, dict) or delivery.get('state') != 'delivered_scope'
             or set(delivery) - {'state', 'tracker', 'expected_version', 'evidence_version', 'evidence_task_id',
@@ -127,25 +172,29 @@ def prepare_delivery(db, task_id, feature, delivery):
     source_contract = load(db, evidence_id) if evidence else None
     source_feature = source_contract.get('feature') if source_contract else None
     if (not evidence or evidence_id == task_id or evidence_id not in bindings.get(tid, set())
-            or evidence['status'] != 'done' or not completed or meta.get('verdict') != 'accept'
-            or not source_feature or source_feature['role'] != 'producer'
-            or source_feature['tracker'] != feature['tracker'] or source_feature['scope'] != feature['scope']
-            or source_feature.get('stage', 'integrated') != feature.get('stage', 'integrated')
-            or not source_contract.get('review')):
+            or evidence['status'] != 'done' or not completed or meta.get('verdict') != 'accept'):
         raise ValueError('Delivery needs completed independent implementation acceptance for this exact scope')
     if __package__ == 'hermes_cli':
         from .nixhomeserver_fleet_workflow import acceptance, review_handoff
     else:
         from fleet_workflow import acceptance, review_handoff
-    acceptance(review_handoff(db, evidence_id), meta, evidence['assignee'])
+    handoff = review_handoff(db, evidence_id)
+    acceptance(handoff, meta, evidence['assignee'])
+    if source_contract is None:
+        _legacy_commissioning(db, task_id, feature, evidence, meta, handoff)
+    elif (not source_feature or source_feature['role'] != 'producer'
+            or source_feature['tracker'] != feature['tracker'] or source_feature['scope'] != feature['scope']
+            or source_feature.get('stage', 'integrated') != feature.get('stage', 'integrated')
+            or not source_contract.get('review')):
+        raise ValueError('Delivery needs a matching structured producer contract')
     checks = meta.get('checks')
     if (not isinstance(checks, list) or not checks or any(
             not isinstance(c, dict) or not isinstance(c.get('command'), str) or not c['command'].strip()
             or type(c.get('exit_code')) is not int or c['exit_code'] != 0 for c in checks)):
         raise ValueError('Delivery evidence needs successful executed checks')
     if feature.get('stage', 'integrated') == 'integrated':
-        from hermes_cli.kanban_db_connect import _main_db_file
-        path = Path(_main_db_file(db))
+        # This shared check also runs in the standalone system-Python hook.
+        path = Path(next(r[2] for r in db.execute('PRAGMA database_list') if r[1] == 'main'))
         registration = json.loads(path.with_name('board.json').read_text())
         work = registration.get('default_workdir')
         if not isinstance(work, str) or not Path(work).is_absolute() or not Path(work).is_dir():

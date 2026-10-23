@@ -132,9 +132,19 @@ class VerdictGuardTest(unittest.TestCase):
         self.assertEqual(before, hashlib.sha256(self.db_path.read_bytes()).hexdigest())
 
     def feature_create(self, **extra):
-        return {'tool_name':'kanban_create','tool_input':{'board':'testboard',
-                'title':'Feature slice','assignee':'standard-implementer',
-                'body':'Feature tracker: testboard:t_tracker\nChange: custom_apps/app/source.rs only.',**extra}}
+        fields = {'board':'testboard', 'title':'Feature slice', 'assignee':'standard-implementer',
+                  'body':'Feature tracker: testboard:t_tracker\nChange: custom_apps/app/source.rs only.', **extra}
+        # Creation fixtures use the current structured surface. Existing-card
+        # fixtures below deliberately keep testing their original legacy rules.
+        workflow = {'version': 1}
+        marker = guard_mod.FEATURE.search(fields['body'])
+        if marker:
+            role = ('delivery' if 'Feature handoff: delivery' in fields['body'] else
+                    'documentary-closure' if 'Feature role: documentary-closure' in fields['body'] else 'producer')
+            workflow['feature'] = {'tracker': ':'.join(marker.groups()), 'role': role, 'scope': 'fixture slice'}
+        if 'Workflow: native-review-v1' in fields['body']:
+            workflow.update(review='native-review-v1', plan_author='owner')
+        return {'tool_name':'kanban_create','tool_input':{'workflow': workflow, **fields}}
 
     def test_native_review_claims_need_canonical_implementation_marker_at_creation(self):
         for role in ('standard-implementer', 'local-implementer'):

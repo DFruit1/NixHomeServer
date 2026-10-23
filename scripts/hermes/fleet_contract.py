@@ -79,6 +79,42 @@ def render(body, workflow):
     return '\n'.join(lines) + '\n'
 
 
+def validate_markers(body, workflow):
+    """Require structured native review while preserving legacy feature recovery.
+
+    Maintained CLI recovery controllers deliberately retain Feature markers and
+    assessed_defer. Only an explicitly supplied workflow owns those markers.
+    """
+    if workflow is None:
+        if re.search(r'^Workflow: native-review-v1\s*$', body or '', re.M):
+            raise ValueError('New Workflow: native-review-v1 implementations require structured workflow')
+        return
+    markers = re.findall(r'(?m)^(?:Workflow|Feature tracker|Feature handoff|Feature role):[^\n]*', body or '')
+    if markers and any(line not in render('', workflow).splitlines() for line in markers):
+        raise ValueError('New Workflow/Feature machine markers require matching structured workflow fields')
+
+
+def validate_create(db, body, workflow, assignee, creator_task_id):
+    # Match native profile normalization before deciding whether this is an implementer.
+    if isinstance(assignee, str):
+        assignee = assignee.strip().lower()
+    validate_markers(body, workflow)
+    if workflow is not None:
+        workflow = validate(workflow)
+    creator = load(db, creator_task_id) if creator_task_id else None
+    feature = creator.get('feature') if creator else None
+    if (feature and feature['role'] == 'delivery'
+            and assignee in {'standard-implementer', 'local-implementer'}):
+        producer = workflow.get('feature') if workflow else None
+        if (not workflow or workflow.get('review') != 'native-review-v1'
+                or not producer or producer['role'] != 'producer'
+                or producer['tracker'] != feature['tracker'] or producer['scope'] != feature['scope']
+                or producer.get('stage', 'integrated') != feature.get('stage', 'integrated')
+                or ('plan_author' in creator and workflow.get('plan_author') != creator['plan_author'])):
+            raise ValueError('Structured delivery commissioning requires a matching producer workflow, '
+                             'tracker, scope, stage and declared plan author')
+
+
 def validate_board(db, workflow):
     feature = workflow.get('feature') if workflow else None
     if feature:
@@ -87,7 +123,7 @@ def validate_board(db, workflow):
             raise ValueError('Feature contract must name a tracker on this task board; use qualified outputs across boards')
 
 
-def load(db, task_id):
+def creation(db, task_id):
     # Compatibility with portable fixtures predating event history.
     if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_events'").fetchone():
         return None
@@ -101,7 +137,12 @@ def load(db, task_id):
     payload = json.loads(raw)
     if not isinstance(payload, dict):
         raise ValueError('Malformed task creation event')
-    return validate(payload['workflow']) if 'workflow' in payload else None
+    return payload
+
+
+def load(db, task_id):
+    payload = creation(db, task_id)
+    return validate(payload['workflow']) if payload and 'workflow' in payload else None
 
 
 def review_metadata(db, task_id, metadata):

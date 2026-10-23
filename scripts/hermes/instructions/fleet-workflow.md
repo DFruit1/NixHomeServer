@@ -9,7 +9,10 @@ For an ordinary new fix, use native kanban_create with
 workflow={"version":1,"review":"native-review-v1","plan_author":"<actual author>"}.
 Name "owner" only when the owner supplied the specification. Creation validates
 and stores this immutable contract and generates its readable body markers.
-Do not handwrite machine markers on new ordinary tasks. Legacy cards without
+New native-review-v1 implementations require the structured review contract.
+Legacy feature-gap controllers retain their Feature markers and assessed_defer
+contract; do not convert those reconciliation tasks into scoped deliveries.
+Legacy cards without
 structured contracts retain their exact body/comment rules; do not rewrite them.
 The implementer owns diagnosis, bounded technical choices, implementation,
 validation and rework. After committing validated code, use native
@@ -41,11 +44,27 @@ agent technical gap, never a reason to reset retry budgets or ask the owner.
 For new feature members, add workflow.feature={tracker:"BOARD:t_TRACKER",
 role:"producer"|"delivery"|"documentary-closure",scope:"<exact requested slice>",
 stage:"accepted"|"integrated"}. Both producer and delivery must name the same
-scope and stage. Use accepted only for requested accepted-source output;
+scope and stage. When a structured delivery commissions an implementation, copy
+its feature tracker, scope and stage into a producer contract with native review
+and the same declared plan author. The commissioning link is native creator
+provenance; do not make the unfinished delivery an implementation dependency.
+Use accepted only for requested accepted-source output;
 integrated additionally requires the accepted commit to be present in the
 registered checkout. This never establishes live/field/deployment acceptance.
 Contracts belong to their own board; cross-board consumption uses qualified
 outputs below. Current legacy feature recoveries drain under their old contracts.
+
+A structured delivery can consume its own historical prose-only native producer
+only when original creation events bind that exact commissioning and the same
+original plan parent. The completed plan must identify this delivery and tracker;
+its full plan digest and author must match the implementer handoff and accepted
+run. Explicit current membership, an actual native independent reviewer claim,
+full accepted revision, green checks, scope CAS and requested integration still
+apply. A structured producer with an incompatible contract never uses this bridge.
+Reconcile a missing legacy membership using a native coordinator comment with the
+standalone `Feature tracker: BOARD:t_TRACKER` line, then read a fresh version and
+complete the existing delivery with the accepted producer. Never rewrite creation,
+plan, acceptance, retry history or claim that this establishes broader/live scope.
 
 Complete a structured delivery task through kanban_complete with
 delivery={state:"delivered_scope",expected_version:"<fresh evidence_version>",

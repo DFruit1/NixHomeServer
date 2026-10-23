@@ -50,6 +50,8 @@ def guard_feature_routing(payload, root):
     """
     args = payload.get('tool_input') or {}
     body = args.get('body') or ''
+    if payload['tool_name'] == 'kanban_create':
+        validate_markers(body, args.get('workflow'))
     if payload['tool_name'] == 'kanban_create' and args.get('workflow') is not None:
         body = render_contract(body, args['workflow'])
         args = {**args, 'body': body}
@@ -72,6 +74,8 @@ def guard_feature_routing(payload, root):
         db.row_factory = sqlite3.Row
         db.execute('PRAGMA query_only=ON'); db.execute('BEGIN')
         if payload['tool_name'] == 'kanban_create':
+            validate_create(db, body, args.get('workflow'), args.get('assignee'),
+                            os.environ.get('HERMES_KANBAN_TASK'))
             child = args
             body = args.get('body') or ''
             parents = args.get('parents') or []
@@ -125,7 +129,8 @@ def guard_feature_routing(payload, root):
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fleet_workflow import native_contract, require_native_acceptance, validate_handoff_metadata
-from fleet_contract import load as load_contract, render as render_contract, review_metadata, completion_metadata
+from fleet_contract import (load as load_contract, render as render_contract, review_metadata,
+                            completion_metadata, validate_markers, validate_create)
 
 
 def verification(task, db=None):

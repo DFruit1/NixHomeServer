@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import time
+from unittest.mock import patch
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--hermes-repo', type=Path, required=True)
@@ -193,6 +194,185 @@ try:
     assert meta['feature_delivery']['revision'] == second
     assert meta['feature_delivery']['stage'] == 'accepted'
     assert not feature_flow.observe_features(db, 'fixture', int(time.time()) + 49 * 3600)
+    # Replay pre-upgrade creation through the native lifecycle, not fabricated
+    # review events. Only the newly introduced create-time rule is suspended.
+    plan = kb.create_task(db, title='Original immutable plan', assignee='project-auditor')
+    assert kb.claim_task(db, plan)
+    legacy_feature = {**feature, 'stage': 'integrated', 'role': 'delivery'}
+    legacy_delivery = kb.create_task(db, title='Structured legacy commissioning delivery',
+        assignee='head-coordinator', parents=[plan], creator_task_id=plan,
+        workflow={'version': 1, 'plan_author': 'project-auditor', 'feature': legacy_feature})
+    plan_hash = 'c' * 64
+    kb.complete_task(db, plan, summary='Published original plan.', metadata={
+        'plan_sha256': plan_hash, 'feature_tracker': feature['tracker'], 'delivery_task': legacy_delivery})
+    with patch.object(contract, 'validate_create', create=True):
+        legacy = kb.create_task(db, title='Historical prose-only native producer',
+            assignee='standard-implementer', body='Workflow: native-review-v1',
+            parents=[plan], creator_task_id=legacy_delivery, created_by='head-coordinator')
+    assert kb.claim_task(db, legacy)
+    legacy_handoff = {'revision': second, 'checks': checks, 'plan_author': 'project-auditor',
+                      'plan_sha256': plan_hash}
+    okay(call('kanban_request_review', task_id=legacy, metadata=legacy_handoff,
+              summary='Legacy implementer handoff.', reviewer='feature-reviewer'))
+    assert kb.claim_review_task(db, legacy)
+    legacy_acceptance = {**legacy_handoff, 'verdict': 'accept', 'feature_tracker': feature['tracker'],
+                         'independence': {'plan_author': False, 'implementer': False}}
+    okay(call('kanban_complete', task_id=legacy, metadata=legacy_acceptance,
+              summary='Independent historical acceptance.'))
+    assert kb.claim_task(db, legacy_delivery)
+    registration = kb.kanban_db_path('fixture').with_name('board.json')
+    board_meta = json.loads(registration.read_text())
+    registration.write_text(json.dumps({**board_meta, 'default_workdir': str(work)}))
+
+    def legacy_payload(**fields):
+        return {'state': 'delivered_scope', 'evidence_task_id': legacy,
+                'expected_version': feature_flow.inspect_feature(db, 'fixture', tracker)['evidence_version'], **fields}
+
+    def refused_unchanged(payload, message):
+        db.commit()
+        before = list(db.iterdump())
+        assert 'error' in call('kanban_complete', task_id=legacy_delivery,
+                              summary='Rejected synthetic delivery.', delivery=payload), message
+        assert list(db.iterdump()) == before, message
+        try:
+            kb.complete_task(db, legacy_delivery, summary='Direct rejection.', delivery=payload)
+            raise AssertionError(message)
+        except ValueError:
+            pass
+        assert list(db.iterdump()) == before, message
+
+    refused_unchanged(legacy_payload(), 'Metadata tracker alone must not establish membership')
+    kb.add_comment(db, legacy, author='head-coordinator', body='Feature tracker: ' + feature['tracker'])
+    db.commit()
+    # This is the original RED: exact authentic legacy commissioning is still
+    # refused by the structured-source-only gate, after membership is reconciled.
+    candidate = contract.completion_metadata(db, legacy_delivery, None, legacy_payload())
+    assert candidate['feature_delivery']['revision'] == second
+    assert candidate['feature_delivery']['scope'] == feature['scope']
+    assert candidate['feature_delivery']['stage'] == 'integrated'
+
+    def changed_json(table, column, where, values, transform, message):
+        raw = db.execute(f'SELECT {column} FROM {table} WHERE {where}', values).fetchone()[0]
+        modified = transform(json.loads(raw))
+        db.execute(f'UPDATE {table} SET {column}=? WHERE {where}', (json.dumps(modified), *values))
+        refused_unchanged(legacy_payload(), message)
+        db.execute(f'UPDATE {table} SET {column}=? WHERE {where}', (raw, *values)); db.commit()
+
+    kb.add_comment(db, legacy, author='head-coordinator', body='Feature tracker: fixture:t_wrong')
+    refused_unchanged(legacy_payload(), 'Latest explicit membership must still match')
+    kb.add_comment(db, legacy, author='head-coordinator', body='Feature tracker: ' + feature['tracker'])
+    db.commit()
+    created_where = "task_id=? AND kind='created'"
+    # Negative mutations model corrupt/unrelated evidence only inside the fixture.
+    # Production creation events are never rewritten by this repair.
+    for changes in ({'creator_task_id': tid}, {'parents': [tid]}, {'workflow': {'version': 1}},
+                    *({'workflow': {'version': 1, 'review': 'native-review-v1', 'plan_author': 'project-auditor',
+                        'feature': {**legacy_feature, 'role': 'producer', **mismatch}}}
+                      for mismatch in ({'scope': 'unrelated'}, {'tracker': 'fixture:t_wrong'}, {'stage': 'accepted'}))):
+        changed_json('task_events', 'payload', created_where, (legacy,),
+                     lambda value, changes=changes: {**value, **changes}, 'Wrong producer commissioning')
+    changed_json('task_events', 'payload', created_where, (legacy_delivery,),
+                 lambda value: {**value, 'creator_task_id': tid}, 'Wrong original plan')
+    for changes in ({'feature_tracker': 'fixture:t_wrong'}, {'plan_sha256': 'd'*64},
+                    {'revision': 'a'*40}, {'revision': second[:7]}, {'verdict': 'request-changes'},
+                    {'checks': []}, {'checks': [{'command': 'failed owning check', 'exit_code': 1}]},
+                    {'independence': {'plan_author': False, 'implementer': True}}):
+        changed_json('task_runs', 'metadata', "task_id=? AND status='done'", (legacy,),
+                     lambda value, changes=changes: {**value, **changes}, 'Invalid acceptance evidence')
+    for changes in ({'plan_author': 'feature-reviewer'}, {'plan_author': 'head-coordinator'},
+                    {'plan_sha256': 'd'*64}, {'revision': 'a'*40}):
+        changed_json('task_runs', 'metadata', "task_id=? AND outcome='review_requested'", (legacy,),
+                     lambda value, changes=changes: {**value, **changes}, 'Invalid handoff evidence')
+    changed_json('task_events', 'payload', "task_id=? AND kind='review_requested'", (legacy,),
+                 lambda value: {**value, 'implementer': 'feature-reviewer'}, 'Self acceptance')
+    changed_json('task_events', 'payload',
+                 "id=(SELECT MAX(id) FROM task_events WHERE task_id=? AND kind='claimed')", (legacy,),
+                 lambda value: {**value, 'source_status': 'ready'}, 'Ordinary claim is not native review')
+    for changes in ({'plan_sha256': 'd'*64}, {'delivery_task': tid}, {'feature_tracker': 'fixture:t_wrong'}):
+        changed_json('task_runs', 'metadata', 'task_id=?', (plan,),
+                     lambda value, changes=changes: {**value, **changes}, 'Unrelated plan result')
+    refused_unchanged(legacy_payload(scope='broader unrequested work'), 'Scope inflation')
+    refused_unchanged(legacy_payload(stage='accepted'), 'Stage mismatch')
+    refused_unchanged(legacy_payload(tracker='t_wrong'), 'Tracker mismatch')
+    refused_unchanged(legacy_payload(expected_version='stale'), 'Scope CAS')
+    git('checkout', '--detach', baseline)
+    refused_unchanged(legacy_payload(), 'Accepted revision must actually be integrated')
+    git('checkout', '--detach', second)
+    preflight = subprocess.run(['/usr/bin/python3', '-B', str(root / 'scripts/review-verdict-guard.py')],
+        input=json.dumps({'tool_name': 'kanban_complete', 'tool_input': {'board': 'fixture',
+            'task_id': legacy_delivery, 'delivery': legacy_payload()}}),
+        text=True, capture_output=True)
+    assert preflight.returncode == 0, preflight.stderr
+    assert json.loads(preflight.stdout) == {}, preflight.stdout
+    okay(call('kanban_complete', task_id=legacy_delivery, summary='Legacy accepted scope integrated.',
+              delivery=legacy_payload()))
+    assert contract.load(db, legacy) is None
+    assert not feature_flow.observe_features(db, 'fixture', int(time.time()) + 49 * 3600)
+    print('PASS: exact legacy commissioning bridge and transactional negative evidence guards')
+
+    # New native-review creates must never reproduce the prose/structured split. Fail before
+    # any row is written through both the tool hook and direct native seam.
+    for body in ('Workflow: native-review-v1', 'Feature tracker: ' + feature['tracker'],
+                 'Feature handoff: delivery', 'Feature role: documentary-closure'):
+        for workflow_input in ((None, {'version': 1}) if body.startswith('Workflow:') else ({'version': 1},)):
+            db.commit(); before = list(db.iterdump())
+            fields = {'body': body, **({'workflow': workflow_input} if workflow_input is not None else {})}
+            assert 'error' in call('kanban_create', title='Invalid machine marker',
+                                  assignee='standard-implementer', **fields)
+            try:
+                kb.create_task(db, title='Invalid direct machine marker', assignee='standard-implementer', **fields)
+                raise AssertionError('Native create accepted an unstructured machine marker')
+            except ValueError:
+                pass
+            assert list(db.iterdump()) == before
+    # Real maintained feature-gap generators still use legacy CLI contracts,
+    # including independent assessed_defer. They must not be disabled by the
+    # new implementation-workflow guard.
+    from deadlock_recovery import recovery_body
+    for audit in (False, True):
+        recovery_body_text = recovery_body('fixture', {'kind': 'feature-delivery-gap', 'task_id': tracker}, audit)
+        legacy_controller = kb.create_task(db, title='Maintained legacy feature gap controller',
+            assignee='project-auditor' if audit else 'head-coordinator', body=recovery_body_text,
+            created_by='deadlock-recovery-monitor')
+        assert contract.load(db, legacy_controller) is None
+        assert kb.claim_task(db, legacy_controller)
+        defer = {'feature_delivery': {'tracker': tracker, 'state': 'assessed_defer',
+                                     'wake_condition': 'actual missing synthetic input'}}
+        # Existing exact legacy metadata is retained, never promoted to delivery.
+        assert contract.completion_metadata(db, legacy_controller, defer) == defer
+        kb.complete_task(db, legacy_controller, summary='Legacy reconciliation result retained.', metadata=defer)
+    # A delivery's newly commissioned implementation must carry the matching
+    # immutable producer contract, even when it uses no readable markers.
+    matching = {'version': 1, 'review': 'native-review-v1', 'plan_author': 'project-auditor',
+                'feature': {**legacy_feature, 'role': 'producer'}}
+    for workflow_input in (None, {'version': 1, 'review': 'native-review-v1', 'plan_author': 'project-auditor'},
+                           {**matching, 'feature': {**matching['feature'], 'scope': 'unrelated'}},
+                           {**matching, 'feature': {**matching['feature'], 'tracker': 'fixture:t_wrong'}},
+                           {**matching, 'feature': {**matching['feature'], 'stage': 'accepted'}},
+                           {**matching, 'plan_author': 'head-coordinator'}):
+        db.commit(); before = list(db.iterdump())
+        try:
+            kb.create_task(db, title='Invalid commissioning', assignee='standard-implementer',
+                           creator_task_id=legacy_delivery, workflow=workflow_input)
+            raise AssertionError('Unmatched structured delivery commissioning accepted')
+        except ValueError:
+            pass
+        assert list(db.iterdump()) == before
+    db.commit(); before = list(db.iterdump())
+    try:
+        kb.create_task(db, title='Normalized implementer commissioning', assignee=' Standard-Implementer ',
+                       creator_task_id=legacy_delivery)
+        raise AssertionError('Normalized implementer bypassed commissioning')
+    except ValueError:
+        pass
+    assert list(db.iterdump()) == before
+    okay(call('kanban_create', title='Plain legacy diagnostic', assignee='standard-implementer',
+              body='Goal: inspect a bounded diagnostic without machine markers.'))
+    commissioned = kb.create_task(db, title='Matched producer contract', assignee='standard-implementer',
+                                  creator_task_id=legacy_delivery, workflow=matching)
+    assert contract.load(db, commissioned) == matching
+    print('PASS: structured create enforcement and matched delivery commissioning')
+
     recovery=okay(call('kanban_create',title='Interrupted recovery fixture',assignee='standard-implementer',
         body='Recovery mode: evidence-only',max_runtime_seconds=300,
         workflow={'version':1},workspace_kind='dir',workspace_path=str(work)))['task_id']
