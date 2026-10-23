@@ -29,7 +29,8 @@ CREATE TABLE tasks (
     id TEXT PRIMARY KEY, title TEXT, body TEXT, assignee TEXT, status TEXT,
     priority INTEGER DEFAULT 0, created_at INTEGER, block_kind TEXT,
     idempotency_key TEXT, consecutive_failures INTEGER DEFAULT 0, tenant TEXT, current_run_id INTEGER,
-    workspace_kind TEXT, workspace_path TEXT, project_id TEXT
+    workspace_kind TEXT, workspace_path TEXT, project_id TEXT,
+    worker_pid INTEGER, worker_started_at TEXT, claim_lock TEXT, claim_expires INTEGER
 );
 CREATE TABLE task_comments (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT, body TEXT);
 CREATE TABLE task_events (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT,
@@ -745,6 +746,105 @@ class VerdictGuardTest(unittest.TestCase):
         if linked:
             self.link('t_new', 't_child')
         return self.payload('t_old', 't_child')
+
+    def unused_archived_duplicate(self):
+        self.card('t_owner',assignee='head-coordinator',status='todo')
+        self.card('t_unused',assignee='feature-reviewer',status='archived')
+        self.card('t_input',assignee='feature-reviewer',status='done')
+        self.link('t_input','t_unused');self.link('t_input','t_owner');self.link('t_unused','t_owner')
+        self.db.execute("INSERT INTO task_events (task_id,kind,payload) VALUES ('t_unused','created',?)",
+            (json.dumps({'assignee':'feature-reviewer','parents':['t_input'],'creator_task_id':'t_owner'}),))
+        self.db.execute("INSERT INTO task_events (task_id,kind) VALUES ('t_unused','archived')")
+        handoff=self.db.execute("INSERT INTO task_runs (task_id,profile,status,outcome,metadata) VALUES "
+            "('t_input','standard-implementer','review','review_requested',?)",
+            (json.dumps({'plan_author':'owner','revision':'a'*40}),)).lastrowid
+        self.db.execute("INSERT INTO task_events (task_id,kind,run_id,payload) VALUES "
+            "('t_input','review_requested',?,?)",(handoff,json.dumps({
+            'implementer':'standard-implementer','reviewer':'feature-reviewer'})))
+        self.add_run('t_input','accept',NOW, rid='a'*40,
+                     independence={'plan_author':False,'implementer':False})
+        reviewer=self.db.execute("SELECT max(id) FROM task_runs").fetchone()[0]
+        self.db.execute("INSERT INTO task_events (task_id,kind,run_id,payload) VALUES "
+            "('t_input','claimed',?,?)",(reviewer,json.dumps({'source_status':'review','run_id':reviewer})))
+        self.db.commit()
+        return self.payload('t_unused','t_owner')
+
+    def test_never_run_archived_duplicate_can_retire_only_its_commissioned_edge(self):
+        payload=self.unused_archived_duplicate()
+        before=list(self.db.iterdump())
+        self.assertEqual({},guard_mod.guard(payload,self.root))
+        self.assertEqual(before,list(self.db.iterdump()))
+        # Archiving never becomes completion acceptance. Retire the exact edge
+        # first, with the accepted native input still gating this consumer.
+        self.assertEqual('block',guard_mod.guard(self.complete_payload('t_owner',{}),self.root).get('action'))
+        self.db.execute("DELETE FROM task_links WHERE parent_id='t_unused' AND child_id='t_owner'")
+        self.db.commit()
+        self.assertEqual({},guard_mod.guard(self.complete_payload('t_owner',{}),self.root))
+
+    def test_prior_review_runs_use_the_existing_accepted_replacement_gate(self):
+        payload=self.unused_archived_duplicate()
+        self.add_run('t_unused','request-changes',NOW-10)
+        self.assertEqual({},guard_mod.guard(payload,self.root))
+        self.db.execute("DELETE FROM task_links WHERE parent_id='t_input' AND child_id='t_owner'")
+        self.db.commit()
+        self.assertEqual('block',guard_mod.guard(payload,self.root).get('action'))
+
+    def test_archived_duplicate_retirement_requires_all_native_provenance_and_gates(self):
+        payload=self.unused_archived_duplicate()
+        for sql in (
+                "DELETE FROM task_links WHERE parent_id='t_input' AND child_id='t_owner'",
+                "DELETE FROM task_links WHERE parent_id='t_input' AND child_id='t_unused'",
+                "DELETE FROM task_links WHERE parent_id='t_unused' AND child_id='t_owner'",
+                "DELETE FROM task_events WHERE task_id='t_unused' AND kind='created'",
+                "UPDATE task_events SET payload='{}' WHERE task_id='t_unused' AND kind='created'",
+                "UPDATE task_events SET payload='[' WHERE task_id='t_unused' AND kind='created'",
+                "DELETE FROM task_events WHERE task_id='t_unused' AND kind='archived'",
+                "UPDATE tasks SET assignee='standard-implementer' WHERE id='t_owner'",
+                "UPDATE tasks SET status='blocked' WHERE id='t_input'",
+                "UPDATE tasks SET current_run_id=999 WHERE id='t_input'",
+                "UPDATE tasks SET status='todo' WHERE id='t_unused'",
+                "UPDATE tasks SET status='running' WHERE id='t_unused'",
+                "UPDATE tasks SET current_run_id=999 WHERE id='t_unused'",
+                "UPDATE tasks SET worker_pid=999 WHERE id='t_unused'",
+                "UPDATE tasks SET worker_started_at='identity' WHERE id='t_unused'",
+                "UPDATE tasks SET claim_lock='fixture' WHERE id='t_unused'",
+                "UPDATE tasks SET claim_expires=123 WHERE id='t_unused'",
+                "INSERT INTO task_runs (task_id,profile,status,outcome) VALUES ('t_unused','feature-reviewer','blocked','blocked')",
+                "INSERT INTO task_runs (task_id,profile,status,outcome,metadata,ended_at) VALUES ('t_unused','feature-reviewer','done','completed','{\"verdict\":\"request-changes\"}',1700000010)",
+                "INSERT INTO task_events (task_id,kind,payload) VALUES ('t_unused','claimed','{}')",
+                "UPDATE task_events SET payload='{}' WHERE task_id='t_input' AND kind='claimed'",
+                "UPDATE task_events SET run_id=999 WHERE task_id='t_input' AND kind='claimed'",
+                "DELETE FROM task_events WHERE task_id='t_input' AND kind='review_requested'",
+                "UPDATE task_events SET run_id=999 WHERE kind='review_requested'",
+                "UPDATE task_runs SET metadata='{}' WHERE task_id='t_input' AND outcome='completed'",
+                "UPDATE task_runs SET profile='standard-implementer' WHERE task_id='t_input' AND outcome='completed'",
+                ):
+            with self.subTest(sql=sql):
+                backup=sqlite3.connect(':memory:');self.db.backup(backup)
+                try:
+                    self.db.execute(sql);self.db.commit()
+                    before=list(self.db.iterdump())
+                    self.assertEqual('block',guard_mod.guard(payload,self.root).get('action'))
+                    self.assertEqual(before,list(self.db.iterdump()))
+                finally:
+                    backup.backup(self.db);backup.close()
+        for field,value in (('creator_task_id','t_other'),('parents',['t_other']),
+                            ('parents',['t_input','t_other']),('assignee','project-auditor')):
+            origin={'assignee':'feature-reviewer','parents':['t_input'],'creator_task_id':'t_owner',field:value}
+            self.db.execute("UPDATE task_events SET payload=? WHERE task_id='t_unused' AND kind='created'",(json.dumps(origin),))
+            self.db.commit()
+            self.assertEqual('block',guard_mod.guard(payload,self.root).get('action'))
+        self.db.execute("UPDATE task_events SET payload=? WHERE task_id='t_unused' AND kind='created'",
+            (json.dumps({'assignee':'feature-reviewer','parents':['t_input'],'creator_task_id':'t_owner'}),))
+        for metadata in ({'verdict':'unknown','missing_inputs':['source']},
+                         json.loads(changes_run('a'*40,NOW)[0]),
+                         {**json.loads(accept_run('a'*40,NOW)[0]),'independence':{'plan_author':True,'implementer':False}},
+                         {**json.loads(accept_run('a'*40,NOW)[0]),'independence':{'plan_author':0,'implementer':0}},
+                         {**json.loads(accept_run('a'*40,NOW)[0]),'independence':{'plan_author':False,'implementer':False},'checks':[{'command':'owning check','exit_code':1}]},
+                         json.loads(accept_run('a'*40,NOW)[0])):
+            self.db.execute("UPDATE task_runs SET metadata=? WHERE task_id='t_input' AND outcome='completed'",(json.dumps(metadata),))
+            self.db.commit()
+            self.assertEqual('block',guard_mod.guard(payload,self.root).get('action'))
 
     def test_invalid_historical_context_evidence_defers_to_normal_replacement_gate(self):
         payload = self.rejected_gate_with_replacement()

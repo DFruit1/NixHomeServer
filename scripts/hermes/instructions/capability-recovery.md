@@ -136,6 +136,19 @@ For each existing hold:
    removed context edge, then use the existing supported recovery/resume path
    and verify an actual reviewer claim. The original consumer's rejection gate
    can retire only after qualified fresh acceptance under the existing guard.
+   An archived unused duplicate reviewer is not acceptance. Guarded unlink can
+   retire its direct edge to its original unfinished commissioning coordinator
+   only when native creation records name that coordinator and exactly one
+   original input, the duplicate has no runs, claims or worker/lease bindings,
+   and its archive event is retained. The original input must still be the
+   duplicate's sole parent AND a direct parent of the coordinator, with a latest
+   completed genuine native independent ACCEPT, valid executed checks and matching
+   implementation-handoff/reviewer-claim provenance. Read back both retained
+   input edges before unlinking only duplicate -> commissioning coordinator.
+   Missing or malformed evidence, pending/active duplicates and prior review
+   history do not qualify this permission. The ordinary accepted-replacement
+   rules remain unchanged; never archive a live review to erase its gate or
+   treat an unused archived card as an accepted completion prerequisite.
    For non-goal tasks, an agent-supplied current-acceptance gap can use native
    `kanban_block(kind="capability")` with the exact evidence and supplier. Native
    block kinds do not include `validation`. Use a dependency wait only with a

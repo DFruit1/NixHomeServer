@@ -411,6 +411,77 @@ def _native_correction_context_evidence(db, review, removed_parent, child):
                 and attempt['status'] == 'blocked' and attempt['outcome'] == 'blocked')
 
 
+def _unused_archived_duplicate(db, duplicate, removed_parent, consumer):
+    """Retire only an unused review commissioned for a retained native input."""
+    try:
+        if (removed_parent != duplicate['id'] or duplicate['status'] != 'archived'
+                or duplicate['assignee'] not in {'feature-reviewer', 'project-auditor'}
+                or consumer['assignee'] != 'head-coordinator'
+                or consumer['status'] in {'done', 'archived'}
+                or any(duplicate[key] is not None for key in (
+                    'current_run_id', 'worker_pid', 'worker_started_at', 'claim_lock', 'claim_expires'))
+                or db.execute('SELECT 1 FROM task_runs WHERE task_id=? LIMIT 1',
+                              (duplicate['id'],)).fetchone()
+                or db.execute("SELECT 1 FROM task_events WHERE task_id=? AND (run_id IS NOT NULL"
+                              " OR kind IN ('claimed','review_requested','changes_requested','review_reopened','completed')) LIMIT 1",
+                              (duplicate['id'],)).fetchone()
+                or not db.execute("SELECT 1 FROM task_events WHERE task_id=? AND kind='archived' LIMIT 1",
+                                  (duplicate['id'],)).fetchone()):
+            return False
+        origin = creation(db, duplicate['id'])
+        if (not origin or origin.get('creator_task_id') != consumer['id']
+                or origin.get('assignee') != duplicate['assignee']
+                or not isinstance(origin.get('parents'), list) or len(origin['parents']) != 1
+                or not isinstance(origin['parents'][0], str)):
+            return False
+        input_id = origin['parents'][0]
+        if input_id in {duplicate['id'], consumer['id']}:
+            return False
+        parents = db.execute('SELECT parent_id FROM task_links WHERE child_id=?', (duplicate['id'],)).fetchall()
+        if [row['parent_id'] for row in parents] != [input_id]:
+            return False
+        for parent_id in (duplicate['id'], input_id):
+            if not db.execute('SELECT 1 FROM task_links WHERE parent_id=? AND child_id=?',
+                              (parent_id, consumer['id'])).fetchone():
+                return False
+        source = db.execute('SELECT * FROM tasks WHERE id=?', (input_id,)).fetchone()
+        if (not source or source['status'] != 'done' or source['current_run_id'] is not None
+                or not native_review(db, source)
+                or db.execute("SELECT 1 FROM task_runs WHERE task_id=? AND status='running' LIMIT 1",
+                              (input_id,)).fetchone()):
+            return False
+        latest = db.execute('SELECT id,profile,status,outcome,metadata FROM task_runs WHERE task_id=?'
+                            ' ORDER BY id DESC LIMIT 1', (input_id,)).fetchone()
+        if not _accepted_verdict(latest, source['assignee']):
+            return False
+        evidence = json.loads(latest['metadata'])
+        independence = evidence.get('independence')
+        if (not isinstance(independence, dict) or set(independence) != {'plan_author', 'implementer'}
+                or independence['plan_author'] is not False or independence['implementer'] is not False):
+            return False
+        handoff = review_handoff(db, input_id)
+        if (not isinstance(handoff.get('metadata'), dict)
+                or handoff.get('implementer') not in {'standard-implementer', 'local-implementer'}
+                or handoff.get('reviewer') != source['assignee']):
+            return False
+        require_native_acceptance(db, source, evidence, True)
+        _independent_native_acceptance(db, source)
+        requested = db.execute("SELECT id,run_id FROM task_events WHERE task_id=? AND kind='review_requested'"
+                               ' ORDER BY id DESC LIMIT 1', (input_id,)).fetchone()
+        claim = db.execute("SELECT id,run_id,payload FROM task_events WHERE task_id=? AND kind='claimed'"
+                           ' ORDER BY id DESC LIMIT 1', (input_id,)).fetchone()
+        provenance = json.loads(claim['payload'] or '{}') if claim else {}
+        return bool(claim and isinstance(provenance, dict)
+                    and provenance.get('source_status') == 'review'
+                    and type(provenance.get('run_id')) is int
+                    and claim['run_id'] == provenance['run_id'] == latest['id']
+                    and requested['id'] < claim['id'] and requested['run_id'] < latest['id'])
+    except (ValueError, TypeError, KeyError, AttributeError, IndexError):
+        # Invalid eligibility declines this special permission, preserving the
+        # ordinary accepted-replacement gate and fail-closed database errors.
+        return False
+
+
 def _review_unlink(db, parent, run, removed_parent, child):
     parent_id, child_id = parent['id'], child['id']
     if _retained_review_path(db, parent_id, removed_parent, child):
@@ -418,6 +489,8 @@ def _review_unlink(db, parent, run, removed_parent, child):
     if _native_correction_context(db, parent, removed_parent, child):
         return
     if run is None:
+        if _unused_archived_duplicate(db, parent, removed_parent, child):
+            return
         raise ValueError(f'Review {parent_id} has no completed verifier run;'
                          ' its gate cannot be retired by unlink')
     latest = db.execute('SELECT profile,status,outcome,metadata FROM task_runs'
