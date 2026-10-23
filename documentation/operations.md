@@ -2466,10 +2466,26 @@ archive, reply, diagnostics — lives in one attempt-scoped scratch directory,
 removed on success, on refusal and on INT/TERM/HUP. The signal guard is armed
 before that directory is acquired, not only before the first remote command, so
 an interruption between local acquisition and endpoint attestation still removes
-the owned scratch and leaves a receipt. The receipt copies what it needs before
-that removal, so an interrupted attempt still preserves whatever stdout/stderr
-had already arrived instead of discarding its own evidence; it leaves a receipt
-with status 130/143/129 and an observed cleanup.
+the owned scratch and leaves a receipt.
+
+The guard also outlives the remote work. Settling a finished attempt still copies
+its evidence, writes the receipt, emits the reply and removes the scratch, so a
+signal in that window is caught by the same guard instead of taking the caller's
+default disposition; it is restored only once the attempt owns nothing, which is
+what keeps a sourcing script's own handlers intact. The abort path itself ignores
+further INT/TERM/HUP while it observes cleanup, writes the interruption receipt
+and removes the scratch — every transport inside it is still deadline-bounded, so
+that cannot hang the attempt. Because the receipt copies what it needs before
+that removal, an interrupted attempt preserves whatever stdout/stderr had already
+arrived instead of discarding its own evidence; it leaves a receipt with status
+130/143/129 and an observed cleanup.
+
+The archive producer (`create_deploy_repo_archive`) allocates its tracked-file
+manifests under `TMPDIR` and removes them inline, so on this route it runs with
+`TMPDIR` confined to a subdirectory of the attempt scratch: those manifests are
+attempt-owned state too, and one that is live when a signal arrives is cleaned by
+the same abort rather than left in the caller's temporary directory. The override
+is scoped to the producer's own subshell, so the caller's `TMPDIR` is unchanged.
 
 Remote staging paths are cleaned through the same bounded transport, and the
 receipt records the observed outcome — `success`, `failed`, `unknown` or `none`

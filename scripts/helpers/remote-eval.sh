@@ -35,9 +35,11 @@
 # the object that was asked for. Every transport step the attempt issues --
 # including the archive staging call, the upload and the cleanup removal -- is
 # bounded by that deadline, and an attempt whose cleanup is not observed as
-# clean is a failure even when the evaluation itself exited 0. See
-# "Remote-required evaluation" in documentation/operations.md. Unset or literal
-# 0 keeps the adaptive route.
+# clean is a failure even when the evaluation itself exited 0. The attempt's
+# local ownership -- evidence copies, the receipt, the scratch directory and the
+# archive producer's temporaries -- is covered by the same interruption guard
+# until it is gone. See "Remote-required evaluation" in documentation/operations.md.
+# Unset or literal 0 keeps the adaptive route.
 
 remote_eval_host=""
 remote_eval_reason=""
@@ -888,7 +890,13 @@ _remote_eval_required_release_guard() {
 _remote_eval_required_abort() {
   local status="$1" cleanup="none"
 
-  trap - INT TERM HUP
+  # Finalization must not be cut short. This function observes cleanup, copies
+  # the evidence it still holds and writes the interruption receipt; a second
+  # INT/TERM/HUP arriving inside it would abandon exactly the scratch and the
+  # receipt the guard exists to preserve. Further signals are therefore ignored
+  # for the remainder of the run -- every transport below is still bounded by the
+  # attempt deadline, so this cannot hang the attempt.
+  trap '' INT TERM HUP
   _remote_eval_required_guard_armed=""
   # Settle what this attempt may have touched even when no path was named: an
   # acquisition that was interrupted after the server allocated its slot is
@@ -907,10 +915,16 @@ _remote_eval_required_abort() {
   exit "$status"
 }
 
-# Settle one finished attempt: observe cleanup, release the guard, persist the
-# receipt. A receipt that cannot be persisted makes the attempt a failure -- the
-# caller must never read an unrecorded run as green. The persisted outcome is not
-# the observed process status alone: an attempt whose cleanup is `failed` or
+# Settle one finished attempt: observe cleanup, then persist the receipt. The
+# interruption guard stays armed throughout -- this function copies evidence and
+# writes the receipt, and the caller still owns the attempt scratch afterwards,
+# so a signal in this window must reach the abort path rather than take the
+# caller's default disposition. Only the public entry point releases the guard,
+# once nothing attempt-owned is left.
+#
+# A receipt that cannot be persisted makes the attempt a failure -- the caller
+# must never read an unrecorded run as green. The persisted outcome is not the
+# observed process status alone: an attempt whose cleanup is `failed` or
 # `unknown` is recorded as a failure even when the evaluation itself exited 0,
 # because nothing proves the remote state it claims.
 _remote_eval_required_settle() {
@@ -919,7 +933,6 @@ _remote_eval_required_settle() {
   cleanup="$(_remote_eval_required_cleanup "$_remote_eval_required_host" \
     "$_remote_eval_required_remote_dir" "$_remote_eval_required_remote_archive")"
   _remote_eval_required_cleanup_outcome="$cleanup"
-  _remote_eval_required_release_guard
   if [[ "$status" == "0" && ( "$cleanup" == success || "$cleanup" == none ) ]]; then
     outcome="success"
   fi
@@ -985,7 +998,28 @@ NIXHOMESERVER_FLAKE_REF_FOR_EVAL="path:$remote_dir" \
 REMOTE_EOF
 }
 
-_remote_eval_required_run() {
+_remote_eval_required_produce_archive() {
+  local archive="$1" producer_tmp="${_remote_eval_required_scratch}/producer"
+
+  # The maintained producer (scripts/helpers/repo-common.sh, create_deploy_repo_archive)
+  # allocates three manifests under ${TMPDIR:-/tmp} and removes them inline. An
+  # interruption between an allocation and its inline removal would outlive the
+  # abort path, which owns only the attempt scratch -- so the producer runs with
+  # TMPDIR confined to a subdirectory of that scratch. The override is scoped to
+  # the producer's own subshell: the caller's TMPDIR is never changed, and the
+  # helper itself is not modified.
+  if [[ -z "$_remote_eval_required_scratch" ]]; then
+    echo "remote-eval: the attempt scratch directory is not available" >&2
+    return 1
+  fi
+  mkdir -p "$producer_tmp" || {
+    echo "remote-eval: could not create the archive producer's scratch directory" >&2
+    return 1
+  }
+  ( TMPDIR="$producer_tmp"; export TMPDIR; create_deploy_repo_archive "$archive" )
+}
+
+_remote_eval_required_attempt() {
   local expression="$1"
   shift
   local -a query_names=("$@")
@@ -1096,7 +1130,7 @@ _remote_eval_required_run() {
   fi
 
   archive="${_remote_eval_required_scratch}/source.tar"
-  if ! create_deploy_repo_archive "$archive" 2>>"$_remote_eval_required_diag_file"; then
+  if ! _remote_eval_required_produce_archive "$archive" 2>>"$_remote_eval_required_diag_file"; then
     cat "$_remote_eval_required_diag_file" >&2
     _remote_eval_required_refuse 1 "the working tree is not admissible for required evaluation"
     return 1
@@ -1238,4 +1272,25 @@ _remote_eval_required_run() {
   cat -- "$output_file"
   _remote_eval_required_clear_scratch || true
   return 0
+}
+
+# Public entry point for the remote-required route. The attempt ends when its
+# result is settled, but its local ownership does not: the reply is emitted, the
+# evidence is copied, the receipt is written and the scratch is removed
+# afterwards. The interruption guard therefore stays armed across all of that --
+# a signal in that window is still receipted and still removes the owned scratch
+# -- and only here, with nothing attempt-owned left, are the caller's own signal
+# handlers restored.
+_remote_eval_required_run() {
+  local status=0
+
+  _remote_eval_required_attempt "$@" || status=$?
+  # A failed receipt must not strand the scratch, and a failed removal must not
+  # keep the guard installed over the caller.
+  if [[ -n "$_remote_eval_required_scratch" ]]; then
+    _remote_eval_required_clear_scratch ||
+      echo "remote-eval: could not remove the attempt scratch directory" >&2
+  fi
+  _remote_eval_required_release_guard
+  return "$status"
 }

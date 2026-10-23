@@ -175,6 +175,59 @@ esac
 EOF
 chmod +x "$spy_root/bin/ssh"
 
+# Two more process boundaries carry attempt-owned state, so the suite needs to be
+# able to interrupt the attempt exactly while they are live. Both spies pass
+# through to the real command unless a case asks for the interruption.
+real_mv="$(command -v mv)"
+real_tar="$(command -v tar)"
+
+cat >"$spy_root/bin/mv" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+# The first move of an attempt is the receipt being put in place: it happens
+# after the remote work settled and before the attempt scratch is removed. The
+# interruption fires once, so the interruption receipt's own move can complete.
+if [[ "\${REQUIRE_INTERRUPT_ON_RECEIPT_MV:-0}" == 1 && ! -e "\${REQUIRE_INTERRUPT_FLAG:?}" ]]; then
+  : >"\$REQUIRE_INTERRUPT_FLAG"
+  kill -TERM "\${REQUIRE_INTERRUPT_PID:?}" 2>/dev/null || true
+fi
+exec ${real_mv} "\$@"
+EOF
+chmod +x "$spy_root/bin/mv"
+
+cat >"$spy_root/bin/tar" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+# The archive producer's archive step is recognisable by its tracked-file
+# manifest. The interruption is placed there, while the producer's manifests are
+# live and before it removes them inline.
+producer=0
+for arg in "\$@"; do
+  case "\$arg" in
+    --null | -T) producer=1 ;;
+  esac
+done
+if ((producer == 1)) && [[ "\${REQUIRE_INTERRUPT_ON_PRODUCE:-0}" == 1 && ! -e "\${REQUIRE_INTERRUPT_FLAG:?}" ]]; then
+  case "\${TMPDIR:-}" in
+    */nixhomeserver-required-eval.*/producer) ;;
+    *)
+      printf 'tar spy: archive-production temporaries are outside the attempt scratch: %s\n' "\${TMPDIR:-<unset>}" >&2
+      exit 97
+      ;;
+  esac
+  shopt -s nullglob
+  live=("\${TMPDIR:-}"/deploy-repo-manifest.*)
+  if ((\${#live[@]} == 0)); then
+    printf 'tar spy: no live archive-production manifest in %s\n' "\$TMPDIR" >&2
+    exit 98
+  fi
+  : >"\$REQUIRE_INTERRUPT_FLAG"
+  kill -TERM "\${REQUIRE_INTERRUPT_PID:?}" 2>/dev/null || true
+fi
+exec ${real_tar} "\$@"
+EOF
+chmod +x "$spy_root/bin/tar"
+
 # The archive producer is wrapped so the *uploaded bytes'* digest is a recorded
 # fact of this suite rather than an invented one; the tampered and drifting
 # variants below replace the producer for the duration of one check.
@@ -955,6 +1008,89 @@ caller_trap="$(
   fail "the attempt did not restore the caller's TERM trap: ${caller_trap}"
 
 echo "  ✅ an interruption is receipted, cleans only what it can name, and leaves no scratch"
+
+# --- settlement is not the end of attempt ownership --------------------------
+#
+# Two kinds of attempt-owned state outlive the remote work: the receipt that is
+# being persisted, and the archive producer's temporary manifests. A signal in
+# either window must still find the guard, because a default disposition there
+# would abandon the evidence and leave local state behind.
+: >"$spy_root/ssh.log"
+rm -f "$spy_root/receipt-mv.flag"
+reset_local_heavy_logs
+receipt_mv_status=0
+(
+  eval "$(spy_env)"
+  export REQUIRE_SSH_RUN_OUT='{"value":1}' REQUIRE_SSH_ABSENT_STATUS=0
+  export REQUIRE_INTERRUPT_ON_RECEIPT_MV=1
+  export REQUIRE_INTERRUPT_FLAG="$spy_root/receipt-mv.flag"
+  export REQUIRE_INTERRUPT_PID="$BASHPID"
+  remote_eval_batch_json 'value=1'
+) >"$spy_root/receipt-mv.out" 2>"$spy_root/receipt-mv.err" || receipt_mv_status=$?
+[[ "$receipt_mv_status" == 143 ]] ||
+  fail "an interruption during receipt persistence exited ${receipt_mv_status} instead of 143: $(cat "$spy_root/receipt-mv.err" 2>/dev/null)"
+[[ -e "$spy_root/receipt-mv.flag" ]] ||
+  fail "the interruption was never placed inside receipt persistence"
+[[ ! -s "$spy_root/receipt-mv.out" ]] ||
+  fail "an interruption during receipt persistence emitted a result: $(cat "$spy_root/receipt-mv.out")"
+[[ "$(eval_call_count)" == 1 ]] ||
+  fail "an interruption during receipt persistence evaluated $(eval_call_count) times"
+require_zero_local_heavy 'an interruption during receipt persistence'
+require_no_owned_scratch 'an interruption during receipt persistence'
+receipt="$(latest_receipt)"
+jq -e '.exit_status == 143 and .outcome == "failure" and .result_certified == false' "$receipt" >/dev/null ||
+  fail "an interruption during receipt persistence was not receipted: $(cat "$receipt")"
+jq -e '.reply_path != null and (.reply_sha256 | test("^[0-9a-f]{64}$"))' "$receipt" >/dev/null ||
+  fail "an interruption during receipt persistence discarded its evidence: $(cat "$receipt")"
+
+# The archive producer allocates its manifests under ${TMPDIR:-/tmp} and removes
+# them inline, so they are attempt-owned state too. The interruption is placed at
+# its own archive step, with a real manifest live, and the case fails loudly if
+# that manifest is anywhere but inside the attempt scratch.
+: >"$spy_root/ssh.log"
+rm -f "$spy_root/produce.flag"
+reset_local_heavy_logs
+produce_status=0
+(
+  eval "$(spy_env)"
+  export REQUIRE_INTERRUPT_ON_PRODUCE=1
+  export REQUIRE_INTERRUPT_FLAG="$spy_root/produce.flag"
+  export REQUIRE_INTERRUPT_PID="$BASHPID"
+  remote_eval_batch_json 'value=1'
+) >"$spy_root/produce.out" 2>"$spy_root/produce.err" || produce_status=$?
+[[ "$produce_status" == 143 ]] ||
+  fail "an interruption during archive production exited ${produce_status} instead of 143: $(cat "$spy_root/produce.err" 2>/dev/null)"
+[[ -e "$spy_root/produce.flag" ]] ||
+  fail "the interruption was never placed inside archive production: $(cat "$spy_root/produce.err" 2>/dev/null)"
+[[ ! -s "$spy_root/produce.out" ]] ||
+  fail "an interruption during archive production emitted a result: $(cat "$spy_root/produce.out")"
+[[ "$(eval_call_count)" == 0 ]] ||
+  fail "an attempt interrupted during archive production still evaluated"
+require_zero_local_heavy 'an interruption during archive production'
+require_no_owned_scratch 'an interruption during archive production'
+leftover_manifest="$(find "$spy_root" -name 'deploy-*manifest.*' -print -quit 2>/dev/null || true)"
+[[ -z "$leftover_manifest" ]] ||
+  fail "an archive-production manifest outlived the attempt: ${leftover_manifest}"
+receipt="$(latest_receipt)"
+jq -e '.exit_status == 143 and .outcome == "failure" and .cleanup == "none" and .remote_archive == null' \
+  "$receipt" >/dev/null ||
+  fail "an interruption during archive production was not receipted: $(cat "$receipt")"
+
+# Confining the producer's temporaries must not move the caller's TMPDIR, which
+# is where the attempt's own scratch base is decided.
+tmpdir_after_attempt="$(
+  eval "$(spy_env)"
+  export REQUIRE_SSH_RUN_OUT='{"value":1}'
+  remote_eval_batch_json 'value=1' >/dev/null
+  printf '%s\n' "$TMPDIR"
+)" || fail "a required evaluation failed while checking the caller's TMPDIR"
+[[ "$tmpdir_after_attempt" == "$scratch_root" ]] ||
+  fail "the attempt changed the caller's TMPDIR to '${tmpdir_after_attempt}'"
+leftover_manifest="$(find "$spy_root" -name 'deploy-*manifest.*' -print -quit 2>/dev/null || true)"
+[[ -z "$leftover_manifest" ]] ||
+  fail "a successful attempt left an archive-production manifest behind: ${leftover_manifest}"
+
+echo "  ✅ receipt persistence and archive production stay inside the guard window"
 
 # --- every transport step is bounded, including staging and removal ---------
 #
