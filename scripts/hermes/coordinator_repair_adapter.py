@@ -11,11 +11,54 @@ def _handle_amend(args: dict, **kwargs):
     with _board(actor["board"]) as (kb, conn):
         return _ok(**amend(kb, conn, str(args.get("task_id", "")),
             expected_version=args.get("expected_version"), changes=args.get("changes"),
+            reason=args.get("reason"), runtime_evidence=args.get("runtime_evidence"),
+            terminal_episode=args.get("terminal_episode")))
+
+
+'''
+# Exact seam installed before the terminal-episode branch. Migration replaces it
+# byte-for-byte, so an installed native is upgraded instead of duplicated.
+PREVIOUS_HANDLER = '''@_kanban_handler("kanban_amend")
+def _handle_amend(args: dict, **kwargs):
+    _reject_delegated_child_mutation("kanban_amend")
+    from hermes_cli.nixhomeserver_coordinator_repair import amend
+    from hermes_cli.nixhomeserver_resume_recovered import coordinator_origin
+    actor = coordinator_origin()
+    _check(actor is not None, "Native head-coordinator identity required")
+    _check(args.get("board") in (None, actor["board"]), "Amend only the authenticated board")
+    with _board(actor["board"]) as (kb, conn):
+        return _ok(**amend(kb, conn, str(args.get("task_id", "")),
+            expected_version=args.get("expected_version"), changes=args.get("changes"),
             reason=args.get("reason"), runtime_evidence=args.get("runtime_evidence")))
 
 
 '''
 SCHEMA = '''KANBAN_AMEND_SCHEMA = {
+    "name": "kanban_amend",
+    "description": "Native head-coordinator only: inspect version, amend parked technical body/priority/skills/runtime or classify an untyped failed blocked card as capability. An optional terminal_episode {run_id,event_id} classifies one untyped blocked containment or reaffirms one reclaimed capability episode, valid only with changes exactly {block_kind:capability}; both the containment and the same-kind reaffirmation need the agent/model supplier line plus 'Repair evidence:' or 'Authorized continuation:' evidence, and a reaffirmation must match this run's native claim, reclaim and prior release chronology. Exact CAS and supplier evidence required. Never releases work or resets retries; use versioned guarded recovery afterwards.",
+    "parameters": {"type":"object", "properties": {
+        "board":{"type":"string"}, "task_id":{"type":"string"},
+        "expected_version":{"type":"string"},
+        "changes":{"type":"object", "properties": {
+            "body":{"type":"string"}, "priority":{"type":"integer"},
+            "skills":{"type":"array","items":{"type":"string"}},
+            "block_kind":{"type":"string","enum":["capability"]},
+            "max_runtime_seconds":{"type":"integer"}}, "additionalProperties":False},
+        "reason":{"type":"string"},
+        "runtime_evidence":{"type":"object", "properties": {
+            "run_id":{"type":"integer"}, "remaining_work":{"type":"string"},
+            "expected_completion":{"type":"string"}, "stop_condition":{"type":"string"}},
+            "required":["run_id","remaining_work","expected_completion","stop_condition"], "additionalProperties":False},
+        "terminal_episode":{"type":"object", "properties": {
+            "run_id":{"type":"integer"}, "event_id":{"type":"integer"}},
+            "required":["run_id","event_id"], "additionalProperties":False}},
+        "required":["task_id"], "additionalProperties":False}}
+
+
+'''
+# The seam installed before the terminal-episode branch: one exact literal
+# migration, so an installed native is upgraded instead of duplicated.
+PREVIOUS = '''KANBAN_AMEND_SCHEMA = {
     "name": "kanban_amend",
     "description": "Native head-coordinator only: inspect version, amend parked technical body/priority/skills/runtime or classify an untyped failed blocked card as capability. Exact CAS and supplier evidence required. Never releases work or resets retries; use versioned guarded recovery afterwards.",
     "parameters": {"type":"object", "properties": {
@@ -35,6 +78,10 @@ SCHEMA = '''KANBAN_AMEND_SCHEMA = {
 
 
 '''
+PREVIOUS_DESCRIPTION = 'Native head-coordinator only: inspect version, amend parked technical body/priority/skills/runtime or classify an untyped failed blocked card as capability. Exact CAS and supplier evidence required. Never releases work or resets retries; use versioned guarded recovery afterwards.'
+LEGACY_DESCRIPTION = 'Native head-coordinator only: inspect a card version, then amend parked technical body, priority, skills or finite runtime using exact CAS. Never releases work or resets retries. Record superseded evidence and use normal guarded resume afterwards.'
+LEGACY = (PREVIOUS.replace(PREVIOUS_DESCRIPTION, LEGACY_DESCRIPTION)
+          .replace('            "block_kind":{"type":"string","enum":["capability"]},\n', ''))
 EDITS = {
  'tools/kanban_tools.py': (
     ('    KANBAN_ATTACH_SCHEMA,', '    KANBAN_AMEND_SCHEMA, KANBAN_ATTACH_SCHEMA,'),
@@ -54,13 +101,14 @@ EDITS = {
 
 
 def adapt(name, text):
-    if name == 'tools/kanban_tools_schemas.py':
-        legacy = SCHEMA.replace(
-            'Native head-coordinator only: inspect version, amend parked technical body/priority/skills/runtime or classify an untyped failed blocked card as capability. Exact CAS and supplier evidence required. Never releases work or resets retries; use versioned guarded recovery afterwards.',
-            'Native head-coordinator only: inspect a card version, then amend parked technical body, priority, skills or finite runtime using exact CAS. Never releases work or resets retries. Record superseded evidence and use normal guarded resume afterwards.'
-        ).replace('            "block_kind":{"type":"string","enum":["capability"]},\n','')
-        if text.count(legacy) == 1 and SCHEMA not in text:
-            text=text.replace(legacy,SCHEMA,1)
+    if name == 'tools/kanban_tools.py' and text.count(HANDLER) != 1:
+        if text.count(PREVIOUS_HANDLER) == 1:
+            text = text.replace(PREVIOUS_HANDLER, HANDLER, 1)
+    if name == 'tools/kanban_tools_schemas.py' and SCHEMA not in text:
+        for variant in (PREVIOUS, LEGACY):
+            if text.count(variant) == 1:
+                text = text.replace(variant, SCHEMA, 1)
+                break
     for before, after in EDITS[name]:
         if text.count(after) == 1:
             continue
