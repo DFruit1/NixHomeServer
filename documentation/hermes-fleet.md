@@ -123,6 +123,14 @@ accepts only fresh evidence from the current sender run. Missing, stale,
 interrupted or failed receipts keep silence visible. Successful reconciliation
 can mean healthy idle or a completed self-send; it never proves handset delivery.
 
+Technical recovery also bounds automatic attempts per original execution episode,
+across helper and source versions. Three unsuccessful repairs commission one
+bounded auditor diagnosis; completing a controller without original-task progress
+also commissions one diagnosis. Further version churn cannot create equivalent
+controllers. Active owners remain protected, historical attempts remain recorded,
+and actual qualified inputs still use the existing native recovery path. Only a
+successful original-task step starts a fresh automatic recovery episode.
+
 The supervisor journals an in-flight attempt before mutating execution. An
 interrupted attempt is held for reconciliation. Ordinary failures have three
 attempts, with backoff; changed helpers, configuration or database availability

@@ -221,7 +221,7 @@ class NativeBoards:
             if board != own_board or not re.fullmatch(r't_[A-Za-z0-9_]+', task_id):
                 raise Refused('COORDINATOR_BOARD_REQUIRED')
             # Fixed read-only statements; the task literal is validated above.
-            tasks = self._query(board, "SELECT id,status,block_kind,workspace_kind,workspace_path,branch_name,worker_pid,claim_expires "
+            tasks = self._query(board, "SELECT id,status,body,block_kind,workspace_kind,workspace_path,branch_name,worker_pid,claim_expires "
                                 "FROM tasks WHERE id='" + task_id + "'")
             runs = self._query(board, "SELECT id,status,worker_pid,claim_expires FROM task_runs WHERE task_id='" +
                                task_id + "' AND (status='running' OR claim_expires>" + str(int(time.time())) +
@@ -284,11 +284,15 @@ def binding(native, board, task_id, target):
     if not isinstance(task, dict) or any(task.get(k) != matches[0].get(k) for k in IDENTITY_FIELDS):
         raise Refused('TASK_BINDING_CHANGED')
     capability_triage = task.get('status') == 'triage' and task.get('block_kind') == 'capability'
-    if task.get('status') not in PARKED and not capability_triage:
+    runs = details.get('runs', [])
+    initial_todo = (task.get('status') == 'todo' and task.get('block_kind') is None
+                    and task.get('workspace_kind') == 'dir' and runs == []
+                    and isinstance(task.get('body'), str)
+                    and not task['body'].lstrip().startswith('ASK:'))
+    if task.get('status') not in PARKED and not capability_triage and not initial_todo:
         raise Refused('OWNER_NOT_PARKED ' + str(task.get('status')))
     if task.get('worker_pid') or (task.get('claim_expires') or 0) > time.time():
         raise Refused('OWNER_PROCESS_OR_LEASE_NOT_CLEARED')
-    runs = details.get('runs', [])
     if not isinstance(runs, list) or any(not isinstance(run, dict) or type(run.get('id')) is not int for run in runs):
         raise Refused('RUN_INVENTORY_UNKNOWN')
     if any((run.get('claim_expires') or 0) > time.time() for run in runs):
@@ -299,6 +303,7 @@ def binding(native, board, task_id, target):
         raise Refused('OWNER_PROCESS_NOT_CLEARED')
     return {**{key: task.get(key) for key in IDENTITY_FIELDS},
             **{key: task.get(key) for key in ACTIVITY_FIELDS},
+            'initial_body': task['body'] if initial_todo else None,
             'latest_run_id': max((run['id'] for run in runs), default=None)}
 
 

@@ -40,6 +40,85 @@ class EpisodeTest(unittest.TestCase):
     def state(self):
         return json.loads((self.root/'runtime/deadlock-intake/state.json').read_text())
 
+    def failed_controller(self, board, *args):
+        card=self.create(board,*args)
+        self.db.execute("UPDATE tasks SET status='blocked' WHERE id=?",(card['id'],))
+        self.db.execute('INSERT INTO task_runs VALUES(?,?,?,?,?)',
+                        (100+len(self.calls),card['id'],'timed_out','timed_out',101))
+        self.db.commit()
+        return card
+
+    def test_helper_versions_do_not_replenish_failed_owner_episode(self):
+        actions=[]
+        for n in range(6):
+            issue={**self.issue,'version':'helper-version-'+str(n)}
+            with patch.object(recovery,'observe',return_value=[issue]):
+                actions.extend(recovery.tick(self.root,now=100+n*10000,create=self.failed_controller))
+        self.assertEqual([False,False,False,True],[action['audit'] for action in actions])
+        entry=self.state()[self.issue['key']]
+        self.assertEqual('t_controller_1',entry['owner_task_id'])
+        self.assertEqual('t_controller_4',entry['episode_audit_task_id'])
+        self.assertEqual(1,entry['origin_run_id'])
+        self.assertEqual('awaiting_execution',entry['execution']['state'])
+
+    def test_completed_controller_gets_one_diagnosis_even_when_helpers_change(self):
+        self.tick(100)
+        self.assertTrue(self.tick(10000,[{**self.issue,'version':'changed-helper'}])[0]['audit'])
+        self.assertEqual([],self.tick(20000,[{**self.issue,'version':'another-helper'}]))
+        self.assertEqual(2,len(self.calls))
+
+    def test_legacy_versions_escalate_once_without_erasing_attempts_or_active_owner(self):
+        with patch.object(recovery,'observe',return_value=[self.issue]):
+            recovery.tick(self.root,now=100,create=self.failed_controller)
+        state=self.state();entry=state[self.issue['key']]
+        entry.pop('episode_attempts',None)  # Installed journals predate this counter.
+        entry['versions'].update({'legacy-'+str(n):{'attempts':2,'last_at':100,'task_id':'t_controller_1'}
+                                  for n in range(16)})
+        saved_versions=dict(entry['versions'])
+        (self.root/'runtime/deadlock-intake/state.json').write_text(json.dumps(state))
+        self.db.execute("UPDATE tasks SET status='running',worker_pid=123 WHERE id='t_controller_1'")
+        self.db.commit()
+        issue={**self.issue,'version':'latest-helper'}
+        self.assertEqual([],self.tick(10000,[issue]))
+        self.db.execute("UPDATE tasks SET status='blocked',worker_pid=NULL WHERE id='t_controller_1'")
+        self.db.commit()
+        self.assertTrue(self.tick(20000,[issue])[0]['audit'])
+        entry=self.state()[self.issue['key']]
+        self.assertEqual(saved_versions,{key:entry['versions'][key] for key in saved_versions})
+        self.assertEqual([],self.tick(30000,[{**issue,'version':'yet-another-helper'}]))
+
+    def test_successful_original_execution_reopens_an_audited_episode(self):
+        self.tick(100);self.tick(401)
+        self.db.execute("INSERT INTO task_runs VALUES(2,'t_original','done','completed',500)")
+        self.db.execute("INSERT INTO task_runs VALUES(3,'t_original','failed','failed',600)")
+        self.db.commit()
+        action=self.tick(10000,[{**self.issue,'version':'real-recurrence'}])[0]
+        self.assertFalse(action['audit'])
+        entry=self.state()[self.issue['key']]
+        self.assertEqual(3,entry['origin_run_id'])
+        self.assertEqual(1,entry['episode_attempts'])
+        self.assertNotIn('episode_audit_task_id',entry)
+        self.assertEqual(1,len(entry['prior_episodes']))
+
+    def test_selected_incident_keeps_its_own_budget_on_a_multi_issue_board(self):
+        self.db.execute("INSERT INTO tasks VALUES('t_other','blocked',1,NULL,NULL)")
+        self.db.execute("INSERT INTO task_runs VALUES(2,'t_other','failed','failed',2)")
+        self.db.commit()
+        other=dict(self.issue,key='test:t_other:failed-lifecycle',task_id='t_other',priority=0)
+        selected=dict(self.issue,priority=10)
+        for own_count,other_count in ((3,0),(0,3)):
+            with self.subTest(selected=own_count,last_observed=other_count):
+                state={selected['key']:{'origin_run_id':1,'episode_attempts':own_count,'versions':{}},
+                       other['key']:{'origin_run_id':2,'episode_attempts':other_count,'versions':{}}}
+                journal=self.root/'runtime/deadlock-intake';journal.mkdir(parents=True,exist_ok=True)
+                (journal/'state.json').write_text(json.dumps(state))
+                action=self.tick(10000,[selected,other])[0]
+                self.assertEqual(selected['task_id'],action['issue']['task_id'])
+                self.assertEqual(own_count>=recovery.MAX_ATTEMPTS,action['audit'])
+                state=self.state()
+                self.assertEqual(own_count+1,state[selected['key']]['episode_attempts'])
+                self.assertEqual(other_count,state[other['key']]['episode_attempts'])
+
     def test_controller_completion_is_not_recovery_and_unchanged_failure_gets_one_audit(self):
         self.tick(100)
         entry=self.state()[self.issue['key']]

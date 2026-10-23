@@ -23,6 +23,18 @@ ORIGIN_KEYS = ('HERMES_KANBAN_TASK', 'HERMES_KANBAN_DB', 'HERMES_KANBAN_BOARD',
 RUNTIME_DIRS = ('agent', 'hermes_cli', 'tools', 'gateway', 'cron', 'hermes_platform',
                 'providers', 'plugins', 'skills', 'locales', 'assets', 'acp_adapter',
                 'pm', 'hermes_agent.egg-info', '.venv')
+SYSTEM_SUITE_PYTHON = Path('/usr/bin/python3')
+YAML_SUITES = frozenset((
+    'test-kanban-owner-alerts.sh', 'test-steward-readonly.sh',
+    'test-steward-opportunity-scan.sh', 'test-kanban-retry-breaker.sh',
+    'test-hermes-autonomy.sh', 'test-hermes-autonomy-runtime.sh',
+    'test-hermes-worker-policy.sh',
+))
+NATIVE_IMPORT_SUITES = frozenset((
+    'test-hermes-worker-origin.sh',
+    'test-hermes-recovered-resume.sh', 'test-hermes-coordinator-repair.sh',
+    'test-hermes-workspace-repair.sh',
+))
 FIXTURE_BOOTSTRAP = r'''import hashlib, json, os, subprocess, sys
 kind, source = sys.argv[1:3]
 source_sha256 = hashlib.sha256(open(source, 'rb').read()).hexdigest()
@@ -88,6 +100,37 @@ def receipt(event, **fields):
         file=sys.stderr, flush=True)
 
 
+def suite_interpreter(suite_path):
+    """Qualify existing toolchains without admitting the host's user site.
+
+    Native workers put Hermes' managed Python first on PATH. Host user-site
+    imports can hide its missing dependencies until the fixture changes HOME.
+    Prefer PATH when qualified, then the installed distro toolchain; never
+    install packages or mount a user's site-packages to satisfy this probe.
+    """
+    found = shutil.which('python3')
+    if not found:
+        raise ValueError('Declared suite Python python3 is required')
+    primary = Path(found).resolve(strict=True)
+    if suite_path is None or suite_path.name not in YAML_SUITES | NATIVE_IMPORT_SUITES:
+        return primary
+    imports = 'yaml, ruamel.yaml' if suite_path.name in NATIVE_IMPORT_SUITES else 'yaml'
+    candidates = dict.fromkeys((primary, SYSTEM_SUITE_PYTHON.resolve()))
+    for candidate in candidates:
+        if not candidate.is_file():
+            continue
+        try:
+            probe = subprocess.run(
+                [str(candidate), '-I', '-B', '-c', 'import ' + imports],
+                stdin=subprocess.DEVNULL, capture_output=True, timeout=10)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if probe.returncode == 0:
+            return candidate
+    raise ValueError('No installed suite Python imports ' + imports + ' in isolation; '
+                     'provision the test toolchain, not the host user site')
+
+
 def command(repo, suite, runtime, scratch, subject=None):
     repo, runtime = (Path(p).resolve(strict=True) for p in (repo, runtime))
     suite_path = None
@@ -117,10 +160,7 @@ def command(repo, suite, runtime, scratch, subject=None):
     python = runtime / '.venv/bin/python'
     if not python.is_file():
         raise ValueError('Declared native Hermes Python environment is required')
-    suite_python_name = shutil.which('python3')
-    if not suite_python_name:
-        raise ValueError('Declared suite Python python3 is required')
-    suite_python = Path(suite_python_name).resolve(strict=True)
+    suite_python = suite_interpreter(suite_path)
     home = scratch / 'home'
     (home / '.hermes').mkdir(parents=True)
     (home / '.hermes/config.yaml').write_text('model: {default: fixture}\n')

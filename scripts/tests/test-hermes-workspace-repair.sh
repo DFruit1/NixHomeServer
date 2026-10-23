@@ -74,6 +74,26 @@ class WorkspaceRepairTest(unittest.TestCase):
         self.assertFalse(result['unblocked'])
         self.assertEqual('blocked',self.native.task['status'])
 
+    def test_initial_todo_static_binding_prepares_source_without_release(self):
+        self.task.update(status='todo',block_kind=None,workspace_kind='dir',body='Goal: supply source')
+        self.target.mkdir()
+        before=copy.deepcopy(self.task)
+        result=self.run_repair()
+        self.assertEqual('prepared',result['status'])
+        self.assert_exact()
+        self.assertEqual(before,self.task)
+        self.assertFalse(result['unblocked'])
+        self.assertFalse(result['inputs_verified'])
+        self.assertEqual('already_prepared',self.run_repair()['status'])
+
+    def test_todo_source_prep_refuses_owner_or_previous_execution(self):
+        self.task.update(status='todo',block_kind=None,workspace_kind='dir',body='ASK: owner gate')
+        with self.assertRaisesRegex(repair.Refused,'OWNER_NOT_PARKED'):self.run_repair()
+        self.task['body']='Goal: supply source'
+        self.native.runs=[{'id':1,'status':'spawn_failed','worker_pid':None,'claim_expires':None}]
+        with self.assertRaisesRegex(repair.Refused,'OWNER_NOT_PARKED'):self.run_repair()
+        self.assertFalse(self.target.exists())
+
     def test_capability_triage_preserves_old_checkout_and_native_hold(self):
         self.task.update(status='triage',block_kind='capability')
         self.git(self.repo,'worktree','add','-qb','wt/t_one',str(self.target),self.commit)

@@ -617,7 +617,7 @@ class RepairTest(unittest.TestCase):
         self.assertEqual(before,self.dump())
 
     def test_workspace_rebind_seam_is_closed_migrated_and_forwarded(self):
-        from coordinator_repair_adapter import SCHEMA,PREVIOUS,LEGACY,HANDLER,PREVIOUS_HANDLER,LEGACY_HANDLER
+        from coordinator_repair_adapter import SCHEMA,PREVIOUS_REBIND,PREVIOUS,LEGACY,HANDLER,PREVIOUS_HANDLER,LEGACY_HANDLER
         seam={};exec(SCHEMA,seam);schema=seam['KANBAN_AMEND_SCHEMA']
         rebind=schema['parameters']['properties']['workspace_rebind']
         self.assertEqual({'workspace_kind','workspace_path'},set(rebind['properties']))
@@ -639,6 +639,9 @@ class RepairTest(unittest.TestCase):
         self.assertEqual(1,current_schemas.count(SCHEMA))
         self.assertEqual(current_tools,adapt('tools/kanban_tools.py',current_tools))
         self.assertEqual(current_schemas,adapt('tools/kanban_tools_schemas.py',current_schemas))
+        self.assertIn('never-started TODO',schema['description'])
+        self.assertEqual(current_schemas,adapt('tools/kanban_tools_schemas.py',
+                                              current_schemas.replace(SCHEMA,PREVIOUS_REBIND,1)))
         tools=current_tools.replace(HANDLER,PREVIOUS_HANDLER,1)
         schemas=current_schemas.replace(SCHEMA,PREVIOUS,1)
         self.assertEqual(1,tools.count(PREVIOUS_HANDLER));self.assertEqual(1,schemas.count(PREVIOUS))
@@ -826,6 +829,76 @@ class RepairTest(unittest.TestCase):
                 self.assertEqual((status,'capability','dir',str(target),0),
                                  (row['status'],row['block_kind'],row['workspace_kind'],
                                   row['workspace_path'],row['consecutive_failures']))
+
+    def test_never_started_todo_can_receive_initial_workspace_without_releasing_parents(self):
+        self.conn.execute("UPDATE tasks SET status='todo',skills='[]' WHERE id=?",(self.target,))
+        self.conn.execute('INSERT INTO task_links(parent_id,child_id) VALUES(?,?)',(self.actor,self.target))
+        self.conn.commit()
+        directory=self.root/'unprovisioned';directory.mkdir()
+        binding={'workspace_kind':'dir','workspace_path':str(directory)}
+        before=self.dump()
+        version=repair.amend(kb,self.conn,self.target)['version']
+        result=repair.amend(kb,self.conn,self.target,expected_version=version,changes=dict(binding),
+                           workspace_rebind=binding,reason='Supply missing initial source binding; open review prerequisite retained')
+        self.assertTrue(result['applied'])
+        after=self.dump()
+        expected={row['id']:row for row in before[0]}
+        expected[self.target]=dict(expected[self.target],**binding)
+        self.assertEqual(expected,{row['id']:row for row in after[0]})
+        self.assertEqual(before[1],after[1])
+        self.assertEqual(before[3],after[3])
+        self.assertEqual(['coordinator_workspace_rebind'],[row['kind'] for row in after[2][len(before[2]):]])
+        self.assertEqual(('todo',None),tuple(self.conn.execute('SELECT status,block_kind FROM tasks WHERE id=?',(self.target,)).fetchone()))
+
+    def test_initial_binding_never_retypes_gates_or_rebinds_previous_execution(self):
+        self.conn.execute("UPDATE tasks SET status='todo',skills='[]' WHERE id=?",(self.target,))
+        self.conn.commit()
+        directory=self.root/'unprovisioned';directory.mkdir()
+        binding={'workspace_kind':'dir','workspace_path':str(directory)}
+        for assignment in ("workspace_path='/previous/source'", "workspace_kind='dir'",
+                           "started_at=1", "block_kind='dependency'", "body='ASK: preserve owner gate'"):
+            with self.subTest(assignment=assignment):
+                old=dict(self.conn.execute('SELECT * FROM tasks WHERE id=?',(self.target,)).fetchone())
+                self.conn.execute('UPDATE tasks SET '+assignment+' WHERE id=?',(self.target,));self.conn.commit()
+                before=self.dump()
+                self.refuse_rebind('parked capability hold',dict(binding),binding)
+                self.assertEqual(before,self.dump())
+                self.conn.execute('UPDATE tasks SET workspace_path=?,workspace_kind=?,started_at=?,block_kind=?,body=? WHERE id=?',
+                                  (old['workspace_path'],old['workspace_kind'],old['started_at'],old['block_kind'],old['body'],self.target))
+                self.conn.commit()
+        self.conn.execute("INSERT INTO task_runs(id,task_id,status,profile,outcome,started_at,ended_at) VALUES(43,?,'spawn_failed','feature-reviewer','spawn_failed',1,2)",(self.target,));self.conn.commit()
+        before=self.dump()
+        self.refuse_rebind('parked capability hold',dict(binding),binding)
+        self.assertEqual(before,self.dump())
+
+    def test_administrative_schedule_does_not_prevent_initial_source_binding(self):
+        self.conn.execute("UPDATE tasks SET status='todo',skills='[]' WHERE id=?",(self.target,));self.conn.commit()
+        self.assertTrue(kb.schedule_task(self.conn,self.target,reason='Park for source preparation'))
+        run=self.conn.execute('SELECT * FROM task_runs WHERE task_id=?',(self.target,)).fetchone()
+        self.assertEqual(('scheduled','scheduled',None,None),
+                         (run['status'],run['outcome'],run['worker_pid'],run['claim_lock']))
+        directory=self.root/'unprovisioned';directory.mkdir()
+        binding={'workspace_kind':'dir','workspace_path':str(directory)}
+        before=self.dump()
+        version=repair.amend(kb,self.conn,self.target)['version']
+        self.assertTrue(repair.amend(kb,self.conn,self.target,expected_version=version,
+            changes=dict(binding),workspace_rebind=binding,
+            reason='Initial source preparation after administrative parking')['applied'])
+        after=self.dump()
+        self.assertEqual(before[1],after[1])
+        self.assertEqual(before[3],after[3])
+        self.assertEqual(('scheduled',None),tuple(self.conn.execute('SELECT status,block_kind FROM tasks WHERE id=?',(self.target,)).fetchone()))
+
+    def test_administrative_parking_cannot_hide_a_prior_native_claim(self):
+        self.conn.execute("UPDATE tasks SET status='todo',skills='[]' WHERE id=?",(self.target,));self.conn.commit()
+        self.assertTrue(kb.schedule_task(self.conn,self.target,reason='Park for source preparation'))
+        kb._append_event(self.conn,self.target,'claimed',{'run_id':43})
+        self.conn.commit()
+        directory=self.root/'unprovisioned';directory.mkdir()
+        binding={'workspace_kind':'dir','workspace_path':str(directory)}
+        before=self.dump()
+        self.refuse_rebind('parked capability hold',dict(binding),binding)
+        self.assertEqual(before,self.dump())
 
     def test_workspace_rebind_refuses_sha256_detached_bare_root(self):
         # Git can detach HEAD as a 64-hex SHA-256 object name. A detector keyed
@@ -1104,7 +1177,11 @@ def recover_publication(native):
         kb.add_comment(self.conn,self.target,author='head-coordinator',body='Another holding comment')
         self.assertEqual([],monitor.tick(self.root,now=30000,create=create))
         kb.edit_task(self.conn,self.target,body='Actual changed source input')
-        self.assertFalse(monitor.tick(self.root,now=30000,create=create)[0]['audit'])
+        # Changed input remains usable by the existing qualified recovery owner;
+        # it cannot buy another automatic controller after the episode audit.
+        count=len(created)
+        self.assertEqual([],monitor.tick(self.root,now=30000,create=create))
+        self.assertEqual(count,len(created))
 
     def test_monitor_semantic_downstream_wait_and_native_open_dedup(self):
         child=kb.create_task(self.conn,title='Corrective producer',assignee='standard-implementer',triage=True,workspace_kind='scratch')

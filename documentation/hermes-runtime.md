@@ -172,8 +172,14 @@ pins; a worker or delegated invocation is confined rather than stripped of its
 identity, and `scripts/tests/hermes-worker-policy-native.py` refuses any run
 outside that boundary. The suite interpreter must import PyYAML *inside* the
 sandbox, which a host-only user site-packages tree cannot satisfy, so the suite
-puts `/usr/bin` first and uses the system interpreter; `fixture-runner.py`
-fails closed with exit 125 when it has no yaml. Within the fixture the suite runs
+puts `/usr/bin` first and uses the system interpreter. When the repository gate
+invokes the fixture before the suite's shell header, `fixture-runner.py` qualifies
+the PATH interpreter with isolated `yaml` imports (also `ruamel.yaml` for suites
+importing native modules), then tries installed `/usr/bin/python3` if necessary. It never installs
+packages or mounts the host user site. Missing qualified toolchains fail before
+launch; the confined readiness probe still fails closed if dependencies are absent
+inside the sandbox. The readiness receipt identifies the interpreter actually used.
+Within the fixture the suite runs
 the native regression against the actual installed seams: it compares `tasks`,
 `task_events` and `task_links` rows on every board, so an omitted, blank,
 malformed or unknown board, a sticky resolution-chain board, a foreign worker

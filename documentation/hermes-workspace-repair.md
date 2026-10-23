@@ -23,6 +23,15 @@ it never writes the board database, fabricates a run or changes task status.
 Python is operations glue alongside the existing Hermes/Git helpers, with no new
 backend or dependencies.
 
+For an unprovisioned TODO or administratively scheduled scratch task with no
+recorded path, no prior native execution and no owner gate, the authenticated owning-board coordinator may use the
+existing exact-version `kanban_amend` closed `workspace_rebind` to record an
+existing canonical directory first. This supplies the initial binding
+without blocking, promoting or releasing the task. Every parent, status and retry
+counter stays unchanged. The same amendment still refuses repository roots,
+symlinks, active workers and previous execution. Source preparation and independent
+acceptance remain separate; a directory alone is not delivered source.
+
 Inspect first, then apply the same identity:
 
 ```bash
@@ -32,7 +41,7 @@ python3 ~/.hermes/scripts/repair-task-workspace.py \
 # Repeat with --apply after assessing the displayed source discrepancy.
 ```
 
-The task must be blocked, scheduled, or capability-held triage with no active
+Previously executed tasks must be blocked, scheduled, or capability-held triage with no active
 run or uncleared latest worker PID. The native repeat-block guard can park a
 capability hold in triage; source repair preserves that hold and its spent
 attempts. Other triage kinds remain refused. Hold kind is part of the checked

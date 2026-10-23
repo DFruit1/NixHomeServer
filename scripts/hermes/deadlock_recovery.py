@@ -394,6 +394,7 @@ def tick(root, *, dry_run=False, now=None, create=None):
                         'origin_run_id':entry['origin_run_id'],'execution':entry['execution'],
                         'owner_task_id':entry.get('owner_task_id')}],
                         'origin_run_id':entry['execution']['run_id'],
+                        'episode_attempts':0,
                         'execution':{'state':'awaiting_execution','run_id':entry['execution']['run_id']}}
                     entry.pop('episode_audit_task_id',None)
                     state[key]=entry
@@ -405,17 +406,24 @@ def tick(root, *, dry_run=False, now=None, create=None):
                         root,board,entry.get('task_id'),now,
                         material_changed=issue['version'] not in entry.get('versions',{})):
                     continue
+                # Helper/source versions are wake evidence, not a replenished
+                # automatic repair budget. Keep the same original execution
+                # episode bounded even while its failed owner stays parked.
+                if entry.get('episode_audit_task_id'):
+                    continue
                 owner=parked_owner(root,board,owner_id)
                 if owner:
                     issue=dict(issue,recovery_owner=owner)
                 versions=entry.get('versions',{})
+                episode_attempts=entry.get('episode_attempts',sum(
+                    version.get('attempts',0) for version in versions.values()))
                 prior=versions.get(issue['version'],{'attempts':0,'last_at':0})
                 count = prior['attempts']
-                if count > MAX_ATTEMPTS or (count and now-prior['last_at'] < BACKOFF[min(count-1,2)]):
+                if count and now-prior['last_at'] < BACKOFF[min(count-1,2)]:
                     continue
-                audit = count == MAX_ATTEMPTS
+                audit = episode_attempts >= MAX_ATTEMPTS
                 # A completed controller without original execution is still
-                # an open incident. Unchanged evidence gets one diagnosis,
+                # an open incident. It gets one diagnosis across versions,
                 # rather than another equivalent repair controller.
                 if entry.get('execution',{}).get('state')=='awaiting_execution' and owner_id:
                     path_db=root/'kanban/boards'/board/'kanban.db'
@@ -423,16 +431,14 @@ def tick(root, *, dry_run=False, now=None, create=None):
                         with closing(sqlite3.connect(path_db.as_uri()+'?mode=ro',uri=True,timeout=2)) as db:
                             db.execute('PRAGMA query_only=ON')
                             row=db.execute('SELECT status FROM tasks WHERE id=?',(owner_id,)).fetchone()
-                        if row and row[0] in {'done','archived'} and issue['version'] in versions:
-                            if entry.get('episode_audit_task_id'):
-                                continue
+                        if row and row[0] in {'done','archived'} and episode_attempts:
                             audit=True
-                selected.append((issue, owner_id, owner, versions, prior, count, audit))
+                selected.append((issue, owner_id, owner, versions, prior, count, audit, episode_attempts))
             last_class=state.get('_fairness',{}).get(board)
             selected.sort(key=lambda item: (
                 (('feature' if item[0]['kind']=='feature-delivery-gap' else 'technical') == last_class),
                 -item[0]['priority'],item[0]['key']))
-            for issue,owner_id,owner,versions,prior,count,audit in selected[:1]:
+            for issue,owner_id,owner,versions,prior,count,audit,episode_attempts in selected[:1]:
                 action = dict(board=board,issue=issue,audit=audit,attempt=count+1)
                 actions.append(action)
                 if dry_run:
@@ -457,6 +463,7 @@ def tick(root, *, dry_run=False, now=None, create=None):
                 state[issue['key']]={**previous,'task_id':card['id'],
                                      'owner_task_id':owner_id if owner or audit else card['id'],
                                      'versions':versions,
+                                     'episode_attempts':episode_attempts+1,
                                      'origin_run_id':previous.get('origin_run_id',progress['run_id']),
                                      'execution':{'state':'awaiting_execution','run_id':progress['run_id']},
                                      'detectors':sorted(set(previous.get('detectors',[]))|{'technical-recovery'})}

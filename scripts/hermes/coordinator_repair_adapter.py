@@ -82,6 +82,11 @@ SCHEMA = '''KANBAN_AMEND_SCHEMA = {
 
 
 '''
+# Preserve the exact installed schema while extending only initial provisioning.
+PREVIOUS_REBIND = SCHEMA
+SCHEMA = SCHEMA.replace('for a parked capability hold, valid only',
+    'for a parked capability hold or a never-started TODO/administratively scheduled scratch task with no path or execution, valid only', 1)
+
 # The seam installed before the workspace-rebind branch: one exact literal
 # migration, so an installed native is upgraded instead of duplicated.
 PREVIOUS = '''KANBAN_AMEND_SCHEMA = {
@@ -152,7 +157,7 @@ def adapt(name, text):
                 text = text.replace(previous, HANDLER, 1)
                 break
     if name == 'tools/kanban_tools_schemas.py' and SCHEMA not in text:
-        for variant in (PREVIOUS, LEGACY):
+        for variant in (PREVIOUS_REBIND, PREVIOUS, LEGACY):
             if text.count(variant) == 1:
                 text = text.replace(variant, SCHEMA, 1)
                 break

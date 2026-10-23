@@ -86,6 +86,64 @@ with tempfile.TemporaryDirectory(prefix='hermes-fixture-isolation-',dir='/tmp') 
     task=Path(task);runtime=task/'runtime';binary=runtime/'.venv/bin';binary.mkdir(parents=True)
     (binary/'python').symlink_to(Path(sys.executable).resolve())
     (runtime/'.venv/pyvenv.cfg').write_text('home = '+str(Path(sys.executable).resolve().parent)+'\n')
+    # A worker PATH can expose a managed Python whose YAML dependencies exist
+    # only in its host user site. The confined suite must use an installed,
+    # independently qualified interpreter instead of importing that host site.
+    selection_repo=task/'interpreter-repo';selection_tests=selection_repo/'scripts/tests'
+    selection_tests.mkdir(parents=True)
+    selection_suite=selection_tests/'test-hermes-workspace-repair.sh'
+    selection_suite.write_text('#!/bin/sh\npython3 -B -c '+__import__('shlex').quote(
+        'import os, sys, yaml, ruamel.yaml; '
+        'assert os.environ["HOME"] == "/run/hermes-fixture/home"; '
+        'assert not any(name in os.environ for name in '+repr(runner.ORIGIN_KEYS)+'); '
+        'assert not any(".local/lib/python" in path for path in sys.path); '
+        'print("QUALIFIED_CONFINED_PYTHON")')+'\n')
+    subprocess.run(['git','-C',str(selection_repo),'init','-q'],check=True)
+    subprocess.run(['git','-C',str(selection_repo),'add','scripts/tests/test-hermes-workspace-repair.sh'],check=True)
+    managed_bin=task/'managed-python/bin';managed_bin.mkdir(parents=True)
+    managed_python=managed_bin/'python3'
+    managed_python.write_text('#!/bin/sh\nexec '+__import__('shlex').quote(str(Path(sys.executable).resolve()))+' -S "$@"\n')
+    managed_python.chmod(0o700)
+    missing_yaml=subprocess.run([str(managed_python),'-I','-c','import yaml, ruamel.yaml'],
+                                capture_output=True,text=True)
+    assert missing_yaml.returncode!=0 and 'ModuleNotFoundError' in missing_yaml.stderr,missing_yaml.stderr
+    # Model an installed test toolchain independently of the host distro. Its
+    # tiny package fixtures test interpreter selection, not the YAML libraries.
+    qualified_root=task/'qualified-python';qualified_bin=qualified_root/'bin'
+    qualified_bin.mkdir(parents=True);packages=qualified_root/'packages'
+    (packages/'yaml').mkdir(parents=True)
+    (packages/'yaml/__init__.py').write_text('__version__ = "fixture-yaml"\n')
+    (packages/'ruamel/yaml').mkdir(parents=True)
+    (packages/'ruamel/__init__.py').write_text('')
+    (packages/'ruamel/yaml/__init__.py').write_text('')
+    qualified_python=qualified_bin/'python3'
+    qualified_python.write_text('#!'+str(Path(sys.executable).resolve())+'\n'+
+        'import sys\n'+
+        'args=[arg for arg in sys.argv[1:] if arg not in ("-I", "-B")]\n'+
+        'assert args[0] == "-c"\n'+
+        'sys.path.insert(0, '+repr(str(packages))+')\n'+
+        'sys.argv=["-c", *args[2:]]\n'+
+        'exec(compile(args[1], "<installed-test-python>", "exec"))\n')
+    qualified_python.chmod(0o700)
+    selection_scratch=task/'interpreter-scratch';selection_scratch.mkdir()
+    selection_origin={key:os.environ.get(key) for key in runner.ORIGIN_KEYS}
+    with unittest.mock.patch.dict(os.environ,{'PATH':str(managed_bin)+':'+os.environ['PATH']}), unittest.mock.patch.object(runner,'SYSTEM_SUITE_PYTHON',qualified_python):
+        selection_argv,selection_env=runner.command(selection_repo,selection_suite,runtime,selection_scratch)
+        selection_run=subprocess.run(selection_argv,env=selection_env,capture_output=True,text=True,timeout=30)
+    assert {key:os.environ.get(key) for key in runner.ORIGIN_KEYS}==selection_origin
+    assert selection_run.returncode==0, ('A PATH Python without isolated YAML dependencies must not break a fixture '
+                                         'when a qualified installed Python is available: '+selection_run.stderr)
+    assert 'QUALIFIED_CONFINED_PYTHON' in selection_run.stdout,selection_run.stdout
+    # Missing packages must still refuse before any fixture workspace is made;
+    # neither host user-site imports nor an unsandboxed run are a fallback.
+    refused_scratch=task/'unqualified-scratch';refused_scratch.mkdir()
+    with unittest.mock.patch.dict(os.environ,{'PATH':str(managed_bin)+':'+os.environ['PATH']}), unittest.mock.patch.object(runner,'SYSTEM_SUITE_PYTHON',task/'absent-python'):
+        try:runner.command(selection_repo,selection_suite,runtime,refused_scratch)
+        except ValueError as exc:assert 'No installed suite Python' in str(exc),str(exc)
+        else:raise AssertionError('Missing isolated YAML dependencies did not refuse')
+    with unittest.mock.patch.dict(os.environ,{'PATH':str(qualified_bin)+':'+os.environ['PATH']}), unittest.mock.patch.object(runner,'SYSTEM_SUITE_PYTHON',task/'absent-python'):
+        assert runner.suite_interpreter(selection_suite)==qualified_python
+    assert not list(refused_scratch.iterdir()),'Unqualified interpreter created fixture state'
     scratch=task/'scratch';scratch.mkdir()
     native_root=task/'native-root';native_runtime=native_root/'hermes-agent'
     native_binary=native_runtime/'.venv/bin';native_binary.mkdir(parents=True)

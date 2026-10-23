@@ -142,8 +142,8 @@ def _rebind_versions(conn, tid):
     return spent
 
 
-def _rebind_binding(task, changes, rebind):
-    """Validate the one static directory an existing capability hold may adopt.
+def _rebind_binding(conn, task, changes, rebind):
+    """Validate a capability rebind or a missing initial source binding.
 
     The seam records only a binding it verified itself: the directory exists,
     is the canonical absolute path itself and is not a working-tree, worktree
@@ -159,7 +159,18 @@ def _rebind_binding(task, changes, rebind):
     if (not isinstance(changes, dict) or set(changes) != REBIND_FIELDS
             or any(changes[field] != rebind[field] for field in REBIND_FIELDS)):
         raise ValueError('A workspace rebind changes exactly its own two fields')
-    if task['block_kind'] != 'capability':
+    initial = (task['status'] in {'todo','scheduled'} and task['block_kind'] is None
+               and task['workspace_kind'] == 'scratch' and task['workspace_path'] is None
+               and task.get('started_at') is None and task.get('current_run_id') is None
+               and not (task.get('body') or '').lstrip().startswith('ASK:')
+               and not conn.execute("SELECT 1 FROM task_runs WHERE task_id=? AND ("
+                   "status IS NOT 'scheduled' OR outcome IS NOT 'scheduled' OR "
+                   "worker_pid IS NOT NULL OR worker_started_at IS NOT NULL OR claim_lock IS NOT NULL OR "
+                   "started_at IS NULL OR ended_at IS NULL OR started_at != ended_at) LIMIT 1",
+                   (task['id'],)).fetchone()
+               and not conn.execute("SELECT 1 FROM task_events WHERE task_id=? "
+                   "AND kind IN ('claimed','spawned') LIMIT 1",(task['id'],)).fetchone())
+    if task['block_kind'] != 'capability' and not initial:
         raise ValueError('Only a parked capability hold can adopt a static workspace')
     if rebind['workspace_kind'] != 'dir':
         raise ValueError('Only a static directory binding can be rebound')
@@ -350,7 +361,7 @@ def amend(kb, conn, tid, *, expected_version=None, changes=None, reason=None, ru
         binding = None
         resume_status = None
         if workspace_rebind is not None:
-            binding = _rebind_binding(task, changes, workspace_rebind)
+            binding = _rebind_binding(conn, task, changes, workspace_rebind)
         if 'block_kind' in changes:
             if terminal_episode is not None:
                 # One closed terminal episode, one branch, one appended event.
