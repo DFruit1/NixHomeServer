@@ -78,6 +78,15 @@ hermes_cli.__path__.insert(0,str(overlay))
 from hermes_cli import kanban_db as kb,kanban_db_dispatch as dispatch  # noqa: E402
 from hermes_cli.kanban_db_connect import connect  # noqa: E402
 from unittest.mock import patch  # noqa: E402
+scratch=args.scratch.resolve()
+# The supported boundary must be the only reachable kanban home, asserted before
+# the first board is opened. An earlier unsandboxed probe resolved the live home
+# here and created a real card on pcops' sticky board (t_55821319); this check
+# makes that escape fail loudly instead of writing it again.
+live_home=kb.kanban_home().resolve()
+assert live_home.is_relative_to(scratch), (
+    'refusing live kanban home '+str(live_home)+' outside '+str(scratch)+
+    ': run through scripts/hermes/fixture-runner.py')
 db=connect(args.scratch/'kanban'/'boards'/'fixture'/'kanban.db')
 try:
     try:
@@ -209,6 +218,7 @@ try:
     kb.current_board_path().write_text('stickyboard')
     assert kb.get_current_board()=='stickyboard'
     paths={board:kb.kanban_db_path(board) for board in ('ownboard','otherboard','stickyboard')}
+    assert all(path.resolve().is_relative_to(scratch) for path in paths.values()), paths
     def rows(board):
         conn=connect(paths[board])
         try:
