@@ -36,6 +36,14 @@ checks. Before completing a rejected downstream review, ensure unfinished
 children are coordinator routing cards. Report implementation/deploy children
 and their exact bad links to the coordinator; never release them.
 
+`metadata.revision` is a nonempty string: the exact reviewed commit, or the
+SHA256 of the reviewed artifact manifest for a multi-file artifact. Keep per-file
+identities in a separate descriptive field, never an object in `revision`.
+`checks` entries use `command` and integer `exit_code`, preserving actual results.
+Validate this shape before the first completion call. A pre-write schema refusal
+changes no state, but does not waive an existing stop-on-refusal condition;
+obtain the exact supported coordinator continuation before another attempt.
+
 An audit with tenant `continuous-improvement` keeps its own report contract.
 These procedures grant no implementation, deployment or wider review authority.
 
