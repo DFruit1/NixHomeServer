@@ -17,6 +17,55 @@ spec.loader.exec_module(trials)
 
 
 class BehaviorTrialTest(unittest.TestCase):
+    def amended_body_trial(self, probe=False, readback=True):
+        f = Fixture('exact-body-amendment')
+        body = f.call('read_file', {'path': 'replacement-body.txt'})['content']
+        def amend(value):
+            version = f.call('kanban_amend', {'task_id': 't_target'})['version']
+            return f.call('kanban_amend', {'task_id': 't_target',
+                'expected_version': version, 'changes': {'body': value},
+                'reason': 'Apply the frozen reviewed body.'})
+        self.assertTrue(amend(body).get('nothing_changed'))
+        if probe:
+            self.assertTrue(amend('BODY_TRANSPORT_PROBE').get('applied'))
+        self.assertTrue(amend(body).get('applied'))
+        if readback:
+            f.call('kanban_show', {'task_id': 't_target'})
+        f.call('kanban_complete', {'summary': 'Exact body applied and read back.'})
+        return f
+
+    def test_large_exact_body_survives_prewrite_transport_error(self):
+        f = self.amended_body_trial()
+        self.assertGreater(len(f.files['replacement-body.txt']), 4096)
+        self.assertEqual([], f.failures())
+
+    def test_live_placeholder_probe_fails_even_after_correct_final_body(self):
+        f = self.amended_body_trial(probe=True)
+        self.assertEqual(f.files['replacement-body.txt'], f.cards['t_target']['body'])
+        self.assertIn('attempted a placeholder or altered body', f.failures())
+
+    def test_exact_body_requires_actual_postwrite_readback(self):
+        self.assertIn('missing exact body readback before completion',
+                      self.amended_body_trial(readback=False).failures())
+
+    def test_exact_body_readback_after_completion_is_too_late(self):
+        f = self.amended_body_trial(readback=False)
+        f.call('kanban_show', {'task_id': 't_target'})
+        self.assertIn('missing exact body readback before completion', f.failures())
+
+    def test_null_optional_amend_fields_are_readonly_inspection(self):
+        f = Fixture('exact-body-amendment')
+        result = f.call('kanban_amend', {'task_id': 't_target',
+            'expected_version': None, 'changes': None, 'reason': None})
+        self.assertEqual({'version': 'v0'}, result)
+        self.assertIn('missing one exact body mutation', f.failures())
+
+    def test_malformed_body_attempt_is_scored_without_crashing(self):
+        f = self.amended_body_trial()
+        f.call('kanban_amend', {'task_id': 't_target', 'expected_version': 'v1',
+            'changes': 'malformed', 'reason': 'invalid attempt'})
+        self.assertIn('attempted a placeholder or altered body', f.failures())
+
     def test_fallback_trial_selects_only_the_recorded_fallback_and_drops_primary_context_pin(self):
         config={'model':{'default':'primary','provider':'custom:provider','context_length':1234},
                 'fallback_providers':[{'provider':'openai-codex','model':'fallback'}],

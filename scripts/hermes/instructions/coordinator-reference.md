@@ -300,6 +300,24 @@ then use that same bridge for the amendment. A directly listed tool such as
 `kanban_unblock` stays a direct call. Auto-substitution to `kanban_comment` is
 not an amendment and never proves the requested operation happened.
 
+Send one lifecycle mutation per call. Inspect the current version, apply the
+complete frozen argument object, and read back before the next dependent step;
+do not batch dependent amendments or guess the next version. For a multiline
+body, `changes.body` is the entire literal JSON string, with JSON escaping for
+newlines, quotes and backslashes. A filename, expression or placeholder is not
+the file's content. Never write transport probes, staging markers or partial
+bodies into live cards, even when the card is still gated. Use read-only
+inspection or an isolated fixture for transport diagnostics.
+
+A confirmed pre-write parse/schema error changed nothing: correct that request
+on the same task and inspect its version again. An actual effect or capability
+refusal retains its existing stopping rule. Compare the full returned body with
+the frozen UTF-8 bytes/hash before intake, unblock or completion; a successful
+tool call alone does not prove exact delivery. Preserve any intervening probe
+or mismatch honestly. If the existing supported single-call transport works,
+do not add a tool-extension prerequisite. Otherwise retain the body artifact
+and precise error on the existing owner for bounded technical recovery.
+
 Use native `kanban_amend` to change a parked technical card's body, priority,
 preloaded skills or finite runtime. First call with task_id to inspect its
 version; then pass `expected_version`, `changes` and a `reason` naming the

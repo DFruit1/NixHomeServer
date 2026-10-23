@@ -16,6 +16,7 @@ launching a board worker. Native task-skill selection is documented in the
 
 | Trial | Required evidence |
 |---|---|
+| `exact-body-amendment` | A pre-write transport error is recovered with sequential version inspections and one exact multiline body mutation/readback; any live placeholder probe fails even after a correct final body. |
 | `approval-precedence` | Coordinator releases and reads back one already-approved slice despite stale generic owner/FINDINGS waits; another approval gate or unfinished prerequisite fails the trial. |
 | `skill-selection` | Coordinator creates one scoped worktree card with relevant native skills and reads back the persisted fields. |
 | `reproduce-before-fix` | Implementer executes a failing reproduction before editing, fixes the boundary and runs the passing gate; unrelated work survives. |

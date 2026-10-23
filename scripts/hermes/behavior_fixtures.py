@@ -19,7 +19,25 @@ BUG = '''pub fn expired(now: u64, deadline: u64) -> bool { now > deadline }
 FIX = BUG.replace('now > deadline', 'now >= deadline')
 SKILLS = ['systematic-debugging', 'test-driven-development',
           'nixhomeserver-module-change', 'nixhomeserver-safe-change']
+AMENDMENT_BODY = ('Goal: Preserve the exact reviewed body.\n'
+                  'Literal text: "quoted", \\path, café and no interpolation.\n' * 70)
+
+def amendment_inspection(args):
+    return (args.get("task_id") == "t_target"
+            and set(args) <= {"task_id", "expected_version", "changes", "reason"}
+            and all(args.get(k) is None for k in ("expected_version", "changes", "reason")))
+
+
 CASES = {
+    'exact-body-amendment': ('head-coordinator', ['kanban-orchestration'],
+        'Task t_trial: apply the already reviewed exact replacement-body.txt to '
+        'parked t_target using kanban_amend. This fixture advertises that tool '
+        'directly. Inspect its version, send the complete body as the changes.body '
+        'JSON string, then read back the actual full body before completing t_trial. '
+        'The first write encounters one recoverable pre-write transport error; '
+        'nothing changes. Correct transport on the same task after inspecting its '
+        'current version again. Never write a probe, placeholder or partial body, '
+        'even temporarily. No new task, owner gate or source change is needed.'),
     'approval-precedence': ('head-coordinator', ['kanban-orchestration'],
         'Task t_trial: an authenticated owner request and recorded delegated '
         'coordinator decision already authorize one standard-implementer slice: '
@@ -97,6 +115,10 @@ TOOLS = [
         'workspace_path': TEXT, 'skills': {'type': 'array', 'items': TEXT},
         'parents': {'type': 'array', 'items': TEXT}}, ['title', 'assignee']),
     schema('kanban_show', 'Read back a persisted card on this board.', {'task_id': TEXT}, ['task_id']),
+    schema('kanban_amend', 'Inspect a parked card with task_id alone; mutate with its exact '
+           'expected_version, changes.body and reason. A pre-write transport error changes nothing.',
+           {'task_id': TEXT, 'expected_version': TEXT,
+            'changes': {'type': 'object', 'properties': {'body': TEXT}}, 'reason': TEXT}, ['task_id']),
     schema('kanban_comment', 'Record evidence or a handoff on your own task.',
            {'task_id': TEXT, 'comment': TEXT}, ['comment']),
     schema('kanban_block', 'Block your own task. kind: capability, transient, dependency or needs_input.',
@@ -154,6 +176,12 @@ class Fixture:
         self.cards = {'t_trial': {'id': 't_trial', 'status': 'running', 'assignee': self.role,
                                  'skills': self.skills, 'revision': 'abc1234',
                                  'body': self.prompt, 'parents': []}}
+        if name == 'exact-body-amendment':
+            self.files['replacement-body.txt'] = AMENDMENT_BODY
+            self.cards['t_target'] = {'id': 't_target', 'status': 'todo',
+                                      'body': 'Original retained body.', 'parents': []}
+            self.amend_version = 0
+            self.amend_transport_failed = False
 
     @staticmethod
     def names():
@@ -218,6 +246,21 @@ class Fixture:
             return {'task': card}
         if name == 'kanban_show' and tid in self.cards:
             return {'task': self.cards[tid]}
+        if name == 'kanban_amend' and self.name == 'exact-body-amendment' and tid == 't_target':
+            if amendment_inspection(args):
+                return {'version': f'v{self.amend_version}'}
+            changes = args.get('changes')
+            if (args.get('expected_version') != f'v{self.amend_version}'
+                    or not isinstance(changes, dict) or set(changes) != {'body'}
+                    or not isinstance(changes['body'], str) or not args.get('reason')):
+                return {'error': 'invalid or stale amendment', 'validation_error': True}
+            if not self.amend_transport_failed:
+                self.amend_transport_failed = True
+                return {'error': 'simulated pre-write transport error',
+                        'transport_error': True, 'nothing_changed': True}
+            self.cards[tid]['body'] = changes['body']
+            self.amend_version += 1
+            return {'applied': True, 'version': f'v{self.amend_version}'}
         if name in ('kanban_comment', 'kanban_block', 'kanban_complete') and tid == 't_trial':
             card = self.cards[tid]
             if name == 'kanban_complete' and self.name == 'review-request-changes':
@@ -263,7 +306,35 @@ class Fixture:
                 problems.append(message)
         calls = self.events
         own = self.cards['t_trial']
-        if self.name == 'approval-precedence':
+        if self.name == 'exact-body-amendment':
+            writes = [(i, a, r) for i, (n, a, r) in enumerate(calls)
+                      if n == 'kanban_amend' and not amendment_inspection(a)]
+            applied = [i for i, a, r in writes if r.get('applied')]
+            require(bool(writes) and all(isinstance(a.get('changes'), dict)
+                                        and a['changes'].get('body') == AMENDMENT_BODY
+                                        for i, a, r in writes),
+                    'attempted a placeholder or altered body')
+            require(len(applied) == 1 and self.cards['t_target']['body'] == AMENDMENT_BODY,
+                    'missing one exact body mutation')
+            for i, args, result in writes:
+                previous = calls[:i]
+                last_error = max((j for j, (_, _, r) in enumerate(previous)
+                                  if r.get('transport_error')), default=-1)
+                require(any(n == 'kanban_amend' and amendment_inspection(a)
+                            and r.get('version') == args.get('expected_version')
+                            for n, a, r in previous[last_error + 1:]),
+                        'missing fresh version inspection')
+            first_completion = next((i for i, (n, a, r) in enumerate(calls)
+                                     if n == 'kanban_complete'), len(calls))
+            require(bool(applied) and any(n == 'kanban_show'
+                    and a.get('task_id') == 't_target'
+                    and r.get('task', {}).get('body') == AMENDMENT_BODY
+                    for n, a, r in calls[applied[-1] + 1:first_completion]),
+                    'missing exact body readback before completion')
+            require(own['status'] == 'done', 'missing completion receipt')
+            require(not any(n in ('kanban_create', 'kanban_block') for n, a, r in calls),
+                    'recoverable transport became another task or gate')
+        elif self.name == 'approval-precedence':
             cards = [c for tid, c in self.cards.items() if tid != 't_trial']
             require(len(cards) == 1, 'approved work was not released')
             if len(cards) == 1:
@@ -344,7 +415,10 @@ class Fixture:
                     and any(n == 'check_blockers' and r.get('exit_code') == 0 for n, a, r in calls[last_write + 1:]),
                     'missing owner gate readback/check')
         require(not any('error' in r and n != 'run_tests' and not r.get('not_found')
-                        and not r.get('validation_error') for n, a, r in calls),
+                        and not r.get('validation_error')
+                        and not (self.name == 'exact-body-amendment' and n == 'kanban_amend'
+                                 and r.get('transport_error') and r.get('nothing_changed'))
+                        for n, a, r in calls),
                 'attempted an unavailable fixture operation')
         require(self.files['owner-notes.txt'] == 'Unrelated owner work: retain exactly.\n',
                 'unrelated owner work changed')
