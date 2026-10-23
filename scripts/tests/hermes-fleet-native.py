@@ -136,6 +136,47 @@ try:
     feature = {'tracker': 'fixture:' + tracker, 'role': 'producer',
                'scope': 'synthetic accepted source only', 'stage': 'accepted'}
     workflow = {'version': 1, 'review': 'native-review-v1', 'plan_author': 'owner', 'feature': feature,'requirements':{'source_revision':baseline}}
+    # The author error must guide correction of this request, never a second
+    # prose-only task. Exercise both actual hook/transport and native DB seams.
+    missing = object()
+    request = dict(title='Implement fixture slice', assignee='standard-implementer',
+                   parents=[tracker], workspace_kind='dir', workspace_path=str(work))
+    for author in (missing, None, False, True, 123, [], {}, '', 'head coordinator',
+                   'head/coordinator', 'a' * 81):
+        invalid = {**workflow}
+        if author is missing:
+            del invalid['plan_author']
+        else:
+            invalid['plan_author'] = author
+        db.commit()
+        before = list(db.iterdump())
+        result = call('kanban_create', **request, workflow=invalid)
+        assert list(db.iterdump()) == before, 'Rejected tool create wrote task/events/links'
+        assert 'error' in result, result
+        messages = [result['error']]
+        try:
+            kb.create_task(db, **request, workflow=invalid)
+            raise AssertionError('Native create accepted an invalid author')
+        except ValueError as exc:
+            messages.append(str(exc))
+        assert list(db.iterdump()) == before, 'Rejected native create wrote task/events/links'
+        for message in messages:
+            for detail in ('[A-Za-z0-9_-]{1,80}', 'pre-write rejection',
+                           'no task, events or links created', 'same request',
+                           'truthful author', 'preserve workflow', 'native-review-v1'):
+                assert detail in message, (author, message)
+    # In this synthetic specification the owner is the actual author. Change
+    # only the invalid field, preserving all other request fields and bindings.
+    invalid['plan_author'] = 'owner'
+    assert invalid == workflow
+    corrected = okay(call('kanban_create', **request, workflow=invalid))['task_id']
+    from hermes_cli import nixhomeserver_fleet_contract as contract
+    assert contract.load(db, corrected) == workflow
+    assert okay(call('kanban_show', task_id=corrected))['workflow'] == workflow
+    assert 'Workflow: native-review-v1' in kb.get_task(db, corrected).body
+    assert db.execute("SELECT COUNT(*) FROM task_events WHERE task_id=? AND kind='created'",
+                      (corrected,)).fetchone()[0] == 1
+    print('PASS: invalid author creates no task/events/links; corrected request retains structured review')
     tid = okay(call('kanban_create', title='Implement fixture slice', assignee='standard-implementer',
                    workflow=workflow, workspace_kind='dir', workspace_path=str(work)))['task_id']
     from hermes_cli import nixhomeserver_fleet_contract as contract

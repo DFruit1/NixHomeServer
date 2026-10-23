@@ -24,11 +24,16 @@ def validate(value):
         raise ValueError('workflow requires version=1 and known structured fields')
     if value.get('review') not in (None, 'native-review-v1'):
         raise ValueError('Unknown workflow review contract')
-    if value.get('review') and not re.fullmatch(TOKEN, str(value.get('plan_author', ''))):
-        raise ValueError('workflow.plan_author must name the actual author token')
-    if 'plan_author' in value and (not isinstance(value['plan_author'], str)
-                                  or not re.fullmatch(TOKEN, value['plan_author'])):
-        raise ValueError('workflow.plan_author must name the actual author token')
+    if ((value.get('review') or 'plan_author' in value)
+            and (not isinstance(value.get('plan_author'), str)
+                 or not re.fullmatch(TOKEN, value['plan_author']))):
+        raise ValueError(
+            'workflow.plan_author must be a string token matching [A-Za-z0-9_-]{1,80} '
+            '(1-80 ASCII letters, digits, underscores or hyphens). '
+            'This validator writes no state; for kanban_create this is a pre-write rejection '
+            '(no task, events or links created). Correct workflow.plan_author on the same request '
+            'using the truthful author token; preserve workflow and native-review-v1. '
+            'Do not remove the contract or create a workaround task')
     feature = value.get('feature')
     if feature is not None:
         if (not isinstance(feature, dict) or set(feature) - {'tracker', 'role', 'scope', 'stage'}

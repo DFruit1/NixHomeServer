@@ -10,6 +10,17 @@ workflow={"version":1,"review":"native-review-v1","plan_author":"<actual author>
 Name "owner" only when the owner supplied the specification. Creation validates
 and stores this immutable contract and generates its readable body markers.
 New native-review-v1 implementations require the structured review contract.
+`workflow.plan_author` must be a string matching `[A-Za-z0-9_-]{1,80}`:
+1-80 ASCII letters, digits, underscores or hyphens, naming the actual author
+(for example, `head-coordinator` when that profile authored the specification).
+Keep longer citations elsewhere. A confirmed pre-write `kanban_create` author
+validation rejection created no task, events or links. Correct only that field
+on the same request, preserving `workflow`, `native-review-v1`, scope and truthful
+authorship; do not drop the contract or create a workaround task. This is schema
+correction within existing create authority, never a release of a policy,
+identity, capability or safety refusal. Public workflow validation is also used
+by read/render/completion callers; it writes no state itself and does not promise
+to undo earlier caller writes.
 Legacy feature-gap controllers retain their Feature markers and assessed_defer
 contract; do not convert those reconciliation tasks into scoped deliveries.
 Legacy cards without
