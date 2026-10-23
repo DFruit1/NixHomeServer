@@ -163,12 +163,17 @@ worker/provider limit or schedule. Rollback through the retained previous fleet
 release restores the previous model settings and telemetry adapter together.
 New workers read the new settings; active workers retain their loaded runtime.
 
+The same instrumentation covers the coordinator, standard/local implementers,
+reviewer, auditor and steward. All currently installed profiles already enable
+the native Langfuse plugin. Reasoning tags apply to every model where the wire
+request reports a recognized effort; no other profile's model is changed.
+
 Use these three questions to compare similar work in the Hermes project:
 
 | Question | Langfuse evidence |
 | --- | --- |
-| How many tokens does the coordinator consume? | Filter generations to metadata `source=hermes`, `profile=head-coordinator`, then compare model, `provider_route` and `reasoning_effort`. Input, cache and output counts are native usage; reasoning is a subset of output, never an extra total. |
-| How long does useful work take? | `Hermes coordinator run` spans (`source=hermes-kanban-run`) carry native start/end times and `elapsed_seconds`, including tools and waits. Compare median/p95 and inspect individual runs. Generation duration separately measures provider request time. |
+| How many tokens does each profile/model consume? | Filter generations to metadata `source=hermes`, `profile=<role>`, then compare model, `provider_route` and `reasoning_effort`. Input, cache and output counts are native usage; reasoning is a subset of output, never an extra total. |
+| How long does useful work take? | `Hermes kanban run` spans (`source=hermes-kanban-run`) carry native start/end times and `elapsed_seconds`, including tools and waits. Compare median/p95 and inspect individual runs. Generation duration separately measures provider request time. |
 | Is the model making progress reliably? | Run metadata `status`, `outcome` and `attempt` show recorded handoffs, timeouts/crashes and repeated attempts per card. Generation errors/retry metadata and `provider_route` show request failures and fallback traffic. Completion is a recorded native run outcome, not independent feature acceptance. |
 
 Generations receive reasoning effort from the actual request body; missing
@@ -179,13 +184,24 @@ including many historic failed runs. Use matching `board`, `card_id`, `run_id`
 and session to inspect related generations rather than attributing every run
 to today's configuration. Failure categories are never inferred from messages.
 
-The existing five-minute usage collection exports terminal coordinator runs
+The existing five-minute usage collection exports terminal runs for every profile
 from active boards with a rolling 24-hour completion horizon (at most 32 boards
 and 1,000 runs per pass). In-progress runs are not counted as successes. Replays
 use stable observation IDs; delayed native session linkage updates the same
 observation. Missing/malformed sources or bounds appear explicitly in
-`summary.json` under `sources.coordinator_runs`. No transcript, task body,
+`summary.json` under `sources.hermes_runs`. No transcript, task body,
 provider error text, additional generation or new recurring job is introduced.
+
+The existing read-only `langfuse_mcp.py` bridge, when configured, forwards
+`queryMetrics` to the native observations Metrics API with a generation filter.
+Use per-profile metadata filters for token totals, generation latency and error
+counts, grouped by model. `getMetricsSchema` supplies the supported fields and
+units: native latency measures use milliseconds; run `elapsed_seconds` uses
+seconds. Run spans remain separate in the Langfuse explorer; a generation-only token query
+cannot accidentally add their durations or duplicate token usage. No second
+API, MCP server, credential set or reporting service is introduced here.
+Imported Codex/OpenCode usage retains its existing token coverage; those events
+do not establish request latency and must not be used as zero-latency samples.
 
 ## Verification
 

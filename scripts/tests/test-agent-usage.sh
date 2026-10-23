@@ -174,7 +174,7 @@ class UsageTest(unittest.TestCase):
             db.execute('INSERT INTO session_message VALUES (?,?,?,?,?,?,?)',('copied','fork','assistant',1,1000,1000,message(1000)))
         self.assertEqual([],usage.opencode_records(path,state,since=0)[0])
 
-    def test_coordinator_runs_export_outcome_wall_time_and_replays(self):
+    def test_fleet_runs_export_outcome_wall_time_and_replays(self):
         board=self.home/'kanban/boards/test/kanban.db';board.parent.mkdir(parents=True)
         with closing(sqlite3.connect(board)) as db, db:
             db.execute('CREATE TABLE task_runs(id INTEGER,task_id TEXT,profile TEXT,status TEXT,outcome TEXT,started_at INTEGER,ended_at INTEGER,metadata TEXT,error TEXT)')
@@ -184,19 +184,20 @@ class UsageTest(unittest.TestCase):
                 (3,'t_b','head-coordinator','running',None,1020,None,'{}','PRIVATE'),
                 (4,'t_c','standard-implementer','done','completed',1000,1020,'{}','PRIVATE')])
         before=board.read_bytes()
-        spans,state,coverage=usage.coordinator_records(self.home,{},since=950,until=1100)
-        self.assertEqual('observed',coverage['status']);self.assertEqual(2,len(spans))
+        spans,state,coverage=usage.hermes_run_records(self.home,{},since=950,until=1100)
+        self.assertEqual('observed',coverage['status']);self.assertEqual(3,len(spans))
+        self.assertEqual({'head-coordinator','standard-implementer'}, {usage.attributes(x)['langfuse.observation.metadata.profile'] for x in spans})
         attrs=[usage.attributes(x) for x in spans]
-        done=next(x for x in attrs if x['langfuse.observation.metadata.outcome']=='completed')
+        done=next(x for x in attrs if x['langfuse.observation.metadata.outcome']=='completed' and x['langfuse.observation.metadata.profile']=='head-coordinator')
         self.assertEqual(30,done['langfuse.observation.metadata.elapsed_seconds'])
         self.assertEqual(2,done['langfuse.observation.metadata.attempt'])
         self.assertEqual('unknown',done['langfuse.observation.metadata.session_model'])
         self.assertNotIn('langfuse.observation.usage_details',done)
         self.assertNotIn('PRIVATE',json.dumps(spans)+json.dumps(state))
         self.assertEqual(before,board.read_bytes())
-        self.assertEqual([],usage.coordinator_records(self.home,state,since=950,until=1100)[0])
+        self.assertEqual([],usage.hermes_run_records(self.home,state,since=950,until=1100)[0])
         self.assertEqual([x['spanId'] for x in spans],
-                         [x['spanId'] for x in usage.coordinator_records(self.home,{},since=950,until=1100)[0]])
+                         [x['spanId'] for x in usage.hermes_run_records(self.home,{},since=950,until=1100)[0]])
         self.assertTrue(all(int(x['endTimeUnixNano'])>int(x['startTimeUnixNano']) for x in spans))
 
     def test_late_session_link_updates_same_observation_without_duplicate_usage(self):
@@ -204,14 +205,14 @@ class UsageTest(unittest.TestCase):
         with closing(sqlite3.connect(board)) as db, db:
             db.execute('CREATE TABLE task_runs(id INTEGER,task_id TEXT,profile TEXT,status TEXT,outcome TEXT,started_at INTEGER,ended_at INTEGER,metadata TEXT)')
             db.execute('INSERT INTO task_runs VALUES (1,"t_a","head-coordinator","done","completed",900,1000,"{}")')
-        first,state,_=usage.coordinator_records(self.home,{},since=950,until=1100)
+        first,state,_=usage.hermes_run_records(self.home,{},since=950,until=1100)
         with closing(sqlite3.connect(board)) as db, db:
             db.execute('UPDATE task_runs SET metadata=?',(json.dumps({'worker_session_id':'s1','secret':'PRIVATE'}),))
         profile=self.home/'profiles/head-coordinator';profile.mkdir(parents=True)
         with closing(sqlite3.connect(profile/'state.db')) as db, db:
             db.execute('CREATE TABLE sessions(id TEXT,model TEXT)')
             db.execute('INSERT INTO sessions VALUES ("s1","gpt-6.1-sol")')
-        second,_,_=usage.coordinator_records(self.home,state,since=950,until=1100)
+        second,_,_=usage.hermes_run_records(self.home,state,since=950,until=1100)
         self.assertEqual(first[0]['traceId'],second[0]['traceId'])
         self.assertEqual(first[0]['spanId'],second[0]['spanId'])
         attrs=usage.attributes(second[0])
@@ -219,11 +220,30 @@ class UsageTest(unittest.TestCase):
         self.assertEqual('gpt-6.1-sol',attrs['langfuse.observation.metadata.session_model'])
         self.assertNotIn('PRIVATE',json.dumps(second))
 
-    def test_coordinator_missing_and_invalid_sources_are_explicit(self):
-        self.assertEqual('unavailable',usage.coordinator_records(self.home,{},since=0,until=100)[2]['status'])
+    def test_run_model_links_use_each_profiles_own_session_database(self):
+        board=self.home/'kanban/boards/test/kanban.db';board.parent.mkdir(parents=True)
+        with closing(sqlite3.connect(board)) as db, db:
+            db.execute('CREATE TABLE task_runs(id INTEGER,task_id TEXT,profile TEXT,status TEXT,outcome TEXT,started_at INTEGER,ended_at INTEGER,metadata TEXT)')
+            for run,profile in enumerate(('head-coordinator','feature-reviewer','../../outside'),1):
+                db.execute('INSERT INTO task_runs VALUES (?,?,?,?,?,?,?,?)',
+                           (run,'t_a',profile,'done','completed',900,1000,json.dumps({'worker_session_id':'s1'})))
+        for profile,model in [('head-coordinator','gpt-6.1-sol'),('feature-reviewer','glm-5.3')]:
+            home=self.home/'profiles'/profile;home.mkdir(parents=True)
+            with closing(sqlite3.connect(home/'state.db')) as db, db:
+                db.execute('CREATE TABLE sessions(id TEXT,model TEXT)')
+                db.execute('INSERT INTO sessions VALUES (?,?)',('s1',model))
+        spans,_,coverage=usage.hermes_run_records(self.home,{},since=950,until=1100)
+        self.assertEqual('partial',coverage['status']);self.assertEqual(1,coverage['errors'])
+        attrs=[usage.attributes(x) for x in spans]
+        self.assertEqual({'head-coordinator':'gpt-6.1-sol','feature-reviewer':'glm-5.3'},
+            {x['langfuse.observation.metadata.profile']:x['langfuse.observation.metadata.session_model'] for x in attrs})
+        self.assertTrue(all(x['langfuse.observation.metadata.attempt']==1 for x in attrs))
+
+    def test_fleet_missing_and_invalid_sources_are_explicit(self):
+        self.assertEqual('unavailable',usage.hermes_run_records(self.home,{},since=0,until=100)[2]['status'])
         board=self.home/'kanban/boards/test/kanban.db';board.parent.mkdir(parents=True)
         board.write_bytes(b'Not a SQLite database PRIVATE')
-        self.assertEqual('partial',usage.coordinator_records(self.home,{},since=0,until=100)[2]['status'])
+        self.assertEqual('partial',usage.hermes_run_records(self.home,{},since=0,until=100)[2]['status'])
 
     def test_wire_effort_survives_native_request_content_cap(self):
         native=Path.home()/'.hermes/hermes-agent/agent/api_request_hooks.py'

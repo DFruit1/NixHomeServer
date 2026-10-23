@@ -278,8 +278,8 @@ def send(config, spans):
             raise ValueError('Partial telemetry rejection')
 
 
-def coordinator_records(root, previous, *, since, until):
-    """Completed native runs, not feature acceptance or extra token usage.
+def hermes_run_records(root, previous, *, since, until):
+    """Terminal native runs across profiles, not feature acceptance or extra token usage.
 
     A completion cohort includes runs started before the window. Session model
     is only attributed through a recorded native link, never today's config.
@@ -292,27 +292,30 @@ def coordinator_records(root, previous, *, since, until):
             bounded=True;break
         try:
             with readonly(path) as db:
-                rows=db.execute("""SELECT r.id,r.task_id,r.status,r.outcome,r.started_at,r.ended_at,
+                rows=db.execute("""SELECT r.id,r.task_id,r.profile,r.status,r.outcome,r.started_at,r.ended_at,
                     CASE WHEN json_valid(r.metadata) THEN json_extract(r.metadata,'$.worker_session_id') END,
                     (SELECT count(*) FROM task_runs p WHERE p.task_id=r.task_id
                        AND p.profile=r.profile AND p.id<=r.id)
-                    FROM task_runs r WHERE r.profile='head-coordinator' AND r.ended_at>=? AND r.ended_at<?
+                    FROM task_runs r WHERE r.ended_at>=? AND r.ended_at<?
                     AND r.status!='running' ORDER BY r.ended_at DESC,r.id DESC LIMIT ?""",
                     (since,until,remaining+1)).fetchall()
             bounded=bounded or len(rows)>remaining
             selected=rows[:remaining];remaining-=len(selected)
-            for run,card,status,outcome,start,end,session,attempt in selected:
+            for run,card,profile,status,outcome,start,end,session,attempt in selected:
+                if not isinstance(profile,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}',profile):
+                    errors+=1;continue
                 if type(start) not in (int,float) or type(end) not in (int,float) or not math.isfinite(start) or not math.isfinite(end) or end<start:
                     errors+=1;continue
                 session=label(session)
                 model='unknown'
                 if session!='unknown':
                     try:
-                        with readonly(root/'profiles/head-coordinator/state.db') as db:
+                        home=root if profile=='default' else root/'profiles'/profile
+                        with readonly(home/'state.db') as db:
                             row=db.execute('SELECT model FROM sessions WHERE id=?',(session,)).fetchone()
                         model=label(row[0]) if row else 'unknown'
                     except (OSError,sqlite3.Error):pass
-                metadata={'profile':'head-coordinator','board':label(path.parent.name),'card_id':label(card),
+                metadata={'profile':label(profile),'board':label(path.parent.name),'card_id':label(card),
                           'run_id':str(run),'status':label(status),'outcome':label(outcome),
                           'elapsed_seconds':end-start,'attempt':attempt,'session_model':model,
                           'session_linked':session!='unknown','capture_mode':'metadata'}
@@ -324,7 +327,7 @@ def coordinator_records(root, previous, *, since, until):
                 if session!='unknown':
                     span['attributes']=[attribute(a['key'],session) if a['key']=='langfuse.session.id' else a
                                         for a in span['attributes']]
-                span['name']='Hermes coordinator run'
+                span['name']='Hermes kanban run'
                 span['startTimeUnixNano']=str(int(start*1_000_000_000))
                 if status in {'failed','crashed','timed_out','spawn_failed','gave_up'}:
                     span['status']={'code':2}
@@ -366,8 +369,9 @@ def collect(config, previous, now):
         state['opencode']=new;spans.extend(new_spans)
         sources['opencode']={'status':'bounded' if bounded or len(new_spans)>=MAX_SPANS else 'observed','exported':len(new_spans)}
     except (OSError,sqlite3.Error,ValueError,TypeError):sources['opencode']={'status':'unavailable'}
-    new_spans,new,coverage=coordinator_records(config['root'],state.get('coordinator_runs',{}),since=since,until=now)
-    state['coordinator_runs']=new;spans.extend(new_spans);sources['coordinator_runs']=coverage
+    new_spans,new,coverage=hermes_run_records(config['root'],state.get('hermes_runs',state.get('coordinator_runs',{})),since=since,until=now)
+    state['hermes_runs']=new;state.pop('coordinator_runs',None)
+    spans.extend(new_spans);sources['hermes_runs']=coverage
     sources['llama.cpp']={}
     for name,endpoint in config['llama_endpoints'].items():
         try:
