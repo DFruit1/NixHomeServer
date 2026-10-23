@@ -69,7 +69,8 @@ def install_files(root, pending, revision, *, source=None, context=None, preimag
     def install_order(item):
         path=item[0]
         # Publish dependencies before native entrypoints can reference them.
-        return (path.name in {'kanban_db.py','kanban_db_dispatch.py','kanban_tools.py','kanban_tools_schemas.py'}, str(path))
+        return (path.name in {'kanban_db.py','kanban_db_dispatch.py','kanban_tools.py',
+                            'kanban_tools_schemas.py','kanban_stop.py'}, str(path))
     for path, text in sorted(pending.items(), key=install_order):
         path = checked(root, path)
         relative = path.relative_to(root)

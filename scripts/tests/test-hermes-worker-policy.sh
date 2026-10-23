@@ -383,6 +383,16 @@ class InstallerTest(unittest.TestCase):
                 '    "a Telegram routing layer) needs to override the env-pinned active "\n'
                 '    "board for this one call."\n'
                 ')\n'
+                'def _board_schema_prop():\n'
+                '    return _prop("string", _DESC_BOARD)\n'
+                'def _schema(name, description, properties, required):\n'
+                '    """Build a tool schema; every kanban tool takes an optional trailing ``board``."""\n'
+                '    return {\n'
+                '        "parameters": {\n'
+                '            "properties": {**properties, "board": _board_schema_prop()},\n'
+                '            "required": required,\n'
+                '        },\n'
+                '    }\n'
                 'KANBAN_CREATE_SCHEMA = _schema(\n'
                 '    "kanban_create",\n'
                 '    ("Create a new kanban task."),\n'
@@ -405,9 +415,25 @@ class InstallerTest(unittest.TestCase):
         namespace = {'_prop': lambda *args: {}, '_schema': lambda *args: {'required': args[3]}}
         exec(compile(adapted_schemas, 'fixture-schemas', 'exec'), namespace)
         self.assertEqual(['title', 'assignee', 'board'],
-                         namespace['KANBAN_CREATE_SCHEMA']['required'])
+                         namespace['KANBAN_CREATE_SCHEMA']['parameters']['required'])
         self.assertIn('kanban_create requires it explicitly', adapted_schemas)
         self.assertNotIn('Pass an explicit slug only when the caller', adapted_schemas)
+
+    def test_handoff_schemas_match_the_scrubbed_hook_scope_contract(self):
+        runtime = Path(os.environ['HERMES_FIXTURE_NATIVE_PYTHON']).parents[2]
+        text = adapt('tools/kanban_tools_schemas.py',
+                     (runtime/'tools/kanban_tools_schemas.py').read_text())
+        schemas = {}
+        exec(compile(text, 'fixture-schemas', 'exec'), schemas)
+        for name in ('KANBAN_COMPLETE_SCHEMA', 'KANBAN_REQUEST_REVIEW_SCHEMA'):
+            with self.subTest(name=name):
+                parameters = schemas[name]['parameters']
+                self.assertIn('task_id', parameters['required'])
+                self.assertIn('board', parameters['required'])
+        for name in ('KANBAN_SHOW_SCHEMA', 'KANBAN_HEARTBEAT_SCHEMA',
+                     'KANBAN_SCHEDULE_SCHEMA', 'KANBAN_REQUEST_CHANGES_SCHEMA'):
+            with self.subTest(name=name):
+                self.assertNotIn('board', schemas[name]['parameters']['required'])
 
     def test_native_adapter_is_idempotent_and_refuses_incompatible_sources(self):
         fixtures = dict(self.native_fixtures(), **self.tool_fixtures())
@@ -458,6 +484,8 @@ class InstallerTest(unittest.TestCase):
             for name,text in self.tool_fixtures().items():
                 text = (runtime/name).read_text()
                 path=root/'hermes-agent'/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text(text)
+            stop=root/'hermes-agent/agent/kanban_stop.py';stop.parent.mkdir(parents=True)
+            stop.write_text((runtime/'agent/kanban_stop.py').read_text())
             config=root/'profiles/local-implementer/config.yaml';config.parent.mkdir(parents=True)
             config.write_text('model: {provider: custom, default: local}\n')
             config.chmod(0o640)
@@ -476,6 +504,9 @@ class InstallerTest(unittest.TestCase):
             self.assertIn('require_explicit_board',
                           (root/'hermes-agent/tools/kanban_tools.py').read_text())
             self.assertTrue((root/'hermes-agent/hermes_cli/nixhomeserver_create_board.py').is_file())
+            self.assertEqual((source.parent/'worker_handoff.py').read_text(),
+                            (root/'hermes-agent/hermes_cli/nixhomeserver_worker_handoff.py').read_text())
+            self.assertIn('session_handed_off', stop.read_text())
             self.assertEqual('Operator instructions\n', (root/'SOUL.md').read_text())
             for lane in ('head-coordinator', 'project-auditor'):
                 self.assertIn(installer.START,

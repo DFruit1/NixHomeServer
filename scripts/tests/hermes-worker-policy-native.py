@@ -209,7 +209,10 @@ try:
     for name,schema in vars(tool_schemas).items():
         if name!='KANBAN_CREATE_SCHEMA' and isinstance(schema,dict):
             required=(schema.get('parameters') or {}).get('required') or []
-            assert 'board' not in required, 'board became mandatory for '+name
+            if name in {'KANBAN_COMPLETE_SCHEMA', 'KANBAN_REQUEST_REVIEW_SCHEMA'}:
+                assert {'board', 'task_id'} <= set(required), 'handoff scope missing for '+name
+            else:
+                assert 'board' not in required, 'board became mandatory for '+name
     assert tool_schemas.KANBAN_CREATE_SCHEMA['parameters']['properties']['board']['description'].startswith(
         'Kanban board slug to target. kanban_create requires it explicitly')
     def create(**fields):

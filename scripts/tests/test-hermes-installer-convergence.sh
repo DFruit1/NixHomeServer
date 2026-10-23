@@ -172,12 +172,13 @@ class SharedRootTest(unittest.TestCase):
                    if os.environ.get('HERMES_FIXTURE_NATIVE_PYTHON') else
                    Path.home()/'.hermes/hermes-agent')
         for relative in ('hermes_cli/kanban_db.py', 'hermes_cli/kanban_db_dispatch.py',
-                         'tools/kanban_tools.py', 'tools/kanban_tools_schemas.py'):
+                         'tools/kanban_tools.py', 'tools/kanban_tools_schemas.py',
+                         'agent/kanban_stop.py'):
             target=self.root/'hermes-agent'/relative
             target.parent.mkdir(parents=True,exist_ok=True)
             target.write_text((runtime/relative).read_text())
         review = self.root / 'hermes-agent/agent/background_review.py'
-        review.parent.mkdir(parents=True)
+        review.parent.mkdir(parents=True,exist_ok=True)
         review.write_text('\n'.join(f'PROMPT{i} = (\n{old}\n)'
                                     for i, (old, _) in enumerate(memory.PROMPT_EDITS)))
 

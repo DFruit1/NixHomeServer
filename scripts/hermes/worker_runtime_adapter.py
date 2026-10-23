@@ -5,6 +5,42 @@ explicit and fail closed on source drift; never replace an entire native file.
 """
 
 EDITS = {
+    'agent/kanban_stop.py': (
+        ('    """True if this conversation already invoked a terminal kanban tool."""\n'
+         '    for msg in filter(lambda m: isinstance(m, dict), messages or ()):\n'
+         '        role = msg.get("role")\n'
+         '        if role == "assistant" and any(\n'
+         '            _tool_call_name(tc) in _TERMINAL_KANBAN_TOOLS for tc in msg.get("tool_calls") or []\n'
+         '        ):\n'
+         '            return True\n'
+         '        if role == "tool" and str(msg.get("name") or "") in _TERMINAL_KANBAN_TOOLS:\n'
+         '            return True\n'
+         '    return False\n',
+         '    """True only after a successful correlated handoff of the owned task."""\n'
+         '    from hermes_cli.nixhomeserver_worker_handoff import session_handed_off\n'
+         '    return session_handed_off(messages, task_id=owned_kanban_task(),\n'
+         '                              board=os.environ.get("HERMES_KANBAN_BOARD"))\n'),
+        ('    # The transcript is the status source: this text is only reached when the session made no\n'
+         '    # handoff call, so it never tells a worker to close a card it already sent to review.\n'
+         '    return (\n'
+         '        "[System: You are a Hermes kanban worker. A plain-text reply is NOT a "\n'
+         '        "terminal state for the board.\\n\\n"\n'
+         '        f"Task `{tid}` has not been handed off: this session made no terminal board "\n'
+         '        "call (`kanban_complete` / `kanban_request_review` / `kanban_block`). Ending now "\n'
+         '        "causes a protocol violation (clean exit with the card still `running`).\\n\\n"\n'
+         '        "Do this immediately in your next response — do not narrate intent:\\n"\n'
+         '        "1. Finish any remaining deliverable (write the required file(s) now).\\n"\n'
+         '        "2. Call `kanban_complete(summary=..., artifacts=[...])` if the work is done "\n'
+         '        "and needs no review, `kanban_request_review(summary=...)` if it is a code "\n'
+         '        "change that needs same-card review, OR `kanban_block(reason=...)` if you are "\n'
+         '        "blocked. Reviewers approve with `kanban_complete` or send the card back with "\n'
+         '        "`kanban_request_changes(reason=...)`.\\n\\n"\n'
+         '        "Never end a turn with only a promise of future action. Repeated "\n'
+         '        "protocol violations will block this task and require manual intervention.]"\n'
+         '    )\n',
+         '    from hermes_cli.nixhomeserver_worker_handoff import handoff_nudge\n'
+         '    return handoff_nudge(tid, os.environ.get("HERMES_KANBAN_BOARD"))\n'),
+    ),
     'kanban_db.py': (
         ('    assignee = _canonical_assignee(assignee)\n    if not title',
          '    assignee = _canonical_assignee(assignee)\n'
@@ -31,6 +67,18 @@ EDITS = {
          '            board=board,\n'),
     ),
     'tools/kanban_tools_schemas.py': (
+        ('    """Build a tool schema; every kanban tool takes an optional trailing ``board``."""\n'
+         '    return {\n',
+         '    """Require the explicit scope consumed by scrubbed handoff hooks."""\n'
+         '    board = _board_schema_prop()\n'
+         '    if name in {"kanban_complete", "kanban_request_review"}:\n'
+         '        required = list(dict.fromkeys([*required, "board", "task_id"]))\n'
+         '        board = _prop("string", "Required exact board slug for the handoff preflight.")\n'
+         '        properties = {**properties, "task_id": _prop("string",\n'
+         '            "Required exact assigned task id for the handoff preflight.")}\n'
+         '    return {\n'),
+        ('            "properties": {**properties, "board": _board_schema_prop()},\n',
+         '            "properties": {**properties, "board": board},\n'),
         ('_DESC_BOARD = (\n'
          '    "Kanban board slug to target. When omitted, the call resolves the "\n'
          '    "active board the usual way: HERMES_KANBAN_DB env → "\n'

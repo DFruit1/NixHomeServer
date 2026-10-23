@@ -74,6 +74,18 @@ class ReleaseTest(unittest.TestCase):
             release.merge_owned(pending,owners,{self.file:'different'},'other')
         self.assertEqual('old = 1\n',self.file.read_text())
 
+    def test_worker_handoff_helper_is_published_before_native_entrypoint(self):
+        helper=self.root/'hermes-agent/hermes_cli/nixhomeserver_worker_handoff.py'
+        entrypoint=self.root/'hermes-agent/agent/kanban_stop.py'
+        helper.parent.mkdir(parents=True);entrypoint.parent.mkdir(parents=True)
+        writes=[];original=release.atomic_write
+        def capture(path, text, **kwargs):
+            if path in (helper,entrypoint):writes.append(path)
+            return original(path,text,**kwargs)
+        with patch.object(release,'atomic_write',capture):
+            release.install_files(self.root,{entrypoint:'entrypoint=1\n',helper:'helper=1\n'},'a'*40)
+        self.assertEqual([helper,entrypoint],writes)
+
     def test_rollback_cannot_drop_existing_contract_reader(self):
         import sqlite3
         path=self.root/'kanban/boards/test/kanban.db';path.parent.mkdir(parents=True)

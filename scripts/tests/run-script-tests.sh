@@ -106,6 +106,7 @@ test_scripts=(
   scripts/tests/test-hermes-cron-policy.sh
   scripts/tests/test-hermes-memory-policy.sh
   scripts/tests/test-hermes-worker-policy.sh
+  scripts/tests/test-hermes-kanban-stop.sh
   scripts/tests/test-hermes-autonomy.sh
   scripts/tests/test-hermes-autonomy-runtime.sh
   scripts/tests/test-hermes-fixture-isolation.sh

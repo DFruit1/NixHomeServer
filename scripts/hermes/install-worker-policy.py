@@ -89,16 +89,19 @@ def pending_files(root, pending=None):
     native = root / 'hermes-agent'
     pending[native / 'hermes_cli/nixhomeserver_worker_policy.py'] = (SOURCE / 'worker-policy.py').read_text()
     pending[native / 'hermes_cli/nixhomeserver_create_board.py'] = (SOURCE / 'create-board-policy.py').read_text()
-    for name in ('fleet_contract', 'fleet_workflow', 'feature_contract', 'execution_preflight'):
+    for name in ('fleet_contract', 'fleet_workflow', 'feature_contract', 'execution_preflight',
+                 'worker_handoff'):
         pending[native / ('hermes_cli/nixhomeserver_' + name + '.py')] = (SOURCE / (name + '.py')).read_text()
         pending[root / ('scripts/' + name + '.py')] = (SOURCE / (name + '.py')).read_text()
     for relative, name in (('hermes_cli/kanban_db.py', 'kanban_db.py'),
                            ('hermes_cli/kanban_db_dispatch.py', 'kanban_db_dispatch.py'),
                            ('tools/kanban_tools.py', 'tools/kanban_tools.py'),
-                           ('tools/kanban_tools_schemas.py', 'tools/kanban_tools_schemas.py')):
+                           ('tools/kanban_tools_schemas.py', 'tools/kanban_tools_schemas.py'),
+                           ('agent/kanban_stop.py', 'agent/kanban_stop.py')):
         path = native / relative
         text = adapt(name, current(path))
-        pending[path] = adapt_workflow(name, text) if name != 'kanban_db_dispatch.py' else text
+        pending[path] = (adapt_workflow(name, text) if name in
+                        ('kanban_db.py', 'tools/kanban_tools.py', 'tools/kanban_tools_schemas.py') else text)
     return pending
 
 

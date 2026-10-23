@@ -159,8 +159,27 @@ host, SIGUSR1 asks the verified gateway PID to drain and exit 75, and the
 existing supervisor relaunches it. Check the replacement PID, heartbeat and
 startup errors. This is a Hermes runtime refresh, not NixOS activation.
 
-To roll back, remove only this adapter's calls from the four native files before
-removing its installed policy modules. Restore only the title setting and
+Worker handoffs are checked against successful native tool receipts. A terminal
+tool attempt that returns an error leaves the worker responsible for its card;
+the bounded stop guard still prompts it to correct that failure. A successful
+completion, block, schedule, review request or reviewer rework for the assigned
+card ends that responsibility. Results are correlated by tool-call ID and exact
+task identity, including tool messages whose name is omitted.
+
+The model-facing completion and review-request schemas require explicit `board`
+and `task_id`: shell hooks deliberately scrub worker identity from their child
+environment, so those preflights cannot use the native task default. The stop
+prompt supplies the actual dispatcher identifiers and preserves goal, review,
+provider and owner gates. Its two-attempt budget is unchanged. These source-checked
+native seams and their helper ship through `fleet-release.py`, including private
+preimages and rollback; new worker processes load them without interrupting active
+workers. Run `bash scripts/tests/test-hermes-kanban-stop.sh` for the confined
+receipt and native stop-gate regressions.
+
+To roll back a fleet-managed installation, use `fleet-release.py rollback
+--revision RELEASE_ID`. For a standalone installation, remove only this adapter's
+calls from the affected native files before removing its installed policy modules.
+Restore only the title setting and
 managed instruction block, preserving intervening operator edits. Use private
 backups as references rather than blindly replacing changed files.
 
