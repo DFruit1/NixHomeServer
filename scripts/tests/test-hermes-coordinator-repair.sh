@@ -97,6 +97,448 @@ class RepairTest(unittest.TestCase):
             self.conn.execute('UPDATE tasks SET block_kind=? WHERE id=?',(kind,self.target));self.conn.commit()
             with self.assertRaises(ValueError):self.apply({'block_kind':'capability'})
 
+    def dump(self):
+        return [[dict(row) for row in self.conn.execute(sql)] for sql in (
+            'SELECT * FROM tasks ORDER BY id','SELECT * FROM task_runs ORDER BY id',
+            'SELECT * FROM task_events ORDER BY id','SELECT * FROM task_links ORDER BY parent_id,child_id')]
+
+    def probe(self, calls):
+        """Record every subprocess argv while keeping the real call semantics."""
+        real=subprocess.run
+        def record(*args,**kwargs):
+            calls.append(args[0] if args else kwargs.get('args'))
+            return real(*args,**kwargs)
+        return record
+
+    def episode(self,run_id,source_status='review'):
+        """One real native untyped kanban_block handoff owned by its own run."""
+        self.conn.execute("UPDATE tasks SET status='running',skills='[]',max_retries=NULL,"
+                          "consecutive_failures=0,block_kind=NULL,block_recurrences=0,claim_lock='proof',"
+                          "claim_expires=?,current_run_id=? WHERE id=?",(self.now+600,run_id,self.target))
+        self.conn.execute("INSERT INTO task_runs(id,task_id,status,profile,started_at,claim_lock,claim_expires)"
+                          " VALUES(?,?,'running','feature-reviewer',?,'proof',?)",
+                          (run_id,self.target,self.now-30,self.now+600))
+        kb._append_event(self.conn,self.target,'claimed',{'source_status':source_status},run_id=run_id)
+        self.conn.commit()
+        self.assertTrue(kb.block_task(self.conn,self.target,
+                                      reason='Reviewer stopped at the missing plan; Input supplier: agent.'))
+        event=self.conn.execute("SELECT id FROM task_events WHERE task_id=? AND kind='blocked'"
+                                " ORDER BY id DESC LIMIT 1",(self.target,)).fetchone()[0]
+        return {'run_id':run_id,'event_id':event}
+
+    def containment(self,episode,**kwargs):
+        return self.amend_episode(episode,'Input supplier: agent. Repair evidence: the missing plan section '
+                                  'was restored and read back; containment only, unchanged review scope.',**kwargs)
+
+    def amend_episode(self,episode,reason,changes=None):
+        version=repair.amend(kb,self.conn,self.target)['version']
+        return repair.amend(kb,self.conn,self.target,expected_version=version,
+                            changes=changes or {'block_kind':'capability'},reason=reason,
+                            terminal_episode=episode)
+
+    def current_hold(self):
+        return monitor.recovery.read_board(self.conn,self.root,'testboard',
+                                           monitor.recovery.helper_identity(self.root))[0]
+
+    def holds(self):
+        return monitor.recovery.read_board(self.conn,self.root,'testboard',
+                                           monitor.recovery.helper_identity(self.root))
+
+    def reclaimed_episode(self):
+        """A genuine native capability hold, release, claim, stale reclaim, trip.
+
+        The prior release is what hides this reclaim from the monitor. The
+        claim, reclaim and gave_up rows come from the native lifecycle
+        functions, so the fixture keeps the real shapes: the claimed and
+        reclaimed events are run-scoped while the breaker's gave_up is
+        task-scoped (run_id NULL).
+        """
+        self.conn.execute("UPDATE tasks SET status='ready',skills='[]',block_kind='capability',"
+                          "max_retries=1,consecutive_failures=0 WHERE id=?",(self.target,));self.conn.commit()
+        self.assertTrue(kb.block_task(self.conn,self.target,kind='capability',
+                                      reason='Input supplier: agent. Older capability episode'))
+        self.assertTrue(kb.unblock_task(self.conn,self.target))
+        self.assertIsNotNone(kb.claim_task(self.conn,self.target,claimer='stale'))
+        run=self.conn.execute('SELECT id FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1',
+                              (self.target,)).fetchone()[0]
+        with kb.write_txn(self.conn):
+            kb._record_reclaim(self.conn,self.target,{},error='stale_lock=stale',
+                               payload={'retry_status':'review'})
+            self.conn.execute("UPDATE tasks SET status='review',claim_lock=NULL,claim_expires=NULL"
+                              " WHERE id=?",(self.target,))
+        self.assertTrue(kb._record_task_failure(
+            self.conn,self.target,'stale_lock=stale',outcome='reclaimed',failure_limit=3,
+            release_claim=False,end_run=False,event_payload_extra={'retry_status':'review'}))
+        event=self.conn.execute("SELECT id FROM task_events WHERE task_id=? AND kind='gave_up'"
+                                " ORDER BY id DESC LIMIT 1",(self.target,)).fetchone()[0]
+        return {'run_id':run,'event_id':event}
+
+    def reviewer_history(self):
+        """The historical consumption a Branch A containment must not rewrite.
+
+        Native reviewer shape: one completed measurement run retained
+        request-changes with its failed exit-1 check, then exactly one
+        receipt-only completion attempt was refused for missing explicit
+        board/task scope and stopped. The card itself is parked with failure 0
+        and NULL retries, so those two consumptions exist only in the run and
+        event record; a classification or release that replenished either one
+        would silently authorise a second attempt.
+        """
+        parent=kb.create_task(self.conn,title='Completed prerequisite',assignee='standard-implementer')
+        self.conn.execute("UPDATE tasks SET status='done' WHERE id=?",(parent,))
+        self.conn.execute('INSERT INTO task_links(parent_id,child_id) VALUES(?,?)',(parent,self.target))
+        revision='a'*64
+        check='PATH=/usr/bin:$PATH python3 scripts/hermes/fixture-runner.py --repo . '\
+              '--suite scripts/tests/test-coordinator-repair-product-check.sh --timeout 300'
+        measurement={'verdict':'request-changes','revision':revision,'implementer':'standard-implementer',
+                     'requested_changes':['Restore the missing plan section'],
+                     'checks':[{'command':check,'exit_code':1}]}
+        self.conn.execute("INSERT INTO task_runs(id,task_id,status,profile,started_at,ended_at,outcome,metadata)"
+                          " VALUES(40,?,'done','feature-reviewer',?,?,'completed',?)",
+                          (self.target,self.now-3000,self.now-2800,json.dumps(measurement)))
+        kb._append_event(self.conn,self.target,'changes_requested',
+                         {'retry_status':'review','revision':revision,'checks':measurement['checks']},run_id=40)
+        refusal='Explicit board and task scope required; no further attempt recorded.'
+        receipt={'attempt':'receipt-only','consumed':True,'refusal':refusal}
+        self.conn.execute("INSERT INTO task_runs(id,task_id,status,profile,started_at,ended_at,outcome,metadata)"
+                          " VALUES(41,?,'done','feature-reviewer',?,?,'completed',?)",
+                          (self.target,self.now-2400,self.now-2300,json.dumps(receipt)))
+        kb._append_event(self.conn,self.target,'failed',
+                         {'error':refusal,'attempt':'receipt-only','consumed':True},run_id=41)
+        self.conn.commit()
+        return {'parent':parent,'measurement':40,'receipt':41,'revision':revision,
+                'check':check,'refusal':refusal,
+                'last_event':self.conn.execute('SELECT MAX(id) FROM task_events').fetchone()[0]}
+
+    def test_terminal_episode_untyped_containment_preserves_review_phase_and_resumes_once(self):
+        history=self.reviewer_history()
+        episode=self.episode(43)
+        before=self.dump()
+        self.assertEqual([],self.holds())             # the untyped episode is not a hold yet
+        version=repair.amend(kb,self.conn,self.target)['version']
+        probes=[]
+        with patch('subprocess.run',side_effect=self.probe(probes)):
+            result=repair.amend(kb,self.conn,self.target,expected_version=version,
+                                changes={'block_kind':'capability'},reason=self.containment_reason(),
+                                terminal_episode=episode)
+        self.assertTrue(result['applied'])
+        after=self.dump()
+        was={r['id']:r for r in before[0]}[self.target];now={r['id']:r for r in after[0]}[self.target]
+        self.assertEqual(dict(was,block_kind='capability'),now)
+        self.assertEqual('blocked',now['status']);self.assertEqual(0,now['consecutive_failures'])
+        self.assertIsNone(now['max_retries']);self.assertIsNone(now['last_failure_error'])
+        self.assertEqual(before[1],after[1])          # no run created, none mutated
+        self.assertEqual(before[2],after[2][:-1])     # every earlier episode preserved
+        self.assertEqual(before[3],after[3])
+        added=after[2][-1];payload=json.loads(added['payload'])
+        self.assertEqual(('blocked','terminal-containment'),(added['kind'],payload['branch']))
+        self.assertEqual((43,episode['event_id'],42),
+                         (payload['source_run'],payload['source_event'],payload['actor_run']))
+        self.assertEqual(('capability','agent','review'),
+                         (payload['kind'],payload['supplier'],payload['resume_status']))
+        # The reviewer-shaped history survives byte for byte: the completed
+        # measurement still carries its request-changes/exit-1 verdict and the
+        # one receipt-only attempt is still spent. Nothing re-runs the failed
+        # product check, and no attempt is minted for a later continuation.
+        runs={r['id']:r for r in after[1]}
+        self.assertEqual([40,41,42,43],sorted(runs))
+        measured=json.loads(runs[history['measurement']]['metadata'])
+        self.assertEqual(('request-changes',history['revision']),
+                         (measured['verdict'],measured['revision']))
+        self.assertEqual([{'command':history['check'],'exit_code':1}],measured['checks'])
+        spent=json.loads(runs[history['receipt']]['metadata'])
+        self.assertEqual(('receipt-only',True),(spent['attempt'],spent['consumed']))
+        refusals=[e for e in after[2] if e['kind']=='failed' and e['run_id']==history['receipt']]
+        self.assertEqual(1,len(refusals))
+        self.assertEqual(history['refusal'],json.loads(refusals[0]['payload'])['error'])
+        self.assertEqual([],probes)                   # classification ran no check
+        self.assertIn({'parent_id':history['parent'],'child_id':self.target},after[3])
+        self.assertEqual('done',{p['id']:p for p in after[0]}[history['parent']]['status'])
+        # A consumed or superseded episode never rides a second amendment.
+        replayed=self.dump()
+        with self.assertRaisesRegex(ValueError,'changed'):
+            repair.amend(kb,self.conn,self.target,expected_version=version,
+                         changes={'block_kind':'capability'},reason=self.containment_reason(),
+                         terminal_episode=episode)
+        self.assertEqual(replayed,self.dump())
+        with self.assertRaisesRegex(ValueError,'supersedes'):
+            self.containment(episode)
+        self.assertEqual(replayed,self.dump())
+        current=self.current_hold()
+        self.assertEqual('agent',current['supplier'])
+        self.assertEqual((self.target,'feature-reviewer'),(current['task_id'],current['assignee']))
+        self.assertRegex(current['version'],r'^[0-9a-f]{64}$')
+        self.assertNotIn(current['version'],{version,result['version']})  # fresh hold, not the snapshot
+        self.assertEqual('review',resume_recovered.resume_recovered(
+            kb,self.conn,self.target,current['version'],'Containment classified; resume the unchanged review')['status'])
+        with self.assertRaises(ValueError):
+            resume_recovered.resume_recovered(kb,self.conn,self.target,current['version'],'replay')
+        # One guarded release: only the target's status moves, and both spent
+        # attempts, the counters and the retry budget survive it unchanged.
+        final=self.dump()
+        self.assertEqual(before[1],final[1])
+        self.assertEqual(before[2],final[2][:-2])
+        self.assertEqual(['blocked','unblocked'],[e['kind'] for e in final[2][-2:]])
+        self.assertEqual(before[3],final[3])
+        self.assertEqual([dict(r,status='review') if r['id']==self.target else r for r in after[0]],final[0])
+        released={r['id']:r for r in final[0]}[self.target]
+        self.assertEqual(('review','capability','feature-reviewer',0,None,None),
+                         (released['status'],released['block_kind'],released['assignee'],
+                          released['consecutive_failures'],released['max_retries'],
+                          released['last_failure_error']))
+        appended=final[2][len(after[2]):]
+        self.assertEqual(['unblocked'],[e['kind'] for e in appended])
+        episode_events=[e for e in final[2] if e['id']>history['last_event']]
+        self.assertEqual(['claimed','blocked','blocked','unblocked'],
+                         [e['kind'] for e in episode_events])
+        self.assertFalse([e for e in episode_events
+                          if 'test-coordinator-repair-product-check' in (e['payload'] or '')])
+
+    def test_terminal_episode_reaffirms_reclaimed_capability_without_mutation(self):
+        episode=self.reclaimed_episode()
+        # The reclaim trip is invisible to the monitor: the newest block-phase
+        # event is still the PRIOR release, so no current hold or resume exists.
+        self.assertEqual([],monitor.recovery.read_board(
+            self.conn,self.root,'testboard',monitor.recovery.helper_identity(self.root)))
+        with self.assertRaisesRegex(ValueError,'technical recovery hold'):
+            resume_recovered.resume_recovered(kb,self.conn,self.target,'0'*64,'no current episode')
+        before=self.dump()
+        give={r['id']:r for r in before[2]}[episode['event_id']]
+        self.assertEqual(('gave_up',None),(give['kind'],give['run_id']))  # native trip is task-scoped
+        self.assertTrue(self.amend_episode(episode,
+            'Input supplier: agent. Authorized continuation: the reclaim at the stale claim was audited; '
+            'reaffirm this reclaimed episode only.').get('applied'))
+        after=self.dump()
+        self.assertEqual(before[0],after[0])          # every task column byte-identical
+        self.assertEqual(before[1],after[1]);self.assertEqual(before[3],after[3])
+        self.assertEqual(before[2],after[2][:-1])
+        payload=json.loads(after[2][-1]['payload'])
+        self.assertEqual(('blocked','reclaimed-reaffirmation','capability'),
+                         (after[2][-1]['kind'],payload['branch'],payload['kind']))
+        self.assertEqual((episode['run_id'],episode['event_id'],42),
+                         (payload['source_run'],payload['source_event'],payload['actor_run']))
+        self.assertEqual(('agent','review'),(payload['supplier'],payload['resume_status']))
+        row={r['id']:r for r in after[0]}[self.target]
+        self.assertEqual((1,1,'stale_lock=stale','capability'),
+                         (row['consecutive_failures'],row['max_retries'],row['last_failure_error'],row['block_kind']))
+        current=self.current_hold()
+        self.assertEqual('agent',current['supplier'])
+        resumed=resume_recovered.resume_recovered(kb,self.conn,self.target,current['version'],
+                                                  'Reaffirmed reclaimed episode; resume the unchanged review')
+        self.assertEqual('review',resumed['status'])
+        released={r['id']:r for r in self.dump()[0]}[self.target]
+        self.assertEqual(dict(row,status='review'),released)
+
+    def test_terminal_episode_reaffirmation_requires_material_repair_evidence(self):
+        episode=self.reclaimed_episode()
+        version=repair.amend(kb,self.conn,self.target)['version']
+        holds=self.holds();before=self.dump()
+        self.assertEqual([],holds)
+        for reason in ('Input supplier: agent.',
+                       'Input supplier: agent. The reclaim at the stale claim was audited.',
+                       'Input supplier: agent. Repair evidence:',
+                       'Input supplier: agent. Authorized continuation: '):
+            with self.subTest(reason=reason),self.assertRaisesRegex(ValueError,'material'):
+                repair.amend(kb,self.conn,self.target,expected_version=version,
+                             changes={'block_kind':'capability'},reason=reason,
+                             terminal_episode=episode)
+            # A refusal must not type, append or consume this episode's hold.
+            self.assertEqual(before,self.dump())
+            self.assertEqual(holds,self.holds())
+        self.assertTrue(self.amend_episode(episode,
+            'Input supplier: agent. Authorized continuation: the reclaim at the stale claim was audited; '
+            'reaffirm this reclaimed episode only.').get('applied'))
+
+    def test_terminal_episode_reaffirmation_requires_this_runs_claim_reclaim_chronology(self):
+        episode=self.reclaimed_episode()
+        reason=('Input supplier: agent. Authorized continuation: the reclaim at the stale claim was '
+                'audited; reaffirm this reclaimed episode only.')
+        before=self.dump();holds=self.holds()
+        rows={r['id']:dict(r) for r in before[2]}
+        claim=next(r for r in rows.values() if r['kind']=='claimed' and r['run_id']==episode['run_id'])
+        reclaim=next(r for r in rows.values() if r['kind']=='reclaimed' and r['run_id']==episode['run_id'])
+        release=next(r for r in reversed(list(rows.values())) if r['kind']=='unblocked')
+        give=rows[episode['event_id']]
+        def restore(row):
+            keys=list(row)
+            self.conn.execute('INSERT OR REPLACE INTO task_events('+','.join(keys)+') VALUES('
+                              +','.join('?'*len(keys))+')',tuple(row[k] for k in keys))
+            self.conn.commit()
+        cases=(('missing claim',claim,'DELETE FROM task_events WHERE id=?',(claim['id'],),
+                "claim and reclaim records"),
+               ('missing reclaim',reclaim,'DELETE FROM task_events WHERE id=?',(reclaim['id'],),
+                "claim and reclaim records"),
+               ('claim of another run',claim,'UPDATE task_events SET run_id=? WHERE id=?',(41,claim['id']),
+                "claim and reclaim records"),
+               ('reclaim of another run',reclaim,'UPDATE task_events SET run_id=? WHERE id=?',(41,reclaim['id']),
+                "claim and reclaim records"),
+               ('claim before the prior release',claim,'UPDATE task_events SET created_at=? WHERE id=?',
+                (release['created_at']-1,claim['id']),'timestamps after the prior release'),
+               ('reclaim before the prior release',reclaim,'UPDATE task_events SET created_at=? WHERE id=?',
+                (release['created_at']-1,reclaim['id']),'timestamps after the prior release'),
+               ('reclaim before its own claim',claim,'UPDATE task_events SET created_at=? WHERE id=?',
+                (reclaim['created_at']+1,claim['id']),'timestamps after the prior release'),
+               ('trip before its own reclaim',give,'UPDATE task_events SET created_at=? WHERE id=?',
+                (reclaim['created_at']-1,give['id']),'Reaffirmation|terminal event'))
+        for name,row,sql,params,expected in cases:
+            with self.subTest(case=name):
+                self.conn.execute(sql,params);self.conn.commit()
+                mutated=self.dump();self.assertNotEqual(before,mutated)  # the probe changed the evidence
+                # Re-inspect after the mutation: a coordinator sees the changed
+                # card, and the chronology rule must still refuse it on its own.
+                current=repair.amend(kb,self.conn,self.target)['version']
+                with self.assertRaisesRegex(ValueError,expected):
+                    repair.amend(kb,self.conn,self.target,expected_version=current,
+                                 changes={'block_kind':'capability'},reason=reason,
+                                 terminal_episode=episode)
+                self.assertEqual(mutated,self.dump())      # a refusal appends or mutates nothing
+                self.assertEqual(holds,self.holds())
+                restore(row)
+                self.assertEqual(before,self.dump())
+        with self.subTest(case='release between the claim and the reclaim'):
+            # release1 -> claim -> release3 -> reclaim -> gave_up. The newest
+            # release is release3, so this trip did not follow the card's live
+            # release and must be refused even though release1 predates the
+            # claim. Shift this card's later event ids to free one slot.
+            shift=10000
+            self.conn.execute('UPDATE task_events SET id=id+? WHERE task_id=? AND id>?',
+                              (shift,self.target,claim['id']))
+            self.conn.execute("INSERT INTO task_events(id,task_id,kind,payload,created_at) "
+                              "VALUES(?,?,'unblocked',?,?)",
+                              (claim['id']+1,self.target,'{"status":"ready"}',claim['created_at']))
+            self.conn.commit()
+            intervening=self.dump();self.assertNotEqual(before,intervening)
+            try:
+                # Re-inspect so this is the chronology rule, not the CAS, refusing.
+                current=repair.amend(kb,self.conn,self.target)['version']
+                with self.assertRaisesRegex(ValueError,'claim after the latest prior release'):
+                    repair.amend(kb,self.conn,self.target,expected_version=current,
+                                 changes={'block_kind':'capability'},reason=reason,
+                                 terminal_episode={'run_id':episode['run_id'],
+                                                   'event_id':episode['event_id']+shift})
+                self.assertEqual(intervening,self.dump())
+                self.assertEqual(holds,self.holds())
+            finally:
+                self.conn.execute('DELETE FROM task_events WHERE id=?',(claim['id']+1,))
+                self.conn.execute('UPDATE task_events SET id=id-? WHERE task_id=? AND id>?',
+                                  (shift,self.target,claim['id']+shift))
+                self.conn.commit()
+            self.assertEqual(before,self.dump())
+
+    def test_terminal_episode_rejections_preserve_rows_runs_events_and_links(self):
+        fresh=self.episode(43)
+        version=repair.amend(kb,self.conn,self.target)['version']
+        before=self.dump()
+        for episode in ({'run_id':43},{'run_id':43,'event_id':fresh['event_id'],'note':'closed object only'},
+                        {'run_id':'43','event_id':fresh['event_id']},
+                        {'run_id':True,'event_id':fresh['event_id']},
+                        {'run_id':0,'event_id':fresh['event_id']},
+                        {'run_id':999,'event_id':fresh['event_id']},
+                        {'run_id':43,'event_id':999}):
+            with self.subTest(episode=episode),self.assertRaises(ValueError):
+                repair.amend(kb,self.conn,self.target,expected_version=version,
+                             changes={'block_kind':'capability'},
+                             reason='Input supplier: agent. Repair evidence: material input supplied.',
+                             terminal_episode=episode)
+            self.assertEqual(before,self.dump())
+        with self.assertRaises(ValueError):   # an episode never travels alone or bundles edits
+            repair.amend(kb,self.conn,self.target,expected_version=version,changes={'skills':[]},
+                         reason='Input supplier: agent. Repair evidence: material input supplied.',
+                         terminal_episode=fresh)
+        self.assertEqual(before,self.dump())
+        with self.assertRaises(ValueError):
+            repair.amend(kb,self.conn,self.target,expected_version=version,
+                         changes={'block_kind':'capability','priority':5},
+                         reason='Input supplier: agent. Repair evidence: material input supplied.',
+                         terminal_episode=fresh)
+        self.assertEqual(before,self.dump())
+        with self.assertRaises(ValueError):   # untyped containment needs material repair evidence
+            repair.amend(kb,self.conn,self.target,expected_version=version,
+                         changes={'block_kind':'capability'},reason='Input supplier: agent.',
+                         terminal_episode=fresh)
+        self.assertEqual(before,self.dump())
+        with self.assertRaises(ValueError):   # never an owner or model-unattributed gate
+            repair.amend(kb,self.conn,self.target,expected_version=version,
+                         changes={'block_kind':'capability'},
+                         reason='Input supplier: owner. Repair evidence: owner decided',
+                         terminal_episode=fresh)
+        self.assertEqual(before,self.dump())
+        kb._append_event(self.conn,self.target,'unblocked',None);self.conn.commit()
+        before=self.dump()
+        with self.assertRaisesRegex(ValueError,'supersedes'):
+            repair.amend(kb,self.conn,self.target,
+                         expected_version=repair.amend(kb,self.conn,self.target)['version'],
+                         changes={'block_kind':'capability'},
+                         reason='Input supplier: agent. Repair evidence: material input supplied.',
+                         terminal_episode=fresh)
+        self.assertEqual(before,self.dump())
+        self.conn.execute("UPDATE tasks SET status='blocked',block_kind='needs_input' WHERE id=?",(self.target,))
+        self.conn.commit();before=self.dump()
+        with self.assertRaises(ValueError):
+            repair.amend(kb,self.conn,self.target,expected_version=repair.amend(kb,self.conn,self.target)['version'],
+                         changes={'block_kind':'capability'},reason='Input supplier: agent.',
+                         terminal_episode={'run_id':43,'event_id':fresh['event_id']})
+        self.assertEqual(before,self.dump())
+        self.conn.execute("UPDATE tasks SET block_kind=NULL,status='blocked',body='ASK: owner must decide' WHERE id=?",
+                          (self.target,));self.conn.commit();before=self.dump()
+        with self.assertRaises(ValueError):
+            repair.amend(kb,self.conn,self.target,expected_version=repair.amend(kb,self.conn,self.target)['version'],
+                         changes={'block_kind':'capability'},
+                         reason='Input supplier: agent. Repair evidence: material input supplied.',
+                         terminal_episode={'run_id':43,'event_id':fresh['event_id']})
+        self.assertEqual(before,self.dump())
+
+    def test_terminal_episode_reaffirmation_rejects_incoherent_reclaim_evidence(self):
+        self.conn.execute("UPDATE tasks SET status='ready',skills='[]',block_kind='capability',"
+                          "max_retries=1,consecutive_failures=0 WHERE id=?",(self.target,));self.conn.commit()
+        self.conn.execute("INSERT INTO task_runs(id,task_id,status,profile,started_at,ended_at,outcome)"
+                          " VALUES(44,?,'reclaimed','feature-reviewer',?,?,'reclaimed')",
+                          (self.target,self.now-300,self.now))
+        kb._append_event(self.conn,self.target,'reclaimed',{'retry_status':'review'},run_id=44)
+        self.conn.execute("UPDATE tasks SET status='blocked',consecutive_failures=1,"
+                          "last_failure_error='stale_lock=stale' WHERE id=?",(self.target,))
+        kb._append_event(self.conn,self.target,'gave_up',
+                         {'trigger_outcome':'reclaimed','failures':1,'effective_limit':1,
+                          'limit_source':'task','retry_status':'review'});self.conn.commit()
+        event=self.conn.execute("SELECT id FROM task_events WHERE task_id=? AND kind='gave_up'"
+                                " ORDER BY id DESC LIMIT 1",(self.target,)).fetchone()[0]
+        for payload in ({'failures':9,'effective_limit':1,'limit_source':'task','trigger_outcome':'reclaimed'},
+                        {'failures':1,'effective_limit':7,'limit_source':'task','trigger_outcome':'reclaimed'},
+                        {'failures':1,'effective_limit':1,'limit_source':'task','trigger_outcome':'timed_out'},
+                        {'trigger_outcome':'reclaimed'}):
+            with self.subTest(payload=payload):
+                self.conn.execute("UPDATE task_events SET payload=? WHERE id=?",(json.dumps(payload),event))
+                self.conn.commit();before=self.dump()
+                with self.assertRaises(ValueError):
+                    self.amend_episode({'run_id':44,'event_id':event},
+                                       'Input supplier: agent. Authorized continuation: reclaim audited.')
+                self.assertEqual(before,self.dump())
+        self.conn.execute("UPDATE task_events SET payload=? WHERE id=?",(json.dumps(
+            {'trigger_outcome':'reclaimed','failures':1,'effective_limit':1,'limit_source':'task'}),event))
+        self.conn.execute("UPDATE task_runs SET status='crashed',outcome='crashed' WHERE id=44");self.conn.commit()
+        before=self.dump()
+        with self.assertRaisesRegex(ValueError,'reclaimed'):
+            self.amend_episode({'run_id':44,'event_id':event},
+                               'Input supplier: agent. Authorized continuation: reclaim audited.')
+        self.assertEqual(before,self.dump())
+
+    def test_terminal_episode_containment_respects_parent_gate_and_ready_source(self):
+        parent=kb.create_task(self.conn,title='Open parent',assignee='standard-implementer')
+        self.conn.execute('INSERT INTO task_links(parent_id,child_id) VALUES(?,?)',(parent,self.target))
+        self.conn.commit()
+        self.containment(self.episode(43,source_status='ready'))
+        current=self.current_hold()
+        self.assertEqual('todo',resume_recovered.resume_recovered(
+            kb,self.conn,self.target,current['version'],'Open parent keeps the containment gated')['status'])
+        self.conn.execute('DELETE FROM task_links WHERE child_id=?',(self.target,))
+        self.conn.execute("UPDATE tasks SET status='ready',block_kind=NULL WHERE id=?",(self.target,))
+        self.conn.commit()
+        self.containment(self.episode(45,source_status='ready'))
+        current=self.current_hold()
+        self.assertEqual('ready',resume_recovered.resume_recovered(
+            kb,self.conn,self.target,current['version'],'Ready source keeps its resume phase')['status'])
+        self.assertEqual('capability',kb.get_task(self.conn,self.target).block_kind)
+
     def test_failed_reviewer_classification_and_versioned_resume_preserve_review_phase(self):
         self.conn.execute("UPDATE tasks SET status='blocked',max_retries=1,consecutive_failures=1,last_failure_error='protocol violation' WHERE id=?",(self.target,))
         self.conn.execute("INSERT INTO task_runs(id,task_id,status,profile,started_at,ended_at,outcome) VALUES(43,?,'crashed','feature-reviewer',?,?,'crashed')",(self.target,self.now-20,self.now))
@@ -128,6 +570,55 @@ class RepairTest(unittest.TestCase):
             data=(native/name).read_text();after=adapt(name,data)
             self.assertEqual(after,adapt(name,after))
             with self.assertRaises(ValueError):adapt(name,'# incompatible source')
+
+    def test_terminal_episode_seam_is_closed_migrated_and_forwarded(self):
+        from coordinator_repair_adapter import SCHEMA
+        seam={};exec(SCHEMA,seam);schema=seam['KANBAN_AMEND_SCHEMA']
+        episode=schema['parameters']['properties']['terminal_episode']
+        self.assertEqual({'terminal_episode'},set(schema['parameters']['properties'])-
+                         {'board','task_id','expected_version','changes','reason','runtime_evidence'})
+        self.assertEqual({'run_id','event_id'},set(episode['properties']))
+        self.assertEqual(['run_id','event_id'],episode['required'])
+        self.assertFalse(episode['additionalProperties'])
+        self.assertNotIn('terminal_episode',schema['parameters']['required'])
+        self.assertIn('exactly',schema['description'])
+        # Both branches carry the same evidence contract in the advertised schema.
+        self.assertIn('both the containment and the same-kind reaffirmation',
+                      schema['description'])
+        tools=adapt('tools/kanban_tools.py',(native/'tools/kanban_tools.py').read_text())
+        self.assertEqual(1,tools.count('def _handle_amend('))
+        self.assertEqual(1,tools.count('registry.register(name="kanban_amend"'))
+        self.assertIn('terminal_episode=args.get("terminal_episode")',tools)
+        schemas=adapt('tools/kanban_tools_schemas.py',(native/'tools/kanban_tools_schemas.py').read_text())
+        self.assertEqual(1,schemas.count('"terminal_episode"'))
+        self.assertIn('"terminal_episode"',schemas)
+        from recovered_resume_adapter import adapt as resume_adapt
+        # Install the adapted schema module first: the native wrapper validates
+        # tool arguments against the registered schema, so this test must not
+        # inherit another test's injection.
+        import tools.kanban_tools_schemas as seam_schemas
+        exec(compile(adapt('tools/kanban_tools_schemas.py',resume_adapt('tools/kanban_tools_schemas.py',
+                     (native/'tools/kanban_tools_schemas.py').read_text())),'fixture-schemas','exec'),
+             seam_schemas.__dict__)
+        module=types.ModuleType('tools.fixture_terminal_episode')
+        exec(compile(adapt('tools/kanban_tools.py',resume_adapt('tools/kanban_tools.py',
+                     (native/'tools/kanban_tools.py').read_text())),'fixture-tools','exec'),module.__dict__)
+        episode=self.episode(43)
+        inspected=json.loads(module._handle_amend({'task_id':self.target}))
+        applied=json.loads(module._handle_amend({'task_id':self.target,'expected_version':inspected['version'],
+            'changes':{'block_kind':'capability'},'reason':self.containment_reason(),'terminal_episode':episode}))
+        self.assertTrue(applied['applied'])
+        self.assertEqual('capability',kb.get_task(self.conn,self.target).block_kind)
+        before=self.dump()
+        refused=json.loads(module._handle_amend({'task_id':self.target,'expected_version':applied['version'],
+            'changes':{'block_kind':'capability'},'reason':self.containment_reason(),
+            'terminal_episode':{'run_id':43,'event_id':episode['event_id'],'note':'not closed'}}))
+        self.assertIn('error',refused)
+        self.assertEqual(before,self.dump())
+
+    def containment_reason(self):
+        return ('Input supplier: agent. Repair evidence: the missing plan section was restored and read back; '
+                'containment only, unchanged review scope.')
 
     def test_actual_native_tool_visibility_and_handler(self):
         from recovered_resume_adapter import adapt as resume_adapt
@@ -630,6 +1121,49 @@ def recover_publication(native):
         with patch.object(installer.subprocess,'run',return_value=None):
             jobs=json.loads(jobs_file.read_text());jobs['jobs'][0]['schedule']['minutes']=60;jobs_file.write_text(json.dumps(jobs))
             with self.assertRaisesRegex(ValueError,'readback differs'):installer.install(self.root)
+
+class TerminalEpisodeInstallerTest(unittest.TestCase):
+    """The installer migrates both amend seams and preserves unrelated bytes."""
+
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory(prefix='coordinator-install-');self.addCleanup(self.tmp.cleanup)
+        self.root=Path(self.tmp.name)
+        for name in ('tools/kanban_tools.py','tools/kanban_tools_schemas.py','hermes_cli/kanban_db.py'):
+            target=self.root/'hermes-agent'/name;target.parent.mkdir(parents=True,exist_ok=True)
+            target.write_text((native/name).read_text())
+        (self.root/'hermes-agent/hermes_cli/nixhomeserver_worker_origin.py').write_text(
+            (source/'worker_origin.py').read_text())
+        canonical=self.root/'hermes-agent/cron/nixhomeserver_capability_recovery.py'
+        canonical.parent.mkdir();canonical.write_text((source/'capability_recovery.py').read_text())
+        # Unrelated dirty and untracked bytes, incl. the preserved result links,
+        # must survive check, install and readback untouched.
+        self.unrelated={'result-1':b'/nix/store/untracked-result-one\n',
+                        'result-2':b'/nix/store/untracked-result-two\n',
+                        'hermes-agent/tools/unrelated-note.txt':b'unrelated dirty note\n',
+                        'kanban/boards/testboard/kanban.db':b'unrelated board bytes\n'}
+        for name,content in self.unrelated.items():
+            path=self.root/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(content)
+        spec=importlib.util.spec_from_file_location('terminal_episode_installer',source/'install-recovered-resume.py')
+        self.installer=importlib.util.module_from_spec(spec);spec.loader.exec_module(self.installer)
+
+    def test_install_migrates_terminal_episode_seam_and_preserves_unrelated_bytes(self):
+        self.assertEqual(1,self.installer.install(self.root,True))
+        self.assertEqual(0,self.installer.install(self.root))
+        self.assertEqual(0,self.installer.install(self.root,True))
+        self.assertEqual(0,self.installer.install(self.root))
+        for name,content in self.unrelated.items():
+            self.assertEqual(content,(self.root/name).read_bytes())
+        installed=(self.root/'hermes-agent/tools/kanban_tools.py').read_text()
+        self.assertEqual(1,installed.count('def _handle_amend('))
+        self.assertEqual(1,installed.count('registry.register(name="kanban_amend"'))
+        self.assertIn('terminal_episode=args.get("terminal_episode")',installed)
+        schemas=(self.root/'hermes-agent/tools/kanban_tools_schemas.py').read_text()
+        self.assertEqual(1,schemas.count('"terminal_episode"'))
+        self.assertIn('"terminal_episode"',schemas)
+        self.assertEqual((source/'coordinator_repair.py').read_text(),
+                         (self.root/'hermes-agent/hermes_cli/nixhomeserver_coordinator_repair.py').read_text())
+        self.assertEqual((source/'resume_recovered.py').read_text(),
+                         (self.root/'hermes-agent/hermes_cli/nixhomeserver_resume_recovered.py').read_text())
 
 unittest.main(argv=['coordinator-repair'],verbosity=2)
 PY

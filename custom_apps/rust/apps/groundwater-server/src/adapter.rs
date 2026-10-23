@@ -891,7 +891,7 @@ fn preview(payload: &[u8]) -> String {
     let take = payload.len().min(OVERSIZED_PREVIEW_BYTES);
     let mut text = String::from_utf8_lossy(&payload[..take]).into_owned();
     if payload.len() > take {
-        text.push_str("…");
+        text.push('…');
     }
     text
 }

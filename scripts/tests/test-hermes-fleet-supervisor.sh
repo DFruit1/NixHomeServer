@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(sys.argv[1]) / 'scripts/hermes'))
 spec = importlib.util.spec_from_file_location('supervisor', Path(sys.argv[1]) / 'scripts/hermes/fleet-supervisor.py')
 supervisor = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(supervisor)
+import deadlock_recovery as recovery
 
 
 class SupervisorTest(unittest.TestCase):
@@ -94,6 +95,86 @@ class SupervisorTest(unittest.TestCase):
         self.assertEqual(1,len(list((self.root/'state/fleet/requalifications').glob('*.json'))))
         with self.assertRaises(ValueError):
             supervisor.requalify(self.root,'technical-recovery',evidence,'Unchanged receipt cannot authorize repeated requalification')
+
+
+class RecoveryWorkspaceTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix='recovery-workspace-')
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.work = self.root / 'work'
+        self.work.mkdir()
+        self.calls = []
+        self.observed = []
+
+    def board(self, name, metadata):
+        directory = self.root / 'kanban/boards' / name
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / 'board.json').write_text(json.dumps(metadata))
+
+    def observe(self, root, board, now):
+        self.observed.append(board)
+        return [dict(key=board+':t_broken:technical-hold', version='fixture',
+                     task_id='t_broken', kind='technical-hold', priority=0)]
+
+    def create(self, board, *args):
+        self.calls.append((board, args))
+        return {'id': 't_recovery_'+board}
+
+    def test_unconfigured_boards_do_not_starve_configured_board_or_spend_attempts(self):
+        invalid = [None, {}, {'default_workdir': None}, {'default_workdir': ''},
+                   {'default_workdir': 17}, {'default_workdir': []},
+                   {'default_workdir': 'relative'},
+                   {'default_workdir': str(self.root/'missing')},
+                   {'default_workdir': 'bad\x00path'}]
+        regular = self.root/'regular-file'
+        regular.write_text('not a workspace')
+        invalid.append({'default_workdir': str(regular)})
+        for index, metadata in enumerate(invalid):
+            self.board('a_invalid_'+str(index), metadata)
+        self.board('z_configured', {'default_workdir': str(self.work)})
+        with patch.object(recovery, 'observe', side_effect=self.observe):
+            actions = recovery.tick(self.root, now=100000, create=self.create)
+        self.assertEqual(['z_configured'], self.observed)
+        self.assertEqual(['z_configured'], [c[0] for c in self.calls])
+        self.assertIn('dir:'+str(self.work), self.calls[0][1])
+        skipped = [a for a in actions if a.get('status') == 'ineligible']
+        self.assertEqual(len(invalid), len(skipped))
+        self.assertTrue(all('workspace' in a['reason'] for a in skipped))
+        state = json.loads((self.root/'runtime/deadlock-intake/state.json').read_text())
+        self.assertEqual({'z_configured:t_broken:technical-hold', '_fairness'}, set(state))
+        self.assertEqual(1, state['z_configured:t_broken:technical-hold']['versions']['fixture']['attempts'])
+
+    def test_preview_uses_same_eligibility_and_remains_read_only(self):
+        self.board('invalid', {'default_workdir': None})
+        self.board('valid', {'default_workdir': str(self.work)})
+        with patch.object(recovery, 'observe', side_effect=self.observe):
+            actions = recovery.tick(self.root, now=100000, dry_run=True, create=self.create)
+        self.assertEqual(['valid'], self.observed)
+        self.assertEqual([], self.calls)
+        self.assertEqual(['invalid', 'valid'], [a['board'] for a in actions])
+        self.assertEqual('ineligible', actions[0]['status'])
+        self.assertFalse((self.root/'runtime').exists())
+
+    def test_malformed_metadata_is_visible_and_can_be_repaired(self):
+        self.board('repairable', {})
+        info = self.root/'kanban/boards/repairable/board.json'
+        info.write_text('{')
+        with patch.object(recovery, 'observe', side_effect=self.observe):
+            result = recovery.tick(self.root, now=100000, create=self.create)
+            self.assertEqual('ineligible', result[0]['status'])
+            self.assertEqual([], self.calls)
+            self.board('repairable', {'default_workdir': str(self.work)})
+            result = recovery.tick(self.root, now=100001, create=self.create)
+        self.assertEqual('repairable', result[0]['board'])
+        self.assertEqual(1, len(self.calls))
+
+    def test_configured_board_observation_errors_still_fail(self):
+        self.board('configured', {'default_workdir': str(self.work)})
+        with patch.object(recovery, 'observe', side_effect=RuntimeError('unreadable native state')):
+            with self.assertRaisesRegex(RuntimeError, 'unreadable native state'):
+                recovery.tick(self.root, now=100000, create=self.create)
+        self.assertEqual([], self.calls)
 
 
 unittest.main(argv=[sys.argv[0]])

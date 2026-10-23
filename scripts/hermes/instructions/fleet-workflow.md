@@ -8,12 +8,21 @@ Legacy profiles, active cards and their exact acceptance contracts drain intact.
 For an ordinary new fix, create one task with `Workflow: native-review-v1`.
 The implementer owns diagnosis, bounded technical choices, implementation,
 validation and rework. After committing validated code, use native
-kanban_request_review(reviewer="feature-reviewer", metadata={revision,
+kanban_request_review(board="<actual board>", task_id="<own task ID>",
+reviewer="feature-reviewer", metadata={revision,
 plan_author, checks, artifacts}). Name the actual plan author, or "owner" when
 the owner supplied the specification. Checks contain actual commands and integer
 exits; artifacts use Hermes' native durable preservation. The first reviewer
 handoff is explicit; subsequent request_changes returns to the original
 implementer and re-review reuses native reviewer provenance.
+
+Pass explicit `board` and `task_id` on the review handoff. `revision` is one full
+lowercase 40/64-hex commit or immutable artifact-manifest digest, never a short
+SHA or several file hashes in prose. `plan_author` is the truthful author token
+(1-80 letters, digits, underscores or hyphens); retain longer citations in other
+metadata fields. Preflight rejects malformed bindings before reviewer dispatch.
+Standalone evidence-verifier cards omit `Workflow: native-review-v1`; that marker
+requires an implementation handoff on the same card.
 
 Acceptance completes that same task with verdict="accept", the same revision,
 executed checks and independence={"plan_author":false,"implementer":false}.

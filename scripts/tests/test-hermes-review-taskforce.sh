@@ -658,7 +658,7 @@ class TaskforceTest(unittest.TestCase):
         self.assertTrue((self.root / 'scripts/review-taskforce-approval.md').is_file())
         config = self.root / 'profiles/head-coordinator/config.yaml'
         self.assertEqual(1, config.read_text().count('# nixhomeserver-review-verdict:start'))
-        self.assertIn('^kanban_(complete|unlink|create|link)$', config.read_text())
+        self.assertIn('^kanban_(complete|unlink|create|link|request_review)$', config.read_text())
         from hermes_config import document
         self.assertIn('kanban', document(config.read_text())['platform_toolsets']['desktop'])
         jobs = self.root / 'profiles/head-coordinator/cron/jobs.json'
@@ -694,7 +694,7 @@ class TaskforceTest(unittest.TestCase):
         self.assertEqual(7, actual['kanban']['max_in_progress'])
         self.assertEqual(['file'], actual['platform_toolsets']['cli'])
         hook = actual['hooks']['pre_tool_call'][0]
-        self.assertEqual('^kanban_(complete|unlink|create|link)$', hook['matcher'])
+        self.assertEqual('^kanban_(complete|unlink|create|link|request_review)$', hook['matcher'])
         self.assertTrue(hook['fail_closed'])
         self.assertEqual(before, {p: p.read_bytes() for p in before})
         self.assertFalse((self.root / 'SOUL.md').exists())

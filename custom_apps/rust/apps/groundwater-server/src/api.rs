@@ -111,7 +111,7 @@ async fn health() -> &'static str {
 }
 
 /// The caller's role, or the response to send instead.
-type GateResult = Result<Role, Response>;
+type GateResult = Result<Role, (StatusCode, Json<serde_json::Value>)>;
 
 fn gate(headers: &HeaderMap) -> GateResult {
     let identity = Identity::from_headers(headers).map_err(|_| {
@@ -119,7 +119,6 @@ fn gate(headers: &HeaderMap) -> GateResult {
             StatusCode::UNAUTHORIZED,
             Json(json!({ "error": "not signed in" })),
         )
-            .into_response()
     })?;
     role_for(&identity).ok_or_else(|| {
         (
@@ -128,7 +127,6 @@ fn gate(headers: &HeaderMap) -> GateResult {
                 "error": "your account is not a member of this app's access groups"
             })),
         )
-            .into_response()
     })
 }
 
@@ -144,7 +142,7 @@ async fn page(
     headers: HeaderMap,
     Query(params): Query<PageParams>,
 ) -> Result<Response, Response> {
-    gate(&headers)?;
+    gate(&headers).map_err(IntoResponse::into_response)?;
     let devices = db::list_devices(&state.db).await.map_err(db_error)?;
     let selected = params
         .device
@@ -157,8 +155,7 @@ async fn page(
     let mut view = ui::FleetView::new(devices, selected.clone());
     if let Some(device_id) = selected.as_deref() {
         let hours = clamp_hours(params.hours.or(Some(PAGE_HISTORY_HOURS)));
-        let to = chrono::Utc::now() + chrono::Duration::hours(MAX_FUTURE_SKEW_HOURS);
-        let from = to - chrono::Duration::hours(hours);
+        let (from, to) = history_window(chrono::Utc::now(), hours);
         let series = db::device_series(
             &state.db,
             device_id,
@@ -171,14 +168,6 @@ async fn page(
         .await
         .map_err(db_error)?;
         view.history = series.points;
-        view.quarantine_note = view
-            .selected()
-            .map(|device| {
-                format!(
-                    "{} delivery/deliveries quarantined for this device; they are recorded in the delivery log and never joined to the history above",
-                    device.quarantined_deliveries
-                )
-            });
     }
 
     Ok((
@@ -196,7 +185,7 @@ async fn api_status(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Response, Response> {
-    gate(&headers)?;
+    gate(&headers).map_err(IntoResponse::into_response)?;
     let stats = state.stats.lock().await.clone();
     let devices = db::list_devices(&state.db).await.map_err(db_error)?;
     Ok(Json(json!({
@@ -247,7 +236,7 @@ async fn api_devices(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Response, Response> {
-    gate(&headers)?;
+    gate(&headers).map_err(IntoResponse::into_response)?;
     let devices = db::list_devices(&state.db).await.map_err(db_error)?;
     Ok(Json(json!({ "devices": devices })).into_response())
 }
@@ -257,7 +246,7 @@ async fn api_device(
     headers: HeaderMap,
     AxumPath(device_id): AxumPath<String>,
 ) -> Result<Response, Response> {
-    gate(&headers)?;
+    gate(&headers).map_err(IntoResponse::into_response)?;
     let device_id = device_id.trim().to_uppercase();
     let devices = db::list_devices(&state.db).await.map_err(db_error)?;
     match devices
@@ -285,7 +274,7 @@ async fn api_series(
     headers: HeaderMap,
     Query(params): Query<SeriesParams>,
 ) -> Result<Response, Response> {
-    gate(&headers)?;
+    gate(&headers).map_err(IntoResponse::into_response)?;
     let device = params.device.trim();
     if device.is_empty() {
         return Err(bad_request("device is required"));
@@ -295,8 +284,7 @@ async fn api_series(
     // A logger's clock comes from GPS and can sit ahead of this host's clock,
     // so the upper bound is padded. Without this the most recent readings — the
     // ones an operator is looking at — would be filtered out.
-    let to = chrono::Utc::now() + chrono::Duration::hours(MAX_FUTURE_SKEW_HOURS);
-    let from = to - chrono::Duration::hours(hours);
+    let (from, to) = history_window(chrono::Utc::now(), hours);
     let series = db::device_series(
         &state.db,
         device,
@@ -326,7 +314,7 @@ async fn api_deliveries(
     headers: HeaderMap,
     Query(params): Query<DeliveryParams>,
 ) -> Result<Response, Response> {
-    let role = gate(&headers)?;
+    let role = gate(&headers).map_err(IntoResponse::into_response)?;
     if role != Role::Operator {
         return Err((
             StatusCode::FORBIDDEN,
@@ -354,7 +342,7 @@ async fn api_events(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Response, Response> {
-    gate(&headers)?;
+    gate(&headers).map_err(IntoResponse::into_response)?;
     let receiver = state.bus.subscribe();
 
     let stream = futures_util::stream::unfold(
@@ -402,6 +390,14 @@ fn clamp_hours(hours: Option<i64>) -> i64 {
     hours.unwrap_or(db::DEFAULT_WINDOW_HOURS).clamp(1, 24 * 365)
 }
 
+fn history_window(
+    now: chrono::DateTime<chrono::Utc>,
+    hours: i64,
+) -> (chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>) {
+    let to = now + chrono::Duration::hours(MAX_FUTURE_SKEW_HOURS);
+    (now - chrono::Duration::hours(hours), to)
+}
+
 /// Downsampling bucket in minutes, clamped; `0` means raw points.
 fn clamp_bucket(bucket: Option<i64>) -> i64 {
     bucket.unwrap_or(0).clamp(0, 24 * 60)
@@ -427,6 +423,51 @@ fn bad_request(message: &str) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn history_window_keeps_recent_readings_when_future_clock_skew_is_allowed() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-10-23T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let recent_reading = now - chrono::Duration::minutes(30);
+        for hours in [1, PAGE_HISTORY_HOURS, db::DEFAULT_WINDOW_HOURS, 48] {
+            let (from, to) = history_window(now, hours);
+            assert_eq!(from, now - chrono::Duration::hours(hours));
+            assert!(from <= recent_reading && recent_reading <= to);
+            assert_eq!(to, now + chrono::Duration::hours(MAX_FUTURE_SKEW_HOURS));
+        }
+    }
+
+    #[tokio::test]
+    async fn authentication_errors_preserve_status_and_json_body() {
+        let mut headers = HeaderMap::new();
+        for (signed_in, expected_status, expected_message) in [
+            (false, StatusCode::UNAUTHORIZED, "not signed in"),
+            (
+                true,
+                StatusCode::FORBIDDEN,
+                "your account is not a member of this app's access groups",
+            ),
+        ] {
+            if signed_in {
+                headers.insert(
+                    "x-forwarded-preferred-username",
+                    HeaderValue::from_static("viewer"),
+                );
+                headers.insert(
+                    "x-forwarded-groups",
+                    HeaderValue::from_static("unrelated-group"),
+                );
+            }
+            let response = gate(&headers).unwrap_err().into_response();
+            assert_eq!(response.status(), expected_status);
+            let bytes = axum::body::to_bytes(response.into_body(), 1024)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(body, json!({"error": expected_message}));
+        }
+    }
 
     #[test]
     fn query_bounds_are_clamped_to_the_documented_limits() {

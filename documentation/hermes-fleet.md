@@ -101,6 +101,9 @@ handlers retain their own cadence: retry breaker, technical recovery, aging,
 cron-loop detection, proactive intake, evidence, health and idle-state monitoring.
 Technical recovery is independent of global idle. Idle recovery still requires
 the original fleet-wide idle state and preserves task-specific receipt waits.
+Boards without an existing absolute `default_workdir` are reported as ineligible
+for technical recovery; they do not consume attempts or prevent other boards'
+recovery. Repair their registration before commissioning workspace-bound work.
 Health findings route to the correct board through deduplicated native recovery
 tasks. A wake failure does not suppress unrelated maintenance.
 

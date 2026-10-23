@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-python3 -B - "$repo" <<'PY'
+"${HERMES_FIXTURE_NATIVE_PYTHON:-python3}" -B - "$repo" <<'PY'
 import importlib.util
 import json
 from pathlib import Path
@@ -21,6 +21,9 @@ spec.loader.exec_module(guard_mod)
 
 DAY = 86400
 NOW = 1_700_000_000
+NATIVE_REPO = (str(Path(os.environ['HERMES_FIXTURE_NATIVE_PYTHON']).parents[2])
+               if os.environ.get('HERMES_FIXTURE_NATIVE_PYTHON')
+               else os.environ.get('HERMES_REVIEW_GUARD_NATIVE_REPO'))
 SCHEMA = """
 CREATE TABLE tasks (
     id TEXT PRIMARY KEY, title TEXT, body TEXT, assignee TEXT, status TEXT,
@@ -50,7 +53,7 @@ def changes_run(rid, ended):
 
 
 class VerdictGuardTest(unittest.TestCase):
-    @unittest.skipUnless(os.environ.get('HERMES_REVIEW_GUARD_NATIVE_REPO'),
+    @unittest.skipUnless(NATIVE_REPO,
                          'opt-in real Hermes hook transport requires its Python environment')
     def test_native_hook_requires_explicit_scope_without_donating_worker_identity(self):
         # Run with the native Hermes Python and HERMES_REVIEW_GUARD_NATIVE_REPO.
@@ -61,6 +64,8 @@ class VerdictGuardTest(unittest.TestCase):
         self.add_run('t_old', 'request-changes', NOW-1)
         self.card('t_fresh', assignee='feature-reviewer', status='running', tenant='verification')
         self.card('t_route', assignee='head-coordinator', status='todo')
+        self.card('t_impl', assignee='standard-implementer', status='running',
+                  body='Workflow: native-review-v1')
         self.link('t_old', 't_fresh'); self.link('t_fresh', 't_route')
         before = hashlib.sha256(self.db_path.read_bytes()).hexdigest()
         home = self.root / 'profiles/feature-reviewer'; home.mkdir(parents=True)
@@ -69,7 +74,7 @@ class VerdictGuardTest(unittest.TestCase):
                'HERMES_KANBAN_BOARD': 'testboard', 'HERMES_KANBAN_DB': str(self.db_path),
                'HERMES_KANBAN_TASK': 't_fresh', 'HERMES_KANBAN_RUN_ID': '1335'}
         with patch.dict(os.environ, env):
-            sys.path.insert(0, os.environ['HERMES_REVIEW_GUARD_NATIVE_REPO'])
+            sys.path.insert(0, NATIVE_REPO)
             import hermes_bootstrap
             from agent import shell_hooks
             from tools import kanban_tools
@@ -84,6 +89,9 @@ class VerdictGuardTest(unittest.TestCase):
                 command=shlex.join([sys.executable, '-B', str(source)]),
                 matcher='^kanban_complete$', timeout=10, fail_closed=True)
             callback = shell_hooks._make_callback(spec)
+            handoff_callback = shell_hooks._make_callback(shell_hooks.ShellHookSpec(
+                event='pre_tool_call', command=spec.command,
+                matcher='^kanban_request_review$', timeout=10, fail_closed=True))
             metadata = json.loads(changes_run('rejected-revision', NOW)[0])
             for multiplex in (False, True):
                 with self.subTest(multiplex=multiplex), patch('agent.secret_scope.is_multiplex_active', return_value=multiplex):
@@ -108,6 +116,17 @@ class VerdictGuardTest(unittest.TestCase):
                     metadata = json.loads(accept_run('rejected-revision', NOW)[0])
                     self.assertEqual('block', call(board='testboard', task_id='t_fresh')['action'])
                     metadata = json.loads(changes_run('rejected-revision', NOW)[0])
+                    handoff = {'reviewer':'feature-reviewer',
+                               'metadata':{'plan_author':'owner', 'revision':'a'*40}}
+                    def request_review(**scope):
+                        return handoff_callback(tool_name='kanban_request_review',
+                            session_id='fixture-review', args={**handoff, **scope})
+                    self.assertEqual('block', request_review()['action'])
+                    self.assertIsNone(request_review(board='testboard', task_id='t_impl'))
+                    handoff['metadata']['revision'] = '43a6ca7'
+                    refused = request_review(board='testboard', task_id='t_impl')
+                    self.assertEqual('block', refused['action'])
+                    self.assertIn('metadata.revision', refused['message'])
             self.assertEqual('t_fresh', os.environ['HERMES_KANBAN_TASK'])
             self.assertEqual('1335', os.environ['HERMES_KANBAN_RUN_ID'])
         self.assertEqual(before, hashlib.sha256(self.db_path.read_bytes()).hexdigest())
@@ -287,6 +306,51 @@ class VerdictGuardTest(unittest.TestCase):
                 self.db.execute("DELETE FROM task_links WHERE child_id='t_consumer'")
                 self.db.execute("DELETE FROM tasks WHERE id='t_consumer'"); self.db.commit()
         self.assertEqual('block', guard_mod.guard(self.complete_payload('t_fresh',json.loads(accept_run('fresh',NOW)[0])),self.root).get('action'))
+
+    def test_native_handoff_rejects_bad_provenance_before_reviewer_dispatch(self):
+        self.card('t_impl', assignee='standard-implementer', status='running',
+                  body='Workflow: native-review-v1\nGoal: repair')
+        good = {'plan_author': 'owner', 'revision': 'a'*40}
+        before = list(self.db.iterdump())
+        invalid = [(None, 'metadata'), ({}, 'plan_author'),
+                   ({**good, 'plan_author': None}, 'plan_author'),
+                   ({**good, 'plan_author': 'pcops/t_plan run613 prose'}, 'plan_author'),
+                   ({**good, 'revision': '43a6ca7'}, 'revision'),
+                   ({**good, 'revision': 'A'*40}, 'revision'),
+                   ({**good, 'revision': 'a.json sha256=x; b.txt sha256=y'}, 'revision')]
+        for metadata, field in invalid:
+            with self.subTest(metadata=metadata):
+                result = guard_mod.guard({'tool_name':'kanban_request_review', 'tool_input':{
+                    'board':'testboard', 'task_id':'t_impl', 'reviewer':'feature-reviewer',
+                    'metadata':metadata}}, self.root)
+                self.assertEqual('block', result.get('action'))
+                self.assertIn(field, result['message'])
+                self.assertEqual(before, list(self.db.iterdump()))
+        for metadata in (good, {'plan_author':'t_plan', 'revision':'b'*64}):
+            self.assertEqual({}, guard_mod.guard({'tool_name':'kanban_request_review', 'tool_input':{
+                'board':'testboard', 'task_id':'t_impl', 'reviewer':'feature-reviewer',
+                'metadata':metadata}}, self.root))
+        self.assertEqual(before, list(self.db.iterdump()))
+
+    def test_review_preflight_preserves_legacy_and_requires_real_scope(self):
+        self.card('t_legacy', assignee='standard-implementer', status='running')
+        self.assertEqual({}, guard_mod.guard({'tool_name':'kanban_request_review', 'tool_input':{
+            'board':'testboard', 'task_id':'t_legacy'}}, self.root))
+        for scope in ({'board':'testboard'}, {'task_id':'t_legacy'},
+                      {'board':'testboard', 'task_id':'t_missing'}):
+            with self.subTest(scope=scope),patch.dict(os.environ, {
+                    'HERMES_KANBAN_TASK':'', 'HERMES_KANBAN_BOARD':''}):
+                result = guard_mod.guard({'tool_name':'kanban_request_review', 'tool_input':scope}, self.root)
+                self.assertEqual('block', result.get('action'))
+
+    def test_standalone_verifier_cannot_be_created_with_implementation_contract(self):
+        for role in ('feature-reviewer', 'project-auditor'):
+            result = guard_mod.guard(self.feature_create(assignee=role,
+                body='Workflow: native-review-v1\nGoal: qualify recorded evidence'), self.root)
+            self.assertEqual('block', result.get('action'))
+            self.assertIn('standalone', result['message'])
+        self.assertEqual({}, guard_mod.guard(self.feature_create(assignee='feature-reviewer',
+            body='Goal: qualify recorded evidence'), self.root))
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='verdict-guard-test-')

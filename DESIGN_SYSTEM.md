@@ -26,6 +26,7 @@ Rules for keeping this file useful:
 | mail-archive-ui | `custom_apps/rust/apps/mail-archive-ui/frontend/` | Qwik 1.16 + Vite (TSX) | `src/styles.css` |
 | homepage | `custom_apps/node/apps/homepage/` | Qwik 1.16 + Vite (TSX) | `src/client/styles.css` |
 | groundwater-logger | `custom_apps/node/apps/groundwater-logger/` | Qwik 1.16 + Vite (TSX) | `src/client/styles.css` |
+| groundwater-server inspection | `custom_apps/rust/apps/groundwater-server/src/ui.rs` | Rust server-rendered HTML | Inline CSS in `ui.rs` |
 | youtube-downloader | `custom_apps/node/apps/youtube-downloader/` | Qwik 1.16 + Vite (TSX) | `src/client/styles.css` |
 | browsertrix-downloader | `custom_apps/rust/apps/browsertrix-downloader/frontend/` | Qwik 1.16 + Vite (TSX) | `src/client/styles.css` |
 | search | `custom_apps/rust/apps/search/` | Single-file vanilla HTML/CSS/JS | `src/ui.html` |
@@ -102,3 +103,7 @@ Media health defaults to every visible library and automatically inspects all bo
 The library category controls reuse sidebar symbols in one evenly spaced row. Dual trees use larger centered symbols; selecting a personal or shared item narrows its tree to 45% of the available desktop columns and gives the detail column the full height beside it. Labels appear below icons on hover or keyboard focus and remain visible on phones. Folder metadata starts with Basics/Advanced and the draft action on one row; detailed source inspection lives under Advanced. Audiobook, podcast, and music folders add a Track order table reusing the metadata-comparison table: one row per file with filename, tag, playlist, and effective positions, plus one grouped warning per problem with affected files. Editor cards retain their natural height within the desktop detail scroller, while phones use page scrolling.
 
 Library search is deliberately split. The library toolbar filters the currently loaded titles and filenames client-side and sends no query anywhere; full metadata and full-text discovery stays in the Search app and is reached through an optional "Advanced search" link that renders only when the deployment registers the `search` capability. Library reads are always served from the catalog cache and never walk the filesystem: the toolbar "Refresh" runs one cooldown-limited scan of the active category's roots, and a background scanner reconciles due roots on an adaptive backoff (15 then 30, 45, and 60 minutes, then hourly to a 24-hour ceiling, resetting on change). The Activity view lists the durable mutation queue as rows with a state badge and owner-only Retry/Cancel actions, and states read-only mode inline.
+
+| Decision | Surface | Reason |
+|---|---|---|
+| Keep the synthetic inspection page server-rendered, with focusable native scroll regions around wide tables | groundwater-server inspection | The pipeline slice needs readable evidence on desktop and phones without another frontend build toolchain. Each surface retains its existing system typography and browser light/dark palette. |

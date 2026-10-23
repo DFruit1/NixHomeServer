@@ -17,6 +17,37 @@ EDITS = {
          '        worker_policy.require_release(conn, task_id)\n'
          '        resume_status = ('),
     ),
+    'tools/kanban_tools.py': (
+        ('    parents = _coerce_str_list(args.get("parents") or [], "parents", "task ids")\n'
+         '    with _board(args.get("board")) as (kb, conn):\n'
+         '        from gateway.session_context import get_session_env\n',
+         '    parents = _coerce_str_list(args.get("parents") or [], "parents", "task ids")\n'
+         '    # Name the board before any board file is opened, created or written.\n'
+         '    from hermes_cli.nixhomeserver_create_board import require_explicit_board\n'
+         '    board = require_explicit_board(args.get("board"))\n'
+         '    with _board(board) as (kb, conn):\n'
+         '        from gateway.session_context import get_session_env\n'),
+        ('            board=args.get("board"),\n',
+         '            board=board,\n'),
+    ),
+    'tools/kanban_tools_schemas.py': (
+        ('_DESC_BOARD = (\n'
+         '    "Kanban board slug to target. When omitted, the call resolves the "\n'
+         '    "active board the usual way: HERMES_KANBAN_DB env → "\n'
+         '    "HERMES_KANBAN_BOARD env → the \'current\' symlink under the kanban "\n'
+         '    "home → \'default\'. Pass an explicit slug only when the caller (e.g. "\n'
+         '    "a Telegram routing layer) needs to override the env-pinned active "\n'
+         '    "board for this one call."\n',
+         '_DESC_BOARD = (\n'
+         '    "Kanban board slug to target. kanban_create requires it explicitly: "\n'
+         '    "name the board the card belongs on. Every other tool resolves the "\n'
+         '    "active board when the caller omits it: HERMES_KANBAN_DB env → "\n'
+         '    "HERMES_KANBAN_BOARD env → the \'current\' symlink under the kanban "\n'
+         '    "home → \'default\'. A dispatched worker stays pinned to the board "\n'
+         '    "its card was claimed from."\n'),
+        ('    ["title", "assignee"],\n)',
+         '    ["title", "assignee", "board"],\n)'),
+    ),
     'kanban_db_dispatch.py': (
         ('        claimed.skills = list(dict.fromkeys([*(claimed.skills or []), "sdlc-review"]))\n',
          '        claimed.skills = list(dict.fromkeys([*worker_policy.execution_skills(\n'

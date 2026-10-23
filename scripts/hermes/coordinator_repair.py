@@ -13,6 +13,14 @@ import sys
 
 ALLOWED = {'body', 'priority', 'skills', 'max_runtime_seconds', 'block_kind'}
 PARKED = {'todo', 'blocked', 'scheduled', 'triage'}
+# Native lifecycle kinds that can supersede one terminal episode. The snapshot
+# CAS binds the newest of these, so a consumed or superseded episode id can
+# never be replayed against a newer release, completion or re-block.
+EPISODE_KINDS = ('blocked', 'block_loop_detected', 'dependency_wait', 'unblocked',
+                 'completed', 'block_reclassified', 'gave_up', 'scheduled')
+SUPPLIER = re.compile(r'Input supplier:\s*(agent|model/provider)\b')
+# Material evidence a containment may cite; prose alone never classifies a hold.
+MATERIAL = re.compile(r'(?:^|\s)(?:Repair evidence|Authorized continuation): \S')
 
 # Fixed inspection program: use only the installed dependency selection. Native
 # activate_dependencies also recovers config/plugin publications, so it is
@@ -51,6 +59,12 @@ print(json.dumps([s['name'] for s in skills._find_all_skills()]))
 '''
 
 
+def _episode(conn, tid):
+    return conn.execute('SELECT id,run_id,kind,payload,created_at FROM task_events WHERE task_id=? '
+                        'AND kind IN (' + ','.join('?' * len(EPISODE_KINDS)) + ') '
+                        'ORDER BY id DESC LIMIT 1', (tid, *EPISODE_KINDS)).fetchone()
+
+
 def snapshot(conn, tid):
     task = conn.execute('SELECT * FROM tasks WHERE id=?', (tid,)).fetchone()
     if task is None:
@@ -61,7 +75,11 @@ def snapshot(conn, tid):
         'ORDER BY parent_id,child_id', (tid, tid))]
     run = conn.execute('SELECT id,status,outcome,metadata FROM task_runs WHERE task_id=? '
                        'ORDER BY id DESC LIMIT 1', (tid,)).fetchone()
-    value = {'task': task, 'links': links, 'run': dict(run) if run else None}
+    event = _episode(conn, tid)
+    # One version binds the row, its links, the newest run and the newest
+    # terminal lifecycle event: an amendment cannot ride a superseded episode.
+    value = {'task': task, 'links': links, 'run': dict(run) if run else None,
+             'episode': dict(event) if event else None}
     version = hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
     return task, version
 
@@ -75,6 +93,103 @@ def _parked(conn, task):
                     "(status IN ('running','pending','claimed','starting') OR "
                     "(ended_at IS NULL AND outcome IS NULL)) LIMIT 1", (task['id'],)).fetchone():
         raise ValueError('Amendment refuses active or pending native work')
+
+
+def _terminal_branch(conn, task, episode, reason):
+    """Validate ONE closed terminal episode; name the branch it authorises.
+
+    Both branches only APPEND one native classification/reaffirmation event.
+    Neither creates a run, moves a counter, rewrites a lease or releases the
+    card: the existing one-version reservation still governs the later release.
+    Both branches also need the same supplier line and material repair or
+    authorized-continuation evidence; the reaffirmation additionally needs the
+    run's own native claim, reclaim and prior release chronology.
+    """
+    if (not isinstance(episode, dict) or set(episode) != {'run_id', 'event_id'}
+            or any(type(episode[key]) is not int or episode[key] <= 0
+                   for key in ('run_id', 'event_id'))):
+        raise ValueError('terminal_episode must be a closed object of positive run_id and event_id')
+    supplier = SUPPLIER.search(reason or '')
+    if supplier is None:
+        raise ValueError('A terminal episode requires an explicit agent/model input supplier')
+    if MATERIAL.search(reason) is None:
+        # Both branches cite material recovery evidence. Reaffirming a reclaim
+        # trip without it would mint a fresh typed hold from a supplier line.
+        raise ValueError('A terminal episode needs material repair or authorized continuation evidence')
+    tid = task['id']
+    event = conn.execute('SELECT id,run_id,kind,payload,created_at FROM task_events '
+                         'WHERE id=? AND task_id=?', (episode['event_id'], tid)).fetchone()
+    run = conn.execute('SELECT id,status,outcome,started_at,ended_at FROM task_runs '
+                       'WHERE id=? AND task_id=?', (episode['run_id'], tid)).fetchone()
+    latest_run = conn.execute('SELECT id FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1',
+                              (tid,)).fetchone()
+    latest = _episode(conn, tid)
+    if event is None or run is None:
+        raise ValueError('terminal_episode names no native run and event of this card')
+    if latest_run is None or latest_run['id'] != run['id']:
+        raise ValueError('terminal_episode is not the latest native run of this card')
+    if latest is None or latest['id'] != event['id']:
+        raise ValueError('A newer native lifecycle event supersedes this terminal episode')
+    if run['ended_at'] is None or run['started_at'] is None or run['ended_at'] < run['started_at']:
+        raise ValueError('terminal_episode names an unfinished or incoherent native run')
+    if not isinstance(event['created_at'], int) or event['created_at'] < run['ended_at']:
+        raise ValueError('The terminal event must follow its native run')
+    try:
+        payload = json.loads(event['payload'] or '{}')
+    except (TypeError, ValueError):
+        raise ValueError('Unsupported terminal episode payload') from None
+    if not isinstance(payload, dict):
+        raise ValueError('Unsupported terminal episode payload')
+    if task['block_kind'] is None:
+        # Branch A: the worker's own untyped terminal handoff, never every
+        # blocked card and never a stale untyped event.
+        if (event['kind'] != 'blocked' or payload.get('kind') is not None
+                or event['run_id'] != run['id']
+                or {run['status'], run['outcome']} != {'blocked'}):
+            raise ValueError("Untyped containment needs this card's current untyped blocked handoff")
+        return 'terminal-containment'
+    if task['block_kind'] != 'capability':
+        raise ValueError('Only an untyped containment or an existing capability episode can be typed')
+    # Branch B: the breaker's trip sits on top of THIS run's own native claim
+    # and reclaim, after the prior release, and its count/limit/timestamps
+    # agree with the stored budget. Native gave_up trips are task-scoped
+    # (run_id NULL), so the trip is bound by its own event id, not by a
+    # fabricated run_id; the claimed and reclaimed records do carry run_id.
+    if (event['kind'] != 'gave_up' or payload.get('trigger_outcome') != 'reclaimed'
+            or {run['status'], run['outcome']} != {'reclaimed'}):
+        raise ValueError('Capability reaffirmation needs the newest reclaimed gave_up episode')
+    failures, limit = payload.get('failures'), payload.get('effective_limit')
+    if (type(failures) is not int or type(limit) is not int or limit <= 0
+            or failures != task['consecutive_failures'] or failures < limit):
+        raise ValueError('Reaffirmation needs the coherent breaker count and limit of this episode')
+    if payload.get('limit_source') == 'task' and limit != task['max_retries']:
+        raise ValueError('Reaffirmation limit must match the stored retry budget')
+    claim = conn.execute("SELECT id,created_at FROM task_events WHERE task_id=? AND kind='claimed' "
+                         'AND run_id=? AND id<? ORDER BY id DESC LIMIT 1',
+                         (tid, run['id'], event['id'])).fetchone()
+    reclaim = conn.execute("SELECT id,created_at FROM task_events WHERE task_id=? AND kind='reclaimed' "
+                           'AND run_id=? AND id<? ORDER BY id DESC LIMIT 1',
+                           (tid, run['id'], event['id'])).fetchone()
+    if claim is None or reclaim is None:
+        raise ValueError("Reaffirmation needs this run's native claim and reclaim records")
+    release = conn.execute("SELECT id,created_at FROM task_events WHERE task_id=? AND kind='unblocked' "
+                           'AND id<? ORDER BY id DESC LIMIT 1', (tid, event['id'])).fetchone()
+    if release is None:
+        raise ValueError('Reaffirmation needs the prior release this reclaim trip followed')
+    if release['id'] > claim['id']:
+        # A release between this claim and the trip supersedes it: the trip did
+        # not follow the newest release, so it is not this card's live episode.
+        raise ValueError('Reaffirmation needs a claim after the latest prior release')
+    stamps = (release['created_at'], claim['created_at'], reclaim['created_at'], event['created_at'])
+    if any(type(stamp) is not int for stamp in stamps):
+        raise ValueError('Reaffirmation needs bounded native event timestamps')
+    if not release['id'] < claim['id'] < reclaim['id'] < event['id']:
+        raise ValueError('Reaffirmation needs a claim, then reclaim, then gave_up event order')
+    if not release['created_at'] <= claim['created_at'] <= reclaim['created_at'] <= event['created_at']:
+        raise ValueError('Reaffirmation needs claim and reclaim timestamps after the prior release')
+    if not run['started_at'] <= claim['created_at'] <= run['ended_at'] <= reclaim['created_at']:
+        raise ValueError("Reaffirmation needs a claim and reclaim inside this run's own span")
+    return 'reclaimed-reaffirmation'
 
 
 def available_skills(root, profile, workspace):
@@ -107,12 +222,15 @@ def available_skills(root, profile, workspace):
     return set(names)
 
 
-def amend(kb, conn, tid, *, expected_version=None, changes=None, reason=None, runtime_evidence=None):
+def amend(kb, conn, tid, *, expected_version=None, changes=None, reason=None, runtime_evidence=None,
+          terminal_episode=None):
     from hermes_cli.nixhomeserver_resume_recovered import coordinator_origin, require_actor_board
     actor = coordinator_origin()
     root, board = require_actor_board(conn, actor)
     if not isinstance(tid, str) or not re.fullmatch(r't_[a-z0-9_]{1,64}', tid):
         raise ValueError('Exact task ID required')
+    if terminal_episode is not None and (not isinstance(changes, dict) or set(changes) != {'block_kind'}):
+        raise ValueError('A terminal episode is valid only with exactly the block_kind capability change')
     if changes is None:
         task, version = snapshot(conn, tid)
         return {'task_id': tid, 'version': version, 'status': task['status'],
@@ -128,20 +246,30 @@ def amend(kb, conn, tid, *, expected_version=None, changes=None, reason=None, ru
         _parked(conn, task)
         if version != expected_version:
             raise ValueError('Card changed; inspect again before amending')
+        branch = None
+        resume_status = None
         if 'block_kind' in changes:
-            if (changes['block_kind'] != 'capability' or task['block_kind'] is not None
-                    or task['status'] != 'blocked' or (task['body'] or '').lstrip().startswith('ASK:')
-                    or not re.search(r'Input supplier:\s*(agent|model/provider)\b',reason)):
-                raise ValueError('Classify only an untyped parked failure as agent/model capability; never reclassify a gate')
-            failure=conn.execute('SELECT status,outcome FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1',(tid,)).fetchone()
-            if not failure or not ({failure['status'],failure['outcome']} & {'failed','crashed','timed_out','spawn_failed','gave_up'}):
-                raise ValueError('Capability classification requires the latest real failed run')
-            # Native breaker's untyped parked episode needs a classification,
-            # not a fresh failure or retry. Retain counters, errors and runs.
-            conn.execute('UPDATE tasks SET block_recurrences=MAX(block_recurrences,1) WHERE id=?',(tid,))
-            kb._append_event(conn,tid,'blocked',{'kind':'capability','reason':reason.strip(),
-                             'resume_status':kb._resume_status_from_events(conn,tid),
-                             'classified_in_place':True,'actor_task':actor['task_id'],'actor_run':actor['run_id']})
+            if terminal_episode is not None:
+                # One closed terminal episode, one branch, one appended event.
+                if (changes['block_kind'] != 'capability' or task['status'] != 'blocked'
+                        or (task['body'] or '').lstrip().startswith('ASK:')):
+                    raise ValueError('A terminal episode only types one blocked technical hold')
+                branch = _terminal_branch(conn, task, terminal_episode, reason)
+                resume_status = kb._resume_status_from_events(conn, tid)
+            else:
+                if (changes['block_kind'] != 'capability' or task['block_kind'] is not None
+                        or task['status'] != 'blocked' or (task['body'] or '').lstrip().startswith('ASK:')
+                        or not re.search(r'Input supplier:\s*(agent|model/provider)\b',reason)):
+                    raise ValueError('Classify only an untyped parked failure as agent/model capability; never reclassify a gate')
+                failure=conn.execute('SELECT status,outcome FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1',(tid,)).fetchone()
+                if not failure or not ({failure['status'],failure['outcome']} & {'failed','crashed','timed_out','spawn_failed','gave_up'}):
+                    raise ValueError('Capability classification requires the latest real failed run')
+                # Native breaker's untyped parked episode needs a classification,
+                # not a fresh failure or retry. Retain counters, errors and runs.
+                conn.execute('UPDATE tasks SET block_recurrences=MAX(block_recurrences,1) WHERE id=?',(tid,))
+                kb._append_event(conn,tid,'blocked',{'kind':'capability','reason':reason.strip(),
+                                 'resume_status':kb._resume_status_from_events(conn,tid),
+                                 'classified_in_place':True,'actor_task':actor['task_id'],'actor_run':actor['run_id']})
         if 'body' in changes:
             body = changes['body']
             if not isinstance(body, str) or not body.strip() or len(body) > 32000:
@@ -186,10 +314,25 @@ def amend(kb, conn, tid, *, expected_version=None, changes=None, reason=None, ru
                     'expected_version':version, 'reason':reason.strip(),
                     'before':{k:task[k] for k in changes}, 'after':changes}
         for field, value in changes.items():
+            if branch is not None and field == 'block_kind' and task['block_kind'] is not None:
+                continue  # a reaffirmation keeps the stored kind byte-identical
             # Field names come exclusively from ALLOWED, never SQL input.
             conn.execute('UPDATE tasks SET '+field+'=? WHERE id=?',
                          (json.dumps(value) if field == 'skills' else value, tid))
-        kb._append_event(conn, tid, 'coordinator_amended', evidence)
+        if branch is not None:
+            # ONE honest native event: the branch, its source run/event, the
+            # native actor, the supplier evidence and the resume phase. The
+            # generic amendment audit is folded in rather than duplicated.
+            kb._append_event(conn, tid, 'blocked', {
+                'kind':'capability', 'reason':reason.strip(), 'resume_status':resume_status,
+                'branch':branch, 'source_run':terminal_episode['run_id'],
+                'source_event':terminal_episode['event_id'],
+                'actor_task':actor['task_id'], 'actor_run':actor['run_id'], 'board':board,
+                'supplier':SUPPLIER.search(reason).group(1), 'expected_version':version,
+                'classified_in_place':branch == 'terminal-containment',
+                'reaffirmed':branch == 'reclaimed-reaffirmation'})
+        else:
+            kb._append_event(conn, tid, 'coordinator_amended', evidence)
         after, new_version = snapshot(conn, tid)
         for field, value in changes.items():
             if (json.loads(after[field] or '[]') if field == 'skills' else after[field]) != value:

@@ -168,6 +168,15 @@ assignment requires explicit disposition through the authorized operator/helper
 path; a comment saying it will fail harmlessly is not repair. Never repeat the
 same invalid create or leave a mistaken duplicate eligible for dispatch.
 
+The tool also requires an explicit `board=<slug>`: name the board the card
+belongs on, for example `kanban_create(..., board="nixhomeserver")`. A missing,
+blank, malformed or unknown slug is refused with `Nothing changed`, and a
+dispatched worker may only create on the board its own card was claimed from.
+The refusal happens before any board file is touched, so an unknown slug never
+becomes a new empty board; create one with `hermes kanban boards create` first.
+A worker that wants a card elsewhere reports the cross-board need to its
+coordinator instead of retrying with another slug.
+
 ### Gate body
 
 A gate asks the owner to authorise something, so the ask is the first thing on

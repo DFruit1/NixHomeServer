@@ -278,7 +278,6 @@ pub fn page_view() -> crate::ui::FleetView {
     let topics = TopicMap::firmware_defaults();
     let mut observations = Vec::new();
     let mut history = Vec::new();
-    let mut quarantined = 0_i64;
 
     // Three samples eighteen minutes apart by device time, three minutes apart
     // by receipt: a normal awake cycle uploading its SD backlog.
@@ -295,36 +294,34 @@ pub fn page_view() -> crate::ui::FleetView {
             qos: 1,
             received_at: received,
         };
-        match intake(&delivery, &registry, &topics).outcome {
-            IntakeOutcome::Accepted {
-                observation: Some(observation),
-                ..
-            } => {
-                history.push(SeriesPoint {
-                    recorded_at: observation
-                        .recorded_at
-                        .expect("fixture clock is interpretable"),
-                    gwl: observation.gwl,
-                    gwl_text: Some(observation.gwl_text.clone()),
-                    battery_v: observation.battery_v,
-                    rssi: observation.rssi,
-                    sample_count: 1,
-                    conflict: false,
-                });
-                observations.push(*observation);
-            }
-            _ => quarantined += 1,
+        if let IntakeOutcome::Accepted {
+            observation: Some(observation),
+            ..
+        } = intake(&delivery, &registry, &topics).outcome
+        {
+            history.push(SeriesPoint {
+                recorded_at: observation
+                    .recorded_at
+                    .expect("fixture clock is interpretable"),
+                gwl: observation.gwl,
+                gwl_text: Some(observation.gwl_text.clone()),
+                battery_v: observation.battery_v,
+                rssi: observation.rssi,
+                sample_count: 1,
+                conflict: false,
+            });
+            observations.push(*observation);
         }
     }
 
     // Legacy shared-topic traffic: recorded, attributed to nobody.
     let legacy = legacy_shared_reading();
-    if matches!(
-        intake(&legacy.delivery(), &registry, &topics).outcome,
+    let legacy_intake = intake(&legacy.delivery(), &registry, &topics);
+    assert!(matches!(
+        legacy_intake.outcome,
         IntakeOutcome::Quarantined { .. }
-    ) {
-        quarantined += 1;
-    }
+    ));
+    assert!(legacy_intake.record.device_id.is_none());
 
     let latest_received = observations.last().map(summary_of);
     let latest_plausible = observations
@@ -346,7 +343,6 @@ pub fn page_view() -> crate::ui::FleetView {
         last_received_at: latest_received.as_ref().map(|latest| latest.received_at),
         observation_count: observations.len() as i64,
         conflict_count: 0,
-        quarantined_deliveries: quarantined,
         latest_received,
         latest_plausible,
     };
@@ -363,7 +359,6 @@ pub fn page_view() -> crate::ui::FleetView {
             last_received_at: None,
             observation_count: 0,
             conflict_count: 0,
-            quarantined_deliveries: 0,
             latest_received: None,
             latest_plausible: None,
         };
@@ -377,9 +372,6 @@ pub fn page_view() -> crate::ui::FleetView {
         Some(DEVICE_A.to_string()),
     );
     view.history = history;
-    view.quarantine_note = Some(format!(
-        "{quarantined} unattributable delivery/deliveries recorded and excluded from the history above"
-    ));
     view
 }
 

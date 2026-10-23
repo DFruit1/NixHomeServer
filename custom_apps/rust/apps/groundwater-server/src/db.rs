@@ -228,13 +228,9 @@ pub async fn load_registry(client: &Client) -> Result<EnrollmentRegistry, String
         let policy_text: String = row.get(3);
         let offset: Option<i32> = row.get(4);
         let revoked: bool = row.get(5);
-        let clock = match policy_text.as_str() {
-            "utc" => ClockPolicy::Utc,
-            "local-offset" => match offset {
-                Some(offset_minutes) => ClockPolicy::LocalOffset { offset_minutes },
-                None => ClockPolicy::Unknown,
-            },
-            _ => ClockPolicy::Unknown,
+        let clock = match (policy_text.as_str(), offset) {
+            ("local-offset", Some(offset_minutes)) => ClockPolicy::LocalOffset { offset_minutes },
+            _ => ClockPolicy::parse(&policy_text).unwrap_or(ClockPolicy::Unknown),
         };
         registry.enroll(Enrollment {
             device_id,
@@ -484,7 +480,6 @@ pub struct DeviceSummary {
     pub last_received_at: Option<DateTime<Utc>>,
     pub observation_count: i64,
     pub conflict_count: i64,
-    pub quarantined_deliveries: i64,
     /// Most recently *received* observation, whatever its event time.
     pub latest_received: Option<ObservationSummary>,
     /// Most recent observation whose event time is plausible.
@@ -526,7 +521,6 @@ pub async fn list_devices(client: &Client) -> Result<Vec<DeviceSummary>, String>
                 "SELECT
                     (SELECT count(*) FROM observations WHERE device_id = $1),
                     (SELECT count(*) FROM observations WHERE device_id = $1 AND duplicate_outcome = 'conflict'),
-                    (SELECT count(*) FROM deliveries WHERE device_id = $1 AND state = 'quarantined'),
                     (SELECT max(received_at) FROM observations WHERE device_id = $1)",
                 &[&device_id],
             )
@@ -536,7 +530,7 @@ pub async fn list_devices(client: &Client) -> Result<Vec<DeviceSummary>, String>
         let latest_received = latest_observation(client, &device_id, Latest::Received).await?;
         let latest_plausible =
             latest_observation(client, &device_id, Latest::PlausibleEvent).await?;
-        let last_received_at: Option<DateTime<Utc>> = counts.get(3);
+        let last_received_at: Option<DateTime<Utc>> = counts.get(2);
 
         let (status, status_reason) = availability(last_received_at, revoked);
         devices.push(DeviceSummary {
@@ -550,7 +544,6 @@ pub async fn list_devices(client: &Client) -> Result<Vec<DeviceSummary>, String>
             last_received_at,
             observation_count: counts.get(0),
             conflict_count: counts.get(1),
-            quarantined_deliveries: counts.get(2),
             latest_received,
             latest_plausible,
         });

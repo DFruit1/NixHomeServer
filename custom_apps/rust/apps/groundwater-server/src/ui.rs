@@ -23,9 +23,6 @@ pub struct FleetView {
     /// The device whose history is shown.
     pub selected_device: Option<String>,
     pub history: Vec<SeriesPoint>,
-    /// Raw deliveries (including quarantined ones) for the selected device
-    /// when the caller has operator rights to show a log.
-    pub quarantine_note: Option<String>,
 }
 
 impl FleetView {
@@ -35,7 +32,6 @@ impl FleetView {
             devices,
             selected_device,
             history: Vec::new(),
-            quarantine_note: None,
         }
     }
 
@@ -60,6 +56,7 @@ pub fn render(view: &FleetView) -> String {
          h2 { font-size: 1.1rem; margin: 2rem 0 .5rem; }\n\
          p, td, th { font-size: .95rem; }\n\
          .meta { opacity: .75; }\n\
+         .table-scroll { max-width: 100%; overflow-x: auto; }\n\
          table { border-collapse: collapse; width: 100%; }\n\
          th, td { text-align: left; padding: .35rem .5rem; border-bottom: 1px solid rgba(128,128,128,.35); }\n\
          th { font-weight: 600; }\n\
@@ -87,8 +84,8 @@ pub fn render(view: &FleetView) -> String {
         html.push_str("<p>No devices are enrolled.</p>\n");
     } else {
         html.push_str(
-            "<table>\n<thead><tr><th>Device</th><th>Profile</th><th>Status</th>\
-             <th>Latest level</th><th>Receipts</th><th>Conflicts</th><th>Quarantined</th></tr></thead>\n<tbody>\n",
+            "<div class=\"table-scroll\" role=\"region\" aria-label=\"Enrolled devices\" tabindex=\"0\"><table>\n<thead><tr><th>Device</th><th>Profile</th><th>Status</th>\
+             <th>Latest level</th><th>Receipts</th><th>Conflicts</th></tr></thead>\n<tbody>\n",
         );
         for device in &view.devices {
             let latest = match device.headline() {
@@ -100,7 +97,7 @@ pub fn render(view: &FleetView) -> String {
                 None => "\u{2014}".to_string(),
             };
             html.push_str(&format!(
-                "<tr><td><code>{}</code>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>\n",
+                "<tr><td><code>{}</code>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>\n",
                 escape(&device.device_id),
                 if device.display_name.is_empty() {
                     String::new()
@@ -112,14 +109,9 @@ pub fn render(view: &FleetView) -> String {
                 latest,
                 device.observation_count,
                 device.conflict_count,
-                device.quarantined_deliveries,
             ));
         }
-        html.push_str("</tbody>\n</table>\n");
-    }
-
-    if let Some(note) = &view.quarantine_note {
-        html.push_str(&format!("<p class=\"caveat\">{}</p>\n", escape(note)));
+        html.push_str("</tbody>\n</table></div>\n");
     }
 
     html.push_str("</body>\n</html>\n");
@@ -146,7 +138,7 @@ fn render_device(device: &DeviceSummary, history: &[SeriesPoint], html: &mut Str
     ));
 
     html.push_str(
-        "<h2>Latest</h2>\n<table>\n<thead><tr><th>View</th><th>Level</th>\
+        "<h2>Latest</h2>\n<div class=\"table-scroll\" role=\"region\" aria-label=\"Latest readings\" tabindex=\"0\"><table>\n<thead><tr><th>View</th><th>Level</th>\
                    <th>Event time</th><th>Received</th><th>Quality</th></tr></thead>\n<tbody>\n",
     );
 
@@ -166,14 +158,14 @@ fn render_device(device: &DeviceSummary, history: &[SeriesPoint], html: &mut Str
     } else {
         html.push_str("<tr><td>Latest received</td><td colspan=\"4\">none</td></tr>\n");
     }
-    html.push_str("</tbody>\n</table>\n");
+    html.push_str("</tbody>\n</table></div>\n");
 
     html.push_str("<h2>History</h2>\n");
     if history.is_empty() {
         html.push_str("<p>No observations in the selected window.</p>\n");
     } else {
         html.push_str(
-            "<table>\n<thead><tr><th>Event time</th><th>Level</th><th>Battery</th>\
+            "<div class=\"table-scroll\" role=\"region\" aria-label=\"Observation history\" tabindex=\"0\"><table>\n<thead><tr><th>Event time</th><th>Level</th><th>Battery</th>\
              <th>Samples</th><th>Note</th></tr></thead>\n<tbody>\n",
         );
         for point in history.iter().rev() {
@@ -197,7 +189,7 @@ fn render_device(device: &DeviceSummary, history: &[SeriesPoint], html: &mut Str
                 },
             ));
         }
-        html.push_str("</tbody>\n</table>\n");
+        html.push_str("</tbody>\n</table></div>\n");
     }
 }
 
@@ -290,13 +282,18 @@ mod tests {
         let html = render(&view);
         assert!(!html.contains("qasimiotdev"));
         assert!(!html.contains(fixtures::PAYLOAD_V21));
-        // The device that sent it is still shown with zero observations.
+        // Accepted device observations remain distinct from unattributable traffic.
         let device = view
             .devices
             .iter()
             .find(|device| device.device_id == fixtures::DEVICE_A)
             .expect("device row");
-        assert!(device.quarantined_deliveries > 0 || device.observation_count > 0);
+        assert!(device.observation_count > 0);
+        let serialized = serde_json::to_value(device).expect("device API representation");
+        assert!(
+            serialized.get("quarantined_deliveries").is_none(),
+            "unattributable quarantine must not become a device metric"
+        );
     }
 
     #[test]

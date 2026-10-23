@@ -31,19 +31,29 @@ def proactive_allowed(tasks):
     return True
 
 
+def validate_handoff_metadata(evidence):
+    """Reject unusable provenance before spending an independent review run."""
+    if not isinstance(evidence, dict):
+        raise ValueError('Review metadata must contain plan_author and revision')
+    if (not isinstance(evidence.get('plan_author'), str)
+            or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', evidence['plan_author'])):
+        raise ValueError('metadata.plan_author needs the actual author token (1-80 letters,'
+                         ' digits, underscores or hyphens); put prose citations separately')
+    if (not isinstance(evidence.get('revision'), str)
+            or not re.fullmatch(r'[a-f0-9]{40}|[a-f0-9]{64}', evidence['revision'])):
+        raise ValueError('metadata.revision needs one full lowercase 40/64-hex commit or'
+                         ' immutable artifact-manifest digest; no abbreviated SHA or prose')
+
+
 def acceptance(handoff, metadata, reviewer):
     """Bind a new-contract acceptance to its actual native implementer handoff."""
-    evidence = handoff.get('metadata') or {}
+    evidence = handoff.get('metadata')
+    validate_handoff_metadata(evidence)
     independence = metadata.get('independence')
     if (handoff.get('implementer') == reviewer
             or not handoff.get('implementer')
             or handoff.get('reviewer') != reviewer
-            or not isinstance(evidence, dict)
-            or not isinstance(evidence.get('plan_author'),str)
-            or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}',evidence['plan_author'])
             or evidence.get('plan_author') == reviewer
-            or not isinstance(evidence.get('revision'),str)
-            or not re.fullmatch(r'[a-f0-9]{40}|[a-f0-9]{64}',evidence['revision'])
             or evidence.get('revision') != metadata.get('revision')
             or not isinstance(independence, dict)
             or set(independence) != {'plan_author', 'implementer'}
