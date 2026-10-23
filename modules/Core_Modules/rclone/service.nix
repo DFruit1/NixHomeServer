@@ -115,6 +115,16 @@ let
   '';
 in
 {
+  options.repo.backups.offsiteMirrorMaxAgeSeconds = lib.mkOption {
+    type = lib.types.ints.positive;
+    default = 26 * 60 * 60;
+    description = ''
+      Maximum acceptable age of the last verified offsite mirror of the
+      encrypted Kopia repository. The mirror runs twice daily, so the default
+      tolerates one missed window.
+    '';
+  };
+
   config = lib.mkMerge [
     {
       assertions = [

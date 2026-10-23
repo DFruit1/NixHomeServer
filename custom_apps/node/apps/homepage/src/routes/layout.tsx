@@ -12,7 +12,7 @@ export const useHomepageData = routeLoader$(async (event): Promise<HomepageLoad>
       import('../server/homepageData.js'),
     ]);
     const data = await buildHomepageData(loadConfig(), headersToIncomingHttpHeaders(event.request.headers));
-    if (event.url.pathname.startsWith('/admins') && !data.isAdmin) {
+    if ((event.url.pathname.startsWith('/admins') || event.url.pathname.startsWith('/admin-dashboard')) && !data.isAdmin) {
       event.status(403);
     }
     return { data };
@@ -94,6 +94,7 @@ const pageNameForPath = (pathname: string): string | undefined => {
   if (pathname === '/getting-started') return 'Getting Started';
   if (pathname === '/uploads') return 'Detailed Guide';
   if (pathname === '/admins') return 'For Admins';
+  if (pathname === '/admin-dashboard') return 'Admin Dashboard';
   if (pathname === '/keys') return 'Keys & Secrets';
   if (pathname.startsWith('/services/')) return 'Service';
   return 'Page Not Found';

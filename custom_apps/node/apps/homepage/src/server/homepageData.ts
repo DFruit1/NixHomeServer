@@ -70,6 +70,7 @@ export const buildHomepageData = async (config: AppConfig, headers: IncomingHttp
     canaryAdminUser: isAdmin ? config.homepage.canaryAdminUser : undefined,
     powerScheduleAvailable: config.powerSchedule?.available ?? false,
     buildModeAvailable: config.buildMode?.available ?? false,
+    adminDashboardAvailable: config.adminDashboard?.available ?? false,
     user,
     isAdmin,
     sftp: sftp ? {

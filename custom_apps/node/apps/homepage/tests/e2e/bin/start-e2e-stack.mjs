@@ -29,6 +29,7 @@ const server = spawn('sh', ['-c', serverCommand], {
     HOMEPAGE_DEV_USER: 'dsaw',
     HOMEPAGE_STATIC_DIR: staticDir,
     HOMEPAGE_CONFIG_FILE: path.join(homepageDir, 'tests/e2e/fixtures/homepage-config.json'),
+    HOMEPAGE_ADMIN_DASHBOARD_STATUS_FILE: path.join(homepageDir, 'tests/e2e/fixtures/admin-dashboard-status.json'),
     HOMEPAGE_SUDO: path.join(homepageDir, 'tests/e2e/bin/fake-sudo.mjs'),
     HOMEPAGE_SFTP_KEY_INSTALL_COMMAND: path.join(homepageDir, 'tests/e2e/bin/fake-install-sftp-key.mjs'),
     HOMEPAGE_SFTP_KEY_LIST_COMMAND: path.join(homepageDir, 'tests/e2e/bin/fake-sftp-key-list.mjs'),

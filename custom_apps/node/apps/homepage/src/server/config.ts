@@ -76,6 +76,10 @@ export type AppConfig = {
     applyCommand?: string;
     defaultMode: string;
   };
+  adminDashboard?: {
+    available: true;
+    statusFile: string;
+  };
   homepage: HomepageConfig;
 };
 
@@ -331,6 +335,17 @@ const normaliseBuildModeConfig = (): AppConfig['buildMode'] | undefined => {
   };
 };
 
+const normaliseAdminDashboardConfig = (): AppConfig['adminDashboard'] | undefined => {
+  const statusFile = process.env.HOMEPAGE_ADMIN_DASHBOARD_STATUS_FILE;
+  if (!statusFile) {
+    return undefined;
+  }
+  return {
+    available: true,
+    statusFile,
+  };
+};
+
 export const loadConfig = (): AppConfig => ({
   host: process.env.HOMEPAGE_HOST ?? '127.0.0.1',
   port: numberFromEnv('HOMEPAGE_PORT', 8084),
@@ -354,5 +369,6 @@ export const loadConfig = (): AppConfig => ({
   mkvmakerProgressFile: process.env.HOMEPAGE_MKVMAKER_PROGRESS_FILE,
   powerSchedule: normalisePowerScheduleConfig(),
   buildMode: normaliseBuildModeConfig(),
+  adminDashboard: normaliseAdminDashboardConfig(),
   homepage: loadHomepageConfig(process.env.HOMEPAGE_CONFIG_FILE),
 });

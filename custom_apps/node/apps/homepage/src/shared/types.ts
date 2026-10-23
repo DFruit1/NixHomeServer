@@ -148,6 +148,32 @@ export type HomepageData = {
   canaryAdminUser?: string;
   powerScheduleAvailable: boolean;
   buildModeAvailable: boolean;
+  adminDashboardAvailable: boolean;
+};
+
+export type AdminDashboardWidgetState = 'ok' | 'warn' | 'critical' | 'unknown';
+
+export type AdminDashboardWidgetRow = {
+  label: string;
+  value: string;
+  state?: AdminDashboardWidgetState;
+};
+
+export type AdminDashboardWidget = {
+  id: string;
+  title: string;
+  state: AdminDashboardWidgetState;
+  summary: string;
+  rows: AdminDashboardWidgetRow[];
+  checkedAt?: string;
+};
+
+export type AdminDashboardResponse = {
+  available: boolean;
+  reason?: string;
+  generatedAt?: string;
+  generatedAgeSeconds?: number;
+  widgets: AdminDashboardWidget[];
 };
 
 export type MkvConversionProgress = {

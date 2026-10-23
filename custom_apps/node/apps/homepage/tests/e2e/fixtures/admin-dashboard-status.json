@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-24T07:00:00+00:00",
+  "kopiaSnapshot": {
+    "completedAt": "2026-10-24T03:20:00+00:00",
+    "ageSeconds": 13200,
+    "maxAgeSeconds": 129600
+  },
+  "kopiaVerify": {
+    "completedAt": "2026-10-21T05:10:00+00:00",
+    "ageSeconds": 266000,
+    "maxAgeSeconds": 691200
+  },
+  "logicalBackup": {
+    "generation": "20261024T031500-4211",
+    "completedAt": "2026-10-24T03:15:00+00:00",
+    "ageSeconds": 13500,
+    "maxAgeSeconds": 129600,
+    "expected": [
+      { "name": "kanidm.sqlite", "kind": "sqlite" },
+      { "name": "paperless.dump", "kind": "postgresql" }
+    ],
+    "dumps": [
+      {
+        "name": "kanidm.sqlite",
+        "kind": "sqlite",
+        "bytes": 4194304,
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "integrityCheck": "ok",
+        "createdAt": "2026-10-24T03:15:00+00:00"
+      },
+      {
+        "name": "paperless.dump",
+        "kind": "postgresql",
+        "bytes": 8388608,
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "integrityCheck": "ok",
+        "createdAt": "2026-10-24T03:15:00+00:00"
+      }
+    ]
+  },
+  "offsiteSync": {
+    "state": "success",
+    "reason": "mirror_verified",
+    "message": "MEGA mirror verified",
+    "completedAt": "2026-10-24T04:30:00+00:00",
+    "ageSeconds": 9000,
+    "maxAgeSeconds": 93600,
+    "repositoryBytes": 734003200,
+    "limitBytes": 214748364800
+  },
+  "zfsSnapshots": {
+    "pool": "tank",
+    "health": "ONLINE",
+    "managedDatasets": 4,
+    "staleDatasets": 0,
+    "newestAgeSeconds": 1800,
+    "maxAgeSeconds": 172800
+  }
+}
