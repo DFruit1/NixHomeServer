@@ -27,8 +27,11 @@ Body/comments remain authoritative only for legacy cards.
 
 Run from a clean, committed checkout after its owning tests, full repository
 validation and independent review. The command composes existing instruction
-and taskforce transformations; it does not introduce another package manager or
-overwrite the installed native recovery adapters.
+and taskforce transformations. It also composes the coordinator amendment
+module and its already fleet-owned tool seams, using the recovery installer's
+read-only prerequisite qualification. Missing or incompatible recovery
+dependencies must be repaired through their owning installer first. The release
+retains its immutable manifests, preimage checks and rollback protection.
 
 ```bash
 python3 -B scripts/hermes/fleet-release.py plan

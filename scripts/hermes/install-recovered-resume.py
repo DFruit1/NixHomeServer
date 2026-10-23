@@ -25,7 +25,8 @@ def _read(path):
     return path.read_text() if path.exists() else None
 
 
-def install(root, check=False):
+def pending_files(root):
+    """Qualify the installed recovery prerequisites without publishing bytes."""
     root = Path(root)
     if root.is_symlink():
         raise ValueError('Refusing a symlink recovery install root')
@@ -63,6 +64,12 @@ def install(root, check=False):
     # Keep the guarded database adapter last: phase_source is a preflight
     # dependency for every earlier replacement, and its phase APIs are unchanged.
     pending.append((phase, phase_source, adapt('hermes_cli/kanban_db.py', phase_source)))
+    guards = [(phase, phase_source), (origin, origin_source), (monitor, monitor_source)]
+    return root, pending, guards
+
+
+def install(root, check=False):
+    root, pending, guards = pending_files(root)
     changes = [(path, before, after) for path, before, after in pending if before != after]
     if check:
         for path, _, _ in changes:
@@ -90,7 +97,6 @@ def install(root, check=False):
                 or info.st_mode & 0o077 or info.st_nlink != 1):
             raise ValueError('Installer lock must be a private regular file')
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        guards = [(phase, phase_source), (origin, origin_source), (monitor, monitor_source)]
         if (any(_read(path) != before for path, before in guards)
                 or any(_read(path) != before for path, before, _ in pending)):
             raise ValueError('Native source changed during recovery installer preflight')

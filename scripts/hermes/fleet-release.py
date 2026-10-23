@@ -397,7 +397,8 @@ def restore_schedules(root, plan, *, checkpoint=lambda:None):
 
 def source_changes(root, directory, *, workers=False):
     """Upgrade transforms use their source helpers, never cached installed ones."""
-    names=('hermes_common','hermes_config') + (('worker_runtime_adapter','fleet_runtime_adapter') if workers else ())
+    names=('hermes_common','hermes_config') + (('worker_runtime_adapter','fleet_runtime_adapter',
+        'coordinator_repair_adapter','recovered_resume_adapter','resume_recovered') if workers else ())
     previous={name:sys.modules.get(name) for name in names}
     previous_path=sys.path[:]
     try:
@@ -415,6 +416,22 @@ def source_changes(root, directory, *, workers=False):
             worker = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(worker)
             pending = worker.pending_files(root, pending)
+            # These seams are already fleet-owned. Compose their reviewed
+            # migration here rather than making the separate API installer
+            # invalidate the active release's immutable file manifest.
+            spec=importlib.util.spec_from_file_location('fleet_recovery_install',directory/'install-recovered-resume.py')
+            recovery=importlib.util.module_from_spec(spec);spec.loader.exec_module(recovery)
+            _,recovery_pending,_=recovery.pending_files(root)
+            owned={'tools/kanban_tools.py','tools/kanban_tools_schemas.py',
+                   'hermes_cli/nixhomeserver_coordinator_repair.py'}
+            for path,before,after in recovery_pending:
+                relative=str(path.relative_to(root/'hermes-agent'))
+                if relative in owned:
+                    # Compose on worker/workflow output, not the earlier input.
+                    pending[path]=(sys.modules['coordinator_repair_adapter'].adapt(relative,pending[path])
+                                   if path in pending else after)
+                elif before!=after:
+                    raise ValueError('Install the matching reviewed recovery prerequisites first: '+relative)
         return pending
     finally:
         sys.path[:]=previous_path
@@ -505,8 +522,12 @@ def require_authority(root, args, revision, source_id, source):
 def mutation_locks(root):
     descriptors=[]
     try:
-        for name in ('release.lock','supervisor.lock'):
-            path=checked(root,root/'state/fleet'/name)
+        for relative in ('state/fleet/release.lock','state/fleet/supervisor.lock',
+                         'backups/recovered-resume/install.lock'):
+            # Hold the owning API installer's lock from qualification through
+            # fingerprint capture and publication; it cannot replace a guard
+            # and have its new bytes adopted as an unqualified baseline.
+            path=checked(root,root/relative)
             path.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
             fd=os.open(path,os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o600)
             descriptors.append(fd)

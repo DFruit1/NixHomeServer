@@ -238,19 +238,52 @@ class ReleaseTest(unittest.TestCase):
 
     def test_source_worker_transforms_use_selected_source_adapters(self):
         source=self.root/'source';source.mkdir()
-        for name in ('hermes_common','hermes_config','worker_runtime_adapter','fleet_runtime_adapter'):
+        for name in ('hermes_common','hermes_config','worker_runtime_adapter','fleet_runtime_adapter','coordinator_repair_adapter','recovered_resume_adapter','resume_recovered'):
             (source/(name+'.py')).write_text('ORIGIN = "source"\n')
+        (source/'coordinator_repair.py').write_text('revision = \"qualified\"\n')
+        (source/'coordinator_repair_adapter.py').write_text(
+            'def adapt(name,text): return text+"-source-amended"\n')
         (source/'install-review-taskforce.py').write_text(
             'def changed_files(root):\n    return {root/"taskforce":"kept"}\n')
         (source/'install-worker-policy.py').write_text(
             'import worker_runtime_adapter, fleet_runtime_adapter\n'
             'def pending_files(root,pending):\n'
-            '    return {**pending,root/"worker":worker_runtime_adapter.ORIGIN+fleet_runtime_adapter.ORIGIN}\n')
+            '    return {**pending,root/"worker":worker_runtime_adapter.ORIGIN+fleet_runtime_adapter.ORIGIN,\n'
+            '        root/"hermes-agent/tools/kanban_tools.py":"handler",\n'
+            '        root/"hermes-agent/tools/kanban_tools_schemas.py":"schema"}\n')
+        (source/'install-recovered-resume.py').write_text('def pending_files(root):\n    native=root/"hermes-agent"\n    pairs=[(native/"tools/kanban_tools.py","old-handler","handler-source-amended"),\n           (native/"tools/kanban_tools_schemas.py","old-schema","schema-source-amended"),\n           (native/"hermes_cli/nixhomeserver_coordinator_repair.py",None,\'revision = "qualified"\\n\')]\n    if (root/"missing-prerequisite").exists():\n        pairs.append((native/"hermes_cli/nixhomeserver_resume_recovered.py",None,"required"))\n    return root,pairs,[]\n')
         previous_path=sys.path[:]
+        before_modules={name:sys.modules.get(name) for name in ('coordinator_repair_adapter','recovered_resume_adapter','resume_recovered')}
         result=release.source_changes(self.root,source,workers=True)
         self.assertEqual('kept',result[self.root/'taskforce'])
         self.assertEqual('sourcesource',result[self.root/'worker'])
+        for name,base in [('kanban_tools.py','handler'),('kanban_tools_schemas.py','schema')]:
+            self.assertEqual(base+'-source-amended',result[self.root/'hermes-agent/tools'/name])
+        self.assertEqual('revision = \"qualified\"\n',result[self.root/'hermes-agent/hermes_cli/nixhomeserver_coordinator_repair.py'])
         self.assertEqual(previous_path,sys.path)
+        (self.root/'missing-prerequisite').touch()
+        with self.assertRaisesRegex(ValueError,'matching reviewed recovery prerequisites'):
+            release.source_changes(self.root,source,workers=True)
+        self.assertEqual(previous_path,sys.path)
+        for name,module in before_modules.items():self.assertIs(module,sys.modules.get(name))
+        self.assertFalse((self.root/'hermes-agent').exists())
+
+    def test_recovery_installer_cannot_replace_guards_during_fleet_transaction(self):
+        import subprocess
+        lock=self.root/'backups/recovered-resume/install.lock'
+        probe='import fcntl,sys; f=open(sys.argv[1],"a"); fcntl.flock(f,fcntl.LOCK_EX|fcntl.LOCK_NB)'
+        with release.mutation_locks(self.root):
+            # Qualify guards, then attempt the owning installer lock before
+            # dependency/preimage collection and publication can occur.
+            result=subprocess.run([sys.executable,'-c',probe,str(lock)],capture_output=True)
+            self.assertNotEqual(0,result.returncode)
+            self.assertIn(b'BlockingIOError',result.stderr)
+        self.assertEqual(0,subprocess.run([sys.executable,'-c',probe,str(lock)],capture_output=True).returncode)
+        import fcntl
+        with lock.open('a') as stream:
+            fcntl.flock(stream,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            with self.assertRaises(BlockingIOError):
+                with release.mutation_locks(self.root):self.fail('qualified during active recovery installation')
 
     def test_native_labels_or_delegated_children_cannot_acquire_release_authority(self):
         args=SimpleNamespace(action='apply',review_card=None)
