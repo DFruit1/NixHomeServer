@@ -745,6 +745,41 @@ class VerdictGuardTest(unittest.TestCase):
                 'tool_input': {'board': board, 'task_id': tid,
                                'metadata': metadata}}
 
+    def test_rejected_handoff_guidance_preserves_work_without_closure_reviews(self):
+        self.card('t_rev', assignee='feature-reviewer', tenant='verification')
+        self.add_run('t_rev', 'request-changes', NOW - DAY)
+        self.card('t_handoff', assignee='head-coordinator', status='running')
+        self.link('t_rev', 't_handoff')
+        before = list(self.db.iterdump())
+        result = guard_mod.guard(self.complete_payload('t_handoff', {}), self.root)
+        self.assertEqual('block', result.get('action'))
+        self.assertIn('kanban_block', result['message'])
+        self.assertIn("kind='validation'", result['message'])
+        self.assertNotIn("kind='dependency'", result['message'])
+        self.assertIn('dependency', result['message'])
+        self.assertIn('linked unfinished input producer', result['message'])
+        self.assertIn('corrected inputs', result['message'])
+        self.assertIn('acknowledge', result['message'])
+        self.assertNotIn('close this card as superseded', result['message'])
+        self.assertEqual(before, list(self.db.iterdump()))
+
+    def test_check_field_correction_preserves_the_actual_rejection(self):
+        self.card('t_ver', assignee='feature-reviewer', tenant='verification', status='running')
+        self.card('t_route', assignee='head-coordinator', status='todo')
+        self.link('t_ver', 't_route')
+        metadata = {'verdict': 'request-changes', 'revision': 'reviewed-source',
+                    'requested_changes': ['repair the current inputs'],
+                    'checks': [{'command': 'actual owning check', 'exit': 1}]}
+        before = list(self.db.iterdump())
+        result = guard_mod.guard(self.complete_payload('t_ver', metadata), self.root)
+        self.assertEqual('block', result.get('action'))
+        self.assertIn('integer exit_code', result['message'])
+        self.assertIn('pre-write check-field validation changed nothing', result['message'])
+        self.assertEqual(before, list(self.db.iterdump()))
+        metadata['checks'][0]['exit_code'] = metadata['checks'][0].pop('exit')
+        self.assertEqual({}, guard_mod.guard(self.complete_payload('t_ver', metadata), self.root))
+        self.assertEqual(before, list(self.db.iterdump()))
+
     def test_sanctioned_unknown_verdict_completes(self):
         # Live incident t_cd6d2128: the body permits verdict=unknown for a
         # first-missing-input outcome, but completion refused it, forcing the

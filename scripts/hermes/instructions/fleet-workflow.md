@@ -32,6 +32,14 @@ metadata fields. Preflight rejects malformed bindings before reviewer dispatch.
 Standalone evidence-verifier cards omit `Workflow: native-review-v1`; that marker
 requires an implementation handoff on the same card.
 
+Correct pre-write check-field schema errors on the same task, keeping the actual
+verdict, revision, commands and measured results. For example, rename an erroneous
+`checks[*].exit` key to the required integer `exit_code`; never invent a result.
+These shape checks produce no operation effect. They need no new review or
+recovery chain. Preserve stop-at-first-refusal for policy, identity, capability,
+effect or safety gates, changed inputs and spent limits. Schema correction never
+permits changing scope, worker identity, counters or execution context.
+
 Declare required configured tools, Python module names and an approved source
 baseline in workflow.requirements={tools:[...],imports:[...],source_revision:"<full SHA>"}.
 Requirements are checked before dispatch and after workspace preparation. Tools

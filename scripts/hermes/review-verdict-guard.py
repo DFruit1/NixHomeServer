@@ -215,7 +215,10 @@ def validate(metadata, allow_unknown=False, *, profile=None):
         raise ValueError('Record executed checks with command and integer exit_code')
     for check in checks:
         if not isinstance(check, dict) or not isinstance(check.get('command'), str) or not check['command'].strip() or type(check.get('exit_code')) is not int:
-            raise ValueError('Every check needs a command and actual integer exit_code')
+            raise ValueError('Every check needs a command and actual integer exit_code. '
+                             'This pre-write check-field validation changed nothing. '
+                             'Correct the field names on this task while preserving the '
+                             'actual verdict, revision and executed check results')
         if metadata['verdict'] == 'accept' and check['exit_code'] != 0:
             raise ValueError('A failing check cannot support acceptance; request changes or resolve it')
     if 'operation_scope' in metadata:
@@ -464,14 +467,16 @@ def guard_complete(payload, root):
                 _independent_native_acceptance(db, parent)
             if evidence['verdict'] != 'accept':
                 raise ValueError(
-                    f"Review {parent['id']} requested changes. The review gate"
-                    ' is live: complete only after an accepted review of the'
-                    ' current revision is linked as a parent. Self-service:'
-                    ' kanban_link a fresh review card as a parent (a review'
-                    ' card that depends on this card can never run), let it'
-                    f' accept, then kanban_unlink the superseded {parent["id"]}'
-                    ' edge and complete. Coordinator routes: the same relink,'
-                    ' or close this card as superseded with evidence')
+                    f"Review {parent['id']} requested changes. Keep this handoff open."
+                    " Use kanban_block(kind='validation') for missing current-scope acceptance,"
+                    ' naming the exact result and its existing supplier. A dependency wait'
+                    ' requires a linked unfinished input producer. Do not commission'
+                    ' a review merely to close or acknowledge this handoff. A replacement'
+                    ' verifier needs actual corrected inputs and must accept the current'
+                    ' plan, source or operation required by this handoff. It must precede'
+                    ' this consumer: kanban_link its accepted result as a parent, then'
+                    f' retire the superseded {parent["id"]} edge through guarded'
+                    ' kanban_unlink. A disposition-only acceptance does not release this gate')
     return {}
 
 
