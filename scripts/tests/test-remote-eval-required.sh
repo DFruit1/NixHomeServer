@@ -14,6 +14,11 @@
 # Every check is hermetic: no real SSH, no Nix store, no server, no build. The
 # fixture data are synthetic and are not evidence of any live inventory.
 #
+# Three claims are easy to get subtly wrong and are therefore pinned here: a
+# transport step that hangs must still end at the declared deadline, cleanup that
+# was not observed as clean must withhold the result rather than certify it, and
+# every local file an attempt creates must be gone when the call returns.
+#
 # The suite is a *production-path* contract test: it sources the real helper and
 # calls the real public entry point. Only the process boundaries (ssh, nix,
 # nix-store) and the repository root are replaced, because the checkout under
@@ -33,6 +38,10 @@ fail() {
 spy_root="$(mktemp -d "${TMPDIR:-/tmp}/nixhomeserver-required-spy.XXXXXX")"
 trap 'rm -rf "$spy_root"' EXIT
 mkdir -p "$spy_root/bin"
+# Every case runs with TMPDIR pointing here, so "the attempt left nothing behind"
+# is an observable fact instead of an assumption about /tmp.
+scratch_root="$spy_root/scratch"
+mkdir -p "$scratch_root"
 
 # --- fixture source repository ------------------------------------------------
 
@@ -102,6 +111,7 @@ case "$args" in
     ;;
   *' stage '*)
     cat >/dev/null
+    sleep "${REQUIRE_SSH_STAGE_SLEEP:-0}"
     [[ "${REQUIRE_SSH_STAGE_STATUS:-0}" == 0 ]] || exit "$REQUIRE_SSH_STAGE_STATUS"
     if [[ "${REQUIRE_SSH_ARCHIVE_EMPTY:-0}" == 1 ]]; then
       printf '\n'
@@ -114,6 +124,7 @@ case "$args" in
     ;;
   *' remove '*)
     cat >/dev/null
+    sleep "${REQUIRE_SSH_REMOVE_SLEEP:-0}"
     exit "${REQUIRE_SSH_REMOVE_STATUS:-0}"
     ;;
   *'sha256sum -- '*)
@@ -143,12 +154,14 @@ case "$args" in
     ;;
   *'cat > '*)
     cat >/dev/null
+    sleep "${REQUIRE_SSH_UPLOAD_SLEEP:-0}"
     exit "${REQUIRE_SSH_UPLOAD_STATUS:-0}"
     ;;
   *'! -e '*)
     exit "${REQUIRE_SSH_ABSENT_STATUS:-0}"
     ;;
   *'rm -rf -- '*)
+    sleep "${REQUIRE_SSH_REMOVE_SLEEP:-0}"
     exit "${REQUIRE_SSH_REMOVE_STATUS:-0}"
     ;;
   *' true')
@@ -206,6 +219,7 @@ use_drifting_archive_producer() {
 spy_env() {
   printf 'export %s=%q\n' \
     PATH "$spy_root/bin:$PATH" \
+    TMPDIR "$scratch_root" \
     REQUIRE_SSH_LOG "$spy_root/ssh.log" \
     REQUIRE_SSH_ARCHIVE "$spy_archive" \
     REQUIRE_SSH_ARCHIVE_SHA_FILE "$spy_root/archive.sha" \
@@ -234,6 +248,15 @@ require_zero_local_heavy() {
   fi
 }
 
+# The attempt owns one scratch directory; every file it created (query bytes,
+# archive, reply, diagnostics) lives inside it and must be gone by the time the
+# call returns, on every exit path.
+require_no_owned_scratch() {
+  local label="$1" leftover
+  leftover="$(find "$scratch_root" -mindepth 1 -print -quit 2>/dev/null || true)"
+  [[ -z "$leftover" ]] || fail "${label}: attempt scratch survived the call: ${leftover}"
+}
+
 receipt_count() {
   find "$receipt_dir" -maxdepth 1 -name '*.receipt.json' -print 2>/dev/null | wc -l
 }
@@ -260,6 +283,7 @@ expect_refusal() {
       fail "${label}: the refusal did not mention '${fragment}': $(cat "$spy_root/case.err" 2>/dev/null)"
   fi
   require_zero_local_heavy "$label"
+  require_no_owned_scratch "$label"
   [[ "$(eval_call_count)" -le 1 ]] ||
     fail "${label}: the attempt evaluated more than once"
   return 0
@@ -305,6 +329,7 @@ success_out="$(
 
 [[ "$(eval_call_count)" == 1 ]] || fail "a single attempt evaluated ${spy_remote_dir} more than once"
 require_zero_local_heavy "a successful required evaluation"
+require_no_owned_scratch "a successful required evaluation"
 grep -q '! -e ' "$spy_root/ssh.log" ||
   fail "the success receipt was written without verifying the remote cleanup"
 
@@ -315,6 +340,8 @@ archive_sha="$(cat "$spy_root/archive.sha")"
 jq -e --arg sha "$uploaded_sha" --arg archive "$archive_sha" '
   .mode == "required"
   and .exit_status == 0
+  and .outcome == "success"
+  and .result_certified == true
   and .cleanup == "success"
   and .commit == "'"$fixture_head"'"
   and .tree == "'"$fixture_tree"'"
@@ -673,21 +700,83 @@ host_c="${context_a_again#*$'\t'}"
 
 echo "  ✅ receipt identities separate the exact query from its configuration host"
 
-# --- cleanup is observed, not assumed --------------------------------------
+# --- cleanup is observed and gates the result -------------------------------
 #
 # The remote EXIT trap usually removes the staging paths. A receipt that reports
 # the trap's intent instead of the filesystem is the claim this route exists to
-# prevent.
+# prevent -- and an unobserved cleanup is not a successful attempt, however good
+# the reply looked, because nothing proves the remote state it came from.
 
-: >"$spy_root/ssh.log"
-(
-  eval "$(spy_env)"
-  export REQUIRE_SSH_RUN_OUT='{"value":1}' REQUIRE_SSH_ABSENT_STATUS=255
-  remote_eval_batch_json 'value=1'
-) >/dev/null || fail "an evaluation whose cleanup could not be observed failed outright"
+cleanup_case() {
+  local label="$1" body="$2"
+  : >"$spy_root/ssh.log"
+  reset_local_heavy_logs
+  case_status=0
+  (eval "$(spy_env)"; eval "$body") >"$spy_root/cleanup.out" 2>"$spy_root/cleanup.err" || case_status=$?
+  require_zero_local_heavy "$label"
+  require_no_owned_scratch "$label"
+  [[ "$(eval_call_count)" -le 1 ]] || fail "${label}: the attempt evaluated more than once"
+}
+
+# UNKNOWN: the session that would prove absence no longer answers.
+cleanup_case 'an unobservable cleanup' \
+  'export REQUIRE_SSH_RUN_OUT="{\"value\":1}" REQUIRE_SSH_ABSENT_STATUS=255; remote_eval_batch_json "value=1"'
+((case_status != 0)) || fail "an attempt whose cleanup was unknown reported success"
+[[ ! -s "$spy_root/cleanup.out" ]] ||
+  fail "an attempt with unknown cleanup emitted its result: $(cat "$spy_root/cleanup.out")"
+grep -q 'could not confirm cleanup' "$spy_root/cleanup.err" ||
+  fail "an unobservable cleanup did not explain itself: $(cat "$spy_root/cleanup.err")"
 receipt="$(latest_receipt)"
-jq -e '.exit_status == 0 and .cleanup == "unknown"' "$receipt" >/dev/null ||
-  fail "an unobservable cleanup was reported as clean: $(cat "$receipt")"
+jq -e '.exit_status == 0 and .cleanup == "unknown" and .outcome == "failure" and .result_certified == false' \
+  "$receipt" >/dev/null ||
+  fail "an unobservable cleanup was not receipted as an uncertified attempt: $(cat "$receipt")"
+jq -e '.reply_path != null and (.reply_sha256 | test("^[0-9a-f]{64}$"))' "$receipt" >/dev/null ||
+  fail "the withheld reply was not preserved as evidence: $(cat "$receipt")"
+[[ "$(eval_call_count)" == 1 ]] || fail "an unobservable cleanup was retried"
+
+# FAILED: the server kept answering, and the bounded removal did not settle it.
+cleanup_case 'a cleanup that did not take' \
+  'export REQUIRE_SSH_RUN_OUT="{\"value\":1}" REQUIRE_SSH_ABSENT_STATUS=1 REQUIRE_SSH_REMOVE_STATUS=1; remote_eval_batch_json "value=1"'
+((case_status != 0)) || fail "an attempt whose cleanup failed reported success"
+[[ ! -s "$spy_root/cleanup.out" ]] ||
+  fail "an attempt with failed cleanup emitted its result: $(cat "$spy_root/cleanup.out")"
+receipt="$(latest_receipt)"
+jq -e '.exit_status == 0 and .cleanup == "failed" and .outcome == "failure" and .result_certified == false' \
+  "$receipt" >/dev/null || fail "a failed cleanup was not receipted as a failure: $(cat "$receipt")"
+grep -q 'rm -rf -- ' "$spy_root/ssh.log" ||
+  fail "a failed cleanup did not attempt the bounded staging-directory removal"
+
+echo "  ✅ an unobserved or failed cleanup withholds the result and is receipted"
+
+# --- partial staging effects are recorded, never inferred -------------------
+#
+# The server allocates the archive slot before the upload. A failed upload
+# therefore leaves a named archive behind; the receipt must keep that ownership
+# and settle the observed state instead of reporting "none".
+
+cleanup_case 'an upload failure after allocation' \
+  'export REQUIRE_SSH_UPLOAD_STATUS=4 REQUIRE_SSH_ABSENT_STATUS=1; remote_eval_batch_json "value=1"'
+((case_status != 0)) || fail "a failed archive upload reported success"
+receipt="$(latest_receipt)"
+jq -e --arg archive "$spy_archive" '
+  .remote_archive == $archive
+  and .remote_archive_sha256 == null
+  and .cleanup == "failed"
+  and .outcome == "failure"' "$receipt" >/dev/null ||
+  fail "a failed upload lost the archive it had acquired: $(cat "$receipt")"
+grep -q ' remove ' "$spy_root/ssh.log" ||
+  fail "an acquired archive was not removed through the namespace helper"
+
+# An acquisition the attempt could not even name: the reply is never certified
+# and absence of the named paths is not reported as clean.
+cleanup_case 'an unnameable staging path' \
+  'export REQUIRE_SSH_ARCHIVE_EMPTY=1 REQUIRE_SSH_ABSENT_STATUS=0; remote_eval_batch_json "value=1"'
+((case_status != 0)) || fail "an attempt with an unnamed acquisition reported success"
+receipt="$(latest_receipt)"
+jq -e '.remote_archive == null and .cleanup == "unknown" and .outcome == "failure"' "$receipt" >/dev/null ||
+  fail "an unnamed acquisition was reported as a settled cleanup: $(cat "$receipt")"
+
+echo "  ✅ allocation-then-upload failure keeps its archive, an unnameable one stays UNKNOWN"
 
 # --- an interruption cleans what it acquired and leaves a receipt -----------
 
@@ -708,12 +797,82 @@ wait "$interrupted_pid" || interrupt_status=$?
 [[ "$interrupt_status" == 143 ]] ||
   fail "an interrupted required evaluation exited ${interrupt_status} instead of 143: $(cat "$spy_root/interrupt.err")"
 receipt="$(latest_receipt)"
-jq -e '.exit_status == 143 and (.cleanup == "success" or .cleanup == "failed" or .cleanup == "unknown")' \
+jq -e '.exit_status == 143 and .outcome == "failure" and (.cleanup == "success" or .cleanup == "failed" or .cleanup == "unknown")' \
   "$receipt" >/dev/null || fail "an interrupted attempt left no attributable receipt: $(cat "$receipt")"
 grep -q 'rm -rf -- ' "$spy_root/ssh.log" ||
   fail "an interrupted attempt did not clean the staging path it had acquired"
+require_no_owned_scratch 'an interrupted required evaluation'
 
-echo "  ✅ cleanup is observed (including UNKNOWN), and an interruption is receipted"
+# An interruption during acquisition: the server may have allocated a slot that
+# was never named, so no broad removal may be attempted and the receipt owes an
+# UNKNOWN cleanup.
+: >"$spy_root/ssh.log"
+(
+  eval "$(spy_env)"
+  export REQUIRE_SSH_STAGE_SLEEP=3 REQUIRE_SSH_RUN_OUT='{"value":1}'
+  remote_eval_batch_json 'value=1'
+) >"$spy_root/acquisition.out" 2>"$spy_root/acquisition.err" &
+acquisition_pid=$!
+for _ in $(seq 1 200); do
+  grep -q ' stage ' "$spy_root/ssh.log" 2>/dev/null && break
+  sleep 0.05
+done
+kill -TERM "$acquisition_pid" 2>/dev/null || true
+acquisition_status=0
+wait "$acquisition_pid" || acquisition_status=$?
+[[ "$acquisition_status" == 143 ]] ||
+  fail "an interrupted acquisition exited ${acquisition_status} instead of 143: $(cat "$spy_root/acquisition.err")"
+[[ ! -s "$spy_root/acquisition.out" ]] || fail "an interrupted acquisition emitted a result"
+receipt="$(latest_receipt)"
+jq -e '.exit_status == 143 and .cleanup == "unknown" and .remote_archive == null and .outcome == "failure"' \
+  "$receipt" >/dev/null || fail "an interrupted acquisition was not receipted as unknown: $(cat "$receipt")"
+if grep -q 'rm -rf -- ' "$spy_root/ssh.log"; then
+  fail "an unnamed acquisition was cleaned with a broad removal"
+fi
+require_no_owned_scratch 'an interrupted acquisition'
+
+echo "  ✅ an interruption is receipted, cleans only what it can name, and leaves no scratch"
+
+# --- every transport step is bounded, including staging and removal ---------
+#
+# The maintained staging and removal helpers call ssh directly. This route keeps
+# their payloads but runs each step under the declared deadline, so a hung
+# staging call, upload or removal is a timed-out attempt, not an open one.
+
+bounded_case() {
+  local label="$1" limit="$2" body="$3" expected="${4:-.exit_status == 124 or .exit_status == 137}" started ended
+  : >"$spy_root/ssh.log"
+  reset_local_heavy_logs
+  started="$(date +%s)"
+  case_status=0
+  (eval "$(spy_env)"; eval "$body") >"$spy_root/bounded.out" 2>"$spy_root/bounded.err" || case_status=$?
+  ended="$(date +%s)"
+  ((case_status != 0)) || fail "${label} reported success"
+  ((ended - started < limit)) || fail "${label} was not bounded (${started}..${ended})"
+  [[ ! -s "$spy_root/bounded.out" ]] || fail "${label} emitted a result"
+  require_zero_local_heavy "$label"
+  require_no_owned_scratch "$label"
+  [[ "$(eval_call_count)" -le 1 ]] || fail "${label} evaluated more than once"
+  receipt="$(latest_receipt)"
+  jq -e "(.outcome == \"failure\") and ($expected)" "$receipt" >/dev/null ||
+    fail "${label} did not receipt the expected failure: $(cat "$receipt")"
+}
+
+bounded_case 'a hung staging allocation' 8 \
+  'export REQUIRE_SSH_STAGE_SLEEP=10 NIXHOMESERVER_REMOTE_EVAL_TIMEOUT_SECONDS=2; remote_eval_batch_json "value=1"'
+jq -e '.cleanup == "unknown"' "$(latest_receipt)" >/dev/null ||
+  fail "a hung allocation did not record unnamed ownership: $(cat "$(latest_receipt)")"
+
+bounded_case 'a hung archive upload' 8 \
+  'export REQUIRE_SSH_UPLOAD_SLEEP=10 NIXHOMESERVER_REMOTE_EVAL_TIMEOUT_SECONDS=2; remote_eval_batch_json "value=1"'
+
+bounded_case 'a hung cleanup removal' 8 \
+  'export REQUIRE_SSH_RUN_OUT="{\"value\":1}" REQUIRE_SSH_ABSENT_STATUS=1 REQUIRE_SSH_REMOVE_SLEEP=10 NIXHOMESERVER_REMOTE_EVAL_TIMEOUT_SECONDS=2; remote_eval_batch_json "value=1"' \
+  '.exit_status == 0'
+jq -e '.cleanup == "unknown" and .result_certified == false' "$(latest_receipt)" >/dev/null ||
+  fail "a hung cleanup removal was not receipted as an uncertified attempt: $(cat "$(latest_receipt)")"
+
+echo "  ✅ staging, upload and removal are all bounded by the declared deadline"
 
 # --- the deadline is enforced, not measured ---------------------------------
 #
@@ -731,6 +890,7 @@ reset_local_heavy_logs
 ) >/dev/null 2>"$spy_root/timeout.err" || timeout_status=$?
 ((timeout_status != 0)) || fail "a session that outlived its deadline reported success"
 require_zero_local_heavy "an expired deadline"
+require_no_owned_scratch "an expired deadline"
 receipt="$(latest_receipt)"
 jq -e '.exit_status == 124 or .exit_status == 137' "$receipt" >/dev/null ||
   fail "an expired deadline was not recorded as a timeout: $(cat "$receipt")"

@@ -2439,7 +2439,8 @@ The run then makes exactly one attempt:
   Empty, whitespace, truncated, scalar, array, concatenated, short and
   over-answering replies are refused with no output on stdout.
 * There is no retry and no local fallback. A nonzero or 255 session status, a
-  staging or transfer fault, and an expired deadline are all failures.
+  staging or transfer fault, an expired deadline and a cleanup that could not be
+  observed as clean are all failures.
 
 A complete inventory is expressed as one query per field: an inventory of
 thirteen fields is thirteen queries, and the route refuses a reply that omits any
@@ -2455,21 +2456,42 @@ identity state and how many checks it survived, the archive, staged-archive,
 helper and exact-query digests, the query field set and selected host context,
 the endpoint and its attested hostname/system, the remote argv and interpreter,
 the declared and enforced deadline, start/end times, the exit status, the cleanup
-outcome and the artifact digests. Attempt numbers are allocated from a counter, so
-a later reader can order attempts and no attempt overwrites another.
+outcome, the attempt outcome and the artifact digests. Attempt numbers are
+allocated from a counter, so a later reader can order attempts and no attempt
+overwrites another.
 
 Receipt persistence is part of the contract: an attempt whose receipt cannot be
-written fails. Remote staging paths are cleaned through the same bounded staging
-interface, and the receipt records the observed outcome — `success`, `failed`,
-`unknown` or `none` — after asking the server whether the paths are gone, rather
-than asserting what the remote `EXIT` trap intended. An interrupted attempt
-(INT/TERM/HUP) cleans what it acquired and leaves a receipt with status
-130/143/129.
+written fails. Every local file the attempt creates — query bytes, source
+archive, reply, diagnostics — lives in one attempt-scoped scratch directory,
+removed on success, on refusal and on INT/TERM/HUP. The receipt copies what it
+needs before that removal, so an interrupted attempt still preserves whatever
+stdout/stderr had already arrived instead of discarding its own evidence; it
+leaves a receipt with status 130/143/129 and an observed cleanup.
 
-Every transport step the helper issues itself is bounded with `timeout(1)` and
-re-checked against the attempt deadline. A single positive wall-clock bound over
-the whole invocation belongs to whatever binding invokes the helper; wrap the call
-in `timeout` when the whole-call bound is part of the requirement.
+Remote staging paths are cleaned through the same bounded transport, and the
+receipt records the observed outcome — `success`, `failed`, `unknown` or `none`
+— after asking the server whether the paths are gone, rather than asserting what
+the remote `EXIT` trap intended. `none` is recorded only when the attempt never
+issued a command that can create a remote file; once it has, an error or a
+missing path is `unknown`, because an acquisition that failed after the server
+allocated its slot cannot be proven absent. The archive slot is recorded as owed
+as soon as the server names it, so a failed upload still cleans and reports the
+archive it acquired rather than losing it.
+
+`outcome` is not the process exit status alone: `success` requires exit 0 **and**
+an observed cleanup of `success` or `none`. An attempt whose cleanup is `failed`
+or `unknown` exits non-zero, is recorded with `outcome: "failure"` and
+`result_certified: false`, and emits nothing on stdout — whatever the evaluation
+returned is preserved as a receipt artifact and left uncertified.
+
+Every transport step is bounded by the declared deadline with `timeout(1)` and
+re-checked before each call, including the archive staging allocation, the upload
+and every cleanup removal. The maintained staging and removal helpers invoke
+`ssh` directly and lose the allocated path when they fail, so this route carries
+their payloads and namespace validation through the bounded transport instead of
+calling them unbounded. A single positive wall-clock bound over the whole
+invocation still belongs to whatever binding invokes the helper; wrap the call in
+`timeout` when the whole-call bound is part of the requirement.
 
 The contract suite is hermetic and runs in the confined fixture:
 
