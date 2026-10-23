@@ -107,6 +107,17 @@ recovery. Repair their registration before commissioning workspace-bound work.
 Health findings route to the correct board through deduplicated native recovery
 tasks. A wake failure does not suppress unrelated maintenance.
 
+Cron loop audits stay bound to the observed failure episode even after their
+diagnosis completes or fails. A new audit needs actual recovery followed by a
+fresh threshold breach; a sliding history window is not recovery. Successful
+execution clears execution failures, while delivery failures need a delivered
+or queued outcome. The owner-alerts sender also writes metadata-only
+`kanban/owner-alerts/health.json` under its existing lock: complete board reads,
+unresolved sends, errors and the last successful reconciliation. The monitor
+accepts only fresh evidence from the current sender run. Missing, stale,
+interrupted or failed receipts keep silence visible. Successful reconciliation
+can mean healthy idle or a completed self-send; it never proves handset delivery.
+
 The supervisor journals an in-flight attempt before mutating execution. An
 interrupted attempt is held for reconciliation. Ordinary failures have three
 attempts, with backoff; changed helpers, configuration or database availability

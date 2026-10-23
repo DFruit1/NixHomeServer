@@ -683,6 +683,23 @@ def tick(root, dry_run=False, now=None, force_decisions=False):
             fcntl.flock(lock, fcntl.LOCK_EX)
         path = directory / 'inbox.json'
         state = load_inbox(root)
+        # This receipt describes a complete sender reconciliation, not handset
+        # delivery. Invalidate the previous result before any board/transport
+        # work so an interrupted tick cannot leave a current healthy claim.
+        health_path = directory / 'health.json'
+        last_success = None
+        try:
+            previous = json.loads(health_path.read_text())
+            value = previous.get('last_success_at')
+            if type(value) in (int, float):
+                last_success = value
+        except (OSError, ValueError, AttributeError):
+            pass
+        health = dict(version=1, started_at=time.time() if now is None else now,
+                      completed_at=None, snapshot_complete=False, errors=0,
+                      due_unsent=None, last_success_at=last_success)
+        if not dry_run:
+            save(health_path, health)
         state['delivery'].setdefault(target, {'technical_token': '', 'technical_at': None, 'hard_blocker': {}})
         delivery = state['delivery'][target]
         if delivery.get('decision_format') != DECISION_FORMAT:
@@ -755,6 +772,16 @@ def tick(root, dry_run=False, now=None, force_decisions=False):
                     continue
                 if batch:
                     delivered(state['decisions'], batch)
+        if not dry_run:
+            due_unsent = (None if errors else 0) if decision_group is not None else sum(
+                target not in state['decisions'][label]['delivered']
+                for label in decision_labels.values())
+            health.update(completed_at=time.time() if now is None else now,
+                          snapshot_complete=not snapshot_failed, errors=len(errors),
+                          due_unsent=due_unsent)
+            if not errors and not snapshot_failed and due_unsent == 0:
+                health['last_success_at'] = health['completed_at']
+            save(health_path, health)
     if errors:
         raise RuntimeError('; '.join(errors))
 

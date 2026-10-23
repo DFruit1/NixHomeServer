@@ -89,6 +89,52 @@ class AlertsTest(unittest.TestCase):
             db.execute('UPDATE tasks SET body=?', (body,))
             db.commit()
 
+    def health(self):
+        return json.loads((self.root / 'kanban/owner-alerts/health.json').read_text())
+
+    def test_tick_records_complete_self_send_and_healthy_idle(self):
+        alerts.tick(self.root, now=1000)
+        self.assertEqual(dict(version=1, started_at=1000, completed_at=1000,
+                              snapshot_complete=True, errors=0, due_unsent=0,
+                              last_success_at=1000), self.health())
+        sent = len(self.sent)
+        alerts.tick(self.root, now=1001)
+        self.assertEqual(sent, len(self.sent))
+        self.assertEqual(1001, self.health()['last_success_at'])
+        self.assertNotIn('delivered', self.health())
+
+    def test_failed_send_records_unresolved_work_without_success(self):
+        with patch.object(alerts, 'send', side_effect=RuntimeError('transport unavailable')):
+            with self.assertRaises(RuntimeError):
+                alerts.tick(self.root, now=1000)
+        health = self.health()
+        self.assertTrue(health['snapshot_complete'])
+        self.assertEqual(1, health['errors'])
+        self.assertEqual(1, health['due_unsent'])
+        self.assertIsNone(health['last_success_at'])
+        self.assertNotIn('transport unavailable', json.dumps(health))
+
+    def test_interrupted_tick_invalidates_previous_success_but_retains_recovery_time(self):
+        alerts.tick(self.root, now=1000)
+        with patch.object(alerts, 'collect', side_effect=RuntimeError('interrupted')):
+            with self.assertRaises(RuntimeError):
+                alerts.tick(self.root, now=1001)
+        health = self.health()
+        self.assertEqual(1001, health['started_at'])
+        self.assertIsNone(health['completed_at'])
+        self.assertFalse(health['snapshot_complete'])
+        self.assertEqual(1000, health['last_success_at'])
+
+    def test_partial_snapshot_is_never_healthy_and_dry_run_writes_no_receipt(self):
+        with patch.object(alerts, 'collect', return_value=([], {}, {}, [], True)):
+            alerts.tick(self.root, now=1000)
+        self.assertFalse(self.health()['snapshot_complete'])
+        self.assertIsNone(self.health()['last_success_at'])
+        path = self.root / 'kanban/owner-alerts/health.json'
+        before = path.read_bytes()
+        alerts.tick(self.root, dry_run=True, now=1001)
+        self.assertEqual(before, path.read_bytes())
+
     def test_answered_owner_hold_is_not_reported_as_an_open_ask(self):
         # A supplier=owner reason lives on an immutable block event. Once the
         # owner answers, that text is stale; reporting it as an open ask tells

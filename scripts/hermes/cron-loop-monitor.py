@@ -30,11 +30,10 @@ Three detectors, over the durable execution ledger (read-only):
   pattern covers only alert/notification-class naming (aging escalation and
   idempotent monitors deliver locally by design and are excluded by default).
 
-One deep-dive commission per (job, detector) exists at a time, deduplicated
-through the native ``idempotency_key``, exactly like aging-escalation
-commissions: usable commission present -> silent; dead-ended (tripped) key ->
-rotate to a fresh sequence so a replacement can exist. A done commission
-re-arms the detector.
+One deep-dive commission owns each (job, detector) episode, deduplicated
+through the native ``idempotency_key``. Completion or failure of the audit does
+not establish recovery. A new commission requires observed recovery after the
+old commission, followed by a fresh qualifying episode.
 
 Signals are damped only through the commission lifecycle; the monitor has no
 own timers. Nothing here mutates jobs, boards or cards beyond creating the
@@ -177,26 +176,39 @@ def failure_loop(rows, minimum):
 
     A failed run can carry ``status='failed'`` or a failed delivery outcome;
     both count. Returns ``(count, latest_row, signature)`` for the most
-    frequent signature inside the window, or ``None`` under the threshold or
-    when no signature is discernible.
+    frequent signature since the last applicable recovery, with episode and
+    recovery timestamps, or ``None`` under the threshold.
     """
-    counts = {}
+    # Execution recovery and delivery recovery are different facts. A completed
+    # self-sending job can legitimately be suppressed by the scheduler, while
+    # suppression alone cannot establish that a denied delivery recovered.
+    counts = {'execution': {}, 'delivery': {}}
+    recovered = {'execution': None, 'delivery': None}
     for row in rows:
-        if ((row['delivery_outcome'] or '') not in DENIAL_OUTCOMES
-                and row['status'] != 'failed'):
+        if row['status'] in NON_TERMINAL_STATUSES:
             continue
+        outcome = row['delivery_outcome'] or ''
+        if row['status'] == 'completed':
+            counts['execution'].clear()
+            recovered['execution'] = row['claimed_at']
+        if outcome in ('delivered', 'queued'):
+            counts['delivery'].clear()
+            recovered['delivery'] = row['claimed_at']
+        kind = ('execution' if row['status'] == 'failed' else
+                'delivery' if outcome in DENIAL_OUTCOMES else None)
         text = signature(row['error'])
-        if text:
-            counts.setdefault(text, []).append(row)
+        if kind and text:
+            counts[kind].setdefault(text, []).append(row)
     best = None
-    for text, group in counts.items():
-        if len(group) >= minimum and (best is None
-                                      or len(group) > len(best[0])):
-            best = (group, group[-1], text)
+    for kind, failures in counts.items():
+        for text, group in failures.items():
+            if len(group) >= minimum and (best is None
+                                          or len(group) > len(best[0])):
+                best = (group, group[-1], text, recovered[kind])
     if best is None:
         return None
-    group, latest, text = best
-    return len(group), latest, text
+    group, latest, text, recovery = best
+    return len(group), latest, text, group[0]['claimed_at'], recovery
 
 
 def trailing_streak(rows, outcomes):
@@ -220,7 +232,47 @@ def trailing_streak(rows, outcomes):
     return first, latest
 
 
-def detection_for_job(job_id, job, rows, window_hours, now):
+def owner_alerts_health(root, job):
+    """Read only bounded, metadata-only evidence from the maintained sender."""
+    if (not job or job.get('script') != 'kanban-owner-alerts.py'
+            or job.get('no_agent') is not True):
+        return {}
+    try:
+        path = Path(root) / 'kanban/owner-alerts/health.json'
+        if path.stat().st_size > 4096:
+            return {}
+        health = json.loads(path.read_text())
+        return health if isinstance(health, dict) and health.get('version') == 1 else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def owner_alerts_healthy(root, job, rows, now, *, health=None):
+    """Qualify self-sender reconciliation, never infer handset delivery.
+
+    Missing, stale, incomplete or previous-run evidence leaves silence visible.
+    Only this maintained no-agent sender produces this receipt; other jobs keep
+    the ordinary delivery detector.
+    """
+    if not rows:
+        return False
+    health = owner_alerts_health(root, job) if health is None else health
+    try:
+        started, completed = health.get('started_at'), health.get('completed_at')
+        latest = parse_when(rows[-1]['claimed_at'])
+        return (health.get('version') == 1
+                and health.get('snapshot_complete') is True
+                and type(health.get('errors')) is int and health['errors'] == 0
+                and type(health.get('due_unsent')) is int and health['due_unsent'] == 0
+                and type(started) in (int, float) and type(completed) in (int, float)
+                and latest is not None and latest <= started <= completed <= now
+                and now - completed <= 45 * 60)
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def detection_for_job(job_id, job, rows, window_hours, now, *, sender_healthy=False,
+                      sender_recovered_at=None):
     """One signal description per detector that tripped, for this job.
 
     Rows are window-filtered here as well as at the SQL boundary: the
@@ -241,11 +293,13 @@ def detection_for_job(job_id, job, rows, window_hours, now):
     failed = failure_loop(rows, int(hours_env('CRON_LOOP_FAILURE_MIN',
                                               DEFAULT_FAILURE_MIN)))
     if failed:
-        count, latest, text = failed
+        count, latest, text, started, recovered = failed
         signals.append({
             'detector': 'failure-loop',
             'headline': f'{count} failures repeat one error signature in {window_hours:.0f}h',
             'evidence': f'latest at {latest["claimed_at"]}: {text}',
+            'episode_started_at': started,
+            'recovered_at': recovered,
         })
 
     first, latest = trailing_streak(rows, DENIAL_OUTCOMES)
@@ -259,16 +313,20 @@ def detection_for_job(job_id, job, rows, window_hours, now):
                             f"({latest['delivery_outcome'] or latest['status']})",
                 'evidence': f'latest at {latest["claimed_at"]}: '
                             f'{signature(latest["error"]) or latest["status"]}',
+                'episode_started_at': first['claimed_at'],
+                'recovered_at': next((r['claimed_at'] for r in reversed(rows)
+                    if (r['delivery_outcome'] or '') in ('delivered', 'queued')), None),
             })
 
     delivery_pattern = pattern_env('CRON_LOOP_DELIVERY_PATTERN',
                                    DEFAULT_DELIVERY_PATTERN)
     name = (job or {}).get('name') or job_id
-    delivered = [r for r in rows
-                 if (r['delivery_outcome'] or '') in ('delivered', 'queued')]
-    if (len(rows) >= 2 and not delivered
+    recovery_epoch = parse_when(sender_recovered_at)
+    silence_rows = [r for r in rows if recovery_epoch is None
+                    or parse_when(r['claimed_at']) > recovery_epoch]
+    if (len(silence_rows) >= 2 and not sender_healthy
             and delivery_pattern.search(name or '')):
-        first, latest = trailing_streak(rows, SILENT_OUTCOMES)
+        first, latest = trailing_streak(silence_rows, SILENT_OUTCOMES)
         if first:
             started = parse_when(first['claimed_at'])
             if started and now - started >= hours_env(
@@ -278,6 +336,11 @@ def detection_for_job(job_id, job, rows, window_hours, now):
                     'headline': f'delivery-class job silent '
                                 f'{(now - started) / 3600:.1f}h with no delivery',
                     'evidence': f'latest at {latest["claimed_at"]}',
+                    'episode_started_at': first['claimed_at'],
+                    'recovered_at': max([r['claimed_at'] for r in rows
+                        if (r['delivery_outcome'] or '') in ('delivered', 'queued')]
+                        + ([sender_recovered_at] if sender_recovered_at else []),
+                        key=parse_when, default=None),
                 })
     return signals
 
@@ -324,22 +387,22 @@ def connect_ro(path):
     return db
 
 
-def commission_usable(status, failures):
+def commission_usable(status, created_at, recovered_at):
     """Whether an existing commission already covers this signal.
 
-    Same rule as aging escalation: a live commission still owns the audit; a
-    done or archived one means the signal re-armed and needs a fresh audit; a
-    breaker-tripped one means the attempt dead-ended and the key must rotate.
+    Completing a diagnosis does not repair its cause. A terminal commission
+    still owns that episode; only observed recovery followed by a new episode
+    can re-arm it. Preserve failed commissions and their spent retry limits.
     """
-    return status not in ('done', 'archived', 'blocked') or (
-        status == 'blocked' and not failures)
+    return (status not in ('done', 'archived', 'blocked')
+            or recovered_at is None or created_at >= recovered_at)
 
 
 def create_commission(root, slug, signal, job_name, job_id, env, report):
     """Create one deep-dive commission for a (job, detector) signal.
 
-    Returns the commission card id, or a note when a usable commission
-    already exists. Rotation skips dead-ended keys.
+    Returns the commission card id, or a note when a commission already owns
+    this episode. Rotation requires observed recovery, never a spent retry.
 
     Keyed on the stable ``job_id``, not the job name: a renamed job must not
     orphan its dedupe history, and a restored name must not inherit.
@@ -351,10 +414,9 @@ def create_commission(root, slug, signal, job_name, job_id, env, report):
     base = f"{KEY_PREFIX}:{signal['detector']}:{job_id}"
     db = connect_ro(board_db)
     try:
-        existing = {row['idempotency_key']: (row['status'],
-                                             row['consecutive_failures'])
+        existing = {row['idempotency_key']: (row['status'], row['created_at'])
                     for row in db.execute(
-            "SELECT idempotency_key, status, consecutive_failures FROM tasks"
+            "SELECT idempotency_key, status, created_at FROM tasks"
             " WHERE idempotency_key LIKE ? || '%'", (base,)).fetchall()}
     finally:
         db.close()
@@ -364,7 +426,7 @@ def create_commission(root, slug, signal, job_name, job_id, env, report):
                                             sequence))
         if entry is None:
             break
-        if commission_usable(*entry):
+        if commission_usable(*entry, parse_when(signal.get('recovered_at'))):
             return 'already commissioned'
         sequence += 1
     key = commission_key(job_id, signal['detector'], sequence)
@@ -481,8 +543,15 @@ def main():
     report = []
     for job_id in sorted(executions):
         rows = executions[job_id]
+        health = owner_alerts_health(root, jobs.get(job_id))
+        recovered = health.get('last_success_at')
+        sender_recovered_at = (datetime.fromtimestamp(recovered).isoformat()
+            if type(recovered) in (int, float) and 0 < recovered <= now else None)
         signals = detection_for_job(job_id, jobs.get(job_id), rows,
-                                    window_hours, now)
+                                    window_hours, now,
+                                    sender_healthy=owner_alerts_healthy(
+                                        root, jobs.get(job_id), rows, now, health=health),
+                                    sender_recovered_at=sender_recovered_at)
         if not signals:
             continue
         name = (jobs.get(job_id) or {}).get('name') or job_id

@@ -90,16 +90,38 @@ class LoopMonitorTest(unittest.TestCase):
                                          runs=runs))
 
     def test_repeated_same_signature_failures_trip(self):
-        runs = [('failed', CONFIG_ERR, 'failed', 50),
-                ('failed', CONFIG_ERR, 'failed', 45),
-                ('failed', CONFIG_ERR, 'failed', 40),
+        runs = [('failed', CONFIG_ERR, 'failed', 3),
+                ('failed', CONFIG_ERR, 'failed', 2),
+                ('failed', CONFIG_ERR, 'failed', 1),
                 ('failed', CONFIG_ERR, 'failed', 0.2),
-                ('completed', None, 'suppressed', 30)]
+                ('completed', None, 'suppressed', 60)]
         signals = self.detect(runs=runs)
         self.assertEqual(['failure-loop'],
                          [s['detector'] for s in signals])
         self.assertIn('numeric allowlisted contact',
                       signals[0]['evidence'])
+
+    def test_success_clears_old_execution_failure_episode(self):
+        runs = [('failed', CONFIG_ERR, 'failed', h) for h in (50, 45, 40, 35)]
+        runs += [('completed', None, 'suppressed', 1)]
+        self.assertEqual([], self.detect(runs=runs))
+
+    def test_new_failures_need_their_own_threshold_after_recovery(self):
+        runs = [('failed', CONFIG_ERR, 'failed', h) for h in (50, 45, 40, 35)]
+        runs += [('completed', None, 'suppressed', 30)]
+        runs += [('failed', CONFIG_ERR, 'failed', h) for h in (3, 2, 1)]
+        self.assertNotIn('failure-loop', [s['detector'] for s in self.detect(runs=runs)])
+        runs += [('failed', CONFIG_ERR, 'failed', .2)]
+        signal = next(s for s in self.detect(runs=runs) if s['detector'] == 'failure-loop')
+        self.assertIn('4 failures', signal['headline'])
+        self.assertEqual(iso(self.now - 3 * HOUR), signal['episode_started_at'])
+
+    def test_suppression_does_not_prove_a_denied_delivery_recovered(self):
+        runs = [('completed', CONFIG_ERR, 'failed', h) for h in (4, 3, 2, 1)]
+        runs += [('completed', None, 'suppressed', .2)]
+        self.assertIn('failure-loop', [s['detector'] for s in self.detect(runs=runs)])
+        runs += [('completed', None, 'delivered', .1)]
+        self.assertEqual([], self.detect(runs=runs))
 
     def test_failures_below_repeat_minimum_stay_quiet(self):
         runs = [('failed', CONFIG_ERR, 'failed', 50),
@@ -147,6 +169,52 @@ class LoopMonitorTest(unittest.TestCase):
 
     def test_empty_history_is_healthy(self):
         self.assertEqual([], self.detect(runs=[]))
+
+    def test_sender_health_requires_fresh_complete_current_run_evidence(self):
+        job = {'script': 'kanban-owner-alerts.py', 'no_agent': True}
+        history = rows(self.now, [('completed', None, 'suppressed', .1)])
+        path = self.root / 'kanban/owner-alerts/health.json'
+        path.parent.mkdir(parents=True)
+        good = dict(version=1, started_at=self.now - 300, completed_at=self.now - 200,
+                    snapshot_complete=True, errors=0, due_unsent=0)
+        self.assertFalse(mon.owner_alerts_healthy(self.root, job, history, self.now))
+        for change in ({}, {'completed_at': None}, {'snapshot_complete': False},
+                       {'errors': 1}, {'due_unsent': 1}, {'completed_at': self.now + 1},
+                       {'started_at': self.now - 400}, {'completed_at': self.now - 4000}):
+            path.write_text(json.dumps({**good, **change}))
+            self.assertEqual(not change,
+                             mon.owner_alerts_healthy(self.root, job, history, self.now), change)
+        path.write_text('not json')
+        self.assertFalse(mon.owner_alerts_healthy(self.root, job, history, self.now))
+        path.write_text(json.dumps(good))
+        self.assertFalse(mon.owner_alerts_healthy(self.root, {'name': 'alerts'}, history, self.now))
+
+    def test_healthy_self_sender_only_suppresses_silence_not_failures(self):
+        runs = [('completed', None, 'suppressed', h) for h in (42, 40, .1)]
+        self.assertEqual([], mon.detection_for_job('job_alerts', {'name': 'alerts'},
+                         rows(self.now, runs), 72, self.now, sender_healthy=True))
+        runs = [('failed', CONFIG_ERR, 'failed', h) for h in (30, 29, 28, .1)]
+        signals = mon.detection_for_job('job_alerts', {'name': 'alerts'},
+                         rows(self.now, runs), 72, self.now, sender_healthy=True)
+        self.assertIn('failure-loop', [s['detector'] for s in signals])
+        self.assertIn('delivery-denial', [s['detector'] for s in signals])
+
+    def test_silence_can_recur_after_old_delivery_inside_window(self):
+        signals = self.detect(runs=[('completed', None, 'delivered', 60),
+                                   ('completed', None, 'suppressed', 42),
+                                   ('completed', None, 'suppressed', .1)])
+        self.assertEqual(['persistent-silence'], [s['detector'] for s in signals])
+
+    def test_sender_reconciliation_restarts_silence_threshold_and_rearms_later(self):
+        history = rows(self.now, [('completed', None, 'delivered', 60),
+                                 ('completed', None, 'suppressed', 42),
+                                 ('completed', None, 'suppressed', 1),
+                                 ('completed', None, 'suppressed', .1)])
+        self.assertEqual([], mon.detection_for_job('j', {'name': 'alerts'}, history, 72,
+            self.now, sender_recovered_at=iso(self.now - 10 * HOUR)))
+        signals = mon.detection_for_job('j', {'name': 'alerts'}, history, 72,
+            self.now, sender_recovered_at=iso(self.now - 50 * HOUR))
+        self.assertEqual(iso(self.now - 50 * HOUR), signals[0]['recovered_at'])
 
     # --- commission body ------------------------------------------------
 
@@ -207,7 +275,9 @@ class LoopMonitorTest(unittest.TestCase):
 
     def commission(self):
         signal = {'detector': 'persistent-silence', 'headline': 'silent 41h',
-                  'evidence': 'latest at now'}
+                  'evidence': 'latest at now',
+                  'episode_started_at': iso(self.now - 41 * HOUR),
+                  'recovered_at': iso(self.now - 42 * HOUR)}
         return mon.create_commission(
             self.root, 'nixhomeserver', signal,
             'kanban owner blocker alerts', 'job_alerts', {}, self.report)
@@ -236,27 +306,49 @@ class LoopMonitorTest(unittest.TestCase):
         self.assertEqual('already commissioned', self.commission())
         self.assertEqual([], calls)
 
-    def test_done_commission_rearms_the_signal(self):
-        # A done commission means the signal re-armed; rotation past the
-        # consumed key orders a fresh audit.
+    def test_done_commission_keeps_owning_unchanged_episode(self):
         self.make_board([('t_done',
                           'cron-loop-monitor:persistent-silence:job_alerts',
                           'done', 0)])
         calls = self.cli_calls()
-        self.assertEqual('t_abc123', self.commission())
-        self.assertIn(
-            'cron-loop-monitor:persistent-silence:job_alerts:r1',
-            [a for a in calls if 'create' in a][0])
+        self.assertEqual('already commissioned', self.commission())
+        self.assertEqual([], calls)
 
-    def test_tripped_commission_rotates_the_key(self):
+    def test_recovered_then_recurrent_episode_gets_one_new_commission(self):
+        self.make_board([('t_done',
+                          'cron-loop-monitor:persistent-silence:job_alerts',
+                          'done', 0)])
+        db = sqlite3.connect(self.root / 'kanban/boards/nixhomeserver/kanban.db')
+        db.execute('UPDATE tasks SET created_at=?', (int(self.now - 50 * HOUR),))
+        db.commit()
+        db.close()
+        calls = self.cli_calls()
+        self.assertEqual('t_abc123', self.commission())
+        self.assertIn('cron-loop-monitor:persistent-silence:job_alerts:r1', calls[0])
+
+    def test_tripped_commission_does_not_duplicate_unchanged_diagnosis(self):
         self.make_board([('t_dead',
                           'cron-loop-monitor:persistent-silence:job_alerts',
                           'blocked', 3)])
         calls = self.cli_calls()
-        self.assertEqual('t_abc123', self.commission())
-        self.assertIn(
-            'cron-loop-monitor:persistent-silence:job_alerts:r1',
-            [a for a in calls if 'create' in a][0])
+        self.assertEqual('already commissioned', self.commission())
+        self.assertEqual([], calls)
+
+    def test_window_rollover_without_observed_recovery_never_rearms(self):
+        self.make_board([('t_done',
+                          'cron-loop-monitor:persistent-silence:job_alerts',
+                          'done', 0)])
+        db = sqlite3.connect(self.root / 'kanban/boards/nixhomeserver/kanban.db')
+        db.execute('UPDATE tasks SET created_at=?', (int(self.now - 100 * HOUR),))
+        db.commit()
+        db.close()
+        calls = self.cli_calls()
+        signal = {'detector': 'persistent-silence', 'headline': 'silent 41h',
+                  'evidence': 'latest at now',
+                  'episode_started_at': iso(self.now - 41 * HOUR), 'recovered_at': None}
+        self.assertEqual('already commissioned', mon.create_commission(
+            self.root, 'nixhomeserver', signal, 'alerts', 'job_alerts', {}, self.report))
+        self.assertEqual([], calls)
 
     def test_duplicate_key_from_a_racing_dispatcher_is_success(self):
         self.make_board()
@@ -303,6 +395,30 @@ class LoopMonitorTest(unittest.TestCase):
         out = self.main_output()
         self.assertEqual(0, out.returncode, out.stderr)
         self.assertIn('nothing to escalate', out.stdout)
+
+    def test_main_qualifies_fresh_self_sender_health_then_keeps_failure_visible(self):
+        make_cron(self.root, 'job_alerts', self.now, [
+            ('completed', None, 'suppressed', 42),
+            ('completed', None, 'suppressed', .1)])
+        jobs = self.root / 'cron/jobs.json'
+        data = json.loads(jobs.read_text())
+        data['jobs'][0].update(script='kanban-owner-alerts.py', no_agent=True)
+        jobs.write_text(json.dumps(data))
+        path = self.root / 'kanban/owner-alerts/health.json'
+        path.parent.mkdir(parents=True)
+        health = dict(version=1, started_at=self.now - 350,
+                      completed_at=self.now - 340, snapshot_complete=True,
+                      errors=0, due_unsent=0, last_success_at=self.now - 340)
+        path.write_text(json.dumps(health))
+        before = path.read_bytes()
+        out = self.main_output()
+        self.assertEqual(0, out.returncode, out.stderr)
+        self.assertIn('nothing to escalate', out.stdout)
+        self.assertEqual(before, path.read_bytes())
+        health.update(completed_at=None, snapshot_complete=False,
+                      last_success_at=None)
+        path.write_text(json.dumps(health))
+        self.assertIn('persistent-silence', self.main_output().stdout)
 
     def test_main_missing_executions_db_degrades_to_clear(self):
         out = self.main_output()

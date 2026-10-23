@@ -617,7 +617,7 @@ class RepairTest(unittest.TestCase):
         self.assertEqual(before,self.dump())
 
     def test_workspace_rebind_seam_is_closed_migrated_and_forwarded(self):
-        from coordinator_repair_adapter import SCHEMA,PREVIOUS,LEGACY,PREVIOUS_HANDLER,LEGACY_HANDLER
+        from coordinator_repair_adapter import SCHEMA,PREVIOUS,LEGACY,HANDLER,PREVIOUS_HANDLER,LEGACY_HANDLER
         seam={};exec(SCHEMA,seam);schema=seam['KANBAN_AMEND_SCHEMA']
         rebind=schema['parameters']['properties']['workspace_rebind']
         self.assertEqual({'workspace_kind','workspace_path'},set(rebind['properties']))
@@ -628,15 +628,27 @@ class RepairTest(unittest.TestCase):
         self.assertIn('workspace-prep receipt',schema['description'])
         self.assertLessEqual({'workspace_kind','workspace_path'},
                              set(schema['parameters']['properties']['changes']['properties']))
-        # Both installed predecessors migrate to the same current seam.
-        tools=(native/'tools/kanban_tools.py').read_text()
-        schemas=(native/'tools/kanban_tools_schemas.py').read_text()
+        # Qualify the installed bytes, then construct exact predecessor fixtures
+        # from the canonical current seam. The installed runtime may already be
+        # current; never require a downgrade to make its own regression pass.
+        installed_tools=(native/'tools/kanban_tools.py').read_text()
+        installed_schemas=(native/'tools/kanban_tools_schemas.py').read_text()
+        current_tools=adapt('tools/kanban_tools.py',installed_tools)
+        current_schemas=adapt('tools/kanban_tools_schemas.py',installed_schemas)
+        self.assertEqual(1,current_tools.count(HANDLER))
+        self.assertEqual(1,current_schemas.count(SCHEMA))
+        self.assertEqual(current_tools,adapt('tools/kanban_tools.py',current_tools))
+        self.assertEqual(current_schemas,adapt('tools/kanban_tools_schemas.py',current_schemas))
+        tools=current_tools.replace(HANDLER,PREVIOUS_HANDLER,1)
+        schemas=current_schemas.replace(SCHEMA,PREVIOUS,1)
         self.assertEqual(1,tools.count(PREVIOUS_HANDLER));self.assertEqual(1,schemas.count(PREVIOUS))
         migrated=adapt('tools/kanban_tools.py',tools)
+        self.assertEqual(current_tools,migrated)
         self.assertEqual(1,migrated.count('workspace_rebind=args.get("workspace_rebind")'))
         self.assertEqual(1,migrated.count('def _handle_amend('))
         self.assertEqual(migrated,adapt('tools/kanban_tools.py',tools.replace(PREVIOUS_HANDLER,LEGACY_HANDLER,1)))
         migrated_schemas=adapt('tools/kanban_tools_schemas.py',schemas)
+        self.assertEqual(current_schemas,migrated_schemas)
         self.assertEqual(1,migrated_schemas.count('"workspace_rebind"'))
         self.assertEqual(migrated_schemas,adapt('tools/kanban_tools_schemas.py',schemas.replace(PREVIOUS,LEGACY,1)))
         # The registered schema validates the real call, so only a closed object
@@ -663,6 +675,8 @@ class RepairTest(unittest.TestCase):
             'workspace_rebind':dict(binding,extra='no')}))
         self.assertIn('error',refused)
         self.assertEqual(before,self.dump())
+        self.assertEqual(installed_tools,(native/'tools/kanban_tools.py').read_text())
+        self.assertEqual(installed_schemas,(native/'tools/kanban_tools_schemas.py').read_text())
 
     def containment_reason(self):
         return ('Input supplier: agent. Repair evidence: the missing plan section was restored and read back; '
