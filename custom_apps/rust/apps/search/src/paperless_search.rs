@@ -219,7 +219,12 @@ fn map_document(
     }
     let tags = taxonomy.tag_names(document.get("tags"));
     if !tags.is_empty() {
-        metadata.insert("tags".to_string(), Value::String(tags.join(", ")));
+        // Keep each resolved tag as its own value so the shared facet filter
+        // can match it exactly; presentation joins them for the API response.
+        metadata.insert(
+            "tags".to_string(),
+            Value::Array(tags.into_iter().map(Value::String).collect()),
+        );
     }
     if let Some(file_name) = document
         .get("original_file_name")
@@ -364,10 +369,29 @@ mod tests {
         assert_eq!(hit.app_url, "https://paperless.example.org/documents/42");
         assert_eq!(hit.metadata["correspondent"], json!("ACME"));
         assert_eq!(hit.metadata["document_type"], json!("Invoice"));
-        assert_eq!(hit.metadata["tags"], json!("finance, 2024"));
+        // Resolved tags stay structured internally so each one is its own facet.
+        assert_eq!(hit.metadata["tags"], json!(["finance", "2024"]));
         assert_eq!(hit.metadata["file"], json!("invoice.pdf"));
-        let snippet = hit.snippet.expect("snippet");
+        let snippet = hit.snippet.as_deref().expect("snippet");
         assert!(snippet.contains("<em>due</em>"), "got: {snippet}");
+
+        // The outward JSON presentation keeps the historical joined string.
+        let json = hit.to_json();
+        assert_eq!(json["metadata"]["tags"], json!("finance, 2024"));
+        assert_eq!(json["metadata"]["correspondent"], json!("ACME"));
+        assert_eq!(json["metadata"]["document_type"], json!("Invoice"));
+        assert_eq!(json["metadata"]["file"], json!("invoice.pdf"));
+        assert_eq!(json["id"], json!("paperless:42"));
+        assert_eq!(json["source"], json!("paperless"));
+        assert_eq!(json["title"], json!("Invoice 42"));
+        assert_eq!(json["contentType"], json!("application/pdf"));
+        assert_eq!(json["owner"], json!("ACME"));
+        assert_eq!(json["score"], json!(0.75));
+        assert_eq!(json["created"], json!(1_706_745_600));
+        assert_eq!(
+            json["appUrl"],
+            json!("https://paperless.example.org/documents/42")
+        );
     }
 
     #[test]
@@ -392,6 +416,95 @@ mod tests {
             Some("ACME")
         );
         assert!(taxonomy.correspondent(Some(&json!(99))).is_none());
+    }
+
+    fn tag_filter(tag: &str) -> crate::solr::SearchFilters {
+        crate::solr::SearchFilters {
+            tag: Some(tag.to_string()),
+            ..Default::default()
+        }
+    }
+
+    fn multi_tag_document() -> Value {
+        json!({
+            "id": 42,
+            "title": "Invoice 42",
+            "content": "total due 100",
+            "created": "2024-02-01",
+            "added": "2024-02-02T10:00:00Z",
+            "correspondent": 7,
+            "document_type": 2,
+            "tags": [3, 4],
+            "original_file_name": "invoice.pdf",
+            "mime_type": "application/pdf",
+            "__search_hit__": { "score": 0.75, "highlights": "total <span class=\"match\">due</span> 100" }
+        })
+    }
+
+    #[test]
+    fn mapped_multi_tag_hit_matches_each_individual_tag() {
+        let hit = map_document(&config(), &taxonomy(), &multi_tag_document(), "due");
+
+        // An unfiltered search keeps the hit, exactly as before.
+        assert!(hit.matches_filters(&crate::solr::SearchFilters::default()));
+
+        // Every resolved tag is its own exact facet value.
+        for tag in ["finance", "2024"] {
+            assert!(
+                hit.matches_filters(&tag_filter(tag)),
+                "tag {tag} should match"
+            );
+        }
+        // The joined presentation is not itself a selectable tag, and unrelated
+        // tags stay excluded.
+        assert!(!hit.matches_filters(&tag_filter("finance, 2024")));
+        assert!(!hit.matches_filters(&tag_filter("tax")));
+
+        // Serialising for presentation must not change filtering or internals.
+        let presentation = hit.to_json();
+        assert_eq!(presentation["metadata"]["tags"], json!("finance, 2024"));
+        assert!(hit.matches_filters(&tag_filter("finance")));
+        assert_eq!(hit.to_json(), presentation);
+        assert_eq!(hit.metadata["tags"], json!(["finance", "2024"]));
+    }
+
+    #[test]
+    fn comma_in_a_tag_name_stays_one_exact_tag() {
+        let mut taxonomy = taxonomy();
+        taxonomy.tags.insert(5, "Research, Development".to_string());
+        let document = json!({ "id": 43, "title": "Lab notes", "tags": [5, 3] });
+        let hit = map_document(&config(), &taxonomy, &document, "lab");
+
+        // Neither mapping nor presentation splits the punctuation.
+        assert_eq!(
+            hit.metadata["tags"],
+            json!(["Research, Development", "finance"])
+        );
+        assert_eq!(
+            hit.to_json()["metadata"]["tags"],
+            json!("Research, Development, finance")
+        );
+
+        assert!(hit.matches_filters(&tag_filter("Research, Development")));
+        assert!(hit.matches_filters(&tag_filter("finance")));
+        // A component of a comma-containing name never becomes its own tag.
+        assert!(!hit.matches_filters(&tag_filter("Research")));
+        assert!(!hit.matches_filters(&tag_filter("Development")));
+    }
+
+    #[test]
+    fn omits_tags_when_no_name_resolves() {
+        let document = json!({ "id": 44, "title": "Unknown tags", "tags": [99, "x"] });
+        let hit = map_document(&config(), &taxonomy(), &document, "unknown");
+        assert!(hit.metadata.get("tags").is_none());
+        assert!(hit.to_json()["metadata"].get("tags").is_none());
+
+        let mixed = json!({ "id": 45, "title": "Mixed tags", "tags": [3, 99] });
+        let hit = map_document(&config(), &taxonomy(), &mixed, "mixed");
+        assert_eq!(hit.metadata["tags"], json!(["finance"]));
+        assert_eq!(hit.to_json()["metadata"]["tags"], json!("finance"));
+        assert!(hit.matches_filters(&tag_filter("finance")));
+        assert!(!hit.matches_filters(&tag_filter("99")));
     }
 
     #[tokio::test]

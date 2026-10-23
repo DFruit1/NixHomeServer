@@ -58,7 +58,7 @@ impl FederatedHit {
             "owner": self.owner,
             "score": self.score,
             "created": self.created,
-            "metadata": self.metadata,
+            "metadata": presented_metadata(&self.metadata),
         })
     }
 
@@ -128,6 +128,32 @@ impl FederatedHit {
         }
         true
     }
+}
+
+/// Projects hit metadata into the shape the API presents. Paperless resolves
+/// tags into a structured list so the shared facet filter can match each tag
+/// exactly; the outward contract still presents tags as the historical
+/// ", "-joined string, mirroring the indexed path's metadata projection. Only
+/// the top-level `tags` array is projected, and only when it is composed
+/// entirely of strings: legacy string tags, unrelated arrays, malformed tag
+/// arrays and non-object metadata all pass through unchanged.
+fn presented_metadata(metadata: &Value) -> Value {
+    let Some(entries) = metadata.as_object() else {
+        return metadata.clone();
+    };
+    let Some(Value::Array(items)) = entries.get("tags") else {
+        return metadata.clone();
+    };
+    let mut names = Vec::with_capacity(items.len());
+    for item in items {
+        match item.as_str() {
+            Some(name) => names.push(name),
+            None => return metadata.clone(),
+        }
+    }
+    let mut projected = entries.clone();
+    projected.insert("tags".to_string(), Value::String(names.join(", ")));
+    Value::Object(projected)
 }
 
 #[cfg(test)]
@@ -265,6 +291,83 @@ mod tests {
         let mut untagged = hit.clone();
         untagged.metadata = json!({ "correspondent": "ACME" });
         assert!(!untagged.matches_filters(&tag));
+    }
+
+    #[test]
+    fn serialises_tag_arrays_as_the_historical_joined_string() {
+        let mut hit = hit();
+        hit.metadata = json!({ "correspondent": "ACME", "tags": ["invoice", "2024"] });
+
+        let presentation = hit.to_json();
+        assert_eq!(presentation["metadata"]["tags"], json!("invoice, 2024"));
+        // Projection is presentation-only: the hit keeps its structured tags.
+        assert_eq!(hit.metadata["tags"], json!(["invoice", "2024"]));
+        assert_eq!(hit.to_json(), presentation);
+
+        // Filtering observes the original list both before and after serialising.
+        assert!(hit.matches_filters(&SearchFilters {
+            tag: Some("invoice".to_string()),
+            ..Default::default()
+        }));
+        assert!(hit.matches_filters(&SearchFilters {
+            tag: Some("2024".to_string()),
+            ..Default::default()
+        }));
+        assert!(!hit.matches_filters(&SearchFilters {
+            tag: Some("invoice, 2024".to_string()),
+            ..Default::default()
+        }));
+    }
+
+    #[test]
+    fn serialisation_leaves_legacy_and_unrelated_metadata_untouched() {
+        let mut hit = hit();
+        let metadata = json!({
+            "correspondent": "ACME",
+            "tags": "invoice",
+            "cc": ["bob@example.org", "carol@example.org"],
+            "page_count": 4,
+            "nested": { "tags": ["a", "b"] }
+        });
+        hit.metadata = metadata.clone();
+
+        let presentation = hit.to_json();
+        // A legacy string tag is already the presentation form.
+        assert_eq!(presentation["metadata"]["tags"], json!("invoice"));
+        // Unrelated arrays, scalars and nested objects are not coerced.
+        assert_eq!(
+            presentation["metadata"]["cc"],
+            json!(["bob@example.org", "carol@example.org"])
+        );
+        assert_eq!(presentation["metadata"]["page_count"], json!(4));
+        assert_eq!(
+            presentation["metadata"]["nested"]["tags"],
+            json!(["a", "b"])
+        );
+        assert_eq!(hit.metadata, metadata);
+    }
+
+    #[test]
+    fn malformed_tag_arrays_are_not_coerced_or_dropped() {
+        let mut hit = hit();
+        hit.metadata = json!({ "tags": ["invoice", 3] });
+        assert_eq!(hit.to_json()["metadata"]["tags"], json!(["invoice", 3]));
+        assert_eq!(hit.metadata["tags"], json!(["invoice", 3]));
+    }
+
+    #[test]
+    fn non_object_metadata_passes_through() {
+        let mut hit = hit();
+        hit.metadata = json!("raw");
+        assert_eq!(hit.to_json()["metadata"], json!("raw"));
+    }
+
+    #[test]
+    fn empty_tag_array_presents_as_empty_string() {
+        let mut hit = hit();
+        hit.metadata = json!({ "tags": [] });
+        assert_eq!(hit.to_json()["metadata"]["tags"], json!(""));
+        assert_eq!(hit.metadata["tags"], json!([]));
     }
 
     #[test]
