@@ -240,8 +240,9 @@ def _terminal_branch(conn, task, episode, reason):
     Neither creates a run, moves a counter, rewrites a lease or releases the
     card: the existing one-version reservation still governs the later release.
     Both branches also need the same supplier line and material repair or
-    authorized-continuation evidence; the reaffirmation additionally needs the
-    run's own native claim, reclaim and prior release chronology.
+    authorized-continuation evidence; a reaffirmation additionally needs the
+    run's own native claim and prior release plus the breaker's own trip
+    (stale-claim reclaim or elapsed-limit timeout) chronology.
     """
     if (not isinstance(episode, dict) or set(episode) != {'run_id', 'event_id'}
             or any(type(episode[key]) is not int or episode[key] <= 0
@@ -288,46 +289,79 @@ def _terminal_branch(conn, task, episode, reason):
         return 'terminal-containment'
     if task['block_kind'] != 'capability':
         raise ValueError('Only an untyped containment or an existing capability episode can be typed')
-    # Branch B: the breaker's trip sits on top of THIS run's own native claim
-    # and reclaim, after the prior release, and its count/limit/timestamps
-    # agree with the stored budget. Native gave_up trips are task-scoped
-    # (run_id NULL), so the trip is bound by its own event id, not by a
-    # fabricated run_id; the claimed and reclaimed records do carry run_id.
-    if (event['kind'] != 'gave_up' or payload.get('trigger_outcome') != 'reclaimed'
-            or {run['status'], run['outcome']} != {'reclaimed'}):
-        raise ValueError('Capability reaffirmation needs the newest reclaimed gave_up episode')
+    return _reaffirm(conn, task, run, event, payload, tid)
+
+
+def _reaffirm(conn, task, run, event, payload, tid):
+    """Validate ONE breaker trip that re-parked an already-typed capability hold.
+
+    Two native trips re-park a typed hold, and both are task-scoped (run_id
+    NULL) because the breaker's gave_up carries no run: a stale-claim
+    ``reclaimed`` reclaim and an elapsed-limit ``timed_out`` timeout. Each trip
+    still sits on top of THIS run's own native claim, its own run-scoped
+    lifecycle event (``reclaimed``/``timed_out``) and the prior release, and the
+    trip's count/limit must agree with the stored exhausted budget. Neither
+    branch rewrites a counter, budget, phase or run.
+    """
+    if event['kind'] != 'gave_up':
+        raise ValueError('Capability reaffirmation needs the newest gave_up episode')
+    trigger = payload.get('trigger_outcome')
+    if trigger not in ('reclaimed', 'timed_out'):
+        raise ValueError('Capability reaffirmation needs the newest reclaimed or timed-out gave_up episode')
+    if {run['status'], run['outcome']} != {trigger}:
+        # Same stored capability kind, different native cause: the trip must
+        # agree with its own run, so a timeout never rides a reclaimed run.
+        raise ValueError('Capability reaffirmation needs the newest reclaimed gave_up episode'
+                         if trigger == 'reclaimed' else
+                         'Timed-out reaffirmation needs the newest native timed_out run')
+    if event['run_id'] not in (None, run['id']):
+        raise ValueError('Reaffirmation needs the task-scoped trip of this run')
     failures, limit = payload.get('failures'), payload.get('effective_limit')
     if (type(failures) is not int or type(limit) is not int or limit <= 0
             or failures != task['consecutive_failures'] or failures < limit):
         raise ValueError('Reaffirmation needs the coherent breaker count and limit of this episode')
     if payload.get('limit_source') == 'task' and limit != task['max_retries']:
         raise ValueError('Reaffirmation limit must match the stored retry budget')
+    source = 'reclaim' if trigger == 'reclaimed' else 'timeout'
     claim = conn.execute("SELECT id,created_at FROM task_events WHERE task_id=? AND kind='claimed' "
                          'AND run_id=? AND id<? ORDER BY id DESC LIMIT 1',
                          (tid, run['id'], event['id'])).fetchone()
-    reclaim = conn.execute("SELECT id,created_at FROM task_events WHERE task_id=? AND kind='reclaimed' "
-                           'AND run_id=? AND id<? ORDER BY id DESC LIMIT 1',
-                           (tid, run['id'], event['id'])).fetchone()
-    if claim is None or reclaim is None:
-        raise ValueError("Reaffirmation needs this run's native claim and reclaim records")
+    middle = conn.execute('SELECT id,created_at,payload FROM task_events WHERE task_id=? AND kind=? '
+                          'AND run_id=? AND id<? ORDER BY id DESC LIMIT 1',
+                          (tid, trigger, run['id'], event['id'])).fetchone()
+    if claim is None or middle is None:
+        raise ValueError("Reaffirmation needs this run's native claim and " + source + ' records')
+    if trigger == 'timed_out':
+        try:
+            timed = json.loads(middle['payload'] or '{}')
+        except (TypeError, ValueError):
+            raise ValueError('Unsupported timed_out episode payload') from None
+        if not isinstance(timed, dict):
+            raise ValueError('Unsupported timed_out episode payload')
+        elapsed, cap = timed.get('elapsed_seconds'), timed.get('limit_seconds')
+        if (type(elapsed) is not int or type(cap) is not int or cap <= 0 or elapsed <= cap):
+            raise ValueError('Timed-out reaffirmation needs finite elapsed and limit evidence over the cap')
+        # The cap this run actually hit is the timed_out event's own limit, not
+        # the stored column: a later measured runtime revision raises that
+        # column, and comparing against it would erase genuine timeout evidence.
     release = conn.execute("SELECT id,created_at FROM task_events WHERE task_id=? AND kind='unblocked' "
                            'AND id<? ORDER BY id DESC LIMIT 1', (tid, event['id'])).fetchone()
     if release is None:
-        raise ValueError('Reaffirmation needs the prior release this reclaim trip followed')
+        raise ValueError('Reaffirmation needs the prior release this ' + source + ' trip followed')
     if release['id'] > claim['id']:
         # A release between this claim and the trip supersedes it: the trip did
         # not follow the newest release, so it is not this card's live episode.
         raise ValueError('Reaffirmation needs a claim after the latest prior release')
-    stamps = (release['created_at'], claim['created_at'], reclaim['created_at'], event['created_at'])
+    stamps = (release['created_at'], claim['created_at'], middle['created_at'], event['created_at'])
     if any(type(stamp) is not int for stamp in stamps):
         raise ValueError('Reaffirmation needs bounded native event timestamps')
-    if not release['id'] < claim['id'] < reclaim['id'] < event['id']:
-        raise ValueError('Reaffirmation needs a claim, then reclaim, then gave_up event order')
-    if not release['created_at'] <= claim['created_at'] <= reclaim['created_at'] <= event['created_at']:
-        raise ValueError('Reaffirmation needs claim and reclaim timestamps after the prior release')
-    if not run['started_at'] <= claim['created_at'] <= run['ended_at'] <= reclaim['created_at']:
-        raise ValueError("Reaffirmation needs a claim and reclaim inside this run's own span")
-    return 'reclaimed-reaffirmation'
+    if not release['id'] < claim['id'] < middle['id'] < event['id']:
+        raise ValueError('Reaffirmation needs a claim, then ' + source + ', then gave_up event order')
+    if not release['created_at'] <= claim['created_at'] <= middle['created_at'] <= event['created_at']:
+        raise ValueError('Reaffirmation needs claim, ' + source + ' and trip timestamps after the prior release')
+    if not run['started_at'] <= claim['created_at'] <= run['ended_at'] <= middle['created_at']:
+        raise ValueError("Reaffirmation needs a claim and " + source + " inside this run's own span")
+    return 'reclaimed-reaffirmation' if trigger == 'reclaimed' else 'timed-out-reaffirmation'
 
 
 def available_skills(root, profile, workspace):
@@ -503,7 +537,7 @@ def amend(kb, conn, tid, *, expected_version=None, changes=None, reason=None, ru
                 'actor_task':actor['task_id'], 'actor_run':actor['run_id'], 'board':board,
                 'supplier':SUPPLIER.search(reason).group(1), 'expected_version':version,
                 'classified_in_place':branch == 'terminal-containment',
-                'reaffirmed':branch == 'reclaimed-reaffirmation'})
+                'reaffirmed':branch in ('reclaimed-reaffirmation','timed-out-reaffirmation')})
         else:
             kb._append_event(conn, tid, 'coordinator_amended', evidence)
         after, new_version = snapshot(conn, tid)

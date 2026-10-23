@@ -21,7 +21,7 @@ from unittest.mock import patch
 source=Path(sys.argv[1])/'scripts/hermes'
 native=(Path(os.environ['HERMES_FIXTURE_NATIVE_PYTHON']).parents[2] if os.environ.get('HERMES_FIXTURE_NATIVE_PYTHON') else Path.home()/'.hermes/hermes-agent')
 sys.path[:0]=[str(source),str(native)]
-from hermes_cli import kanban_db as kb,kanban_db_connect as kbc
+from hermes_cli import kanban_db as kb,kanban_db_connect as kbc,kanban_db_dispatch as kbd
 from agent.delegation_context import delegated_child_context
 import worker_origin, resume_recovered, coordinator_repair as repair, deadlock_recovery as monitor
 sys.modules['hermes_cli.nixhomeserver_worker_origin']=worker_origin
@@ -172,6 +172,60 @@ class RepairTest(unittest.TestCase):
         event=self.conn.execute("SELECT id FROM task_events WHERE task_id=? AND kind='gave_up'"
                                 " ORDER BY id DESC LIMIT 1",(self.target,)).fetchone()[0]
         return {'run_id':run,'event_id':event}
+
+    def timed_out_episode(self, source='ready'):
+        """A genuine native typed capability hold, release, claim and runtime timeout.
+
+        Mirrors run1523 exactly: an already-typed capability hold, its guarded
+        release, this run's own native claim, the dispatcher's elapsed-limit
+        kill (911s against the run's 900s cap) and the breaker's task-scoped
+        ``gave_up`` with failures2/effective_limit1/trigger_outcome timed_out.
+        Every row comes from the native lifecycle functions, so the fixture
+        cannot drift from the shapes the helper must accept. The stored runtime
+        column is raised afterwards, exactly like the measured 900->1800
+        revision that followed the real run: the trip's own limit_seconds stays
+        the historical 900 the worker actually hit.
+        """
+        self.conn.execute("UPDATE tasks SET status='ready',skills='[]',block_kind=NULL,"
+                          "block_recurrences=0,max_retries=1,consecutive_failures=1,"
+                          "max_runtime_seconds=900 WHERE id=?",
+                          (self.target,));self.conn.commit()
+        self.assertTrue(kb.block_task(self.conn,self.target,kind='capability',
+                                      reason='Input supplier: agent. Older capability episode'))
+        self.assertTrue(kb.unblock_task(self.conn,self.target))
+        # The spent failure that preceded this run survives its guarded release,
+        # exactly like run1513's crash before run1523; the native release itself
+        # decides the counter, so the carried failure is seeded after it.
+        self.conn.execute('UPDATE tasks SET consecutive_failures=1 WHERE id=?',(self.target,))
+        self.conn.commit()
+        if source=='review':
+            self.conn.execute("UPDATE tasks SET status='review' WHERE id=?",(self.target,));self.conn.commit()
+            self.assertIsNotNone(kb.claim_review_task(self.conn,self.target))
+        else:
+            self.assertIsNotNone(kb.claim_task(self.conn,self.target))
+        run=self.conn.execute('SELECT id FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1',
+                              (self.target,)).fetchone()[0]
+        started=int(time.time())-911
+        with kb.write_txn(self.conn):
+            self.conn.execute('UPDATE task_runs SET started_at=? WHERE id=?',(started,run))
+            self.conn.execute("UPDATE tasks SET status='running',worker_pid=?,worker_started_at=?,"
+                              "current_run_id=? WHERE id=?",(999991,started,run,self.target))
+        self.assertEqual([self.target],kbd.enforce_max_runtime(self.conn,signal_fn=lambda *a,**k:None))
+        self.conn.execute('UPDATE tasks SET max_runtime_seconds=1800 WHERE id=?',(self.target,))
+        self.conn.commit()
+        event=self.conn.execute("SELECT id FROM task_events WHERE task_id=? AND kind='gave_up'"
+                                " ORDER BY id DESC LIMIT 1",(self.target,)).fetchone()[0]
+        payload=json.loads(self.conn.execute('SELECT payload FROM task_events WHERE id=?',
+                                             (event,)).fetchone()[0])
+        self.assertEqual({'failures':2,'effective_limit':1,'limit_source':'task',
+                          'trigger_outcome':'timed_out'},{
+            k:payload[k] for k in ('failures','effective_limit','limit_source','trigger_outcome')})
+        return {'run_id':run,'event_id':event}
+
+    def timeout_reason(self):
+        return ('Input supplier: agent. Repair evidence: the parked body was narrowed to the '
+                'artifact-first donor map and read back; reaffirm this elapsed-limit timeout only, '
+                'counters and budgets unchanged.')
 
     def reviewer_history(self):
         """The historical consumption a Branch A containment must not rewrite.
@@ -521,6 +575,238 @@ class RepairTest(unittest.TestCase):
             self.amend_episode({'run_id':44,'event_id':event},
                                'Input supplier: agent. Authorized continuation: reclaim audited.')
         self.assertEqual(before,self.dump())
+
+    def test_terminal_episode_reaffirms_typed_timeout_and_resumes_once(self):
+        episode=self.timed_out_episode()
+        # The timeout trip is invisible to the monitor: the newest block-phase
+        # event is still the PRIOR release, so no current hold or resume exists.
+        self.assertEqual([],self.holds())
+        with self.assertRaisesRegex(ValueError,'technical recovery hold'):
+            resume_recovered.resume_recovered(kb,self.conn,self.target,'0'*64,'no current episode')
+        # Material narrowed-body amendment first: a purchased runtime extension
+        # or a supplier-only assertion is never the changed input.
+        body=('Goal: produce ONE donor-map artifact from run1523 measured references only. '
+              'Stop after the first durable map or concrete unknown report; no source sweeps.')
+        narrowed=repair.amend(kb,self.conn,self.target,
+                              expected_version=repair.amend(kb,self.conn,self.target)['version'],
+                              changes={'body':body},
+                              reason='Input supplier: agent. Authorized continuation: narrow the spent investigation to one artifact pass.')
+        self.assertTrue(narrowed['applied'])
+        before=self.dump()
+        give={r['id']:r for r in before[2]}[episode['event_id']]
+        self.assertEqual(('gave_up',None),(give['kind'],give['run_id']))  # native trip is task-scoped
+        self.assertTrue(self.amend_episode(episode,self.timeout_reason()).get('applied'))
+        after=self.dump()
+        self.assertEqual(before[0],after[0])          # every task column byte-identical
+        self.assertEqual(before[1],after[1]);self.assertEqual(before[3],after[3])
+        self.assertEqual(before[2],after[2][:-1])
+        added=after[2][-1];payload=json.loads(added['payload'])
+        self.assertEqual(('blocked','timed-out-reaffirmation','capability'),
+                         (added['kind'],payload['branch'],payload['kind']))
+        self.assertEqual((episode['run_id'],episode['event_id'],42),
+                         (payload['source_run'],payload['source_event'],payload['actor_run']))
+        self.assertEqual(('agent','ready',True,False),
+                         (payload['supplier'],payload['resume_status'],payload['reaffirmed'],
+                          payload['classified_in_place']))
+        row={r['id']:r for r in after[0]}[self.target]
+        self.assertEqual(('blocked','capability',2,1,'elapsed 911s > limit 900s',1800),
+                         (row['status'],row['block_kind'],row['consecutive_failures'],
+                          row['max_retries'],row['last_failure_error'],row['max_runtime_seconds']))
+        current=self.current_hold()
+        self.assertEqual('agent',current['supplier'])
+        self.assertEqual((self.target,'feature-reviewer'),(current['task_id'],current['assignee']))
+        self.assertNotIn(current['version'],{narrowed['version'],payload['expected_version']})
+        # The consumed episode never rides a second amendment: the honest event
+        # appended above is now the newest native lifecycle event.
+        replay=self.dump()
+        with self.assertRaisesRegex(ValueError,'supersedes|terminal event'):
+            self.amend_episode(episode,self.timeout_reason())
+        self.assertEqual(replay,self.dump())
+        resumed=resume_recovered.resume_recovered(kb,self.conn,self.target,current['version'],
+                                                  'Reaffirmed genuine timeout trip; resume the narrowed artifact pass')
+        self.assertEqual('ready',resumed['status'])
+        released={r['id']:r for r in self.dump()[0]}[self.target]
+        self.assertEqual(dict(row,status='ready'),released)
+        with self.assertRaises(ValueError):
+            resume_recovered.resume_recovered(kb,self.conn,self.target,current['version'],'replay')
+
+    def test_timed_out_reaffirmation_respects_review_phase_and_parent_gate(self):
+        episode=self.timed_out_episode(source='review')
+        parent=kb.create_task(self.conn,title='Open parent',assignee='standard-implementer')
+        self.conn.execute('INSERT INTO task_links(parent_id,child_id) VALUES(?,?)',(parent,self.target))
+        self.conn.commit()
+        self.amend_episode(episode,self.timeout_reason())
+        current=self.current_hold()
+        self.assertEqual('todo',resume_recovered.resume_recovered(
+            kb,self.conn,self.target,current['version'],'Open parent keeps the timeout containment gated')['status'])
+        self.conn.execute('DELETE FROM task_links WHERE child_id=?',(self.target,))
+        self.conn.execute("UPDATE tasks SET status='ready' WHERE id=?",(self.target,));self.conn.commit()
+        self.amend_episode(self.timed_out_episode(source='review'),self.timeout_reason())
+        current=self.current_hold()
+        self.assertEqual('review',resume_recovered.resume_recovered(
+            kb,self.conn,self.target,current['version'],'Review source keeps its resume phase')['status'])
+        row=self.conn.execute('SELECT block_kind,consecutive_failures,max_retries,max_runtime_seconds '
+                              'FROM tasks WHERE id=?',(self.target,)).fetchone()
+        self.assertEqual(('capability',2,1,1800),tuple(row))
+
+    def test_timed_out_reaffirmation_rejects_incoherent_evidence_atomically(self):
+        episode=self.timed_out_episode()
+        reason=self.timeout_reason()
+        rows={r['id']:dict(r) for r in self.dump()[2]}
+        claim=next(r for r in rows.values() if r['kind']=='claimed' and r['run_id']==episode['run_id'])
+        timeout=next(r for r in rows.values() if r['kind']=='timed_out' and r['run_id']==episode['run_id'])
+        release=next(r for r in reversed(list(rows.values())) if r['kind']=='unblocked')
+        give=rows[episode['event_id']]
+        def restore(row):
+            keys=list(row)
+            self.conn.execute('INSERT OR REPLACE INTO task_events('+','.join(keys)+') VALUES('
+                              +','.join('?'*len(keys))+')',tuple(row[k] for k in keys))
+            self.conn.commit()
+        def refuse(expected=None):
+            before=self.dump();holds=self.holds()
+            current=repair.amend(kb,self.conn,self.target)['version']
+            with self.assertRaisesRegex(ValueError,expected) if expected else self.assertRaises(ValueError):
+                repair.amend(kb,self.conn,self.target,expected_version=current,
+                             changes={'block_kind':'capability'},reason=reason,
+                             terminal_episode=episode)
+            self.assertEqual(before,self.dump());self.assertEqual(holds,self.holds())
+        chronology=(('missing claim',claim,'DELETE FROM task_events WHERE id=?',(claim['id'],),
+                     "claim and timeout records"),
+                    ('missing timeout',timeout,'DELETE FROM task_events WHERE id=?',(timeout['id'],),
+                     "claim and timeout records"),
+                    ('claim of another run',claim,'UPDATE task_events SET run_id=42 WHERE id=?',(claim['id'],),
+                     "claim and timeout records"),
+                    ('timeout of another run',timeout,'UPDATE task_events SET run_id=42 WHERE id=?',
+                     (timeout['id'],),"claim and timeout records"),
+                    ('claim before the prior release',claim,'UPDATE task_events SET created_at=? WHERE id=?',
+                     (release['created_at']-1,claim['id']),'timestamps after the prior release'),
+                    ('timeout before the prior release',timeout,'UPDATE task_events SET created_at=? WHERE id=?',
+                     (release['created_at']-1,timeout['id']),'timestamps after the prior release'),
+                    ('timeout before its own claim',claim,'UPDATE task_events SET created_at=? WHERE id=?',
+                     (timeout['created_at']+1,claim['id']),'timestamps after the prior release'),
+                    ('trip before its own timeout',give,'UPDATE task_events SET created_at=? WHERE id=?',
+                     (timeout['created_at']-1,give['id']),'Reaffirmation|terminal event'))
+        for name,row,sql,params,expected in chronology:
+            with self.subTest(case=name):
+                self.conn.execute(sql,params);self.conn.commit()
+                self.assertNotEqual(rows,{r['id']:dict(r) for r in self.dump()[2]})
+                refuse(expected)
+                restore(row)
+        for name,where,payload,expected in (
+                ('elapsed under the cap','timeout',{'elapsed_seconds':900,'limit_seconds':900},'elapsed'),
+                ('malformed elapsed','timeout',{'elapsed_seconds':'911'},'elapsed'),
+                ('missing limit','timeout',{'limit_seconds':None},'elapsed'),
+                ('zero limit','timeout',{'limit_seconds':0},'elapsed'),
+                ('failures disagree','give',{'failures':3,'effective_limit':1},'coherent breaker count'),
+                ('limit disagrees with the retry budget','give',{'effective_limit':2,'failures':2},'retry budget'),
+                ('trip claims reclaimed','give',{'trigger_outcome':'reclaimed'},'reclaimed gave_up episode')):
+            with self.subTest(case=name):
+                original=rows[give['id']] if where=='give' else rows[timeout['id']]
+                payload_text=json.loads(original['payload']);payload_text.update(payload)
+                self.conn.execute('UPDATE task_events SET payload=? WHERE id=?',
+                                  (json.dumps(payload_text),original['id']));self.conn.commit()
+                refuse(expected)
+                restore(original)
+        # A timeout trip that rode a non-timed-out run is refused, never retyped.
+        self.conn.execute("UPDATE task_runs SET status='reclaimed',outcome='reclaimed' WHERE id=?",
+                          (episode['run_id'],));self.conn.commit()
+        refuse('timed_out run')
+        self.conn.execute("UPDATE task_runs SET status='timed_out',outcome='timed_out' WHERE id=?",
+                          (episode['run_id'],));self.conn.commit()
+        # A newer release or completion supersedes the episode.
+        for kind in ('unblocked','completed'):
+            kb._append_event(self.conn,self.target,kind,{'status':'ready'});self.conn.commit()
+            refuse('supersedes|terminal event')
+            self.conn.execute('DELETE FROM task_events WHERE task_id=? AND kind=?',(self.target,kind))
+            self.conn.commit()
+
+    def test_timed_out_reaffirmation_requires_actor_gate_and_material_input(self):
+        episode=self.timed_out_episode()
+        def refuse(reason=None,expected=None,**kwargs):
+            before=self.dump();holds=self.holds()
+            current=repair.amend(kb,self.conn,self.target)['version']
+            call=dict(expected_version=current,changes={'block_kind':'capability'},
+                      reason=reason if reason is not None else self.timeout_reason(),
+                      terminal_episode=episode);call.update(kwargs)
+            with self.assertRaisesRegex(ValueError,expected) if expected else self.assertRaises(ValueError):
+                repair.amend(kb,self.conn,self.target,**call)
+            self.assertEqual(before,self.dump());self.assertEqual(holds,self.holds())
+        for reason in ('Input supplier: agent.','Input supplier: agent. Repair evidence:',
+                       'Input supplier: agent. Authorized continuation: ',
+                       'Input supplier: owner. Repair evidence: owner decided',
+                       'Repair evidence: material input supplied.'):
+            with self.subTest(reason=reason):refuse(reason,'material|supplier')
+        # Parked technical, no owner gate, no live lease and no pending work.
+        body=self.conn.execute('SELECT body FROM tasks WHERE id=?',(self.target,)).fetchone()[0]
+        self.conn.execute("UPDATE tasks SET body='ASK: owner decided' WHERE id=?",(self.target,))
+        self.conn.commit();refuse();self.conn.execute('UPDATE tasks SET body=? WHERE id=?',(body,self.target))
+        self.conn.commit()
+        for update in ("status='running'","worker_pid=999","claim_lock='lease'","claim_expires=1"):
+            self.conn.execute('UPDATE tasks SET '+update+' WHERE id=?',(self.target,));self.conn.commit()
+            refuse()
+            self.conn.execute("UPDATE tasks SET status='blocked',worker_pid=NULL,claim_lock=NULL,"
+                              "claim_expires=NULL WHERE id=?",(self.target,));self.conn.commit()
+        self.conn.execute("INSERT INTO task_runs(task_id,status,profile,started_at) VALUES(?,'running','feature-reviewer',?)",
+                          (self.target,self.now));self.conn.commit()
+        refuse('active or pending native work')
+        self.conn.execute('DELETE FROM task_runs WHERE task_id=? AND status=?',(self.target,'running'))
+        self.conn.commit()
+        forged=repair.amend(kb,self.conn,self.target)['version']
+        with delegated_child_context(),self.assertRaises(ValueError):
+            repair.amend(kb,self.conn,self.target,expected_version=forged,
+                         changes={'block_kind':'capability'},reason=self.timeout_reason(),
+                         terminal_episode=episode)
+        with patch.dict(os.environ,{'HERMES_KANBAN_RUN_ID':'43'}),self.assertRaises(ValueError):
+            repair.amend(kb,self.conn,self.target,expected_version=forged,
+                         changes={'block_kind':'capability'},reason=self.timeout_reason(),
+                         terminal_episode=episode)
+        other=kbc.connect(db_path=self.root/'other.db')
+        try:
+            with self.assertRaises(ValueError):repair.amend(kb,other,self.target)
+        finally:other.close()
+        # An untyped failed timeout run stays the ORDINARY classification path:
+        # it takes no terminal_episode and keeps its spent counter.
+        untyped=kb.create_task(self.conn,title='Untyped timeout',assignee='feature-reviewer',max_retries=1)
+        self.conn.execute("UPDATE tasks SET status='blocked',consecutive_failures=1,"
+                          "last_failure_error='elapsed 911s > limit 900s' WHERE id=?",(untyped,))
+        self.conn.execute("INSERT INTO task_runs(id,task_id,status,profile,started_at,ended_at,outcome)"
+                          " VALUES(60,?,'timed_out','feature-reviewer',?,?,'timed_out')",
+                          (untyped,self.now-911,self.now))
+        kb._append_event(self.conn,untyped,'timed_out',{'elapsed_seconds':911,'limit_seconds':900},run_id=60)
+        kb._append_event(self.conn,untyped,'gave_up',{'failures':1,'effective_limit':1,
+                                                     'limit_source':'task','trigger_outcome':'timed_out'})
+        self.conn.commit()
+        untyped_event=self.conn.execute("SELECT id FROM task_events WHERE task_id=? AND kind='gave_up'",
+                                        (untyped,)).fetchone()[0]
+        version=repair.amend(kb,self.conn,untyped)['version']
+        with self.assertRaises(ValueError):
+            repair.amend(kb,self.conn,untyped,expected_version=version,changes={'block_kind':'capability'},
+                         reason=self.timeout_reason(),terminal_episode={'run_id':60,'event_id':untyped_event})
+        self.assertTrue(repair.amend(kb,self.conn,untyped,expected_version=version,
+                                     changes={'block_kind':'capability'},
+                                     reason='Input supplier: agent. Repair evidence: untyped timeout run classified in place.')['applied'])
+        self.assertEqual(('capability',1),tuple(self.conn.execute(
+            'SELECT block_kind,consecutive_failures FROM tasks WHERE id=?',(untyped,)).fetchone()))
+
+    def test_timed_out_episode_seam_is_described_and_migrated(self):
+        from coordinator_repair_adapter import SCHEMA,PREVIOUS_TIMEOUT_SCHEMA
+        seam={};exec(SCHEMA,seam);schema=seam['KANBAN_AMEND_SCHEMA']
+        self.assertIn('elapsed-limit timed-out capability episode',schema['description'])
+        self.assertIn('run-scoped timed_out event over the cap',schema['description'])
+        terminal=schema['parameters']['properties']['terminal_episode']['description']
+        self.assertIn('elapsed-limit timed_out gave_up episode',terminal)
+        self.assertIn('not for crashed or timed_out failed-run classification',terminal)
+        self.assertEqual({'run_id','event_id'},set(schema['parameters']['properties']['terminal_episode']['properties']))
+        installed=(native/'tools/kanban_tools_schemas.py').read_text()
+        current=adapt('tools/kanban_tools_schemas.py',installed)
+        self.assertIn(SCHEMA,current)
+        self.assertIn('"workspace_rebind"',current);self.assertIn('"verification_intake"',current)
+        self.assertEqual(current,adapt('tools/kanban_tools_schemas.py',
+                                       current.replace(SCHEMA,PREVIOUS_TIMEOUT_SCHEMA,1)))
+        self.assertEqual(current,adapt('tools/kanban_tools_schemas.py',current))
+        tools=adapt('tools/kanban_tools.py',(native/'tools/kanban_tools.py').read_text())
+        self.assertEqual(1,tools.count('def _handle_amend('))
+        self.assertEqual(1,tools.count('registry.register(name="kanban_amend"'))
 
     def test_terminal_episode_containment_respects_parent_gate_and_ready_source(self):
         parent=kb.create_task(self.conn,title='Open parent',assignee='standard-implementer')
