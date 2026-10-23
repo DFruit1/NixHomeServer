@@ -399,7 +399,7 @@ def restore_schedules(root, plan, *, checkpoint=lambda:None):
 
 def source_changes(root, directory, *, workers=False):
     """Upgrade transforms use their source helpers, never cached installed ones."""
-    names=('hermes_common','hermes_config') + (('worker_runtime_adapter','fleet_runtime_adapter',
+    names=('hermes_common','hermes_config','coordinator_trial') + (('worker_runtime_adapter','fleet_runtime_adapter',
         'coordinator_repair_adapter','recovered_resume_adapter','resume_recovered') if workers else ())
     previous={name:sys.modules.get(name) for name in names}
     previous_path=sys.path[:]
@@ -434,6 +434,9 @@ def source_changes(root, directory, *, workers=False):
                                    if path in pending else after)
                 elif before!=after:
                     raise ValueError('Install the matching reviewed recovery prerequisites first: '+relative)
+        coordinator=root/'profiles/head-coordinator/config.yaml'
+        if coordinator.exists():
+            pending[coordinator]=sys.modules['coordinator_trial'].configure(pending.get(coordinator,coordinator.read_text()))
         return pending
     finally:
         sys.path[:]=previous_path
@@ -472,7 +475,7 @@ def pending_files(root, source, plan, *, owners=None):
                  'feature_contract.py', 'fleet_contract.py'):
         merge_owned(pending,owners,{root/'scripts'/name:(directory/name).read_text()},'recovery')
     for name in ('fleet-release.py','fleet-evidence.py','fleet-supervisor.py','fleet-report.py','kanban-analytics.py',
-                 'agent-usage.py','agent_usage_report.py',
+                 'agent-usage.py','agent_usage_report.py','coordinator_trial.py',
                  'fleet_workflow.py','idle-recovery-monitor.py','kanban-board-health.sh'):
         merge_owned(pending,owners,{root/'scripts'/name:(directory/name).read_text()},'fleet-runtime')
     merge_owned(pending,owners,{
@@ -487,6 +490,8 @@ def pending_files(root, source, plan, *, owners=None):
         try:
             sys.path.insert(0,str(directory));spec.loader.exec_module(module)
             merge_owned(pending,owners,{native:module.patch_native(native.read_text())},'agent-usage')
+            request_hook=root/'hermes-agent/agent/api_request_hooks.py'
+            merge_owned(pending,owners,{request_hook:module.patch_request_hook(request_hook.read_text())},'agent-usage')
         finally:sys.path[:]=original_path
     return pending
 

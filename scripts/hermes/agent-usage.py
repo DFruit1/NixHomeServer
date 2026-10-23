@@ -52,7 +52,7 @@ def identity(value, size=32):
 
 
 def attribute(key,value):
-    kind='boolValue' if type(value) is bool else 'intValue' if type(value) is int else 'stringValue'
+    kind='boolValue' if type(value) is bool else 'intValue' if type(value) is int else 'doubleValue' if type(value) is float else 'stringValue'
     return {'key':key,'value':{kind:str(value) if kind=='intValue' else value}}
 
 
@@ -75,7 +75,7 @@ def observation(source,session,event,stamp,model,details,metadata=None,*,kind='g
         values['langfuse.observation.model.name']=label(model)
         values['langfuse.observation.usage_details']=json.dumps(details,separators=(',',':'))
     for key,value in (metadata or {}).items():
-        if isinstance(value,(str,int,bool)):
+        if isinstance(value,(str,int,float,bool)):
             values['langfuse.observation.metadata.'+key]=value
     return {'traceId':identity(source+':'+session),'spanId':identity(source+':'+session+':'+event,16),
             'name':source+' usage','kind':1,'startTimeUnixNano':nanos,'endTimeUnixNano':nanos,
@@ -278,6 +278,63 @@ def send(config, spans):
             raise ValueError('Partial telemetry rejection')
 
 
+def coordinator_records(root, previous, *, since, until):
+    """Completed native runs, not feature acceptance or extra token usage.
+
+    A completion cohort includes runs started before the window. Session model
+    is only attributed through a recorded native link, never today's config.
+    """
+    spans=[];state={};errors=0;bounded=False;remaining=1000
+    paths=sorted(p for p in (root/'kanban/boards').glob('*/kanban.db')
+                 if not p.parent.name.startswith(('.', '_')))
+    for path in paths[:32]:
+        if not remaining:
+            bounded=True;break
+        try:
+            with readonly(path) as db:
+                rows=db.execute("""SELECT r.id,r.task_id,r.status,r.outcome,r.started_at,r.ended_at,
+                    CASE WHEN json_valid(r.metadata) THEN json_extract(r.metadata,'$.worker_session_id') END,
+                    (SELECT count(*) FROM task_runs p WHERE p.task_id=r.task_id
+                       AND p.profile=r.profile AND p.id<=r.id)
+                    FROM task_runs r WHERE r.profile='head-coordinator' AND r.ended_at>=? AND r.ended_at<?
+                    AND r.status!='running' ORDER BY r.ended_at DESC,r.id DESC LIMIT ?""",
+                    (since,until,remaining+1)).fetchall()
+            bounded=bounded or len(rows)>remaining
+            selected=rows[:remaining];remaining-=len(selected)
+            for run,card,status,outcome,start,end,session,attempt in selected:
+                if type(start) not in (int,float) or type(end) not in (int,float) or not math.isfinite(start) or not math.isfinite(end) or end<start:
+                    errors+=1;continue
+                session=label(session)
+                model='unknown'
+                if session!='unknown':
+                    try:
+                        with readonly(root/'profiles/head-coordinator/state.db') as db:
+                            row=db.execute('SELECT model FROM sessions WHERE id=?',(session,)).fetchone()
+                        model=label(row[0]) if row else 'unknown'
+                    except (OSError,sqlite3.Error):pass
+                metadata={'profile':'head-coordinator','board':label(path.parent.name),'card_id':label(card),
+                          'run_id':str(run),'status':label(status),'outcome':label(outcome),
+                          'elapsed_seconds':end-start,'attempt':attempt,'session_model':model,
+                          'session_linked':session!='unknown','capture_mode':'metadata'}
+                key=path.parent.name+':'+str(run)
+                fingerprint=identity(json.dumps(metadata,sort_keys=True)+str(start)+str(end))
+                state[key]=fingerprint
+                if previous.get(key)==fingerprint:continue
+                span=observation('hermes-kanban-run',key,key,end,'',{},metadata,kind='span')
+                if session!='unknown':
+                    span['attributes']=[attribute(a['key'],session) if a['key']=='langfuse.session.id' else a
+                                        for a in span['attributes']]
+                span['name']='Hermes coordinator run'
+                span['startTimeUnixNano']=str(int(start*1_000_000_000))
+                if status in {'failed','crashed','timed_out','spawn_failed','gave_up'}:
+                    span['status']={'code':2}
+                spans.append(span)
+        except (OSError,sqlite3.Error,TypeError,ValueError):errors+=1
+    return spans,state,{'status':'unavailable' if not paths else 'partial' if errors else
+                        'bounded' if bounded or len(paths)>32 else 'observed',
+                        'boards':min(len(paths),32),'errors':errors,'exported':len(spans)}
+
+
 def collect(config, previous, now):
     state=copy.deepcopy(previous);state.setdefault('codex',{});spans=[];sources={}
     since=now-86400  # Explicit initial/backfill horizon, not a claim about older history.
@@ -309,6 +366,8 @@ def collect(config, previous, now):
         state['opencode']=new;spans.extend(new_spans)
         sources['opencode']={'status':'bounded' if bounded or len(new_spans)>=MAX_SPANS else 'observed','exported':len(new_spans)}
     except (OSError,sqlite3.Error,ValueError,TypeError):sources['opencode']={'status':'unavailable'}
+    new_spans,new,coverage=coordinator_records(config['root'],state.get('coordinator_runs',{}),since=since,until=now)
+    state['coordinator_runs']=new;spans.extend(new_spans);sources['coordinator_runs']=coverage
     sources['llama.cpp']={}
     for name,endpoint in config['llama_endpoints'].items():
         try:
@@ -357,7 +416,7 @@ def run(config):
     return report
 
 
-NATIVE_CONTEXT = '''
+NATIVE_CONTEXT_V1 = '''
 # BEGIN nixhomeserver-langfuse-usage-v1
 def _nixhomeserver_usage_context(provider, model, base_url, usage=None):
     from hermes_constants import get_hermes_home
@@ -383,21 +442,57 @@ def _nixhomeserver_usage_context(provider, model, base_url, usage=None):
 '''
 
 
+NATIVE_CONTEXT = NATIVE_CONTEXT_V1.replace('langfuse-usage-v1', 'langfuse-usage-v2').replace(
+    'base_url, usage=None):', 'base_url, usage=None, request=None):').replace(
+    '    return metadata\n',
+    '    body = request.get("body") if isinstance(request, dict) else None\n'
+    '    if isinstance(body, dict):\n'
+    '        reasoning = body.get("reasoning")\n'
+    '        effort = reasoning.get("effort") if isinstance(reasoning, dict) else body.get("reasoning_effort")\n'
+    '        if isinstance(effort, str) and effort in {"none", "minimal", "low", "medium", "high", "xhigh", "max"}:\n'
+    '            metadata["reasoning_effort"] = effort\n'
+    '    if isinstance(request, dict) and isinstance(request.get("wire_reasoning_effort"), str) and request.get("wire_reasoning_effort") in {"none", "minimal", "low", "medium", "high", "xhigh", "max"}:\n'
+    '        metadata["reasoning_effort"] = request["wire_reasoning_effort"]\n'
+    '    return metadata\n')
+
+
 def patch_native(text):
-    if '# BEGIN nixhomeserver-langfuse-usage-v1' in text:
-        if not text.endswith(NATIVE_CONTEXT) or 'usage_details["total"] = canonical.total_tokens' not in text:
+    if '# BEGIN nixhomeserver-langfuse-usage-v2' in text:
+        if not text.endswith(NATIVE_CONTEXT) or '_nixhomeserver_usage_context(provider, model, base_url, request=request)' not in text:
             raise ValueError('Native telemetry adapter drift')
         return text
-    replacements=[
-        ('    ("reasoning_tokens", "reasoning_tokens", None),\n',''),
-        ('    cost_details: Dict[str, float] = {}\n','    usage_details["total"] = canonical.total_tokens\n    cost_details: Dict[str, float] = {}\n'),
-        ('        gen_metadata = {\n','        gen_metadata = {**_nixhomeserver_usage_context(provider, model, base_url),\n'),
-        ('    gen_metadata = {"tool_call_count":','    gen_metadata = {**_nixhomeserver_usage_context(provider, model, base_url, usage=usage), "tool_call_count":')]
-    for before,after in replacements:
-        if text.count(before)!=1:raise ValueError('Unsupported native Langfuse plugin; qualify its source before installation')
-        text=text.replace(before,after)
+    if '# BEGIN nixhomeserver-langfuse-usage-v1' in text:
+        if not text.endswith(NATIVE_CONTEXT_V1) or 'usage_details["total"] = canonical.total_tokens' not in text:
+            raise ValueError('Native telemetry adapter drift')
+        text=text[:-len(NATIVE_CONTEXT_V1)]
+    else:
+        replacements=[
+            ('    ("reasoning_tokens", "reasoning_tokens", None),\n',''),
+            ('    cost_details: Dict[str, float] = {}\n','    usage_details["total"] = canonical.total_tokens\n    cost_details: Dict[str, float] = {}\n'),
+            ('        gen_metadata = {\n','        gen_metadata = {**_nixhomeserver_usage_context(provider, model, base_url),\n'),
+            ('    gen_metadata = {"tool_call_count":','    gen_metadata = {**_nixhomeserver_usage_context(provider, model, base_url, usage=usage), "tool_call_count":')]
+        for before,after in replacements:
+            if text.count(before)!=1:raise ValueError('Unsupported native Langfuse plugin; qualify its source before installation')
+            text=text.replace(before,after)
+    before='_nixhomeserver_usage_context(provider, model, base_url)'
+    if text.count(before)!=1:raise ValueError('Unsupported native generation context')
+    text=text.replace(before,'_nixhomeserver_usage_context(provider, model, base_url, request=request)')
     text=text.rstrip()+'\n'+NATIVE_CONTEXT
     compile(text,'langfuse-usage-adapter','exec')
+    return text
+
+
+HOOK_ORIGINAL = '        return self._sanitize_hook_payload({"method": "POST", "body": body})'
+HOOK_PATCH = '        # nixhomeserver: preserve only wire effort outside the content size cap.\n        payload = self._sanitize_hook_payload({"method": "POST", "body": body})\n        reasoning = body.get("reasoning")\n        effort = reasoning.get("effort") if isinstance(reasoning, dict) else body.get("reasoning_effort")\n        if (isinstance(payload, dict) and isinstance(effort, str)\n                and effort in {"none", "minimal", "low", "medium", "high", "xhigh", "max"}):\n            payload["wire_reasoning_effort"] = effort\n        return payload'
+
+
+def patch_request_hook(text):
+    if 'nixhomeserver: preserve only wire effort' in text:
+        if text.count(HOOK_PATCH)!=1:raise ValueError('Wire reasoning hook adapter drift')
+        return text
+    if text.count(HOOK_ORIGINAL)!=1:raise ValueError('Unsupported native request hook')
+    text=text.replace(HOOK_ORIGINAL,HOOK_PATCH)
+    compile(text,'request-effort-adapter','exec')
     return text
 
 

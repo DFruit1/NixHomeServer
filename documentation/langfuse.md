@@ -153,6 +153,40 @@ plugin shapes before writing. Rollback restores only unchanged owned postimages;
 usage observations and checkpoints are retained. Run
 `bash scripts/tests/test-agent-usage.sh` before the owning repository gate.
 
+## Coordinator Sol trial
+
+The owner-selected coordinator primary is `gpt-6.1-sol` through `openai-codex`,
+with a model-specific `medium` reasoning override. The former
+`glm-5.3-flash` primary remains the fallback. The fleet release composes this
+policy from `coordinator_trial.py`; it changes no other profile, credential,
+worker/provider limit or schedule. Rollback through the retained previous fleet
+release restores the previous model settings and telemetry adapter together.
+New workers read the new settings; active workers retain their loaded runtime.
+
+Use these three questions to compare similar work in the Hermes project:
+
+| Question | Langfuse evidence |
+| --- | --- |
+| How many tokens does the coordinator consume? | Filter generations to metadata `source=hermes`, `profile=head-coordinator`, then compare model, `provider_route` and `reasoning_effort`. Input, cache and output counts are native usage; reasoning is a subset of output, never an extra total. |
+| How long does useful work take? | `Hermes coordinator run` spans (`source=hermes-kanban-run`) carry native start/end times and `elapsed_seconds`, including tools and waits. Compare median/p95 and inspect individual runs. Generation duration separately measures provider request time. |
+| Is the model making progress reliably? | Run metadata `status`, `outcome` and `attempt` show recorded handoffs, timeouts/crashes and repeated attempts per card. Generation errors/retry metadata and `provider_route` show request failures and fallback traffic. Completion is a recorded native run outcome, not independent feature acceptance. |
+
+Generations receive reasoning effort from the actual request body; missing
+wire evidence stays absent. Run summaries do **not** add token usage. They link
+the native worker session when it is recorded; `session_model` is that session's
+recorded model, not proof that every call used it. Missing links remain unknown,
+including many historic failed runs. Use matching `board`, `card_id`, `run_id`
+and session to inspect related generations rather than attributing every run
+to today's configuration. Failure categories are never inferred from messages.
+
+The existing five-minute usage collection exports terminal coordinator runs
+from active boards with a rolling 24-hour completion horizon (at most 32 boards
+and 1,000 runs per pass). In-progress runs are not counted as successes. Replays
+use stable observation IDs; delayed native session linkage updates the same
+observation. Missing/malformed sources or bounds appear explicitly in
+`summary.json` under `sources.coordinator_runs`. No transcript, task body,
+provider error text, additional generation or new recurring job is introduced.
+
 ## Verification
 
 ```sh

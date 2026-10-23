@@ -19,6 +19,31 @@ spec.loader.exec_module(release)
 
 
 class ReleaseTest(unittest.TestCase):
+    def test_coordinator_trial_sets_effective_medium_and_preserves_other_settings(self):
+        from coordinator_trial import configure
+        from hermes_config import document
+        original="""model: {default: glm-5.3-flash, provider: 'custom:opencode-go'}
+agent:
+  reasoning_effort: high
+  reasoning_overrides: {glm-5.3-flash: medium, gpt-6.1-sol: low}
+  max_turns: 60
+fallback_providers:
+  - {provider: openai-codex, model: gpt-6.1-sol}
+  - {provider: local, model: retained}
+api_key: PRIVATE
+"""
+        fixed=configure(original);config=document(fixed)
+        self.assertEqual({'default':'gpt-6.1-sol','provider':'openai-codex'},config['model'])
+        self.assertEqual('medium',config['agent']['reasoning_overrides']['gpt-6.1-sol'])
+        self.assertEqual('high',config['agent']['reasoning_effort'])
+        self.assertEqual(60,config['agent']['max_turns'])
+        self.assertEqual([{'provider':'custom:opencode-go','model':'glm-5.3-flash'},
+                          {'provider':'local','model':'retained'}],config['fallback_providers'])
+        self.assertIn('api_key: PRIVATE',fixed)
+        self.assertEqual(fixed,configure(fixed))
+        with self.assertRaises(ValueError):configure('model: a\nmodel: b\n')
+        self.assertEqual('medium',document(configure('other: 1\n'))['agent']['reasoning_overrides']['gpt-6.1-sol'])
+
     def test_usage_collection_is_enabled_on_upgrade_and_keeps_explicit_pause(self):
         self.assertEqual({'enabled':True,'interval':300},release.schedule_plan(self.root)['handlers']['agent-usage'])
         path=self.root/'state/fleet/handlers.json';path.parent.mkdir(parents=True)
@@ -109,6 +134,7 @@ class ReleaseTest(unittest.TestCase):
         directory=self.root/'source';directory.mkdir()
         (directory/'hermes_common.py').write_text('version="new source"\n')
         (directory/'hermes_config.py').write_text('version="source config"\n')
+        (directory/'coordinator_trial.py').write_text('def configure(text): return text\n')
         (directory/'install-review-taskforce.py').write_text(
             'import hermes_common,hermes_config\n'
             'def changed_files(root):return {root/"result":hermes_common.version+hermes_config.version}\n')
@@ -257,7 +283,7 @@ class ReleaseTest(unittest.TestCase):
 
     def test_source_worker_transforms_use_selected_source_adapters(self):
         source=self.root/'source';source.mkdir()
-        for name in ('hermes_common','hermes_config','worker_runtime_adapter','fleet_runtime_adapter','coordinator_repair_adapter','recovered_resume_adapter','resume_recovered'):
+        for name in ('hermes_common','hermes_config','coordinator_trial','worker_runtime_adapter','fleet_runtime_adapter','coordinator_repair_adapter','recovered_resume_adapter','resume_recovered'):
             (source/(name+'.py')).write_text('ORIGIN = "source"\n')
         (source/'coordinator_repair.py').write_text('revision = \"qualified\"\n')
         (source/'coordinator_repair_adapter.py').write_text(
