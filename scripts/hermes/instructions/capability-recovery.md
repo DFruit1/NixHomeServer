@@ -37,9 +37,15 @@ omitted; its read-only response returns `version`. Pass that value as
 or task-table version column. The capability hold `recovery_version` is a
 separate token inspected after the amendment. It does not edit active work, reset counters or
 accept reviews. See the coordinator reference for the measured runtime and
-assignee skill-catalog contracts. A blocked recovery handoff owns its productive
-remedy; routine comments never cause duplicate recovery. Repeated unchanged
-failed recovery attempts back off, then go once to project-auditor.
+assignee skill-catalog contracts. A current same-kind capability TRIAGE block loop
+with no old supplier marker can use the closed terminal_episode supplier
+clarification in that reference after actual input delivery is verified. It
+only appends classification evidence; explicit or ambiguous old supplier text
+refuses, every task field and review gate survives, and guarded resume remains
+a separate operation with a fresh recovery token. A blocked recovery handoff
+owns its productive remedy; routine comments never cause duplicate recovery.
+Repeated unchanged failed recovery attempts back off, then go once to
+project-auditor.
 
 An exact-source or tool-identity mismatch invalidates that attempt's old receipt;
 it does not require endless preservation of an obsolete technical contract.

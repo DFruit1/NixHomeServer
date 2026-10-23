@@ -96,7 +96,20 @@ Amendments require an authenticated native coordinator on its own board, an
 exact current version and a parked target with no worker/lease. Only body,
 priority, skills and finite runtime can change. An untyped blocked native failure
 may additionally be classified as capability with an agent/model supplier;
-existing typed blocks and owner gates cannot be reclassified by this API.
+existing typed blocks and owner gates cannot be retyped by this API. The closed
+`terminal_episode={run_id,event_id}` amendment also permits supplier-only
+clarification of the current same-kind capability TRIAGE block loop when its
+old reason contains no supplier marker, including malformed or ambiguous text.
+It requires the latest finished blocked/blocked run and its exact latest
+run-bound lifecycle event, coherent chronology, and positive integer
+recurrences matching the row and reaching the integer limit. Exactly one
+canonical agent/model supplier and substantive `Repair evidence:` must name
+input delivery the coordinator actually verified. It records that attestation,
+not evidence acceptance. One appended native classification event binds actor,
+CAS, source episode and preserved resume phase; every task field, prior event,
+run, link, counter, budget and review gate remains unchanged. A replay refuses.
+Any later separately authorized guarded resume still needs a fresh recovery
+token. See the maintained coordinator reference for the exact contract.
 Native events retain before,
 after, supersession reason and actor run; readback precedes any resume. Skills
 resolve through the assignee's catalog in an isolated interpreter. The native

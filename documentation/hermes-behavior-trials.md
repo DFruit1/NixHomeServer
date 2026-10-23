@@ -16,9 +16,11 @@ launching a board worker. Native task-skill selection is documented in the
 
 | Trial | Required evidence |
 |---|---|
+| `exact-body-amendment` | A pre-write transport error is recovered with sequential version inspections and one exact multiline body mutation/readback; any live placeholder probe fails even after a correct final body. |
 | `approval-precedence` | Coordinator releases and reads back one already-approved slice despite stale generic owner/FINDINGS waits; another approval gate or unfinished prerequisite fails the trial. |
 | `skill-selection` | Coordinator creates one scoped worktree card with relevant native skills and reads back the persisted fields. |
 | `reproduce-before-fix` | Implementer executes a failing reproduction before editing, fixes the boundary and runs the passing gate; unrelated work survives. |
+| `review-harness-correction` | Fixed inert SQL lookup fails on an omitted column, preserves argv/exit/output as harness-error, then corrects the projection and runs independent source/expectation/liveness checks; weakened predicates, product retries, refusals, hidden failures or missing final checks fail. |
 | `review-request-changes` | Reviewer independently runs the failing gate, completes its downstream card with rejection metadata and never patches source or invents check results. |
 | `technical-blocker` | One failed authorized probe becomes an agent capability block with a concrete coordinator handoff, without an owner ask. |
 | `owner-blocker` | A genuinely owner-only physical fact gets a checked owner summary, native fixture write, readback and final blocker check. |

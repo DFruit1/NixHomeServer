@@ -14,6 +14,10 @@ An implementation-plan contradiction goes to its plan-owning auditor. A scope
 problem needs a tighter card. Owner input is determined by the fleet supplier
 test, not by difficulty or an inconclusive report. Do not repeat unchanged audits.
 
+When authoring review stops or qualifying diagnostic recovery, follow
+`hermes-review-evidence.md` (Disposable diagnostic errors); preserve existing
+explicit stops until a qualified exact native same-card continuation.
+
 ## Workspace and handoff
 
 Use explicit durable workspaces: worktree for git projects; dir:/home/dsaw/pc-ops
@@ -300,6 +304,24 @@ then use that same bridge for the amendment. A directly listed tool such as
 `kanban_unblock` stays a direct call. Auto-substitution to `kanban_comment` is
 not an amendment and never proves the requested operation happened.
 
+Send one lifecycle mutation per call. Inspect the current version, apply the
+complete frozen argument object, and read back before the next dependent step;
+do not batch dependent amendments or guess the next version. For a multiline
+body, `changes.body` is the entire literal JSON string, with JSON escaping for
+newlines, quotes and backslashes. A filename, expression or placeholder is not
+the file's content. Never write transport probes, staging markers or partial
+bodies into live cards, even when the card is still gated. Use read-only
+inspection or an isolated fixture for transport diagnostics.
+
+A confirmed pre-write parse/schema error changed nothing: correct that request
+on the same task and inspect its version again. An actual effect or capability
+refusal retains its existing stopping rule. Compare the full returned body with
+the frozen UTF-8 bytes/hash before intake, unblock or completion; a successful
+tool call alone does not prove exact delivery. Preserve any intervening probe
+or mismatch honestly. If the existing supported single-call transport works,
+do not add a tool-extension prerequisite. Otherwise retain the body artifact
+and precise error on the existing owner for bounded technical recovery.
+
 Use native `kanban_amend` to change a parked technical card's body, priority,
 preloaded skills or finite runtime. First call with task_id to inspect its
 version; then pass `expected_version`, `changes` and a `reason` naming the
@@ -312,12 +334,31 @@ An untyped blocked card whose latest real run failed may be classified once
 with `changes.block_kind=capability` and an explicit `Input supplier: agent`
 or `model/provider` reason. This records native classification without changing
 status or spent failure counters; it cannot retype an existing gate or block.
-For crashed, timed_out, spawn_failed or gave_up failures, omit terminal_episode.
-That optional object serves two different cases only: an untyped native blocked
-containment, or an existing capability hold's reclaimed gave_up episode. Do not
-infer that every terminal run needs it. A failed-run classification needs no
-invented event ID. Read back block_kind=capability before inspecting its recovery
-version; an untyped failure is not yet a uniquely typed technical hold.
+For ordinary untyped crashed, timed_out, spawn_failed or gave_up failures,
+omit terminal_episode.
+That optional object handles an untyped native blocked containment, an existing
+capability hold's reclaimed or elapsed-limit timed_out gave_up episode, or the
+bounded supplier clarification below. Do not infer that every terminal run needs
+it. A failed-run classification needs no invented event ID. Read back
+block_kind=capability before inspecting its recovery version; an untyped failure is not yet a uniquely typed technical hold.
+For a current same-kind capability TRIAGE block loop whose old reason has no
+supplier marker at all, use `terminal_episode={run_id,event_id}` and changes
+exactly `{block_kind:capability}` to clarify that supplier. First actually verify
+the missing input's delivery at the consumer destination. The new reason must
+contain exactly one canonical `Input supplier: agent` or
+`Input supplier: model/provider` marker and substantive `Repair evidence:`
+naming that verified delivery (at least three words). This is the coordinator's
+attestation, not automated evidence acceptance; `Authorized continuation:` alone
+is insufficient. Explicit old supplier text of any kind, including malformed or
+ambiguously spaced markers, refuses this branch. The latest finished run must
+be blocked/blocked and the latest lifecycle event must be its own run-bound
+block_loop_detected at or after its end, with capability kind and positive
+integer recurrences matching the task and reaching the positive integer limit.
+The amendment appends one honest classification event with actor, CAS, source
+episode and preserved resume phase. Every task column, prior event, run, link,
+counter, budget and review gate stays unchanged. Replays and superseded episodes
+refuse; this neither re-arms nor releases the task. Read back the new hold and
+obtain a fresh recovery token for any separately authorized guarded resume.
 For repaired capability holds use `kanban_unblock` with exact recovery_version
 and recovery_reason in blocked/scheduled/triage; this preserves failure counters
 and consumes one hold version. Ordinary unblock resets the native failure

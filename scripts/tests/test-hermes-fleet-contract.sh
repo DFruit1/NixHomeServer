@@ -41,6 +41,50 @@ class ContractTest(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 contract.validate(value)
 
+    def test_invalid_author_explains_format_and_same_request_recovery(self):
+        missing = object()
+        for author in (missing, None, False, True, 123, [], {}, '', 'head coordinator',
+                       'head/coordinator', 'a' * 81):
+            value = copy.deepcopy(self.workflow)
+            if author is missing:
+                del value['plan_author']
+            else:
+                value['plan_author'] = author
+            original = copy.deepcopy(value)
+            with self.subTest(author=author):
+                with self.assertRaises(ValueError) as raised:
+                    contract.validate(value)
+                message = str(raised.exception)
+                for detail in ('workflow.plan_author', 'string token', '[A-Za-z0-9_-]{1,80}',
+                               '1-80 ASCII letters, digits, underscores or hyphens',
+                               'This validator writes no state', 'for kanban_create',
+                               'pre-write rejection', 'no task, events or links created',
+                               'same request', 'truthful author', 'preserve workflow',
+                               'native-review-v1', 'Do not remove the contract'):
+                    self.assertIn(detail, message)
+                self.assertEqual(original, value)
+
+    def test_author_validation_applies_without_review_and_preserves_valid_tokens(self):
+        for author in (None, False, 123, [], {}, '', 'head coordinator', 'head/coordinator', 'a' * 81):
+            with self.subTest(author=author), self.assertRaises(ValueError):
+                contract.validate({'version': 1, 'plan_author': author})
+        self.assertEqual({'version': 1}, contract.validate({'version': 1}))
+        for author in ('owner', 'head-coordinator', 'review_author-9', 'a', 'a' * 80):
+            value = {**self.workflow, 'plan_author': author}
+            with self.subTest(author=author):
+                self.assertEqual(value, contract.validate(value))
+
+    def test_saved_invalid_author_does_not_claim_caller_transaction_unchanged(self):
+        # load() also uses public validate(): earlier caller writes remain present.
+        self.record({**self.workflow, 'plan_author': 'head/coordinator'})
+        before = list(self.db.iterdump())
+        with self.assertRaises(ValueError) as raised:
+            contract.load(self.db, 't_work')
+        self.assertIn('This validator writes no state', str(raised.exception))
+        self.assertIn('for kanban_create', str(raised.exception))
+        self.assertEqual(before, list(self.db.iterdump()))
+        self.assertEqual(1, self.db.execute('SELECT COUNT(*) FROM task_events').fetchone()[0])
+
     def test_saved_contract_is_authoritative_and_legacy_is_explicit(self):
         self.assertIsNone(contract.load(self.db, 't_work'))
         self.record(self.workflow)

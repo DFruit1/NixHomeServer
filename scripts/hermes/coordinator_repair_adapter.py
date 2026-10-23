@@ -124,6 +124,13 @@ SCHEMA = SCHEMA.replace('reclaim and prior release chronology.',
     'reclaim and prior release chronology, or -- for an elapsed-limit timeout -- its native claim, '
     'run-scoped timed_out event over the cap and prior release chronology.', 1)
 
+# Keep the exact pre-clarification schema so installation migrates atomically.
+PREVIOUS_SUPPLIER_SCHEMA = SCHEMA
+SCHEMA = SCHEMA.replace('Never releases work or resets retries;',
+    'A terminal_episode may also clarify the absent supplier of the current same-kind capability TRIAGE block_loop_detected episode: latest finished blocked run, exact run-bound latest event, integer recurrences matching the task and reaching its integer limit. The old reason must have no supplier marker, including malformed or ambiguous text. The new reason must have exactly one canonical Input supplier: agent or model/provider marker and substantive Repair evidence: naming delivery actually verified by the coordinator; Authorized continuation alone is insufficient. This appends one classification event and preserves every task field, history, phase, counter, budget and review gate. Never releases work or resets retries;', 1)
+SCHEMA = SCHEMA.replace('Only for an untyped native blocked containment or existing capability reclaimed or elapsed-limit timed_out gave_up episode;',
+    'Only for an untyped native blocked containment, existing capability reclaimed or elapsed-limit timed_out gave_up episode, or current same-kind capability TRIAGE block_loop_detected supplier clarification;', 1)
+
 # The seam installed before the workspace-rebind branch: one exact literal
 # migration, so an installed native is upgraded instead of duplicated.
 PREVIOUS = '''KANBAN_AMEND_SCHEMA = {
@@ -194,7 +201,7 @@ def adapt(name, text):
                 text = text.replace(previous, HANDLER, 1)
                 break
     if name == 'tools/kanban_tools_schemas.py' and SCHEMA not in text:
-        for variant in (PREVIOUS_TIMEOUT_SCHEMA, PREVIOUS_INTAKE_SCHEMA, PREVIOUS_INSPECTION,
+        for variant in (PREVIOUS_SUPPLIER_SCHEMA, PREVIOUS_TIMEOUT_SCHEMA, PREVIOUS_INTAKE_SCHEMA, PREVIOUS_INSPECTION,
                         PREVIOUS_REBIND, PREVIOUS, LEGACY):
             if text.count(variant) == 1:
                 text = text.replace(variant, SCHEMA, 1)
