@@ -6,6 +6,8 @@ from pathlib import Path
 import sys
 import time
 
+from agent_usage_report import render_summary
+
 root = Path(os.environ.get('HERMES_ROOT', str(Path.home()/'.hermes')))
 path = root/'state/fleet/report.json'
 if not path.is_file() or path.is_symlink():
@@ -28,6 +30,7 @@ if outcomes.get('status')=='observed':
               +str(round(values['maintenance_elapsed_seconds']/60))+' summed worker minutes, including waits. Billing unknown.')
 else:
     print('Outcome measurements unavailable; no productivity conclusion can be drawn.')
+print('\n'.join(render_summary(root)))
 for name, state in sorted(report['handlers'].items()):
     if state.get('exit_code') or state.get('interrupted') or state.get('in_flight') or state.get('wake_error'):
         print(name+': needs technical recovery (exit '+str(state.get('exit_code','unknown'))+').')
