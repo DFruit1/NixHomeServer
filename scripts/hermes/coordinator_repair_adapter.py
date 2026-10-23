@@ -87,6 +87,19 @@ PREVIOUS_REBIND = SCHEMA
 SCHEMA = SCHEMA.replace('for a parked capability hold, valid only',
     'for a parked capability hold or a never-started TODO/administratively scheduled scratch task with no path or execution, valid only', 1)
 
+# Keep the exact previous advertised seam for atomic, drift-checked migration.
+# These descriptions distinguish inspection, ordinary failed-run classification
+# and the two special terminal episodes; the native authority is unchanged.
+PREVIOUS_INSPECTION = SCHEMA
+SCHEMA = SCHEMA.replace('Native head-coordinator only: inspect version,',
+    'Native head-coordinator only. Inspect with task_id alone. Omit changes and expected_version to return the read-only version; there is no CLI version command. For a mutation use that exact expected_version, changes and reason. For an untyped blocked crashed/timed_out/spawn_failed/gave_up run, use changes {block_kind:capability} without terminal_episode and an Input supplier: agent or model/provider reason. Never guess versions from body hashes or use kanban_comment as the tool transport. Native head-coordinator only: inspect version,', 1)
+SCHEMA = SCHEMA.replace('"expected_version":{"type":"string"}',
+    '"expected_version":{"type":"string","description":"Omit for read-only inspection. For mutation copy version from the immediately preceding task_id-only inspection; this is not recovery_version."}', 1)
+SCHEMA = SCHEMA.replace('"changes":{"type":"object", "properties": {',
+    '"changes":{"type":"object", "description":"Omit for read-only inspection. Ordinary failed-run classification uses block_kind capability without terminal_episode; preserve counters and typed gates.", "properties": {', 1)
+SCHEMA = SCHEMA.replace('"terminal_episode":{"type":"object", "properties": {',
+    '"terminal_episode":{"type":"object", "description":"Only for an untyped native blocked containment or existing capability reclaimed gave_up episode; not for crashed or timed_out failed-run classification. Omit for inspection and ordinary failed-run classification.", "properties": {', 1)
+
 # The seam installed before the workspace-rebind branch: one exact literal
 # migration, so an installed native is upgraded instead of duplicated.
 PREVIOUS = '''KANBAN_AMEND_SCHEMA = {
@@ -157,7 +170,7 @@ def adapt(name, text):
                 text = text.replace(previous, HANDLER, 1)
                 break
     if name == 'tools/kanban_tools_schemas.py' and SCHEMA not in text:
-        for variant in (PREVIOUS_REBIND, PREVIOUS, LEGACY):
+        for variant in (PREVIOUS_INSPECTION, PREVIOUS_REBIND, PREVIOUS, LEGACY):
             if text.count(variant) == 1:
                 text = text.replace(variant, SCHEMA, 1)
                 break

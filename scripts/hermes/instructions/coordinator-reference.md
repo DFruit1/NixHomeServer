@@ -312,6 +312,12 @@ An untyped blocked card whose latest real run failed may be classified once
 with `changes.block_kind=capability` and an explicit `Input supplier: agent`
 or `model/provider` reason. This records native classification without changing
 status or spent failure counters; it cannot retype an existing gate or block.
+For crashed, timed_out, spawn_failed or gave_up failures, omit terminal_episode.
+That optional object serves two different cases only: an untyped native blocked
+containment, or an existing capability hold's reclaimed gave_up episode. Do not
+infer that every terminal run needs it. A failed-run classification needs no
+invented event ID. Read back block_kind=capability before inspecting its recovery
+version; an untyped failure is not yet a uniquely typed technical hold.
 For repaired capability holds use `kanban_unblock` with exact recovery_version
 and recovery_reason in blocked/scheduled/triage; this preserves failure counters
 and consumes one hold version. Ordinary unblock resets the native failure

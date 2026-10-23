@@ -571,6 +571,37 @@ class RepairTest(unittest.TestCase):
             self.assertEqual(after,adapt(name,after))
             with self.assertRaises(ValueError):adapt(name,'# incompatible source')
 
+    def test_advertised_inspection_and_crash_classification_need_no_episode(self):
+        from coordinator_repair_adapter import SCHEMA, PREVIOUS_INSPECTION
+        from recovered_resume_adapter import adapt as resume_adapt
+        scope={};exec(SCHEMA,scope);schema=scope['KANBAN_AMEND_SCHEMA']
+        self.assertIn('Omit changes and expected_version',schema['description'])
+        self.assertIn('without terminal_episode',schema['parameters']['properties']['changes']['description'])
+        self.assertIn('not for crashed or timed_out',schema['parameters']['properties']['terminal_episode']['description'])
+        # The exact installed predecessor must migrate, then remain idempotent.
+        installed=(native/'tools/kanban_tools_schemas.py').read_text()
+        current=adapt('tools/kanban_tools_schemas.py',installed)
+        self.assertEqual(current,adapt('tools/kanban_tools_schemas.py',current.replace(SCHEMA,PREVIOUS_INSPECTION,1)))
+        import tools.kanban_tools_schemas as schemas
+        exec(compile(adapt('tools/kanban_tools_schemas.py',resume_adapt('tools/kanban_tools_schemas.py',installed)),
+                     'fixture-schemas','exec'),schemas.__dict__)
+        module=types.ModuleType('tools.fixture_inspect_crash')
+        exec(compile(adapt('tools/kanban_tools.py',resume_adapt('tools/kanban_tools.py',
+                     (native/'tools/kanban_tools.py').read_text())),'fixture-tools','exec'),module.__dict__)
+        self.conn.execute("UPDATE tasks SET status='blocked',consecutive_failures=1,last_failure_error='protocol violation' WHERE id=?",(self.target,))
+        self.conn.execute("INSERT INTO task_runs(id,task_id,status,profile,started_at,ended_at,outcome) VALUES(43,?,'crashed','feature-reviewer',?,?,'crashed')",(self.target,self.now-20,self.now));self.conn.commit()
+        before=self.dump()
+        inspected=json.loads(module._handle_amend({'task_id':self.target}))
+        self.assertRegex(inspected['version'],r'^[0-9a-f]{64}$')
+        self.assertEqual(before,self.dump())
+        applied=json.loads(module._handle_amend({'task_id':self.target,'expected_version':inspected['version'],
+            'changes':{'block_kind':'capability'},'reason':'Input supplier: agent. Repaired the missing native terminal response guidance.'}))
+        self.assertTrue(applied['applied'])
+        row=self.conn.execute('SELECT status,block_kind,consecutive_failures,max_retries,last_failure_error FROM tasks WHERE id=?',(self.target,)).fetchone()
+        self.assertEqual(('blocked','capability',1,1,'protocol violation'),tuple(row))
+        self.assertEqual(before[1],self.dump()[1])  # Every historical run unchanged.
+        self.assertEqual(before[3],self.dump()[3])  # Every prerequisite unchanged.
+
     def test_terminal_episode_seam_is_closed_migrated_and_forwarded(self):
         from coordinator_repair_adapter import SCHEMA
         seam={};exec(SCHEMA,seam);schema=seam['KANBAN_AMEND_SCHEMA']
