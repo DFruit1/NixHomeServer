@@ -289,6 +289,14 @@ _remote_eval_required_archive_tree=""
 _remote_eval_required_remote_archive=""
 _remote_eval_required_remote_archive_sha=""
 _remote_eval_required_remote_dir=""
+# The invocation facts a receipt may have to name after live cleanup ownership
+# has been released. Each is written once, when the path it describes is
+# adopted, and is never cleared during the attempt: settlement releases the
+# paths themselves, but the interruption guard can still rewrite the receipt
+# afterwards, and a record rebuilt from live ownership would describe an
+# evaluation against no directory, no archive and a bare /query.nix.
+_remote_eval_required_recorded_remote_dir=""
+_remote_eval_required_recorded_remote_archive=""
 _remote_eval_required_query_sha=""
 _remote_eval_required_query_bytes=0
 _remote_eval_required_query_test_host=""
@@ -342,6 +350,8 @@ _remote_eval_required_reset() {
   _remote_eval_required_remote_archive=""
   _remote_eval_required_remote_archive_sha=""
   _remote_eval_required_remote_dir=""
+  _remote_eval_required_recorded_remote_dir=""
+  _remote_eval_required_recorded_remote_archive=""
   _remote_eval_required_query_sha=""
   _remote_eval_required_query_bytes=0
   _remote_eval_required_query_test_host=""
@@ -730,6 +740,7 @@ _remote_eval_required_stage_archive() {
     return 1
   fi
   _remote_eval_required_remote_archive="$remote_archive"
+  _remote_eval_required_recorded_remote_archive="$remote_archive"
 
   _remote_eval_required_ssh -T "$host" "cat > $(printf '%q' "$remote_archive")" <"$archive"
 }
@@ -876,9 +887,9 @@ _remote_eval_required_write_receipt() {
   end="$(date +%s)" || return 1
 
   argv_json="$(jq -cn --arg host "$_remote_eval_required_host" \
-    --arg dir "$_remote_eval_required_remote_dir" \
-    --arg archive "$_remote_eval_required_remote_archive" \
-    --arg expr "${_remote_eval_required_remote_dir}/query.nix" \
+    --arg dir "$_remote_eval_required_recorded_remote_dir" \
+    --arg archive "$_remote_eval_required_recorded_remote_archive" \
+    --arg expr "${_remote_eval_required_recorded_remote_dir}/query.nix" \
     --arg context "$_remote_eval_required_query_test_host" \
     '["ssh", "-o", "BatchMode=yes", $host, "bash", "-s", "--", $dir, $archive, $expr, $context]')" || return 1
 
@@ -891,7 +902,7 @@ _remote_eval_required_write_receipt() {
     --arg phase "$phase" --arg commit "$_remote_eval_required_head" \
     --arg tree "$_remote_eval_required_tree" --arg repo "$_remote_eval_required_repo" \
     --arg archive "$_remote_eval_required_archive_sha" --arg archive_tree "$_remote_eval_required_archive_tree" \
-    --arg remote_archive "$_remote_eval_required_remote_archive" \
+    --arg remote_archive "$_remote_eval_required_recorded_remote_archive" \
     --arg remote_archive_sha "$_remote_eval_required_remote_archive_sha" \
     --arg helper "$_remote_eval_required_helper_sha" --arg query "$_remote_eval_required_query_sha" \
     --arg query_test_host "$_remote_eval_required_query_test_host" \
@@ -1076,7 +1087,10 @@ _remote_eval_required_settle() {
     printf 'remote-eval: %s (cleanup: %s, local cleanup: %s)\n' "$message" "$cleanup" "$local_cleanup" >&2
   fi
   # The recorded observation is what the interruption path must reuse, so the
-  # attempt's transport parameters stop being live here.
+  # attempt's transport parameters stop being live here. Only live cleanup
+  # ownership is released: the invocation facts recorded when each path was
+  # adopted stay, because a signal during the reply emission still rewrites this
+  # receipt from them.
   _remote_eval_required_remote_dir=""
   _remote_eval_required_remote_archive=""
   return 0
@@ -1339,6 +1353,7 @@ _remote_eval_required_attempt() {
     return 1
   fi
   _remote_eval_required_remote_dir="$remote_dir"
+  _remote_eval_required_recorded_remote_dir="$remote_dir"
   _remote_eval_required_remote_unnamed=0
 
   if ! _remote_eval_required_ssh -o BatchMode=yes "$host" \

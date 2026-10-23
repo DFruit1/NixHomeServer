@@ -240,6 +240,7 @@ chmod +x "$spy_root/bin/tar"
 # temporary before it is put in place, so a case can interrupt there too.
 real_rm="$(command -v rm)"
 real_jq="$(command -v jq)"
+real_cat="$(command -v cat)"
 
 cat >"$spy_root/bin/rm" <<EOF
 #!/usr/bin/env bash
@@ -292,6 +293,31 @@ fi
 exec ${real_jq} "\$@"
 EOF
 chmod +x "$spy_root/bin/jq"
+
+cat >"$spy_root/bin/cat" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+# The reply emission is the last act of an attempt: it is the only \`cat\` that
+# reads the receipt directory's certified reply copy, and it happens after the
+# remote work has settled. A case can interrupt exactly there, before a single
+# byte reaches the caller.
+reply_emission=0
+for arg in "\$@"; do
+  case "\$arg" in
+    */eval-required-*.reply.json) reply_emission=1 ;;
+  esac
+done
+if ((reply_emission == 1)) && [[ "\${REQUIRE_INTERRUPT_ON_REPLY_EMIT:-0}" == 1 && ! -e "\${REQUIRE_INTERRUPT_FLAG:?}" ]]; then
+  : >"\$REQUIRE_INTERRUPT_FLAG"
+  kill -TERM "\${REQUIRE_INTERRUPT_PID:?}" 2>/dev/null || true
+  # Stay alive until the signal has been delivered, then exit without writing
+  # the reply: the interruption, not the emission, is what the caller must see.
+  sleep 0.2
+  exit 1
+fi
+exec ${real_cat} "\$@"
+EOF
+chmod +x "$spy_root/bin/cat"
 
 # The archive producer is wrapped so the *uploaded bytes'* digest is a recorded
 # fact of this suite rather than an invented one; the tampered and drifting
@@ -1107,6 +1133,68 @@ jq -e '.exit_status == 143 and .outcome == "failure" and .result_certified == fa
   fail "an interruption during receipt persistence was not receipted: $(cat "$receipt")"
 jq -e '.reply_path != null and (.reply_sha256 | test("^[0-9a-f]{64}$"))' "$receipt" >/dev/null ||
   fail "an interruption during receipt persistence discarded its evidence: $(cat "$receipt")"
+
+# The reply emission is the last attempt-owned step. Settlement has already
+# released the remote paths there, while the interruption guard deliberately
+# stays armed until the caller's handlers are restored -- so a signal between
+# settlement and emission still has to produce a receipt that names the
+# invocation that actually ran. A receipt rebuilt from live cleanup ownership
+# would describe an evaluation against no directory, no archive and /query.nix.
+: >"$spy_root/ssh.log"
+rm -f "$spy_root/reply-emit.flag"
+reset_local_heavy_logs
+reply_emit_status=0
+(
+  eval "$(spy_env)"
+  export REQUIRE_SSH_RUN_OUT='{"value":1}' REQUIRE_SSH_ABSENT_STATUS=0
+  export REQUIRE_INTERRUPT_ON_REPLY_EMIT=1
+  export REQUIRE_INTERRUPT_FLAG="$spy_root/reply-emit.flag"
+  export REQUIRE_INTERRUPT_PID="$BASHPID"
+  remote_eval_batch_json 'value=1'
+) >"$spy_root/reply-emit.out" 2>"$spy_root/reply-emit.err" || reply_emit_status=$?
+[[ "$reply_emit_status" == 143 ]] ||
+  fail "an interruption at the reply emission exited ${reply_emit_status} instead of 143: $(cat "$spy_root/reply-emit.err" 2>/dev/null)"
+[[ -e "$spy_root/reply-emit.flag" ]] ||
+  fail "the interruption was never placed at the reply emission"
+[[ ! -s "$spy_root/reply-emit.out" ]] ||
+  fail "an interruption at the reply emission emitted a result: $(cat "$spy_root/reply-emit.out")"
+[[ "$(eval_call_count)" == 1 ]] ||
+  fail "an interruption at the reply emission evaluated $(eval_call_count) times"
+# The settled observation is reused, not repeated: one absence check is the
+# settlement's own, and no second removal may be issued for provenance.
+[[ "$(grep -c '! -e ' "$spy_root/ssh.log" || true)" == 1 ]] ||
+  fail "an interruption at the reply emission repeated the remote cleanup verification: $(cat "$spy_root/ssh.log")"
+if grep -q -e 'rm -rf -- ' -e ' remove ' "$spy_root/ssh.log"; then
+  fail "an interruption at the reply emission issued another remote removal: $(cat "$spy_root/ssh.log")"
+fi
+require_zero_local_heavy 'an interruption at the reply emission'
+require_no_owned_scratch 'an interruption at the reply emission'
+pending_receipt="$(find "$receipt_dir" -maxdepth 1 -name '*.receipt.pending.json' -print -quit 2>/dev/null || true)"
+[[ -z "$pending_receipt" ]] ||
+  fail "an interruption at the reply emission left a receipt temporary behind: ${pending_receipt}"
+receipt="$(latest_receipt)"
+jq -e --arg dir "$spy_remote_dir" --arg archive "$spy_archive" \
+  --arg archive_sha "$(cat "$spy_root/archive.sha")" '
+  .exit_status == 143
+  and .outcome == "failure"
+  and .result_certified == false
+  and .cleanup == "success"
+  and .local_cleanup == "success"
+  and .remote_archive == $archive
+  and .remote_archive_sha256 == $archive_sha
+  and .archive_sha256 == $archive_sha
+  and .staged_archive_verified == true
+  and .argv[7] == $dir
+  and .argv[8] == $archive
+  and .argv[9] == ($dir + "/query.nix")
+  and (.reply_sha256 | test("^[0-9a-f]{64}$"))
+  and .reply_path != null' "$receipt" >/dev/null ||
+  fail "an interruption at the reply emission lost the invocation it had settled: $(cat "$receipt")"
+reply_path="$(jq -r '.reply_path' "$receipt")"
+[[ -f "$reply_path" ]] ||
+  fail "an interruption at the reply emission lost the certified reply copy: ${reply_path}"
+[[ "$(sha256sum "$reply_path" | awk '{print $1}')" == "$(jq -r '.reply_sha256' "$receipt")" ]] ||
+  fail "an interruption at the reply emission recorded a digest its evidence does not match: $(cat "$receipt")"
 
 # An unpersistable receipt is a failed attempt, not a green one with a missing
 # paper trail, and it must not strand the scratch the attempt already owns.
