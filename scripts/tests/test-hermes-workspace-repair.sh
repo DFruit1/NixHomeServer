@@ -4,7 +4,7 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 if [[ "${HERMES_FIXTURE_ACTIVE:-}" != 1 ]]; then
   exec python3 -B "$repo/scripts/hermes/fixture-runner.py" --repo "$repo" --suite "$repo/scripts/tests/test-hermes-workspace-repair.sh"
 fi
-fixture="$(mktemp -d /tmp/hermes-workspace-repair.XXXXXX)"
+fixture="$(mktemp -d "${TMPDIR:-/tmp}/hermes-workspace-repair.XXXXXX")"
 trap 'rm -rf "$fixture"' EXIT
 python3 -B - "$repo" "$fixture" <<'PY'
 import copy
@@ -73,6 +73,48 @@ class WorkspaceRepairTest(unittest.TestCase):
         self.assertFalse(result['inputs_verified'])
         self.assertFalse(result['unblocked'])
         self.assertEqual('blocked',self.native.task['status'])
+
+    def test_capability_triage_preserves_old_checkout_and_native_hold(self):
+        self.task.update(status='triage',block_kind='capability')
+        self.git(self.repo,'worktree','add','-qb','wt/t_one',str(self.target),self.commit)
+        (self.target/'source').write_text('older rejected source')
+        self.git(self.target,'commit','-qam','older source')
+        old=self.git(self.target,'rev-parse','HEAD')
+        before=copy.deepcopy(self.task)
+        result=self.run_repair()
+        self.assert_exact()
+        preserved=Path(result['preserved_path'])
+        self.assertEqual(old,self.git(preserved,'rev-parse','HEAD'))
+        self.assertEqual('older rejected source',(preserved/'source').read_text())
+        self.assertEqual(before,self.task)
+        self.assertFalse(result['unblocked'])
+        self.assertFalse(result['inputs_verified'])
+
+    def test_triage_requires_capability_and_cleared_activity(self):
+        self.task['status']='triage'
+        for kind in (None,'needs_input','review','dependency'):
+            self.task['block_kind']=kind
+            with self.assertRaisesRegex(repair.Refused,'OWNER_NOT_PARKED'): self.run_repair()
+            self.assertFalse(self.target.exists())
+        self.task['block_kind']='capability'
+        for field,value in (('worker_pid',123),('claim_expires',__import__('time').time()+600)):
+            self.task[field]=value
+            with self.assertRaisesRegex(repair.Refused,'OWNER_PROCESS_OR_LEASE_NOT_CLEARED'): self.run_repair()
+            self.task.pop(field)
+            self.assertFalse(self.target.exists())
+
+    def test_hold_kind_change_during_preservation_stops_source_creation(self):
+        self.task.update(status='triage',block_kind='capability')
+        self.target.mkdir();(self.target/'input').write_text('retain')
+        original=repair.preserve_workspace
+        def preserve(*args,**kwargs):
+            result=original(*args,**kwargs)
+            self.task['block_kind']='needs_input'
+            return result
+        with patch.object(repair,'preserve_workspace',side_effect=preserve):
+            with self.assertRaises(repair.PartialRepair) as caught: self.run_repair()
+        self.assertEqual('retain',(Path(caught.exception.receipt['preserved_path'])/'input').read_text())
+        self.assertFalse(self.target.exists())
 
     def scratch_binding(self):
         self.hermes = self.root/'hermes'
@@ -152,7 +194,7 @@ class WorkspaceRepairTest(unittest.TestCase):
         cli.chmod(0o700)
         with patch.dict(os.environ,dict(HERMES_BIN=str(cli),HERMES_ROOT=str(self.hermes),HERMES_KANBAN_HOME=str(self.hermes))):
             self.native=repair.NativeBoards(repair.Runner())
-            cli_details=self.native.details('one','t_one')
+            cli_details=self.native.read(['--board','one','show','t_one','--json'])
             for field in ('worker_pid','claim_expires','current_run_id'):
                 self.assertNotIn(field,cli_details['task'])
             self.assertEqual(self.hermes,self.native.scratch_root('one'))
@@ -247,6 +289,33 @@ class WorkspaceRepairTest(unittest.TestCase):
         with self.assertRaisesRegex(repair.Refused,'SHARED_WORKSPACE'): self.run_repair()
         self.assertFalse(self.target.exists())
 
+    def test_operator_worktree_triage_uses_raw_native_hold_and_preserves_database(self):
+        import os,time
+        from hermes_cli import kanban_db_connect as kbc,kanban_db as kb
+        hermes=self.root/'hermes';path=hermes/'kanban/boards/one/kanban.db'
+        path.parent.mkdir(parents=True)
+        with closing(kbc.connect(db_path=path)) as db:
+            db.execute("INSERT INTO tasks(id,title,status,assignee,created_at,workspace_kind,workspace_path,branch_name) VALUES('t_one','Source repair','ready','feature-reviewer',?,'worktree',?,'wt/t_one')",(int(time.time()),str(self.target)))
+            for _ in range(kb.BLOCK_RECURRENCE_LIMIT):
+                db.execute("UPDATE tasks SET status='ready' WHERE id='t_one'")
+                self.assertTrue(kb.block_task(db,'t_one',reason='Input supplier: agent. Source stale',kind='capability'))
+            db.commit()
+            before='\n'.join(db.iterdump())
+        native=Path(os.environ['HERMES_FIXTURE_NATIVE_PYTHON']).parents[2]
+        cli=self.root/'cli'
+        cli.write_text('#!'+os.environ['HERMES_FIXTURE_NATIVE_PYTHON']+'\nimport runpy,sys\nsys.path.insert(0,'+repr(str(native))+')\nrunpy.run_module("hermes_cli.main",run_name="__main__",alter_sys=True)\n')
+        cli.chmod(0o700)
+        with patch.dict(os.environ,dict(HERMES_BIN=str(cli),HERMES_ROOT=str(hermes),HERMES_KANBAN_HOME=str(hermes))):
+            self.native=repair.NativeBoards(repair.Runner())
+            self.assertNotIn('block_kind',self.native.read(['--board','one','show','t_one','--json'])['task'])
+            self.assertEqual('prepared',self.run_repair()['status'])
+            self.assert_exact()
+            self.assertEqual('capability',self.native.details('one','t_one')['task']['block_kind'])
+            with self.assertRaisesRegex(repair.Refused,'COORDINATOR_BOARD_REQUIRED'):
+                self.native.details('two','t_one')
+        with closing(kbc.connect(db_path=path)) as db:
+            self.assertEqual(before,'\n'.join(db.iterdump()))
+
     def test_wrong_tree_symlink_foreign_repo_and_primary_root_refuse(self):
         self.tree = '0'*40
         with self.assertRaises(repair.Refused): self.run_repair()
@@ -306,7 +375,7 @@ class WorkspaceRepairTest(unittest.TestCase):
         self.assertEqual(self.commit,self.git(self.repo,'rev-parse','wt/t_one'))
         self.assertTrue((moved/'source').is_file())
 
-    def test_native_adapter_includes_archived_boards_when_checking_aliases(self):
+    def test_operator_rejects_cli_board_metadata_without_root_provenance(self):
         owner = self.task
         alias = {**owner,'id':'t_archived'}
         class Cli:
@@ -319,7 +388,7 @@ class WorkspaceRepairTest(unittest.TestCase):
                     return json.dumps({'task':owner,'runs':[]})
                 return json.dumps([alias if 'archived' in argv else owner])
         self.native = repair.NativeBoards(Cli())
-        with self.assertRaisesRegex(repair.Refused,'SHARED_WORKSPACE archived/t_archived'):
+        with self.assertRaisesRegex(repair.Refused,'NATIVE_ROOT_PROVENANCE_REQUIRED'):
             self.run_repair()
         self.assertFalse(self.target.exists())
 
@@ -412,7 +481,7 @@ assert all((root/'hermes/kanban/boards'/name/'kanban.db').read_bytes()==value fo
 
 
 class NativePinnedWorkspaceTest(unittest.TestCase):
-    def probe(self,alias=False,profile='head-coordinator',delegated=False,legacy_alias=False,symlink_board=False,archive_alias=False,nested_artifact=False,scratch=False):
+    def probe(self,alias=False,profile='head-coordinator',delegated=False,legacy_alias=False,symlink_board=False,archive_alias=False,nested_artifact=False,scratch=False,triage=False):
         import os,sqlite3,time
         native=Path(os.environ['HERMES_FIXTURE_NATIVE_PYTHON']).parents[2]
         sys.path.insert(0,str(native))
@@ -432,6 +501,11 @@ class NativePinnedWorkspaceTest(unittest.TestCase):
                 if board=='one':
                     db.execute("INSERT INTO tasks(id,title,status,assignee,created_at,workspace_kind,workspace_path,branch_name) VALUES('t_one','Parked repair','blocked','feature-reviewer',?,?,?,'wt/t_one')",(now,fixture.task['workspace_kind'],str(fixture.target)))
                     kb._append_event(db,'t_one','blocked',{'reason':'Input supplier: agent. Fixture source missing','kind':'capability'})
+                    if triage:
+                        for _ in range(kb.BLOCK_RECURRENCE_LIMIT):
+                            db.execute("UPDATE tasks SET status='ready' WHERE id='t_one'")
+                            self.assertTrue(kb.block_task(db,'t_one',reason='Input supplier: agent. Source missing',kind='capability'))
+                        self.assertEqual('triage',db.execute("SELECT status FROM tasks WHERE id='t_one'").fetchone()[0])
                     db.execute("INSERT INTO tasks(id,title,status,assignee,created_at,workspace_kind,workspace_path,current_run_id,claim_lock,claim_expires) VALUES('t_actor','Native coordinator','running','head-coordinator',?,'dir',?,42,'fixture',?)",(now,str(work),now+600))
                     db.execute("INSERT INTO task_runs(id,task_id,status,profile,started_at,claim_lock,claim_expires) VALUES(42,'t_actor','running','head-coordinator',?,'fixture',?)",(now-5,now+600))
                 elif (board=='two' and alias) or (board=='default' and legacy_alias):
@@ -457,6 +531,18 @@ class NativePinnedWorkspaceTest(unittest.TestCase):
         result=subprocess.run([str(Path(os.environ['HERMES_FIXTURE_NATIVE_PYTHON'])),'-B','-c',_NATIVE_PARENT,str(ROOT/'scripts/hermes'),str(root),_NATIVE_CHILD],env=env,capture_output=True,text=True,timeout=90)
         self.assertEqual(0,result.returncode,result.stderr)
         return json.loads(result.stdout),fixture
+
+    def test_native_repeat_block_triage_can_prepare_without_lifecycle_changes(self):
+        result,fixture=self.probe(triage=True)
+        self.assertEqual('prepared',result['status'],result)
+        self.assertTrue(result['preserved_pins'])
+        fixture.assert_exact()
+        import sqlite3
+        path=fixture.root/'hermes/kanban/boards/one/kanban.db'
+        with sqlite3.connect(path) as db:
+            self.assertEqual(('triage','capability'),db.execute("SELECT status,block_kind FROM tasks WHERE id='t_one'").fetchone())
+            self.assertEqual(1,db.execute("SELECT count(*) FROM task_events WHERE task_id='t_one' AND kind='block_loop_detected'").fetchone()[0])
+            self.assertEqual(0,db.execute("SELECT count(*) FROM task_events WHERE task_id='t_one' AND kind='unblocked'").fetchone()[0])
 
     def test_authenticated_native_scratch_root_ignores_forged_environment(self):
         result,fixture=self.probe(scratch=True)

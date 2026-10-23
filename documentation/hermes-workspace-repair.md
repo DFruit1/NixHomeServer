@@ -5,8 +5,11 @@ bounded recovery authority. Source preparation precedes independent review; it
 never substitutes for acceptance, verified artifact transfer or a live deploy gate.
 Use the exact candidate commit and tree commissioned on the existing card.
 
-`repair-task-workspace.py` uses the supported native CLI for interactive operator
-reads. A coordinator terminal uses the maintained query-only board-evidence
+`repair-task-workspace.py` qualifies the interactive operator's board root through
+the supported native CLI, then uses the maintained query-only board-evidence
+reader for task details and alias inventory. CLI task JSON omits hold kind and
+task/run activity; those omissions cannot establish safe repair eligibility.
+A coordinator terminal uses that same maintained query-only board-evidence
 reader instead: the native CLI preserves worker board pins and refuses child
 commands, so it cannot provide a complete cross-board alias inventory. The
 helper authenticates the actual top-level native coordinator, run, session and
@@ -29,8 +32,12 @@ python3 ~/.hermes/scripts/repair-task-workspace.py \
 # Repeat with --apply after assessing the displayed source discrepancy.
 ```
 
-The task must be blocked or scheduled with no active run or uncleared latest
-worker PID. Scratch recovery also requires no task PID or unexpired task/run
+The task must be blocked, scheduled, or capability-held triage with no active
+run or uncleared latest worker PID. The native repeat-block guard can park a
+capability hold in triage; source repair preserves that hold and its spent
+attempts. Other triage kinds remain refused. Hold kind is part of the checked
+identity, so a concurrent reclassification stops preparation. Scratch recovery
+also requires no task PID or unexpired task/run
 lease. The helper reads all boards, including archived tasks, and refuses another
 recorded workspace alias or a task nested inside the target. It refuses
 symlinked paths, primary checkouts and foreign repositories. Targets must be
@@ -41,7 +48,7 @@ native database origin, or the interactive operator's supported
 `hermes kanban boards list --json --all` `db_path` for that board. No root or
 workspace override is accepted as proof. Root/database/target spellings must
 be canonical, with no symlink components; the database must already exist.
-After CLI root qualification, interactive scratch details and inventory both
+After CLI root qualification, interactive details and inventory for all bindings
 use the same query-only reader, including actual task/run PID and lease fields
 omitted by CLI JSON and removed boards in `_archived/`. This grants no native
 coordinator identity. The instruction

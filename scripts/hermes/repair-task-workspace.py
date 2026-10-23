@@ -22,7 +22,7 @@ import uuid
 
 sys.dont_write_bytecode = True
 PARKED = {'blocked', 'scheduled'}
-IDENTITY_FIELDS = ('id', 'status', 'workspace_kind', 'workspace_path', 'branch_name')
+IDENTITY_FIELDS = ('id', 'status', 'block_kind', 'workspace_kind', 'workspace_path', 'branch_name')
 ACTIVITY_FIELDS = ('worker_pid', 'claim_expires')
 HASH = re.compile(r'(?:[0-9a-f]{40}|[0-9a-f]{64})')
 
@@ -172,7 +172,7 @@ class NativeBoards:
         tasks = []
         for board in boards:
             for offset in range(0, 20001, 200):
-                rows = self._query(board, 'SELECT id,status,workspace_kind,workspace_path,branch_name,worker_pid,claim_expires '
+                rows = self._query(board, 'SELECT id,status,block_kind,workspace_kind,workspace_path,branch_name,worker_pid,claim_expires '
                                    'FROM tasks ORDER BY id LIMIT 200 OFFSET ' + str(offset))
                 if offset + len(rows) > 20000:
                     raise Refused('TASK_INVENTORY_UNBOUNDED ' + board)
@@ -210,13 +210,18 @@ class NativeBoards:
         return tasks
 
     def details(self, board, task_id):
+        if self.origin is None and not hasattr(self, '_operator_board'):
+            # CLI task JSON omits hold kind and task/run activity. Qualify its
+            # real board root, then use the same query-only evidence as scratch
+            # repair for every binding; missing fields are never a parked proof.
+            self.scratch_root(board)
         if self.origin is not None or hasattr(self, '_operator_board'):
             self._recheck()
             own_board = self.origin['board'] if self.origin is not None else self._operator_board
             if board != own_board or not re.fullmatch(r't_[A-Za-z0-9_]+', task_id):
                 raise Refused('COORDINATOR_BOARD_REQUIRED')
             # Fixed read-only statements; the task literal is validated above.
-            tasks = self._query(board, "SELECT id,status,workspace_kind,workspace_path,branch_name,worker_pid,claim_expires "
+            tasks = self._query(board, "SELECT id,status,block_kind,workspace_kind,workspace_path,branch_name,worker_pid,claim_expires "
                                 "FROM tasks WHERE id='" + task_id + "'")
             runs = self._query(board, "SELECT id,status,worker_pid,claim_expires FROM task_runs WHERE task_id='" +
                                task_id + "' AND (status='running' OR claim_expires>" + str(int(time.time())) +
@@ -278,7 +283,8 @@ def binding(native, board, task_id, target):
     task = details.get('task')
     if not isinstance(task, dict) or any(task.get(k) != matches[0].get(k) for k in IDENTITY_FIELDS):
         raise Refused('TASK_BINDING_CHANGED')
-    if task.get('status') not in PARKED:
+    capability_triage = task.get('status') == 'triage' and task.get('block_kind') == 'capability'
+    if task.get('status') not in PARKED and not capability_triage:
         raise Refused('OWNER_NOT_PARKED ' + str(task.get('status')))
     if task.get('worker_pid') or (task.get('claim_expires') or 0) > time.time():
         raise Refused('OWNER_PROCESS_OR_LEASE_NOT_CLEARED')
