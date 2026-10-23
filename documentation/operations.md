@@ -2402,6 +2402,85 @@ Batching matters more than offloading. `scripts/tests/test-common.sh` sources
 the helper, so a test that needs several config values should use the batch
 helper rather than calling `flake_eval_json` repeatedly.
 
+#### Remote-required evaluation (opt-in)
+
+The adaptive route above is right for the suite: a server outage must not fail
+the repository tests. It is wrong for evidence. When a result has to be
+attributable to a declared remote endpoint, a silent local fallback turns a
+transport fault into a green claim.
+
+`NIXHOMESERVER_REQUIRE_REMOTE=1` selects the remote-only route. It is an
+admission gate and a certification boundary, not a speed switch:
+
+| Input | Meaning |
+| --- | --- |
+| `NIXHOMESERVER_REQUIRE_REMOTE` | Unset or `0`: adaptive route, unchanged. `1`: remote-required. Anything else, including an explicitly empty value, is refused with exit status 2 before any work. |
+| `REMOTE_EVAL` | `0` contradicts the opt-in and is refused with exit 2 before any work. |
+| `REMOTE_EVAL_HOST` | Required, explicit `user@host`. The route never derives an endpoint, because deriving one would mean evaluating locally. |
+| `NIXHOMESERVER_EXPECTED_HEAD`, `NIXHOMESERVER_EXPECTED_TREE` | Required, full lowercase object ids. The run certifies this commit, not whatever the checkout happens to be. |
+| `NIXHOMESERVER_REMOTE_EVAL_RECEIPT_DIR` | Required, absolute, existing, writable, and outside the certified tree. |
+| `NIXHOMESERVER_REMOTE_EVAL_TIMEOUT_SECONDS` | Deadline in seconds, positive integer, at most 3600, default 300. |
+| `NIXHOMESERVER_TEST_HOST` | Optional selected-configuration host, transmitted as bounded query context. |
+
+The run then makes exactly one attempt:
+
+* The endpoint is attested over the same transport (`hostname -f`, `uname -srm`).
+  A loopback, unnamed or this-workstation endpoint is refused as remote evidence.
+* The source is verified at three boundaries (preflight, pre-staging,
+  pre-execution) and again before the reply is certified: HEAD and tree must
+  match the declared objects, the worktree and index must be clean, no path may
+  carry an assume-unchanged or skip-worktree flag, and the certified tree may
+  contain no untracked non-ignored files.
+* The archive is verified, not just the worktree. The extracted archive must
+  rebuild exactly the declared tree, and the sha256 of the staged copy on the
+  server must equal the sha256 of the archive that was verified.
+* The reply is the result. `ssh` exiting 0 is not an answer: the reply must be
+  exactly one nonempty JSON object holding exactly the queries that were asked.
+  Empty, whitespace, truncated, scalar, array, concatenated, short and
+  over-answering replies are refused with no output on stdout.
+* There is no retry and no local fallback. A nonzero or 255 session status, a
+  staging or transfer fault, and an expired deadline are all failures.
+
+A complete inventory is expressed as one query per field: an inventory of
+thirteen fields is thirteen queries, and the route refuses a reply that omits any
+of them. If the caller instead sends a single query whose value is an object, the
+route can only certify that the query itself was answered, so the caller remains
+responsible for checking every field of that object (the P1 readiness
+qualification does exactly that).
+
+Each attempt writes one receipt to `NIXHOMESERVER_REMOTE_EVAL_RECEIPT_DIR` as
+`eval-required-NNNN.receipt.json`, plus the observed reply and stderr as separate
+artifacts. The receipt records the declared and observed commit/tree, the source
+identity state and how many checks it survived, the archive, staged-archive,
+helper and exact-query digests, the query field set and selected host context,
+the endpoint and its attested hostname/system, the remote argv and interpreter,
+the declared and enforced deadline, start/end times, the exit status, the cleanup
+outcome and the artifact digests. Attempt numbers are allocated from a counter, so
+a later reader can order attempts and no attempt overwrites another.
+
+Receipt persistence is part of the contract: an attempt whose receipt cannot be
+written fails. Remote staging paths are cleaned through the same bounded staging
+interface, and the receipt records the observed outcome — `success`, `failed`,
+`unknown` or `none` — after asking the server whether the paths are gone, rather
+than asserting what the remote `EXIT` trap intended. An interrupted attempt
+(INT/TERM/HUP) cleans what it acquired and leaves a receipt with status
+130/143/129.
+
+Every transport step the helper issues itself is bounded with `timeout(1)` and
+re-checked against the attempt deadline. A single positive wall-clock bound over
+the whole invocation belongs to whatever binding invokes the helper; wrap the call
+in `timeout` when the whole-call bound is part of the requirement.
+
+The contract suite is hermetic and runs in the confined fixture:
+
+```bash
+python3 ~/.hermes/scripts/fixture-runner.py --repo "$PWD" \
+  --suite "$PWD/scripts/tests/test-remote-eval-required.sh"
+```
+
+It uses a fixture Git repository and spy `ssh`/`nix`/`nix-store` processes, so it
+proves the production code path without a server, Nix store, build or sudo.
+
 ### Builds
 
 `~/.config/nix/nix.conf` on the workstation already declares the server as an
