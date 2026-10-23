@@ -117,6 +117,27 @@ class VerdictGuardTest(unittest.TestCase):
                 'title':'Feature slice','assignee':'standard-implementer',
                 'body':'Feature tracker: testboard:t_tracker\nChange: custom_apps/app/source.rs only.',**extra}}
 
+    def test_native_review_claims_need_canonical_implementation_marker_at_creation(self):
+        for role in ('standard-implementer', 'local-implementer'):
+            for claim in ('native-review-v1 lifecycle', 'NATIVE-REVIEW-V1 CONTRACT explicitly on this card'):
+                with self.subTest(role=role, claim=claim):
+                    payload = self.feature_create(assignee=role, body='Goal: bounded repair\n' + claim)
+                    refused = guard_mod.guard(payload, self.root)
+                    self.assertEqual('block', refused.get('action'))
+                    self.assertIn('Workflow: native-review-v1', refused['message'])
+            for body in ('Goal: bounded standalone diagnostic',
+                         'Workflow: native-review-v1\nGoal: bounded repair'):
+                self.assertEqual({}, guard_mod.guard(self.feature_create(assignee=role, body=body), self.root))
+        for role in ('head-coordinator', 'feature-reviewer', 'project-auditor'):
+            self.assertEqual({}, guard_mod.guard(self.feature_create(
+                assignee=role, body='Discuss native-review-v1 evidence'), self.root))
+        # Existing cards remain governed by their original completion contract.
+        self.card('t_parent')
+        self.card('t_legacy', assignee='standard-implementer', status='todo',
+                  body='Historical native-review-v1 discussion')
+        self.assertEqual({}, guard_mod.guard({'tool_name':'kanban_link', 'tool_input':{
+            'board':'testboard', 'parent_id':'t_parent', 'child_id':'t_legacy'}}, self.root))
+
     def test_delivery_handoff_cannot_gate_its_own_input_but_decision_and_closure_can(self):
         self.card('t_delivery',assignee='head-coordinator',status='running',body='Feature tracker: testboard:t_tracker\nFeature handoff: delivery')
         for role in ('standard-implementer','feature-reviewer','project-auditor'):

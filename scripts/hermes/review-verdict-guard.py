@@ -46,6 +46,12 @@ def guard_feature_routing(payload, root):
     Native project/worktree, cycle and lease checks still own actual effects.
     """
     args = payload.get('tool_input') or {}
+    body = args.get('body') or ''
+    if (payload['tool_name'] == 'kanban_create'
+            and args.get('assignee') in {'standard-implementer', 'local-implementer'}
+            and re.search(r'native-review-v1', body, re.I) and not native_contract(body)):
+        raise ValueError('Implementation review workflow claims require the standalone line '
+                         'Workflow: native-review-v1; prose does not activate independent acceptance')
     board = args.get('board') or os.environ.get('HERMES_KANBAN_BOARD')
     if not isinstance(board, str) or not re.fullmatch(r'[A-Za-z0-9_-]+', board):
         if payload['tool_name'] == 'kanban_create' and re.search(r'^Feature tracker:', args.get('body') or '', re.M):
@@ -108,7 +114,7 @@ def guard_feature_routing(payload, root):
     return {}
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from fleet_workflow import require_native_acceptance
+from fleet_workflow import native_contract, require_native_acceptance
 
 
 def verification(task, db=None):
