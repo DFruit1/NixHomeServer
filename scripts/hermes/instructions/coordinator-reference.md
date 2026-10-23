@@ -292,6 +292,14 @@ For deferral, the auditor's actual completed run must carry
 `wake_condition`. A generic done audit is insufficient. These records
 affect scheduling only and grant no implementation, acceptance or deploy authority.
 
+Use the tool transport actually advertised by discovery. `tool_describe` only
+returns a deferred tool's schema; it does not make its name directly callable.
+For deferred `kanban_amend`, invoke `tool_call` with
+`{"calls":[{"name":"kanban_amend","arguments":{"task_id":"t_CARD"}}]}`,
+then use that same bridge for the amendment. A directly listed tool such as
+`kanban_unblock` stays a direct call. Auto-substitution to `kanban_comment` is
+not an amendment and never proves the requested operation happened.
+
 Use native `kanban_amend` to change a parked technical card's body, priority,
 preloaded skills or finite runtime. First call with task_id to inspect its
 version; then pass `expected_version`, `changes` and a `reason` naming the
@@ -308,6 +316,11 @@ For repaired capability holds use `kanban_unblock` with exact recovery_version
 and recovery_reason in blocked/scheduled/triage; this preserves failure counters
 and consumes one hold version. Ordinary unblock resets the native failure
 counter and cannot satisfy a recovery contract that preserves spent allowances.
+These are two different tokens: `kanban_amend.version` is only its amendment CAS
+token. Obtain the recovery token from the matching board/task `version` in
+`python3 ~/.hermes/scripts/capability_recovery.py --inspect`, after the repair.
+Relevant task, source or helper changes invalidate that recovery observation;
+read it again rather than guessing from an amendment response or old event.
 Preloaded skills must resolve in the assigned profile's actual catalog; remove
 an irrelevant coordinator-only preload from a reviewer, rather than granting
 the reviewer routing powers. Skills never grant tools or permission.
