@@ -22,6 +22,8 @@ NAME='kanban technical recovery'
 def install(root,check=False,files_only=False):
     if root.is_symlink():
         raise ValueError('Recovery install root must not be a symlink')
+    if not files_only and (root/'state/fleet/current.json').exists():
+        raise ValueError('Fleet supervision owns recovery cadence; use fleet-release.py, never resume a legacy job')
     jobs_file=root/'cron/jobs.json'
     if not files_only:
         jobs=json.loads(jobs_file.read_text()).get('jobs',[])
@@ -29,7 +31,7 @@ def install(root,check=False,files_only=False):
         if len(matches)>1:
             raise ValueError('Duplicate recovery jobs; reconcile native identities')
     changed=False
-    for name in ('deadlock_recovery.py','feature_flow.py','review-verdict-guard.py','capability_recovery.py','hermes_common.py','review-taskforce.py'):
+    for name in ('deadlock_recovery.py','feature_flow.py','feature_contract.py','fleet_contract.py','review-verdict-guard.py','capability_recovery.py','hermes_common.py','review-taskforce.py'):
         target=root/'scripts'/name
         if target.is_symlink():
             raise ValueError('Recovery install target must not be a symlink')

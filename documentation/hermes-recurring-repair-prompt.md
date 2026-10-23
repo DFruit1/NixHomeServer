@@ -89,6 +89,14 @@ IDs, workspaces and branches, who owns each unfinished step, what changed since
 the last pass, and the exact evidence/condition for the next action. Store facts,
 not new standing permissions. Keep temporary scratch in one task directory.
 
+Before reporting productivity, read the existing kanban analytics for the
+current day and compare the previous pass receipt: recorded scoped deliveries,
+unfinished feature trackers, repeat blocks, and maintenance worker elapsed time.
+Report this pass's elapsed time separately. Distinguish restored infrastructure
+from requested project delivery and installation from loaded runtime. Unknown
+usage/cost remains unknown. Fewer repeat incidents and more completed requested
+outcomes are the success measures; repair counts alone are not productivity.
+
 Finish with a concise report: outcomes completed, recurring causes permanently
 fixed, work still running elsewhere, remaining genuine owner action, and the
 highest-value next check. If nothing changed, say so and do not manufacture work

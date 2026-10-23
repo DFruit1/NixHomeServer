@@ -465,6 +465,44 @@ def token_effort(db, root, since, until):
             'note': 'matched worker-session tokens attributed per card; estimate'}
 
 
+def maintenance_outcomes(db, since, until):
+    """Bounded native facts; worker elapsed time is not cost or owner time saved."""
+    rows=db.execute("SELECT t.id,t.tenant,t.created_by,r.started_at,r.ended_at,r.outcome,r.metadata "
+                    "FROM task_runs r JOIN tasks t ON t.id=r.task_id "
+                    "WHERE r.ended_at>=? AND r.ended_at<? LIMIT 10001",(since,until)).fetchall()
+    if len(rows)>10000:
+        return {'status':'truncated'}
+    completed=0;maintenance=0;elapsed=0;deliveries=set();invalid=0
+    for tid,tenant,creator,started,ended,outcome,raw in rows:
+        is_maintenance=(tenant in {'technical-recovery','continuous-improvement'}
+                        or creator in {'fleet-supervisor','deadlock-recovery-monitor','aging-escalation','cron-loop-monitor'})
+        if outcome=='completed':
+            completed+=1
+            maintenance+=int(is_maintenance)
+        if is_maintenance and isinstance(started,(int,float)) and isinstance(ended,(int,float)):
+            elapsed+=max(0,ended-started)
+        try:
+            metadata=json.loads(raw or '{}')
+            delivery=metadata.get('feature_delivery',{})
+            if (outcome=='completed' and isinstance(delivery,dict) and delivery.get('state')=='delivered_scope'
+                    and isinstance(delivery.get('tracker'),str) and isinstance(delivery.get('evidence_version'),str)):
+                deliveries.add((delivery['tracker'],delivery.get('scope'),delivery.get('revision',delivery['evidence_version'])))
+        except (ValueError,TypeError,AttributeError):
+            invalid+=1
+    unfinished=db.execute("SELECT COUNT(*) FROM tasks WHERE title LIKE '[FEATURE TRACKER%' "
+                          "AND status NOT IN ('done','archived')").fetchone()[0]
+    repeats=db.execute("SELECT COUNT(*) FROM task_events WHERE kind='blocked' AND created_at>=? AND created_at<? "
+                       "GROUP BY task_id HAVING COUNT(*)>1 LIMIT 10001",(since,until)).fetchall()
+    if len(repeats)>10000:
+        return {'status':'truncated'}
+    return dict(status='observed',window_seconds=until-since,completed_runs=completed,
+                maintenance_completed_runs=maintenance,maintenance_elapsed_seconds=round(elapsed),
+                recorded_scope_deliveries=len(deliveries),unfinished_feature_trackers=unfinished,
+                repeat_blocked_tasks=len(repeats),repeat_block_events=sum(r[0]-1 for r in repeats),
+                malformed_run_metadata=invalid,
+                note='Recorded delivery scopes are not live acceptance; summed worker elapsed includes waits and parallel work. Billing unknown.')
+
+
 def board_report(db_path, review_dir, home, since, until, now):
     with readonly(db_path) as db:
         per_task, truncated = load_events(db, until)
@@ -481,6 +519,7 @@ def board_report(db_path, review_dir, home, since, until, now):
             'escalation': escalation(db, per_task, since, until,
                                      (life['claim_wait_days'] or {}).get('p50')),
             'token_effort': token_effort(db, home, since, until),
+            'maintenance': maintenance_outcomes(db,since,until),
         }
 
 

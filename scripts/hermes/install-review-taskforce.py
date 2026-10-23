@@ -160,7 +160,7 @@ def review_hook_files(root, pending=None):
             text = pending.get(config, config.read_text())
             command = 'python3 ' + shlex.quote(str(root / 'scripts/review-verdict-guard.py'))
             changes[config] = hooks.readonly_hook(text, command, 'review-verdict', '^kanban_(complete|unlink|create|link|request_review)$')
-    for name in ('review-verdict-guard.py', 'capability_recovery.py', 'fleet_workflow.py'):
+    for name in ('review-verdict-guard.py', 'capability_recovery.py', 'fleet_workflow.py', 'fleet_contract.py', 'feature_contract.py'):
         changes[root / 'scripts' / name] = (SOURCE / name).read_text()
     return {p: t for p, t in changes.items() if not p.exists() or p.read_text() != t}
 
@@ -218,6 +218,8 @@ def changed_files(root, policy_only=False):
 
 
 def install(root, check=False, cron=True, policy_only=False, hooks_only=False):
+    if cron and not policy_only and not hooks_only and (root/'state/fleet/current.json').exists():
+        raise ValueError('Fleet supervision owns maintenance cadence; use fleet-release.py, not the legacy cron installer')
     if hooks_only and policy_only:
         raise ValueError('Choose hooks-only or policy-only, not both')
     if hooks_only:

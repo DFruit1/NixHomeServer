@@ -97,6 +97,28 @@ class SupervisorTest(unittest.TestCase):
             supervisor.requalify(self.root,'technical-recovery',evidence,'Unchanged receipt cannot authorize repeated requalification')
 
 
+class OutcomeCadenceTest(unittest.TestCase):
+    def test_installed_analytics_refreshes_once_per_day_before_board_reads(self):
+        with tempfile.TemporaryDirectory(prefix='fleet-outcomes-') as directory:
+            root=Path(directory)
+            (root/'scripts').mkdir()
+            (root/'scripts/kanban-analytics.py').write_text(
+                'from contextlib import contextmanager\n'
+                '@contextmanager\n'
+                'def readonly(path):\n'
+                '    yield str(path)\n'
+                'def maintenance_outcomes(db,since,until):\n'
+                '    return {"fixture_db":db,"since":since,"until":until}\n')
+            first=supervisor.outcome_report(root,['test'],100000)
+            self.assertEqual(100000,first['boards']['test']['until'])
+            state=root/'state/fleet/report.json'
+            state.parent.mkdir(parents=True)
+            state.write_text(json.dumps({'outcomes':first}))
+            (root/'scripts/kanban-analytics.py').unlink()
+            self.assertEqual(first,supervisor.outcome_report(root,['test'],100001))
+            self.assertEqual('unavailable',supervisor.outcome_report(root,['test'],186400)['status'])
+
+
 class RecoveryWorkspaceTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='recovery-workspace-')

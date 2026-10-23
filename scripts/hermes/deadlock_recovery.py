@@ -90,7 +90,7 @@ def observe(root, board, now=None):
                 continue
             if db.execute("SELECT 1 FROM task_runs WHERE task_id=? AND (status IN ('running','pending','claimed','starting') OR (ended_at IS NULL AND outcome IS NULL)) LIMIT 1",(tid,)).fetchone():
                 continue
-            run = db.execute('SELECT status,outcome,metadata FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1',(tid,)).fetchone()
+            run = db.execute('SELECT id,status,outcome,metadata FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1',(tid,)).fetchone()
             parents = [dict(r) for r in db.execute('SELECT p.id,p.status,p.assignee,p.body FROM task_links l JOIN tasks p ON p.id=l.parent_id WHERE l.child_id=? ORDER BY p.id',(tid,))]
             hold = holds.get(tid)
             failure = bool(run and {run['status'],run['outcome']} & {'failed','crashed','timed_out','spawn_failed','gave_up'})
@@ -117,7 +117,11 @@ def observe(root, board, now=None):
                 parent_results.append([parent['id'],{k:meta[k] for k in ('verdict','revision','checks','requested_changes','missing_inputs') if k in meta}])
             metadata=json.loads(run['metadata'] or '{}') if run else {}
             semantic_result={k:metadata[k] for k in ('verdict','revision','checks','requested_changes','missing_inputs','independence') if k in metadata}
+            success = db.execute("SELECT id FROM task_runs WHERE task_id=? AND ended_at IS NOT NULL "
+                                 "AND outcome IN ('completed','review_requested','changes_requested') ORDER BY id DESC LIMIT 1",
+                                 (tid,)).fetchone()
             state.update(parents=parents, downstream=downstream,
+                         execution_epoch=success['id'] if success else None,
                          parent_results=parent_results,
                          workspace_identity=recovery.workspace_identity(task['workspace_path'],{}),
                          # Free-form failure prose (PID, elapsed, log/claim
@@ -261,6 +265,67 @@ def registered_workspace(info):
         return None
 
 
+def incident_key(state, board, issue):
+    """A detector's classification is evidence, not a second task owner."""
+    if issue['kind'] == 'feature-delivery-gap':
+        return issue['key']
+    prefix = board + ':' + issue['task_id'] + ':'
+    matches = [key for key in state if key.startswith(prefix) and not key.endswith(':feature-delivery-gap')]
+    return sorted(matches)[0] if matches else issue['key']
+
+
+def execution_progress(root, board, original, baseline):
+    path = root/'kanban/boards'/board/'kanban.db'
+    if not path.is_file():
+        return {'state': 'unknown', 'run_id': baseline}
+    with closing(sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True,timeout=2)) as db:
+        db.row_factory=sqlite3.Row;db.execute('PRAGMA query_only=ON')
+        run=db.execute('SELECT id,status,outcome,ended_at FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1',
+                       (original,)).fetchone()
+        proof=db.execute("SELECT id FROM task_runs WHERE task_id=? AND id>? AND ended_at IS NOT NULL "
+                         "AND outcome IN ('completed','review_requested','changes_requested') ORDER BY id DESC LIMIT 1",
+                         (original,baseline)).fetchone()
+        progressed=bool(proof)
+        return {'state': 'recovered' if progressed else 'awaiting_execution',
+                'run_id': run['id'] if run else 0,
+                'successful_run_id':proof['id'] if proof else None}
+
+
+def attach_observations(root, board, detector, lines):
+    """Attach known detector signals to existing incidents without another card.
+
+    The existing intake lock and journal own this record. Unknown board-wide
+    findings retain the supervisor's existing routing and native budgets.
+    """
+    path=root/'runtime/deadlock-intake/state.json'
+    if not path.exists():
+        return lines
+    journal,lock=intake_journal(root,False)
+    try:
+        state=json.loads(path.read_text());remaining=[];changed=False
+        for line in lines:
+            if not re.match(r'^(WORKER_FAILED_BLOCKED|TRIAGE_EXHAUSTED|DEAD_WORKER)\b',line):
+                remaining.append(line);continue
+            matches=[entry for key,entry in state.items() if not key.startswith('_')
+                     and key.startswith(board+':') and isinstance(entry,dict)
+                     and entry.get('execution',{}).get('state')=='awaiting_execution'
+                     and key.split(':')[1] in re.findall(r'\bt_[A-Za-z0-9_]+\b',line)]
+            if not matches:
+                remaining.append(line);continue
+            for entry in matches:
+                sources=entry.setdefault('detectors',[])
+                if detector not in sources:
+                    sources.append(detector);changed=True
+                evidence=entry.setdefault('detector_evidence',{})
+                if evidence.get(detector)!=line[:1200]:
+                    evidence[detector]=line[:1200];changed=True
+        if changed:
+            atomic_write(path,json.dumps(state,sort_keys=True)+'\n',mode=0o600)
+        return remaining
+    finally:
+        os.close(lock)
+
+
 def tick(root, *, dry_run=False, now=None, create=None):
     now = int(time.time()) if now is None else now
     root = Path(root).resolve()
@@ -272,6 +337,15 @@ def tick(root, *, dry_run=False, now=None, create=None):
         state = json.loads(path.read_text()) if path.exists() else {}
         if not isinstance(state,dict):
             raise ValueError('Invalid recovery state')
+        if len(state)>5000:
+            raise ValueError('Recovery incident inventory exceeds bound')
+        # Finishing a controller or merely releasing a hold is insufficient.
+        # Observe a later successful original execution before closing incident.
+        for key,entry in state.items():
+            if key.startswith('_') or not isinstance(entry,dict) or 'origin_run_id' not in entry:
+                continue
+            board,original=key.split(':')[:2]
+            entry['execution']=execution_progress(root,board,original,entry['origin_run_id'])
         actions = []
         for info in sorted((root/'kanban/boards').glob('*/board.json')):
             board = info.parent.name
@@ -286,7 +360,43 @@ def tick(root, *, dry_run=False, now=None, create=None):
             # an exhausted/owned technical issue cannot consume a feature turn.
             selected=[]
             for issue in observe(root,board,now):
-                entry = state.get(issue['key'],{})
+                key=incident_key(state,board,issue)
+                issue=dict(issue,key=key)
+                entry = state.get(key,{})
+                # Old releases may have separate classifications for one task.
+                # Preserve every record and protect every existing owner while
+                # commissioning only through the stable canonical entry.
+                prefix=board+':'+issue['task_id']+':'
+                aliases=[state[k] for k in state if k.startswith(prefix) and k!=key
+                         and not k.endswith(':feature-delivery-gap')]
+                alias_owners={tid for v in aliases for tid in (v.get('owner_task_id'),v.get('task_id')) if tid}
+                if any(previous_owner_active(root,board,tid,now) for tid in alias_owners if tid):
+                    continue
+                if aliases:
+                    entry={**entry,'legacy_owner_tasks':sorted(t for t in alias_owners if t)}
+                    versions={v:{**data} for v,data in entry.get('versions',{}).items()}
+                    for alias in aliases:
+                        for version,record in alias.get('versions',{}).items():
+                            old=versions.get(version)
+                            if old is None:
+                                versions[version]={**record}
+                            elif old.get('task_id') != record.get('task_id'):
+                                versions[version]={**old,'attempts':max(old['attempts'],record['attempts'])}
+                    entry['versions']=versions
+                    state[key]=entry
+                if entry.get('execution',{}).get('state')=='recovered':
+                    # A real later recurrence starts a new episode; retain the
+                    # old one and its attempts as history, never reset budgets.
+                    history=entry.get('prior_episodes',[])
+                    if len(history)>=64:
+                        raise ValueError('Recovery episode history exceeds bound; retain and reconcile it')
+                    entry={**entry,'prior_episodes':history+[{
+                        'origin_run_id':entry['origin_run_id'],'execution':entry['execution'],
+                        'owner_task_id':entry.get('owner_task_id')}],
+                        'origin_run_id':entry['execution']['run_id'],
+                        'execution':{'state':'awaiting_execution','run_id':entry['execution']['run_id']}}
+                    entry.pop('episode_audit_task_id',None)
+                    state[key]=entry
                 owner_id=entry.get('owner_task_id',entry.get('task_id'))
                 if previous_owner_active(root,board,owner_id,now,
                                          material_changed=issue['version'] not in entry.get('versions',{})):
@@ -304,6 +414,19 @@ def tick(root, *, dry_run=False, now=None, create=None):
                 if count > MAX_ATTEMPTS or (count and now-prior['last_at'] < BACKOFF[min(count-1,2)]):
                     continue
                 audit = count == MAX_ATTEMPTS
+                # A completed controller without original execution is still
+                # an open incident. Unchanged evidence gets one diagnosis,
+                # rather than another equivalent repair controller.
+                if entry.get('execution',{}).get('state')=='awaiting_execution' and owner_id:
+                    path_db=root/'kanban/boards'/board/'kanban.db'
+                    if path_db.exists():
+                        with closing(sqlite3.connect(path_db.as_uri()+'?mode=ro',uri=True,timeout=2)) as db:
+                            db.execute('PRAGMA query_only=ON')
+                            row=db.execute('SELECT status FROM tasks WHERE id=?',(owner_id,)).fetchone()
+                        if row and row[0] in {'done','archived'} and issue['version'] in versions:
+                            if entry.get('episode_audit_task_id'):
+                                continue
+                            audit=True
                 selected.append((issue, owner_id, owner, versions, prior, count, audit))
             last_class=state.get('_fairness',{}).get(board)
             selected.sort(key=lambda item: (
@@ -329,12 +452,21 @@ def tick(root, *, dry_run=False, now=None, create=None):
                               '--body',recovery_body(board,issue,audit))
                 prior.update(attempts=count+1,last_at=now,task_id=card['id'])
                 versions[issue['version']]=prior
-                state[issue['key']]={'task_id':card['id'],
+                progress=execution_progress(root,board,issue['task_id'],0)
+                previous=state.get(issue['key'],{})
+                state[issue['key']]={**previous,'task_id':card['id'],
                                      'owner_task_id':owner_id if owner or audit else card['id'],
-                                     'versions':versions}
+                                     'versions':versions,
+                                     'origin_run_id':previous.get('origin_run_id',progress['run_id']),
+                                     'execution':{'state':'awaiting_execution','run_id':progress['run_id']},
+                                     'detectors':sorted(set(previous.get('detectors',[]))|{'technical-recovery'})}
+                if audit:
+                    state[issue['key']]['episode_audit_task_id']=card['id']
                 state.setdefault('_fairness',{})[board]='feature' if issue['kind']=='feature-delivery-gap' else 'technical'
                 atomic_write(path,json.dumps(state,sort_keys=True)+'\n',mode=0o600)
                 break  # At most one new bounded worker per board per tick.
+        if not dry_run and state:
+            atomic_write(path,json.dumps(state,sort_keys=True)+'\n',mode=0o600)
         return actions
     finally:
         if lock is not None:

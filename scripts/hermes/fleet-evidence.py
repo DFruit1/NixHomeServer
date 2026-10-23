@@ -82,7 +82,7 @@ def output(root, board, task_id, name, version):
         guard.validate(metadata, profile=run['profile'])
         if metadata['verdict'] != 'accept' or not re.fullmatch(r'[a-f0-9]{40}|[a-f0-9]{64}', metadata['revision']):
             raise ValueError('Output needs acceptance of an exact source revision')
-        if 'body' in task.keys() and native_contract(task['body']):
+        if 'body' in task.keys() and native_contract(task['body'], db, task_id):
             acceptance(review_handoff(db, task_id), metadata, run['profile'])
         outputs = metadata.get('outputs')
         if not isinstance(outputs, list) or len(outputs) > 32:

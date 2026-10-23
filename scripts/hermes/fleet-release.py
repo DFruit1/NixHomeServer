@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import re
+import sqlite3
 import subprocess
 import sys
 import time
@@ -65,7 +66,11 @@ def install_files(root, pending, revision, *, source=None, context=None, preimag
     if manifest_path.exists():
         raise ValueError('This release already has a journal; check or roll it back before retry')
     records = []
-    for path, text in sorted(pending.items()):
+    def install_order(item):
+        path=item[0]
+        # Publish dependencies before native entrypoints can reference them.
+        return (path.name in {'kanban_db.py','kanban_db_dispatch.py','kanban_tools.py','kanban_tools_schemas.py'}, str(path))
+    for path, text in sorted(pending.items(), key=install_order):
         path = checked(root, path)
         relative = path.relative_to(root)
         if ('.env' in relative.parts or 'kanban' in relative.parts or 'cron' in relative.parts
@@ -167,6 +172,21 @@ def rollback_files(root, revision, *, dry_run=False):
             atomic_write(target, old.decode(), mode=mode)
     manifest['status'] = 'rolled-back'
     atomic_write(path, json.dumps(manifest, indent=2, sort_keys=True) + '\n', mode=0o600)
+
+
+def require_rollback_compatibility(root, manifest):
+    previous=manifest.get('previous_release') or {}
+    supported=[]
+    if previous.get('revision'):
+        old=json.loads(journal(root,previous['revision']).read_text())
+        supported=old.get('workflow_versions',[])
+    for path in sorted((root/'kanban/boards').glob('*/kanban.db')):
+        with sqlite3.connect(path.as_uri()+'?mode=ro',uri=True,timeout=2) as db:
+            db.execute('PRAGMA query_only=ON')
+            rows=db.execute("SELECT DISTINCT json_extract(payload,'$.workflow.version') FROM task_events "
+                            "WHERE kind='created' AND json_type(payload,'$.workflow') IS NOT NULL LIMIT 32").fetchall()
+            if any(type(row[0]) is not int or row[0] not in supported for row in rows):
+                raise ValueError('Rollback would remove a reader for existing workflow contracts; install a compatible reviewed release')
 
 
 def jobs(root, profile):
@@ -375,9 +395,9 @@ def restore_schedules(root, plan, *, checkpoint=lambda:None):
             item['restored']=owned(current_job(root,item));checkpoint()
 
 
-def source_changes(root, directory):
+def source_changes(root, directory, *, workers=False):
     """Upgrade transforms use their source helpers, never cached installed ones."""
-    names=('hermes_common','hermes_config')
+    names=('hermes_common','hermes_config') + (('worker_runtime_adapter','fleet_runtime_adapter') if workers else ())
     previous={name:sys.modules.get(name) for name in names}
     previous_path=sys.path[:]
     try:
@@ -389,7 +409,13 @@ def source_changes(root, directory):
             spec.loader.exec_module(module)
         spec=importlib.util.spec_from_file_location('fleet_taskforce_install',directory/'install-review-taskforce.py')
         installer=importlib.util.module_from_spec(spec);spec.loader.exec_module(installer)
-        return installer.changed_files(root)
+        pending = installer.changed_files(root)
+        if workers:
+            spec = importlib.util.spec_from_file_location('fleet_worker_install', directory/'install-worker-policy.py')
+            worker = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(worker)
+            pending = worker.pending_files(root, pending)
+        return pending
     finally:
         sys.path[:]=previous_path
         for name,module in previous.items():
@@ -397,9 +423,20 @@ def source_changes(root, directory):
             else:sys.modules[name]=module
 
 
-def pending_files(root, source, plan):
+def merge_owned(pending, owners, changes, owner, *, compose=False):
+    for path, value in changes.items():
+        previous = owners.get(path, [])
+        if path in pending and pending[path] != value and previous and previous != ['retained-legacy']:
+            if not compose or (path.name not in {'SOUL.md', 'config.yaml'}):
+                raise ValueError('Conflicting release file owners: ' + str(path))
+        pending[path] = value
+        owners[path] = sorted(set(previous) | {owner})
+
+
+def pending_files(root, source, plan, *, owners=None):
     directory = source / 'scripts/hermes'
     pending = {}
+    owners = {} if owners is None else owners
     current_path = root/'state/fleet/current.json'
     if current_path.exists():
         previous = json.loads(current_path.read_text())
@@ -408,12 +445,19 @@ def pending_files(root, source, plan):
                 raise ValueError('Reconcile installed release drift before replacing it')
             manifest=json.loads(journal(root,previous['revision']).read_text())
             pending.update({root/item['path']:(root/item['path']).read_text() for item in manifest['files']})
-    pending.update(source_changes(root,directory))
-    for name in ('fleet-release.py','fleet-evidence.py','fleet-supervisor.py','fleet-report.py',
+            owners.update({p:['retained-legacy'] for p in pending})
+    merge_owned(pending,owners,source_changes(root,directory,workers=True),'fleet-runtime')
+    # These helpers previously needed a separate interactive files-only update.
+    # They now share the release's preimage, readback and rollback transaction.
+    for name in ('deadlock_recovery.py', 'feature_flow.py', 'capability_recovery.py',
+                 'feature_contract.py', 'fleet_contract.py'):
+        merge_owned(pending,owners,{root/'scripts'/name:(directory/name).read_text()},'recovery')
+    for name in ('fleet-release.py','fleet-evidence.py','fleet-supervisor.py','fleet-report.py','kanban-analytics.py',
                  'fleet_workflow.py','idle-recovery-monitor.py','kanban-board-health.sh'):
-        pending[root/'scripts'/name] = (directory/name).read_text()
-    pending[root/'profiles/board-steward/scripts/fleet-report.py']=(directory/'fleet-report.py').read_text()
-    pending[root/'state/fleet/handlers.json'] = json.dumps(plan['handlers'], sort_keys=True, indent=2) + '\n'
+        merge_owned(pending,owners,{root/'scripts'/name:(directory/name).read_text()},'fleet-runtime')
+    merge_owned(pending,owners,{
+        root/'profiles/board-steward/scripts/fleet-report.py':(directory/'fleet-report.py').read_text(),
+        root/'state/fleet/handlers.json':json.dumps(plan['handlers'], sort_keys=True, indent=2) + '\n'},'fleet-runtime')
     return pending
 
 
@@ -497,6 +541,7 @@ def operate(args,root):
         manifest = json.loads(manifest_path.read_text())
         if args.action == 'rollback':
             require_authority(root,args,revision,manifest.get('source_revision'),Path(manifest.get('source') or ''))
+            require_rollback_compatibility(root,manifest)
             # Preflight file conflicts before modifying any schedules.
             rollback_files(root,revision,dry_run=True)
             if manifest.get('schedule'):
@@ -522,12 +567,14 @@ def operate(args,root):
     source = (source or HERE.parents[1]).resolve()
     source_id = source_revision(source, clean=args.action=='apply')
     plan = schedule_plan(root)
-    pending = pending_files(root,source,plan)
+    owners = {}
+    pending = pending_files(root,source,plan,owners=owners)
     dependencies=runtime_dependencies(root)
     # Dependencies are retained rather than overwritten; omit any file whose
     # new bytes this package itself owns from the baseline dependency set.
     dependencies={p:h for p,h in dependencies.items() if root/p not in pending}
-    content=dict(source_revision=source_id,dependencies=dependencies,
+    ownership={str(p.relative_to(root)):owner for p,owner in sorted(owners.items())}
+    content=dict(source_revision=source_id,dependencies=dependencies,ownership=ownership,
                   files={str(p.relative_to(root)):sha(t.encode()) for p,t in sorted(pending.items())})
     content_id=sha(json.dumps(content,sort_keys=True).encode())
     preimages={str(p.relative_to(root)):{'sha256':sha(value) if value is not None else None,
@@ -540,7 +587,7 @@ def operate(args,root):
         if path.suffix=='.py':compile(text,str(path),'exec')
     if args.action=='plan':
         print(json.dumps(dict(revision=revision,source_revision=source_id,files=[str(p.relative_to(root)) for p in pending],
-                              schedules=plan),indent=2,sort_keys=True))
+                              file_owners=ownership,schedules=plan),indent=2,sort_keys=True))
         return 0
     if current and current.get('status')=='active':
         installed=json.loads(journal(root,current['revision']).read_text())
@@ -565,7 +612,8 @@ def operate(args,root):
         if item and owned(current_job(root,item))!=item['before']:
             raise ValueError('Schedule input changed during preflight')
     context=dict(source_revision=source_id,dependencies=dependencies,authority=authority,
-                 previous_release=current,schedule=plan,content_id=content_id)
+                 previous_release=current,schedule=plan,content_id=content_id,file_owners=ownership,
+                 workflow_versions=[1])
     manifest=install_files(root,pending,revision,source=source,context=context,preimages=preimages)
     manifest_path=journal(root,revision)
     atomic_write(manifest_path,json.dumps(manifest,indent=2,sort_keys=True)+'\n',mode=0o600)
@@ -584,6 +632,6 @@ def operate(args,root):
 if __name__=='__main__':
     try:
         sys.exit(main())
-    except (ValueError,OSError,subprocess.SubprocessError) as exc:
+    except (ValueError,OSError,sqlite3.Error,subprocess.SubprocessError) as exc:
         print('Fleet release stopped: '+str(exc),file=sys.stderr)
         sys.exit(2)

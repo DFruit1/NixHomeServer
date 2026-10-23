@@ -66,6 +66,26 @@ class ReleaseTest(unittest.TestCase):
         self.assertEqual(0o700, self.file.stat().st_mode & 0o777)
         self.assertFalse((self.root / 'scripts/new.py').exists())
 
+    def test_conflicting_file_owners_refuse_before_writes(self):
+        pending={};owners={}
+        release.merge_owned(pending,owners,{self.file:'one'},'first')
+        release.merge_owned(pending,owners,{self.file:'one'},'shared')
+        with self.assertRaises(ValueError):
+            release.merge_owned(pending,owners,{self.file:'different'},'other')
+        self.assertEqual('old = 1\n',self.file.read_text())
+
+    def test_rollback_cannot_drop_existing_contract_reader(self):
+        import sqlite3
+        path=self.root/'kanban/boards/test/kanban.db';path.parent.mkdir(parents=True)
+        with sqlite3.connect(path) as db:
+            db.execute('CREATE TABLE task_events(kind TEXT,payload TEXT)')
+            db.execute('INSERT INTO task_events VALUES(?,?)',('created',json.dumps({'workflow':{'version':1}})))
+        with self.assertRaisesRegex(ValueError,'reader'):
+            release.require_rollback_compatibility(self.root,{})
+        manifest=release.journal(self.root,'a'*40);manifest.parent.mkdir(parents=True)
+        manifest.write_text(json.dumps({'workflow_versions':[1]}))
+        release.require_rollback_compatibility(self.root,{'previous_release':{'revision':'a'*40}})
+
     def test_upgrades_use_source_helpers_and_restore_installed_imports(self):
         directory=self.root/'source';directory.mkdir()
         (directory/'hermes_common.py').write_text('version="new source"\n')
@@ -215,6 +235,22 @@ class ReleaseTest(unittest.TestCase):
                 release.install_files(self.root,self.pending,'a'*64,context=context)
         manifest=json.loads(release.journal(self.root,'a'*64).read_text())
         for key,value in context.items():self.assertEqual(value,manifest[key])
+
+    def test_source_worker_transforms_use_selected_source_adapters(self):
+        source=self.root/'source';source.mkdir()
+        for name in ('hermes_common','hermes_config','worker_runtime_adapter','fleet_runtime_adapter'):
+            (source/(name+'.py')).write_text('ORIGIN = "source"\n')
+        (source/'install-review-taskforce.py').write_text(
+            'def changed_files(root):\n    return {root/"taskforce":"kept"}\n')
+        (source/'install-worker-policy.py').write_text(
+            'import worker_runtime_adapter, fleet_runtime_adapter\n'
+            'def pending_files(root,pending):\n'
+            '    return {**pending,root/"worker":worker_runtime_adapter.ORIGIN+fleet_runtime_adapter.ORIGIN}\n')
+        previous_path=sys.path[:]
+        result=release.source_changes(self.root,source,workers=True)
+        self.assertEqual('kept',result[self.root/'taskforce'])
+        self.assertEqual('sourcesource',result[self.root/'worker'])
+        self.assertEqual(previous_path,sys.path)
 
     def test_native_labels_or_delegated_children_cannot_acquire_release_authority(self):
         args=SimpleNamespace(action='apply',review_card=None)

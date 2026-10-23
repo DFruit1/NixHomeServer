@@ -16,6 +16,7 @@ import yaml
 from hermes_common import backup_file, remove_block
 from hermes_config import document
 from worker_runtime_adapter import adapt
+from fleet_runtime_adapter import adapt as adapt_workflow
 
 SOURCE = Path(__file__).resolve().parent
 WORKERS = ('head-coordinator', 'feature-reviewer', 'project-auditor',
@@ -69,29 +70,42 @@ def instruction(text):
     return first + content + last
 
 
-def install(root, check=False):
-    pending = {}
+def pending_files(root, pending=None):
+    pending = dict(pending or {})
+    def current(path):
+        return pending.get(path, path.read_text() if path.exists() else '')
     for profile in WORKERS:
         path = root / 'profiles' / profile / 'config.yaml'
         if path.exists():
-            pending[path] = derived_titles(path.read_text())
+            pending[path] = derived_titles(current(path))
     for relative in BUDGETED_SOULS:
         path = root / relative
         if path.exists():
-            pending[path] = instruction(path.read_text())
+            pending[path] = instruction(current(path))
     default = root / 'SOUL.md'
     if default.exists():
-        pending[default] = remove_block(default.read_text(), START, END, 'worker instruction')
+        pending[default] = remove_block(current(default), START, END, 'worker instruction')
     pending[root / 'scripts/hermes-worker-budgets.md'] = (SOURCE / 'instructions/worker-budgets.md').read_text()
     native = root / 'hermes-agent'
     pending[native / 'hermes_cli/nixhomeserver_worker_policy.py'] = (SOURCE / 'worker-policy.py').read_text()
     pending[native / 'hermes_cli/nixhomeserver_create_board.py'] = (SOURCE / 'create-board-policy.py').read_text()
+    for name in ('fleet_contract', 'fleet_workflow', 'feature_contract', 'execution_preflight'):
+        pending[native / ('hermes_cli/nixhomeserver_' + name + '.py')] = (SOURCE / (name + '.py')).read_text()
+        pending[root / ('scripts/' + name + '.py')] = (SOURCE / (name + '.py')).read_text()
     for relative, name in (('hermes_cli/kanban_db.py', 'kanban_db.py'),
                            ('hermes_cli/kanban_db_dispatch.py', 'kanban_db_dispatch.py'),
                            ('tools/kanban_tools.py', 'tools/kanban_tools.py'),
                            ('tools/kanban_tools_schemas.py', 'tools/kanban_tools_schemas.py')):
         path = native / relative
-        pending[path] = adapt(name, path.read_text())
+        text = adapt(name, current(path))
+        pending[path] = adapt_workflow(name, text) if name != 'kanban_db_dispatch.py' else text
+    return pending
+
+
+def install(root, check=False):
+    if not check and (root / 'state/fleet/current.json').exists():
+        raise ValueError('Fleet-managed worker installation: use fleet-release.py apply')
+    pending = pending_files(root)
     changes = []
     for path, text in pending.items():
         if path.is_symlink():

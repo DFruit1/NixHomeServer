@@ -7,7 +7,15 @@ WORKFLOW = 'native-review-v1'
 TERMINAL = {'done', 'archived'}
 
 
-def native_contract(body):
+def native_contract(body, db=None, task_id=None):
+    if db is not None and task_id is not None:
+        if __package__ == 'hermes_cli':
+            from .nixhomeserver_fleet_contract import load
+        else:
+            from fleet_contract import load
+        workflow = load(db, task_id)
+        if workflow is not None:
+            return workflow.get('review') == WORKFLOW
     return bool(re.search(r'^Workflow: native-review-v1\s*$', body or '', re.M))
 
 
@@ -84,7 +92,7 @@ def review_handoff(db, task_id):
 
 
 def require_native_acceptance(db, task, metadata, native):
-    if not native_contract(task['body']):
+    if not native_contract(task['body'], db, task['id']):
         return
     if not native or not isinstance(metadata, dict) or metadata.get('verdict') != 'accept':
         raise ValueError('This implementation completes only through independent native acceptance;'

@@ -22,20 +22,6 @@ BINDING = re.compile(r'^Feature tracker:\s*([a-zA-Z0-9_-]+):(t_[a-zA-Z0-9_]+)\s*
 TASK_ID = re.compile(r'\bt_[a-zA-Z0-9_]+\b')
 
 
-def _metadata(db, tid):
-    row = db.execute('SELECT metadata,status,outcome,profile FROM task_runs WHERE task_id=? '
-                     'ORDER BY id DESC LIMIT 1', (tid,)).fetchone()
-    if not row:
-        return {}, False
-    try:
-        value = json.loads(row['metadata'] or '{}')
-    except (ValueError, TypeError):
-        return {}, False
-    assignee = db.execute('SELECT assignee FROM tasks WHERE id=?', (tid,)).fetchone()
-    return (value if isinstance(value, dict) else {}), (row['status'] == 'done' and row['outcome'] == 'completed'
-                                                        and assignee and row['profile'] == assignee[0])
-
-
 @lru_cache(maxsize=1)
 def _verifier():
     spec = importlib.util.spec_from_file_location('feature_verdict_contract', Path(__file__).with_name('review-verdict-guard.py'))
@@ -44,62 +30,7 @@ def _verifier():
     return module
 
 
-def _inventory(db, board):
-    tasks = [dict(r) for r in db.execute('SELECT * FROM tasks LIMIT 5001')]
-    if len(tasks) > 5000:
-        raise ValueError('Feature intake exceeds bounded task inventory')
-    by_id = {t['id']: t for t in tasks}
-    trackers = [t for t in tasks if t['status'] not in {'done', 'archived'} and TRACKER.match(t['title'])]
-    if len(trackers) > 100:
-        raise ValueError('Feature intake exceeds bounded tracker inventory')
-    # Exact body/comment bindings are membership, unlike quoted context IDs.
-    bindings = {}
-    comments = db.execute("SELECT task_id,body FROM task_comments WHERE body LIKE '%Feature tracker:%' LIMIT 5001").fetchall()
-    if len(comments) > 5000:
-        raise ValueError('Feature intake exceeds bounded membership records')
-    for tid, body in [(t['id'], t['body'] or '') for t in tasks] + [(r['task_id'], r['body']) for r in comments]:
-        for marker_board, tracker in BINDING.findall(body):
-            if marker_board == board and tracker in by_id and TRACKER.match(by_id[tracker]['title']) and tid != tracker:
-                bindings.setdefault(tracker, set()).add(tid)
-    return by_id, trackers, bindings
-
-
-def _inputs(db, tracker, members):
-    inputs = db.execute("SELECT id,author,body,created_at FROM task_comments WHERE task_id=? AND "
-                        "(author IN ('desktop','user','owner','interactive-operator','authenticated-owner','default') "
-                        "OR (author='head-coordinator' AND body LIKE '%Feature input:%')) ORDER BY id LIMIT 1001",
-                        (tracker['id'],)).fetchall()
-    if len(inputs) > 1000:
-        raise ValueError('Feature material-input inventory exceeds bound')
-    ids = [tracker['id']] + [m['id'] for m in members if m['created_by'] != 'deadlock-recovery-monitor']
-    receipts = db.execute('SELECT id,task_id,filename,size,created_at FROM task_attachments WHERE task_id IN ('+
-                          ','.join('?' for _ in ids)+') ORDER BY id LIMIT 1001', ids).fetchall()
-    if len(receipts) > 1000:
-        raise ValueError('Feature receipt inventory exceeds bound')
-    return inputs, receipts
-
-
-def _version(db, tracker, members):
-    results = []
-    assessments = set()
-    for member in members:
-        meta, completed = _metadata(db, member['id'])
-        assessment = meta.get('feature_assessment', {})
-        if (completed and member['assignee'] == 'project-auditor' and isinstance(assessment, dict)
-                and assessment.get('tracker') == tracker['id']
-                and assessment.get('scope_sha256') == digest({'title': tracker['title'], 'body': tracker['body']})):
-            # Identical repeated recovery assessments are not new evidence.
-            # A genuinely changed scoped mechanism/input assessment is.
-            semantic = {k: assessment[k] for k in ('scope_sha256', 'outcome', 'missing_inputs', 'supplier', 'wake_condition') if k in assessment}
-            assessments.add(json.dumps(semantic, sort_keys=True))
-        if completed and member['assignee'] != 'head-coordinator' and member['created_by'] != 'deadlock-recovery-monitor':
-            semantic = {k: meta[k] for k in ('revision', 'verdict', 'checks', 'missing_inputs') if k in meta}
-            if semantic:
-                results.append([member['id'], semantic])
-    inputs, receipts = _inputs(db, tracker, members)
-    return digest({'tracker': tracker['id'], 'title': tracker['title'], 'body': tracker['body'], 'results': results,
-                   'assessments': sorted(assessments),
-                   'material_inputs': [list(r) for r in inputs], 'receipts': [list(r) for r in receipts]})
+from feature_contract import _metadata, _inventory, _inputs, _version
 
 
 def inspect_feature(db, board, tid):

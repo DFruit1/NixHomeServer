@@ -8,6 +8,7 @@ import argparse
 import fcntl
 import hashlib
 import json
+import importlib.util
 import os
 from pathlib import Path
 import re
@@ -32,6 +33,27 @@ HANDLERS = (
     ('idle-state', 900, 30, 'python', 'idle-recovery-monitor.py', ()),
 )
 MAX_FAILURES = 3
+
+
+def outcome_report(root, boards, now):
+    """Refresh the existing analytics lens daily, before doing its board reads."""
+    previous=root/'state/fleet/report.json'
+    old=json.loads(previous.read_text()).get('outcomes') if previous.is_file() else None
+    if isinstance(old,dict) and old.get('status')=='observed' and 0<=now-old.get('generated_at',0)<86400:
+        return old
+    source=root/'scripts/kanban-analytics.py'
+    if not source.is_file():
+        return {'generated_at':now,'status':'unavailable','reason':'analytics helper not installed'}
+    spec=importlib.util.spec_from_file_location('fleet_outcome_analytics',source)
+    analytics=importlib.util.module_from_spec(spec);spec.loader.exec_module(analytics)
+    result={'generated_at':now,'status':'observed','boards':{}}
+    for board in boards:
+        try:
+            with analytics.readonly(root/'kanban/boards'/board/'kanban.db') as db:
+                result['boards'][board]=analytics.maintenance_outcomes(db,now-86400,now)
+        except (OSError,ValueError,sqlite3.Error):
+            result['boards'][board]={'status':'unavailable'}
+    return result
 
 
 def run_handler(command, *, root, board, timeout):
@@ -91,6 +113,10 @@ def wake_coordinator(root, board, detector, output):
                              r'WORKER_FAILED_BLOCKED|OWNER_COMMENT_UNACTED|CAPABILITY_OWNER_INPUT|'
                              r'CLASSIFICATION_AUDIT|UNMERGED_ACCEPTED_WORK|INSTRUCTION_DRIFT|'
                              r'SCRIPT_DRIFT|FLEET_RELEASE_DRIFT|MIRROR_STALE)\b', line)]
+        if not lines:
+            return
+        from deadlock_recovery import attach_observations
+        lines = attach_observations(root, board, detector, lines)
         if not lines:
             return
         evidence = '\n'.join(sorted(lines))
@@ -210,6 +236,7 @@ def tick(root, *, now=None, runner=run_handler, dry_run=False):
                     failed |= bool(handlers[key].get('wake_pending'))
                     atomic_write(path,json.dumps(state,sort_keys=True,indent=2)+'\n',mode=0o600)
         report = dict(schema_version=1, generated_at=now, boards=boards, handlers=handlers,
+                      outcomes=outcome_report(root,boards,now),
                       note='Generated local report; execution evidence and review acceptance remain separate.')
         atomic_write(directory / 'report.json', json.dumps(report, sort_keys=True, indent=2) + '\n', mode=0o600)
         return int(failed)

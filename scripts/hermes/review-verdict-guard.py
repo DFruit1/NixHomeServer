@@ -19,6 +19,9 @@ FEATURE = re.compile(r'^Feature tracker:\s*([A-Za-z0-9_-]+):(t_[A-Za-z0-9_]+)\s*
 def _feature_contract(db, task):
     if not task:
         return ''
+    workflow = load_contract(db, task['id'])
+    if workflow is not None:
+        return render_contract(task['body'], workflow)
     comments = db.execute("SELECT body FROM task_comments WHERE task_id=? AND "
                           "(body LIKE '%Feature tracker:%' OR body LIKE '%Feature handoff:%' OR body LIKE '%Feature role:%') "
                           'ORDER BY id LIMIT 101', (task['id'],)).fetchall()
@@ -47,6 +50,9 @@ def guard_feature_routing(payload, root):
     """
     args = payload.get('tool_input') or {}
     body = args.get('body') or ''
+    if payload['tool_name'] == 'kanban_create' and args.get('workflow') is not None:
+        body = render_contract(body, args['workflow'])
+        args = {**args, 'body': body}
     if (payload['tool_name'] == 'kanban_create' and native_contract(body)
             and args.get('assignee') in {'feature-reviewer', 'project-auditor'}):
         raise ValueError('Workflow: native-review-v1 belongs to a same-card implementation;'
@@ -119,6 +125,7 @@ def guard_feature_routing(payload, root):
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fleet_workflow import native_contract, require_native_acceptance, validate_handoff_metadata
+from fleet_contract import load as load_contract, render as render_contract, review_metadata, completion_metadata
 
 
 def verification(task, db=None):
@@ -394,8 +401,8 @@ def guard_request_review(payload, root):
         task = db.execute('SELECT body FROM tasks WHERE id=?', (task_id,)).fetchone()
         if task is None:
             raise ValueError('Unknown task; do not infer review handoff scope')
-        if native_contract(task['body']):
-            validate_handoff_metadata(args.get('metadata'))
+        if native_contract(task['body'], db, task_id):
+            validate_handoff_metadata(review_metadata(db, task_id, args.get('metadata')))
     return {}
 
 
@@ -414,7 +421,7 @@ def guard_complete(payload, root):
         task = db.execute('SELECT * FROM tasks WHERE id=?', (task_id,)).fetchone()
         if task is None:
             raise ValueError('Unknown task; do not infer review acceptance')
-        metadata = args.get('metadata')
+        metadata = completion_metadata(db, task_id, args.get('metadata'), args.get('delivery'))
         native = native_review(db, task)
         require_native_acceptance(db, task, metadata, native)
         if verification(task) or native:

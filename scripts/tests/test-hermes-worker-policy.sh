@@ -452,8 +452,11 @@ class InstallerTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='hermes-worker-policy-') as directory, contextlib.redirect_stdout(io.StringIO()):
             root=Path(directory)
             native=root/'hermes-agent/hermes_cli'; native.mkdir(parents=True)
-            for name,text in self.native_fixtures().items():(native/name).write_text(text)
+            runtime = Path(os.environ['HERMES_FIXTURE_NATIVE_PYTHON']).parents[2]
+            for name in self.native_fixtures():
+                (native/name).write_text((runtime/'hermes_cli'/name).read_text())
             for name,text in self.tool_fixtures().items():
+                text = (runtime/name).read_text()
                 path=root/'hermes-agent'/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text(text)
             config=root/'profiles/local-implementer/config.yaml';config.parent.mkdir(parents=True)
             config.write_text('model: {provider: custom, default: local}\n')

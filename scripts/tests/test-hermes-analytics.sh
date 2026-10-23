@@ -134,6 +134,24 @@ class AnalyticsTest(unittest.TestCase):
         return module, module.collect(self.root, NOW - days * DAY, NOW,
                                       only_board='fixture')
 
+    def test_maintenance_outcomes_distinguish_delivery_effort_and_open_requests(self):
+        module=self.filled_module()
+        with sqlite3.connect(self.board/'kanban.db') as db:
+            db.execute("UPDATE tasks SET tenant='technical-recovery' WHERE id='t_a'")
+            db.execute("UPDATE tasks SET title='[FEATURE TRACKER] unfinished' WHERE id='t_c'")
+            receipt=json.dumps({'feature_delivery':{'tracker':'t_c','state':'delivered_scope',
+                               'evidence_version':'scope-version','revision':'a'*40,'scope':'slice'}})
+            for _ in range(2):
+                db.execute('INSERT INTO task_runs(task_id,profile,status,outcome,metadata,started_at,ended_at) '
+                           'VALUES(?,?,?,?,?,?,?)',('t_a','head-coordinator','done','completed',receipt,NOW-200,NOW-100))
+            metrics=module.maintenance_outcomes(db,NOW-5*DAY,NOW)
+        self.assertEqual(1,metrics['recorded_scope_deliveries'])
+        self.assertEqual(1,metrics['unfinished_feature_trackers'])
+        self.assertEqual(1,metrics['repeat_blocked_tasks'])
+        self.assertEqual(2,metrics['maintenance_completed_runs'])
+        self.assertEqual(200,metrics['maintenance_elapsed_seconds'])
+        self.assertIn('Billing unknown',metrics['note'])
+
     def test_report_metrics(self):
         module, data = self.collect(7)
         board = data['boards']['fixture']

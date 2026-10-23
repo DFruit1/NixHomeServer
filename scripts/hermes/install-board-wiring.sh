@@ -64,6 +64,10 @@ DISPATCH_EXCLUDED_PROFILES="${DISPATCH_EXCLUDED_PROFILES:-default principal-cons
 
 check_only=false
 [[ "${1:-}" == "--check" ]] && check_only=true
+if [[ "$check_only" == false && -e "$HERMES_ROOT/state/fleet/current.json" ]]; then
+  echo 'Fleet-managed installation: use fleet-release.py for maintenance wiring; legacy bootstrap cannot recreate migrated jobs.' >&2
+  exit 2
+fi
 
 drift=0
 note() { printf '%s\n' "$*"; }

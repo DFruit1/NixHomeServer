@@ -18,6 +18,11 @@ The full handoff/output contract is maintained in
 as `~/.hermes/scripts/hermes-fleet-workflow.md`. Existing deployment review,
 decision, exact source, guarded test/switch and rollback rules remain unchanged.
 
+New tasks pass the structured `workflow` input to native create; the readable
+marker is generated from the retained creation contract. See the full handoff
+reference for phase-specific requirements and transactional delivery completion.
+Body/comments remain authoritative only for legacy cards.
+
 ## One release command
 
 Run from a clean, committed checkout after its owning tests, full repository
@@ -155,3 +160,32 @@ Focused regressions are `test-hermes-fleet-{workflow,evidence,supervisor,release
 The native integration script `scripts/tests/hermes-fleet-native.py` exercises
 actual same-card handoff, reviewer rejection, implementer rework and acceptance
 against an installed Hermes checkout using a task-local scratch home.
+
+## Contract adoption and maintenance outcomes
+
+The release composes worker/structured-contract and recovery helper updates,
+declares each file's owner and rejects inconsistent ownership before writes.
+The standalone worker installer and legacy board-wiring bootstrap refuse writes
+on fleet-managed installations. Legacy taskforce/recovery cron installation also
+refuses migrated cadence. Their supported read-only or narrowly scoped native
+maintenance modes remain available; they cannot resurrect paused monitor jobs.
+Native dependency modules are written before entrypoints that reference them.
+
+Rollback checks retained workflow versions. Once structured contracts exist,
+a downgrade that removes their reader is refused before any file or schedule
+changes. Install a compatible reviewed release instead; historical contracts
+are never erased to make a downgrade pass.
+
+Run the installed lifecycle regression through
+`scripts/tests/test-hermes-fleet-native.sh`. It confines native tool/hook,
+dispatch, rework, delivery and interruption tests through the maintained fixture
+runner and installs candidate files into a private native overlay. No production
+board or model process is used.
+
+The generated daily report includes existing analytics outcome measurements,
+refreshed at most daily: recorded scoped deliveries, unfinished feature trackers,
+repeated blocking and summed maintenance worker elapsed time. The window end is
+shown. These are measured workflow facts, not live acceptance or money saved.
+Billing remains unknown without matched usage evidence. Recurring external
+passes compare these results and report their own elapsed time using existing
+receipts, rather than treating repair counts as productivity.

@@ -92,6 +92,19 @@ def reason(db, task_id, assignee=None):
                                 task['max_runtime_seconds'], task['max_retries'])
     if problem:
         return problem
+    try:
+        if __package__ == 'hermes_cli':
+            from .nixhomeserver_fleet_contract import load as task_contract
+        else:
+            from fleet_contract import load as task_contract
+        if task_contract(db, task_id) is not None:
+            from hermes_cli.kanban_db_connect import _main_db_file
+            from hermes_cli.nixhomeserver_execution_preflight import reason as execution_reason
+            problem = execution_reason(db, task_id, Path(_main_db_file(db)).parents[3], assignee or task['assignee'])
+            if problem:
+                return problem
+    except (ImportError, OSError, ValueError, TypeError, sqlite3.Error, subprocess.TimeoutExpired):
+        return 'Worker policy: structured execution prerequisites unavailable; repair the installed contract/runtime. Input supplier: agent.'
     columns = {r[1] for r in db.execute('PRAGMA table_info(tasks)')}
     if {'skills','workspace_path'} <= columns:
         row = db.execute('SELECT skills,workspace_path FROM tasks WHERE id=?',(task_id,)).fetchone()
