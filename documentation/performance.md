@@ -195,9 +195,11 @@ Search indexes `documents(source_id, id)` for batched source paging.
 
 ## Validation
 
-Run `scripts/validate-repo.sh --full` for repository evaluation, derivation checks,
-the shell regression suite and Homepage end-to-end checks. It does not activate
-the server. Application tests cover pagination/search races, durable links,
+Default to local tests for the affected application and behavior. Only when the
+user explicitly requests full validation, run `scripts/validate-repo.sh --full`
+for repository evaluation, derivation checks, the shell regression suite and
+Homepage end-to-end checks. It does not activate the server.
+Application tests cover pagination/search races, durable links,
 literal directory ranges, unchanged rescans, attachment ordering/triage and
 SQLite worker responsiveness, admission, rollback and shutdown.
 

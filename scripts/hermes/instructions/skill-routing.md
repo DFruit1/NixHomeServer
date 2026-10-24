@@ -32,6 +32,11 @@ existing inspection skill and remains read-only.
 
 Project instructions and role permissions govern every recipe. For generic
 bundled skills, use project commands and meaningful behavioral checks; avoid
-tests for reversible low-impact edits or tests that merely mirror code. Respect
-confidentiality before web calls or delegation. No skill grants publication,
-deployment, extra tools, automatic subagents or permission to widen scope.
+tests for reversible low-impact edits or tests that merely mirror code.
+Default to limited local checks: generic skill checklists do not authorize full
+suites, repository-wide runners (even lean), workspace/all-app tests, broad
+builds, full flake checks, end-to-end/VM suites or remote validation. Those need
+an explicit user request for that scope. Report coverage limits and retain CI
+and integral safety checks of explicitly requested deploy/release operations.
+Respect confidentiality before web calls or delegation. No skill grants
+publication, deployment, extra tools, automatic subagents or permission to widen scope.

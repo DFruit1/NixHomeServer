@@ -44,6 +44,13 @@ This skill is loaded automatically by the review dispatcher. Start with `kanban_
 3. Choose exactly one verdict: approve, request changes, or escalate.
 4. Record concrete evidence in the terminal Kanban transition.
 
+Verification defaults to limited local checks of changed files and behavior.
+Run full suites, repository-wide runners (even lean), workspace/all-app tests,
+full flake checks, broad builds, end-to-end/VM suites or remote validation only
+when the user explicitly requests that scope. Review lenses and older blanket
+gate criteria do not authorize broader runs. Report coverage limits; preserve
+CI and integral checks of explicitly requested deploy/release operations.
+
 ## Quick Reference
 
 | Verdict | When | Final action |

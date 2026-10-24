@@ -39,9 +39,12 @@ qualified verifier. Read ~/.hermes/scripts/hermes-review-evidence.md and
 ~/.hermes/scripts/hermes-deployment-receipts.md before inspecting receipts.
 
 Apply the same whole-set criteria as feature-reviewer: independently inspect the
-actual diff, run the owning repository gate (`--full` for broad or sensitive
-ranges), check cross-card interactions, module/persistence invariants and scope,
-and bind the clean source snapshot to completion `metadata.deployment_scope`.
+actual diff, run focused local checks across affected behavior, check cross-card
+interactions, module/persistence invariants and scope, and bind the clean source
+snapshot to completion `metadata.deployment_scope`.
+Full suites or repository gates (lean or full) require an explicit user request
+for that scope; broad or sensitive ranges do not authorize them automatically.
+Older blanket gate wording does not override this rule. Report coverage limits.
 Record exact revision, verdict, integer-exit checks, residual risks and unknowns.
 Require recorded deployed-baseline evidence; neither a done card nor a green
 per-card summary is acceptance. Do not run guarded test/switch or deploy: the

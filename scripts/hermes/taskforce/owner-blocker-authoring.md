@@ -7,6 +7,15 @@ reserved refusals remain binding; use authorized helpers/installers, not evasion
 See hermes-instructions.md for authority and propagation. AGENTS.md supplies
 project invariants; memory grants no permissions or mandatory workflows.
 
+Default to limited local tests and verification of changed files and behavior.
+Full suites, repository-wide runners (even lean), workspace/all-app tests, full
+flake checks, broad builds, end-to-end/VM suites and remote validation require
+an explicit user request for that scope. Generic fix/test/review requests, broad
+or sensitive changes and focused failures do not authorize full runs. This
+supersedes older blanket gate requirements; focused checks are the ordinary
+commit/review gate. Report coverage limits. Preserve CI and integral safety
+checks of explicitly requested deploy/release operations; never bypass them.
+
 Never remove worker pins, alter delegation markers, switch tools or change
 execution context to bypass a refusal. Use an explicitly authorized helper or
 report the exact capability gap through head-coordinator. Anchor every worker

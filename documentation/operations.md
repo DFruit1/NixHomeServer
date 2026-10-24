@@ -538,6 +538,11 @@ and then run the rollback command.
 
 ## Common Commands
 
+Agents default to limited local checks of the changed files and behavior.
+Repository-wide gates (even lean), full suites, broad builds and remote
+validation below require an explicit user request for that scope. Preserve
+integral safety checks of explicitly requested deploy/release operations.
+
 - Remote validation gate: `./scripts/deploy.sh --debug --action test`
 - Local validation gate: `nix flake check --no-build` then `scripts/validate-repo.sh`
 - Flake-inclusive local gate: `scripts/validate-repo.sh --run-flake-check`
@@ -2181,6 +2186,16 @@ Kopia policy.
 
 ## Validation Gate
 
+For agent work, default to focused local regression/unit tests, syntax/lint,
+relevant Nix evaluation and affected UI render checks. Documentation-only edits
+need diff, link and instruction-consistency checks. Do not automatically run the
+repository gates below, even the lean gate, or remote validation. Full suites,
+workspace/all-app tests, full flake checks, broad builds and end-to-end/VM suites
+require an explicit user request for that scope. Risk, focused failures and
+older blanket gate requirements do not authorize broader runs. Report coverage
+limits. CI and integral safety checks of explicitly requested deployment or
+release operations remain in place; never bypass them.
+
 The documented day-2 validation path runs resource-intensive checks on the
 remote server. The local wrapper still needs `nix` for its lightweight flake and
 target validation:
@@ -2664,8 +2679,10 @@ These assumptions are deliberate requirements:
 - **`flake.lock` always follows upstream.** Local input bumps are not
   preserved across a sync; pin changes belong upstream.
 
-For broad or suspicious merges, run the full validation gate before deploying:
-`./scripts/deploy.sh --action test --debug`.
+Broad or suspicious merges do not automatically authorize full validation.
+When the user explicitly requests guarded remote validation, run
+`./scripts/deploy.sh --action test --debug`; an explicitly requested deployment
+retains its integral safety checks.
 
 ## Fast Remote Deploy
 

@@ -39,6 +39,23 @@ rewrites a profile SOUL composes the same per-role block.
 | Cards, plans and cron state | Exact scope, existing approvals, temporary receipt conditions and evidence |
 | Memory | Facts and preferences; no permission grants or extra mandatory workflows |
 
+### Test scope
+
+Agents default to limited local checks of changed files and behavior. Full
+suites and broad validation require an explicit user request for that scope:
+repository-wide runners (even lean), workspace/all-app tests, full flake checks,
+broad builds, end-to-end/VM suites and remote validation. Generic fix/test/review
+requests, broad or sensitive changes and focused failures do not authorize them.
+This supersedes older blanket gate wording in skills, cards, roles and runbooks;
+focused checks are the ordinary commit/review gate. Report coverage limits.
+Preserve CI configuration and integral safety checks of explicitly requested
+deployment/release operations; never bypass those checks.
+
+`taskforce/owner-blocker-authoring.md` carries this rule into every worker's
+managed fleet block. The project validation skills, review/debugging skills and
+verifier templates must agree. These are maintained sources; installed profiles
+adopt them through the reviewed fleet release path, with refresh only when idle.
+
 The owner-requested technical recovery loop is installed with
 `python3 scripts/hermes/install-deadlock-recovery.py`; `--check` verifies source
 and the native five-minute, local-only, no-agent schedule. It commissions real
@@ -347,7 +364,7 @@ bind existing review/decision records to clean source and supplied test evidence
 Both helpers are read-only and installed by the instruction/taskforce installer;
 neither creates schedules, changes cards or widens a role's authority.
 
-Focused checks:
+Focused checks (select only scripts relevant to the instruction change):
 
 ```bash
 bash scripts/tests/test-hermes-instruction-policy.sh
@@ -359,9 +376,10 @@ bash scripts/tests/test-hermes-coordination.sh
 bash scripts/tests/test-hermes-owner-chat-policy.sh
 ```
 
-Review broad changes with scripts/validate-repo.sh --full. Keep incident narratives
-out of standing prompts. Preserve immutable plans and task-specific no-retry,
-custody and recovery conditions on their existing cards/jobs. Refresh a profile
+Broad changes do not authorize full validation. Run repository gates, including
+`scripts/validate-repo.sh --full`, only on an explicit user request for that scope.
+Keep incident narratives out of standing prompts. Preserve immutable plans and
+task-specific no-retry, custody and recovery conditions on their existing cards/jobs. Refresh a profile
 only after its active turns finish using the supported Hermes surface; never
 interrupt work or restart services merely to load new wording.
 

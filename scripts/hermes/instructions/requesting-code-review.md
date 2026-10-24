@@ -18,9 +18,12 @@ context to a remote model.
 2. Review the actual owned diff for correctness, scope, secrets, input handling,
    error paths, data preservation and relevant performance concerns. Do not print
    suspected credentials into chat or include them in a review payload.
-3. Run the project's owning validation command and report its real exit status.
-   Use its test wrapper, not a generic pytest/npm command substituted for it.
-   Distinguish a known baseline failure from evidence about the changed candidate.
+3. Run the project's focused local checks for the changed behavior and report
+   real exit statuses. Use a wrapper only if its scope stays focused. Full suites
+   and broad validation, including lean repository gates, require an explicit
+   user request for that scope. Generic review requests and older blanket gate
+   wording do not authorize them. Distinguish known baseline failures and report
+   coverage limits.
 4. Fix demonstrated defects within scope, rerun affected checks, and stop unchanged
    retries. Report new scope or unavailable capability to the coordinator.
 5. Once the owning gate passes, stage explicit owned paths/hunks and inspect the

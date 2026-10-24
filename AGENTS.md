@@ -160,6 +160,21 @@ Load `nixhomeserver-safe-change` for gate selection, guarded deployment and
 recovery. Use its existing remote evaluation/build/run helpers; allocation and
 measurement details live in [Compute Offload](documentation/operations.md#compute-offload-workstation-and-server).
 
+* Default to limited local tests and verification of the changed files and
+  behavior: focused regression/unit tests, syntax/lint checks, relevant Nix
+  evaluation, and affected UI render checks. Documentation-only edits need
+  only diff, link and instruction-consistency checks.
+* Run full test suites or broad validation only when the user explicitly asks
+  for that scope. This includes repository-wide runners (even the lean gate),
+  workspace/all-app tests, full flake checks, broad builds, end-to-end/VM suites,
+  and remote validation. A generic request to fix, review, test or finish work
+  does not request a full run. Broad or sensitive changes and focused failures
+  do not automatically authorize escalation; report the coverage limit instead.
+* This test-scope policy supersedes older blanket full-suite/gate requirements
+  in skills, role templates, cards and runbooks. Focused checks are the ordinary
+  commit/review gate. Keep CI configuration and safety checks built into an
+  explicitly requested deployment or release intact; such an operation does not
+  authorize unrelated suites. Report exactly what ran and what remains untested.
 * Ordinary rebuilds use `nix run .#deploy` with the dashboard's default allocation;
   never raw `nixos-rebuild` or build-mode/build-host overrides.
 * Changing `buildMode`, `max-jobs`, the `repo-policy` sandbox exclusion or
@@ -458,7 +473,7 @@ unpublished worktrees.
 * `.agents/skills/` + `.agents/vendor/` — agent skills and vendored toolkits. `skills/frontend-design/` owns all frontend work; `skills/impeccable/` is the review/QA layer; `vendor/ux-ui-kit/` is the vendored UI/UX Kit knowledge base.
 * `DESIGN_SYSTEM.md` — living record of frontend surfaces and deliberate design decisions; the precedent Impeccable detectors must respect.
 * `.impeccable/config.json` — shared Impeccable config; narrowly scoped detector exceptions live here.
-* `scripts/` — deploy, admin, helpers, and `tests/` (shell regression suite). `tests/test-common.sh` holds shared helpers; `validate-repo.sh` is the gate.
+* `scripts/` — deploy, admin, helpers, and `tests/` (shell regression suite). `tests/test-common.sh` holds shared helpers; `validate-repo.sh` provides opt-in repository gates.
 * `documentation/hermes-analytics.md` — the read-only historical analytics lens (`scripts/hermes/kanban-analytics.py`) over board state: flow waits, rework, review value, escalation effectiveness and cost per card.
 * `secrets/` — agenix-managed encrypted `.age` files only. Never read or print plaintext `secrets/unencrypted/`.
 * `documentation/` — operator runbooks. `operations.md` is the most commonly relevant.
@@ -512,12 +527,11 @@ stylistic enhancement commands still require an explicit user request.
 
 ## Test Tiers
 
-`nixhomeserver-safe-change` selects the focused, lean or full gate and documents
-their scope. Use `--all-apps` for the whole catalog. Significant changes and
-persistent integration issues require `scripts/validate-repo.sh --full`; protect
-the shutdown timer with `nixhomeserver-shutdown-guard`. Interrupted runs are never
-a pass. VM tests (`--run-vm-tests`, requiring `/dev/kvm`) are allowed only for
-persistent bugs severely lacking integration coverage, or explicit user permission.
+`nixhomeserver-safe-change` selects limited local checks by default. Repository
+gates (`scripts/validate-repo.sh`, including lean), `--full`, `--all-apps` and VM
+tests (`--run-vm-tests`, requiring `/dev/kvm`) require an explicit user request
+for that scope. If a requested run is long, protect a pending shutdown through
+`nixhomeserver-shutdown-guard`. Interrupted runs are never a pass.
 
 ## Service-Access Canary
 

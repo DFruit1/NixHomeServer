@@ -336,9 +336,12 @@ cadence; retries use a deduplication key.
 ```bash
 bash scripts/tests/test-hermes-review-taskforce.sh
 bash scripts/tests/test-kanban-durability-sync.sh
-scripts/validate-repo.sh
 python3 scripts/hermes/install-review-taskforce.py --check
 ```
+
+Select only the local checks relevant to the change. Full suites and broad
+validation, including the lean `scripts/validate-repo.sh` gate, require an
+explicit user request for that scope.
 
 The helper/installer use standard-library Python as operations glue for Hermes'
 existing Python runtime and CLI. They add no backend service or dependencies;

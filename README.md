@@ -133,19 +133,26 @@ scripts/admin/sync-upstream.sh --upstream <maintainer-repository-url>
 See [Upstream Sync](documentation/operations.md#upstream-sync) for the policy
 and required post-merge steps.
 
-Routine validation is:
+Agents default to limited local checks for the changed files and behavior:
+focused regression tests, syntax/lint checks, relevant Nix evaluation and
+affected UI render checks. Documentation-only changes need diff, link and
+instruction-consistency checks. Full suites and broad validation require an
+explicit user request for that scope; see [AGENTS.md](AGENTS.md#validation-builds-and-deployment).
+
+The following repository-wide gates are available when explicitly requested.
+The lean gate is:
 
 ```bash
 scripts/validate-repo.sh
 ```
 
-Before merging a broad or risky change, run:
+For an explicitly requested full gate, run:
 
 ```bash
 scripts/validate-repo.sh --full
 ```
 
-That full gate remains scoped to `applications.enabled`. To validate and build
+That full gate remains scoped to `applications.enabled`. When the request covers
 the entire application catalog, including apps disabled for this host, run:
 
 ```bash

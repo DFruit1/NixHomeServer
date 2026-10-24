@@ -625,14 +625,17 @@ Nothing below is changed by this design phase.
 
 ## 12. Validation strategy (implementation phase)
 
-1. **Rust:** `cargo test` in the workspace — payload parser, dedupe,
+Use limited local checks of changed behavior; full suites and broad validation
+require an explicit user request under [AGENTS.md](../AGENTS.md#validation-builds-and-deployment).
+
+1. **Rust:** select the affected package and test filter — payload parser, dedupe,
    config-builder constraint tests (§3.6), alert state machine, command
    scheduler window logic (fake clock).
 2. **Frontend:** `pnpm run check` (typecheck) + build; viewport verification
    desktop/mobile; Impeccable `critique` + `audit`.
-3. **Nix:** `validate-repo.sh` (lean) for module changes;
-   `validate-repo.sh --full` before any deploy; update
-   `module-disable-matrix` / hardening expectations.
+3. **Nix:** focused local evaluation and affected module/hardening checks;
+   update `module-disable-matrix` / hardening expectations. Lean/full repository
+   gates require an explicit request. Requested deploys retain guarded checks.
 4. **Post-deploy:** canary target (§10) +
    `sudo systemctl start homepage-canary.service && sudo homepage-canary-assert`.
 5. **End-to-end with hardware:** device (or an MQTT fixture replaying captured

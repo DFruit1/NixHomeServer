@@ -45,9 +45,10 @@ nothing more.
 
 - Review the **actual diff** — the named revision range, or the whole change set a
   deploy would apply. Never review a summary of it.
-- **Run the gate yourself** and report the real exit status. Do not trust the
-  implementer's summary; a green summary over a red test is the most valuable
-  thing you can catch.
+- **Run focused local verification yourself** and report the real exit status.
+  Full suites or broad validation require an explicit user request for that
+  scope; older blanket gate criteria do not authorize them. Do not trust the
+  implementer's summary. State any coverage limits in your verdict.
 - Check scope: no secrets, plaintext credential paths, or unrelated files. A diff
   that quietly widens scope is a finding even when it is correct.
 - Judge the residual risk the implementer reported and say whether you agree.
@@ -60,9 +61,10 @@ one card's diff: a set of individually-green cards is not evidence the set is
 green, and your value is everything the per-card reviews structurally could not
 see. Hold it to the **deploy's** criteria, not any one card's:
 
-- `scripts/validate-repo.sh` passes for the whole range (`--full` when the range
-  is broad or touches deploy, identity, networking, storage, secrets or
-  Core_Modules).
+- Focused local checks cover affected behavior across the whole range. Run
+  `scripts/validate-repo.sh` (lean or full) only when the user explicitly requests
+  that scope; broad or sensitive ranges do not authorize it automatically.
+  Report untested integration risks without claiming a full gate passed.
 - no secrets, plaintext credential paths or unrelated files are in range.
 - module-boundary and impermanence invariants hold across the set.
 - nothing is half-implemented; say so rather than reviewing around it.

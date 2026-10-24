@@ -77,8 +77,11 @@ Add or update regression coverage before claiming completion:
   routes, identity reconciliation, or storage consumers when those boundaries
   change.
 
-Run focused tests during development. Then load `nixhomeserver-safe-change`
-to select the repository-level validation gate.
+Run only the local checks relevant to the changed module and behavior; the list
+above is a coverage map, not a command list to execute in full. Load
+`nixhomeserver-safe-change` to select focused checks. Repository-wide disable or
+removal matrices, all-app tests and broader gates require an explicit user
+request. Report any unverified matrix coverage rather than running it by default.
 
 ## Review checklist
 

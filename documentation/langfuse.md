@@ -320,6 +320,13 @@ the stable alert reaches the coordinator command with this runbook.
 ```sh
 bash scripts/tests/test-langfuse-secrets.sh
 bash scripts/tests/test-langfuse-module.sh
+```
+
+Select the relevant local tests above. Run the full gate below only when the
+user explicitly requests full validation. Deployment commands require their
+existing authority and retain all guarded checks:
+
+```sh
 scripts/validate-repo.sh --full
 nix run .#deploy -- --action test
 nix run .#deploy -- --action switch
