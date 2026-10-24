@@ -18,6 +18,91 @@ import deadlock_recovery as recovery
 
 
 class SupervisorTest(unittest.TestCase):
+    def progress_board(self):
+        import sqlite3
+        path=self.root/'kanban/boards/test/kanban.db'
+        with sqlite3.connect(path) as db:
+            db.executescript('CREATE TABLE tasks(id TEXT,title TEXT,body TEXT,status TEXT,assignee TEXT,'
+                             'priority INTEGER,tenant TEXT,created_by TEXT,block_kind TEXT);'
+                             'CREATE TABLE task_links(parent_id TEXT,child_id TEXT);')
+            db.executemany('INSERT INTO tasks VALUES (?,?,?,?,?,?,?,?,?)',[
+                ('t_hold','Blocked delivery','Input supplier: agent. Missing input.','blocked','head-coordinator',10,None,None,'capability'),
+                ('t_wait','Dependent delivery','Preserve its acceptance gate.','todo','standard-implementer',5,None,None,None),
+                ('t_free','Independent requested fix','Owns other/file.py.','todo','standard-implementer',4,None,None,None)])
+            db.execute('INSERT INTO task_links VALUES (?,?)',('t_hold','t_wait'))
+        return path
+
+    def test_low_activity_finds_independent_work_without_releasing_dependencies(self):
+        import board_progress
+        path=self.progress_board();before=path.read_bytes()
+        packet=board_progress.collect(self.root)[0]
+        self.assertEqual(0,packet['ready_running'])
+        candidates={item['id']:item for item in packet['candidates']}
+        self.assertEqual([],candidates['t_free']['waiting_on'])
+        self.assertEqual(['t_hold'],candidates['t_wait']['waiting_on'])
+        self.assertEqual(before,path.read_bytes())
+        self.assertEqual(packet,board_progress.collect(self.root)[0])
+
+    def test_one_active_card_triggers_but_two_and_empty_boards_do_not(self):
+        import board_progress,sqlite3
+        path=self.progress_board()
+        with sqlite3.connect(path) as db:db.execute("UPDATE tasks SET status='running' WHERE id='t_free'")
+        self.assertEqual(1,board_progress.collect(self.root)[0]['ready_running'])
+        with sqlite3.connect(path) as db:db.execute("UPDATE tasks SET status='ready' WHERE id='t_wait'")
+        self.assertEqual([],board_progress.collect(self.root))
+        with sqlite3.connect(path) as db:db.execute("UPDATE tasks SET status='done'")
+        self.assertEqual([],board_progress.collect(self.root))
+
+    def test_supervision_task_does_not_masquerade_as_project_activity(self):
+        import board_progress,sqlite3
+        path=self.progress_board()
+        with sqlite3.connect(path) as db:
+            db.execute("UPDATE tasks SET status='running' WHERE id='t_free'")
+            db.execute("INSERT INTO tasks VALUES ('t_supervision','Assess progress','','running','head-coordinator',0,'board-progress','fleet-supervisor',NULL)")
+        self.assertEqual(1,board_progress.collect(self.root)[0]['ready_running'])
+
+    def test_two_recovery_controllers_do_not_hide_an_idle_project(self):
+        import board_progress,sqlite3
+        path=self.progress_board()
+        with sqlite3.connect(path) as db:
+            db.execute("UPDATE tasks SET status='running',tenant='technical-recovery',created_by='deadlock-recovery-monitor' WHERE id IN ('t_hold','t_free')")
+        self.assertEqual(0,board_progress.collect(self.root)[0]['ready_running'])
+
+    def test_review_only_board_is_inspected_without_releasing_review_gates(self):
+        import board_progress,sqlite3
+        path=self.progress_board()
+        with sqlite3.connect(path) as db:db.execute("UPDATE tasks SET status='review'")
+        packet=board_progress.collect(self.root)[0]
+        self.assertEqual(0,packet['ready_running'])
+        self.assertTrue(all(item['status']=='review' for item in packet['candidates']))
+
+    def test_existing_progress_owner_suppresses_duplicate_without_touching_its_hold(self):
+        import json,sqlite3
+        path=self.progress_board()
+        with sqlite3.connect(path) as db:
+            db.execute("UPDATE tasks SET tenant='board-progress' WHERE id='t_hold'")
+        before=path.read_bytes()
+        with patch.object(supervisor.subprocess,'run') as run:
+            supervisor.wake_coordinator(self.root,'test','board-progress',json.dumps(
+                {'board':'test','version':'a'*64,'ready_running':0,'candidates':[]}))
+        run.assert_not_called()
+        self.assertEqual(before,path.read_bytes())
+
+    def test_progress_wake_is_not_suppressed_by_unrelated_parked_recovery(self):
+        import json,sqlite3
+        path=self.progress_board()
+        with sqlite3.connect(path) as db:
+            db.execute("UPDATE tasks SET created_by='deadlock-recovery-monitor' WHERE id='t_hold'")
+        packet={'board':'test','version':'a'*64,'ready_running':0,'candidates':[]}
+        with patch.object(supervisor.subprocess,'run') as run:
+            supervisor.wake_coordinator(self.root,'test','board-progress',json.dumps(packet))
+        self.assertEqual(1,run.call_count)
+        command=run.call_args.args[0]
+        body=command[command.index('--body')+1]
+        self.assertIn('independent',body)
+        self.assertIn('blocker',body)
+        self.assertIn('board-progress',command)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='fleet-supervisor-')
         self.addCleanup(self.tmp.cleanup)
@@ -29,7 +114,8 @@ class SupervisorTest(unittest.TestCase):
 
     def runner(self, command, **kwargs):
         self.calls.append(command)
-        return {'exit_code': 0, 'output': 'BUSY' if 'idle-recovery-monitor.py' in command[-1] else 'ok'}
+        return {'exit_code': 0, 'output': ('' if 'board_progress.py' in command[-1] else
+                'BUSY' if 'idle-recovery-monitor.py' in command[-1] else 'ok')}
 
     def test_one_tick_runs_due_detectors_without_global_busy_starvation(self):
         self.assertEqual(0, supervisor.tick(self.root, now=100000, runner=self.runner))

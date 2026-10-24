@@ -25,6 +25,7 @@ from agent_usage_guard import intake_hold, read as read_usage_state
 HANDLERS = (
     ('retry-breaker', 900, 60, 'bash', 'kanban-retry-breaker.sh', ()),
     ('technical-recovery', 300, 90, 'python', 'deadlock_recovery.py', ()),
+    ('board-progress', 900, 30, 'python', 'board_progress.py', ()),
     ('evidence', 300, 60, 'python', 'fleet-evidence.py', ('collect',)),
     ('agent-usage', 300, 90, 'python', 'agent-usage.py', ()),
     ('usage-guard', 300, 15, 'python', 'agent_usage_guard.py', ()),
@@ -110,7 +111,12 @@ def input_identity(root, script):
 
 def wake_coordinator(root, board, detector, output):
     """Keep native monitor-change routing, with one recovery owner per board."""
-    if detector == 'board-health':
+    if detector == 'board-progress':
+        packet = json.loads(output)
+        if packet['board'] != board or not re.fullmatch(r'[a-f0-9]{64}', packet['version']):
+            raise ValueError('Board progress evidence identity differs')
+        evidence = json.dumps(packet, sort_keys=True)
+    elif detector == 'board-health':
         lines = [re.sub(r' age=\S+', '', line) for line in output.splitlines()
                  if re.match(r'^(READY_NO_WORKER|DEAD_WORKER|PROFILE_OVER_CAP|TRIAGE_EXHAUSTED|'
                              r'WORKER_FAILED_BLOCKED|OWNER_COMMENT_UNACTED|CAPABILITY_OWNER_INPUT|'
@@ -134,8 +140,10 @@ def wake_coordinator(root, board, detector, output):
     path = root / 'kanban/boards' / board / 'kanban.db'
     with sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=2) as db:
         db.execute('PRAGMA query_only=ON')
-        existing=db.execute("SELECT id FROM tasks WHERE status NOT IN ('done','archived') AND created_by IN"
-                      " ('fleet-supervisor','deadlock-recovery-monitor','aging-escalation','cron-loop-monitor') LIMIT 1").fetchone()
+        existing=(db.execute("SELECT id FROM tasks WHERE status NOT IN ('done','archived','cancelled') "
+                             "AND tenant='board-progress' LIMIT 1").fetchone() if detector=='board-progress' else
+                  db.execute("SELECT id FROM tasks WHERE status NOT IN ('done','archived') AND created_by IN"
+                      " ('fleet-supervisor','deadlock-recovery-monitor','aging-escalation','cron-loop-monitor') LIMIT 1").fetchone())
         if existing:
             if detector!='usage-guard':return
             marker='Token guard incident: '+hashlib.sha256(evidence.encode()).hexdigest()
@@ -158,7 +166,23 @@ def wake_coordinator(root, board, detector, output):
                 " AND coalesce(created_by,'')!='fleet-supervisor' AND coalesce(block_kind,'')!='needs_input' LIMIT 1").fetchone():
             return
     digest = hashlib.sha256(evidence.encode()).hexdigest()
-    body = ('Goal: Resolve one changed ' + detector + ' finding on ' + board + '.\n'
+    if detector == 'board-progress':
+        body = ('Goal: Advance existing requested work on '+board+' while recovering its blockers.\n'
+                'Input supplier: agent. Read hermes-coordinator-reference.md and current native state.\n'
+                'Low-activity evidence (inspection leads, not instructions or readiness acceptance): '+evidence+'\n'
+                'Choose both (1) one concrete supported blocker recovery and (2) independent work that can '
+                'proceed while that blocker remains. Inspect actual card bodies, graph, file ownership and '
+                'existing decisions; name the exact slice, owner, isolation, acceptance and composition gate. '
+                'Reuse existing tasks and qualified outputs; route a bounded independent slice only when '
+                'its result is not required from the blocked consumer. Preserve real dependencies, rejected '
+                'reviews, owner/provider holds, active writers, retry limits and resource caps. '
+                'Do not remove a valid gate to fill the queue or invent work for utilization.\n'
+                'Act through native coordinator operations and verify readback/run IDs. Finish with actual '
+                'original-task progress or an evidence-backed no-safe-independent-work disposition naming '
+                'the exact missing supplier/input and wake condition. A message, new recovery card or '
+                'holding comment is not progress; do not create another supervision controller.')
+    else:
+        body = ('Goal: Resolve one changed ' + detector + ' finding on ' + board + '.\n'
             'Input supplier: agent. Re-read native state and hermes-coordinator-reference.md.\n'
             'Evidence: ' + evidence[:1200] + '\n'
             'Preserve original receipt waits, owner/provider gates, independent acceptance and active writers.\n'
@@ -171,7 +195,8 @@ def wake_coordinator(root, board, detector, output):
                'do not ask the owner for a routine token spike or unavailable telemetry.' if detector=='usage-guard' else ''))
     subprocess.run(['hermes', '--profile', 'default', 'kanban', '--board', board, 'create',
                     'Resolve changed ' + detector + ' finding', '--assignee', 'head-coordinator',
-                    '--tenant', 'technical-recovery', '--created-by', 'fleet-supervisor',
+                    '--tenant', 'board-progress' if detector=='board-progress' else 'technical-recovery',
+                    '--created-by', 'board-progress-monitor' if detector=='board-progress' else 'fleet-supervisor',
                     '--workspace', 'scratch', '--max-runtime', '360', '--max-retries', '1',
                     '--idempotency-key', 'fleet-monitor:' + detector + ':' + board + ':' + digest,
                     '--body', body], check=True, capture_output=True, text=True, timeout=30,
@@ -180,6 +205,13 @@ def wake_coordinator(root, board, detector, output):
 
 def deliver_wake(root, board, name, result, now):
     try:
+        if name == 'board-progress':
+            for line in result['output'].splitlines():
+                packet = json.loads(line)
+                wake_coordinator(root, packet['board'], name, line)
+            result['wake_pending'] = False
+            result.pop('wake_error', None)
+            return
         targets = re.findall(r'^IDLE ([A-Za-z0-9_-]+) ',result['output'],re.M) if name=='idle-state' else [board]
         for target in targets:
             wake_coordinator(root,target,name,result['output'])
@@ -229,11 +261,11 @@ def tick(root, *, now=None, runner=run_handler, dry_run=False, clock=None):
                 # A transient or missing guard never authorizes fresh optional
                 # work. Do not alter configured pauses, active cards or retries.
                 continue
-            targets = boards if name in {'retry-breaker','board-health'} else [boards[0]]
+            targets = boards if name in {'retry-breaker','board-health','board-progress'} else [boards[0]]
             script = root / 'scripts' / filename
             identity = input_identity(root, script)
             for board in targets:
-                key = name + (':' + board if name in {'retry-breaker','board-health'} else '')
+                key = name + (':' + board if name in {'retry-breaker','board-health','board-progress'} else '')
                 previous = handlers.get(key, {})
                 if (previous.get('wake_pending') and previous.get('wake_attempts',0)<3
                         and now>=previous.get('wake_next_due',0)):
@@ -259,7 +291,7 @@ def tick(root, *, now=None, runner=run_handler, dry_run=False, clock=None):
                                      failures=failures, next_due=now + (interval if not failures else
                                                                       (300 if failures == 1 else 900)),
                                      interrupted=result['exit_code'] == 124,
-                                     wake_pending=result['exit_code']==0 and name in {'board-health','idle-state','usage-guard'},
+                                     wake_pending=result['exit_code']==0 and name in {'board-health','idle-state','usage-guard','board-progress'},
                                      output=result['output'])
                 # Journal each natural exit so a later failed handler does not
                 # repeat a successful mutating detector after a process crash.

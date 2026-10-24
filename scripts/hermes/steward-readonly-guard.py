@@ -59,7 +59,7 @@ def terminal_command(command, root, repo):
         if not script.is_absolute():
             script = repo / script
         scripts = {'kanban-daily-steward.py', 'usage-pace.py', 'kanban-performance.py', 'kanban-blockers.py',
-                   'steward-opportunity-scan.py', 'steward-board-read.py'}
+                   'steward-opportunity-scan.py', 'steward-board-read.py', 'board_progress.py'}
         bases = (root / 'scripts', root / 'profiles/board-steward/scripts', repo / 'scripts/hermes')
         allowed_paths = {base / item for base in bases for item in scripts}
         allowed_paths.add(root / 'profiles/board-steward/skills/devops/board-steward/scripts/steward-sweep.py')

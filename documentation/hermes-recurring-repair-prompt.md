@@ -50,6 +50,28 @@ Check whether each alleged blockage still exists. Separate legitimate owner or
 external waits from technical faults agents can repair. Ordinary running work
 and a healthy wait are not defects merely because the card is old.
 
+On EVERY pass, check per-board ready/running counts, active workers and the
+latest original-task progress, using the maintained board_progress.py evidence
+and native read-only receipts. Zero or one ready/running project card is a
+low-activity trigger, even if another board is busy or a recovery controller is
+running. Exclude supervision controllers from claims of productive activity.
+For each such board with unfinished requested outcomes, pursue BOTH tracks:
+- Repair a concrete root blocker through the existing coordinator/producer and
+  supported native recovery, preserving original gates and spent budgets.
+- Find existing work or a bounded independent slice that can proceed while the
+  blocker remains. Inspect full card scope, dependency results, current owner
+  decisions and file ownership. Name its owner, isolated workspace, acceptance
+  check and final composition gate; do not remove valid edges to fill ready.
+Reuse existing owners and qualified outputs. Do not wait for an entire deploy,
+composition or unrelated recovery chain when the proposed slice needs none of
+its results. Coordinate with the steward's actual action requests and check the
+coordinator's subsequent run/output evidence. If follow-through is missing,
+repair the demonstrated cause and advance the original work; another reminder,
+new controller or completed routing card is not sufficient. If all remaining
+scope genuinely needs the blocked result, record why, the missing supplier/input
+and exact wake condition. Respect deliberate pauses, owner/provider gates,
+resource limits and active writers; do not invent busywork or duplicate repairs.
+
 Before taking new scope, name the original requested outcome, its current owner,
 the failing episode, the existing recovery owner, and the observable condition
 that would count as actual progress. Keep one canonical incident across new

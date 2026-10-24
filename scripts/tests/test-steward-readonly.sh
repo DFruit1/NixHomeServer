@@ -60,6 +60,20 @@ usage = module('usage', 'usage-pace.py')
 handoff = module('handoff', 'steward-coordinator-request.py')
 
 class StewardTest(unittest.TestCase):
+    def test_deepseek_high_overrides_medium_without_changing_fallbacks_or_other_models(self):
+        import yaml
+        text=('model: {default: deepseek-v4.1-flash, provider: "custom:opencode-go"}\n'
+              'agent: {reasoning_effort: high, reasoning_overrides: {deepseek-v4.1-flash: medium, gpt-6-luna: high}}\n'
+              'fallback_providers: [{provider: openai-codex, model: gpt-6-luna}]\n'
+              'unrelated: retained\n')
+        before=yaml.safe_load(text)
+        updated=installer.configure_model(text);after=yaml.safe_load(updated)
+        self.assertEqual('high',after['agent']['reasoning_overrides']['deepseek-v4.1-flash'])
+        self.assertEqual(before['fallback_providers'],after['fallback_providers'])
+        self.assertEqual('high',after['agent']['reasoning_overrides']['gpt-6-luna'])
+        self.assertEqual(before['unrelated'],after['unrelated'])
+        self.assertEqual(updated,installer.configure_model(updated))
+
     def test_managed_hooks_reject_orphan_duplicate_and_reversed_markers(self):
         marker = '    # nixhomeserver-steward-readonly:'
         start, end = marker + 'start\n', marker + 'end\n'
@@ -329,7 +343,7 @@ class StewardTest(unittest.TestCase):
         self.assertEqual(6, len(calls))
         self.assertEqual({'kind': 'cron', 'expr': '0 7 * * *'}, jobs[0]['schedule'])
         config = (profile / 'config.yaml').read_text()
-        self.assertIn('model: {default: keep-model}', config)
+        self.assertEqual('deepseek-v4.1-flash', installer.document(config)['model']['default'])
         self.assertIn('post_tool_call:\n    - command: echo keep-hook', config)
         self.assertIn('fail_closed: true', config)
         self.assertIn('hooks_auto_accept: true', config)

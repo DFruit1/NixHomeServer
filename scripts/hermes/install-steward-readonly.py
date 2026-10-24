@@ -18,7 +18,7 @@ import hermes_common
 
 SOURCE = Path(__file__).resolve().parent
 sys.path.insert(0, str(SOURCE))
-from hermes_config import platform_tools
+from hermes_config import document, platform_tools
 PROFILE = 'board-steward'
 
 
@@ -120,12 +120,32 @@ def steward_soul(current, instructions):
     return wanted.rstrip() + '\n\n' + '\n\n'.join(sections) + '\n'
 
 
-def install(root, repo, check=False):
+def configure_model(text):
+    """Pin the owner's DeepSeek/high choice without changing fallback providers."""
+    original = document(text)
+    model = dict(original.get('model') or {})
+    agent = dict(original.get('agent') or {})
+    overrides = dict(agent.get('reasoning_overrides') or {})
+    model.update(default='deepseek-v4.1-flash', provider='custom:opencode-go')
+    agent['reasoning_effort'] = 'high'
+    overrides['deepseek-v4.1-flash'] = 'high'
+    agent['reasoning_overrides'] = overrides
+    for key, value in (('model', model), ('agent', agent)):
+        if original.get(key) != value:
+            text = replace_setting(text, key, json.dumps(value))
+    expected = {**original, 'model': model, 'agent': agent}
+    if document(text) != expected:
+        raise ValueError('Steward model edit would change unrelated settings')
+    return text
+
+
+def profile_files(root, pending=None):
+    pending = pending or {}
     profile = root / 'profiles' / PROFILE
     if not (profile / 'SOUL.md').exists():
         raise ValueError('Create the board-steward profile before installing its policy')
     config_path = profile / 'config.yaml'
-    config_text = config_path.read_text()
+    config_text = configure_model(pending.get(config_path, config_path.read_text()))
     command = shlex.join(['python3', str(root / 'scripts/steward-readonly-guard.py')])
     config_text = readonly_hook(config_text, command)
     # The owner's explicit read-only request authorises this scoped hook. Other
@@ -144,7 +164,8 @@ def install(root, repo, check=False):
     spec = importlib.util.spec_from_file_location('instruction_policy', SOURCE / 'install-instruction-policy.py')
     instructions = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(instructions)
-    changes = {profile / 'SOUL.md': steward_soul((profile / 'SOUL.md').read_text(), instructions),
+    soul_path = profile / 'SOUL.md'
+    changes = {soul_path: steward_soul(pending.get(soul_path, soul_path.read_text()), instructions),
                profile / 'skills/devops/board-steward/SKILL.md':
                    (SOURCE / 'taskforce/board-steward-skill.md').read_text(),
                config_path: config_text,
@@ -154,12 +175,18 @@ def install(root, repo, check=False):
     changes[root / 'scripts/hermes-instructions.md'] = (SOURCE.parent.parent / 'documentation/hermes-instructions.md').read_text()
     changes[root / 'scripts/hermes-capability-recovery.md'] = (SOURCE / 'instructions/capability-recovery.md').read_text()
     for name in ('capability_recovery.py', 'kanban-daily-steward.py', 'daily-steward-window.py', 'usage-pace.py', 'kanban-performance.py', 'agent_usage_report.py', 'kanban-blockers.py',
-                 'steward-opportunity-scan.py',
+                 'steward-opportunity-scan.py', 'board_progress.py',
                  'steward-board-read.py', 'steward-readonly-guard.py', 'steward-coordinator-request.py'):
         changes[root / 'scripts' / name] = (SOURCE / name).read_text()
         if name != 'steward-readonly-guard.py':
             changes[profile / 'scripts' / name] = (SOURCE / name).read_text()
     changes = {path: text for path, text in changes.items() if not path.exists() or path.read_text() != text}
+    return changes
+
+
+def install(root, repo, check=False):
+    profile = root / 'profiles' / PROFILE
+    changes = profile_files(root)
     jobs_path = profile / 'cron/jobs.json'
     jobs = json.loads(jobs_path.read_text()).get('jobs', []) if jobs_path.exists() else []
     # The separately approved DM split uses profile-scoped scheduler delivery.

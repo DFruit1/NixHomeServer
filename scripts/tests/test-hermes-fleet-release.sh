@@ -50,7 +50,7 @@ api_key: PRIVATE
         paused={'agent-usage':{'enabled':False,'interval':900},'evidence':{'enabled':True,'interval':300},
                 'usage-guard':{'enabled':False,'interval':600}}
         path.write_text(json.dumps(paused))
-        self.assertEqual(paused,release.schedule_plan(self.root)['handlers'])
+        self.assertEqual({**paused,'board-progress':{'enabled':True,'interval':900}},release.schedule_plan(self.root)['handlers'])
 
     def schedules(self):
         for profile,items in [('default',[
@@ -76,10 +76,58 @@ api_key: PRIVATE
             if action=='pause':job.update(enabled=False,state='paused',paused_at='fixture-pause')
             elif action=='resume':job.update(enabled=True,state='scheduled',paused_at=None)
             elif action=='edit':
+                if '--prompt' in args:job['prompt']=args[args.index('--prompt')+1]
                 if '--script' in args:job['script']=args[args.index('--script')+1]
                 if '--no-agent' in args:job['no_agent']=True
                 if '--agent' in args:job['no_agent']=False
         path.write_text(json.dumps(data))
+
+    def test_steward_inspections_are_restored_explicitly_and_journaled(self):
+        self.schedules()
+        path=self.root/'profiles/board-steward/cron/jobs.json'
+        data=json.loads(path.read_text())
+        data['jobs'].append({'id':'steward','name':'steward opportunity scan','enabled':False,
+                            'paused_at':'migration-pause','prompt':'old prompt','no_agent':False,
+                            'monitor_script':'steward-opportunity-scan.py','deliver':'local',
+                            'schedule':{'minutes':120}})
+        path.write_text(json.dumps(data))
+        self.assertFalse(release.schedule_plan(self.root)['steward'][0]['activate'])
+        plan=release.schedule_plan(self.root,activate_steward=True)
+        self.assertFalse(any(item['id']=='steward' for item in plan['pause']))
+        checkpoint=lambda:release.schedule_snapshot(self.root,plan)
+        with patch.object(release,'cron',self.native_cron):
+            release.apply_schedules(self.root,plan,checkpoint=checkpoint)
+            item=plan['steward'][0]
+            self.assertTrue(release.active(release.current_job(self.root,item)))
+            self.assertIn('LOW_ACTIVITY',release.current_job(self.root,item)['prompt'])
+            self.assertEqual([],release.check_schedules(self.root,plan))
+            release.restore_schedules(self.root,plan,checkpoint=checkpoint)
+        self.assertEqual('old prompt',release.current_job(self.root,item)['prompt'])
+        self.assertFalse(release.active(release.current_job(self.root,item)))
+
+    def test_steward_rollback_recovers_native_success_with_lost_prompt_reply(self):
+        self.schedules()
+        path=self.root/'profiles/board-steward/cron/jobs.json'
+        data=json.loads(path.read_text())
+        data['jobs'].append({'id':'steward','name':'steward opportunity scan','enabled':False,
+                            'paused_at':'migration-pause','prompt':'old prompt','no_agent':False,
+                            'monitor_script':'steward-opportunity-scan.py','deliver':'local',
+                            'schedule':{'minutes':120}})
+        path.write_text(json.dumps(data))
+        plan=release.schedule_plan(self.root,activate_steward=True)
+        checkpoint=lambda:release.schedule_snapshot(self.root,plan)
+        with patch.object(release,'cron',self.native_cron):
+            release.apply_schedules(self.root,plan,checkpoint=checkpoint)
+        def lost_reply(root,profile,*args):
+            self.native_cron(root,profile,*args)
+            if args[:2]==('edit','steward'):raise OSError('Successful rollback prompt edit lost its reply')
+        with patch.object(release,'cron',lost_reply):
+            with self.assertRaises(OSError):release.restore_schedules(self.root,plan,checkpoint=checkpoint)
+        with patch.object(release,'cron',self.native_cron):
+            release.restore_schedules(self.root,plan,checkpoint=checkpoint)
+        job=release.current_job(self.root,plan['steward'][0])
+        self.assertEqual('old prompt',job['prompt'])
+        self.assertFalse(release.active(job))
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='fleet-release-')

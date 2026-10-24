@@ -66,8 +66,11 @@ Apply preflights files and schedule identities, retains private preimages,
 records postimages and verifies readback. It acquires the supervisor lock and
 does not interrupt active workers. Old monitor schedules are paused with their
 IDs/history retained; their deliberate pauses and original handler cadence carry
-forward. The daily steward becomes a generated no-agent report on its existing
-schedule/delivery. Durability sync, owner alerts and usage-budget monitoring are
+forward. The daily steward remains a generated no-agent report on its existing
+schedule/delivery. The two-hour opportunity and four-hour stall inspections
+remain agent-backed, with the steward on DeepSeek high reasoning. A release
+preserves their deliberate pauses by default; `--activate-steward` explicitly
+resumes those two existing jobs when restoring supervision. Durability sync, owner alerts and usage-budget monitoring are
 separate and retain their existing authority.
 
 The private journal lives at `~/.hermes/state/fleet/releases/RELEASE_ID/`.
@@ -143,7 +146,18 @@ the recovery helper files that `install-deadlock-recovery.py` owns.
 
 The local no-agent `hermes fleet supervisor` job runs every five minutes. Its
 handlers retain their own cadence: retry breaker, technical recovery, aging,
-cron-loop detection, proactive intake, evidence, health and idle-state monitoring.
+cron-loop detection, proactive intake, evidence, health, board progress and
+idle-state monitoring.
+The board-progress handler runs every 15 minutes per board, independently of
+fleet-wide idle and optional new-improvement intake. At zero or one ready/running
+project card, it supplies bounded read-only graph/scope evidence to one native
+coordinator task per board. The task must pursue both concrete blocker recovery
+and independent existing work, or record why no safe independent slice exists.
+Supervision tasks do not count as productive ready/running work. Stable material
+versions and native idempotency prevent unchanged ticks from creating another
+controller; an unrelated parked recovery does not suppress this check. Existing
+dependencies, rejection/owner/provider gates and retry/resource limits remain.
+
 Technical recovery is independent of global idle. Idle recovery still requires
 the original fleet-wide idle state and preserves task-specific receipt waits.
 Boards without an existing absolute `default_workdir` are reported as ineligible
@@ -237,3 +251,16 @@ shown. These are measured workflow facts, not live acceptance or money saved.
 Billing remains unknown without matched usage evidence. Recurring external
 passes compare these results and report their own elapsed time using existing
 receipts, rather than treating repair counts as productivity.
+
+To restore steward inspections while installing a reviewed release:
+
+```bash
+python3 -B scripts/hermes/fleet-release.py --source "$PWD" --activate-steward plan
+python3 -B scripts/hermes/fleet-release.py --source "$PWD" --activate-steward apply
+python3 -B scripts/hermes/fleet-release.py check
+```
+
+This journals the existing inspection IDs, prompts and enabled states for
+readback/rollback; it neither creates another monitor nor changes their cadence.
+The model pin updates only the steward's default provider/model and high effort,
+including its DeepSeek-specific override; configured fallback order is retained.

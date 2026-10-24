@@ -255,8 +255,11 @@ class RecoveryTest(unittest.TestCase):
         scripts = self.root / 'scripts'
         scripts.mkdir()
         source = Path(sys.argv[1]) / 'scripts/hermes'
-        for name in ('capability_recovery.py', 'steward-opportunity-scan.py'):
+        for name in ('capability_recovery.py', 'board_progress.py', 'steward-opportunity-scan.py'):
             shutil.copyfile(source / name, scripts / name)
+        for column in ("title TEXT DEFAULT 'Fixture request'", 'priority INTEGER DEFAULT 0',
+                       'tenant TEXT', 'created_by TEXT'):
+            self.db.execute('ALTER TABLE tasks ADD COLUMN '+column)
         self.db.commit()
         before = {str(p.relative_to(self.root)): p.read_bytes()
                   for p in self.root.rglob('*') if p.is_file()}

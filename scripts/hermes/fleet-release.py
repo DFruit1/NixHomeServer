@@ -31,9 +31,9 @@ JOBS = {
     ('default', 'kanban review taskforce'): ('proactive-intake', 3600),
     ('head-coordinator', 'kanban board health'): ('board-health', 1800),
     ('head-coordinator', 'kanban idle recovery'): ('idle-state', 900),
-    ('board-steward', 'steward opportunity scan'): (None, 7200),
-    ('board-steward', 'steward stall follow-up'): (None, 14400),
 }
+STEWARD_JOBS = {'steward opportunity scan': 'steward-opportunity-prompt.txt',
+                'steward stall follow-up': 'steward-stall-prompt.txt'}
 
 
 def checked(root, path):
@@ -210,6 +210,15 @@ def owned(job):
             'enabled':active(job), 'paused_at':job.get('paused_at') if not active(job) else None}
 
 
+def schedule_records(plan):
+    return [*plan['pause'], *plan.get('steward', []), plan.get('daily'), plan.get('supervisor')]
+
+
+def observed(root, item):
+    job = current_job(root, item)
+    return {**owned(job), **({'prompt': job.get('prompt')} if 'prompt' in (item['before'] or {}) else {})}
+
+
 def current_job(root, item):
     matches=[j for j in jobs(root,item['profile']) if j['id']==item['id']]
     if len(matches)!=1:
@@ -217,24 +226,32 @@ def current_job(root, item):
     return matches[0]
 
 
-def schedule_plan(root):
+def schedule_plan(root, *, activate_steward=False, directory=HERE):
     policy = checked(root, root / 'state/fleet/handlers.json')
     handlers = json.loads(policy.read_text()) if policy.exists() else {'evidence': {'enabled': True, 'interval': 300}}
     handlers.setdefault('agent-usage', {'enabled': True, 'interval': 300})
     handlers.setdefault('usage-guard', {'enabled': True, 'interval': 300})
-    result = dict(pause=[], daily=None, supervisor=None, handlers=handlers)
+    handlers.setdefault('board-progress', {'enabled': True, 'interval': 900})
+    result = dict(pause=[], steward=[], daily=None, supervisor=None, handlers=handlers)
     for profile in ('default', 'head-coordinator', 'board-steward'):
         names = {}
         for job in jobs(root, profile):
             key = (profile, job.get('name'))
-            is_owned = key in JOBS or key == ('board-steward','hermes daily steward') or key == ('default',NAME)
+            is_inspection = profile == 'board-steward' and job.get('name') in STEWARD_JOBS
+            is_owned = is_inspection or key in JOBS or key == ('board-steward','hermes daily steward') or key == ('default',NAME)
             if not is_owned:
                 continue
             if key in names:
                 raise ValueError('Duplicate owned schedule: ' + str(key))
             names[key] = job
             record = dict(profile=profile, id=job['id'], before=owned(job))
-            if key == ('default', NAME):
+            if is_inspection:
+                record['before']['prompt'] = job.get('prompt')
+                record['prompt_source'] = STEWARD_JOBS[job['name']]
+                record['desired_prompt'] = (directory / record['prompt_source']).read_text()
+                record['activate'] = active(job) or activate_steward
+                result['steward'].append(record)
+            elif key == ('default', NAME):
                 if (job.get('script')!='fleet-supervisor.py' or job.get('no_agent') is not True
                         or job.get('deliver')!='local' or job.get('monitor_script')
                         or job.get('schedule',{}).get('minutes')!=5):
@@ -258,20 +275,20 @@ def cron(root, profile, *args):
 
 
 def schedule_snapshot(root, plan):
-    for item in [*plan['pause'], plan.get('daily'), plan.get('supervisor')]:
+    for item in schedule_records(plan):
         if item is None:
             continue
-        item.setdefault('after',owned(current_job(root,item)))
+        item.setdefault('after',observed(root,item))
 
 
 def mutate_schedule(root, item, arguments, changes, checkpoint):
     expected=item.get('after',item['before'])
-    if owned(current_job(root,item))!=expected:
+    if observed(root,item)!=expected:
         raise ValueError('Schedule changed since preflight: '+item['id'])
     item['intent']=dict(before=expected,changes=changes,operation=arguments[0])
     checkpoint()  # A successful native mutation remains recoverable if its reply is lost.
     cron(root,item['profile'],*arguments)
-    actual=owned(current_job(root,item))
+    actual=observed(root,item)
     desired={**expected,**changes}
     # Native pause assigns its own timestamp; all other owned fields must match.
     if changes.get('enabled') is False:
@@ -305,6 +322,11 @@ def apply_schedules(root, plan, *, checkpoint=lambda:None):
     for item in plan['pause']:
         if active(item['before']):
             mutate_schedule(root,item,['pause',item['id']],{'enabled':False},checkpoint)
+    for item in plan.get('steward', []):
+        prompt = item['desired_prompt']
+        mutate_schedule(root,item,['edit',item['id'],'--prompt',prompt],{'prompt':prompt},checkpoint)
+        if item['activate'] and not item['before']['enabled']:
+            mutate_schedule(root,item,['resume',item['id']],{'enabled':True,'paused_at':None},checkpoint)
     if plan['daily']:
         item = plan['daily']
         mutate_schedule(root,item,['edit',item['id'],'--script','fleet-report.py','--no-agent'],
@@ -321,6 +343,9 @@ def apply_schedules(root, plan, *, checkpoint=lambda:None):
 
 def check_schedules(root, plan):
     errors = []
+    for item in plan.get('steward', []):
+        if observed(root,item) != item.get('after'):
+            errors.append('steward:'+item['id'])
     for item in plan['pause']:
         current = next((j for j in jobs(root,item['profile']) if j['id']==item['id']), None)
         if current is None or active(current):
@@ -358,9 +383,9 @@ def restore_schedules(root, plan, *, checkpoint=lambda:None):
                                     execution_observation='Paused native creation observed; completion reply unavailable')
         plan.pop('creation_intent')
         checkpoint()
-    for item in [*plan['pause'], plan.get('daily'), plan.get('supervisor')]:
+    for item in schedule_records(plan):
         if item and item.get('intent'):
-            intent=item['intent'];actual=owned(current_job(root,item))
+            intent=item['intent'];actual=observed(root,item)
             desired={**intent['before'],**intent['changes']}
             if intent['changes'].get('enabled') is False:desired['paused_at']=actual['paused_at']
             if actual not in (intent['before'],desired):
@@ -371,7 +396,7 @@ def restore_schedules(root, plan, *, checkpoint=lambda:None):
             checkpoint()
         if not item or not item.get('after'):
             continue
-        actual=owned(current_job(root,item))
+        actual=observed(root,item)
         if actual not in (item['after'],item.get('restored'),item['before']):
             if item is plan.get('supervisor') and item['before'] is None and not actual['enabled']:
                 expected={**item['after'],'enabled':False,'paused_at':actual['paused_at']}
@@ -383,6 +408,16 @@ def restore_schedules(root, plan, *, checkpoint=lambda:None):
         plan['supervisor']['restored']=owned(current_job(root,plan['supervisor']))
         checkpoint()
     # Restore only owned changes. Never restore a jobs.json snapshot or erase history.
+    for item in plan.get('steward', []):
+        before = item['before']
+        if observed(root,item) != before:
+            if current_job(root,item).get('prompt') != before['prompt']:
+                mutate_schedule(root,item,['edit',item['id'],'--prompt',before['prompt'] or ''],
+                                {'prompt':before['prompt']},checkpoint)
+            if not before['enabled'] and active(current_job(root,item)):
+                mutate_schedule(root,item,['pause',item['id']],{'enabled':False},checkpoint)
+            item['restored'] = observed(root,item)
+            checkpoint()
     if plan.get('daily'):
         item = plan['daily']; before = item['before']
         if owned(current_job(root,item))==before:
@@ -486,6 +521,9 @@ def pending_files(root, source, plan, *, owners=None):
             pending.update({root/item['path']:(root/item['path']).read_text() for item in manifest['files']})
             owners.update({p:['retained-legacy'] for p in pending})
     merge_owned(pending,owners,source_changes(root,directory,workers=True),'fleet-runtime')
+    spec=importlib.util.spec_from_file_location('fleet_steward_install',directory/'install-steward-readonly.py')
+    steward=importlib.util.module_from_spec(spec);spec.loader.exec_module(steward)
+    merge_owned(pending,owners,steward.profile_files(root,pending),'steward',compose=True)
     # These helpers previously needed a separate interactive files-only update.
     # They now share the release's preimage, readback and rollback transaction.
     for name in ('deadlock_recovery.py', 'feature_flow.py', 'capability_recovery.py',
@@ -493,7 +531,7 @@ def pending_files(root, source, plan, *, owners=None):
         merge_owned(pending,owners,{root/'scripts'/name:(directory/name).read_text()},'recovery')
     for name in ('fleet-release.py','fleet-evidence.py','fleet-supervisor.py','fleet-report.py','kanban-analytics.py',
                  'agent-usage.py','agent_usage_report.py','agent_usage_guard.py','langfuse_mcp.py','coordinator_trial.py',
-                 'fleet_workflow.py','idle-recovery-monitor.py','kanban-board-health.sh'):
+                 'fleet_workflow.py','idle-recovery-monitor.py','kanban-board-health.sh','board_progress.py'):
         merge_owned(pending,owners,{root/'scripts'/name:(directory/name).read_text()},'fleet-runtime')
     merge_owned(pending,owners,{
         root/'profiles/board-steward/scripts/fleet-report.py':(directory/'fleet-report.py').read_text(),
@@ -578,6 +616,8 @@ def main():
     parser.add_argument('--source', type=Path)
     parser.add_argument('--revision')
     parser.add_argument('--review-card')
+    parser.add_argument('--activate-steward', action='store_true',
+                        help='Explicitly resume the two existing steward inspection jobs')
     args = parser.parse_args()
     root = Path(os.environ.get('HERMES_ROOT',str(Path.home()/'.hermes'))).absolute()
     if args.action in {'apply','rollback'}:
@@ -622,7 +662,7 @@ def operate(args,root):
         source=Path(recorded) if recorded else None
     source = (source or HERE.parents[1]).resolve()
     source_id = source_revision(source, clean=args.action=='apply')
-    plan = schedule_plan(root)
+    plan = schedule_plan(root, activate_steward=args.activate_steward, directory=source/'scripts/hermes')
     owners = {}
     pending = pending_files(root,source,plan,owners=owners)
     dependencies=runtime_dependencies(root)
@@ -664,8 +704,8 @@ def operate(args,root):
             raise ValueError('Install existing maintained runtime dependency first: '+required)
     if source_revision(source,clean=True)!=source_id:
         raise ValueError('Committed fleet source changed during preflight')
-    for item in [*plan['pause'],plan.get('daily'),plan.get('supervisor')]:
-        if item and owned(current_job(root,item))!=item['before']:
+    for item in schedule_records(plan):
+        if item and observed(root,item)!=item['before']:
             raise ValueError('Schedule input changed during preflight')
     context=dict(source_revision=source_id,dependencies=dependencies,authority=authority,
                  previous_release=current,schedule=plan,content_id=content_id,file_owners=ownership,

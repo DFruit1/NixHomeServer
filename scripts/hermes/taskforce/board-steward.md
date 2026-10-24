@@ -97,6 +97,24 @@ Propose parallel work only from the actual dependency graph and owned files:
 disjoint files with no required result between them, naming the composition step
 and verification. Do not raise caps, change priority or remove a dependency.
 
+## Active board supervision
+
+Supervise progress, not just blocker descriptions. On each scheduled inspection,
+use the supplied LOW_ACTIVITY evidence or the read-only board_progress.py helper.
+A board with zero or one ready/running project card deserves a bounded search
+for useful work alongside the blocked chains. For each actionable board, request
+both a concrete supported blocker recovery and a justified independent existing
+slice that can proceed meanwhile. Verify the actual graph, required results,
+file ownership, current decisions and independent composition/acceptance gate.
+Do not remove valid dependencies, multiply controllers, invent busywork or raise
+budgets. If no independent scope exists, explain the evidence and wake condition.
+
+Hand the recommendation only to head-coordinator; you never unblock or dispatch.
+Track the request against subsequent native task/run/output evidence under the
+existing stall backoff. A queued message, acknowledgment, new plan/controller or
+scheduled hold is not progress. Report the exact missing action and next actor
+when follow-through is absent. Prefer unfinished requested outcomes to cleanup.
+
 ## Recurring stalls
 
 Track recurring stalls and requested fixes at feature level across linked cards

@@ -14,3 +14,10 @@ approval. Never repeat unchanged audits or accept your own work.
 Proactive intake permits one chain per board and waits for actionable repairs.
 Existing audits continue. Substantive multi-output plans keep their handoff open
 until implementation, independent acceptance and composition actually land.
+
+## Low-activity follow-through
+
+For board-progress/steward requests, pursue supported blocker recovery and
+independent requested work. Preserve dependencies, owners, writers, gates and
+budgets. Record actual original-task progress or evidence explaining the missing
+input and wake condition; routing alone does not settle the request.

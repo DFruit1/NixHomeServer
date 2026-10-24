@@ -254,6 +254,9 @@ class CronPolicyTest(unittest.TestCase):
                          'profiles/board-steward/scripts/capability_recovery.py',
                          'hermes-agent/cron/nixhomeserver_capability_recovery.py'):
             self.assertEqual(dependency,(self.root/relative).read_bytes())
+        progress=(Path(sys.argv[1])/'scripts/hermes/board_progress.py').read_bytes()
+        for relative in ('scripts/board_progress.py','profiles/board-steward/scripts/board_progress.py'):
+            self.assertEqual(progress,(self.root/relative).read_bytes())
         for role in jobs:
             data=json.loads((self.root/'profiles'/role/'cron/jobs.json').read_text())['jobs']
             for job in data:

@@ -13,6 +13,30 @@ owns the Hermes routing workflow and is
 the sole author of owner-facing blocker cards and summaries. The steward may
 critique those asks and recommend clearer wording without publishing a gate.
 
+## Active supervision
+
+The steward uses `deepseek-v4.1-flash` through the existing OpenCode Go provider
+with high reasoning, including the per-model override. It remains read-only and
+cannot unblock or dispatch. Its two-hour opportunity inspection and four-hour
+stall follow-up send actionable recommendations only to head-coordinator.
+The daily phone report remains generated without an agent by the fleet release.
+
+Inspect LOW_ACTIVITY evidence from `python3 ~/.hermes/scripts/board_progress.py`:
+zero or one ready/running project card triggers a bounded search for independent
+requested work alongside the blockers. Recommend both a supported blocker
+recovery method and a justified existing card or disjoint slice that can proceed
+meanwhile. Verify actual dependencies, required results, current decisions and
+file ownership; name the owner, isolation and final composition/acceptance check.
+Preserve legitimate gates and active writers. If no safe independent work exists,
+state the evidence and precise wake input rather than inventing work.
+
+Follow each request against subsequent native task/run/output evidence through
+the existing 8h/16h/24h stall backoff. Queued messages, acknowledgments, another
+controller and scheduled holds do not establish progress. Cite existing recovery
+and board-progress owners rather than proposing replacement chains. The fleet's
+15-minute board-progress handler supplies an additional coordinator wake even
+when an unrelated recovery is parked or another board is busy.
+
 ## Reporting scope
 
 All previous grants to mutate boards, dispatch cleanup work, restore scripts,
@@ -273,8 +297,9 @@ host multiplexer; the coordinator identity and host gateway process stay intact.
 Verify both DMs and report delivery before removing the steward's legacy group
 allowlist. Retain the old group's history; do not delete either identity store.
 
-The existing 2-hour monitor-gated opportunity job produces a local report when
-repo-grounded candidates change. It never files cleanup cards. Existing legacy
+The existing 2-hour monitor-gated opportunity job inspects material changes in
+low-activity boards, capability holds and repo-grounded candidates, and hands
+actionable recommendations to head-coordinator. It never files cleanup cards. Existing legacy
 cleanup cards suppress duplicate recommendations while their work is ongoing;
 this change does not cancel or rewrite that work. The local report is available
 to the daily report and owner requests.

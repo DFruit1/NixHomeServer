@@ -1,7 +1,7 @@
 ---
 name: board-steward
 description: Read-only board inspection and actionable coordinator requests.
-version: 2.4.0
+version: 2.5.0
 author: NixHomeServer
 license: MIT
 metadata:
@@ -87,3 +87,10 @@ never treat acknowledgment, a queued request or a routing card as resolution.
 
 Answer a direct owner request normally. Coordinator acknowledgment is not proof
 of resolution, and a queued request is not proof of delivery or completion.
+
+For active supervision, inspect `python3 ~/.hermes/scripts/board_progress.py`.
+LOW_ACTIVITY means at most one ready/running project card, excluding the
+supervision task itself. Check both blocker recovery and safe independent work;
+follow the SOUL's Active board supervision section. These are inspection leads,
+not authority to unblock. Use exact current board/version keys for deduplicated
+coordinator requests and actual later native output for progress claims.

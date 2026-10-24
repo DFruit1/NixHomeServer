@@ -1,22 +1,21 @@
 #!/usr/bin/env python3
-"""Find cheap, safe, repo-grounded cleanup candidates for the board steward.
+"""Collect stable board-progress, recovery and repository leads for the steward.
 
 Wired as a ``hermes cron --monitor-script`` on the board-steward profile. The
 monitor hashes this output byte-for-byte and suppresses the agent run while the
 hash is unchanged, so the output must be stable across ticks: sorted, no
 timestamps, no pids, no absolute paths that move, no ages in seconds.
 
-It prints one ``CANDIDATE <id> <TAG> :: <detail>`` line per finding and nothing
-else. The steward reads the MONITOR CHANGE DETECTED diff and reports proposed fixes
+It prints LOW_ACTIVITY packets, CAPABILITY_HOLD lines and one
+``CANDIDATE <id> <TAG> :: <detail>`` line per repository finding. The steward
+reads the MONITOR CHANGE DETECTED diff and reports proposed actions
 for the external agent. It never files cards or applies changes. A candidate
 already covered by an open legacy ``steward-cleanup`` card is omitted to avoid
 duplicate recommendations while existing work is underway.
 
-Scope is deliberately narrow. Every check is mechanical and its fix is
-git-backed and revertible: a broken script, an empty tracked script in committed HEAD. Active edits, untracked
-artifacts and worktree counts never trigger this scan. Nothing here needs a judgement call, an approval, or an edit
-outside the repository. Anything richer (dead code, stale comments, board or
-Hermes-config drift) is the daily report's business, not an automatic change.
+Repository checks remain narrow and mechanical: a broken script, an empty tracked script in committed HEAD. Active edits, untracked
+artifacts and worktree counts never trigger this scan. Board packets are inspection leads requiring steward/coordinator judgment; no
+collector result authorizes readiness, dependency edits or automatic fixes.
 
 Environment overrides (used by tests and for a different checkout):
   STEWARD_REPO      repo root (default: the board's default_workdir)
@@ -155,6 +154,9 @@ def main() -> None:
     recovery_lines = monitor_lines(recovery)
     if recovery_lines:
         print("\n".join(recovery_lines))
+    from board_progress import monitor_lines as progress_lines
+    for line in progress_lines(HERMES_ROOT):
+        print(line)
     if recovery['warnings']:
         raise SystemExit(2)
     repo = board_repo()
