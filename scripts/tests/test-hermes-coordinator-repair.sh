@@ -20,6 +20,7 @@ import tempfile
 import time
 import types
 import unittest
+from contextlib import contextmanager
 from unittest.mock import patch
 
 source=Path(sys.argv[1])/'scripts/hermes'
@@ -2960,7 +2961,7 @@ class TerminalEpisodeInstallerTest(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory(prefix='coordinator-install-');self.addCleanup(self.tmp.cleanup)
         self.root=Path(self.tmp.name)
-        for name in ('tools/kanban_tools.py','tools/kanban_tools_schemas.py','hermes_cli/kanban_db.py','hermes_cli/kanban.py'):
+        for name in ('tools/kanban_tools.py','tools/kanban_tools_schemas.py','hermes_cli/kanban_db.py','hermes_cli/kanban_db_connect.py','hermes_cli/kanban.py'):
             target=self.root/'hermes-agent'/name;target.parent.mkdir(parents=True,exist_ok=True)
             target.write_text((native/name).read_text())
         (self.root/'hermes-agent/hermes_cli/nixhomeserver_worker_origin.py').write_text(
@@ -2996,6 +2997,334 @@ class TerminalEpisodeInstallerTest(unittest.TestCase):
                          (self.root/'hermes-agent/hermes_cli/nixhomeserver_coordinator_repair.py').read_text())
         self.assertEqual((source/'resume_recovered.py').read_text(),
                          (self.root/'hermes-agent/hermes_cli/nixhomeserver_resume_recovered.py').read_text())
+
+class CoordinatorToolsTest(unittest.TestCase):
+    dump = RepairTest.dump
+
+    def setUp(self):
+        RepairTest.setUp(self)
+        self.target=kb.create_task(self.conn,title='[RECOVERY] stale prerequisite',assignee='head-coordinator',
+                                   max_runtime_seconds=900,max_retries=1,triage=True,workspace_kind='scratch')
+
+    def manager(self):
+        import coordinator_tools as manager
+        import coordinator_delivery as delivery
+        sys.modules['hermes_cli.nixhomeserver_coordinator_tools'] = manager
+        sys.modules['hermes_cli.nixhomeserver_coordinator_delivery'] = delivery
+        return manager
+
+    def setup_recovery(self, state='blocked'):
+        self.conn.execute("UPDATE tasks SET title='[RECOVERY] stale prerequisite',assignee='head-coordinator',"
+                          "status=?,block_kind='capability',consecutive_failures=1,block_recurrences=1 WHERE id=?",
+                          (state,self.target));self.conn.commit()
+        supplier=kb.create_task(self.conn,title='Actual delivered repair',assignee='head-coordinator',triage=True)
+        with kb.write_txn(self.conn):
+            self.conn.execute("UPDATE tasks SET status='done' WHERE id=?",(supplier,))
+            self.conn.execute("INSERT INTO task_runs(id,task_id,profile,status,outcome,started_at,ended_at,summary) "
+                              "VALUES(43,?,'head-coordinator','done','completed',?,?, 'Actual repair delivered')",
+                              (supplier,self.now-10,self.now))
+            kb._append_event(self.conn,supplier,'claimed',{},run_id=43)
+            kb._append_event(self.conn,supplier,'spawned',{'pid':123},run_id=43)
+        self.evidence=[{'task_id':supplier,'run_id':43,'why':'Delivered the exact formerly missing prerequisite.'}]
+        scripts=self.root/'scripts';scripts.mkdir(exist_ok=True)
+        for name in ('review-verdict-guard.py','owner-blocker-authoring-guard.py','kanban-owner-alerts.py'):
+            (scripts/name).write_text((source/name).read_text())
+
+    @contextmanager
+    def adapted_native(self):
+        from coordinator_tools_adapter import adapt as board_adapt
+        originals={}
+        try:
+            for module,filename,names in ((kbc,'hermes_cli/kanban_db_connect.py',('write_txn',)),
+                                         (kb,'hermes_cli/kanban_db.py',('complete_task','block_task','schedule_task','_synthesize_ended_run','add_attachment'))):
+                import ast
+                adapted=board_adapt(filename,(native/filename).read_text())
+                tree=ast.parse(adapted)
+                for node in tree.body:
+                    if isinstance(node,ast.FunctionDef) and node.name in names:
+                        originals[(module,node.name)]=getattr(module,node.name)
+                        first=min([node.lineno]+[d.lineno for d in node.decorator_list])-1
+                        code='\n'.join(adapted.splitlines()[first:node.end_lineno])
+                        exec(compile(code,filename,'exec'),module.__dict__)
+            originals[(kb,'write_txn')]=kb.write_txn;kb.write_txn=kbc.write_txn
+            yield
+        finally:
+            for (module,name),value in originals.items():setattr(module,name,value)
+
+    def manage(self,action,**fields):
+        manager=self.manager()
+        version=manager.manage(kb,self.conn,self.target)['version']
+        return manager.manage(kb,self.conn,self.target,action=action,expected_version=version,
+                              reason='Input supplier: agent. Existing native evidence satisfies this recovery only.',**fields)
+
+    def test_board_completion_uses_actual_evidence_without_starting_worker(self):
+        self.setup_recovery()
+        historical=self.dump()[1]
+        with self.adapted_native():
+            result=self.manage('complete',evidence=self.evidence)
+        self.assertEqual('done',result['status'])
+        self.assertEqual(historical,self.dump()[1][:-1])
+        closing=self.dump()[1][-1]
+        self.assertEqual(closing['started_at'],closing['ended_at'])
+        metadata=json.loads(closing['metadata'])
+        self.assertEqual(self.actor,metadata['coordinator_action']['actor_task'])
+        self.assertEqual(42,metadata['coordinator_action']['actor_run'])
+        self.assertEqual('board-management',metadata['execution_origin'])
+        self.assertEqual(0,self.conn.execute("SELECT count(*) FROM task_events WHERE task_id=? AND kind IN ('claimed','spawned')",(self.target,)).fetchone()[0])
+
+    def test_board_completion_handles_scheduled_and_triage_without_unblock(self):
+        for status in ('scheduled','triage','todo'):
+            with self.subTest(status=status):
+                self.setup_recovery(status)
+                with self.adapted_native():self.manage('complete',evidence=self.evidence)
+                self.assertEqual('done',kb.get_task(self.conn,self.target).status)
+                self.assertEqual(0,self.conn.execute("SELECT count(*) FROM task_events WHERE task_id=? AND kind='unblocked'",(self.target,)).fetchone()[0])
+                self.conn.execute('DELETE FROM task_runs WHERE id=43');self.conn.commit()
+
+    def test_board_management_refuses_forgery_delegates_other_boards_and_active_work(self):
+        self.setup_recovery()
+        manager=self.manager()
+        for env in ({'HERMES_KANBAN_RUN_ID':'999'},{'HERMES_PROFILE':'standard-implementer'}):
+            with patch.dict(os.environ,env),self.assertRaises(ValueError):manager.manage(kb,self.conn,self.target)
+        with delegated_child_context(),self.assertRaises(ValueError):manager.manage(kb,self.conn,self.target)
+        version=manager.manage(kb,self.conn,self.target)['version']
+        for update in ("status='running'","worker_pid=999","claim_lock='other'","claim_expires=1"):
+            self.conn.execute('UPDATE tasks SET '+update+' WHERE id=?',(self.target,));self.conn.commit()
+            with self.assertRaises(ValueError):self.manage('complete',evidence=self.evidence)
+            self.conn.execute("UPDATE tasks SET status='blocked',worker_pid=NULL,claim_lock=NULL,claim_expires=NULL WHERE id=?",(self.target,));self.conn.commit()
+        other=kbc.connect(db_path=self.root/'other.db')
+        try:
+            with self.assertRaises(ValueError):manager.manage(kb,other,self.target)
+        finally:other.close()
+        kb.edit_task(self.conn,self.target,body='Concurrent amendment')
+        with self.adapted_native(),self.assertRaisesRegex(ValueError,'changed'):
+            manager.manage(kb,self.conn,self.target,action='complete',expected_version=version,
+                           reason='Stale',evidence=self.evidence)
+
+    def test_board_completion_preserves_review_owner_and_execution_gates(self):
+        self.setup_recovery()
+        for update in ("assignee='feature-reviewer'","assignee='standard-implementer'", "block_kind='needs_input'", "goal_mode=1", "title='[FEATURE TRACKER] Keep open'"):
+            baseline=self.dump()
+            self.conn.execute('UPDATE tasks SET '+update+' WHERE id=?',(self.target,));self.conn.commit()
+            held=self.dump()
+            with self.adapted_native(),self.assertRaises(ValueError):self.manage('complete',evidence=self.evidence)
+            self.assertEqual(held,self.dump())
+            self.conn.execute("UPDATE tasks SET assignee='head-coordinator',block_kind='capability',goal_mode=0,title='[RECOVERY] stale prerequisite' WHERE id=?",(self.target,));self.conn.commit()
+        parent=kb.create_task(self.conn,title='Unfinished input',assignee='standard-implementer',triage=True)
+        kb.link_tasks(self.conn,parent,self.target)
+        with self.adapted_native(),self.assertRaises(ValueError):self.manage('complete',evidence=self.evidence)
+
+    def test_board_completion_requires_real_finished_run_evidence(self):
+        self.setup_recovery()
+        for evidence in ([],[{'task_id':self.actor,'run_id':42,'why':'Still active'}],
+                         [{'task_id':self.target,'run_id':43,'why':'Wrong task'}],
+                         [{'task_id':self.evidence[0]['task_id'],'run_id':999,'why':'Invented'}]):
+            held=self.dump()
+            with self.adapted_native(),self.assertRaises(ValueError):self.manage('complete',evidence=evidence)
+            self.assertEqual(held,self.dump())
+
+    def fresh_target(self, status='todo'):
+        self.setup_recovery()
+        self.conn.execute("UPDATE tasks SET status=?,assignee='standard-implementer',skills='[]',block_kind=NULL,"
+                          "consecutive_failures=0,block_recurrences=0,last_failure_error=NULL,body='Goal: bounded existing work' WHERE id=?",
+                          (status,self.target));self.conn.commit()
+
+    def test_board_parking_records_the_coordinator_and_preserves_failure_budget(self):
+        self.setup_recovery('triage')
+        with self.adapted_native():self.manage('schedule')
+        row=kb.get_task(self.conn,self.target)
+        self.assertEqual('scheduled',row.status)
+        self.assertEqual(1,row.consecutive_failures)
+        self.assertEqual(1,row.block_recurrences)
+        closing=self.dump()[1][-1]
+        self.assertEqual('head-coordinator',closing['profile'])
+        self.assertEqual('board-management',json.loads(closing['metadata'])['execution_origin'])
+
+    def test_board_blocks_and_specs_generic_triage_without_starting_it(self):
+        self.fresh_target('triage')
+        with self.adapted_native():
+            self.manage('specify',title='Prepared bounded work',body='Goal: perform the existing bounded operation. Verify: exact result recorded.')
+            self.assertEqual('ready',kb.get_task(self.conn,self.target).status)
+            self.manage('block',kind='capability')
+        self.assertEqual('blocked',kb.get_task(self.conn,self.target).status)
+        self.assertEqual('capability',kb.get_task(self.conn,self.target).block_kind)
+
+    def test_board_assignment_and_promotion_keep_role_and_dependency_gates(self):
+        self.fresh_target()
+        with self.adapted_native():
+            self.manage('assign',assignee='local-implementer')
+            self.assertEqual('local-implementer',kb.get_task(self.conn,self.target).assignee)
+            self.manage('promote')
+        self.assertEqual('ready',kb.get_task(self.conn,self.target).status)
+        with self.adapted_native(),self.assertRaises(ValueError):self.manage('assign',assignee='standard-implementer')
+
+    def test_board_reclaim_contains_dead_worker_without_replenishing_attempts(self):
+        self.setup_recovery()
+        with kb.write_txn(self.conn):
+            self.conn.execute("INSERT INTO task_runs(id,task_id,profile,status,started_at,claim_lock) VALUES(44,?,'head-coordinator','running',?,'dead')",(self.target,self.now))
+            self.conn.execute("UPDATE tasks SET status='running',claim_lock='dead',current_run_id=44,worker_pid=99999999,"
+                              "worker_started_at='dead-fingerprint',consecutive_failures=2,max_retries=2 WHERE id=?",(self.target,))
+        with self.adapted_native():self.manage('reclaim')
+        row=kb.get_task(self.conn,self.target)
+        self.assertEqual('triage',row.status)
+        self.assertEqual((2,2),(row.consecutive_failures,row.max_retries))
+        self.assertIsNone(row.current_run_id)
+
+    def test_board_archive_only_handles_terminal_records(self):
+        self.setup_recovery()
+        with self.adapted_native(),self.assertRaises(ValueError):self.manage('archive')
+        self.conn.execute("UPDATE tasks SET status='done',block_kind=NULL WHERE id=?",(self.target,));self.conn.commit()
+        with self.adapted_native():self.manage('archive')
+        self.assertEqual('archived',kb.get_task(self.conn,self.target).status)
+
+    def test_board_completion_rechecks_concurrent_edits_under_native_write_lock(self):
+        import sqlite3
+        self.setup_recovery()
+        with self.adapted_native():
+            real=kb.complete_task
+            def concurrent(conn,tid,**kwargs):
+                with sqlite3.connect(self.path) as other:
+                    other.execute("UPDATE tasks SET body='Concurrent changed scope' WHERE id=?",(tid,))
+                return real(conn,tid,**kwargs)
+            with patch.object(kb,'complete_task',concurrent),self.assertRaisesRegex(ValueError,'changed'):
+                self.manage('complete',evidence=self.evidence)
+        self.assertEqual('blocked',kb.get_task(self.conn,self.target).status)
+        self.assertFalse(self.conn.execute("SELECT 1 FROM task_events WHERE task_id=? AND kind='coordinator_board_action'",(self.target,)).fetchone())
+
+    @contextmanager
+    def adapted_tools(self):
+        from coordinator_tools_adapter import adapt as board_adapt, SCHEMA
+        import tools.kanban_tools_schemas as schemas
+        from tools.registry import registry
+        saved=dict(registry._tools)
+        sentinel=object()
+        prior_schemas={name:schemas.__dict__.get(name,sentinel) for name in
+                       ('KANBAN_MANAGE_SCHEMA','KANBAN_DELIVER_SCHEMA','KANBAN_ROUTE_SCHEMA')}
+        module=types.ModuleType('tools.coordinator_fixture')
+        try:
+            exec(SCHEMA,schemas.__dict__)
+            module.__file__=str(native/'tools/kanban_tools.py')
+            exec(compile(board_adapt('tools/kanban_tools.py',(native/'tools/kanban_tools.py').read_text()),
+                         module.__file__,'exec'),module.__dict__)
+            yield module
+        finally:
+            registry._tools.clear();registry._tools.update(saved)
+            for name,value in prior_schemas.items():
+                if value is sentinel:schemas.__dict__.pop(name,None)
+                else:schemas.__dict__[name]=value
+
+    def test_board_tool_catalog_and_sibling_attachment_delivery(self):
+        import base64
+        self.setup_recovery()
+        with self.adapted_native(),self.adapted_tools() as tools:
+            self.assertTrue(tools._check_kanban_orchestrator_mode())
+            self.assertTrue(tools._check_kanban_manage_mode())
+            for name in ('kanban_manage','kanban_deliver_file','kanban_route'):
+                self.assertEqual(name,tools.registry.get_schema(name)['name'])
+            listing=json.loads(tools._handle_list({'board':'testboard'}))
+            self.assertNotIn('error',listing)
+            delivery=json.loads(tools._handle_attach({'board':'testboard','task_id':self.target,
+                'filename':'public-evidence.txt','content_base64':base64.b64encode(b'non-secret evidence').decode()}))
+            self.assertNotIn('error',delivery)
+            attachments=kb.list_attachments(self.conn,self.target)
+            self.assertEqual(b'non-secret evidence',Path(attachments[0].stored_path).read_bytes())
+            ordinary=json.loads(tools._handle_complete({'board':'testboard','task_id':self.target,'result':'Wrong surface'}))
+            self.assertIn('error',ordinary)
+            inspection=json.loads(tools._handle_manage({'board':'testboard','task_id':self.target}))
+            self.assertIn('version',inspection)
+            with delegated_child_context():
+                self.assertFalse(tools._check_kanban_manage_mode())
+                self.assertFalse(tools._check_kanban_orchestrator_mode())
+            self.assertIn('error',json.loads(tools._handle_list({'board':'otherboard'})))
+            self.assertIn('error',json.loads(tools._handle_route({'target_board':'missing','message':'No implicit target'})))
+
+    def test_board_completion_keeps_rejected_review_and_laundered_roles_held(self):
+        self.setup_recovery()
+        parent=kb.create_task(self.conn,title='Verify required source',assignee='feature-reviewer',triage=True)
+        self.conn.execute("UPDATE tasks SET status='done' WHERE id=?",(parent,))
+        self.conn.execute("INSERT INTO task_runs(id,task_id,profile,status,outcome,started_at,ended_at,metadata) VALUES(44,?,'feature-reviewer','done','completed',?,?,?)",
+                          (parent,self.now-5,self.now,json.dumps({'verdict':'request-changes'})))
+        self.conn.commit();kb.link_tasks(self.conn,parent,self.target)
+        held=self.dump()
+        with self.adapted_native(),self.assertRaises(ValueError):self.manage('complete',evidence=self.evidence)
+        self.assertEqual(held,self.dump())
+
+    def test_native_file_delivery_verifies_and_records_bytes_without_model_payload(self):
+        from coordinator_delivery import deliver_file
+        self.setup_recovery();manager=self.manager()
+        folder=self.work/'.tmp'/self.actor;folder.mkdir(parents=True)
+        source_file=folder/'evidence.bin';source_file.write_bytes(b'non-secret native evidence')
+        digest=hashlib.sha256(source_file.read_bytes()).hexdigest()
+        version=manager.manage(kb,self.conn,self.target)['version']
+        with self.adapted_native():
+            result=deliver_file(kb,self.conn,self.target,expected_version=version,source_task_id=self.actor,
+                                source_path=str(source_file),sha256=digest,classification='non-secret')
+        actual=kb.get_attachment(self.conn,result['attachment_id'])
+        self.assertEqual(source_file.read_bytes(),Path(actual.stored_path).read_bytes())
+        self.assertEqual(digest,result['sha256'])
+        self.assertEqual('head-coordinator',actual.uploaded_by)
+        with self.adapted_native():
+            again=deliver_file(kb,self.conn,self.target,expected_version=version,source_task_id=self.actor,
+                              source_path=str(source_file),sha256=digest,classification='non-secret')
+        self.assertTrue(again['reused']);self.assertEqual(result['attachment_id'],again['attachment_id'])
+
+    def test_file_delivery_preserves_upload_cap_and_prepares_large_input_on_parked_card(self):
+        from coordinator_delivery import deliver_file
+        self.setup_recovery();manager=self.manager()
+        self.conn.execute('UPDATE tasks SET workspace_path=? WHERE id=?',(str(self.work),self.target));self.conn.commit()
+        folder=self.work/'.tmp'/self.actor;folder.mkdir(parents=True)
+        path=folder/'capsule.bin';path.write_bytes(b'fixture-only bytes'*256)
+        digest=hashlib.sha256(path.read_bytes()).hexdigest()
+        with self.adapted_native(),patch.object(kb,'KANBAN_ATTACHMENT_MAX_BYTES',2048):
+            result=deliver_file(kb,self.conn,self.target,expected_version=manager.manage(kb,self.conn,self.target)['version'],
+                source_task_id=self.actor,source_path=str(path),sha256=digest,classification='non-secret')
+        self.assertEqual('non-secret-task-local-input',result['kind'])
+        self.assertEqual(path.read_bytes(),Path(result['stored_path']).read_bytes())
+        self.assertEqual('blocked',kb.get_task(self.conn,self.target).status)
+        manifest=json.loads(Path(kb.get_attachment(self.conn,result['attachment_id']).stored_path).read_text())
+        self.assertEqual(digest,manifest['sha256'])
+
+    def test_file_delivery_rejects_wrong_hash_secrets_and_active_destination(self):
+        from coordinator_delivery import deliver_file
+        self.setup_recovery();manager=self.manager()
+        folder=self.work/'.tmp'/self.actor;folder.mkdir(parents=True)
+        path=folder/'evidence.bin';path.write_bytes(b'public fixture')
+        fields=dict(source_task_id=self.actor,source_path=str(path),sha256='0'*64,classification='non-secret')
+        with self.adapted_native(),self.assertRaisesRegex(ValueError,'SHA256'):
+            deliver_file(kb,self.conn,self.target,expected_version=manager.manage(kb,self.conn,self.target)['version'],**fields)
+        fields['sha256']=hashlib.sha256(path.read_bytes()).hexdigest();fields['classification']='secret'
+        with self.adapted_native(),self.assertRaises(ValueError):
+            deliver_file(kb,self.conn,self.target,expected_version=manager.manage(kb,self.conn,self.target)['version'],**fields)
+        fields['classification']='non-secret'
+        self.conn.execute("UPDATE tasks SET status='running' WHERE id=?",(self.target,));self.conn.commit()
+        with self.adapted_native(),self.assertRaises(ValueError):
+            deliver_file(kb,self.conn,self.target,expected_version=manager.manage(kb,self.conn,self.target)['version'],**fields)
+        self.assertEqual([],kb.list_attachments(self.conn,self.target))
+
+    def test_cross_board_requests_use_fixed_recipient_without_foreign_mutation_or_dispatch(self):
+        from coordinator_delivery import route_request
+        self.manager()
+        other_path=self.root/'kanban/boards/otherboard/kanban.db';other_path.parent.mkdir(parents=True)
+        other_path.with_name('board.json').write_text('{}')
+        other=kbc.connect(db_path=other_path);other.close()
+        before=other_path.read_bytes()
+        records={}
+        class Queue:
+            def defer(queue,key,job,content,profile,home):
+                self.assertEqual('head-coordinator',profile)
+                self.assertEqual(self.root/'profiles/head-coordinator',home)
+                records.setdefault(key,content);return {'status':'queued'}
+        queue=Queue()
+        first=route_request(kb,self.conn,target_board='otherboard',message='Supply the existing named prerequisite; preserve all gates.',delivery=queue)
+        second=route_request(kb,self.conn,target_board='otherboard',message='Supply the existing named prerequisite; preserve all gates.',delivery=queue)
+        self.assertEqual(first,second);self.assertEqual(1,len(records))
+        self.assertEqual(before,other_path.read_bytes())
+        self.assertIn('not owner approval',next(iter(records.values())))
+        self.assertIn('unverified',first['completion'])
+        with delegated_child_context(),self.assertRaises(ValueError):
+            route_request(kb,self.conn,target_board='otherboard',message='Forbidden child route',delivery=queue)
+        with self.assertRaises(ValueError):
+            route_request(kb,self.conn,target_board='missing',message='No implicit board',delivery=queue)
 
 unittest.main(argv=['coordinator-repair'],verbosity=2)
 PY

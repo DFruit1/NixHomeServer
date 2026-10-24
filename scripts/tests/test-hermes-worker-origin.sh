@@ -578,7 +578,7 @@ assert not marker.exists()
 # Qualify the actual maintained installers and fleet preimage/readback/rollback
 # on confined copies. Candidate origin can be upgraded in the SAME transaction.
 for name in ('run_agent.py','tools/environments/local.py','tools/kanban_tools.py',
-             'tools/kanban_tools_schemas.py','hermes_cli/kanban_db.py','hermes_cli/kanban.py'):
+             'tools/kanban_tools_schemas.py','hermes_cli/kanban_db.py','hermes_cli/kanban_db_connect.py','hermes_cli/kanban.py'):
  path=root/'hermes-agent'/name;path.parent.mkdir(parents=True,exist_ok=True)
  path.write_text((native/name).read_text())
 monitor=root/'hermes-agent/cron/nixhomeserver_capability_recovery.py'
@@ -596,7 +596,8 @@ _,recovery_pending,guards=ri.pending_files(root,origin_candidate=candidate)
 # A rollback-compatible baseline retains the candidate's finite guards. This
 # fixture exercises an origin upgrade, never an unsafe guard removal.
 for path,before,after in recovery_pending:
- if path.name in {'nixhomeserver_resume_recovered.py','kanban_db.py','kanban.py'}:
+ if path.name in {'nixhomeserver_resume_recovered.py','nixhomeserver_coordinator_tools.py',
+                  'nixhomeserver_coordinator_repair.py','kanban_db_connect.py','kanban_db.py','kanban.py'}:
   path.parent.mkdir(parents=True,exist_ok=True);path.write_text(after)
 _,recovery_pending,guards=ri.pending_files(root,origin_candidate=candidate)
 pending={path:after for path,before,after in origin_pending+recovery_pending}

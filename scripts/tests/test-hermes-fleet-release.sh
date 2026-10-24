@@ -21,6 +21,97 @@ spec.loader.exec_module(release)
 
 
 class ReleaseTest(unittest.TestCase):
+    def test_coordinator_component_preserves_other_policy_and_refuses_native_drift(self):
+        source=Path(sys.argv[1])
+        native=self.root/'hermes-agent/hermes_cli/nixhomeserver_coordinator_repair.py'
+        native.parent.mkdir(parents=True);native.write_text('old = True\n')
+        soul=self.root/'profiles/head-coordinator/SOUL.md';soul.parent.mkdir(parents=True)
+        soul.write_text('<!-- hermes-coordinator-role -->\nold role\n<!-- /hermes-coordinator-role -->\nIndependent policy\n')
+        release.install_files(self.root,{native:native.read_text(),soul:soul.read_text()},'a'*64)
+        manifest_path=release.journal(self.root,'a'*64)
+        manifest=json.loads(manifest_path.read_text());manifest['status']='active';manifest_path.write_text(json.dumps(manifest))
+        (self.root/'state/fleet/current.json').write_text(json.dumps({'revision':'a'*64,'status':'active'}))
+        soul.write_text(soul.read_text().replace('Independent policy','Independent newer policy'))
+        before=soul.read_bytes();history=manifest_path.read_bytes();retained=[]
+        with patch.object(release,'source_changes',return_value={native:'new = True\n'}):
+            pending=release.coordinator_component_files(self.root,source,owners={},retained=retained)
+        self.assertIn('Independent newer policy',pending[soul])
+        self.assertIn('kanban_manage',pending[soul])
+        self.assertEqual(before,soul.read_bytes());self.assertEqual(history,manifest_path.read_bytes())
+        self.assertEqual(['profiles/head-coordinator/SOUL.md'],retained)
+        self.assertEqual('new = True\n',pending[native])
+        native.write_text('unrelated native edit\n')
+        with patch.object(release,'source_changes',return_value={native:'new = True\n'}),self.assertRaisesRegex(ValueError,'drift'):
+            release.coordinator_component_files(self.root,source,owners={},retained=[])
+
+    def test_coordinator_component_cannot_hide_unknown_or_secret_file_drift(self):
+        source=Path(sys.argv[1])
+        for name in ('hermes-agent/tools/kanban_tools.py','scripts/worker_origin.py','private.env'):
+            with self.subTest(name=name):
+                path=self.root/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text('old\n')
+                revision=release.sha(name.encode())
+                release.install_files(self.root,{path:'old\n'},revision)
+                manifest_path=release.journal(self.root,revision)
+                manifest=json.loads(manifest_path.read_text());manifest['status']='active';manifest_path.write_text(json.dumps(manifest))
+                (self.root/'state/fleet/current.json').write_text(json.dumps({'revision':revision,'status':'active'}))
+                path.write_text('changed\n')
+                with self.assertRaisesRegex(ValueError,'drift'):
+                    release.coordinator_component_files(self.root,source,owners={},retained=[])
+
+    def test_coordinator_component_does_not_adopt_model_or_permission_changes(self):
+        self.adoption_fixture()
+        with self.assertRaisesRegex(ValueError,'solely the additional fail-closed'):
+            release.coordinator_component_files(self.root,Path(sys.argv[1]),owners={},retained=[])
+
+    def test_coordinator_component_binds_inputs_before_transforming_them(self):
+        source=Path(sys.argv[1]);soul=self.root/'profiles/head-coordinator/SOUL.md'
+        soul.parent.mkdir(parents=True);soul.write_text('<!-- hermes-coordinator-role -->\nold role\n<!-- /hermes-coordinator-role -->\nIndependent policy\n')
+        release.install_files(self.root,{soul:soul.read_text()},'a'*64)
+        manifest_path=release.journal(self.root,'a'*64)
+        manifest=json.loads(manifest_path.read_text());manifest['status']='active';manifest_path.write_text(json.dumps(manifest))
+        (self.root/'state/fleet/current.json').write_text(json.dumps({'revision':'a'*64,'status':'active'}))
+        def concurrent(*args,**kwargs):
+            soul.write_text(soul.read_text()+'Concurrent operator policy\n');return {}
+        with patch.object(release,'source_changes',side_effect=concurrent),self.assertRaisesRegex(ValueError,'changed during preparation'):
+            release.coordinator_component_files(self.root,source,owners={},retained=[])
+        self.assertIn('Concurrent operator policy',soul.read_text())
+
+    def test_coordinator_component_retains_only_prompt_changes_in_existing_schedules(self):
+        item={'profile':'board-steward','id':'scan','before':{'prompt':'old','enabled':False},
+              'after':{'prompt':'old','enabled':False}}
+        manifest={'schedule':{'steward':[item]}}
+        with patch.object(release,'check_schedules',return_value=['steward:scan']),patch.object(release,'observed',return_value={'prompt':'new','enabled':False}):
+            kept=release.coordinator_schedule_updates(self.root,manifest)
+        self.assertEqual(release.sha(b'new'),kept[0]['prompt_sha256'])
+        with patch.object(release,'check_schedules',return_value=['steward:scan']),patch.object(release,'observed',return_value={'prompt':'new','enabled':True}),self.assertRaises(ValueError):
+            release.coordinator_schedule_updates(self.root,manifest)
+
+    def test_coordinator_component_publication_rechecks_original_inputs(self):
+        self.adoption_fixture()
+        target=self.root/'race.py';target.write_text('old = True\n')
+        args=SimpleNamespace(action='plan',source=self.adoption_source,component='coordinator-tools',
+                             activate_steward=False,adopt_config=None,revision=None)
+        def pending(root,source,plan,**kwargs):
+            kwargs['inputs']['race.py']={'sha256':release.sha(target.read_bytes()),'mode':target.stat().st_mode&0o777}
+            target.write_text('concurrent = True\n')
+            return {target:'reviewed = True\n'}
+        with patch.object(release,'source_revision',return_value='c'*40),patch.object(release,'schedule_plan',return_value=self.adoption_plan),patch.object(release,'pending_files',side_effect=pending),patch.object(release,'runtime_dependencies',return_value={}),self.assertRaisesRegex(ValueError,'after preparation'):
+            release.operate(args,self.root)
+        self.assertEqual('concurrent = True\n',target.read_text())
+
+    def test_native_dependency_publication_precedes_new_tool_entrypoints(self):
+        names=['hermes-agent/tools/kanban_tools.py','hermes-agent/hermes_cli/kanban_db_connect.py',
+               'hermes-agent/tools/kanban_tools_schemas.py','hermes-agent/hermes_cli/nixhomeserver_coordinator_tools.py']
+        for name in names:(self.root/name).parent.mkdir(parents=True,exist_ok=True)
+        writes=[];real=release.atomic_write
+        def record(path,*args,**kwargs):
+            if path.relative_to(self.root).as_posix() in names:writes.append(path.relative_to(self.root).as_posix())
+            return real(path,*args,**kwargs)
+        with patch.object(release,'atomic_write',side_effect=record):
+            release.install_files(self.root,{self.root/name:'value = True\n' for name in names},'d'*40)
+        self.assertLess(writes.index(names[3]),writes.index(names[1]))
+        self.assertLess(writes.index(names[2]),writes.index(names[0]))
+
     def adoption_fixture(self):
         self.config=self.root/'profiles/feature-reviewer/config.yaml'
         self.config.parent.mkdir(parents=True)
@@ -650,12 +741,13 @@ api_key: PRIVATE
 
     def test_source_worker_transforms_use_selected_source_adapters(self):
         source=self.root/'source';source.mkdir()
-        for name in ('hermes_common','hermes_config','coordinator_trial','worker_runtime_adapter','fleet_runtime_adapter','coordinator_repair_adapter','recovered_resume_adapter','resume_recovered','worker_origin_adapter'):
+        for name in ('hermes_common','hermes_config','coordinator_trial','worker_runtime_adapter','fleet_runtime_adapter','coordinator_repair_adapter','coordinator_tools_adapter','recovered_resume_adapter','resume_recovered','worker_origin_adapter'):
             (source/(name+'.py')).write_text('ORIGIN = "source"\n')
         (source/'coordinator_repair.py').write_text('revision = \"qualified\"\n')
         (source/'coordinator_repair_adapter.py').write_text(
             'def adapt(name,text): return text+"-source-amended"\n')
         (source/'recovered_resume_adapter.py').write_text('def adapt(name,text): return text\n')
+        (source/'coordinator_tools_adapter.py').write_text('def adapt(name,text): return text+"-source-managed"\n')
         (source/'install-worker-origin.py').write_text(
             'def pending_files(root):\n'
             '    return [(root/"hermes-agent/hermes_cli/nixhomeserver_worker_origin.py",None,"origin-source")]\n')
@@ -676,7 +768,7 @@ api_key: PRIVATE
         self.assertEqual('origin-source',result[self.root/'hermes-agent/hermes_cli/nixhomeserver_worker_origin.py'])
         self.assertEqual('qualified-resume',result[self.root/'hermes-agent/hermes_cli/nixhomeserver_resume_recovered.py'])
         for name,base in [('kanban_tools.py','handler'),('kanban_tools_schemas.py','schema')]:
-            self.assertEqual(base+'-source-amended',result[self.root/'hermes-agent/tools'/name])
+            self.assertEqual(base+'-source-amended-source-managed',result[self.root/'hermes-agent/tools'/name])
         self.assertEqual('revision = \"qualified\"\n',result[self.root/'hermes-agent/hermes_cli/nixhomeserver_coordinator_repair.py'])
         self.assertEqual(previous_path,sys.path)
         (self.root/'missing-prerequisite').touch()

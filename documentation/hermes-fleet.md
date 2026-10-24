@@ -133,6 +133,12 @@ Genuine technical capability holds still use exact-version coordinator recovery.
 
 ## Updating technical-recovery helpers
 
+The [coordinator capability inventory](hermes-coordinator-capabilities.md) maps
+every duty to its supported tool/helper and retained gate. Native coordinator
+workers can list their board, deliver sibling attachments and use authenticated
+`kanban_manage` for exact-version parked-card management. Routine stale recovery
+closure consumes existing native evidence directly; it needs no new worker.
+
 Native terminal ordinary-unblock protection is owned by `worker_origin.py` and
 the version-checked local launch adapter, with the CLI/API guards owned by
 `install-recovered-resume.py`. Fleet release composition includes those sources

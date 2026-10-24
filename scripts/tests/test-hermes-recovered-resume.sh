@@ -280,7 +280,7 @@ class InstallerTest(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(prefix='hermes-recovered-install-');self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name)
-        for name in ('tools/kanban_tools.py','tools/kanban_tools_schemas.py','hermes_cli/kanban_db.py','hermes_cli/kanban.py'):
+        for name in ('tools/kanban_tools.py','tools/kanban_tools_schemas.py','hermes_cli/kanban_db.py','hermes_cli/kanban_db_connect.py','hermes_cli/kanban.py'):
             text=(NATIVE/name).read_text()
             if name in EDITS:text=fixture_native_preimage(name,text)
             target=self.root/'hermes-agent'/name;target.parent.mkdir(parents=True,exist_ok=True);target.write_text(text)
@@ -349,16 +349,25 @@ class InstallerTest(unittest.TestCase):
         self.assertEqual((SOURCE/'resume_recovered.py').read_text(),(self.root/'hermes-agent/hermes_cli/nixhomeserver_resume_recovered.py').read_text())
 
     def test_already_installed_fixture_is_unchanged_without_backups(self):
+        from coordinator_tools_adapter import adapt as manage_adapt
         expected={}
         for name in EDITS:
             target=self.root/'hermes-agent'/name
             updated=adapt(name,target.read_text())
             if name not in ('hermes_cli/kanban_db.py','hermes_cli/kanban.py'):updated=amend_adapt(name,updated)
+            if name != 'hermes_cli/kanban.py':updated=manage_adapt(name,updated)
             target.write_text(updated);expected[target]=target.read_bytes()
         helper=self.root/'hermes-agent/hermes_cli/nixhomeserver_resume_recovered.py'
         helper.write_bytes((SOURCE/'resume_recovered.py').read_bytes());expected[helper]=helper.read_bytes()
         helper=self.root/'hermes-agent/hermes_cli/nixhomeserver_coordinator_repair.py'
         helper.write_bytes((SOURCE/'coordinator_repair.py').read_bytes());expected[helper]=helper.read_bytes()
+        helper=self.root/'hermes-agent/hermes_cli/nixhomeserver_coordinator_tools.py'
+        helper.write_bytes((SOURCE/'coordinator_tools.py').read_bytes());expected[helper]=helper.read_bytes()
+        helper=self.root/'hermes-agent/hermes_cli/nixhomeserver_coordinator_delivery.py'
+        helper.write_bytes((SOURCE/'coordinator_delivery.py').read_bytes());expected[helper]=helper.read_bytes()
+        connection=self.root/'hermes-agent/hermes_cli/kanban_db_connect.py'
+        connection.write_text(manage_adapt('hermes_cli/kanban_db_connect.py',connection.read_text()))
+        expected[connection]=connection.read_bytes()
         self.assertEqual(0,self.installer.install(self.root,True))
         self.assertEqual(0,self.installer.install(self.root))
         self.assertFalse((self.root/'backups').exists())

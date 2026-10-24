@@ -14,6 +14,7 @@ import sys
 from hermes_common import atomic_write, backup_file
 from recovered_resume_adapter import adapt
 from coordinator_repair_adapter import adapt as amend_adapt
+from coordinator_tools_adapter import adapt as manage_adapt
 from resume_recovered import validate_native_source
 
 SOURCE = Path(__file__).resolve().parent
@@ -40,7 +41,9 @@ def pending_files(root, *, origin_candidate=None):
     pending = []
     for source, relative in (
             ('resume_recovered.py', 'hermes_cli/nixhomeserver_resume_recovered.py'),
-            ('coordinator_repair.py', 'hermes_cli/nixhomeserver_coordinator_repair.py')):
+            ('coordinator_repair.py', 'hermes_cli/nixhomeserver_coordinator_repair.py'),
+            ('coordinator_tools.py', 'hermes_cli/nixhomeserver_coordinator_tools.py'),
+            ('coordinator_delivery.py', 'hermes_cli/nixhomeserver_coordinator_delivery.py')):
         code = (SOURCE / source).read_text()
         compile(code, source, 'exec')
         target = native / relative
@@ -64,10 +67,17 @@ def pending_files(root, *, origin_candidate=None):
         after = adapt(name, before)
         if name != 'hermes_cli/kanban.py':
             after = amend_adapt(name, after)
+        if name != 'hermes_cli/kanban.py':
+            after = manage_adapt(name, after)
         pending.append((target, before, after))
+    connection = native / 'hermes_cli/kanban_db_connect.py'
+    before = _read(connection)
+    if before is None:
+        raise ValueError('Native transaction source is missing')
+    pending.append((connection, before, manage_adapt('hermes_cli/kanban_db_connect.py', before)))
     # Keep the guarded database adapter last: phase_source is a preflight
     # dependency for every earlier replacement, and its phase APIs are unchanged.
-    pending.append((phase, phase_source, adapt('hermes_cli/kanban_db.py', phase_source)))
+    pending.append((phase, phase_source, manage_adapt('hermes_cli/kanban_db.py', adapt('hermes_cli/kanban_db.py', phase_source))))
     guards = [(phase, phase_source), (origin, origin_before), (monitor, monitor_source)]
     return root, pending, guards
 

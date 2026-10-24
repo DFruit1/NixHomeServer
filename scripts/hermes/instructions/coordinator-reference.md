@@ -90,6 +90,12 @@ Native `kanban_create` requires the board slug: name the board you route on.
 You cannot create on another board from a dispatched worker, and a genuinely
 cross-board card belongs to that board's coordinator rather than a foreign-slug
 retry.
+Use native `kanban_route` to queue one bounded request to the fixed
+head-coordinator recipient for that owning board. Name its existing open
+coordinator task when present, or request scoped admission. The request retains
+the actual source board/task/run, changes no pins and writes no foreign card.
+It grants no approval. Read back actual owning-board results; queued is not
+started, repaired or accepted. Do not create duplicate handoff/controller chains.
 Keep technical evidence on the existing relevant card; do not narrate routine
 events to the owner's phone. Report decisions, exact checks, actual queue state
 and residual risks. A done review is delivered evidence; only accept is acceptance.
@@ -209,6 +215,56 @@ recorded evidence; preserve genuine prerequisites and owner decisions. Current
 feature priorities come from the board and HERMES_PRIORITIES.md, not old task IDs.
 
 ### Board surgery
+
+An authenticated native head-coordinator worker can list its own board with
+`kanban_list`. Use `kanban_manage({"task_id":"t_CARD"})` to inspect a sibling's
+current `version`, then pass `action`, that `expected_version` and a substantive
+`reason` to one management operation. This is a supported role-specific tool;
+ordinary lifecycle calls still belong to their own worker. Never shed pins or
+use a terminal to impersonate this operation.
+
+`complete` closes a parked coordinator handoff without dispatch. Supply
+`evidence:[{"task_id":"t_SUPPLIER","run_id":123,"why":"The exact missing input
+was delivered and the original task actually ran."}]`, using actual latest
+finished native runs from this board. A blocked subsequent run may prove the
+old prerequisite was repaired; it does not prove full feature acceptance.
+Read the original contract and each result, keep later failures with their
+existing owner, and record only the scope now satisfied. Original implementation
+or review cards cannot become coordinator completions by reassignment. Current
+parents, review guards and structured delivery contracts still apply. Existing
+handoff metadata goes in `metadata`; it cannot forge a verdict or worker identity.
+The new zero-duration closing record identifies the actual coordinator actor
+task/run as board management and preserves historical failures.
+
+`block` checks the normal supplier/owner authoring policy and requires an actual
+linked unfinished input for dependency waits. `schedule` parks a genuine time or
+external-event wait. Both refuse active workers and retain budgets and history.
+`assign` routes eligible fresh/unassigned work, qualified reviewer peers or the
+retired planner lane; it cannot transfer failures, credential work into a cloud
+lane, native review handoffs or implementation into its own approver. `specify`
+prepares generic triage with explicit bounded title/body and preserved fences;
+`promote` only releases eligible ordinary work after prerequisites and execution
+checks. Capability holds retain `kanban_amend` plus versioned `kanban_unblock`.
+`reclaim` contains a demonstrably dead worker in capability triage without
+signalling a live process or replenishing attempts. `archive` accepts terminal
+records only. Every action consumes an exact card version under the native write
+lock, records the actual actor and returns readback; inspect again after change.
+
+Native `kanban_attach`/`kanban_attach_url` allow append-only delivery to sibling
+cards on this board, preserving size, filename and SSRF checks. Use native
+attachments for inputs; a comment naming a path is not delivery. Cross-board
+reads and versioned outputs use the existing read-only evidence helpers;
+cross-board mutations require their owning-board coordinator.
+
+Use `kanban_deliver_file` when file bytes should not pass through the model:
+inspect the parked destination version, then name the source card, canonical
+task-artifact path, exact recorded SHA256 and classification `non-secret`.
+Credential lanes, secret paths, symlinks, changed destinations and active workers
+refuse. Inputs within the native attachment cap become actual attachments;
+larger inputs up to 256 MiB use the prepared destination's `.tmp/task_id/inputs`
+with a native manifest. The upload cap is unchanged. Copies preserve existing
+bytes, matching retries reuse the verified result, and nothing is unblocked or
+accepted by delivery alone. Verify the returned stored path/hash and attachment.
 
 You may link/unlink real dependencies, promote demonstrably eligible work,
 schedule time waits and reassign between existing suitable lanes. Read remaining
