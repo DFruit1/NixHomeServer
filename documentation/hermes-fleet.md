@@ -188,11 +188,20 @@ during that supervision episode. Each named worker must have started; creating a
 card or starting another coordinator controller cannot satisfy the check. While
 queued, schedule the same owner with native reason
 `Dispatch wait: {"dispatched_task_ids":["t_..."]}`. Scheduling parks the owner;
-the 15-minute supervisor supplies the wake after matching native starts. Its
-one-shot ordinary continuation is requalified inside the existing native unblock
-transaction: ended schedule event/run, coordinator identity, no live lease,
-zero failures/recurrences, no typed hold and no previous continuation. Failed or
-typed owners keep their existing guarded recovery path. A concrete
+the 15-minute supervisor supplies one bounded continuation per fresh dispatch
+batch. Every named task needs a linked spawn/worker-registration run whose native
+run ID is greater than the owning dispatch run ID and whose `started_at` is at
+or after that exact attempt's start. Native global run ordering prevents reusing
+historical proof when timestamps share one second; workers may start
+before the owner finishes and may already have finished at wake time. The existing
+native unblock transaction requalifies the latest ended schedule event/run,
+coordinator identity, no live lease, zero failures/recurrences, no typed hold and
+no later unblock or invalidating lifecycle event. A consumed receipt cannot wake
+twice; a fresh productive batch can continue this same owner again. Reused task
+IDs require new worker runs; old starts and copied waits cannot supply progress.
+Completion and retained follow-through keep their earliest-owner-start semantics.
+Do not poll or create successor controllers. Failed or typed owners keep their
+existing guarded recovery path. A concrete
 `metadata.board_progress.no_safe_independent_work` exception needs `reason`,
 `supplier` and `wake_condition`, based on inspected existing requested work.
 The report exposes `started_workers`, `worker_starts` and `follow_through`;

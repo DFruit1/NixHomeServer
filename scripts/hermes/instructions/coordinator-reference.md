@@ -43,13 +43,21 @@ finished. They establish execution only, never acceptance or delivery.
 
 If work is queued, call `kanban_schedule` on this same owner with reason exactly
 `Dispatch wait: {"dispatched_task_ids":["t_..."]}` and release its worker slot.
-Scheduling alone creates no timer. The 15-minute supervisor qualifies one native
-continuation after every named worker starts. The existing native unblock
-transaction rechecks the matching ended schedule event/run, coordinator identity,
-no live lease, zero failures/recurrences, no typed hold and no prior continuation.
+Scheduling alone creates no timer. The 15-minute supervisor qualifies one bounded
+native continuation per fresh dispatch batch: every named task needs a linked
+spawn/worker-registration run with a native run ID greater than the owning
+dispatch run ID and `started_at` at or after that attempt's start, including
+starts before the owner finishes. Global native run ordering excludes old
+worker proof even when timestamps share one second. The existing
+native unblock transaction rechecks the latest ended schedule event/run,
+coordinator identity, no live lease, zero failures/recurrences, no typed hold and
+no later unblock or invalidating lifecycle event. A prior consumed receipt does
+not prevent a new productive batch on this same owner. Reused task IDs need fresh
+worker runs; copying old IDs or a previous wait cannot authorize another wake.
+Completion and retained follow-through still cover the owner's whole episode.
 It preserves original task gates and cannot replenish a spent budget. Failed or
 typed supervision owners retain the existing qualified recovery path. Do not
-poll or create a successor controller. If no
+poll, reuse old starts or create a successor controller. If no
 safe independent work exists, inspect the available requested scopes and complete
 with `metadata.board_progress.no_safe_independent_work={reason,supplier,wake_condition}`.
 Name the exact missing input and its supplier (`agent`, `owner`, `model/provider`

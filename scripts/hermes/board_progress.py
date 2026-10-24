@@ -34,7 +34,7 @@ def productive(task):
             and not task['title'].startswith('[FEATURE TRACKER'))
 
 
-def starts(db, task_ids, *, since=0, current=False):
+def starts(db, task_ids, *, since=0, current=False, after_run_id=0):
     """A native claim alone is insufficient: bind an actual spawn to its run."""
     if not task_ids:
         return []
@@ -47,9 +47,9 @@ def starts(db, task_ids, *, since=0, current=False):
         't.current_run_id,t.status AS task_status FROM task_runs r '
         'JOIN task_events e ON e.run_id=r.id AND e.task_id=r.task_id '
         'JOIN tasks t ON t.id=r.task_id '
-        f'WHERE r.task_id IN ({marks}) AND r.started_at>=? '
+        f'WHERE r.task_id IN ({marks}) AND r.started_at>=? AND r.id>? '
         "AND e.kind IN ('spawned','worker_registered') AND e.created_at>=r.started_at "
-        + live + 'ORDER BY r.id,e.id', (*task_ids, since), limit=4000)
+        + live + 'ORDER BY r.id,e.id', (*task_ids, since, after_run_id), limit=4000)
     result = {}
     for row in rows:
         if not productive(row) or row['profile'] not in DELEGATE_ROLES:
@@ -72,11 +72,13 @@ def starts(db, task_ids, *, since=0, current=False):
 
 def scheduled_receipt(db, task_id):
     """Retain dispatch IDs in native schedule evidence across a continuation."""
-    event = db.execute("SELECT e.id,e.run_id,e.payload,r.profile,r.status,r.outcome,r.ended_at "
+    event = db.execute("SELECT e.id,e.run_id,e.payload,r.profile,r.status,r.outcome,r.started_at,r.ended_at "
         "FROM task_events e JOIN task_runs r ON r.id=e.run_id AND r.task_id=e.task_id "
         "WHERE e.task_id=? AND e.kind='scheduled' ORDER BY e.id DESC LIMIT 1", (task_id,)).fetchone()
     if (not event or event['profile'] != 'head-coordinator' or event['status'] != 'scheduled'
-            or event['outcome'] != 'scheduled' or event['ended_at'] is None):
+            or event['outcome'] != 'scheduled' or type(event['started_at']) is not int
+            or event['started_at'] <= 0 or type(event['ended_at']) is not int
+            or event['ended_at'] < event['started_at']):
         raise ValueError('Dispatch continuation needs its actual ended scheduled run')
     payload = json.loads(event['payload'] or '{}')
     reason = payload.get('reason') if isinstance(payload, dict) else None
@@ -86,7 +88,7 @@ def scheduled_receipt(db, task_id):
 
 
 def require_resume(db, task_id):
-    """Qualify one normal continuation inside the existing native unblock txn.
+    """Qualify one continuation per fresh dispatch receipt in native unblock.
 
     Zero counters stay zero. Typed holds and failed workers keep their existing
     recovery path; this never grants a new attempt to another task or incident.
@@ -105,15 +107,15 @@ def require_resume(db, task_id):
     event, metadata = scheduled_receipt(db, task_id)
     latest = db.execute('SELECT id FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1', (task_id,)).fetchone()
     lifecycle = db.execute('SELECT id FROM task_events WHERE task_id=? AND kind NOT IN '
-        "('commented','attachment_added','subscribed','unsubscribed') ORDER BY id DESC LIMIT 1", (task_id,)).fetchone()
+        "('commented','attached','subscribed','unsubscribed') ORDER BY id DESC LIMIT 1", (task_id,)).fetchone()
     if (not latest or latest['id'] != event['run_id'] or not lifecycle or lifecycle['id'] != event['id']
-            or db.execute("SELECT 1 FROM task_events WHERE task_id=? AND kind='unblocked' LIMIT 1", (task_id,)).fetchone()
-            or disposition(db, owner, metadata)['state'] != 'started'):
-        raise ValueError('Dispatch wait is not satisfied, was superseded or already consumed its one continuation')
+            or disposition(db, owner, metadata, since=event['started_at'],
+                           after_run_id=event['run_id'])['state'] != 'started'):
+        raise ValueError('Dispatch wait needs fresh worker starts; its receipt was superseded or already consumed')
     return True
 
 
-def disposition(db, owner, metadata):
+def disposition(db, owner, metadata, *, since=None, after_run_id=0):
     """Correlate declared delegation to subsequent native execution, never prose."""
     if not isinstance(metadata, dict):
         raise ValueError('Supervision metadata must be an object')
@@ -125,8 +127,13 @@ def disposition(db, owner, metadata):
             or any(not isinstance(tid, str) or not re.fullmatch(r't_[A-Za-z0-9_-]+', tid) for tid in task_ids)
             or len(set(task_ids)) != len(task_ids) or owner['id'] in task_ids):
         raise ValueError('Declare up to eight distinct native dispatched_task_ids')
-    first = db.execute('SELECT min(started_at) FROM task_runs WHERE task_id=?', (owner['id'],)).fetchone()[0]
-    workers = starts(db, task_ids, since=first) if first is not None else []
+    # Completion/retained follow-through cover the whole episode. A scheduled
+    # wake must instead prove new execution from that exact dispatch attempt.
+    # Native run IDs globally autoincrement: ordering also excludes historical
+    # workers when successive owner attempts share an integer timestamp.
+    first = (db.execute('SELECT min(started_at) FROM task_runs WHERE task_id=?', (owner['id'],)).fetchone()[0]
+             if since is None else since)
+    workers = starts(db, task_ids, since=first, after_run_id=after_run_id) if first is not None else []
     seen = {worker['task_id'] for worker in workers}
     state = 'started' if task_ids and seen == set(task_ids) else 'awaiting_worker_start'
     no_safe = receipt.get('no_safe_independent_work')

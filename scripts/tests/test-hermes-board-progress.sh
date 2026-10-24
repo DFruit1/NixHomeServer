@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-scratch="$(mktemp -d /tmp/hermes-board-progress-tests.XXXXXX)"
+scratch="$(mktemp -d "${TMPDIR:-/tmp}/hermes-board-progress-tests.XXXXXX")"
 trap 'rm -rf -- "$scratch"' EXIT
 python3 -B - "$repo" "$scratch" <<'PY'
 import importlib.util
@@ -40,10 +40,10 @@ class BoardProgressTest(unittest.TestCase):
                 consecutive_failures INTEGER NOT NULL DEFAULT 0,
                 block_recurrences INTEGER NOT NULL DEFAULT 0);
             CREATE TABLE task_links(parent_id TEXT,child_id TEXT);
-            CREATE TABLE task_runs(id INTEGER PRIMARY KEY,task_id TEXT,profile TEXT,status TEXT,
+            CREATE TABLE task_runs(id INTEGER PRIMARY KEY AUTOINCREMENT,task_id TEXT,profile TEXT,status TEXT,
                 started_at INTEGER,ended_at INTEGER,outcome TEXT,metadata TEXT,worker_pid INTEGER,
                 worker_started_at INTEGER,last_heartbeat_at INTEGER);
-            CREATE TABLE task_events(id INTEGER PRIMARY KEY,task_id TEXT,run_id INTEGER,
+            CREATE TABLE task_events(id INTEGER PRIMARY KEY AUTOINCREMENT,task_id TEXT,run_id INTEGER,
                 kind TEXT,payload TEXT,created_at INTEGER);
             CREATE TABLE task_comments(id INTEGER PRIMARY KEY,task_id TEXT,author TEXT,body TEXT,
                 created_at INTEGER);
@@ -86,7 +86,7 @@ class BoardProgressTest(unittest.TestCase):
                   body='Goal: Advance existing requested work.\nDispatch policy: parallel-v1')
         payload = metadata if metadata is not None else {'board_progress': {'dispatched_task_ids': list(dispatched)}}
         self.db.execute('''INSERT INTO task_runs VALUES
-            (20,'t_supervision','head-coordinator','done',100,200,'completed',?,NULL,NULL,NULL)''',
+            (10,'t_supervision','head-coordinator','done',100,200,'completed',?,NULL,NULL,NULL)''',
             (json.dumps(payload),))
         self.db.execute("UPDATE tasks SET assignee='head-coordinator',started_at=100,completed_at=200 WHERE id='t_supervision'")
         self.db.commit()
@@ -110,17 +110,17 @@ class BoardProgressTest(unittest.TestCase):
         self.task('t_supervision', 'running', tenant='board-progress', creator='board-progress-monitor',
                   body='Goal: Advance existing requested work.\nDispatch policy: parallel-v1')
         self.db.execute('''INSERT INTO task_runs VALUES
-            (20,'t_supervision','head-coordinator','running',100,NULL,NULL,'{}',NULL,NULL,NULL)''')
-        self.db.execute("UPDATE tasks SET assignee='head-coordinator',started_at=100,current_run_id=20 WHERE id='t_supervision'")
+            (10,'t_supervision','head-coordinator','running',100,NULL,NULL,'{}',NULL,NULL,NULL)''')
+        self.db.execute("UPDATE tasks SET assignee='head-coordinator',started_at=100,current_run_id=10 WHERE id='t_supervision'")
         self.db.commit()
 
     def schedule_supervision(self):
         self.new_supervision()
         reason = 'Dispatch wait: ' + json.dumps({'dispatched_task_ids': ['t_fix_a', 't_fix_b']})
         self.db.execute("UPDATE tasks SET status='scheduled',current_run_id=NULL WHERE id='t_supervision'")
-        self.db.execute("UPDATE task_runs SET status='scheduled',outcome='scheduled',ended_at=180 WHERE id=20")
+        self.db.execute("UPDATE task_runs SET status='scheduled',outcome='scheduled',ended_at=180 WHERE id=10")
         self.db.execute("INSERT INTO task_events(task_id,run_id,kind,payload,created_at) VALUES "
-                        "('t_supervision',20,'scheduled',?,180)", (json.dumps({'reason': reason}),))
+                        "('t_supervision',10,'scheduled',?,180)", (json.dumps({'reason': reason}),))
         self.db.commit()
         return reason
 
@@ -130,6 +130,23 @@ class BoardProgressTest(unittest.TestCase):
             return board_progress.require_resume(self.db, 't_supervision')
         finally:
             self.db.row_factory = None
+
+    def second_dispatch_wait(self, *, dispatched=('t_next_a', 't_next_b'), prior_unblock=True):
+        self.schedule_supervision()
+        self.start_worker('t_fix_a', 11, started=150, ended=200)
+        self.start_worker('t_fix_b', 12, started=210, ended=240)
+        if prior_unblock:
+            self.db.execute("INSERT INTO task_events(task_id,run_id,kind,payload,created_at) VALUES "
+                            "('t_supervision',NULL,'unblocked','{}',250)")
+        self.db.execute("INSERT INTO task_runs VALUES "
+                        "(30,'t_supervision','head-coordinator','scheduled',300,400,'scheduled','{}',NULL,NULL,NULL)")
+        for task_id in dispatched:
+            if not self.db.execute('SELECT 1 FROM tasks WHERE id=?', (task_id,)).fetchone():
+                self.task(task_id, 'todo')
+        reason = 'Dispatch wait: ' + json.dumps({'dispatched_task_ids': list(dispatched)})
+        self.db.execute("INSERT INTO task_events(task_id,run_id,kind,payload,created_at) VALUES "
+                        "('t_supervision',30,'scheduled',?,400)", (json.dumps({'reason': reason}),))
+        self.db.commit()
 
     def test_queued_ready_and_review_cards_are_not_started_workers(self):
         self.db.execute("UPDATE tasks SET status='ready' WHERE id='t_fix_a'")
@@ -474,13 +491,140 @@ class BoardProgressTest(unittest.TestCase):
         self.assertEqual('started', self.follow_through()['state'])
         self.assertEqual({'t_fix_a', 't_fix_b'}, set(self.follow_through()['dispatched_task_ids']))
 
+    def test_second_productive_dispatch_batch_allows_same_owner_continuation(self):
+        # Real native ordering: prior wait consumed, resumed owner dispatches a
+        # new batch, workers start during that attempt and finish before wake.
+        self.second_dispatch_wait()
+        self.start_worker('t_next_a', 31, started=300, ended=360)
+        self.start_worker('t_next_b', 32, started=350, ended=380)
+        before = self.path.read_bytes()
+        self.assertTrue(self.require_resume())
+        self.assertEqual(before, self.path.read_bytes(), 'Qualification never writes or resets budgets')
+
+    def test_native_evidence_attachment_preserves_fresh_dispatch_receipt(self):
+        self.second_dispatch_wait()
+        self.start_worker('t_next_a', 31, started=320, ended=360)
+        self.start_worker('t_next_b', 32, started=350, ended=380)
+        # kanban_db's native attachment emitters use `attached`. Documentary
+        # input delivery must not consume or supersede the schedule receipt.
+        self.db.execute("INSERT INTO task_events(task_id,run_id,kind,payload,created_at) VALUES "
+                        "('t_supervision',NULL,'attached',?,410)",
+                        (json.dumps({'filename': 'accepted-plan.md', 'size': 123, 'by': 'interactive-operator'}),))
+        self.db.commit()
+        before = self.path.read_bytes()
+        self.assertTrue(self.require_resume())
+        self.assertEqual(before, self.path.read_bytes())
+
+    def test_later_wait_cannot_reuse_historical_worker_starts_or_old_receipt(self):
+        # Also test without a prior unblock: freshness is independently required,
+        # not merely a side effect of rejecting all historical continuations.
+        self.second_dispatch_wait(dispatched=('t_fix_a', 't_fix_b'), prior_unblock=False)
+        before = self.path.read_bytes()
+        with self.assertRaises(ValueError):
+            self.require_resume()
+        self.assertEqual(before, self.path.read_bytes())
+        self.assertEqual('started', self.follow_through()['state'],
+                         'Retained follow-through still uses the canonical earliest owner start')
+
+    def test_reused_task_ids_need_new_linked_worker_runs_for_every_batch_member(self):
+        self.second_dispatch_wait(dispatched=('t_fix_a', 't_fix_b'))
+        self.start_worker('t_fix_a', 31, started=299, ended=350)
+        self.start_worker('t_fix_b', 32, started=320, registered=False)
+        with self.assertRaises(ValueError):
+            self.require_resume()
+        self.start_worker('t_fix_a', 33, started=330, ended=360)
+        with self.assertRaises(ValueError):
+            self.require_resume()
+        self.start_worker('t_fix_b', 34, started=350, ended=380)
+        self.assertTrue(self.require_resume())
+
+    def test_same_second_historical_runs_cannot_supply_a_new_dispatch_batch(self):
+        self.second_dispatch_wait(dispatched=('t_fix_a', 't_fix_b'))
+        # Native timestamps have second resolution. Both old workers, the first
+        # unblock and the second owner claim can legally share this second.
+        self.db.execute('UPDATE task_runs SET started_at=300,ended_at=300 WHERE id IN (11,12)')
+        self.db.execute('UPDATE task_events SET created_at=300 WHERE run_id IN (11,12) OR kind=\'unblocked\'')
+        self.db.commit()
+        before = self.path.read_bytes()
+        with self.assertRaises(ValueError):
+            self.require_resume()
+        self.assertEqual(before, self.path.read_bytes())
+        # A later registration event still belongs to an old worker run.
+        self.db.execute("INSERT INTO task_events(task_id,run_id,kind,payload,created_at) VALUES "
+                        "('t_fix_a',11,'worker_registered',?,350)",
+                        (json.dumps({'pid': 4011, 'started_at': 9011}),))
+        self.db.commit()
+        with self.assertRaises(ValueError):
+            self.require_resume()
+        self.start_worker('t_fix_a', 31, started=300, ended=360)
+        with self.assertRaises(ValueError):
+            self.require_resume()
+        self.start_worker('t_fix_b', 32, started=300, ended=380)
+        self.assertTrue(self.require_resume(), 'New runs in the same second and before owner completion qualify')
+
+    def test_fresh_batch_partial_or_orphan_claim_cannot_continue(self):
+        self.second_dispatch_wait(prior_unblock=False)
+        self.start_worker('t_next_a', 31, started=320, ended=360)
+        with self.assertRaises(ValueError):
+            self.require_resume()
+        self.start_worker('t_next_b', 32, started=350, registered=False)
+        with self.assertRaises(ValueError):
+            self.require_resume()
+        # Another task's registration cannot be attached to the orphan claim.
+        self.db.execute("INSERT INTO task_events(task_id,run_id,kind,payload,created_at) VALUES "
+                        "('t_next_a',32,'worker_registered',?,351)",
+                        (json.dumps({'pid': 4032, 'started_at': 9032}),))
+        self.db.commit()
+        with self.assertRaises(ValueError):
+            self.require_resume()
+
+    def test_second_dispatch_receipt_is_consumed_once_and_later_lifecycle_invalidates_it(self):
+        self.second_dispatch_wait()
+        self.start_worker('t_next_a', 31, started=320, ended=360)
+        self.start_worker('t_next_b', 32, started=350, ended=380)
+        self.assertTrue(self.require_resume())
+        for kind in ('unblocked', 'blocked', 'claimed', 'completed'):
+            with self.subTest(kind=kind):
+                self.db.execute("INSERT INTO task_events(task_id,run_id,kind,payload,created_at) VALUES "
+                                "('t_supervision',NULL,?,'{}',410)", (kind,))
+                self.db.commit()
+                before = self.path.read_bytes()
+                with self.assertRaises(ValueError):
+                    self.require_resume()
+                self.assertEqual(before, self.path.read_bytes())
+                self.db.execute("DELETE FROM task_events WHERE task_id='t_supervision' AND kind=? AND created_at=410", (kind,))
+                self.db.commit()
+
+    def test_later_owner_run_invalidates_older_schedule_event(self):
+        self.second_dispatch_wait(prior_unblock=False)
+        self.start_worker('t_next_a', 31, started=320, ended=360)
+        self.start_worker('t_next_b', 32, started=350, ended=380)
+        self.db.execute("INSERT INTO task_runs VALUES "
+                        "(40,'t_supervision','head-coordinator','scheduled',500,550,'scheduled','{}',NULL,NULL,NULL)")
+        self.db.commit()
+        with self.assertRaises(ValueError):
+            self.require_resume()
+
+    def test_schedule_attempt_start_must_be_present_valid_and_before_its_end(self):
+        self.schedule_supervision()
+        self.start_worker('t_fix_a', 11)
+        self.start_worker('t_fix_b', 12)
+        for started in (None, 'unknown', 0, -1, 181):
+            with self.subTest(started=started):
+                self.db.execute('UPDATE task_runs SET started_at=? WHERE id=10', (started,))
+                self.db.commit()
+                before = self.path.read_bytes()
+                with self.assertRaises(ValueError):
+                    self.require_resume()
+                self.assertEqual(before, self.path.read_bytes())
+
     def test_scheduled_owner_continuation_rejects_prior_release_typed_hold_and_failure_counters(self):
         self.schedule_supervision()
         self.start_worker('t_fix_a', 11)
         self.start_worker('t_fix_b', 12)
         for field, value in [('status', 'blocked'), ('status', 'triage'), ('block_kind', 'capability'),
                              ('block_kind', 'needs_input'), ('consecutive_failures', 1), ('block_recurrences', 1),
-                             ('assignee', 'standard-implementer'), ('current_run_id', 20),
+                             ('assignee', 'standard-implementer'), ('current_run_id', 10),
                              ('claim_lock', 'fixture-host:retained'), ('claim_expires', 1000), ('worker_pid', 4010)]:
             with self.subTest(field=field, value=value):
                 self.db.execute(f'UPDATE tasks SET {field}=? WHERE id=?', (value, 't_supervision'))
@@ -494,7 +638,7 @@ class BoardProgressTest(unittest.TestCase):
                                 "claim_expires=NULL,worker_pid=NULL WHERE id='t_supervision'")
                 self.db.commit()
         self.db.execute("INSERT INTO task_events(task_id,run_id,kind,payload,created_at) VALUES "
-                        "('t_supervision',20,'unblocked','{}',220)")
+                        "('t_supervision',10,'unblocked','{}',220)")
         self.db.commit()
         with self.assertRaises(ValueError):
             self.require_resume()
@@ -507,7 +651,7 @@ class BoardProgressTest(unittest.TestCase):
                         "(21,'t_supervision','head-coordinator','running',230,NULL,NULL,'{}',NULL,NULL,NULL)")
         self.db.execute("UPDATE tasks SET status='running',current_run_id=21 WHERE id='t_supervision'")
         self.db.execute("INSERT INTO task_events(task_id,run_id,kind,payload,created_at) VALUES "
-                        "('t_supervision',20,'unblocked','{}',220)")
+                        "('t_supervision',10,'unblocked','{}',220)")
         self.db.commit()
         observation = self.follow_through()
         self.assertEqual('started', observation['state'])
@@ -547,14 +691,14 @@ class BoardProgressTest(unittest.TestCase):
         self.db.commit()
         with self.assertRaises(ValueError):
             self.require_resume()
-        self.db.execute("UPDATE task_events SET run_id=20 WHERE task_id='t_supervision' AND kind='scheduled'")
+        self.db.execute("UPDATE task_events SET run_id=10 WHERE task_id='t_supervision' AND kind='scheduled'")
         for field, value in [('profile', 'standard-implementer'), ('status', 'blocked'), ('outcome', 'timed_out'), ('ended_at', None)]:
             with self.subTest(field=field, value=value):
-                self.db.execute(f'UPDATE task_runs SET {field}=? WHERE id=20', (value,))
+                self.db.execute(f'UPDATE task_runs SET {field}=? WHERE id=10', (value,))
                 self.db.commit()
                 with self.assertRaises(ValueError):
                     self.require_resume()
-                self.db.execute("UPDATE task_runs SET profile='head-coordinator',status='scheduled',outcome='scheduled',ended_at=180 WHERE id=20")
+                self.db.execute("UPDATE task_runs SET profile='head-coordinator',status='scheduled',outcome='scheduled',ended_at=180 WHERE id=10")
                 self.db.commit()
 
     def test_legacy_supervision_is_never_automatically_resumed(self):
@@ -596,6 +740,45 @@ class BoardProgressTest(unittest.TestCase):
         self.assertEqual(1, len(calls))
         self.assertEqual(('blocked', 'capability'), self.db.execute("SELECT status,block_kind FROM tasks WHERE id='t_hold'").fetchone())
         self.assertEqual(('ready', 0, 0), self.db.execute("SELECT status,consecutive_failures,block_recurrences FROM tasks WHERE id='t_supervision'").fetchone())
+        self.assertEqual(1, self.db.execute("SELECT count(*) FROM tasks WHERE tenant='board-progress'").fetchone()[0])
+
+    def test_supervisor_continues_each_fresh_batch_once_through_existing_native_unblock_path(self):
+        self.second_dispatch_wait()
+        calls = []
+
+        def native(command, **kwargs):
+            calls.append(command)
+            self.assertIn('unblock', command)
+            self.assertIn('t_supervision', command)
+            self.assertNotIn('create', command)
+            # The CLI's ordinary unblock requalifies inside its transaction.
+            self.assertTrue(self.require_resume())
+            self.db.execute("UPDATE tasks SET status='ready' WHERE id='t_supervision'")
+            self.db.execute("INSERT INTO task_events(task_id,run_id,kind,payload,created_at) VALUES "
+                            "('t_supervision',NULL,'unblocked','{}',600)")
+            self.db.commit()
+
+        with patch.object(supervisor.subprocess, 'run', side_effect=native):
+            for command_count, run_id, started in ((1, 30, 300), (2, 40, 500)):
+                if run_id == 40:
+                    # Reuse task IDs, but no worker starts from this attempt yet.
+                    self.db.execute("INSERT INTO task_runs VALUES "
+                                    "(40,'t_supervision','head-coordinator','scheduled',500,580,'scheduled','{}',NULL,NULL,NULL)")
+                    self.db.execute("UPDATE tasks SET status='scheduled' WHERE id='t_supervision'")
+                    reason = 'Dispatch wait: ' + json.dumps({'dispatched_task_ids': ['t_next_a', 't_next_b']})
+                    self.db.execute("INSERT INTO task_events(task_id,run_id,kind,payload,created_at) VALUES "
+                                    "('t_supervision',40,'scheduled',?,580)", (json.dumps({'reason': reason}),))
+                    self.db.commit()
+                for task_id, worker_run in (('t_next_a', run_id + 1), ('t_next_b', run_id + 2)):
+                    supervisor.wake_coordinator(self.root, 'project', 'board-progress', json.dumps(self.packet()))
+                    self.assertEqual(command_count - 1, len(calls), 'Old or partial starts cannot wake the owner')
+                    self.start_worker(task_id, worker_run, started=started + 10, ended=started + 30)
+                supervisor.wake_coordinator(self.root, 'project', 'board-progress', json.dumps(self.packet()))
+                supervisor.wake_coordinator(self.root, 'project', 'board-progress', json.dumps(self.packet()))
+                self.assertEqual(command_count, len(calls), 'Each exact receipt is consumed once')
+        self.assertEqual(('ready', 0, 0), self.db.execute("SELECT status,consecutive_failures,block_recurrences FROM tasks WHERE id='t_supervision'").fetchone())
+        self.assertEqual(('blocked', 'capability'), self.db.execute("SELECT status,block_kind FROM tasks WHERE id='t_hold'").fetchone())
+        self.assertEqual([('t_hold', 't_consumer')], self.db.execute('SELECT * FROM task_links').fetchall())
         self.assertEqual(1, self.db.execute("SELECT count(*) FROM tasks WHERE tenant='board-progress'").fetchone()[0])
 
 
