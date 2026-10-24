@@ -117,6 +117,12 @@ turns drain, then use the existing supported graceful gateway refresh described
 in [runtime recovery](hermes-runtime.md). Never launch a second gateway. Report
 source, installed release and running-session evidence separately.
 
+Scheduled event waits retain consumed dispatcher failures and the last failure
+error when resumed through ordinary unblock. A satisfied wait is not a new
+retry allowance. This applies to all scheduled tasks; the existing blocked-task
+reset behavior, parent gates and origin/release checks remain unchanged.
+Genuine technical capability holds still use exact-version coordinator recovery.
+
 ## Updating technical-recovery helpers
 
 Native terminal ordinary-unblock protection is owned by `worker_origin.py` and

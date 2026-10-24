@@ -70,6 +70,23 @@ _UNBLOCK_AFTER = _UNBLOCK_BEFORE + '''    from hermes_cli.nixhomeserver_worker_o
     require_ordinary_unblock()
 '''
 
+_WAIT_BUDGET_BEFORE = '''        # (the dispatcher's spawn/crash counter) IS reset — a deliberate unblock
+        # is a fresh start for the retry budget.
+        cur = conn.execute(
+            "UPDATE tasks SET status = ?, current_run_id = NULL, "
+            "consecutive_failures = 0, last_failure_error = NULL "
+            "WHERE id = ? AND status IN ('blocked', 'scheduled')", (new_status, task_id),
+'''
+_WAIT_BUDGET_AFTER = '''        # (the dispatcher's spawn/crash counter) retains the existing blocked
+        # reset semantics. Resuming a scheduled event wait preserves consumed
+        # failures and their evidence; waiting does not grant another attempt.
+        cur = conn.execute(
+            "UPDATE tasks SET status = ?, current_run_id = NULL, "
+            "consecutive_failures = CASE WHEN status = 'scheduled' THEN consecutive_failures ELSE 0 END, "
+            "last_failure_error = CASE WHEN status = 'scheduled' THEN last_failure_error ELSE NULL END "
+            "WHERE id = ? AND status IN ('blocked', 'scheduled')", (new_status, task_id),
+'''
+
 EDITS = {
     'hermes_cli/kanban.py': (
         ('def _cmd_unblock(args: argparse.Namespace) -> int:\n',
@@ -81,7 +98,8 @@ EDITS = {
          '        return _err(str(exc))\n'),
     ),
     'hermes_cli/kanban_db.py': ((_SPECIFY_BEFORE, _SPECIFY_AFTER),
-                              (_UNBLOCK_BEFORE, _UNBLOCK_AFTER)),
+                              (_UNBLOCK_BEFORE, _UNBLOCK_AFTER),
+                              (_WAIT_BUDGET_BEFORE, _WAIT_BUDGET_AFTER)),
     'tools/kanban_tools.py': (
         (_HANDLER, _RECOVERY_HANDLER),
         ('# --- Shared helpers: validation failures raise _Reject; _kanban_handler renders it ---',
@@ -127,6 +145,7 @@ def adapt(name, text):
         original=(ast.get_source_segment(text,unblock[0])+'\n'
                   if len(unblock) == 1 else '')
         original=original.replace(_UNBLOCK_AFTER,_UNBLOCK_BEFORE)
+        original=original.replace(_WAIT_BUDGET_AFTER,_WAIT_BUDGET_BEFORE)
         # The reviewed parallel-dispatch guard belongs only to ordinary
         # unblock. Qualify its one exact insertion without accepting any other
         # native-body drift or changing guarded recovery's release policy.
