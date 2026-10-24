@@ -415,6 +415,106 @@ try:
     assert contract.load(db, commissioned) == matching
     print('PASS: structured create enforcement and matched delivery commissioning')
 
+    # The maintained completion transform must enforce actual delegation in the
+    # native transaction. Synthetic PIDs record native spawn evidence without
+    # starting a process, making a claim alone visibly insufficient.
+    dispatch_hold = kb.create_task(db, title='Parallel dispatch original incident',
+        assignee='standard-implementer', body='Input supplier: agent. Qualified input is missing.')
+    assert kb.block_task(db, dispatch_hold, reason='Synthetic technical hold', kind='capability')
+    dispatch_consumer = kb.create_task(db, title='Parallel dispatch gated consumer',
+        assignee='standard-implementer', parents=[dispatch_hold])
+    dispatch_owner = kb.create_task(db, title='Parallel dispatch supervision',
+        assignee='head-coordinator', tenant='board-progress', created_by='board-progress-monitor',
+        body='Goal: Delegate independent requested fixes.\nDispatch policy: parallel-v1',
+        max_runtime_seconds=360, max_retries=1)
+    assert kb.claim_task(db, dispatch_owner)
+    independent = [kb.create_task(db, title='Independent dispatch slice ' + suffix,
+        assignee='standard-implementer', creator_task_id=dispatch_owner) for suffix in ('A', 'B')]
+    dispatch_metadata = {'board_progress': {'dispatched_task_ids': independent}}
+
+    def reject_dispatch_completion(metadata):
+        db.commit()
+        before = list(db.iterdump())
+        for complete in (
+            lambda: contract.completion_metadata(db, dispatch_owner, metadata),
+            lambda: kb.complete_task(db, dispatch_owner, summary='Delegation needs native starts.', metadata=metadata),
+        ):
+            try:
+                complete()
+                raise AssertionError('Queued, partial or omitted delegation evidence completed supervision')
+            except ValueError:
+                pass
+            assert list(db.iterdump()) == before, 'Refused dispatch completion must be transactional'
+
+    reject_dispatch_completion(None)
+    reject_dispatch_completion(dispatch_metadata)
+    for task_id in independent:
+        assert kb.claim_task(db, task_id)
+    reject_dispatch_completion(dispatch_metadata)
+    dispatch._set_worker_pid(db, independent[0], 99999991)
+    reject_dispatch_completion(dispatch_metadata)
+    dispatch._set_worker_pid(db, independent[1], 99999992)
+    assert contract.completion_metadata(db, dispatch_owner, dispatch_metadata) == dispatch_metadata
+    assert kb.complete_task(db, dispatch_owner, summary='Both independent workers started.', metadata=dispatch_metadata)
+    assert kb.get_task(db, dispatch_hold).status == 'blocked'
+    assert kb.get_task(db, dispatch_consumer).status == 'todo'
+    assert [(row['parent_id'], row['child_id']) for row in db.execute(
+        'SELECT parent_id,child_id FROM task_links WHERE child_id=?', (dispatch_consumer,))] == [
+            (dispatch_hold, dispatch_consumer)]
+    for task_id in independent:
+        assert db.execute("SELECT 1 FROM task_events WHERE task_id=? AND kind='spawned'", (task_id,)).fetchone()
+    print('PASS: native parallel dispatch refuses queued/partial evidence and retains original gates')
+
+    continuation = kb.create_task(db, title='Bounded scheduled dispatch continuation',
+        assignee='head-coordinator', tenant='board-progress', created_by='board-progress-monitor',
+        body='Goal: Wait for independently dispatched native starts.\nDispatch policy: parallel-v1',
+        max_runtime_seconds=360, max_retries=1)
+    assert kb.claim_task(db, continuation)
+    continuing_workers = [kb.create_task(db, title='Continuation slice ' + suffix,
+        assignee='standard-implementer', creator_task_id=continuation) for suffix in ('A', 'B')]
+    continuing_receipt = {'board_progress': {'dispatched_task_ids': continuing_workers}}
+    wait_reason = 'Dispatch wait: ' + json.dumps(continuing_receipt['board_progress'])
+    assert kb.schedule_task(db, continuation, reason=wait_reason)
+    assert kb.get_task(db, continuation).current_run_id is None
+
+    def reject_continuation():
+        db.commit()
+        before = list(db.iterdump())
+        try:
+            kb.unblock_task(db, continuation)
+            raise AssertionError('Unqualified scheduled dispatch continuation was released')
+        except ValueError:
+            pass
+        assert list(db.iterdump()) == before, 'Continuation refusal must preserve counters and existing gates'
+
+    reject_continuation()
+    for task_id in continuing_workers:
+        assert kb.claim_task(db, task_id)
+    dispatch._set_worker_pid(db, continuing_workers[0], 99999993)
+    reject_continuation()
+    dispatch._set_worker_pid(db, continuing_workers[1], 99999994)
+    for field, value in [('block_kind', 'capability'), ('block_kind', 'needs_input'),
+                         ('consecutive_failures', 1), ('block_recurrences', 1)]:
+        db.execute(f'UPDATE tasks SET {field}=? WHERE id=?', (value, continuation))
+        db.commit()
+        reject_continuation()
+        db.execute('UPDATE tasks SET block_kind=NULL,consecutive_failures=0,block_recurrences=0 WHERE id=?',
+                   (continuation,))
+        db.commit()
+    assert kb.unblock_task(db, continuation)
+    assert kb.get_task(db, continuation).status == 'ready'
+    reject_continuation()  # The same owner gets one continuation, never another retry budget.
+    assert kb.claim_task(db, continuation)
+    assert kb.complete_task(db, continuation, summary='Qualified continuation observed both starts.',
+                            metadata=continuing_receipt)
+    assert kb.get_task(db, dispatch_hold).status == 'blocked'
+    assert kb.get_task(db, dispatch_consumer).status == 'todo'
+    assert db.execute("SELECT count(*) FROM task_events WHERE task_id=? AND kind='unblocked'",
+                      (continuation,)).fetchone()[0] == 1
+    assert db.execute('SELECT consecutive_failures,block_recurrences FROM tasks WHERE id=?',
+                      (continuation,)).fetchone()[:] == (0, 0)
+    print('PASS: native scheduled dispatch continuation is single-use and preserves typed/failed holds')
+
     recovery=okay(call('kanban_create',title='Interrupted recovery fixture',assignee='standard-implementer',
         body='Recovery mode: evidence-only',max_runtime_seconds=300,
         workflow={'version':1},workspace_kind='dir',workspace_path=str(work)))['task_id']
@@ -427,6 +527,63 @@ try:
     except ValueError:
         pass
     assert kb.get_task(db,recovery).consecutive_failures==1
+
+    # A failed dispatch supervisor uses the existing exact-version technical
+    # recovery path. Ordinary unblock must never consume/reset its allowance,
+    # while the guarded API retains its native actor/process authentication.
+    from hermes_cli import nixhomeserver_resume_recovered as guarded_resume
+    from cron import nixhomeserver_capability_recovery as capability
+    failed_supervisor = kb.create_task(db, title='Failed marked dispatch supervisor',
+        assignee='head-coordinator', tenant='board-progress', created_by='board-progress-monitor',
+        body='Goal: inspect bounded dispatch evidence.\nRecovery mode: evidence-only\nDispatch policy: parallel-v1',
+        max_runtime_seconds=360, max_retries=1, workspace_kind='dir', workspace_path=str(work))
+    assert kb.claim_task(db, failed_supervisor)
+    assert dispatch._record_task_failure(db, failed_supervisor, 'Synthetic timed-out bounded inspection',
+        outcome='timed_out', release_claim=True, end_run=True)
+    assert kb.block_task(db, failed_supervisor, reason='Input supplier: agent. Bounded input has now been repaired.',
+                         kind='capability')
+    failed_run = db.execute('SELECT id FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1',
+                           (failed_supervisor,)).fetchone()[0]
+    kb.add_comment(db, failed_supervisor, author='head-coordinator',
+        body=f'Recovery run: {failed_run}\nRecovery change: The synthetic qualified input is now available.\n'
+             'Recovery action: Inspect only that input within the unchanged bounded allowance.')
+    before_failed = dict(db.execute('SELECT * FROM tasks WHERE id=?', (failed_supervisor,)).fetchone())
+    assert before_failed['consecutive_failures'] == 1 and before_failed['block_kind'] == 'capability'
+    try:
+        kb.unblock_task(db, failed_supervisor)
+        raise AssertionError('Ordinary unblock released a typed failed supervision task')
+    except ValueError:
+        pass
+    assert dict(db.execute('SELECT * FROM tasks WHERE id=?', (failed_supervisor,)).fetchone()) == before_failed
+
+    actor = kb.create_task(db, title='Authenticated fixture recovery coordinator', assignee='head-coordinator',
+        workspace_kind='dir', workspace_path=str(work), max_runtime_seconds=360, max_retries=1)
+    assert kb.claim_task(db, actor)
+    dispatch._set_worker_pid(db, actor, os.getpid())
+    actor_row = db.execute('SELECT current_run_id,claim_lock FROM tasks WHERE id=?', (actor,)).fetchone()
+    actor_env = {'HERMES_KANBAN_TASK': actor, 'HERMES_KANBAN_RUN_ID': str(actor_row['current_run_id']),
+                 'HERMES_KANBAN_BOARD': 'fixture', 'HERMES_KANBAN_DB': str(kb.kanban_db_path('fixture')),
+                 'HERMES_KANBAN_WORKSPACE': str(work), 'HERMES_PROFILE': 'head-coordinator',
+                 'HERMES_KANBAN_CLAIM_LOCK': actor_row['claim_lock']}
+    with patch.dict(os.environ, actor_env):
+        assert guarded_resume.coordinator_origin()['task_id'] == actor
+        hold = next(item for item in capability.read_board(db, root, 'fixture', capability.helper_identity(root))
+                    if item['task_id'] == failed_supervisor)
+        try:
+            guarded_resume.resume_recovered(kb, db, failed_supervisor, '0' * 64,
+                'A stale version cannot release the repaired supervision task.')
+            raise AssertionError('Guarded technical recovery accepted stale version')
+        except ValueError:
+            pass
+        result = guarded_resume.resume_recovered(kb, db, failed_supervisor, hold['version'],
+            'Qualified changed input recorded; continue only the exact bounded inspection.')
+        assert result['applied'] and result['actor_task'] == actor
+    assert dict(db.execute('SELECT * FROM tasks WHERE id=?', (failed_supervisor,)).fetchone()) == {
+        **before_failed, 'status': 'ready'}
+    assert kb.get_task(db, dispatch_hold).status == 'blocked'
+    assert kb.get_task(db, dispatch_consumer).status == 'todo'
+    print('PASS: typed failed dispatch supervisor retains exact-version authenticated technical recovery')
+
     print('PASS: installed tools/hooks dispatch, handoff, rejection/rework, independent acceptance, GC authority, transactional scope CAS, delivery and interrupted recovery')
 finally:
     db.close()

@@ -23,6 +23,10 @@ distinct outputs or operation gates. Use the on-demand auditor for substantive
 plans/repeated recovery. Consume qualified versioned cross-board outputs rather
 than introducing another handoff graph. Existing exact contracts remain binding.
 See hermes-fleet-workflow.md and use fleet-release.py for installed maintenance.
+Delegate the whole bounded repair, including its routine technical prerequisites;
+retain coordinator authority for integration and gated operations. Keep disjoint
+existing work runnable beside a held incident within the effective dispatch caps.
+An unfinished delivery or supervision task is not a producer prerequisite.
 
 1. Anchor the current request and runtime-assigned board/task. A compaction summary
    supplies history, not a new instruction to switch features. Read compact
@@ -110,8 +114,12 @@ tick reconcile it. Direct replies and explicitly requested pulls stay in the DM.
 
 ## Stop conditions
 
-Stop when the existing graph correctly routes the next action or holds a real
-prerequisite. Do not comment unchanged conditions, poll blocked work, duplicate
+For new `Dispatch policy: parallel-v1` supervision, follow the dispatch-evidence
+procedure in hermes-coordinator-reference.md. A correct graph or queued card is
+not a worker start; schedule the same owner until native evidence is available,
+or record the concrete no-safe-work exception. Keep original delivery obligations
+open. Other routing tasks retain their existing exact stopping conditions.
+Do not comment unchanged conditions, poll blocked work, duplicate
 handoffs, alter worker pins or bypass refusals through another tool/context.
 Report actual actions and uncertainty. Queued is not started, accepted is not
 activated, and manual containment is not proof of automatic recovery.

@@ -17,7 +17,8 @@ until implementation, independent acceptance and composition actually land.
 
 ## Low-activity follow-through
 
-For board-progress/steward requests, pursue supported blocker recovery and
-independent requested work. Preserve dependencies, owners, writers, gates and
-budgets. Record actual original-task progress or evidence explaining the missing
-input and wake condition; routing alone does not settle the request.
+Delegate outcomes; keep disjoint work running beside recovery.
+Link required outputs only. For board-progress/steward requests, follow the
+dispatch-evidence procedure in hermes-coordinator-reference.md: verify native
+worker starts or record the exact no-safe-work reason, supplier and wake condition.
+Keep one recovery owner and preserve writers, gates and budgets.

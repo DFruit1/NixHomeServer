@@ -379,6 +379,19 @@ class InstallerTest(unittest.TestCase):
 
 
 class AdapterTest(unittest.TestCase):
+    def test_ordinary_dispatch_continuation_composes_without_weakening_source_checks(self):
+        from worker_runtime_adapter import adapt as worker_adapt, CURRENT_UNBLOCK
+        name='hermes_cli/kanban_db.py'
+        source=(NATIVE/name).read_text()
+        updated=worker_adapt('kanban_db.py',source)
+        self.assertIn(CURRENT_UNBLOCK,updated)
+        composed=adapt(name,updated)
+        self.assertEqual(composed,adapt(name,composed))
+        self.assertIn(CURRENT_UNBLOCK,composed)
+        with self.assertRaisesRegex(ValueError,'ordinary unblock source drift'):
+            adapt(name,updated.replace('        require_resume(conn, task_id)\n',
+                '        require_resume(conn, "different-task")\n',1))
+
     def test_pinned_native_seams_idempotent_and_drift_refused(self):
         for name in EDITS:
             original=fixture_native_preimage(name,(NATIVE/name).read_text());updated=adapt(name,original)

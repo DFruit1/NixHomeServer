@@ -167,6 +167,11 @@ def completion_metadata(db, task_id, metadata, delivery=None):
     Direct metadata submissions obey the same checks. Missing required delivery
     evidence never turns into a successful routing completion.
     """
+    if __package__ == 'hermes_cli':
+        from .nixhomeserver_board_progress import require_completion
+    else:
+        from board_progress import require_completion
+    require_completion(db, task_id, metadata)
     workflow = load(db, task_id)
     if workflow and workflow.get('review'):
         if __package__ == 'hermes_cli':

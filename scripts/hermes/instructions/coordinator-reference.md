@@ -18,6 +18,52 @@ When authoring review stops or qualifying diagnostic recovery, follow
 `hermes-review-evidence.md` (Disposable diagnostic errors); preserve existing
 explicit stops until a qualified exact native same-card continuation.
 
+### Dispatch evidence and parallel work
+
+At a low-activity request, inspect current workers, effective caps, accepted
+inputs and existing owners. Delegate routine diagnosis, prerequisite repair,
+implementation, validation and review rework to one native-review-v1 task per
+independently deliverable outcome. Choose disjoint existing work beside the
+blocked incident; identify owned files, isolated source baseline, actual input
+dependencies and final composition/acceptance. Shared context creates no parent
+edge. Neither an unfinished handoff nor its tracker may gate its input producer.
+Use available capacity without changing caps, provider limits or retry budgets.
+
+New board-progress tasks carry `Dispatch policy: parallel-v1`. Before completing,
+read native task/run state and inspect bounded start evidence with:
+
+    HERMES_BOARD=BOARD python3 -B ~/.hermes/scripts/board_progress.py
+
+Complete with `metadata.board_progress.dispatched_task_ids=["t_..."]`, naming
+every task delegated by this supervision episode. Native completion requires a
+matched spawn/worker-registration event on an actual worker run since this
+owner's first run; a created task, claim or another coordinator controller is
+insufficient. Starts may precede supervisor completion and may already have
+finished. They establish execution only, never acceptance or delivery.
+
+If work is queued, call `kanban_schedule` on this same owner with reason exactly
+`Dispatch wait: {"dispatched_task_ids":["t_..."]}` and release its worker slot.
+Scheduling alone creates no timer. The 15-minute supervisor qualifies one native
+continuation after every named worker starts. The existing native unblock
+transaction rechecks the matching ended schedule event/run, coordinator identity,
+no live lease, zero failures/recurrences, no typed hold and no prior continuation.
+It preserves original task gates and cannot replenish a spent budget. Failed or
+typed supervision owners retain the existing qualified recovery path. Do not
+poll or create a successor controller. If no
+safe independent work exists, inspect the available requested scopes and complete
+with `metadata.board_progress.no_safe_independent_work={reason,supplier,wake_condition}`.
+Name the exact missing input and its supplier (`agent`, `owner`, `model/provider`
+or `external-source-owner(name)`). This is a technical disposition, not an owner
+alert or new authority. Keep the original incident/delivery owner unfinished.
+The report retains unverified historical handoffs; repair their concrete missing
+inputs through existing ownership, without manufacturing replacement controllers.
+
+Prepare source fixes in parallel against declared baselines. Coordinate shared
+installed-helper changes so an affected validation/review keeps its actual input
+identities stable; unrelated isolated work continues. A repeated incident keeps
+one canonical recovery owner, with one bounded auditor assessment after failed
+repair limits. Return its remedy to that owner rather than adding routing chains.
+
 ## Workspace and handoff
 
 Use explicit durable workspaces: worktree for git projects; dir:/home/dsaw/pc-ops
@@ -60,6 +106,9 @@ gate; a bounded mechanical repair may be authored here but requires another
 qualified agent's exact-source acceptance before integration. Record each
 disposition and leave a terminal kanban call or continuation before the run
 budget expires. Keep the server-deploy gate and reserved owner decisions.
+Aggregate related accepted deploy ranges into one qualified last-deployed..HEAD
+whole-set review and paired decision when its verifier accepts the union. Preserve
+the exact source, guarded test/switch and all reserved gates.
 
 ## Continuous improvement intake
 
