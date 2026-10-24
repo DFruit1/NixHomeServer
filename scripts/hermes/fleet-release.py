@@ -811,16 +811,6 @@ def recovery_wait_component_files(root, source, *, owners, retained, inputs=None
     manifest=json.loads(bounded_regular(journal(root,state['revision'])))
     if state.get('status')!='active' or manifest.get('status')!='active':
         raise ValueError('Recovery waits require an active existing fleet release')
-    if check_files(root,state['revision']):
-        raise ValueError('Reconcile active fleet drift before publishing recovery waits')
-    subprocess.run(['git','-C',str(source),'merge-base','--is-ancestor',
-                    manifest['source_revision'],'HEAD'],check=True,capture_output=True)
-    pending={checked(root,root/item['path']):bounded_regular(checked(root,root/item['path'])).decode()
-             for item in manifest['files']}
-    owners.update({path:['retained-existing'] for path in pending})
-    retained.extend(manifest.get('retained_external_changes',[]))
-    if schedule_updates is not None:
-        schedule_updates.extend(coordinator_schedule_updates(root,manifest))
     files={
         'scripts/fleet-release.py':'scripts/hermes/fleet-release.py',
         'scripts/fleet-supervisor.py':'scripts/hermes/fleet-supervisor.py',
@@ -828,29 +818,52 @@ def recovery_wait_component_files(root, source, *, owners, retained, inputs=None
         'scripts/hermes-capability-recovery.md':'scripts/hermes/instructions/capability-recovery.md',
         'scripts/hermes-coordinator-reference.md':'scripts/hermes/instructions/coordinator-reference.md',
     }
+    helpers=('scripts/recovery_wait.py','hermes-agent/hermes_cli/nixhomeserver_recovery_wait.py')
+    native=checked(root,root/'hermes-agent/hermes_cli/kanban_db.py')
+    entries={item['path']:item for item in manifest['files']}
+    paths={checked(root,root/relative) for relative in set(entries)|set(files)|set(helpers)}|{native}
+    # Bind every retained and replaced byte/mode before composing any output.
+    # A later read must never authorize overwriting a concurrent independent edit.
+    initial={path:bounded_regular(path) if path.exists() else None for path in paths}
+    observed={str(path.relative_to(root)):{'sha256':sha(value) if value is not None else None,
+              'mode':path.stat().st_mode&0o777 if value is not None else None}
+              for path,value in initial.items()}
+    if (check_files(root,state['revision']) or any(
+            observed[relative]!={'sha256':item['after_sha256'],'mode':item['mode']}
+            for relative,item in entries.items())):
+        raise ValueError('Reconcile active fleet drift before publishing recovery waits')
+    for relative in helpers:
+        if initial[root/relative] is not None and relative not in entries:
+            raise ValueError('Recovery wait helper already exists outside fleet ownership')
+    subprocess.run(['git','-C',str(source),'merge-base','--is-ancestor',
+                    manifest['source_revision'],'HEAD'],check=True,capture_output=True)
+    pending={root/relative:initial[root/relative].decode() for relative in entries}
+    owners.update({path:['retained-existing'] for path in pending})
+    retained.extend(manifest.get('retained_external_changes',[]))
+    if schedule_updates is not None:
+        schedule_updates.extend(coordinator_schedule_updates(root,manifest))
     for relative,original in files.items():
         path=checked(root,root/relative)
         predecessor=subprocess.check_output(['git','-C',str(source),'show',
                                             manifest['source_revision']+':'+original])
-        if bounded_regular(path)!=predecessor:
+        if initial[path]!=predecessor:
             raise ValueError('Recovery wait target needs its current maintained source: '+relative)
         pending[path]=(source/original).read_text()
         owners[path]=['recovery-waits']
-    native=checked(root,root/'hermes-agent/hermes_cli/kanban_db.py')
     from worker_runtime_adapter import adapt
     from recovered_resume_adapter import adapt as recovery_adapt
-    pending[native]=recovery_adapt('hermes_cli/kanban_db.py',adapt('kanban_db.py',bounded_regular(native).decode()))
+    pending[native]=recovery_adapt('hermes_cli/kanban_db.py',adapt('kanban_db.py',initial[native].decode()))
     owners[native]=['recovery-waits']
     helper=(source/'scripts/hermes/recovery_wait.py').read_text()
-    for relative in ('scripts/recovery_wait.py','hermes-agent/hermes_cli/nixhomeserver_recovery_wait.py'):
+    for relative in helpers:
         path=checked(root,root/relative)
-        if path.exists() and path not in pending:
-            raise ValueError('Recovery wait helper already exists outside fleet ownership')
         pending[path]=helper;owners[path]=['recovery-waits']
+    if any(read(checked(root,path))!=value or (value is not None and
+           path.stat().st_mode&0o777!=observed[str(path.relative_to(root))]['mode'])
+           for path,value in initial.items()):
+        raise ValueError('Recovery wait component input changed during preparation')
     if inputs is not None:
-        inputs.update({str(path.relative_to(root)):{'sha256':sha(value) if value is not None else None,
-            'mode':path.stat().st_mode&0o777 if value is not None else None}
-            for path in pending for value in [read(path)]})
+        inputs.update(observed)
     return pending
 
 

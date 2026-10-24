@@ -204,6 +204,44 @@ class RecoveryWaitTest(unittest.TestCase):
         self.assertEqual(1, len(self.calls))
         self.assertEqual('capability', self.db.execute("SELECT block_kind FROM tasks WHERE id='t_original'").fetchone()[0])
 
+    def test_native_dependency_wait_and_rate_limit_results_wake_only_the_owner(self):
+        self.original()
+        for outcome, kind, status in [('blocked', 'dependency_wait', 'todo'),
+                                      ('rate_limited', 'rate_limited', 'ready')]:
+            with self.subTest(outcome=outcome):
+                self.db.execute('UPDATE task_runs SET status=?,outcome=? WHERE id=11',
+                                (outcome, outcome))
+                self.db.execute("UPDATE tasks SET status=?,block_kind='dependency' WHERE id='t_original'",
+                                (status,))
+                self.db.execute("UPDATE task_events SET kind=? WHERE task_id='t_original' AND created_at=200",
+                                (kind,))
+                self.db.commit()
+                before = self.state()
+                with patch.object(supervisor.subprocess, 'run', side_effect=self.native):
+                    self.tick()
+                self.assertEqual('ready', self.db.execute("SELECT status FROM tasks WHERE id='t_owner'").fetchone()[0])
+                self.assertEqual([r for r in before if r[0] != 't_owner'],
+                                 [r for r in self.state() if r[0] != 't_owner'])
+                self.db.execute("UPDATE tasks SET status='scheduled' WHERE id='t_owner'")
+                self.wait()
+        self.assertEqual(2, len(self.calls))
+
+    def test_native_recovery_terminal_pairs_still_require_the_correlated_event(self):
+        self.original()
+        pairs = [('crashed', 'protocol_violation'), ('stale', 'stale'),
+                 ('reclaimed', 'reclaimed'), ('reclaimed', 'reconciled'),
+                 ('reclaimed', 'archived'), ('reclaimed', 'descendant_invalidated')]
+        for outcome, kind in pairs:
+            with self.subTest(outcome=outcome, kind=kind):
+                self.db.execute('UPDATE task_runs SET status=?,outcome=? WHERE id=11',
+                                (outcome, outcome))
+                self.db.execute("UPDATE task_events SET kind=?,run_id=11 WHERE task_id='t_original' AND created_at=200",
+                                (kind,))
+                self.assertTrue(self.require())
+                self.db.execute("UPDATE task_events SET run_id=99 WHERE task_id='t_original' AND created_at=200")
+                with self.assertRaisesRegex(ValueError, 'matching native terminal event'):
+                    self.require()
+
     def test_gate_counters_workers_and_typed_holds_cannot_be_automatically_released(self):
         self.original()
         changes = ["consecutive_failures=1", "block_recurrences=1", "worker_pid=1234",
@@ -324,14 +362,14 @@ class ComponentReleaseTest(unittest.TestCase):
             candidate.parent.mkdir(parents=True, exist_ok=True)
             candidate.write_text(before+'# reviewed recovery change\n')
             self.predecessors[original] = before.encode()
-            entries.append(dict(path=target))
+            entries.append(dict(path=target, after_sha256=self.release.sha(path.read_bytes()), mode=path.stat().st_mode&0o777))
         for name, value in [('profiles/head-coordinator/config.yaml', 'model: retained\n'),
                             ('profiles/board-steward/SOUL.md', 'independent instructions\n'),
                             ('hermes-agent/hermes_cli/kanban_db.py', 'native baseline\n')]:
             path = self.root/name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(value)
-            entries.append(dict(path=name))
+            entries.append(dict(path=name, after_sha256=self.release.sha(path.read_bytes()), mode=path.stat().st_mode&0o777))
         (self.checkout/'scripts/hermes/recovery_wait.py').write_text('# qualified helper\n')
         current = self.root/'state/fleet/current.json'
         current.parent.mkdir(parents=True)
@@ -341,15 +379,19 @@ class ComponentReleaseTest(unittest.TestCase):
         manifest.write_text(json.dumps(dict(status='active', source_revision='b'*40, files=entries,
             retained_external_changes=['profiles/board-steward/SOUL.md'])))
 
-    def plan(self, *, drift=()):
+    def plan(self, *, drift=(), during=None):
         import worker_runtime_adapter
         import recovered_resume_adapter
         owners, retained, inputs, schedules = {}, [], {}, []
+        def adapt(name, value):
+            if during:
+                during()
+            return value+'# native wait recheck\n'
         with patch.object(self.release, 'check_files', return_value=list(drift)), \
              patch.object(self.release, 'coordinator_schedule_updates', return_value=[]), \
              patch.object(self.release.subprocess, 'run'), \
              patch.object(self.release.subprocess, 'check_output', side_effect=lambda argv: self.predecessors[argv[-1].split(':',1)[1]]), \
-             patch.object(worker_runtime_adapter, 'adapt', side_effect=lambda name, value: value+'# native wait recheck\n'), \
+             patch.object(worker_runtime_adapter, 'adapt', side_effect=adapt), \
              patch.object(recovered_resume_adapter, 'adapt', side_effect=lambda name, value: value):
             pending = self.release.recovery_wait_component_files(self.root, self.checkout,
                 owners=owners, retained=retained, inputs=inputs, schedule_updates=schedules)
@@ -373,6 +415,10 @@ class ComponentReleaseTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'drift'):
             self.plan(drift=['scripts/fleet-supervisor.py'])
         (self.root/'scripts/fleet-supervisor.py').write_text('# unrelated newer source\n')
+        manifest_path = self.root/'state/fleet/releases'/('a'*64)/'manifest.json'
+        manifest = json.loads(manifest_path.read_text())
+        next(item for item in manifest['files'] if item['path']=='scripts/fleet-supervisor.py')['after_sha256'] = self.release.sha(b'# unrelated newer source\n')
+        manifest_path.write_text(json.dumps(manifest))
         with self.assertRaisesRegex(ValueError, 'current maintained source'):
             self.plan()
 
@@ -380,6 +426,25 @@ class ComponentReleaseTest(unittest.TestCase):
         (self.root/'scripts/recovery_wait.py').write_text('# another owner\n')
         with self.assertRaisesRegex(ValueError, 'outside fleet ownership'):
             self.plan()
+
+    def test_scoped_release_refuses_retained_bytes_changed_during_composition(self):
+        path = self.root/'profiles/head-coordinator/config.yaml'
+        with self.assertRaisesRegex(ValueError, 'input changed during preparation'):
+            self.plan(during=lambda: path.write_text('model: concurrent edit\n'))
+        self.assertEqual('model: concurrent edit\n', path.read_text())
+
+    def test_scoped_release_refuses_retained_mode_changed_during_composition(self):
+        path = self.root/'profiles/head-coordinator/config.yaml'
+        mode = path.stat().st_mode&0o777
+        with self.assertRaisesRegex(ValueError, 'input changed during preparation'):
+            self.plan(during=lambda: path.chmod(mode ^ 0o100))
+        self.assertEqual(mode ^ 0o100, path.stat().st_mode&0o777)
+
+    def test_scoped_release_refuses_new_helper_created_during_composition(self):
+        path = self.root/'scripts/recovery_wait.py'
+        with self.assertRaises(ValueError):
+            self.plan(during=lambda: path.write_text('# concurrent helper\n'))
+        self.assertEqual('# concurrent helper\n', path.read_text())
 
 
 unittest.main(argv=[sys.argv[0]], verbosity=2)

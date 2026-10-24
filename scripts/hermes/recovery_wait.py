@@ -14,12 +14,15 @@ PREFIX = 'Recovery wait: '
 NOTES = ('commented', 'attached', 'subscribed', 'unsubscribed')
 TERMINAL_EVENTS = {
     'completed': ('completed',),
-    'blocked': ('blocked', 'block_loop_detected'),
+    'blocked': ('blocked', 'block_loop_detected', 'dependency_wait'),
     'scheduled': ('scheduled',),
     'review_requested': ('review_requested',),
     'changes_requested': ('changes_requested',),
     'failed': ('failed', 'gave_up'),
-    'crashed': ('crashed', 'gave_up'),
+    'crashed': ('crashed', 'protocol_violation', 'gave_up'),
+    'rate_limited': ('rate_limited',),
+    'stale': ('stale',),
+    'reclaimed': ('reclaimed', 'reconciled', 'archived', 'descendant_invalidated', 'gave_up'),
     'timed_out': ('timed_out', 'gave_up'),
     'spawn_failed': ('spawn_failed', 'gave_up'),
     'gave_up': ('gave_up',),
