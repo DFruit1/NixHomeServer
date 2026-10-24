@@ -42,6 +42,8 @@ def pending_files(root):
 
 
 def install(root, check=False):
+    if not check and (root / 'state/fleet/current.json').exists():
+        raise ValueError('Fleet-managed worker installation: use fleet-release.py apply')
     pending = pending_files(root)
     changes = [(path, old, new) for path, old, new in pending if old != new]
     if check:

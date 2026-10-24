@@ -173,6 +173,55 @@ class InstallerTest(unittest.TestCase):
         self.local.write_text(AdapterTest().local_fixture())
         self.helper=self.root/'hermes-agent/hermes_cli/nixhomeserver_worker_origin.py'
 
+    def test_fleet_owned_upgrade_refuses_standalone_and_keeps_rollback(self):
+        spec=importlib.util.spec_from_file_location('release',SOURCE/'fleet-release.py')
+        release=importlib.util.module_from_spec(spec);spec.loader.exec_module(release)
+        pending={path:after for path,_,after in installer.pending_files(self.root)}
+        stale=self.root/'hermes-agent/hermes_cli/nixhomeserver_worker_origin.py'
+        older=dict(pending)
+        older[stale]='# Synthetic older fleet helper\n'
+        stale.chmod(0o640) if stale.exists() else None
+        initial={p.relative_to(self.root):(p.read_bytes(),p.stat().st_mode & 0o777)
+                 for p in self.root.rglob('*') if p.is_file()}
+        release.install_files(self.root,older,'a'*40)
+        current=self.root/'state/fleet/current.json'
+        current.write_text(json.dumps({'revision':'a'*40,'status':'active'}))
+        self.assertEqual([],release.check_files(self.root,'a'*40))
+        def snapshot():
+            return {str(p.relative_to(self.root)):(p.stat().st_mode,p.stat().st_mtime_ns,
+                    p.read_bytes() if p.is_file() else None)
+                    for p in self.root.rglob('*')}
+        before=snapshot()
+        with self.assertRaisesRegex(ValueError,'Fleet-managed worker installation'):
+            installer.install(self.root)
+        self.assertEqual(before,snapshot())
+        env=dict(os.environ,HERMES_ROOT=str(self.root))
+        result=subprocess.run([sys.executable,'-B',str(SOURCE/'install-worker-origin.py')],
+                              env=env,capture_output=True,timeout=10)
+        self.assertEqual(2,result.returncode)
+        self.assertEqual(before,snapshot())
+        self.assertEqual(1,installer.install(self.root,check=True))
+        result=subprocess.run([sys.executable,'-B',str(SOURCE/'install-worker-origin.py'),'--check'],
+                              env=env,capture_output=True,timeout=10)
+        self.assertEqual(1,result.returncode)
+        self.assertIn(b'drift:',result.stdout)
+        self.assertEqual(before,snapshot())
+        self.assertEqual([],release.check_files(self.root,'a'*40))
+        candidate={path:after for path,_,after in installer.pending_files(self.root)}
+        self.assertEqual(pending,candidate)
+        release.install_files(self.root,candidate,'b'*40)
+        self.assertEqual([],release.check_files(self.root,'b'*40))
+        self.assertEqual(0,installer.install(self.root,check=True))
+        self.assertTrue(all(old==new for _,old,new in installer.pending_files(self.root)))
+        release.rollback_files(self.root,'b'*40)
+        self.assertEqual([],release.check_files(self.root,'a'*40))
+        self.assertEqual(older[stale],stale.read_text())
+        release.rollback_files(self.root,'a'*40)
+        actual={p.relative_to(self.root):(p.read_bytes(),p.stat().st_mode & 0o777)
+                for p in self.root.rglob('*') if p.is_file()
+                and not p.is_relative_to(self.root/'state')}
+        self.assertEqual(initial,actual)
+
     def test_check_is_read_only_and_apply_is_backed_up_atomic_and_idempotent(self):
         self.assertEqual(1,installer.install(self.root,check=True))
         self.assertEqual(self.before,self.native.read_bytes())

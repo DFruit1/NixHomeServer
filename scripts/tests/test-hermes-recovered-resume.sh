@@ -288,6 +288,55 @@ class InstallerTest(unittest.TestCase):
         spec=importlib.util.spec_from_file_location('recovered_installer',SOURCE/'install-recovered-resume.py')
         self.installer=importlib.util.module_from_spec(spec);spec.loader.exec_module(self.installer)
 
+    def test_fleet_owned_upgrade_refuses_standalone_and_keeps_rollback(self):
+        spec=importlib.util.spec_from_file_location('release',SOURCE/'fleet-release.py')
+        release=importlib.util.module_from_spec(spec);spec.loader.exec_module(release)
+        pending={path:after for path,_,after in self.installer.pending_files(self.root)[1]}
+        stale=self.root/'hermes-agent/hermes_cli/kanban.py'
+        older=dict(pending)
+        older[stale]=stale.read_text()
+        stale.chmod(0o640) if stale.exists() else None
+        initial={p.relative_to(self.root):(p.read_bytes(),p.stat().st_mode & 0o777)
+                 for p in self.root.rglob('*') if p.is_file()}
+        release.install_files(self.root,older,'a'*40)
+        current=self.root/'state/fleet/current.json'
+        current.write_text(json.dumps({'revision':'a'*40,'status':'active'}))
+        self.assertEqual([],release.check_files(self.root,'a'*40))
+        def snapshot():
+            return {str(p.relative_to(self.root)):(p.stat().st_mode,p.stat().st_mtime_ns,
+                    p.read_bytes() if p.is_file() else None)
+                    for p in self.root.rglob('*')}
+        before=snapshot()
+        with self.assertRaisesRegex(ValueError,'Fleet-managed worker installation'):
+            self.installer.install(self.root)
+        self.assertEqual(before,snapshot())
+        env=dict(os.environ,HERMES_ROOT=str(self.root))
+        result=subprocess.run([sys.executable,'-B',str(SOURCE/'install-recovered-resume.py')],
+                              env=env,capture_output=True,timeout=10)
+        self.assertEqual(2,result.returncode)
+        self.assertEqual(before,snapshot())
+        self.assertEqual(1,self.installer.install(self.root,check=True))
+        result=subprocess.run([sys.executable,'-B',str(SOURCE/'install-recovered-resume.py'),'--check'],
+                              env=env,capture_output=True,timeout=10)
+        self.assertEqual(1,result.returncode)
+        self.assertIn(b'drift:',result.stdout)
+        self.assertEqual(before,snapshot())
+        self.assertEqual([],release.check_files(self.root,'a'*40))
+        candidate={path:after for path,_,after in self.installer.pending_files(self.root)[1]}
+        self.assertEqual(pending,candidate)
+        release.install_files(self.root,candidate,'b'*40)
+        self.assertEqual([],release.check_files(self.root,'b'*40))
+        self.assertEqual(0,self.installer.install(self.root,check=True))
+        self.assertTrue(all(old==new for _,old,new in self.installer.pending_files(self.root)[1]))
+        release.rollback_files(self.root,'b'*40)
+        self.assertEqual([],release.check_files(self.root,'a'*40))
+        self.assertEqual(older[stale],stale.read_text())
+        release.rollback_files(self.root,'a'*40)
+        actual={p.relative_to(self.root):(p.read_bytes(),p.stat().st_mode & 0o777)
+                for p in self.root.rglob('*') if p.is_file()
+                and not p.is_relative_to(self.root/'state')}
+        self.assertEqual(initial,actual)
+
     def test_check_install_idempotence_and_private_backup(self):
         self.assertEqual(1,self.installer.install(self.root,True))
         self.assertFalse((self.root/'backups').exists())
