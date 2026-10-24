@@ -13,6 +13,14 @@ from pathlib import Path
 import re
 import sqlite3
 import time
+import subprocess
+import sys
+import weakref
+
+
+# Native objects, never the os.environ session mirror, own these associations.
+# Weak references avoid retaining finished chats on long-lived gateway hosts.
+_sessions = weakref.WeakValueDictionary()
 
 
 def process_fingerprint():
@@ -82,6 +90,12 @@ def session_origin(agent, origin_json):
     Compression retains the same task/run/process binding. Missing evidence
     denies tool attestation without preventing unrelated session startup.
     """
+    session = getattr(agent, 'session_id', None)
+    if isinstance(session, str) and 0 < len(session) <= 256:
+        try:
+            _sessions[session] = agent
+        except TypeError:
+            pass
     try:
         prior = json.loads(origin_json) if origin_json else {}
     except (ValueError, TypeError):
@@ -99,9 +113,9 @@ def session_origin(agent, origin_json):
 
 
 
-def _launch_directory(root, binding, create=False):
+def _launch_directory(root, binding, create=False, namespace='worker-origin'):
     path = Path(root)
-    for part in ('runtime', 'worker-origin', str(binding['pid']) + '-' +
+    for part in ('runtime', namespace, str(binding['pid']) + '-' +
                  hashlib.sha256(binding['fingerprint'].encode()).hexdigest()):
         path = path / part
         if create:
@@ -114,6 +128,159 @@ def _launch_directory(root, binding, create=False):
                 or info.st_mode & (0o022 if part == 'runtime' else 0o077)):
             raise ValueError('Native launch metadata directory is not private')
     return path
+
+
+def _terminal_root():
+    # Fixed by the maintained installation path, never a caller environment label.
+    return Path(__file__).resolve().parents[2]
+
+
+def _process(pid):
+    with (Path('/proc') / str(pid) / 'stat').open('rb') as stream:
+        raw = stream.read(4097)
+    if len(raw) > 4096:
+        raise ValueError('Terminal process identity exceeds its bound')
+    fields = raw.decode().rsplit(')', 1)[1].split()
+    if fields[0] == 'Z':
+        raise ValueError('Terminal process has exited')
+    return (pid, int(fields[1]), fields[19])
+
+
+def _epoch():
+    return Path('/proc/sys/kernel/random/boot_id').read_text().strip() + ':' + _process(1)[2]
+
+
+def _terminal_session():
+    try:
+        from gateway.session_context import _VAR_MAP, _UNSET
+        session = _VAR_MAP['HERMES_SESSION_ID'].get()
+        agent = _sessions.get(session) if session is not _UNSET else None
+        if agent is not None and agent.session_id == session:
+            return {'id': session, 'source': str(getattr(agent, 'platform', ''))[:128]}
+    except (ImportError, KeyError, TypeError, AttributeError):
+        pass
+    # Missing/scrubbed context never turns a native model launch into an operator.
+    return None
+
+
+def _publish_terminal_launch(proc):
+    parent = _process(os.getpid())
+    child = _process(proc.pid)
+    if child[1] != parent[0]:
+        raise ValueError('Terminal launch is not a native child')
+    binding = {'pid': parent[0], 'fingerprint': _epoch() + '|' + parent[2]}
+    directory = _launch_directory(_terminal_root(), binding, True, 'terminal-origin')
+    receipt = dict(schema_version=1, pid=child[0], start_ticks=child[2],
+                   native_process=binding, session=_terminal_session())
+    fd, temporary = tempfile.mkstemp(dir=directory, prefix='.launch-')
+    try:
+        with os.fdopen(fd, 'w') as stream:
+            json.dump(receipt, stream, sort_keys=True)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, directory / (str(child[0]) + '-' + child[2] + '.json'),
+                follow_symlinks=False)
+    finally:
+        os.unlink(temporary)
+    if _process(os.getpid()) != parent or _process(proc.pid) != child:
+        raise ValueError('Terminal ancestry changed before publication')
+
+
+def popen_terminal(args, **kwargs):
+    """Gate native model commands until kernel-bound denial provenance exists.
+
+    Python is the existing runtime integration language. Isolated CPython waits
+    before exec so shell startup files, env scrubbing and fast commands cannot
+    race publication. A publication failure kills/reaps the waiting child.
+    This same-UID cooperative boundary is not a sandbox against arbitrary code
+    rewriting installed policy or its private receipts.
+    """
+    if os.name == 'nt':
+        raise ValueError('Native terminal provenance requires Linux procfs')
+    read_fd, write_fd = os.pipe()
+    proc = None
+    try:
+        inherited = tuple(kwargs.pop('pass_fds', ()))
+        gate = ('import os,sys; fd=int(sys.argv[1]); '
+                'ok=os.read(fd,1)==b"1"; os.close(fd); '
+                'sys.exit(125) if not ok else os.execvpe(sys.argv[2],sys.argv[2:],os.environ)')
+        proc = subprocess.Popen([sys.executable, '-I', '-S', '-c', gate, str(read_fd), *args],
+                                pass_fds=(*inherited, read_fd), **kwargs)
+        os.close(read_fd)
+        read_fd = None
+        _publish_terminal_launch(proc)
+        # Preserve first-launch delegate denials and native worker attestation.
+        record_launch(proc)
+        os.write(write_fd, b'1')
+        return proc
+    except BaseException:
+        if proc is not None:
+            proc.kill()
+            proc.wait()
+            for stream in (proc.stdin, proc.stdout, proc.stderr):
+                if stream is not None:
+                    stream.close()
+        raise
+    finally:
+        if read_fd is not None:
+            os.close(read_fd)
+        os.close(write_fd)
+
+
+def proven_terminal_origin():
+    """Selective negative proof only; absence never grants native authority.
+
+    Walk actual ancestry with bounded, private receipt reads. Ignore caller
+    env entirely. Boot/PID-1 epoch and both process start ticks defeat stale
+    receipts/PID reuse. Check each edge so nested/scrubbed descendants retain
+    the first native launch's denial even across concurrent gateway sessions.
+    """
+    lineage = []
+    pid = os.getpid()
+    try:
+        epoch = _epoch()
+    except (OSError, ValueError, IndexError):
+        return False
+    for _ in range(64):
+        try:
+            child = _process(pid)
+            if child[1] <= 0 or child[1] == pid:
+                return False
+            parent = _process(child[1])
+        except (OSError, ValueError, IndexError):
+            return False
+        try:
+            lineage.append(child)
+            binding = {'pid': parent[0], 'fingerprint': epoch + '|' + parent[2]}
+            directory = _launch_directory(_terminal_root(), binding, namespace='terminal-origin')
+            target = directory / (str(child[0]) + '-' + child[2] + '.json')
+            fd = os.open(target, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(fd, 'rb') as stream:
+                info = os.fstat(stream.fileno())
+                if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                        or info.st_mode & 0o077 or info.st_nlink != 1):
+                    raise ValueError('Terminal launch receipt is not private')
+                raw = stream.read(4097)
+            if len(raw) > 4096:
+                raise ValueError('Terminal launch receipt exceeds its bound')
+            receipt = json.loads(raw)
+            if (receipt.get('schema_version') == 1 and receipt.get('pid') == child[0]
+                    and receipt.get('start_ticks') == child[2]
+                    and receipt.get('native_process') == binding
+                    and _process(parent[0]) == parent
+                    and all(_process(old[0]) == old for old in lineage)):
+                return True
+        except (OSError, ValueError, TypeError, AttributeError, IndexError):
+            # Unproven callers remain ordinary operators. This is negative
+            # provenance, not a new positive authority or a blanket CLI fence.
+            pass
+        pid = child[1]
+    return False
+
+
+def require_ordinary_unblock():
+    if proven_terminal_origin():
+        raise ValueError('Native model terminal ordinary unblock is refused; use native exact-version coordinator recovery')
 
 
 def _record_launch(proc):

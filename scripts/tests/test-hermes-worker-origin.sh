@@ -18,8 +18,11 @@ from unittest.mock import patch
 
 SOURCE=Path(sys.argv[1])/'scripts/hermes'
 sys.path.insert(0,str(SOURCE))
+NATIVE=(Path(os.environ['HERMES_FIXTURE_NATIVE_PYTHON']).parents[2] if os.environ.get('HERMES_FIXTURE_NATIVE_PYTHON') else Path(os.environ.get('HERMES_ROOT',str(Path.home()/'.hermes')))/'hermes-agent')
+sys.path.insert(0,str(NATIVE))
 import worker_origin as origin
 from worker_origin_adapter import adapt, adapt_local
+from worker_origin_adapter import LOCAL_BEFORE, LOCAL_AFTER
 spec=importlib.util.spec_from_file_location('installer',SOURCE/'install-worker-origin.py')
 installer=importlib.util.module_from_spec(spec);spec.loader.exec_module(installer)
 
@@ -110,6 +113,15 @@ class WorkerOriginTest(unittest.TestCase):
 
 
 class AdapterTest(unittest.TestCase):
+    def local_fixture(self):
+        return ('def spawn(proc):\n'
+                '        proc = subprocess.Popen(\n'
+                '            args, text=True, env=_make_run_env(self.env), encoding="utf-8", errors="replace",\n'
+                '        )\n'
+                '        if not _IS_WINDOWS:\n'
+                '            with contextlib.suppress(ProcessLookupError):\n'
+                '                pass\n')
+
     def fixture(self):
         return ('class Agent:\n    def start(self):\n'
                 '        try:\n            self._session_db.create_session(\n'
@@ -125,16 +137,15 @@ class AdapterTest(unittest.TestCase):
         from types import ModuleType
         called=[]
         helper=ModuleType('hermes_cli.nixhomeserver_worker_origin')
-        helper.record_launch=lambda proc:called.append(proc)
+        helper.popen_terminal=lambda *a,**k:called.append(process) or process
         package=ModuleType('hermes_cli');package.nixhomeserver_worker_origin=helper
-        source=('def spawn(proc):\n'
-                '        if not _IS_WINDOWS:\n'
-                '            with contextlib.suppress(ProcessLookupError):\n'
-                '                pass\n')
+        source=self.local_fixture()
         adapted=adapt_local(source)
         self.assertEqual(adapted,adapt_local(adapted))
+        self.assertEqual(adapted,adapt_local(source.replace(LOCAL_BEFORE,LOCAL_AFTER)))
         import contextlib
-        scope={'_IS_WINDOWS':False,'contextlib':contextlib}
+        scope={'_IS_WINDOWS':False,'contextlib':contextlib,'args':[],
+               '_make_run_env':lambda env:env,'self':SimpleNamespace(env={})}
         with patch.dict(sys.modules,{'hermes_cli':package}):
             exec(compile(adapted,'native-local.py','exec'),scope)
             process=object();scope['spawn'](process)
@@ -159,7 +170,7 @@ class InstallerTest(unittest.TestCase):
         self.before=self.native.read_bytes()
         self.local=self.root/'hermes-agent/tools/environments/local.py'
         self.local.parent.mkdir(parents=True)
-        self.local.write_text('def spawn():\n        if not _IS_WINDOWS:\n            with contextlib.suppress(ProcessLookupError):\n                pass\n')
+        self.local.write_text(AdapterTest().local_fixture())
         self.helper=self.root/'hermes-agent/hermes_cli/nixhomeserver_worker_origin.py'
 
     def test_check_is_read_only_and_apply_is_backed_up_atomic_and_idempotent(self):
@@ -181,6 +192,12 @@ class InstallerTest(unittest.TestCase):
         with self.assertRaises(ValueError):installer.install(self.root)
         self.assertFalse(self.helper.exists())
         self.assertEqual('pass\n',self.native.read_text())
+
+    def test_local_launch_drift_refuses_before_any_helper_write(self):
+        self.local.write_text(self.local.read_text().replace('_make_run_env(self.env)','unknown_env(self.env)'))
+        with self.assertRaises(ValueError):installer.install(self.root)
+        self.assertFalse(self.helper.exists())
+        self.assertFalse((self.root/'backups').exists())
 
     def test_helper_symlink_is_not_followed(self):
         self.helper.parent.mkdir()
@@ -349,6 +366,186 @@ class AuthenticatedOriginTest(unittest.TestCase):
                          'receipt_wrong_session','receipt_string_allowed','metadata_sqlite_failure','metadata_write_failure','delegated_mislabelled_kanban',
                          'wrong_expected_scope'):
             with self.subTest(scenario=scenario):self.assertFalse(self.probe(scenario)['accepted'])
+
+class TerminalBoundaryTest(unittest.TestCase):
+    def test_only_live_kernel_edge_proves_terminal_origin(self):
+        with tempfile.TemporaryDirectory(prefix='hermes-terminal-identity-') as task:
+            root=Path(task)
+            parent=(122,1,'200');child=(123,122,'100')
+            binding={'pid':122,'fingerprint':'boot|200'}
+            directory=origin._launch_directory(root,binding,True,'terminal-origin')
+            target=directory/'123-100.json'
+            receipt=dict(schema_version=1,pid=123,start_ticks='100',native_process=binding,
+                         session={'id':'actual-native-session','source':'bot'})
+            def process(pid):return {123:child,122:parent,1:(1,0,'1')}[pid]
+            with patch.object(origin,'_terminal_root',return_value=root),patch.object(origin,'_epoch',return_value='boot'),patch.object(origin,'_process',side_effect=process),patch.object(origin.os,'getpid',return_value=123):
+                self.assertFalse(origin.proven_terminal_origin())
+                target.write_text(json.dumps(receipt));target.chmod(0o600)
+                self.assertTrue(origin.proven_terminal_origin())
+                for field,value in [('pid',999),('start_ticks','99'),('native_process',dict(binding,fingerprint='old-boot|200'))]:
+                    with self.subTest(field=field):
+                        target.write_text(json.dumps(dict(receipt,**{field:value})))
+                        self.assertFalse(origin.proven_terminal_origin())
+                target.write_text(json.dumps(receipt))
+                for changed in ((123,122,'101'),(123,121,'100')):
+                    with patch.object(origin,'_process',side_effect=lambda pid:changed if pid==123 else (pid,0,'other')):
+                        self.assertFalse(origin.proven_terminal_origin())
+                with patch.object(origin,'_epoch',return_value='new-boot'):
+                    self.assertFalse(origin.proven_terminal_origin())
+                target.chmod(0o644)
+                self.assertFalse(origin.proven_terminal_origin())
+
+    def test_concurrent_session_objects_override_environment_mirrors(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Barrier
+        from gateway.session_context import _VAR_MAP
+        class Agent:
+            side_agent=False
+            platform='bot'
+            def __init__(self,session):self.session_id=session
+        agents=[Agent('native-a'),Agent('native-b')]
+        for agent in agents:origin.session_origin(agent,None)
+        barrier=Barrier(2)
+        def session(agent):
+            token=_VAR_MAP['HERMES_SESSION_ID'].set(agent.session_id)
+            try:
+                barrier.wait(timeout=5)
+                return origin._terminal_session()
+            finally:_VAR_MAP['HERMES_SESSION_ID'].reset(token)
+        with patch.dict(os.environ,{'HERMES_SESSION_ID':'spoofed-operator'}),ThreadPoolExecutor(2) as pool:
+            results=list(pool.map(session,agents))
+        self.assertEqual([{'id':a.session_id,'source':'bot'} for a in agents],results)
+
+    def test_scrubbed_terminal_denied_before_generic_unblock_changes_database(self):
+        with tempfile.TemporaryDirectory(prefix='hermes-terminal-boundary-') as task:
+            result=subprocess.run([sys.executable,'-B','-c',TERMINAL_FIXTURE,
+                                   str(SOURCE),task],capture_output=True,text=True,timeout=30)
+            self.assertEqual(0,result.returncode,result.stdout+result.stderr)
+
+
+TERMINAL_FIXTURE = r"""
+import ast,contextlib,importlib.util,os,subprocess,sys,types,shlex,textwrap
+from pathlib import Path
+source,task=map(Path,sys.argv[1:]);sys.path.insert(0,str(source))
+from recovered_resume_adapter import adapt
+from worker_origin_adapter import adapt_local
+native=Path(os.environ['HERMES_FIXTURE_NATIVE_PYTHON']).parents[2]
+sys.path.insert(0,str(native))
+root=task/'hermes';helper=root/'hermes-agent/hermes_cli/nixhomeserver_worker_origin.py'
+helper.parent.mkdir(parents=True);helper.write_text((source/'worker_origin.py').read_text())
+spec=importlib.util.spec_from_file_location('terminal_origin',helper)
+o=importlib.util.module_from_spec(spec);spec.loader.exec_module(o)
+sys.modules['hermes_cli.nixhomeserver_worker_origin']=o
+from hermes_cli import kanban_db as installed,kanban_db_connect
+kb=types.ModuleType('fixture_native_db');kb.__file__=installed.__file__;sys.modules[kb.__name__]=kb
+exec(compile(adapt('hermes_cli/kanban_db.py',Path(installed.__file__).read_text()),installed.__file__,'exec'),kb.__dict__)
+db=root/'kanban/boards/synthetic/kanban.db';db.parent.mkdir(parents=True)
+c=kanban_db_connect.connect(db_path=db)
+t=kb.create_task(c,title='incident refusal',assignee='standard-implementer',workspace_kind='scratch')
+c.execute("UPDATE tasks SET status='blocked',consecutive_failures=3,last_failure_error='native refusal',block_recurrences=2 WHERE id=?",(t,));c.commit()
+# Execute the actual native refusal seam before the scrubbed terminal attempt.
+tools=(native/'tools/kanban_tools.py').read_text()
+reject=next(n for n in ast.parse(tools).body if isinstance(n,ast.FunctionDef) and n.name=='_require_orchestrator_tool')
+class Reject(Exception):pass
+ns={'os':os,'_Reject':Reject}
+exec(compile(ast.get_source_segment(tools,reject),'fixture-native-refusal','exec'),ns)
+snapshot=list(c.iterdump())
+os.environ['HERMES_KANBAN_TASK']='t_synthetic_refused'
+try:
+ try:ns['_require_orchestrator_tool']('kanban_unblock')
+ except Reject:pass
+ else:raise AssertionError('native refusal fixture did not refuse')
+finally:os.environ.pop('HERMES_KANBAN_TASK')
+assert snapshot==list(c.iterdump())
+# Invoke the maintained source's actual local launch method, not a lookalike.
+local=adapt_local((native/'tools/environments/local.py').read_text())
+method=next(n for n in ast.walk(ast.parse(local)) if isinstance(n,ast.FunctionDef) and n.name=='_run_bash')
+namespace={'subprocess':subprocess,'os':os,'contextlib':contextlib,
+           '_find_bash':lambda:'/bin/bash','_make_run_env':lambda e:e,'_IS_WINDOWS':False}
+exec(compile(textwrap.dedent(ast.get_source_segment(local,method)),'fixture-native-local','exec'),namespace)
+runtime=types.SimpleNamespace(cwd=str(task),_recover_cwd=lambda:None)
+child=r'''import importlib.util,os,sys,types
+from pathlib import Path
+helper,source,db,t=sys.argv[1:];sys.path.insert(0,source)
+spec=importlib.util.spec_from_file_location('origin',helper);o=importlib.util.module_from_spec(spec);spec.loader.exec_module(o)
+sys.modules['hermes_cli.nixhomeserver_worker_origin']=o
+from hermes_cli import kanban_db as installed,kanban_db_connect
+from recovered_resume_adapter import adapt
+kb=types.ModuleType('fixture_db');kb.__file__=installed.__file__;sys.modules[kb.__name__]=kb
+exec(compile(adapt('hermes_cli/kanban_db.py',Path(installed.__file__).read_text()),installed.__file__,'exec'),kb.__dict__)
+c=kanban_db_connect.connect(db_path=Path(db))
+assert kb.get_task(c,t).status=='blocked'
+kb.create_task(c,title='reads and create remain',assignee='standard-implementer',workspace_kind='scratch')
+before=list(c.iterdump())
+try:kb.unblock_task(c,t)
+except ValueError as e:assert 'terminal' in str(e).lower()
+else:raise AssertionError('Bot terminal ordinary unblock was accepted')
+assert before==list(c.iterdump()),'denial changed state/counters/events'
+# CLI has an earlier guard: a reason must not append a comment on refusal.
+import ast,argparse
+text=adapt('hermes_cli/kanban.py',Path(installed.__file__).with_name('kanban.py').read_text())
+node=next(n for n in ast.parse(text).body if isinstance(n,ast.FunctionDef) and n.name=='_cmd_unblock')
+ns={'argparse':argparse,'_err':lambda msg:1}
+exec(compile(ast.get_source_segment(text,node),'fixture-native-cli','exec'),ns)
+assert ns['_cmd_unblock'](argparse.Namespace(task_ids=[t],reason='must not be recorded'))==1
+assert before==list(c.iterdump()),'CLI denial appended state'
+'''
+command=shlex.join([sys.executable,'-B','-c',child,str(helper),str(source),str(db),t])
+for scenario in ('scrubbed','spoofed'):
+ env={'PATH':os.environ['PATH'],'HOME':str(task),'PYTHONPATH':str(native)}
+ if scenario=='spoofed':env.update(HERMES_PROFILE='head-coordinator',HERMES_SESSION_ID='operator',HERMES_KANBAN_TASK='t_fake',HERMES_ROOT=str(task/'unrelated'),HERMES_KANBAN_DB=str(task/'fake.db'))
+ runtime.env=env
+ p=namespace['_run_bash'](runtime,command)
+ out,err=p.communicate(timeout=15);assert p.returncode==0,(out,err)
+assert not o.proven_terminal_origin()
+assert kb.unblock_task(c,t)
+assert kb.get_task(c,t).status=='ready'
+# An actual ordinary CLI function remains usable by the interactive parent.
+from hermes_cli import kanban as cli
+import argparse
+text=adapt('hermes_cli/kanban.py',(native/'hermes_cli/kanban.py').read_text())
+node=next(n for n in ast.parse(text).body if isinstance(n,ast.FunctionDef) and n.name=='_cmd_unblock')
+@contextlib.contextmanager
+def board():yield c
+ns=dict(cli.__dict__,kb=kb,kbc=types.SimpleNamespace(connect_closing=board))
+exec(compile(ast.get_source_segment(text,node),'fixture-operator-cli','exec'),ns)
+c.execute("UPDATE tasks SET status='blocked' WHERE id=?",(t,));c.commit()
+assert ns['_cmd_unblock'](argparse.Namespace(task_ids=[t],reason=None))==0
+assert kb.get_task(c,t).status=='ready'
+marker=task/'escaped'
+o._publish_terminal_launch=lambda *a:(_ for _ in ()).throw(OSError('synthetic publication failure'))
+try:o.popen_terminal(['/bin/bash','-c','touch '+str(marker)],env={'PATH':os.environ['PATH']},start_new_session=True)
+except OSError:pass
+else:raise AssertionError('publication failure released model command')
+assert not marker.exists()
+# Qualify the actual maintained installers and fleet preimage/readback/rollback
+# on confined copies. Candidate origin can be upgraded in the SAME transaction.
+for name in ('run_agent.py','tools/environments/local.py','tools/kanban_tools.py',
+             'tools/kanban_tools_schemas.py','hermes_cli/kanban_db.py','hermes_cli/kanban.py'):
+ path=root/'hermes-agent'/name;path.parent.mkdir(parents=True,exist_ok=True)
+ path.write_text((native/name).read_text())
+monitor=root/'hermes-agent/cron/nixhomeserver_capability_recovery.py'
+monitor.parent.mkdir();monitor.write_text((source/'capability_recovery.py').read_text())
+helper.write_text('# old reviewed origin fixture\n')
+def load(name,filename):
+ spec=importlib.util.spec_from_file_location(name,source/filename)
+ module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);return module
+oi=load('origin_install','install-worker-origin.py')
+ri=load('recovery_install','install-recovered-resume.py')
+release=load('release','fleet-release.py')
+origin_pending=oi.pending_files(root)
+candidate=next(after for path,before,after in origin_pending if path==helper)
+_,recovery_pending,guards=ri.pending_files(root,origin_candidate=candidate)
+pending={path:after for path,before,after in origin_pending+recovery_pending}
+old={path:path.read_bytes() if path.exists() else None for path in pending}
+release.install_files(root,pending,'a'*64)
+assert release.check_files(root,'a'*64)==[]
+assert oi.install(root,check=True)==0
+assert ri.install(root,check=True)==0
+release.rollback_files(root,'a'*64)
+assert all((path.read_bytes() if path.exists() else None)==before for path,before in old.items())
+"""
+
 
 unittest.main(argv=[sys.argv[0]],verbosity=2)
 PY

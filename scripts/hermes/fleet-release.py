@@ -70,7 +70,8 @@ def install_files(root, pending, revision, *, source=None, context=None, preimag
         path=item[0]
         # Publish dependencies before native entrypoints can reference them.
         return (path.name in {'kanban_db.py','kanban_db_dispatch.py','kanban_tools.py',
-                            'kanban_tools_schemas.py','kanban_stop.py'}, str(path))
+                            'kanban_tools_schemas.py','kanban_stop.py','kanban.py',
+                            'run_agent.py','local.py'}, str(path))
     for path, text in sorted(pending.items(), key=install_order):
         path = checked(root, path)
         relative = path.relative_to(root)
@@ -136,7 +137,8 @@ def runtime_dependencies(root):
                'scripts/capability_recovery.py','scripts/worker_origin.py','scripts/autonomy-policy.py',
                'scripts/cron_sweep.py','scripts/kanban-retry-breaker.sh',
                'scripts/kanban-aging-escalation.py','scripts/cron-loop-monitor.py',
-               'hermes-agent/hermes_cli/kanban_db.py','hermes-agent/hermes_cli/kanban_db_dispatch.py',
+               'hermes-agent/hermes_cli/kanban.py','hermes-agent/hermes_cli/kanban_db.py','hermes-agent/hermes_cli/kanban_db_dispatch.py',
+               'hermes-agent/run_agent.py','hermes-agent/tools/environments/local.py',
                'hermes-agent/tools/kanban_tools.py','hermes-agent/tools/kanban_tools_schemas.py']
     relatives += [str(p.relative_to(root)) for pattern in
                   ('hermes-agent/hermes_cli/nixhomeserver_*.py','hermes-agent/cron/nixhomeserver_*.py')
@@ -401,7 +403,8 @@ def restore_schedules(root, plan, *, checkpoint=lambda:None):
 def source_changes(root, directory, *, workers=False):
     """Upgrade transforms use their source helpers, never cached installed ones."""
     names=('hermes_common','hermes_config','coordinator_trial') + (('worker_runtime_adapter','fleet_runtime_adapter',
-        'coordinator_repair_adapter','recovered_resume_adapter','resume_recovered') if workers else ())
+        'coordinator_repair_adapter','recovered_resume_adapter','resume_recovered',
+        'worker_origin_adapter') if workers else ())
     previous={name:sys.modules.get(name) for name in names}
     previous_path=sys.path[:]
     try:
@@ -419,20 +422,33 @@ def source_changes(root, directory, *, workers=False):
             worker = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(worker)
             pending = worker.pending_files(root, pending)
+            spec=importlib.util.spec_from_file_location('fleet_origin_install',directory/'install-worker-origin.py')
+            origin=importlib.util.module_from_spec(spec);spec.loader.exec_module(origin)
+            for path,before,after in origin.pending_files(root):
+                if path in pending and pending[path] != before:
+                    raise ValueError('Native launch provenance has conflicting release owners')
+                pending[path]=after
             # These seams are already fleet-owned. Compose their reviewed
             # migration here rather than making the separate API installer
             # invalidate the active release's immutable file manifest.
             spec=importlib.util.spec_from_file_location('fleet_recovery_install',directory/'install-recovered-resume.py')
             recovery=importlib.util.module_from_spec(spec);spec.loader.exec_module(recovery)
-            _,recovery_pending,_=recovery.pending_files(root)
+            _,recovery_pending,_=recovery.pending_files(root,
+                origin_candidate=pending[root/'hermes-agent/hermes_cli/nixhomeserver_worker_origin.py'])
             owned={'tools/kanban_tools.py','tools/kanban_tools_schemas.py',
-                   'hermes_cli/nixhomeserver_coordinator_repair.py'}
+                   'hermes_cli/nixhomeserver_coordinator_repair.py',
+                   'hermes_cli/kanban_db.py','hermes_cli/kanban.py'}
             for path,before,after in recovery_pending:
                 relative=str(path.relative_to(root/'hermes-agent'))
                 if relative in owned:
                     # Compose on worker/workflow output, not the earlier input.
-                    pending[path]=(sys.modules['coordinator_repair_adapter'].adapt(relative,pending[path])
-                                   if path in pending else after)
+                    if path in pending:
+                        value=sys.modules['recovered_resume_adapter'].adapt(relative,pending[path])
+                        if relative.startswith('tools/'):
+                            value=sys.modules['coordinator_repair_adapter'].adapt(relative,value)
+                        pending[path]=value
+                    else:
+                        pending[path]=after
                 elif before!=after:
                     raise ValueError('Install the matching reviewed recovery prerequisites first: '+relative)
         coordinator=root/'profiles/head-coordinator/config.yaml'

@@ -2167,7 +2167,7 @@ class TerminalEpisodeInstallerTest(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory(prefix='coordinator-install-');self.addCleanup(self.tmp.cleanup)
         self.root=Path(self.tmp.name)
-        for name in ('tools/kanban_tools.py','tools/kanban_tools_schemas.py','hermes_cli/kanban_db.py'):
+        for name in ('tools/kanban_tools.py','tools/kanban_tools_schemas.py','hermes_cli/kanban_db.py','hermes_cli/kanban.py'):
             target=self.root/'hermes-agent'/name;target.parent.mkdir(parents=True,exist_ok=True)
             target.write_text((native/name).read_text())
         (self.root/'hermes-agent/hermes_cli/nixhomeserver_worker_origin.py').write_text(

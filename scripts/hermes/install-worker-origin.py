@@ -23,7 +23,8 @@ def _read(path):
     return path.read_text() if path.exists() else None
 
 
-def install(root, check=False):
+def pending_files(root):
+    """Qualify every source seam before the installer or fleet publishes bytes."""
     native = root / 'hermes-agent/run_agent.py'
     local = root / 'hermes-agent/tools/environments/local.py'
     local_before = _read(local)
@@ -36,8 +37,12 @@ def install(root, check=False):
     code = (SOURCE / 'worker_origin.py').read_text()
     compile(code, str(helper), 'exec')
     shared = root / 'scripts/worker_origin.py'
-    pending = [(helper, _read(helper), code), (shared, _read(shared), code),
-               (native, before, adapt(before)), (local, local_before, adapt_local(local_before))]
+    return [(helper, _read(helper), code), (shared, _read(shared), code),
+            (native, before, adapt(before)), (local, local_before, adapt_local(local_before))]
+
+
+def install(root, check=False):
+    pending = pending_files(root)
     changes = [(path, old, new) for path, old, new in pending if old != new]
     if check:
         for path, _, _ in changes:

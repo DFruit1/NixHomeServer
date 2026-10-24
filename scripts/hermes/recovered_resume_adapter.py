@@ -62,8 +62,26 @@ _SPECIFY_AFTER = _SPECIFY_BEFORE.replace(
             raise ValueError("Capability-held triage requires exact-version guarded recovery, not specify")
 '''
 
+_UNBLOCK_BEFORE = '''def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
+    """``blocked``/``scheduled`` -> its resumable phase (parent re-gated; ``review``
+    when that is where it left off), closing any leaked run first."""
+'''
+_UNBLOCK_AFTER = _UNBLOCK_BEFORE + '''    from hermes_cli.nixhomeserver_worker_origin import require_ordinary_unblock
+    require_ordinary_unblock()
+'''
+
 EDITS = {
-    'hermes_cli/kanban_db.py': ((_SPECIFY_BEFORE, _SPECIFY_AFTER),),
+    'hermes_cli/kanban.py': (
+        ('def _cmd_unblock(args: argparse.Namespace) -> int:\n',
+         'def _cmd_unblock(args: argparse.Namespace) -> int:\n'
+         '    from hermes_cli.nixhomeserver_worker_origin import require_ordinary_unblock\n'
+         '    try:\n'
+         '        require_ordinary_unblock()\n'
+         '    except ValueError as exc:\n'
+         '        return _err(str(exc))\n'),
+    ),
+    'hermes_cli/kanban_db.py': ((_SPECIFY_BEFORE, _SPECIFY_AFTER),
+                              (_UNBLOCK_BEFORE, _UNBLOCK_AFTER)),
     'tools/kanban_tools.py': (
         (_HANDLER, _RECOVERY_HANDLER),
         ('# --- Shared helpers: validation failures raise _Reject; _kanban_handler renders it ---',
@@ -104,6 +122,13 @@ def adapt(name, text):
         if len(matches) != 1 or hashlib.sha256(
                 (ast.get_source_segment(text,matches[0])+'\n').encode()).hexdigest() not in _SPECIFY_HASHES:
             raise ValueError('Native specify source drift; reconcile before installation')
+        unblock=[node for node in tree.body if isinstance(node,ast.FunctionDef)
+                 and node.name == 'unblock_task']
+        original=(ast.get_source_segment(text,unblock[0])+'\n'
+                  if len(unblock) == 1 else '')
+        original=original.replace(_UNBLOCK_AFTER,_UNBLOCK_BEFORE)
+        if hashlib.sha256(original.encode()).hexdigest() != 'fa1d9541f09631fa990c4222bc712ac305d0271a70ecc733f7b591e151e8cd81':
+            raise ValueError('Native ordinary unblock source drift; reconcile before installation')
     text=migrate_legacy(text)
     for before, after in EDITS[name]:
         if text.count(after) == 1:

@@ -94,6 +94,30 @@ source, installed release and running-session evidence separately.
 
 ## Updating technical-recovery helpers
 
+Native terminal ordinary-unblock protection is owned by `worker_origin.py` and
+the version-checked local launch adapter, with the CLI/API guards owned by
+`install-recovered-resume.py`. Fleet release composition includes those sources
+in one preimage/readback/rollback journal; it qualifies the candidate origin
+helper before publishing entrypoints. Standalone installations retain private
+backups and require worker-origin before recovered-resume. Reconcile source
+drift rather than adopting unknown launch or unblock code.
+
+On Linux, the native local launch waits in isolated CPython until its private
+receipt is published. Receipts bind the actual parent and child PID/start ticks
+to the boot/PID-1 epoch. Native session objects and task-local context supply
+session metadata; caller environment labels cannot supply it. Missing session
+metadata does not change a proven native terminal into an operator. Ordinary
+unblock refuses proven terminal descendants before CLI comments or database
+transactions. Reads, create, ordinary interactive CLI and native exact-version
+coordinator recovery keep their existing policy.
+
+This extends the existing cooperative same-UID provenance boundary, not an OS
+sandbox against rewriting installed policy or receipts. Proof requires live
+kernel ancestry; it does not grant authority to callers with absent proof.
+Publication failure refuses the model command before shell startup. Existing
+processes must load the reviewed launch/helper sources through the supported
+graceful runtime refresh before the installed change can be claimed operational.
+
 When the fleet supervisor owns cadence and the legacy `kanban technical recovery`
 job is deliberately paused, an interactive operator can update the recovery
 installer's owned helper files from the reviewed checkout without touching any

@@ -284,11 +284,15 @@ api_key: PRIVATE
 
     def test_source_worker_transforms_use_selected_source_adapters(self):
         source=self.root/'source';source.mkdir()
-        for name in ('hermes_common','hermes_config','coordinator_trial','worker_runtime_adapter','fleet_runtime_adapter','coordinator_repair_adapter','recovered_resume_adapter','resume_recovered'):
+        for name in ('hermes_common','hermes_config','coordinator_trial','worker_runtime_adapter','fleet_runtime_adapter','coordinator_repair_adapter','recovered_resume_adapter','resume_recovered','worker_origin_adapter'):
             (source/(name+'.py')).write_text('ORIGIN = "source"\n')
         (source/'coordinator_repair.py').write_text('revision = \"qualified\"\n')
         (source/'coordinator_repair_adapter.py').write_text(
             'def adapt(name,text): return text+"-source-amended"\n')
+        (source/'recovered_resume_adapter.py').write_text('def adapt(name,text): return text\n')
+        (source/'install-worker-origin.py').write_text(
+            'def pending_files(root):\n'
+            '    return [(root/"hermes-agent/hermes_cli/nixhomeserver_worker_origin.py",None,"origin-source")]\n')
         (source/'install-review-taskforce.py').write_text(
             'def changed_files(root):\n    return {root/"taskforce":"kept"}\n')
         (source/'install-worker-policy.py').write_text(
@@ -297,12 +301,13 @@ api_key: PRIVATE
             '    return {**pending,root/"worker":worker_runtime_adapter.ORIGIN+fleet_runtime_adapter.ORIGIN,\n'
             '        root/"hermes-agent/tools/kanban_tools.py":"handler",\n'
             '        root/"hermes-agent/tools/kanban_tools_schemas.py":"schema"}\n')
-        (source/'install-recovered-resume.py').write_text('def pending_files(root):\n    native=root/"hermes-agent"\n    pairs=[(native/"tools/kanban_tools.py","old-handler","handler-source-amended"),\n           (native/"tools/kanban_tools_schemas.py","old-schema","schema-source-amended"),\n           (native/"hermes_cli/nixhomeserver_coordinator_repair.py",None,\'revision = "qualified"\\n\')]\n    if (root/"missing-prerequisite").exists():\n        pairs.append((native/"hermes_cli/nixhomeserver_resume_recovered.py",None,"required"))\n    return root,pairs,[]\n')
+        (source/'install-recovered-resume.py').write_text('def pending_files(root, *, origin_candidate=None):\n    assert origin_candidate == "origin-source"\n    native=root/"hermes-agent"\n    pairs=[(native/"tools/kanban_tools.py","old-handler","handler-source-amended"),\n           (native/"tools/kanban_tools_schemas.py","old-schema","schema-source-amended"),\n           (native/"hermes_cli/nixhomeserver_coordinator_repair.py",None,\'revision = "qualified"\\n\')]\n    if (root/"missing-prerequisite").exists():\n        pairs.append((native/"hermes_cli/nixhomeserver_resume_recovered.py",None,"required"))\n    return root,pairs,[]\n')
         previous_path=sys.path[:]
         before_modules={name:sys.modules.get(name) for name in ('coordinator_repair_adapter','recovered_resume_adapter','resume_recovered')}
         result=release.source_changes(self.root,source,workers=True)
         self.assertEqual('kept',result[self.root/'taskforce'])
         self.assertEqual('sourcesource',result[self.root/'worker'])
+        self.assertEqual('origin-source',result[self.root/'hermes-agent/hermes_cli/nixhomeserver_worker_origin.py'])
         for name,base in [('kanban_tools.py','handler'),('kanban_tools_schemas.py','schema')]:
             self.assertEqual(base+'-source-amended',result[self.root/'hermes-agent/tools'/name])
         self.assertEqual('revision = \"qualified\"\n',result[self.root/'hermes-agent/hermes_cli/nixhomeserver_coordinator_repair.py'])

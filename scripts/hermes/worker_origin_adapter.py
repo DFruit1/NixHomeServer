@@ -27,10 +27,19 @@ LOCAL_AFTER = ('        from hermes_cli import nixhomeserver_worker_origin\n'
 
 
 def adapt_local(text):
-    if text.count(LOCAL_AFTER) == 1:
+    # Replace only the reviewed local terminal Popen seam. The helper publishes
+    # both negative terminal proof and existing worker/delegate receipts BEFORE
+    # releasing the shell. Migrate the earlier post-launch-only seam explicitly.
+    text = text.replace(LOCAL_AFTER, LOCAL_BEFORE)
+    before = '        proc = subprocess.Popen(\n            args, text=True, env=_make_run_env(self.env), encoding="utf-8", errors="replace",'
+    after = ('        from hermes_cli import nixhomeserver_worker_origin\n'
+             '        proc = nixhomeserver_worker_origin.popen_terminal(\n'
+             '            args, text=True, env=_make_run_env(self.env), encoding="utf-8", errors="replace",')
+    if text.count(after) == 1 and text.count(before) == 0 and text.count(LOCAL_BEFORE) == 1:
+        compile(text, 'tools/environments/local.py', 'exec')
         return text
-    if text.count(LOCAL_BEFORE) != 1:
-        raise ValueError('Native worker launch adapter source drift; reconcile before installation')
-    text = text.replace(LOCAL_BEFORE, LOCAL_AFTER, 1)
+    if text.count(before) != 1 or text.count(LOCAL_BEFORE) != 1:
+        raise ValueError('Native terminal launch adapter source drift; reconcile before installation')
+    text = text.replace(before, after, 1)
     compile(text, 'tools/environments/local.py', 'exec')
     return text

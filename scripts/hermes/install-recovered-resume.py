@@ -25,7 +25,7 @@ def _read(path):
     return path.read_text() if path.exists() else None
 
 
-def pending_files(root):
+def pending_files(root, *, origin_candidate=None):
     """Qualify the installed recovery prerequisites without publishing bytes."""
     root = Path(root)
     if root.is_symlink():
@@ -49,22 +49,26 @@ def pending_files(root):
     # worker-origin installer; do not substitute caller-selected role evidence.
     origin = native / 'hermes_cli/nixhomeserver_worker_origin.py'
     origin_source = (SOURCE / 'worker_origin.py').read_text()
-    if _read(origin) != origin_source:
+    origin_before = _read(origin)
+    if (origin_candidate if origin_candidate is not None else origin_before) != origin_source:
         raise ValueError('Install the matching reviewed native worker-origin helper first')
     monitor = native / 'cron/nixhomeserver_capability_recovery.py'
     monitor_source = (SOURCE / 'capability_recovery.py').read_text()
     if _read(monitor) != monitor_source:
         raise ValueError('Install the matching canonical capability monitor first')
-    for name in ('tools/kanban_tools.py', 'tools/kanban_tools_schemas.py'):
+    for name in ('tools/kanban_tools.py', 'tools/kanban_tools_schemas.py', 'hermes_cli/kanban.py'):
         target = native / name
         before = _read(target)
         if before is None:
             raise ValueError('Native recovered-resume tool source is missing')
-        pending.append((target, before, amend_adapt(name, adapt(name, before))))
+        after = adapt(name, before)
+        if name != 'hermes_cli/kanban.py':
+            after = amend_adapt(name, after)
+        pending.append((target, before, after))
     # Keep the guarded database adapter last: phase_source is a preflight
     # dependency for every earlier replacement, and its phase APIs are unchanged.
     pending.append((phase, phase_source, adapt('hermes_cli/kanban_db.py', phase_source)))
-    guards = [(phase, phase_source), (origin, origin_source), (monitor, monitor_source)]
+    guards = [(phase, phase_source), (origin, origin_before), (monitor, monitor_source)]
     return root, pending, guards
 
 
