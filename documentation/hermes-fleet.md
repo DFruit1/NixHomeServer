@@ -13,6 +13,12 @@ of that revision and truthful independence declarations. Missing inputs retain
 unfinished work. Distinct outputs and reserved operations may need separate
 tasks; routine acknowledgment and routing steps do not.
 
+A proven native handoff to an independent reviewer excludes the producer-only
+shutdown-guard procedure from execution skills. Coordinator routing procedures
+are excluded only for a head-coordinator producer. Stored task pins remain for
+implementer rework; other skills and ambiguous handoffs keep their requirements.
+This phase selection grants no server-administration authority to reviewers.
+
 The full handoff/output contract is maintained in
 [fleet-workflow.md](../scripts/hermes/instructions/fleet-workflow.md), installed
 as `~/.hermes/scripts/hermes-fleet-workflow.md`. Existing deployment review,

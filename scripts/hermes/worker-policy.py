@@ -37,13 +37,13 @@ def assignment_reason(assignee, body, cap, retries):
 
 
 def execution_skills(db, task_id, assignee, skills):
-    """Keep coordinator routing procedures out of a proven independent review.
+    """Exclude producer-only procedures from a proven current independent review.
 
     The task's original pins remain stored for implementer rework. All other
     skills, and ambiguous or non-review executions, retain their requirements.
     """
     skills = list(skills or [])
-    if ('kanban-orchestration' not in skills
+    if (not {'kanban-orchestration','nixhomeserver-shutdown-guard'}.intersection(skills)
             or assignee not in {'feature-reviewer', 'project-auditor'}):
         return skills
     try:
@@ -56,31 +56,48 @@ def execution_skills(db, task_id, assignee, skills):
             return skills
         handoff = json.loads(event['payload'] or '{}')
         if (not isinstance(handoff,dict) or handoff.get('reviewer') != assignee
-                or handoff.get('implementer') != 'head-coordinator'):
+                or handoff.get('implementer') not in {
+                    'standard-implementer','local-implementer','head-coordinator'}):
             return skills
-        producer = db.execute('SELECT task_id,profile,status,outcome FROM task_runs WHERE id=?',
+        producer = db.execute('SELECT task_id,profile,status,outcome,ended_at FROM task_runs WHERE id=?',
                               (event['run_id'],)).fetchone()
-        if (not producer or producer['task_id'] != task_id or producer['profile'] != 'head-coordinator'
-                or producer['status'] not in {'review','review_requested'} or producer['outcome'] != 'review_requested'):
+        if (not producer or producer['task_id'] != task_id or producer['profile'] != handoff['implementer']
+                or producer['status'] not in {'review','review_requested'} or producer['outcome'] != 'review_requested'
+                or type(producer['ended_at']) is not int or type(event['created_at']) is not int
+                or not 0 <= producer['ended_at'] <= event['created_at']):
             return skills
+        # A historical handoff cannot qualify a later run or an orphaned claim.
+        latest = [row['id'] for row in db.execute(
+            'SELECT id FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 2', (task_id,))]
+        active = [row['id'] for row in db.execute(
+            "SELECT id FROM task_runs WHERE task_id=? AND (status='running' OR ended_at IS NULL)",
+            (task_id,))]
+        claim = db.execute("SELECT id,run_id,payload,created_at FROM task_events WHERE task_id=? "
+                           "AND kind='claimed' ORDER BY id DESC LIMIT 1", (task_id,)).fetchone()
         if task['status'] == 'running':
             run = db.execute('SELECT task_id,profile,status,outcome,ended_at FROM task_runs WHERE id=?',
                              (task['current_run_id'],)).fetchone()
-            claim = db.execute("SELECT id,payload,created_at FROM task_events WHERE task_id=? "
-                               "AND run_id=? AND kind='claimed' ORDER BY id DESC LIMIT 1",
-                               (task_id,task['current_run_id'])).fetchone()
             payload = json.loads(claim['payload'] or '{}') if claim else {}
-            if (not run or run['task_id'] != task_id or run['profile'] != assignee
+            if (latest != [task['current_run_id'],event['run_id']] or active != [task['current_run_id']]
+                    or not run or run['task_id'] != task_id or run['profile'] != assignee
                     or run['status'] != 'running' or run['outcome'] is not None
-                    or run['ended_at'] is not None or not claim or claim['id'] <= event['id']
+                    or run['ended_at'] is not None or not claim or claim['run_id'] != task['current_run_id']
+                    or claim['id'] <= event['id'] or type(claim['created_at']) is not int
                     or claim['created_at'] < event['created_at'] or not isinstance(payload,dict)
                     or payload.get('source_status') != 'review'):
                 return skills
-        elif task['status'] != 'review':
+        elif (task['status'] != 'review' or task['current_run_id'] is not None or active
+                or not latest or latest[0] != event['run_id']
+                or (claim and (claim['id'] >= event['id']
+                               or type(claim['created_at']) is not int
+                               or claim['created_at'] > event['created_at']))):
             return skills
     except (sqlite3.Error,ValueError,TypeError,KeyError):
         return skills  # Missing or ambiguous provenance never drops a pin.
-    return [skill for skill in skills if skill != 'kanban-orchestration']
+    excluded = {'nixhomeserver-shutdown-guard'}
+    if handoff['implementer'] == 'head-coordinator':
+        excluded.add('kanban-orchestration')
+    return [skill for skill in skills if skill not in excluded]
 
 
 def reason(db, task_id, assignee=None):

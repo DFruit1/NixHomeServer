@@ -12,8 +12,12 @@ if [[ "${HERMES_FIXTURE_ACTIVE:-}" != 1 ]]; then
   exec python3 -B "$repo/scripts/hermes/fixture-runner.py" --repo "$repo" \
     --suite "$repo/scripts/tests/test-hermes-worker-policy.sh"
 fi
+scratch="$(mktemp -d /tmp/hermes-worker-policy.XXXXXX)"
+trap 'rm -rf -- "$scratch"' EXIT
+export TMPDIR="$scratch"
 python3 -B - "$repo" <<'PY'
 import importlib.util
+import json
 import ast
 import types
 import contextlib
@@ -124,13 +128,15 @@ class ReviewSkillsTest(unittest.TestCase):
             INSERT INTO task_events VALUES(10,'t_review','review_requested',42,
                 '{"implementer":"head-coordinator","reviewer":"feature-reviewer"}',100);
         """)
-        self.skills=['kanban-orchestration','systematic-debugging','unknown-required-skill']
+        self.skills=['kanban-orchestration','nixhomeserver-shutdown-guard',
+                     'nixhomeserver-safe-change','unknown-required-skill']
 
     def effective(self,assignee='feature-reviewer'):
         before=list(self.db.iterdump())
+        pins=list(self.skills)
         result=policy.execution_skills(self.db,'t_review',assignee,self.skills)
         self.assertEqual(before,list(self.db.iterdump()))
-        self.assertEqual('kanban-orchestration',self.skills[0])
+        self.assertEqual(pins,self.skills)
         return result
 
     def running(self):
@@ -140,13 +146,13 @@ class ReviewSkillsTest(unittest.TestCase):
             INSERT INTO task_events VALUES(11,'t_review','claimed',43,'{"source_status":"review"}',101);
         """)
 
-    def test_only_coordinator_skill_removed_and_other_requirements_retained(self):
-        self.assertEqual(self.skills[1:],self.effective())
+    def test_coordinator_review_filters_only_producer_procedures(self):
+        self.assertEqual(self.skills[2:],self.effective())
         self.assertEqual(self.skills,self.effective('head-coordinator'))
         self.assertEqual(self.skills,self.effective('standard-implementer'))
         self.db.execute("UPDATE task_runs SET status='review_requested' WHERE id=42")
-        self.assertEqual(self.skills[1:],self.effective())
-        self.running();self.assertEqual(self.skills[1:],self.effective())
+        self.assertEqual(self.skills[2:],self.effective())
+        self.running();self.assertEqual(self.skills[2:],self.effective())
 
     def test_each_intervening_lifecycle_transition_retains_original_pins(self):
         for kind in ['changes_requested','review_reopened','completed','assigned','reclaimed']:
@@ -196,6 +202,75 @@ class ReviewSkillsTest(unittest.TestCase):
                 self.db.execute('ROLLBACK TO claim');self.db.execute('RELEASE claim')
         self.db.execute('DELETE FROM task_events WHERE id=11')
         self.assertEqual(self.skills,self.effective())
+
+    def producer(self, profile):
+        self.db.execute('UPDATE task_runs SET profile=? WHERE id=42',(profile,))
+        self.db.execute('UPDATE task_events SET payload=? WHERE id=10',
+            (json.dumps({'implementer':profile,'reviewer':'feature-reviewer'}),))
+
+    def test_shutdown_filter_requires_supported_producer_and_keeps_routing_pin(self):
+        for profile in ('standard-implementer','local-implementer','head-coordinator'):
+            with self.subTest(profile=profile):
+                self.producer(profile)
+                expected=[s for s in self.skills if s!='nixhomeserver-shutdown-guard'
+                          and (s!='kanban-orchestration' or profile!='head-coordinator')]
+                self.assertEqual(expected,self.effective())
+                self.db.execute("UPDATE tasks SET assignee='project-auditor'")
+                self.db.execute('UPDATE task_events SET payload=? WHERE id=10',
+                    (json.dumps({'implementer':profile,'reviewer':'project-auditor'}),))
+                self.assertEqual(expected,self.effective('project-auditor'))
+                self.db.execute("UPDATE tasks SET assignee='feature-reviewer'")
+        self.producer('standard-implementer')
+        self.running()
+        self.assertEqual([self.skills[0],*self.skills[2:]],self.effective())
+        self.skills.remove('kanban-orchestration')
+        self.assertEqual(self.skills[1:],self.effective())
+
+    def test_shutdown_filter_rejects_stale_foreign_or_active_provenance(self):
+        self.producer('standard-implementer')
+        mutations=[
+            "UPDATE tasks SET current_run_id=42",
+            "UPDATE task_runs SET ended_at=NULL WHERE id=42",
+            "UPDATE task_runs SET ended_at=101 WHERE id=42",
+            "UPDATE task_events SET created_at=NULL WHERE id=10",
+            "UPDATE task_events SET created_at='invalid' WHERE id=10",
+            "UPDATE task_events SET task_id='foreign' WHERE id=10",
+            "UPDATE task_events SET run_id=404 WHERE id=10",
+            "UPDATE task_events SET payload='{}' WHERE id=10",
+            "UPDATE task_events SET payload='null' WHERE id=10",
+            "UPDATE task_runs SET profile='head-coordinator' WHERE id=42",
+            "UPDATE task_runs SET task_id='foreign' WHERE id=42",
+            "UPDATE task_runs SET outcome='completed' WHERE id=42",
+            "UPDATE task_runs SET status='running' WHERE id=42",
+            "INSERT INTO task_runs VALUES(43,'t_review','standard-implementer','running',NULL,NULL)",
+            "INSERT INTO task_runs VALUES(43,'t_review','standard-implementer','done','completed',101)",
+            "INSERT INTO task_events VALUES(11,'t_review','claimed',42,'{}',101)",
+        ]
+        for statement in mutations:
+            with self.subTest(statement=statement):
+                self.db.execute('SAVEPOINT provenance')
+                self.db.execute(statement)
+                self.assertEqual(self.skills,self.effective())
+                self.db.execute('ROLLBACK TO provenance');self.db.execute('RELEASE provenance')
+        self.producer('feature-reviewer')
+        self.assertEqual(self.skills,self.effective())
+
+    def test_shutdown_filter_keeps_all_pins_for_ambiguous_active_claims(self):
+        self.producer('standard-implementer')
+        self.running()
+        mutations=[
+            "INSERT INTO task_runs VALUES(44,'t_review','standard-implementer','running',NULL,NULL)",
+            "INSERT INTO task_events VALUES(12,'t_review','claimed',42,'{}',102)",
+            "UPDATE task_events SET task_id='foreign' WHERE id=11",
+            "UPDATE task_events SET created_at=NULL WHERE id=11",
+            "UPDATE task_events SET created_at='invalid' WHERE id=11",
+        ]
+        for statement in mutations:
+            with self.subTest(statement=statement):
+                self.db.execute('SAVEPOINT provenance')
+                self.db.execute(statement)
+                self.assertEqual(self.skills,self.effective())
+                self.db.execute('ROLLBACK TO provenance');self.db.execute('RELEASE provenance')
 
 
 SLUG = re.compile(r'^[a-z0-9][a-z0-9_-]{0,63}$')
@@ -551,6 +626,7 @@ class InstallerTest(unittest.TestCase):
             run=subprocess.run(command+['--scratch',scratch],capture_output=True,text=True,
                                timeout=300)
             self.assertEqual(0,run.returncode, run.stdout+run.stderr)
+            self.assertIn('PASS native shutdown review spawning and exact rework pins: 6 producer/reviewer pairs',run.stdout)
             self.assertIn('PASS native kanban_create requires an explicit existing board',run.stdout)
             self.assertIn('PASS native create, dispatch, first-failure breaker',run.stdout)
             boards=sorted(path.name for path in (Path(scratch)/'home/kanban/boards').iterdir()

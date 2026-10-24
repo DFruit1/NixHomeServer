@@ -183,19 +183,61 @@ try:
             assert kb.get_task(db,review).assignee=='head-coordinator'
             assert kb.get_task(db,review).skills==task_before.skills
             assert 'kanban-orchestration' in policy.reason(db,review,'head-coordinator')
-    held=kb.create_task(db,title='Keep other reviewer requirements',assignee='head-coordinator',
-        skills=['kanban-orchestration','required-unavailable'],
-        workspace_kind='dir',workspace_path=str(args.scratch))
-    assert kb.request_review(db,held,reviewer='feature-reviewer',summary='Synthetic output with missing reviewer requirement')
-    before=list(db.iterdump());spawned=[]
-    with patch.object(repair,'available_skills',return_value={'sdlc-review'}), \
-         patch.object(dispatch,'_profile_exists_fn',return_value=lambda _:True):
-        row=db.execute('SELECT * FROM tasks WHERE id=?',(held,)).fetchone()
-        assert 'required-unavailable' in policy.reason(db,held,'feature-reviewer')
-        assert not dispatch._dispatch_lane_task(db,row,'feature-reviewer',dispatch.DispatchResult(),
-            lane='review',dry_run=False,ttl_seconds=None,board=None,failure_limit=2,
-            spawn_fn=capture,per_profile_caps=None,per_profile_running={})
-        assert not spawned and before==list(db.iterdump())
+    # Match a real standard producer: claimed run, native handoff, review claim.
+    # Shutdown protection is deliberately absent from both reviewer catalogs.
+    shutdown_cases=0
+    for producer_profile in ('standard-implementer','local-implementer','head-coordinator'):
+        for reviewer in ('feature-reviewer','project-auditor'):
+            pins=['nixhomeserver-safe-change','nixhomeserver-shutdown-guard']
+            review=kb.create_task(db,title='Review producer shutdown-protected output',
+                assignee=producer_profile,max_runtime_seconds=600,skills=pins,
+                workspace_kind='dir',workspace_path=str(args.scratch))
+            producer=kb.claim_task(db,review)
+            assert producer
+            assert kb.request_review(db,review,reviewer=reviewer,summary='Synthetic producer output',
+                expected_run_id=producer.current_run_id)
+            event=dict(db.execute("SELECT * FROM task_events WHERE task_id=? AND kind='review_requested'",
+                                  (review,)).fetchone())
+            assert json.loads(event['payload'])['implementer']==producer_profile
+            run=db.execute('SELECT * FROM task_runs WHERE id=?',(event['run_id'],)).fetchone()
+            assert (run['task_id'],run['profile'],run['status'],run['outcome'])==(review,producer_profile,'review','review_requested')
+            assert run['ended_at']<=event['created_at']
+            spawned=[]
+            with patch.object(repair,'available_skills',return_value={'nixhomeserver-safe-change','sdlc-review'}), \
+                 patch.object(dispatch,'_profile_exists_fn',return_value=lambda _:True):
+                row=db.execute('SELECT * FROM tasks WHERE id=?',(review,)).fetchone()
+                result=dispatch.DispatchResult()
+                consumed=dispatch._dispatch_lane_task(db,row,reviewer,result,lane='review',dry_run=False,
+                    ttl_seconds=None,board=None,failure_limit=2,spawn_fn=capture,
+                    per_profile_caps=None,per_profile_running={})
+                assert consumed and spawned, ('shutdown review stranded',producer_profile,reviewer,result)
+                assert spawned==[(reviewer,['nixhomeserver-safe-change','sdlc-review'])],spawned
+                assert kb.get_task(db,review).skills==pins
+                assert dict(db.execute('SELECT * FROM task_events WHERE id=?',(event['id'],)).fetchone())==event
+                active=kb.get_task(db,review)
+                assert kb.request_changes(db,review,reason='Synthetic correction',
+                    expected_run_id=active.current_run_id)==(True,producer_profile)
+                assert kb.get_task(db,review).skills==pins
+                assert 'nixhomeserver-shutdown-guard' in policy.reason(db,review,producer_profile)
+            shutdown_cases+=1
+    print(f'PASS native shutdown review spawning and exact rework pins: {shutdown_cases} producer/reviewer pairs')
+    for producer_profile,producer_pin in (('head-coordinator','kanban-orchestration'),
+                                          ('standard-implementer','nixhomeserver-shutdown-guard')):
+        held=kb.create_task(db,title='Keep other reviewer requirements',assignee=producer_profile,
+            skills=[producer_pin,'required-unavailable'],
+            workspace_kind='dir',workspace_path=str(args.scratch))
+        held_producer=kb.claim_task(db,held)
+        assert held_producer
+        assert kb.request_review(db,held,expected_run_id=held_producer.current_run_id,reviewer='feature-reviewer',summary='Synthetic output with missing reviewer requirement')
+        before=list(db.iterdump());spawned=[]
+        with patch.object(repair,'available_skills',return_value={'sdlc-review'}), \
+             patch.object(dispatch,'_profile_exists_fn',return_value=lambda _:True):
+            row=db.execute('SELECT * FROM tasks WHERE id=?',(held,)).fetchone()
+            assert 'required-unavailable' in policy.reason(db,held,'feature-reviewer')
+            assert not dispatch._dispatch_lane_task(db,row,'feature-reviewer',dispatch.DispatchResult(),
+                lane='review',dry_run=False,ttl_seconds=None,board=None,failure_limit=2,
+                spawn_fn=capture,per_profile_caps=None,per_profile_running={})
+            assert not spawned and before==list(db.iterdump())
     print('PASS native independent reviewer receives sdlc-review without coordinator pin; rework retains original skills')
     # --- Model-facing kanban_create names its board ---------------------------
     # The schema and the handler are the real adapted native seams, exercised
