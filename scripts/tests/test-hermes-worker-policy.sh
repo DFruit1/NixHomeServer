@@ -57,6 +57,7 @@ class WorkerPolicyTest(unittest.TestCase):
                                  outcome TEXT, ended_at INTEGER);
           CREATE TABLE task_comments(id INTEGER, task_id TEXT, author TEXT,
                                      body TEXT, created_at INTEGER);
+          CREATE TABLE task_events(id INTEGER, task_id TEXT, kind TEXT, payload TEXT);
         ''')
         self.addCleanup(self.db.close)
 

@@ -87,6 +87,25 @@ _WAIT_BUDGET_AFTER = '''        # (the dispatcher's spawn/crash counter) retains
             "WHERE id = ? AND status IN ('blocked', 'scheduled')", (new_status, task_id),
 '''
 
+_ITERATION_UNBLOCK_BEFORE = '''        _reclaim_dangling_run(
+            conn, task_id, statuses=("blocked", "scheduled"), now=now,
+'''
+_ITERATION_UNBLOCK_AFTER = '''        from hermes_cli.nixhomeserver_resume_recovered import require_iteration_ordinary_unblock
+        require_iteration_ordinary_unblock(conn, task_id)
+''' + _ITERATION_UNBLOCK_BEFORE
+
+_CLAIM_BEFORE = '''    """CAS ``source_status -> running``, open a run row, emit ``claimed``; None
+    when the CAS lost. Caller holds the txn."""
+'''
+_CLAIM_AFTER = _CLAIM_BEFORE + '''    from hermes_cli.nixhomeserver_resume_recovered import iteration_claim_authority
+    try:
+        authority = iteration_claim_authority(conn, task_id)
+    except ValueError:
+        return None
+    if authority is not None:
+        event_extra = {**(event_extra or {}), "iteration_continuation": authority}
+'''
+
 EDITS = {
     'hermes_cli/kanban.py': (
         ('def _cmd_unblock(args: argparse.Namespace) -> int:\n',
@@ -96,10 +115,18 @@ EDITS = {
          '        require_ordinary_unblock()\n'
          '    except ValueError as exc:\n'
          '        return _err(str(exc))\n'),
+        ('        op = _commented(conn, reason, author, "UNBLOCK", lambda tid: kb.unblock_task(conn, tid))\n',
+         '        def op(tid):\n'
+         '            changed = kb.unblock_task(conn, tid)\n'
+         '            if changed and reason:\n'
+         '                kb.add_comment(conn, tid, author, f"UNBLOCK: {reason}")\n'
+         '            return changed\n'),
     ),
     'hermes_cli/kanban_db.py': ((_SPECIFY_BEFORE, _SPECIFY_AFTER),
                               (_UNBLOCK_BEFORE, _UNBLOCK_AFTER),
-                              (_WAIT_BUDGET_BEFORE, _WAIT_BUDGET_AFTER)),
+                              (_WAIT_BUDGET_BEFORE, _WAIT_BUDGET_AFTER),
+                              (_ITERATION_UNBLOCK_BEFORE, _ITERATION_UNBLOCK_AFTER),
+                              (_CLAIM_BEFORE, _CLAIM_AFTER)),
     'tools/kanban_tools.py': (
         (_HANDLER, _RECOVERY_HANDLER),
         ('# --- Shared helpers: validation failures raise _Reject; _kanban_handler renders it ---',
@@ -146,6 +173,7 @@ def adapt(name, text):
                   if len(unblock) == 1 else '')
         original=original.replace(_UNBLOCK_AFTER,_UNBLOCK_BEFORE)
         original=original.replace(_WAIT_BUDGET_AFTER,_WAIT_BUDGET_BEFORE)
+        original=original.replace(_ITERATION_UNBLOCK_AFTER,_ITERATION_UNBLOCK_BEFORE)
         # The reviewed parallel-dispatch guard belongs only to ordinary
         # unblock. Qualify its one exact insertion without accepting any other
         # native-body drift or changing guarded recovery's release policy.
@@ -155,6 +183,11 @@ def adapt(name, text):
             '        require_resume(conn, task_id)\n', release)
         if hashlib.sha256(original.encode()).hexdigest() != 'fa1d9541f09631fa990c4222bc712ac305d0271a70ecc733f7b591e151e8cd81':
             raise ValueError('Native ordinary unblock source drift; reconcile before installation')
+        claim=[node for node in tree.body if isinstance(node,ast.FunctionDef) and node.name=='_claim_and_open_run']
+        original=(ast.get_source_segment(text,claim[0])+'\n' if len(claim)==1 else '')
+        original=original.replace(_CLAIM_AFTER,_CLAIM_BEFORE)
+        if hashlib.sha256(original.encode()).hexdigest()!='7cda44d4d77d7ecb592a1cc4762c14a19cdc7a9992373dd6a63c261fc9ffb37e':
+            raise ValueError('Native run-claim source drift; reconcile before installation')
     text=migrate_legacy(text)
     for before, after in EDITS[name]:
         if text.count(after) == 1:

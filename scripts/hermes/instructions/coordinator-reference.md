@@ -394,7 +394,8 @@ status or spent failure counters; it cannot retype an existing gate or block.
 For ordinary untyped crashed, timed_out, spawn_failed or gave_up failures,
 omit terminal_episode.
 That optional object handles an untyped native blocked containment, an existing
-capability hold's reclaimed or elapsed-limit timed_out gave_up episode, or the
+capability hold's reclaimed, elapsed-limit timed_out or run-scoped iteration
+gave_up episode, or the
 bounded supplier clarification below. Do not infer that every terminal run needs
 it. A failed-run classification needs no invented event ID. Read back
 block_kind=capability before inspecting its recovery version; an untyped failure is not yet a uniquely typed technical hold.
@@ -425,6 +426,71 @@ token. Obtain the recovery token from the matching board/task `version` in
 `python3 ~/.hermes/scripts/capability_recovery.py --inspect`, after the repair.
 Relevant task, source or helper changes invalidate that recovery observation;
 read it again rather than guessing from an amendment response or old event.
+
+For iteration exhaustion, retain the native gave_up/gave_up run, its run-scoped
+trip and structured budget fields; there is no intermediate timed_out event.
+Use the same closed terminal_episode object after verifying the exact source
+repair. Reaffirmation appends BLOCKED evidence only. Execution additionally
+requires an independently qualified finite decision on the owning board.
+Complete that actual head-coordinator decision with metadata.iteration_continuation:
+
+```json
+{"version":1,"decision":"approve","task_id":"t_TARGET","run_id":123,"event_id":456,
+ "checkpoint":"R1","max_runs":1,"max_iterations":150,"max_runtime_seconds":2700,
+ "consecutive_failures":2,"review_task_id":"t_REVIEW","review_run_id":789,
+ "scope_revision":"<exact independently accepted scope revision>"}
+```
+
+Copy actual native values, never the example numbers. The decision's current
+completed independent verification prerequisite must ACCEPT that scope revision
+with executed passing checks and independence false/false. Preserve its native
+worker execution and the dated authority/conditions comment on original ownership.
+The verifier also records metadata.iteration_continuation_scope with exactly
+task_id, run_id, event_id, checkpoint, max_runs, max_iterations,
+max_runtime_seconds, consecutive_failures and scope_revision. Its
+metadata.iteration_scope_sha256 is SHA256 of that object's UTF-8
+`json.dumps(scope,sort_keys=True,separators=(',',':'))` bytes, without a newline.
+An ACCEPT of the same plan revision cannot authorize a different checkpoint,
+target or limit. Native claim/spawn/completion events retain execution proof
+after normal terminal cleanup clears run PID fields.
+In the separately authorized kanban_unblock recovery_reason name exactly one
+`Iteration decision: t_CARD/runN`. The guard rechecks the original trip, unchanged
+ledgers, completed native decision and current linked independent ACCEPT. It
+reserves that source episode before the transaction, independently of helper
+hashes, actor or decision ID. A reservation survives failure/restart: inspect
+its journal and native event, never replay the episode with changed prose or a
+fresh token. A partial checkpoint remains held with explicit remaining work;
+no later checkpoint or full acceptance is implied. Source/installation/loaded
+qualification and all existing review/consumer gates still apply.
+Normal capability blocks after that run retain the authority lineage. Another
+run needs a new independently bound decision for that actual ended run/hold;
+the old decision or an unrelated ACCEPT cannot release it. Failure, runtime and
+retry ledgers must still agree with their retained native history.
+For a later elapsed-timeout or reclaim reaffirmation, bind run_id/event_id to
+the classification's source_run/source_event, after checking that native
+timed_out/timed_out or reclaimed/reclaimed terminal run and trip. Do not bind
+the new decision to the task-scoped classification row itself.
+Fleet rollback cannot remove this guard once a reservation or iteration
+history exists. Use a compatible independently reviewed release for recovery;
+keep consumption records and counters intact.
+Ordinary native unblock is refused for iteration history, including before
+classification and after an interrupted reservation. A native claim consumes
+the finite continuation; protocol, quota and other automatic requeues cannot
+claim it again. Dispatcher containment retains the actual terminal run and
+source event without synthesizing a blocked execution. A fresh independently
+bound decision may qualify that retained episode. A genuine native review
+handoff permits one independent review; request-changes preserves consumption
+and needs a fresh finite rework disposition before implementation can restart.
+Below the failure breaker, the native timed_out event retains the iteration
+error but drops structured budget fields. Ordinary unblock must still preserve
+that failure. Guarded recovery preserves any remaining configured automatic
+attempt; this first failure alone does not imply a spent aggregate allowance.
+Containment retains the ended run's ready/review phase. A consumed continuation
+that hits the ordinary spawn breaker or protocol-violation breaker may be
+reaffirmed through its exact terminal_episode, with native claim/authority,
+counter, error and separate breaker evidence. Classification is not another
+allowance; execution still needs its fresh independently bound decision.
+
 Preloaded skills must resolve in the assigned profile's actual catalog; remove
 an irrelevant coordinator-only preload from a reviewer, rather than granting
 the reviewer routing powers. Skills never grant tools or permission.

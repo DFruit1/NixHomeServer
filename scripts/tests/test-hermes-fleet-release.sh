@@ -394,6 +394,109 @@ api_key: PRIVATE
         manifest.write_text(json.dumps({'workflow_versions':[1]}))
         release.require_rollback_compatibility(self.root,{'previous_release':{'revision':'a'*40}})
 
+    def test_actual_helper_rollback_cannot_discard_iteration_guard_after_reservation_or_history(self):
+        import sqlite3
+        helper=self.root/'hermes-agent/hermes_cli/nixhomeserver_resume_recovered.py'
+        helper.parent.mkdir(parents=True)
+        # Actual predecessor and candidate bytes, not a helper-identity mock.
+        old=(release.HERE.parents[1]/'scripts/tests/fixtures/hermes-iteration/resume-pre-iteration.py').read_text()
+        new=(release.HERE/'resume_recovered.py').read_text()
+        helper.write_text(old)
+        release.install_files(self.root,{**self.pending,helper:new},'c'*64)
+        journal=release.journal(self.root,'c'*64);before=journal.read_bytes()
+        reservation=self.root/'runtime/recovered-resume/test--t_example--iteration-10-20.json'
+        reservation.parent.mkdir(parents=True);reservation.write_text('{}')
+        with self.assertRaisesRegex(ValueError,'iteration'):
+            release.rollback_files(self.root,'c'*64)
+        self.assertEqual(new,helper.read_text());self.assertEqual(before,journal.read_bytes())
+        self.assertEqual('new = 2\n',self.file.read_text())
+        reservation.unlink()
+        dbpath=self.root/'kanban/boards/test/kanban.db';dbpath.parent.mkdir(parents=True)
+        with sqlite3.connect(dbpath) as db:
+            db.execute('CREATE TABLE task_events(kind TEXT,payload TEXT)')
+            db.execute('CREATE TABLE tasks(status TEXT,current_run_id INTEGER,worker_pid INTEGER,claim_lock TEXT,claim_expires INTEGER)')
+            db.execute('CREATE TABLE task_runs(status TEXT,outcome TEXT,ended_at INTEGER,worker_pid INTEGER)')
+            db.execute('INSERT INTO task_events VALUES(?,?)',('unblocked',json.dumps({
+                'iteration_continuation':{'source_run':10,'source_event':20}})))
+        with self.assertRaisesRegex(ValueError,'iteration'):
+            release.require_rollback_compatibility(self.root,json.loads(before))
+        with self.assertRaisesRegex(ValueError,'iteration'):
+            release.rollback_files(self.root,'c'*64,dry_run=True)
+        self.assertEqual(new,helper.read_text());self.assertEqual(before,journal.read_bytes())
+        with sqlite3.connect(dbpath) as db:
+            db.execute('UPDATE task_events SET kind=?,payload=?',('gave_up',json.dumps({
+                'budget_used':150,'budget_max':150,'trigger_outcome':'timed_out'})))
+        # No classification, release or reservation: the raw native trip alone
+        # already requires preservation of the unblock/claim guards.
+        with self.assertRaisesRegex(ValueError,'iteration'):
+            release.rollback_files(self.root,'c'*64)
+        self.assertEqual(new,helper.read_text());self.assertEqual(before,journal.read_bytes())
+        with sqlite3.connect(dbpath) as db:
+            db.execute('UPDATE task_events SET kind=?,payload=?',('timed_out',json.dumps({
+                'error':'Iteration budget exhausted (150/150) — task could not complete within the allowed iterations',
+                'failures':1,'retry_status':'ready'})))
+        with self.assertRaisesRegex(ValueError,'iteration'):
+            release.rollback_files(self.root,'c'*64)
+        self.assertEqual(new,helper.read_text());self.assertEqual(before,journal.read_bytes())
+        # A compatible predecessor retains the guard and can be restored even
+        # with the exact same permanent consumption evidence.
+        release.install_files(self.root,{helper:new+'\n# reviewed successor\n'},'d'*64)
+        release.rollback_files(self.root,'d'*64)
+        self.assertEqual(new,helper.read_text())
+
+    def test_actual_helper_rollback_before_iteration_use_requires_a_compatible_guard(self):
+        helper=self.root/'hermes-agent/hermes_cli/nixhomeserver_resume_recovered.py'
+        helper.parent.mkdir(parents=True);helper.write_text('# pre-iteration helper\n')
+        release.install_files(self.root,{helper:(release.HERE/'resume_recovered.py').read_text()},'c'*64)
+        before=helper.read_bytes()
+        with self.assertRaisesRegex(ValueError,'compatible'):
+            release.rollback_files(self.root,'c'*64)
+        self.assertEqual(before,helper.read_bytes())
+
+    def iteration_rollback_board(self):
+        import sqlite3
+        path=self.root/'kanban/boards/test/kanban.db';path.parent.mkdir(parents=True)
+        with sqlite3.connect(path) as db:
+            db.execute('CREATE TABLE task_events(kind TEXT,payload TEXT)')
+            db.execute('CREATE TABLE tasks(status TEXT,current_run_id INTEGER,worker_pid INTEGER,claim_lock TEXT,claim_expires INTEGER)')
+            db.execute('CREATE TABLE task_runs(status TEXT,outcome TEXT,ended_at INTEGER,worker_pid INTEGER)')
+        helper=self.root/'hermes-agent/hermes_cli/nixhomeserver_resume_recovered.py'
+        helper.parent.mkdir(parents=True);helper.write_text('# predecessor without guard\n')
+        release.install_files(self.root,{helper:(release.HERE/'resume_recovered.py').read_text()},'c'*64)
+        return path,helper
+
+    def test_iteration_downgrade_refuses_active_native_run_before_its_first_budget_trip(self):
+        import sqlite3
+        path,helper=self.iteration_rollback_board()
+        with sqlite3.connect(path) as db:
+            db.execute("INSERT INTO tasks VALUES('running',1,123,'native-claim',999)")
+            db.execute("INSERT INTO task_runs VALUES('running',NULL,NULL,123)")
+        before=helper.read_bytes();journal=release.journal(self.root,'c'*64).read_bytes()
+        with self.assertRaisesRegex(ValueError,'compatible'):
+            release.rollback_files(self.root,'c'*64)
+        self.assertEqual(before,helper.read_bytes())
+        self.assertEqual(journal,release.journal(self.root,'c'*64).read_bytes())
+
+    def test_iteration_downgrade_cannot_race_a_new_board_during_restore(self):
+        import sqlite3
+        path,helper=self.iteration_rollback_board()
+        write=release.atomic_write;attempts=[]
+        def race(target,*args,**kwargs):
+            if target==helper:
+                new=self.root/'kanban/boards/new-board/kanban.db';new.parent.mkdir(parents=True)
+                with sqlite3.connect(new) as db:
+                    db.execute('CREATE TABLE task_events(kind TEXT,payload TEXT)')
+                    db.execute('INSERT INTO task_events VALUES(?,?)',('gave_up',json.dumps({'budget_max':150})))
+                attempts.append(True)
+            return write(target,*args,**kwargs)
+        before=helper.read_bytes();journal=release.journal(self.root,'c'*64).read_bytes()
+        with patch.object(release,'atomic_write',side_effect=race):
+            with self.assertRaisesRegex(ValueError,'compatible'):
+                release.rollback_files(self.root,'c'*64)
+        self.assertEqual([],attempts)
+        self.assertEqual(before,helper.read_bytes())
+        self.assertEqual(journal,release.journal(self.root,'c'*64).read_bytes())
+
     def test_upgrades_use_source_helpers_and_restore_installed_imports(self):
         directory=self.root/'source';directory.mkdir()
         (directory/'hermes_common.py').write_text('version="new source"\n')
@@ -564,13 +667,14 @@ api_key: PRIVATE
             '    return {**pending,root/"worker":worker_runtime_adapter.ORIGIN+fleet_runtime_adapter.ORIGIN,\n'
             '        root/"hermes-agent/tools/kanban_tools.py":"handler",\n'
             '        root/"hermes-agent/tools/kanban_tools_schemas.py":"schema"}\n')
-        (source/'install-recovered-resume.py').write_text('def pending_files(root, *, origin_candidate=None):\n    assert origin_candidate == "origin-source"\n    native=root/"hermes-agent"\n    pairs=[(native/"tools/kanban_tools.py","old-handler","handler-source-amended"),\n           (native/"tools/kanban_tools_schemas.py","old-schema","schema-source-amended"),\n           (native/"hermes_cli/nixhomeserver_coordinator_repair.py",None,\'revision = "qualified"\\n\')]\n    if (root/"missing-prerequisite").exists():\n        pairs.append((native/"hermes_cli/nixhomeserver_resume_recovered.py",None,"required"))\n    return root,pairs,[]\n')
+        (source/'install-recovered-resume.py').write_text('def pending_files(root, *, origin_candidate=None):\n    assert origin_candidate == "origin-source"\n    native=root/"hermes-agent"\n    pairs=[(native/"tools/kanban_tools.py","old-handler","handler-source-amended"),\n           (native/"tools/kanban_tools_schemas.py","old-schema","schema-source-amended"),\n           (native/"hermes_cli/nixhomeserver_coordinator_repair.py",None,\'revision = "qualified"\\n\'),\n           (native/"hermes_cli/nixhomeserver_resume_recovered.py","old-resume","qualified-resume")]\n    if (root/"missing-prerequisite").exists():\n        pairs.append((native/"hermes_cli/nixhomeserver_unowned_recovery.py",None,"required"))\n    return root,pairs,[]\n')
         previous_path=sys.path[:]
         before_modules={name:sys.modules.get(name) for name in ('coordinator_repair_adapter','recovered_resume_adapter','resume_recovered')}
         result=release.source_changes(self.root,source,workers=True)
         self.assertEqual('kept',result[self.root/'taskforce'])
         self.assertEqual('sourcesource',result[self.root/'worker'])
         self.assertEqual('origin-source',result[self.root/'hermes-agent/hermes_cli/nixhomeserver_worker_origin.py'])
+        self.assertEqual('qualified-resume',result[self.root/'hermes-agent/hermes_cli/nixhomeserver_resume_recovered.py'])
         for name,base in [('kanban_tools.py','handler'),('kanban_tools_schemas.py','schema')]:
             self.assertEqual(base+'-source-amended',result[self.root/'hermes-agent/tools'/name])
         self.assertEqual('revision = \"qualified\"\n',result[self.root/'hermes-agent/hermes_cli/nixhomeserver_coordinator_repair.py'])

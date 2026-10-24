@@ -297,8 +297,6 @@ class InstallerTest(unittest.TestCase):
         older=dict(pending)
         older[stale]=stale.read_text()
         stale.chmod(0o640) if stale.exists() else None
-        initial={p.relative_to(self.root):(p.read_bytes(),p.stat().st_mode & 0o777)
-                 for p in self.root.rglob('*') if p.is_file()}
         release.install_files(self.root,older,'a'*40)
         current=self.root/'state/fleet/current.json'
         current.write_text(json.dumps({'revision':'a'*40,'status':'active'}))
@@ -332,11 +330,13 @@ class InstallerTest(unittest.TestCase):
         release.rollback_files(self.root,'b'*40)
         self.assertEqual([],release.check_files(self.root,'a'*40))
         self.assertEqual(older[stale],stale.read_text())
-        release.rollback_files(self.root,'a'*40)
-        actual={p.relative_to(self.root):(p.read_bytes(),p.stat().st_mode & 0o777)
-                for p in self.root.rglob('*') if p.is_file()
-                and not p.is_relative_to(self.root/'state')}
-        self.assertEqual(initial,actual)
+        # The initial release introduced finite guards. Removing those guards
+        # is refused even before use; the compatible B -> A rollback above is
+        # still supported and independently checked.
+        before=snapshot()
+        with self.assertRaisesRegex(ValueError,'compatible'):
+            release.rollback_files(self.root,'a'*40)
+        self.assertEqual(before,snapshot())
 
     def test_check_install_idempotence_and_private_backup(self):
         self.assertEqual(1,self.installer.install(self.root,True))

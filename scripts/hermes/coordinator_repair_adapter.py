@@ -131,6 +131,20 @@ SCHEMA = SCHEMA.replace('Never releases work or resets retries;',
 SCHEMA = SCHEMA.replace('Only for an untyped native blocked containment or existing capability reclaimed or elapsed-limit timed_out gave_up episode;',
     'Only for an untyped native blocked containment, existing capability reclaimed or elapsed-limit timed_out gave_up episode, or current same-kind capability TRIAGE block_loop_detected supplier clarification;', 1)
 
+# Exact predecessor for an atomic upgrade of the advertised iteration branch.
+PREVIOUS_ITERATION_SCHEMA = SCHEMA
+SCHEMA = SCHEMA.replace('reaffirms one reclaimed or elapsed-limit timed-out capability episode',
+    'reaffirms one reclaimed or elapsed-limit timed-out capability episode, or a run-scoped iteration-exhaustion capability episode', 1)
+SCHEMA = SCHEMA.replace('Never releases work or resets retries;',
+    'Iteration recognition requires the run-scoped gave_up trip, strict structured budget counts, '
+    'matching native run metadata/error and prior technical-hold/release/claim chronology; no invented '
+    'intermediate timeout. It only appends BLOCKED evidence. Subsequent iteration resume needs an '
+    'independently accepted finite native decision referenced as Iteration decision: t_CARD/runN '
+    'and consumes the source episode once across helper changes and interrupted transactions. '
+    'Recognition grants no allowance. Never releases work or resets retries;', 1)
+SCHEMA = SCHEMA.replace('existing capability reclaimed or elapsed-limit timed_out gave_up episode,',
+    'existing capability reclaimed or elapsed-limit timed_out gave_up episode, or run-scoped iteration gave_up episode,', 1)
+
 # The seam installed before the workspace-rebind branch: one exact literal
 # migration, so an installed native is upgraded instead of duplicated.
 PREVIOUS = '''KANBAN_AMEND_SCHEMA = {
@@ -201,7 +215,7 @@ def adapt(name, text):
                 text = text.replace(previous, HANDLER, 1)
                 break
     if name == 'tools/kanban_tools_schemas.py' and SCHEMA not in text:
-        for variant in (PREVIOUS_SUPPLIER_SCHEMA, PREVIOUS_TIMEOUT_SCHEMA, PREVIOUS_INTAKE_SCHEMA, PREVIOUS_INSPECTION,
+        for variant in (PREVIOUS_ITERATION_SCHEMA, PREVIOUS_SUPPLIER_SCHEMA, PREVIOUS_TIMEOUT_SCHEMA, PREVIOUS_INTAKE_SCHEMA, PREVIOUS_INSPECTION,
                         PREVIOUS_REBIND, PREVIOUS, LEGACY):
             if text.count(variant) == 1:
                 text = text.replace(variant, SCHEMA, 1)

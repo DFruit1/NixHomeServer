@@ -38,7 +38,17 @@ cannot judge whether a claimed improvement is true. The coordinator owns that
 judgment and must stop unchanged loops. Keep task-specific receipts on cards.
 
 Hitting an iteration or timeout limit requires diagnosis, not an unchanged
-retry. Narrow/split when practical. When measurements show a runtime estimate
+retry. Keep four separate ledgers: iterations per run, wall-clock cap,
+consecutive-failure breaker threshold, and any aggregate incident or exact
+operation allowance. A breaker trip stops automatic retries; it is not proof
+of an exhausted aggregate grant or permission for manual continuation.
+Narrow/split when practical. An authenticated owning-board coordinator may
+record an independently qualified finite recovery within existing authority;
+it must cite that authority, preserve all ledgers and respect any exact spent
+operation allowance. Recognition, source acceptance and preserved counters do
+not grant that continuation. Iteration recovery uses the exact native decision
+record and episode-stable one-use reservation in `hermes-coordinator-reference.md`.
+When measurements show a runtime estimate
 error, head-coordinator may record one finite revised runtime cap on the same
 card within existing resource budgets: old/new caps, measured cause, remaining
 work, expected completion and stopping condition. This does not increase retry

@@ -7,6 +7,9 @@ if [[ -n "${HERMES_KANBAN_TASK:-}${HERMES_KANBAN_RUN_ID:-}${HERMES_DELEGATED_CHI
 fi
 python3 -B - "$repo" <<'PY'
 import importlib.util
+import ast
+import contextlib
+import argparse
 import hashlib
 import json
 import os
@@ -29,6 +32,21 @@ sys.modules['hermes_cli.nixhomeserver_worker_origin']=worker_origin
 sys.modules['hermes_cli.nixhomeserver_resume_recovered']=resume_recovered
 sys.modules['hermes_cli.nixhomeserver_coordinator_repair']=repair
 sys.modules['cron.nixhomeserver_capability_recovery']=monitor.recovery
+policy_spec=importlib.util.spec_from_file_location('hermes_cli.nixhomeserver_worker_policy',source/'worker-policy.py')
+candidate_policy=importlib.util.module_from_spec(policy_spec);policy_spec.loader.exec_module(candidate_policy)
+sys.modules['hermes_cli.nixhomeserver_worker_policy']=candidate_policy
+import hermes_cli
+hermes_cli.nixhomeserver_worker_policy=candidate_policy
+from recovered_resume_adapter import adapt as resume_adapt
+# Exercise the candidate native boundaries in memory, not the installed files.
+candidate_native=resume_adapt('hermes_cli/kanban_db.py',(native/'hermes_cli/kanban_db.py').read_text())
+for node in ast.parse(candidate_native).body:
+    if isinstance(node,ast.FunctionDef) and node.name in {'unblock_task','_claim_and_open_run'}:
+        exec(compile(ast.get_source_segment(candidate_native,node),'candidate-native','exec'),kb.__dict__)
+from worker_runtime_adapter import adapt as worker_adapt
+candidate_dispatch=worker_adapt('kanban_db_dispatch.py',(native/'hermes_cli/kanban_db_dispatch.py').read_text())
+node=next(n for n in ast.parse(candidate_dispatch).body if isinstance(n,ast.FunctionDef) and n.name=='_dispatch_lane_task')
+exec(compile(ast.get_source_segment(candidate_dispatch,node),'candidate-dispatch','exec'),kbd.__dict__)
 from coordinator_repair_adapter import adapt,EDITS
 
 class RepairTest(unittest.TestCase):
@@ -222,6 +240,781 @@ class RepairTest(unittest.TestCase):
                           'trigger_outcome':'timed_out'},{
             k:payload[k] for k in ('failures','effective_limit','limit_source','trigger_outcome')})
         return {'run_id':run,'event_id':event}
+
+    def iteration_episode(self, prior_failures=1, max_retries=None):
+        """Native finalizer topology: one run-scoped trip, no timeout event.
+
+        Only synthetic state is used. The recorded dispatcher threshold is
+        historical evidence, independent of any current configured default.
+        """
+        self.conn.execute("UPDATE tasks SET status='ready',assignee='standard-implementer',skills='[]',max_retries=NULL,"
+                          "max_runtime_seconds=2700,consecutive_failures=0 WHERE id=?",(self.target,))
+        self.conn.commit()
+        self.conn.execute('UPDATE tasks SET max_retries=? WHERE id=?',(max_retries,self.target));self.conn.commit()
+        self.assertTrue(kb.block_task(self.conn,self.target,kind='capability',
+                                      reason='Input supplier: agent. Earlier technical hold'))
+        self.assertTrue(kb.unblock_task(self.conn,self.target))
+        self.conn.execute('UPDATE tasks SET consecutive_failures=? WHERE id=?',(prior_failures,self.target))
+        self.conn.commit()
+        self.assertIsNotNone(kb.claim_task(self.conn,self.target))
+        run=self.conn.execute('SELECT current_run_id FROM tasks WHERE id=?',(self.target,)).fetchone()[0]
+        error='Iteration budget exhausted (150/150) — task could not complete within the allowed iterations'
+        self.assertEqual(prior_failures>=1,kb._record_task_failure(self.conn,self.target,error,outcome='timed_out',
+            failure_limit=2,release_claim=True,end_run=True,
+            event_payload_extra={'budget_used':150,'budget_max':150}))
+        event=self.conn.execute('SELECT id FROM task_events WHERE task_id=? AND kind=? '
+                                'ORDER BY id DESC LIMIT 1',(self.target,'gave_up' if prior_failures>=1 else 'timed_out')).fetchone()[0]
+        return {'run_id':run,'event_id':event}
+
+    def iteration_reason(self):
+        return ('Input supplier: agent. Repair evidence: independently qualified synthetic source input; '
+                'recognize this iteration episode only, with continuation and all allowances held.')
+
+    def test_iteration_exhaustion_recognition_only_preserves_the_entire_native_state(self):
+        episode=self.iteration_episode()
+        before=self.dump()
+        run=next(row for row in before[1] if row['id']==episode['run_id'])
+        event=next(row for row in before[2] if row['id']==episode['event_id'])
+        self.assertEqual(('gave_up','gave_up'),(run['status'],run['outcome']))
+        self.assertEqual(episode['run_id'],event['run_id'])
+        self.assertNotIn('budget_used',json.loads(run['metadata']))
+        self.assertFalse(any(row['kind']=='timed_out' and row['run_id']==episode['run_id']
+                             for row in before[2]))
+        result=self.amend_episode(episode,self.iteration_reason())
+        self.assertTrue(result['applied'])
+        after=self.dump()
+        self.assertEqual(before[0],after[0]);self.assertEqual(before[1],after[1])
+        self.assertEqual(before[2],after[2][:-1]);self.assertEqual(before[3],after[3])
+        evidence=json.loads(after[2][-1]['payload'])
+        self.assertEqual('iteration-exhaustion-reaffirmation',evidence['branch'])
+        self.assertTrue(evidence['reaffirmed'])
+        self.assertEqual((episode['run_id'],episode['event_id']),
+                         (evidence['source_run'],evidence['source_event']))
+        hold=self.current_hold()
+        self.assertEqual('agent',hold['supplier'])
+        with self.assertRaises(ValueError):self.amend_episode(episode,self.iteration_reason())
+        self.assertEqual(after,self.dump())
+
+    def test_iteration_episode_rejects_inconsistent_structured_native_evidence(self):
+        episode=self.iteration_episode()
+        originals={table:dict(self.conn.execute('SELECT * FROM '+table+' WHERE id=?',
+                    (self.target if table=='tasks' else episode['run_id'] if table=='task_runs'
+                     else episode['event_id'],)).fetchone())
+                   for table in ('tasks','task_runs','task_events')}
+        def refuse(table, changes):
+            original=originals[table]
+            self.conn.execute('UPDATE '+table+' SET '+','.join(key+'=?' for key in changes)
+                              +' WHERE id=?',(*changes.values(),original['id']))
+            self.conn.commit()
+            before=self.dump()
+            with self.assertRaises(ValueError):self.amend_episode(episode,self.iteration_reason())
+            self.assertEqual(before,self.dump())
+            self.conn.execute('UPDATE '+table+' SET '+','.join(key+'=?' for key in changes)
+                              +' WHERE id=?',(*(original[key] for key in changes),original['id']))
+            self.conn.commit()
+        payload=json.loads(originals['task_events']['payload'])
+        for key in ('budget_used','budget_max','failures','effective_limit'):
+            for bad in (None,True,False,0,-1,'150',150.0):
+                with self.subTest(field=key,value=bad):
+                    refuse('task_events',{'payload':json.dumps({**payload,key:bad})})
+        for changes in ({'budget_used':149},{'budget_max':151},
+                        {'trigger_outcome':'reclaimed'},{'retry_status':'done'},
+                        {'limit_source':'unknown'},{'limit_source':'task'},
+                        {'failures':3},{'effective_limit':3},
+                        {'error':'Iteration budget exhausted (1/1) — task could not complete within the allowed iterations'}):
+            with self.subTest(payload=changes):
+                refuse('task_events',{'payload':json.dumps({**payload,**changes})})
+        for table,changes in (
+                ('task_events',{'run_id':None}),('task_events',{'run_id':42}),
+                ('task_events',{'payload':'[]'}),('task_events',{'payload':'{'}),
+                ('task_runs',{'error':'different cause'}),('task_runs',{'metadata':'[]'}),
+                ('task_runs',{'metadata':'{'}),('task_runs',{'outcome':'timed_out'}),
+                ('task_runs',{'started_at':self.now+100}),('task_runs',{'ended_at':None}),
+                ('tasks',{'consecutive_failures':0}),('tasks',{'max_retries':2}),
+                ('tasks',{'last_failure_error':'different cause'}),
+                ('tasks',{'block_kind':'needs_input'}),('tasks',{'status':'running'}),
+                ('tasks',{'claim_lock':'another-worker'}),('tasks',{'worker_pid':99999}),
+                ('tasks',{'current_run_id':episode['run_id']}),('tasks',{'current_run_id':999999}),
+                ('tasks',{'body':'ASK: Allow another operation?'})):
+            with self.subTest(table=table,changes=changes):refuse(table,changes)
+        metadata=json.loads(originals['task_runs']['metadata'])
+        for key in ('failures','effective_limit','limit_source','retry_status','trigger_outcome'):
+            with self.subTest(metadata=key):
+                refuse('task_runs',{'metadata':json.dumps({**metadata,key:None})})
+        # Wrong source/claim chronology and an absent preceding technical hold
+        # must not be legitimized merely by the row's current capability kind.
+        for kind in ('claimed','unblocked','blocked'):
+            row=dict(self.conn.execute('SELECT * FROM task_events WHERE task_id=? AND kind=? '
+                                       'ORDER BY id DESC LIMIT 1',(self.target,kind)).fetchone())
+            self.conn.execute('DELETE FROM task_events WHERE id=?',(row['id'],));self.conn.commit()
+            before=self.dump()
+            with self.assertRaises(ValueError):self.amend_episode(episode,self.iteration_reason())
+            self.assertEqual(before,self.dump())
+            self.conn.execute('INSERT INTO task_events('+','.join(row)+') VALUES('
+                              +','.join('?' for _ in row)+')',tuple(row.values()));self.conn.commit()
+
+    def finite_iteration_decision(self, episode, checkpoint='R1'):
+        """Real synthetic native claims/completions, not an asserted role string."""
+        def completed(profile, metadata, tenant=None, parents=()):
+            tid=kb.create_task(self.conn,title='Finite synthetic scope qualification',assignee=profile,
+                               workspace_kind='scratch',tenant=tenant,parents=parents)
+            self.assertIsNotNone(kb.claim_task(self.conn,tid))
+            run=self.conn.execute('SELECT current_run_id FROM tasks WHERE id=?',(tid,)).fetchone()[0]
+            child=subprocess.Popen([sys.executable,'-c','import sys; sys.stdin.read()'],stdin=subprocess.PIPE)
+            try:
+                kbd._set_worker_pid(self.conn,tid,child.pid)
+                self.assertTrue(kb.complete_task(self.conn,tid,summary='Executed synthetic scope checks',
+                    metadata=metadata,expected_run_id=run,fire_lifecycle_hook=False))
+            finally:
+                child.communicate(timeout=10)
+            row=self.conn.execute('SELECT * FROM task_runs WHERE id=?',(run,)).fetchone()
+            def no_signal(*args,**kwargs):raise AssertionError('Ended synthetic worker must not be signalled')
+            kbd._reap_terminal_worker_row(self.conn,row,kb._host_prefix(),no_signal,[])
+            self.assertIsNone(self.conn.execute('SELECT worker_pid FROM task_runs WHERE id=?',(run,)).fetchone()[0])
+            return tid,run
+        revision='a'*64
+        current=kb.get_task(self.conn,self.target)
+        scope={'task_id':self.target,**episode,'checkpoint':checkpoint,'max_runs':1,
+               'max_iterations':150,'max_runtime_seconds':current.max_runtime_seconds,
+               'consecutive_failures':current.consecutive_failures,
+               'scope_revision':revision}
+        review,review_run=completed('feature-reviewer',{'verdict':'accept','revision':revision,
+            'checks':[{'command':'synthetic finite-scope identity check','exit_code':0}],
+            'iteration_continuation_scope':scope,
+            'iteration_scope_sha256':hashlib.sha256(json.dumps(scope,sort_keys=True,separators=(',',':')).encode()).hexdigest(),
+            'independence':{'plan_author':False,'implementer':False}},'verification')
+        disposition={'version':1,'decision':'approve',**scope,
+                     'review_task_id':review,'review_run_id':review_run}
+        decision,decision_run=completed('head-coordinator',{'iteration_continuation':disposition},parents=(review,))
+        return decision,decision_run,disposition
+
+    def test_iteration_resume_needs_real_independently_qualified_finite_decision(self):
+        episode=self.iteration_episode()
+        self.amend_episode(episode,self.iteration_reason())
+        hold=self.current_hold()
+        before=self.dump()
+        for reason in ('Source repair accepted', 'Iteration decision: t_missing/run999',
+                       'Iteration decision: '+self.actor+'/run42'):
+            with self.subTest(reason=reason),self.assertRaises(ValueError):
+                resume_recovered.resume_recovered(kb,self.conn,self.target,hold['version'],reason)
+            self.assertEqual(before,self.dump())
+        decision,run,disposition=self.finite_iteration_decision(episode)
+        reason=f'Qualified repair; Iteration decision: {decision}/run{run}'
+        for binding in (episode['run_id'],999999):
+            self.conn.execute('UPDATE tasks SET current_run_id=? WHERE id=?',(binding,self.target));self.conn.commit()
+            snapshot=self.dump()
+            with self.assertRaises(ValueError):
+                resume_recovered.resume_recovered(kb,self.conn,self.target,self.current_hold()['version'],reason)
+            self.assertEqual(snapshot,self.dump())
+        self.conn.execute('UPDATE tasks SET current_run_id=NULL WHERE id=?',(self.target,));self.conn.commit()
+        self.assertEqual('ready',resume_recovered.resume_recovered(
+            kb,self.conn,self.target,self.current_hold()['version'],reason)['status'])
+        self.assertEqual(2,kb.get_task(self.conn,self.target).consecutive_failures)
+        self.assertIsNotNone(kb.claim_task(self.conn,self.target))
+        self.assertIsNone(kb.claim_task(self.conn,self.target))
+        self.assertEqual(2,kb.get_task(self.conn,self.target).consecutive_failures)
+
+    def test_iteration_finite_disposition_rejects_wrong_scope_or_unaccepted_review(self):
+        episode=self.iteration_episode()
+        self.amend_episode(episode,self.iteration_reason())
+        decision,run,disposition=self.finite_iteration_decision(episode)
+        reason=f'Qualified repair; Iteration decision: {decision}/run{run}'
+        for key,value in (('version',True),('decision','hold'),('task_id',self.actor),
+                ('run_id',42),('event_id',1),('checkpoint',''),('checkpoint','R2'),('max_runs',True),('max_runs',2),
+                ('max_iterations',151),('max_runtime_seconds',2701),('consecutive_failures',0),
+                ('review_run_id',42),('scope_revision','b'*64)):
+            with self.subTest(field=key,value=value):
+                self.conn.execute('UPDATE task_runs SET metadata=? WHERE id=?',
+                    (json.dumps({'iteration_continuation':{**disposition,key:value}}),run))
+                self.conn.commit();before=self.dump()
+                with self.assertRaises(ValueError):
+                    resume_recovered.resume_recovered(kb,self.conn,self.target,self.current_hold()['version'],reason)
+                self.assertEqual(before,self.dump())
+        self.conn.execute('UPDATE task_runs SET metadata=? WHERE id=?',
+                          (json.dumps({'iteration_continuation':disposition}),run));self.conn.commit()
+        review_run=disposition['review_run_id']
+        original=self.conn.execute('SELECT metadata FROM task_runs WHERE id=?',(review_run,)).fetchone()[0]
+        metadata=json.loads(original)
+        for changes in ({'verdict':'request-changes'},{'revision':'b'*64},
+                        {'iteration_scope_sha256':'b'*64},
+                        {'iteration_continuation_scope':{**metadata['iteration_continuation_scope'],'checkpoint':'R2'}},
+                        {'independence':{'plan_author':True,'implementer':False}},
+                        {'checks':[{'command':'scope check','exit_code':True}]},
+                        {'checks':[{'command':'scope check','exit_code':1}]}):
+            with self.subTest(review=changes):
+                self.conn.execute('UPDATE task_runs SET metadata=? WHERE id=?',
+                                  (json.dumps({**metadata,**changes}),review_run));self.conn.commit()
+                before=self.dump()
+                with self.assertRaises(ValueError):
+                    resume_recovered.resume_recovered(kb,self.conn,self.target,self.current_hold()['version'],reason)
+                self.assertEqual(before,self.dump())
+        self.conn.execute('UPDATE task_runs SET metadata=? WHERE id=?',(original,review_run));self.conn.commit()
+        self.conn.execute('DELETE FROM task_links WHERE parent_id=? AND child_id=?',
+                          (disposition['review_task_id'],decision));self.conn.commit()
+        before=self.dump()
+        with self.assertRaises(ValueError):
+            resume_recovered.resume_recovered(kb,self.conn,self.target,self.current_hold()['version'],reason)
+        self.assertEqual(before,self.dump())
+
+    def test_iteration_authority_lineage_survives_a_normal_partial_checkpoint_block(self):
+        episode=self.iteration_episode();self.amend_episode(episode,self.iteration_reason())
+        decision,run,_=self.finite_iteration_decision(episode)
+        reason=f'Qualified repair; Iteration decision: {decision}/run{run}'
+        resume_recovered.resume_recovered(kb,self.conn,self.target,self.current_hold()['version'],reason)
+        self.assertIsNotNone(kb.claim_task(self.conn,self.target))
+        checkpoint_run=kb.get_task(self.conn,self.target).current_run_id
+        self.assertTrue(kb.block_task(self.conn,self.target,kind='capability',
+            reason='Input supplier: agent. R1 partial checkpoint retained; R2 still requires assessment.'))
+        before=self.dump()
+        for replay in (reason,'Material input changed; no finite decision'):
+            with self.assertRaises(ValueError):
+                resume_recovered.resume_recovered(kb,self.conn,self.target,self.current_hold()['version'],replay)
+            self.assertEqual(before,self.dump())
+        event=self.conn.execute("SELECT id FROM task_events WHERE task_id=? AND kind IN ('blocked','block_loop_detected') "
+                                "ORDER BY id DESC LIMIT 1",(self.target,)).fetchone()[0]
+        new_decision,new_run,_=self.finite_iteration_decision({'run_id':checkpoint_run,'event_id':event},'R2')
+        fresh=f'Fresh independent assessment; Iteration decision: {new_decision}/run{new_run}'
+        self.assertEqual('ready',resume_recovered.resume_recovered(
+            kb,self.conn,self.target,self.current_hold()['version'],fresh)['status'])
+        self.assertEqual(2,kb.get_task(self.conn,self.target).consecutive_failures)
+
+    def test_iteration_prior_reclassification_uses_native_new_kind(self):
+        episode=self.iteration_episode()
+        prior=self.conn.execute("SELECT id,payload FROM task_events WHERE task_id=? AND kind='blocked' "
+                                "ORDER BY id DESC LIMIT 1",(self.target,)).fetchone()
+        payload=json.loads(prior['payload']);payload.pop('kind')
+        payload.update(old_kind='needs_input',new_kind='capability')
+        self.conn.execute("UPDATE task_events SET kind='block_reclassified',payload=? WHERE id=?",
+                          (json.dumps(payload),prior['id']));self.conn.commit()
+        bad={**payload,'kind':'capability','new_kind':'needs_input'}
+        self.conn.execute('UPDATE task_events SET payload=? WHERE id=?',(json.dumps(bad),prior['id']));self.conn.commit()
+        before=self.dump()
+        with self.assertRaises(ValueError):self.amend_episode(episode,self.iteration_reason())
+        self.assertEqual(before,self.dump())
+        self.conn.execute('UPDATE task_events SET payload=? WHERE id=?',(json.dumps(payload),prior['id']));self.conn.commit()
+        self.assertTrue(self.amend_episode(episode,self.iteration_reason())['applied'])
+
+    def test_ordinary_native_unblock_cannot_erase_iteration_failures_or_skip_authority(self):
+        episode=self.iteration_episode()
+        for classified in (False,True):
+            if classified:self.amend_episode(episode,self.iteration_reason())
+            before=self.dump()
+            with self.assertRaisesRegex(ValueError,'iteration'):
+                kb.unblock_task(self.conn,self.target)
+            self.assertEqual(before,self.dump())
+
+    def test_cli_iteration_refusal_preserves_comments_and_events_with_reason(self):
+        episode=self.iteration_episode();self.amend_episode(episode,self.iteration_reason())
+        from hermes_cli import kanban as cli
+        candidate=resume_adapt('hermes_cli/kanban.py',(native/'hermes_cli/kanban.py').read_text())
+        node=next(n for n in ast.parse(candidate).body if isinstance(n,ast.FunctionDef) and n.name=='_cmd_unblock')
+        @contextlib.contextmanager
+        def fixture_board():yield self.conn
+        namespace=dict(cli.__dict__,kb=kb,kbc=types.SimpleNamespace(connect_closing=fixture_board))
+        exec(compile(ast.get_source_segment(candidate,node),'candidate-cli','exec'),namespace)
+        before=self.dump()
+        # This is the isolated fixture's interactive CLI mode, never a live
+        # worker changing execution context after a refusal.
+        with patch.dict(os.environ,{'HERMES_KANBAN_TASK':''}):
+            with self.assertRaisesRegex(ValueError,'iteration'):
+                namespace['_cmd_unblock'](argparse.Namespace(task_ids=[self.target],reason='retry'))
+        self.assertEqual(before,self.dump())
+
+    def test_first_iteration_exhaustion_preserves_failure_without_replenishing_native_retry_budget(self):
+        episode=self.iteration_episode(prior_failures=0)
+        raw=self.conn.execute('SELECT kind,payload FROM task_events WHERE id=?',(episode['event_id'],)).fetchone()
+        self.assertEqual('timed_out',raw['kind'])
+        self.assertNotIn('budget_max',json.loads(raw['payload']))
+        self.assertEqual(1,kb.get_task(self.conn,self.target).consecutive_failures)
+        self.assertIsNone(candidate_policy.reason(self.conn,self.target))
+        self.assertTrue(kb.block_task(self.conn,self.target,kind='capability',
+            reason='Input supplier: agent. Independently qualified fixture input delivered.'))
+        before=self.dump()
+        with self.assertRaisesRegex(ValueError,'iteration'):
+            kb.unblock_task(self.conn,self.target)
+        self.assertEqual(before,self.dump())
+        # Guarded technical recovery preserves the unspent native automatic
+        # attempt. A first failure is not a newly exhausted aggregate grant.
+        self.assertEqual('ready',resume_recovered.resume_recovered(kb,self.conn,self.target,
+            self.current_hold()['version'],'Qualified fixture input delivered; preserve failure1')['status'])
+        self.assertEqual(1,kb.get_task(self.conn,self.target).consecutive_failures)
+        self.assertIsNotNone(kb.claim_task(self.conn,self.target))
+
+    def test_iteration_grant_prevents_a_second_claim_after_native_protocol_requeue(self):
+        self.assert_iteration_requeue_is_held(0)
+
+    def test_iteration_grant_prevents_a_second_claim_after_native_quota_requeue(self):
+        self.assert_iteration_requeue_is_held(kb.KANBAN_RATE_LIMIT_EXIT_CODE)
+
+    def native_worker_exit(self,exit_code,exit_kind=None):
+        child=subprocess.Popen([sys.executable,'-c',f'raise SystemExit({exit_code})'])
+        kbd._set_worker_pid(self.conn,self.target,child.pid);child.wait(timeout=10)
+        with patch.object(kbd,'_classify_worker_exit',return_value=(
+                exit_kind or kbd._exit_code_kind(exit_code)[0],exit_code)),\
+                patch.object(kb,'_resolve_crash_grace_seconds',return_value=0):
+            kbd.detect_crashed_workers(self.conn)
+
+    def test_reviewer_quota_containment_preserves_native_review_phase(self):
+        self.assert_reviewer_containment_phase(kb.KANBAN_RATE_LIMIT_EXIT_CODE)
+
+    def test_reviewer_protocol_containment_preserves_native_review_phase(self):
+        self.assert_reviewer_containment_phase(0)
+
+    def assert_reviewer_containment_phase(self,exit_code):
+        episode=self.iteration_episode();self.amend_episode(episode,self.iteration_reason())
+        decision,run,_=self.finite_iteration_decision(episode,'complete-candidate')
+        resume_recovered.resume_recovered(kb,self.conn,self.target,self.current_hold()['version'],
+            f'Qualified scope; Iteration decision: {decision}/run{run}')
+        self.assertIsNotNone(kb.claim_task(self.conn,self.target))
+        self.assertTrue(kb.request_review(self.conn,self.target,reviewer='feature-reviewer',
+            metadata={'revision':'a'*64},expected_run_id=kb.get_task(self.conn,self.target).current_run_id))
+        self.assertIsNotNone(kb.claim_review_task(self.conn,self.target))
+        reviewed=kb.get_task(self.conn,self.target).current_run_id
+        self.native_worker_exit(exit_code)
+        self.assertEqual('review',kb.get_task(self.conn,self.target).status)
+        raw=self.conn.execute("SELECT id FROM task_events WHERE task_id=? AND run_id=? AND kind IN ('protocol_violation','rate_limited')",
+                               (self.target,reviewed)).fetchone()[0]
+        self.assertTrue(candidate_policy.park_assignment(kb,self.conn,self.target,candidate_policy.reason(self.conn,self.target)))
+        decision,run,_=self.finite_iteration_decision({'run_id':reviewed,'event_id':raw},'review-retry')
+        self.assertEqual('review',resume_recovered.resume_recovered(kb,self.conn,self.target,self.current_hold()['version'],
+            f'Qualified reviewer repair; Iteration decision: {decision}/run{run}')['status'])
+        self.assertIsNotNone(kb.claim_review_task(self.conn,self.target))
+        self.assertEqual((True,'standard-implementer'),kb.request_changes(self.conn,self.target,
+            reason='Independent reviewer requests the missing real control',
+            expected_run_id=kb.get_task(self.conn,self.target).current_run_id))
+        self.assertEqual(2,kb.get_task(self.conn,self.target).consecutive_failures)
+
+    def test_protocol_breaker_trip_retains_exact_fresh_continuation_path(self):
+        episode=self.iteration_episode(max_retries=1);self.amend_episode(episode,self.iteration_reason())
+        decision,run,_=self.finite_iteration_decision(episode)
+        old=f'Qualified repair; Iteration decision: {decision}/run{run}'
+        resume_recovered.resume_recovered(kb,self.conn,self.target,self.current_hold()['version'],old)
+        self.assertIsNotNone(kb.claim_task(self.conn,self.target))
+        consumed=kb.get_task(self.conn,self.target).current_run_id
+        with patch.object(kb,'read_worker_log',return_value='x'*400):
+            self.native_worker_exit(0)
+        self.assertGreater(len(self.conn.execute('SELECT error FROM task_runs WHERE id=?',(consumed,)).fetchone()[0]),500)
+        self.assertEqual(('blocked',3),tuple(self.conn.execute('SELECT status,consecutive_failures FROM tasks WHERE id=?',
+                                                           (self.target,)).fetchone()))
+        event=self.conn.execute("SELECT id FROM task_events WHERE task_id=? AND kind='gave_up' ORDER BY id DESC LIMIT 1",
+                                (self.target,)).fetchone()[0]
+        episode={'run_id':consumed,'event_id':event}
+        self.amend_episode(episode,self.iteration_reason())
+        before=self.dump()
+        with self.assertRaises(ValueError):
+            resume_recovered.resume_recovered(kb,self.conn,self.target,self.current_hold()['version'],old)
+        self.assertEqual(before,self.dump())
+        decision,run,_=self.finite_iteration_decision(episode,'R1-repair')
+        self.assertEqual('ready',resume_recovered.resume_recovered(kb,self.conn,self.target,self.current_hold()['version'],
+            f'Qualified protocol repair; Iteration decision: {decision}/run{run}')['status'])
+        self.assertEqual((3,1),tuple(self.conn.execute('SELECT consecutive_failures,max_retries FROM tasks WHERE id=?',
+                                                   (self.target,)).fetchone()))
+
+    def test_finite_nonzero_crash_accepts_only_a_fresh_exact_decision(self):
+        self.assert_finite_crash_recovery('nonzero_exit',1)
+
+    def test_finite_signal_crash_accepts_only_a_fresh_exact_decision(self):
+        self.assert_finite_crash_recovery('signaled',9)
+
+    def test_finite_terminal_provider_crash_retains_its_exact_repair_path(self):
+        self.assert_finite_crash_recovery('terminal_provider',kb.KANBAN_TERMINAL_PROVIDER_EXIT_CODE)
+
+    def assert_finite_crash_recovery(self,kind,code):
+        episode=self.iteration_episode();self.amend_episode(episode,self.iteration_reason())
+        decision,run,_=self.finite_iteration_decision(episode)
+        old=f'Qualified repair; Iteration decision: {decision}/run{run}'
+        resume_recovered.resume_recovered(kb,self.conn,self.target,self.current_hold()['version'],old)
+        self.assertIsNotNone(kb.claim_task(self.conn,self.target))
+        consumed=kb.get_task(self.conn,self.target).current_run_id
+        with patch.object(kb,'read_worker_log',return_value='x'*400):
+            self.native_worker_exit(code,kind)
+        self.assertEqual(('blocked',3),tuple(self.conn.execute(
+            'SELECT status,consecutive_failures FROM tasks WHERE id=?',(self.target,)).fetchone()))
+        raw=self.conn.execute("SELECT id FROM task_events WHERE task_id=? AND kind='gave_up' ORDER BY id DESC LIMIT 1",
+                              (self.target,)).fetchone()[0]
+        episode={'run_id':consumed,'event_id':raw}
+        self.amend_episode(episode,self.iteration_reason())
+        before=self.dump()
+        with self.assertRaises(ValueError):
+            resume_recovered.resume_recovered(kb,self.conn,self.target,self.current_hold()['version'],old)
+        self.assertEqual(before,self.dump())
+        decision,run,_=self.finite_iteration_decision(episode,'repaired-crash')
+        self.assertEqual('ready',resume_recovered.resume_recovered(kb,self.conn,self.target,
+            self.current_hold()['version'],f'Qualified failure repair; Iteration decision: {decision}/run{run}')['status'])
+        self.assertEqual(3,kb.get_task(self.conn,self.target).consecutive_failures)
+        self.assertIsNotNone(kb.claim_task(self.conn,self.target))
+
+    def test_interrupted_crash_sweep_preserves_fresh_recovery_and_unrelated_dispatch(self):
+        episode=self.iteration_episode();self.amend_episode(episode,self.iteration_reason())
+        decision,run,_=self.finite_iteration_decision(episode)
+        old=f'Qualified repair; Iteration decision: {decision}/run{run}'
+        resume_recovered.resume_recovered(kb,self.conn,self.target,self.current_hold()['version'],old)
+        self.assertIsNotNone(kb.claim_task(self.conn,self.target))
+        consumed=kb.get_task(self.conn,self.target).current_run_id
+        with patch.object(kbd,'_account_crashes',side_effect=InterruptedError('dispatch process lost after committed reclaim')):
+            with self.assertRaises(InterruptedError):self.native_worker_exit(1)
+        self.assertEqual(('ready',2),tuple(self.conn.execute(
+            'SELECT status,consecutive_failures FROM tasks WHERE id=?',(self.target,)).fetchone()))
+        raw=self.conn.execute("SELECT id FROM task_events WHERE task_id=? AND run_id=? AND kind='crashed'",
+                              (self.target,consumed)).fetchone()[0]
+        result=kbd.DispatchResult()
+        def dispatch(tid):
+            row=self.conn.execute('SELECT * FROM tasks WHERE id=?',(tid,)).fetchone()
+            with patch.object(kbd,'_profile_exists_fn',return_value=lambda profile:True),\
+                    patch.object(kbd._kbw,'resolve_workspace',return_value=self.work):
+                return kbd._dispatch_lane_task(self.conn,row,'standard-implementer',result,
+                    lane='ready',dry_run=False,ttl_seconds=600,board='testboard',failure_limit=2,
+                    spawn_fn=lambda *a,**k:None,per_profile_caps=None,per_profile_running={})
+        self.assertFalse(dispatch(self.target))
+        self.assertEqual('blocked',kb.get_task(self.conn,self.target).status)
+        self.assertEqual(consumed,self.conn.execute('SELECT id FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1',
+                                                 (self.target,)).fetchone()[0])
+        other=kb.create_task(self.conn,title='Useful output after interrupted sweep',assignee='standard-implementer',workspace_kind='scratch')
+        self.assertTrue(dispatch(other))
+        before=self.dump()
+        with self.assertRaises(ValueError):
+            resume_recovered.resume_recovered(kb,self.conn,self.target,self.current_hold()['version'],old)
+        self.assertEqual(before,self.dump())
+        decision,run,_=self.finite_iteration_decision({'run_id':consumed,'event_id':raw},'crash-sweep-repair')
+        self.assertEqual('ready',resume_recovered.resume_recovered(kb,self.conn,self.target,
+            self.current_hold()['version'],f'Qualified crash repair; Iteration decision: {decision}/run{run}')['status'])
+        self.assertEqual(2,kb.get_task(self.conn,self.target).consecutive_failures)
+        self.assertIsNotNone(kb.claim_task(self.conn,self.target))
+
+    def test_stale_consumed_claim_is_contained_without_stopping_unrelated_dispatch(self):
+        episode=self.iteration_episode();self.amend_episode(episode,self.iteration_reason())
+        decision,run,_=self.finite_iteration_decision(episode)
+        old=f'Qualified repair; Iteration decision: {decision}/run{run}'
+        resume_recovered.resume_recovered(kb,self.conn,self.target,self.current_hold()['version'],old)
+        self.assertIsNotNone(kb.claim_task(self.conn,self.target))
+        consumed=kb.get_task(self.conn,self.target).current_run_id
+        # Advance time through the native lifecycle, never rewrite its history.
+        self.enterContext(patch.object(kbd.time,'time',return_value=self.now+601))
+        with kb.write_txn(self.conn):
+            self.conn.execute('UPDATE tasks SET claim_expires=?,last_heartbeat_at=? WHERE id=?',
+                              (self.now+4000,self.now+601,self.actor))
+            self.conn.execute('UPDATE task_runs SET claim_expires=? WHERE id=42',(self.now+4000,))
+        self.assertEqual([self.target],kbd.detect_stale_running(self.conn,stale_timeout_seconds=600))
+        raw=self.conn.execute("SELECT id FROM task_events WHERE task_id=? AND run_id=? AND kind='stale'",
+                              (self.target,consumed)).fetchone()[0]
+        result=kbd.DispatchResult()
+        def dispatch(tid):
+            row=self.conn.execute('SELECT * FROM tasks WHERE id=?',(tid,)).fetchone()
+            with patch.object(kbd,'_profile_exists_fn',return_value=lambda profile:True),\
+                    patch.object(kbd._kbw,'resolve_workspace',return_value=self.work):
+                return kbd._dispatch_lane_task(self.conn,row,'standard-implementer',result,
+                    lane='ready',dry_run=False,ttl_seconds=600,board='testboard',failure_limit=2,
+                    spawn_fn=lambda *a,**k:None,per_profile_caps=None,per_profile_running={})
+        self.assertFalse(dispatch(self.target))
+        self.assertEqual(('blocked',2),tuple(self.conn.execute(
+            'SELECT status,consecutive_failures FROM tasks WHERE id=?',(self.target,)).fetchone()))
+        self.assertEqual(consumed,self.conn.execute('SELECT id FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1',
+                                                 (self.target,)).fetchone()[0])
+        other=kb.create_task(self.conn,title='Useful parallel output',assignee='standard-implementer',workspace_kind='scratch')
+        self.assertTrue(dispatch(other))
+        before=self.dump()
+        with self.assertRaises(ValueError):
+            resume_recovered.resume_recovered(kb,self.conn,self.target,self.current_hold()['version'],old)
+        self.assertEqual(before,self.dump())
+        decision,run,_=self.finite_iteration_decision({'run_id':consumed,'event_id':raw},'repaired-stale')
+        self.assertEqual('ready',resume_recovered.resume_recovered(kb,self.conn,self.target,
+            self.current_hold()['version'],f'Qualified heartbeat repair; Iteration decision: {decision}/run{run}')['status'])
+        self.assertEqual(2,kb.get_task(self.conn,self.target).consecutive_failures)
+        self.assertIsNotNone(kb.claim_task(self.conn,self.target))
+
+    def test_native_dispatcher_contains_infrastructure_spawn_refusal_and_keeps_processing(self):
+        self.assert_native_dispatcher_spawn_refusal(True)
+
+    def test_native_dispatcher_normal_spawn_failure_accepts_only_fresh_disposition(self):
+        self.assert_native_dispatcher_spawn_refusal(False)
+
+    def assert_native_dispatcher_spawn_refusal(self,infrastructure):
+        from tools.process_registry import RestartSafeScopeUnavailable
+        episode=self.iteration_episode();self.amend_episode(episode,self.iteration_reason())
+        decision,run,_=self.finite_iteration_decision(episode)
+        resume_recovered.resume_recovered(kb,self.conn,self.target,self.current_hold()['version'],
+            f'Qualified repair; Iteration decision: {decision}/run{run}')
+        result=kbd.DispatchResult()
+        def dispatch(tid,spawn):
+            row=self.conn.execute('SELECT * FROM tasks WHERE id=?',(tid,)).fetchone()
+            with patch.object(kbd,'_profile_exists_fn',return_value=lambda profile:True),\
+                    patch.object(kbd._kbw,'resolve_workspace',return_value=self.work):
+                return kbd._dispatch_lane_task(self.conn,row,'standard-implementer',result,
+                    lane='ready',dry_run=False,ttl_seconds=600,board='testboard',failure_limit=2,
+                    spawn_fn=spawn,per_profile_caps=None,per_profile_running={})
+        def refused(*args,**kwargs):
+            raise (RestartSafeScopeUnavailable('synthetic restart-safe scope unavailable')
+                   if infrastructure else RuntimeError('synthetic ordinary spawn failure'))
+        self.assertFalse(dispatch(self.target,refused))
+        failed=self.conn.execute('SELECT id,status,outcome FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1',
+                                 (self.target,)).fetchone()
+        terminal='spawn_failed' if infrastructure else 'gave_up'
+        self.assertEqual((terminal,terminal),(failed['status'],failed['outcome']))
+        self.assertEqual('ready' if infrastructure else 'blocked',kb.get_task(self.conn,self.target).status)
+        raw=self.conn.execute('SELECT id FROM task_events WHERE task_id=? AND run_id=? AND kind=?',
+                               (self.target,failed['id'],terminal)).fetchone()[0]
+        def no_second_spawn(*args,**kwargs):raise AssertionError('Consumed claim cannot spawn twice')
+        if infrastructure:
+            self.assertFalse(dispatch(self.target,no_second_spawn))
+        else:
+            self.amend_episode({'run_id':failed['id'],'event_id':raw},self.iteration_reason())
+        self.assertEqual('blocked',kb.get_task(self.conn,self.target).status)
+        self.assertEqual(failed['id'],self.conn.execute('SELECT id FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1',
+                                                     (self.target,)).fetchone()[0])
+        other=kb.create_task(self.conn,title='Independent useful work',assignee='standard-implementer',workspace_kind='scratch')
+        calls=[]
+        self.assertTrue(dispatch(other,lambda *args,**kwargs:calls.append(other)))
+        self.assertEqual([other],calls)
+        decision,run,_=self.finite_iteration_decision({'run_id':failed['id'],'event_id':raw},'R1-repair')
+        self.assertEqual('ready',resume_recovered.resume_recovered(kb,self.conn,self.target,self.current_hold()['version'],
+            f'Qualified infrastructure repair; Iteration decision: {decision}/run{run}')['status'])
+        self.assertEqual(2 if infrastructure else 3,kb.get_task(self.conn,self.target).consecutive_failures)
+
+    def assert_iteration_requeue_is_held(self,exit_code):
+        episode=self.iteration_episode();self.amend_episode(episode,self.iteration_reason())
+        decision,run,_=self.finite_iteration_decision(episode)
+        resume_recovered.resume_recovered(kb,self.conn,self.target,self.current_hold()['version'],
+            f'Qualified repair; Iteration decision: {decision}/run{run}')
+        self.assertIsNotNone(kb.claim_task(self.conn,self.target))
+        continuation=kb.get_task(self.conn,self.target).current_run_id
+        self.assertIsNone(candidate_policy.reason(self.conn,self.target))
+        child=subprocess.Popen([sys.executable,'-c',f'raise SystemExit({exit_code})'])
+        kbd._set_worker_pid(self.conn,self.target,child.pid)
+        child.wait(timeout=10)
+        # Real crash accounting reads the native exit receipt supplied by the
+        # worker monitor. Stub only that external process receipt, not requeue.
+        with patch.object(kbd,'_classify_worker_exit',return_value=(
+                'clean_exit' if exit_code==0 else 'rate_limited',exit_code)),\
+                patch.object(kb,'_resolve_crash_grace_seconds',return_value=0):
+            kbd.detect_crashed_workers(self.conn)
+        self.assertEqual('ready',kb.get_task(self.conn,self.target).status)
+        self.assertEqual(2,kb.get_task(self.conn,self.target).consecutive_failures)
+        before=self.dump()
+        self.assertIsNone(kb.claim_task(self.conn,self.target))
+        self.assertEqual(before,self.dump())
+        self.assertEqual(continuation,self.conn.execute(
+            'SELECT id FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1',(self.target,)).fetchone()[0])
+        self.assertIn('fresh independently assessed',candidate_policy.reason(self.conn,self.target))
+        # The dispatcher records the exact technical hold before another spawn.
+        # A separately assessed new decision must remain usable on that hold.
+        raw=self.conn.execute("SELECT id FROM task_events WHERE task_id=? AND run_id=? "
+            "AND kind IN ('protocol_violation','rate_limited') ORDER BY id DESC LIMIT 1",
+            (self.target,continuation)).fetchone()[0]
+        self.assertTrue(candidate_policy.park_assignment(kb,self.conn,self.target,
+                                     candidate_policy.reason(self.conn,self.target)))
+        new_decision,new_run,_=self.finite_iteration_decision({'run_id':continuation,'event_id':raw},'R1-repair')
+        self.assertEqual('ready',resume_recovered.resume_recovered(kb,self.conn,self.target,
+            self.current_hold()['version'],f'New assessed repair; Iteration decision: {new_decision}/run{new_run}')['status'])
+        self.assertEqual(2,kb.get_task(self.conn,self.target).consecutive_failures)
+
+    def test_interrupted_native_timeout_keeps_dispatch_and_fresh_decision_working(self):
+        self.assert_interrupted_native_terminal('timed_out')
+
+    def test_interrupted_native_reclaim_keeps_dispatch_and_fresh_decision_working(self):
+        self.assert_interrupted_native_terminal('reclaimed')
+
+    def test_native_orphan_reconciliation_keeps_dispatch_and_fresh_decision_working(self):
+        self.assert_interrupted_native_terminal('reconciled')
+
+    def assert_interrupted_native_terminal(self,kind):
+        episode=self.iteration_episode();self.amend_episode(episode,self.iteration_reason())
+        decision,run,_=self.finite_iteration_decision(episode)
+        old=f'Qualified repair; Iteration decision: {decision}/run{run}'
+        resume_recovered.resume_recovered(kb,self.conn,self.target,self.current_hold()['version'],old)
+        self.assertIsNotNone(kb.claim_task(self.conn,self.target))
+        consumed=kb.get_task(self.conn,self.target).current_run_id
+        self.enterContext(patch.object(kbd.time,'time',return_value=self.now+2701))
+        with kb.write_txn(self.conn):
+            self.conn.execute('UPDATE tasks SET claim_expires=? WHERE id=?',(self.now+4000,self.actor))
+            self.conn.execute('UPDATE task_runs SET claim_expires=? WHERE id=42',(self.now+4000,))
+        if kind=='timed_out':
+            with kb.write_txn(self.conn):
+                self.conn.execute('UPDATE tasks SET worker_pid=?,worker_started_at=? WHERE id=?',
+                                  (999991,'synthetic-dead',self.target))
+            with patch.object(kbd,'_record_task_failure',side_effect=InterruptedError('after native timeout commit')):
+                with self.assertRaises(InterruptedError):kbd.enforce_max_runtime(self.conn,signal_fn=lambda *a:None)
+        elif kind=='reclaimed':
+            with patch.object(kb,'_record_task_failure',side_effect=InterruptedError('after native reclaim commit')):
+                with self.assertRaises(InterruptedError):kb.release_stale_claims(self.conn,signal_fn=lambda *a:None)
+        else:
+            with kb.write_txn(self.conn):
+                self.conn.execute('UPDATE tasks SET claim_expires=NULL WHERE id=?',(self.target,))
+            self.assertEqual([self.target],kbd.reconcile_orphaned_running(self.conn))
+        self.assertEqual(('ready',2),tuple(self.conn.execute(
+            'SELECT status,consecutive_failures FROM tasks WHERE id=?',(self.target,)).fetchone()))
+        raw=self.conn.execute('SELECT id FROM task_events WHERE task_id=? AND run_id=? AND kind=?',
+                              (self.target,consumed,kind)).fetchone()[0]
+        result=kbd.DispatchResult()
+        def dispatch(tid):
+            row=self.conn.execute('SELECT * FROM tasks WHERE id=?',(tid,)).fetchone()
+            with patch.object(kbd,'_profile_exists_fn',return_value=lambda profile:True),\
+                    patch.object(kbd._kbw,'resolve_workspace',return_value=self.work):
+                return kbd._dispatch_lane_task(self.conn,row,'standard-implementer',result,
+                    lane='ready',dry_run=False,ttl_seconds=600,board='testboard',failure_limit=2,
+                    spawn_fn=lambda *a,**k:None,per_profile_caps=None,per_profile_running={})
+        self.assertFalse(dispatch(self.target))
+        self.assertEqual('blocked',kb.get_task(self.conn,self.target).status)
+        self.assertEqual(consumed,self.conn.execute('SELECT id FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1',
+                                                 (self.target,)).fetchone()[0])
+        other=kb.create_task(self.conn,title='Useful work after terminal commit',assignee='standard-implementer',workspace_kind='scratch')
+        self.assertTrue(dispatch(other))
+        before=self.dump()
+        with self.assertRaises(ValueError):
+            resume_recovered.resume_recovered(kb,self.conn,self.target,self.current_hold()['version'],old)
+        self.assertEqual(before,self.dump())
+        decision,run,_=self.finite_iteration_decision({'run_id':consumed,'event_id':raw},'terminal-repair')
+        self.assertEqual('ready',resume_recovered.resume_recovered(kb,self.conn,self.target,
+            self.current_hold()['version'],f'Qualified terminal repair; Iteration decision: {decision}/run{run}')['status'])
+        self.assertEqual(2,kb.get_task(self.conn,self.target).consecutive_failures)
+        self.assertIsNotNone(kb.claim_task(self.conn,self.target))
+
+    def test_iteration_completion_can_handoff_to_one_independent_native_review(self):
+        episode=self.iteration_episode();self.amend_episode(episode,self.iteration_reason())
+        decision,run,_=self.finite_iteration_decision(episode,'complete-candidate')
+        resume_recovered.resume_recovered(kb,self.conn,self.target,self.current_hold()['version'],
+            f'Qualified complete scope; Iteration decision: {decision}/run{run}')
+        self.assertIsNotNone(kb.claim_task(self.conn,self.target))
+        self.assertTrue(kb.request_review(self.conn,self.target,reviewer='feature-reviewer',
+            summary='Synthetic complete candidate',metadata={'revision':'a'*64},
+            expected_run_id=kb.get_task(self.conn,self.target).current_run_id))
+        self.assertIsNone(candidate_policy.reason(self.conn,self.target))
+        self.assertIsNotNone(kb.claim_review_task(self.conn,self.target))
+        self.assertIsNone(candidate_policy.reason(self.conn,self.target))
+        self.assertTrue(kb.request_changes(self.conn,self.target,reason='Meaningful missing control',
+            expected_run_id=kb.get_task(self.conn,self.target).current_run_id))
+        # Review rework is progress, not another implementation grant.
+        self.assertIsNone(kb.claim_task(self.conn,self.target))
+        self.assertIn('fresh independently assessed',candidate_policy.reason(self.conn,self.target))
+        rework=self.conn.execute("SELECT id,run_id FROM task_events WHERE task_id=? AND kind='changes_requested' "
+                                 'ORDER BY id DESC LIMIT 1',(self.target,)).fetchone()
+        self.assertTrue(candidate_policy.park_assignment(kb,self.conn,self.target,
+            candidate_policy.reason(self.conn,self.target)))
+        decision,run,_=self.finite_iteration_decision({'run_id':rework['run_id'],'event_id':rework['id']},'rework')
+        self.assertEqual('ready',resume_recovered.resume_recovered(kb,self.conn,self.target,
+            self.current_hold()['version'],f'Qualified rework; Iteration decision: {decision}/run{run}')['status'])
+        self.assertIsNotNone(kb.claim_task(self.conn,self.target))
+
+    def test_iteration_checkpoint_classification_retains_raw_scope_binding(self):
+        self.assert_classified_iteration_checkpoint('terminal-containment')
+
+    def test_iteration_supplier_clarification_retains_raw_scope_binding(self):
+        self.assert_classified_iteration_checkpoint('block-loop-supplier-clarification')
+
+    def assert_classified_iteration_checkpoint(self,branch):
+        episode=self.iteration_episode();self.amend_episode(episode,self.iteration_reason())
+        decision,run,_=self.finite_iteration_decision(episode)
+        old=f'Qualified repair; Iteration decision: {decision}/run{run}'
+        resume_recovered.resume_recovered(kb,self.conn,self.target,self.current_hold()['version'],old)
+        self.assertIsNotNone(kb.claim_task(self.conn,self.target))
+        continuation=kb.get_task(self.conn,self.target).current_run_id
+        if branch=='block-loop-supplier-clarification':
+            self.conn.execute('UPDATE tasks SET block_recurrences=2 WHERE id=?',(self.target,));self.conn.commit()
+        self.assertTrue(kb.block_task(self.conn,self.target,
+            kind='capability' if branch=='block-loop-supplier-clarification' else None,
+            reason='Checkpoint input arrived; further independently assessed work remains.'))
+        event=self.conn.execute("SELECT id FROM task_events WHERE task_id=? AND kind IN ('blocked','block_loop_detected') "
+                                'ORDER BY id DESC LIMIT 1',(self.target,)).fetchone()[0]
+        episode={'run_id':continuation,'event_id':event}
+        self.amend_episode(episode,'Input supplier: agent. Repair evidence: synthetic checkpoint input '
+                           'has been delivered and independently qualified; retain raw episode.')
+        classified=self.conn.execute('SELECT run_id,payload FROM task_events WHERE task_id=? ORDER BY id DESC LIMIT 1',
+                                     (self.target,)).fetchone()
+        self.assertIsNone(classified['run_id']);self.assertEqual(branch,json.loads(classified['payload'])['branch'])
+        before=self.dump()
+        with self.assertRaises(ValueError):
+            resume_recovered.resume_recovered(kb,self.conn,self.target,self.current_hold()['version'],old)
+        self.assertEqual(before,self.dump())
+        decision,run,_=self.finite_iteration_decision(episode,'R2')
+        self.assertEqual('ready',resume_recovered.resume_recovered(kb,self.conn,self.target,
+            self.current_hold()['version'],f'Fresh assessment; Iteration decision: {decision}/run{run}')['status'])
+        self.assertEqual(2,kb.get_task(self.conn,self.target).consecutive_failures)
+
+    def iteration_followup_trip(self, trigger, elapsed=2711):
+        episode=self.iteration_episode();self.amend_episode(episode,self.iteration_reason())
+        decision,run,_=self.finite_iteration_decision(episode)
+        old=f'Qualified repair; Iteration decision: {decision}/run{run}'
+        resume_recovered.resume_recovered(kb,self.conn,self.target,self.current_hold()['version'],old)
+        self.assertIsNotNone(kb.claim_task(self.conn,self.target))
+        continuation=kb.get_task(self.conn,self.target).current_run_id
+        started=self.conn.execute('SELECT started_at FROM task_runs WHERE id=?',(continuation,)).fetchone()[0]
+        if trigger=='timed_out':
+            # Advance the native clock, keeping real claim/run chronology and
+            # the original 2700s cap instead of rewriting historical dates.
+            with kb.write_txn(self.conn):
+                self.conn.execute('UPDATE tasks SET worker_pid=?,worker_started_at=? WHERE id=?',
+                                  (999991,'synthetic',self.target))
+            self.enterContext(patch.object(kbd.time,'time',return_value=started+elapsed))
+            with kb.write_txn(self.conn):
+                self.conn.execute('UPDATE tasks SET claim_expires=? WHERE id=?',(self.now+4000,self.actor))
+                self.conn.execute('UPDATE task_runs SET claim_expires=? WHERE id=42',(self.now+4000,))
+            with patch.object(kbd,'DEFAULT_FAILURE_LIMIT',2):
+                self.assertEqual([self.target],kbd.enforce_max_runtime(
+                    self.conn,signal_fn=lambda *a,**k:None))
+        else:
+            with kb.write_txn(self.conn):
+                kb._record_reclaim(self.conn,self.target,{},error='stale_lock=continuation',
+                                   payload={'retry_status':'ready'})
+                self.conn.execute("UPDATE tasks SET status='ready',claim_lock=NULL,claim_expires=NULL "
+                                  'WHERE id=?',(self.target,))
+            self.assertTrue(kb._record_task_failure(self.conn,self.target,'stale_lock=continuation',
+                outcome='reclaimed',failure_limit=2,release_claim=False,end_run=False,
+                event_payload_extra={'retry_status':'ready'}))
+        trip=self.conn.execute("SELECT id FROM task_events WHERE task_id=? AND kind='gave_up' "
+                               'ORDER BY id DESC LIMIT 1',(self.target,)).fetchone()[0]
+        episode={'run_id':continuation,'event_id':trip}
+        self.amend_episode(episode,'Input supplier: agent. Repair evidence: synthetic later trip '
+                           'independently assessed; preserve the continuation lineage and all limits.')
+        before=self.dump()
+        for replay in (old,'Material input supplied without a new finite decision'):
+            with self.assertRaises(ValueError):
+                resume_recovered.resume_recovered(kb,self.conn,self.target,self.current_hold()['version'],replay)
+            self.assertEqual(before,self.dump())
+        return episode
+
+    def test_iteration_timeout_reaffirmation_accepts_only_its_fresh_finite_decision(self):
+        self.assert_iteration_followup_decision('timed_out')
+
+    def test_iteration_timeout_exactly_at_cap_accepts_fresh_disposition(self):
+        episode=self.iteration_followup_trip('timed_out',elapsed=2700)
+        decision,run,_=self.finite_iteration_decision(episode,'exact-cap-repair')
+        self.assertEqual('ready',resume_recovered.resume_recovered(kb,self.conn,self.target,
+            self.current_hold()['version'],f'Qualified timeout repair; Iteration decision: {decision}/run{run}')['status'])
+        self.assertEqual(3,kb.get_task(self.conn,self.target).consecutive_failures)
+
+    def test_iteration_reclaim_reaffirmation_accepts_only_its_fresh_finite_decision(self):
+        self.assert_iteration_followup_decision('reclaimed')
+
+    def assert_iteration_followup_decision(self,trigger):
+        episode=self.iteration_followup_trip(trigger)
+        decision,run,_=self.finite_iteration_decision(episode,'R1-repair')
+        self.assertEqual('ready',resume_recovered.resume_recovered(kb,self.conn,self.target,
+            self.current_hold()['version'],f'Fresh assessment; Iteration decision: {decision}/run{run}')['status'])
+        current=kb.get_task(self.conn,self.target)
+        self.assertEqual((3,2700,None),(current.consecutive_failures,current.max_runtime_seconds,current.max_retries))
+
+    def test_iteration_reservation_survives_rollback_restart_and_changed_helper_version(self):
+        episode=self.iteration_episode()
+        self.amend_episode(episode,self.iteration_reason())
+        decision,run,disposition=self.finite_iteration_decision(episode)
+        reason=f'Qualified repair; Iteration decision: {decision}/run{run}'
+        hold=self.current_hold();before=self.dump()
+        append=kb._append_event
+        def interrupted(conn,tid,kind,*args,**kwargs):
+            if tid==self.target and kind=='unblocked':raise RuntimeError('synthetic interrupted commit')
+            return append(conn,tid,kind,*args,**kwargs)
+        with patch.object(kb,'_append_event',side_effect=interrupted),self.assertRaises(RuntimeError):
+            resume_recovered.resume_recovered(kb,self.conn,self.target,hold['version'],reason)
+        self.assertEqual(before,self.dump())
+        # Reopen the real fixture connection, then change only helper identity.
+        with self.assertRaisesRegex(ValueError,'iteration'):
+            kb.unblock_task(self.conn,self.target)
+        self.assertEqual(before,self.dump())
+        self.conn.close();self.conn=kbc.connect(db_path=self.path);self.addCleanup(self.conn.close)
+        with patch.object(monitor.recovery,'helper_identity',return_value={'changed-helper':'b'*64}):
+            new_hold=self.current_hold();self.assertNotEqual(hold['version'],new_hold['version'])
+            with self.assertRaisesRegex(ValueError,'consumed'):
+                resume_recovered.resume_recovered(kb,self.conn,self.target,new_hold['version'],reason)
+        self.assertEqual(before,self.dump())
 
     def timeout_reason(self):
         return ('Input supplier: agent. Repair evidence: the parked body was narrowed to the '
@@ -854,7 +1647,7 @@ class RepairTest(unittest.TestCase):
                 refuse(expected)
                 restore(row)
         for name,where,payload,expected in (
-                ('elapsed under the cap','timeout',{'elapsed_seconds':900,'limit_seconds':900},'elapsed'),
+                ('elapsed under the cap','timeout',{'elapsed_seconds':899,'limit_seconds':900},'elapsed'),
                 ('malformed elapsed','timeout',{'elapsed_seconds':'911'},'elapsed'),
                 ('missing limit','timeout',{'limit_seconds':None},'elapsed'),
                 ('zero limit','timeout',{'limit_seconds':0},'elapsed'),

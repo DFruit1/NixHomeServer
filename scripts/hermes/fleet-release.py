@@ -6,6 +6,7 @@ and its reviewed recovery adapters remain dependencies, fingerprinted separately
 No credentials, board databases or whole cron journals are restored.
 """
 import argparse
+import ast
 from contextlib import contextmanager
 import fcntl
 import hashlib
@@ -150,8 +151,8 @@ def runtime_dependencies(root):
 
 
 def rollback_files(root, revision, *, dry_run=False):
-    path = journal(root, revision)
-    manifest = json.loads(path.read_text())
+    path=journal(root,revision)
+    manifest=json.loads(path.read_text())
     changes = []
     for item in manifest['files']:
         target = checked(root, root / item['path'])
@@ -167,6 +168,7 @@ def rollback_files(root, revision, *, dry_run=False):
         if (sha(old) if old is not None else None) != item['before_sha256']:
             raise ValueError('Rollback preimage failed verification')
         changes.append((target, old, item['mode']))
+    require_iteration_rollback_compatibility(root, manifest)
     if dry_run:
         return
     for target, old, mode in reversed(changes):
@@ -179,6 +181,7 @@ def rollback_files(root, revision, *, dry_run=False):
 
 
 def require_rollback_compatibility(root, manifest):
+    require_iteration_rollback_compatibility(root, manifest)
     previous=manifest.get('previous_release') or {}
     supported=[]
     if previous.get('revision'):
@@ -191,6 +194,39 @@ def require_rollback_compatibility(root, manifest):
                             "WHERE kind='created' AND json_type(payload,'$.workflow') IS NOT NULL LIMIT 32").fetchall()
             if any(type(row[0]) is not int or row[0] not in supported for row in rows):
                 raise ValueError('Rollback would remove a reader for existing workflow contracts; install a compatible reviewed release')
+
+
+def iteration_guard_downgrade(root, manifest):
+    """Inspect verified rollback bytes without importing historical code."""
+    helper='hermes-agent/hermes_cli/nixhomeserver_resume_recovered.py'
+    item=next((entry for entry in manifest.get('files',[]) if entry['path']==helper),None)
+    if item is None:
+        return False
+    preimage=item.get('preimage')
+    old=read(checked(root,journal(root,manifest['revision']).parent/preimage)) if preimage else None
+    if (sha(old) if old is not None else None)!=item['before_sha256']:
+        raise ValueError('Rollback iteration-guard preimage failed verification')
+    if old:
+        tree=ast.parse(old)
+        for node in tree.body:
+            if (isinstance(node,ast.Assign) and len(node.targets)==1
+                    and isinstance(node.targets[0],ast.Name)
+                    and node.targets[0].id=='ITERATION_GUARD_VERSION'
+                    and isinstance(node.value,ast.Constant)
+                    and type(node.value.value) is int and node.value.value>=2):
+                return False
+    return True
+
+
+def require_iteration_rollback_compatibility(root, manifest):
+    """Never restore helpers that remove native finite-authority enforcement.
+
+    A scan of existing boards cannot fence a newly created board or a first
+    trip from a concurrent worker. Require a compatible reviewed rollback
+    release even before first use; do not attempt a racy negative-history proof.
+    """
+    if iteration_guard_downgrade(root,manifest):
+        raise ValueError('Rollback would remove iteration authority enforcement; install a compatible reviewed release')
 
 
 def jobs(root, profile):
@@ -473,12 +509,18 @@ def source_changes(root, directory, *, workers=False):
                 origin_candidate=pending[root/'hermes-agent/hermes_cli/nixhomeserver_worker_origin.py'])
             owned={'tools/kanban_tools.py','tools/kanban_tools_schemas.py',
                    'hermes_cli/nixhomeserver_coordinator_repair.py',
+                   'hermes_cli/nixhomeserver_resume_recovered.py',
                    'hermes_cli/kanban_db.py','hermes_cli/kanban.py'}
             for path,before,after in recovery_pending:
                 relative=str(path.relative_to(root/'hermes-agent'))
                 if relative in owned:
                     # Compose on worker/workflow output, not the earlier input.
-                    if path in pending:
+                    if relative in {'hermes_cli/nixhomeserver_coordinator_repair.py',
+                                    'hermes_cli/nixhomeserver_resume_recovered.py'}:
+                        if path in pending and pending[path] not in (before,after):
+                            raise ValueError('Recovery helper has conflicting release owners: '+relative)
+                        pending[path]=after
+                    elif path in pending:
                         value=sys.modules['recovered_resume_adapter'].adapt(relative,pending[path])
                         if relative.startswith('tools/'):
                             value=sys.modules['coordinator_repair_adapter'].adapt(relative,value)
@@ -738,10 +780,12 @@ def mutation_locks(root):
     descriptors=[]
     try:
         for relative in ('state/fleet/release.lock','state/fleet/supervisor.lock',
-                         'backups/recovered-resume/install.lock'):
+                         'backups/recovered-resume/install.lock','runtime/recovered-resume/operation.lock'):
             # Hold the owning API installer's lock from qualification through
             # fingerprint capture and publication; it cannot replace a guard
-            # and have its new bytes adopted as an unqualified baseline.
+            # and have its new bytes adopted as an unqualified baseline. The
+            # native resume lock also fences a concurrent one-shot reservation
+            # throughout compatibility checks, schedules and file publication.
             path=checked(root,root/relative)
             path.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
             fd=os.open(path,os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o600)

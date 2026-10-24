@@ -149,8 +149,21 @@ CURRENT_UNBLOCK = PREVIOUS_UNBLOCK.replace(
 EDITS['kanban_db.py'] = (EDITS['kanban_db.py'][0],
     (EDITS['kanban_db.py'][1][0], CURRENT_UNBLOCK), *EDITS['kanban_db.py'][2:])
 
+# Upgrade only the established dispatcher policy containment calls. Ordinary
+# failures retain native block_task; consumed finite authority keeps its real
+# terminal run instead of fabricating a synthetic blocked execution.
+PREVIOUS_DISPATCH = EDITS['kanban_db_dispatch.py']
+EDITS['kanban_db_dispatch.py'] = tuple((before,after.replace(
+    '_kb.block_task(conn, task_id, reason=policy_reason, kind="capability")',
+    'worker_policy.park_assignment(_kb, conn, task_id, policy_reason)'))
+    for before,after in PREVIOUS_DISPATCH)
+
 
 def adapt(name, text):
+    if name=='kanban_db_dispatch.py':
+        for (_,old),(_,new) in zip(PREVIOUS_DISPATCH,EDITS[name]):
+            if old!=new and text.count(old)==1:
+                text=text.replace(old,new,1)
     if name == 'kanban_db.py' and text.count(PREVIOUS_UNBLOCK) == 1:
         text = text.replace(PREVIOUS_UNBLOCK, CURRENT_UNBLOCK, 1)
     for before, after in EDITS[name]:

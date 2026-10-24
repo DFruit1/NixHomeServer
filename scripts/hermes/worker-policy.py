@@ -109,6 +109,19 @@ def reason(db, task_id, assignee=None):
                                 task['max_runtime_seconds'], task['max_retries'])
     if problem:
         return problem
+    iteration=db.execute("SELECT 1 FROM task_events WHERE task_id=? AND ("
+        "json_type(payload,'$.iteration_continuation') IS NOT NULL OR "
+        "json_extract(payload,'$.branch')='iteration-exhaustion-reaffirmation' OR "
+        "(kind='gave_up' AND json_type(payload,'$.budget_max') IS NOT NULL)) LIMIT 1",(task_id,)).fetchone()
+    # Claim admission applies to runnable/current executions. A parked task's
+    # guarded recovery must first validate its NEW finite disposition; testing
+    # the spent prior claim here would prevent issuing that release forever.
+    if iteration and db.execute('SELECT status FROM tasks WHERE id=?',(task_id,)).fetchone()[0] in {'ready','review','running'}:
+        try:
+            from hermes_cli.nixhomeserver_resume_recovered import iteration_claim_authority
+            iteration_claim_authority(db,task_id,allow_current=True)
+        except (ImportError,ValueError) as exc:
+            return 'Worker policy: '+str(exc)
     try:
         if __package__ == 'hermes_cli':
             from .nixhomeserver_fleet_contract import load as task_contract
@@ -170,3 +183,32 @@ def require_release(db, task_id):
     problem = reason(db, task_id)
     if problem:
         raise ValueError(problem)
+
+
+def park_assignment(kb, db, task_id, problem):
+    """Park consumed finite authority without synthesizing an execution run."""
+    prefix='Worker policy: Finite iteration continuation requires '
+    if not problem.startswith(prefix):
+        return kb.block_task(db,task_id,reason=problem,kind='capability')
+    with kb.write_txn(db):
+        task=db.execute('SELECT status,current_run_id,worker_pid,claim_lock,claim_expires '
+                        'FROM tasks WHERE id=?',(task_id,)).fetchone()
+        if (not task or task['status'] not in {'ready','review'}
+                or any(task[key] is not None for key in ('current_run_id','worker_pid','claim_lock','claim_expires'))):
+            raise ValueError('Finite continuation containment requires a parked, unleased task')
+        if reason(db,task_id)!=problem:
+            raise ValueError('Finite continuation containment evidence changed')
+        run=db.execute('SELECT id,ended_at FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1',
+                       (task_id,)).fetchone()
+        event=db.execute("SELECT id,kind FROM task_events WHERE task_id=? AND run_id=? AND kind IN "
+            "('gave_up','blocked','block_loop_detected','protocol_violation','rate_limited','spawn_failed','changes_requested','stale','crashed','timed_out','reclaimed','reconciled') "
+            'ORDER BY id DESC LIMIT 1',(task_id,run['id'])).fetchone() if run else None
+        if not run or run['ended_at'] is None or not event:
+            raise ValueError('Finite continuation containment needs the actual ended native episode')
+        phase=(kb._retry_status_for_run(db,task_id,run['id'])
+               if event['kind']=='reconciled' else task['status'])
+        db.execute("UPDATE tasks SET status='blocked',block_kind='capability' WHERE id=?",(task_id,))
+        kb._append_event(db,task_id,'blocked',dict(kind='capability',reason=problem,
+            branch='iteration-continuation-consumed',source_run=run['id'],source_event=event['id'],
+            resume_status=phase))
+    return True

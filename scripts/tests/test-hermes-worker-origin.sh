@@ -489,6 +489,8 @@ helper.parent.mkdir(parents=True);helper.write_text((source/'worker_origin.py').
 spec=importlib.util.spec_from_file_location('terminal_origin',helper)
 o=importlib.util.module_from_spec(spec);spec.loader.exec_module(o)
 sys.modules['hermes_cli.nixhomeserver_worker_origin']=o
+import resume_recovered as candidate_resume
+sys.modules['hermes_cli.nixhomeserver_resume_recovered']=candidate_resume
 from hermes_cli import kanban_db as installed,kanban_db_connect
 kb=types.ModuleType('fixture_native_db');kb.__file__=installed.__file__;sys.modules[kb.__name__]=kb
 exec(compile(adapt('hermes_cli/kanban_db.py',Path(installed.__file__).read_text()),installed.__file__,'exec'),kb.__dict__)
@@ -522,6 +524,8 @@ from pathlib import Path
 helper,source,db,t=sys.argv[1:];sys.path.insert(0,source)
 spec=importlib.util.spec_from_file_location('origin',helper);o=importlib.util.module_from_spec(spec);spec.loader.exec_module(o)
 sys.modules['hermes_cli.nixhomeserver_worker_origin']=o
+import resume_recovered as candidate_resume
+sys.modules['hermes_cli.nixhomeserver_resume_recovered']=candidate_resume
 from hermes_cli import kanban_db as installed,kanban_db_connect
 from recovered_resume_adapter import adapt
 kb=types.ModuleType('fixture_db');kb.__file__=installed.__file__;sys.modules[kb.__name__]=kb
@@ -588,6 +592,12 @@ ri=load('recovery_install','install-recovered-resume.py')
 release=load('release','fleet-release.py')
 origin_pending=oi.pending_files(root)
 candidate=next(after for path,before,after in origin_pending if path==helper)
+_,recovery_pending,guards=ri.pending_files(root,origin_candidate=candidate)
+# A rollback-compatible baseline retains the candidate's finite guards. This
+# fixture exercises an origin upgrade, never an unsafe guard removal.
+for path,before,after in recovery_pending:
+ if path.name in {'nixhomeserver_resume_recovered.py','kanban_db.py','kanban.py'}:
+  path.parent.mkdir(parents=True,exist_ok=True);path.write_text(after)
 _,recovery_pending,guards=ri.pending_files(root,origin_candidate=candidate)
 pending={path:after for path,before,after in origin_pending+recovery_pending}
 old={path:path.read_bytes() if path.exists() else None for path in pending}

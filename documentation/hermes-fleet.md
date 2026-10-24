@@ -102,6 +102,14 @@ already-restored preimages and restores only owned files/fields. It refuses
 another writer's changes. It never restores board databases, whole jobs.json
 files or task/provider retry counters. A new supervisor job is retained paused
 on rollback so its execution history survives.
+A rollback that removes finite iteration enforcement is refused before changing
+files or schedules, including before the first recorded use. A negative history
+scan cannot fence concurrent native finalization or newly created boards.
+Install a compatible independently reviewed release instead; consumption records
+and counters are never cleared to make rollback possible.
+The compatible guard includes native ordinary-unblock and claim enforcement,
+not just the versioned release helper. Protocol/quota requeues retain spent
+continuations; dispatcher containment preserves their actual terminal run.
 
 Coordinate native API adoption with active repository gates and reviews: they
 read installed adapter seams even when their application checkout is isolated.
