@@ -77,7 +77,17 @@ def _schema(name, description, properties, required):
             "Required exact assigned task id for the handoff preflight.")}
     return {"properties": {**properties, "board": board}, "required": required}
 '''
-assert adapt('tools/kanban_tools_schemas.py', scoped_schema) == scoped_schema
+adapted_schema = adapt('tools/kanban_tools_schemas.py', scoped_schema)
+assert adapted_schema == scoped_schema
+schema_ns = {
+    '_board_schema_prop': lambda: {'type': 'string'},
+    '_prop': lambda kind, description: {'type': kind, 'description': description},
+}
+exec(adapted_schema, schema_ns)
+for handoff_tool in ('kanban_complete', 'kanban_request_review'):
+    schema = schema_ns['_schema'](handoff_tool, '', {}, [])
+    assert {'board', 'task_id'} <= set(schema['required']), handoff_tool
+    assert {'board', 'task_id'} <= set(schema['properties']), handoff_tool
 overlay=args.scratch/'overlay';overlay.mkdir(exist_ok=True)
 for name in ('kanban_db.py','kanban_db_dispatch.py'):
     (overlay/name).write_text(adapt(name,(args.hermes_repo/'hermes_cli'/name).read_text()))
