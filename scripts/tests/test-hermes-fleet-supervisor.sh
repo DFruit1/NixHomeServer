@@ -133,6 +133,13 @@ class SupervisorTest(unittest.TestCase):
         board.mkdir(parents=True)
         (board / 'board.json').write_text('{}')
         self.calls = []
+        # These are scheduler/cadence unit tests. Actual recovery receipt and
+        # native transition coverage lives in test-hermes-recovery-waits.sh.
+        import recovery_wait
+        observer = patch.object(recovery_wait, 'inspect',
+                                return_value=dict(ready=[], waiting=[], unregistered=0))
+        observer.start()
+        self.addCleanup(observer.stop)
 
     def runner(self, command, **kwargs):
         self.calls.append(command)

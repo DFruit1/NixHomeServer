@@ -251,6 +251,44 @@ and genuine owner prohibitions still apply.
 
 ## Monitoring and deduplication
 
+### Registered recovery event waits
+
+For a clean `technical-recovery` head-coordinator task awaiting another native
+task's execution, use the existing `kanban_schedule` with this exact reason:
+
+```text
+Recovery wait: {"task_id":"t_ORIGINAL","after_run_id":123,"until":"terminal"}
+```
+
+Use the observed last run before the execution being awaited as `after_run_id`
+(`0` only when it has no runs). `until` is `started` for a real native spawn or
+`terminal` for a matching ended run and terminal event, including failure. A
+terminal receipt is an observation, never an acceptance verdict. The original
+execution must be newer than that run boundary, and its start/result event must
+occur during or after this coordinator run. Both tasks belong to the same board.
+The JSON accepts exactly these three fields and one task; no cross-board target,
+arbitrary predicate or inferred prose wait is supported.
+
+The existing five-minute technical-recovery supervisor inspects registered
+scheduled waits even when the original execution is already finished. It calls
+native unblock for at most four eligible owners per tick; native unblock checks
+the receipt again inside its transaction. The schedule can be consumed once.
+Only a scheduled head-coordinator recovery with zero failure/recurrence counters,
+no active run/worker/lease and no capability, transient or owner hold qualifies.
+Keep actual required-result dependencies in the formal graph; observing an
+execution neither satisfies nor removes them. The native parent gate, finite
+iteration controls, budgets and original acceptance/activation gates survive.
+
+Inspect without effects with `python3 ~/.hermes/scripts/recovery_wait.py --inspect`.
+The supervisor report records ready/waiting receipts and counts unregistered
+legacy waits. Free-form old reasons retain their original conditions and need
+an owning coordinator's supported reconciliation; never translate them by
+guessing. A changed scope, newer owner run or prior resume invalidates the old
+receipt. Attachments and evidence comments do not consume it.
+A native refusal is recorded in the supervisor journal and is not retried for
+unchanged schedule/result evidence and helper inputs. Supply the supported
+repair or a genuinely new receipt; never reset task counters to clear it.
+
 `python3 ~/.hermes/scripts/capability_recovery.py --inspect` is read-only. The
 existing two-hour opportunity monitor includes stable CAPABILITY_HOLD lines for
 parked capability episodes, including scheduled/triage/todo holds without a later

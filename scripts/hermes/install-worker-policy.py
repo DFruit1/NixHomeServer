@@ -90,7 +90,7 @@ def pending_files(root, pending=None):
     pending[native / 'hermes_cli/nixhomeserver_worker_policy.py'] = (SOURCE / 'worker-policy.py').read_text()
     pending[native / 'hermes_cli/nixhomeserver_create_board.py'] = (SOURCE / 'create-board-policy.py').read_text()
     for name in ('fleet_contract', 'fleet_workflow', 'feature_contract', 'execution_preflight',
-                 'worker_handoff', 'board_progress'):
+                 'worker_handoff', 'board_progress', 'recovery_wait'):
         pending[native / ('hermes_cli/nixhomeserver_' + name + '.py')] = (SOURCE / (name + '.py')).read_text()
         pending[root / ('scripts/' + name + '.py')] = (SOURCE / (name + '.py')).read_text()
     for relative, name in (('hermes_cli/kanban_db.py', 'kanban_db.py'),

@@ -181,6 +181,9 @@ def adapt(name, text):
         original = original.replace(release +
             '        from hermes_cli.nixhomeserver_board_progress import require_resume\n'
             '        require_resume(conn, task_id)\n', release)
+        original = original.replace(
+            '        from hermes_cli.nixhomeserver_recovery_wait import require_resume as require_recovery_wait\n'
+            '        require_recovery_wait(conn, task_id)\n', '')
         if hashlib.sha256(original.encode()).hexdigest() != 'fa1d9541f09631fa990c4222bc712ac305d0271a70ecc733f7b591e151e8cd81':
             raise ValueError('Native ordinary unblock source drift; reconcile before installation')
         claim=[node for node in tree.body if isinstance(node,ast.FunctionDef) and node.name=='_claim_and_open_run']

@@ -97,7 +97,7 @@ def input_identity(root, script):
             digest.update(path.read_bytes())
     for path in sorted((root / 'kanban/boards').glob('*/kanban.db')):
         try:
-            with sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=.1) as db:
+            with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=.1)) as db:
                 db.execute('PRAGMA query_only=ON')
                 db.execute('SELECT id FROM tasks LIMIT 1').fetchone()
                 digest.update(json.dumps(db.execute("SELECT name,sql FROM sqlite_master WHERE type='table'"
@@ -259,6 +259,38 @@ def wake_coordinator(root, board, detector, output):
 
 def deliver_wake(root, board, name, result, now):
     try:
+        if name == 'technical-recovery':
+            from recovery_wait import inspect as inspect_waits
+            waits = inspect_waits(root)
+            result['recovery_waits'] = waits
+            refused = result.setdefault('recovery_wait_refusals', {})
+            eligible = [(hashlib.sha256(json.dumps(wait, sort_keys=True).encode()).hexdigest(), wait)
+                        for wait in waits['ready']]
+            eligible = [(key, wait) for key, wait in eligible if key not in refused]
+            for key, wait in eligible[:4]:
+                path = root / 'kanban/boards' / wait['board'] / 'kanban.db'
+                # The native transaction requalifies this exact schedule before
+                # the supported resume. No second controller or SQL write here.
+                try:
+                    subprocess.run(['hermes', '--profile', 'default', 'kanban', '--board',
+                        wait['board'], 'unblock', wait['task_id'], '--reason',
+                        'Registered recovery wait satisfied by native event '
+                        + str(wait['observed_event_id']) + '; reconcile the same owner once.'],
+                        check=True, capture_output=True, text=True, timeout=15,
+                        env=dict(os.environ, HERMES_HOME=str(root), HERMES_KANBAN_HOME=str(root)))
+                except (OSError, subprocess.SubprocessError) as exc:
+                    refused[key] = dict(board=wait['board'], task_id=wait['task_id'],
+                                        schedule_event_id=wait['schedule_event_id'], error=type(exc).__name__)
+                    raise
+                with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=1)) as db:
+                    db.execute('PRAGMA query_only=ON')
+                    if not db.execute("SELECT 1 FROM task_events WHERE task_id=? AND kind='unblocked' "
+                                      'AND id>? LIMIT 1',
+                                      (wait['task_id'], wait['schedule_event_id'])).fetchone():
+                        raise ValueError('Recovery wait continuation missing native readback')
+            result['wake_pending'] = False
+            result.pop('wake_error', None)
+            return
         if name == 'board-progress':
             for line in result['output'].splitlines():
                 packet = json.loads(line)
@@ -345,8 +377,10 @@ def tick(root, *, now=None, runner=run_handler, dry_run=False, clock=None):
                                      failures=failures, next_due=now + (interval if not failures else
                                                                       (300 if failures == 1 else 900)),
                                      interrupted=result['exit_code'] == 124,
-                                     wake_pending=result['exit_code']==0 and name in {'board-health','idle-state','usage-guard','board-progress'},
+                                     wake_pending=result['exit_code']==0 and name in {'board-health','idle-state','usage-guard','board-progress','technical-recovery'},
                                      output=result['output'])
+                if name=='technical-recovery' and not changed:
+                    handlers[key]['recovery_wait_refusals']=previous.get('recovery_wait_refusals',{})
                 # Journal each natural exit so a later failed handler does not
                 # repeat a successful mutating detector after a process crash.
                 atomic_write(path, json.dumps(state, sort_keys=True, indent=2) + '\n', mode=0o600)

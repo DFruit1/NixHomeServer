@@ -805,11 +805,65 @@ def coordinator_component_files(root, source, *, owners, retained, inputs=None, 
     return pending
 
 
+def recovery_wait_component_files(root, source, *, owners, retained, inputs=None, schedule_updates=None):
+    """Retain the active fleet; publish only the qualified event-wait delta."""
+    state=json.loads(bounded_regular(checked(root,root/'state/fleet/current.json')))
+    manifest=json.loads(bounded_regular(journal(root,state['revision'])))
+    if state.get('status')!='active' or manifest.get('status')!='active':
+        raise ValueError('Recovery waits require an active existing fleet release')
+    if check_files(root,state['revision']):
+        raise ValueError('Reconcile active fleet drift before publishing recovery waits')
+    subprocess.run(['git','-C',str(source),'merge-base','--is-ancestor',
+                    manifest['source_revision'],'HEAD'],check=True,capture_output=True)
+    pending={checked(root,root/item['path']):bounded_regular(checked(root,root/item['path'])).decode()
+             for item in manifest['files']}
+    owners.update({path:['retained-existing'] for path in pending})
+    retained.extend(manifest.get('retained_external_changes',[]))
+    if schedule_updates is not None:
+        schedule_updates.extend(coordinator_schedule_updates(root,manifest))
+    files={
+        'scripts/fleet-release.py':'scripts/hermes/fleet-release.py',
+        'scripts/fleet-supervisor.py':'scripts/hermes/fleet-supervisor.py',
+        'scripts/deadlock_recovery.py':'scripts/hermes/deadlock_recovery.py',
+        'scripts/hermes-capability-recovery.md':'scripts/hermes/instructions/capability-recovery.md',
+        'scripts/hermes-coordinator-reference.md':'scripts/hermes/instructions/coordinator-reference.md',
+    }
+    for relative,original in files.items():
+        path=checked(root,root/relative)
+        predecessor=subprocess.check_output(['git','-C',str(source),'show',
+                                            manifest['source_revision']+':'+original])
+        if bounded_regular(path)!=predecessor:
+            raise ValueError('Recovery wait target needs its current maintained source: '+relative)
+        pending[path]=(source/original).read_text()
+        owners[path]=['recovery-waits']
+    native=checked(root,root/'hermes-agent/hermes_cli/kanban_db.py')
+    from worker_runtime_adapter import adapt
+    from recovered_resume_adapter import adapt as recovery_adapt
+    pending[native]=recovery_adapt('hermes_cli/kanban_db.py',adapt('kanban_db.py',bounded_regular(native).decode()))
+    owners[native]=['recovery-waits']
+    helper=(source/'scripts/hermes/recovery_wait.py').read_text()
+    for relative in ('scripts/recovery_wait.py','hermes-agent/hermes_cli/nixhomeserver_recovery_wait.py'):
+        path=checked(root,root/relative)
+        if path.exists() and path not in pending:
+            raise ValueError('Recovery wait helper already exists outside fleet ownership')
+        pending[path]=helper;owners[path]=['recovery-waits']
+    if inputs is not None:
+        inputs.update({str(path.relative_to(root)):{'sha256':sha(value) if value is not None else None,
+            'mode':path.stat().st_mode&0o777 if value is not None else None}
+            for path in pending for value in [read(path)]})
+    return pending
+
+
 def pending_files(root, source, plan, *, owners=None, adopt_config=None, adoptions=None,
                   component='full', retained=None, inputs=None, schedule_updates=None):
     directory = source / 'scripts/hermes'
     pending = {}
     owners = {} if owners is None else owners
+    if component=='recovery-waits':
+        if adopt_config is not None or adoptions:
+            raise ValueError('Recovery wait component cannot adopt configuration changes')
+        return recovery_wait_component_files(root,source,owners=owners,
+            retained=retained if retained is not None else [],inputs=inputs,schedule_updates=schedule_updates)
     if component=='coordinator-tools':
         if adopt_config is not None or adoptions:
             raise ValueError('Coordinator component cannot adopt model/config choices')
@@ -941,8 +995,8 @@ def main():
                         help='Exact receipt of an existing owner-approved provider/model rearrangement')
     parser.add_argument('--activate-steward', action='store_true',
                         help='Explicitly resume the two existing steward inspection jobs')
-    parser.add_argument('--component',choices=('full','coordinator-tools'),default='full',
-                        help='Publish only the coordinator API and role while preserving independent instruction changes')
+    parser.add_argument('--component',choices=('full','coordinator-tools','recovery-waits'),default='full',
+                        help='Publish a bounded component while preserving the active fleet and schedules')
     args = parser.parse_args()
     root = Path(os.environ.get('HERMES_ROOT',str(Path.home()/'.hermes'))).absolute()
     if args.action in {'apply','rollback'}:
@@ -973,13 +1027,13 @@ def operate(args,root):
             require_rollback_compatibility(root,manifest)
             # Preflight file conflicts before modifying any schedules.
             rollback_files(root,revision,dry_run=True)
-            if manifest.get('schedule') and manifest.get('component')!='coordinator-tools':
+            if manifest.get('schedule') and manifest.get('component','full')=='full':
                 def rollback_checkpoint():
                     atomic_write(manifest_path,json.dumps(manifest,indent=2,sort_keys=True)+'\n',mode=0o600)
                 restore_schedules(root,manifest['schedule'],checkpoint=rollback_checkpoint)
             rollback_files(root,revision)
             supervisor=(manifest.get('schedule') or {}).get('supervisor')
-            if manifest.get('component')!='coordinator-tools' and supervisor and supervisor.get('before') and active(supervisor['before']):
+            if manifest.get('component','full')=='full' and supervisor and supervisor.get('before') and active(supervisor['before']):
                 cron(root,'default','resume',supervisor['id'])
             previous=manifest.get('previous_release')
             atomic_write(state,json.dumps(previous or {'revision':revision,'status':'rolled-back'})+'\n',mode=0o600)

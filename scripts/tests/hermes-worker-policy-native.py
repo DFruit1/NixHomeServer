@@ -68,7 +68,7 @@ for name in ('kanban_db.py','kanban_db_dispatch.py'):
     (overlay/name).write_text(adapt(name,(args.hermes_repo/'hermes_cli'/name).read_text()))
 (overlay/'nixhomeserver_worker_policy.py').write_text((Path(__file__).resolve().parents[1]/'hermes/worker-policy.py').read_text())
 (overlay/'nixhomeserver_create_board.py').write_text((Path(__file__).resolve().parents[1]/'hermes/create-board-policy.py').read_text())
-for name in ('fleet_contract', 'fleet_workflow', 'feature_contract', 'execution_preflight', 'board_progress'):
+for name in ('fleet_contract', 'fleet_workflow', 'feature_contract', 'execution_preflight', 'board_progress', 'recovery_wait'):
     (overlay/('nixhomeserver_'+name+'.py')).write_text(
         (Path(__file__).resolve().parents[1]/'hermes'/(name+'.py')).read_text())
 tools_overlay=args.scratch/'tools-overlay';tools_overlay.mkdir(exist_ok=True)
@@ -116,6 +116,37 @@ try:
         pass
     db.execute('UPDATE tasks SET max_runtime_seconds=300 WHERE id=?',(local,))
     assert kb.unblock_task(db,local)
+    # Exercise the actual adapted native transaction, not only a supervisor
+    # mock: an unsatisfied receipt must write nothing, then consume once.
+    owner=kb.create_task(db,title='Reconcile a fixture execution',assignee='head-coordinator',
+        tenant='technical-recovery',created_by='deadlock-recovery-monitor',
+        max_runtime_seconds=900,max_retries=1,workspace_kind='dir',workspace_path=str(args.scratch))
+    observed=kb.create_task(db,title='Produce the observed fixture result',assignee='head-coordinator',
+        max_runtime_seconds=300,workspace_kind='dir',workspace_path=str(args.scratch))
+    owner_run=kb.claim_task(db,owner).current_run_id
+    assert kb.schedule_task(db,owner,expected_run_id=owner_run,
+        reason='Recovery wait: '+json.dumps(dict(task_id=observed,after_run_id=0,until='terminal')))
+    before_events=db.execute('SELECT count(*) FROM task_events').fetchone()[0]
+    try:
+        kb.unblock_task(db,owner)
+        raise AssertionError('Unmet recovery wait escaped native transactional guard')
+    except ValueError:
+        pass
+    assert db.execute('SELECT count(*) FROM task_events').fetchone()[0]==before_events
+    original_run=kb.claim_task(db,observed).current_run_id
+    assert kb.complete_task(db,observed,summary='Fixture result available.',expected_run_id=original_run)
+    fields=('assignee','workspace_path','max_retries','max_runtime_seconds',
+            'consecutive_failures','block_recurrences','block_kind')
+    preserved=tuple(getattr(kb.get_task(db,owner),key) for key in fields)
+    assert kb.unblock_task(db,owner)
+    assert kb.get_task(db,owner).status=='ready'
+    assert preserved==tuple(getattr(kb.get_task(db,owner),key) for key in fields)
+    try:
+        kb.unblock_task(db,owner)
+        raise AssertionError('Consumed recovery schedule resumed twice')
+    except ValueError:
+        pass
+    print('PASS native scheduled recovery wait requires genuine result, preserves budgets and consumes once')
     race=kb.create_task(db,title='Concurrent cap removal',assignee='local-implementer',max_runtime_seconds=300,
                        workspace_kind='dir',workspace_path=str(args.scratch))
     row=db.execute('SELECT * FROM tasks WHERE id=?',(race,)).fetchone()

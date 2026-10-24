@@ -483,6 +483,15 @@ token. Obtain the recovery token from the matching board/task `version` in
 Relevant task, source or helper changes invalidate that recovery observation;
 read it again rather than guessing from an amendment response or old event.
 
+For clean scheduled technical-recovery owners awaiting a same-board execution,
+register `kanban_schedule` with reason exactly
+`Recovery wait: {"task_id":"t_ORIGINAL","after_run_id":123,"until":"terminal"}`.
+Use `started` for a real spawn, `terminal` for an ended result, and the observed
+run before the execution being awaited as the boundary. Read the registered-wait
+contract in `hermes-capability-recovery.md` before use. The five-minute supervisor
+can then resume this same owner once, preserving the native parent and budget
+gates. Free-form reasons do not register a wake-up callback.
+
 For iteration exhaustion, retain the native gave_up/gave_up run, its run-scoped
 trip and structured budget fields; there is no intermediate timed_out event.
 Use the same closed terminal_episode object after verifying the exact source

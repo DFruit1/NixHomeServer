@@ -200,6 +200,7 @@ test_scripts=(
   scripts/tests/test-hermes-fleet-evidence.sh
   scripts/tests/test-hermes-fleet-supervisor.sh
   scripts/tests/test-hermes-board-progress.sh
+  scripts/tests/test-hermes-recovery-waits.sh
   scripts/tests/test-hermes-fleet-release.sh
   scripts/tests/test-hermes-behavior-trials.sh
   scripts/tests/test-hermes-config-policy.sh

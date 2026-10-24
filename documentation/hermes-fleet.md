@@ -131,6 +131,25 @@ retry allowance. This applies to all scheduled tasks; the existing blocked-task
 reset behavior, parent gates and origin/release checks remain unchanged.
 Genuine technical capability holds still use exact-version coordinator recovery.
 
+Clean recovery owners can register a native execution wait with
+`kanban_schedule(reason='Recovery wait: {"task_id":"t_ORIGINAL","after_run_id":123,"until":"terminal"}')`.
+The existing five-minute technical-recovery tick rechecks these receipts and
+resumes at most four satisfied owners. Native unblock checks the current receipt
+inside its transaction. `started` requires an actual spawn; `terminal` requires
+a matching ended native run/event and conveys no acceptance. Original dependency
+and acceptance gates remain in place. See the
+[registered-wait contract](../scripts/hermes/instructions/capability-recovery.md#registered-recovery-event-waits).
+`recovery_wait.py --inspect` reports ready/waiting receipts and unregistered legacy
+prose waits without mutating cards. Legacy waits require explicit reconciliation.
+
+For this isolated repair, `fleet-release.py --source CHECKOUT --component recovery-waits
+plan|apply` retains the active fleet's unrelated files, profiles, deliberate pauses
+and schedules. It requires a source descended from the active release, exact
+maintained preimages for the targeted helpers/instructions and a drift-free
+installed baseline. It publishes the native recheck and both helper copies in
+the normal journaled transaction. Independent review and clean committed source
+remain required; rollback preserves schedule state and finite-iteration guards.
+
 ## Updating technical-recovery helpers
 
 The [coordinator capability inventory](hermes-coordinator-capabilities.md) maps

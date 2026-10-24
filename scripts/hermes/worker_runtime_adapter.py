@@ -146,6 +146,12 @@ CURRENT_UNBLOCK = PREVIOUS_UNBLOCK.replace(
     '        worker_policy.require_release(conn, task_id)\n'
     '        from hermes_cli.nixhomeserver_board_progress import require_resume\n'
     '        require_resume(conn, task_id)\n')
+PREVIOUS_EVENT_UNBLOCK = CURRENT_UNBLOCK
+CURRENT_UNBLOCK = CURRENT_UNBLOCK.replace(
+    '        resume_status = (',
+    '        from hermes_cli.nixhomeserver_recovery_wait import require_resume as require_recovery_wait\n'
+    '        require_recovery_wait(conn, task_id)\n'
+    '        resume_status = (')
 EDITS['kanban_db.py'] = (EDITS['kanban_db.py'][0],
     (EDITS['kanban_db.py'][1][0], CURRENT_UNBLOCK), *EDITS['kanban_db.py'][2:])
 
@@ -166,6 +172,8 @@ def adapt(name, text):
                 text=text.replace(old,new,1)
     if name == 'kanban_db.py' and text.count(PREVIOUS_UNBLOCK) == 1:
         text = text.replace(PREVIOUS_UNBLOCK, CURRENT_UNBLOCK, 1)
+    elif name == 'kanban_db.py' and text.count(PREVIOUS_EVENT_UNBLOCK) == 1 and CURRENT_UNBLOCK not in text:
+        text = text.replace(PREVIOUS_EVENT_UNBLOCK, CURRENT_UNBLOCK, 1)
     for before, after in EDITS[name]:
         if text.count(after) == 1:
             continue
