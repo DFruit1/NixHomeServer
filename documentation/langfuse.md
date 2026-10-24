@@ -263,6 +263,12 @@ codex mcp add langfuse -- python3 "$HOME/.hermes/scripts/langfuse_mcp.py"
 opencode mcp add --global langfuse -- python3 "$HOME/.hermes/scripts/langfuse_mcp.py"
 ```
 
+OpenCode 2 connects asynchronously. Use `opencode reload` and allow startup to
+finish before checking `opencode mcp list` for `langfuse connected`; a successful
+config write alone is not connection evidence. Its supported
+[configuration reload](https://dev.opencode.ai/v2/docs/cli/commands/#reload)
+keeps running sessions at their next step boundary.
+
 New client sessions load that configuration. The board steward continues using
 credential-free cached reports; its tool permissions and write prohibition
 stay intact. No public route or additional daemon is needed. Native keys remain

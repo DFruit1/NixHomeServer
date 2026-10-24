@@ -112,8 +112,11 @@ tracked_age_files="${tmpdir}/tracked-age-files.txt"
 manifest_names="${tmpdir}/manifest-names.txt"
 optional_manifest_names="${tmpdir}/optional-manifest-names.txt"
 
-rg --no-filename -o -N '^\s*([A-Za-z0-9]+)\s*=\s*\{' modules/Core_Modules/age/default.nix -r '$1' \
-  | sort -u >"$definitions_file"
+{
+  rg --no-filename -o -N '^\s*([A-Za-z0-9]+)\s*=\s*\{' modules/Core_Modules/age/default.nix -r '$1'
+  # Removable apps own their agenix declarations alongside their modules.
+  rg --no-filename -o -N 'age\.secrets\.([A-Za-z0-9]+)\s*=\s*\{' modules --glob '*.nix' -r '$1' || true
+} | sort -u >"$definitions_file"
 
 nix eval --json --file secrets/manifest.nix \
   | jq -r '(.generatedSecrets + .externalSecrets) | keys[]' \
@@ -122,9 +125,17 @@ nix eval --json --file secrets/manifest.nix \
   | jq -r '.externalSecrets | to_entries[] | select(.value.required == false) | .key' \
   | sort -u >"$optional_manifest_names"
 
-missing_manifest_definitions="$(comm -23 "$manifest_names" "$definitions_file" || true)"
+# This explicitly named desktop consumer uses the standard encryption manifest,
+# but must never materialize a new credential in the NixOS runtime.
+nixos_manifest_names="${tmpdir}/nixos-manifest-names.txt"
+sed '/^langfuseMcpClientEnv$/d' "$manifest_names" >"$nixos_manifest_names"
+if grep -Fxq langfuseMcpClientEnv "$definitions_file"; then
+  echo "❌ Desktop Langfuse credential must not be materialized by agenix."
+  exit 1
+fi
+missing_manifest_definitions="$(comm -23 "$nixos_manifest_names" "$definitions_file" || true)"
 if [[ -n "$missing_manifest_definitions" ]]; then
-  echo "❌ Manifest secrets missing from the agenix module:"
+  echo "❌ Server manifest secrets missing from agenix declarations:"
   printf '   %s\n' "$missing_manifest_definitions"
   exit 1
 fi
@@ -148,7 +159,7 @@ fi
 
 missing_refs="$(comm -23 "$references_file" "$definitions_file" || true)"
 if [[ -n "$missing_refs" ]]; then
-  echo "❌ Some referenced agenix secrets are not defined in modules/Core_Modules/age/default.nix:"
+  echo "❌ Some referenced agenix secrets have no module declaration:"
   printf '   %s\n' "$missing_refs"
   exit 1
 fi
@@ -185,7 +196,7 @@ done < <(
 )
 
 {
-  rg --no-filename -o -N 'file\s*=\s*(?:\.\./)*secrets/([A-Za-z0-9_.-]+\.age)' modules/Core_Modules/age/default.nix -r 'secrets/$1' || true
+  rg --no-filename -o -N 'file\s*=\s*(?:\.\./)*secrets/([A-Za-z0-9_.-]+\.age)' modules --glob '*.nix' -r 'secrets/$1' || true
   rg --no-filename -o -N 'secretFile "([A-Za-z0-9_.-]+)"' modules/Core_Modules/age/default.nix -r 'secrets/$1.age'
 } | sort -u >"$defined_age_files"
 
