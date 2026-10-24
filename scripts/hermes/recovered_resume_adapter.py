@@ -62,8 +62,26 @@ _SPECIFY_AFTER = _SPECIFY_BEFORE.replace(
             raise ValueError("Capability-held triage requires exact-version guarded recovery, not specify")
 '''
 
+_UNBLOCK_BEFORE = '''def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
+    """``blocked``/``scheduled`` -> its resumable phase (parent re-gated; ``review``
+    when that is where it left off), closing any leaked run first."""
+'''
+_UNBLOCK_AFTER = _UNBLOCK_BEFORE + '''    from hermes_cli.nixhomeserver_worker_origin import require_ordinary_unblock
+    require_ordinary_unblock()
+'''
+
 EDITS = {
-    'hermes_cli/kanban_db.py': ((_SPECIFY_BEFORE, _SPECIFY_AFTER),),
+    'hermes_cli/kanban.py': (
+        ('def _cmd_unblock(args: argparse.Namespace) -> int:\n',
+         'def _cmd_unblock(args: argparse.Namespace) -> int:\n'
+         '    from hermes_cli.nixhomeserver_worker_origin import require_ordinary_unblock\n'
+         '    try:\n'
+         '        require_ordinary_unblock()\n'
+         '    except ValueError as exc:\n'
+         '        return _err(str(exc))\n'),
+    ),
+    'hermes_cli/kanban_db.py': ((_SPECIFY_BEFORE, _SPECIFY_AFTER),
+                              (_UNBLOCK_BEFORE, _UNBLOCK_AFTER)),
     'tools/kanban_tools.py': (
         (_HANDLER, _RECOVERY_HANDLER),
         ('# --- Shared helpers: validation failures raise _Reject; _kanban_handler renders it ---',

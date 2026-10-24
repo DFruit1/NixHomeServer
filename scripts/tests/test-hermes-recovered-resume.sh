@@ -279,7 +279,7 @@ class InstallerTest(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(prefix='hermes-recovered-install-');self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name)
-        for name in ('tools/kanban_tools.py','tools/kanban_tools_schemas.py','hermes_cli/kanban_db.py'):
+        for name in ('tools/kanban_tools.py','tools/kanban_tools_schemas.py','hermes_cli/kanban_db.py','hermes_cli/kanban.py'):
             text=(NATIVE/name).read_text()
             if name in EDITS:text=fixture_native_preimage(name,text)
             target=self.root/'hermes-agent'/name;target.parent.mkdir(parents=True,exist_ok=True);target.write_text(text)
@@ -303,7 +303,7 @@ class InstallerTest(unittest.TestCase):
         for name in EDITS:
             target=self.root/'hermes-agent'/name
             updated=adapt(name,target.read_text())
-            if name != 'hermes_cli/kanban_db.py':updated=amend_adapt(name,updated)
+            if name not in ('hermes_cli/kanban_db.py','hermes_cli/kanban.py'):updated=amend_adapt(name,updated)
             target.write_text(updated);expected[target]=target.read_bytes()
         helper=self.root/'hermes-agent/hermes_cli/nixhomeserver_resume_recovered.py'
         helper.write_bytes((SOURCE/'resume_recovered.py').read_bytes());expected[helper]=helper.read_bytes()
