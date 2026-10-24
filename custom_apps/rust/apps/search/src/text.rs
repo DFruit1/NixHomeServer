@@ -861,7 +861,7 @@ mod tests {
             find_ascii_case_insensitive_from("İabababac", 0, "ababac"),
             Some((4, 10))
         );
-        for (from, needle, expected) in [
+        let wrapper_cases = [
             (0, "a", Some((0, 1))),
             (0, "b", Some((3, 4))),
             (1, "b", Some((3, 4))),
@@ -873,7 +873,8 @@ mod tests {
             (0, "oversized", None),
             (5, "b", None),
             (0, "A", Some((0, 1))),
-        ] {
+        ];
+        for (from, needle, expected) in wrapper_cases {
             let got = find_case_insensitive_from("aİb", from, needle);
             assert_eq!(got, expected, "wrapper from={from}, needle={needle:?}");
             if let Some((start, end)) = got {
@@ -886,9 +887,13 @@ mod tests {
                 );
             }
         }
+        let overlapping = find_case_insensitive_from("İabababac", 0, "ababac");
+        assert_eq!(overlapping, Some((4, 10)));
+        assert!("İabababac".is_char_boundary(overlapping.unwrap().0));
+        assert!("İabababac".is_char_boundary(overlapping.unwrap().1));
         assert_eq!(
-            find_case_insensitive_from("İabababac", 0, "ababac"),
-            Some((4, 10))
+            "İabababac".get(overlapping.unwrap().0..overlapping.unwrap().1),
+            Some("ababac")
         );
     }
 
