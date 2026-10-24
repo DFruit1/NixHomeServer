@@ -7,6 +7,7 @@ if [[ -n "${HERMES_KANBAN_TASK:-}${HERMES_KANBAN_RUN_ID:-}${HERMES_DELEGATED_CHI
 fi
 python3 -B - "$repo" <<'PY'
 from contextlib import closing
+import ast
 import importlib.util
 import json
 import os
@@ -379,6 +380,80 @@ class InstallerTest(unittest.TestCase):
 
 
 class AdapterTest(unittest.TestCase):
+    def test_scheduled_event_wait_preserves_failures_and_existing_guards(self):
+        source=adapt('hermes_cli/kanban_db.py',(NATIVE/'hermes_cli/kanban_db.py').read_text())
+        with self.assertRaisesRegex(ValueError,'ordinary unblock source drift'):
+            adapt('hermes_cli/kanban_db.py',source.replace("WHEN status = 'scheduled'", "WHEN status = 'ready'",1))
+        function=next(node for node in ast.parse(source).body
+                      if isinstance(node,ast.FunctionDef) and node.name=='unblock_task')
+        namespace=dict(vars(kb))
+        exec(compile(ast.Module(body=[function],type_ignores=[]),'candidate-unblock','exec'),namespace)
+        unblock=namespace['unblock_task']
+        from hermes_cli import nixhomeserver_worker_policy as policy
+        from hermes_cli import nixhomeserver_board_progress as progress
+        for failures,parented,refusal in [(0,False,None),(1,False,None),(2,False,None),
+                                         (1,True,None),(1,False,'origin'),
+                                         (1,False,'release'),(1,False,'progress')]:
+            with self.subTest(failures=failures,parented=parented,refusal=refusal), tempfile.TemporaryDirectory() as temp:
+                conn=kbc.connect(db_path=Path(temp)/'kanban.db')
+                self.addCleanup(conn.close)
+                tid=kb.create_task(conn,title='Synthetic event wait',assignee='standard-implementer',
+                                   workspace_kind='scratch',max_retries=2)
+                self.assertTrue(kb.block_task(conn,tid,reason='Input supplier: agent. Synthetic prerequisite.',kind='capability'))
+                self.assertTrue(kb.unblock_task(conn,tid))
+                self.assertIsNotNone(kb.claim_task(conn,tid))
+                conn.execute("UPDATE tasks SET consecutive_failures=?,last_failure_error='retained failure' WHERE id=?",(failures,tid));conn.commit()
+                self.assertTrue(kb.schedule_task(conn,tid,reason='Input supplier: agent. WAIT_FOR=fixture receipt'))
+                self.assertEqual('unblocked',conn.execute("SELECT kind FROM task_events WHERE task_id=? AND kind IN ('blocked','unblocked','block_loop_detected') ORDER BY id DESC LIMIT 1",(tid,)).fetchone()[0])
+                if parented:
+                    parent=kb.create_task(conn,title='Unfinished gate',assignee='feature-reviewer',triage=True,workspace_kind='scratch')
+                    kb.link_tasks(conn,parent,tid)
+                before=dict(conn.execute('SELECT * FROM tasks WHERE id=?',(tid,)).fetchone())
+                if refusal:
+                    module,attribute={'origin':(worker_origin,'require_ordinary_unblock'),
+                                      'release':(policy,'require_release'),
+                                      'progress':(progress,'require_resume')}[refusal]
+                    with patch.object(module,attribute,side_effect=ValueError('fixture refusal')):
+                        with self.assertRaisesRegex(ValueError,'fixture refusal'):unblock(conn,tid)
+                    self.assertEqual(before,dict(conn.execute('SELECT * FROM tasks WHERE id=?',(tid,)).fetchone()))
+                else:
+                    self.assertTrue(unblock(conn,tid))
+                    after=dict(conn.execute('SELECT * FROM tasks WHERE id=?',(tid,)).fetchone())
+                    before['status']='todo' if parented else 'ready'
+                    self.assertEqual(before,after)
+                    if failures==2:self.assertEqual(after['max_retries'],after['consecutive_failures'])
+                conn.close()
+
+    def test_blocked_ordinary_unblock_retains_existing_reset_semantics(self):
+        source=adapt('hermes_cli/kanban_db.py',(NATIVE/'hermes_cli/kanban_db.py').read_text())
+        function=next(node for node in ast.parse(source).body
+                      if isinstance(node,ast.FunctionDef) and node.name=='unblock_task')
+        namespace=dict(vars(kb))
+        exec(compile(ast.Module(body=[function],type_ignores=[]),'candidate-unblock','exec'),namespace)
+        with tempfile.TemporaryDirectory() as temp:
+            conn=kbc.connect(db_path=Path(temp)/'kanban.db')
+            self.addCleanup(conn.close)
+            tid=kb.create_task(conn,title='Synthetic blocked task',assignee='standard-implementer',workspace_kind='scratch')
+            self.assertTrue(kb.block_task(conn,tid,reason='Synthetic block'))
+            conn.execute("UPDATE tasks SET consecutive_failures=1,last_failure_error='old' WHERE id=?",(tid,));conn.commit()
+            self.assertTrue(namespace['unblock_task'](conn,tid))
+            task=kb.get_task(conn,tid)
+            self.assertEqual(0,task.consecutive_failures);self.assertIsNone(task.last_failure_error)
+            conn.close()
+
+    def test_ordinary_dispatch_continuation_composes_without_weakening_source_checks(self):
+        from worker_runtime_adapter import adapt as worker_adapt, CURRENT_UNBLOCK
+        name='hermes_cli/kanban_db.py'
+        source=(NATIVE/name).read_text()
+        updated=worker_adapt('kanban_db.py',source)
+        self.assertIn(CURRENT_UNBLOCK,updated)
+        composed=adapt(name,updated)
+        self.assertEqual(composed,adapt(name,composed))
+        self.assertIn(CURRENT_UNBLOCK,composed)
+        with self.assertRaisesRegex(ValueError,'ordinary unblock source drift'):
+            adapt(name,updated.replace('        require_resume(conn, task_id)\n',
+                '        require_resume(conn, "different-task")\n',1))
+
     def test_pinned_native_seams_idempotent_and_drift_refused(self):
         for name in EDITS:
             original=fixture_native_preimage(name,(NATIVE/name).read_text());updated=adapt(name,original)

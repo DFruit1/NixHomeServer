@@ -138,7 +138,32 @@ EDITS = {
 }
 
 
+# Upgrade the exact preceding ordinary-unblock hook. Guarded versioned recovery
+# also uses worker_policy.require_release, so its contract stays untouched.
+PREVIOUS_UNBLOCK = EDITS['kanban_db.py'][1][1]
+CURRENT_UNBLOCK = PREVIOUS_UNBLOCK.replace(
+    '        worker_policy.require_release(conn, task_id)\n',
+    '        worker_policy.require_release(conn, task_id)\n'
+    '        from hermes_cli.nixhomeserver_board_progress import require_resume\n'
+    '        require_resume(conn, task_id)\n')
+EDITS['kanban_db.py'] = (EDITS['kanban_db.py'][0],
+    (EDITS['kanban_db.py'][1][0], CURRENT_UNBLOCK), *EDITS['kanban_db.py'][2:])
+
+
+def _already_scoped_handoff_schema(text):
+    return all(marker in text for marker in (
+        '"""Require the explicit scope consumed by scrubbed handoff hooks."""',
+        'required = list(dict.fromkeys([*required, "board", "task_id"]))',
+        'properties = {**properties, "task_id": _prop("string",',
+    ))
+
+
 def adapt(name, text):
+    if name == 'tools/kanban_tools_schemas.py' and _already_scoped_handoff_schema(text):
+        compile(text, name, 'exec')
+        return text
+    if name == 'kanban_db.py' and text.count(PREVIOUS_UNBLOCK) == 1:
+        text = text.replace(PREVIOUS_UNBLOCK, CURRENT_UNBLOCK, 1)
     for before, after in EDITS[name]:
         if text.count(after) == 1:
             continue

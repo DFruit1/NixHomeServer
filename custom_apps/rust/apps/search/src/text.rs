@@ -164,7 +164,7 @@ fn first_present_term_span<'a>(body: &str, terms: &'a [String]) -> Option<(&'a s
             if let Some(at) = lowered.find(term.as_str()) {
                 return Some((term.as_str(), at, at + term.len()));
             }
-        } else if let Some((start, end)) = find_case_insensitive_from(body, 0, term) {
+        } else if let Some((start, end)) = find_ascii_case_insensitive_from(body, 0, term) {
             return Some((term.as_str(), start, end));
         }
     }
@@ -283,6 +283,150 @@ fn escape_html(text: &str) -> String {
     out
 }
 
+#[derive(Clone, Copy)]
+enum AsciiKmpOperation {
+    Validation,
+    PrefixCompare,
+    BodyByte,
+    SearchCompare,
+    PrefixInit,
+    PrefixStore,
+    PrefixFallback,
+    SearchFallback,
+    TableAllocated(usize),
+    TableReleased,
+}
+
+trait AsciiKmpObserver {
+    fn observe(&mut self, operation: AsciiKmpOperation);
+}
+
+struct NoopAsciiKmpObserver;
+
+impl AsciiKmpObserver for NoopAsciiKmpObserver {
+    #[inline(always)]
+    fn observe(&mut self, operation: AsciiKmpOperation) {
+        if let AsciiKmpOperation::TableAllocated(slots) = operation {
+            let _ = slots;
+        }
+    }
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct AsciiKmpCounts {
+    validation: usize,
+    prefix_compares: usize,
+    body_bytes: usize,
+    search_compares: usize,
+    prefix_init: usize,
+    prefix_stores: usize,
+    prefix_fallbacks: usize,
+    search_fallbacks: usize,
+    live_table_slots: usize,
+    max_live_table_slots: usize,
+}
+
+#[cfg(test)]
+impl AsciiKmpObserver for AsciiKmpCounts {
+    fn observe(&mut self, operation: AsciiKmpOperation) {
+        match operation {
+            AsciiKmpOperation::Validation => self.validation += 1,
+            AsciiKmpOperation::PrefixCompare => self.prefix_compares += 1,
+            AsciiKmpOperation::BodyByte => self.body_bytes += 1,
+            AsciiKmpOperation::SearchCompare => self.search_compares += 1,
+            AsciiKmpOperation::PrefixInit => self.prefix_init += 1,
+            AsciiKmpOperation::PrefixStore => self.prefix_stores += 1,
+            AsciiKmpOperation::PrefixFallback => self.prefix_fallbacks += 1,
+            AsciiKmpOperation::SearchFallback => self.search_fallbacks += 1,
+            AsciiKmpOperation::TableAllocated(slots) => {
+                self.live_table_slots += slots;
+                self.max_live_table_slots = self.max_live_table_slots.max(self.live_table_slots);
+            }
+            AsciiKmpOperation::TableReleased => self.live_table_slots = 0,
+        }
+    }
+}
+
+fn find_ascii_case_insensitive_from(
+    haystack: &str,
+    from: usize,
+    needle: &str,
+) -> Option<(usize, usize)> {
+    find_ascii_case_insensitive_with_observer(haystack, from, needle, &mut NoopAsciiKmpObserver)
+}
+
+fn find_ascii_case_insensitive_with_observer<O: AsciiKmpObserver>(
+    haystack: &str,
+    from: usize,
+    needle: &str,
+    observer: &mut O,
+) -> Option<(usize, usize)> {
+    let suffix = haystack.get(from..)?;
+    let n = suffix.len();
+    let l = needle.len();
+    if l == 0 || l > n {
+        return None;
+    }
+    for byte in needle.bytes() {
+        observer.observe(AsciiKmpOperation::Validation);
+        if !byte.is_ascii() {
+            return None;
+        }
+    }
+
+    let folded_needle = |index: usize| needle.as_bytes()[index].to_ascii_lowercase();
+    let mut prefix = vec![0; l];
+    observer.observe(AsciiKmpOperation::TableAllocated(prefix.len()));
+    for _ in 0..l {
+        observer.observe(AsciiKmpOperation::PrefixInit);
+    }
+    for i in 1..l {
+        let mut q = prefix[i - 1];
+        loop {
+            observer.observe(AsciiKmpOperation::PrefixCompare);
+            if folded_needle(i) == folded_needle(q) {
+                q += 1;
+                break;
+            }
+            if q == 0 {
+                break;
+            }
+            observer.observe(AsciiKmpOperation::PrefixFallback);
+            q = prefix[q - 1];
+        }
+        prefix[i] = q;
+        observer.observe(AsciiKmpOperation::PrefixStore);
+    }
+
+    let mut q = 0;
+    for (i, byte) in suffix.bytes().enumerate() {
+        observer.observe(AsciiKmpOperation::BodyByte);
+        let folded = byte.to_ascii_lowercase();
+        loop {
+            observer.observe(AsciiKmpOperation::SearchCompare);
+            if folded == folded_needle(q) {
+                q += 1;
+                if q == l {
+                    let span = (from + i + 1 - l, from + i + 1);
+                    drop(prefix);
+                    observer.observe(AsciiKmpOperation::TableReleased);
+                    return Some(span);
+                }
+                break;
+            }
+            if q == 0 {
+                break;
+            }
+            observer.observe(AsciiKmpOperation::SearchFallback);
+            q = prefix[q - 1];
+        }
+    }
+    drop(prefix);
+    observer.observe(AsciiKmpOperation::TableReleased);
+    None
+}
+
 /// Case-insensitive byte-span search for `needle` at or after `from`, returning
 /// (start, end) offsets into `haystack`. Only matches when lowercasing both
 /// sides preserves the byte layout, so returned offsets are always valid
@@ -290,10 +434,13 @@ fn escape_html(text: &str) -> String {
 /// cosmetic no-op rather than risking misplaced or invalid spans.
 fn find_case_insensitive_from(haystack: &str, from: usize, needle: &str) -> Option<(usize, usize)> {
     let hay = haystack.get(from..)?;
-    let hay_lower = hay.to_lowercase();
     let needle_lower = needle.to_lowercase();
-    if hay_lower.len() != hay.len() || needle_lower.len() != needle.len() {
+    if needle_lower.len() != needle.len() {
         return None;
+    }
+    let hay_lower = hay.to_lowercase();
+    if hay_lower.len() != hay.len() {
+        return find_ascii_case_insensitive_from(haystack, from, needle);
     }
     hay_lower
         .find(&needle_lower)
@@ -678,5 +825,234 @@ mod tests {
             "got: {snippet}"
         );
         assert!(!snippet.contains("<script>"), "raw tag leaked: {snippet}");
+    }
+
+    #[test]
+    fn ascii_fallback_preserves_original_offsets() {
+        for (from, needle, expected) in [
+            (0, "a", Some((0, 1))),
+            (0, "b", Some((3, 4))),
+            (1, "b", Some((3, 4))),
+            (2, "b", None),
+            (3, "b", Some((3, 4))),
+            (4, "b", None),
+            (0, "", None),
+            (0, "İ", None),
+            (0, "oversized", None),
+            (5, "b", None),
+        ] {
+            let got = find_ascii_case_insensitive_from("aİb", from, needle);
+            assert_eq!(got, expected, "from={from}, needle={needle:?}");
+            if let Some((start, end)) = got {
+                assert!(start < end);
+                assert!("aİb".is_char_boundary(start));
+                assert!("aİb".is_char_boundary(end));
+                assert_eq!(
+                    "aİb".get(start..end),
+                    Some(if needle == "A" { "a" } else { needle })
+                );
+            }
+        }
+        assert_eq!(
+            find_ascii_case_insensitive_from("aİb", 0, "A"),
+            Some((0, 1))
+        );
+        assert_eq!(
+            find_ascii_case_insensitive_from("İabababac", 0, "ababac"),
+            Some((4, 10))
+        );
+        let wrapper_cases = [
+            (0, "a", Some((0, 1))),
+            (0, "b", Some((3, 4))),
+            (1, "b", Some((3, 4))),
+            (2, "b", None),
+            (3, "b", Some((3, 4))),
+            (4, "b", None),
+            (0, "", None),
+            (0, "İ", None),
+            (0, "oversized", None),
+            (5, "b", None),
+            (0, "A", Some((0, 1))),
+        ];
+        for (from, needle, expected) in wrapper_cases {
+            let got = find_case_insensitive_from("aİb", from, needle);
+            assert_eq!(got, expected, "wrapper from={from}, needle={needle:?}");
+            if let Some((start, end)) = got {
+                assert!(start < end);
+                assert!("aİb".is_char_boundary(start));
+                assert!("aİb".is_char_boundary(end));
+                assert_eq!(
+                    "aİb".get(start..end),
+                    Some(if needle == "A" { "a" } else { needle })
+                );
+            }
+        }
+        let overlapping = find_case_insensitive_from("İabababac", 0, "ababac");
+        assert_eq!(overlapping, Some((4, 10)));
+        assert!("İabababac".is_char_boundary(overlapping.unwrap().0));
+        assert!("İabababac".is_char_boundary(overlapping.unwrap().1));
+        assert_eq!(
+            "İabababac".get(overlapping.unwrap().0..overlapping.unwrap().1),
+            Some("ababac")
+        );
+    }
+
+    #[test]
+    fn snippet_ascii_fallback_keeps_query_order_and_window() {
+        let body = format!("firstİ{}second", "x".repeat(300));
+        let second_first = snippet_from_text(&body, "second first").expect("second match");
+        assert!(second_first.contains("<em>second</em>"));
+        assert!(!second_first.contains("<em>first</em>"));
+        let first_second = snippet_from_text(&body, "first second").expect("first match");
+        assert!(first_second.contains("<em>first</em>"));
+        assert!(!first_second.contains("<em>second</em>"));
+
+        for body in [
+            format!("{}İneedle{}", "é".repeat(80), "ü".repeat(80)),
+            format!("{}needleİ{}", "é".repeat(80), "ü".repeat(80)),
+        ] {
+            let snippet = snippet_from_text(&body, "needle").expect("late ascii term");
+            let visible = visible_text(&snippet);
+            assert!(body.is_char_boundary(body.find("needle").unwrap()));
+            assert!(visible.chars().count() <= 260);
+            assert!(visible.chars().take_while(|ch| *ch == 'é').count() <= 60);
+            assert!(snippet.contains("<em>needle</em>"));
+        }
+        let repeated = snippet_from_text("aİa a", "a").expect("repeated matches");
+        assert_eq!(repeated.matches("<em>").count(), 3);
+        assert_eq!(
+            repeated.matches("<em>").count(),
+            repeated.matches("</em>").count()
+        );
+    }
+
+    #[test]
+    fn snippet_ascii_fallback_preserves_caps_and_escaping() {
+        let mut partial = "a".repeat(SNIPPET_SCAN_LIMIT - 3);
+        partial.push('İ');
+        partial.push_str("target");
+        assert_eq!(snippet_from_text(&partial, "target"), None);
+        let mut beyond = "a".repeat(SNIPPET_SCAN_LIMIT - 2);
+        beyond.push('İ');
+        beyond.push_str("target");
+        assert_eq!(snippet_from_text(&beyond, "target"), None);
+        let mut inside = "a".repeat(SNIPPET_SCAN_LIMIT - 10);
+        inside.push_str("targetİ");
+        assert!(snippet_from_text(&inside, "target").is_some());
+
+        let html = "<p>İ target</p>";
+        assert_eq!(snippet_from_html(html, "target", 4), None);
+        assert!(snippet_from_html(html, "target", html.len()).is_some());
+        assert_eq!(snippet_from_html("<p>İtarget</p>", "target", 4), None);
+        assert_eq!(snippet_from_html(html, "target", 0), None);
+        assert_eq!(
+            snippet_from_text("<script>İ</script> a & b", "a").as_deref(),
+            Some("&lt;script&gt;İ&lt;/script&gt; <em>a</em> &amp; b")
+        );
+    }
+
+    #[test]
+    fn ascii_fallback_has_linear_work_on_repetitive_absent_terms() {
+        for n in [200_000, 400_000] {
+            let body = format!("{}İ", "a".repeat(n - 2));
+            for requested_l in [4096, n / 2] {
+                let needle = format!("{}b", "a".repeat(requested_l - 1));
+                for needle in [needle.clone(), needle.to_ascii_uppercase()] {
+                    let mut counts = AsciiKmpCounts::default();
+                    assert_eq!(
+                        find_ascii_case_insensitive_with_observer(&body, 0, &needle, &mut counts),
+                        None
+                    );
+                    let l = needle.len();
+                    assert_eq!(counts.validation, l);
+                    assert!(counts.prefix_compares <= 2 * l);
+                    assert_eq!(counts.body_bytes, n);
+                    assert!(counts.search_compares <= 2 * n);
+                    assert_eq!(counts.prefix_init, l);
+                    assert!(counts.prefix_stores <= l);
+                    assert!(counts.prefix_fallbacks <= l);
+                    assert!(counts.search_fallbacks <= n);
+                    let work = [
+                        counts.validation,
+                        counts.prefix_compares,
+                        counts.body_bytes,
+                        counts.search_compares,
+                        counts.prefix_init,
+                        counts.prefix_stores,
+                        counts.prefix_fallbacks,
+                        counts.search_fallbacks,
+                    ]
+                    .into_iter()
+                    .map(|count| u64::try_from(count).expect("test count fits u64"))
+                    .try_fold(0u64, u64::checked_add)
+                    .expect("counted work fits u64");
+                    let linear_envelope = 8u64
+                        .checked_mul(u64::try_from(n + l).expect("test input lengths fit u64"))
+                        .and_then(|work| work.checked_add(16))
+                        .expect("linear envelope fits u64");
+                    assert!(work <= linear_envelope);
+                    assert_eq!(counts.max_live_table_slots, l);
+                    assert_eq!(counts.live_table_slots, 0);
+                    assert_eq!(snippet_from_text(&body, &needle), None);
+                }
+            }
+            let overlong = format!("{}b", "a".repeat(n));
+            let mut counts = AsciiKmpCounts::default();
+            assert_eq!(
+                find_ascii_case_insensitive_with_observer(&body, 0, &overlong, &mut counts),
+                None
+            );
+            assert_eq!(
+                counts.validation
+                    + counts.prefix_compares
+                    + counts.body_bytes
+                    + counts.search_compares
+                    + counts.prefix_init
+                    + counts.prefix_stores
+                    + counts.prefix_fallbacks
+                    + counts.search_fallbacks,
+                0
+            );
+            assert_eq!(counts.max_live_table_slots, 0);
+            assert_eq!(snippet_from_text(&body, &overlong), None);
+        }
+        let mut counts = AsciiKmpCounts::default();
+        assert_eq!(
+            find_ascii_case_insensitive_with_observer("İabababac", 0, "ababac", &mut counts),
+            Some((4, 10))
+        );
+        assert!(counts.search_fallbacks > 0);
+    }
+
+    #[test]
+    fn snippet_preserves_ascii_terms_across_dotted_i() {
+        assert_eq!(
+            snippet_from_text("alpha quantum omega", "quantum").as_deref(),
+            Some("alpha <em>quantum</em> omega")
+        );
+        assert_eq!(
+            snippet_from_text("é🙂quantum omega", "quantum").as_deref(),
+            Some("é🙂<em>quantum</em> omega")
+        );
+        assert_eq!(snippet_from_text("aİb", "i"), None);
+        assert_eq!(
+            snippet_from_text("aİb", "b").as_deref(),
+            Some("aİ<em>b</em>")
+        );
+        assert_eq!(
+            snippet_from_text("aİb", "a").as_deref(),
+            Some("<em>a</em>İb")
+        );
+        assert_eq!(snippet_from_text("aİb", "ab"), None);
+        assert_eq!(snippet_from_text("aİb", "İ"), None);
+        assert_eq!(snippet_from_text("aİb", "!!!"), None);
+        assert_eq!(
+            snippet_from_text("aİb", "missing B").as_deref(),
+            Some("aİ<em>b</em>")
+        );
+        assert_eq!(
+            snippet_from_text("AİB", "a b").as_deref(),
+            Some("<em>A</em>İ<em>B</em>")
+        );
     }
 }
