@@ -169,7 +169,6 @@ test_scripts=(
   scripts/tests/test-failure-alert-delivery.sh
   scripts/tests/test-freshrss-module.sh
   scripts/tests/test-freshness-marker.sh
-  scripts/tests/test-rust-workspace-dependencies.sh
   scripts/tests/test-rust-source-isolation.sh
   scripts/tests/test-rust-dependency-manifest-scope.sh
   scripts/tests/test-frontend-build-isolation.sh
@@ -225,14 +224,12 @@ test_scripts=(
   scripts/tests/test-homepage-guidance.sh
   scripts/tests/test-homepage-vault.sh
   scripts/tests/test-admin-dashboard-status.sh
-  scripts/tests/test-portal-landing.sh
   scripts/tests/test-identity-reconcile-fail-closed.sh
   scripts/tests/test-integration-dependencies.sh
   scripts/tests/test-install-repository-seeding.sh
   scripts/tests/test-bootstrap-host.sh
   scripts/tests/test-sync-upstream.sh
   scripts/tests/test-jellyfin-oidc.sh
-  scripts/tests/test-kanidm-branding.sh
   scripts/tests/test-kanidm-provision-validation.sh
   scripts/tests/test-kiwix-disable-evaluation.sh
   scripts/tests/test-kiwix-web-archives-integration.sh

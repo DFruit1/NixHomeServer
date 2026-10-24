@@ -18,6 +18,12 @@ context to a remote model.
 2. Review the actual owned diff for correctness, scope, secrets, input handling,
    error paths, data preservation and relevant performance concerns. Do not print
    suspected credentials into chat or include them in a review payload.
+   For every added or expanded test, verify cited evidence of at least two
+   distinct historical regressions of the protected behavior, or a demonstrated
+   concrete catastrophic failure path and how the test detects it. New features,
+   first-time bugs and coverage targets do not qualify. Follow project test
+   policy over blanket TDD instructions; use existing checks, inspection or
+   bounded manual reproduction when no new test qualifies.
 3. Run the project's owning validation command and report its real exit status.
    Use its test wrapper, not a generic pytest/npm command substituted for it.
    Distinguish a known baseline failure from evidence about the changed candidate.

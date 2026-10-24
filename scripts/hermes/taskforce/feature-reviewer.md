@@ -51,6 +51,12 @@ nothing more.
 - Check scope: no secrets, plaintext credential paths, or unrelated files. A diff
   that quietly widens scope is a finding even when it is correct.
 - Judge the residual risk the implementer reported and say whether you agree.
+- Apply the fleet/project test-authoring policy: added or expanded tests need
+  verifiable evidence of at least two distinct historical regressions of the
+  protected behavior or a demonstrated concrete catastrophic failure path.
+  Check how the test detects that failure. Do not request tests for first-time
+  bugs, new features or coverage targets alone; assess existing checks,
+  inspection and bounded manual reproductions instead.
 
 ### Whole-set deploy review
 

@@ -133,6 +133,13 @@ scripts/admin/sync-upstream.sh --upstream <maintainer-repository-url>
 See [Upstream Sync](documentation/operations.md#upstream-sync) for the policy
 and required post-merge steps.
 
+Test additions and expansions follow the [test-authoring policy](AGENTS.md#test-authoring-and-retention):
+cite at least two distinct historical regressions of the protected behavior,
+or demonstrate a concrete catastrophic failure path (unrecoverable data loss,
+hardware damage, secret leakage or comparable harm). New features, first-time
+bugs and coverage targets do not qualify. Use existing checks, inspection or
+bounded manual reproductions otherwise; preserve CI and guarded operation checks.
+
 Routine validation is:
 
 ```bash

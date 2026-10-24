@@ -64,7 +64,11 @@ project-auditor uses it for planning. Preserve role and card limits throughout.
 
 ## Prove removability
 
-Add or update regression coverage before claiming completion:
+Use existing relevant checks to verify the changed boundary. Add or expand
+tests only under `AGENTS.md`'s Test Authoring and Retention policy: cite at least
+two distinct historical regressions of that behavior or demonstrate a concrete
+catastrophic failure path. Changing a module boundary alone does not qualify.
+The following lists existing coverage, not required new tests:
 
 - `scripts/tests/test-app-module-structure.sh` for structural policy.
 - `scripts/tests/test-module-disable-evaluation.sh` and
@@ -73,9 +77,8 @@ Add or update regression coverage before claiming completion:
   `flake/module-removal-matrix.nix` for physical removal behavior.
 - `scripts/tests/test-canary-target-coverage.sh` for authenticated canary
   coverage of every enabled private host.
-- Focused tests for secrets, persistence, backup paths, service hardening,
-  routes, identity reconciliation, or storage consumers when those boundaries
-  change.
+- Existing focused tests for affected secrets, persistence, backup paths,
+  service hardening, routes, identity reconciliation or storage consumers.
 
 Run focused tests during development. Then load `nixhomeserver-safe-change`
 to select the repository-level validation gate.

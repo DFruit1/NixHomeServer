@@ -5,6 +5,18 @@ This repo has two browser custom app surfaces:
 - `mail-archive-ui`: Rust/Axum server-rendered pages with Qwik islands for browser interactivity.
 - `youtube-downloader`: Qwik/Vite client app with a Node server.
 
+## Test authoring
+
+Follow the [repository test policy](../AGENTS.md#test-authoring-and-retention).
+Add or expand a test only with verifiable evidence of at least two distinct
+historical regressions of the protected behavior, or a demonstrated concrete
+catastrophic failure path such as unrecoverable data loss, hardware damage or
+secret leakage. Record the evidence and how the test detects that failure.
+New features, first-time bugs, hypothetical edge cases and coverage targets
+alone do not qualify. Use existing checks, inspection or a bounded manual
+reproduction otherwise. This overrides blanket TDD guidance; keep existing CI
+and guarded deployment/release checks.
+
 ## Server Build Cache
 
 The server's bounded Nix post-build hook uploads newly built outputs to the

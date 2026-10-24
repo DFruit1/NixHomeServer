@@ -7,6 +7,8 @@ reserved refusals remain binding; use authorized helpers/installers, not evasion
 See hermes-instructions.md for authority and propagation. AGENTS.md supplies
 project invariants; memory grants no permissions or mandatory workflows.
 
+Tests require hermes-instructions.md evidence, overriding TDD/coverage recipes.
+
 Never remove worker pins, alter delegation markers, switch tools or change
 execution context to bypass a refusal. Use an explicitly authorized helper or
 report the exact capability gap through head-coordinator. Anchor every worker

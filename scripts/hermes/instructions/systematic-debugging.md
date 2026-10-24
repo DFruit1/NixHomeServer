@@ -30,6 +30,15 @@ Qualified auditors may independently investigate/verify candidates they did not
 author or implement; substantive implementation remains in implementer lanes.
 The steward remains read-only.
 
+Adding or expanding permanent tests requires verifiable evidence of at least
+two distinct historical regressions of the protected behavior, or a demonstrated
+concrete catastrophic failure path (unrecoverable data loss, hardware damage,
+secret leakage or comparable harm). Record that evidence and what the test
+detects. First-time bugs, new features, coverage targets, reruns of one bug and
+synthetic mutations do not qualify. Without that evidence, use existing checks,
+inspection or a bounded temporary reproduction. This overrides blanket
+test-first guidance; preserve existing CI and guarded operation checks.
+
 Use the project's focused reproduction and owning validation gate. In
 NixHomeServer, load `nixhomeserver-safe-change` for remote helpers and gate
 selection. Keep scratch under a dedicated task temp directory and clean it up.
@@ -233,7 +242,9 @@ rg -n 'variable_name\s*=' src/
 
 Once the loop is red, shrink the repro to the smallest scenario that still goes red. Cut inputs, callers, config, data, and steps **one at a time**, re-running the loop after each cut. Keep only what is load-bearing for the failure.
 
-Done when removing any remaining element makes the loop go green. A minimal repro narrows the hypothesis space and often becomes the cleanest regression test.
+Done when removing any remaining element makes the loop go green. A minimal
+reproduction narrows the hypothesis space. Keep it temporary unless it meets
+the permanent-test evidence requirement above.
 
 ### 1. Find Working Examples
 
@@ -311,14 +322,15 @@ they do not create or change the implementation.
 
 **Fix the root cause, not the symptom:**
 
-### 1. Create Failing Test Case
+### 1. Capture the Minimal Reproduction
 
-- Simplest possible reproduction
-- Automated test if possible
-- MUST have before fixing
-- Use the test-first method from the existing `test-driven-development` skill
-  within project test policy; preserve existing work rather than following
-  blanket delete-and-restart advice
+- Reproduce the reported behavior through an existing check, inspection or a
+  bounded temporary probe before fixing it.
+- Add or expand a permanent test only when the evidence requirement above is
+  met; a first occurrence is not enough.
+- For a qualifying test, use the existing `test-driven-development` skill with
+  project commands. Preserve existing work rather than following blanket
+  delete-and-restart advice.
 
 ### 2. Implement Single Fix
 
@@ -330,12 +342,14 @@ they do not create or change the implementation.
 ### 3. Verify Fix
 
 ```bash
-# Run the specific regression test
+# Run the existing or qualifying regression test
 pytest tests/test_module.py::test_regression -v
 
-# Run full suite — no regressions
-pytest tests/ -q
+# Otherwise repeat the bounded reproduction and relevant existing checks.
 ```
+
+Use project commands and the authorized validation scope; this example is not
+an instruction to create a test or run a full suite.
 
 ### 4. If Fix Doesn't Work — The Rule of Three
 
@@ -390,7 +404,7 @@ If you catch yourself thinking:
 | "Issue is simple, don't need process" | Simple issues have root causes too. Process is fast for simple bugs. |
 | "Emergency, no time for process" | Systematic debugging is FASTER than guess-and-check thrashing. |
 | "Just try this first, then investigate" | First fix sets the pattern. Do it right from the start. |
-| "I'll write test after confirming fix works" | Untested fixes don't stick. Test first proves it. |
+| "Every fix needs a new test" | Verify every fix, but add a test only for evidenced recurrence or a demonstrated catastrophic failure path. |
 | "Multiple fixes at once saves time" | Can't isolate what worked. Causes new bugs. |
 | "Reference too long, I'll adapt the pattern" | Partial understanding guarantees bugs. Read it completely. |
 | "I see the problem, let me fix it" | Seeing symptoms ≠ understanding root cause. |
@@ -403,7 +417,7 @@ If you catch yourself thinking:
 | **1. Root Cause** | Read errors, reproduce, check changes, gather evidence, trace data flow | Understand WHAT and WHY |
 | **2. Pattern** | Find working examples, compare, identify differences | Know what's different |
 | **3. Hypothesis** | Form theory, test minimally, one variable at a time | Confirmed or new hypothesis |
-| **4. Implementation** | Create regression test, fix root cause, verify | Bug resolved, all tests pass |
+| **4. Implementation** | Capture reproduction, apply test evidence rule, fix root cause, verify | Bug resolved, relevant checks pass and coverage limits reported |
 
 ## Hermes Agent Integration
 
@@ -414,11 +428,12 @@ workspace, independent review and existing publication/deployment limits.
 
 ### With test-driven-development
 
-When fixing bugs:
-1. Write a test that reproduces the bug (RED)
+Only for a test meeting the evidence requirement above:
+
+1. Reproduce the qualified failure in a test (RED)
 2. Debug systematically to find root cause
 3. Fix the root cause (GREEN)
-4. The test proves the fix and prevents regression
+4. Verify that the test detects the demonstrated failure and passes with the fix
 
 Report the root cause or remaining unknown, exact revision, reproduction and
 verification commands with real exit codes, and residual risks. A successful

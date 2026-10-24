@@ -154,6 +154,38 @@ temporary task receipts on their cards/jobs, not in standing instructions.
 
 ---
 
+## Test Authoring and Retention
+
+* Add or expand automated tests only when one of these evidence requirements
+  is met:
+  * **Repeated historical regressions:** cite at least two distinct prior
+    incidents in which the same behavior regressed, with verifiable issue,
+    incident, commit or log references and a reproduction of that failure.
+    Repeated runs of one bug, duplicate reports and synthetic mutations do not
+    establish recurrence.
+  * **Catastrophic risk:** demonstrate a concrete path from the affected code
+    to unrecoverable deletion/data loss, hardware damage, leaked secrets or an
+    outcome of comparable severity. Identify the entry point, failing safeguard,
+    consequence and how the proposed test detects it using safe fixtures.
+    Explain why existing safeguards/checks leave that risk unmitigated and why
+    this test is necessary to mitigate it.
+    A generic claim that code is sensitive or might break is insufficient.
+* Record the qualifying evidence and protected behavior beside the test or in
+  its change description. Without it, do not write a test, including for a new
+  feature, a first-time bug, an edge case or a coverage target. Verify the change
+  through existing relevant checks, inspection or a bounded manual reproduction.
+* This applies to all suites and overrides blanket TDD, test-first, regression
+  coverage and skill/checklist instructions. Reviewers must not demand an
+  ineligible test. Temporary debugging probes do not become permanent tests
+  without meeting the same requirement.
+* Qualifying tests must exercise the protected behavior. Remove low-value tests
+  that only mirror implementation, wording, cosmetic choices, fixed inventory
+  counts or existing checks. Inspect their purpose and history first; missing
+  evidence alone is not proof that an existing test is safe to delete. Preserve
+  catastrophic-risk safeguards and coverage of demonstrated recurring failures.
+* Test authoring is separate from running existing checks. Preserve CI and
+  guarded deployment/release checks; this policy does not authorize bypasses.
+
 ## Validation, Builds and Deployment
 
 Load `nixhomeserver-safe-change` for gate selection, guarded deployment and

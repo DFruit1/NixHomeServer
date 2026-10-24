@@ -97,6 +97,13 @@ For code work:
 3. Exercise the reported failure path and at least one ordinary control path when practical.
 4. Check error handling, edge cases, concurrency boundaries, data preservation, security boundaries, and cross-platform behavior relevant to the change.
 5. Confirm that tests assert behavior rather than merely snapshotting source text or constants.
+6. For added or expanded tests, require verifiable evidence of at least two
+   distinct historical regressions of the protected behavior, or a demonstrated
+   concrete catastrophic failure path (unrecoverable data loss, hardware damage,
+   secret leakage or comparable harm) and how the test detects it. First-time
+   bugs, new features and coverage targets do not qualify. Do not demand an
+   ineligible test; existing checks, inspection and bounded manual reproduction
+   are valid verification. Preserve existing CI and guarded operation checks.
 
 For non-code work:
 

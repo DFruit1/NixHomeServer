@@ -94,6 +94,13 @@ Prioritise useful, coherent interfaces over visually busy ones.
 
 ## Workflow for meaningful frontend changes
 
+Automated test additions and expansions follow `AGENTS.md`'s Test Authoring
+and Retention policy: evidence of at least two distinct historical regressions
+or a demonstrated concrete catastrophic failure path is required. A new view,
+wording change, layout adjustment or coverage target does not qualify by itself.
+Use existing checks and the rendered inspection below for other changes;
+do not turn viewport observations into permanent tests without that evidence.
+
 Initial implementation:
 
 1. Apply UI/UX Kit principles (read the brief + relevant rules above).

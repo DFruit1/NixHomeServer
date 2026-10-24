@@ -15,7 +15,7 @@ assigned checkout's current instructions or prove a running turn refreshed.
 | Task | Skill | Application |
 | --- | --- | --- |
 | Failing test/build, unexpected behavior, regression | `systematic-debugging` | Implementers investigate and fix; feature-reviewer investigates and reports within the card's verification or offline-audit limits. |
-| Implementing meaningful behavior | Existing bundled `test-driven-development` | Implementers use the test-first cycle with the project's own commands and test policy. Preserve existing code; do not follow blanket delete-and-restart advice or ask permission for project-approved test exemptions. |
+| Writing a test that meets the evidence requirement | Existing bundled `test-driven-development` | First cite at least two distinct historical regressions of the protected behavior or demonstrate a concrete catastrophic failure path. Only then use the test-first cycle with project commands. Preserve existing code; do not follow blanket delete-and-restart advice. |
 | NixHomeServer validation, build, recovery or deployment evidence | `nixhomeserver-safe-change` | Implementers validate; qualified independent reviewers/auditors verify; coordinator diagnoses, validates and integrates mechanically with independent acceptance, retaining the guarded deploy gate. |
 | Optional application module, integrations or removal | `nixhomeserver-module-change` | Implementers change the module; reviewer checks the contract; auditor uses it for planning and independent verification; coordinator uses it for bounded integration. |
 | Long work that may outlast a pending server shutdown | `nixhomeserver-shutdown-guard` | Use existing operational authority or route the timer action to the coordinator. |
@@ -30,8 +30,15 @@ qualified independent auditors may verify. Substantive implementation stays in
 implementer lanes, and authored repairs require independent acceptance. The steward keeps its
 existing inspection skill and remains read-only.
 
-Project instructions and role permissions govern every recipe. For generic
-bundled skills, use project commands and meaningful behavioral checks; avoid
-tests for reversible low-impact edits or tests that merely mirror code. Respect
-confidentiality before web calls or delegation. No skill grants publication,
+Project instructions and role permissions govern every recipe. Test additions
+and expansions require verifiable repeated-regression evidence (at least two
+distinct historical incidents) or a demonstrated concrete catastrophic failure
+path: unrecoverable data loss, hardware damage, secret leakage or comparable
+harm. Record that evidence and the behavior protected. A first-time bug, new
+feature, coverage target, reruns of one bug or synthetic mutations do not qualify.
+Without qualifying evidence, use existing checks, inspection or a bounded manual
+reproduction. This overrides generic bundled TDD/test-first/coverage recipes;
+do not add mirrors of wording, constants or implementation. Preserve existing
+CI and guarded deployment/release checks. Respect confidentiality before web
+calls or delegation. No skill grants publication,
 deployment, extra tools, automatic subagents or permission to widen scope.

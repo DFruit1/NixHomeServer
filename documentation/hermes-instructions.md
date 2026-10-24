@@ -39,6 +39,32 @@ rewrites a profile SOUL composes the same per-role block.
 | Cards, plans and cron state | Exact scope, existing approvals, temporary receipt conditions and evidence |
 | Memory | Facts and preferences; no permission grants or extra mandatory workflows |
 
+### Test authoring and retention
+
+Add or expand automated tests only for verifiable repeated historical
+regressions of the protected behavior (at least two distinct prior incidents),
+or a demonstrated concrete catastrophic failure path: unrecoverable data loss,
+hardware damage, secret leakage or comparable harm. Record the incident
+references and reproduction, or the entry point, failing safeguard, consequence
+and how the test detects it using safe fixtures.
+The catastrophic-risk case must also explain why existing safeguards/checks
+leave that risk unmitigated and why the test is necessary to mitigate it.
+First-time bugs, new features, coverage targets, duplicate reports, reruns of one
+bug and synthetic mutations do not qualify. Use existing checks, inspection or
+a bounded manual reproduction otherwise. This supersedes blanket
+TDD/test-first/coverage instructions;
+reviewers must not demand ineligible tests. Remove low-value implementation,
+wording and inventory mirrors after checking purpose/history, preserving
+catastrophic-risk and demonstrated recurrence coverage. Existing CI and guarded
+deployment/release checks remain in force.
+
+The full repository policy is in [AGENTS.md](../AGENTS.md#test-authoring-and-retention).
+`taskforce/owner-blocker-authoring.md` carries a compact mandatory pointer into
+every worker's managed fleet block. Skill routing, debugging, review skills and
+project skills must agree. These are maintained sources; adopt them through the
+reviewed fleet release path and refresh workers only when idle. A source edit
+alone does not prove installed or running workers have adopted it.
+
 The owner-requested technical recovery loop is installed with
 `python3 scripts/hermes/install-deadlock-recovery.py`; `--check` verifies source
 and the native five-minute, local-only, no-agent schedule. It commissions real
@@ -521,8 +547,9 @@ from obra/superpowers). The maintained adaptation is
 `instructions/LICENSE.hermes-skills`. It retains the four-phase investigation
 and reproduction method, adapts role/tool/privacy limits and escalation, and
 removes automatic delegation and unsupported performance claims. Existing
-bundled test-driven-development remains available: use its test-first method
-with project exemptions and preserve existing work. Existing review and
+bundled test-driven-development remains available only for tests meeting the
+evidence requirement above; it does not authorize tests for every implementation
+or bug fix. Preserve existing work. Existing review and
 orchestration skills remain authoritative for their workflows.
 
 Install only this skill selection and its discovery blocks without refreshing

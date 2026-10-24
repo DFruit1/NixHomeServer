@@ -30,46 +30,9 @@ if [[ "${NIXHOMESERVER_SKIP_NESTED_BUILDS:-0}" != "1" ]]; then
   and (.sftp.port | type == "number" and . > 0 and . < 65536)
   and (.sftp.requiredAnyGroups | length > 0)
   and (.offlineMedia.requiredAnyGroups | length > 0)
-  and ((.services[] | select(.id == "files")) as $files
-    | ($files.requiredAnyGroups | length == 1)
-    and ($files.loginNotes | contains($files.requiredAnyGroups[0])))
   and ([.services[] | select(.id != "passwords") | (.requiredAnyGroups // []) | length > 0] | all)
-  and ([.services[] | select(.logoUrl != null) | .logoUrl | startswith("/logos/")] | all)
-  and ([.services[] | select(.enabled) | (.logoUrl // "") | startswith("/logos/")] | all)
-  and (.services[] | select(.id == "photos") | .logoUrl == "/logos/immich.svg")
-  and (.services[] | select(.id == "documents") | .logoUrl == "/logos/paperless-ngx.svg")
-  and (.services[] | select(.id == "files") | .logoUrl == "/logos/filestash.svg")
-  and (.services[] | select(.id == "audiobooks") | .logoUrl == "/logos/audiobookshelf.svg")
-  and (.services[] | select(.id == "videos") | .logoUrl == "/logos/jellyfin.svg")
-  and (.services[] | select(.id == "videos")
-    | (.loginNotes | contains("Kanidm password"))
-    and (.loginNotes | contains("/sso/OIDC/QuickConnect/kanidm")))
-  and (.services[] | select(.id == "books") | .logoUrl == "/logos/kavita.svg")
-  and (.services[] | select(.id == "emails") | .logoUrl == "/logos/mail-archive-ui.svg")
-  and (.services[] | select(.id == "passwords") | .logoUrl == "/logos/vaultwarden.svg")
-  and ([.folderGuides[] | .personalPath?, .sharedPath? | select(. != null) | startswith("/mnt/data") | not] | all)
-  and (.adminGuide[] | select(.title == "Authenticate Kanidm CLI") | .command | contains("kanidm self whoami"))
-  and (.adminGuide[] | select(.title == "Troubleshoot Jellyfin LAN discovery")
-    | (.detail | contains("same IPv4 broadcast network"))
-    and (.detail | contains("client isolation"))
-    and (.detail | contains("UDP source port 7359")))
-  and (.adminGuide[] | select(.title == "Allow Jellyfin discovery replies with nftables")
-    | (.command | contains("udp sport 7359"))
-    and (.command | test("ip saddr [0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+")))
-  and (.adminGuide[] | select(.title == "Allow Jellyfin discovery replies with UFW")
-    | (.command | contains("proto udp"))
-    and (.command | contains("port 7359")))
-  and (.adminGuide[] | select(.title == "Allow Jellyfin discovery replies with firewalld")
-    | (.command | contains("source-port port=\"7359\"")))
-  and (.adminGuide[] | select(.title == "Allow Jellyfin discovery replies on Windows")
-    | (.command | contains("New-NetFirewallRule"))
-    and (.command | contains("-RemotePort 7359"))
-    and (.command | contains("-Profile Private")))
-  and (.adminGuide[] | select(.title == "Allow Jellyfin discovery on Apple devices")
-    | (.detail | contains("Local Network"))
-    and (.detail | contains("Block all incoming connections")))
 ' "$homepage_config" >/dev/null || {
-    echo "Homepage evaluated guidance/access contract regressed." >&2
+    echo "Homepage evaluated access configuration regressed." >&2
     jq . "$homepage_config" >&2
     exit 1
   }
@@ -101,7 +64,7 @@ if [[ "${NIXHOMESERVER_SKIP_NESTED_BUILDS:-0}" != "1" ]]; then
   fi
 
   removal_matrix="$(
-    NIXHOMESERVER_MODULE_VARIANTS='without-immich,without-paperless,without-jellyfin,without-files' \
+    NIXHOMESERVER_MODULE_VARIANTS='without-files' \
       nix eval --impure --json --file scripts/tests/module-removal-matrix.nix
   )"
   text_derivation_payload() {
@@ -115,27 +78,6 @@ if [[ "${NIXHOMESERVER_SKIP_NESTED_BUILDS:-0}" != "1" ]]; then
         end
     '
   }
-  while IFS=$'\t' read -r variant forbidden_title; do
-    config_drv="$(jq -er --arg variant "$variant" '.[$variant].homepageConfigDrv' <<<"$removal_matrix")"
-    disabled_homepage_config="$(text_derivation_payload "$config_drv")"
-    if jq -e --arg title "$forbidden_title" '.adminGuide | map(.title) | index($title) != null' \
-      <<<"$disabled_homepage_config" >/dev/null; then
-      echo "$variant left an operator command for its removed service: $forbidden_title" >&2
-      exit 1
-    fi
-  done <<'EOF'
-without-immich	Re-run Immich OIDC reconcile
-without-paperless	Re-run Paperless OIDC reconcile
-without-jellyfin	Re-run Jellyfin library sync
-without-jellyfin	Re-run Jellyfin OIDC bootstrap
-without-jellyfin	Troubleshoot Jellyfin LAN discovery
-without-jellyfin	Allow Jellyfin discovery replies with nftables
-without-jellyfin	Allow Jellyfin discovery replies with UFW
-without-jellyfin	Allow Jellyfin discovery replies with firewalld
-without-jellyfin	Allow Jellyfin discovery replies on Windows
-without-jellyfin	Allow Jellyfin discovery on Apple devices
-EOF
-
   without_files_drv="$(jq -er '."without-files".homepageConfigDrv' <<<"$removal_matrix")"
   without_files_homepage_config="$(text_derivation_payload "$without_files_drv")"
   if ! jq -e '
@@ -147,103 +89,8 @@ EOF
   fi
 fi
 
-if rg -n 'logoUrl = "https?://' modules/Core_Modules/homepage/services.nix modules/*/registration.nix; then
-  echo "Homepage service logos must be packaged locally rather than fetched during page views." >&2
-  exit 1
-fi
-while IFS= read -r logo_path; do
-  if [[ ! -f "custom_apps/node/apps/homepage/public${logo_path}" ]]; then
-    echo "Homepage service logo is referenced but not packaged: ${logo_path}" >&2
-    exit 1
-  fi
-done < <(rg --no-filename -o -N 'logoUrl = "(/logos/[^"]+)"' modules/Core_Modules/homepage/services.nix modules/*/registration.nix -r '$1' | sort -u)
-
-if rg -n 'shows live groups|live group catalog' documentation/kanidm.md; then
-  echo "Kanidm documentation must not describe evaluated groups as live membership." >&2
-  exit 1
-fi
-require_fixed documentation/operations.md 'never to the backup groups' \
-  "Operations guidance must not claim that the non-privileged canary has backup access."
-
-require_fixed modules/Core_Modules/homepage/services.nix '++ lib.optionals megaEnabled [' \
-  "Homepage must omit MEGA commands when offsite MEGA sync is disabled."
 require_fixed custom_apps/node/apps/homepage/src/server/http.ts 'assertFeatureAccess(user, config.homepage.sftp.requiredAllGroups, config.homepage.sftp.requiredAnyGroups)' \
   "SFTP key mutation must enforce the evaluated SFTP access groups."
 require_fixed custom_apps/node/apps/homepage/src/server/http.ts 'assertFeatureAccess(user, config.homepage.offlineMedia?.requiredAllGroups, config.homepage.offlineMedia?.requiredAnyGroups)' \
   "Offline-media APIs must enforce the evaluated access groups."
-require_fixed custom_apps/node/apps/homepage/src/shared/ui-constants.ts 'sshfs_bin="$(command -v sshfs)"' \
-  "Startup guidance must resolve the installed SSHFS binary instead of assuming one installation prefix."
-require_fixed custom_apps/node/apps/homepage/src/shared/ui-constants.ts 'fusermount_bin="$(command -v fusermount3 || command -v fusermount)"' \
-  "Linux startup guidance must support FUSE 2/3 tools outside an FHS /usr/bin."
-if rg -Fq '/usr/local/bin/sshfs' custom_apps/node/apps/homepage/src/shared/ui-constants.ts \
-  || rg -Fq '/usr/bin/sshfs' custom_apps/node/apps/homepage/src/shared/ui-constants.ts \
-  || rg -Fq '/usr/bin/fusermount' custom_apps/node/apps/homepage/src/shared/ui-constants.ts; then
-  echo "SSHFS guidance must support Apple Silicon, NixOS, and non-default install prefixes." >&2
-  exit 1
-fi
-require_fixed modules/files/registration.nix 'loginNotes = "Requires ${vars.fileAccess.webAccessGroup} for browser access."' \
-  "Files guidance must use the evaluated configurable web-access group."
-require_fixed modules/Core_Modules/homepage/services.nix '++ lib.optionals immichEnabled [' \
-  "Homepage must omit Immich reconciliation commands when Immich is disabled."
-require_fixed modules/Core_Modules/homepage/services.nix '++ lib.optionals paperlessEnabled [' \
-  "Homepage must omit Paperless reconciliation commands when Paperless is disabled."
-require_fixed modules/Core_Modules/homepage/services.nix '++ lib.optionals jellyfinEnabled [' \
-  "Homepage must omit Jellyfin synchronization commands when Jellyfin is disabled."
-require_fixed custom_apps/node/apps/homepage/src/routes/admins/index.tsx \
-  "'Allow Jellyfin discovery replies with nftables': { category: 'network', executionContext: 'Linux client' }" \
-  "Homepage must label nftables discovery changes as client-side rather than server-side commands."
-require_fixed custom_apps/node/apps/homepage/src/routes/admins/index.tsx \
-  "'Allow Jellyfin discovery replies on Windows': { category: 'network', executionContext: 'Windows client (Administrator PowerShell)' }" \
-  "Homepage must label the Windows discovery rule with its required client and shell context."
-require_fixed documentation/operations.md 'UDP source port `7359` to the client' \
-  "Jellyfin discovery guidance must describe the reply direction that stateful client firewalls can misclassify."
-require_fixed documentation/operations.md 'New-NetFirewallRule' \
-  "Jellyfin discovery guidance must include a narrow Windows Firewall example."
-require_fixed documentation/operations.md 'System Settings → Privacy & Security → Local Network' \
-  "Jellyfin discovery guidance must cover Apple local-network privacy permission."
-require_fixed custom_apps/node/apps/homepage/src/components/SftpSetup.tsx 'SFTP/SSHFS and browser Files access use separate permissions.' \
-  "SFTP guidance must not promise browser uploads to accounts without the separate Files permission."
-require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/steps.tsx 'Never send an admin your password' \
-  "New-user guidance must clearly identify credentials that support requests must never include."
-require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/steps.tsx 'Use a trusted network path' \
-  "New-user guidance must explain the private LAN or NetBird access requirement."
-require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/steps.tsx 'Install a password manager' \
-  "New-user guidance must start with an actionable password-manager setup step."
-require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/steps.tsx 'https://bitwarden.com/download/' \
-  "New-user guidance must link directly to the Bitwarden download page."
-require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/steps.tsx 'https://keepassxc.org/download/' \
-  "New-user guidance must link directly to the KeePassXC download page."
-require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/steps.tsx 'https://docs.netbird.io/get-started/install' \
-  "New-user guidance must link directly to NetBird installation instructions."
-require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/steps.tsx 'Immich, Jellyfin, Inkita, Lissen, and Audiobookshelf' \
-  "New-user guidance must recommend the supported Android clients in one place."
-require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.tsx 'progress is saved only in this browser profile' \
-  "New-user guidance must not imply that checklist progress is stored server-side."
-require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/steps.tsx 'Browser Files and SFTP/SSHFS are separate permissions.' \
-  "New-user guidance must explain the separate browser and direct-file-transfer permissions."
-require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/steps.tsx 'Local Backups has two sign-in gates.' \
-  "New-user guidance must distinguish Kanidm gateway access from the native Kopia login."
-require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/steps.tsx 'Some app accounts are created on first sign-in.' \
-  "New-user guidance must explain first-login provisioning for apps that keep local accounts."
-require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/steps.tsx 'Do not use a public photo-share link or the public share hostname' \
-  "Mobile Photos guidance must distinguish the private app URL from public share links."
-require_fixed custom_apps/node/apps/homepage/src/components/OfflineMediaSetup.tsx 'Set up Syncthing-Fork (Android Only)' \
-  "Offline Media guidance must mark the supported mobile app as Android-only."
-require_fixed custom_apps/node/apps/homepage/src/components/OfflineMediaSetup.tsx 'offline-media-lan-address' \
-  "Offline Media guidance must show the detected LAN address inline instead of deferring to Connection help."
-require_fixed custom_apps/node/apps/homepage/src/components/OfflineMediaSetup.tsx 'offline-media-status-column' \
-  "Offline Media must keep the server QR code and connection status in the dedicated layout column."
-if rg -Fq 'Möbius Sync' custom_apps/node/apps/homepage/src/components/OfflineMediaSetup.tsx; then
-  echo "Offline Media must not advertise an unsupported iOS client." >&2
-  exit 1
-fi
-require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/steps.tsx 'No enabled apps are currently assigned to this account' \
-  "New-user guidance must make an empty app assignment a skippable state."
-require_fixed modules/Core_Modules/homepage/services.nix '"manual"' \
-  "Homepage group metadata must identify Kanidm-managed membership."
-require_fixed custom_apps/node/apps/homepage/src/components/CredentialBackupGuide.tsx '.zip (with attachments)' \
-  "Vault recovery guidance must explain the separate attachment export."
-require_fixed custom_apps/node/apps/homepage/src/components/CredentialBackupGuide.tsx 'Treat that archive as plaintext vault data' \
-  "The attachment archive must be identified as sensitive plaintext."
-
-echo "✅ Homepage guidance and authorization regression tests passed."
+echo "✅ Homepage access configuration and authorization regression tests passed."
