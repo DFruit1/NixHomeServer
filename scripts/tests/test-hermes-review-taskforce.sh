@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 TESTS_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-python3 -B - "$TESTS_REPO_ROOT" <<'PY'
+python3 -B - "$TESTS_REPO_ROOT" "$@" <<'PY'
 from contextlib import closing
 import hashlib
 import importlib.util
@@ -659,6 +659,11 @@ class TaskforceTest(unittest.TestCase):
         config = self.root / 'profiles/head-coordinator/config.yaml'
         self.assertEqual(1, config.read_text().count('# nixhomeserver-review-verdict:start'))
         self.assertIn('^kanban_(complete|unlink|create|link|request_review)$', config.read_text())
+        # Completion citations resolve independently of the broader verdict check.
+        self.assertEqual(1, config.read_text().count('# nixhomeserver-kanban-ref:start'))
+        self.assertIn('^kanban_complete$', config.read_text())
+        self.assertIn('kanban-ref-guard.py', config.read_text())
+        self.assertTrue((self.root / 'scripts/kanban-ref-guard.py').is_file())
         from hermes_config import document
         self.assertIn('kanban', document(config.read_text())['platform_toolsets']['desktop'])
         jobs = self.root / 'profiles/head-coordinator/cron/jobs.json'
@@ -693,12 +698,16 @@ class TaskforceTest(unittest.TestCase):
         self.assertEqual('keep-model', actual['model']['default'])
         self.assertEqual(7, actual['kanban']['max_in_progress'])
         self.assertEqual(['file'], actual['platform_toolsets']['cli'])
-        hook = actual['hooks']['pre_tool_call'][0]
+        hooks = actual['hooks']['pre_tool_call']
+        hook, = [h for h in hooks if h['command'].endswith('/review-verdict-guard.py')]
         self.assertEqual('^kanban_(complete|unlink|create|link|request_review)$', hook['matcher'])
         self.assertTrue(hook['fail_closed'])
+        reference, = [h for h in hooks if h['command'].endswith('/kanban-ref-guard.py')]
+        self.assertEqual('^kanban_complete$', reference['matcher'])
+        self.assertTrue(reference['fail_closed'])
         self.assertEqual(before, {p: p.read_bytes() for p in before})
         self.assertFalse((self.root / 'SOUL.md').exists())
-        for name in ('review-verdict-guard.py', 'capability_recovery.py', 'fleet_workflow.py'):
+        for name in ('review-verdict-guard.py', 'kanban-ref-guard.py', 'capability_recovery.py', 'fleet_workflow.py'):
             self.assertEqual((installer.SOURCE / name).read_bytes(),
                              (self.root / 'scripts' / name).read_bytes())
         result = subprocess.run(
@@ -712,5 +721,5 @@ class TaskforceTest(unittest.TestCase):
             installer.install(self.root, hooks_only=True, policy_only=True)
 
 
-unittest.main(argv=['taskforce'], verbosity=2)
+unittest.main(argv=['taskforce', *sys.argv[2:]], verbosity=2)
 PY
