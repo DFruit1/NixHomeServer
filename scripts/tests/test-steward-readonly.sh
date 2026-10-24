@@ -60,6 +60,36 @@ usage = module('usage', 'usage-pace.py')
 handoff = module('handoff', 'steward-coordinator-request.py')
 
 class StewardTest(unittest.TestCase):
+    def test_device_token_provider_cannot_be_replaced_by_static_env_refresh(self):
+        import yaml
+        before = {
+            'providers': {
+                'opencode-go': {'base_url': 'https://opencode.ai/zen/go/v1',
+                                'key_cmd': '/existing/device-token-helper',
+                                'key_env': 'OPENCODE_API_KEY',
+                                'api_key_env': 'OTHER_STATIC_KEY',
+                                'extra_headers': {'x-opencode-session': 'existing-session'}},
+                'other': {'key_env': 'OTHER_KEY'},
+            },
+            'fallback_providers': [{'provider': 'openai-codex', 'model': 'gpt-6.1-sol'}],
+        }
+        updated = installer.configure_model(yaml.safe_dump(before))
+        after = yaml.safe_load(updated)
+        expected = dict(before['providers']['opencode-go'])
+        del expected['key_env']; del expected['api_key_env']
+        self.assertEqual(expected, after['providers']['opencode-go'])
+        self.assertEqual(before['providers']['other'], after['providers']['other'])
+        self.assertEqual(before['fallback_providers'], after['fallback_providers'])
+        self.assertEqual(updated, installer.configure_model(updated))
+
+    def test_static_credentials_are_retained_without_a_device_token_command(self):
+        import yaml
+        for key_cmd in (None, '', '   '):
+            before = {'providers': {'opencode-go': {'key_env': 'OPENCODE_API_KEY',
+                                                    'key_cmd': key_cmd}}}
+            after = yaml.safe_load(installer.configure_model(yaml.safe_dump(before)))
+            self.assertEqual(before['providers'], after['providers'])
+
     def test_deepseek_high_overrides_medium_without_changing_fallbacks_or_other_models(self):
         import yaml
         text=('model: {default: deepseek-v4.1-flash, provider: "custom:opencode-go"}\n'

@@ -21,6 +21,13 @@ cannot unblock or dispatch. Its two-hour opportunity inspection and four-hour
 stall follow-up send actionable recommendations only to head-coordinator.
 The daily phone report remains generated without an agent by the fleet release.
 
+When the existing OpenCode provider has a device-token `key_cmd`, the steward
+installer removes its competing `key_env`/`api_key_env` settings. Hermes' env
+refresh can otherwise replace the command's subscription credential with a stale
+static API key at the first turn and produce a misleading subscription error.
+The helper, credential values, endpoint, headers and fallback order are retained;
+providers without a token command keep their existing credential settings.
+
 Inspect LOW_ACTIVITY evidence from `python3 ~/.hermes/scripts/board_progress.py`:
 zero or one ready/running project card triggers a bounded search for independent
 requested work alongside the blockers. Recommend both a supported blocker
