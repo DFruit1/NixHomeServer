@@ -201,6 +201,44 @@ def recovery_body(board, issue, audit=False):
     ])
 
 
+def qualified_review_wait(db, tid):
+    """A parked recovery consumer retains its direct native qualification gates.
+
+    Fingerprint changes are observations, not acceptance. Match the completion
+    guard's latest-run contract; an accepted replacement must retire the old
+    edge through native guarded routing before it releases this consumer.
+    Do not apply this to corrective producers that must resolve a rejection.
+    Malformed or incomplete evidence raises rather than becoming an absent gate.
+    """
+    task=db.execute('SELECT * FROM tasks WHERE id=?',(tid,)).fetchone()
+    if (task['assignee'] != 'head-coordinator' or task['tenant'] != 'technical-recovery'
+            or task['status'] not in {'blocked','triage','scheduled'}):
+        return False
+    spec=importlib.util.spec_from_file_location('recovery_verdict_guard',
+                                              Path(__file__).with_name('review-verdict-guard.py'))
+    guard=importlib.util.module_from_spec(spec);spec.loader.exec_module(guard)
+    parents=db.execute('SELECT p.* FROM task_links l JOIN tasks p ON p.id=l.parent_id '
+                       'WHERE l.child_id=? LIMIT 129',(tid,)).fetchall()
+    if len(parents)>128:
+        raise ValueError('Recovery qualification prerequisites exceed bound')
+    held=False
+    for parent in parents:
+        if not guard.verification(parent,db):
+            continue
+        run=db.execute('SELECT profile,status,outcome,metadata FROM task_runs '
+                       'WHERE task_id=? ORDER BY id DESC LIMIT 1',(parent['id'],)).fetchone()
+        if (not run or run['profile'] != parent['assignee'] or run['status'] != 'done'
+                or run['outcome'] != 'completed'):
+            raise ValueError('Recovery qualification has no current completed verifier result: '+parent['id'])
+        evidence=json.loads(run['metadata'] or '{}')
+        guard.validate(evidence,allow_unknown=bool(re.search(r'verdict[=:]\s*unknown',parent['body'] or '')),
+                       profile=parent['assignee'])
+        if evidence['verdict']=='accept' and guard.native_review(db,parent):
+            guard._independent_native_acceptance(db,parent)
+        held=held or parent['status']!='done' or evidence['verdict']!='accept'
+    return held
+
+
 def previous_owner_active(root,board,tid,now,material_changed=False):
     if not tid:
         return False
@@ -215,8 +253,6 @@ def previous_owner_active(root,board,tid,now,material_changed=False):
         if task['status'] in {'ready','todo','review'}:
             return True  # Queued ownership never expires into a duplicate writer.
         run=db.execute('SELECT status,outcome,ended_at FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1',(tid,)).fetchone()
-        if task['status'] in {'blocked','triage'} and run and {run['status'],run['outcome']} & {'failed','crashed','timed_out','spawn_failed','gave_up'}:
-            return False
         # Only actual running work keeps an old parked route alive forever.
         # A waiting card/acknowledgment is not productive recovery. Traverse a
         # bounded connected remedy cluster to preserve active source writers.
@@ -236,6 +272,10 @@ def previous_owner_active(root,board,tid,now,material_changed=False):
                 seen.add(other['id']);front.append(other['id'])
         if front:
             raise ValueError('Recovery remedy traversal exceeds bound')
+        if qualified_review_wait(db,tid):
+            return True
+        if task['status'] in {'blocked','triage'} and run and {run['status'],run['outcome']} & {'failed','crashed','timed_out','spawn_failed','gave_up'}:
+            return False
         if material_changed:
             return False
         quiet_since=(run['ended_at'] if run and run['ended_at'] else task['created_at'])
