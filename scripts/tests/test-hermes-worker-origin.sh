@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+if [[ "${HERMES_FIXTURE_ACTIVE:-}" != 1 ]]; then
+  exec python3 -B "$repo/scripts/hermes/fixture-runner.py" --repo "$repo" \
+    --suite "$repo/scripts/tests/test-hermes-worker-origin.sh" --timeout 300
+fi
 python3 -B - "$repo" <<'PY'
 from contextlib import closing
 import importlib.util
