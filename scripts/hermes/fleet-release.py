@@ -480,7 +480,7 @@ def source_changes(root, directory, *, workers=False, coordinator_only=False):
     """Upgrade transforms use their source helpers, never cached installed ones."""
     names=('hermes_common','hermes_config','coordinator_trial') + (('worker_runtime_adapter','fleet_runtime_adapter',
         'coordinator_repair_adapter','coordinator_tools_adapter','recovered_resume_adapter','resume_recovered',
-        'worker_origin_adapter') if workers else ())
+        'worker_origin_adapter', 'card_records_adapter') if workers else ())
     previous={name:sys.modules.get(name) for name in names}
     previous_path=sys.path[:]
     try:

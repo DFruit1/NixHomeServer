@@ -57,7 +57,7 @@ class WorkerPolicyTest(unittest.TestCase):
                                  outcome TEXT, ended_at INTEGER);
           CREATE TABLE task_comments(id INTEGER, task_id TEXT, author TEXT,
                                      body TEXT, created_at INTEGER);
-          CREATE TABLE task_events(id INTEGER, task_id TEXT, kind TEXT, payload TEXT);
+          CREATE TABLE task_events(id INTEGER, task_id TEXT, kind TEXT, payload TEXT, created_at INTEGER DEFAULT 0);
         ''')
         self.addCleanup(self.db.close)
 
@@ -91,7 +91,7 @@ class WorkerPolicyTest(unittest.TestCase):
         self.task(body='Recovery mode: evidence-only')
         self.assertIsNone(policy.reason(self.db, 't_test'))
         self.db.execute("INSERT INTO task_runs VALUES(7,'t_test','timed_out','timed_out',100)")
-        self.assertIn('Recovery run: 7', policy.reason(self.db, 't_test'))
+        self.assertIn('run_id=7', policy.reason(self.db, 't_test'))
         receipt='Recovery run: 7\nRecovery change: Source receipt is now attached.\nRecovery action: Read only that attachment and return the receipt.'
         for author, timestamp, body in (
             ('standard-implementer', 101, receipt),
@@ -105,7 +105,7 @@ class WorkerPolicyTest(unittest.TestCase):
         self.db.execute('INSERT INTO task_comments VALUES(2,?,?,?,?)',('t_test','head-coordinator',receipt,101))
         self.assertIsNone(policy.reason(self.db, 't_test'))
         self.db.execute("INSERT INTO task_runs VALUES(8,'t_test','crashed','crashed',102)")
-        self.assertIn('Recovery run: 8', policy.reason(self.db, 't_test'))
+        self.assertIn('run_id=8', policy.reason(self.db, 't_test'))
 
     def test_normal_tasks_and_completed_evidence_are_unchanged(self):
         self.task()
@@ -555,7 +555,7 @@ class InstallerTest(unittest.TestCase):
             root=Path(directory)
             native=root/'hermes-agent/hermes_cli'; native.mkdir(parents=True)
             runtime = Path(os.environ['HERMES_FIXTURE_NATIVE_PYTHON']).parents[2]
-            for name in self.native_fixtures():
+            for name in (*self.native_fixtures(), 'kanban.py', 'kanban_parser.py'):
                 (native/name).write_text((runtime/'hermes_cli'/name).read_text())
             for name,text in self.tool_fixtures().items():
                 text = (runtime/name).read_text()

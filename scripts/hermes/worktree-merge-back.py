@@ -23,10 +23,9 @@ Deterministic receipt + exit codes:
     3  merge conflicted (receipt names the files) or validation failed
        (merge reverted, master restored green)
 
-Dispositions are card comments written through the native CLI by this
-helper, body starting exactly with `merge-back disposition: ` authored by
-head-coordinator -- so the board-health detector and the audit trail read
-the same fact with no second state surface.
+Dispositions are typed native records written through the coordinator CLI.
+The board-health detector and audit trail read the same durable event. Historical
+`merge-back disposition:` comments remain readable during adoption.
 """
 import argparse
 from contextlib import closing, contextmanager
@@ -99,7 +98,12 @@ def disposed_tasks(conn):
     rows = conn.execute(
         "SELECT DISTINCT task_id FROM task_comments WHERE author = 'head-coordinator'"
         " AND body LIKE ?", (DISPOSITION_MARKER + '%',)).fetchall()
-    return {row[0] for row in rows}
+    from card_records import inspect as record_state
+    result = {row[0] for row in rows}
+    for (tid,) in conn.execute("SELECT DISTINCT task_id FROM task_events WHERE kind='task_record'"):
+        if 'merge_back' in record_state(conn, tid)['records']:
+            result.add(tid)
+    return result
 
 
 def branch_state(repo, branch):
@@ -204,6 +208,7 @@ def require_integration_head(repo):
 def read_board(root, board):
     with closing(sqlite3.connect(board_db(root, board).resolve().as_uri() + '?mode=ro',
                                  uri=True, timeout=5)) as conn:
+        conn.row_factory = sqlite3.Row
         conn.execute('PRAGMA query_only=ON')
         conn.execute('BEGIN')
         yield conn
@@ -531,14 +536,20 @@ def dispose(root, board, branch, reason):
     if unapplied == 0 and not rollback:
         emit_receipt({'status': 'already_integrated', 'branch': branch})
         return 0
-    message = DISPOSITION_MARKER + reason + ' (unapplied=%d)' % unapplied
     cli = os.environ.get('HERMES_BIN', 'hermes')
+    command = [cli, '--profile', 'head-coordinator', 'kanban', '--board', board, 'record', task_id]
+    environment = dict(os.environ, HERMES_KANBAN_HOME=str(root))
+    observed = subprocess.run(command, text=True, capture_output=True, timeout=60, env=environment)
+    if observed.returncode != 0:
+        raise ValueError('record inspection refused: ' + observed.stderr.strip()[:200])
+    version = json.loads(observed.stdout)['version']
+    value = {'disposition': 'dispose', 'revision': git_out(repo, ['rev-parse', branch]).strip(), 'reason': reason}
     result = subprocess.run(
-        [cli, 'kanban', '--board', board, 'comment', task_id, message],
+        command + ['--kind', 'merge_back', '--data', json.dumps(value), '--expected-version', version],
         text=True, capture_output=True, timeout=60,
-        env=dict(os.environ, HERMES_KANBAN_HOME=str(root)))
+        env=environment)
     if result.returncode != 0:
-        raise ValueError('comment write refused: ' + result.stderr.strip()[:200])
+        raise ValueError('record write refused: ' + result.stderr.strip()[:200])
     emit_receipt({'status': 'disposed', 'task_id': task_id, 'branch': branch})
     return 0
 

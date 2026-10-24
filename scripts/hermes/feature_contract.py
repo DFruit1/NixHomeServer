@@ -14,6 +14,11 @@ if __package__ == 'hermes_cli':
 else:
     from fleet_contract import creation, digest, load, validate_board
 
+if __package__ == 'hermes_cli':
+    from .nixhomeserver_card_records import inspect as record_state, protocol_entries, render as render_record
+else:
+    from card_records import inspect as record_state, protocol_entries, render as render_record
+
 TRACKER = re.compile(r'^\[FEATURE TRACKER', re.I)
 BINDING = re.compile(r'^Feature tracker:\s*([a-zA-Z0-9_-]+):(t_[a-zA-Z0-9_]+)\s*$', re.M)
 
@@ -43,6 +48,15 @@ def _inventory(db, board):
     # Exact body/comment bindings are membership, unlike quoted context IDs.
     bindings = {}
     comments = db.execute("SELECT task_id,body FROM task_comments WHERE body LIKE '%Feature tracker:%' LIMIT 5001").fetchall()
+    comments = [dict(row) for row in comments]
+    recorded = db.execute("SELECT DISTINCT task_id FROM task_events WHERE kind='task_record' LIMIT 5001").fetchall()
+    if len(recorded) > 5000:
+        raise ValueError('Feature record inventory exceeds bound')
+    recorded_features = {}
+    for row in recorded:
+        feature = record_state(db, row[0])['records'].get('feature')
+        if feature:
+            recorded_features[row[0]] = render_record('feature', feature['value'])
     if len(comments) > 5000:
         raise ValueError('Feature intake exceeds bounded membership records')
     structured = {t['id']: load(db, t['id']) for t in tasks}
@@ -52,7 +66,10 @@ def _inventory(db, board):
             marker_board, tracker = feature['tracker'].split(':')
             if marker_board == board and tracker in by_id and TRACKER.match(by_id[tracker]['title']) and tid != tracker:
                 bindings.setdefault(tracker, set()).add(tid)
-    for tid, body in [(t['id'], t['body'] or '') for t in tasks] + [(r['task_id'], r['body']) for r in comments]:
+    legacy = [(t['id'], t['body'] or '') for t in tasks] + [(r['task_id'], r['body']) for r in comments]
+    bindings_source = [(tid, body) for tid, body in legacy if tid not in recorded_features]
+    bindings_source += list(recorded_features.items())
+    for tid, body in bindings_source:
         if structured.get(tid) is not None:
             continue
         for marker_board, tracker in BINDING.findall(body):
@@ -62,10 +79,9 @@ def _inventory(db, board):
 
 
 def _inputs(db, tracker, members):
-    inputs = db.execute("SELECT id,author,body,created_at FROM task_comments WHERE task_id=? AND "
-                        "(author IN ('desktop','user','owner','interactive-operator','authenticated-owner','default') "
-                        "OR (author='head-coordinator' AND body LIKE '%Feature input:%')) ORDER BY id LIMIT 1001",
-                        (tracker['id'],)).fetchall()
+    inputs = [row for row in protocol_entries(db, tracker['id'])
+              if row['author'] in {'desktop','user','owner','interactive-operator','authenticated-owner','default'}
+              or (row['author'] == 'head-coordinator' and 'Feature input:' in row['body'])]
     if len(inputs) > 1000:
         raise ValueError('Feature material-input inventory exceeds bound')
     ids = [tracker['id']] + [m['id'] for m in members if m['created_by'] != 'deadlock-recovery-monitor']
@@ -96,7 +112,7 @@ def _version(db, tracker, members):
     inputs, receipts = _inputs(db, tracker, members)
     return digest({'tracker': tracker['id'], 'title': tracker['title'], 'body': tracker['body'], 'results': results,
                    'assessments': sorted(assessments),
-                   'material_inputs': [list(r) for r in inputs], 'receipts': [list(r) for r in receipts]})
+                   'material_inputs': inputs, 'receipts': [list(r) for r in receipts]})
 
 
 def _legacy_commissioning(db, task_id, feature, evidence, meta, handoff):

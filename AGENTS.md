@@ -233,6 +233,12 @@ remains until explicitly removed there.
 
 ## Kanban Card Authoring
 
+Owner instruction (2026-10-25): comments are optional human notes. Use existing
+native fields/results and, after matching runtime adoption, typed card records.
+Keep detailed evidence in one durable referenced artifact. Follow
+[card state and evidence](documentation/hermes-card-records.md); it supersedes
+generic comment-marker/report requirements while preserving exact gates.
+
 ### Simplified fleet (owner instruction 2026-10-23)
 
 The everyday team is head-coordinator, standard-implementer and feature-reviewer.
@@ -281,8 +287,8 @@ decision when every condition holds: an independent feature-reviewer or
 project-auditor acceptance is recorded on the owning card with its exact
 revision; the owning validation gate passes at the tier this change requires;
 the merge stays inside the scope that acceptance covered; and the merge or an
-explicit defer/dispose is recorded as a `merge-back disposition:` comment per
-the board-health convention (merge now, defer with reason, or dispose). Merge
+explicit defer/dispose is recorded as a typed native `merge_back` record after
+runtime adoption (merge now, defer with reason, or dispose). Merge
 integration is not deployment: switching the deployed server still requires
 the whole-set review/decision deploy gate. Exact owner approval remains
 required for secret/credential changes, public exposure or routing, priority

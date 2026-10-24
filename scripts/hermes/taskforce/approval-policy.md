@@ -108,9 +108,9 @@ coordinator without an owner reply only when all hold:
   recorded by a qualified `feature-reviewer` or `project-auditor` who neither
   authored the candidate plan nor implemented the reviewed change. Final
   source acceptance and the current whole-set deployment gate remain required.
-- The coordinator records each delegated decision in a native card comment:
-  date, gate/finding ID, plan path/SHA, decision, classification and verifier
-  evidence. This native record immediately releases work within its exact
+- The coordinator records each delegated decision in a typed native `approval`
+  record: finding ID, plan path/SHA, decision, classification and verifier
+  task/run. Native state supplies date and actor. No comment is required. This native record immediately releases work within its exact
   scope once the stated review prerequisites hold. The auditor persists it
   asynchronously in FINDINGS.md; persistence/readback is visibility and
   durability work, never a second approval or dispatch prerequisite. The

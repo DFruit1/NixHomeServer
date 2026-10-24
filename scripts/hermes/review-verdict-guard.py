@@ -22,9 +22,14 @@ def _feature_contract(db, task):
     workflow = load_contract(db, task['id'])
     if workflow is not None:
         return render_contract(task['body'], workflow)
-    comments = db.execute("SELECT body FROM task_comments WHERE task_id=? AND "
-                          "(body LIKE '%Feature tracker:%' OR body LIKE '%Feature handoff:%' OR body LIKE '%Feature role:%') "
-                          'ORDER BY id LIMIT 101', (task['id'],)).fetchall()
+    from card_records import inspect as record_state, protocol_entries, render as render_record
+    feature = record_state(db, task['id'])['records'].get('feature')
+    if feature:
+        body = re.sub(r'(?m)^Feature (?:tracker|handoff|role):[^\n]*', '', task['body'] or '')
+        return body + '\n' + render_record('feature', feature['value'])
+    comments = [entry for entry in protocol_entries(db, task['id'])
+                if any(marker in entry['body'] for marker in
+                       ('Feature tracker:', 'Feature handoff:', 'Feature role:'))]
     if len(comments) > 100:
         raise ValueError('Feature contract history exceeds bound; reconcile its maintained body')
     fields = {}

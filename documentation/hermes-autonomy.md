@@ -27,14 +27,16 @@ or a firsthand observation. Bot output must never be labelled owner execution.
    non-secret inputs with `--env NAME=VALUE`; loader and credential variables are
    rejected. Execution inherits only that reviewed environment plus the executor's
    unchanged identity pins, so incidental shell variables cannot change a request.
-2. Publish the returned manifest in a native comment on that gate. Show the owner
+2. Keep the returned manifest in the helper's immutable request file and bind its
+   digest in the native decision record. Show the owner
    its hostname, complete argv, working directory, expected effects, executor,
    timeout, recovery and declared input identities. Use the checked existing
    Blocking / Why owner / Unblock summary and existing sender; no new transport.
    Ask for `D<n> approve <full request SHA256>` after the owner reviews those bytes.
 3. Resolve the current delivered D label, authenticate the reply through the
    existing contact allowlist, and record the exact reply with native tools.
-   Then the coordinator posts a JSON comment, using the real reply:
+   Then the coordinator writes an `owner_execution_decision` native record,
+   using the real reply. Its value is the inner object in this legacy schema:
 
    ```json
    {"owner_execution_decision":{"request_sha256":"FULL_SHA256","approved":true,"executor":"head-coordinator","owner_reply":"D42 approve FULL_SHA256"}}
@@ -95,7 +97,8 @@ An auditor review uses tenant `verification` and also records
 `metadata.independence={"plan_author":false,"implementer":false}`. Either reviewer
 must actually be independent of the candidate plan and implementation; a role
 label or declaration cannot manufacture independence. The coordinator posts a
-native comment on the operation gate:
+native `delegated_execution_decision` record on the operation gate. Its value
+is the inner object in this legacy schema:
 
 ```json
 {"delegated_execution_decision":{"approved":true,"request_sha256":"FULL_SHA256","executor":"head-coordinator","review_task_id":"t_REVIEW"}}

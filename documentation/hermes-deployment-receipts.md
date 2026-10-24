@@ -64,8 +64,10 @@ does not release deployment. Use a fresh accepted review after fixes.
 
 ## Record the coordinator decision
 
-After acceptance, `head-coordinator` uses its existing native comment tool on the
-paired decision card. The entire comment is JSON with this exact shape:
+After acceptance, `head-coordinator` writes a typed `deployment_decision` with
+`kanban_record` on the paired decision card, using the inspected record version.
+The value is the inner object below. Historical JSON comments remain readable;
+no new comment is required:
 
 ```json
 {

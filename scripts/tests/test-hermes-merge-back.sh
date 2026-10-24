@@ -37,8 +37,8 @@ CREATE TABLE tasks (
   claim_lock TEXT, block_kind TEXT, block_recurrences INTEGER DEFAULT 0,
   consecutive_failures INTEGER DEFAULT 0
 );
-CREATE TABLE task_comments (id INTEGER PRIMARY KEY, task_id TEXT, body TEXT, author TEXT);
-CREATE TABLE task_events (id INTEGER PRIMARY KEY, task_id TEXT, kind TEXT, payload TEXT);
+CREATE TABLE task_comments (id INTEGER PRIMARY KEY, task_id TEXT, body TEXT, author TEXT, created_at INTEGER DEFAULT 0);
+CREATE TABLE task_events (id INTEGER PRIMARY KEY, task_id TEXT, kind TEXT, payload TEXT, created_at INTEGER DEFAULT 0);
 CREATE TABLE task_links (parent_id TEXT, child_id TEXT);
 CREATE TABLE task_runs (id INTEGER PRIMARY KEY, task_id TEXT, profile TEXT, status TEXT, outcome TEXT, metadata TEXT);
 SQL
@@ -58,19 +58,35 @@ git -C "$repo" config user.name test
 # is the thing under test, and the recorded row must carry head-coordinator.
 mkdir -p "$fixture/bin"
 cat >"$fixture/bin/hermes" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-# helper invokes: hermes kanban --board <slug> comment <task> <message>
-[[ "${1:-}" == kanban && "${2:-}" == --board && "${4:-}" == comment ]] || exit 64
-db="$HERMES_KANBAN_HOME/kanban/boards/$3/kanban.db"
-task="$5" msg="$6"
-sqlite3 "$db" "INSERT INTO task_comments (task_id, body, author)
-  SELECT '$task', '$msg', 'head-coordinator';"
-echo "commented $task"
+#!/usr/bin/env python3
+import contextlib,json,os,sqlite3,sys,time
+from pathlib import Path
+sys.path.insert(0,os.environ['HERMES_RECORD_SOURCE'])
+import card_records as records
+args=sys.argv[1:]
+assert args[:4]==['--profile','head-coordinator','kanban','--board'] and args[5]=='record'
+db=sqlite3.connect(Path(os.environ['HERMES_KANBAN_HOME'])/'kanban/boards'/args[4]/'kanban.db')
+db.row_factory=sqlite3.Row
+class Native:
+    @staticmethod
+    @contextlib.contextmanager
+    def write_txn(conn):
+        with conn: yield
+    @staticmethod
+    def _append_event(conn,tid,kind,payload):
+        conn.execute('INSERT INTO task_events(task_id,kind,payload,created_at) VALUES(?,?,?,?)',
+                     (tid,kind,json.dumps(payload),int(time.time())))
+if len(args)==7:
+    result=records.inspect(db,args[6])
+else:
+    options=dict(zip(args[7::2],args[8::2]))
+    result=records.write(Native,db,args[6],options['--kind'],json.loads(options['--data']),
+                          actor='head-coordinator',expected_version=options['--expected-version'])
+print(json.dumps(result))
 EOF
 chmod +x "$fixture/bin/hermes"
 
-mb() { HERMES_ROOT="$root" HERMES_BOARD=testboard HERMES_BIN="$fixture/bin/hermes" \
+mb() { HERMES_ROOT="$root" HERMES_BOARD=testboard HERMES_BIN="$fixture/bin/hermes" HERMES_RECORD_SOURCE="$(dirname "$HELPER")" \
   python3 -B "$HELPER" "$@"; }
 
 card() {
@@ -194,9 +210,10 @@ pass "plans a conflict with file evidence"
 
 out=$(mb --dispose wt/t_conf --reason 'superseded by the composition route; keep worktree evidence only')
 grep -q '"status": "disposed"' <<<"$out" || fail "dispose refused: $out"
-sqlite3 "$board_dir/kanban.db" "SELECT body FROM task_comments WHERE author='head-coordinator';" |
-  grep -q '^merge-back disposition: superseded by the composition route; keep worktree evidence only' ||
-  fail "the disposition comment is not on record"
+sqlite3 "$board_dir/kanban.db" "SELECT json_extract(payload,'$.kind') FROM task_events WHERE kind='task_record';" |
+  grep -q '^merge_back$' || fail "the native disposition record is missing"
+[[ "$(sqlite3 "$board_dir/kanban.db" 'SELECT COUNT(*) FROM task_comments;')" == 0 ]] ||
+  fail "disposition unexpectedly wrote a comment"
 list_after="$(mb --list)"
 grep -q 't_conf' <<<"$list_after" && fail "list still reports the dispositioned branch: $list_after"
 pass "records a disposition and silences the finding"
@@ -224,6 +241,7 @@ import sys
 import unittest
 from unittest.mock import patch
 
+sys.path.insert(0, str(Path(sys.argv[1]).parent))
 spec = importlib.util.spec_from_file_location('merge_back', sys.argv[1])
 mb = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mb)

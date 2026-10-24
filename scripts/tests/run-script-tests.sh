@@ -194,6 +194,7 @@ test_scripts=(
   scripts/tests/test-hermes-installer-convergence.sh
   scripts/tests/test-hermes-fleet-workflow.sh
   scripts/tests/test-hermes-fleet-contract.sh
+  scripts/tests/test-hermes-card-records.sh
   scripts/tests/test-hermes-execution-preflight.sh
   scripts/tests/test-hermes-recovery-episodes.sh
   scripts/tests/test-hermes-fleet-native.sh

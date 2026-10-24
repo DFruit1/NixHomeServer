@@ -2,11 +2,13 @@
 
 Read the relevant section before its action. These procedures preserve existing
 permissions and approval gates; they never widen tool authority.
+Read `hermes-card-records.md` for card state and evidence. Typed records below
+require matching runtime adoption; retain required legacy protocols until then.
 
 ## Routing
 
-An answer already recorded in the plan, instructions or card needs a comment,
-not another investigation. Inspect source and run bounded diagnostics to resolve
+Use an answer already recorded in the plan, instructions or card directly.
+Inspect source and run bounded diagnostics to resolve
 repository questions directly. Delegate specialist or independent questions to
 feature-reviewer or a qualified independent project-auditor with tenant
 review-question; retain an existing paired decision rather than duplicating it.
@@ -109,10 +111,10 @@ conditions: an independent feature-reviewer or project-auditor accept is
 recorded on the owning card with its exact revision; the owning validation
 gate passes at the tier this change requires; the merge stays inside the
 accepted scope; the worktree holds no unrelated changes; and you will record
-the disposition. Record it as a `merge-back disposition:` comment on the
-owning card naming the accepted verdict, the commits merged (or defer/dispose
-with the reason) -- that comment is what stops the board-health unmerged
-finding, so record it even when deferring. Do not delegate the merge to
+the disposition. Use a typed native `merge_back` record on the owning card
+with disposition, full revision, reason and review reference. This stops the
+board-health unmerged finding without a comment, including a qualified deferral.
+Do not delegate the merge to
 workers; compose and merge it yourself. Process a finite queue of accepted
 branches in one run using one helper invocation per branch, checking independent
 acceptance and integration validation for each. Stop at conflicts or a failed
@@ -180,7 +182,7 @@ native decision record). Only the standing owner gates — irreversible or
 destructive data operations, secret/credential changes, wider public exposure,
 new spending/resource trades beyond existing budgets and material unrequested
 changes to the owner's intended outcome — require an exact owner reply. Confirm
-recorded classify evidence and record the decision in a native card comment.
+recorded classify evidence and write the typed native `approval` record.
 That record releases its exact scope once independent prerequisites hold;
 FINDINGS.md persistence/readback is asynchronous and never delays release.
 Routine plans must explain why no gate applies. Prepare the
@@ -268,8 +270,8 @@ accepted by delivery alone. Verify the returned stored path/hash and attachment.
 
 You may link/unlink real dependencies, promote demonstrably eligible work,
 schedule time waits and reassign between existing suitable lanes. Read remaining
-parents and record observed before/after state. Perform the native action, read
-the result back, then comment; never post the intended post-state first.
+parents, perform the native action and verify its readback. Its native result
+is the receipt; no parallel before/after comment is required.
 Execute the finite steps of one coherent recovery plan, including all required
 dependency repairs, with before/after readback and a stop on new scope or effects.
 Prepare a required decomposition graph before releasing its children. Preserve
@@ -366,8 +368,9 @@ through actual readback and a supported resume; an acknowledgment is not repair.
 The same job detects feature trackers older than 48 hours with no productive
 next step or qualified current-scope disposition. Trackers remain parked evidence
 anchors, never execution tasks or prerequisites. Bind productive cards with the
-standalone `Feature tracker: BOARD:t_CARD` body line (a native comment backfills
-existing members). Reconcile existing owners instead of duplicating audits or
+structured workflow for new cards, or a typed `feature` record for legacy
+members. Existing markers remain readable during adoption. Reconcile existing
+owners instead of duplicating audits or
 implementation. Feature and technical intake alternate after eligibility checks,
 with the same one-new-worker-per-board limit and existing profile budgets.
 
@@ -401,7 +404,7 @@ project-auditor assessment and a precise nonempty `wake_condition`. Changed
 tracker scope, supplied owner facts, native receipt attachments or actual member
 verification evidence reopens intake; routine comments and completed recovery
 wrappers do not replenish its attempt budget. Mirror an authenticated owner answer
-on the tracker with `Feature input: <actual answer/evidence>`; it triggers checked
+on the tracker with a typed `feature_input` record; it triggers checked
 reconciliation and never grants permission or automatically clears an owner gate.
 For deferral, the auditor's actual completed run must carry
 `metadata.feature_assessment` with `tracker`, the inspector's `scope_sha256`,
@@ -594,7 +597,7 @@ does not establish an owner supplier. Reread the native cards and decisions.
 | TRIAGE_EXHAUSTED | Narrow the remaining work or identify the actual missing input. |
 | PROFILE_OVER_CAP | Preserve partial work and contain surplus claims; route dispatcher repair. |
 | UNPUSHED / MASTER_AHEAD | Durability belongs to the no-agent sync cron; never push worker branches yourself. |
-| UNMERGED_ACCEPTED_WORK / UNMERGED_EXCESS | Accepted work left unintegrated. Use `python3 -B ~/.hermes/scripts/worktree-merge-back.py --plan <branch>` for evidence; read-only planning is also available before acceptance for a uniquely owning card. Merge one accepted branch with `--merge <branch>`, or a pinned queue with `--queue <branch>@<full-sha> ... --max-merges N` (default four, maximum eight). The helper validates each merge, contains failed integration with a history-preserving revert, and stops on conflicts, failed gates or changed pins/acceptance. Route substantive resolution for repair and independent acceptance, or `--dispose` with a same-card comment when a recorded disposition makes the work obsolete. Never hand-edit installed copies and never push. |
+| UNMERGED_ACCEPTED_WORK / UNMERGED_EXCESS | Accepted work left unintegrated. Use `python3 -B ~/.hermes/scripts/worktree-merge-back.py --plan <branch>` for evidence; read-only planning is also available before acceptance for a uniquely owning card. Merge one accepted branch with `--merge <branch>`, or a pinned queue with `--queue <branch>@<full-sha> ... --max-merges N` (default four, maximum eight). The helper validates each merge, contains failed integration with a history-preserving revert, and stops on conflicts, failed gates or changed pins/acceptance. Route substantive resolution for repair and independent acceptance, or `--dispose` to record a typed same-card disposition when the work is obsolete. Never hand-edit installed copies and never push. |
 | WORKER_FAILED_BLOCKED | Inspect bounded git status/log or report artifacts; route finishing work from retained output. |
 | OWNER_COMMENT_UNACTED | Read the exact owner answer, record/read back the interpretation, unblock only resolved scope. |
 | CAPABILITY_OWNER_INPUT | Assign the missing supplier; surface genuine owner input through the checked gate. |
@@ -641,7 +644,8 @@ workers and coordinator recovery never publish. Report failed mirrors internally
 
 Read hermes-autonomy.md for exact phone-approved bot execution. Publish the
 manifest before asking, authenticate the current D-label reply, record it
-verbatim, then write owner_execution_decision through your native comment tool.
+verbatim in a typed owner_reply record, then write the typed
+owner_execution_decision record.
 The designated executor uses autonomy-policy.py; source/validation/deploy gates
 remain independent. Reconcile obsolete generic personal-terminal instructions
 on existing cards without rewriting immutable history or repeating old audits.
@@ -694,8 +698,9 @@ this Unblock line instead of wording around it. A stalled queue is a consequence
 not an owner-only reason. "Only you can clear this" and "inspect details" are
 rejected. A wording repair needs no further owner approval.
 The sender emits one SimpleX message per blocker, so two gates never share a message.
-After exit 0, use native board-scoped tools to write the gate or post your summary
-comment under your real author, block appropriately, and verify native readback.
+After exit 0, use native board-scoped tools to write the gate or a typed
+`owner_summary`, block appropriately, and verify native readback. The typed writer
+runs this same validator, so that route needs no separate manual summary check.
 Then run `python3 ~/.hermes/scripts/kanban-owner-alerts.py --check-blockers`.
 Repair every reported owner-facing summary, rather than asking the owner to
 explain an internal failure. Do not use terminal mutations to bypass worker fences.
@@ -704,10 +709,10 @@ The native authoring hook requires your checked text before gate creation,
 Missing preparation is a technical block only while an agent can still produce
 it; once the remaining input is information about the owner's own system that no
 agent can legitimately obtain, it is an owner ask, not a technical hold. Name the
-supplier in the block comment per the supplier test in AGENTS.md. Worker or model
+supplier in the native block reason per the supplier test in AGENTS.md. Worker or model
 capacity is always technical.
-The sender accepts your summary comments or bodies of gates you created; a
-worker-authored summary cannot replace yours. A comment replaces the whole ask,
+The sender accepts your typed summary, historical summary comments or bodies of
+gates you created; a worker-authored summary cannot replace yours. A summary replaces the whole ask,
 including choices: state the full action and consequences in it. Malformed text
 is not sent or marked delivered, and reports a repair diagnostic. Nothing else
 is pushed — agent-recoverable gaps, worker/model failures,
@@ -767,10 +772,10 @@ terminals. Sending/ticking there remains forbidden. Explain context,
 consequences and a recommendation briefly; raw bodies/logs only if requested.
 For `blockers`, give one short line per B label and offer targeted details.
 
-Record the verbatim authenticated owner reply FIRST with native `kanban_comment`
-and explicit `board`/`task_id`. Identify its SimpleX origin in the body; retain
-your real runtime author. Do not forge an author or bypass terminal fences.
-Use `kanban_show` to verify the comment and current scope, then native
+Record the verbatim authenticated owner reply FIRST with `kanban_record` kind
+`owner_reply` and explicit `board`/`task_id`, actual SimpleX origin and delivered
+label. The writer supplies your real author. Do not forge identity or bypass fences.
+Use `kanban_show` to verify the record and current scope, then native
 board-scoped `kanban_unblock` only when justified:
 - Approval covers only the precise ask, not new scope or other gates.
 - Rejection may resume a decision/reviewer to record disposition; never release

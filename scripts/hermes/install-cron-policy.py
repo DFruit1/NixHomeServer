@@ -66,13 +66,14 @@ def changes(root):
     native=root/'hermes-agent'
     for name in EDITS:pending[native/name]=adapt(name,(native/name).read_text())
     # Install the dependency first; active scheduler turns may import it on demand.
+    pending[native/'hermes_cli/nixhomeserver_card_records.py']=(SOURCE/'card_records.py').read_text()
     for source,target in (('capability_recovery.py','nixhomeserver_capability_recovery.py'),
                           ('cron_policy.py','nixhomeserver_cron_policy.py'),('cron_stall.py','nixhomeserver_cron_stall.py')):
         pending[native/'cron'/target]=(SOURCE/source).read_text()
     for role in ('head-coordinator','board-steward'):
         soul=root/'profiles'/role/'SOUL.md';pending[soul]=instructions(soul.read_text())
     copies={'review-taskforce-tick.sh','cron_sweep.py','cron_policy.py','cron_stall.py','capability_recovery.py',
-            'usage-pace.py','worktree-merge-back.py',
+            'usage-pace.py','worktree-merge-back.py','card_records.py',
             'steward-opportunity-scan.py','board_progress.py','kanban-daily-steward.py','kanban-board-health.sh','kanban-performance.py'}
     for name in sorted(copies,key=lambda name:(name!='capability_recovery.py',name)):
         pending[root/'scripts'/name]=(SOURCE/name).read_text()

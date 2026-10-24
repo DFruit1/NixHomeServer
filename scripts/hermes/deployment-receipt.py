@@ -190,10 +190,10 @@ def evidence(root,board,review,decision,repo):
             raise ValueError('Review revision does not match its deployment scope')
         chosen = None
         scanned_bytes = 0
-        for index,comment in enumerate(db.execute(
-                'SELECT id,author,body FROM task_comments WHERE task_id=? ORDER BY id DESC LIMIT 201',(decision,))):
+        from card_records import protocol_entries
+        for index,comment in enumerate(reversed(protocol_entries(db, decision))):
             if index>=200:
-                raise ValueError('Reconcile the decision in a recent bounded structured comment')
+                raise ValueError('Reconcile the decision with a current typed deployment_decision record')
             if comment['author'] in OWNER_AUTHORS and chosen is None:
                 raise ValueError('New owner feedback needs coordinator reconciliation')
             body = comment['body'] or ''
@@ -227,7 +227,10 @@ def evidence(root,board,review,decision,repo):
             raise ValueError('Latest coordinator decision is missing, withdrawn or does not match the reviewed scope/run')
         if digest(validate_scope(chosen['scope']))!=digest(scope):
             raise ValueError('Coordinator deployment scope differs from the reviewed scope')
-        return {'scope':scope,'review_run_id':run['id'],'decision_comment_id':comment_id,
+        return {'scope':scope,'review_run_id':run['id'],
+                'decision_comment_id':comment_id if comment['source']=='comment' else None,
+                'decision_record_id':comment_id if comment['source']=='task_record' else None,
+                'decision_source':comment['source'],
                 'review_metadata_sha256':digest(metadata),'decision_sha256':digest(chosen)}
 
 

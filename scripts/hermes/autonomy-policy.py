@@ -245,8 +245,8 @@ def check(root, digest, profile=None):
         if task is None or task['status'] in {'done', 'archived'}:
             raise ValueError('Operation gate is no longer open')
         decision = None
-        for comment in db.execute('SELECT author,body FROM task_comments WHERE task_id=? ORDER BY id',
-                                  (manifest['task_id'],)):
+        from card_records import protocol_entries
+        for comment in protocol_entries(db, manifest['task_id']):
             if comment['author'] in {'user', 'owner', 'desktop'}:
                 decision = None  # Later owner feedback must be reconciled first.
             if comment['author'] != 'head-coordinator' or not any(

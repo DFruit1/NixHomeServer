@@ -135,8 +135,10 @@ Unblock: Reply yes if it arrived, or no if it did not.
 SUMMARY
 ```
 
-On exit 0, write the gate or post a summary comment under the coordinator's real
-author, block appropriately, and verify native readback. Then check the whole
+On exit 0, write the gate or a typed `owner_summary` record under the
+coordinator's real identity, block appropriately, and verify native readback.
+The typed writer runs this same summary validator automatically; a separate
+manual check is unnecessary for that route. Then check the whole
 current owner-facing set:
 
 ```bash
@@ -147,8 +149,9 @@ Both commands are read-only, work in delegated terminals, and exit 2 on invalid
 text. Use native tools for board changes; these commands do not bypass worker
 fences. Repairing wording requires no new owner approval.
 
-A summary comment replaces the entire owner ask. The sender never mixes it with
-old body choices or fills partial fields from a different source, and it never
+A typed owner summary (or a historical summary comment) replaces the entire
+owner ask. The sender never mixes it with old body choices or fills partial
+fields from a different source, and it never
 echoes options from the card body: the `Unblock:` text is the whole Recommended
 section. Each blocker is one SimpleX message, so two gates never share a
 message. The phone shows:
@@ -224,8 +227,8 @@ targeted lookup also accepts `board:card`, and `hermes --profile default kanban
 --board pcops show <task-id>` reads a card directly.
 
 The coordinator resolves the label to the exact board, card and question
-revision. It records the verbatim reply with native `kanban_comment`, verifies
-the comment and current ask with `kanban_show`, and unblocks only justified
+revision. It records the verbatim reply with native `kanban_record` kind
+`owner_reply`, verifies the record and current ask with `kanban_show`, and unblocks only justified
 work. An old label cannot approve revised scope. Rejection never dispatches an
 implementer for the rejected change. Unclear replies keep work blocked.
 Confirmations are one short line per decision and name the actual status.

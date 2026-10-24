@@ -32,7 +32,7 @@ class ReceiptTest(unittest.TestCase):
         self.addCleanup(self.db.close)
         self.db.executescript('''CREATE TABLE tasks(id TEXT,status TEXT,assignee TEXT,tenant TEXT);
             CREATE TABLE task_runs(id INTEGER,task_id TEXT,profile TEXT,status TEXT,outcome TEXT,metadata TEXT);
-            CREATE TABLE task_comments(id INTEGER,task_id TEXT,author TEXT,body TEXT);
+            CREATE TABLE task_comments(id INTEGER,task_id TEXT,author TEXT,body TEXT,created_at INTEGER DEFAULT 0);
             CREATE TABLE task_links(parent_id TEXT,child_id TEXT);
             INSERT INTO tasks VALUES ('t_review','done','feature-reviewer','verification'),
               ('t_decision','running','head-coordinator',NULL);
@@ -54,7 +54,7 @@ class ReceiptTest(unittest.TestCase):
 
     def comment(self, decision, author='head-coordinator'):
         i=self.db.execute('SELECT coalesce(max(id),0)+1 FROM task_comments').fetchone()[0]
-        self.db.execute('INSERT INTO task_comments VALUES (?,?,?,?)',
+        self.db.execute('INSERT INTO task_comments(id,task_id,author,body) VALUES (?,?,?,?)',
                         (i,'t_decision',author,json.dumps({'deployment_decision':decision})))
         self.db.commit()
 
@@ -73,6 +73,20 @@ class ReceiptTest(unittest.TestCase):
         self.assertEqual('reviewed_and_tested',result['stage'])
         self.assertEqual(7,result['review_run_id'])
         self.assertIn('toplevel',result['tested'])
+
+    def test_typed_decision_and_later_typed_owner_reply_use_original_deploy_gate(self):
+        self.db.execute('CREATE TABLE task_events(id INTEGER PRIMARY KEY,task_id TEXT,kind TEXT,payload TEXT,created_at INTEGER)')
+        watermark=self.db.execute('SELECT MAX(id) FROM task_comments').fetchone()[0]
+        record={'version':1,'kind':'deployment_decision','actor':'head-coordinator',
+                'comment_watermark':watermark,'value':self.decision}
+        self.db.execute('INSERT INTO task_events(task_id,kind,payload,created_at) VALUES(?,?,?,0)',
+                        ('t_decision','task_record',json.dumps(record)))
+        self.assertEqual('reviewed',self.check()['stage'])
+        record.update(kind='owner_reply',value={'text':'Stop this deployment','origin':'simplex'})
+        self.db.execute('INSERT INTO task_events(task_id,kind,payload,created_at) VALUES(?,?,?,0)',
+                        ('t_decision','task_record',json.dumps(record)))
+        with self.assertRaises(ValueError): self.check()
+        self.assertEqual(1,self.db.execute('SELECT COUNT(*) FROM task_comments').fetchone()[0])
 
     def test_independent_auditor_can_verify_whole_set(self):
         self.db.execute("UPDATE tasks SET assignee='project-auditor' WHERE id='t_review'")
@@ -115,7 +129,7 @@ class ReceiptTest(unittest.TestCase):
         # approval, not just the desktop app's.
         for index,author in enumerate(('desktop','user','owner'),start=100):
             with self.subTest(author=author):
-                self.db.execute("INSERT INTO task_comments VALUES (?,'t_decision',?,'Stop; scope changed')",(index,author))
+                self.db.execute("INSERT INTO task_comments(id,task_id,author,body) VALUES (?,'t_decision',?,'Stop; scope changed')",(index,author))
                 with self.assertRaises(ValueError): self.check()
 
     def test_changed_source_target_action_or_input_manifest_fails(self):
@@ -180,7 +194,7 @@ class ReceiptTest(unittest.TestCase):
     def test_escaped_rejection_key_cannot_resurrect_approval(self):
         body=json.dumps({'deployment_decision':{**self.decision,'approved':False}})
         body=body.replace('deployment_decision',r'\u0064eployment_decision')
-        self.db.execute("INSERT INTO task_comments VALUES (100,'t_decision','head-coordinator',?)",(body,))
+        self.db.execute("INSERT INTO task_comments(id,task_id,author,body) VALUES (100,'t_decision','head-coordinator',?)",(body,))
         with self.assertRaises(ValueError): self.check()
 
     def test_decision_scope_requires_exact_schema_types(self):

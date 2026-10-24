@@ -41,8 +41,10 @@ def related_tasks(db, task_id):
 def collect(root,state,now):
     if __package__ == 'cron':
         from cron import nixhomeserver_capability_recovery as recovery
+        from hermes_cli.nixhomeserver_card_records import protocol_entries
     else:
         import capability_recovery as recovery
+        from card_records import protocol_entries
     helpers=recovery.helper_identity(root)
     boards=sorted(p for p in (root/'kanban/boards').glob('*/board.json') if not p.parent.name.startswith(('_','.')))
     if not boards:raise ValueError('No active board manifests')
@@ -63,8 +65,8 @@ def collect(root,state,now):
                 task=dict(row);key=board+':'+task['id'];live.add(key)
                 run=db.execute('SELECT status,outcome,ended_at,metadata FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1',
                                (task['id'],)).fetchone()
-                owner=db.execute("SELECT id,body,created_at FROM task_comments WHERE task_id=? AND author IN ('desktop','user','owner') ORDER BY id DESC LIMIT 1",
-                                 (task['id'],)).fetchone()
+                owner=next((entry for entry in reversed(protocol_entries(db,task['id']))
+                            if entry['author'] in {'desktop','user','owner'}),None)
                 outcome=run['outcome'] or run['status'] if run else None
                 failed=outcome in {'crashed','failed','timed_out','spawn_failed','gave_up','blocked'}
                 unfulfilled=bool(owner and (not run or owner['created_at']>(run['ended_at'] or 0)))
@@ -79,7 +81,7 @@ def collect(root,state,now):
                 evidence={k:metadata.get(k) for k in ('verdict','revision','failure_category')}
                 evidence['verdict']=evidence['verdict'] if evidence['verdict'] in ('accept','request-changes') else None
                 version=[task['status'],task['assignee'],task['block_kind'],outcome,evidence,
-                         [owner['id'],hashlib.sha256(owner['body'].encode()).hexdigest()] if owner else None,
+                         [owner['source'],owner['id'],hashlib.sha256(owner['body'].encode()).hexdigest()] if owner else None,
                          hold['version'] if hold else None,related]
                 digest=hashlib.sha256(json.dumps(version,sort_keys=True).encode()).hexdigest()
                 previous=issues.get(key,{})
@@ -89,7 +91,9 @@ def collect(root,state,now):
                 due.append({'key':key,'version':digest,'status':task['status'],'assignee':task['assignee'],
                     'reason':'material_change' if previous.get('version')!=digest else 'reminder_due',
                     'block_kind':task['block_kind'],'last_outcome':outcome,'verdict':evidence['verdict'],
-                    'owner_comment_id':owner['id'] if owner else None,
+                    'owner_comment_id':owner['id'] if owner and owner['source']=='comment' else None,
+                    'owner_record_id':owner['id'] if owner and owner['source']=='task_record' else None,
+                    'owner_evidence_source':owner['source'] if owner else None,
                     'owner_requested':owner_requested,
                     'last_run_utc':utc(run['ended_at']) if run and run['ended_at'] else None,
                     'last_inspected_utc':utc(previous['last_processed_at']) if previous.get('last_processed_at') else None,

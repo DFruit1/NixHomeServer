@@ -37,6 +37,10 @@ label in every column, so make it distinguishable at a glance:
 
 ### Decision ownership
 
+Use [native card records](hermes-card-records.md) for current ownership.
+The marker procedure below is historical compatibility until that runtime is
+installed; new cards should not require ownership comments.
+
 Gate-flavoured wording ("Decide …", "Approve …") never names who is gated.
 Every open card carries one explicit decision-ownership state so the owner can
 ask "what waits on me?" and get an unambiguous answer. State lives on the card
@@ -86,6 +90,10 @@ backfill the retry limit. Full retry/replacement mechanics live in
 writes or guard removal.
 
 ### Task skills
+
+Use structured `workflow` for new feature membership and roles. Existing cards
+use typed `feature` records after adoption; legacy comment backfills below are
+compatibility only.
 
 Feature execution and routing cards carry a standalone
 `Feature tracker: BOARD:t_CARD` line, naming the canonical tracker. Backfill an
@@ -286,13 +294,21 @@ Must not change: no plaintext secrets; no stamp wrapper; no live deploy
 The decision is answerable from line 1; the evidence sits below it. Nothing was
 dropped — only the prose was.
 
+### Comments and evidence
+
+Comments are optional human notes. No status update, acknowledgment, repeated
+constraint or `Update/Evidence/Next` report is required. Use native lifecycle
+results, run metadata, typed records and referenced artifacts as described in
+[native card records](hermes-card-records.md). Keep any optional note short and
+post only a meaningful change; existing comment budgets still apply.
+
 ### Answering a gate
 
-A comment does not change card status. Record the decision as a comment, then
-unblock — the dispatcher only claims `ready` cards, so an unanswered `blocked`
-card never runs, and a commented-but-still-blocked card never runs either. A
-`running` card needs only the comment: the dispatcher live-steals new operator
-comments into the worker.
+Record the authenticated reply and decision with their typed native records,
+then unblock only the justified work. Recording evidence does not change card
+status; the dispatcher only claims `ready` cards. For a running card, deliver
+new instructions through its existing live-input channel. Saving a record alone
+does not deliver a new instruction to the active worker.
 
 ### Pre-flight check
 

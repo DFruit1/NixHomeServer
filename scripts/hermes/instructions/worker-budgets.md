@@ -21,8 +21,10 @@ authorized. Set a positive `max_runtime_seconds`. Native creation sets
 failure. Ordinary cards and provider cooldowns keep their existing policies.
 Do not remove the marker or create a duplicate to evade recovery checks.
 
-Before another attempt, head-coordinator must inspect the failed run and record
-a comment on the same card using its exact numeric run ID:
+Before another attempt, head-coordinator must inspect the failed run and write
+a typed `recovery` record on the same card using `kanban_record`: `run_id`,
+verified `change`, and bounded `action`. No comment is required. The following
+legacy shape remains readable until the matching runtime is adopted:
 
 ```text
 Recovery run: 123

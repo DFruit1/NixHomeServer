@@ -238,6 +238,11 @@ try:
                         'SELECT body FROM task_comments WHERE task_id=?',
                         (card['id'],)):
                     parts.append(row['body'] or '')
+                if db.execute("SELECT 1 FROM sqlite_master WHERE name='task_events'").fetchone():
+                    for row in db.execute(
+                            "SELECT payload FROM task_events WHERE task_id=? AND kind='task_record'",
+                            (card['id'],)):
+                        parts.append(row['payload'] or '')
                 for row in db.execute(
                         'SELECT filename, stored_path FROM task_attachments'
                         ' WHERE task_id=?', (card['id'],)):

@@ -12,8 +12,8 @@ otherwise performs by hand:
 1. Extract the D label from the reply text or its quoted prefix.
 2. Resolve the label read-only with ``kanban-owner-alerts.py --resolve``.
 3. Refuse stale, closed, undelivered, or technical (B) labels.
-4. Record the verbatim reply as a ``kanban_comment`` authored by the
-   coordinator, naming its SimpleX origin.
+4. Record the verbatim reply as a typed native ``owner_reply`` record,
+   with coordinator authorship and its actual SimpleX origin.
 5. With ``--apply``, unblock the resolved card only for a ``kind=decision``
    card and only when the reply is affirmative (a choice or explicit
    approval). It never treats a reply as deploy authorisation.
@@ -92,7 +92,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--text', help='Reply text; omit to read stdin')
     parser.add_argument('--apply', action='store_true',
-                        help='Record the comment and unblock an affirmative decision reply')
+                        help='Record the reply and unblock an affirmative decision reply')
     parser.add_argument('--json', action='store_true')
     args = parser.parse_args()
 
@@ -129,15 +129,19 @@ def main() -> int:
         outcome['dry_run'] = True
     else:
         board, task_id = decision['board'], decision['task_id']
-        comment = (f'Owner reply via SimpleX {label}: {body}\n\n'
-                   f'Authenticated SimpleX decision-channel reply; recorded verbatim '
-                   f'before any board transition.')
+        command = ['hermes', '--profile', 'head-coordinator', 'kanban', '--board', board, 'record', task_id]
+        observed = subprocess.run(command, capture_output=True, text=True, timeout=120)
+        if observed.returncode != 0:
+            outcome['error'] = f'record inspection failed: {observed.stderr.strip() or observed.stdout.strip()}'
+            print(json.dumps(outcome))
+            return 1
+        value = {'text': text, 'origin': 'simplex', 'label': label}
         recorded = subprocess.run(
-            ['hermes', 'kanban', '--board', board, 'comment', task_id,
-             '--author', 'head-coordinator', comment],
+            command + ['--kind', 'owner_reply', '--data', json.dumps(value),
+                       '--expected-version', json.loads(observed.stdout)['version']],
             capture_output=True, text=True, timeout=120)
         if recorded.returncode != 0:
-            outcome['error'] = f'comment failed: {recorded.stderr.strip() or recorded.stdout.strip()}'
+            outcome['error'] = f'record failed: {recorded.stderr.strip() or recorded.stdout.strip()}'
         else:
             outcome['recorded'] = True
             if outcome['affirmative']:

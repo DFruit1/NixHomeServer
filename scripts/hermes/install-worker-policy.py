@@ -17,6 +17,7 @@ from hermes_common import backup_file, remove_block
 from hermes_config import document
 from worker_runtime_adapter import adapt
 from fleet_runtime_adapter import adapt as adapt_workflow
+from card_records_adapter import adapt as adapt_records
 
 SOURCE = Path(__file__).resolve().parent
 WORKERS = ('head-coordinator', 'feature-reviewer', 'project-auditor',
@@ -90,7 +91,7 @@ def pending_files(root, pending=None):
     pending[native / 'hermes_cli/nixhomeserver_worker_policy.py'] = (SOURCE / 'worker-policy.py').read_text()
     pending[native / 'hermes_cli/nixhomeserver_create_board.py'] = (SOURCE / 'create-board-policy.py').read_text()
     for name in ('fleet_contract', 'fleet_workflow', 'feature_contract', 'execution_preflight',
-                 'worker_handoff', 'board_progress'):
+                 'worker_handoff', 'board_progress', 'card_records'):
         pending[native / ('hermes_cli/nixhomeserver_' + name + '.py')] = (SOURCE / (name + '.py')).read_text()
         pending[root / ('scripts/' + name + '.py')] = (SOURCE / (name + '.py')).read_text()
     for relative, name in (('hermes_cli/kanban_db.py', 'kanban_db.py'),
@@ -102,6 +103,10 @@ def pending_files(root, pending=None):
         text = adapt(name, current(path))
         pending[path] = (adapt_workflow(name, text) if name in
                         ('kanban_db.py', 'tools/kanban_tools.py', 'tools/kanban_tools_schemas.py') else text)
+    for relative in ('tools/kanban_tools.py', 'tools/kanban_tools_schemas.py',
+                     'hermes_cli/kanban.py', 'hermes_cli/kanban_parser.py', 'hermes_cli/kanban_db.py'):
+        path = native / relative
+        pending[path] = adapt_records(relative, current(path))
     return pending
 
 

@@ -32,7 +32,7 @@ class RecoveryTest(unittest.TestCase):
             CREATE TABLE tasks(id TEXT PRIMARY KEY,status TEXT,assignee TEXT,block_kind TEXT,
                 body TEXT,workspace_path TEXT,consecutive_failures INTEGER DEFAULT 0,
                 block_recurrences INTEGER DEFAULT 0);
-            CREATE TABLE task_events(id INTEGER PRIMARY KEY,task_id TEXT,kind TEXT,payload TEXT);
+            CREATE TABLE task_events(id INTEGER PRIMARY KEY,task_id TEXT,kind TEXT,payload TEXT,created_at INTEGER DEFAULT 0);
             CREATE TABLE task_links(parent_id TEXT,child_id TEXT);
             CREATE TABLE task_comments(id INTEGER PRIMARY KEY,task_id TEXT,author TEXT,body TEXT,created_at REAL);
             CREATE TABLE task_runs(id INTEGER PRIMARY KEY,task_id TEXT,status TEXT,outcome TEXT,ended_at REAL,metadata TEXT);
@@ -135,6 +135,34 @@ class RecoveryTest(unittest.TestCase):
         for status in ('running', 'ready', 'review', 'done', 'archived'):
             self.db.execute('UPDATE tasks SET status=?', (status,))
             self.assertEqual([], self.report()['holds'], status)
+
+    def test_owner_evidence_ids_keep_source_and_native_scheduler_imports(self):
+        import importlib.util
+        import types
+        from unittest.mock import patch
+        import card_records
+        self.db.execute('INSERT INTO task_comments VALUES(2,?,?,?,100)',('t_one','owner','Stop'))
+        self.db.commit()
+        before=cron_stall.collect(self.root,{},1000)[0]
+        record={'version':1,'kind':'owner_reply','actor':'head-coordinator','comment_watermark':2,
+                'value':{'text':'Stop','origin':'simplex'}}
+        self.db.execute('INSERT INTO task_events(id,task_id,kind,payload,created_at) VALUES(2,?,?,?,100)',
+                        ('t_one','task_record',json.dumps(record)))
+        self.db.commit()
+        after=cron_stall.collect(self.root,{},1000)[0]
+        self.assertEqual(2,before['owner_comment_id'])
+        self.assertIsNone(after['owner_comment_id'])
+        self.assertEqual(2,after['owner_record_id'])
+        self.assertEqual('task_record',after['owner_evidence_source'])
+        self.assertNotEqual(before['version'],after['version'])
+        cron_package=types.ModuleType('cron');cron_package.__path__=[]
+        cron_package.nixhomeserver_capability_recovery=recovery
+        native_package=types.ModuleType('hermes_cli');native_package.__path__=[]
+        with patch.dict(sys.modules,{'cron':cron_package,'hermes_cli':native_package,
+                'hermes_cli.nixhomeserver_card_records':card_records}):
+            spec=importlib.util.spec_from_file_location('cron.nixhomeserver_cron_stall',Path(cron_stall.__file__))
+            module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+            self.assertEqual(after['version'],module.collect(self.root,{},1000)[0]['version'])
 
     def test_stall_followthrough_uses_existing_backoff_and_new_evidence_resets_it(self):
         self.db.execute("UPDATE tasks SET status='scheduled',block_kind=NULL")

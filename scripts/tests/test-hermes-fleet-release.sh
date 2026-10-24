@@ -741,7 +741,7 @@ api_key: PRIVATE
 
     def test_source_worker_transforms_use_selected_source_adapters(self):
         source=self.root/'source';source.mkdir()
-        for name in ('hermes_common','hermes_config','coordinator_trial','worker_runtime_adapter','fleet_runtime_adapter','coordinator_repair_adapter','coordinator_tools_adapter','recovered_resume_adapter','resume_recovered','worker_origin_adapter'):
+        for name in ('hermes_common','hermes_config','coordinator_trial','worker_runtime_adapter','fleet_runtime_adapter','coordinator_repair_adapter','coordinator_tools_adapter','recovered_resume_adapter','resume_recovered','worker_origin_adapter','card_records_adapter'):
             (source/(name+'.py')).write_text('ORIGIN = "source"\n')
         (source/'coordinator_repair.py').write_text('revision = \"qualified\"\n')
         (source/'coordinator_repair_adapter.py').write_text(

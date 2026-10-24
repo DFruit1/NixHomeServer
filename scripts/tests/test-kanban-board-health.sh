@@ -28,6 +28,10 @@
 
 set -euo pipefail
 
+# Synthetic git commits must not depend on the operator's HOME configuration.
+export GIT_AUTHOR_NAME="Hermes fixture" GIT_AUTHOR_EMAIL="fixture@example.invalid"
+export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME" GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
+
 TESTS_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # The seam for installed copies. The whole suite exercises exactly the script
 # this names -- the executable check below makes a typo in the override a loud
@@ -395,6 +399,36 @@ pass "reports an owner answer recorded as user"
 grep -q '^OWNER_COMMENT_UNACTED testboard t_owner_marker project-auditor block=needs_input ' <<<"$out" ||
   fail "did not report an owner-recorded decision marker (author=owner)"
 pass "reports an owner answer recorded as owner"
+
+# Typed replies must wake the same coordinator path without any new comment.
+comments_before="$(sqlite3 "$DB" 'SELECT COUNT(*) FROM task_comments;')"
+sqlite3 "$DB" "INSERT INTO task_events(task_id,kind,created_at,payload)
+  SELECT 't_owner_handled','task_record',$now,json_object(
+    'version',1,'kind','owner_reply','actor','head-coordinator',
+    'comment_watermark',COALESCE(MAX(id),0),'value',json_object('text','No, keep it stopped','origin','simplex'))
+    FROM task_comments WHERE task_id='t_owner_handled';"
+record_out="$(run_health)"
+grep -q '^OWNER_COMMENT_UNACTED testboard t_owner_handled ' <<<"$record_out" ||
+  fail "typed owner reply did not wake the coordinator"
+sqlite3 "$DB" "INSERT INTO task_events(task_id,kind,created_at,payload)
+  SELECT 't_owner_handled','task_record',$now,json_object(
+    'version',1,'kind','decision_owner','actor','head-coordinator',
+    'comment_watermark',COALESCE(MAX(id),0),'value',json_object('owner','head-coordinator'))
+    FROM task_comments WHERE task_id='t_owner_handled';"
+record_out="$(run_health)"
+grep -q '^OWNER_COMMENT_UNACTED testboard t_owner_handled ' <<<"$record_out" &&
+  fail "typed coordinator reconciliation did not clear owner wake"
+[[ "$(sqlite3 "$DB" 'SELECT COUNT(*) FROM task_comments;')" == "$comments_before" ]] ||
+  fail "typed owner reconciliation created a comment"
+pass "typed owner reply and reconciliation wake and clear without comments"
+
+sqlite3 "$DB" "INSERT INTO task_events(task_id,kind,created_at,payload)
+  VALUES('t_gaveup','task_record',$now,'{\"version\":1,\"kind\":\"recovery\",\"actor\":\"head-coordinator\",\"comment_watermark\":0,\"value\":{\"run_id\":1,\"change\":\"Delivered input\",\"action\":\"Read supplied evidence\"}}');"
+record_out="$(run_health)"
+grep -q '^WORKER_FAILED_BLOCKED t_gaveup ' <<<"$record_out" &&
+  fail "typed recovery receipt did not clear handled-failure diagnostic"
+sqlite3 "$DB" "DELETE FROM task_events WHERE task_id='t_gaveup' AND kind='task_record';"
+pass "typed recovery receipt counts as handled failure evidence"
 
 # --- capability holds that name no input supplier -----------------------------
 #

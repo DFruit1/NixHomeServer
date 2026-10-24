@@ -165,18 +165,22 @@ def reason(db, task_id, assignee=None):
         return None
     # A receipt for an earlier run never grants another attempt. Read at most
     # 32 coordinator comments after this failure; no history or prompt export.
-    comments = db.execute("SELECT body FROM task_comments WHERE task_id=? AND author='head-coordinator' "
-                          'AND created_at>=? ORDER BY id DESC LIMIT 32',
-                          (task_id, run['ended_at'] or 0))
+    if __package__ == 'hermes_cli':
+        from .nixhomeserver_card_records import protocol_entries
+    else:
+        from card_records import protocol_entries
+    comments = [entry for entry in reversed(protocol_entries(db, task_id))
+                if entry['author'] == 'head-coordinator'
+                and entry['created_at'] >= (run['ended_at'] or 0)][:32]
     for comment in comments:
         body = comment['body'] or ''
         if (re.search(rf'^Recovery run: {run["id"]}\s*$', body, re.M)
                 and re.search(r'^Recovery change: [^\s\n][^\n]*$', body, re.M)
                 and re.search(r'^Recovery action: [^\s\n][^\n]*$', body, re.M)):
             return None
-    return (f'Worker policy: record a new coordinator receipt with Recovery run: {run["id"]}, '
-            'Recovery change: <changed input or narrowed scope>, and Recovery action: <bounded next step> '
-            'on separate lines before retrying. Input supplier: agent.')
+    return (f'Worker policy: use kanban_record kind=recovery for run_id={run["id"]}, '
+            'change=<verified new input or narrowed scope>, action=<bounded next step> '
+            'before retrying. Input supplier: agent.')
 
 
 def require_release(db, task_id):

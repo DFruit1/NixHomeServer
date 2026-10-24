@@ -158,7 +158,7 @@ def install(root, check=False, fixture_runner_only=False, review_card=None):
         # Install the safe dependency before adding its import sites, including on retry.
         pending = {native / 'hermes_cli/nixhomeserver_autonomy.py': (SOURCE / 'autonomy_runtime.py').read_text()}
         pending.update({native / name: adapt(name, (native / name).read_text()) for name in EDITS})
-        for name in ('autonomy-policy.py', 'fixture-runner.py', 'hermes_common.py'):
+        for name in ('autonomy-policy.py', 'fixture-runner.py', 'hermes_common.py', 'card_records.py'):
             pending[root / 'scripts' / name] = (SOURCE / name).read_text()
         pending[root / 'scripts/hermes-autonomy.md'] = (SOURCE.parents[1] / 'documentation/hermes-autonomy.md').read_text()
     changes = []

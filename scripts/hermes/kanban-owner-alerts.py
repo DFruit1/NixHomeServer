@@ -134,7 +134,9 @@ def snapshot(board_file, task_id=None):
             # Only the coordinator may author the owner ask. Ordinary comments
             # and summaries from other profiles cannot replace it.
             try:
-                comment = db.execute("SELECT body FROM task_comments WHERE task_id=? AND author=? AND instr(body,'Blocking:')>0 ORDER BY created_at DESC, id DESC LIMIT 1", (task['id'], PROFILE)).fetchone()
+                from card_records import protocol_entries
+                comment = next((entry for entry in reversed(protocol_entries(db, task['id']))
+                                if entry['author'] == PROFILE and 'Blocking:' in entry['body']), None)
             except sqlite3.OperationalError:
                 comment = None
             task['comment'] = comment['body'] if comment else ''
@@ -606,9 +608,10 @@ def check_ownership(root):
                     key = f'{name}:{task["id"]}'
                     body = task['body'] or ''
                     gate = task['block_kind'] == 'needs_input' or HARD_LINE.search(body)
-                    marker_row = db.execute(
-                        "SELECT body FROM task_comments WHERE task_id=? AND body LIKE 'Decision owner:%'"
-                        ' ORDER BY created_at DESC, id DESC LIMIT 1', (task['id'],)).fetchone()
+                    from card_records import protocol_entries
+                    evidence = protocol_entries(db, task['id'])
+                    marker_row = next((entry for entry in reversed(evidence)
+                                       if entry['body'].startswith('Decision owner:')), None)
                     marker = DECISION_MARKER.match(marker_row['body']) if marker_row else None
                     event = db.execute(
                         "SELECT payload, created_at FROM task_events WHERE task_id=? AND (kind='blocked' OR"
@@ -622,13 +625,10 @@ def check_ownership(root):
                     # told the coordinator to author a gate the owner had
                     # already answered, which pages the owner twice for one
                     # decision. Owner authors match kanban-board-health.sh.
-                    owner_spoke_since = bool(event and db.execute(
-                        "SELECT 1 FROM task_comments WHERE task_id=? AND created_at>=?"
-                        " AND author IN ('owner','desktop','user') LIMIT 1",
-                        (task['id'], event['created_at'])).fetchone())
-                    coordinator_summary = db.execute(
-                        "SELECT id FROM task_comments WHERE task_id=? AND author=? AND instr(body,'Blocking:')>0"
-                        ' ORDER BY created_at DESC, id DESC LIMIT 1', (task['id'], PROFILE)).fetchone()
+                    owner_spoke_since = bool(event and any(entry['author'] in {'owner','desktop','user'}
+                        and entry['created_at'] >= event['created_at'] for entry in evidence))
+                    coordinator_summary = next((entry for entry in reversed(evidence)
+                        if entry['author'] == PROFILE and 'Blocking:' in entry['body']), None)
                     # An answered owner episode followed by a native dependency
                     # hold is history, not a current approval request. Without
                     # that answer, dependency metadata must not hide a malformed

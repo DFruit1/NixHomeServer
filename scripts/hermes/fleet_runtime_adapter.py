@@ -97,7 +97,13 @@ KANBAN_COMPLETE_SCHEMA["parameters"]["properties"]["delivery"] = {
 '''
 
 
+LEGACY_RETENTION = EDITS['kanban_db.py'][-1][1]
+RECORD_RETENTION = LEGACY_RETENTION.replace("kind != 'decomposed'", "kind NOT IN ('decomposed','task_record')")
+
+
 def adapt(name, text):
+    if name == 'kanban_db.py':
+        text = text.replace(RECORD_RETENTION, LEGACY_RETENTION, 1)
     if name == 'kanban_db.py' and text.count(PREVIOUS_CREATE) == 1:
         text = text.replace(PREVIOUS_CREATE, CURRENT_CREATE, 1)
     if name == 'tools/kanban_tools_schemas.py':
@@ -110,5 +116,7 @@ def adapt(name, text):
             if text.count(before) != 1:
                 raise ValueError('Native structured-workflow adapter source drift: ' + name)
             text = text.replace(before, after, 1)
+    if name == 'kanban_db.py':
+        text = text.replace(LEGACY_RETENTION, RECORD_RETENTION, 1)
     compile(text, name, 'exec')
     return text

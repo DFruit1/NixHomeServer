@@ -636,8 +636,10 @@ failed_block_rows="$(sql "
          (SELECT MAX(e.created_at) FROM task_events e
             WHERE e.task_id = t.id
               AND e.kind IN ('blocked', 'gave_up', 'crashed', 'timed_out')) AS block_ts,
-         (SELECT MAX(c.created_at) FROM task_comments c
-            WHERE c.task_id = t.id) AS comment_ts,
+         (SELECT MAX(at) FROM (
+            SELECT c.created_at AS at FROM task_comments c WHERE c.task_id=t.id
+            UNION ALL SELECT e.created_at FROM task_events e
+             WHERE e.task_id=t.id AND e.kind='task_record')) AS comment_ts,
          (SELECT COUNT(*) FROM task_links l WHERE l.parent_id = t.id) AS children
     FROM tasks t
     LEFT JOIN task_runs r ON r.id = (
@@ -703,13 +705,22 @@ for owner_db in "$HERMES_ROOT"/kanban/boards/*/kanban.db; do
     _*|.*) continue ;;
   esac
   if ! owner_rows="$(sqlite3 -separator '|' "$owner_db" "
+        WITH evidence AS (
+          SELECT task_id,author,created_at,id AS watermark,0 AS source_rank,id FROM task_comments
+          UNION ALL
+          SELECT task_id,
+                 CASE WHEN json_extract(payload,'$.kind')='owner_reply' THEN 'owner'
+                      ELSE json_extract(payload,'$.actor') END,
+                 created_at,json_extract(payload,'$.comment_watermark'),1,id
+            FROM task_events WHERE kind='task_record'
+        )
         SELECT t.id,
                COALESCE(t.assignee, ''),
                COALESCE(t.block_kind, ''),
-               COALESCE((SELECT c.author FROM task_comments c
+               COALESCE((SELECT c.author FROM evidence c
                           WHERE c.task_id = t.id
-                          ORDER BY c.created_at DESC, c.id DESC LIMIT 1), ''),
-               COALESCE((SELECT MAX(c.created_at) FROM task_comments c
+                          ORDER BY c.watermark DESC,c.source_rank DESC,c.id DESC LIMIT 1), ''),
+               COALESCE((SELECT MAX(c.created_at) FROM evidence c
                           WHERE c.task_id = t.id), t.created_at)
           FROM tasks t
          WHERE t.status = 'blocked'
@@ -930,7 +941,11 @@ if [[ -n "$repo" ]] && git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
   # names in order, so the hash changes exactly when a finding actually moves.
   disposed="$(sql "
     SELECT DISTINCT task_id FROM task_comments
-     WHERE author = 'head-coordinator' AND body LIKE 'merge-back disposition:%';")" || disposed=""
+     WHERE author = 'head-coordinator' AND body LIKE 'merge-back disposition:%'
+    UNION SELECT DISTINCT task_id FROM task_events
+     WHERE kind='task_record' AND json_valid(payload)
+       AND json_extract(payload,'$.actor')='head-coordinator'
+       AND json_extract(payload,'$.kind')='merge_back';")" || disposed=""
   emitted_unmerged=0
   excess_unmerged=0
   while IFS='|' read -r branch task_id; do

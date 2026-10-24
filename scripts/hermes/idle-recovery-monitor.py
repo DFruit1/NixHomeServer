@@ -37,8 +37,13 @@ def snapshot(root):
                                ') AND child_id IN ('+external+') ORDER BY parent_id,child_id').fetchall()
             # Owner replies can supply new authority without changing task state.
             comments = db.execute("SELECT c.id,c.task_id,c.author,c.body FROM task_comments c JOIN tasks t ON t.id=c.task_id WHERE (c.author!='head-coordinator' OR t.status='done') AND t.id IN ("+external+") ORDER BY c.id").fetchall()
+            records = []
+            if db.execute("SELECT 1 FROM sqlite_master WHERE name='task_events'").fetchone():
+                records = db.execute("SELECT e.id,e.task_id,e.payload FROM task_events e JOIN tasks t ON t.id=e.task_id "
+                    "WHERE e.kind='task_record' AND (json_extract(e.payload,'$.kind') IN ('owner_reply','feature_input') "
+                    "OR t.status='done') AND t.id IN ("+external+") ORDER BY e.id").fetchall()
             runs = db.execute("SELECT task_id,id,status,outcome,metadata FROM task_runs WHERE id IN (SELECT MAX(id) FROM task_runs GROUP BY task_id) AND task_id IN ("+external+") ORDER BY task_id").fetchall()
-            summaries.append((board.parent.name, digest([tasks, links, comments, runs])))
+            summaries.append((board.parent.name, digest([tasks, links, comments, records, runs])))
     # Running work may change continuously. Only its end should wake recovery.
     if busy:
         return 'BUSY: existing global-idle recovery rule applies'
