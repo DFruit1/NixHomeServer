@@ -53,6 +53,22 @@ dependency needs qualification, never an automatic downgrade to older bytes.
 Native Hermes upgrades still use their owning supported maintenance path; the
 next fleet release records the resulting qualified baseline.
 
+An independently approved reviewer model-order change may be retained with
+`plan --adopt-config RECEIPT.json` and `apply --adopt-config RECEIPT.json`.
+The explicit receipt contains `schema_version: 1`, `prior_release`,
+`path: "profiles/feature-reviewer/config.yaml"`, `prior_sha256`,
+`observed_sha256` and the exact `grant_reference`. This narrow adoption accepts
+only a rearrangement of existing primary/fallback provider/model pairs. It
+requires a verified retained prior postimage, unchanged mode and every other
+config field unchanged, including credentials, endpoints, reasoning and tool
+policy. Other drift remains a refusal. The new release binds the receipt and
+prior manifest identity, retains the owner's current config and journals its
+rollback preimage. A new immutable adoption baseline records the prior runtime
+with that approved config; union rollback lands there with clean readback. That
+baseline cannot roll back to the obsolete model order. Historical manifests
+remain immutable. Adoption records a
+qualified existing change and grants no new model or credential authority.
+
 An authentic native head-coordinator may use the same entrypoint with
 `--review-card t_REVIEW`, within its existing tool fence. The latest independent
 verification must accept the exact release ID, source_revision, fleet_action

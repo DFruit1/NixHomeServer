@@ -130,10 +130,18 @@ def configure_model(text):
     agent['reasoning_effort'] = 'high'
     overrides['deepseek-v4.1-flash'] = 'high'
     agent['reasoning_overrides'] = overrides
-    for key, value in (('model', model), ('agent', agent)):
+    settings = {'model': model, 'agent': agent}
+    providers = original.get('providers') or {}
+    go = providers.get('opencode-go') if isinstance(providers, dict) else None
+    if isinstance(go, dict) and isinstance(go.get('key_cmd'), str) and go['key_cmd'].strip():
+        # Hermes' turn-boundary env refresh otherwise replaces the selected
+        # device-token command with an obsolete static key before its first call.
+        go = {key: value for key, value in go.items() if key not in {'key_env', 'api_key_env'}}
+        settings['providers'] = {**providers, 'opencode-go': go}
+    for key, value in settings.items():
         if original.get(key) != value:
             text = replace_setting(text, key, json.dumps(value))
-    expected = {**original, 'model': model, 'agent': agent}
+    expected = {**original, **settings}
     if document(text) != expected:
         raise ValueError('Steward model edit would change unrelated settings')
     return text

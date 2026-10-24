@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import stat
 import subprocess
 import sys
 import time
@@ -507,15 +508,151 @@ def merge_owned(pending, owners, changes, owner, *, compose=False):
         owners[path] = sorted(set(previous) | {owner})
 
 
-def pending_files(root, source, plan, *, owners=None):
+def bounded_regular(path, *, limit=1024*1024):
+    try:fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+    except OSError:
+        raise ValueError('Required adoption evidence is missing or unavailable') from None
+    with os.fdopen(fd,'rb') as stream:
+        info=os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_size>limit:
+            raise ValueError('Adoption evidence must be a bounded regular file')
+        value=stream.read(limit+1)
+        if len(value)>limit:raise ValueError('Adoption evidence exceeds its bound')
+        return value
+
+
+def model_choices(text):
+    """Compare the complete configuration without exposing credential values."""
+    from hermes_config import document
+    data=document(text)
+    model=data.get('model')
+    fallback=data.get('fallback_providers')
+    if not isinstance(model,dict) or not isinstance(fallback,list) or len(fallback)>8:
+        raise ValueError('Model adoption requires explicit model and bounded fallback mappings')
+    def pair(value, keys):
+        if (not isinstance(value,dict) or (keys and set(value)!=keys)
+                or any(not isinstance(value.get(key),str) or not re.fullmatch(r'\S{1,256}',value[key])
+                       for key in ('provider','model'))):
+            raise ValueError('Fallback adoption supports provider/model pairs without extra settings')
+        return (value['provider'],value['model'])
+    primary=pair({'provider':model.get('provider'),'model':model.get('default')},None)
+    chain=[primary,*[pair(entry,{'provider','model'}) for entry in fallback]]
+    choices={'default':model['default'],'provider':model['provider'],'fallback_providers':fallback}
+    remaining={**data,'model':{key:value for key,value in model.items() if key not in {'default','provider'}}}
+    remaining.pop('fallback_providers')
+    try:
+        # JSON retains bool/int and other scalar type differences that ordinary
+        # Python mapping equality would overlook. Unsupported YAML fails closed.
+        projection=json.dumps(remaining,sort_keys=True,allow_nan=False)
+    except (TypeError,ValueError):
+        raise ValueError('Unsupported configuration values for bounded model adoption') from None
+    return choices,sorted(chain),projection
+
+
+def config_adoption(root, receipt_path):
+    """Qualify one recorded owner grant; a receipt never supplies authority."""
+    receipt_path=receipt_path.absolute()
+    if any(part.is_symlink() for part in (receipt_path,*receipt_path.parents)):
+        raise ValueError('Adoption receipt paths must not contain symlinks')
+    raw=bounded_regular(receipt_path,limit=8192)
+    def unique(pairs):
+        value={}
+        for key,item in pairs:
+            if key in value:raise ValueError('Duplicate adoption receipt key')
+            value[key]=item
+        return value
+    receipt=json.loads(raw,object_pairs_hook=unique)
+    keys={'schema_version','prior_release','path','prior_sha256','observed_sha256','grant_reference'}
+    if (not isinstance(receipt,dict) or set(receipt)!=keys or type(receipt['schema_version']) is not int
+            or receipt['schema_version']!=1
+            or receipt['path']!='profiles/feature-reviewer/config.yaml'
+            or any(not isinstance(receipt[key],str) or not re.fullmatch(r'[a-f0-9]{64}',receipt[key])
+                   for key in ('prior_sha256','observed_sha256'))
+            or not isinstance(receipt['grant_reference'],str) or not receipt['grant_reference'].strip()
+            or len(receipt['grant_reference'])>1000):
+        raise ValueError('Adoption receipt needs exact release, config hashes and existing owner grant reference')
+    state=json.loads(bounded_regular(checked(root,root/'state/fleet/current.json')))
+    if state!={'revision':receipt['prior_release'],'status':'active'}:
+        raise ValueError('Adoption receipt does not name the active prior release')
+    manifest_path=journal(root,receipt['prior_release'])
+    old_raw=bounded_regular(manifest_path)
+    manifest=json.loads(old_raw)
+    if manifest.get('status')!='active' or manifest.get('revision')!=receipt['prior_release']:
+        raise ValueError('Adoption requires an active immutable prior manifest')
+    matches=[item for item in manifest['files'] if item['path']==receipt['path']]
+    if len(matches)!=1:raise ValueError('Adopted config is not uniquely owned by the prior release')
+    entry=matches[0]
+    if (entry['after_sha256']!=receipt['prior_sha256'] or entry['before_sha256']!=entry['after_sha256']
+            or not isinstance(entry.get('preimage'),str)
+            or not re.fullmatch(r'[0-9]+\.before',entry['preimage'])):
+        raise ValueError('Prior config postimage is unavailable from a verified immutable preimage')
+    before=bounded_regular(checked(root,manifest_path.parent/entry['preimage']))
+    if sha(before)!=receipt['prior_sha256']:
+        raise ValueError('Prior config immutable preimage failed verification')
+    target=checked(root,root/receipt['path'])
+    observed=bounded_regular(target)
+    if sha(observed)!=receipt['observed_sha256'] or target.stat().st_mode&0o777!=entry['mode']:
+        raise ValueError('Observed owner config changed or has an unapproved mode')
+    if check_files(root,receipt['prior_release'])!=[receipt['path']]:
+        raise ValueError('Model adoption requires exactly its named config drift and no dependency drift')
+    if manifest.get('schedule') and check_schedules(root,manifest['schedule']):
+        raise ValueError('Model adoption cannot adopt schedule drift')
+    old_choices,old_pairs,old_rest=model_choices(before.decode())
+    choices,pairs,rest=model_choices(observed.decode())
+    if old_rest!=rest or old_pairs!=pairs or old_choices==choices:
+        raise ValueError('Model adoption permits only rearranging the existing provider/model chain')
+    return {**receipt,'receipt_sha256':sha(raw),'prior_manifest_sha256':sha(old_raw),
+            'prior_preimage':entry['preimage'],'mode':entry['mode']}
+
+
+def adoption_baseline(root, adoption, *, install=False):
+    """A new no-write baseline preserves the approved model order on rollback."""
+    raw=bounded_regular(journal(root,adoption['prior_release']))
+    if sha(raw)!=adoption['prior_manifest_sha256']:
+        raise ValueError('Prior immutable manifest changed during adoption')
+    previous=json.loads(raw)
+    identity={'adopted_from':adoption['prior_release'],'config_adoption':adoption}
+    revision=sha(json.dumps(identity,sort_keys=True).encode())
+    if not install:return {'revision':revision,'status':'active'}
+    retained={key:previous[key] for key in ('source_revision','dependencies','schedule','file_owners','workflow_versions')
+              if key in previous}
+    expected={item['path']:{'sha256':adoption['observed_sha256'] if item['path']==adoption['path']
+                           else item['after_sha256'],'mode':item['mode']} for item in previous['files']}
+    path=journal(root,revision)
+    if path.exists():
+        existing=json.loads(path.read_text())
+        inventory={item['path']:{'sha256':item['after_sha256'],'mode':item['mode']}
+                   for item in existing.get('files',[]) if item['before_sha256']==item['after_sha256']}
+        if (existing.get('status')!='active' or existing.get('adoption_baseline')!=identity
+                or existing.get('source')!=previous.get('source') or inventory!=expected
+                or len(existing.get('files',[]))!=len(expected) or existing.get('config_adoptions')!=[adoption]
+                or any(existing.get(key)!=value for key,value in retained.items())
+                or check_files(root,revision)
+                or (existing.get('schedule') and check_schedules(root,existing['schedule']))):
+            raise ValueError('Existing adoption baseline is incomplete or changed; reconcile its journal')
+    else:
+        pending={checked(root,root/item['path']):bounded_regular(checked(root,root/item['path'])).decode()
+                 for item in previous['files']}
+        context=dict(retained)
+        context.update(adoption_baseline=identity,config_adoptions=[adoption])
+        manifest=install_files(root,pending,revision,source=previous.get('source'),context=context,preimages=expected)
+        if check_files(root,revision) or (manifest.get('schedule') and check_schedules(root,manifest['schedule'])):
+            raise ValueError('Adoption baseline readback differs')
+        manifest['status']='active'
+        atomic_write(path,json.dumps(manifest,indent=2,sort_keys=True)+'\n',mode=0o600)
+    return {'revision':revision,'status':'active'}
+
+
+def pending_files(root, source, plan, *, owners=None, adopt_config=None, adoptions=None):
     directory = source / 'scripts/hermes'
     pending = {}
     owners = {} if owners is None else owners
     current_path = root/'state/fleet/current.json'
+    adoption=config_adoption(root,adopt_config) if adopt_config is not None else None
     if current_path.exists():
         previous = json.loads(current_path.read_text())
         if previous.get('status') == 'active':
-            if check_files(root,previous['revision'],dependencies=False):
+            if not adoption and check_files(root,previous['revision'],dependencies=False):
                 raise ValueError('Reconcile installed release drift before replacing it')
             manifest=json.loads(journal(root,previous['revision']).read_text())
             pending.update({root/item['path']:(root/item['path']).read_text() for item in manifest['files']})
@@ -548,6 +685,11 @@ def pending_files(root, source, plan, *, owners=None):
             request_hook=root/'hermes-agent/agent/api_request_hooks.py'
             merge_owned(pending,owners,{request_hook:module.patch_request_hook(request_hook.read_text())},'agent-usage')
         finally:sys.path[:]=original_path
+    if adoption:
+        target=root/adoption['path']
+        if model_choices(pending[target])[0]!=model_choices(bounded_regular(target).decode())[0]:
+            raise ValueError('Release composition would replace the adopted owner model choices')
+        if adoptions is not None:adoptions.append(adoption)
     return pending
 
 
@@ -616,6 +758,8 @@ def main():
     parser.add_argument('--source', type=Path)
     parser.add_argument('--revision')
     parser.add_argument('--review-card')
+    parser.add_argument('--adopt-config',type=Path,
+                        help='Exact receipt of an existing owner-approved provider/model rearrangement')
     parser.add_argument('--activate-steward', action='store_true',
                         help='Explicitly resume the two existing steward inspection jobs')
     args = parser.parse_args()
@@ -627,6 +771,9 @@ def main():
 
 
 def operate(args,root):
+    adopt_config=getattr(args,'adopt_config',None)
+    if adopt_config is not None and args.action not in {'plan','apply'}:
+        raise ValueError('Config adoption is available only during release plan/apply')
     state = checked(root,root/'state/fleet/current.json')
     current = json.loads(state.read_text()) if state.exists() else None
     if args.action in {'check','status','rollback'}:
@@ -636,6 +783,8 @@ def operate(args,root):
         manifest_path = journal(root,revision)
         manifest = json.loads(manifest_path.read_text())
         if args.action == 'rollback':
+            if manifest.get('adoption_baseline'):
+                raise ValueError('An owner config adoption baseline is retained; reversing it needs its own approved change')
             require_authority(root,args,revision,manifest.get('source_revision'),Path(manifest.get('source') or ''))
             require_rollback_compatibility(root,manifest)
             # Preflight file conflicts before modifying any schedules.
@@ -664,12 +813,14 @@ def operate(args,root):
     source_id = source_revision(source, clean=args.action=='apply')
     plan = schedule_plan(root, activate_steward=args.activate_steward, directory=source/'scripts/hermes')
     owners = {}
-    pending = pending_files(root,source,plan,owners=owners)
+    adoptions=[]
+    pending = pending_files(root,source,plan,owners=owners,adopt_config=adopt_config,adoptions=adoptions)
     dependencies=runtime_dependencies(root)
     # Dependencies are retained rather than overwritten; omit any file whose
     # new bytes this package itself owns from the baseline dependency set.
     dependencies={p:h for p,h in dependencies.items() if root/p not in pending}
-    ownership={str(p.relative_to(root)):owner for p,owner in sorted(owners.items())}
+    ownership={str(p.relative_to(root)):[item for item in owner if item!='retained-legacy'] or owner
+               for p,owner in sorted(owners.items())}
     content=dict(source_revision=source_id,dependencies=dependencies,ownership=ownership,
                   files={str(p.relative_to(root)):sha(t.encode()) for p,t in sorted(pending.items())})
     content_id=sha(json.dumps(content,sort_keys=True).encode())
@@ -677,13 +828,16 @@ def operate(args,root):
                                        'mode':p.stat().st_mode & 0o777 if value is not None else None}
                for p in pending for value in [read(checked(root,p))]}
     identity=dict(content_id=content_id,action='apply',schedules=plan,preimages=preimages)
+    baseline=adoption_baseline(root,adoptions[0]) if adoptions else None
+    if baseline:identity.update(adoption_baseline=baseline,config_adoptions=adoptions)
     revision=sha(json.dumps(identity,sort_keys=True).encode())
     for path,text in pending.items():
         checked(root,path)
         if path.suffix=='.py':compile(text,str(path),'exec')
     if args.action=='plan':
         print(json.dumps(dict(revision=revision,source_revision=source_id,files=[str(p.relative_to(root)) for p in pending],
-                              file_owners=ownership,schedules=plan),indent=2,sort_keys=True))
+                              file_owners=ownership,schedules=plan,
+                              **({'config_adoptions':adoptions,'adoption_baseline':baseline} if adoptions else {})),indent=2,sort_keys=True))
         return 0
     if current and current.get('status')=='active':
         installed=json.loads(journal(root,current['revision']).read_text())
@@ -707,9 +861,14 @@ def operate(args,root):
     for item in schedule_records(plan):
         if item and observed(root,item)!=item['before']:
             raise ValueError('Schedule input changed during preflight')
+    if adoptions:
+        if config_adoption(root,adopt_config)!=adoptions[0]:
+            raise ValueError('Config adoption evidence changed during preflight')
+        current=adoption_baseline(root,adoptions[0],install=True)
     context=dict(source_revision=source_id,dependencies=dependencies,authority=authority,
                  previous_release=current,schedule=plan,content_id=content_id,file_owners=ownership,
                  workflow_versions=[1])
+    if adoptions:context['config_adoptions']=adoptions
     manifest=install_files(root,pending,revision,source=source,context=context,preimages=preimages)
     manifest_path=journal(root,revision)
     atomic_write(manifest_path,json.dumps(manifest,indent=2,sort_keys=True)+'\n',mode=0o600)

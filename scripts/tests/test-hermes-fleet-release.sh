@@ -3,6 +3,7 @@ set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 python3 -B - "$repo" <<'PY'
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -11,6 +12,7 @@ import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+from contextlib import redirect_stdout
 
 sys.path.insert(0, str(Path(sys.argv[1]) / 'scripts/hermes'))
 spec = importlib.util.spec_from_file_location('release', Path(sys.argv[1]) / 'scripts/hermes/fleet-release.py')
@@ -19,6 +21,219 @@ spec.loader.exec_module(release)
 
 
 class ReleaseTest(unittest.TestCase):
+    def adoption_fixture(self):
+        self.config=self.root/'profiles/feature-reviewer/config.yaml'
+        self.config.parent.mkdir(parents=True)
+        self.old_config=("model: {default: glm-5.3, provider: 'custom:opencode-go'}\n"
+                         "fallback_providers: [{provider: openai-codex, model: gpt-6.1-sol}]\n"
+                         "agent: {reasoning_effort: high}\nhooks: {pre_tool_call: [retained]}\n"
+                         "permissions: {shell: false}\napi_key: synthetic-retained-value\n")
+        self.adopted_config=("model: {default: gpt-6.1-sol, provider: openai-codex}\n"
+                             "fallback_providers: [{provider: 'custom:opencode-go', model: glm-5.3}]\n"
+                             "agent: {reasoning_effort: high}\nhooks: {pre_tool_call: [retained]}\n"
+                             "permissions: {shell: false}\napi_key: synthetic-retained-value\n")
+        self.config.write_text(self.old_config)
+        self.config.chmod(0o600)
+        release.install_files(self.root,{self.config:self.old_config},'a'*64)
+        manifest_path=release.journal(self.root,'a'*64)
+        manifest=json.loads(manifest_path.read_text());manifest['status']='active'
+        manifest_path.write_text(json.dumps(manifest))
+        self.original_manifest=manifest_path.read_bytes()
+        (self.root/'state/fleet/current.json').write_text(json.dumps({'revision':'a'*64,'status':'active'}))
+        self.config.write_text(self.adopted_config)
+        self.receipt=self.root/'approved-model-adoption.json'
+        self.adoption={'schema_version':1,'prior_release':'a'*64,
+                       'path':'profiles/feature-reviewer/config.yaml',
+                       'prior_sha256':release.sha(self.old_config.encode()),
+                       'observed_sha256':release.sha(self.adopted_config.encode()),
+                       'grant_reference':'T3 cebd27fb-7963-43fb-aa17-e036048ffec6 owner model decision'}
+        self.receipt.write_text(json.dumps(self.adoption))
+        source=self.root/'source/scripts/hermes';source.mkdir(parents=True)
+        helpers=('deadlock_recovery.py','feature_flow.py','capability_recovery.py','feature_contract.py',
+                 'fleet_contract.py','fleet-release.py','fleet-evidence.py','fleet-supervisor.py','fleet-report.py',
+                 'kanban-analytics.py','agent-usage.py','agent_usage_report.py','agent_usage_guard.py',
+                 'langfuse_mcp.py','coordinator_trial.py','fleet_workflow.py','idle-recovery-monitor.py',
+                 'kanban-board-health.sh','board_progress.py')
+        for helper in helpers:(source/helper).write_text('# fixture\n')
+        (source/'install-steward-readonly.py').write_text('def profile_files(root,pending):return {}\n')
+        self.adoption_source=source.parents[1]
+        self.adoption_plan={'pause':[],'steward':[],'daily':None,'supervisor':None,'handlers':{}}
+        return manifest
+
+    def adoption_pending(self, *, adopt=True, changes=None):
+        records=[]
+        with patch.object(release,'source_changes',return_value=changes or {}):
+            pending=release.pending_files(self.root,self.adoption_source,self.adoption_plan,
+                adopt_config=self.receipt if adopt else None,adoptions=records)
+        return pending,records
+
+    def test_explicit_model_adoption_preserves_runtime_and_old_manifest_then_rolls_back_to_owner_choice(self):
+        self.adoption_fixture()
+        before=self.config.read_bytes()
+        pending,records=self.adoption_pending()
+        self.assertEqual(before,pending[self.config].encode())
+        self.assertEqual(before,self.config.read_bytes())
+        self.assertEqual(1,len(records))
+        self.assertEqual(self.adoption['grant_reference'],records[0]['grant_reference'])
+        self.assertEqual(release.sha(self.receipt.read_bytes()),records[0]['receipt_sha256'])
+        self.assertEqual(self.original_manifest,release.journal(self.root,'a'*64).read_bytes())
+        self.assertEqual(['profiles/feature-reviewer/config.yaml'],release.check_files(self.root,'a'*64))
+        transformed=self.adopted_config.replace('pre_tool_call: [retained]','pre_tool_call: [reviewed-new-hook]')
+        pending,records=self.adoption_pending(changes={self.config:transformed})
+        release.install_files(self.root,pending,'b'*64,context={'config_adoptions':records})
+        manifest=json.loads(release.journal(self.root,'b'*64).read_text())
+        self.assertEqual(records,manifest['config_adoptions'])
+        self.assertEqual(transformed,self.config.read_text())
+        release.rollback_files(self.root,'b'*64)
+        self.assertEqual(before,self.config.read_bytes())
+        self.assertEqual(self.original_manifest,release.journal(self.root,'a'*64).read_bytes())
+
+    def test_model_adoption_requires_explicit_receipt_and_exact_single_drift(self):
+        self.adoption_fixture()
+        with self.assertRaises(ValueError):self.adoption_pending(adopt=False)
+        release.atomic_write(self.root/'scripts/unowned.py','changed=1\n',mode=0o600)
+        old=json.loads(release.journal(self.root,'a'*64).read_text())
+        old['files'].append({'path':'scripts/unowned.py','before_sha256':None,
+                             'after_sha256':release.sha(b'original=1\n'),'mode':0o600,'preimage':None})
+        release.journal(self.root,'a'*64).write_text(json.dumps(old))
+        with self.assertRaises(ValueError):self.adoption_pending()
+
+    def test_model_adoption_refuses_stale_receipt_or_unverified_immutable_preimage(self):
+        manifest=self.adoption_fixture()
+        for key,value in [('prior_release','b'*64),('prior_sha256','0'*64),('observed_sha256','0'*64),
+                          ('path','scripts/owned.py'),('schema_version',True),('unknown','unused')]:
+            with self.subTest(key=key):
+                self.receipt.write_text(json.dumps({**self.adoption,key:value}))
+                with self.assertRaises(ValueError):self.adoption_pending()
+        self.receipt.write_text(json.dumps(self.adoption))
+        preimage=release.journal(self.root,'a'*64).parent/manifest['files'][0]['preimage']
+        preimage.write_text('tampered retained preimage')
+        with self.assertRaises(ValueError):self.adoption_pending()
+        preimage.unlink()
+        with self.assertRaises(ValueError):self.adoption_pending()
+
+    def test_model_adoption_refuses_credential_tool_reasoning_endpoint_and_duplicate_fallback_changes(self):
+        self.adoption_fixture()
+        changes=[('synthetic-retained-value','different-synthetic-value'),('shell: false','shell: true'),
+                 ('pre_tool_call: [retained]','pre_tool_call: []'),('reasoning_effort: high','reasoning_effort: low'),
+                 ('provider: openai-codex}','provider: openai-codex, base_url: https://example.invalid}'),
+                 ('model: glm-5.3}]','model: glm-5.3, key_env: CHANGED}]'),
+                 ('model: glm-5.3}]','model: glm-5.3}, {provider: openai-codex, model: gpt-6.1-sol}]')]
+        for before,after in changes:
+            with self.subTest(change=after):
+                changed=self.adopted_config.replace(before,after)
+                self.assertNotEqual(self.adopted_config,changed)
+                self.config.write_text(changed)
+                self.receipt.write_text(json.dumps({**self.adoption,'observed_sha256':release.sha(changed.encode())}))
+                with self.assertRaises(ValueError):self.adoption_pending()
+
+    def test_model_adoption_refuses_modes_symlinks_and_composition_reverting_model_order(self):
+        self.adoption_fixture()
+        self.config.chmod(0o640)
+        with self.assertRaises(ValueError):self.adoption_pending()
+        self.config.chmod(0o600)
+        with self.assertRaises(ValueError):self.adoption_pending(changes={self.config:self.old_config})
+        target=self.root/'retained-config';self.config.rename(target);self.config.symlink_to(target)
+        with self.assertRaises(ValueError):self.adoption_pending()
+
+    def test_model_adoption_is_bound_to_plan_and_apply_identity_and_does_not_skip_schedule_or_dependencies(self):
+        self.adoption_fixture()
+        arguments=SimpleNamespace(action='plan',source=self.adoption_source,revision=None,review_card=None,
+                                  activate_steward=False,adopt_config=self.receipt)
+        def invoke():
+            output=io.StringIO()
+            with redirect_stdout(output),patch.object(release,'source_revision',return_value='c'*40),\
+                 patch.object(release,'schedule_plan',return_value=self.adoption_plan),\
+                 patch.object(release,'source_changes',return_value={}),\
+                 patch.object(release,'runtime_dependencies',return_value={}):
+                result=release.operate(arguments,self.root)
+            return result,output.getvalue()
+        result,output=invoke();self.assertEqual(0,result)
+        plan=json.loads(output);self.assertEqual(1,len(plan['config_adoptions']))
+        first=plan['revision']
+        self.receipt.write_text(json.dumps({**self.adoption,'grant_reference':'Different exact owner decision'}))
+        self.assertNotEqual(first,json.loads(invoke()[1])['revision'])
+        arguments.action='apply'
+        with self.assertRaisesRegex(ValueError,'runtime dependency'):invoke()
+        self.assertEqual(self.adopted_config,self.config.read_text())
+
+    def test_adoption_apply_and_explicit_rollback_land_on_clean_immutable_owner_baseline(self):
+        self.adoption_fixture()
+        for name in ('deadlock_recovery.py','kanban-retry-breaker.sh','kanban-aging-escalation.py',
+                     'cron-loop-monitor.py','review-taskforce-tick.sh'):
+            (self.root/'scripts'/name).write_text('# retained fixture dependency\n')
+        arguments=SimpleNamespace(action='apply',source=self.adoption_source,revision=None,review_card=None,
+                                  activate_steward=False,adopt_config=self.receipt)
+        transformed=self.adopted_config.replace('pre_tool_call: [retained]','pre_tool_call: [reviewed-new-hook]')
+        with redirect_stdout(io.StringIO()),patch.object(release,'source_revision',return_value='c'*40),\
+             patch.object(release,'schedule_plan',return_value=self.adoption_plan),\
+             patch.object(release,'source_changes',return_value={self.config:transformed}),\
+             patch.object(release,'runtime_dependencies',return_value={}),\
+             patch.object(release,'apply_schedules') as schedules:
+            self.assertEqual(0,release.operate(arguments,self.root))
+        schedules.assert_called_once()
+        union=json.loads((self.root/'state/fleet/current.json').read_text())
+        manifest=json.loads(release.journal(self.root,union['revision']).read_text())
+        baseline=manifest['previous_release']
+        self.assertNotEqual('a'*64,baseline['revision'])
+        self.assertEqual('active',json.loads(release.journal(self.root,baseline['revision']).read_text())['status'])
+        self.assertEqual(transformed,self.config.read_text())
+        # Adoption is one operation's provenance; ordinary clean reapply uses
+        # desired source/content identity and must not mint another journal.
+        arguments.adopt_config=None
+        journals=sorted((self.root/'state/fleet/releases').glob('*/manifest.json'))
+        with redirect_stdout(io.StringIO()),patch.object(release,'source_revision',return_value='c'*40),\
+             patch.object(release,'schedule_plan',return_value=self.adoption_plan),\
+             patch.object(release,'source_changes',return_value={self.config:transformed}),\
+             patch.object(release,'runtime_dependencies',return_value={}),\
+             patch.object(release,'install_files',side_effect=AssertionError('clean reapply must not install')):
+            self.assertEqual(0,release.operate(arguments,self.root))
+        self.assertEqual(journals,sorted((self.root/'state/fleet/releases').glob('*/manifest.json')))
+        # Explicit revision rollback must work even if current publication was
+        # interrupted and the pointer still names the old, visibly drifted one.
+        (self.root/'state/fleet/current.json').write_text(json.dumps({'revision':'a'*64,'status':'active'}))
+        arguments.action='rollback';arguments.revision=union['revision'];arguments.adopt_config=None
+        self.assertEqual(0,release.operate(arguments,self.root))
+        self.assertEqual(baseline,json.loads((self.root/'state/fleet/current.json').read_text()))
+        self.assertEqual([],release.check_files(self.root,baseline['revision']))
+        self.assertEqual(self.adopted_config,self.config.read_text())
+        self.assertEqual(self.original_manifest,release.journal(self.root,'a'*64).read_bytes())
+        with self.assertRaisesRegex(ValueError,'baseline'):
+            arguments.revision=baseline['revision'];release.operate(arguments,self.root)
+
+    def test_verified_adoption_baseline_is_reused_after_interruption_and_refuses_partial_or_changed_journal(self):
+        self.adoption_fixture()
+        record=release.config_adoption(self.root,self.receipt)
+        baseline=release.adoption_baseline(self.root,record,install=True)
+        path=release.journal(self.root,baseline['revision']);original=path.read_bytes()
+        self.assertEqual(baseline,release.adoption_baseline(self.root,record,install=True))
+        self.assertEqual(original,path.read_bytes())
+        self.assertEqual({'revision':'a'*64,'status':'active'},json.loads((self.root/'state/fleet/current.json').read_text()))
+        self.assertEqual(self.adopted_config,self.config.read_text())
+        for change in ({'status':'applying'},{'files':[]},{'source':'unrelated'},
+                       {'config_adoptions':[]},{'adoption_baseline':{}}):
+            with self.subTest(change=change):
+                path.write_text(json.dumps({**json.loads(original),**change}))
+                with self.assertRaises(ValueError):release.adoption_baseline(self.root,record,install=True)
+        path.write_bytes(original)
+        self.config.write_text(self.adopted_config+'# another writer\n')
+        with self.assertRaises(ValueError):release.adoption_baseline(self.root,record,install=True)
+
+    def test_adoption_refuses_prior_postimage_unavailable_dependency_or_schedule_drift(self):
+        manifest=self.adoption_fixture()
+        path=release.journal(self.root,'a'*64)
+        manifest['files'][0]['before_sha256']='0'*64
+        path.write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(ValueError,'postimage'):self.adoption_pending()
+        manifest['files'][0]['before_sha256']=manifest['files'][0]['after_sha256']
+        manifest['dependencies']={'scripts/owned.py':'0'*64}
+        path.write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(ValueError,'dependency'):self.adoption_pending()
+        manifest.pop('dependencies');manifest['schedule']=self.adoption_plan
+        path.write_text(json.dumps(manifest))
+        with patch.object(release,'check_schedules',return_value=['owner-changed-schedule']):
+            with self.assertRaisesRegex(ValueError,'schedule'):self.adoption_pending()
+
     def test_coordinator_trial_sets_effective_medium_and_preserves_other_settings(self):
         from coordinator_trial import configure
         from hermes_config import document
