@@ -426,6 +426,10 @@ class AlertsTest(unittest.TestCase):
         self.assertFalse((self.root / 'kanban/owner-alerts').exists())
 
     def test_check_blockers_warns_on_unclassified_capability_hold(self):
+        # Keep age fresh so this regression isolates supplier classification.
+        with closing(sqlite3.connect(self.boards['two'])) as db:
+            db.execute('UPDATE task_events SET created_at=?', (int(alerts.time.time()),))
+            db.commit()
         environment = {**os.environ, 'HERMES_ROOT': str(self.root)}
         before = self.board_bytes()
         result = subprocess.run([sys.executable, '-B', alerts.__file__, '--check-blockers'],
@@ -444,6 +448,125 @@ class AlertsTest(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertNotIn('two:t_12345678', result.stdout)
         self.assertFalse((self.root / 'kanban/owner-alerts').exists())
+
+    def test_old_decision_identity_survives_blocked_at_metadata(self):
+        board = self.root / 'kanban/boards/one/board.json'
+        # Exercise the real old schema, rather than calling a timestamp column
+        # with a NULL value an old-schema fixture.
+        with closing(sqlite3.connect(self.boards['one'])) as db:
+            db.execute('ALTER TABLE task_events DROP COLUMN created_at')
+            db.commit()
+        current_snapshot = alerts.snapshot
+
+        def legacy_snapshot(board_file, task_id=None):
+            tasks = current_snapshot(board_file, task_id)
+            for task in tasks:
+                task.pop('blocked_at', None)
+            return tasks
+
+        # Persist a real delivered D1 using the pre-metadata snapshot shape.
+        with patch.object(alerts, 'snapshot', side_effect=legacy_snapshot):
+            alerts.tick(self.root, now=1000)
+        prior = alerts.load_inbox(self.root)
+        receipt = prior['decisions']['D1'].copy()
+        self.assertEqual(['simplex:3'], receipt['delivered'])
+        self.assertEqual(1, len(self.sent))
+
+        for timestamp in (None, 1000, 2000):
+            with self.subTest(blocked_at=timestamp):
+                if timestamp is not None:
+                    with closing(sqlite3.connect(self.boards['one'])) as db:
+                        if timestamp == 1000:
+                            db.execute('ALTER TABLE task_events ADD COLUMN created_at INTEGER')
+                        db.execute('UPDATE task_events SET created_at=?', (timestamp,))
+                        db.commit()
+                before = self.board_bytes()
+                self.assertEqual(timestamp, alerts.snapshot(board)[0]['blocked_at'])
+                if timestamp is None:
+                    self.assertFalse(any('one:t_12345678: blocked hold held for' in warning
+                                         for warning in alerts.capability_warnings(self.root)))
+                self.assertEqual(receipt['token'], alerts.token(alerts.snapshot(board)[0]))
+                self.assertTrue(alerts.resolve(self.root, 'D1')['can_reply'])
+                alerts.tick(self.root, now=3000)
+                migrated = alerts.load_inbox(self.root)
+                self.assertEqual(receipt, migrated['decisions']['D1'])
+                self.assertEqual({'D1'}, set(migrated['decisions']))
+                self.assertEqual(2, migrated['next_label'])
+                self.assertEqual(prior['delivery'], migrated['delivery'])
+                self.assertEqual(1, len(self.sent))
+                self.assertEqual(before, self.board_bytes())
+
+        # Metadata compatibility must not make a changed question answerable
+        # through its old label or suppress delivery of the new question.
+        self.mark('one', 'ASK: Postpone the repair?\n'
+                        'Blocking: The repair is ready but its timing is undecided.\n'
+                        'Why owner: Only you can choose when the repair may start.\n'
+                        'Unblock: Approve starting today or postpone the repair.')
+        self.assertFalse(alerts.resolve(self.root, 'D1')['can_reply'])
+        alerts.tick(self.root, now=3001)
+        revised = alerts.load_inbox(self.root)
+        self.assertEqual(receipt, revised['decisions']['D1'])
+        self.assertNotEqual(receipt['token'], revised['decisions']['D2']['token'])
+        self.assertEqual(['simplex:3'], revised['decisions']['D2']['delivered'])
+        self.assertTrue(alerts.resolve(self.root, 'D2')['can_reply'])
+        self.assertIn('timing is undecided', self.sent[-1])
+        self.assertEqual(2, len(self.sent))
+
+    def test_check_blockers_warns_on_missing_supplier_and_stale_hold_age(self):
+        with closing(sqlite3.connect(self.boards['one'])) as db:
+            db.execute('UPDATE task_events SET created_at=1000')
+            db.commit()
+        before = self.board_bytes()
+        result = subprocess.run([sys.executable, '-B', alerts.__file__, '--check-blockers'],
+                                env={**os.environ, 'HERMES_ROOT': str(self.root)},
+                                text=True, capture_output=True)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn('one:t_12345678: blocked hold names no input supplier', result.stdout)
+        self.assertIn('two:t_12345678: capability hold names no input supplier', result.stdout)
+        self.assertRegex(result.stdout, r'one:t_12345678: blocked hold held for \d+ hours \(threshold 24 hours\)')
+        self.assertEqual(before, self.board_bytes())
+        self.assertFalse((self.root / 'kanban/owner-alerts').exists())
+        self.assertFalse(self.sent)
+
+    def test_stale_hold_age_uses_a_strict_threshold_independent_of_supplier(self):
+        now = 1_000_000
+        with closing(sqlite3.connect(self.boards['two'])) as db:
+            db.execute("UPDATE tasks SET status='done'")
+            db.commit()
+        for kind in ('needs_input', 'capability', 'dependency'):
+            for timestamp in (None, 'unknown', now + 3600, now, now - 86400, now - 90001):
+                with self.subTest(kind=kind, blocked_at=timestamp):
+                    with closing(sqlite3.connect(self.boards['one'])) as db:
+                        db.execute('UPDATE tasks SET block_kind=?', (kind,))
+                        db.execute('UPDATE task_events SET created_at=?, payload=?',
+                                   (timestamp, json.dumps({'reason': 'Input supplier: agent.'})))
+                        db.commit()
+                    before = self.board_bytes()
+                    with patch.object(alerts.time, 'time', return_value=now):
+                        warnings = alerts.capability_warnings(self.root)
+                    expected = (['one:t_12345678: blocked hold held for 25 hours (threshold 24 hours)']
+                                if timestamp == now - 90001 else [])
+                    self.assertEqual(expected, warnings)
+                    self.assertEqual(before, self.board_bytes())
+        self.assertFalse((self.root / 'kanban/owner-alerts').exists())
+
+    def test_snapshot_blocked_at_follows_the_latest_block_event(self):
+        board = self.root / 'kanban/boards/one/board.json'
+        with closing(sqlite3.connect(self.boards['one'])) as db:
+            db.execute('UPDATE task_events SET created_at=1000')
+            db.execute('INSERT INTO task_events VALUES (?,?,?,?,?)',
+                       (2, 't_12345678', 'status', json.dumps({'status': 'blocked', 'reason': 'New hold'}), 2000))
+            db.execute('INSERT INTO task_events VALUES (?,?,?,?,?)',
+                       (3, 't_12345678', 'comment', '{}', 3000))
+            db.commit()
+        before = self.board_bytes()
+        task = alerts.snapshot(board)[0]
+        self.assertEqual((2, 2000, 'New hold'), (task['event_id'], task['blocked_at'], task['reason']))
+        self.assertEqual(before, self.board_bytes())
+        with closing(sqlite3.connect(self.boards['one'])) as db:
+            db.execute('DELETE FROM task_events')
+            db.commit()
+        self.assertIsNone(alerts.snapshot(board)[0]['blocked_at'])
 
     def board_bytes(self):
         return {name: path.read_bytes() for name, path in self.boards.items()}
@@ -930,8 +1053,9 @@ class AlertsTest(unittest.TestCase):
                         run.assert_not_called()
                     self.assertEqual(before, {p: p.read_bytes() for p in self.root.rglob('*') if p.is_file()})
 
+test_filter = [os.environ['ALERTS_TEST_FILTER']] if os.environ.get('ALERTS_TEST_FILTER') else []
 with patch.dict(os.environ):
     os.environ.pop('HERMES_DELEGATED_CHILD_CONTEXT', None)
     os.environ.pop('HERMES_KANBAN_TASK', None)
-    unittest.main(argv=['alerts'], verbosity=2)
+    unittest.main(argv=['alerts', *test_filter], verbosity=2)
 PY
