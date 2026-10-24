@@ -125,20 +125,22 @@ class AdapterTest(unittest.TestCase):
         from types import ModuleType
         called=[]
         helper=ModuleType('hermes_cli.nixhomeserver_worker_origin')
-        helper.record_launch=lambda proc:called.append(proc)
+        process=object()
+        helper.popen_terminal=lambda *args,**kwargs: called.append((args,kwargs)) or process
         package=ModuleType('hermes_cli');package.nixhomeserver_worker_origin=helper
-        source=('def spawn(proc):\n'
-                '        if not _IS_WINDOWS:\n'
-                '            with contextlib.suppress(ProcessLookupError):\n'
-                '                pass\n')
+        source=('def spawn(self, args):\n'
+                '        proc = subprocess.Popen(\n'
+                '            args, text=True, env=_make_run_env(self.env), encoding="utf-8", errors="replace",\n'
+                '        )\n'
+                '        return proc\n')
         adapted=adapt_local(source)
         self.assertEqual(adapted,adapt_local(adapted))
-        import contextlib
-        scope={'_IS_WINDOWS':False,'contextlib':contextlib}
+        scope={'_make_run_env':lambda env:env}
         with patch.dict(sys.modules,{'hermes_cli':package}):
             exec(compile(adapted,'native-local.py','exec'),scope)
-            process=object();scope['spawn'](process)
-        self.assertEqual([process],called)
+            result=scope['spawn'](SimpleNamespace(env={}), ['true'])
+        self.assertIs(process,result)
+        self.assertEqual([((['true'],),{'text':True,'env':{},'encoding':'utf-8','errors':'replace'})],called)
         for changed in ('pass\n',source+source):
             with self.assertRaises(ValueError):adapt_local(changed)
 
@@ -159,7 +161,9 @@ class InstallerTest(unittest.TestCase):
         self.before=self.native.read_bytes()
         self.local=self.root/'hermes-agent/tools/environments/local.py'
         self.local.parent.mkdir(parents=True)
-        self.local.write_text('def spawn():\n        if not _IS_WINDOWS:\n            with contextlib.suppress(ProcessLookupError):\n                pass\n')
+        self.local.write_text('def spawn(self, args):\n        proc = subprocess.Popen(\n'
+                              '            args, text=True, env=_make_run_env(self.env), encoding="utf-8", errors="replace",\n'
+                              '        )\n')
         self.helper=self.root/'hermes-agent/hermes_cli/nixhomeserver_worker_origin.py'
 
     def test_check_is_read_only_and_apply_is_backed_up_atomic_and_idempotent(self):
