@@ -1085,6 +1085,211 @@ class RepairTest(unittest.TestCase):
                 f'{delivered}; readback sha256 {digest} verified; '
                 'clarify this episode only, preserving the failed review gate.')
 
+    def blocked_supplier_episode(self, source='ready'):
+        """run716 shape: first run-bound capability block, no supplier or breaker."""
+        self.conn.execute("UPDATE tasks SET status='running',skills='[]',block_kind=NULL,"
+                          "max_retries=NULL,consecutive_failures=0,block_recurrences=0,"
+                          "current_run_id=716,claim_lock='gap',claim_expires=? WHERE id=?",
+                          (self.now+600,self.target))
+        self.conn.execute("INSERT INTO task_runs(id,task_id,status,profile,started_at,claim_lock) "
+                          "VALUES(716,?,'running','feature-reviewer',?,'gap')",(self.target,self.now-30))
+        kb._append_event(self.conn,self.target,'claimed',{'source_status':source},run_id=716)
+        self.conn.commit()
+        old=('Routing step refused: review-verdict guard rejects unlink(t_2ccbc2bd -> t_1710155c) '
+             'because review t_2ccbc2bd has no completed verifier run, yet its reviewer withholds '
+             'the verdict pending that same routing fix (deadlock). Need warranted '
+             'capability-recovery path (per hermes-capability-recovery.md:97-109) or explicit '
+             'coordinator decision to retire the gate lawfully without bypassing the guard.')
+        self.assertTrue(kb.block_task(self.conn,self.target,kind='capability',reason=old))
+        event=self.conn.execute("SELECT * FROM task_events WHERE task_id=? AND kind='blocked' "
+                                "ORDER BY id DESC LIMIT 1",(self.target,)).fetchone()
+        self.assertEqual({'reason':old,'kind':'capability','recurrences':1,'source_status':source},
+                         json.loads(event['payload']))
+        row=kb.get_task(self.conn,self.target)
+        self.assertEqual(('blocked','capability',1,0,None,None),
+                         (row.status,row.block_kind,row.block_recurrences,row.consecutive_failures,
+                          row.max_retries,row.current_run_id))
+        # A separate spent checker and its downstream gates must survive classification.
+        checker=kb.create_task(self.conn,title='Spent checker; no retry permission',
+                               assignee='feature-reviewer',max_retries=1,triage=True)
+        self.conn.execute("UPDATE tasks SET status='blocked',consecutive_failures=1 WHERE id=?",(checker,))
+        self.conn.execute("INSERT INTO task_runs(id,task_id,status,profile,started_at,ended_at,outcome,metadata) "
+                          "VALUES(813,?,'done','feature-reviewer',?,?,'completed',?)",
+                          (checker,self.now-20,self.now-10,json.dumps({'consumed':True,'verdict':'request-changes'})))
+        for title in ('P1 gate; no allowance granted','P2 gate; no allowance granted'):
+            child=kb.create_task(self.conn,title=title,assignee='standard-implementer',triage=True)
+            self.conn.execute('INSERT INTO task_links(parent_id,child_id) VALUES(?,?)',(checker,child))
+        self.conn.execute('INSERT INTO task_links(parent_id,child_id) VALUES(?,?)',(self.target,checker))
+        self.conn.commit()
+        return {'run_id':716,'event_id':event['id']}
+
+    def test_blocked_supplier_clarification_preserves_spent_checker_and_all_gates(self):
+        episode=self.blocked_supplier_episode()
+        hold=self.current_hold();self.assertEqual('unclassified',hold['supplier'])
+        before=self.dump();version=repair.amend(kb,self.conn,self.target)['version']
+        self.assertTrue(self.amend_episode(episode,self.supplier_gap_reason())['applied'])
+        after=self.dump()
+        self.assertEqual(before[0],after[0]);self.assertEqual(before[1],after[1])
+        self.assertEqual(before[3],after[3]);self.assertEqual(before[2],after[2][:-1])
+        added=after[2][-1];payload=json.loads(added['payload'])
+        self.assertEqual(('blocked','blocked-supplier-clarification','ready','agent'),
+                         (added['kind'],payload['branch'],payload['resume_status'],payload['supplier']))
+        self.assertEqual((716,episode['event_id'],self.actor,42,version),
+                         (payload['source_run'],payload['source_event'],payload['actor_task'],
+                          payload['actor_run'],payload['expected_version']))
+        current=self.current_hold()
+        self.assertEqual('agent',current['supplier']);self.assertNotEqual(hold['version'],current['version'])
+        self.assertIsNone(resume_recovered._eligible(self.conn,kb.get_task(self.conn,self.target),current))
+        self.assertEqual(after,self.dump())  # inspection/eligibility never resumes work
+        for token in (version,repair.amend(kb,self.conn,self.target)['version']):
+            before=tuple(self.conn.iterdump())
+            with self.assertRaises(ValueError):
+                repair.amend(kb,self.conn,self.target,expected_version=token,
+                    changes={'block_kind':'capability'},reason=self.supplier_gap_reason(),terminal_episode=episode)
+            self.assertEqual(before,tuple(self.conn.iterdump()))
+
+    def test_blocked_supplier_model_review_phase_and_exact_schema_upgrade(self):
+        episode=self.blocked_supplier_episode(source='review');before=self.dump()
+        reason=self.supplier_gap_reason().replace('Input supplier: agent.', 'Input supplier: model/provider.')
+        from recovered_resume_adapter import adapt as resume_adapt
+        import tools.kanban_tools_schemas as schemas
+        from coordinator_repair_adapter import SCHEMA,PREVIOUS_BLOCKED_SUPPLIER_SCHEMA
+        current=adapt('tools/kanban_tools_schemas.py',resume_adapt('tools/kanban_tools_schemas.py',
+                      (native/'tools/kanban_tools_schemas.py').read_text()))
+        self.assertEqual(current,adapt('tools/kanban_tools_schemas.py',
+                                       current.replace(SCHEMA,PREVIOUS_BLOCKED_SUPPLIER_SCHEMA,1)))
+        self.assertEqual(current,adapt('tools/kanban_tools_schemas.py',current))
+        with self.assertRaises(ValueError):
+            adapt('tools/kanban_tools_schemas.py',
+                  PREVIOUS_BLOCKED_SUPPLIER_SCHEMA.replace('exact version', 'drift'))
+        exec(compile(current,'fixture-schemas','exec'),schemas.__dict__)
+        self.assertIn('ordinary run-bound capability BLOCKED supplier clarification',
+                      schemas.KANBAN_AMEND_SCHEMA['parameters']['properties']['terminal_episode']['description'])
+        module=types.ModuleType('tools.fixture_blocked_supplier')
+        exec(compile(adapt('tools/kanban_tools.py',resume_adapt('tools/kanban_tools.py',
+                     (native/'tools/kanban_tools.py').read_text())),'fixture-tools','exec'),module.__dict__)
+        inspected=json.loads(module._handle_amend({'task_id':self.target}))
+        result=json.loads(module._handle_amend({'task_id':self.target,'expected_version':inspected['version'],
+            'changes':{'block_kind':'capability'},'reason':reason,'terminal_episode':episode}))
+        self.assertTrue(result.get('applied'),result)
+        after=self.dump()
+        self.assertEqual(before[0],after[0]);self.assertEqual(before[1],after[1])
+        self.assertEqual(before[3],after[3]);self.assertEqual(before[2],after[2][:-1])
+        payload=json.loads(after[2][-1]['payload'])
+        self.assertEqual(('review','model/provider'),(payload['resume_status'],payload['supplier']))
+        self.assertEqual('review',kb._resume_status_from_events(self.conn,self.target))
+
+    def test_blocked_supplier_refusals_preserve_complete_database(self):
+        episode=self.blocked_supplier_episode();baseline=self.dump()
+        event=next(r for r in baseline[2] if r['id']==episode['event_id'])
+        payload=json.loads(event['payload']);reason=self.supplier_gap_reason()
+        cases=[]
+        for status in ('triage','scheduled','todo','ready','review','running','done','archived'):
+            cases.append((status,'UPDATE tasks SET status=? WHERE id=?',(status,self.target)))
+        for change in ("block_kind='needs_input'","block_kind='dependency'",
+                       "title='[FEATURE TRACKER gap]'","body='ASK: owner decision'",
+                       "claim_lock='active'","worker_pid=99","claim_expires=1",
+                       "current_run_id=716","block_recurrences=0","block_recurrences=99"):
+            cases.append((change,'UPDATE tasks SET '+change+' WHERE id=?',(self.target,)))
+        for change in ("ended_at=NULL","started_at=ended_at+1","status='running'",
+                       "outcome='failed'"):
+            cases.append((change,'UPDATE task_runs SET '+change+' WHERE id=716',()))
+        for change in ("run_id=42","run_id=NULL","created_at=0","kind='gave_up'",
+                       "payload='[]'","payload='{'" ):
+            cases.append((change,'UPDATE task_events SET '+change+' WHERE id=?',(event['id'],)))
+        cases.append(('foreign run','UPDATE task_runs SET task_id=? WHERE id=716',(self.actor,)))
+        cases.append(('foreign event','UPDATE task_events SET task_id=? WHERE id=?',(self.actor,event['id'])))
+        for key,value in [('kind','needs_input'),('recurrences',None),('recurrences',True),
+                          ('recurrences',1.0),('recurrences','1'),('recurrences',0),
+                          ('recurrences',-1),('recurrences',kb.BLOCK_RECURRENCE_LIMIT),
+                          ('source_status',None),('source_status','running'),('source_status',[]),
+                          ('resume_status','review'),('limit',kb.BLOCK_RECURRENCE_LIMIT),
+                          ('classified_in_place',True),('reason',None),('reason',{})]:
+            cases.append((str((key,value)),'UPDATE task_events SET payload=? WHERE id=?',
+                          (json.dumps(dict(payload,**{key:value})),event['id'])))
+        for key in payload:
+            cases.append(('missing '+key,'UPDATE task_events SET payload=? WHERE id=?',
+                          (json.dumps({k:v for k,v in payload.items() if k!=key}),event['id'])))
+        for old in ('Input supplier: agent.','Input supplier: model/provider.','Input supplier: owner.',
+                    'Input supplier: external-source-owner(A).','Input supplier: unknown.',
+                    'Input supplier:','input  supplier : owner','Input\tsupplier: agent',
+                    'INPUT_SUPPLIER owner','Input-supplier owner',
+                    'Input supplier: agent. Input supplier: owner.'):
+            cases.append((old,'UPDATE task_events SET payload=? WHERE id=?',
+                          (json.dumps(dict(payload,reason=old)),event['id'])))
+        # Include events outside the terminal CAS set: a fresh version cannot bless a stale phase.
+        for kind in repair.EPISODE_KINDS+('changes_requested','review_reopened','status','reclaimed',
+                'stale','timed_out','crashed','spawn_failed','rate_limited','failed','review_requested','claimed','spawned'):
+            cases.append((kind,'INSERT INTO task_events(task_id,kind,payload,created_at) VALUES(?,?,?,?)',
+                          (self.target,kind,'{}',self.now)))
+        cases.append(('new run',"INSERT INTO task_runs(id,task_id,status,outcome,started_at,ended_at) "
+                      "VALUES(814,?,'blocked','blocked',1,2)",(self.target,)))
+        cases.append(('older active run',"INSERT INTO task_runs(id,task_id,status,started_at) "
+                      "VALUES(715,?,'pending',1)",(self.target,)))
+        for name,sql,args in cases:
+            with self.subTest(case=name):
+                self.conn.execute(sql,args);self.conn.commit();before=tuple(self.conn.iterdump())
+                with self.assertRaises(ValueError):self.amend_episode(episode,reason)
+                self.assertEqual(before,tuple(self.conn.iterdump()))
+                self.conn.execute('DELETE FROM task_runs WHERE id IN (715,814)')
+                self.conn.execute('DELETE FROM task_events WHERE id>?',(baseline[2][-1]['id'],))
+                for table,rows in zip(('tasks','task_runs','task_events'),baseline[:3]):
+                    for row in rows:
+                        fields=[key for key in row if key!='id']
+                        self.conn.execute('UPDATE '+table+' SET '+','.join(key+'=?' for key in fields)+
+                                          ' WHERE id=?',tuple(row[key] for key in fields)+(row['id'],))
+                self.conn.commit()
+        self.assertEqual(baseline,self.dump())
+        for count in (0,kb.BLOCK_RECURRENCE_LIMIT,kb.BLOCK_RECURRENCE_LIMIT+1):
+            self.conn.execute('UPDATE tasks SET block_recurrences=? WHERE id=?',(count,self.target))
+            self.conn.execute('UPDATE task_events SET payload=? WHERE id=?',
+                              (json.dumps(dict(payload,recurrences=count)),event['id']))
+            self.conn.commit();before=tuple(self.conn.iterdump())
+            with self.subTest(matching_count=count),self.assertRaises(ValueError):self.amend_episode(episode,reason)
+            self.assertEqual(before,tuple(self.conn.iterdump()))
+        self.conn.execute('UPDATE tasks SET block_recurrences=1 WHERE id=?',(self.target,))
+        self.conn.execute('UPDATE task_events SET payload=? WHERE id=?',(event['payload'],event['id']))
+        self.conn.commit()
+        for invalid in ('Input supplier: agent. Authorized continuation: delivery verified.',
+                        'Input supplier: agent. Repair evidence:',
+                        'Input supplier: agent. Repair evidence: yes',
+                        'Input supplier: owner. Repair evidence: delivered and read back.',
+                        'Input supplier: external-source-owner(A). Repair evidence: delivered and read back.',
+                        'Input supplier: agent. Input supplier: model/provider. Repair evidence: delivered and read back.',
+                        'Input  supplier: agent. Repair evidence: delivered and read back.',
+                        'Input supplier: agentXYZ. Repair evidence: delivered and read back.',
+                        'Input supplier: agent. Repair evidence: delivered and read back.\nRepair evidence: delivered twice again.'):
+            before=tuple(self.conn.iterdump())
+            with self.subTest(reason=invalid),self.assertRaises(ValueError):self.amend_episode(episode,invalid)
+            self.assertEqual(before,tuple(self.conn.iterdump()))
+
+    def test_blocked_supplier_requires_native_actor_cas_and_closed_request(self):
+        episode=self.blocked_supplier_episode();reason=self.supplier_gap_reason()
+        version=repair.amend(kb,self.conn,self.target)['version']
+        for environment in ({'HERMES_KANBAN_RUN_ID':'999'}, {'HERMES_PROFILE':'standard-implementer'},
+                            {'HERMES_KANBAN_TASK':self.target}, {'HERMES_KANBAN_BOARD':'foreign'},
+                            {'HERMES_KANBAN_CLAIM_LOCK':'forged'}, {'HERMES_PROFILE':''}):
+            before=tuple(self.conn.iterdump())
+            with patch.dict(os.environ,environment),self.assertRaises(ValueError):self.amend_episode(episode,reason)
+            self.assertEqual(before,tuple(self.conn.iterdump()))
+        before=tuple(self.conn.iterdump())
+        with delegated_child_context(),self.assertRaises(ValueError):self.amend_episode(episode,reason)
+        self.assertEqual(before,tuple(self.conn.iterdump()))
+        for changes in ({'block_kind':'capability','priority':1},{'block_kind':'needs_input'},
+                        {'block_kind':'capability','max_retries':2}):
+            with self.assertRaises(ValueError):self.amend_episode(episode,reason,changes)
+            self.assertEqual(before,tuple(self.conn.iterdump()))
+        for invalid in ({'run_id':716},dict(episode,extra=True),dict(episode,run_id=True),
+                        dict(episode,event_id=str(episode['event_id'])),dict(episode,run_id=42)):
+            with self.assertRaises(ValueError):self.amend_episode(invalid,reason)
+            self.assertEqual(before,tuple(self.conn.iterdump()))
+        kb.edit_task(self.conn,self.target,body='Current approved prerequisite-only body')
+        before=tuple(self.conn.iterdump())
+        with self.assertRaisesRegex(ValueError,'changed'):
+            repair.amend(kb,self.conn,self.target,expected_version=version,changes={'block_kind':'capability'},
+                         reason=reason,terminal_episode=episode)
+        self.assertEqual(before,tuple(self.conn.iterdump()))
+
     def test_supplier_gap_clarification_only_appends_and_makes_existing_eligibility_deterministic(self):
         self.reviewer_history()
         episode=self.supplier_gap_episode()

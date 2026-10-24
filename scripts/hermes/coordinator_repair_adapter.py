@@ -144,6 +144,12 @@ SCHEMA = SCHEMA.replace('Never releases work or resets retries;',
     'Recognition grants no allowance. Never releases work or resets retries;', 1)
 SCHEMA = SCHEMA.replace('existing capability reclaimed or elapsed-limit timed_out gave_up episode,',
     'existing capability reclaimed or elapsed-limit timed_out gave_up episode, or run-scoped iteration gave_up episode,', 1)
+# Preserve the exact iteration-aware predecessor for drift-checked upgrades.
+PREVIOUS_BLOCKED_SUPPLIER_SCHEMA = SCHEMA
+SCHEMA = SCHEMA.replace('Never releases work or resets retries;',
+    'A separate terminal_episode branch clarifies an ordinary same-kind capability BLOCKED hold: latest finished blocked/blocked run, exact run-bound latest blocked event, no current run, and a closed payload of reason/kind/recurrences/source_status with ready or review phase and positive integer recurrences matching the task below the native loop limit. The same absent-old-supplier, exactly-one canonical agent/model supplier and substantive verified Repair evidence rules apply. Only one classification event is appended; all task fields, history, phases, counters, iteration allowances and gates remain intact. Never releases work or resets retries;', 1)
+SCHEMA = SCHEMA.replace('TRIAGE block_loop_detected supplier clarification;',
+    'TRIAGE block_loop_detected supplier clarification, or ordinary run-bound capability BLOCKED supplier clarification;', 1)
 
 # The seam installed before the workspace-rebind branch: one exact literal
 # migration, so an installed native is upgraded instead of duplicated.
@@ -215,7 +221,7 @@ def adapt(name, text):
                 text = text.replace(previous, HANDLER, 1)
                 break
     if name == 'tools/kanban_tools_schemas.py' and SCHEMA not in text:
-        for variant in (PREVIOUS_ITERATION_SCHEMA, PREVIOUS_SUPPLIER_SCHEMA, PREVIOUS_TIMEOUT_SCHEMA, PREVIOUS_INTAKE_SCHEMA, PREVIOUS_INSPECTION,
+        for variant in (PREVIOUS_BLOCKED_SUPPLIER_SCHEMA, PREVIOUS_ITERATION_SCHEMA, PREVIOUS_SUPPLIER_SCHEMA, PREVIOUS_TIMEOUT_SCHEMA, PREVIOUS_INTAKE_SCHEMA, PREVIOUS_INSPECTION,
                         PREVIOUS_REBIND, PREVIOUS, LEGACY):
             if text.count(variant) == 1:
                 text = text.replace(variant, SCHEMA, 1)

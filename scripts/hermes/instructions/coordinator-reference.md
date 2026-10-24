@@ -473,6 +473,21 @@ episode and preserved resume phase. Every task column, prior event, run, link,
 counter, budget and review gate stays unchanged. Replays and superseded episodes
 refuse; this neither re-arms nor releases the task. Read back the new hold and
 obtain a fresh recovery token for any separately authorized guarded resume.
+An ordinary capability BLOCKED hold with an absent supplier has a separate
+closed branch using the same `terminal_episode` and exact changes. It requires
+the latest finished blocked/blocked run and its own latest run-bound `blocked`
+event, no current run or worker/lease, and a payload containing exactly reason,
+kind, recurrences and source_status. The kind must be capability, source_status
+ready or review, and recurrences a positive integer matching the task below
+the native block-loop limit. The same strict old-marker refusal, canonical
+agent/model supplier and verified `Repair evidence:` requirements apply. A
+newer run, lifecycle/phase event, stale version or replay refuses. This appends
+only one classification event, preserving the original phase and every task
+field, run, link, history, counter, checker/P1/P2 allowance and gate. It cannot
+rewrite owner/external supplier records, retire a gate or grant another attempt.
+Read back the recovery inspector's new supplier and obtain its fresh version;
+guarded resume is a separate native operation under its existing authorization
+and breaker/iteration checks. An amendment version is never a recovery version.
 For repaired capability holds use `kanban_unblock` with exact recovery_version
 and recovery_reason in blocked/scheduled/triage; this preserves failure counters
 and consumes one hold version. Ordinary unblock resets the native failure

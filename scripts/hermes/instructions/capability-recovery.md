@@ -42,7 +42,20 @@ with no old supplier marker can use the closed terminal_episode supplier
 clarification in that reference after actual input delivery is verified. It
 only appends classification evidence; explicit or ambiguous old supplier text
 refuses, every task field and review gate survives, and guarded resume remains
-a separate operation with a fresh recovery token. A blocked recovery handoff
+a separate operation with a fresh recovery token. An ordinary capability BLOCKED
+hold has a separate closed clarification branch: latest finished blocked/blocked
+run, its own latest run-bound blocked event, no current run or worker/lease,
+exact reason/kind/recurrences/source_status payload, ready or review phase, and
+positive integer recurrences matching the task below the native loop limit.
+Use the same terminal_episode and changes exactly {block_kind:capability}, with
+exact CAS, no old supplier marker of any kind, exactly one canonical agent or
+model/provider supplier and substantive Repair evidence naming delivery actually
+verified at the consumer. The coordinator attests to that evidence; the tool
+does not accept it independently. Only one classification event is appended;
+all rows, runs, links, historical events, phases, counters, checker/P1/P2
+allowances and gates survive. Owner/external suppliers cannot be rewritten.
+Read back the inspector's new supplier/version before any separately authorized
+native guarded resume; breaker and iteration checks still apply. A blocked recovery handoff
 owns its productive remedy; routine comments never cause duplicate recovery.
 Repeated unchanged failed recovery attempts back off, then go once to
 project-auditor.
