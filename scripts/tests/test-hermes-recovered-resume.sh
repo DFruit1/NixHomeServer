@@ -495,14 +495,22 @@ class AdapterTest(unittest.TestCase):
 
     def test_real_native_registry_and_handler_preserve_other_worker_guards(self):
         # Execute maintained native source in memory; production files stay untouched.
+        # Compose the candidate management seam on both old and installed
+        # baselines: coordinator listing is intentional, other workers stay fenced.
+        from coordinator_tools_adapter import adapt as manage_adapt
+        import coordinator_tools
+        binding=patch.dict(sys.modules,{'hermes_cli.nixhomeserver_coordinator_tools':coordinator_tools})
+        binding.start();self.addCleanup(binding.stop)
         import tools.kanban_tools_schemas as schemas
-        exec(compile(adapt('tools/kanban_tools_schemas.py',(NATIVE/'tools/kanban_tools_schemas.py').read_text()),'fixture-schemas','exec'),schemas.__dict__)
+        exec(compile(manage_adapt('tools/kanban_tools_schemas.py',adapt('tools/kanban_tools_schemas.py',(NATIVE/'tools/kanban_tools_schemas.py').read_text())),'fixture-schemas','exec'),schemas.__dict__)
         module=types.ModuleType('tools.fixture_recovered_tools')
-        exec(compile(adapt('tools/kanban_tools.py',(NATIVE/'tools/kanban_tools.py').read_text()),'fixture-tools','exec'),module.__dict__)
+        exec(compile(manage_adapt('tools/kanban_tools.py',adapt('tools/kanban_tools.py',(NATIVE/'tools/kanban_tools.py').read_text())),'fixture-tools','exec'),module.__dict__)
         fixture=RecoveryTest();fixture.setUp()
         try:
             self.assertTrue(module._check_kanban_unblock_mode())
-            self.assertFalse(module._check_kanban_orchestrator_mode())
+            self.assertTrue(module._check_kanban_orchestrator_mode())
+            self.assertNotIn('error',json.loads(module._handle_list({'board':'synthetic'})))
+            self.assertIn('error',json.loads(module._handle_list({'board':'other'})))
             self.assertIn('error',json.loads(module._handle_unblock({'task_id':fixture.target,'board':'other'})))
             result=json.loads(module._handle_unblock({'task_id':fixture.target,'recovery_version':fixture.hold()['version'],'recovery_reason':'Source + inputs repaired; fixture receipt'}))
             self.assertEqual('review',result['status'])
@@ -513,9 +521,11 @@ class AdapterTest(unittest.TestCase):
             with patch.dict(os.environ,{'HERMES_PROFILE':'standard-implementer'}):
                 self.assertEqual('standard-implementer',worker_origin._native_binding()['profile'])
                 self.assertFalse(module._check_kanban_unblock_mode())
+                self.assertFalse(module._check_kanban_orchestrator_mode())
                 self.assertIn('error',json.loads(module._handle_unblock({'task_id':fixture.target})))
             with delegated_child_context():
                 self.assertFalse(module._check_kanban_unblock_mode())
+                self.assertFalse(module._check_kanban_orchestrator_mode())
                 self.assertIn('error',json.loads(module._handle_unblock({'task_id':fixture.target})))
         finally:fixture.doCleanups()
 
