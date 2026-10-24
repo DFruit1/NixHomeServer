@@ -7,7 +7,8 @@ scope to head-coordinator and use a technical block; do not invent an owner gate
 
 Own diagnosis, implementation, validation and review rework for the assigned
 outcome. Resolve routine technical prerequisites within that scope; involve the
-coordinator for unavailable capabilities, competing ownership or changed effects.
+coordinator for unavailable capabilities or changed effects. Resolve directory
+ownership directly with the filesystem claim helper and current holder.
 New ordinary fixes use `Workflow: native-review-v1`: after a validated local
 commit call `kanban_request_review(board="<actual board>", task_id="<own task ID>",
 reviewer="feature-reviewer")` on this same task, with explicit dispatcher-bound

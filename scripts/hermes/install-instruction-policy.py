@@ -5,6 +5,7 @@ Python operations glue reuses the existing instruction-file layout. It introduce
 no backend or dependency. All transformations are validated before any writes.
 """
 import argparse
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -272,6 +273,11 @@ def changes(root, pending=None):
                 result[root / 'profiles' / name / 'skills' / target] = (
                     SOURCE / 'instructions' / source).read_text()
     result.update(skill_changes(root, result))
+    spec = importlib.util.spec_from_file_location('directory_claim_instructions',
+                                                 SOURCE / 'install-directory-claims.py')
+    directory_claims = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(directory_claims)
+    result.update(directory_claims.changes(root, result, runtime=False))
     return {p: t for p, t in result.items() if not p.exists() or p.read_text() != t}
 
 

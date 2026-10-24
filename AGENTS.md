@@ -24,6 +24,19 @@ Hermes agents use the installed `systematic-debugging` skill for failures and
 `~/.hermes/scripts/hermes-skill-routing.md` for role-specific selection. Keep
 temporary task receipts on their cards/jobs, not in standing instructions.
 
+## Feature-directory ownership
+
+* Once the claim runtime is activated, new source-writing sessions acquire claims with
+  `python3 ~/.hermes/scripts/directory_claims.py claim <directory> [...]`.
+  See [the filesystem ownership workflow](documentation/hermes-directory-claims.md).
+* Claims and holder requests are authoritative filesystem records shared across
+  linked worktrees, never card comments or coordinator permission. Writers
+  inspect `list`, request an occupied directory from its holder, and commit then
+  `release` it themselves. Do not steal claims or remove their lock files.
+* Use separate assigned worktrees and feature-sized folders. Broad aggregation
+  directories are refused; shared integration files use `@shared-files`.
+  Existing source, role, review, secret and deployment boundaries still apply.
+
 ## Implementation Language
 
 * Prefer Rust for new backend implementations. Use another language only when

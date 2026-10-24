@@ -191,6 +191,7 @@ test_scripts=(
   scripts/tests/test-kanban-decision-reply.sh
   scripts/tests/test-hermes-review-taskforce.sh
   scripts/tests/test-hermes-instruction-policy.sh
+  scripts/tests/test-hermes-directory-claims.sh
   scripts/tests/test-hermes-installer-convergence.sh
   scripts/tests/test-hermes-fleet-workflow.sh
   scripts/tests/test-hermes-fleet-contract.sh

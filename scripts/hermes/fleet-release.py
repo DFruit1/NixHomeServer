@@ -524,6 +524,13 @@ def pending_files(root, source, plan, *, owners=None):
     spec=importlib.util.spec_from_file_location('fleet_steward_install',directory/'install-steward-readonly.py')
     steward=importlib.util.module_from_spec(spec);spec.loader.exec_module(steward)
     merge_owned(pending,owners,steward.profile_files(root,pending),'steward',compose=True)
+    spec=importlib.util.spec_from_file_location('fleet_directory_claims',directory/'install-directory-claims.py')
+    directory_claims=importlib.util.module_from_spec(spec);spec.loader.exec_module(directory_claims)
+    native_tools=root/'hermes-agent/tools'
+    runtime=any((native_tools/name).exists() for name in ('file_tools.py','terminal_tool.py'))
+    candidate=directory_claims.changes(root,pending,runtime=runtime)
+    delta={p:t for p,t in candidate.items() if pending.get(p,p.read_text() if p.exists() else '')!=t}
+    merge_owned(pending,owners,delta,'directory-claims',compose=True)
     # These helpers previously needed a separate interactive files-only update.
     # They now share the release's preimage, readback and rollback transaction.
     for name in ('deadlock_recovery.py', 'feature_flow.py', 'capability_recovery.py',
