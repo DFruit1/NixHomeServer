@@ -233,14 +233,8 @@ def _verification_intake(conn, task, changes, intake, reason):
         raise ValueError('Verification intake never rewrites a structured or native implementation workflow')
 
 
-def _clarify_block_loop(conn, task, run, event, payload, reason):
-    """Clarify a missing supplier on one same-kind native TRIAGE episode.
-
-    The repair statement attests to delivery the coordinator actually verified;
-    this seam records that attestation, never executes or accepts its evidence.
-    Explicit old supplier text, including malformed/ambiguous markers, is a gate
-    to reconcile separately and must never be overwritten by this branch.
-    """
+def _current_supplier_episode(conn, task, event):
+    """A phase/claim/failure after either supplier episode supersedes it."""
     # Include native phase/claim/failure events beyond the terminal CAS set.
     # A later phase event also supersedes this loop, even if a malformed caller
     # left the task/run rows unchanged. Keep older amendment branches unchanged.
@@ -251,8 +245,11 @@ def _clarify_block_loop(conn, task, run, event, payload, reason):
                     + ','.join('?' * len(lifecycle)) + ') LIMIT 1',
                     (task['id'],event['id'],*lifecycle)).fetchone():
         raise ValueError('A newer native lifecycle event supersedes this supplier episode')
-    marker = re.compile(r'input[\W_]*supplier', re.IGNORECASE)
-    old = payload.get('reason')
+
+
+def _clarify_block_loop(conn, task, run, event, payload, reason):
+    """Clarify a missing supplier on one same-kind native TRIAGE episode."""
+    _current_supplier_episode(conn, task, event)
     count, limit = payload.get('recurrences'), payload.get('limit')
     if (task['status'] != 'triage' or event['run_id'] != run['id']
             or run['status'] != 'blocked' or run['outcome'] != 'blocked'
@@ -261,6 +258,36 @@ def _clarify_block_loop(conn, task, run, event, payload, reason):
             or type(task['block_recurrences']) is not int
             or count <= 0 or count != task['block_recurrences'] or count < limit):
         raise ValueError('Supplier clarification needs the current same-kind capability TRIAGE block loop')
+    _supplier_clarification_evidence(payload, reason)
+    return 'block-loop-supplier-clarification'
+
+
+def _clarify_blocked(conn, task, run, event, payload, reason):
+    """Clarify only an ordinary run-bound BLOCKED hold, never a breaker trip."""
+    from hermes_cli.kanban_db import BLOCK_RECURRENCE_LIMIT
+    _current_supplier_episode(conn, task, event)
+    count = payload.get('recurrences')
+    if (task['status'] != 'blocked' or task.get('current_run_id') is not None
+            or event['run_id'] != run['id']
+            or run['status'] != 'blocked' or run['outcome'] != 'blocked'
+            or set(payload) != {'reason', 'kind', 'recurrences', 'source_status'}
+            or payload.get('kind') != 'capability'
+            or payload.get('source_status') not in ('ready', 'review')
+            or type(count) is not int or type(task['block_recurrences']) is not int
+            or count != task['block_recurrences'] or not 0 < count < BLOCK_RECURRENCE_LIMIT):
+        raise ValueError('Supplier clarification needs the current ordinary run-bound capability BLOCKED hold')
+    _supplier_clarification_evidence(payload, reason)
+    return 'blocked-supplier-clarification'
+
+
+def _supplier_clarification_evidence(payload, reason):
+    """Record verified delivery attested by the coordinator, never accept it.
+
+    Explicit old supplier text, including malformed/ambiguous markers, is a gate
+    to reconcile separately and must never be overwritten by either branch.
+    """
+    marker = re.compile(r'input[\W_]*supplier', re.IGNORECASE)
+    old = payload.get('reason')
     if not isinstance(old, str) or marker.search(old):
         raise ValueError('Supplier clarification refuses every explicit or ambiguous old supplier marker')
     supplier = re.findall(r'(?<!\w)Input supplier: (agent|model/provider)(?=$|[.;](?:\s|$)|\n)', reason)
@@ -271,7 +298,6 @@ def _clarify_block_loop(conn, task, run, event, payload, reason):
     repairs = re.findall(r'(?:^|\s)Repair evidence: ([^\n]+)', reason)
     if len(repairs) != 1 or len(repairs[0].split()) < 3:
         raise ValueError('Supplier clarification needs substantive Repair evidence naming verified delivery')
-    return 'block-loop-supplier-clarification'
 
 
 def _terminal_branch(conn, task, episode, reason):
@@ -334,6 +360,8 @@ def _terminal_branch(conn, task, episode, reason):
         raise ValueError('Only an untyped containment or an existing capability episode can be typed')
     if event['kind'] == 'block_loop_detected':
         return _clarify_block_loop(conn, task, run, event, payload, reason)
+    if event['kind'] == 'blocked':
+        return _clarify_blocked(conn, task, run, event, payload, reason)
     if (event['kind']=='gave_up' and payload.get('trigger_outcome') in {'spawn_failed','crashed'}
             and conn.execute("SELECT 1 FROM task_events WHERE task_id=? AND kind='unblocked' "
                 "AND json_type(payload,'$.iteration_continuation') IS NOT NULL AND id<? LIMIT 1",
