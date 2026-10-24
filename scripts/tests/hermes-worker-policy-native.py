@@ -147,6 +147,14 @@ try:
     except ValueError:
         pass
     print('PASS native scheduled recovery wait requires genuine result, preserves budgets and consumes once')
+    legacy=kb.create_task(db,title='Ordinary long schedule reason',assignee='head-coordinator',
+        max_runtime_seconds=900,workspace_kind='dir',workspace_path=str(args.scratch))
+    legacy_run=kb.claim_task(db,legacy).current_run_id
+    assert kb.schedule_task(db,legacy,expected_run_id=legacy_run,
+        reason='Wait for an ordinary result. '*160)
+    assert kb.unblock_task(db,legacy)
+    assert kb.get_task(db,legacy).status=='ready'
+    print('PASS native ordinary unblock preserves long unregistered schedule reasons')
     race=kb.create_task(db,title='Concurrent cap removal',assignee='local-implementer',max_runtime_seconds=300,
                        workspace_kind='dir',workspace_path=str(args.scratch))
     row=db.execute('SELECT * FROM tasks WHERE id=?',(race,)).fetchone()

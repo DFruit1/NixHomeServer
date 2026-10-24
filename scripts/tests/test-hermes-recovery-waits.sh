@@ -314,6 +314,30 @@ class RecoveryWaitTest(unittest.TestCase):
         native.assert_not_called()
         self.assertEqual(1, result['recovery_waits']['unregistered'])
 
+    def test_long_unregistered_reasons_remain_outside_the_recovery_guard(self):
+        self.original()
+        for reason in ('Wait for an ordinary result. '*160, 'Long Unicode prose: '+('\u2603'*5000),
+                       'Recovery wait without the registration delimiter. '*100):
+            with self.subTest(prefix=reason[:30]):
+                self.db.execute("UPDATE task_events SET payload=? WHERE task_id='t_owner' AND kind='scheduled'",
+                                (json.dumps({'reason': reason}),))
+                self.db.commit()
+                self.assertFalse(self.require())
+                with patch.object(supervisor.subprocess, 'run') as native:
+                    result = self.tick()
+                native.assert_not_called()
+                self.assertEqual(1, result['recovery_waits']['unregistered'])
+
+    def test_registered_receipts_still_enforce_reason_and_payload_bounds(self):
+        self.original()
+        reason = PREFIX+json.dumps(dict(task_id='t_original', after_run_id=9, until='terminal'))
+        for payload in ({'reason': reason+' '*1100}, {'reason': reason, 'extra': 'x'*4100}):
+            with self.subTest(keys=list(payload)):
+                self.db.execute("UPDATE task_events SET payload=? WHERE task_id='t_owner' AND kind='scheduled'",
+                                (json.dumps(payload),))
+                with self.assertRaisesRegex(ValueError, 'bound'):
+                    self.require()
+
     def test_native_rejection_is_reported_without_switching_interfaces(self):
         self.original()
         with patch.object(supervisor.subprocess, 'run', side_effect=subprocess.CalledProcessError(1, ['hermes'])) as native:

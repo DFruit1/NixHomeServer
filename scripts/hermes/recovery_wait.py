@@ -31,16 +31,19 @@ TERMINAL_EVENTS = {
 
 
 def receipt(db, task_id):
-    event = db.execute("SELECT id,run_id,substr(payload,1,4097) AS payload,created_at FROM task_events "
+    # Identify opt-in before applying bounds: ordinary native schedule reasons
+    # have no receipt limit. Extract only a bounded reason into Python.
+    event = db.execute("SELECT id,run_id,created_at,length(payload) AS payload_length, "
+        "CASE WHEN json_valid(payload) THEN CASE WHEN json_type(payload,'$.reason')='text' "
+        "THEN substr(json_extract(payload,'$.reason'),1,1025) END END AS reason FROM task_events "
         "WHERE task_id=? AND kind='scheduled' ORDER BY id DESC LIMIT 1", (task_id,)).fetchone()
     if not event:
         return None
-    if event['payload'] is not None and len(event['payload']) > 4096:
-        raise ValueError('Recovery schedule payload exceeds its receipt bound')
-    payload = json.loads(event['payload'] or '{}')
-    reason = payload.get('reason') if isinstance(payload, dict) else None
+    reason = event['reason']
     if not isinstance(reason, str) or not reason.startswith(PREFIX):
         return None
+    if event['payload_length'] > 4096:
+        raise ValueError('Recovery schedule payload exceeds its receipt bound')
     if len(reason) > 1024:
         raise ValueError('Recovery wait exceeds its receipt bound')
     value = json.loads(reason[len(PREFIX):])
