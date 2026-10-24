@@ -154,6 +154,9 @@ EDITS = {
 
 def adapt(name, text):
     for index, (before, after) in enumerate(EDITS[name]):
+        if (name == 'tools/kanban_tools_schemas.py'
+                and 'Require the explicit scope consumed by scrubbed handoff hooks.' in text):
+            continue
         if (name == 'tools/kanban_tools_schemas.py' and index == 0
                 and 'KANBAN_COMPLETE_SCHEMA' not in text):
             continue

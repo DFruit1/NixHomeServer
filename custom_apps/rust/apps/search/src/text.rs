@@ -861,8 +861,35 @@ mod tests {
             find_ascii_case_insensitive_from("İabababac", 0, "ababac"),
             Some((4, 10))
         );
-        assert_eq!(find_case_insensitive_from("aİb", 0, "b"), Some((3, 4)));
-        assert_eq!(find_case_insensitive_from("aİb", 2, "b"), None);
+        for (from, needle, expected) in [
+            (0, "a", Some((0, 1))),
+            (0, "b", Some((3, 4))),
+            (1, "b", Some((3, 4))),
+            (2, "b", None),
+            (3, "b", Some((3, 4))),
+            (4, "b", None),
+            (0, "", None),
+            (0, "İ", None),
+            (0, "oversized", None),
+            (5, "b", None),
+            (0, "A", Some((0, 1))),
+        ] {
+            let got = find_case_insensitive_from("aİb", from, needle);
+            assert_eq!(got, expected, "wrapper from={from}, needle={needle:?}");
+            if let Some((start, end)) = got {
+                assert!(start < end);
+                assert!("aİb".is_char_boundary(start));
+                assert!("aİb".is_char_boundary(end));
+                assert_eq!(
+                    "aİb".get(start..end),
+                    Some(if needle == "A" { "a" } else { needle })
+                );
+            }
+        }
+        assert_eq!(
+            find_case_insensitive_from("İabababac", 0, "ababac"),
+            Some((4, 10))
+        );
     }
 
     #[test]
@@ -896,7 +923,11 @@ mod tests {
 
     #[test]
     fn snippet_ascii_fallback_preserves_caps_and_escaping() {
-        let mut beyond = "a".repeat(SNIPPET_SCAN_LIMIT - 3);
+        let mut partial = "a".repeat(SNIPPET_SCAN_LIMIT - 3);
+        partial.push('İ');
+        partial.push_str("target");
+        assert_eq!(snippet_from_text(&partial, "target"), None);
+        let mut beyond = "a".repeat(SNIPPET_SCAN_LIMIT - 2);
         beyond.push('İ');
         beyond.push_str("target");
         assert_eq!(snippet_from_text(&beyond, "target"), None);
@@ -936,15 +967,25 @@ mod tests {
                     assert!(counts.prefix_stores <= l);
                     assert!(counts.prefix_fallbacks <= l);
                     assert!(counts.search_fallbacks <= n);
-                    let work = counts.validation
-                        + counts.prefix_compares
-                        + counts.body_bytes
-                        + counts.search_compares
-                        + counts.prefix_init
-                        + counts.prefix_stores
-                        + counts.prefix_fallbacks
-                        + counts.search_fallbacks;
-                    assert!(work <= 8 * (n + l) + 16);
+                    let work = [
+                        counts.validation,
+                        counts.prefix_compares,
+                        counts.body_bytes,
+                        counts.search_compares,
+                        counts.prefix_init,
+                        counts.prefix_stores,
+                        counts.prefix_fallbacks,
+                        counts.search_fallbacks,
+                    ]
+                    .into_iter()
+                    .map(|count| u64::try_from(count).expect("test count fits u64"))
+                    .try_fold(0u64, u64::checked_add)
+                    .expect("counted work fits u64");
+                    let linear_envelope = 8u64
+                        .checked_mul(u64::try_from(n + l).expect("test input lengths fit u64"))
+                        .and_then(|work| work.checked_add(16))
+                        .expect("linear envelope fits u64");
+                    assert!(work <= linear_envelope);
                     assert_eq!(counts.max_live_table_slots, l);
                     assert_eq!(counts.live_table_slots, 0);
                     assert_eq!(snippet_from_text(&body, &needle), None);

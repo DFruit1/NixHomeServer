@@ -63,6 +63,21 @@ sys.path.insert(0,str(args.hermes_repo))
 import hermes_bootstrap  # noqa: E402,F401
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'hermes'))
 from worker_runtime_adapter import adapt  # noqa: E402
+
+# A newer upstream schema already enforces exact board/task handoff scope.
+# The compatibility adapter must not replace that guard with the legacy form.
+scoped_schema = '''
+def _schema(name, description, properties, required):
+    """Require the explicit scope consumed by scrubbed handoff hooks."""
+    board = _board_schema_prop()
+    if name in {"kanban_complete", "kanban_request_review"}:
+        required = list(dict.fromkeys([*required, "board", "task_id"]))
+        board = _prop("string", "Required exact board slug for the handoff preflight.")
+        properties = {**properties, "task_id": _prop("string",
+            "Required exact assigned task id for the handoff preflight.")}
+    return {"properties": {**properties, "board": board}, "required": required}
+'''
+assert adapt('tools/kanban_tools_schemas.py', scoped_schema) == scoped_schema
 overlay=args.scratch/'overlay';overlay.mkdir(exist_ok=True)
 for name in ('kanban_db.py','kanban_db_dispatch.py'):
     (overlay/name).write_text(adapt(name,(args.hermes_repo/'hermes_cli'/name).read_text()))
@@ -209,7 +224,10 @@ try:
     for name,schema in vars(tool_schemas).items():
         if name!='KANBAN_CREATE_SCHEMA' and isinstance(schema,dict):
             required=(schema.get('parameters') or {}).get('required') or []
-            assert 'board' not in required, 'board became mandatory for '+name
+            if name in {'KANBAN_COMPLETE_SCHEMA', 'KANBAN_REQUEST_REVIEW_SCHEMA'}:
+                assert {'board', 'task_id'} <= set(required), name
+            else:
+                assert 'board' not in required, 'board became mandatory for '+name
     assert tool_schemas.KANBAN_CREATE_SCHEMA['parameters']['properties']['board']['description'].startswith(
         'Kanban board slug to target. kanban_create requires it explicitly')
     def create(**fields):
