@@ -79,6 +79,15 @@ class EpisodeTest(unittest.TestCase):
         self.assertEqual(1,len(self.tick(10000,[{**self.issue,'version':'accepted-input'}])))
         self.assertEqual('awaiting_execution',self.state()[self.issue['key']]['execution']['state'])
 
+    def test_queued_qualification_is_healthy_wait_without_terminal_result(self):
+        self.qualification()
+        self.db.execute("DELETE FROM task_runs WHERE task_id='t_review'")
+        for status in ('ready', 'todo', 'review'):
+            self.db.execute("UPDATE tasks SET status=? WHERE id='t_review'", (status,))
+            self.db.commit()
+            self.assertEqual([], self.tick(10000, [{**self.issue, 'version':status}]))
+        self.assertEqual(1, len(self.calls))
+
     def test_replacement_acceptance_needs_the_native_gate_edge_transition(self):
         self.qualification()
         self.db.execute("INSERT INTO tasks(id,status,assignee,tenant,body) VALUES('t_fresh','done','project-auditor','verification','')")

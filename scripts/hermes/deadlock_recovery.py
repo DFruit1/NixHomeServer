@@ -225,6 +225,11 @@ def qualified_review_wait(db, tid):
     for parent in parents:
         if not guard.verification(parent,db):
             continue
+        if parent['status'] in {'todo','ready','review','running','scheduled','triage'}:
+            # A queued qualification has no terminal verdict to validate yet.
+            # Preserve its owner without reporting normal dispatch wait as drift.
+            held=True
+            continue
         run=db.execute('SELECT profile,status,outcome,metadata FROM task_runs '
                        'WHERE task_id=? ORDER BY id DESC LIMIT 1',(parent['id'],)).fetchone()
         if (not run or run['profile'] != parent['assignee'] or run['status'] != 'done'
