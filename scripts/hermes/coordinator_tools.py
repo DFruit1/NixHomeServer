@@ -3,6 +3,7 @@
 Python extends the existing Hermes tools and transactions. It is not a new
 backend. The ordinary worker lifecycle and terminal fences remain unchanged.
 """
+from contextlib import contextmanager
 from contextvars import ContextVar
 import importlib.util
 import json
@@ -32,7 +33,9 @@ def attachment_target(task_id, board=None):
     return bool(actor and task_id != actor['task_id'])
 
 
+@contextmanager
 def _load(root, filename):
+    """Keep trusted public imports available through the policy callback."""
     path = root / 'scripts' / filename
     if not path.is_file() or path.is_symlink():
         raise ValueError('Required installed policy is unavailable: ' + filename)
@@ -42,9 +45,9 @@ def _load(root, filename):
     try:
         sys.path.insert(0, str(path.parent))
         spec.loader.exec_module(module)
+        yield module
     finally:
         sys.path[:] = previous
-    return module
 
 
 def _policy(root, board, tid, action, fields, reason):
@@ -63,10 +66,12 @@ def _policy(root, board, tid, action, fields, reason):
                 or {'verdict', 'independence', 'worker_session_id', 'coordinator_action', 'execution_origin'} & set(metadata)):
             raise ValueError('Completion metadata must preserve actual coordinator provenance and cannot supply a review verdict')
         args.update(result=reason, summary=reason)
-        answer = _load(root, 'review-verdict-guard.py').guard(payload, root)
+        with _load(root, 'review-verdict-guard.py') as guard:
+            answer = guard.guard(payload, root)
     else:
-        alerts = _load(root, 'kanban-owner-alerts.py')
-        answer = _load(root, 'owner-blocker-authoring-guard.py').guard(payload, root, alerts)
+        with _load(root, 'kanban-owner-alerts.py') as alerts:
+            with _load(root, 'owner-blocker-authoring-guard.py') as guard:
+                answer = guard.guard(payload, root, alerts)
     if answer.get('action') == 'block':
         raise ValueError(answer['message'])
 
