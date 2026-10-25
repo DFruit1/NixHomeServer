@@ -517,7 +517,7 @@ def cli(args, kb, kbc):
         elif args.conditions_action=='register':
             raw=Path(args.file).read_bytes()
             if len(raw)>MAX_BYTES:raise ValueError('Release contract file exceeds bound')
-            result=register(kb,db,root,args.task_id,json.loads(raw),args.version)
+            result=register(kb,db,root,args.task_id,json.loads(raw),args.conditions_version)
         else:
             result=apply(kb,db,root,args.task_id,args.registration_id)
         print(json.dumps(result,sort_keys=True))

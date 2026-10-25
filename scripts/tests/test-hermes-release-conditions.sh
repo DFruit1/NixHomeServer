@@ -81,10 +81,9 @@ for name in ('kanban_db_connect','kanban_parser','kanban'):
     module=importlib.util.module_from_spec(spec)
     sys.modules[qualified]=module;setattr(hermes_cli,name,module)
     exec(compile(adapt('hermes_cli/'+name+'.py',path.read_text()),str(path),'exec'),module.__dict__)
-from hermes_cli.kanban_parser import build_parser
-from hermes_cli.kanban import kanban_command
-parser=argparse.ArgumentParser();build_parser(parser.add_subparsers())
-raise SystemExit(kanban_command(parser.parse_args(sys.argv[3:])))
+sys.argv=['hermes','--profile','default',*sys.argv[3:]]
+from hermes_cli.main import main
+main()
 '''
         environment=dict(os.environ,HERMES_HOME=str(self.root),HERMES_KANBAN_HOME=str(self.root),HERMES_ROOT=str(self.root))
         def cli(*args):

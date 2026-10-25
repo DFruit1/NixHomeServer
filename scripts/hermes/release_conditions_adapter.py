@@ -7,7 +7,7 @@ _SPECS.append(_cmd("conditions", children=("conditions_action", [
     _cmd("show", (_TASK_ID,)),
     _cmd("artifact", (_TASK_ID,_arg("--attachment-id",type=int,required=True))),
     _cmd("migrate", (_arg("--file",required=True),)),
-    _cmd("register", (_TASK_ID, _arg("--file", required=True), _arg("--version", required=True))),
+    _cmd("register", (_TASK_ID, _arg("--file", required=True), _arg("--version", dest="conditions_version", required=True))),
     _cmd("publish", (_TASK_ID, _arg("--attachment-id",type=int,required=True),
         _arg("--sha256",required=True),_arg("--classification",choices=("non-secret",),required=True))),
     _cmd("apply", (_TASK_ID, _arg("--registration-id",type=int,required=True))),
@@ -86,6 +86,11 @@ def _end_run(
         text=replace_once(text,'        connect_fn=sqlite3.connect,\n        isolation_level=None,',
             '        connect_fn=sqlite3.connect,\n        uri=True,\n        isolation_level=None,')
     elif name=='hermes_cli/kanban_parser.py':
+        # Keep the public child flag while avoiding the global args.version
+        # boolean, which native main checks before dispatching any command.
+        legacy=PARSER.replace('_arg("--version", dest="conditions_version", required=True)',
+                              '_arg("--version", required=True)')
+        if legacy in text:text=text.replace(legacy,PARSER,1)
         if PARSER not in text:
             text=replace_once(text,'\ndef build_parser(',PARSER+'\ndef build_parser(')
     elif name=='hermes_cli/kanban.py':
