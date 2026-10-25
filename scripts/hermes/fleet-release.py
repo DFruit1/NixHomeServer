@@ -903,7 +903,7 @@ def release_condition_files(root, source, *, owners, retained, inputs=None, sche
         'scripts/release_conditions.py':'scripts/hermes/release_conditions.py',
         'hermes-agent/hermes_cli/nixhomeserver_release_conditions.py':'scripts/hermes/release_conditions.py',
         'scripts/hermes-release-conditions.md':'documentation/hermes-release-conditions.md'}
-    native=('hermes_cli/kanban_db.py','hermes_cli/kanban.py','hermes_cli/kanban_parser.py','tools/kanban_tools.py')
+    native=('hermes_cli/kanban_db.py','hermes_cli/kanban_db_connect.py','hermes_cli/kanban.py','hermes_cli/kanban_parser.py','tools/kanban_tools.py')
     entries={item['path']:item for item in manifest['files']}
     paths=set(entries)|set(replacements)|set(additions)|{'hermes-agent/'+p for p in native}|{'state/fleet/handlers.json'}
     initial={relative:read(checked(root,root/relative)) for relative in paths}
@@ -951,7 +951,7 @@ def add_release_condition_runtime(root, source, pending, owners):
         pending[root/relative]=helper;owners[root/relative]=['release-conditions']
     path=root/'scripts/hermes-release-conditions.md'
     pending[path]=(source/'documentation/hermes-release-conditions.md').read_text();owners[path]=['release-conditions']
-    for name in ('hermes_cli/kanban_db.py','hermes_cli/kanban.py','hermes_cli/kanban_parser.py','tools/kanban_tools.py'):
+    for name in ('hermes_cli/kanban_db.py','hermes_cli/kanban_db_connect.py','hermes_cli/kanban.py','hermes_cli/kanban_parser.py','tools/kanban_tools.py'):
         path=root/'hermes-agent'/name
         pending[path]=adapt(name,pending.get(path) or path.read_text())
         owners.setdefault(path,[]).append('release-conditions')

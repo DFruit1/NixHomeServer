@@ -80,6 +80,11 @@ def _end_run(
         text=replace_once(text,"AND kind != 'decomposed' ",
             "AND kind NOT IN ('decomposed','release_conditions_registered','release_conditions_applied',"
             "'release_output_sealed','release_artifact_published','diagnostic_closed','created','claimed','spawned','worker_registered','completed','review_requested') ")
+    elif name=='hermes_cli/kanban_db_connect.py':
+        # ATTACH mode=ro must work on native CPython SQLite builds whose
+        # compile-time URI default is off, as well as the system test Python.
+        text=replace_once(text,'        connect_fn=sqlite3.connect,\n        isolation_level=None,',
+            '        connect_fn=sqlite3.connect,\n        uri=True,\n        isolation_level=None,')
     elif name=='hermes_cli/kanban_parser.py':
         if PARSER not in text:
             text=replace_once(text,'\ndef build_parser(',PARSER+'\ndef build_parser(')

@@ -12,6 +12,7 @@ NATIVE=Path(os.environ['HERMES_FIXTURE_NATIVE_PYTHON']).parents[2]
 sys.path[:0]=[str(SOURCE),str(NATIVE)]
 from hermes_cli import kanban_db as kb, kanban_db_connect as kbc
 import release_conditions as rc
+OPERATOR_ACTOR = rc.require_actor
 
 class Conditions(unittest.TestCase):
     def setUp(self):
@@ -61,6 +62,55 @@ class Conditions(unittest.TestCase):
         before['status']='ready';self.assertEqual(before,after)
         self.assertTrue(self.apply(registration)['already_applied'])
         self.assertEqual(0,self.db.execute("SELECT count(*) FROM task_comments WHERE task_id=?",(self.target,)).fetchone()[0])
+    def test_real_native_cli_registers_and_applies_for_an_unpinned_operator(self):
+        import subprocess
+        contract=self.root/'contract.json';contract.write_text(json.dumps(self.contract))
+        # Exercise native parsing, routing, actor checks and transaction in a
+        # fresh process. Only the candidate helper is selected, never authority.
+        program='''import sys,argparse,importlib.util
+from pathlib import Path
+sys.path[:0]=sys.argv[1:3]
+import release_conditions
+sys.modules['hermes_cli.nixhomeserver_release_conditions']=release_conditions
+import hermes_cli
+from release_conditions_adapter import adapt
+for name in ('kanban_db_connect','kanban_parser','kanban'):
+    path=Path(sys.argv[2])/'hermes_cli'/(name+'.py')
+    qualified='hermes_cli.'+name
+    spec=importlib.util.spec_from_file_location(qualified,path)
+    module=importlib.util.module_from_spec(spec)
+    sys.modules[qualified]=module;setattr(hermes_cli,name,module)
+    exec(compile(adapt('hermes_cli/'+name+'.py',path.read_text()),str(path),'exec'),module.__dict__)
+from hermes_cli.kanban_parser import build_parser
+from hermes_cli.kanban import kanban_command
+parser=argparse.ArgumentParser();build_parser(parser.add_subparsers())
+raise SystemExit(kanban_command(parser.parse_args(sys.argv[3:])))
+'''
+        environment=dict(os.environ,HERMES_HOME=str(self.root),HERMES_KANBAN_HOME=str(self.root),HERMES_ROOT=str(self.root))
+        def cli(*args):
+            process=subprocess.run([os.environ['HERMES_FIXTURE_NATIVE_PYTHON'],'-B','-c',program,
+                str(SOURCE),str(NATIVE),'kanban','--board','one','conditions',*args],env=environment,
+                capture_output=True,text=True,timeout=15)
+            self.assertEqual(0,process.returncode,process.stderr)
+            return json.loads(process.stdout)
+        manifest=self.root/'migration.json'
+        manifest.write_text(json.dumps(dict(schema_version=1,board='one',records=[dict(
+            task_id=self.target,expected_version=rc.hold_version(self.db,self.target),contract=self.contract,
+            title='Reconcile the original result',body='Goal: Reconcile the original result.\nNotes: Read release-context.json.')])) )
+        self.assertEqual('registered',cli('migrate','--file',str(manifest))['results'][0]['state'])
+        registration=cli('register',self.target,'--version',rc.hold_version(self.db,self.target),'--file',str(contract))
+        self.assertEqual(registration,cli('show',self.target)['release_conditions'])
+        self.finish(self.dbs['two'],self.source)
+        self.assertEqual('ready',cli('apply',self.target,'--registration-id',str(registration['registration_id']))['status'])
+        self.assertEqual({'kind':'interactive-operator'},registration['actor'])
+    def test_operator_admission_keeps_native_terminal_and_worker_fences(self):
+        from unittest.mock import patch
+        from hermes_cli import nixhomeserver_worker_origin as origin
+        with patch.object(origin,'proven_terminal_origin',return_value=True):
+            with self.assertRaisesRegex(ValueError,'Native model terminal'):OPERATOR_ACTOR(self.db)
+        for marker in ('HERMES_KANBAN_TASK','HERMES_DELEGATED_CHILD_CONTEXT'):
+            with self.subTest(marker=marker),patch.dict(os.environ,{marker:'fixture-held-origin'}):
+                with self.assertRaisesRegex(ValueError,'authenticated native coordinator'):OPERATOR_ACTOR(self.db)
     def test_missing_archived_or_unclaimed_results_do_not_release(self):
         registration=self.register();self.finish(self.dbs['two'],self.source,claim=False)
         with self.assertRaises(ValueError):self.apply(registration)
@@ -90,6 +140,8 @@ class Conditions(unittest.TestCase):
         original=rc.evaluate
         def check(db,root,task,contract,schemas):
             import subprocess
+            with self.assertRaisesRegex(sqlite3.OperationalError,'readonly'):
+                db.execute('UPDATE '+schemas['two']+".tasks SET status='blocked' WHERE id=?",(self.source,))
             writer=subprocess.run([sys.executable,'-c',
                 "import sqlite3,sys;db=sqlite3.connect(sys.argv[1],timeout=.01);db.execute(\"UPDATE tasks SET status='blocked' WHERE id=?\",(sys.argv[2],));db.commit()",
                 str(self.root/'kanban/boards/two/kanban.db'),self.source],capture_output=True,text=True)
@@ -155,7 +207,7 @@ class Conditions(unittest.TestCase):
                 'scripts/board_progress.py':'scripts/hermes/board_progress.py',
                 'hermes-agent/hermes_cli/nixhomeserver_board_progress.py':'scripts/hermes/board_progress.py'}.items():
             pending[self.root/target]=subprocess.check_output(['git','-C',str(source),'show','HEAD:'+original],text=True)
-        for name in ('hermes_cli/kanban_db.py','hermes_cli/kanban.py','hermes_cli/kanban_parser.py','tools/kanban_tools.py'):
+        for name in ('hermes_cli/kanban_db.py','hermes_cli/kanban_db_connect.py','hermes_cli/kanban.py','hermes_cli/kanban_parser.py','tools/kanban_tools.py'):
             pending[self.root/'hermes-agent'/name]=(NATIVE/name).read_text()
         pending[self.root/'profiles/retained/SOUL.md']='Independent installed instructions remain byte-identical\n'
         policy={'technical-recovery':{'enabled':False,'interval':300},'release-conditions':{'enabled':False,'interval':300}}
@@ -363,7 +415,7 @@ class Conditions(unittest.TestCase):
         self.assertEqual('ready',self.apply(registration)['status'])
     def test_adapter_is_idempotent_compiles_and_publishes_real_completion_seal(self):
         import release_conditions_adapter as adapter
-        for name in ('hermes_cli/kanban_db.py','hermes_cli/kanban.py','hermes_cli/kanban_parser.py','tools/kanban_tools.py'):
+        for name in ('hermes_cli/kanban_db.py','hermes_cli/kanban_db_connect.py','hermes_cli/kanban.py','hermes_cli/kanban_parser.py','tools/kanban_tools.py'):
             text=(NATIVE/name).read_text();adapted=adapter.adapt(name,text)
             self.assertEqual(adapted,adapter.adapt(name,adapted));compile(adapted,name,'exec')
         import ast,types

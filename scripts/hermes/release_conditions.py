@@ -205,7 +205,9 @@ def require_actor(db):
     # Public CLI operators retain their normal authority. A native model terminal
     # cannot turn this helper into a sibling mutation capability.
     origin.require_ordinary_unblock()
-    if origin.dispatcher_owned() or os.environ.get('HERMES_KANBAN_TASK') or os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'):
+    # dispatcher_owned() describes context eligibility, not a worker binding:
+    # its default is also true in an ordinary operator CLI or no-agent process.
+    if os.environ.get('HERMES_KANBAN_TASK') or os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'):
         raise ValueError('Register conditions through the authenticated native coordinator tool')
     return {'kind':'interactive-operator'}
 

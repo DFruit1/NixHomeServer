@@ -91,6 +91,11 @@ completion seals and required claim/start/completion provenance survive normal e
 A fleet rollback cannot remove this contract reader/enforcement version; install
 a compatible reviewed replacement when a rollback is needed.
 
+Operator and no-agent CLI calls retain native terminal-origin and delegated-worker
+denials; the runtime's default context-eligibility flag is not a worker identity.
+Native tracked connections explicitly enable URI parsing so read-only evidence
+attachments work with both native and system SQLite builds.
+
 Install using the reviewed `fleet-release.py --component release-conditions`
 plan/apply/check flow. It preserves current runtime files, instruction drift,
 handler pauses and cron records, snapshots private preimages, and rejects changed
