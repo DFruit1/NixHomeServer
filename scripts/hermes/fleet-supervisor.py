@@ -334,6 +334,20 @@ def tick(root, *, now=None, runner=run_handler, dry_run=False, clock=None):
         if not boards:
             raise ValueError('No configured fleet boards')
         handlers = state.setdefault('handlers', {})
+        # Conditions have their own cadence inside the existing supervisor.
+        # A stopped/failed technical-recovery detector cannot suppress this scan.
+        setting=(policy or {}).get('release-conditions', {})
+        conditions=state.get('release_conditions', {})
+        if setting.get('enabled') is True and now>=conditions.get('next_due',0):
+            if setting.get('interval')!=300:
+                raise ValueError('Release conditions require the reviewed five-minute cadence')
+            from release_conditions import scan
+            try:
+                conditions=dict(scan(root,cursor=conditions.get('cursor',0)),last_run=now,next_due=now+300)
+            except (OSError,ValueError,sqlite3.Error) as exc:
+                conditions=dict(last_run=now,next_due=now+300,error=type(exc).__name__,cursor=conditions.get('cursor',0))
+            state['release_conditions']=conditions
+            atomic_write(path,json.dumps(state,sort_keys=True,indent=2)+'\n',mode=0o600)
         failed = False
         for name, interval, timeout, interpreter, filename, arguments in HANDLERS:
             if policy is not None:
@@ -389,6 +403,7 @@ def tick(root, *, now=None, runner=run_handler, dry_run=False, clock=None):
                     failed |= bool(handlers[key].get('wake_pending'))
                     atomic_write(path,json.dumps(state,sort_keys=True,indent=2)+'\n',mode=0o600)
         report = dict(schema_version=1, generated_at=now, boards=boards, handlers=handlers,
+                      release_conditions=state.get('release_conditions'),
                       outcomes=outcome_report(root,boards,now),
                       note='Generated local report; execution evidence and review acceptance remain separate.')
         atomic_write(directory / 'report.json', json.dumps(report, sort_keys=True, indent=2) + '\n', mode=0o600)

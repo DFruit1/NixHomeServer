@@ -304,6 +304,16 @@ class RecoveryWaitTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.require()
 
+    def test_condition_registration_composes_with_native_wait_and_owns_automatic_scan(self):
+        self.original()
+        self.db.execute("INSERT INTO task_events(task_id,kind,payload,created_at) VALUES ('t_owner','release_conditions_registered','{}',219)")
+        self.db.commit()
+        self.assertTrue(self.require())
+        with patch.object(supervisor.subprocess,'run') as native:
+            result=self.tick()
+        native.assert_not_called()
+        self.assertEqual([],result['recovery_waits']['ready'])
+
     def test_legacy_prose_is_observed_but_never_inferred_or_unblocked(self):
         self.original()
         self.db.execute("UPDATE task_events SET payload=? WHERE task_id='t_owner' AND kind='scheduled'",

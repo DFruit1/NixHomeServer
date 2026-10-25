@@ -173,6 +173,11 @@ def rollback_files(root, revision, *, dry_run=False):
             raise ValueError('Rollback preimage failed verification')
         changes.append((target, old, item['mode']))
     require_iteration_rollback_compatibility(root, manifest)
+    if manifest.get('release_condition_versions'):
+        previous=manifest.get('previous_release') or {}
+        old=json.loads(journal(root,previous['revision']).read_text()) if previous.get('revision') else {}
+        if 1 not in old.get('release_condition_versions',[]):
+            raise ValueError('Rollback would remove native release-condition readers and enforcement; install a compatible reviewed release')
     if dry_run:
         return
     for target, old, mode in reversed(changes):
@@ -186,6 +191,11 @@ def rollback_files(root, revision, *, dry_run=False):
 
 def require_rollback_compatibility(root, manifest):
     require_iteration_rollback_compatibility(root, manifest)
+    if manifest.get('release_condition_versions'):
+        previous=manifest.get('previous_release') or {}
+        old=json.loads(journal(root,previous['revision']).read_text()) if previous.get('revision') else {}
+        if 1 not in old.get('release_condition_versions',[]):
+            raise ValueError('Rollback would remove native release-condition readers and enforcement; install a compatible reviewed release')
     previous=manifest.get('previous_release') or {}
     supported=[]
     if previous.get('revision'):
@@ -273,6 +283,7 @@ def schedule_plan(root, *, activate_steward=False, directory=HERE):
     handlers.setdefault('agent-usage', {'enabled': True, 'interval': 300})
     handlers.setdefault('usage-guard', {'enabled': True, 'interval': 300})
     handlers.setdefault('board-progress', {'enabled': True, 'interval': 900})
+    handlers.setdefault('release-conditions', {'enabled': True, 'interval': 300})
     result = dict(pause=[], steward=[], daily=None, supervisor=None, handlers=handlers)
     for profile in ('default', 'head-coordinator', 'board-steward'):
         names = {}
@@ -867,11 +878,93 @@ def recovery_wait_component_files(root, source, *, owners, retained, inputs=None
     return pending
 
 
+def condition_adapter(source):
+    """Load the selected committed transform, never a cached caller module."""
+    path=source/'scripts/hermes/release_conditions_adapter.py'
+    spec=importlib.util.spec_from_file_location('fleet_selected_condition_adapter',path)
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+    return module.adapt
+
+
+def release_condition_files(root, source, *, owners, retained, inputs=None, schedule_updates=None):
+    """Add the native contract API and five-minute scan without replacing drift."""
+    state=json.loads(bounded_regular(checked(root,root/'state/fleet/current.json')))
+    manifest=json.loads(bounded_regular(journal(root,state['revision'])))
+    if state.get('status')!='active' or manifest.get('status')!='active':
+        raise ValueError('Release conditions require an active fleet')
+    replacements={
+        'scripts/fleet-release.py':'scripts/hermes/fleet-release.py',
+        'scripts/fleet-supervisor.py':'scripts/hermes/fleet-supervisor.py',
+        'scripts/recovery_wait.py':'scripts/hermes/recovery_wait.py',
+        'hermes-agent/hermes_cli/nixhomeserver_recovery_wait.py':'scripts/hermes/recovery_wait.py',
+        'scripts/board_progress.py':'scripts/hermes/board_progress.py',
+        'hermes-agent/hermes_cli/nixhomeserver_board_progress.py':'scripts/hermes/board_progress.py'}
+    additions={
+        'scripts/release_conditions.py':'scripts/hermes/release_conditions.py',
+        'hermes-agent/hermes_cli/nixhomeserver_release_conditions.py':'scripts/hermes/release_conditions.py',
+        'scripts/hermes-release-conditions.md':'documentation/hermes-release-conditions.md'}
+    native=('hermes_cli/kanban_db.py','hermes_cli/kanban.py','hermes_cli/kanban_parser.py','tools/kanban_tools.py')
+    entries={item['path']:item for item in manifest['files']}
+    paths=set(entries)|set(replacements)|set(additions)|{'hermes-agent/'+p for p in native}|{'state/fleet/handlers.json'}
+    initial={relative:read(checked(root,root/relative)) for relative in paths}
+    observed={relative:dict(sha256=sha(data) if data is not None else None,
+        mode=(root/relative).stat().st_mode&0o777 if data is not None else None) for relative,data in initial.items()}
+    if check_files(root,state['revision']) or any(observed[p]!={'sha256':e['after_sha256'],'mode':e['mode']} for p,e in entries.items()):
+        raise ValueError('Reconcile fleet drift before adding release conditions')
+    subprocess.run(['git','-C',str(source),'merge-base','--is-ancestor',manifest['source_revision'],'HEAD'],check=True,capture_output=True)
+    pending={root/p:initial[p].decode() for p in entries}
+    owners.update({path:['retained-existing'] for path in pending})
+    retained.extend(manifest.get('retained_external_changes',[]))
+    if schedule_updates is not None:schedule_updates.extend(coordinator_schedule_updates(root,manifest))
+    for relative,original in replacements.items():
+        predecessor=subprocess.check_output(['git','-C',str(source),'show',manifest['source_revision']+':'+original])
+        if initial[relative]!=predecessor:
+            raise ValueError('Release-condition target needs matching maintained source: '+relative)
+        pending[root/relative]=(source/original).read_text();owners[root/relative]=['release-conditions']
+    for relative,original in additions.items():
+        if initial[relative] is not None and relative not in entries:
+            raise ValueError('Release-condition target exists outside fleet ownership: '+relative)
+        pending[root/relative]=(source/original).read_text();owners[root/relative]=['release-conditions']
+    adapt=condition_adapter(source)
+    for name in native:
+        path=root/'hermes-agent'/name
+        if initial['hermes-agent/'+name] is None:raise ValueError('Native contract dependency missing: '+name)
+        pending[path]=adapt(name,initial['hermes-agent/'+name].decode());owners[path]=['release-conditions']
+    policy=json.loads(initial['state/fleet/handlers.json'])
+    policy.setdefault('release-conditions',dict(enabled=True,interval=300))
+    pending[root/'state/fleet/handlers.json']=json.dumps(policy,sort_keys=True,indent=2)+'\n'
+    owners[root/'state/fleet/handlers.json']=['release-conditions']
+    if any(read(checked(root,root/p))!=value or (value is not None and (root/p).stat().st_mode&0o777!=observed[p]['mode']) for p,value in initial.items()):
+        raise ValueError('Release-condition inputs changed during preparation')
+    if inputs is not None:inputs.update(observed)
+    return pending
+
+
+def add_release_condition_runtime(root, source, pending, owners):
+    adapt=condition_adapter(source)
+    helper=(source/'scripts/hermes/release_conditions.py').read_text()
+    for name in ('board_progress','recovery_wait'):
+        text=(source/('scripts/hermes/'+name+'.py')).read_text()
+        for path in (root/'scripts'/(name+'.py'),root/'hermes-agent/hermes_cli'/('nixhomeserver_'+name+'.py')):
+            pending[path]=text;owners.setdefault(path,[]).append('release-conditions')
+    for relative in ('scripts/release_conditions.py','hermes-agent/hermes_cli/nixhomeserver_release_conditions.py'):
+        pending[root/relative]=helper;owners[root/relative]=['release-conditions']
+    path=root/'scripts/hermes-release-conditions.md'
+    pending[path]=(source/'documentation/hermes-release-conditions.md').read_text();owners[path]=['release-conditions']
+    for name in ('hermes_cli/kanban_db.py','hermes_cli/kanban.py','hermes_cli/kanban_parser.py','tools/kanban_tools.py'):
+        path=root/'hermes-agent'/name
+        pending[path]=adapt(name,pending.get(path) or path.read_text())
+        owners.setdefault(path,[]).append('release-conditions')
+
+
 def pending_files(root, source, plan, *, owners=None, adopt_config=None, adoptions=None,
                   component='full', retained=None, inputs=None, schedule_updates=None):
     directory = source / 'scripts/hermes'
     pending = {}
     owners = {} if owners is None else owners
+    if component=='release-conditions':
+        if adopt_config is not None:raise ValueError('Config adoption is a separate operation')
+        return release_condition_files(root,source,owners=owners,retained=retained if retained is not None else [],inputs=inputs,schedule_updates=schedule_updates)
     if component=='recovery-waits':
         if adopt_config is not None or adoptions:
             raise ValueError('Recovery wait component cannot adopt configuration changes')
@@ -926,6 +1019,7 @@ def pending_files(root, source, plan, *, owners=None, adopt_config=None, adoptio
         if model_choices(pending[target])[0]!=model_choices(bounded_regular(target).decode())[0]:
             raise ValueError('Release composition would replace the adopted owner model choices')
         if adoptions is not None:adoptions.append(adoption)
+    add_release_condition_runtime(root,source,pending,owners)
     if current_path.exists():
         for relative in manifest.get('retained_external_changes',[]):
             if pending.get(root/relative)!=(root/relative).read_text():
@@ -1008,7 +1102,7 @@ def main():
                         help='Exact receipt of an existing owner-approved provider/model rearrangement')
     parser.add_argument('--activate-steward', action='store_true',
                         help='Explicitly resume the two existing steward inspection jobs')
-    parser.add_argument('--component',choices=('full','coordinator-tools','recovery-waits'),default='full',
+    parser.add_argument('--component',choices=('full','coordinator-tools','recovery-waits','release-conditions'),default='full',
                         help='Publish a bounded component while preserving the active fleet and schedules')
     args = parser.parse_args()
     root = Path(os.environ.get('HERMES_ROOT',str(Path.home()/'.hermes'))).absolute()
@@ -1100,6 +1194,8 @@ def operate(args,root):
     for path,text in pending.items():
         checked(root,path)
         if path.suffix=='.py':compile(text,str(path),'exec')
+    if args.action=='apply' and args.revision and args.revision!=revision:
+        raise ValueError('Reviewed release plan changed; nothing installed')
     if args.action=='plan':
         print(json.dumps(dict(revision=revision,source_revision=source_id,files=[str(p.relative_to(root)) for p in pending],
                               file_owners=ownership,schedules=plan,
@@ -1134,7 +1230,7 @@ def operate(args,root):
         current=adoption_baseline(root,adoptions[0],install=True)
     context=dict(source_revision=source_id,dependencies=dependencies,authority=authority,
                  previous_release=current,schedule=plan,content_id=content_id,file_owners=ownership,
-                 workflow_versions=[1])
+                 workflow_versions=[1],release_condition_versions=[1] if root/'hermes-agent/hermes_cli/nixhomeserver_release_conditions.py' in pending else [])
     if adoptions:context['config_adoptions']=adoptions
     if component!='full':context.update(component=component,retained_external_changes=retained,
                                       retained_external_schedule_updates=preserved_schedules)

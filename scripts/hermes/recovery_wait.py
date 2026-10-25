@@ -11,7 +11,7 @@ import sqlite3
 import time
 
 PREFIX = 'Recovery wait: '
-NOTES = ('commented', 'attached', 'subscribed', 'unsubscribed')
+NOTES = ('commented', 'attached', 'subscribed', 'unsubscribed', 'release_conditions_registered')
 TERMINAL_EVENTS = {
     'completed': ('completed',),
     'blocked': ('blocked', 'block_loop_detected', 'dependency_wait'),
@@ -82,7 +82,7 @@ def require_resume(db, task_id):
     run = db.execute('SELECT * FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1',
                      (task_id,)).fetchone()
     lifecycle = db.execute("SELECT id FROM task_events WHERE task_id=? AND kind NOT IN "
-        "('commented','attached','subscribed','unsubscribed') ORDER BY id DESC LIMIT 1",
+        "('commented','attached','subscribed','unsubscribed','release_conditions_registered') ORDER BY id DESC LIMIT 1",
         (task_id,)).fetchone()
     active = db.execute('SELECT 1 FROM task_runs WHERE task_id=? '
         'AND (ended_at IS NULL OR status IN (\'running\',\'pending\',\'claimed\',\'starting\')) LIMIT 1',
@@ -158,6 +158,11 @@ def inspect(root):
             if len(rows) > 1000:
                 raise ValueError('Recovery wait inventory exceeds 1000 owners per board')
             for row in rows:
+                # The condition scanner owns registered cards, including manual
+                # contracts and deliberate scanner pauses. Never race its policy
+                # through the older automatic event-wait route.
+                if db.execute("SELECT 1 FROM task_events WHERE task_id=? AND kind='release_conditions_registered' LIMIT 1",(row['id'],)).fetchone():
+                    continue
                 try:
                     proof = require_resume(db, row['id'])
                     if proof:

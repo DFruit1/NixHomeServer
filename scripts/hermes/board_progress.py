@@ -107,7 +107,7 @@ def require_resume(db, task_id):
     event, metadata = scheduled_receipt(db, task_id)
     latest = db.execute('SELECT id FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1', (task_id,)).fetchone()
     lifecycle = db.execute('SELECT id FROM task_events WHERE task_id=? AND kind NOT IN '
-        "('commented','attached','subscribed','unsubscribed') ORDER BY id DESC LIMIT 1", (task_id,)).fetchone()
+        "('commented','attached','subscribed','unsubscribed','release_conditions_registered') ORDER BY id DESC LIMIT 1", (task_id,)).fetchone()
     if (not latest or latest['id'] != event['run_id'] or not lifecycle or lifecycle['id'] != event['id']
             or disposition(db, owner, metadata, since=event['started_at'],
                            after_run_id=event['run_id'])['state'] != 'started'):

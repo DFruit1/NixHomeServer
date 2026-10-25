@@ -139,6 +139,10 @@ class ReleaseTest(unittest.TestCase):
                        'observed_sha256':release.sha(self.adopted_config.encode()),
                        'grant_reference':'T3 cebd27fb-7963-43fb-aa17-e036048ffec6 owner model decision'}
         self.receipt.write_text(json.dumps(self.adoption))
+        # Model-adoption unit fixtures deliberately isolate the unrelated
+        # native condition runtime; its real composition is covered separately.
+        condition_runtime=patch.object(release,'add_release_condition_runtime')
+        condition_runtime.start();self.addCleanup(condition_runtime.stop)
         source=self.root/'source/scripts/hermes';source.mkdir(parents=True)
         helpers=('deadlock_recovery.py','feature_flow.py','capability_recovery.py','feature_contract.py',
                  'fleet_contract.py','fleet-release.py','fleet-evidence.py','fleet-supervisor.py','fleet-report.py',
@@ -356,7 +360,7 @@ api_key: PRIVATE
         paused={'agent-usage':{'enabled':False,'interval':900},'evidence':{'enabled':True,'interval':300},
                 'usage-guard':{'enabled':False,'interval':600}}
         path.write_text(json.dumps(paused))
-        self.assertEqual({**paused,'board-progress':{'enabled':True,'interval':900}},release.schedule_plan(self.root)['handlers'])
+        self.assertEqual({**paused,'board-progress':{'enabled':True,'interval':900},'release-conditions':{'enabled':True,'interval':300}},release.schedule_plan(self.root)['handlers'])
 
     def schedules(self):
         for profile,items in [('default',[

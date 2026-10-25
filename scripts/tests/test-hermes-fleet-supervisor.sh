@@ -125,6 +125,26 @@ class SupervisorTest(unittest.TestCase):
         self.assertIn('blocker',body)
         self.assertIn('board-progress',command)
 
+    def test_condition_scan_keeps_its_cadence_when_recovery_detector_is_stopped(self):
+        import release_conditions
+        directory=self.root/'state/fleet';directory.mkdir(parents=True)
+        policy={'release-conditions':{'enabled':True,'interval':300}}
+        (directory/'handlers.json').write_text(json.dumps(policy))
+        (directory/'supervisor.json').write_text(json.dumps({'handlers':{'technical-recovery':{'failures':3,'interrupted':True}}}))
+        with patch.object(supervisor,'HANDLERS',()),patch.object(release_conditions,'scan',return_value={'cursor':0,'results':[]}) as scan:
+            supervisor.tick(self.root,now=100000,runner=self.runner)
+            supervisor.tick(self.root,now=100299,runner=self.runner)
+            self.assertEqual(1,scan.call_count)
+            supervisor.tick(self.root,now=100300,runner=self.runner)
+            self.assertEqual(2,scan.call_count)
+            policy['release-conditions']['enabled']=False
+            (directory/'handlers.json').write_text(json.dumps(policy))
+            supervisor.tick(self.root,now=100600,runner=self.runner)
+            self.assertEqual(2,scan.call_count)
+        report=json.loads((directory/'report.json').read_text())
+        self.assertEqual(100300,report['release_conditions']['last_run'])
+        self.assertEqual(3,report['handlers']['technical-recovery']['failures'])
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='fleet-supervisor-')
         self.addCleanup(self.tmp.cleanup)
