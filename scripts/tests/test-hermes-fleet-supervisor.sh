@@ -145,6 +145,32 @@ class SupervisorTest(unittest.TestCase):
         self.assertEqual(100300,report['release_conditions']['last_run'])
         self.assertEqual(3,report['handlers']['technical-recovery']['failures'])
 
+    def registered_dispatch_tick(self, *, action, scanner_enabled):
+        import board_progress, release_conditions, sqlite3
+        path=self.progress_board()
+        with sqlite3.connect(path) as db:
+            db.execute("UPDATE tasks SET status='scheduled',tenant='board-progress' WHERE id='t_hold'")
+            db.execute("INSERT INTO task_events(task_id,kind,payload,created_at) VALUES (?, ?, ?, ?)",
+                       ('t_hold','release_conditions_registered',json.dumps({'contract':{'action':action}}),100))
+        directory=self.root/'state/fleet';directory.mkdir(parents=True)
+        (directory/'handlers.json').write_text(json.dumps({
+            'board-progress':{'enabled':True,'interval':900},
+            'release-conditions':{'enabled':scanner_enabled,'interval':300}}))
+        packet=json.dumps({'board':'test','version':'a'*64,'ready_running':0,'candidates':[]})
+        with patch.object(board_progress,'require_resume',return_value=True), \
+             patch.object(release_conditions,'scan',return_value={'cursor':0,'results':[]}), \
+             patch.object(supervisor.subprocess,'run') as native:
+            supervisor.tick(self.root,now=100000,runner=lambda *a,**k: {'exit_code':0,'output':packet})
+        self.assertEqual(0,native.call_count,'Registered waits belong exclusively to the condition scanner')
+        with sqlite3.connect(path) as db:
+            self.assertEqual('scheduled',db.execute("SELECT status FROM tasks WHERE id='t_hold'").fetchone()[0])
+
+    def test_progress_handler_yields_registered_wait_when_scanner_is_paused(self):
+        self.registered_dispatch_tick(action='resume',scanner_enabled=False)
+
+    def test_progress_handler_yields_manual_registered_wait(self):
+        self.registered_dispatch_tick(action='manual',scanner_enabled=True)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='fleet-supervisor-')
         self.addCleanup(self.tmp.cleanup)

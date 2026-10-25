@@ -112,6 +112,9 @@ def input_identity(root, script):
 
 def continue_dispatch(root, board, db, task_id):
     """Wake one qualified supervision wait through the guarded native API."""
+    if db.execute("SELECT 1 FROM task_events WHERE task_id=? AND kind='release_conditions_registered' LIMIT 1",
+                  (task_id,)).fetchone():
+        return  # Registered owners belong to the separately paused condition scanner.
     from board_progress import require_resume
     try:
         if not require_resume(db, task_id):
