@@ -133,6 +133,21 @@ jq -e '
   and (all(.disabled, .removed; .services == [] and .groups == [] and .users == [] and .gateway == [] and .backups == {} and .firewall == {} and .database == []))
 ' <<<"$settings" >/dev/null
 
+# Firmware must publish ACKs without permission to write desired config or
+# other command topics. Check every listener, including LAN and NetBird.
+jq -e '
+  all(.services.mosquitto.listeners[];
+    .users["groundwater-logger"].acl as $acl
+    | ($acl | index("read cfg/#") != null)
+    and ([$acl[] | select(startswith("write ") or startswith("readwrite "))] | sort == [
+      "readwrite azman1/feeds/#", "readwrite testtopic/9",
+      "write cfg/danger_ack", "write cfg/desired/applied"
+    ]))
+' <<<"$settings" >/dev/null || {
+  echo '❌ Device MQTT ACLs must allow only telemetry/test writes and the two firmware ACK topics.' >&2
+  exit 1
+}
+
 require_fixed modules/Core_Modules/impermanence/default.nix '"/var/lib/groundwater-logger"' \
   "Groundwater removal must retain the historical SQLite archive."
 require_fixed modules/Core_Modules/impermanence/default.nix '"/var/lib/groundwater-mosquitto"' \

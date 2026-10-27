@@ -23,6 +23,8 @@ let
     "read requesttesta"
     "read cmd/#"
     "read cfg/#"
+    "write cfg/desired/applied"
+    "write cfg/danger_ack"
   ];
   listenerUsers = {
     groundwater-app = {
