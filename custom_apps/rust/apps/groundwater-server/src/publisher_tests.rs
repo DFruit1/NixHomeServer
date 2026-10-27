@@ -451,3 +451,173 @@ async fn real_mqtt_puback_correlates_after_crash_before_dispatch() {
         "broker-accepted settings never repeat"
     );
 }
+
+/// Reproduce the durable side of COMMIT succeeding but its response being
+/// lost before enqueue. The publisher owner consequently has no Pending ID.
+async fn reserve_without_tracker(db: &mut Client, command_id: i64, state: &str) -> i64 {
+    let tx = db.transaction().await.unwrap();
+    let attempt = tx
+        .query_one(
+            "INSERT INTO command_publish_attempts(command_id,ready_at,topic,state,dispatched_at)
+         SELECT $1,last_ready_at,'requesttesta',$2::text,
+                CASE WHEN $2::text='inflight' THEN now() ELSE NULL END
+         FROM devices WHERE device_id=$3 RETURNING id",
+            &[&command_id, &state, &DEVICE],
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0);
+    tx.execute(
+        "UPDATE commands SET active_publish_attempt=$2,attempts=attempts+1 WHERE id=$1",
+        &[&command_id, &attempt],
+    )
+    .await
+    .unwrap();
+    tx.execute(
+        "UPDATE devices SET last_downlink_at=now() WHERE device_id=$1",
+        &[&DEVICE],
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    attempt
+}
+
+#[tokio::test]
+#[ignore = "requires disposable GROUNDWATER_TEST_DATABASE_URL"]
+async fn owner_reconcile_recovers_untracked_reservations_after_database_reconnect() {
+    let mut db = setup().await;
+    let prepared = queued(&db, "test", json!({})).await;
+    let inflight = queued(&db, "test", json!({})).await;
+    let prepared_attempt = reserve_without_tracker(&mut db, prepared.id, "prepared").await;
+    let inflight_attempt = reserve_without_tracker(&mut db, inflight.id, "inflight").await;
+    assert!(platform::cancel(&db, DEVICE, prepared.id, "operator")
+        .await
+        .unwrap()
+        .is_none());
+    drop(db);
+    let mut db = db::connect(&std::env::var("GROUNDWATER_TEST_DATABASE_URL").unwrap())
+        .await
+        .unwrap();
+    // Exercise the normal owner tick after replacing only its DB client;
+    // there is no restart-time call to recover(). Even an offline broker
+    // must not prevent clearing a stranded reservation for cancellation.
+    let mut publisher = Publisher::default();
+    let (mqtt, _event_loop) = transport();
+    let bus = EventBus::new();
+    scheduler::tick(&mut db, &mqtt, &bus, &mut publisher)
+        .await
+        .unwrap();
+    let rows=db.query("SELECT state,recovery_reason FROM command_publish_attempts WHERE id=ANY($1) ORDER BY id", &[&vec![prepared_attempt,inflight_attempt]]).await.unwrap();
+    assert!(
+        rows.iter().all(|r| r.get::<_, String>(0) == "abandoned"),
+        "untracked reservations remain stranded after reconnect"
+    );
+    assert!(rows.iter().all(|r| r.get::<_, Option<String>>(1).is_some()));
+    assert_eq!(
+        platform::cancel(&db, DEVICE, prepared.id, "operator")
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        "cancelled"
+    );
+    assert_eq!(command(&db, inflight.id).await.state, "queued");
+    publisher.connected = true;
+    scheduler::tick(&mut db, &mqtt, &bus, &mut publisher)
+        .await
+        .unwrap();
+    assert_eq!(
+        command(&db, inflight.id).await.attempts,
+        1,
+        "reconciliation preserves the pacing boundary"
+    );
+    elapsed(&db).await;
+    scheduler::tick(&mut db, &mqtt, &bus, &mut publisher)
+        .await
+        .unwrap();
+    assert!(publisher.busy());
+    assert_eq!(
+        command(&db, inflight.id).await.attempts,
+        2,
+        "recovered intent is retryable without a process restart"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires disposable GROUNDWATER_TEST_DATABASE_URL"]
+async fn owner_reconcile_preserves_tracked_inflight_and_puback_across_database_loss() {
+    let mut db = setup().await;
+    let bus = EventBus::new();
+    let (mqtt, _event_loop) = transport();
+    let mut publisher = tracker();
+    let settings = queued(&db, "project-settings", config()).await;
+    scheduler::tick(&mut db, &mqtt, &bus, &mut publisher)
+        .await
+        .unwrap();
+    publisher.outgoing(&mut db, 77, &bus).await.unwrap();
+    let attempt = db
+        .query_one(
+            "SELECT active_publish_attempt FROM commands WHERE id=$1",
+            &[&settings.id],
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0);
+    drop(db);
+    let mut db = db::connect(&std::env::var("GROUNDWATER_TEST_DATABASE_URL").unwrap())
+        .await
+        .unwrap();
+    publisher.reconcile(&mut db, &bus).await.unwrap();
+    assert!(publisher.busy());
+    assert_eq!(
+        db.query_one(
+            "SELECT state FROM command_publish_attempts WHERE id=$1",
+            &[&attempt]
+        )
+        .await
+        .unwrap()
+        .get::<_, String>(0),
+        "inflight",
+        "live packet correlation must survive a DB reconnect"
+    );
+    // Lose this disposable client while the MQTT owner receives PUBACK.
+    // The failed SQL write must leave the confirmation in Pending.
+    assert!(db
+        .simple_query("SELECT pg_terminate_backend(pg_backend_pid())")
+        .await
+        .is_err());
+    assert!(publisher.puback(&mut db, 77, &bus).await.is_err());
+    assert!(publisher.busy());
+    drop(db);
+    let mut db = db::connect(&std::env::var("GROUNDWATER_TEST_DATABASE_URL").unwrap())
+        .await
+        .unwrap();
+    publisher.reconcile(&mut db, &bus).await.unwrap();
+    assert!(!publisher.busy());
+    let sent = command(&db, settings.id).await;
+    assert_eq!(sent.state, "sent");
+    assert!(sent.broker_acked_at.is_some());
+    assert!(sent.acked_at.is_none());
+    assert_eq!(sent.attempts, 1);
+    assert_eq!(
+        db.query_one(
+            "SELECT state,recovery_reason FROM command_publish_attempts WHERE id=$1",
+            &[&attempt]
+        )
+        .await
+        .unwrap()
+        .get::<_, String>(0),
+        "accepted"
+    );
+    assert_eq!(
+        db.query_one(
+            "SELECT desired_config FROM devices WHERE device_id=$1",
+            &[&DEVICE]
+        )
+        .await
+        .unwrap()
+        .get::<_, Value>(0),
+        config()
+    );
+}

@@ -94,6 +94,11 @@ impl Publisher {
         Ok(())
     }
     pub async fn reconcile(&mut self, db: &mut Client, bus: &EventBus) -> Result<(), String> {
+        // COMMIT may persist a reservation while its response is lost before
+        // enqueue installs Pending. The single owner can recover those rows
+        // on its next tick, including after replacing only the DB client.
+        // Never clear live packet correlation or a PUBACK awaiting SQL commit.
+        recover_untracked(db, self.pending.as_ref().map(|pending| pending.attempt_id)).await?;
         let Some(pending) = &mut self.pending else {
             return Ok(());
         };
@@ -115,6 +120,27 @@ impl Publisher {
         }
         Ok(())
     }
+}
+
+async fn recover_untracked(db: &Client, tracked: Option<i64>) -> Result<(), String> {
+    db.execute(
+        "WITH candidates AS (
+            SELECT id FROM command_publish_attempts
+            WHERE state IN ('prepared','inflight') AND id IS DISTINCT FROM $1::bigint
+            ORDER BY id LIMIT 32 FOR UPDATE SKIP LOCKED
+        ), lost AS (
+            UPDATE command_publish_attempts a SET state='abandoned',
+                recovery_reason='untracked reservation after uncertain commit or database reconnect'
+            FROM candidates WHERE a.id=candidates.id RETURNING a.id,a.command_id
+        ), cleared AS (
+            UPDATE commands c SET active_publish_attempt=NULL FROM lost
+            WHERE c.id=lost.command_id AND c.active_publish_attempt=lost.id
+        ) INSERT INTO command_events(command_id,event,detail)
+        SELECT command_id,'publish-recovered',jsonb_build_object('attempt_id',id,
+            'reason','untracked reservation after uncertain commit or database reconnect') FROM lost",
+        &[&tracked],
+    ).await.map_err(|e|format!("untracked publish recovery: {e:?}"))?;
+    Ok(())
 }
 
 /// The old process's packet IDs and request queue cannot survive restart.
