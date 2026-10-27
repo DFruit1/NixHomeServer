@@ -1,5 +1,11 @@
 # Hermes instruction ownership
 
+The five project entrypoints and their routing are documented in
+[project skills](agent-skills.md). Full legacy Hermes skill bodies are
+[archived](archive/skills/README.md); their original installer paths now contain
+small native compatibility adapters. Project skill references ship with installed
+fallbacks. This source consolidation does not update or restart the running fleet.
+
 The owner-approved 2026-10-23 simplification is maintained in
 [fleet maintenance](hermes-fleet.md). The everyday roles are coordinator,
 implementer and independent reviewer; auditor work is on demand and the scheduled
@@ -536,12 +542,11 @@ The online source is [Hermes Agent's bundled systematic-debugging skill](https:/
 pinned at `0f3fcacd3f92d02d163789b4c3441b6388f8753d` (MIT, originally adapted
 from obra/superpowers). The maintained adaptation is
 `scripts/hermes/instructions/systematic-debugging.md`; its upstream license is
-`instructions/LICENSE.hermes-skills`. It retains the four-phase investigation
-and reproduction method, adapts role/tool/privacy limits and escalation, and
-removes automatic delegation and unsupported performance claims. Existing
-bundled test-driven-development remains available: use its test-first method
-with project exemptions and preserve existing work. Existing review and
-orchestration skills remain authoritative for their workflows.
+`instructions/LICENSE.hermes-skills`. Its former full adaptation is archived;
+the native name now exposes a concise evidence/reproduction method within the
+same role/tool/privacy boundaries. Existing bundled test-driven-development
+remains available within project test scope. Native review and orchestration
+adapters preserve their dispatch and acceptance contracts.
 
 Install only this skill selection and its discovery blocks without refreshing
 other policy, models, configs, approvals, jobs or sessions:

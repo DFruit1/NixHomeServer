@@ -1,0 +1,97 @@
+{
+  "archived_on": "2026-10-28",
+  "source_revision": "ffcc7b240ca4e9923f4b117938ccffc4a3a01987",
+  "purpose": "Historical definitions; current project skills and native compatibility adapters supersede these instructions.",
+  "files": [
+    {
+      "source": "scripts/hermes/instructions/systematic-debugging.md",
+      "archive": "documentation/archive/skills/hermes/systematic-debugging.md",
+      "sha256": "8238bba7d847323f54de3bff6d39da947ccca6e1629729229dd83f558fbec14e"
+    },
+    {
+      "source": "scripts/hermes/instructions/requesting-code-review.md",
+      "archive": "documentation/archive/skills/hermes/requesting-code-review.md",
+      "sha256": "acf9ffe5127bd63d9ebead77071c72a8b9718fcaa2d28cbfb4ca1a50d6415ff0"
+    },
+    {
+      "source": "scripts/hermes/instructions/sdlc-review.md",
+      "archive": "documentation/archive/skills/hermes/sdlc-review.md",
+      "sha256": "55e303880e089cca059ce77785f90993d95d7632b877ba5bf2d33c74d3788851"
+    },
+    {
+      "source": "scripts/hermes/instructions/kanban-orchestration.md",
+      "archive": "documentation/archive/skills/hermes/kanban-orchestration.md",
+      "sha256": "e44587420c00792d38fcc65fe5bbea1b55c5c8bc804253f0768e59421a8d488d"
+    },
+    {
+      "source": "scripts/hermes/instructions/taskforce-feature-audit.md",
+      "archive": "documentation/archive/skills/hermes/taskforce-feature-audit.md",
+      "sha256": "3d655a63a2b5df99fcfe599a9d2c9de5f4798b70865396baadcfccd05a998fa0"
+    },
+    {
+      "source": "scripts/hermes/taskforce/board-steward-skill.md",
+      "archive": "documentation/archive/skills/hermes/board-steward.md",
+      "sha256": "b277accf1baa10f4b0848ea3c1a0d85f0664d1b2e88c48da82ab5d6a153bc72c"
+    },
+    {
+      "source": ".agents/skills/grilling/SKILL.md",
+      "archive": "documentation/archive/skills/retired/grilling/REFERENCE.md",
+      "sha256": "fd227e6c9cef8edce3ffe6d5ec819700029657d4ee67b528e7ba44f56d421c34"
+    },
+    {
+      "source": ".agents/skills/grilling/agents/openai.yaml",
+      "archive": "documentation/archive/skills/retired/grilling/agents/openai.yaml",
+      "sha256": "ae203f565b576c5facb1aa3afdaeca0e3c562285623a54a104ec67f5358c9594"
+    },
+    {
+      "source": ".agents/skills/grill-me/SKILL.md",
+      "archive": "documentation/archive/skills/retired/grill-me/REFERENCE.md",
+      "sha256": "003b8c83be0bd04cd5d1fcd2401b2586c599305bbfb2cf5461d60e54f5858bb2"
+    },
+    {
+      "source": ".agents/skills/grill-me/agents/openai.yaml",
+      "archive": "documentation/archive/skills/retired/grill-me/agents/openai.yaml",
+      "sha256": "7ef4e33714a174923acd3c4945f0369a033bc0303f38b00835618e8a960f15cc"
+    },
+    {
+      "source": ".agents/skills/teach/GLOSSARY-FORMAT.md",
+      "archive": "documentation/archive/skills/retired/teach/GLOSSARY-FORMAT.md",
+      "sha256": "dc461ab506b45b8fbb67ed25f2edfddfac33ec581c4b67831d44ddd3ccdbd007"
+    },
+    {
+      "source": ".agents/skills/teach/LEARNING-RECORD-FORMAT.md",
+      "archive": "documentation/archive/skills/retired/teach/LEARNING-RECORD-FORMAT.md",
+      "sha256": "a394eab2560ff056e5269edca2328f4a8b796549627922e4e5b8924fe7c80b5a"
+    },
+    {
+      "source": ".agents/skills/teach/SKILL.md",
+      "archive": "documentation/archive/skills/retired/teach/REFERENCE.md",
+      "sha256": "596f551ec9ee517f474c8d93c3d4479d52be8138bf94e05f976a23ee4325aec0"
+    },
+    {
+      "source": ".agents/skills/teach/RESOURCES-FORMAT.md",
+      "archive": "documentation/archive/skills/retired/teach/RESOURCES-FORMAT.md",
+      "sha256": "0f33737d305b1a7cadeadbc52c27b11ca07c214dc6335e22cf3a5ac762a5b3c9"
+    },
+    {
+      "source": ".agents/skills/teach/MISSION-FORMAT.md",
+      "archive": "documentation/archive/skills/retired/teach/MISSION-FORMAT.md",
+      "sha256": "132ed8453372a6c07b6345e45a6b4b38533d354b80e1e6dcf0c663c333b0b1e1"
+    },
+    {
+      "source": ".agents/skills/teach/agents/openai.yaml",
+      "archive": "documentation/archive/skills/retired/teach/agents/openai.yaml",
+      "sha256": "09c613cc83b2138d96e49d24c43ddd36f77a1819d21956a28ef8ab23e2f07544"
+    },
+    {
+      "source": ".agents/skills/nixhomeserver-shutdown-guard/SKILL.md",
+      "archive": "documentation/archive/skills/retired/nixhomeserver-shutdown-guard/REFERENCE.md",
+      "sha256": "e0feb7fd4920a11e88356bf4b4633ef69b5e6d447c68f73cef003e1a0f8ab1df"
+    },
+    {
+      "source": ".agents/skills/nixhomeserver-shutdown-guard/agents/openai.yaml",
+      "archive": "documentation/archive/skills/retired/nixhomeserver-shutdown-guard/agents/openai.yaml",
+      "sha256": "6f345b796ea8ca192cc4d86c2a7aa9d24568f6d4dab66fcb3bf688526cd8c790"
+    }
+  ]
+}

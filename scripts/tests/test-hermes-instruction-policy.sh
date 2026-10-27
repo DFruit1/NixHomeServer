@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-python3 -B - "$repo" <<'PY'
+python3 -B - "$repo" "$@" <<'PY'
 import importlib.util
 import json
 import re
@@ -371,6 +371,44 @@ class InstructionPolicyTest(unittest.TestCase):
                          (audit / 'references/offline-state-probe.md').read_bytes())
         self.assertEqual(0, policy.install(self.root, check=True))
 
+    def test_project_skill_references_survive_installed_fallback(self):
+        policy.install(self.root, skills_only=True)
+        expected = {
+            'nixhomeserver-safe-change': ('shutdown.md', 'operations.md'),
+            'nixhomeserver-module-change': ('checks.md',),
+        }
+        for profile in ('standard-implementer', 'feature-reviewer', 'head-coordinator'):
+            for skill, filenames in expected.items():
+                for filename in filenames:
+                    canonical = source.parents[1] / '.agents/skills' / skill / 'references' / filename
+                    installed = self.root / 'profiles' / profile / 'skills/devops' / skill / 'references' / filename
+                    self.assertEqual(canonical.read_bytes(), installed.read_bytes())
+        changed = self.root / 'profiles/head-coordinator/skills/devops/nixhomeserver-safe-change/references/shutdown.md'
+        prior = b'Operator reference customization; preserve in backup.\n'
+        changed.write_bytes(prior)
+        self.assertEqual(1, policy.install(self.root, check=True, skills_only=True))
+        self.assertEqual(prior, changed.read_bytes())
+        policy.install(self.root, skills_only=True)
+        self.assertTrue(any(p.is_file() and p.read_bytes() == prior for p in
+                            (self.root / 'backups/instruction-policy').rglob('*')))
+        self.assertEqual(0, policy.install(self.root, check=True, skills_only=True))
 
-unittest.main(argv=['instruction-policy'], verbosity=2)
+    def test_archived_owned_review_copy_is_retired_without_deleting_edits(self):
+        retired = self.root / 'skills/devops/sdlc-review/SKILL.md'
+        retired.parent.mkdir(parents=True)
+        legacy = (policy.LEGACY_SKILLS / 'sdlc-review.md').read_bytes()
+        retired.write_bytes(legacy)
+        custom = self.root / 'profiles/board-steward/skills/devops/sdlc-review/SKILL.md'
+        custom.parent.mkdir(parents=True)
+        custom.write_bytes(legacy + b'\nIndependent operator edit.\n')
+        self.assertIn(retired, policy.stale_review_skills(self.root))
+        self.assertNotIn(custom, policy.stale_review_skills(self.root))
+        policy.install(self.root)
+        self.assertFalse(retired.exists())
+        self.assertEqual(legacy + b'\nIndependent operator edit.\n', custom.read_bytes())
+        self.assertTrue(any(p.is_file() and p.read_bytes() == legacy for p in
+                            (self.root / 'backups/instruction-policy').rglob('*')))
+
+
+unittest.main(argv=['instruction-policy', *sys.argv[2:]], verbosity=2)
 PY

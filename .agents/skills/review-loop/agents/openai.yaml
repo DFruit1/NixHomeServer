@@ -1,0 +1,4 @@
+interface:
+  display_name: "Review"
+  short_description: "Resolve scoped findings in bounded review rounds"
+  default_prompt: "Use $review-loop to complete this task within the project scope."

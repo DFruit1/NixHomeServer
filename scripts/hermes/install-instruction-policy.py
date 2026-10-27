@@ -20,11 +20,14 @@ PROFILES = ('head-coordinator', 'standard-implementer', 'local-implementer',
 FLEET_START = '<!-- kanban-owner-blocker-author -->'
 FLEET_END = '<!-- /kanban-owner-blocker-author -->'
 PROJECT_SKILLS = SOURCE.parents[1] / '.agents/skills'
+LEGACY_SKILLS = SOURCE.parents[1] / 'documentation/archive/skills/hermes'
 SKILL_SOURCES = {
     name: (PROJECT_SKILLS / name / 'SKILL.md', f'devops/{name}/SKILL.md')
-    for name in ('nixhomeserver-safe-change', 'nixhomeserver-module-change',
-                 'nixhomeserver-shutdown-guard')
+    for name in ('nixhomeserver-safe-change', 'nixhomeserver-module-change')
 }
+SKILL_SOURCES['nixhomeserver-shutdown-guard'] = (
+    SOURCE / 'instructions/nixhomeserver-shutdown-guard.md',
+    'devops/nixhomeserver-shutdown-guard/SKILL.md')
 SKILL_SOURCES['systematic-debugging'] = (
     SOURCE / 'instructions/systematic-debugging.md',
     'software-development/systematic-debugging/SKILL.md')
@@ -176,6 +179,13 @@ def skill_changes(root, pending=None):
         for skill in skills:
             source, target = SKILL_SOURCES[skill]
             result[home / 'skills' / target] = source.read_text()
+            # Project entrypoints now disclose procedures progressively. Ship
+            # their references too, so plain-directory installed fallbacks do
+            # not depend on the presence of the source checkout.
+            if source.name == 'SKILL.md':
+                for reference in sorted((source.parent / 'references').rglob('*.md')):
+                    destination = Path(target).parent / reference.relative_to(source.parent)
+                    result[home / 'skills' / destination] = reference.read_text()
             if skill == 'systematic-debugging':
                 result[home / 'skills' / Path(target).parent / 'LICENSE'] = (
                     SOURCE / 'instructions/LICENSE.hermes-skills').read_text()
@@ -193,6 +203,9 @@ def changes(root, pending=None):
         SOURCE / 'taskforce/owner-blocker-authoring.md').read_text()
     result[root / 'scripts/hermes-card-authoring.md'] = (
         SOURCE.parent.parent / 'documentation/hermes-card-authoring.md').read_text()
+    for document in ('hermes-review-taskforce.md', 'hermes-daily-steward.md'):
+        result[root / 'scripts' / document] = (
+            SOURCE.parents[1] / 'documentation' / document).read_text()
     result[root / 'scripts/hermes-instructions.md'] = (
         SOURCE.parent.parent / 'documentation/hermes-instructions.md').read_text()
     result[root / 'scripts/hermes-fleet.md'] = (
@@ -258,7 +271,7 @@ def changes(root, pending=None):
             if count != 1:
                 raise ValueError(f'Expected exactly one {name} description')
             result[metadata] = updated
-    # These are complete maintained skills, not model-specific profile copies.
+    # Keep native dispatch adapters at their established catalog names.
     # Only roles that implement, review or route source work carry them; see
     # REVIEW_SKILL_PROFILES above for the exclusion rationale.
     for name in REVIEW_SKILL_PROFILES:
@@ -284,9 +297,9 @@ def changes(root, pending=None):
 def stale_review_skills(root):
     """Copies of the review skills at excluded scopes this installer owns.
 
-    A stale copy is removed only when it is byte-identical to the tracked
-    source, i.e. one this installer previously put there. An independently
-    edited copy is never deleted; it is reported so the operator reconciles it.
+    Remove only a copy identical to the current adapter or its recorded legacy
+    source, i.e. one this installer previously owned. Preserve independently
+    edited copies for the operator to reconcile.
     """
     stale = []
     excluded = [root] + [root / 'profiles' / name for name in PROFILES
@@ -298,7 +311,11 @@ def stale_review_skills(root):
             path = home / 'skills' / target
             if not path.exists():
                 continue
-            if path.read_text() == (SOURCE / 'instructions' / skill).read_text():
+            owned_versions = {(SOURCE / 'instructions' / skill).read_text()}
+            legacy = LEGACY_SKILLS / skill
+            if legacy.is_file():
+                owned_versions.add(legacy.read_text())
+            if path.read_text() in owned_versions:
                 stale.append(path)
     return stale
 

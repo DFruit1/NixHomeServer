@@ -1,0 +1,4 @@
+interface:
+  display_name: "Development"
+  short_description: "Code and debug with focused application checks"
+  default_prompt: "Use $nixhomeserver-development to complete this task within the project scope."

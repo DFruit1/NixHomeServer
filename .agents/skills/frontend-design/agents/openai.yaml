@@ -1,0 +1,4 @@
+interface:
+  display_name: "Frontend"
+  short_description: "Build and verify useful, accessible interfaces"
+  default_prompt: "Use $frontend-design to complete this task within the project scope."

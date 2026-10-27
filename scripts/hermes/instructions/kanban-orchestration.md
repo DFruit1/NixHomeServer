@@ -1,117 +1,38 @@
 ---
 name: kanban-orchestration
-description: Route stalled Kanban work and preserve evidence, ownership and gates.
+description: Route coordinator work through the existing native lifecycle and recovery.
 metadata:
   hermes:
-    tags: [kanban, orchestration, routing]
+    tags: [kanban, orchestration]
 ---
 
-# Kanban orchestration
+# Coordinator compatibility adapter
 
-Use for coordinator routing and recovery. Fleet/role permissions and project
-rules and explicit grants constrain this procedure. Coordinator source
-inspection, diagnostics, validation and bounded mechanical integration repairs
-are allowed; another qualified agent must accept those repairs. Delegate
-substantive feature implementation and preserve the authority contract in
-hermes-instructions.md.
+Use only within head-coordinator authority. Read current task/parents, exact
+outputs, recorded decisions, and `~/.hermes/scripts/hermes-coordinator-reference.md`.
+Keep original scope, acceptance, worker ownership, and deploy gates intact.
 
-## Procedure
+Use one native-review-v1 task for an ordinary new fix. Implementers own diagnosis
+and rework; reviewers independently accept. Separate cards represent distinct
+outputs or operation gates. Check existing remedies and formal dependencies
+before creating more work. Queued or acknowledged does not mean repaired.
 
-For ordinary new fixes, use one `Workflow: native-review-v1` task. The implementer
-owns diagnosis through native independent review/rework; separate cards are for
-distinct outputs or operation gates. Use the on-demand auditor for substantive
-plans/repeated recovery. Consume qualified versioned cross-board outputs rather
-than introducing another handoff graph. Existing exact contracts remain binding.
-See hermes-fleet-workflow.md and use fleet-release.py for installed maintenance.
+Provision the right source/evidence, preserve failed partial work, and resolve
+agent-recoverable prerequisites through maintained helpers. Recheck actual
+state before writes. Do not poll unchanged holds, duplicate investigations,
+remove pins, bypass refusals, rewrite evidence, or manufacture owner input.
+Honor valid recorded approvals without asking again for unchanged scope.
 
-1. Anchor the current request and runtime-assigned board/task. A compaction summary
-   supplies history, not a new instruction to switch features. Read compact
-   current states, unsatisfied parents, latest verdict/run and recorded decisions.
-   Recheck before a write: delayed notifications may already be superseded.
-2. Classify the actual missing input: active work, corrective implementation,
-   provider capacity, owner input or a dependency. Resolve already-recorded
-   answers within scope. Unknown evidence does not establish an owner-only ask.
-   Preserve the owner's corrected intent; return obsolete immutable plans to
-   their owner rather than silently rewriting them or repeating settled choices.
-   Apply current standing autonomy to obsolete generic restrictions in old
-   cards, citing each superseded clause; preserve specific scope and safety
-   constraints. Owner-approved bot execution replaces a generic personal-terminal
-   requirement unless the actual check needs a physical/session/firsthand fact.
-3. Read existing children/remedies before creating cards. Route concrete fixes
-   and a fresh review after rejection; done alone is not acceptance. Prepare
-   evidence and incomplete corrective parents before a dependency wait, because
-   Hermes converts a wait without open parents into needs_input. Retire an old
-   rejected-review edge only with replacement acceptance and recorded evidence.
-   When the owner supplies an existing codebase and wants a receiving application
-   designed around it read-only, commission that investigation with
-   references/source-to-service-planning.md rather than ad-hoc reader cards.
-4. Preserve failed workers' partial trees, commits and artifacts. Inspect bounded
-   status/log and structured errors, narrow remaining work, then route finishing
-   work. Do not repeat an unchanged failed investigation. One measured finite
-   runtime correction is allowed by hermes-worker-budgets.md; persist the actual
-   field with kanban_amend and verify readback before resume. Recover
-   sufficient existing receipts for output-only completion when reruns are banned;
-   missing evidence remains unverified rather than fabricated.
-5. Provision isolated workspaces at the intended base and lawfully deliver required
-   evidence before release. Verify actual attachments/copies and identities; a
-   path in another worker's summary does not authorize reading it. Parallelize
-   disjoint slices, serialize shared files/contracts and compose last. Pin the
-   required native task skills using the card-authoring guide; verify assignee
-   availability and persisted skill names before dispatch. No gate
-   may block unrelated work merely because it is convenient to chain it.
-6. Reconcile accepted source, installed files and loaded runtime separately.
-   A source verdict does not prove installation, rollback, supervision or live
-   acceptance. Preserve dirty/unowned bytes and immutable history. An identity
-   mismatch needs assessed disposition; never edit a hash or plan to make it fit.
-   Use references/activation-handoffs.md for bounded activation evidence recipes.
-7. Diagnose repeated faults by shared cause, including deficient coordinator scope
-   and acceptance criteria. Prefer one invariant-level repair with prior regression
-   cases retained over a chain of example-specific patches. Route early bounded
-   verification when risk warrants it, retaining final independent acceptance.
+For recovery, read only the relevant installed reference:
+`references/queue-recovery.md`, `references/activation-handoffs.md`, or
+`references/source-to-service-planning.md`. Use the native graph and bounded
+source-repair/readback procedures; preserve existing retry/provider limits.
 
-## Capacity and recovery
+Substantive implementation stays with implementers. Bounded mechanical repairs
+need another qualified agent's acceptance. Whole-set review plus its paired
+decision and matching guarded test remain the live-switch gate. Source,
+installation, loaded runtime, and live verification are separate evidence.
 
-Use current process/run evidence and effective limits before attributing a queue
-to host load, quota or concurrency. A model name, heartbeat, test count or empty
-diagnostic is not execution proof. Keep actual credential values local under the
-shared Credential-only local routing rule; do not trade privacy for an idle slot.
-Caps, models and credentials require their own
-authorization. Quota-breaker holds retain their recorded recovery conditions.
-Use references/queue-recovery.md only within those restrictions.
-
-For idle-recovery cron, retain its global-idle rule, exact receipt predicates,
-one-transition limit and local delivery. These are job-specific conditions, not
-a general requirement to stop unrelated work or all boards for deployment.
-Store temporary task IDs and receipt-specific triggers in the owning card/job;
-do not append incidents to this standing skill or permission-granting memories.
-
-## Owner-facing SimpleX delivery
-
-Only owner-action Hard Blockers justify unsolicited coordinator messages,
-through the existing checked alert sender. Do not send routine completions,
-technical failures, files or lifecycle subscriptions. Answer direct requests
-within scope; the steward's scheduled report remains separate. Check existing
-decisions and actual missing supplier before asking again. Use the installed
-owner-alert policy for summary validation, authenticated reply/readback and
-unblocking. Approval covers the exact ask and never bypasses a tool restriction.
-
-Owner decisions are delivered to the coordinator-owned decision group, not the
-general DM. On every owner-alerts tick (every 15 minutes) the sender mirrors
-the current open set there:
-new decisions are added, changed wording is edited and answered, revised or
-closed decisions are deleted. The group therefore reads as current state, never
-as an accumulating transcript. A decision that is still waiting on the
-coordinator, a reviewer, a worker or another agent is internal and must not be
-posted; only a decision the owner alone can make belongs there. Use
-`~/.hermes/scripts/simplex-decisions.sh --list` and its `post`/`edit`/`delete`
-commands for coordinator-authored status that the alert ledger does not own.
-Never duplicate an alert-managed decision manually: edit the card and let the
-tick reconcile it. Direct replies and explicitly requested pulls stay in the DM.
-
-## Stop conditions
-
-Stop when the existing graph correctly routes the next action or holds a real
-prerequisite. Do not comment unchanged conditions, poll blocked work, duplicate
-handoffs, alter worker pins or bypass refusals through another tool/context.
-Report actual actions and uncertainty. Queued is not started, accepted is not
-activated, and manual containment is not proof of automatic recovery.
+Use the maintained owner-alert runbook for genuine owner-supplied decisions.
+Technical waits stay internal. Stop when the next action is correctly routed
+or a real prerequisite remains, and report actual progress and uncertainty.
