@@ -138,6 +138,64 @@ impl FederatedHit {
     }
 }
 
+/// Drill-sideways counts over the fetched live sample. Each dimension ignores
+/// its own filter while retaining the others, just like the indexed facets.
+/// Counts are explicitly a sample, never an estimate of upstream totals.
+pub fn facet_counts(hits: &[FederatedHit], filters: &SearchFilters) -> Value {
+    let mut result = serde_json::Map::new();
+    for dimension in [
+        "kind",
+        "contentType",
+        "owner",
+        "author",
+        "tag",
+        "series",
+        "year",
+    ] {
+        let mut relaxed = filters.clone();
+        match dimension {
+            "kind" => relaxed.kind = None,
+            "contentType" => relaxed.content_type = None,
+            "owner" => relaxed.owner = None,
+            "author" => relaxed.author = None,
+            "tag" => relaxed.tag = None,
+            "series" => relaxed.series = None,
+            _ => relaxed.year = None,
+        }
+        let mut counts = std::collections::BTreeMap::<String, u64>::new();
+        for hit in hits.iter().filter(|hit| hit.matches_filters(&relaxed)) {
+            let facets = crate::facets::extract(&hit.metadata, hit.created);
+            let values = match dimension {
+                "kind" => vec![hit.kind.clone()],
+                "contentType" => vec![hit.content_type.clone()],
+                "owner" => vec![hit.owner.clone()],
+                "author" => facets.authors,
+                "tag" => facets.tags,
+                "series" => facets.series,
+                _ => facets
+                    .year
+                    .map(|year| year.to_string())
+                    .into_iter()
+                    .collect(),
+            };
+            for value in values.into_iter().filter(|value| !value.is_empty()) {
+                *counts.entry(value).or_default() += 1;
+            }
+        }
+        let mut counts: Vec<_> = counts.into_iter().collect();
+        counts.sort_by(|(a, ac), (b, bc)| bc.cmp(ac).then(a.cmp(b)));
+        result.insert(
+            format!("{dimension}Facets"),
+            json!(counts
+                .into_iter()
+                .take(50)
+                .map(|(name, count)| json!({"name":name,"count":count}))
+                .collect::<Vec<_>>()),
+        );
+    }
+    Value::Object(result)
+}
+
 /// Projects hit metadata into the shape the API presents. Paperless resolves
 /// tags into a structured list so the shared facet filter can match each tag
 /// exactly; the outward contract still presents tags as the historical
@@ -183,6 +241,27 @@ mod tests {
             created: Some(1_706_745_600),
             metadata: json!({ "correspondent": "ACME" }),
         }
+    }
+
+    #[test]
+    fn live_facets_keep_literal_values_and_ignore_only_their_own_filter() {
+        let mut first = hit();
+        first.metadata = json!({"author":"Ada", "tags":["science, fiction", "science, fiction"]});
+        let mut second = hit();
+        second.metadata = json!({"author":"Ada", "tags":["other"]});
+        let mut third = hit();
+        third.metadata = json!({"author":"Bob", "tags":["excluded"]});
+        let filters = SearchFilters {
+            author: Some("Ada".into()),
+            tag: Some("science, fiction".into()),
+            ..Default::default()
+        };
+        let result = facet_counts(&[first, second, third], &filters);
+        assert_eq!(
+            result["tagFacets"],
+            json!([{"name":"other","count":1},{"name":"science, fiction","count":1}])
+        );
+        assert_eq!(result["authorFacets"], json!([{"name":"Ada","count":1}]));
     }
 
     #[test]

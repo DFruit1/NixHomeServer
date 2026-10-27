@@ -15,6 +15,7 @@ use crate::federate::FederatedHit;
 use crate::identity::Identity;
 use crate::paperless_search;
 use crate::solr::SolrClient;
+use crate::source_cache::{CachedValue, SourceCache};
 use crate::text;
 use crate::timeutil::now_epoch;
 use crate::zim_search::{self, ZimIndexEntry, ZimSearchConfig};
@@ -41,7 +42,8 @@ struct Inner {
     /// Shared HTTP client used for runtime-federated Paperless searches.
     paperless_http: reqwest::Client,
     /// Cached Paperless taxonomy names, keyed by base URL.
-    paperless_taxonomy: Mutex<HashMap<String, (paperless_search::Taxonomy, i64)>>,
+    paperless_taxonomy:
+        Mutex<HashMap<String, std::sync::Arc<SourceCache<paperless_search::Taxonomy>>>>,
     /// Shared gateway sign-out URL the browser continues through, so a Search
     /// sign-out also clears the shared SSO cookie.
     logout_url: String,
@@ -83,6 +85,7 @@ pub async fn run() -> Result<(), String> {
             zim_cache: Mutex::new(ZimCache::default()),
             paperless_http: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(15))
+                .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .map_err(|err| format!("failed to build Paperless HTTP client: {err}"))?,
             paperless_taxonomy: Mutex::new(HashMap::new()),
@@ -366,7 +369,11 @@ async fn api_search(
                 .hits
                 .sort_by_key(|hit| std::cmp::Reverse(hit.created));
         }
-        return Json(json!({ "hits": result.hits.iter().map(FederatedHit::to_json).collect::<Vec<_>>(), "total": result.hits.len(), "hasMore": false, "limited": true, "warnings": result.warnings })).into_response();
+        let mut body = json!({ "hits": result.hits.iter().map(FederatedHit::to_json).collect::<Vec<_>>(), "total": result.hits.len(), "hasMore": false, "limited": true, "warnings": result.warnings });
+        if let Some(facets) = result.facets.as_object() {
+            body.as_object_mut().unwrap().extend(facets.clone());
+        }
+        return Json(body).into_response();
     }
     let indexed = state.inner.solr.search(
         &query,
@@ -513,6 +520,22 @@ fn truncate(value: &str, limit: usize) -> String {
 struct LiveResults {
     hits: Vec<FederatedHit>,
     warnings: Vec<serde_json::Value>,
+    facets: serde_json::Value,
+}
+
+fn runtime_source_in_scope(
+    source: &crate::config::SourceConfig,
+    selected: &[String],
+    filters: &crate::solr::SearchFilters,
+) -> bool {
+    selected.contains(&source.id)
+        && filters.source.as_ref().is_none_or(|id| id == &source.id)
+        && match source.source_type.as_str() {
+            "kiwix" => filters.created_after.is_none() && filters.created_before.is_none(),
+            // Kind is applied after sampling so its facet exposes alternatives.
+            "paperless-api" => true,
+            _ => false,
+        }
 }
 
 async fn federate_runtime_sources(
@@ -527,25 +550,7 @@ async fn federate_runtime_sources(
         .settings
         .sources
         .iter()
-        .filter(|source| {
-            selected.contains(&source.id)
-                && filters.source.as_ref().is_none_or(|id| id == &source.id)
-                && match source.source_type.as_str() {
-                    "kiwix" => {
-                        filters.created_after.is_none()
-                            && filters.created_before.is_none()
-                            && filters
-                                .kind
-                                .as_deref()
-                                .is_none_or(|kind| kind == "zim-article")
-                    }
-                    "paperless-api" => filters
-                        .kind
-                        .as_deref()
-                        .is_none_or(|kind| kind == "document"),
-                    _ => false,
-                }
-        })
+        .filter(|source| runtime_source_in_scope(source, selected, filters))
         .cloned()
         .collect();
     let mut results = stream::iter(sources)
@@ -553,12 +558,7 @@ async fn federate_runtime_sources(
             let operation = async {
                 match source.source_type.as_str() {
                     "kiwix" => federate_kiwix(state, &source, query).await,
-                    _ => federate_paperless(state, &source, query)
-                        .await
-                        .map(|hits| LiveResults {
-                            hits,
-                            warnings: Vec::new(),
-                        }),
+                    _ => federate_paperless(state, &source, query).await,
                 }
             };
             let result = tokio::time::timeout(std::time::Duration::from_secs(30), operation)
@@ -574,12 +574,7 @@ async fn federate_runtime_sources(
     for (source, result) in results {
         match result {
             Ok(result) => {
-                output.hits.extend(
-                    result
-                        .hits
-                        .into_iter()
-                        .filter(|hit| hit.matches_filters(filters)),
-                );
+                output.hits.extend(result.hits);
                 output.warnings.extend(result.warnings);
             }
             Err(message) => output
@@ -587,6 +582,8 @@ async fn federate_runtime_sources(
                 .push(json!({ "source": source, "message": message })),
         }
     }
+    output.facets = crate::federate::facet_counts(&output.hits, filters);
+    output.hits.retain(|hit| hit.matches_filters(filters));
     output
 }
 
@@ -627,6 +624,7 @@ async fn federate_kiwix(
             .map(|hit| FederatedHit::from_zim(&source.id, hit))
             .collect(),
         warnings,
+        ..Default::default()
     })
 }
 
@@ -637,7 +635,7 @@ async fn federate_paperless(
     state: &AppState,
     source: &crate::config::SourceConfig,
     query: &str,
-) -> Result<Vec<FederatedHit>, String> {
+) -> Result<LiveResults, String> {
     let Some(base_url) = source.setting_str("baseUrl") else {
         return Err("The document server is not configured.".to_string());
     };
@@ -652,7 +650,14 @@ async fn federate_paperless(
         max_results: paperless_search::DEFAULT_MAX_RESULTS,
     };
     let taxonomy = paperless_taxonomy(state, &config).await;
-    paperless_search::search(&config, &taxonomy, query).await
+    let hits =
+        paperless_search::search(&config, &taxonomy.value.unwrap_or_default(), query).await?;
+    let warnings = taxonomy.warning.into_iter().map(|message| json!({"source": source.id, "message": format!("{message} Metadata filters and labels may be incomplete.")})).collect();
+    Ok(LiveResults {
+        hits,
+        warnings,
+        ..Default::default()
+    })
 }
 
 /// Reads the Paperless API token from its configured file. Returns `None` when
@@ -669,21 +674,30 @@ fn paperless_token(state: &AppState) -> Option<String> {
 async fn paperless_taxonomy(
     state: &AppState,
     config: &paperless_search::PaperlessSearchConfig,
-) -> paperless_search::Taxonomy {
-    let key = config.base_url.clone();
-    let now = now_epoch();
-    {
-        let cache = state.inner.paperless_taxonomy.lock().unwrap();
-        if let Some((taxonomy, fetched_at)) = cache.get(&key)
-            && now - *fetched_at < PAPERLESS_TAXONOMY_TTL_SECONDS
-        {
-            return taxonomy.clone();
-        }
-    }
-    let taxonomy = paperless_search::load_taxonomy(&state.inner.paperless_http, config).await;
-    let mut cache = state.inner.paperless_taxonomy.lock().unwrap();
-    cache.insert(key, (taxonomy.clone(), now));
-    taxonomy
+) -> CachedValue<paperless_search::Taxonomy> {
+    let cache = state
+        .inner
+        .paperless_taxonomy
+        .lock()
+        .unwrap()
+        .entry(config.base_url.clone())
+        .or_insert_with(|| {
+            std::sync::Arc::new(SourceCache::new(
+                std::time::Duration::from_secs(PAPERLESS_TAXONOMY_TTL_SECONDS as u64),
+                std::time::Duration::from_secs(30),
+            ))
+        })
+        .clone();
+    cache
+        .get_or_refresh(|| async {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(6),
+                paperless_search::load_taxonomy(&state.inner.paperless_http, config),
+            )
+            .await
+            .unwrap_or_else(|_| Err("Document metadata lookup timed out.".into()))
+        })
+        .await
 }
 
 /// Returns the cached ZIM library inventory for a kiwix source, refreshing it
@@ -715,6 +729,31 @@ async fn zim_entries(state: &AppState, config: &ZimSearchConfig) -> Vec<ZimIndex
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kind_filter_preserves_alternative_live_samples_but_not_out_of_scope_sources() {
+        let mut source = crate::config::SourceConfig {
+            id: "archive".into(),
+            display_name: "Archive".into(),
+            source_type: "kiwix".into(),
+            app_base: String::new(),
+            settings: Default::default(),
+        };
+        let selected = vec![source.id.clone()];
+        let mut filters = crate::solr::SearchFilters {
+            kind: Some("document".into()),
+            ..Default::default()
+        };
+        assert!(runtime_source_in_scope(&source, &selected, &filters));
+        assert!(!runtime_source_in_scope(&source, &[], &filters));
+        filters.created_after = Some("2024-01-01".into());
+        assert!(!runtime_source_in_scope(&source, &selected, &filters));
+        source.source_type = "paperless-api".into();
+        filters.kind = Some("zim-article".into());
+        assert!(runtime_source_in_scope(&source, &selected, &filters));
+        filters.source = Some("other".into());
+        assert!(!runtime_source_in_scope(&source, &selected, &filters));
+    }
 
     #[test]
     fn validates_query_dates_and_result_window() {

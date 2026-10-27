@@ -64,7 +64,7 @@
   button { cursor: pointer; }
   button:hover:not(:disabled), summary:hover { background: var(--surface-hover); }
   button:active:not(:disabled) { background: var(--selected); }
-  button:disabled { opacity: 0.55; cursor: wait; }
+  button:disabled, button[aria-disabled="true"] { opacity: 0.55; cursor: wait; }
   button[type="submit"] { background: var(--accent); border-color: var(--accent); color: var(--accent-contrast); font-weight: 600; }
   button[type="submit"]:hover { filter: brightness(1.1); background: var(--accent); }
   .shell { max-width: 76rem; margin: auto; padding: 0 var(--space-6) var(--space-7); }
@@ -95,10 +95,9 @@
   .filter-note { font-size: 0.8125rem; color: var(--text-muted); margin-bottom: var(--space-4); }
   .result-tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-3); margin-bottom: var(--space-4); }
   .result-options { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
-  .result-counts { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-3); font-size: 0.875rem; }
   .result-options label { display: flex; align-items: center; gap: var(--space-2); font-size: 0.875rem; }
   .result-options select { width: auto; }
-  #status, #liveStatus { color: var(--text-muted); font-size: 0.875rem; }
+  #status { color: var(--text-muted); font-size: 0.875rem; }
   .results { list-style: none; padding: 0; margin: 0; }
   .result { padding: var(--space-5) 0; border-bottom: 1px solid var(--border); }
   .result:first-child { padding-top: var(--space-2); }
@@ -115,9 +114,6 @@
   .empty { padding: var(--space-7) 0; }
   .empty h2 { font-size: 1.5rem; margin-bottom: var(--space-2); letter-spacing: -0.02em; }
   .more { display: flex; justify-content: center; margin-top: var(--space-5); }
-  .live-section { margin-top: var(--space-7); }
-  .live-section h2 { margin-bottom: var(--space-1); }
-  .live-section > p { color: var(--text-muted); font-size: 0.8125rem; margin-bottom: var(--space-3); }
   .notice { margin-top: var(--space-3); color: var(--error); overflow-wrap: anywhere; }
   .notice button { margin-top: var(--space-2); }
   .source-health { color: var(--text-muted); margin-top: var(--space-4); font-size: 0.875rem; }
@@ -170,7 +166,7 @@
   <div class="workspace" id="workspace">
     <aside class="filter-panel" id="filtersPanel" aria-label="Search filters" hidden>
       <h2>Refine results</h2>
-      <p class="filter-note">Counts describe library matches. Live sources search a limited sample.</p>
+      <p class="filter-note">Counts show library matches and sampled live matches separately.</p>
       <div class="filter-fields">
         <label class="field"><span>Kind</span><select id="kind"><option value="">All kinds</option></select></label>
         <label class="field"><span>Format</span><select id="type"><option value="">All formats</option></select></label>
@@ -184,10 +180,10 @@
       </div>
       <button type="button" id="showResults">Show results</button>
     </aside>
-    <section id="resultsRegion" aria-labelledby="libraryHeading" tabindex="-1">
-      <h2 id="libraryHeading" class="sr-only">Library results</h2>
+    <section id="resultsRegion" aria-labelledby="resultsHeading" tabindex="-1">
+      <h2 id="resultsHeading" class="sr-only">Search results</h2>
       <div class="result-tools" id="resultTools" hidden>
-        <div class="result-counts"><p id="status" role="status"></p><a id="liveJump" href="#liveHeading" hidden>Live results</a></div>
+        <p id="status" role="status"></p>
         <div class="result-options">
           <label>Sort <select id="sort"><option value="relevance">Relevance</option><option value="newest">Newest first</option></select></label>
           <label>Per page <select id="pageSize"><option value="25" selected>25</option><option value="50">50</option><option value="100">100</option></select></label>
@@ -195,15 +191,11 @@
       </div>
       <div class="empty" id="emptyState"><h2 id="emptyTitle">Search across your server</h2><p class="muted" id="emptyMessage">Enter a title, phrase, name or topic.</p></div>
       <div class="notice" id="searchError" role="alert" hidden><p id="errorMessage"></p><button type="button" id="retrySearch">Retry search</button></div>
-      <ul class="results" id="results" aria-label="Library results"></ul>
+      <details class="source-health" id="searchCoverage" hidden><summary>Search coverage</summary><p id="coverageText"></p></details>
+      <div class="notice" id="liveError" role="status" hidden><p id="liveErrorMessage"></p><button type="button" id="retryLive">Retry connected sources</button></div>
+      <ul class="results" id="results" aria-label="Search results"></ul>
       <div class="more" id="moreWrap" hidden><button type="button" id="loadMore">Load more results</button></div>
-      <section class="live-section" id="liveSection" aria-labelledby="liveHeading" hidden>
-        <h2 id="liveHeading" tabindex="-1">Live results</h2>
-        <p>Up to 20 matches per connected source. Filters apply to that sample.</p>
-        <p id="liveStatus" role="status"></p>
-        <ul class="results" id="liveResults" aria-label="Live results"></ul>
-        <div class="notice" id="liveError" role="status" hidden><p id="liveErrorMessage"></p><button type="button" id="retryLive">Retry live sources</button></div>
-      </section>
+
     </section>
   </div>
 </main>
@@ -225,7 +217,8 @@ const filterLabels = { source: 'Source', kind: 'Kind', type: 'Format', owner: 'O
 const kindLabels = { email: 'Email', document: 'Document', book: 'Book', 'web-page': 'Web page', 'zim-article': 'Offline article', 'zim-archive': 'Offline archive', video: 'Video', audiobook: 'Audiobook' };
 const formatLabels = { 'message/rfc822': 'Email', 'application/pdf': 'PDF', 'text/html': 'Web page', 'application/epub+zip': 'EPUB', 'text/plain': 'Text' };
 const sourceNames = new Map();
-const state = { hits: [], liveHits: [], page: 0, total: 0, hasMore: false, generation: 0, controller: null, submitted: null, loading: false, liveLoading: false };
+const state = { hits: [], liveHits: [], page: 0, total: 0, hasMore: false, generation: 0, controller: null, submitted: null, loading: false, liveLoading: false,
+  indexedDone: false, liveDone: false, indexedFailed: false, liveFailed: false, indexedFacets: {}, liveFacets: {}, resultNodes: new Map() };
 
 function safeHref(value) {
   if (!value) return '';
@@ -284,44 +277,114 @@ function toggleFilters(open = el('filterToggle').getAttribute('aria-expanded') !
   el('filtersPanel').hidden = !open;
   el('workspace').setAttribute('data-filters-open', String(open));
 }
-function renderFacets(data) {
+function renderFacets(data, scope = 'indexed') {
+  state[scope === 'live' ? 'liveFacets' : 'indexedFacets'] = data;
   const dimensions = { owner: 'ownerFacets', kind: 'kindFacets', type: 'contentTypeFacets', author: 'authorFacets', tag: 'tagFacets', series: 'seriesFacets', year: 'yearFacets' };
   for (const [key, field] of Object.entries(dimensions)) {
-    const options = (data[field] || []).map(facet => ({value: String(facet.name), label: `${displayValue(key, facet.name)} (${facet.count})`}));
+    const values = new Map();
+    for (const [scope, facets] of [['library', state.indexedFacets], ['live', state.liveFacets]]) {
+      for (const facet of facets[field] || []) {
+        const entry = values.get(String(facet.name)) || {value: String(facet.name), library: 0, live: 0};
+        entry[scope] = facet.count; values.set(entry.value, entry);
+      }
+    }
+    const options = [...values.values()].sort((a, b) => (b.library + b.live) - (a.library + a.live) || a.value.localeCompare(b.value)).map(entry => ({
+      value: entry.value,
+      label: `${displayValue(key, entry.value)} (${[entry.library ? `${entry.library} library` : '', entry.live ? `${entry.live} live` : ''].filter(Boolean).join(' + ')})`,
+    }));
     if (key === 'kind') for (const [value, label] of Object.entries(kindLabels)) {
       if (!options.some(item => item.value === value)) options.push({value, label});
     }
     fillSelect(controls[key], options, `All ${key === 'type' ? 'formats' : key === 'series' ? 'series' : key + 's'}`);
   }
 }
+
+// Raw engine scores are incomparable. Interleave their rank positions instead,
+// boost exact title matches, and use real timestamps for the global date sort.
+function combinedHits() {
+  const groups = [['library', state.hits], ...[...new Set(state.liveHits.map(hit => hit.source || ''))].sort().map(source => [source, state.liveHits.filter(hit => (hit.source || '') === source)])];
+  const query = (new URLSearchParams(state.submitted || '').get('q') || '').replace(/^"(.*)"$/, '$1').trim().toLocaleLowerCase();
+  const newest = new URLSearchParams(state.submitted || '').get('sort') === 'newest';
+  const seen = new Set();
+  const ranked = [];
+  groups.forEach(([, hits], group) => hits.forEach((hit, rank) => {
+    const key = `${hit.source || ''}:${hit.id}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    ranked.push({ ...hit, _key: key, _live: group > 0, _rank: rank, _group: group, _exact: Boolean(query) && (hit.title || '').trim().toLocaleLowerCase() === query });
+  }));
+  const time = hit => Number.isFinite(hit.created) ? hit.created : -Infinity;
+  return ranked.sort((a, b) => {
+    if (newest && time(a) !== time(b)) return time(a) > time(b) ? -1 : 1;
+    if (!newest && a._exact !== b._exact) return a._exact ? -1 : 1;
+    return a._rank - b._rank || a._group - b._group || a._key.localeCompare(b._key);
+  });
+}
+function renderCombined() {
+  const hits = combinedHits();
+  const focused = document.activeElement;
+  const restoreFocus = focused && resultsEl.contains(focused);
+  const selection = window.getSelection();
+  const selectionElement = selection && !selection.isCollapsed ? selection.anchorNode?.parentElement : null;
+  let anchor = restoreFocus ? focused.closest('.result') : selectionElement?.closest('.result');
+  if (!anchor && resultsEl.getBoundingClientRect().top < 0) {
+    anchor = [...resultsEl.children].find(node => {
+      const rect = node.getBoundingClientRect(); return rect.bottom > 0 && rect.top < window.innerHeight;
+    });
+  }
+  if (anchor && !resultsEl.contains(anchor)) anchor = null;
+  const anchorTop = anchor?.getBoundingClientRect().top;
+  const wanted = new Set(hits.map(hit => hit._key));
+  for (const [key, node] of state.resultNodes) if (!wanted.has(key)) { node.remove(); state.resultNodes.delete(key); }
+  hits.forEach((hit, index) => {
+    let node = state.resultNodes.get(hit._key);
+    if (!node) { node = resultNode(hit); state.resultNodes.set(hit._key, node); }
+    else updateResultNode(node, hit);
+    if (resultsEl.children[index] !== node) resultsEl.insertBefore(node, resultsEl.children[index] || null);
+  });
+  if (restoreFocus && document.activeElement !== focused) {
+    (focused.isConnected ? focused : el('resultsRegion')).focus({preventScroll: true});
+  }
+  if (anchor?.isConnected && anchorTop !== undefined) {
+    window.scrollBy(0, anchor.getBoundingClientRect().top - anchorTop);
+  }
+}
 function resultNode(hit) {
   const item = document.createElement('li'); item.className = 'result';
   const context = document.createElement('div'); context.className = 'result__context';
-  const source = document.createElement('span'); source.className = 'result__source'; source.dataset.source = hit.source || ''; source.textContent = sourceNames.get(hit.source) || hit.source || ''; context.appendChild(source);
-  const date = hit.created ? new Date(hit.created * 1000).toLocaleDateString(undefined, {year: 'numeric', month: 'short', day: 'numeric'}) : '';
-  const info = document.createElement('span'); info.textContent = [formatLabels[hit.contentType] || hit.contentType, hit.owner === 'shared' ? '' : hit.owner, date].filter(Boolean).join(' · '); context.appendChild(info);
-  item.appendChild(context);
-  const href = safeHref(hit.appUrl) || safeHref(hit.originUrl);
-  const title = document.createElement(href ? 'a' : 'span'); title.className = 'result__title'; title.textContent = hit.title || 'Untitled';
-  if (href) title.href = href;
-  const heading = document.createElement('h3'); heading.appendChild(title); item.appendChild(heading);
-  if (hit.snippet) {
-    const snippet = document.createElement('div'); snippet.className = 'result__snippet';
-    // API contract: escaped text, with only generated <em> highlights.
-    snippet.innerHTML = hit.snippet; item.appendChild(snippet);
-  }
-  const metadata = Object.entries(hit.metadata || {}).filter(([key, value]) => key !== 'owner' && value !== null && value !== '');
-  if (metadata.length) {
-    const details = document.createElement('details'); details.className = 'result__details';
-    const summary = document.createElement('summary'); summary.textContent = 'Details'; details.appendChild(summary);
-    const text = document.createElement('p'); text.textContent = metadata.map(([key, value]) => `${key.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase())}: ${value}`).join(' · '); details.appendChild(text);
-    const origin = safeHref(hit.originUrl);
-    if (origin && origin !== href) {
-      const link = document.createElement('a'); link.href = origin; link.textContent = 'Open original'; details.appendChild(link);
-    }
-    item.appendChild(details);
-  }
+  const source = document.createElement('span'); source.className = 'result__source';
+  const info = document.createElement('span'); context.append(source, info);
+  const heading = document.createElement('h3');
+  const title = document.createElement('a'); title.className = 'result__title'; heading.appendChild(title);
+  const snippet = document.createElement('div'); snippet.className = 'result__snippet';
+  const details = document.createElement('details'); details.className = 'result__details';
+  const summary = document.createElement('summary'); summary.textContent = 'Details';
+  const metadataText = document.createElement('p');
+  const originLink = document.createElement('a'); originLink.textContent = 'Open original';
+  details.append(summary, metadataText, originLink); item.append(context, heading, snippet, details);
+  item._parts = {source, info, title, snippet, details, metadataText, originLink};
+  updateResultNode(item, hit);
   return item;
+}
+function updateResultNode(item, hit) {
+  const parts = item._parts;
+  const text = (node, value) => { if (node.textContent !== value) node.textContent = value; };
+  parts.source.dataset.source = hit.source || '';
+  text(parts.source, sourceNames.get(hit.source) || hit.source || '');
+  const date = Number.isFinite(hit.created) ? new Date(hit.created * 1000).toLocaleDateString(undefined, {year: 'numeric', month: 'short', day: 'numeric'}) : '';
+  text(parts.info, [hit._live ? 'Live' : '', formatLabels[hit.contentType] || hit.contentType, hit.owner === 'shared' ? '' : hit.owner, date].filter(Boolean).join(' · '));
+  const href = safeHref(hit.appUrl) || safeHref(hit.originUrl);
+  text(parts.title, hit.title || 'Untitled');
+  if (href) parts.title.href = href; else parts.title.removeAttribute('href');
+  parts.snippet.hidden = !hit.snippet;
+  // API contract: escaped text, with only generated <em> highlights.
+  if (parts.snippet.innerHTML !== (hit.snippet || '')) parts.snippet.innerHTML = hit.snippet || '';
+  const metadata = Object.entries(hit.metadata || {}).filter(([key, value]) => key !== 'owner' && value !== null && value !== '');
+  text(parts.metadataText, metadata.map(([key, value]) => `${key.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase())}: ${value}`).join(' · '));
+  const origin = safeHref(hit.originUrl);
+  parts.originLink.hidden = !origin || origin === href;
+  if (origin) parts.originLink.href = origin; else parts.originLink.removeAttribute('href');
+  parts.details.hidden = !metadata.length && parts.originLink.hidden;
 }
 function syncUrl() {
   const qs = params().toString(); const url = qs ? `${location.pathname}?${qs}` : location.pathname;
@@ -354,45 +417,57 @@ async function fetchPage(page, scope, submitted, signal) {
 }
 function resetResults() {
   state.hits = []; state.liveHits = []; state.page = 0; state.total = 0; state.hasMore = false;
-  resultsEl.replaceChildren(); el('liveResults').replaceChildren();
-  for (const id of ['moreWrap', 'liveSection', 'liveJump', 'searchError', 'liveError']) el(id).hidden = true;
+  state.indexedDone = false; state.liveDone = false; state.indexedFailed = false; state.liveFailed = false;
+  state.indexedFacets = {}; state.liveFacets = {}; state.resultNodes.clear();
+  resultsEl.replaceChildren();
+  for (const id of ['moreWrap', 'searchError', 'liveError', 'searchCoverage']) el(id).hidden = true;
   updateActiveFilters();
 }
 function updateResultsStatus() {
-  statusEl.textContent = state.hasMore ? `${state.hits.length} of ${state.total.toLocaleString()} library matches` : `${state.total.toLocaleString()} library match${state.total === 1 ? '' : 'es'}`;
+  const count = combinedHits().length;
+  const pending = state.loading || state.liveLoading;
+  const failed = state.indexedFailed || state.liveFailed || !el('liveError').hidden;
+  statusEl.textContent = count ? `${count.toLocaleString()} match${count === 1 ? '' : 'es'} shown${pending ? ' · searching…' : ''}` : pending ? 'Searching…' : state.indexedFailed && state.liveFailed ? 'Search is unavailable' : failed ? 'No matches from available sources' : 'No matches';
   el('moreWrap').hidden = !state.hasMore;
   el('loadMore').disabled = state.loading;
   el('loadMore').textContent = state.loading ? 'Loading more…' : 'Load more results';
-  el('emptyState').hidden = state.hits.length > 0;
-  el('emptyTitle').textContent = 'No library matches';
-  el('emptyMessage').textContent = Object.values(controls).some(control => control.value) ? 'Try a broader search or clear some filters.' : 'Try a different phrase or fewer words.';
+  el('emptyState').hidden = count > 0 || pending || (!state.indexedDone && !state.liveDone);
+  el('emptyTitle').textContent = state.indexedFailed && state.liveFailed ? 'Search is unavailable' : state.indexedFailed || !el('liveError').hidden ? 'No matches from available sources' : 'No matches';
+  el('emptyMessage').textContent = state.indexedFailed && state.liveFailed ? 'Retry the unavailable sources above, or try again shortly.' : Object.values(controls).some(control => control.value) ? 'Try a broader search or clear some filters.' : 'Try a different phrase or fewer words.';
+  el('searchCoverage').hidden = !state.submitted || (!state.indexedDone && !state.liveDone);
+  el('coverageText').textContent = `${state.indexedFailed ? 'Library search is unavailable' : state.indexedDone ? `${state.total.toLocaleString()} library matches` : 'Library search is still running'}. ${state.liveFailed ? 'Connected search is unavailable' : state.liveDone ? `${state.liveHits.length} matches returned by available connected sources` : 'Connected sources are still being searched'}. Connected sources return up to 20 matches each, with up to five per offline archive; filters apply to that sample.`;
 }
 async function runLive(generation, submitted, signal) {
-  state.liveLoading = true; el('liveSection').hidden = false; el('liveError').hidden = true;
-  el('liveJump').hidden = false; el('liveJump').textContent = 'Searching live sources…';
-  el('liveStatus').textContent = 'Searching connected documents and offline archives…';
-  el('liveResults').setAttribute('aria-busy', 'true');
+  const retry = el('retryLive');
+  const retryFocused = document.activeElement === retry;
+  state.liveLoading = true; state.liveDone = false; state.liveFailed = false;
+  if (!retryFocused) el('liveError').hidden = true;
+  else el('liveErrorMessage').textContent = 'Retrying connected sources…';
+  retry.setAttribute('aria-disabled', 'true'); retry.textContent = 'Retrying…';
+  updateResultsStatus();
   try {
     const data = await fetchPage(0, 'live', submitted, signal);
     if (generation !== state.generation || !data) return;
     state.liveHits = data.hits || [];
-    el('liveResults').replaceChildren(...state.liveHits.map(resultNode));
-    el('liveStatus').textContent = `${state.liveHits.length} live match${state.liveHits.length === 1 ? '' : 'es'}`;
+    renderFacets(data, 'live');
+    renderCombined();
     const warnings = data.warnings || [];
     if (warnings.length) {
       el('liveErrorMessage').textContent = warnings.map(item => `${sourceNames.get(item.source) || item.source}: ${item.message}`).join(' ');
       el('liveError').hidden = false;
+    } else {
+      if (document.activeElement === retry) el('resultsRegion').focus({preventScroll: true});
+      el('liveError').hidden = true;
     }
-    el('liveSection').hidden = !state.liveHits.length && !warnings.length;
-    el('liveJump').hidden = el('liveSection').hidden;
-    el('liveJump').textContent = warnings.length ? `${state.liveHits.length} live matches · source issues` : `${state.liveHits.length} live match${state.liveHits.length === 1 ? '' : 'es'}`;
   } catch (error) {
     if (generation !== state.generation || signal.aborted) return;
-    el('liveStatus').textContent = 'Live results unavailable';
-    el('liveJump').textContent = 'Live sources unavailable';
-    el('liveErrorMessage').textContent = error.message; el('liveError').hidden = false;
+    state.liveFailed = true; el('liveErrorMessage').textContent = error.message; el('liveError').hidden = false;
   } finally {
-    if (generation === state.generation) { state.liveLoading = false; el('liveResults').removeAttribute('aria-busy'); }
+    if (generation === state.generation) {
+      state.liveLoading = false; state.liveDone = true;
+      retry.removeAttribute('aria-disabled'); retry.textContent = 'Retry connected sources';
+      updateResultsStatus();
+    }
   }
 }
 async function runSearch(event, {append = false, pushHistory = true} = {}) {
@@ -404,7 +479,7 @@ async function runSearch(event, {append = false, pushHistory = true} = {}) {
     resetResults();
     if (pushHistory) syncUrl();
     if (!queryEl.value.trim()) {
-      resultsEl.removeAttribute('aria-busy'); el('liveResults').removeAttribute('aria-busy');
+      resultsEl.removeAttribute('aria-busy');
       el('resultTools').hidden = true; el('emptyState').hidden = false;
       el('emptyTitle').textContent = 'Search across your server'; el('emptyMessage').textContent = 'Enter a title, phrase, name or topic.';
       return;
@@ -412,12 +487,21 @@ async function runSearch(event, {append = false, pushHistory = true} = {}) {
     el('resultTools').hidden = false; el('emptyState').hidden = true; statusEl.textContent = 'Searching your library…';
     void runLive(state.generation, state.submitted, state.controller.signal);
   }
+  return runIndexed(append);
+}
+async function runIndexed(append = false) {
+  if (state.loading || !state.submitted) return;
+  const retry = el('retrySearch');
+  const retryFocused = document.activeElement === retry;
   const generation = state.generation;
   const submitted = state.submitted;
   const signal = state.controller.signal;
   const page = append ? state.page + 1 : 0;
   state.loading = true; resultsEl.setAttribute('aria-busy', 'true');
-  el('searchError').hidden = true; el('loadMore').disabled = true; el('loadMore').textContent = 'Loading more…';
+  if (!retryFocused) el('searchError').hidden = true;
+  else el('errorMessage').textContent = 'Retrying library search…';
+  retry.setAttribute('aria-disabled', 'true'); retry.textContent = 'Retrying…';
+  el('loadMore').disabled = true; el('loadMore').textContent = 'Loading more…';
   try {
     const data = await fetchPage(page, 'indexed', submitted, signal);
     if (generation !== state.generation || !data) return;
@@ -425,16 +509,20 @@ async function runSearch(event, {append = false, pushHistory = true} = {}) {
     const seen = new Set(state.hits.map(hit => hit.id));
     const hits = (data.hits || []).filter(hit => !seen.has(hit.id));
     state.hits.push(...hits);
-    resultsEl.append(...hits.map(resultNode));
+    renderCombined();
     if (!append) renderFacets(data);
-    state.loading = false; updateResultsStatus();
+    state.indexedDone = true; state.indexedFailed = false;
+    if (document.activeElement === retry) el('resultsRegion').focus({preventScroll: true});
+    el('searchError').hidden = true;
   } catch (error) {
     if (generation !== state.generation || signal.aborted) return;
     el('errorMessage').textContent = error.message; el('searchError').hidden = false;
-    statusEl.textContent = append ? `${state.hits.length} loaded. Could not load more.` : 'Library results unavailable';
+    state.indexedDone = true; if (!append) state.indexedFailed = true;
   } finally {
     if (generation === state.generation) {
-      state.loading = false; resultsEl.removeAttribute('aria-busy'); el('loadMore').disabled = false; el('loadMore').textContent = 'Load more results';
+      state.loading = false; resultsEl.removeAttribute('aria-busy');
+      retry.removeAttribute('aria-disabled'); retry.textContent = 'Retry search';
+      updateResultsStatus();
     }
   }
 }
@@ -463,7 +551,7 @@ el('filterToggle').addEventListener('click', () => toggleFilters());
 el('showResults').addEventListener('click', () => { toggleFilters(false); el('resultsRegion').focus(); });
 el('clearFilters').addEventListener('click', clearFilters);
 el('loadMore').addEventListener('click', () => runSearch(null, {append: true}));
-el('retrySearch').addEventListener('click', () => state.hits.length ? runSearch(null, {append: true}) : runSearch());
+el('retrySearch').addEventListener('click', () => runIndexed(state.hits.length > 0));
 el('retryLive').addEventListener('click', () => { if (!state.liveLoading && state.submitted) void runLive(state.generation, state.submitted, state.controller.signal); });
 el('signOut').addEventListener('click', () => { location.href = safeHref(window.SEARCH_LOGOUT_URL) || '/'; });
 queryEl.addEventListener('search', () => { if (!queryEl.value.trim()) runSearch(); });

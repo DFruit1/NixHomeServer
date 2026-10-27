@@ -1897,27 +1897,48 @@ focuses the search field. Search state is shareable in the URL and restored by
 browser Back/Forward; loading more uses the submitted query even while the
 search field is being edited.
 
-Library results appear independently of **Live results** from Paperless and
-native-index Kiwix archives. Live results are a sample of up to 20 hits per
-source (Kiwix also limits to five per archive); filters apply after that sample
-is retrieved. Their counts are shown separately and never presented as an
-exhaustive total. Facet counts refer only to library results. An unavailable
-live source is named with a retry action; another source's successful results
-remain usable. A jump link beside the library count goes directly to live
-matches or source issues. Source sync failures are disclosed above results because library
-matches may be stale.
+Library and live Paperless/Kiwix requests run independently and feed one result
+list. Relevance boosts exact titles, then interleaves rank positions from the
+library stream and each live source; raw engine scores are not comparable.
+**Newest first** sorts every loaded match by content date, with undated matches
+last. Rows keep their focus and expanded Details as late matches arrive, and
+retries update changed content in place. A retry affects only its failed scope
+and retains the submitted query even if the search field contains a draft.
+
+Live sources return up to 20 hits each (Kiwix also limits to five per archive);
+filters apply after that sample is retrieved. The main count says how many
+deduplicated matches are shown. **Search coverage** discloses the library total,
+live sample size and coverage limits. An unavailable live source is named with
+a retry action; another source's results remain usable. An outage is reported
+as unavailable rather than a successful zero-match search. Sync failures are
+disclosed above results because indexed matches may be stale.
+
+Filter options merge library facets with live sample facets, labelling their
+counts separately. Live counts ignore that dimension's own filter while
+retaining the other filters, so authors and tags found only in live sources
+remain discoverable. Tag values remain structured internally: a comma inside
+a tag name does not split it into multiple tags.
 
 `GET /api/search` accepts the existing query/filter parameters plus optional
 `scope=indexed|live|all` (`all` is the backward-compatible default). The browser
 requests `indexed` and `live` concurrently. Live responses include `limited:
-true`, `hasMore: false`, and `warnings: [{source, message}]`; their `total` counts
-returned hits only. Combined responses also include warnings. Live sources run
+true`, `hasMore: false`, `warnings: [{source, message}]`, and the same facet-field
+names as indexed responses; their `total` counts returned hits only. Combined
+responses retain their previous API shape plus warnings. Live sources run
 with at most four sources in flight and a 30-second budget per source. Solr
 select requests have a 15-second timeout. No source failure changes gateway
 authorization or enables public access. Responses use private/no-store caching.
 Invalid calendar dates, inverted ranges, nonnumeric years, queries over 2048
 bytes, and result offsets above 10,000 receive HTTP 400. Other search errors use
 public JSON messages without database connection strings or raw Solr payloads.
+
+Paperless metadata tables load concurrently with a six-second refresh budget.
+Concurrent queries share one refresh per source URL. Successful metadata stays
+fresh for ten minutes; failed refreshes retain the last usable value, warn that
+metadata labels/filters may be incomplete, and retry after 30 seconds. A
+cancelled refresh releases its lock without caching partial data. Pagination
+must stay on the same origin and exact metadata endpoint, is capped at 50 pages,
+and rejects cycles. The authenticated Paperless client does not follow redirects.
 
 Normal checks and manual actions:
 

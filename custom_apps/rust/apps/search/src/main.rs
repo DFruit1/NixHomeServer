@@ -11,6 +11,7 @@ mod pdf_archive;
 mod retry;
 mod server;
 mod solr;
+mod source_cache;
 mod text;
 mod timeutil;
 mod zim_search;

@@ -63,64 +63,78 @@ impl Taxonomy {
 
 /// Loads correspondent, document-type, and tag names so numeric ids from a
 /// search hit can be presented as readable metadata.
-pub async fn load_taxonomy(client: &reqwest::Client, config: &PaperlessSearchConfig) -> Taxonomy {
-    let mut taxonomy = Taxonomy::default();
-    let base = config.base_url.as_str();
-    load_names(
-        client,
-        config,
-        &format!("{base}/api/correspondents/?page_size={TAXONOMY_PAGE_SIZE}"),
-        &mut taxonomy.correspondents,
-    )
-    .await;
-    load_names(
-        client,
-        config,
-        &format!("{base}/api/document_types/?page_size={TAXONOMY_PAGE_SIZE}"),
-        &mut taxonomy.document_types,
-    )
-    .await;
-    load_names(
-        client,
-        config,
-        &format!("{base}/api/tags/?page_size={TAXONOMY_PAGE_SIZE}"),
-        &mut taxonomy.tags,
-    )
-    .await;
-    taxonomy
+pub async fn load_taxonomy(
+    client: &reqwest::Client,
+    config: &PaperlessSearchConfig,
+) -> Result<Taxonomy, String> {
+    let base = config.base_url.trim_end_matches('/');
+    let correspondents_url = format!("{base}/api/correspondents/?page_size={TAXONOMY_PAGE_SIZE}");
+    let types_url = format!("{base}/api/document_types/?page_size={TAXONOMY_PAGE_SIZE}");
+    let tags_url = format!("{base}/api/tags/?page_size={TAXONOMY_PAGE_SIZE}");
+    let (correspondents, document_types, tags) = tokio::try_join!(
+        load_names(client, config, &correspondents_url),
+        load_names(client, config, &types_url),
+        load_names(client, config, &tags_url),
+    )?;
+    Ok(Taxonomy {
+        correspondents,
+        document_types,
+        tags,
+    })
 }
 
 async fn load_names(
     client: &reqwest::Client,
     config: &PaperlessSearchConfig,
     first_url: &str,
-    out: &mut HashMap<i64, String>,
-) {
-    let mut next = Some(first_url.to_string());
-    let mut pages = 0;
+) -> Result<HashMap<i64, String>, String> {
+    let first = url::Url::parse(first_url).map_err(|_| "Document metadata endpoint is invalid.")?;
+    let mut next = Some(first.clone());
+    let mut visited = std::collections::HashSet::new();
+    let mut out = HashMap::new();
     while let Some(url) = next {
-        if pages >= TAXONOMY_MAX_PAGES {
-            break;
+        if visited.len() >= TAXONOMY_MAX_PAGES || !visited.insert(url.to_string()) {
+            return Err("Document metadata pagination exceeded its safety limit.".into());
         }
-        pages += 1;
-        let Ok(value) = fetch_json(client, &config.token, &url).await else {
-            break;
-        };
-        if let Some(results) = value.get("results").and_then(Value::as_array) {
-            for item in results {
-                if let (Some(id), Some(name)) = (
-                    item.get("id").and_then(Value::as_i64),
-                    item.get("name").and_then(Value::as_str),
-                ) {
-                    out.insert(id, name.to_string());
-                }
+        let value = fetch_json(client, &config.token, url.as_str())
+            .await
+            .map_err(|_| "Document metadata is temporarily unavailable.")?;
+        let results = value
+            .get("results")
+            .and_then(Value::as_array)
+            .ok_or("The document server returned invalid metadata.")?;
+        for item in results {
+            if let (Some(id), Some(name)) = (
+                item.get("id").and_then(Value::as_i64),
+                item.get("name").and_then(Value::as_str),
+            ) {
+                out.insert(id, name.to_string());
             }
         }
         next = value
             .get("next")
             .and_then(Value::as_str)
-            .map(str::to_string);
+            .map(|next| taxonomy_page_url(&first, next))
+            .transpose()?;
     }
+    Ok(out)
+}
+
+fn taxonomy_page_url(first: &url::Url, next: &str) -> Result<url::Url, String> {
+    let url = first
+        .join(next)
+        .map_err(|_| "Document metadata pagination URL is invalid.")?;
+    // Never attach the service token to an upstream-supplied foreign origin,
+    // another endpoint, embedded userinfo, or a fragment-bearing URL.
+    if url.origin() != first.origin()
+        || url.path() != first.path()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+    {
+        return Err("The document server returned unsafe metadata pagination.".into());
+    }
+    Ok(url)
 }
 
 /// Runs a query against Paperless's own full-text index and maps the hits into
@@ -319,6 +333,65 @@ async fn fetch_json(client: &reqwest::Client, token: &str, url: &str) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn taxonomy_pagination_allows_same_endpoint_queries_only() {
+        let first = url::Url::parse("http://127.0.0.1:8000/api/tags/?page_size=100").unwrap();
+        assert_eq!(
+            taxonomy_page_url(&first, "?page=2").unwrap().as_str(),
+            "http://127.0.0.1:8000/api/tags/?page=2"
+        );
+        for unsafe_url in [
+            "http://127.0.0.1:8001/api/tags/?page=2",
+            "https://127.0.0.1:8000/api/tags/",
+            "/api/documents/",
+            "http://user@127.0.0.1:8000/api/tags/",
+            "?page=2#fragment",
+        ] {
+            assert!(
+                taxonomy_page_url(&first, unsafe_url).is_err(),
+                "{unsafe_url}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn taxonomy_never_sends_a_token_to_another_origin() {
+        use axum::{routing::get, Json, Router};
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        let foreign = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let foreign_url = format!("http://{}/steal", foreign.local_addr().unwrap());
+        let count = Arc::new(AtomicUsize::new(0));
+        let counter = count.clone();
+        let foreign_app = Router::new().fallback(get(move || {
+            let count = counter.clone();
+            async move {
+                count.fetch_add(1, Ordering::SeqCst);
+                Json(serde_json::json!({"results":[]}))
+            }
+        }));
+        let foreign_task =
+            tokio::spawn(async move { axum::serve(foreign, foreign_app).await.unwrap() });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut config = config();
+        config.base_url = format!("http://{}", listener.local_addr().unwrap());
+        let app = Router::new().fallback(get(move || {
+            let next = foreign_url.clone();
+            async move { Json(serde_json::json!({"results":[],"next":next})) }
+        }));
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let _ = load_taxonomy(&config.client, &config).await;
+        task.abort();
+        foreign_task.abort();
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            0,
+            "foreign pagination received an authenticated request"
+        );
+    }
 
     #[tokio::test]
     async fn upstream_failure_is_distinct_from_a_successful_empty_search() {
