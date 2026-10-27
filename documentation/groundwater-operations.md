@@ -108,7 +108,9 @@ substring collisions before accepting a queue entry. Check the preview before
 queuing; a valid payload is not evidence that its calibration is correct.
 
 The scheduler waits for an attributed `Ready`, publishes QoS 1 without retain,
-and spaces downlink messages by at least five seconds. Sleeping devices do not
+and waits for the broker's PUBACK before recording a command as `sent`. Broker
+acceptance is distinct from firmware application. Downlink messages are spaced
+by at least five seconds. Sleeping devices do not
 receive downlink. Commands persist across restarts and remain pending for a
 later wake when the firmware has not acknowledged them. Cancellation stops
 future attempts; it cannot undo a delivery already sent.
@@ -116,7 +118,8 @@ future attempts; it cannot undo a delivery already sent.
 Incremental configuration matches the `cfg/desired/applied` echo; self-tests
 match attributed result traffic; danger commands match the firmware's danger
 acknowledgment. `Reboot` has no firmware acknowledgment. Full project settings
-have no acknowledgment either: `sent` proves publication only. Verify the
+have no acknowledgment either. Both are single-send operations after broker
+acceptance: `sent` never claims that the device applied them. Verify the
 device's observed intervals and clock after a settings change. Destructive
 device actions require typing `DANGER` in the console.
 

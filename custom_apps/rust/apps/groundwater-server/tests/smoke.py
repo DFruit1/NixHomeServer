@@ -164,7 +164,9 @@ def main():
                        ('smoke-test', '{DEVICE}', 'azman1/feeds/testresults', 'V21'),
                        ('smoke-cfg', '{DEVICE}', 'cfg/desired/applied', 'V21'),
                        ('smoke-danger', '{DEVICE}', 'cfg/danger_ack', 'V21'),
-                       ('smoke-downlink', '{DEVICE}', 'cfg/desired', 'V21');
+                       ('smoke-downlink', '{DEVICE}', 'cfg/desired', 'V21'),
+                       ('smoke-reboot', '{DEVICE}', 'cmd/danger', 'V21'),
+                       ('smoke-settings', '{DEVICE}', 'azman1/feeds/project-settings-slash-configuration', 'V21');
               UPDATE devices SET min_limit=1, max_limit=4 WHERE device_id='{DEVICE}';
             """)
             app = start_app()
@@ -258,6 +260,54 @@ def main():
             ], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
             assert not retained.stdout, "configuration was published retained"
 
+            def capture(topic):
+                process = subprocess.Popen([
+                    "mosquitto_sub", "-h", "127.0.0.1", "-p", str(mqtt_port),
+                    "-q", "1", "-t", topic, "-C", "1", "-W", "12",
+                ], text=True, stdout=subprocess.PIPE, stderr=log)
+                processes.append(process)
+                time.sleep(0.2)
+                return process
+
+            def sent(command_id):
+                return any(item["id"] == command_id and item["state"] == "sent"
+                           for item in request(f"/api/commands?device={DEVICE}")["commands"])
+
+            # No real device is connected. Capture Reboot in the isolated
+            # broker and verify that its missing firmware ACK cannot create
+            # a reboot loop on later Ready messages.
+            reboot_receiver = capture("cmd/danger")
+            reboot = request(f"/api/devices/{DEVICE}/commands", payload={
+                "kind": "danger", "payload": "Reboot", "confirm": "DANGER",
+            }, expected=201)["command"]
+            publish("azman1/feeds/device-status", "Ready")
+            reboot_wire, _ = reboot_receiver.communicate(timeout=15)
+            assert json.loads(reboot_wire) == {"Reboot": "1"}, reboot_wire
+            wait_for(lambda: sent(reboot["id"]), "broker-accepted Reboot")
+
+            # A sent Reboot must also release the queue for later commands.
+            settings_topic = "azman1/feeds/project-settings-slash-configuration"
+            settings_receiver = capture(settings_topic)
+            full = request(f"/api/devices/{DEVICE}/config", payload={"config": config}, expected=201)["command"]
+            settings_wire, _ = settings_receiver.communicate(timeout=15)
+            assert json.loads(settings_wire) == config and len(settings_wire.strip().encode()) <= 150
+            wait_for(lambda: sent(full["id"]), "broker-accepted full settings")
+            detail = request(f"/api/devices/{DEVICE}")["device"]
+            assert detail["desired_config"] == config and detail["applied_config"] == flags, detail
+
+            # Wait past the five-second spacing gate: an empty observation
+            # then proves no retry, rather than merely a delayed retry.
+            replay_receiver = subprocess.Popen([
+                "mosquitto_sub", "-h", "127.0.0.1", "-p", str(mqtt_port),
+                "-t", "cmd/danger", "-t", settings_topic, "-C", "1", "-W", "7",
+            ], text=True, stdout=subprocess.PIPE, stderr=log)
+            processes.append(replay_receiver)
+            time.sleep(0.2)
+            publish("azman1/feeds/device-status", "sleep")
+            publish("azman1/feeds/device-status", "Ready")
+            replay, _ = replay_receiver.communicate(timeout=10)
+            assert not replay, f"unacknowledgeable command repeated on a later wake: {replay}"
+
             if args.frontend:
                 html = request("/", role="viewer")
                 assert "<html" in html.lower() and "groundwater-app" in html, "Qwik application was not served"
@@ -279,7 +329,7 @@ def main():
                     assert path.startswith("/") and not path.startswith("//"), path
                     assert request(path, role="viewer"), f"empty frontend asset: {path}"
                 request("/api/unknown", expected=404)
-            print("PASS: local MQTT ingestion, dedupe, raw log, ACLs, alerts, history, CSV, config validation, wake dispatch, ack, non-retain, presence and restart audit")
+            print("PASS: local MQTT ingestion, dedupe, raw log, ACLs, alerts, history, CSV, config validation, wake dispatch, ack, non-retain, presence, restart audit and single-send Reboot/settings")
         except Exception:
             log.flush()
             log.seek(0)
