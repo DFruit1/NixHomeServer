@@ -104,14 +104,23 @@ def version():
 def client_for_home(home):
     # Read only through Hermes' profile-scoped resolver. Values stay in memory.
     from agent.secret_scope import get_secret
-    public=get_secret('HERMES_LANGFUSE_PUBLIC_KEY')
-    secret=get_secret('HERMES_LANGFUSE_SECRET_KEY')
+    def _secret(*names):
+        for name in names:
+            try:
+                value=get_secret(name)
+            except Exception:
+                value=None
+            if value:
+                return value
+        return None
+    public=_secret('LANGFUSE_PUBLIC_KEY','AI_USAGE_LANGFUSE_PUBLIC_KEY','HERMES_LANGFUSE_PUBLIC_KEY')
+    secret=_secret('LANGFUSE_SECRET_KEY','AI_USAGE_LANGFUSE_SECRET_KEY','HERMES_LANGFUSE_SECRET_KEY')
     if not public or not secret:
         return None
     from langfuse import Langfuse
     return Langfuse(public_key=public,secret_key=secret,
-                    base_url=get_secret('HERMES_LANGFUSE_BASE_URL'),
-                    environment=get_secret('HERMES_LANGFUSE_ENV') or 'default')
+                    base_url=_secret('LANGFUSE_BASE_URL','AI_USAGE_LANGFUSE_BASE_URL','HERMES_LANGFUSE_BASE_URL'),
+                    environment=_secret('LANGFUSE_ENV','AI_USAGE_LANGFUSE_ENV','HERMES_LANGFUSE_ENV') or 'default')
 
 
 def export(metadata,*,session_id='',task_id='',turn_id='',api_request_id='',client=None,**_):

@@ -101,7 +101,7 @@ class Client:
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--credential-age',type=Path,default=Path.home()/'.hermes/credentials/langfuse-mcp.age')
+    parser.add_argument('--credential-age',type=Path,default=Path(os.environ.get('LANGFUSE_MCP_CREDENTIAL_AGE') or os.environ.get('HERMES_LANGFUSE_MCP_CREDENTIAL_AGE') or str(Path.home()/'.hermes/credentials/langfuse-mcp.age')))
     args=parser.parse_args();client=Client(args.credential_age)
     while True:
         line=sys.stdin.buffer.readline(MAX_BYTES+1)

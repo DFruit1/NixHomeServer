@@ -11,16 +11,16 @@
   homepage = { config, vars }: [ {
     order = 30;
     id = "langfuse";
-    name = "Agent Traces";
+    name = "Langfuse";
     url = "https://langfuse.${vars.domain}";
     enabled = builtins.hasAttr "langfuse.${vars.domain}" config.services.caddy.virtualHosts;
     category = "automation";
-    description = "Hermes model latency, usage, errors, and tool execution traces.";
+    description = "AI model latency, usage, errors, and tool execution traces.";
     loginNotes = "Requires langfuse-users through Kanidm, followed by the Langfuse owner login.";
     projectUrl = "https://langfuse.com";
     appName = "langfuse";
     logoUrl = "/logos/ai-tools.svg";
-    uploadNotes = "Hermes sends traces automatically; content capture starts in metadata-only mode.";
+    uploadNotes = "AI clients send traces automatically; content capture starts in metadata-only mode.";
     requiredAnyGroups = [ "langfuse-users" ];
   } ];
 }

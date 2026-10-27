@@ -312,8 +312,8 @@ in {
           AUTH_DISABLE_SIGNUP = "true";
           LANGFUSE_INIT_ORG_ID = "nixhomeserver";
           LANGFUSE_INIT_ORG_NAME = "NixHomeServer";
-          LANGFUSE_INIT_PROJECT_ID = "hermes";
-          LANGFUSE_INIT_PROJECT_NAME = "Hermes";
+          LANGFUSE_INIT_PROJECT_ID = "ai-usage";
+          LANGFUSE_INIT_PROJECT_NAME = "AI Usage";
           LANGFUSE_INIT_USER_EMAIL = ownerEmail;
           LANGFUSE_INIT_USER_NAME = vars.localAdminUser;
         };
