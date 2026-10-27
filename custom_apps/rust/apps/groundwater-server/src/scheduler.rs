@@ -3,11 +3,11 @@
 //! while the client's bounded request queue is full.
 use crate::{
     adapter::EnrollmentRegistry,
-    ingest::{EventBus, IngestStats, LiveEvent},
+    ingest::{EventBus, LiveEvent},
+    publisher::Publisher,
 };
 use chrono::{DateTime, Utc};
-use rumqttc::{AsyncClient, QoS};
-use std::sync::Arc;
+use rumqttc::AsyncClient;
 use tokio_postgres::Client;
 
 pub fn attributed<'a>(
@@ -96,9 +96,29 @@ pub async fn ancillary(
         serde_json::from_str::<serde_json::Value>(text).unwrap_or_else(|_| serde_json::json!(text));
     // Match only a command actually attempted in this Ready window. Identical
     // cfg echoes are compared as JSON, not formatting or key order.
-    let changed=client.query("WITH candidate AS (SELECT c.id FROM commands c JOIN devices d ON d.device_id=c.device_id WHERE c.device_id=$1 AND c.kind=$2 AND (c.state='sent' OR ($2='test' AND c.state='acked')) AND c.sent_at<=$3 AND c.last_ready_at=d.last_ready_at AND d.presence_status='awake' AND d.last_ready_at>$3-interval '8 minutes' AND ($2<>'cfg' OR c.payload=$4) ORDER BY c.id DESC LIMIT 1) UPDATE commands c SET state='acked',acked_at=COALESCE(c.acked_at,$3),ack_payload=CASE WHEN $2='test' THEN COALESCE(c.ack_payload,'[]'::jsonb)||jsonb_build_array($4::jsonb) ELSE $4 END FROM candidate WHERE c.id=candidate.id RETURNING c.id", &[&device,&ack_kind,&now,&parsed]).await.map_err(|e|format!("ack match: {e:?}"))?;
+    let changed=client.query(
+        "WITH candidate AS (
+            SELECT c.id,a.id AS attempt_id FROM commands c JOIN devices d ON d.device_id=c.device_id
+            LEFT JOIN command_publish_attempts a ON a.id=c.active_publish_attempt AND a.state='inflight'
+            WHERE c.device_id=$1 AND c.kind=$2 AND c.firmware_ack_expected
+              AND (c.state IN ('queued','sent') OR ($2='test' AND c.state='acked'))
+              AND d.presence_status='awake' AND d.last_ready_at>$3::timestamptz-interval '8 minutes'
+              AND ((a.dispatched_at<=$3::timestamptz AND a.ready_at=d.last_ready_at)
+                  OR (a.id IS NULL AND c.state IN ('sent','acked') AND c.broker_acked_at IS NOT NULL AND c.sent_at<=$3::timestamptz AND c.last_ready_at=d.last_ready_at))
+              AND ($2<>'cfg' OR c.payload=$4::jsonb)
+            ORDER BY c.id DESC LIMIT 1
+        ), buffered AS (
+            UPDATE command_publish_attempts a SET firmware_acked_at=COALESCE(a.firmware_acked_at,$3::timestamptz),
+                firmware_ack_payload=CASE WHEN $2='test' THEN COALESCE(a.firmware_ack_payload,'[]'::jsonb)||jsonb_build_array($4::jsonb) ELSE $4::jsonb END
+            FROM candidate WHERE a.id=candidate.attempt_id
+        ) UPDATE commands c SET
+            state=CASE WHEN candidate.attempt_id IS NULL THEN 'acked' ELSE c.state END,
+            acked_at=CASE WHEN candidate.attempt_id IS NULL THEN COALESCE(c.acked_at,$3::timestamptz) ELSE c.acked_at END,
+            ack_payload=CASE WHEN candidate.attempt_id IS NOT NULL THEN c.ack_payload WHEN $2='test' THEN COALESCE(c.ack_payload,'[]'::jsonb)||jsonb_build_array($4::jsonb) ELSE $4::jsonb END
+        FROM candidate WHERE c.id=candidate.id RETURNING c.id,candidate.attempt_id IS NULL AS finalized",
+        &[&device,&ack_kind,&now,&parsed]).await.map_err(|e|format!("ack match: {e:?}"))?;
     if !changed.is_empty() {
-        if ack_kind == "cfg" {
+        if ack_kind == "cfg" && changed.iter().any(|r| r.get::<_, bool>(1)) {
             client
                 .execute(
                     "UPDATE devices SET applied_config=$2,last_seen=$3 WHERE device_id=$1",
@@ -114,49 +134,39 @@ pub async fn ancillary(
     Ok(Some(device.clone()))
 }
 
-pub async fn run(
-    database_url: String,
-    mqtt: AsyncClient,
-    stats: Arc<tokio::sync::Mutex<IngestStats>>,
-    bus: EventBus,
-) {
-    let mut timer = tokio::time::interval(std::time::Duration::from_secs(1));
-    loop {
-        let mut db = match crate::db::connect(&database_url).await {
-            Ok(db) => db,
-            Err(e) => {
-                eprintln!("groundwater scheduler: {e}");
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                continue;
-            }
-        };
-        loop {
-            timer.tick().await;
-            if !stats.lock().await.connected {
-                continue;
-            }
-            if let Err(e) = tick(&mut db, &mqtt, &bus).await {
-                eprintln!("groundwater scheduler: {e}");
-                if db.is_closed() {
-                    break;
-                }
-            }
-        }
+/// Called only by the MQTT event-loop owner. SQL reservation commits before
+/// the request is enqueued; no scheduler task can race packet correlation.
+pub async fn tick(
+    db: &mut Client,
+    mqtt: &AsyncClient,
+    bus: &EventBus,
+    publisher: &mut Publisher,
+) -> Result<(), String> {
+    publisher.reconcile(db, bus).await?;
+    if !publisher.connected || publisher.busy() {
+        return Ok(());
     }
-}
-
-pub async fn tick(db: &mut Client, mqtt: &AsyncClient, bus: &EventBus) -> Result<(), String> {
-    // Lock both rows through publication handoff and commit. Cancellation
-    // serializes here, so a successfully cancelled command cannot later send.
     let tx = db.transaction().await.map_err(|e| e.to_string())?;
-    let rows=tx.query("SELECT c.id,c.device_id,c.kind,c.payload,c.wire_payload,d.last_ready_at FROM commands c JOIN devices d ON d.device_id=c.device_id WHERE c.state IN ('queued','sent') AND NOT(c.kind='project-settings' AND c.state='sent') AND d.revoked_at IS NULL AND d.presence_status='awake' AND d.last_ready_at<=now() AND d.last_ready_at>now()-interval '8 minutes' AND (d.last_downlink_at IS NULL OR d.last_downlink_at<=now()-interval '5 seconds') AND (c.last_ready_at IS NULL OR c.last_ready_at<d.last_ready_at) AND NOT EXISTS(SELECT 1 FROM commands prior WHERE prior.device_id=c.device_id AND prior.id<c.id AND prior.state IN ('queued','sent') AND NOT(prior.kind='project-settings' AND prior.state='sent')) ORDER BY c.id LIMIT 32 FOR UPDATE OF c,d SKIP LOCKED", &[]).await.map_err(|e|format!("scheduler select: {e:?}"))?;
+    let rows=tx.query(
+        "SELECT c.id,c.device_id,c.kind,c.wire_payload,d.last_ready_at
+         FROM commands c JOIN devices d ON d.device_id=c.device_id
+         WHERE c.active_publish_attempt IS NULL
+           AND (c.state='queued' OR (c.state='sent' AND (c.firmware_ack_expected OR c.broker_acked_at IS NULL)))
+           AND d.revoked_at IS NULL AND d.presence_status='awake'
+           AND d.last_ready_at<=now() AND d.last_ready_at>now()-interval '8 minutes'
+           AND (d.last_downlink_at IS NULL OR d.last_downlink_at<=now()-interval '5 seconds')
+           AND (c.broker_acked_at IS NULL OR c.last_ready_at IS NULL OR c.last_ready_at<d.last_ready_at)
+           AND NOT EXISTS(SELECT 1 FROM commands prior WHERE prior.device_id=c.device_id AND prior.id<c.id
+               AND (prior.state='queued' OR (prior.state='sent' AND (prior.firmware_ack_expected OR prior.broker_acked_at IS NULL))))
+         ORDER BY c.id LIMIT 32 FOR UPDATE OF c,d SKIP LOCKED", &[])
+        .await.map_err(|e|format!("scheduler select: {e:?}"))?;
+    let mut prepared = None;
     for row in &rows {
         let id: i64 = row.get(0);
         let device: String = row.get(1);
         let kind: String = row.get(2);
-        let payload: serde_json::Value = row.get(3);
-        let wire: String = row.get(4);
-        let ready: DateTime<Utc> = row.get(5);
+        let wire: String = row.get(3);
+        let ready: DateTime<Utc> = row.get(4);
         let base = match kind.as_str() {
             "project-settings" => "azman1/feeds/project-settings-slash-configuration",
             "cfg" => "cfg/desired",
@@ -164,43 +174,51 @@ pub async fn tick(db: &mut Client, mqtt: &AsyncClient, bus: &EventBus) -> Result
             "test" => "requesttesta",
             _ => return Err("invalid persisted command kind".into()),
         };
-        let bindings=tx.query("SELECT b.topic FROM device_bindings b JOIN devices d ON d.device_id=b.device_id WHERE b.device_id=$1 AND b.source_profile=d.source_profile AND b.revoked_at IS NULL AND (b.topic=$2 OR right(b.topic,length($2)+1)='/'||$2) ORDER BY b.topic", &[&device,&base]).await.map_err(|e|e.to_string())?;
-        // Exactly one explicit destination. Generic firmware downlinks are
-        // broadcast to every logger, even with one topic binding: disable them
-        // whenever more than one active device is enrolled.
-        if bindings.len() == 1 {
-            let topic: String = bindings[0].get(0);
-            let count: i64 = tx
-                .query_one("SELECT count(*) FROM devices WHERE revoked_at IS NULL", &[])
-                .await
-                .map_err(|e| e.to_string())?
-                .get(0);
-            if topic != base || count == 1 {
-                // Nonblocking enqueue: this task never waits for the event
-                // loop to make channel capacity, and retain is ALWAYS false.
-                if mqtt
-                    .try_publish(topic.clone(), QoS::AtLeastOnce, false, wire.as_bytes())
-                    .is_ok()
-                {
-                    tx.execute("UPDATE commands SET state='sent',sent_at=now(),attempts=attempts+1,last_ready_at=$2 WHERE id=$1", &[&id,&ready]).await.map_err(|e|e.to_string())?;
-                    tx.execute(
-                        "UPDATE devices SET last_downlink_at=now() WHERE device_id=$1",
-                        &[&device],
-                    )
-                    .await
-                    .map_err(|e| e.to_string())?;
-                    if kind == "project-settings" {
-                        let min: f64 = payload["mG"].as_str().unwrap().parse().unwrap();
-                        let max: f64 = payload["MG"].as_str().unwrap().parse().unwrap();
-                        tx.execute("UPDATE devices SET desired_config=$2,min_limit=$3,max_limit=$4,location_id=$2->>'l',sensor_id=$2->>'id',alerts_dirty=true WHERE device_id=$1", &[&device,&payload,&min,&max]).await.map_err(|e|e.to_string())?;
-                        // No firmware ACK exists. Keep sent, never manufacture
-                        // an applied config or new clock policy from intent.
-                    }
-                    tx.execute("INSERT INTO deliveries(received_at,topic,kind,qos,payload,payload_size,payload_digest,device_id,state,direction) VALUES(now(),$1,'command',1,$2,$3,'',$4,'sent','out')", &[&topic,&wire,&(wire.len() as i32),&device]).await.map_err(|e|e.to_string())?;
-                    bus.emit(LiveEvent::Command { device_id: device });
-                }
-            }
+        let bindings = tx
+            .query(
+                "SELECT b.topic FROM device_bindings b JOIN devices d ON d.device_id=b.device_id
+             WHERE b.device_id=$1 AND b.source_profile=d.source_profile AND b.revoked_at IS NULL
+               AND (b.topic=$2 OR right(b.topic,length($2)+1)='/'||$2) ORDER BY b.topic",
+                &[&device, &base],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        if bindings.len() != 1 {
+            continue;
         }
+        let topic: String = bindings[0].get(0);
+        let count: i64 = tx
+            .query_one("SELECT count(*) FROM devices WHERE revoked_at IS NULL", &[])
+            .await
+            .map_err(|e| e.to_string())?
+            .get(0);
+        if topic == base && count != 1 {
+            continue;
+        }
+        let attempt:i64=tx.query_one(
+            "INSERT INTO command_publish_attempts(command_id,ready_at,topic) VALUES($1,$2,$3) RETURNING id",
+            &[&id,&ready,&topic]).await.map_err(|e|e.to_string())?.get(0);
+        tx.execute(
+            "UPDATE commands SET active_publish_attempt=$2,attempts=attempts+1 WHERE id=$1",
+            &[&id, &attempt],
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        // Persist a conservative boundary before any possible packet leaves.
+        // Outgoing::Publish and PUBACK advance it to observed dispatch times.
+        tx.execute(
+            "UPDATE devices SET last_downlink_at=now() WHERE device_id=$1",
+            &[&device],
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        prepared = Some((attempt, topic, wire));
+        break;
     }
-    tx.commit().await.map_err(|e| e.to_string())
+    tx.commit().await.map_err(|e| e.to_string())?;
+    if let Some((attempt, topic, wire)) = prepared {
+        publisher.enqueue(attempt, mqtt, &topic, &wire);
+        publisher.reconcile(db, bus).await?;
+    }
+    Ok(())
 }

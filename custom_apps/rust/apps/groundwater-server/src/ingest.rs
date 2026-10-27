@@ -21,7 +21,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use rumqttc::{AsyncClient, Event, Incoming, MqttOptions};
+use rumqttc::{AsyncClient, Event, Incoming, MqttOptions, Outgoing};
 use tokio::sync::{broadcast, RwLock};
 use tokio_postgres::Client;
 
@@ -150,12 +150,12 @@ pub async fn run(
     }
 
     let (mqtt_client, mut event_loop) = AsyncClient::new(options, 10);
-    tokio::spawn(crate::scheduler::run(
-        settings.database_url.clone(),
-        mqtt_client.clone(),
-        stats.clone(),
-        bus.clone(),
-    ));
+    // This task is the sole command producer and observer of packet IDs.
+    // No volatile rumqttc request survives an unconfirmed process restart.
+    let mut publisher_db = db::connect(&settings.database_url).await?;
+    crate::publisher::recover(&publisher_db).await?;
+    let mut publisher = crate::publisher::Publisher::default();
+    let mut dispatch = tokio::time::interval(Duration::from_secs(1));
     let subscribe_topics = settings.topics.subscribe_topics();
     let topic_map = Arc::new(settings.topics.clone());
     let mut connected = false;
@@ -164,6 +164,19 @@ pub async fn run(
     loop {
         let event = tokio::select! {
             event = event_loop.poll() => event,
+            _ = dispatch.tick() => {
+                if publisher_db.is_closed() {
+                    match db::connect(&settings.database_url).await {
+                        Ok(db)=>publisher_db=db,
+                        Err(e)=>{eprintln!("groundwater publisher reconnect: {e}");continue}
+                    }
+                }
+                if let Err(e)=crate::scheduler::tick(&mut publisher_db,&mqtt_client,&bus,&mut publisher).await {
+                    eprintln!("groundwater publisher: {e}");
+                    stats.lock().await.last_error=Some(e);
+                }
+                continue;
+            }
             _ = refresh.tick() => {
                 match db::load_registry(&client).await {
                     Ok(loaded) => {
@@ -194,6 +207,7 @@ pub async fn run(
         match event {
             Ok(Event::Incoming(Incoming::ConnAck(_))) => {
                 connected = true;
+                publisher.connected = true;
                 {
                     let mut guard = stats.lock().await;
                     guard.connected = true;
@@ -226,6 +240,16 @@ pub async fn run(
                     detail: format!("subscribed to {} topics", subscribe_topics.len()),
                 });
             }
+            Ok(Event::Outgoing(Outgoing::Publish(packet_id))) => {
+                if let Err(e) = publisher.outgoing(&mut publisher_db, packet_id, &bus).await {
+                    eprintln!("groundwater outgoing confirmation: {e}");
+                }
+            }
+            Ok(Event::Incoming(Incoming::PubAck(ack))) => {
+                if let Err(e) = publisher.puback(&mut publisher_db, ack.pkid, &bus).await {
+                    eprintln!("groundwater broker confirmation: {e}");
+                }
+            }
             Ok(Event::Incoming(Incoming::Publish(publish))) => {
                 handle_publish(
                     &publish.topic,
@@ -243,8 +267,14 @@ pub async fn run(
             }
             Ok(_) => {}
             Err(err) => {
-                // rumqttc retries internally; log and keep polling so a
-                // transient broker outage does not kill the service.
+                // Explicitly discard the old session's volatile packets.
+                // SQL owns recovery and wake-window/spacing checks; automatic
+                // MQTT replay could otherwise publish after sleep or cancel.
+                publisher.disconnected();
+                crate::publisher::discard_session(&mut event_loop);
+                if let Err(e) = publisher.reconcile(&mut publisher_db, &bus).await {
+                    eprintln!("groundwater publish recovery: {e}");
+                }
                 let message = err.to_string();
                 let should_log = {
                     let mut guard = stats.lock().await;

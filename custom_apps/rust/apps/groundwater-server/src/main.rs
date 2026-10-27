@@ -21,6 +21,9 @@ mod platform;
 #[cfg(test)]
 mod platform_tests;
 mod profiles;
+mod publisher;
+#[cfg(test)]
+mod publisher_tests;
 mod scheduler;
 mod telemetry;
 mod topics;

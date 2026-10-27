@@ -59,6 +59,33 @@ CREATE TABLE IF NOT EXISTS command_events (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     detail JSONB
 );
+-- An attempt is durable before it enters rumqttc's volatile request queue.
+-- sent is broker acceptance, not firmware application. In particular Reboot
+-- resets the MCU before it can emit cfg/danger_ack.
+ALTER TABLE commands ADD COLUMN IF NOT EXISTS broker_acked_at TIMESTAMPTZ;
+ALTER TABLE commands ADD COLUMN IF NOT EXISTS firmware_ack_expected BOOLEAN
+    GENERATED ALWAYS AS (kind <> 'project-settings' AND
+        NOT (kind='danger' AND payload @> '{"Reboot":"1"}'::jsonb)) STORED;
+CREATE TABLE IF NOT EXISTS command_publish_attempts (
+    id BIGSERIAL PRIMARY KEY,
+    command_id BIGINT NOT NULL REFERENCES commands(id),
+    ready_at TIMESTAMPTZ NOT NULL,
+    topic TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'prepared'
+        CHECK(state IN ('prepared','inflight','accepted','abandoned')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    dispatched_at TIMESTAMPTZ,
+    mqtt_packet_id INTEGER,
+    broker_acked_at TIMESTAMPTZ,
+    firmware_acked_at TIMESTAMPTZ,
+    firmware_ack_payload JSONB,
+    recovery_reason TEXT,
+    delivery_id BIGINT REFERENCES deliveries(id) ON DELETE SET NULL
+);
+ALTER TABLE commands ADD COLUMN IF NOT EXISTS active_publish_attempt BIGINT
+    REFERENCES command_publish_attempts(id);
+CREATE UNIQUE INDEX IF NOT EXISTS command_publish_attempts_active_idx
+    ON command_publish_attempts(command_id) WHERE state IN ('prepared','inflight');
 CREATE OR REPLACE FUNCTION groundwater_command_audit() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
     INSERT INTO command_events(command_id,event,actor,detail)

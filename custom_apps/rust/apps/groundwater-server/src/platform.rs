@@ -44,6 +44,8 @@ pub struct Command {
     pub acked_at: Option<DateTime<Utc>>,
     pub ack_payload: Option<Value>,
     pub attempts: i32,
+    pub broker_acked_at: Option<DateTime<Utc>>,
+    pub firmware_ack_expected: bool,
     pub cancelled_at: Option<DateTime<Utc>>,
     pub cancelled_by: Option<String>,
 }
@@ -60,6 +62,8 @@ fn command(row: Row) -> Command {
         acked_at: row.get("acked_at"),
         ack_payload: row.get("ack_payload"),
         attempts: row.get("attempts"),
+        broker_acked_at: row.get("broker_acked_at"),
+        firmware_ack_expected: row.get("firmware_ack_expected"),
         cancelled_at: row.get("cancelled_at"),
         cancelled_by: row.get("cancelled_by"),
     }
@@ -88,7 +92,7 @@ pub async fn cancel(
     username: &str,
 ) -> Result<Option<Command>, String> {
     // Single SQL statement serializes against the publisher's reservation.
-    client.query_opt("WITH changed AS (UPDATE commands SET state='cancelled',cancelled_at=now(),cancelled_by=$3 WHERE id=$2 AND device_id=$1 AND state IN ('queued','sent') RETURNING *), audit AS (INSERT INTO command_events(command_id,event,actor) SELECT id,'cancelled',$3 FROM changed) SELECT * FROM changed", &[&device,&id,&username]).await.map(|r|r.map(command)).map_err(|e|e.to_string())
+    client.query_opt("WITH changed AS (UPDATE commands SET state='cancelled',cancelled_at=now(),cancelled_by=$3 WHERE id=$2 AND device_id=$1 AND state IN ('queued','sent') AND active_publish_attempt IS NULL RETURNING *), audit AS (INSERT INTO command_events(command_id,event,actor) SELECT id,'cancelled',$3 FROM changed) SELECT * FROM changed", &[&device,&id,&username]).await.map(|r|r.map(command)).map_err(|e|e.to_string())
 }
 pub async fn alerts(
     client: &Client,

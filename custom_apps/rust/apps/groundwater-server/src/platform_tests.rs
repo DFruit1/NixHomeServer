@@ -7,6 +7,7 @@ use crate::{
     ingest::{EventBus, IngestStats, LiveEvent},
     platform,
     profiles::ProfileId,
+    publisher::Publisher,
     scheduler,
     topics::TopicMap,
 };
@@ -139,6 +140,8 @@ async fn platform_database_api_and_scheduler_regressions() {
     let first = platform::queue(&db, A, "cfg", flags.clone(), &wire, "operator")
         .await
         .unwrap();
+    let mut publisher = Publisher::default();
+    publisher.connected = true;
     let (mqtt, _event_loop) =
         rumqttc::AsyncClient::new(rumqttc::MqttOptions::new("unit-test", "127.0.0.1", 1), 1);
     scheduler::ancillary(
@@ -153,7 +156,9 @@ async fn platform_database_api_and_scheduler_regressions() {
     .await
     .unwrap();
     // A generic outbound binding cannot make a flat topic address a fleet.
-    scheduler::tick(&mut db, &mqtt, &bus).await.unwrap();
+    scheduler::tick(&mut db, &mqtt, &bus, &mut publisher)
+        .await
+        .unwrap();
     assert_eq!(
         platform::commands(&db, &[A.into()], None).await.unwrap()[0].attempts,
         0
@@ -164,13 +169,18 @@ async fn platform_database_api_and_scheduler_regressions() {
     )
     .await
     .unwrap();
-    scheduler::tick(&mut db, &mqtt, &bus).await.unwrap();
+    scheduler::tick(&mut db, &mqtt, &bus, &mut publisher)
+        .await
+        .unwrap();
     let sent = platform::commands(&db, &[A.into()], None)
         .await
         .unwrap()
         .remove(0);
-    assert_eq!(sent.state, "sent");
+    assert_eq!(sent.state, "queued");
+    assert!(sent.broker_acked_at.is_none());
     assert_eq!(sent.attempts, 1);
+    publisher.outgoing(&mut db, 7, &bus).await.unwrap();
+    publisher.puback(&mut db, 7, &bus).await.unwrap();
     // Same Ready never retries, even after the spacing period elapses.
     db.execute(
         "UPDATE devices SET last_downlink_at=now()-interval '10 seconds' WHERE device_id=$1",
@@ -178,7 +188,9 @@ async fn platform_database_api_and_scheduler_regressions() {
     )
     .await
     .unwrap();
-    scheduler::tick(&mut db, &mqtt, &bus).await.unwrap();
+    scheduler::tick(&mut db, &mqtt, &bus, &mut publisher)
+        .await
+        .unwrap();
     assert_eq!(
         platform::commands(&db, &[A.into()], None).await.unwrap()[0].attempts,
         1
@@ -259,7 +271,9 @@ async fn platform_database_api_and_scheduler_regressions() {
     let second = platform::queue(&db, A, "cfg", flags.clone(), &wire, "operator")
         .await
         .unwrap();
-    scheduler::tick(&mut db, &mqtt, &bus).await.unwrap();
+    scheduler::tick(&mut db, &mqtt, &bus, &mut publisher)
+        .await
+        .unwrap();
     assert_eq!(
         platform::commands(&db, &[A.into()], None).await.unwrap()[0].state,
         "queued"
@@ -285,7 +299,9 @@ async fn platform_database_api_and_scheduler_regressions() {
     .unwrap();
     let (fresh_mqtt, _fresh_loop) =
         rumqttc::AsyncClient::new(rumqttc::MqttOptions::new("restarted", "127.0.0.1", 1), 1);
-    scheduler::tick(&mut db, &fresh_mqtt, &bus).await.unwrap();
+    scheduler::tick(&mut db, &fresh_mqtt, &bus, &mut publisher)
+        .await
+        .unwrap();
     assert_eq!(
         platform::commands(&db, &[A.into()], None).await.unwrap()[0].attempts,
         0
@@ -296,7 +312,9 @@ async fn platform_database_api_and_scheduler_regressions() {
     )
     .await
     .unwrap();
-    scheduler::tick(&mut db, &fresh_mqtt, &bus).await.unwrap();
+    scheduler::tick(&mut db, &fresh_mqtt, &bus, &mut publisher)
+        .await
+        .unwrap();
     assert_eq!(
         platform::commands(&db, &[A.into()], None).await.unwrap()[0].attempts,
         1
@@ -318,25 +336,36 @@ async fn platform_database_api_and_scheduler_regressions() {
     )
     .await
     .unwrap();
-    // The bounded MQTT queue is full. A tick must return without waiting or
-    // incrementing the attempt. A new publisher retries on the new Ready.
+    crate::publisher::recover(&db).await.unwrap();
+    publisher = Publisher::default();
+    publisher.connected = true;
+    // The bounded MQTT queue is full. A failed handoff is audited and stays
+    // queued. It must return without waiting for an event-loop poll.
     tokio::time::timeout(
         std::time::Duration::from_secs(1),
-        scheduler::tick(&mut db, &fresh_mqtt, &bus),
+        scheduler::tick(&mut db, &fresh_mqtt, &bus, &mut publisher),
     )
     .await
     .unwrap()
     .unwrap();
     assert_eq!(
         platform::commands(&db, &[A.into()], None).await.unwrap()[0].attempts,
-        1
+        2
     );
     let (retry_mqtt, _retry_loop) =
         rumqttc::AsyncClient::new(rumqttc::MqttOptions::new("retry", "127.0.0.1", 1), 1);
-    scheduler::tick(&mut db, &retry_mqtt, &bus).await.unwrap();
+    db.execute(
+        "UPDATE devices SET last_downlink_at=now()-interval '6 seconds' WHERE device_id=$1",
+        &[&A],
+    )
+    .await
+    .unwrap();
+    scheduler::tick(&mut db, &retry_mqtt, &bus, &mut publisher)
+        .await
+        .unwrap();
     assert_eq!(
         platform::commands(&db, &[A.into()], None).await.unwrap()[0].attempts,
-        2
+        3
     );
     // Retained Ready is evidence in the raw log, never an awake transition.
     scheduler::ancillary(
@@ -541,4 +570,41 @@ async fn platform_database_api_and_scheduler_regressions() {
             .is_err()
     );
     assert_eq!(second.state, "queued");
+}
+
+#[tokio::test]
+#[ignore = "requires disposable GROUNDWATER_TEST_DATABASE_URL"]
+async fn publish_enqueue_does_not_claim_broker_acceptance() {
+    let url = std::env::var("GROUNDWATER_TEST_DATABASE_URL").unwrap();
+    let mut db = db::connect(&url).await.unwrap();
+    db::migrate(&db).await.unwrap();
+    db.batch_execute("TRUNCATE devices,device_bindings,observations,deliveries,alerts,commands,command_events,device_permissions RESTART IDENTITY CASCADE").await.unwrap();
+    db.execute("INSERT INTO devices(device_id,source_profile,clock_policy,presence_status,last_ready_at) VALUES($1,'V21','utc','awake',now())",&[&A]).await.unwrap();
+    db.execute("INSERT INTO device_bindings(binding_key,device_id,topic,source_profile) VALUES('settings',$1,'azman1/feeds/project-settings-slash-configuration','V21')",&[&A]).await.unwrap();
+    let config = json!({"NA":"3","l":"A1","id":"B1","lf":"0:3","sf":"0:9","fac":"1.00,1.00,0.00,0.00","fst":"2026-10-01T00:00:00","mG":"0","MG":"9","S":"0101","ltost":"5:0"});
+    let wire = crate::commands::project_payload(&config).unwrap();
+    platform::queue(&db, A, "project-settings", config, &wire, "operator")
+        .await
+        .unwrap();
+    let (mqtt, _event_loop) =
+        rumqttc::AsyncClient::new(rumqttc::MqttOptions::new("unpolled", "127.0.0.1", 1), 1);
+    let mut publisher = Publisher::default();
+    publisher.connected = true;
+    scheduler::tick(&mut db, &mqtt, &EventBus::new(), &mut publisher)
+        .await
+        .unwrap();
+    let commands = platform::commands(&db, &[A.into()], None).await.unwrap();
+    assert_eq!(
+        commands[0].state, "queued",
+        "in-memory enqueue is not a broker acknowledgment"
+    );
+    let row = db
+        .query_one(
+            "SELECT desired_config,min_limit FROM devices WHERE device_id=$1",
+            &[&A],
+        )
+        .await
+        .unwrap();
+    assert!(row.get::<_, Option<Value>>(0).is_none());
+    assert!(row.get::<_, Option<f64>>(1).is_none());
 }
