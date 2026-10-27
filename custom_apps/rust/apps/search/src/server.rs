@@ -96,6 +96,15 @@ pub async fn run() -> Result<(), String> {
         .route("/healthz", get(health))
         .route("/api/sources", get(api_sources))
         .route("/api/search", get(api_search))
+        .layer(axum::middleware::map_response(
+            |mut response: Response| async {
+                response.headers_mut().insert(
+                    axum::http::header::CACHE_CONTROL,
+                    axum::http::HeaderValue::from_static("private, no-store"),
+                );
+                response
+            },
+        ))
         .with_state(state.clone());
 
     let listener = tokio::net::TcpListener::bind((address.as_str(), port))
@@ -151,25 +160,29 @@ async fn gate(state: &AppState, headers: &HeaderMap) -> Result<Vec<db::UiSource>
     }
     let client = match shared_db_client(state).await {
         Ok(client) => client,
-        Err(err) => {
-            return Err(Box::new(
-                (StatusCode::INTERNAL_SERVER_ERROR, err).into_response(),
-            ))
-        }
+        Err(err) => return Err(Box::new(database_unavailable(&err))),
     };
     match db::list_sources(&client).await {
         Ok(sources) => Ok(sources),
         Err(err) => {
             *state.inner.db.lock().await = None;
-            Err(Box::new(
-                (StatusCode::INTERNAL_SERVER_ERROR, err).into_response(),
-            ))
+            Err(Box::new(database_unavailable(&err)))
         }
     }
 }
 
 fn not_signed_in() -> Response {
     (StatusCode::UNAUTHORIZED, "not signed in").into_response()
+}
+
+fn database_unavailable(_internal_error: &str) -> Response {
+    // Connection errors can contain a DSN. Keep them out of public responses.
+    eprintln!("search: database operation unavailable");
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(json!({"error": "The search library is unavailable. Try again shortly."})),
+    )
+        .into_response()
 }
 
 async fn api_sources(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -212,9 +225,53 @@ struct SearchParams {
     page_size: Option<usize>,
     #[serde(default)]
     sort: Option<String>,
+    /// The browser requests both scopes concurrently, so live archives never
+    /// hold up indexed results. Older clients retain the combined response.
+    #[serde(default)]
+    scope: SearchScope,
+}
+
+#[derive(Default, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum SearchScope {
+    #[default]
+    All,
+    Indexed,
+    Live,
 }
 
 impl SearchParams {
+    fn validate(&self) -> Result<(), &'static str> {
+        if self.q.len() > 2048 {
+            return Err("Search terms must be at most 2048 bytes.");
+        }
+        for date in [self.after.as_deref(), self.before.as_deref()]
+            .into_iter()
+            .flatten()
+            .filter(|s| !s.trim().is_empty())
+        {
+            if chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
+                .ok()
+                .is_none_or(|parsed| parsed.format("%Y-%m-%d").to_string() != date)
+            {
+                return Err("Use a valid date in YYYY-MM-DD format.");
+            }
+        }
+        if let (Some(after), Some(before)) = (
+            nonempty(self.after.as_deref()),
+            nonempty(self.before.as_deref()),
+        ) && after > before
+        {
+            return Err("The start date must be on or before the end date.");
+        }
+        if nonempty(self.year.as_deref()).is_some_and(|value| value.parse::<i64>().is_err()) {
+            return Err("Year must be a number.");
+        }
+        if self.page.unwrap_or(0).saturating_mul(self.page_size()) > 10_000 {
+            return Err("Narrow your search to load more than 10,000 results.");
+        }
+        Ok(())
+    }
     /// The requested page size, clamped so a client cannot ask for an
     /// unbounded result window.
     fn page_size(&self) -> usize {
@@ -266,6 +323,9 @@ async fn api_search(
     if Identity::from_headers(&headers).is_err() {
         return not_signed_in();
     }
+    if let Err(message) = params.validate() {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": message }))).into_response();
+    }
     let query = params.q.trim().to_string();
     if query.is_empty() {
         return Json(json!({ "hits": [], "total": 0 })).into_response();
@@ -273,13 +333,13 @@ async fn api_search(
 
     let client = match shared_db_client(&state).await {
         Ok(client) => client,
-        Err(err) => return (StatusCode::INTERNAL_SERVER_ERROR, err).into_response(),
+        Err(err) => return database_unavailable(&err),
     };
     let sources = match db::list_sources(&client).await {
         Ok(sources) => sources,
         Err(err) => {
             *state.inner.db.lock().await = None;
-            return (StatusCode::INTERNAL_SERVER_ERROR, err).into_response();
+            return database_unavailable(&err);
         }
     };
     let selected: Vec<String> = sources.into_iter().map(|source| source.id).collect();
@@ -292,26 +352,32 @@ async fn api_search(
     // Runtime-federated hits (a source's own index queried live) have no
     // pagination of their own, so they are pinned to the first page. The
     // per-source filter is applied inside the federator.
-    let include_federated = page == 0;
-    let federated_hits = if include_federated {
-        federate_runtime_sources(&state, &selected, &query, &filters).await
-    } else {
-        Vec::new()
+    let live = async {
+        if page == 0 && params.scope != SearchScope::Indexed {
+            federate_runtime_sources(&state, &selected, &query, &filters).await
+        } else {
+            LiveResults::default()
+        }
     };
-
-    match state
-        .inner
-        .solr
-        .search(
-            &query,
-            &selected,
-            &filters,
-            rows,
-            offset,
-            params.sort_order(),
-        )
-        .await
-    {
+    if params.scope == SearchScope::Live {
+        let mut result = live.await;
+        if params.sort_order() == crate::solr::SortOrder::Newest {
+            result
+                .hits
+                .sort_by_key(|hit| std::cmp::Reverse(hit.created));
+        }
+        return Json(json!({ "hits": result.hits.iter().map(FederatedHit::to_json).collect::<Vec<_>>(), "total": result.hits.len(), "hasMore": false, "limited": true, "warnings": result.warnings })).into_response();
+    }
+    let indexed = state.inner.solr.search(
+        &query,
+        &selected,
+        &filters,
+        rows,
+        offset,
+        params.sort_order(),
+    );
+    let (response, federated) = tokio::join!(indexed, live);
+    match response {
         Ok(response) => {
             // Solr never returns the body; load it once for the returned page
             // and build snippets from the authoritative Postgres copy. A failed
@@ -325,7 +391,7 @@ async fn api_search(
                 }
             };
             let mut hits: Vec<serde_json::Value> =
-                federated_hits.iter().map(FederatedHit::to_json).collect();
+                federated.hits.iter().map(FederatedHit::to_json).collect();
             // Federated hits are only ever returned on the first page, so more
             // results remain exactly when Solr still has rows past this page.
             let has_more = offset + response.hits.len() < response.total as usize;
@@ -352,8 +418,9 @@ async fn api_search(
             }
             Json(json!({
                 "hits": hits,
-                "total": response.total + federated_hits.len() as u64,
+                "total": response.total + federated.hits.len() as u64,
                 "hasMore": has_more,
+                "warnings": federated.warnings,
                 "sourceFacets": facet_json(&response.source_facets),
                 "kindFacets": facet_json(&response.kind_facets),
                 "contentTypeFacets": facet_json(&response.content_type_facets),
@@ -365,7 +432,14 @@ async fn api_search(
             }))
             .into_response()
         }
-        Err(err) => (StatusCode::BAD_GATEWAY, err).into_response(),
+        Err(err) => {
+            eprintln!("search: indexed query failed: {err}");
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "error": "Library search is unavailable. Try again shortly." })),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -433,41 +507,87 @@ fn truncate(value: &str, limit: usize) -> String {
     value.chars().take(limit).collect()
 }
 
-/// Queries every runtime-federated source in scope using that source's own
-/// index, returning unified hits. Never fails the whole request: a source whose
-/// tools, credentials, or upstream are unavailable simply contributes nothing.
+/// Live results are a bounded sample, with source-specific failures kept
+/// separate from successful zero-match queries.
+#[derive(Default)]
+struct LiveResults {
+    hits: Vec<FederatedHit>,
+    warnings: Vec<serde_json::Value>,
+}
+
 async fn federate_runtime_sources(
     state: &AppState,
     selected: &[String],
     query: &str,
     filters: &crate::solr::SearchFilters,
-) -> Vec<FederatedHit> {
-    let mut hits: Vec<FederatedHit> = Vec::new();
-    for source in &state.inner.settings.sources {
-        if !selected.iter().any(|id| id == &source.id) {
-            continue;
-        }
-        // A source filter that names a different source makes this one
-        // entirely out of scope.
-        if let Some(filter) = &filters.source
-            && filter != &source.id
-        {
-            continue;
-        }
-        match source.source_type.as_str() {
-            "kiwix" => {
-                // ZIM articles carry no timestamps, so a date filter can never
-                // match them: skip the archive walk entirely in that case.
-                if filters.created_after.is_none() && filters.created_before.is_none() {
-                    hits.extend(federate_kiwix(state, source, query).await);
+) -> LiveResults {
+    use futures_util::{stream, StreamExt};
+    let sources: Vec<_> = state
+        .inner
+        .settings
+        .sources
+        .iter()
+        .filter(|source| {
+            selected.contains(&source.id)
+                && filters.source.as_ref().is_none_or(|id| id == &source.id)
+                && match source.source_type.as_str() {
+                    "kiwix" => {
+                        filters.created_after.is_none()
+                            && filters.created_before.is_none()
+                            && filters
+                                .kind
+                                .as_deref()
+                                .is_none_or(|kind| kind == "zim-article")
+                    }
+                    "paperless-api" => filters
+                        .kind
+                        .as_deref()
+                        .is_none_or(|kind| kind == "document"),
+                    _ => false,
                 }
+        })
+        .cloned()
+        .collect();
+    let mut results = stream::iter(sources)
+        .map(|source| async move {
+            let operation = async {
+                match source.source_type.as_str() {
+                    "kiwix" => federate_kiwix(state, &source, query).await,
+                    _ => federate_paperless(state, &source, query)
+                        .await
+                        .map(|hits| LiveResults {
+                            hits,
+                            warnings: Vec::new(),
+                        }),
+                }
+            };
+            let result = tokio::time::timeout(std::time::Duration::from_secs(30), operation)
+                .await
+                .unwrap_or_else(|_| Err("The source took too long to respond.".to_string()));
+            (source.id.clone(), result)
+        })
+        .buffer_unordered(4)
+        .collect::<Vec<_>>()
+        .await;
+    results.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut output = LiveResults::default();
+    for (source, result) in results {
+        match result {
+            Ok(result) => {
+                output.hits.extend(
+                    result
+                        .hits
+                        .into_iter()
+                        .filter(|hit| hit.matches_filters(filters)),
+                );
+                output.warnings.extend(result.warnings);
             }
-            "paperless-api" => hits.extend(federate_paperless(state, source, query).await),
-            _ => {}
+            Err(message) => output
+                .warnings
+                .push(json!({ "source": source, "message": message })),
         }
     }
-    hits.retain(|hit| hit.matches_filters(filters));
-    hits
+    output
 }
 
 /// Queries the ZIM archives' native Xapian indexes for one kiwix source.
@@ -475,9 +595,9 @@ async fn federate_kiwix(
     state: &AppState,
     source: &crate::config::SourceConfig,
     query: &str,
-) -> Vec<FederatedHit> {
+) -> Result<LiveResults, String> {
     let Some(library_root) = source.setting_str("libraryRoot") else {
-        return Vec::new();
+        return Err("The archive library is not configured.".to_string());
     };
     let config = ZimSearchConfig {
         kiwix_search: state.inner.settings.kiwix_search.clone(),
@@ -486,31 +606,43 @@ async fn federate_kiwix(
         app_base: source.app_base.clone(),
     };
     if !config.enabled() {
-        return Vec::new();
+        return Err("Offline archive search tools are unavailable.".to_string());
+    }
+    if !config.library_root.is_dir() {
+        return Err("The archive library is unavailable.".to_string());
     }
     let entries = zim_entries(state, &config).await;
-    zim_search::search(&config, &entries, query)
-        .await
-        .into_iter()
-        .map(|hit| FederatedHit::from_zim(&source.id, hit))
-        .collect()
+    let result = zim_search::search(&config, &entries, query).await;
+    let warnings = if result.failed_archives > 0 {
+        vec![
+            json!({ "source": source.id, "message": format!("{} offline archives could not be searched. These results are incomplete.", result.failed_archives) }),
+        ]
+    } else {
+        Vec::new()
+    };
+    Ok(LiveResults {
+        hits: result
+            .hits
+            .into_iter()
+            .map(|hit| FederatedHit::from_zim(&source.id, hit))
+            .collect(),
+        warnings,
+    })
 }
 
 /// Queries one Paperless instance's own full-text index. The API token is read
-/// from disk on demand, so a not-yet-minted or missing token degrades to "no
-/// Paperless results" instead of failing the search.
+/// from disk on demand. An unavailable token becomes a source warning rather
+/// than failing other sources or pretending there were no matches.
 async fn federate_paperless(
     state: &AppState,
     source: &crate::config::SourceConfig,
     query: &str,
-) -> Vec<FederatedHit> {
+) -> Result<Vec<FederatedHit>, String> {
     let Some(base_url) = source.setting_str("baseUrl") else {
-        return Vec::new();
+        return Err("The document server is not configured.".to_string());
     };
-    let token = match paperless_token(state) {
-        Some(token) => token,
-        None => return Vec::new(),
-    };
+    let token = paperless_token(state)
+        .ok_or("Document search is not ready. Its access token is unavailable.")?;
     let config = paperless_search::PaperlessSearchConfig {
         source_id: source.id.clone(),
         client: state.inner.paperless_http.clone(),
@@ -583,6 +715,42 @@ async fn zim_entries(state: &AppState, config: &ZimSearchConfig) -> Vec<ZimIndex
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validates_query_dates_and_result_window() {
+        for invalid in [
+            json!({"after":"2024-02-30"}),
+            json!({"after":"*] OR *:*"}),
+            json!({"after":"2024-2-01"}),
+            json!({"after":"2025-01-01", "before":"2024-01-01"}),
+            json!({"year":"abc"}),
+            json!({"page":1000}),
+            json!({"q":"x".repeat(2049)}),
+        ] {
+            let mut input = json!({"q":"test"});
+            input
+                .as_object_mut()
+                .unwrap()
+                .extend(invalid.as_object().unwrap().clone());
+            assert!(
+                serde_json::from_value::<SearchParams>(input.clone())
+                    .unwrap()
+                    .validate()
+                    .is_err(),
+                "{input}"
+            );
+        }
+        for valid in [
+            json!({"q":"test", "after":"2024-02-29"}),
+            json!({"q":"test", "before":"2025-01-01"}),
+            json!({"q":"test", "scope":"live"}),
+        ] {
+            assert!(serde_json::from_value::<SearchParams>(valid)
+                .unwrap()
+                .validate()
+                .is_ok());
+        }
+    }
 
     #[test]
     fn identity_is_required() {

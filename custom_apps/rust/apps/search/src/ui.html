@@ -11,12 +11,14 @@
     --surface: #f6f6f4;
     --surface-hover: #ecece8;
     --border: #d8d8d3;
+    --control-border: #858990;
     --text: #16181d;
     --text-muted: #5c6068;
     --accent: #1c5d99;
     --accent-contrast: #ffffff;
     --selected: #ddeaf6;
     --mark: #ffe08a;
+    --error: #a22b24;
     --focus: #1c5d99;
     --radius: 8px;
     --radius-sm: 6px;
@@ -26,6 +28,8 @@
     --space-4: 1rem;
     --space-5: 1.5rem;
     --space-6: 2rem;
+    --space-7: 3rem;
+    --control-height: 2.75rem;
     --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   }
   @media (prefers-color-scheme: dark) {
@@ -34,632 +38,443 @@
       --surface: #1f2228;
       --surface-hover: #292d35;
       --border: #3a3f48;
+      --control-border: #737b88;
       --text: #eceef2;
-      --text-muted: #9aa0aa;
-      --accent: #6fb2ef;
+      --text-muted: #a5abb5;
+      --accent: #86bff3;
       --accent-contrast: #0b1220;
       --selected: #23384d;
-      --mark: #7a5c15;
-      --focus: #6fb2ef;
+      --mark: #6c5114;
+      --error: #ffaaa1;
+      --focus: #86bff3;
     }
   }
   * { box-sizing: border-box; }
-  body {
-    margin: 0 auto;
-    max-width: 64rem;
-    padding: var(--space-5) var(--space-4) var(--space-6);
-    font-family: var(--font);
-    line-height: 1.5;
-    color: var(--text);
-    background: var(--bg);
-  }
-  header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-4);
-    margin-bottom: var(--space-5);
-  }
-  h1 { font-size: 1.4rem; margin: 0; letter-spacing: -0.01em; }
-  .sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
-    white-space: nowrap;
-    border: 0;
-  }
-
-  .search { display: flex; flex-direction: column; gap: var(--space-3); }
-  .search__row { display: flex; gap: var(--space-2); }
-  @media (max-width: 300px) {
-    .search__row { flex-direction: column; }
-  }
-  .filters {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
-    gap: var(--space-3);
-  }
-  .field { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
-  .field > span { font-size: 0.78rem; color: var(--text-muted); }
-  .field--range { grid-column: span 2; }
-  .range { display: flex; align-items: center; gap: var(--space-2); }
-  .range input { flex: 1 1 0; min-width: 0; }
-  .range span { color: var(--text-muted); font-size: 0.85rem; }
-  .filter-actions { display: flex; justify-content: flex-end; margin-top: var(--space-2); }
-
-  input, select, button {
-    font: inherit;
-    color: var(--text);
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    padding: var(--space-2) var(--space-3);
-    min-width: 0;
-  }
-  input:hover, select:hover { border-color: var(--text-muted); }
-  input:focus-visible, select:focus-visible, button:focus-visible,
-  .chip:focus-visible {
-    outline: 2px solid var(--focus);
-    outline-offset: 1px;
-  }
-  #query { flex: 1 1 auto; font-size: 1.05rem; }
-  button {
-    cursor: pointer;
-    transition: background-color 120ms ease, border-color 120ms ease;
-  }
-  button:hover:not(:disabled) { background: var(--surface-hover); }
-  button:disabled { opacity: 0.5; cursor: default; }
-  button[type="submit"] {
-    background: var(--accent);
-    color: var(--accent-contrast);
-    border-color: var(--accent);
-    font-weight: 600;
-    white-space: nowrap;
-  }
-  button[type="submit"]:hover:not(:disabled) { background: var(--accent); filter: brightness(1.08); }
-  .ghost { background: transparent; }
-
-  .facets { margin-top: var(--space-4); display: flex; flex-direction: column; gap: var(--space-2); }
-  .facet-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
-  .facet-row h2 {
-    font-size: 0.72rem;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--text-muted);
-    margin: 0;
-    flex: 0 0 4.5rem;
-  }
-  .chip {
-    font: inherit;
-    font-size: 0.82rem;
-    background: transparent;
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    padding: var(--space-1) var(--space-3);
-    cursor: pointer;
-  }
-  .chip:hover:not(:disabled) { background: var(--surface-hover); }
-  .chip[aria-pressed="true"] {
-    background: var(--selected);
-    border-color: var(--accent);
-    font-weight: 600;
-  }
-  .chip--more { border-style: dashed; color: var(--text-muted); }
-
-  #status { color: var(--text-muted); margin: var(--space-4) 0 0; min-height: 1.25rem; }
-  .results { list-style: none; margin: var(--space-2) 0 0; padding: 0; }
-  .result { padding: var(--space-3) 0; border-top: 1px solid var(--border); }
-  .result:first-child { border-top: none; }
-  .result__head { display: flex; align-items: baseline; gap: var(--space-2); flex-wrap: wrap; }
-  .result__title { font-size: 1.05rem; color: var(--text); text-decoration: none; word-break: break-word; }
+  [hidden] { display: none !important; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 1rem/1.5 var(--font); }
+  ::selection { background: var(--selected); color: var(--text); }
+  button, input, select, summary, a { -webkit-tap-highlight-color: transparent; }
+  :focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+  a { color: var(--accent); text-underline-offset: 0.2em; }
+  button, input, select { font: inherit; color: inherit; min-width: 0; }
+  button, select, input { min-height: var(--control-height); border: 1px solid var(--control-border); border-radius: var(--radius-sm); padding: var(--space-2) var(--space-3); background: var(--bg); }
+  input, select { width: 100%; }
+  input::placeholder { color: var(--text-muted); opacity: 1; }
+  input { caret-color: var(--accent); }
+  button { cursor: pointer; }
+  button:hover:not(:disabled), summary:hover { background: var(--surface-hover); }
+  button:active:not(:disabled) { background: var(--selected); }
+  button:disabled { opacity: 0.55; cursor: wait; }
+  button[type="submit"] { background: var(--accent); border-color: var(--accent); color: var(--accent-contrast); font-weight: 600; }
+  button[type="submit"]:hover { filter: brightness(1.1); background: var(--accent); }
+  .shell { max-width: 76rem; margin: auto; padding: 0 var(--space-6) var(--space-7); }
+  header { display: flex; align-items: center; justify-content: space-between; padding: var(--space-5) 0; margin-bottom: var(--space-5); border-bottom: 1px solid var(--border); }
+  h1 { font-size: 1.5rem; margin: 0; letter-spacing: -0.02em; }
+  h2 { font-size: 1.125rem; margin: 0; font-weight: 600; }
+  p { margin: 0; }
+  .ghost { background: transparent; border-color: transparent; }
+  .muted { color: var(--text-muted); }
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+  .search__row { position: relative; display: flex; gap: var(--space-2); }
+  #query { flex: 1; font-size: 1.125rem; padding: var(--space-3) var(--space-4); }
+  .search-tools { display: flex; gap: var(--space-3); align-items: center; flex-wrap: wrap; margin-top: var(--space-3); }
+  .source-field { display: flex; align-items: center; gap: var(--space-2); flex: 1; max-width: 25rem; min-width: 0; }
+  .source-field select { flex: 1; }
+  #filterToggle[aria-expanded="true"] { background: var(--selected); border-color: var(--accent); }
+  .active-filters { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin-top: var(--space-3); }
+  .active-filter { display: inline-flex; align-items: baseline; gap: var(--space-2); font-size: 0.875rem; background: var(--selected); border-color: var(--border); max-width: 100%; overflow-wrap: anywhere; text-align: left; }
+  .active-filter span { color: var(--text-muted); font-size: 0.75rem; }
+  .workspace { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-6); margin-top: var(--space-6); align-items: start; }
+  .workspace[data-filters-open="true"] { grid-template-columns: 16rem minmax(0, 1fr); }
+  .workspace > * { min-width: 0; }
+  .filter-panel { border-right: 1px solid var(--border); padding-right: var(--space-5); }
+  .filter-panel h2 { margin-bottom: var(--space-4); }
+  #showResults { display: none; }
+  .field { display: flex; flex-direction: column; gap: var(--space-1); margin-bottom: var(--space-4); }
+  .field > span { font-size: 0.875rem; }
+  .filter-note { font-size: 0.8125rem; color: var(--text-muted); margin-bottom: var(--space-4); }
+  .result-tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-3); margin-bottom: var(--space-4); }
+  .result-options { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+  .result-counts { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-3); font-size: 0.875rem; }
+  .result-options label { display: flex; align-items: center; gap: var(--space-2); font-size: 0.875rem; }
+  .result-options select { width: auto; }
+  #status, #liveStatus { color: var(--text-muted); font-size: 0.875rem; }
+  .results { list-style: none; padding: 0; margin: 0; }
+  .result { padding: var(--space-5) 0; border-bottom: 1px solid var(--border); }
+  .result:first-child { padding-top: var(--space-2); }
+  .result__context { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); color: var(--text-muted); font-size: 0.8125rem; margin-bottom: var(--space-1); overflow-wrap: anywhere; }
+  .result__source { font-weight: 600; }
+  .result__title { display: inline-block; font-size: 1.125rem; font-weight: 600; line-height: 1.4; overflow-wrap: anywhere; text-decoration: none; }
+  .result h3 { margin: 0; font-size: inherit; line-height: 1.4; }
   a.result__title:hover { text-decoration: underline; }
-  .badge {
-    font-size: 0.7rem;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--text-muted);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    padding: 0 var(--space-2);
-    white-space: nowrap;
+  .result__snippet { margin-top: var(--space-2); max-width: 75ch; overflow-wrap: anywhere; }
+  .result__snippet em { font-style: normal; font-weight: 600; background: var(--mark); color: var(--text); }
+  .result__details { margin-top: var(--space-2); font-size: 0.8125rem; color: var(--text-muted); overflow-wrap: anywhere; }
+  .result__details summary { display: inline-block; cursor: pointer; padding: var(--space-1) 0; text-decoration: underline; text-underline-offset: 0.2em; }
+  .result__details p { margin-top: var(--space-2); }
+  .empty { padding: var(--space-7) 0; }
+  .empty h2 { font-size: 1.5rem; margin-bottom: var(--space-2); letter-spacing: -0.02em; }
+  .more { display: flex; justify-content: center; margin-top: var(--space-5); }
+  .live-section { margin-top: var(--space-7); }
+  .live-section h2 { margin-bottom: var(--space-1); }
+  .live-section > p { color: var(--text-muted); font-size: 0.8125rem; margin-bottom: var(--space-3); }
+  .notice { margin-top: var(--space-3); color: var(--error); overflow-wrap: anywhere; }
+  .notice button { margin-top: var(--space-2); }
+  .source-health { color: var(--text-muted); margin-top: var(--space-4); font-size: 0.875rem; }
+  .source-health summary { cursor: pointer; padding: var(--space-2) 0; }
+  .source-health ul { padding-left: var(--space-5); }
+  @media (max-width: 48rem) {
+    .shell { padding-inline: var(--space-4); }
+    header { margin-bottom: var(--space-4); padding-block: var(--space-4); }
+    .workspace[data-filters-open="true"] { grid-template-columns: minmax(0, 1fr); }
+    .filter-panel { border-right: 0; border-bottom: 1px solid var(--border); padding-right: 0; padding-bottom: var(--space-4); }
+    #showResults { display: block; width: 100%; }
+    .filter-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 var(--space-3); }
+    .result-tools { align-items: flex-start; }
+    .source-field { max-width: none; }
   }
-  .result__snippet { margin: var(--space-1) 0; }
-  .result__meta { font-size: 0.8rem; color: var(--text-muted); word-break: break-word; }
-  .result__details {
-    font-size: 0.78rem;
-    color: var(--text-muted);
-    margin-top: 2px;
-    word-break: break-word;
+  @media (max-width: 24rem) {
+    .search__row { flex-wrap: wrap; }
+    #query { flex-basis: 100%; }
+    .search__row button { width: 100%; }
+    .source-field { flex-basis: 100%; }
+    .filter-fields { grid-template-columns: minmax(0, 1fr); }
   }
-  mark { background: var(--mark); color: inherit; }
-  .more { display: flex; justify-content: center; margin-top: var(--space-4); }
 </style>
 </head>
 <body>
 <!--LOGOUT_URL-->
+<div class="shell">
 <header>
   <h1>Search</h1>
-  <button type="button" class="ghost" onclick="logout()">Sign out</button>
+  <button type="button" class="ghost" id="signOut">Sign out</button>
 </header>
-
-<form class="search" id="searchForm">
-  <div class="search__row">
-    <label class="sr-only" for="query">Search terms</label>
-    <input id="query" type="search" placeholder="Search everything…" autocomplete="off" autofocus>
-    <button type="submit">Search</button>
+<main>
+  <form id="searchForm" role="search">
+    <div class="search__row">
+      <label class="sr-only" for="query">Search terms</label>
+      <input id="query" type="search" placeholder="Search your server…" maxlength="2048" autocomplete="off" autofocus aria-keyshortcuts="Control+k Meta+k">
+      <button type="submit">Search</button>
+    </div>
+    <div class="search-tools">
+      <label class="source-field" for="source">Source
+        <select id="source"><option value="">All sources</option></select>
+      </label>
+      <button type="button" id="filterToggle" aria-expanded="false" aria-controls="filtersPanel">Filters</button>
+      <button type="button" class="ghost" id="clearFilters" hidden>Clear filters</button>
+    </div>
+    <div class="active-filters" id="activeFilters" aria-label="Active filters" hidden></div>
+  </form>
+  <p id="sourcesError" class="notice" role="status" hidden></p>
+  <details class="source-health" id="sourceHealth" hidden><summary>Source sync issues</summary><ul id="sourceIssues"></ul></details>
+  <div class="workspace" id="workspace">
+    <aside class="filter-panel" id="filtersPanel" aria-label="Search filters" hidden>
+      <h2>Refine results</h2>
+      <p class="filter-note">Counts describe library matches. Live sources search a limited sample.</p>
+      <div class="filter-fields">
+        <label class="field"><span>Kind</span><select id="kind"><option value="">All kinds</option></select></label>
+        <label class="field"><span>Format</span><select id="type"><option value="">All formats</option></select></label>
+        <label class="field"><span>Owner</span><select id="owner"><option value="">All owners</option></select></label>
+        <label class="field"><span>Author</span><select id="author"><option value="">All authors</option></select></label>
+        <label class="field"><span>Tag</span><select id="tag"><option value="">All tags</option></select></label>
+        <label class="field"><span>Series</span><select id="series"><option value="">All series</option></select></label>
+        <label class="field"><span>Year</span><select id="year"><option value="">All years</option></select></label>
+        <label class="field"><span>Content date, from</span><input id="after" type="date"></label>
+        <label class="field"><span>Content date, to</span><input id="before" type="date"></label>
+      </div>
+      <button type="button" id="showResults">Show results</button>
+    </aside>
+    <section id="resultsRegion" aria-labelledby="libraryHeading" tabindex="-1">
+      <h2 id="libraryHeading" class="sr-only">Library results</h2>
+      <div class="result-tools" id="resultTools" hidden>
+        <div class="result-counts"><p id="status" role="status"></p><a id="liveJump" href="#liveHeading" hidden>Live results</a></div>
+        <div class="result-options">
+          <label>Sort <select id="sort"><option value="relevance">Relevance</option><option value="newest">Newest first</option></select></label>
+          <label>Per page <select id="pageSize"><option value="25" selected>25</option><option value="50">50</option><option value="100">100</option></select></label>
+        </div>
+      </div>
+      <div class="empty" id="emptyState"><h2 id="emptyTitle">Search across your server</h2><p class="muted" id="emptyMessage">Enter a title, phrase, name or topic.</p></div>
+      <div class="notice" id="searchError" role="alert" hidden><p id="errorMessage"></p><button type="button" id="retrySearch">Retry search</button></div>
+      <ul class="results" id="results" aria-label="Library results"></ul>
+      <div class="more" id="moreWrap" hidden><button type="button" id="loadMore">Load more results</button></div>
+      <section class="live-section" id="liveSection" aria-labelledby="liveHeading" hidden>
+        <h2 id="liveHeading" tabindex="-1">Live results</h2>
+        <p>Up to 20 matches per connected source. Filters apply to that sample.</p>
+        <p id="liveStatus" role="status"></p>
+        <ul class="results" id="liveResults" aria-label="Live results"></ul>
+        <div class="notice" id="liveError" role="status" hidden><p id="liveErrorMessage"></p><button type="button" id="retryLive">Retry live sources</button></div>
+      </section>
+    </section>
   </div>
-  <div class="filters">
-    <label class="field"><span>User</span>
-      <select id="owner"><option value="">All users</option></select>
-    </label>
-    <label class="field"><span>Source</span>
-      <select id="source"><option value="">All sources</option></select>
-    </label>
-    <label class="field"><span>Content type</span>
-      <select id="type"><option value="">All types</option></select>
-    </label>
-    <label class="field"><span>Sort</span>
-      <select id="sort">
-        <option value="relevance">Relevance</option>
-        <option value="newest">Newest first</option>
-      </select>
-    </label>
-    <label class="field"><span>Per page</span>
-      <select id="pageSize">
-        <option value="25">25</option>
-        <option value="50" selected>50</option>
-        <option value="100">100</option>
-      </select>
-    </label>
-    <label class="field field--range"><span>Date added</span>
-      <span class="range">
-        <input id="after" type="date" aria-label="Added on or after">
-        <span>to</span>
-        <input id="before" type="date" aria-label="Added on or before">
-      </span>
-    </label>
-  </div>
-  <div class="filter-actions">
-    <button type="button" class="ghost" id="clearFilters" hidden>Clear filters</button>
-  </div>
-</form>
-
-<section class="facets" id="facets" hidden aria-label="Narrow results">
-  <div class="facet-row" id="ownerFacets" role="group" aria-labelledby="ownerFacetsHeading"><h2 id="ownerFacetsHeading">Users</h2></div>
-  <div class="facet-row" id="sourceFacets" role="group" aria-labelledby="sourceFacetsHeading"><h2 id="sourceFacetsHeading">Sources</h2></div>
-  <div class="facet-row" id="kindFacets" role="group" aria-labelledby="kindFacetsHeading"><h2 id="kindFacetsHeading">Kinds</h2></div>
-  <div class="facet-row" id="typeFacets" role="group" aria-labelledby="typeFacetsHeading"><h2 id="typeFacetsHeading">Types</h2></div>
-  <div class="facet-row" id="authorFacets" role="group" aria-labelledby="authorFacetsHeading"><h2 id="authorFacetsHeading">Authors</h2></div>
-  <div class="facet-row" id="tagFacets" role="group" aria-labelledby="tagFacetsHeading"><h2 id="tagFacetsHeading">Tags</h2></div>
-  <div class="facet-row" id="seriesFacets" role="group" aria-labelledby="seriesFacetsHeading"><h2 id="seriesFacetsHeading">Series</h2></div>
-  <div class="facet-row" id="yearFacets" role="group" aria-labelledby="yearFacetsHeading"><h2 id="yearFacetsHeading">Years</h2></div>
-</section>
-
-<p id="status" role="status">Loading sources…</p>
-<ul class="results" id="results" aria-label="Search results"></ul>
-<div class="more" id="moreWrap" hidden>
-  <button type="button" id="loadMore">Load more results</button>
+</main>
 </div>
-
 <script>
-const statusEl = document.getElementById('status');
-const resultsEl = document.getElementById('results');
-const facetsEl = document.getElementById('facets');
-const moreWrap = document.getElementById('moreWrap');
-const loadMoreBtn = document.getElementById('loadMore');
-const clearBtn = document.getElementById('clearFilters');
-const queryEl = document.getElementById('query');
-const ownerEl = document.getElementById('owner');
-const sourceEl = document.getElementById('source');
-const typeEl = document.getElementById('type');
-const sortEl = document.getElementById('sort');
-const pageSizeEl = document.getElementById('pageSize');
-const afterEl = document.getElementById('after');
-const beforeEl = document.getElementById('before');
+const el = id => document.getElementById(id);
+const queryEl = el('query');
+const sourceEl = el('source');
+const ownerEl = el('owner');
+const typeEl = el('type');
+const afterEl = el('after');
+const beforeEl = el('before');
+const sortEl = el('sort');
+const pageSizeEl = el('pageSize');
+const resultsEl = el('results');
+const statusEl = el('status');
+const controls = { source: sourceEl, kind: el('kind'), type: typeEl, owner: ownerEl, author: el('author'), tag: el('tag'), series: el('series'), year: el('year'), after: afterEl, before: beforeEl };
+const filterLabels = { source: 'Source', kind: 'Kind', type: 'Format', owner: 'Owner', author: 'Author', tag: 'Tag', series: 'Series', year: 'Year', after: 'From', before: 'To' };
+const kindLabels = { email: 'Email', document: 'Document', book: 'Book', 'web-page': 'Web page', 'zim-article': 'Offline article', 'zim-archive': 'Offline archive', video: 'Video', audiobook: 'Audiobook' };
+const formatLabels = { 'message/rfc822': 'Email', 'application/pdf': 'PDF', 'text/html': 'Web page', 'application/epub+zip': 'EPUB', 'text/plain': 'Text' };
+const sourceNames = new Map();
+const state = { hits: [], liveHits: [], page: 0, total: 0, hasMore: false, generation: 0, controller: null, submitted: null, loading: false, liveLoading: false };
 
-// Chip-only filters (the dimensions that have no select control). Owner,
-// source, and type reuse their selects above.
-const chipFilters = { kind: '', author: '', tag: '', series: '', year: '' };
-// Facet dimensions render at most this many chips before offering "Show all".
-const FACET_LIMIT = 12;
-const expandedFacets = new Set();
-let lastFacets = null;
-
-// Results accumulated across pages for the active query, plus its paging state.
-const state = { hits: [], page: 0, total: 0, hasMore: false };
-
-// Friendly labels for metadata keys that appear across the different sources.
-// Unknown keys fall back to a title-cased, underscore-stripped version so every
-// source surfaces its metadata through the same presentation.
-const META_LABELS = {
-  from: 'From', to: 'To', cc: 'Cc',
-  correspondent: 'Correspondent', tags: 'Tags',
-  document_type: 'Type', file: 'File',
-  feed: 'Feed', author: 'Author',
-  archive: 'Archive', entry_path: 'Path', crawl: 'Crawl',
-  added: 'Added',
-};
-
-function labelFor(key) {
-  return META_LABELS[key] || key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
-}
-
-function metaPairs(metadata) {
-  if (!metadata || typeof metadata !== 'object') return [];
-  return Object.entries(metadata)
-    .filter(([, value]) => value !== null && value !== undefined && value !== '')
-    .slice(0, 6)
-    .map(([key, value]) => `${labelFor(key)}: ${value}`);
-}
-
-function fmtDate(epoch) {
-  if (!epoch) return '';
-  return new Date(epoch * 1000).toLocaleDateString();
-}
-
-// Only http(s) targets are linkable. Indexed URLs are attacker-influenced
-// content, so a `javascript:` or `data:` URL must never become an href.
 function safeHref(value) {
   if (!value) return '';
-  try {
-    const url = new URL(value, location.origin);
-    if (url.protocol === 'http:' || url.protocol === 'https:') return url.href;
-  } catch (err) {
-    return '';
-  }
-  return '';
+  try { const url = new URL(value, location.origin); return ['http:', 'https:'].includes(url.protocol) ? url.href : ''; } catch { return ''; }
 }
-
 function option(value, label) {
-  const el = document.createElement('option');
-  el.value = value;
-  el.textContent = label;
-  return el;
+  const node = document.createElement('option'); node.value = value; node.textContent = label; return node;
 }
-
-// Fills a select from `{ value, label }` pairs, preserving the current choice
-// even when the new options do not include it (an active filter with no
-// matching results must not be silently dropped). Labels let the Source select
-// show display names while the value stays the stable source id the API filters
-// on.
 function fillSelect(select, options, allLabel) {
   const current = select.value;
-  const merged = current && !options.some(({ value }) => value === current)
-    ? [{ value: current, label: current }, ...options]
-    : options;
-  select.replaceChildren(option('', allLabel), ...merged.map(({ value, label }) => option(value, label)));
+  if (current && !options.some(item => item.value === current)) options = [{value: current, label: current}, ...options];
+  select.replaceChildren(option('', allLabel), ...options.map(item => option(item.value, item.label)));
   select.value = current;
 }
-
-// Applies a value to a select before its options are known (e.g. restoring a
-// filter from the URL), adding a placeholder option so the value is not lost.
 function setSelectValue(select, value) {
-  if (!value) return;
-  if (!Array.from(select.options).some((opt) => opt.value === value)) {
-    select.appendChild(option(value, value));
-  }
-  select.value = value;
+  if (value && !Array.from(select.options).some(item => item.value === value)) select.appendChild(option(value, value));
+  select.value = value || '';
 }
-
-function facetNames(facets) {
-  return (facets || []).map((facet) => ({ value: facet.name, label: facet.name }));
+function displayValue(key, value) {
+  if (key === 'source') return sourceNames.get(value) || value;
+  if (key === 'kind') return kindLabels[value] || value;
+  if (key === 'type') return formatLabels[value] || value;
+  return value;
 }
-
-function params(page) {
+function params() {
   const p = new URLSearchParams();
-  const query = queryEl.value.trim();
-  if (query) p.set('q', query);
-  if (ownerEl.value) p.set('owner', ownerEl.value);
-  if (sourceEl.value) p.set('source', sourceEl.value);
-  if (typeEl.value) p.set('type', typeEl.value);
-  if (sortEl.value && sortEl.value !== 'relevance') p.set('sort', sortEl.value);
-  if (pageSizeEl.value && pageSizeEl.value !== '50') p.set('pageSize', pageSizeEl.value);
-  for (const [key, value] of Object.entries(chipFilters)) {
-    if (value) p.set(key, value);
-  }
-  if (afterEl.value) p.set('after', afterEl.value);
-  if (beforeEl.value) p.set('before', beforeEl.value);
-  if (page > 0) p.set('page', String(page));
+  if (queryEl.value.trim()) p.set('q', queryEl.value.trim());
+  for (const [key, control] of Object.entries(controls)) if (control.value) p.set(key, control.value);
+  if (sortEl.value === 'newest') p.set('sort', 'newest');
+  if (pageSizeEl.value && pageSizeEl.value !== '25') p.set('pageSize', pageSizeEl.value);
+  // The API default remains 50 for existing callers; this UI starts with 25.
   return p;
 }
-
-function anyFilterActive() {
-  return Boolean(
-    ownerEl.value || sourceEl.value || typeEl.value || afterEl.value || beforeEl.value
-    || Object.values(chipFilters).some(Boolean)
-  );
+function updateActiveFilters() {
+  const container = el('activeFilters');
+  container.replaceChildren();
+  for (const [key, control] of Object.entries(controls)) {
+    if (!control.value) continue;
+    const value = displayValue(key, control.value);
+    const button = document.createElement('button');
+    button.type = 'button'; button.className = 'active-filter';
+    button.textContent = `${filterLabels[key]}: ${value}`;
+    button.setAttribute('aria-label', `Remove ${filterLabels[key].toLowerCase()} filter: ${value}`);
+    const remove = document.createElement('span'); remove.textContent = 'Remove'; button.appendChild(remove);
+    button.addEventListener('click', () => {
+      control.value = ''; runSearch();
+      (el('activeFilters').children[0] || el('filterToggle')).focus();
+    });
+    container.appendChild(button);
+  }
+  container.hidden = container.children.length === 0;
+  el('clearFilters').hidden = container.hidden;
 }
-
-function updateClearVisibility() {
-  clearBtn.hidden = !anyFilterActive();
+function toggleFilters(open = el('filterToggle').getAttribute('aria-expanded') !== 'true') {
+  el('filterToggle').setAttribute('aria-expanded', String(open));
+  el('filtersPanel').hidden = !open;
+  el('workspace').setAttribute('data-filters-open', String(open));
 }
-
-function facetButton(name, count, key) {
-  // Built via DOM APIs rather than inline onclick strings: facet values come
-  // from indexed content, so they must never be interpolated into markup.
-  const button = document.createElement('button');
-  button.type = 'button';
-  button.className = 'chip';
-  button.textContent = `${name} (${count})`;
-  const targets = { owner: ownerEl, source: sourceEl, type: typeEl };
-  const selectTarget = targets[key];
-  const active = selectTarget ? selectTarget.value === name : chipFilters[key] === name;
-  button.setAttribute('aria-pressed', String(active));
-  button.addEventListener('click', () => {
-    if (selectTarget) {
-      selectTarget.value = selectTarget.value === name ? '' : name;
-    } else {
-      chipFilters[key] = chipFilters[key] === name ? '' : name;
-    }
-    runSearch();
-  });
-  return button;
-}
-
 function renderFacets(data) {
-  lastFacets = data;
-  const rows = [
-    ['owner', 'ownerFacets', document.getElementById('ownerFacets')],
-    ['source', 'sourceFacets', document.getElementById('sourceFacets')],
-    ['kind', 'kindFacets', document.getElementById('kindFacets')],
-    ['type', 'contentTypeFacets', document.getElementById('typeFacets')],
-    ['author', 'authorFacets', document.getElementById('authorFacets')],
-    ['tag', 'tagFacets', document.getElementById('tagFacets')],
-    ['series', 'seriesFacets', document.getElementById('seriesFacets')],
-    ['year', 'yearFacets', document.getElementById('yearFacets')],
-  ];
-  let any = false;
-  for (const [kind, dataKey, row] of rows) {
-    const facets = data[dataKey] || [];
-    const [heading] = row.children;
-    row.replaceChildren(heading);
-    const expanded = expandedFacets.has(kind);
-    const visible = expanded ? facets : facets.slice(0, FACET_LIMIT);
-    for (const facet of visible) {
-      row.appendChild(facetButton(facet.name, facet.count, kind));
+  const dimensions = { owner: 'ownerFacets', kind: 'kindFacets', type: 'contentTypeFacets', author: 'authorFacets', tag: 'tagFacets', series: 'seriesFacets', year: 'yearFacets' };
+  for (const [key, field] of Object.entries(dimensions)) {
+    const options = (data[field] || []).map(facet => ({value: String(facet.name), label: `${displayValue(key, facet.name)} (${facet.count})`}));
+    if (key === 'kind') for (const [value, label] of Object.entries(kindLabels)) {
+      if (!options.some(item => item.value === value)) options.push({value, label});
     }
-    if (facets.length > FACET_LIMIT) {
-      const toggle = document.createElement('button');
-      toggle.type = 'button';
-      toggle.className = 'chip chip--more';
-      toggle.textContent = expanded ? 'Show fewer' : `Show all (${facets.length})`;
-      toggle.setAttribute('aria-expanded', String(expanded));
-      toggle.addEventListener('click', () => {
-        if (expanded) expandedFacets.delete(kind); else expandedFacets.add(kind);
-        if (lastFacets) renderFacets(lastFacets);
-      });
-      row.appendChild(toggle);
-    }
-    if (facets.length) any = true;
+    fillSelect(controls[key], options, `All ${key === 'type' ? 'formats' : key === 'series' ? 'series' : key + 's'}`);
   }
-  facetsEl.hidden = !any;
 }
-
 function resultNode(hit) {
-  const item = document.createElement('li');
-  item.className = 'result';
-
-  const head = document.createElement('div');
-  head.className = 'result__head';
-  const badge = document.createElement('span');
-  badge.className = 'badge';
-  badge.textContent = hit.source || '';
-  head.appendChild(badge);
-
-  const link = safeHref(hit.appUrl || hit.originUrl);
-  const title = document.createElement(link ? 'a' : 'span');
-  title.className = 'result__title';
-  title.textContent = hit.title || '';
-  if (link) title.href = link;
-  head.appendChild(title);
-  item.appendChild(head);
-
+  const item = document.createElement('li'); item.className = 'result';
+  const context = document.createElement('div'); context.className = 'result__context';
+  const source = document.createElement('span'); source.className = 'result__source'; source.dataset.source = hit.source || ''; source.textContent = sourceNames.get(hit.source) || hit.source || ''; context.appendChild(source);
+  const date = hit.created ? new Date(hit.created * 1000).toLocaleDateString(undefined, {year: 'numeric', month: 'short', day: 'numeric'}) : '';
+  const info = document.createElement('span'); info.textContent = [formatLabels[hit.contentType] || hit.contentType, hit.owner === 'shared' ? '' : hit.owner, date].filter(Boolean).join(' · '); context.appendChild(info);
+  item.appendChild(context);
+  const href = safeHref(hit.appUrl) || safeHref(hit.originUrl);
+  const title = document.createElement(href ? 'a' : 'span'); title.className = 'result__title'; title.textContent = hit.title || 'Untitled';
+  if (href) title.href = href;
+  const heading = document.createElement('h3'); heading.appendChild(title); item.appendChild(heading);
   if (hit.snippet) {
-    // The API escapes snippet text and only adds <em> around query terms, so
-    // this is safe to insert as markup; no client-side re-escaping needed.
-    const snippet = document.createElement('div');
-    snippet.className = 'result__snippet';
-    snippet.innerHTML = hit.snippet;
-    item.appendChild(snippet);
+    const snippet = document.createElement('div'); snippet.className = 'result__snippet';
+    // API contract: escaped text, with only generated <em> highlights.
+    snippet.innerHTML = hit.snippet; item.appendChild(snippet);
   }
-
-  const meta = [hit.contentType, hit.owner, hit.created ? fmtDate(hit.created) : '']
-    .filter(Boolean)
-    .join(' · ');
-  if (meta) {
-    const metaEl = document.createElement('div');
-    metaEl.className = 'result__meta';
-    metaEl.textContent = meta;
-    item.appendChild(metaEl);
-  }
-
-  const details = metaPairs(hit.metadata).join(' · ');
-  if (details) {
-    const detailsEl = document.createElement('div');
-    detailsEl.className = 'result__details';
-    detailsEl.textContent = details;
-    item.appendChild(detailsEl);
+  const metadata = Object.entries(hit.metadata || {}).filter(([key, value]) => key !== 'owner' && value !== null && value !== '');
+  if (metadata.length) {
+    const details = document.createElement('details'); details.className = 'result__details';
+    const summary = document.createElement('summary'); summary.textContent = 'Details'; details.appendChild(summary);
+    const text = document.createElement('p'); text.textContent = metadata.map(([key, value]) => `${key.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase())}: ${value}`).join(' · '); details.appendChild(text);
+    const origin = safeHref(hit.originUrl);
+    if (origin && origin !== href) {
+      const link = document.createElement('a'); link.href = origin; link.textContent = 'Open original'; details.appendChild(link);
+    }
+    item.appendChild(details);
   }
   return item;
 }
-
-function renderResults() {
-  resultsEl.replaceChildren(...state.hits.map(resultNode));
-  if (state.hits.length === 0) {
-    statusEl.textContent = 'No results';
-  } else if (state.hasMore) {
-    statusEl.textContent = `${state.hits.length} of ${state.total} results`;
-  } else {
-    statusEl.textContent = `${state.total} result${state.total === 1 ? '' : 's'}`;
-  }
-  moreWrap.hidden = !state.hasMore;
-  loadMoreBtn.disabled = false;
-  loadMoreBtn.textContent = 'Load more results';
-  updateClearVisibility();
+function syncUrl() {
+  const qs = params().toString(); const url = qs ? `${location.pathname}?${qs}` : location.pathname;
+  if (url !== location.pathname + location.search) history.pushState(null, '', url);
 }
-
-function resetResults() {
-  state.hits = [];
-  state.page = 0;
-  state.total = 0;
-  state.hasMore = false;
-  resultsEl.replaceChildren();
-  facetsEl.hidden = true;
-  moreWrap.hidden = true;
-  lastFacets = null;
-  expandedFacets.clear();
-  updateClearVisibility();
-}
-
-async function fetchPage(page) {
-  const response = await fetch('/api/search?' + params(page).toString());
-  if (response.status === 401) {
-    location.href = '/';
-    return null;
+function readUrlState() {
+  const p = new URLSearchParams(location.search);
+  queryEl.value = p.get('q') || '';
+  for (const [key, control] of Object.entries(controls)) {
+    if (key === 'after' || key === 'before') control.value = p.get(key) || '';
+    else setSelectValue(control, p.get(key));
   }
+  sortEl.value = p.get('sort') === 'newest' ? 'newest' : 'relevance';
+  pageSizeEl.value = ['25', '50', '100'].includes(p.get('pageSize')) ? p.get('pageSize') : '25';
+  updateActiveFilters();
+  return Boolean(queryEl.value.trim());
+}
+async function fetchPage(page, scope, submitted, signal) {
+  const p = new URLSearchParams(submitted);
+  p.set('pageSize', p.get('pageSize') || '25'); p.set('scope', scope);
+  if (page) p.set('page', page);
+  const response = await fetch('/api/search?' + p, {signal});
+  if (response.status === 401) { location.href = '/'; return null; }
   if (!response.ok) {
-    let message = 'The search could not be completed. Try again.';
-    try {
-      const text = await response.text();
-      if (text) message = text;
-    } catch (err) {
-      // Fall back to the generic message when the body cannot be read.
-    }
+    let message = 'Search is unavailable. Please try again.';
+    try { const data = await response.json(); if (typeof data.error === 'string') message = data.error; } catch { /* Keep the public message, not a proxy error page. */ }
     throw new Error(message);
   }
   return response.json();
 }
-
-function syncUrl() {
-  const qs = params(0).toString();
-  const url = qs ? `${location.pathname}?${qs}` : location.pathname;
-  if (url !== location.pathname + location.search) {
-    history.pushState(null, '', url);
-  }
+function resetResults() {
+  state.hits = []; state.liveHits = []; state.page = 0; state.total = 0; state.hasMore = false;
+  resultsEl.replaceChildren(); el('liveResults').replaceChildren();
+  for (const id of ['moreWrap', 'liveSection', 'liveJump', 'searchError', 'liveError']) el(id).hidden = true;
+  updateActiveFilters();
 }
-
-async function runSearch(event, { append = false, pushHistory = true } = {}) {
-  if (event) event.preventDefault();
-  const query = queryEl.value.trim();
-  if (!query) {
-    resetResults();
-    statusEl.textContent = 'Enter a search term.';
-    if (pushHistory) syncUrl();
-    return;
-  }
-  if (!append) {
-    resetResults();
-    statusEl.textContent = 'Searching…';
-    resultsEl.setAttribute('aria-busy', 'true');
-  } else {
-    loadMoreBtn.disabled = true;
-    loadMoreBtn.textContent = 'Loading more…';
-  }
-  const page = append ? state.page + 1 : 0;
-  let data;
+function updateResultsStatus() {
+  statusEl.textContent = state.hasMore ? `${state.hits.length} of ${state.total.toLocaleString()} library matches` : `${state.total.toLocaleString()} library match${state.total === 1 ? '' : 'es'}`;
+  el('moreWrap').hidden = !state.hasMore;
+  el('loadMore').disabled = state.loading;
+  el('loadMore').textContent = state.loading ? 'Loading more…' : 'Load more results';
+  el('emptyState').hidden = state.hits.length > 0;
+  el('emptyTitle').textContent = 'No library matches';
+  el('emptyMessage').textContent = Object.values(controls).some(control => control.value) ? 'Try a broader search or clear some filters.' : 'Try a different phrase or fewer words.';
+}
+async function runLive(generation, submitted, signal) {
+  state.liveLoading = true; el('liveSection').hidden = false; el('liveError').hidden = true;
+  el('liveJump').hidden = false; el('liveJump').textContent = 'Searching live sources…';
+  el('liveStatus').textContent = 'Searching connected documents and offline archives…';
+  el('liveResults').setAttribute('aria-busy', 'true');
   try {
-    data = await fetchPage(page);
-  } catch (err) {
-    statusEl.textContent = err.message || 'The search could not be completed. Try again.';
-    loadMoreBtn.disabled = false;
-    loadMoreBtn.textContent = 'Load more results';
-    return;
+    const data = await fetchPage(0, 'live', submitted, signal);
+    if (generation !== state.generation || !data) return;
+    state.liveHits = data.hits || [];
+    el('liveResults').replaceChildren(...state.liveHits.map(resultNode));
+    el('liveStatus').textContent = `${state.liveHits.length} live match${state.liveHits.length === 1 ? '' : 'es'}`;
+    const warnings = data.warnings || [];
+    if (warnings.length) {
+      el('liveErrorMessage').textContent = warnings.map(item => `${sourceNames.get(item.source) || item.source}: ${item.message}`).join(' ');
+      el('liveError').hidden = false;
+    }
+    el('liveSection').hidden = !state.liveHits.length && !warnings.length;
+    el('liveJump').hidden = el('liveSection').hidden;
+    el('liveJump').textContent = warnings.length ? `${state.liveHits.length} live matches · source issues` : `${state.liveHits.length} live match${state.liveHits.length === 1 ? '' : 'es'}`;
+  } catch (error) {
+    if (generation !== state.generation || signal.aborted) return;
+    el('liveStatus').textContent = 'Live results unavailable';
+    el('liveJump').textContent = 'Live sources unavailable';
+    el('liveErrorMessage').textContent = error.message; el('liveError').hidden = false;
   } finally {
-    resultsEl.removeAttribute('aria-busy');
+    if (generation === state.generation) { state.liveLoading = false; el('liveResults').removeAttribute('aria-busy'); }
   }
-  if (!data) return;
-  state.page = page;
-  state.hits = state.hits.concat(data.hits || []);
-  state.total = Math.max(state.total, data.total || 0);
-  state.hasMore = Boolean(data.hasMore);
+}
+async function runSearch(event, {append = false, pushHistory = true} = {}) {
+  if (event) event.preventDefault();
+  if (append && (state.loading || !state.hasMore || !state.submitted)) return;
   if (!append) {
-    fillSelect(ownerEl, facetNames(data.ownerFacets), 'All users');
-    fillSelect(typeEl, facetNames(data.contentTypeFacets), 'All types');
-    renderFacets(data);
+    state.controller?.abort(); state.controller = new AbortController(); state.generation++;
+    state.submitted = params().toString(); state.loading = false; state.liveLoading = false;
+    resetResults();
+    if (pushHistory) syncUrl();
+    if (!queryEl.value.trim()) {
+      resultsEl.removeAttribute('aria-busy'); el('liveResults').removeAttribute('aria-busy');
+      el('resultTools').hidden = true; el('emptyState').hidden = false;
+      el('emptyTitle').textContent = 'Search across your server'; el('emptyMessage').textContent = 'Enter a title, phrase, name or topic.';
+      return;
+    }
+    el('resultTools').hidden = false; el('emptyState').hidden = true; statusEl.textContent = 'Searching your library…';
+    void runLive(state.generation, state.submitted, state.controller.signal);
   }
-  renderResults();
-  if (!append && pushHistory) syncUrl();
+  const generation = state.generation;
+  const submitted = state.submitted;
+  const signal = state.controller.signal;
+  const page = append ? state.page + 1 : 0;
+  state.loading = true; resultsEl.setAttribute('aria-busy', 'true');
+  el('searchError').hidden = true; el('loadMore').disabled = true; el('loadMore').textContent = 'Loading more…';
+  try {
+    const data = await fetchPage(page, 'indexed', submitted, signal);
+    if (generation !== state.generation || !data) return;
+    state.page = page; state.total = data.total || 0; state.hasMore = Boolean(data.hasMore);
+    const seen = new Set(state.hits.map(hit => hit.id));
+    const hits = (data.hits || []).filter(hit => !seen.has(hit.id));
+    state.hits.push(...hits);
+    resultsEl.append(...hits.map(resultNode));
+    if (!append) renderFacets(data);
+    state.loading = false; updateResultsStatus();
+  } catch (error) {
+    if (generation !== state.generation || signal.aborted) return;
+    el('errorMessage').textContent = error.message; el('searchError').hidden = false;
+    statusEl.textContent = append ? `${state.hits.length} loaded. Could not load more.` : 'Library results unavailable';
+  } finally {
+    if (generation === state.generation) {
+      state.loading = false; resultsEl.removeAttribute('aria-busy'); el('loadMore').disabled = false; el('loadMore').textContent = 'Load more results';
+    }
+  }
 }
-
-function clearFilters() {
-  ownerEl.value = '';
-  sourceEl.value = '';
-  typeEl.value = '';
-  afterEl.value = '';
-  beforeEl.value = '';
-  for (const key of Object.keys(chipFilters)) chipFilters[key] = '';
-  runSearch();
-}
-
+function clearFilters() { for (const control of Object.values(controls)) control.value = ''; runSearch(); el('filterToggle').focus(); }
 async function loadSources() {
   try {
     const response = await fetch('/api/sources');
     if (response.status === 401) { location.href = '/'; return; }
+    if (!response.ok) throw new Error('Could not load sources. Refresh to try again.');
     const data = await response.json();
-    const sources = (data.sources || []).map((source) => ({
-      value: source.id,
-      label: source.displayName || source.id,
+    for (const source of data.sources || []) sourceNames.set(source.id, source.displayName || source.id);
+    fillSelect(sourceEl, [...sourceNames].map(([value, label]) => ({value, label})), 'All sources');
+    // Update names on already-rendered results without replacing those nodes.
+    for (const node of document.querySelectorAll('[data-source]')) node.textContent = sourceNames.get(node.dataset.source) || node.dataset.source;
+    const issues = (data.sources || []).filter(source => source.lastError);
+    el('sourceHealth').hidden = !issues.length;
+    el('sourceIssues').replaceChildren(...issues.map(source => {
+      const item = document.createElement('li'); item.textContent = `${sourceNames.get(source.id)}: last sync failed. Results may be out of date.`; return item;
     }));
-    fillSelect(sourceEl, sources, 'All sources');
-    if (!queryEl.value.trim()) statusEl.textContent = '';
-  } catch (err) {
-    statusEl.textContent = 'Could not load the list of sources. Try refreshing the page.';
-    statusEl.title = String(err);
-  }
+    updateActiveFilters();
+  } catch (error) { el('sourcesError').textContent = error.message; el('sourcesError').hidden = false; }
 }
-
-// Restores query and filters from the URL so a search is shareable and the
-// back/forward buttons replay it. Returns whether a query was present.
-function readUrlState() {
-  const p = new URLSearchParams(location.search);
-  queryEl.value = p.get('q') || '';
-  chipFilters.kind = p.get('kind') || '';
-  chipFilters.author = p.get('author') || '';
-  chipFilters.tag = p.get('tag') || '';
-  chipFilters.series = p.get('series') || '';
-  chipFilters.year = p.get('year') || '';
-  afterEl.value = p.get('after') || '';
-  beforeEl.value = p.get('before') || '';
-  sortEl.value = p.get('sort') === 'newest' ? 'newest' : 'relevance';
-  pageSizeEl.value = ['25', '50', '100'].includes(p.get('pageSize')) ? p.get('pageSize') : '50';
-  setSelectValue(ownerEl, p.get('owner'));
-  setSelectValue(typeEl, p.get('type'));
-  setSelectValue(sourceEl, p.get('source'));
-  updateClearVisibility();
-  return Boolean(queryEl.value.trim());
-}
-
-function logout() {
-  const target = window.SEARCH_LOGOUT_URL || '/';
-  location.href = target;
-}
-
-document.getElementById('searchForm').addEventListener('submit', runSearch);
-ownerEl.addEventListener('change', runSearch);
-sourceEl.addEventListener('change', runSearch);
-typeEl.addEventListener('change', runSearch);
-sortEl.addEventListener('change', runSearch);
-pageSizeEl.addEventListener('change', runSearch);
-afterEl.addEventListener('change', runSearch);
-beforeEl.addEventListener('change', runSearch);
-clearBtn.addEventListener('click', clearFilters);
-loadMoreBtn.addEventListener('click', () => runSearch(null, { append: true }));
-window.addEventListener('popstate', () => {
-  if (readUrlState()) {
-    runSearch(null, { pushHistory: false });
-  } else {
-    resetResults();
-    statusEl.textContent = '';
-  }
+el('searchForm').addEventListener('submit', runSearch);
+for (const control of [...Object.values(controls), sortEl, pageSizeEl]) control.addEventListener('change', runSearch);
+el('filterToggle').addEventListener('click', () => toggleFilters());
+el('showResults').addEventListener('click', () => { toggleFilters(false); el('resultsRegion').focus(); });
+el('clearFilters').addEventListener('click', clearFilters);
+el('loadMore').addEventListener('click', () => runSearch(null, {append: true}));
+el('retrySearch').addEventListener('click', () => state.hits.length ? runSearch(null, {append: true}) : runSearch());
+el('retryLive').addEventListener('click', () => { if (!state.liveLoading && state.submitted) void runLive(state.generation, state.submitted, state.controller.signal); });
+el('signOut').addEventListener('click', () => { location.href = safeHref(window.SEARCH_LOGOUT_URL) || '/'; });
+queryEl.addEventListener('search', () => { if (!queryEl.value.trim()) runSearch(); });
+window.addEventListener('keydown', event => {
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); queryEl.focus(); }
+  if (event.key === 'Escape' && !el('filtersPanel').hidden) { toggleFilters(false); el('filterToggle').focus(); }
 });
-
+window.addEventListener('popstate', () => { readUrlState(); runSearch(null, {pushHistory: false}); });
 const hadQuery = readUrlState();
-loadSources();
-if (hadQuery) runSearch(null, { pushHistory: false });
+void loadSources();
+if (hadQuery) void runSearch(null, {pushHistory: false});
 </script>
 </body>
 </html>

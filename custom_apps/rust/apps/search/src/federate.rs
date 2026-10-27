@@ -11,6 +11,7 @@ use crate::zim_search::ZimHit;
 #[derive(Debug, Clone)]
 pub struct FederatedHit {
     pub source: String,
+    pub kind: String,
     pub remote_id: String,
     pub title: String,
     pub snippet: Option<String>,
@@ -33,6 +34,7 @@ impl FederatedHit {
     pub fn from_zim(source_id: &str, hit: ZimHit) -> Self {
         Self {
             source: source_id.to_string(),
+            kind: "zim-article".to_string(),
             remote_id: timeutil::sha256_hex(&[&hit.origin_url]),
             title: hit.title,
             snippet: hit.snippet,
@@ -50,6 +52,7 @@ impl FederatedHit {
         json!({
             "id": self.id(),
             "source": self.source,
+            "kind": self.kind,
             "title": self.title,
             "snippet": self.snippet,
             "originUrl": self.origin_url,
@@ -68,6 +71,11 @@ impl FederatedHit {
     /// federator has always behaved and keeps federated results consistent with
     /// the Solr facet filtering they sit beside.
     pub fn matches_filters(&self, filters: &SearchFilters) -> bool {
+        if let Some(kind) = &filters.kind
+            && kind != &self.kind
+        {
+            return false;
+        }
         if let Some(source) = &filters.source
             && source != &self.source
         {
@@ -163,6 +171,7 @@ mod tests {
     fn hit() -> FederatedHit {
         FederatedHit {
             source: "paperless".to_string(),
+            kind: "document".to_string(),
             remote_id: "42".to_string(),
             title: "Invoice".to_string(),
             snippet: None,
@@ -241,6 +250,19 @@ mod tests {
             ..Default::default()
         };
         assert!(!hit.matches_filters(&dated));
+    }
+
+    #[test]
+    fn kind_filter_excludes_unrelated_live_results() {
+        let hit = hit();
+        assert!(hit.matches_filters(&SearchFilters {
+            kind: Some("document".into()),
+            ..Default::default()
+        }));
+        assert!(!hit.matches_filters(&SearchFilters {
+            kind: Some("email".into()),
+            ..Default::default()
+        }));
     }
 
     #[test]

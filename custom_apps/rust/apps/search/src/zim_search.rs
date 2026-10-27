@@ -94,6 +94,12 @@ pub fn discover_zims(zimdump: &Path, library_root: &Path) -> Vec<ZimIndexEntry> 
         .collect()
 }
 
+#[derive(Default)]
+pub struct ZimSearchResult {
+    pub hits: Vec<ZimHit>,
+    pub failed_archives: usize,
+}
+
 /// Runs the query against every Xapian-bearing ZIM in `entries` and returns
 /// the merged, bounded set of article hits. ZIMs without an embedded index are
 /// skipped: their articles are already indexed into Solr by the fallback
@@ -105,13 +111,13 @@ pub async fn search(
     config: &ZimSearchConfig,
     entries: &[ZimIndexEntry],
     query: &str,
-) -> Vec<ZimHit> {
+) -> ZimSearchResult {
     let query = query.trim();
     let (Some(kiwix_search), Some(zimdump)) = (&config.kiwix_search, &config.zimdump) else {
-        return Vec::new();
+        return ZimSearchResult::default();
     };
     if query.is_empty() {
-        return Vec::new();
+        return ZimSearchResult::default();
     }
 
     let searchable: Vec<(usize, &ZimIndexEntry)> = entries
@@ -122,6 +128,7 @@ pub async fn search(
 
     // Search archives in bounded batches so a large library is fully covered
     // without spawning an unbounded number of `kiwix-search` subprocesses.
+    let mut failed_archives = 0;
     let mut ordered: Vec<(usize, Vec<ZimHit>)> = Vec::new();
     for chunk in searchable.chunks(MAX_ZIM_CONCURRENCY) {
         let mut tasks = tokio::task::JoinSet::new();
@@ -142,15 +149,25 @@ pub async fn search(
         }
         while let Some(joined) = tasks.join_next().await {
             match joined {
-                Ok((index, hits)) => ordered.push((index, hits)),
-                Err(err) => eprintln!("search: ZIM federation task failed: {err}"),
+                Ok((index, Ok(hits))) => ordered.push((index, hits)),
+                Ok((_, Err(err))) => {
+                    failed_archives += 1;
+                    eprintln!("search: ZIM query failed: {err}");
+                }
+                Err(err) => {
+                    failed_archives += 1;
+                    eprintln!("search: ZIM federation task failed: {err}");
+                }
             }
         }
     }
     ordered.sort_by_key(|(index, _)| *index);
     let mut hits: Vec<ZimHit> = ordered.into_iter().flat_map(|(_, hits)| hits).collect();
     hits.truncate(MAX_TOTAL_ZIM_RESULTS);
-    hits
+    ZimSearchResult {
+        hits,
+        failed_archives,
+    }
 }
 
 /// Searches one ZIM archive and resolves its hits' titles and snippets.
@@ -161,10 +178,8 @@ async fn search_zim(
     stem: &str,
     app_base: &str,
     query: &str,
-) -> Vec<ZimHit> {
-    let Ok(paths) = search_paths(kiwix_search, zim, query).await else {
-        return Vec::new();
-    };
+) -> Result<Vec<ZimHit>, String> {
+    let paths = search_paths(kiwix_search, zim, query).await?;
     let paths: Vec<String> = paths
         .into_iter()
         .take(MAX_RESULTS_PER_ZIM)
@@ -193,23 +208,27 @@ async fn search_zim(
         }
     }
     resolved.sort_by_key(|(position, ..)| *position);
-    resolved
+    Ok(resolved
         .into_iter()
         .map(|(_, path, title, snippet)| ZimHit {
             title,
             snippet,
             origin_url: entry_origin(app_base, stem, &path),
-            app_url: app_base.trim_end_matches('/').to_string(),
+            app_url: entry_origin(app_base, stem, &path),
             metadata: serde_json::json!({ "archive": stem, "entry_path": path }),
         })
-        .collect()
+        .collect())
 }
 
 /// Runs `kiwix-search ZIM PATTERN` and returns the matching entry paths.
 async fn search_paths(kiwix_search: &Path, zim: &Path, query: &str) -> Result<Vec<String>, String> {
     let output = timeout(
         SEARCH_TIMEOUT,
-        Command::new(kiwix_search).arg(zim).arg(query).output(),
+        Command::new(kiwix_search)
+            .kill_on_drop(true)
+            .arg(zim)
+            .arg(query)
+            .output(),
     )
     .await
     .map_err(|_| format!("kiwix-search timed out for {}", zim.display()))?
@@ -282,7 +301,7 @@ async fn show_html(
     namespace: Option<&str>,
 ) -> Option<Vec<u8>> {
     let mut command = Command::new(zimdump);
-    command.arg("show");
+    command.kill_on_drop(true).arg("show");
     match namespace {
         Some(ns) => {
             command
@@ -319,6 +338,24 @@ fn make_snippet(html: &str, query: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn failed_archive_is_reported_instead_of_becoming_zero_matches() {
+        let config = ZimSearchConfig {
+            kiwix_search: Some(PathBuf::from("/nonexistent/search-fixture-tool")),
+            zimdump: Some(PathBuf::from("/nonexistent/zim-fixture-tool")),
+            library_root: PathBuf::from("/nonexistent/fixture-library"),
+            app_base: "https://wiki.example.test".into(),
+        };
+        let entries = vec![ZimIndexEntry {
+            path: config.library_root.join("fixture.zim"),
+            stem: "fixture".into(),
+            has_xapian: true,
+        }];
+        let result = search(&config, &entries, "test").await;
+        assert!(result.hits.is_empty());
+        assert_eq!(result.failed_archives, 1);
+    }
 
     #[test]
     fn derives_titles_from_paths() {
@@ -400,6 +437,6 @@ mod tests {
             .build()
             .expect("runtime");
         let hits = runtime.block_on(search(&config, &entries, "quantum"));
-        assert!(hits.is_empty());
+        assert!(hits.hits.is_empty());
     }
 }

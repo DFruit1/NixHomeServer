@@ -1889,6 +1889,36 @@ which have no per-user ownership). Facet
 counts update with the selected filters, so an admin can see the composition of
 a result set and drill in without leaving the page.
 
+The search field and Source control stay visible; **Filters** opens the other
+dimensions in a desktop sidebar or mobile panel. **Show results** closes the
+mobile panel. Active filters can be removed individually or cleared together.
+Dates refer to the content's creation date, not its indexing date. Ctrl/Cmd+K
+focuses the search field. Search state is shareable in the URL and restored by
+browser Back/Forward; loading more uses the submitted query even while the
+search field is being edited.
+
+Library results appear independently of **Live results** from Paperless and
+native-index Kiwix archives. Live results are a sample of up to 20 hits per
+source (Kiwix also limits to five per archive); filters apply after that sample
+is retrieved. Their counts are shown separately and never presented as an
+exhaustive total. Facet counts refer only to library results. An unavailable
+live source is named with a retry action; another source's successful results
+remain usable. A jump link beside the library count goes directly to live
+matches or source issues. Source sync failures are disclosed above results because library
+matches may be stale.
+
+`GET /api/search` accepts the existing query/filter parameters plus optional
+`scope=indexed|live|all` (`all` is the backward-compatible default). The browser
+requests `indexed` and `live` concurrently. Live responses include `limited:
+true`, `hasMore: false`, and `warnings: [{source, message}]`; their `total` counts
+returned hits only. Combined responses also include warnings. Live sources run
+with at most four sources in flight and a 30-second budget per source. Solr
+select requests have a 15-second timeout. No source failure changes gateway
+authorization or enables public access. Responses use private/no-store caching.
+Invalid calendar dates, inverted ranges, nonnumeric years, queries over 2048
+bytes, and result offsets above 10,000 receive HTTP 400. Other search errors use
+public JSON messages without database connection strings or raw Solr payloads.
+
 Normal checks and manual actions:
 
 ```bash
@@ -1960,7 +1990,7 @@ Notes:
     dedicated, view-only `search-service` local user (member of
     `paperless-users`) and writes it to `/run/paperless-search-api-token`
     (`root:search`, `0640`); the Search UI reads it per query, so a missing
-    token simply yields no Paperless results instead of failing the search. The
+    token produces a source warning while other results remain available. The
     token lives in the Paperless database and is regenerated on every boot, so
     it is never backed up. Paperless is configured to accept the loopback Host
     header via `repo.paperless.additionalAllowedHosts`.
@@ -2004,14 +2034,18 @@ Notes:
   (8 at a time) and each archive's article title/snippet fetches run
   concurrently, so a large library is fully searchable without unbounded
   subprocess fan-out. A single failing archive is skipped rather than failing
-  the query.
+  the query; the live response reports how many archives failed. Timed-out
+  async search/snippet subprocesses are killed on cancellation. A source that
+  exceeds the overall live budget returns a timeout warning.
 * Query handling. Queries are parsed by Solr's `edismax` with phrase boosts
   (`pf`/`ps`) so adjacent-term matches rank above scattered ones. If Solr
   rejects a query for containing Lucene syntax characters (`:`, `[`, an
   unbalanced quote, ...), the UI retries once with those characters escaped so
   a literal search still returns results instead of a 502. The result page size
-  is a request parameter (`pageSize`, default 50, capped at 200) exposed as the
-  UI's Per page control.
+  is a request parameter (`pageSize`, API default 50, capped at 200); the UI's
+  Per page control starts at 25 and also offers 50/100. Both relevance and date
+  order use a unique-id tie-breaker for stable paging. Registry source scope
+  remains enforced independently of selected source filters and facet exclusions.
 * Disabling the Search app keeps every piece of state: `/var/lib/solr` stays
   on disk (persisted centrally), the Postgres `search` database stays in the
   cluster, and the last `dumps/search.pgdump` backup remains in Kopia

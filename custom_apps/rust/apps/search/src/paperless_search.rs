@@ -130,10 +130,10 @@ pub async fn search(
     config: &PaperlessSearchConfig,
     taxonomy: &Taxonomy,
     query: &str,
-) -> Vec<FederatedHit> {
+) -> Result<Vec<FederatedHit>, String> {
     let query = query.trim();
     if query.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let url = format!("{}/api/documents/", config.base_url);
     let page_size = config.max_results.max(1).to_string();
@@ -154,19 +154,16 @@ pub async fn search(
         ];
         response = request_json(config, &url, &simple).await;
     }
-    let Ok(value) = response else {
-        return Vec::new();
-    };
-    value
+    let value =
+        response.map_err(|_| "The document server could not complete this search.".to_string())?;
+    let results = value
         .get("results")
         .and_then(Value::as_array)
-        .map(|results| {
-            results
-                .iter()
-                .map(|document| map_document(config, taxonomy, document, query))
-                .collect()
-        })
-        .unwrap_or_default()
+        .ok_or("The document server returned an invalid search response.")?;
+    Ok(results
+        .iter()
+        .map(|document| map_document(config, taxonomy, document, query))
+        .collect())
 }
 
 fn map_document(
@@ -239,6 +236,7 @@ fn map_document(
 
     FederatedHit {
         source: config.source_id.clone(),
+        kind: "document".to_string(),
         app_url: format!("{}/documents/{}", config.app_base, remote_id),
         remote_id,
         title,
@@ -279,7 +277,7 @@ fn snippet_for(document: &Value, query: &str) -> Option<String> {
     }
     text::snippet_from_text(plain, query).or_else(|| {
         let truncated: String = plain.chars().take(260).collect();
-        (!truncated.trim().is_empty()).then_some(truncated)
+        (!truncated.trim().is_empty()).then(|| text::highlight_terms(&truncated, &[]))
     })
 }
 
@@ -321,6 +319,47 @@ async fn fetch_json(client: &reqwest::Client, token: &str, url: &str) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn upstream_failure_is_distinct_from_a_successful_empty_search() {
+        use axum::{routing::get, Json, Router};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = Router::new()
+            .route(
+                "/ok/api/documents/",
+                get(|| async { Json(serde_json::json!({"results":[]})) }),
+            )
+            .route(
+                "/bad/api/documents/",
+                get(|| async { axum::http::StatusCode::SERVICE_UNAVAILABLE }),
+            )
+            .route(
+                "/invalid/api/documents/",
+                get(|| async { Json(serde_json::json!({})) }),
+            );
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let mut config = config();
+        config.base_url = format!("http://{address}/ok");
+        assert!(search(&config, &Taxonomy::default(), "test")
+            .await
+            .unwrap()
+            .is_empty());
+        for path in ["bad", "invalid"] {
+            config.base_url = format!("http://{address}/{path}");
+            assert!(search(&config, &Taxonomy::default(), "test").await.is_err());
+        }
+        task.abort();
+    }
+
+    #[test]
+    fn unmatched_snippet_escapes_decoded_markup() {
+        let document = serde_json::json!({"content": "&lt;img src=x onerror=alert(1)&gt; &lt;em&gt;literal&lt;/em&gt;"});
+        let snippet = snippet_for(&document, "title-only-match").expect("fallback snippet");
+        assert!(!snippet.contains("<img"), "{snippet}");
+        assert!(!snippet.contains("<em>"), "{snippet}");
+        assert!(snippet.contains("&lt;img"), "{snippet}");
+    }
     use serde_json::json;
 
     fn config() -> PaperlessSearchConfig {
@@ -509,7 +548,9 @@ mod tests {
 
     #[tokio::test]
     async fn empty_query_returns_no_hits() {
-        let hits = search(&config(), &taxonomy(), "   ").await;
+        let hits = search(&config(), &taxonomy(), "   ")
+            .await
+            .expect("empty query");
         assert!(hits.is_empty());
     }
 }

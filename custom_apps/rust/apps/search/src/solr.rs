@@ -169,15 +169,20 @@ impl SearchFilters {
     /// Builds the Solr `fq` clauses for the selected filters.
     fn clauses(&self, selected_sources: &[String]) -> Vec<String> {
         let mut clauses = Vec::new();
-        if let Some(source) = &self.source {
-            clauses.push(format!("{{!tag=src}}source:{}", solr_string_term(source)));
-        } else if !selected_sources.is_empty() {
+        // This constraint must survive facet exclusion and a hand-edited source
+        // filter. Removed/unregistered sources are never part of this search.
+        if selected_sources.is_empty() {
+            clauses.push("(*:* AND -(*:*))".to_string());
+        } else {
             let allowed = selected_sources
                 .iter()
                 .map(|source| solr_string_term(source))
                 .collect::<Vec<_>>()
                 .join(" OR ");
-            clauses.push(format!("{{!tag=src}}source:({allowed})"));
+            clauses.push(format!("source:({allowed})"));
+        }
+        if let Some(source) = &self.source {
+            clauses.push(format!("{{!tag=src}}source:{}", solr_string_term(source)));
         }
         if let Some(kind) = &self.kind {
             clauses.push(format!("{{!tag=kind}}kind_s:{}", solr_string_term(kind)));
@@ -212,15 +217,15 @@ impl SearchFilters {
         if self.created_after.is_some() || self.created_before.is_some() {
             let lower = self
                 .created_after
-                .clone()
+                .as_ref()
+                .map(|date| format!("{date}T00:00:00Z"))
                 .unwrap_or_else(|| "*".to_string());
             let upper = self
                 .created_before
-                .clone()
+                .as_ref()
+                .map(|date| format!("{date}T23:59:59.999Z"))
                 .unwrap_or_else(|| "*".to_string());
-            clauses.push(format!(
-                "content_created:[{lower}T00:00:00Z TO {upper}T23:59:59Z]"
-            ));
+            clauses.push(format!("content_created:[{lower} TO {upper}]"));
         }
         clauses
     }
@@ -230,7 +235,7 @@ fn solr_string_term(value: &str) -> String {
     format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
-/// Result ordering chosen by the user. Relevance is Solr's default score order;
+/// Result ordering chosen by the user. Relevance uses Solr's score order;
 /// Newest orders by the document's content date so the most recent material
 /// surfaces first regardless of score.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -241,12 +246,12 @@ pub enum SortOrder {
 }
 
 impl SortOrder {
-    /// The Solr `sort` clause, or `None` to leave the default score order.
+    /// Stable ordering prevents equal-score hits from moving between pages.
     fn clause(self) -> Option<&'static str> {
         match self {
-            SortOrder::Relevance => None,
-            // `score desc` breaks ties between documents sharing a date.
-            SortOrder::Newest => Some("content_created desc, score desc"),
+            SortOrder::Relevance => Some("score desc, id asc"),
+            // The unique id also breaks equal-date, equal-score ties.
+            SortOrder::Newest => Some("content_created desc, score desc, id asc"),
         }
     }
 }
@@ -562,6 +567,7 @@ impl SolrClient {
             .http
             .post(&url)
             .form(&params)
+            .timeout(Duration::from_secs(15))
             .send()
             .await
             .map_err(|err| format!("solr query failed: {err}"))?
@@ -792,7 +798,7 @@ mod tests {
         let none = SearchFilters::default();
         assert_eq!(
             none.clauses(&selected),
-            vec!["{!tag=src}source:(\"paperless\" OR \"mail-archive\")"]
+            vec!["source:(\"paperless\" OR \"mail-archive\")"]
         );
 
         let filtered = SearchFilters {
@@ -817,8 +823,39 @@ mod tests {
         assert!(clauses.contains(&"{!tag=ser}series_ss:\"Fees\"".to_string()));
         assert!(clauses.contains(&"{!tag=yr}year_i:2024".to_string()));
         assert!(clauses.contains(
-            &"content_created:[2024-01-01T00:00:00Z TO 2024-12-31T23:59:59Z]".to_string()
+            &"content_created:[2024-01-01T00:00:00Z TO 2024-12-31T23:59:59.999Z]".to_string()
         ));
+    }
+
+    #[test]
+    fn source_scope_cannot_be_bypassed_by_filters_or_facets() {
+        let filters = SearchFilters {
+            source: Some("removed".into()),
+            ..Default::default()
+        };
+        let clauses = filters.clauses(&["registered".into()]);
+        assert!(clauses.contains(&"source:(\"registered\")".to_string()));
+        assert!(SearchFilters::default()
+            .clauses(&[])
+            .contains(&"(*:* AND -(*:*))".to_string()));
+    }
+
+    #[test]
+    fn one_sided_dates_keep_wildcards_and_include_subseconds() {
+        let after = SearchFilters {
+            created_after: Some("2024-01-01".into()),
+            ..Default::default()
+        };
+        assert!(after
+            .clauses(&[])
+            .contains(&"content_created:[2024-01-01T00:00:00Z TO *]".to_string()));
+        let before = SearchFilters {
+            created_before: Some("2024-12-31".into()),
+            ..Default::default()
+        };
+        assert!(before
+            .clauses(&[])
+            .contains(&"content_created:[* TO 2024-12-31T23:59:59.999Z]".to_string()));
     }
 
     #[test]
@@ -859,11 +896,11 @@ mod tests {
 
     #[test]
     fn sort_order_maps_to_solr_clause() {
-        // Relevance leaves Solr's default score ordering untouched.
-        assert_eq!(SortOrder::Relevance.clause(), None);
+        // Both orders break otherwise equal results by unique id.
+        assert_eq!(SortOrder::Relevance.clause(), Some("score desc, id asc"));
         assert_eq!(
             SortOrder::Newest.clause(),
-            Some("content_created desc, score desc")
+            Some("content_created desc, score desc, id asc")
         );
     }
 
