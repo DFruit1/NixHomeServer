@@ -24,6 +24,10 @@ in
         StartLimitBurst = 5;
         OnFailure = [ config.repo.monitoring.failureAlerts.targetUnit ];
         OnFailureJobMode = "replace-irreversibly";
+        RequiresMountsFor = [
+          cfg.sharedRoot
+          cfg.workspaceRoot
+        ];
       };
       environment = {
         AI_TOOLS_LISTEN = "${cfg.listenAddress}:${toString cfg.port}";
@@ -66,10 +70,6 @@ in
         # time.
         ReadOnlyPaths = [ cfg.sharedRoot ];
         ReadWritePaths = [ cfg.workspaceRoot ];
-        RequiresMountsFor = [
-          cfg.sharedRoot
-          cfg.workspaceRoot
-        ];
         ProtectHome = true;
         ProtectClock = true;
         ProtectControlGroups = true;

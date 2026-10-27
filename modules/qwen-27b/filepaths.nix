@@ -56,10 +56,12 @@ in
       wants = [ "data-pool-layout.service" "local-fs.target" ];
       after = [ "data-pool-layout.service" "local-fs.target" ];
       before = [ "qwen-27b-model-prepare.service" ];
+      unitConfig = {
+        RequiresMountsFor = [ vars.dataRoot ];
+      };
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        RequiresMountsFor = [ vars.dataRoot ];
       };
       script = ''
         set -euo pipefail

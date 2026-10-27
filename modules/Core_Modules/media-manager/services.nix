@@ -344,8 +344,8 @@ in
     wantedBy = [ "timers.target" ];
     timerConfig = {
       OnBootSec = "20s";
-      OnUnitInactiveSec = "10s";
-      AccuracySec = "1s";
+      OnUnitInactiveSec = "30s";
+      AccuracySec = "5s";
       Unit = "media-manager-broker.service";
     };
   };

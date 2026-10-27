@@ -51,11 +51,13 @@ in
     # immediately and then gives up, leaving the single edge down until a human
     # restarts it; space the retries and allow enough of them to survive a slow
     # network bring-up instead.
+    unitConfig = {
+      StartLimitIntervalSec = 600;
+      StartLimitBurst = 60;
+    };
     serviceConfig = {
       Restart = "on-failure";
       RestartSec = "5s";
-      StartLimitIntervalSec = 600;
-      StartLimitBurst = 60;
     };
   };
 }

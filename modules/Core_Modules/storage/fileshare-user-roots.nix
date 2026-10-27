@@ -798,6 +798,8 @@ in
     systemd.services."files-shared-bindfs@" = {
       description = "Mount delete-protected shared files view for %I";
       unitConfig.ConditionPathIsDirectory = "${vars.usersRoot}/%I/${sharedMountName}";
+      unitConfig.StartLimitIntervalSec = "2m";
+      unitConfig.StartLimitBurst = 6;
       wants = [
         "fileshare-user-root-sync.service"
         "data-pool-layout.service"
@@ -820,14 +822,14 @@ in
         ExecStop = "-${pkgs.fuse3}/bin/fusermount3 -u ${vars.usersRoot}/%I/${sharedMountName}";
         Restart = "on-failure";
         RestartSec = "10s";
-        StartLimitIntervalSec = "2m";
-        StartLimitBurst = 6;
       };
     };
 
     systemd.services."files-shared-delete-bindfs@" = {
       description = "Mount deletable shared files view for %I";
       unitConfig.ConditionPathIsDirectory = "${vars.usersRoot}/%I/${sharedMountName}";
+      unitConfig.StartLimitIntervalSec = "2m";
+      unitConfig.StartLimitBurst = 6;
       wants = [
         "fileshare-user-root-sync.service"
         "data-pool-layout.service"
@@ -850,8 +852,6 @@ in
         ExecStop = "-${pkgs.fuse3}/bin/fusermount3 -u ${vars.usersRoot}/%I/${sharedMountName}";
         Restart = "on-failure";
         RestartSec = "10s";
-        StartLimitIntervalSec = "2m";
-        StartLimitBurst = 6;
       };
     };
 

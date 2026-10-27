@@ -27,6 +27,23 @@ let
   modelArtifactIgnoreFlags = lib.concatMapStrings
     (pattern: " \\\n      --add-ignore=${lib.escapeShellArg pattern}")
     [ "*.gguf" "*.gguf.part" ];
+  bulkDataIgnoreFlags = lib.concatMapStrings
+    (pattern: " \\\n      --add-ignore=${lib.escapeShellArg pattern}")
+    [
+      "var/lib/postgresql"
+      "var/lib/browsertrix-downloader"
+      "var/lib/mkvmaker"
+      "var/lib/solr"
+      "var/lib/clamav"
+      "var/lib/atticd/storage"
+      "*.wacz"
+      "*.iso"
+      "*.qcow2"
+      "*.raw"
+      "*.img"
+      "*.vmdk"
+      "*.log"
+    ];
   rebuildableSnapshotIgnoreFlags = lib.concatMapStrings
     (path: " \\\n            --add-ignore=${lib.escapeShellArg path}")
     (lib.unique config.repo.backups.rebuildableSnapshotPaths);
@@ -58,7 +75,8 @@ let
 
     # Add in a separate call: --clear-ignore wins over additions in the same
     # invocation. Global basename patterns apply to roots without local lists.
-    kopia policy set --global${modelArtifactIgnoreFlags}
+    kopia policy set --global${modelArtifactIgnoreFlags}${bulkDataIgnoreFlags} \
+      --max-file-size=104857600
 
     # Kopia applies --clear-ignore after additions when both are supplied in
     # one invocation. Keep clearing and rebuilding as two ordered mutations so
@@ -67,7 +85,8 @@ let
 
     # A target-specific list replaces the global list, so retain the model
     # patterns here as well. Directory patterns are relative only to /persist.
-    kopia policy set /persist${modelArtifactIgnoreFlags} \
+    kopia policy set /persist${modelArtifactIgnoreFlags}${bulkDataIgnoreFlags} \
+      --max-file-size=104857600 \
       --add-ignore='appdata/kopia/cache' \
       --add-ignore='appdata/kopia/logs' \
       --add-ignore='appdata/system-state-backup' \
