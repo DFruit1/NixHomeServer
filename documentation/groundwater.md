@@ -1,7 +1,10 @@
 # Groundwater Level Platform — Design
 
-**Status:** Draft for review. No implementation exists yet; this document is the
-contract the implementation phase will follow.
+**Status:** Design contract + resolved decisions. A synthetic server-side slice
+exists in `custom_apps/rust/apps/groundwater-server` (plain PostgreSQL, no
+TimescaleDB, server-rendered inspection page). The decisions in §13 are
+resolved and supersede the open questions there; implementation of the full
+platform proceeds against this document.
 
 **Firmware source:** private repo `MuhammadAli1132001/Ground-Water-Level`,
 commit `8278b61` ("ack and desired applied"), active tree
@@ -28,12 +31,12 @@ production platform; §10 maps every touchpoint.
    SSO via the shared auth-gateway, Postgres on the shared cluster, Kopia
    backups, canary coverage, clean module removability.
 
-**In scope (design only):** broker architecture, Rust ingestion/API service,
-Postgres + TimescaleDB schema, HTTP API, Qwik frontend, auth/roles, module
+**In scope:** broker architecture, Rust ingestion/API service,
+plain PostgreSQL schema, HTTP API, Qwik frontend, auth/roles, module
 impact map, validation strategy.
 
-**Out of scope:** all code, Nix wiring, catalog/enablement changes, deploys,
-firmware modifications (§11 records recommended firmware changes for later —
+**Out of scope:** live deployment and firmware modifications
+(§11 records recommended firmware changes for later —
 the design works with the firmware *as shipped*).
 
 ---
@@ -65,8 +68,8 @@ the design works with the firmware *as shipped*).
                 ▼                              ▼
 ┌──────────────────────────────┐   ┌───────────────────────────────────┐
 │ PostgreSQL (shared cluster)  │   │ auth-gateway (Kanidm OIDC)        │
-│ + TimescaleDB (§6)           │   │ groundwater.<domain> → Caddy →   │
-│  readings hypertable,        │   │ upstream, X-Auth-Request-* hdrs   │
+│ plain PostgreSQL (§6)        │   │ groundwater.<domain> → Caddy →   │
+│  observations,               │   │ upstream, X-Auth-Request-* hdrs   │
 │  devices, alerts, commands,  │   └───────────────────────────────────┘
 │  raw message log             │               ▲
 └──────────────┬───────────────┘               │ browser (multi-user)
@@ -223,7 +226,7 @@ with **±0.5 m hysteresis** (`main.c:503-531`) but only `printf`s the result —
 covering `azman1/feeds/#`, `requesttesta`, `cmd/#`, `cfg/#`). No new broker
 technology.
 
-### 4.1 How devices reach the broker (decision needed — §13.1)
+### 4.1 How devices reach the broker (resolved — §13.2)
 
 The firmware's broker host is compile-time and currently points at a public
 broker. Two viable paths:
@@ -241,12 +244,12 @@ broker. Two viable paths:
   inherits the public-broker trust problem (anyone on the internet can
   publish to those topics — already true today).
 
-**Risk note for a public listener:** the firmware speaks **plaintext
-1883 with credentials in the clear and no TLS**. Exposing Mosquitto directly
-to the internet is acceptable only with unique credentials and awareness of
-the sniffing risk; proper fix is modem TLS (`AT+QMTSSLCFG`, firmware change,
-§11). Interim recommendation: LAN + VPN/tunnel path for field devices, or
-accept the plaintext risk explicitly per §13.1.
+**Resolved decision (§13.2):** devices reach our Mosquitto over **LAN + NetBird**
+(Path A). The firmware is rebuilt to point at our broker with per-deployment
+credentials; field/LTE units join the existing NetBird mesh rather than being
+exposed to the public internet. No public plaintext listener. Firmware TLS
+(`AT+QMTSSLCFG`) remains a later hardening item (§11.3). The HiveMQ bridge
+(Path B) is not used.
 
 ### 4.2 Accounts and ACLs
 
@@ -332,8 +335,10 @@ on each accepted reading:
   back to `NORMAL` at `≤ max − 0.5` / `≥ min + 0.5`. Direct
   `BELOW_MIN ↔ ABOVE_MAX` jumps allowed (mirrors firmware).
 - Transitions write `alerts` rows (open/resolved with timestamps and the
-  triggering value). UI surfaces open alerts; notification channel is an open
-  question (§13.3).
+  triggering value). **Resolved (§13.6): UI-only in v1** — no external
+  notification channel. **No acknowledgment step**: alerts are read-only state
+  and resolve automatically when a reading returns to `NORMAL`. Any
+  authenticated user can view them.
 
 ### 5.5 Command scheduler
 
@@ -345,7 +350,9 @@ All downlink flows are DB-backed so they survive restarts and are auditable:
 - **Window-aware sending:** the publisher watches `device-status`. When the
   target device publishes `Ready`, send **one** queued command (QoS 1,
   non-retained), then wait ≥ 5 s before the next (one-command-per-UART-read
-  limit, §3.6.5). Re-poll on the next `Ready` if unacked.
+  limit, §3.6.5). **Resolved retry policy (§13.11):** re-poll on the next `Ready`;
+  **no automatic timeout/fail** — a command stays queued until it is acked or
+  cancelled by an operator.
 - **Ack matching:** `cfg` → `cfg/desired/applied` echo; `danger` →
   `cfg/danger_ack`; `test` → one-or-more `testresults` messages within the
   window; `project-settings` → **no ack exists** — mark `sent` (not `acked`)
@@ -360,7 +367,7 @@ All downlink flows are DB-backed so they survive restarts and are auditable:
 
 ---
 
-## 6. Database — PostgreSQL + TimescaleDB
+## 6. Database — plain PostgreSQL
 
 ### 6.1 Cluster and extension (central, not per-module)
 
@@ -368,23 +375,26 @@ The host runs **one shared PostgreSQL cluster** (created by the Search module,
 also backing Immich), centrally tuned in `system-resources.nix:416-431`.
 Per AGENTS.md, optional modules must not set `services.postgresql.settings`.
 
-- **TimescaleDB** (`postgresqlPackages.timescaledb`, 2.30.1 in the pinned
-  nixpkgs) requires `shared_preload_libraries = "timescaledb"` at the
-  **cluster** level → added in `system-resources.nix`, gated centrally on the
-  groundwater module being enabled (same style as the existing
-  `moduleEnabled` gates there).
+- **TimescaleDB: not adopted in v1 (resolved, §13.9).** Plain PostgreSQL is used; the
+  synthetic slice and the full platform keep manual `to_timestamp(floor(...))`
+  bucketing in `db::device_series`. The `shared_preload_libraries` gate in
+  `system-resources.nix` is not added. Revisit only if fleet size demands
+  continuous aggregates.
 - Database/role provisioning follows the Search precedent: `ensureDatabases =
   [ "groundwater" ]`, `ensureUsers = [ { name = "groundwater";
   ensureDBOwnership = true; } ]` in the groundwater module's `services.nix`.
-- `CREATE EXTENSION IF NOT EXISTS timescaledb` / `postgis`-style bootstrap
-  runs from a central one-shot (declarative `ensureExtensions` if available in
-  the pinned NixOS, else a root `ExecStartPre` on the groundwater service —
-  decided at implementation time, executed centrally either way).
+- No extension bootstrap or PostgreSQL preload change is required in v1.
 - **Backup:** follow the existing pattern — Kopia entry over the PostgreSQL
   `dataDir` plus a `pg_dump groundwater` app-state dump (replacing the
   current SQLite dump entry in `backups.nix`).
 
 ### 6.2 Schema (v1)
+
+The SQL below describes the original logical model. The implementation retains
+the synthetic slice's separate `observations`, `deliveries`, enrollment and
+trusted-binding tables, extending them additively for settings, permissions,
+presence, alerts and commands. See [operations](groundwater-operations.md) for
+the executable enrollment template; `src/db.rs` is the migration authority.
 
 ```sql
 -- Identity & config (one row per physical device, keyed by firmware DeviceID)
@@ -419,7 +429,6 @@ CREATE TABLE readings (
   time_plausible boolean NOT NULL DEFAULT true,
   payload       jsonb NOT NULL         -- original parsed JSON (audit)
 );
-SELECT create_hypertable('readings', 'recorded_at');
 CREATE UNIQUE INDEX readings_dedupe ON readings (device_id, recorded_at);
 CREATE INDEX readings_device_recv ON readings (device_id, received_at DESC);
 
@@ -472,7 +481,8 @@ separately.
 ### 6.3 Downsampling
 
 Raw cadence ≈ one row / 3 min / device (~175 k rows/device/year — trivial).
-Charts query the hypertable directly with time_bucket() for ranges > 90 days.
+Charts query PostgreSQL directly with
+`to_timestamp(floor(extract(epoch FROM recorded_at) / width) * width)` bucketing.
 No continuous aggregates in v1; add later only if fleet size demands it.
 
 ### 6.4 Retention
@@ -506,7 +516,7 @@ required role (§9).
 |---|---|
 | `GET /api/status` | service + broker connectivity, ingest rates |
 | `GET /api/devices` / `GET /api/devices/{id}` | fleet list / detail incl. presence, config, lag |
-| `GET /api/series?device&from&to&bucket` | chart data (time_bucket downsampling) |
+| `GET /api/series?device&from&to&bucket` | chart data (plain PostgreSQL downsampling) |
 | `GET /api/alerts` | open/resolved alerts |
 | `GET /api/messages?device&topic&since` | raw log (role-gated) |
 | `POST /api/devices/{id}/config` | build + queue project-settings push (role-gated) |
@@ -517,6 +527,15 @@ required role (§9).
 
 All mutating endpoints require the admin role; read endpoints require any
 authenticated group (§9). JSON errors, no HTML error pages on `/api/*`.
+
+**Resolved contracts:**
+- **SSE (`/api/events`) (§13.18):** the browser uses `EventSource`
+  auto-reconnect; on an `event: resync` the client re-fetches the affected
+  device/series. Heartbeat every 15 s.
+- **Export (`/api/export`) (§13.17):** observations only, streaming CSV, for a
+  device and time range.
+- **Monitoring in v1 (§13.19):** `/healthz` + `/api/status` + systemd journal
+  only; no `/metrics` endpoint and no ingest-stall alerting.
 
 ---
 
@@ -544,7 +563,7 @@ pattern like `mail-archive-ui`: Vite build copied to
 4. **Commands** — run self-test, incremental `cfg` toggles, and a
    **DANGER console** (type `DANGER` to confirm, per repo precedent from the
    old `presets.ts`); live command state (queued/sent/acked/timeout).
-5. **Alerts** — open/resolved list with acknowledge.
+5. **Alerts** — read-only open/resolved list; resolution follows the readings.
 
 **Behavior:** SSE for live updates with polling fallback; data state via
 Qwik signals; routes under `/` on the single protected host. **Verification
@@ -566,23 +585,29 @@ implemented (§10).
 | Group | Capability |
 |---|---|
 | `app-admin` (existing) | everything, including config push, DANGER commands, raw log |
-| `groundwater-user` (new, proposed) | read-only: dashboard, charts, alerts, exports |
+| `groundwater-user` (new) | read-only: dashboard, charts, alerts, exports |
 
-Membership managed in Kanidm; the gateway's `allowedGroups` list in
-`networking.nix` admits both groups at the host level, and the API enforces
-the finer split. §13.2 asks you to confirm names/capabilities.
+**Resolved (§13.4):** both groups are created in Kanidm and admitted at the
+gateway (`allowedGroups` includes both); the API enforces the finer split.
+**Access scope (resolved): per-device ACLs** — a user's visible device set is
+determined by a per-device permission list, not by role alone; `app-admin`
+retains global access. This extends (does not replace) the group-based model
+and requires a permission store + enforcement in the API.
 
 ---
 
-## 10. Module impact map (implementation checklist — document only)
+## 10. Module impact map
 
-Nothing below is changed by this design phase.
+**Resolved (§13.21): Nix wiring is implemented as part of this work** (not
+deferred): `groundwater-server` gets a `default.nix`/module, service unit,
+canary target, `pg_dump` backup entry and `vars.nix` enablement. The checklist
+below is the implementation guide.
 
 | File | Planned change when implementing |
 |---|---|
 | `modules/groundwater-logger/services.nix` | replace Node unit with `groundwater-server` (Rust bin, new env: DB URL, MQTT creds/topics, listen addr); add `services.postgresql.ensureDatabases/ensureUsers`; Mosquitto stays; retention options reinterpreted (raw-log days) |
-| `system-resources.nix` | central `shared_preload_libraries = "timescaledb"` gate (§6.1) |
-| `.../networking.nix` | unchanged except `allowedGroups` may add `groundwater-user` (§13.2) |
+| `system-resources.nix` | no TimescaleDB or preload change (§13.9) |
+| `.../networking.nix` | unchanged except `allowedGroups` may add `groundwater-user` (§13.4) |
 | `.../registration.nix` | unchanged ports; homepage card optional |
 | `.../identity.nix` | unchanged user/group |
 | `.../filepaths.nix` | drop SQLite paths; keep `stateRoot`, broker state; add DB dump path |
@@ -594,7 +619,7 @@ Nothing below is changed by this design phase.
 | `custom_apps/rust/apps/groundwater-server/` | new app (src, frontend, `default.nix`, checks) |
 | `custom_apps/node/apps/groundwater-logger/` | **remove** at cutover (with its dependabot entry, pnpm lock, tests) |
 | `DESIGN_SYSTEM.md` | update surface row + shared `node-common` precedent table |
-| `vars.nix` | enable `groundwater-logger` only on your go-ahead |
+| `vars.nix` | enable `groundwater-logger` as resolved in §13.21 |
 | tests | `module-disable-matrix.nix`, hardening tests, `flake/checks.nix` `hasApp` — update expectations |
 
 ---
@@ -644,17 +669,61 @@ require an explicit user request under [AGENTS.md](../AGENTS.md#validation-build
 
 ---
 
-## 13. Open questions (needed before implementation)
+## 13. Resolved decisions
 
-1. **Broker path for real devices (§4.1):** (A) rebuild firmware pointing at
-   our Mosquitto with credentials — what's the network path for field/LTE
-   units (LAN test only for now / public listener accepting plaintext /
-   wireguard/tunnel / firmware TLS now)? or (B) HiveMQ bridge interim so
-   existing flashed units work unchanged?
-2. **Roles (§9):** confirm group names (`app-admin` + new
-   `groundwater-user`?) and whether read-only users should exist at all in v1.
-3. **Alert notifications (§5.4):** UI-only in v1, or wire to an existing
-   channel (e-mail via the mail stack, Gotify, etc.)?
-4. **Retention (§6.4):** readings indefinite + raw log 90 days — agree?
-5. **App name:** `groundwater-server` for the Rust crate/directory — agree, or
-   prefer `groundwater`?
+All decisions below are authoritative for the implementation phase and
+supersede the earlier open questions. Each cites the section it affects.
+
+1. **Scope (§1, §8, §10):** full platform per this document — not just the
+   synthetic inspection slice. The slice is the first increment. Includes Qwik
+   frontend, alert engine, command scheduler, config-push builder, exports.
+2. **Broker path (§4.1):** LAN + NetBird. Rebuild firmware to point at our
+   Mosquitto with credentials; field/LTE units join the existing NetBird mesh.
+   No public plaintext listener. HiveMQ bridge not used. Firmware TLS remains
+   a later hardening item (§11.3).
+3. **Tunnel technology (§4.1):** NetBird (existing mesh), site-dependent
+   fallback documented in the runbook.
+4. **Roles (§9):** `app-admin` (Operator) + new `groundwater-user` (Viewer).
+   Both created in Kanidm and admitted by the gateway. API enforces the split.
+5. **Access scope (§9):** per-device ACLs. A user's visible device set is
+   determined by a per-device permission list; `app-admin` retains global
+   access. Extends the group model.
+6. **Alert notifications (§5.4):** UI-only in v1. No external channel.
+7. **Alert acknowledgment (§5.4):** none. Alerts are read-only state and
+   resolve automatically when a reading returns to `NORMAL`.
+8. **Retention (§6.4):** readings indefinite; raw delivery log 90 days;
+   commands/alerts retained for audit, prunable after a year. Agreed.
+9. **TimescaleDB (§6.1):** not adopted. Plain PostgreSQL with manual
+   bucketing. Revisit if fleet size demands continuous aggregates.
+10. **Config push (§3.6, §5.5):** in v1 scope. Implement the project-settings
+    builder with §3.6 constraint tests, the DANGER-gated UI, and the
+    window-aware scheduler.
+11. **Command retry (§5.5):** re-poll on next `Ready`; no automatic
+    timeout/fail. A command stays queued until acked or cancelled by an
+    operator.
+12. **Enrollment/provisioning (§5.2, §6.2):** documented SQL seed template +
+    runbook. No auto-create-on-first-reading, no admin CRUD API in v1.
+    Operator records the firmware profile at enrollment.
+13. **Firmware profile assignment (§3.1):** operator records `source_profile`
+    (V21/V20/ML) at enrollment from the firmware tree in use; documented in
+    the runbook.
+14. **GWL datum/sign (§3.4, telemetry):** keep `GWL_ABS_LIMIT_M = 1000 m` as
+    a sanity bound only; alert thresholds use raw metres and are operator-set.
+    Document that the datum is uncommissioned.
+15. **Device-status (§3.3, §5.2):** attributed now. Bind device-status topics
+    and derive awake/asleep + `last_ready_at`.
+16. **Node app (§10):** remove at cutover. Keep enabled until the Rust app is
+    deployable; then delete the Node app, module wiring, dependabot entry and
+    pnpm lock.
+17. **Exports (§7):** observations only, streaming CSV, for a device and time
+    range.
+18. **SSE contract (§7, §8):** browser uses `EventSource` auto-reconnect; on
+    `event: resync` the client re-fetches the affected device/series.
+    Heartbeat every 15 s.
+19. **Monitoring (§7):** `/healthz` + `/api/status` + systemd journal only in
+    v1. No `/metrics` endpoint, no ingest-stall alerting.
+20. **App name (§1, §10):** `groundwater-server` for the crate/directory.
+    Agreed.
+21. **Nix wiring (§10):** implemented as part of this work — `default.nix`,
+    service unit, canary target, `pg_dump` backup entry, `vars.nix`
+    enablement.
