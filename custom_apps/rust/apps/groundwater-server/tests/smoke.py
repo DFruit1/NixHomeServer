@@ -10,6 +10,7 @@ executables must be on PATH; no deployed service or real credentials are used.
 import argparse
 import datetime as dt
 import getpass
+from html.parser import HTMLParser
 import json
 import os
 from pathlib import Path
@@ -259,7 +260,25 @@ def main():
 
             if args.frontend:
                 html = request("/", role="viewer")
-                assert "<html" in html.lower() and "/build/" in html, "Qwik application was not served"
+                assert "<html" in html.lower() and "groundwater-app" in html, "Qwik application was not served"
+
+                class Assets(HTMLParser):
+                    paths = []
+
+                    def handle_starttag(self, tag, attrs):
+                        attributes = dict(attrs)
+                        if tag == "script" and attributes.get("src"):
+                            self.paths.append(attributes["src"])
+                        if tag == "link" and attributes.get("rel") == "stylesheet":
+                            self.paths.append(attributes["href"])
+
+                assets = Assets()
+                assets.feed(html)
+                assert assets.paths, "production frontend has no assets"
+                for path in assets.paths:
+                    assert path.startswith("/") and not path.startswith("//"), path
+                    assert request(path, role="viewer"), f"empty frontend asset: {path}"
+                request("/api/unknown", expected=404)
             print("PASS: local MQTT ingestion, dedupe, raw log, ACLs, alerts, history, CSV, config validation, wake dispatch, ack, non-retain, presence and restart audit")
         except Exception:
             log.flush()
