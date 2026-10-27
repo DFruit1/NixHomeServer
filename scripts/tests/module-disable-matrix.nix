@@ -229,18 +229,18 @@ let
       modules = [ ../../modules/groundwater-logger ];
       disable = { repo.groundwaterLogger.enable = lib.mkForce false; };
       registryName = "groundwater-logger";
-      services = [ "groundwater-logger" ];
+      services = [ "groundwater-server" "mosquitto" ];
       timers = [ ];
       hosts = [ "groundwater" ];
       gatewayApps = [ "groundwater" ];
       oauthClients = [ ];
-      kanidmGroups = [ ];
-      users = [ "groundwater-logger" ];
-      groups = [ "groundwater-logger" ];
+      kanidmGroups = [ "groundwater-user" ];
+      users = [ "groundwater" "groundwater-logger" ];
+      groups = [ "groundwater" "groundwater-logger" ];
       secrets = [ "groundwaterAppMqttPassword" "groundwaterLoggerMqttPassword" ];
       backupApps = [ "groundwater-logger" ];
-      guardedServices = [ ];
-      persistencePaths = [ "/var/lib/groundwater-logger" "/var/lib/groundwater-mosquitto" ];
+      guardedServices = [ "groundwater-server" "mosquitto" ];
+      persistencePaths = [ "/var/lib/groundwater-logger" "/var/lib/groundwater-mosquitto" "/var/lib/postgresql" ];
     };
     mail-archive-ui = {
       disable = { services.mail-archive-ui.enable = lib.mkForce false; };

@@ -69,6 +69,12 @@ in
     workspaceSrc = workspaceSource "browsertrix-downloader" false;
     workspaceCheckSrc = workspaceSource "browsertrix-downloader" true;
   };
+  groundwater-server = import ./groundwater-server/default.nix {
+    inherit rustLib;
+    inherit workspaceVersion sharedCargoArtifacts cargoLock;
+    workspaceSrc = workspaceSource "groundwater-server" false;
+    workspaceCheckSrc = workspaceSource "groundwater-server" true;
+  };
   kanidm-canary-bootstrap = import ./kanidm-canary-bootstrap/default.nix {
     inherit rustLib;
     inherit workspaceVersion sharedCargoArtifacts cargoLock;

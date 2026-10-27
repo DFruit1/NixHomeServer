@@ -38,6 +38,7 @@ let
     ai-gate = "bonsai";
     ai-tools = "ai-tools";
     browsertrix-downloader = "browsertrix-downloader";
+    groundwater-server = "groundwater-logger";
     kanidm-canary-bootstrap = null;
     mail-archive-ui = "mail-archive-ui";
     filesync-api = "filesync";
@@ -301,7 +302,7 @@ in
   bootstrap-disko = bootstrapConfigurations."${hostName}-bootstrap".config.system.build.diskoScript;
 }
 // lib.optionalAttrs (hasApp "groundwater-logger") {
-  groundwater-logger = nodeApps.groundwater-logger;
+  groundwater-server-package = rustApps.groundwater-server.package;
 }
 // {
   homepage = nodeApps.homepage;

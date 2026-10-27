@@ -27,6 +27,7 @@ let
         "fdroid"
         "forgejo"
         "freshrss"
+        "groundwater-logger"
         "immich"
         "ipfs"
         "jellyfin"

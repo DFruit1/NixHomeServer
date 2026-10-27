@@ -12,6 +12,7 @@ member_manifests=(
   custom_apps/mkvmaker/Cargo.toml
   custom_apps/rust/apps/ai-gate/Cargo.toml
   custom_apps/rust/apps/browsertrix-downloader/Cargo.toml
+  custom_apps/rust/apps/groundwater-server/Cargo.toml
   custom_apps/rust/apps/ipfs-alias/Cargo.toml
   custom_apps/rust/apps/kanidm-canary-bootstrap/Cargo.toml
   custom_apps/rust/apps/mail-archive-ui/Cargo.toml
@@ -87,6 +88,7 @@ nix_versions="$(flake_eval_json '
   };
   workspaceMembers = [
     "browsertrix-downloader"
+    "groundwater-server"
     "kanidm-canary-bootstrap"
     "mail-archive-ui"
     "media-manager"

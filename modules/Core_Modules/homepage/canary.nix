@@ -36,6 +36,7 @@ let
     (mkTarget { id = "archives"; name = "Web Archives"; host = "archives.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "Web Archives|Browsertrix"; })
     (mkTarget { id = "feeds"; name = "Feeds"; host = "rss.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "FreshRSS|Feeds"; })
     (mkTarget { id = "emails"; name = "Mail Archive"; host = "emails.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "Mail Archive|Emails"; })
+    (mkTarget { id = "groundwater"; name = "Groundwater Platform"; host = "groundwater.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "Groundwater"; })
     (mkTarget { id = "downloads"; name = "YouTube Downloads"; host = "ytdownload.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "YouTube|Downloads"; })
     (mkTarget { id = "passwords"; name = "Passwords"; host = "passwords.${vars.domain}"; coverageMode = "local-boundary"; expectedPattern = "Vaultwarden|Bitwarden|Passwords"; })
     (mkTarget { id = "git"; name = "Git"; host = "git.${vars.domain}"; coverageMode = "native-oidc"; expectedPattern = "Forgejo|Dashboard|Repositories"; })

@@ -11,7 +11,7 @@ test_root="$(mktemp -d)"
 trap 'rm -rf "$test_root"' EXIT
 export NODE_PNPM_DEPS_FIXTURE="$test_root"
 
-apps=(groundwater-logger homepage youtube-downloader)
+apps=(homepage youtube-downloader)
 mkdir -p "$test_root/custom_apps/node/apps" "$test_root/custom_apps/rust"
 cp -a "$TESTS_REPO_ROOT/custom_apps/rust/lib" "$test_root/custom_apps/rust/lib"
 # The app derivations interpolate ../../shared into postPatch, so the scratch
@@ -61,7 +61,7 @@ deps_id() {
         drv = apps.\${name}.pnpmDeps.drvPath;
         src = toString apps.\${name}.pnpmDeps.src;
       };
-    }) [ \"groundwater-logger\" \"homepage\" \"youtube-downloader\" ])
+    }) [ \"homepage\" \"youtube-downloader\" ])
   "
 }
 

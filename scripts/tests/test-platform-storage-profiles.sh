@@ -79,7 +79,7 @@ let
   appPackages = {
     homepage = pkgs.writeTextDir "share/homepage/client/index.html" "";
     mail-archive-ui = pkgs.writeShellScriptBin "mail-archive-ui" "exit 0";
-    groundwater-logger = pkgs.writeShellScriptBin "groundwater-logger" "exit 0";
+    groundwater-server = pkgs.writeShellScriptBin "groundwater-server" "exit 0";
   };
   host = import ./flake/system.nix {
     inputs = f.inputs;
@@ -121,7 +121,7 @@ let
   appPackages = {
     homepage = pkgs.writeTextDir "share/homepage/client/index.html" "";
     mail-archive-ui = pkgs.writeShellScriptBin "mail-archive-ui" "exit 0";
-    groundwater-logger = pkgs.writeShellScriptBin "groundwater-logger" "exit 0";
+    groundwater-server = pkgs.writeShellScriptBin "groundwater-server" "exit 0";
   };
   host = import ./flake/system.nix {
     inputs = f.inputs;
