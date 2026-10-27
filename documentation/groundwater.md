@@ -257,7 +257,7 @@ Reuse the module's two-account model, unchanged semantics:
 
 | Account | Role | ACL |
 |---|---|---|
-| `groundwater-logger` (device) | devices | write `azman1/feeds/#`; read `requesttesta`, `cmd/#`, `cfg/#` |
+| `groundwater-logger` (device) | devices | write `azman1/feeds/#`, `cfg/desired/applied`, `cfg/danger_ack`; read `requesttesta`, `cmd/#`, `cfg/#` |
 | `groundwater-app` (service) | `groundwater-server` | read/write the same set (needs write for downlink, read for telemetry) |
 
 **Multi-device reality:** all devices share one account and one client ID
