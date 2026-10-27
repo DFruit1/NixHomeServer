@@ -1,21 +1,20 @@
 # Groundwater Level Platform — Design
 
-**Status:** Design contract + resolved decisions. A synthetic server-side slice
-exists in `custom_apps/rust/apps/groundwater-server` (plain PostgreSQL, no
-TimescaleDB, server-rendered inspection page). The decisions in §13 are
-resolved and supersede the open questions there; implementation of the full
-platform proceeds against this document.
+**Status:** Platform implementation in `custom_apps/rust/apps/groundwater-server`
+(plain PostgreSQL, Qwik frontend, MQTT ingest, alerts, configuration and durable
+commands). The decisions in §13 supersede earlier proposals. See the
+[operator runbook](groundwater-operations.md) for enrollment and commissioning.
+Live deployment and hardware commissioning remain separate operations.
 
 **Firmware source:** private repo `MuhammadAli1132001/Ground-Water-Level`,
 commit `8278b61` ("ack and desired applied"), active tree
 `GWL_Firmware_V2.1/GWL_Firmware_V2.1/` (referred to below as *the firmware*).
 Cloned locally at `~/Projects/Ground-Water-Level`.
 
-**Related repo state:** `modules/groundwater-logger/` and
-`custom_apps/node/apps/groundwater-logger/` exist but are **inactive** (absent
-from `vars.nix` `applications.enabled`). That Node app is a "LAN MQTT test
-console" (Qwik UI + SQLite + MQTT bridge). This design replaces it with a
-production platform; §10 maps every touchpoint.
+**Related repo state:** `modules/groundwater-logger/` retains the application
+catalog key and broker. The Rust platform replaces the removed Node LAN MQTT
+test console, and is selected in `vars.nix`. Historical SQLite files remain
+retained state. Source enablement does not activate the deployed server.
 
 ---
 

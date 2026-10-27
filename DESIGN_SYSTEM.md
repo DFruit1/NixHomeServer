@@ -25,7 +25,6 @@ Rules for keeping this file useful:
 | media-manager | `custom_apps/rust/apps/media-manager/frontend/` | Qwik 1.16 + Vite (TSX) | `src/styles.css` |
 | mail-archive-ui | `custom_apps/rust/apps/mail-archive-ui/frontend/` | Qwik 1.16 + Vite (TSX) | `src/styles.css` |
 | homepage | `custom_apps/node/apps/homepage/` | Qwik 1.16 + Vite (TSX) | `src/client/styles.css` |
-| groundwater-logger | `custom_apps/node/apps/groundwater-logger/` | Qwik 1.16 + Vite (TSX) | `src/client/styles.css` |
 | groundwater-server | `custom_apps/rust/apps/groundwater-server/frontend/` | Qwik 1.16 + Vite CSR SPA | `src/styles.css` |
 | youtube-downloader | `custom_apps/node/apps/youtube-downloader/` | Qwik 1.16 + Vite (TSX) | `src/client/styles.css` |
 | browsertrix-downloader | `custom_apps/rust/apps/browsertrix-downloader/frontend/` | Qwik 1.16 + Vite (TSX) | `src/client/styles.css` |

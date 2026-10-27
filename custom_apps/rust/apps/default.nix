@@ -11,7 +11,8 @@ let
     inherit name cargoLock workspaceManifests;
     workspaceRoot = workspaceSrcRoot;
     excludePrefixes = if checks then [ ] else [ "tests" ] ++ lib.optional (name == "mail-archive-ui") "src/tests.rs";
-    extraSourcePrefixes = lib.optional (name == "search") "src/ui.html";
+    extraSourcePrefixes = lib.optional (name == "search") "src/ui.html"
+      ++ lib.optional (name == "groundwater-server") "src/platform.sql";
   };
   # mkvmaker is the one workspace member outside rust/apps/, so it names its
   # member path explicitly.
