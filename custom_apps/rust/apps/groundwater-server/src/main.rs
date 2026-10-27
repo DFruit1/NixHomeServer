@@ -2,35 +2,29 @@
 //!
 //! Ingests MQTT telemetry from the STM32 groundwater loggers, interprets it
 //! against explicit firmware profiles, stores it in plain PostgreSQL, and
-//! serves an authenticated API plus a single-device inspection page behind the
-//! shared authentication gateway.
-//!
-//! The pipeline is layered so each part is testable on its own:
-//!
-//! - [`telemetry`] parses the firmware's JSON payload, keeping its text;
-//! - [`clock`] interprets the device timestamp from evidence, never a guess;
-//! - [`topics`] classifies a topic by name only;
-//! - [`adapter`] decides attribution, quarantine and duplicates;
-//! - [`db`] stores deliveries, observations and trust state;
-//! - [`ingest`] is the MQTT transport, and holds no policy.
-//!
-//! Slice 1 is server-side and synthetic-only: the crate builds and tests here,
-//! but nothing is deployed and no broker is contacted by the test suite
-//! (`GWAPP-20261023-slice1` §3). Enabling the application in NixOS stays
-//! opt-in and off by default.
+//! serves the ACL-scoped API and packaged Qwik application behind the shared
+//! authentication gateway. Durable commands use explicit topic bindings and
+//! wake windows; alert history is replayed in recorded-time order. The
+//! enrollment, clock, duplicate and quarantine safeguards remain in adapter.
 
 mod adapter;
 mod api;
 mod clock;
+mod commands;
 mod config;
 mod db;
 #[cfg(test)]
 mod fixtures;
 mod identity;
 mod ingest;
+mod platform;
+#[cfg(test)]
+mod platform_tests;
 mod profiles;
+mod scheduler;
 mod telemetry;
 mod topics;
+#[cfg(test)]
 mod ui;
 
 use std::process::ExitCode;
@@ -82,6 +76,23 @@ async fn run() -> Result<(), String> {
     let retention_days = settings.retention_days;
     let bus = EventBus::new();
     let stats = Arc::new(tokio::sync::Mutex::new(IngestStats::default()));
+    // Stored observations/configuration can need replay even without MQTT.
+    let alert_db = client.clone();
+    let alert_bus = bus.clone();
+    tokio::spawn(async move {
+        let mut timer = tokio::time::interval(Duration::from_secs(1));
+        loop {
+            timer.tick().await;
+            match platform::refresh_alerts(&alert_db).await {
+                Ok(ids) => {
+                    for device_id in ids {
+                        alert_bus.emit(ingest::LiveEvent::Alert { device_id });
+                    }
+                }
+                Err(e) => eprintln!("groundwater alert engine: {e}"),
+            }
+        }
+    });
 
     match &settings.mqtt {
         Some(mqtt) => eprintln!(

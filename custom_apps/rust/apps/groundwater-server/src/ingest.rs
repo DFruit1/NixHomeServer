@@ -49,13 +49,32 @@ pub enum LiveEvent {
         gwl: f64,
     },
     /// A delivery was identical to one already stored at the same device time.
-    Redelivery { device_id: String },
+    Redelivery {
+        device_id: String,
+    },
     /// A different value at a device time that already has one.
-    Conflict { device_id: String },
+    Conflict {
+        device_id: String,
+    },
+    Presence {
+        device_id: String,
+    },
+    Alert {
+        device_id: String,
+    },
+    Command {
+        device_id: String,
+    },
     /// Traffic that was recorded but not attributed to any device.
-    Quarantine { topic: String, reason: String },
+    Quarantine {
+        topic: String,
+        reason: String,
+    },
     /// The broker connection state changed.
-    Broker { connected: bool, detail: String },
+    Broker {
+        connected: bool,
+        detail: String,
+    },
 }
 
 /// Handle shared with the HTTP layer to publish live events.
@@ -72,7 +91,7 @@ impl EventBus {
         self.0.subscribe()
     }
 
-    fn emit(&self, event: LiveEvent) {
+    pub fn emit(&self, event: LiveEvent) {
         // A send error only means nobody is listening, which is the common case.
         let _ = self.0.send(event);
     }
@@ -131,6 +150,12 @@ pub async fn run(
     }
 
     let (mqtt_client, mut event_loop) = AsyncClient::new(options, 10);
+    tokio::spawn(crate::scheduler::run(
+        settings.database_url.clone(),
+        mqtt_client.clone(),
+        stats.clone(),
+        bus.clone(),
+    ));
     let subscribe_topics = settings.topics.subscribe_topics();
     let topic_map = Arc::new(settings.topics.clone());
     let mut connected = false;
@@ -144,6 +169,10 @@ pub async fn run(
                     Ok(loaded) => {
                         let enrollments = loaded.enrollments().count();
                         let bindings = loaded.bindings().len();
+                        let mut topics=settings.topics.subscribe_topics();
+                        topics.extend(loaded.bindings().iter().map(|b|b.topic.clone()));topics.sort();topics.dedup();
+                        let subscriber=mqtt_client.clone();
+                        tokio::spawn(async move {for topic in topics {if let Err(e)=subscriber.subscribe(topic,rumqttc::QoS::AtLeastOnce).await {eprintln!("groundwater subscription refresh: {e}");}}});
                         *registry.write().await = loaded;
                         eprintln!(
                             "groundwater: registry refreshed ({enrollments} enrollment(s), {bindings} binding(s))"
@@ -170,14 +199,28 @@ pub async fn run(
                     guard.connected = true;
                     guard.last_error = None;
                 }
-                for topic in &subscribe_topics {
-                    if let Err(err) = mqtt_client
-                        .subscribe(topic.clone(), rumqttc::QoS::AtLeastOnce)
+                // Subscription production must not await queue capacity while
+                // this same task owns event_loop.poll().
+                let subscriber = mqtt_client.clone();
+                let mut subscriptions = subscribe_topics.clone();
+                subscriptions.extend(
+                    registry
+                        .read()
                         .await
-                    {
-                        eprintln!("groundwater: subscribe to {topic} failed: {err}");
+                        .bindings()
+                        .iter()
+                        .map(|b| b.topic.clone()),
+                );
+                subscriptions.sort();
+                subscriptions.dedup();
+                tokio::spawn(async move {
+                    for topic in subscriptions {
+                        if let Err(e) = subscriber.subscribe(topic, rumqttc::QoS::AtLeastOnce).await
+                        {
+                            eprintln!("groundwater subscribe: {e}");
+                        }
                     }
-                }
+                });
                 bus.emit(LiveEvent::Broker {
                     connected: true,
                     detail: format!("subscribed to {} topics", subscribe_topics.len()),
@@ -188,6 +231,7 @@ pub async fn run(
                     &publish.topic,
                     &publish.payload,
                     publish.qos as i16,
+                    publish.retain,
                     chrono::Utc::now(),
                     &topic_map,
                     &client,
@@ -233,6 +277,7 @@ pub async fn handle_publish(
     topic: &str,
     payload: &[u8],
     qos: i16,
+    retained: bool,
     received_at: chrono::DateTime<chrono::Utc>,
     topic_map: &TopicMap,
     client: &Client,
@@ -249,25 +294,19 @@ pub async fn handle_publish(
     let registry = registry.read().await.clone();
     let evaluation = adapter::evaluate(&delivery, &registry, topic_map);
 
-    let intake = match evaluation {
+    let mut intake = match evaluation {
         adapter::Evaluation::Quarantined {
             record,
             reason,
             detail,
-        } => {
-            eprintln!(
-                "groundwater: quarantined {topic}: {} ({detail})",
-                reason.code()
-            );
-            adapter::finalize(
-                adapter::Evaluation::Quarantined {
-                    record,
-                    reason,
-                    detail,
-                },
-                adapter::DuplicateDecision::fresh("not evaluated (quarantined)"),
-            )
-        }
+        } => adapter::finalize(
+            adapter::Evaluation::Quarantined {
+                record,
+                reason,
+                detail,
+            },
+            adapter::DuplicateDecision::fresh("not evaluated (quarantined)"),
+        ),
         adapter::Evaluation::Candidate {
             record,
             observation,
@@ -300,6 +339,37 @@ pub async fn handle_publish(
             )
         }
     };
+
+    if !retained && intake.record.kind != crate::topics::MessageKind::Reading {
+        match crate::scheduler::ancillary(
+            client,
+            &registry,
+            topic,
+            payload,
+            topic_map,
+            received_at,
+            bus,
+        )
+        .await
+        {
+            Ok(Some(device)) => {
+                intake.record.device_id = Some(device);
+                intake.record.state = adapter::DeliveryState::Accepted;
+                intake.record.quarantine_reason = None;
+                intake.record.quarantine_detail = None;
+                if let Some(binding) = crate::scheduler::attributed(&registry, topic) {
+                    intake.record.binding_key = Some(binding.key.clone());
+                    intake.record.profile = Some(binding.profile);
+                }
+                intake.outcome = IntakeOutcome::Accepted {
+                    observation: None,
+                    duplicate: adapter::DuplicateDecision::fresh("attributed ancillary message"),
+                };
+            }
+            Ok(None) => {}
+            Err(e) => eprintln!("groundwater ancillary: {e}"),
+        }
+    }
 
     {
         let mut guard = stats.lock().await;
@@ -357,7 +427,11 @@ pub async fn handle_publish(
                 }
             }
         }
-        IntakeOutcome::Quarantined { reason, .. } => {
+        IntakeOutcome::Quarantined { reason, detail } => {
+            eprintln!(
+                "groundwater: quarantined {topic}: {} ({detail})",
+                reason.code()
+            );
             bus.emit(LiveEvent::Quarantine {
                 topic: intake.record.topic.clone(),
                 reason: reason.code().to_string(),

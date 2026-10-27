@@ -20,4 +20,5 @@ tokio-postgres = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
+tower.workspace = true
 tempfile.workspace = true

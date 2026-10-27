@@ -1,49 +1,28 @@
-//! HTTP API and the inspection page.
-//!
-//! Bound to loopback and reached only through the auth gateway, which
-//! authenticates the caller and forwards identity headers. Every route
-//! re-checks the role locally because the gateway's group check is
-//! host-level, not per-route (`GWAPP-20261023-slice1` §1).
-//!
-//! Read endpoints answer for the viewer group; the raw delivery log — which
-//! contains unattributed payloads — requires the operator group.
-
-use std::sync::Arc;
-use std::time::Duration;
-
-use axum::extract::{Path as AxumPath, Query, State};
-use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
-use axum::middleware::Next;
-use axum::response::{IntoResponse, Response};
-use axum::routing::get;
-use axum::{Json, Router};
+//! Gateway-authenticated JSON API, ACL-scoped streams and packaged Qwik SPA.
+use crate::{
+    config::Settings,
+    db,
+    identity::{role_for, Identity, Role},
+    ingest::{EventBus, IngestStats, LiveEvent},
+    platform,
+};
+use axum::{
+    extract::{Path as AxumPath, Query, Request, State},
+    http::{header, HeaderMap, HeaderValue, StatusCode},
+    middleware::Next,
+    response::{IntoResponse, Response},
+    routing::{get, post},
+    Json, Router,
+};
+use chrono::{DateTime, Utc};
+use futures_util::{StreamExt, TryStreamExt};
 use serde::Deserialize;
-use serde_json::json;
-use tokio::sync::broadcast::error::RecvError;
-
-use crate::adapter::{DUPLICATE_WINDOW_MINUTES, MAX_PAYLOAD_BYTES};
-use crate::clock::MAX_FUTURE_SKEW_HOURS;
-use crate::config::Settings;
-use crate::db;
-use crate::identity::{role_for, Identity, Role};
-use crate::ingest::{EventBus, IngestStats};
-use crate::profiles::ALL_PROFILES;
-use crate::telemetry::GWL_ABS_LIMIT_M;
-use crate::ui;
-
-/// Hard cap on delivery-log rows a single request may return.
-const MAX_LOG_ROWS: i64 = 500;
-
-/// Heartbeat interval for the event stream, so proxies do not drop an idle
-/// connection.
-const EVENT_HEARTBEAT_SECONDS: u64 = 15;
-
-/// Hours of history the inspection page shows by default.
-const PAGE_HISTORY_HOURS: i64 = 24;
-
-/// Bucket width the inspection page asks for.
-const PAGE_BUCKET_MINUTES: i64 = 15;
-
+use serde_json::{json, Value};
+use std::{
+    path::{Component, Path},
+    sync::Arc,
+    time::Duration,
+};
 #[derive(Clone)]
 pub struct AppState {
     pub settings: Arc<Settings>,
@@ -51,439 +30,527 @@ pub struct AppState {
     pub bus: EventBus,
     pub stats: Arc<tokio::sync::Mutex<IngestStats>>,
 }
-
-pub async fn serve(state: AppState) -> Result<(), String> {
-    let address = state.settings.address.clone();
-    let port = state.settings.port;
-
-    let app = Router::new()
-        .route("/healthz", get(health))
-        .route("/", get(page))
-        .route("/api/status", get(api_status))
-        .route("/api/devices", get(api_devices))
-        .route("/api/devices/{device_id}", get(api_device))
-        .route("/api/series", get(api_series))
-        // The documented raw-log name, plus its delivery-oriented alias.
-        .route("/api/messages", get(api_deliveries))
-        .route("/api/deliveries", get(api_deliveries))
-        .route("/api/events", get(api_events))
-        .fallback(not_found)
+type ApiResult = Result<Response, Response>;
+pub fn router(state: AppState) -> Router {
+    Router::new()
+        .route("/healthz", get(|| async { "ok" }))
+        .route("/api/status", get(status))
+        .route("/api/devices", get(devices))
+        .route("/api/devices/{device_id}", get(device))
+        .route("/api/series", get(series))
+        .route("/api/alerts", get(alerts))
+        .route("/api/commands", get(commands))
+        .route("/api/messages", get(deliveries))
+        .route("/api/deliveries", get(deliveries))
+        .route("/api/export", get(export))
+        .route("/api/events", get(events))
+        .route("/api/devices/{device_id}/config", post(configure))
+        .route("/api/devices/{device_id}/commands", post(enqueue))
+        .route(
+            "/api/devices/{device_id}/commands/{command_id}/cancel",
+            post(cancel),
+        )
+        .fallback(frontend)
         .with_state(state)
-        .layer(axum::middleware::from_fn(security_headers));
-
-    let listener = tokio::net::TcpListener::bind((address.as_str(), port))
+        .layer(axum::middleware::from_fn(boundary))
+}
+pub async fn serve(state: AppState) -> Result<(), String> {
+    let endpoint = format!("{}:{}", state.settings.address, state.settings.port);
+    let listener = tokio::net::TcpListener::bind(&endpoint)
         .await
-        .map_err(|err| format!("failed to bind {address}:{port}: {err}"))?;
-    homelab_common::log_server_started("groundwater-server", &format!("{address}:{port}"));
-    axum::serve(listener, app)
+        .map_err(|e| e.to_string())?;
+    homelab_common::log_server_started("groundwater-server", &endpoint);
+    axum::serve(listener, router(state))
         .with_graceful_shutdown(homelab_common::shutdown_signal())
         .await
-        .map_err(|err| format!("server error: {err}"))
+        .map_err(|e| e.to_string())
 }
-
-/// Baseline security headers applied to every response.
-async fn security_headers(request: axum::extract::Request, next: Next) -> Response {
+fn error(code: StatusCode, message: &str) -> Response {
+    (code, Json(json!({"error":message}))).into_response()
+}
+fn bad(message: &str) -> Response {
+    error(StatusCode::BAD_REQUEST, message)
+}
+fn database(e: String) -> Response {
+    eprintln!("groundwater API: {e}");
+    error(StatusCode::INTERNAL_SERVER_ERROR, "database request failed")
+}
+fn gate(headers: &HeaderMap) -> Result<(Identity, Role), Response> {
+    let identity = Identity::from_headers(headers)
+        .map_err(|_| error(StatusCode::UNAUTHORIZED, "not signed in"))?;
+    let role = role_for(&identity).ok_or_else(|| {
+        error(
+            StatusCode::FORBIDDEN,
+            "your account is not a member of this app's access groups",
+        )
+    })?;
+    Ok((identity, role))
+}
+fn operator(headers: &HeaderMap) -> Result<Identity, Response> {
+    let (i, r) = gate(headers)?;
+    if r != Role::Operator {
+        return Err(error(StatusCode::FORBIDDEN, "operator role required"));
+    }
+    Ok(i)
+}
+async fn authorize(s: &AppState, h: &HeaderMap, device: &str) -> Result<String, Response> {
+    let (i, r) = gate(h)?;
+    let device = crate::adapter::canonical_device_id(device);
+    if !platform::allowed(&s.db, &i.username, &device, r == Role::Operator)
+        .await
+        .map_err(database)?
+    {
+        return Err(error(StatusCode::NOT_FOUND, "device not found"));
+    }
+    Ok(device)
+}
+async fn ids(s: &AppState, h: &HeaderMap) -> Result<Vec<String>, Response> {
+    let (i, r) = gate(h)?;
+    platform::visible_ids(&s.db, &i.username, r == Role::Operator)
+        .await
+        .map_err(database)
+}
+/// Authenticate before extraction; normalize JSON/query/path/body-limit and
+/// method rejections so every API failure is a JSON envelope.
+async fn boundary(request: Request, next: Next) -> Response {
+    let api = request.uri().path() == "/api" || request.uri().path().starts_with("/api/");
+    if request.uri().path() != "/healthz" {
+        if let Err(e) = gate(request.headers()) {
+            return e;
+        }
+    }
+    if api
+        && !matches!(
+            *request.method(),
+            axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS
+        )
+    {
+        if let Err(e) = operator(request.headers()) {
+            return e;
+        }
+    }
     let mut response = next.run(request).await;
-    let headers = response.headers_mut();
-    headers.insert(
+    if api
+        && (response.status().is_client_error() || response.status().is_server_error())
+        && !response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .is_some_and(|v| v.as_bytes().starts_with(b"application/json"))
+    {
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .unwrap_or_default();
+        let text = std::str::from_utf8(&body).unwrap_or("invalid request");
+        response = error(
+            status,
+            if text.is_empty() {
+                status.canonical_reason().unwrap_or("request failed")
+            } else {
+                text
+            },
+        );
+    }
+    let h = response.headers_mut();
+    h.insert(
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
     );
-    headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
-    headers.insert(
+    h.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    h.insert(
         header::REFERRER_POLICY,
         HeaderValue::from_static("same-origin"),
     );
-    // The page is a server-rendered document with no inline script; keep it
-    // that way so a payload can never become executable content.
-    headers.insert(
-        header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static(
-            "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; base-uri 'none'",
-        ),
-    );
+    h.insert(header::CONTENT_SECURITY_POLICY,HeaderValue::from_static("default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; font-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"));
+    if api && !h.contains_key(header::CACHE_CONTROL) {
+        h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    }
     response
 }
-
-/// Liveness only: no identity, no data. The listener is loopback-bound.
-async fn health() -> &'static str {
-    "ok"
+async fn status(State(s): State<AppState>, h: HeaderMap) -> ApiResult {
+    let (i, r) = gate(&h)?;
+    let stats = s.stats.lock().await.clone();
+    let visible = ids(&s, &h).await?;
+    Ok(Json(json!({"service":"groundwater-server","user":{"username":i.username,"role":if r==Role::Operator{"operator"}else{"viewer"}},"broker":{"configured":s.settings.mqtt.is_some(),"connected":stats.connected,"endpoint":s.settings.mqtt.as_ref().map(|m|format!("{}:{}",m.host,m.port)),"lastError":if r==Role::Operator{stats.last_error}else{None}},"ingest":{"deliveries":stats.deliveries,"observations":stats.observations,"redeliveryCandidates":stats.redelivery_candidates,"conflicts":stats.conflicts,"quarantined":stats.quarantined},"adapter":{"profiles":crate::profiles::ALL_PROFILES.iter().map(|p|json!({"id":p.as_str(),"label":p.label(),"carriesDeviceId":p.carries_device_id()})).collect::<Vec<_>>()},"devices":visible.len(),"retentionDays":s.settings.retention_days})).into_response())
 }
-
-/// The caller's role, or the response to send instead.
-type GateResult = Result<Role, (StatusCode, Json<serde_json::Value>)>;
-
-fn gate(headers: &HeaderMap) -> GateResult {
-    let identity = Identity::from_headers(headers).map_err(|_| {
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({ "error": "not signed in" })),
-        )
-    })?;
-    role_for(&identity).ok_or_else(|| {
-        (
-            StatusCode::FORBIDDEN,
-            Json(json!({
-                "error": "your account is not a member of this app's access groups"
-            })),
-        )
-    })
-}
-
-/// The inspection page: latest plausible event plus history for one device.
-#[derive(Debug, Deserialize)]
-struct PageParams {
-    device: Option<String>,
-    hours: Option<i64>,
-}
-
-async fn page(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Query(params): Query<PageParams>,
-) -> Result<Response, Response> {
-    gate(&headers).map_err(IntoResponse::into_response)?;
-    let devices = db::list_devices(&state.db).await.map_err(db_error)?;
-    let selected = params
-        .device
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|value| value.to_string())
-        .or_else(|| devices.first().map(|device| device.device_id.clone()));
-
-    let mut view = ui::FleetView::new(devices, selected.clone());
-    if let Some(device_id) = selected.as_deref() {
-        let hours = clamp_hours(params.hours.or(Some(PAGE_HISTORY_HOURS)));
-        let (from, to) = history_window(chrono::Utc::now(), hours);
-        let series = db::device_series(
-            &state.db,
-            device_id,
-            db::SeriesQuery {
-                from,
-                to,
-                bucket_minutes: PAGE_BUCKET_MINUTES,
-            },
-        )
+async fn devices(State(s): State<AppState>, h: HeaderMap) -> ApiResult {
+    let visible = ids(&s, &h).await?;
+    let devices: Vec<_> = db::list_devices(&s.db)
         .await
-        .map_err(db_error)?;
-        view.history = series.points;
-    }
-
-    Ok((
-        StatusCode::OK,
-        [
-            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
-            (header::CACHE_CONTROL, "no-store"),
-        ],
-        ui::render(&view),
-    )
-        .into_response())
-}
-
-async fn api_status(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Result<Response, Response> {
-    gate(&headers).map_err(IntoResponse::into_response)?;
-    let stats = state.stats.lock().await.clone();
-    let devices = db::list_devices(&state.db).await.map_err(db_error)?;
-    Ok(Json(json!({
-        "service": "groundwater-server",
-        "slice": "server-side-synthetic",
-        "broker": {
-            "configured": state.settings.mqtt.is_some(),
-            "endpoint": state
-                .settings
-                .mqtt
-                .as_ref()
-                .map(|mqtt| format!("{}:{}", mqtt.host, mqtt.port)),
-            "connected": stats.connected,
-            "lastError": stats.last_error,
-        },
-        "ingest": {
-            "deliveries": stats.deliveries,
-            "observations": stats.observations,
-            "redeliveryCandidates": stats.redelivery_candidates,
-            "conflicts": stats.conflicts,
-            "quarantined": stats.quarantined,
-            "lastQuarantineReason": stats.last_quarantine_reason,
-        },
-        "adapter": {
-            "interpretationVersions": ALL_PROFILES
-                .iter()
-                .map(|profile| profile.interpretation_version())
-                .collect::<Vec<_>>(),
-            "duplicateWindowMinutes": DUPLICATE_WINDOW_MINUTES,
-            "maxPayloadBytes": MAX_PAYLOAD_BYTES,
-            "gwlAbsLimitM": GWL_ABS_LIMIT_M,
-            "profiles": ALL_PROFILES
-                .iter()
-                .map(|profile| json!({
-                    "id": profile.as_str(),
-                    "label": profile.label(),
-                    "carriesDeviceId": profile.carries_device_id(),
-                }))
-                .collect::<Vec<_>>(),
-        },
-        "devices": devices.len(),
-        "retentionDays": state.settings.retention_days,
-    }))
-    .into_response())
-}
-
-async fn api_devices(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Result<Response, Response> {
-    gate(&headers).map_err(IntoResponse::into_response)?;
-    let devices = db::list_devices(&state.db).await.map_err(db_error)?;
-    Ok(Json(json!({ "devices": devices })).into_response())
-}
-
-async fn api_device(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    AxumPath(device_id): AxumPath<String>,
-) -> Result<Response, Response> {
-    gate(&headers).map_err(IntoResponse::into_response)?;
-    let device_id = device_id.trim().to_uppercase();
-    let devices = db::list_devices(&state.db).await.map_err(db_error)?;
-    match devices
+        .map_err(database)?
         .into_iter()
-        .find(|device| device.device_id == device_id)
-    {
-        Some(device) => Ok(Json(json!({ "device": device })).into_response()),
-        None => Err((
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": "unknown device" })),
-        )
-            .into_response()),
-    }
+        .filter(|d| visible.contains(&d.device_id))
+        .collect();
+    Ok(Json(json!({"devices":devices})).into_response())
 }
-
-#[derive(Debug, Deserialize)]
-struct SeriesParams {
+async fn device(
+    State(s): State<AppState>,
+    h: HeaderMap,
+    AxumPath(device): AxumPath<String>,
+) -> ApiResult {
+    let device = authorize(&s, &h, &device).await?;
+    let device = db::list_devices(&s.db)
+        .await
+        .map_err(database)?
+        .into_iter()
+        .find(|d| d.device_id == device)
+        .ok_or_else(|| error(StatusCode::NOT_FOUND, "device not found"))?;
+    Ok(Json(json!({"device":device})).into_response())
+}
+#[derive(Debug, Default, Deserialize)]
+struct Range {
     device: String,
+    from: Option<DateTime<Utc>>,
+    to: Option<DateTime<Utc>>,
     hours: Option<i64>,
     bucket: Option<i64>,
+    format: Option<String>,
 }
-
-async fn api_series(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Query(params): Query<SeriesParams>,
-) -> Result<Response, Response> {
-    gate(&headers).map_err(IntoResponse::into_response)?;
-    let device = params.device.trim();
-    if device.is_empty() {
-        return Err(bad_request("device is required"));
+impl Range {
+    fn bounds(&self) -> Result<(DateTime<Utc>, DateTime<Utc>), Response> {
+        let now = Utc::now();
+        let from = self.from.unwrap_or(
+            now - chrono::Duration::hours(
+                self.hours
+                    .unwrap_or(db::DEFAULT_WINDOW_HOURS)
+                    .clamp(1, 24 * 365),
+            ),
+        );
+        let to = self
+            .to
+            .unwrap_or(now + chrono::Duration::hours(crate::clock::MAX_FUTURE_SKEW_HOURS));
+        if from >= to {
+            return Err(bad("from must be earlier than to"));
+        }
+        Ok((from, to))
     }
-    let hours = clamp_hours(params.hours);
-    let bucket = clamp_bucket(params.bucket);
-    // A logger's clock comes from GPS and can sit ahead of this host's clock,
-    // so the upper bound is padded. Without this the most recent readings — the
-    // ones an operator is looking at — would be filtered out.
-    let (from, to) = history_window(chrono::Utc::now(), hours);
+}
+async fn series(State(s): State<AppState>, h: HeaderMap, Query(q): Query<Range>) -> ApiResult {
+    let device = authorize(&s, &h, &q.device).await?;
+    let (from, to) = q.bounds()?;
     let series = db::device_series(
-        &state.db,
-        device,
+        &s.db,
+        &device,
         db::SeriesQuery {
             from,
             to,
-            bucket_minutes: bucket,
+            bucket_minutes: q.bucket.unwrap_or(0).clamp(0, 1440),
         },
     )
     .await
-    .map_err(db_error)?;
-    Ok(Json(json!({ "series": series })).into_response())
+    .map_err(database)?;
+    Ok(Json(json!({"series":series})).into_response())
 }
-
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
+struct List {
+    device: Option<String>,
+    state: Option<String>,
+}
+async fn alerts(State(s): State<AppState>, h: HeaderMap, Query(q): Query<List>) -> ApiResult {
+    let device = match &q.device {
+        Some(d) => Some(authorize(&s, &h, d).await?),
+        None => None,
+    };
+    if q.state
+        .as_deref()
+        .is_some_and(|v| v != "open" && v != "resolved")
+    {
+        return Err(bad("state must be open or resolved"));
+    }
+    let visible = ids(&s, &h).await?;
+    Ok(Json(json!({"alerts":platform::alerts(&s.db,&visible,device.as_deref(),q.state.as_deref()).await.map_err(database)?})).into_response())
+}
+async fn commands(State(s): State<AppState>, h: HeaderMap, Query(q): Query<List>) -> ApiResult {
+    let device = match &q.device {
+        Some(d) => Some(authorize(&s, &h, d).await?),
+        None => None,
+    };
+    let visible = ids(&s, &h).await?;
+    Ok(Json(json!({"commands":platform::commands(&s.db,&visible,device.as_deref()).await.map_err(database)?})).into_response())
+}
+#[derive(Deserialize)]
 struct DeliveryParams {
     device: Option<String>,
+    topic: Option<String>,
+    since: Option<DateTime<Utc>>,
     limit: Option<i64>,
 }
-
-/// The raw delivery log, including quarantined traffic.
-///
-/// Operator-only: it contains payloads that were deliberately not attributed to
-/// any device, which a plain viewer should not be able to enumerate.
-async fn api_deliveries(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Query(params): Query<DeliveryParams>,
-) -> Result<Response, Response> {
-    let role = gate(&headers).map_err(IntoResponse::into_response)?;
-    if role != Role::Operator {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "the delivery log requires the operator role" })),
-        )
-            .into_response());
-    }
-    let limit = clamp_limit(params.limit);
-    let deliveries = db::list_deliveries(
-        &state.db,
-        params
-            .device
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty()),
-        limit,
+async fn deliveries(
+    State(s): State<AppState>,
+    h: HeaderMap,
+    Query(q): Query<DeliveryParams>,
+) -> ApiResult {
+    operator(&h)?;
+    let device = q.device.as_deref().map(crate::adapter::canonical_device_id);
+    let deliveries = db::filtered_deliveries(
+        &s.db,
+        device.as_deref(),
+        q.topic.as_deref(),
+        q.since,
+        q.limit.unwrap_or(100).clamp(1, 500),
     )
     .await
-    .map_err(db_error)?;
-    Ok(Json(json!({ "deliveries": deliveries })).into_response())
+    .map_err(database)?;
+    Ok(Json(json!({"deliveries":deliveries})).into_response())
 }
-
-/// Server-sent events stream of live ingest updates.
-async fn api_events(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Result<Response, Response> {
-    gate(&headers).map_err(IntoResponse::into_response)?;
-    let receiver = state.bus.subscribe();
-
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConfigRequest {
+    config: Value,
+}
+async fn configure(
+    State(s): State<AppState>,
+    h: HeaderMap,
+    AxumPath(device): AxumPath<String>,
+    Json(q): Json<ConfigRequest>,
+) -> ApiResult {
+    let user = operator(&h)?;
+    let device = authorize(&s, &h, &device).await?;
+    let wire = crate::commands::project_payload(&q.config).map_err(|e| bad(&e))?;
+    let command = platform::queue(
+        &s.db,
+        &device,
+        "project-settings",
+        q.config,
+        &wire,
+        &user.username,
+    )
+    .await
+    .map_err(database)?;
+    s.bus.emit(LiveEvent::Command { device_id: device });
+    Ok((StatusCode::CREATED, Json(json!({"command":command}))).into_response())
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CommandRequest {
+    kind: String,
+    #[serde(default = "empty_payload")]
+    payload: Value,
+    confirm: Option<String>,
+}
+fn empty_payload() -> Value {
+    json!({})
+}
+async fn enqueue(
+    State(s): State<AppState>,
+    h: HeaderMap,
+    AxumPath(device): AxumPath<String>,
+    Json(q): Json<CommandRequest>,
+) -> ApiResult {
+    let user = operator(&h)?;
+    let device = authorize(&s, &h, &device).await?;
+    let (payload, wire) =
+        crate::commands::command_payload(&q.kind, &q.payload, q.confirm.as_deref())
+            .map_err(|e| bad(&e))?;
+    let command = platform::queue(&s.db, &device, &q.kind, payload, &wire, &user.username)
+        .await
+        .map_err(database)?;
+    s.bus.emit(LiveEvent::Command { device_id: device });
+    Ok((StatusCode::CREATED, Json(json!({"command":command}))).into_response())
+}
+async fn cancel(
+    State(s): State<AppState>,
+    h: HeaderMap,
+    AxumPath((device, id)): AxumPath<(String, i64)>,
+) -> ApiResult {
+    let user = operator(&h)?;
+    let device = authorize(&s, &h, &device).await?;
+    let command = platform::cancel(&s.db, &device, id, &user.username)
+        .await
+        .map_err(database)?
+        .ok_or_else(|| {
+            error(
+                StatusCode::CONFLICT,
+                "command is absent or no longer cancellable",
+            )
+        })?;
+    s.bus.emit(LiveEvent::Command { device_id: device });
+    Ok(Json(json!({"command":command})).into_response())
+}
+async fn export(State(s): State<AppState>, h: HeaderMap, Query(q): Query<Range>) -> ApiResult {
+    let device = authorize(&s, &h, &q.device).await?;
+    let (from, to) = q.bounds()?;
+    if q.format.as_deref().is_some_and(|f| f != "csv") {
+        return Err(bad("format must be csv"));
+    }
+    let params: [&(dyn tokio_postgres::types::ToSql + Sync); 3] = [&device, &from, &to];
+    let rows=s.db.query_raw("SELECT device_id,recorded_at,received_at,gwl,rssi,battery_v,solar_v,time_quality,duplicate_outcome FROM observations WHERE device_id=$1 AND recorded_at >= $2 AND recorded_at <= $3 ORDER BY recorded_at,id",params).await.map_err(|e|database(e.to_string()))?;
+    let body=futures_util::stream::once(async{Ok::<_,std::io::Error>("device_id,recorded_at,received_at,gwl,rssi,battery_v,solar_v,time_quality,duplicate_outcome\r\n".to_owned())}).chain(rows.map_ok(|r|{
+        let fields=vec![r.get::<_,String>(0),r.get::<_,DateTime<Utc>>(1).to_rfc3339(),r.get::<_,DateTime<Utc>>(2).to_rfc3339(),r.get::<_,f64>(3).to_string(),r.get::<_,Option<i16>>(4).map(|v|v.to_string()).unwrap_or_default(),r.get::<_,Option<f64>>(5).map(|v|v.to_string()).unwrap_or_default(),r.get::<_,Option<f64>>(6).map(|v|v.to_string()).unwrap_or_default(),r.get::<_,String>(7),r.get::<_,String>(8)];fields.iter().map(|v|csv_field(v)).collect::<Vec<_>>().join(",")+"\r\n"
+    }).map_err(std::io::Error::other));
+    Ok(Response::builder()
+        .header(header::CONTENT_TYPE, "text/csv; charset=utf-8")
+        .header(
+            header::CONTENT_DISPOSITION,
+            "attachment; filename=groundwater-observations.csv",
+        )
+        .body(axum::body::Body::from_stream(body))
+        .unwrap())
+}
+fn csv_field(v: &str) -> String {
+    format!("\"{}\"", v.replace('"', "\"\""))
+}
+fn event_device(e: &LiveEvent) -> Option<&str> {
+    match e {
+        LiveEvent::Observation { device_id, .. }
+        | LiveEvent::Redelivery { device_id }
+        | LiveEvent::Conflict { device_id }
+        | LiveEvent::Presence { device_id }
+        | LiveEvent::Alert { device_id }
+        | LiveEvent::Command { device_id } => Some(device_id),
+        _ => None,
+    }
+}
+async fn events(State(s): State<AppState>, h: HeaderMap) -> ApiResult {
+    let (identity, role) = gate(&h)?;
+    let receiver = s.bus.subscribe();
+    let db = s.db.clone();
     let stream = futures_util::stream::unfold(
         (
             receiver,
-            tokio::time::interval(Duration::from_secs(EVENT_HEARTBEAT_SECONDS)),
+            tokio::time::interval(Duration::from_secs(15)),
+            true,
+            db,
+            identity,
+            role,
         ),
-        move |(mut receiver, mut heartbeat)| async move {
-            tokio::select! {
-                event = receiver.recv() => match event {
-                    Ok(event) => {
-                        let payload = serde_json::to_string(&event).unwrap_or_default();
-                        Some((Ok::<_, std::convert::Infallible>(format!("data: {payload}\n\n")), (receiver, heartbeat)))
-                    }
-                    // Sender dropped: the service is shutting down.
-                    Err(RecvError::Closed) => None,
-                    // A lagging receiver missed events; ask the client to
-                    // resync rather than silently dropping the gap.
-                    Err(RecvError::Lagged(missed)) => {
-                        Some((Ok(format!("event: resync\ndata: {{\"type\":\"resync\",\"missed\":{missed}}}\n\n")), (receiver, heartbeat)))
-                    }
-                },
-                _ = heartbeat.tick() => {
-                    Some((Ok(": keepalive\n\n".to_string()), (receiver, heartbeat)))
-                }
+        |(mut rx, mut heartbeat, first, db, identity, role)| async move {
+            if first {
+                return Some((
+                    Ok::<_, std::convert::Infallible>(
+                        "event: resync\ndata: {\"type\":\"resync\"}\n\n".to_owned(),
+                    ),
+                    (rx, heartbeat, false, db, identity, role),
+                ));
+            }
+            loop {
+                let text = tokio::select! {event=rx.recv()=>match event{
+                    Ok(event)=>{let allowed=if let Some(device)=event_device(&event){platform::allowed(&db,&identity.username,device,role==Role::Operator).await.unwrap_or(false)}else{role==Role::Operator};if !allowed{continue}format!("data: {}\n\n",serde_json::to_string(&event).unwrap())},
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_))=>"event: resync\ndata: {\"type\":\"resync\"}\n\n".into(),Err(tokio::sync::broadcast::error::RecvError::Closed)=>return None,
+                },_=heartbeat.tick()=>": keepalive\n\n".into()};
+                return Some((Ok(text), (rx, heartbeat, false, db, identity, role)));
             }
         },
     );
-
     Ok(Response::builder()
-        .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/event-stream")
         .header(header::CACHE_CONTROL, "no-cache")
-        .header(header::CONNECTION, "keep-alive")
+        .header("x-accel-buffering", "no")
         .body(axum::body::Body::from_stream(stream))
-        .expect("static response builder is valid"))
+        .unwrap())
 }
-
-async fn not_found() -> Response {
-    (StatusCode::NOT_FOUND, "not found").into_response()
+fn safe_path(p: &str) -> bool {
+    !p.contains(['%', '\\', '\0'])
+        && Path::new(p.trim_start_matches('/'))
+            .components()
+            .all(|c| matches!(c, Component::Normal(_)))
 }
-
-/// Query window in hours, clamped so a wide request stays bounded.
-fn clamp_hours(hours: Option<i64>) -> i64 {
-    hours.unwrap_or(db::DEFAULT_WINDOW_HOURS).clamp(1, 24 * 365)
+async fn frontend(State(_s): State<AppState>, request: Request) -> Response {
+    if request.uri().path() == "/api" || request.uri().path().starts_with("/api/") {
+        return error(StatusCode::NOT_FOUND, "API route not found");
+    }
+    if request.method() != axum::http::Method::GET && request.method() != axum::http::Method::HEAD {
+        return error(StatusCode::METHOD_NOT_ALLOWED, "method not allowed");
+    }
+    let path = request.uri().path();
+    if path != "/" && !safe_path(path) {
+        return bad("invalid asset path");
+    }
+    let root = std::env::var("GROUNDWATER_FRONTEND_DIR").unwrap_or_else(|_| "frontend/dist".into());
+    let Ok(root) = tokio::fs::canonicalize(root).await else {
+        return error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "frontend assets are unavailable",
+        );
+    };
+    let relative = path.trim_start_matches('/');
+    let requested = root.join(if relative.is_empty() {
+        "index.html"
+    } else {
+        relative
+    });
+    let resolved = match tokio::fs::canonicalize(&requested).await {
+        Ok(p) => p,
+        Err(_) => {
+            if Path::new(relative).extension().is_some() {
+                return error(StatusCode::NOT_FOUND, "asset not found");
+            }
+            match tokio::fs::canonicalize(root.join("index.html")).await {
+                Ok(p) => p,
+                Err(_) => return error(StatusCode::NOT_FOUND, "asset not found"),
+            }
+        }
+    };
+    if !resolved.starts_with(&root) {
+        return bad("invalid asset path");
+    }
+    match tokio::fs::read(&resolved).await {
+        Ok(bytes) => (
+            [
+                (
+                    header::CONTENT_TYPE,
+                    homelab_common::content_type_for_path(&resolved),
+                ),
+                (
+                    header::CACHE_CONTROL,
+                    homelab_common::cache_control_for_path(&resolved),
+                ),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Err(_) => error(StatusCode::NOT_FOUND, "asset not found"),
+    }
 }
-
-fn history_window(
-    now: chrono::DateTime<chrono::Utc>,
-    hours: i64,
-) -> (chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>) {
-    let to = now + chrono::Duration::hours(MAX_FUTURE_SKEW_HOURS);
-    (now - chrono::Duration::hours(hours), to)
-}
-
-/// Downsampling bucket in minutes, clamped; `0` means raw points.
-fn clamp_bucket(bucket: Option<i64>) -> i64 {
-    bucket.unwrap_or(0).clamp(0, 24 * 60)
-}
-
-/// Raw-log row limit, clamped.
-fn clamp_limit(limit: Option<i64>) -> i64 {
-    limit.unwrap_or(100).clamp(1, MAX_LOG_ROWS)
-}
-
-fn db_error(err: String) -> Response {
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(json!({ "error": err })),
-    )
-        .into_response()
-}
-
-fn bad_request(message: &str) -> Response {
-    (StatusCode::BAD_REQUEST, Json(json!({ "error": message }))).into_response()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
-    fn history_window_keeps_recent_readings_when_future_clock_skew_is_allowed() {
-        let now = chrono::DateTime::parse_from_rfc3339("2026-10-23T00:00:00Z")
-            .unwrap()
-            .with_timezone(&chrono::Utc);
-        let recent_reading = now - chrono::Duration::minutes(30);
-        for hours in [1, PAGE_HISTORY_HOURS, db::DEFAULT_WINDOW_HOURS, 48] {
-            let (from, to) = history_window(now, hours);
-            assert_eq!(from, now - chrono::Duration::hours(hours));
-            assert!(from <= recent_reading && recent_reading <= to);
-            assert_eq!(to, now + chrono::Duration::hours(MAX_FUTURE_SKEW_HOURS));
-        }
-    }
-
-    #[tokio::test]
-    async fn authentication_errors_preserve_status_and_json_body() {
-        let mut headers = HeaderMap::new();
-        for (signed_in, expected_status, expected_message) in [
-            (false, StatusCode::UNAUTHORIZED, "not signed in"),
-            (
-                true,
-                StatusCode::FORBIDDEN,
-                "your account is not a member of this app's access groups",
-            ),
+    fn asset_paths_do_not_escape_root() {
+        for bad in [
+            "/../etc/passwd",
+            "/%2e%2e/secret",
+            "/assets\\secret",
+            "/a/../../b",
         ] {
-            if signed_in {
-                headers.insert(
-                    "x-forwarded-preferred-username",
-                    HeaderValue::from_static("viewer"),
-                );
-                headers.insert(
-                    "x-forwarded-groups",
-                    HeaderValue::from_static("unrelated-group"),
-                );
-            }
-            let response = gate(&headers).unwrap_err().into_response();
-            assert_eq!(response.status(), expected_status);
-            let bytes = axum::body::to_bytes(response.into_body(), 1024)
-                .await
-                .unwrap();
-            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-            assert_eq!(body, json!({"error": expected_message}));
+            assert!(!safe_path(bad))
         }
+        assert!(safe_path("/build/q-abc.js"));
     }
-
     #[test]
-    fn query_bounds_are_clamped_to_the_documented_limits() {
-        assert_eq!(clamp_hours(None), db::DEFAULT_WINDOW_HOURS);
-        assert_eq!(clamp_hours(Some(0)), 1);
-        assert_eq!(clamp_hours(Some(-5)), 1);
-        assert_eq!(clamp_hours(Some(1_000_000)), 24 * 365);
-
-        assert_eq!(clamp_bucket(None), 0);
-        assert_eq!(clamp_bucket(Some(-1)), 0);
-        assert_eq!(clamp_bucket(Some(5)), 5);
-        assert_eq!(clamp_bucket(Some(1_000_000)), 24 * 60);
-
-        assert_eq!(clamp_limit(None), 100);
-        assert_eq!(clamp_limit(Some(0)), 1);
-        assert_eq!(clamp_limit(Some(-1)), 1);
-        assert_eq!(clamp_limit(Some(1_000_000)), MAX_LOG_ROWS);
+    fn csv_quotes_values() {
+        assert_eq!(csv_field("a,\"b"), "\"a,\"\"b\"");
+    }
+    #[test]
+    fn rejects_inverted_ranges() {
+        let now = Utc::now();
+        assert!(Range {
+            device: "A".into(),
+            from: Some(now),
+            to: Some(now),
+            ..Default::default()
+        }
+        .bounds()
+        .is_err());
+    }
+    #[test]
+    fn global_events_have_no_device() {
+        assert_eq!(
+            event_device(&LiveEvent::Quarantine {
+                topic: "private".into(),
+                reason: "invalid".into()
+            }),
+            None
+        );
+    }
+    #[tokio::test]
+    async fn auth_errors_are_json() {
+        let e = gate(&HeaderMap::new()).unwrap_err();
+        assert_eq!(e.status(), StatusCode::UNAUTHORIZED);
+        let b = axum::body::to_bytes(e.into_body(), 1024).await.unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&b).unwrap()["error"],
+            "not signed in"
+        );
     }
 }
