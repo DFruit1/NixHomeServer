@@ -26,7 +26,7 @@ Rules for keeping this file useful:
 | mail-archive-ui | `custom_apps/rust/apps/mail-archive-ui/frontend/` | Qwik 1.16 + Vite (TSX) | `src/styles.css` |
 | homepage | `custom_apps/node/apps/homepage/` | Qwik 1.16 + Vite (TSX) | `src/client/styles.css` |
 | groundwater-logger | `custom_apps/node/apps/groundwater-logger/` | Qwik 1.16 + Vite (TSX) | `src/client/styles.css` |
-| groundwater-server inspection | `custom_apps/rust/apps/groundwater-server/src/ui.rs` | Rust server-rendered HTML | Inline CSS in `ui.rs` |
+| groundwater-server | `custom_apps/rust/apps/groundwater-server/frontend/` | Qwik 1.16 + Vite CSR SPA | `src/styles.css` |
 | youtube-downloader | `custom_apps/node/apps/youtube-downloader/` | Qwik 1.16 + Vite (TSX) | `src/client/styles.css` |
 | browsertrix-downloader | `custom_apps/rust/apps/browsertrix-downloader/frontend/` | Qwik 1.16 + Vite (TSX) | `src/client/styles.css` |
 | search | `custom_apps/rust/apps/search/` | Single-file vanilla HTML/CSS/JS | `src/ui.html` |
@@ -107,4 +107,5 @@ Library search is deliberately split. The library toolbar filters the currently 
 
 | Decision | Surface | Reason |
 |---|---|---|
-| Keep the synthetic inspection page server-rendered, with focusable native scroll regions around wide tables | groundwater-server inspection | The pipeline slice needs readable evidence on desktop and phones without another frontend build toolchain. Each surface retains its existing system typography and browser light/dark palette. |
+| Fleet table and hash-routed device workspace, app-local system-font tokens derived from mail-archive-ui, native light/dark palette, focusable table scroll regions | groundwater-server | Practical fleet comparison and history take priority. Configuration, commands, raw deliveries and audit use separate views. Forms start empty, dangerous submissions require DANGER, and viewers see read-only state. Default Qwik segment chunking stays enabled. |
+| SVG history exposes threshold bands, alert-opening markers and gaps, with an accessible measurement table and CSV observations export | groundwater-server | Device time and receipt time remain distinct; secondary battery/RSSI history shares the time range without redundant metric panels. Alerts are read-only and resolve automatically. |
