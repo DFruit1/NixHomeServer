@@ -92,6 +92,7 @@ lean_skip_test() {
     test-first-boot-convergence.sh | \
     test-secret-generation.sh | \
     test-kopia-cli-wrapper.sh | \
+    test-kopia-policy-recovery.sh | \
     test-module-disable-evaluation.sh)
       return 0
       ;;
@@ -241,6 +242,7 @@ test_scripts=(
   scripts/tests/test-kiwix-disable-evaluation.sh
   scripts/tests/test-kiwix-web-archives-integration.sh
   scripts/tests/test-kopia-cli-wrapper.sh
+  scripts/tests/test-kopia-policy-recovery.sh
   scripts/tests/test-mail-archive-paperless-reliability.sh
   scripts/tests/test-media-manager-core.sh
   scripts/tests/test-paperless-v3-readiness.sh

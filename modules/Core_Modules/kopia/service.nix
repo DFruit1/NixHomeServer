@@ -36,7 +36,7 @@ let
       "var/lib/solr"
       "var/lib/clamav"
       "var/lib/atticd/storage"
-      "appdata/backup-metadata"
+      "appdata/backup-metadata/generations/.prepare.*"
       "home/*/.gradle"
       "home/*/.cargo"
       "home/*/.npm"
@@ -82,8 +82,10 @@ let
 
     # Add in a separate call: --clear-ignore wins over additions in the same
     # invocation. Global basename patterns apply to roots without local lists.
+    # Zero clears any saved size ceiling: logical dumps and user documents may
+    # exceed 100 MiB and must remain recoverable.
     kopia policy set --global${modelArtifactIgnoreFlags}${bulkDataIgnoreFlags} \
-      --max-file-size=104857600
+      --max-file-size=0
 
     # Kopia applies --clear-ignore after additions when both are supplied in
     # one invocation. Keep clearing and rebuilding as two ordered mutations so
@@ -93,7 +95,7 @@ let
     # A target-specific list replaces the global list, so retain the model
     # patterns here as well. Directory patterns are relative only to /persist.
     kopia policy set /persist${modelArtifactIgnoreFlags}${bulkDataIgnoreFlags} \
-      --max-file-size=104857600 \
+      --max-file-size=0 \
       --add-ignore='appdata/kopia/cache' \
       --add-ignore='appdata/kopia/logs' \
       --add-ignore='appdata/system-state-backup' \

@@ -2995,6 +2995,15 @@ in every snapshot root, including `/persist` and Paperless. These patterns follo
 Exclude them in Kopia rather than rclone: MEGA receives encrypted repository
 packs, so a filename filter on the mirror cannot identify model weights.
 
+Successful logical backup generations under
+`/persist/appdata/backup-metadata/generations`, their checksums and manifests,
+and the `current` symlink remain included. Only unfinished `.prepare.*`
+generations are excluded. Neither the global policy nor `/persist` imposes a
+file-size ceiling: database dumps and Paperless documents above 100 MiB must be
+recoverable. Reconciliation explicitly clears a previously saved ceiling; simply
+omitting [Kopia's size-exclusion flag](https://kopia.io/docs/reference/command-line/common/policy-set/)
+would leave the old setting in place.
+
 Keep downloaded model artifacts on the data pool under
 `${dataRoot}/<application>/models`, whether the application is active or disabled.
 Bonsai uses `/mnt/data/bonsai/models`; Qwen uses `/mnt/data/qwen-27b/models`.
