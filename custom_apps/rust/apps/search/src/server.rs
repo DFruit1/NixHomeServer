@@ -17,16 +17,14 @@ use crate::paperless_search;
 use crate::solr::SolrClient;
 use crate::source_cache::{CachedValue, SourceCache};
 use crate::text;
-use crate::timeutil::now_epoch;
-use crate::zim_search::{self, ZimIndexEntry, ZimSearchConfig};
+use crate::zim_inventory::ZimInventoryCache;
+use crate::zim_search::{self, ZimSearchConfig};
 
 /// Default page size when the client does not ask for one, and the hard upper
 /// bound a client may request. Paging is offset-based, so a very large page
 /// would make Solr materialize an unbounded result window.
 const DEFAULT_PAGE_SIZE: usize = 50;
 const MAX_PAGE_SIZE: usize = 200;
-/// How long the discovered ZIM library listing is cached between queries.
-const ZIM_CACHE_TTL_SECONDS: i64 = 300;
 /// How long Paperless correspondent/tag/document-type names are cached.
 const PAPERLESS_TAXONOMY_TTL_SECONDS: i64 = 600;
 
@@ -38,7 +36,7 @@ struct AppState {
 struct Inner {
     settings: Settings,
     solr: SolrClient,
-    zim_cache: Mutex<ZimCache>,
+    zim_cache: ZimInventoryCache,
     /// Shared HTTP client used for runtime-federated Paperless searches.
     paperless_http: reqwest::Client,
     /// Cached Paperless taxonomy names, keyed by base URL.
@@ -50,13 +48,6 @@ struct Inner {
     /// One shared Postgres connection for the small source-listing queries,
     /// connected lazily and evicted on failure so the next request reconnects.
     db: tokio::sync::Mutex<Option<std::sync::Arc<tokio_postgres::Client>>>,
-}
-
-/// Cached ZIM library inventories, keyed by the library root each was built
-/// from, so multiple kiwix sources never evict each other's inventories.
-#[derive(Default)]
-struct ZimCache {
-    entries: HashMap<String, (Vec<ZimIndexEntry>, i64)>,
 }
 
 pub async fn run() -> Result<(), String> {
@@ -82,7 +73,7 @@ pub async fn run() -> Result<(), String> {
                 &env_or("SEARCH_SOLR_URL", "http://127.0.0.1:8983/solr"),
                 &env_or("SEARCH_SOLR_CORE", "search"),
             ),
-            zim_cache: Mutex::new(ZimCache::default()),
+            zim_cache: ZimInventoryCache::default(),
             paperless_http: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(15))
                 .redirect(reqwest::redirect::Policy::none())
@@ -608,15 +599,21 @@ async fn federate_kiwix(
     if !config.library_root.is_dir() {
         return Err("The archive library is unavailable.".to_string());
     }
-    let entries = zim_entries(state, &config).await;
-    let result = zim_search::search(&config, &entries, query).await;
-    let warnings = if result.failed_archives > 0 {
-        vec![
-            json!({ "source": source.id, "message": format!("{} offline archives could not be searched. These results are incomplete.", result.failed_archives) }),
-        ]
-    } else {
-        Vec::new()
-    };
+    let inventory = state.inner.zim_cache.get(&config).await;
+    let entries = inventory
+        .value
+        .as_deref()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let result = zim_search::search(&config, entries, query).await;
+    let mut warnings: Vec<_> = inventory
+        .warning
+        .into_iter()
+        .map(|message| json!({ "source": source.id, "message": message }))
+        .collect();
+    if result.failed_archives > 0 {
+        warnings.push(json!({ "source": source.id, "message": format!("{} offline archives could not be searched. These results are incomplete.", result.failed_archives) }));
+    }
     Ok(LiveResults {
         hits: result
             .hits
@@ -698,32 +695,6 @@ async fn paperless_taxonomy(
             .unwrap_or_else(|_| Err("Document metadata lookup timed out.".into()))
         })
         .await
-}
-
-/// Returns the cached ZIM library inventory for a kiwix source, refreshing it
-/// when stale.
-async fn zim_entries(state: &AppState, config: &ZimSearchConfig) -> Vec<ZimIndexEntry> {
-    let root = config.library_root.to_string_lossy().to_string();
-    let now = now_epoch();
-    {
-        let cache = state.inner.zim_cache.lock().unwrap();
-        if let Some((entries, fetched_at)) = cache.entries.get(&root)
-            && now - *fetched_at < ZIM_CACHE_TTL_SECONDS
-        {
-            return entries.clone();
-        }
-    }
-    let zimdump = config.zimdump.clone();
-    let library_root = config.library_root.clone();
-    let entries = tokio::task::spawn_blocking(move || match zimdump {
-        Some(zimdump) => zim_search::discover_zims(&zimdump, &library_root),
-        None => Vec::new(),
-    })
-    .await
-    .unwrap_or_default();
-    let mut cache = state.inner.zim_cache.lock().unwrap();
-    cache.entries.insert(root, (entries.clone(), now));
-    entries
 }
 
 #[cfg(test)]

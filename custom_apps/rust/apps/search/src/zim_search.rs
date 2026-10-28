@@ -1,10 +1,11 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use futures_util::{stream, StreamExt};
 use tokio::process::Command;
 use tokio::time::timeout;
 
-use crate::extract::kiwix::{clean_title_from_path, entry_origin, has_xapian_fulltext};
+use crate::extract::kiwix::{clean_title_from_path, contains_fulltext_index, entry_origin};
 use crate::text::{html_title, snippet_from_html};
 
 /// How many ZIM archives a single query searches concurrently. Every Xapian-
@@ -19,6 +20,8 @@ const MAX_TOTAL_ZIM_RESULTS: usize = 20;
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(15);
 /// Bound for a single title fetch.
 const TITLE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Bound for a cheap namespace listing during inventory discovery.
+const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
 /// HTML considered for a snippet; conversion cost is capped by this.
 const SNIPPET_HTML_LIMIT: usize = 200_000;
 
@@ -58,40 +61,70 @@ pub struct ZimHit {
     pub metadata: serde_json::Value,
 }
 
-/// Enumerates the ZIM archives in the library root and records, for each,
-/// whether it embeds its own Xapian fulltext index. Every archive is returned;
-/// the caller bounds how many are queried concurrently, so a large library is
-/// fully searchable rather than silently truncated. Runs blocking
-/// subprocesses, so call from spawn_blocking.
-pub fn discover_zims(zimdump: &Path, library_root: &Path) -> Vec<ZimIndexEntry> {
-    let mut zims: Vec<PathBuf> = std::fs::read_dir(library_root)
-        .map(|reader| {
-            reader
-                .filter_map(|entry| entry.ok())
-                .map(|entry| entry.path())
-                .filter(|path| {
-                    path.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("zim")
+/// Discover archives with bounded, cancellable index probes. A failed scan is
+/// distinct from a successful empty inventory, so callers can retain stale data.
+pub async fn discover_zims(
+    zimdump: &Path,
+    library_root: &Path,
+) -> Result<Vec<ZimIndexEntry>, String> {
+    let mut directory = tokio::fs::read_dir(library_root)
+        .await
+        .map_err(|_| "The archive library could not be read.".to_string())?;
+    let mut zims = Vec::new();
+    while let Some(entry) = directory
+        .next_entry()
+        .await
+        .map_err(|_| "The archive library could not be read.".to_string())?
+    {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) == Some("zim")
+            && tokio::fs::metadata(&path)
+                .await
+                .map_err(|_| "An archive could not be read.".to_string())?
+                .is_file()
+        {
+            zims.push(path);
+        }
+    }
+    let zimdump = zimdump.to_path_buf();
+    let mut probes = stream::iter(zims)
+        .map(move |path: PathBuf| {
+            let zimdump = zimdump.clone();
+            async move {
+                let output = timeout(
+                    DISCOVERY_TIMEOUT,
+                    Command::new(zimdump)
+                        .kill_on_drop(true)
+                        .args(["list", "--ns=X", "--"])
+                        .arg(&path)
+                        .output(),
+                )
+                .await
+                .map_err(|_| "Archive index discovery timed out.".to_string())?
+                .map_err(|_| "An archive index could not be read.".to_string())?;
+                if !output.status.success() {
+                    return Err("An archive index could not be read.".to_string());
+                }
+                let stem = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or_default()
+                    .trim_end_matches(".zim")
+                    .to_string();
+                Ok(ZimIndexEntry {
+                    path,
+                    stem,
+                    has_xapian: contains_fulltext_index(&String::from_utf8_lossy(&output.stdout)),
                 })
-                .collect()
-        })
-        .unwrap_or_default();
-    zims.sort();
-    zims.into_iter()
-        .map(|path| {
-            let stem = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or_default()
-                .trim_end_matches(".zim")
-                .to_string();
-            let has_xapian = has_xapian_fulltext(zimdump, &path);
-            ZimIndexEntry {
-                path,
-                stem,
-                has_xapian,
             }
         })
-        .collect()
+        .buffer_unordered(MAX_ZIM_CONCURRENCY);
+    let mut entries = Vec::new();
+    while let Some(entry) = probes.next().await {
+        entries.push(entry?);
+    }
+    entries.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(entries)
 }
 
 #[derive(Default)]
@@ -349,6 +382,52 @@ mod tests {
         path
     }
 
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_hung_inventory_probe_times_out_and_is_reaped() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("library.zim"), b"fixture").unwrap();
+        let tool = fixture_tool(
+            root.path(),
+            "zimdump",
+            r#"#!/bin/sh
+for archive do :; done
+printf '%s\n' "$$" > "${archive%/*}/pid"
+exec sleep 60
+"#,
+        );
+        let error = discover_zims(&tool, root.path()).await.unwrap_err();
+        assert!(error.contains("timed out"));
+        let pid = std::fs::read_to_string(root.path().join("pid")).unwrap();
+        let process = PathBuf::from(format!("/proc/{}", pid.trim()));
+        timeout(Duration::from_secs(2), async {
+            while process.exists() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("a timed-out probe must not leave a child process running");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_valid_archive_without_an_index_is_a_successful_inventory() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("b.zim"), b"fixture").unwrap();
+        std::fs::write(root.path().join("a.zim"), b"fixture").unwrap();
+        std::fs::write(root.path().join("notes.txt"), b"ignore").unwrap();
+        let tool = fixture_tool(root.path(), "zimdump", "#!/bin/sh\nexit 0\n");
+        let entries = discover_zims(&tool, root.path()).await.unwrap();
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.stem.as_str())
+                .collect::<Vec<_>>(),
+            ["a", "b"]
+        );
+        assert!(entries.iter().all(|entry| !entry.has_xapian));
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn a_slow_archive_does_not_block_later_archives_or_reorder_hits() {
@@ -484,18 +563,21 @@ printf 'A/Article\n'
         assert_eq!(make_snippet("<html><body></body></html>", "quantum"), None);
     }
 
-    #[test]
-    fn discovers_zims_from_directory() {
+    #[tokio::test]
+    async fn discovery_failure_is_not_a_successful_empty_inventory() {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(dir.path().join("a.zim"), b"zim").expect("write");
         std::fs::write(dir.path().join("b.zim"), b"zim").expect("write");
         std::fs::write(dir.path().join("notes.txt"), b"x").expect("write");
-        // A missing zimdump binary makes every entry report "no index", which
-        // is the safe fallback, but discovery still returns the archives.
-        let entries = discover_zims(Path::new("/nonexistent/zimdump"), dir.path());
-        let stems: Vec<String> = entries.iter().map(|entry| entry.stem.clone()).collect();
-        assert_eq!(stems, vec!["a".to_string(), "b".to_string()]);
-        assert!(entries.iter().all(|entry| !entry.has_xapian));
+        assert!(discover_zims(Path::new("/nonexistent/zimdump"), dir.path())
+            .await
+            .is_err());
+        assert!(discover_zims(
+            Path::new("/nonexistent/zimdump"),
+            &dir.path().join("missing")
+        )
+        .await
+        .is_err());
     }
 
     #[test]

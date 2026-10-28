@@ -14,6 +14,7 @@ mod solr;
 mod source_cache;
 mod text;
 mod timeutil;
+mod zim_inventory;
 mod zim_search;
 
 use std::process::ExitCode;

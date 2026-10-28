@@ -1,6 +1,7 @@
 //! Coalesce metadata refreshes and retain the last usable inventory on failure.
 //! These caches contain source metadata, never document bodies or credentials.
 use std::future::Future;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
@@ -16,7 +17,7 @@ struct Entry<T> {
 }
 
 pub struct SourceCache<T> {
-    entry: Mutex<Entry<T>>,
+    entry: Arc<Mutex<Entry<T>>>,
     success_ttl: Duration,
     failure_ttl: Duration,
 }
@@ -24,13 +25,13 @@ pub struct SourceCache<T> {
 impl<T: Clone> SourceCache<T> {
     pub fn new(success_ttl: Duration, failure_ttl: Duration) -> Self {
         Self {
-            entry: Mutex::new(Entry {
+            entry: Arc::new(Mutex::new(Entry {
                 current: CachedValue {
                     value: None,
                     warning: None,
                 },
                 checked_at: None,
-            }),
+            })),
             success_ttl,
             failure_ttl,
         }
@@ -44,6 +45,34 @@ impl<T: Clone> SourceCache<T> {
         // A per-source async lock coalesces concurrent refreshes. Cancellation
         // releases it without publishing a timestamp or a half-filled value.
         let mut entry = self.entry.lock().await;
+        if let Some(current) = self.fresh_value(&entry) {
+            return current;
+        }
+        Self::refresh(&mut entry, refresh()).await
+    }
+
+    /// Finish an inventory scan even if its requesting search times out. Only
+    /// the refresh owns a task; callers waiting for it hold no background work.
+    pub async fn get_or_refresh_background<F, Fut>(&self, refresh: F) -> CachedValue<T>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: Future<Output = Result<T, String>> + Send,
+    {
+        let mut entry = self.entry.clone().lock_owned().await;
+        if let Some(current) = self.fresh_value(&entry) {
+            return current;
+        }
+        match tokio::spawn(async move { Self::refresh(&mut entry, refresh()).await }).await {
+            Ok(current) => current,
+            Err(_) => CachedValue {
+                value: self.entry.lock().await.current.value.clone(),
+                warning: Some("Source inventory refresh failed.".into()),
+            },
+        }
+    }
+
+    fn fresh_value(&self, entry: &Entry<T>) -> Option<CachedValue<T>> {
         let ttl = if entry.current.warning.is_some() {
             self.failure_ttl
         } else {
@@ -53,9 +82,16 @@ impl<T: Clone> SourceCache<T> {
             .checked_at
             .is_some_and(|checked| checked.elapsed() < ttl)
         {
-            return entry.current.clone();
+            return Some(entry.current.clone());
         }
-        match refresh().await {
+        None
+    }
+
+    async fn refresh(
+        entry: &mut Entry<T>,
+        refresh: impl Future<Output = Result<T, String>>,
+    ) -> CachedValue<T> {
+        match refresh.await {
             Ok(value) => {
                 entry.current = CachedValue {
                     value: Some(value),

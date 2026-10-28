@@ -141,7 +141,7 @@ pub(crate) fn has_xapian_fulltext(zimdump: &Path, zim: &Path) -> bool {
     contains_fulltext_index(&String::from_utf8_lossy(&output.stdout))
 }
 
-fn contains_fulltext_index(listing: &str) -> bool {
+pub(crate) fn contains_fulltext_index(listing: &str) -> bool {
     listing.contains("fulltext/xapian") || listing.contains("fulltextIndex/xapian")
 }
 
