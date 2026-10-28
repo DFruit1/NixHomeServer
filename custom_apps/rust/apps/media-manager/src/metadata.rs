@@ -1327,12 +1327,14 @@ fn parse_sidecar_fields(text: &str) -> Result<Value, String> {
         "providerIds": provider_ids,
     });
     if let Some(object) = fields.as_object_mut() {
-        object.retain(|_, value| !value.is_null());
         // An explicit file decision overrides only its selected fields. Other
-        // fields keep inheriting later changes to the shared album sidecar.
+        // fields keep inheriting later changes to the shared album sidecar;
+        // selected nulls represent explicit clears rather than inheritance.
         if let Some(selected) = meta_content(root, "media-manager:override-fields") {
             let selected = selected.split(',').collect::<BTreeSet<_>>();
             object.retain(|field, _| selected.contains(field.as_str()));
+        } else {
+            object.retain(|_, value| !value.is_null());
         }
     }
     Ok(fields)
@@ -1429,8 +1431,7 @@ fn is_managed_element(node: Node<'_, '_>, root: Node<'_, '_>) -> bool {
     }
     if name == "meta"
         && (root.tag_name().name().eq_ignore_ascii_case("package")
-            || (root.tag_name().name().eq_ignore_ascii_case("album")
-                && meta_content(root, "media-manager:override-fields").is_some()))
+            || root.tag_name().name().eq_ignore_ascii_case("album"))
     {
         return node.attribute("name").is_some_and(|value| {
             matches!(

@@ -361,7 +361,7 @@ fn metadata_sidecar(
         for writer in &request.writers {
             xml.push_str(&xml_element("writer", Some(writer)));
         }
-        if request.file_only {
+        if item.media_kind == MediaKind::Music {
             for (name, value) in [
                 ("calibre:series", request.series.as_deref()),
                 ("calibre:series_index", request.volume_number.as_deref()),
@@ -1318,12 +1318,14 @@ async fn item_metadata_value(
         );
         if let Some(mut observation) = observation {
             observation.label = "File sidecar".to_string();
-            merge_metadata(
-                &mut response,
-                &observation.fields,
-                "sidecar",
-                &mut field_sources,
-            );
+            // Selected nulls explicitly clear inherited scalar values. The
+            // ordinary source merge intentionally ignores nulls instead.
+            if let Some(fields) = observation.fields.as_object() {
+                for (field, value) in fields {
+                    response[field] = value.clone();
+                    field_sources.insert(field.clone(), "sidecar".to_string());
+                }
+            }
             observations.push(observation);
         }
     }
