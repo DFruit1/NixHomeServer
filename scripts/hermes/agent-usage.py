@@ -512,24 +512,44 @@ def patch_request_hook(text):
 
 def configuration(args):
     root=Path(args.root).expanduser().absolute();env=root/'.env'
-    values={}
+    prefixes=('LANGFUSE_','AI_USAGE_LANGFUSE_','HERMES_LANGFUSE_')
+    buckets={p:{} for p in prefixes}
     # Read existing values in memory. Never evaluate a dotenv file as shell.
     for line in env.read_text().splitlines():
         key,sep,value=line.partition('=')
-        if sep and key.startswith('HERMES_LANGFUSE_'):values[key]=value.strip().strip('\"\'')
-    url=values['HERMES_LANGFUSE_BASE_URL'].rstrip('/')
+        if not sep:continue
+        for prefix in prefixes:
+            if key.startswith(prefix):
+                buckets[prefix][key[len(prefix):]]=value.strip().strip('\"\'')
+    priority=('LANGFUSE_','AI_USAGE_LANGFUSE_','HERMES_LANGFUSE_')
+    active=None
+    for prefix in priority:
+        if 'BASE_URL' in buckets[prefix]:
+            active=prefix;break
+    if active is None:
+        for prefix in priority:
+            if buckets[prefix]:
+                active=prefix;break
+    values={}
+    if active is not None:
+        for prefix in reversed(priority):
+            values.update(buckets[prefix])
+        values.update(buckets[active])
+    if 'BASE_URL' not in values:
+        raise ValueError('Missing Langfuse base URL in configuration')
+    url=values['BASE_URL'].rstrip('/')
     parts=urllib.parse.urlsplit(url)
     if parts.scheme!='https' or parts.username or parts.password or parts.query or parts.fragment:
         raise ValueError('Private HTTPS Langfuse origin required')
-    return {'root':root,'base_url':url,'public_key':values['HERMES_LANGFUSE_PUBLIC_KEY'],
-            'secret_key':values['HERMES_LANGFUSE_SECRET_KEY'],'codex_home':Path.home()/'.codex',
+    return {'root':root,'base_url':url,'public_key':values['PUBLIC_KEY'],
+            'secret_key':values['SECRET_KEY'],'codex_home':Path.home()/'.codex',
             'opencode_db':Path.home()/'.local/share/opencode/opencode.db',
             'state_dir':root/'state/agent-usage','llama_endpoints':{'qwen-local':'http://127.0.0.1:8093'}}
 
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--root',default=os.environ.get('HERMES_ROOT',str(Path.home()/'.hermes')))
+    parser.add_argument('--root',default=os.environ.get('AI_USAGE_ROOT') or os.environ.get('LANGFUSE_USAGE_ROOT') or os.environ.get('HERMES_ROOT') or str(Path.home()/'.hermes'))
     parser.add_argument('--report',action='store_true',help='Read cached counters without credentials or network')
     args=parser.parse_args();directory=Path(args.root).expanduser()/'state/agent-usage'
     if args.report:

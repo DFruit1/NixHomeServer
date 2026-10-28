@@ -96,6 +96,31 @@ const shuffleButton = (root: ParentNode): HTMLButtonElement | undefined =>
 describe("music player playback options", () => {
   afterEach(() => vi.unstubAllGlobals());
 
+  it("finds albums by track filename and labels playback sliders", async () => {
+    vi.stubGlobal("fetch", playerFetch());
+    const { render, screen, userEvent } = await createDOM();
+    await render(<Root initialView="player" />);
+    await vi.waitFor(() => expect(screen.textContent).toContain("Blue Hour"));
+    const search = screen.querySelector<HTMLInputElement>(
+      'input[aria-label="Search loaded albums and tracks"]',
+    );
+    expect(search).toBeTruthy();
+    if (!search) return;
+    search.value = "Third Light";
+    await userEvent(search, "input");
+    expect(screen.querySelector(".track-button")?.textContent).toContain(
+      "Third Light",
+    );
+    expect(screen.querySelector(".track-button")?.textContent).toContain(
+      "Shared Album",
+    );
+    expect(screen.textContent).not.toContain("Blue Hour");
+    expect(
+      screen.querySelector('input[aria-label="Playback position"]'),
+    ).toBeTruthy();
+    expect(screen.querySelector('input[aria-label="Volume"]')).toBeTruthy();
+  });
+
   it("cycles the shuffle button through album, all and off", async () => {
     vi.stubGlobal("fetch", playerFetch());
 

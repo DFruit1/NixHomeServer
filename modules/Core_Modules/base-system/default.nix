@@ -135,8 +135,11 @@ in
     };
   };
 
+  users.groups.${localAdminUser} = { };
+
   users.users.${localAdminUser} = {
     isNormalUser = true;
+    group = localAdminUser;
     extraGroups = [ "wheel" ];
     shell = pkgs.bashInteractive;
     # sshExtraPublicKeys carries additional operator devices (for example a phone

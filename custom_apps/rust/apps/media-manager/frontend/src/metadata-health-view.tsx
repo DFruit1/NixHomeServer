@@ -520,6 +520,7 @@ const ExternalProvidersDialog = component$<{
 interface GroupedIssue {
   key: string;
   issue: MetadataHealthIssue;
+  target: MetadataHealthResult;
 }
 
 function groupIssues(results: MetadataHealthResult[]): GroupedIssue[] {
@@ -527,7 +528,12 @@ function groupIssues(results: MetadataHealthResult[]): GroupedIssue[] {
   const order: string[] = [];
   const byKey = new Map<
     string,
-    { issue: MetadataHealthIssue; files: Set<string>; explicitCount: number }
+    {
+      issue: MetadataHealthIssue;
+      target: MetadataHealthResult;
+      files: Set<string>;
+      explicitCount: number;
+    }
   >();
   for (const result of results) {
     const fileName =
@@ -538,10 +544,11 @@ function groupIssues(results: MetadataHealthResult[]): GroupedIssue[] {
         issue.field ?? null,
         issue.currentValue ?? null,
         (issue.proposedValues ?? []).map((candidate) => candidate.value),
+        issue.field && "currentValue" in issue ? result.itemId : null,
       ]);
       let merged = byKey.get(key);
       if (!merged) {
-        merged = { issue, files: new Set(), explicitCount: 0 };
+        merged = { issue, target: result, files: new Set(), explicitCount: 0 };
         byKey.set(key, merged);
         order.push(key);
       }
@@ -561,10 +568,11 @@ function groupIssues(results: MetadataHealthResult[]): GroupedIssue[] {
     const merged = byKey.get(key)!;
     const files = [...merged.files];
     if (files.length === 0 && merged.explicitCount === 0) {
-      return { key, issue: merged.issue };
+      return { key, issue: merged.issue, target: merged.target };
     }
     return {
       key,
+      target: merged.target,
       issue: {
         ...merged.issue,
         affectedFiles: files.slice(0, MAX_GROUPED_FILES),
@@ -616,6 +624,7 @@ export const MetadataHealthView = component$<{
     primary: ProviderDefinition;
     itemId: string;
     query: string;
+    selectionKey: string;
   } | null>(null);
   const onlineSelections = useStore<
     Record<string, { value: unknown; source: string }>
@@ -853,7 +862,7 @@ export const MetadataHealthView = component$<{
                 )}
               </header>
               <div class="health-result-issues">
-                {groupIssues(group.results).map(({ key, issue }) => {
+                {groupIssues(group.results).map(({ key, issue, target }) => {
                   const field = issue.field ?? "";
                   const compares = Boolean(field) && "currentValue" in issue;
                   const sources = compares
@@ -882,10 +891,13 @@ export const MetadataHealthView = component$<{
                         disabled={applyingValue.value}
                         title={`Set this ${origin.toLowerCase()} value for “${field}”`}
                         onClick$={() =>
-                          applyValue$(value, origin, issue, first.itemId)
+                          applyValue$(value, origin, issue, target.itemId)
                         }
                       >
-                        {renderValue(value)}
+                        <span>{renderValue(value)}</span>
+                        <span class="health-value-action">
+                          Use {origin.toLowerCase()}
+                        </span>
                       </button>
                     );
                   };
@@ -900,6 +912,18 @@ export const MetadataHealthView = component$<{
                           "health-comparison-split": compares,
                         }}
                       >
+                        <div class="health-reason">
+                          <h4>{issue.title}</h4>
+                          {!compares && <p>{issue.message}</p>}
+                          {compares && (
+                            <div class="health-provenance">
+                              <p>{proposedProvenance(issue)}</p>
+                            </div>
+                          )}
+                          {compares && group.results.length > 1 && (
+                            <p>Changes apply to {target.relativePath}.</p>
+                          )}
+                        </div>
                         {compares && (
                           <div class="health-value">
                             <span class="health-value-label">Current</span>
@@ -955,8 +979,9 @@ export const MetadataHealthView = component$<{
                                       issue,
                                       mediaKind: first.mediaKind,
                                       primary,
-                                      itemId: first.itemId,
+                                      itemId: target.itemId,
                                       query: groupHeading(group).text,
+                                      selectionKey: `${group.key}:${key}`,
                                     };
                                   }}
                                 >
@@ -966,15 +991,6 @@ export const MetadataHealthView = component$<{
                             )}
                           </div>
                         )}
-                        <div class="health-reason">
-                          <h4>{issue.title}</h4>
-                          {!compares && <p>{issue.message}</p>}
-                          {compares && (
-                            <div class="health-provenance">
-                              <p>{proposedProvenance(issue)}</p>
-                            </div>
-                          )}
-                        </div>
                       </div>
                       {(issue.affectedFiles?.length ?? 0) > 0 && (
                         <details class="health-file-details">
@@ -1032,19 +1048,7 @@ export const MetadataHealthView = component$<{
           onSelect$={(value, source) => {
             const active = providersDialogFor.value;
             if (!active) return;
-            const issueKey = JSON.stringify([
-              active.issue.code,
-              active.issue.field ?? null,
-              active.issue.currentValue ?? null,
-              (active.issue.proposedValues ?? []).map(
-                (candidate) => candidate.value,
-              ),
-            ]);
-            const group = groupResults(inbox.results).find((entry) =>
-              entry.results.some((result) => result.itemId === active.itemId),
-            );
-            if (group)
-              onlineSelections[`${group.key}:${issueKey}`] = { value, source };
+            onlineSelections[active.selectionKey] = { value, source };
           }}
           onClose$={() => (providersDialogFor.value = null)}
         />

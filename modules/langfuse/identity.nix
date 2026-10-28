@@ -26,7 +26,7 @@ in
       # callback. `/api/public/*` keeps its project-key path, protected by the
       # gateway rather than this client.
       systems.oauth2.langfuse = {
-        displayName = "Agent Traces";
+        displayName = "Langfuse";
         originUrl = "https://${host}/api/auth/callback/custom";
         originLanding = "https://${host}";
         basicSecretFile = config.age.secrets.langfuseClientSecret.path;
@@ -37,6 +37,6 @@ in
       systems.oauth2.auth-gateway-web.scopeMaps.langfuse-users =
         [ "openid" "profile" "email" "groups_name" ];
     };
-    nixhomeserver.kanidmGroupDescriptions.langfuse-users = "Private access to agent observability.";
+    nixhomeserver.kanidmGroupDescriptions.langfuse-users = "Private access to AI observability.";
   };
 }

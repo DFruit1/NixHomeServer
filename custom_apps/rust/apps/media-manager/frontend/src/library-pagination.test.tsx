@@ -256,7 +256,7 @@ describe("Media Manager library pagination", () => {
         ),
     );
     vi.stubGlobal("fetch", fetchMock);
-    const { render } = await createDOM();
+    const { render, screen, userEvent } = await createDOM();
     await render(
       <Root
         initialView="library"
@@ -276,6 +276,12 @@ describe("Media Manager library pagination", () => {
         }),
       ).toBe(true),
     );
+    const up = Array.from(screen.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Up one level",
+    );
+    expect(up).toBeTruthy();
+    await userEvent(up ?? null, "click");
+    expect(screen.textContent).not.toContain("Up one level");
   });
 
   it("publishes a completed root without waiting for the other library pane", async () => {
@@ -539,6 +545,9 @@ describe("Media Manager library pagination", () => {
     );
     try {
       await vi.waitFor(() => expect(screen.textContent).toContain("First.mkv"));
+      expect(
+        screen.querySelector(".shared-pane .pane-count")?.textContent,
+      ).toContain("loaded");
       expect(
         fetchMock.mock.calls.some(([input]) =>
           String(input).includes("cursor="),

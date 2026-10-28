@@ -86,27 +86,27 @@ let
   };
   clickhouseLogTtls = {
     # Query profiler samples are the heaviest log and only aid short debugging.
-    trace_log = clickhouseLogTtl 3 "trace_log";
-    query_log = clickhouseLogTtl 7 "query_log";
-    query_thread_log = clickhouseLogTtl 7 "query_thread_log";
-    query_views_log = clickhouseLogTtl 7 "query_views_log";
-    query_metric_log = clickhouseLogTtl 7 "query_metric_log";
-    metric_log = clickhouseLogTtl 7 "metric_log";
-    asynchronous_metric_log = clickhouseLogTtl 7 "asynchronous_metric_log";
-    part_log = clickhouseLogTtl 7 "part_log";
-    text_log = clickhouseLogTtl 7 "text_log";
+    trace_log = clickhouseLogTtl 1 "trace_log";
+    query_log = clickhouseLogTtl 3 "query_log";
+    query_thread_log = clickhouseLogTtl 3 "query_thread_log";
+    query_views_log = clickhouseLogTtl 3 "query_views_log";
+    query_metric_log = clickhouseLogTtl 3 "query_metric_log";
+    metric_log = clickhouseLogTtl 3 "metric_log";
+    asynchronous_metric_log = clickhouseLogTtl 3 "asynchronous_metric_log";
+    part_log = clickhouseLogTtl 3 "part_log";
+    text_log = clickhouseLogTtl 3 "text_log";
     error_log = clickhouseLogTtl 7 "error_log";
-    background_schedule_pool_log = clickhouseLogTtl 7 "background_schedule_pool_log";
+    background_schedule_pool_log = clickhouseLogTtl 3 "background_schedule_pool_log";
     backup_log = clickhouseLogTtl 7 "backup_log";
     session_log = clickhouseLogTtl 7 "session_log";
-    s3queue_log = clickhouseLogTtl 7 "s3queue_log";
+    s3queue_log = clickhouseLogTtl 3 "s3queue_log";
     # The packaged config pins a full engine spec for this log because it
     # partitions by finish_date rather than event_date, and ClickHouse refuses a
     # separate `ttl` beside an `engine`, so the retention goes in the spec.
     opentelemetry_span_log = {
       database = "system";
       table = "opentelemetry_span_log";
-      engine = "engine MergeTree partition by toYYYYMM(finish_date) order by (finish_date, finish_time_us) ttl finish_date + INTERVAL 7 DAY delete";
+      engine = "engine MergeTree partition by toYYYYMM(finish_date) order by (finish_date, finish_time_us) ttl finish_date + INTERVAL 3 DAY delete";
     };
   };
   # A data-store restart must not stay silent: bounded retries, then an alert.
@@ -267,6 +267,8 @@ in {
         http_port = vars.networking.ports.langfuseClickhouseHttp;
         tcp_port = vars.networking.ports.langfuseClickhouseTcp;
         max_server_memory_usage = 4294967296;
+        max_threads = 8;
+        max_insert_threads = 4;
         storage_configuration.disks.backups = { type = "local"; path = "/var/lib/langfuse/clickhouse-backups/"; };
         backups.allowed_disk = "backups";
       };
@@ -312,8 +314,8 @@ in {
           AUTH_DISABLE_SIGNUP = "true";
           LANGFUSE_INIT_ORG_ID = "nixhomeserver";
           LANGFUSE_INIT_ORG_NAME = "NixHomeServer";
-          LANGFUSE_INIT_PROJECT_ID = "hermes";
-          LANGFUSE_INIT_PROJECT_NAME = "Hermes";
+          LANGFUSE_INIT_PROJECT_ID = "ai-usage";
+          LANGFUSE_INIT_PROJECT_NAME = "AI Usage";
           LANGFUSE_INIT_USER_EMAIL = ownerEmail;
           LANGFUSE_INIT_USER_NAME = vars.localAdminUser;
         };

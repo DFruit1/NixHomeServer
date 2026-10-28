@@ -1,4 +1,4 @@
-# Langfuse for Hermes
+# Langfuse
 
 Langfuse runs privately at `https://langfuse.<domain>`. The module reuses the
 shared PostgreSQL cluster and repository-pinned Redis and ClickHouse packages.
@@ -44,7 +44,7 @@ for routine setup: it replaces all generated secrets. Remove plaintext staging
 before deployment as required by the normal secrets workflow.
 
 Langfuse's supported headless initialization creates the NixHomeServer
-organization, Hermes project, project API keys, and owner account on first
+organization, an AI usage project, project API keys, and owner account on first
 startup. Initialization preserves existing resources; editing the bootstrap
 keys later does not rotate a project's existing keys. Use the Langfuse UI to
 rotate keys, then update Hermes credentials.
@@ -57,17 +57,19 @@ consumer (`langfuse-web`, `langfuse-worker`, `langfuse-minio`, `clickhouse`,
 keeps the environment it started with, so without those triggers a rotation
 would leave the app crash-looping against stores that already adopted the new
 credentials. Rotating `NEXTAUTH_SECRET` or the project keys still requires the
-Hermes `.env` files to be updated and its processes restarted.
+client `.env` files to be updated and their processes restarted.
 Rotating `langfuseClientSecret` is likewise supported: `langfuse-prepare`
 rewrites `/run/langfuse/oidc.env` and `langfuse-web` restarts.
 
-Hermes needs these values in its own root and worker-profile `.env` files:
+AI clients (Hermes, Codex, OpenCode, ...) need these values in their own
+configuration. The canonical variable names are `LANGFUSE_*`; the legacy
+`HERMES_LANGFUSE_*` names remain supported as a fallback:
 
-- `HERMES_LANGFUSE_PUBLIC_KEY`: `LANGFUSE_INIT_PROJECT_PUBLIC_KEY`
-- `HERMES_LANGFUSE_SECRET_KEY`: `LANGFUSE_INIT_PROJECT_SECRET_KEY`
-- `HERMES_LANGFUSE_BASE_URL`: the private HTTPS Langfuse URL
-- `HERMES_LANGFUSE_CAPTURE=metadata`
-- `HERMES_LANGFUSE_ENV=nixhomeserver`
+- `LANGFUSE_PUBLIC_KEY` (legacy `HERMES_LANGFUSE_PUBLIC_KEY`): `LANGFUSE_INIT_PROJECT_PUBLIC_KEY`
+- `LANGFUSE_SECRET_KEY` (legacy `HERMES_LANGFUSE_SECRET_KEY`): `LANGFUSE_INIT_PROJECT_SECRET_KEY`
+- `LANGFUSE_BASE_URL` (legacy `HERMES_LANGFUSE_BASE_URL`): the private HTTPS Langfuse URL
+- `LANGFUSE_CAPTURE=metadata`
+- `LANGFUSE_ENV=nixhomeserver`
 
 Keep each `.env` at mode `0600`. Configure Langfuse Observability through
 `hermes tools` to install the SDK via Hermes's package manager, and enable
@@ -120,8 +122,8 @@ They appear as **spans**, with raw uncached/cached/output counts in metadata,
 rather than additional generations: they overlap per-request usage and must
 never be added to it. Engine counters reset when the inference server restarts.
 
-The owner can inspect all streams in the existing Hermes project at
-`https://langfuse.<domain>/project/hermes`. Filter generations by model and by
+The owner can inspect all streams in the existing AI usage project at
+`https://langfuse.<domain>/project/ai-usage`. Filter generations by model and by
 metadata `source` (`hermes`, `codex-cli`, `opencode-cli`), `provider_route`,
 `profile`, `board` or `card_id`. Select spans with source `llama.cpp-engine` for
 the independent engine counters. Request-level durations are available for
@@ -340,8 +342,8 @@ sudo systemctl start homepage-canary.service
 sudo homepage-canary-assert
 ```
 
-Send a harmless Hermes request, then confirm its trace is present in the Hermes
-Langfuse project. A successful process start or SDK authentication check alone
+Send a harmless AI client request, then confirm its trace is present in the AI
+usage Langfuse project. A successful process start or SDK authentication check alone
 is not proof that ingestion reached ClickHouse.
 
 ClickHouse is pinned to UTC because Langfuse writes UTC date strings. Verify a
