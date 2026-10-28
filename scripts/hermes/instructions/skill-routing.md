@@ -1,42 +1,31 @@
-# Hermes task skill selection
+# Hermes skill routing
 
-Use `skills_list` to discover skills and `skill_view` to load the one a task
-needs; load procedures on demand, not the whole catalog. Read a project skill
-from the assigned checkout when it exists there; installed NixHomeServer copies
-are a fallback. A missing skill is a technical installation gap for the
-coordinator, not permission to improvise operational commands or a reason for an
-owner gate.
+Prefer the five project skills in the assigned NixHomeServer checkout:
+nixhomeserver-development for coding/debugging, review-loop for scoped review,
+frontend-design for rendered UI, nixhomeserver-module-change for application
+wiring, and nixhomeserver-safe-change for operations. Load only what applies.
 
-Card authors pin relevant names in the native task `skills` field after checking
-the assignee's workspace catalog; see the card-authoring guide. Workers still
-load additional matching skills on demand. A preload does not supersede the
-assigned checkout's current instructions or prove a running turn refreshed.
+Existing native names remain compatibility adapters for dispatcher/card
+contracts: systematic-debugging, requesting-code-review, sdlc-review,
+kanban-orchestration, taskforce-feature-audit, board-steward, and shutdown guard.
+Their full former definitions are archived in documentation/archive/skills.
+Use skills_list/skill_view to load the actual assignee catalog; card authors
+still verify and pin names. An installed fallback is not evidence of fresh
+running instructions.
 
-| Task | Skill | Application |
-| --- | --- | --- |
-| Failing test/build, unexpected behavior, regression | `systematic-debugging` | Implementers investigate and fix; feature-reviewer investigates and reports within the card's verification or offline-audit limits. |
-| Implementing meaningful behavior | Existing bundled `test-driven-development` | Implementers use the test-first cycle with the project's own commands and test policy. Preserve existing code; do not follow blanket delete-and-restart advice or ask permission for project-approved test exemptions. |
-| NixHomeServer validation, build, recovery or deployment evidence | `nixhomeserver-safe-change` | Implementers validate; qualified independent reviewers/auditors verify; coordinator diagnoses, validates and integrates mechanically with independent acceptance, retaining the guarded deploy gate. |
-| Optional application module, integrations or removal | `nixhomeserver-module-change` | Implementers change the module; reviewer checks the contract; auditor uses it for planning and independent verification; coordinator uses it for bounded integration. |
-| Long work that may outlast a pending server shutdown | `nixhomeserver-shutdown-guard` | Use existing operational authority or route the timer action to the coordinator. |
-| Rendered frontend work | Project `.agents/skills/frontend-design/SKILL.md` | Read the existing project workflow and its references; implementers build and reviewers apply its review discipline within their role. |
-| Taskforce feature audit (commissioned only) | `taskforce-feature-audit` | feature-reviewer audits within the audit card's offline limits and report contract. |
-| Coordinator routing or recovery | `kanban-orchestration` | head-coordinator only; follow its references for recovery recipes and read-only commissioning. |
+Native review stays native-review-v1. Do not create parallel reviewer/fixer
+chains. Reviewer, auditor, coordinator, implementer, and steward permissions
+remain unchanged. Skills do not authorize subagents, publication, live actions,
+private remote context, or wider tests.
 
-Keep the existing `requesting-code-review`, `sdlc-review`, orchestration, feature
-audit and steward skills as the owners of those workflows. Do not replace them
-with upstream defaults. Coordinators may investigate source and run diagnostics;
-qualified independent auditors may verify. Substantive implementation stays in
-implementer lanes, and authored repairs require independent acceptance. The steward keeps its
-existing inspection skill and remains read-only.
+Focused local checks are the ordinary gate. Full suites, repository runners
+(even lean), all-app tests, full flake checks, broad builds, end-to-end/VM suites,
+and remote validation require explicit scope. Retain integral checks of an
+authorized release and report coverage limits. Missing technical capability
+uses maintained agent recovery, never improvised commands or an owner gate.
 
-Project instructions and role permissions govern every recipe. For generic
-bundled skills, use project commands and meaningful behavioral checks; avoid
-tests for reversible low-impact edits or tests that merely mirror code.
-Default to limited local checks: generic skill checklists do not authorize full
-suites, repository-wide runners (even lean), workspace/all-app tests, broad
-builds, full flake checks, end-to-end/VM suites or remote validation. Those need
-an explicit user request for that scope. Report coverage limits and retain CI
-and integral safety checks of explicitly requested deploy/release operations.
-Respect confidentiality before web calls or delegation. No skill grants
-publication, deployment, extra tools, automatic subagents or permission to widen scope.
+Test creation is separate: add or expand automated tests only for demonstrated
+repeated regressions or concrete catastrophic risks under project policy.
+Retain existing coverage and integral release/CI safety checks. An installed
+helper or queued remedy is an intermediate result; verify actual progress
+against the original failure when authorized before claiming recovery.

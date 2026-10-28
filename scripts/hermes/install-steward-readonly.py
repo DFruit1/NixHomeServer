@@ -173,6 +173,7 @@ def profile_files(root, pending=None):
                metadata_path: replace_setting(metadata_path.read_text(), 'description', json.dumps(description))}
     changes[root / 'scripts/hermes-fleet-policy.md'] = (SOURCE / 'taskforce/owner-blocker-authoring.md').read_text()
     changes[root / 'scripts/hermes-card-authoring.md'] = (SOURCE.parent.parent / 'documentation/hermes-card-authoring.md').read_text()
+    changes[root / 'scripts/hermes-daily-steward.md'] = (SOURCE.parent.parent / 'documentation/hermes-daily-steward.md').read_text()
     changes[root / 'scripts/hermes-instructions.md'] = (SOURCE.parent.parent / 'documentation/hermes-instructions.md').read_text()
     changes[root / 'scripts/hermes-capability-recovery.md'] = (SOURCE / 'instructions/capability-recovery.md').read_text()
     changes.update(policy_activation(root))

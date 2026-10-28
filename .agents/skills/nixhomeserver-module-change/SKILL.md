@@ -1,97 +1,38 @@
 ---
 name: nixhomeserver-module-change
-description: Safely add, remove, enable, disable, or restructure a NixHomeServer application module and its integrations. Use for changes in application directories under modules, modules/catalog.nix, configuration.nix application assembly, app-owned secrets, guarded services, application persistence, or module removal/disable tests. Do not use for changes limited to always-present Core_Modules or for ordinary edits inside an existing custom application that do not change its NixOS module boundary.
+description: Add, disable, remove, or restructure a removable NixHomeServer application and its integrations, catalog entry, services, secrets, or persistence. Use when the NixOS application boundary changes, rather than for ordinary code inside an existing app.
 ---
 
-# NixHomeServer Module Change
+# Application module changes
 
-Preserve the repository's central invariant: removing an application module
-must not break unrelated evaluation or delete retained application data.
+Removing an application must preserve unrelated evaluation and retained data.
+Work under `AGENTS.md` and the role/card's existing authority.
 
-Resolve paths in the assigned NixHomeServer checkout and prefer its current
-skill over an installed copy. Hermes implementers execute the assigned change;
-feature-reviewer uses this contract to verify without editing source, and
-project-auditor uses it for planning. Preserve role and card limits throughout.
+1. Start with `modules/catalog.nix`, the app's `default.nix`, and the facet
+   being changed. Optional apps live in `modules/<app>/`; always-present
+   platform services live in `modules/Core_Modules/`.
+2. Keep one catalog entry with the module path, display/category metadata,
+   owned secrets, and guarded services. Derive shared identities, paths, ports,
+   and settings through existing interfaces.
+3. Structural policy currently requires `backups.nix`, `networking.nix`,
+   `identity.nix`, `bootstrap.nix`, and `services.nix` alongside the registered
+   `default.nix`. A facet can be empty when it has no behavior. Add
+   `filepaths.nix` or `package.nix` only as needed.
+4. Put multi-optional-app behavior in `modules/Integrations/`, gated on every
+   participating app. Disabling either side must remain valid.
+5. Register persistence centrally under `modules/Core_Modules/impermanence/`.
+   Disable/removal retains that data and backup history unless deletion has
+   separate explicit authority. Model weights stay on the data pool.
+6. Keep credentials encrypted and manifest-driven. A skill does not authorize
+   credential changes or wider exposure. Every new private browser host needs
+   an authenticated canary target in `modules/Core_Modules/homepage/canary.nix`
+   or a justified `repo.canary.coverageExemptHosts` entry.
+7. Track new nonignored source files explicitly. Verify only the affected
+   contracts using [focused module checks](references/checks.md) and safe-change.
+   Report disabled/removal behavior not actually evaluated.
 
-## Establish the boundary
-
-1. Read `AGENTS.md`, `modules/catalog.nix`, the target module, and the relevant
-   structure/removal tests before editing.
-2. Inspect neighboring modules for current conventions. Do not assume every
-   older module is the preferred example.
-3. Classify the change:
-   - Put always-required platform infrastructure in `modules/Core_Modules/`.
-   - Put a removable application in `modules/<app>/`.
-   - Put behavior that requires multiple optional applications in
-     `modules/Integrations/`, gated on every required application.
-4. Keep application modules self-contained. References from other optional
-   applications must go through a gated integration rather than an unconditional
-   import.
-
-## Implement the module contract
-
-1. Add or update the single application entry in `modules/catalog.nix`.
-   - Point `module` at the app's `default.nix`.
-   - Declare the display name and category.
-   - List every secret owned by the app.
-   - List services or state transitions that must be absent when the app is
-     disabled in `guardedServices`.
-2. Follow the established facet layout where applicable:
-   `default.nix`, `identity.nix`, `networking.nix`, `filepaths.nix`,
-   `services.nix`, `bootstrap.nix`, `package.nix`, and `backups.nix`.
-   Create only facets the app needs.
-3. Derive identities, paths, ports, and shared settings through existing
-   repository interfaces. Do not create a parallel settings source.
-4. Keep secrets manifest-driven and encrypted. Never add real credentials,
-   tokens, cookie secrets, or bootstrap passwords to Nix, scripts, fixtures, or
-   documentation.
-5. Register persistent directories and files centrally through
-   `modules/Core_Modules/impermanence/`. Removing the application module must
-   leave retained data registered unless the user explicitly requests data
-   deletion.
-6. Register backup inputs through the existing central backup interfaces.
-   Removal of a module may stop producing new app data, but must not silently
-   erase backup or restore history.
-7. Gate cross-application integrations on every participating module. Confirm
-   that disabling either side leaves a valid configuration.
-8. Track each new non-ignored file immediately with an explicit `git add
-   <path>`. Never stage unrelated changes, caches, build outputs, plaintext
-   secrets, or generated bulk data.
-9. When the app exposes a private browser host, add an authenticated canary
-   target in `modules/Core_Modules/homepage/canary.nix`. The lean-tier
-   `test-canary-target-coverage.sh` gate fails until the host is covered or
-   documented as an exemption under `repo.canary.coverageExemptHosts`.
-
-## Prove removability
-
-Add or update regression coverage before claiming completion:
-
-- `scripts/tests/test-app-module-structure.sh` for structural policy.
-- `scripts/tests/test-module-disable-evaluation.sh` and
-  `scripts/tests/module-disable-matrix.nix` for disabled-module behavior.
-- `scripts/tests/test-module-removal-evaluation.sh` and
-  `flake/module-removal-matrix.nix` for physical removal behavior.
-- `scripts/tests/test-canary-target-coverage.sh` for authenticated canary
-  coverage of every enabled private host.
-- Focused tests for secrets, persistence, backup paths, service hardening,
-  routes, identity reconciliation, or storage consumers when those boundaries
-  change.
-
-Run only the local checks relevant to the changed module and behavior; the list
-above is a coverage map, not a command list to execute in full. Load
-`nixhomeserver-safe-change` to select focused checks. Repository-wide disable or
-removal matrices, all-app tests and broader gates require an explicit user
-request. Report any unverified matrix coverage rather than running it by default.
-
-## Review checklist
-
-- The app has exactly one catalog entry.
-- Owned secrets and guarded services are complete.
-- Optional dependencies are gated.
-- Persistence remains centrally defined and survives module removal.
-- Backup and restore boundaries remain explicit.
-- Disabled and physically removed configurations evaluate.
-- Every enabled private browser host has a canary target or a documented
-  exemption.
-- New source files are tracked; sensitive and bulky files are not.
-- Documentation explains operator-visible behavior and recovery implications.
+Finish with the catalog, services, secrets, optional dependencies, persistence,
+backups, and canary coverage consistent. Explain operator-visible changes and
+recovery implications. Distinguish source checks from observed enabled/disabled
+behavior and post-activation access; live activation still follows the whole-set
+deploy gate.

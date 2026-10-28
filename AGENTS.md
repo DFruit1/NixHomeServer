@@ -15,14 +15,18 @@ assigned checkout. Skills supply procedures within existing role permissions.
 
 | Work | Skill |
 | --- | --- |
+| Coding, debugging and focused application checks | [nixhomeserver-development](.agents/skills/nixhomeserver-development/SKILL.md) |
+| Scoped code review and bounded re-review | [review-loop](.agents/skills/review-loop/SKILL.md) |
 | Validation, builds, deployment or recovery | [nixhomeserver-safe-change](.agents/skills/nixhomeserver-safe-change/SKILL.md) |
 | Application module boundaries, integrations or removal | [nixhomeserver-module-change](.agents/skills/nixhomeserver-module-change/SKILL.md) |
-| Long work that may outlast a server shutdown | [nixhomeserver-shutdown-guard](.agents/skills/nixhomeserver-shutdown-guard/SKILL.md) |
 | Rendered frontend implementation or review | [frontend-design](.agents/skills/frontend-design/SKILL.md) |
 
-Hermes agents use the installed `systematic-debugging` skill for failures and
-`~/.hermes/scripts/hermes-skill-routing.md` for role-specific selection. Keep
-temporary task receipts on their cards/jobs, not in standing instructions.
+Load only relevant skills and references. Shutdown protection is the safe-change
+[procedure](.agents/skills/nixhomeserver-safe-change/references/shutdown.md).
+Hermes retains small native compatibility adapters and its existing review
+lifecycle; use `~/.hermes/scripts/hermes-skill-routing.md` for role selection.
+The full former definitions are [archived](documentation/archive/skills/README.md).
+Keep temporary task receipts on their cards/jobs, not in standing instructions.
 
 ## Feature-directory ownership
 
@@ -177,6 +181,13 @@ measurement details live in [Compute Offload](documentation/operations.md#comput
   behavior: focused regression/unit tests, syntax/lint checks, relevant Nix
   evaluation, and affected UI render checks. Documentation-only edits need
   only diff, link and instruction-consistency checks.
+* Create or expand automated tests only for demonstrated repeated regressions
+  or a concrete risk of catastrophic outcomes, such as unrecoverable deletion,
+  hardware damage or leaked secrets. Record the supporting history or risk in
+  the change/card. Otherwise use existing checks and direct verification.
+  This creation rule is separate from execution scope; it does not authorize
+  removing existing coverage or bypassing CI and release safety checks. It
+  supersedes generic recipes that mandate a new test for every change.
 * Run full test suites or broad validation only when the user explicitly asks
   for that scope. This includes repository-wide runners (even the lean gate),
   workspace/all-app tests, full flake checks, broad builds, end-to-end/VM suites,
@@ -491,7 +502,7 @@ unpublished worktrees.
 * `lib/` — validation and derived-value helpers (`derive-vars.nix`, `identity-access.nix`, `*validation.nix`).
 * `flake/` — system/package/check/app assembly. `checks.nix` wires the test gates.
 * `custom_apps/` — first-party apps: `rust/apps/*` (media-manager, mail-archive-ui, kanidm-canary-bootstrap), `node/apps/*` (homepage, groundwater-logger, youtube-downloader), `mkvmaker`.
-* `.agents/skills/` + `.agents/vendor/` — agent skills and vendored toolkits. `skills/frontend-design/` owns all frontend work; `skills/impeccable/` is the review/QA layer; `vendor/ux-ui-kit/` is the vendored UI/UX Kit knowledge base.
+* `.agents/skills/` — five project entrypoints; see [skill routing](documentation/agent-skills.md). `.agents/vendor/` holds non-discoverable UI knowledge and the pinned Impeccable detector, consumed only through frontend-design references.
 * `DESIGN_SYSTEM.md` — living record of frontend surfaces and deliberate design decisions; the precedent Impeccable detectors must respect.
 * `.impeccable/config.json` — shared Impeccable config; narrowly scoped detector exceptions live here.
 * `scripts/` — deploy, admin, helpers, and `tests/` (shell regression suite). `tests/test-common.sh` holds shared helpers; `validate-repo.sh` provides opt-in repository gates.
@@ -516,7 +527,7 @@ If a broad search is needed, prefer `rg`/`glob` (they skip gitignored files) ove
 ## Frontend Design Workflow
 
 Load `frontend-design` for every rendered UI change or review. It owns UI/UX Kit
-implementation, Impeccable review, desktop/mobile rendering and scroll checks,
+implementation, focused review, desktop/mobile rendering and scroll checks,
 media-manager coverage and the stopping condition. Project anti-slop rules and
 `DESIGN_SYSTEM.md` take precedence over generic toolkit preferences. Impeccable
 stylistic enhancement commands still require an explicit user request.
@@ -602,7 +613,7 @@ replace, the Impeccable `critique`/`audit` pass required by `frontend-design`.
 gates (`scripts/validate-repo.sh`, including lean), `--full`, `--all-apps` and VM
 tests (`--run-vm-tests`, requiring `/dev/kvm`) require an explicit user request
 for that scope. If a requested run is long, protect a pending shutdown through
-`nixhomeserver-shutdown-guard`. Interrupted runs are never a pass.
+the safe-change shutdown procedure. Interrupted runs are never a pass.
 
 ## Service-Access Canary
 

@@ -154,7 +154,7 @@ Use the smallest relevant set from
 | Meaningful implementation logic | `test-driven-development` |
 | NixHomeServer validation or operational evidence | `nixhomeserver-safe-change` |
 | Optional NixOS application boundary or integration | `nixhomeserver-module-change` |
-| Work needing protection from a pending shutdown | `nixhomeserver-shutdown-guard` within existing role authority |
+| Work needing protection from a pending shutdown | `nixhomeserver-safe-change` shutdown reference; the installed `nixhomeserver-shutdown-guard` compatibility name remains valid for existing cards |
 | Rendered frontend implementation or review | `frontend-design` from the assigned project |
 | Taskforce feature audit | `taskforce-feature-audit` |
 | Coordinator routing or recovery | `kanban-orchestration` |
