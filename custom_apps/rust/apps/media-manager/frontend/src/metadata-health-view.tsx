@@ -1,6 +1,7 @@
 import type {
   MetadataHealthIssue,
   MetadataHealthResult,
+  MetadataObservation,
   MetadataIssuesPage as MetadataIssuesEnvelope,
   MutationPreview,
   ProviderCatalogResponse,
@@ -517,70 +518,362 @@ const ExternalProvidersDialog = component$<{
   );
 });
 
-interface GroupedIssue {
-  key: string;
+interface HealthIssueEntry {
   issue: MetadataHealthIssue;
   target: MetadataHealthResult;
 }
 
+interface GroupedIssue {
+  key: string;
+  issue: MetadataHealthIssue;
+  entries: HealthIssueEntry[];
+}
+
+const ALBUM_HEALTH_FIELDS = new Set([
+  "authors",
+  "narrators",
+  "series",
+  "year",
+  "language",
+]);
+
+type AlbumTarget = { rootId: string; path: string };
+type ApplyHealthValue = QRL<
+  (
+    value: unknown,
+    origin: "Current" | "Proposed",
+    issue: MetadataHealthIssue,
+    target: MetadataHealthResult,
+    album?: AlbumTarget,
+  ) => Promise<boolean>
+>;
+
 function groupIssues(results: MetadataHealthResult[]): GroupedIssue[] {
-  const multipleFiles = results.length > 1;
-  const order: string[] = [];
-  const byKey = new Map<
-    string,
-    {
-      issue: MetadataHealthIssue;
-      target: MetadataHealthResult;
-      files: Set<string>;
-      explicitCount: number;
-    }
-  >();
-  for (const result of results) {
-    const fileName =
-      result.relativePath.split("/").at(-1) ?? result.relativePath;
-    for (const issue of result.health) {
+  const grouped = new Map<string, GroupedIssue>();
+  for (const target of results) {
+    for (const issue of target.health) {
       const key = JSON.stringify([
-        issue.code,
+        issue.field && "currentValue" in issue ? issue.field : issue.code,
         issue.field ?? null,
-        issue.currentValue ?? null,
-        (issue.proposedValues ?? []).map((candidate) => candidate.value),
-        issue.field && "currentValue" in issue ? result.itemId : null,
       ]);
-      let merged = byKey.get(key);
-      if (!merged) {
-        merged = { issue, target: result, files: new Set(), explicitCount: 0 };
-        byKey.set(key, merged);
-        order.push(key);
+      let group = grouped.get(key);
+      if (!group) {
+        group = { key, issue, entries: [] };
+        grouped.set(key, group);
       }
-      merged.explicitCount = Math.max(
-        merged.explicitCount,
-        issue.affectedFileCount ?? 0,
-      );
-      const affected = issue.affectedFiles?.length
-        ? issue.affectedFiles
-        : multipleFiles
-          ? [fileName]
-          : [];
-      for (const file of affected) merged.files.add(file);
+      group.entries.push({ issue, target });
     }
   }
-  return order.map((key) => {
-    const merged = byKey.get(key)!;
-    const files = [...merged.files];
-    if (files.length === 0 && merged.explicitCount === 0) {
-      return { key, issue: merged.issue, target: merged.target };
-    }
-    return {
-      key,
-      target: merged.target,
-      issue: {
-        ...merged.issue,
-        affectedFiles: files.slice(0, MAX_GROUPED_FILES),
-        affectedFileCount: merged.explicitCount || files.length,
-      },
-    };
-  });
+  return [...grouped.values()];
 }
+
+function distinctValues(entries: HealthIssueEntry[], proposed: boolean) {
+  const values = new Map<string, { value: unknown; sources: string[] }>();
+  for (const { issue } of entries) {
+    const candidates = proposed
+      ? (issue.proposedValues ?? [])
+      : [{ value: issue.currentValue, sources: issue.currentSources ?? [] }];
+    for (const candidate of candidates) {
+      const key = displayValue(candidate.value);
+      const previous = values.get(key);
+      values.set(key, {
+        value: candidate.value,
+        sources: [
+          ...new Set([...(previous?.sources ?? []), ...candidate.sources]),
+        ],
+      });
+    }
+  }
+  return [...values.values()];
+}
+
+const HealthDecisionRow = component$<{
+  entries: HealthIssueEntry[];
+  album?: AlbumTarget;
+  showFile: boolean;
+  canEdit: boolean;
+  applying: boolean;
+  onApply$: ApplyHealthValue;
+}>((props) => {
+  const customValue = useSignal("");
+  const queuedValue = useSignal("");
+  const { issue, target } = props.entries[0];
+  const field = issue.field ?? "";
+  const editable =
+    props.canEdit && isSettableField(field) && target.mediaKind !== "podcast";
+  const currents = distinctValues(props.entries, false);
+  const proposals = distinctValues(props.entries, true);
+  const apply$ = $(async (value: unknown, origin: "Current" | "Proposed") => {
+    if (await props.onApply$(value, origin, issue, target, props.album))
+      queuedValue.value = `Queued: ${displayValue(value)}`;
+  });
+  const valueButton = (value: unknown, origin: "Current" | "Proposed") =>
+    editable ? (
+      <button
+        type="button"
+        class="health-value-set"
+        disabled={props.applying}
+        title={`Set this ${origin.toLowerCase()} value for “${field}”`}
+        onClick$={() => apply$(value, origin)}
+      >
+        <span>{renderValue(value)}</span>
+        <span class="health-value-action">Use {origin.toLowerCase()}</span>
+      </button>
+    ) : (
+      <p class="health-value-text">{renderValue(value)}</p>
+    );
+  return (
+    <tr>
+      {props.showFile && (
+        <th scope="row">
+          <a
+            class="health-review-link"
+            href={`?view=library&root=${encodeURIComponent(target.rootId)}&item=${encodeURIComponent(target.itemId)}`}
+          >
+            <span title={target.relativePath}>
+              {target.relativePath.split("/").at(-1)}
+            </span>
+          </a>
+        </th>
+      )}
+      <td class="health-value">
+        {currents.length > 1 && <small>Varies by file</small>}
+        {currents.map((candidate, index) => (
+          <div class="health-candidate" key={index}>
+            {valueButton(candidate.value, "Current")}
+            {!!candidate.sources.length && (
+              <small>{candidate.sources.join(" · ")}</small>
+            )}
+          </div>
+        ))}
+      </td>
+      <td class="health-value">
+        {proposals.length ? (
+          proposals.map((candidate, index) => (
+            <div class="health-candidate" key={index}>
+              {valueButton(candidate.value, "Proposed")}
+            </div>
+          ))
+        ) : (
+          <p class="health-no-proposal">???</p>
+        )}
+        {editable && (
+          <details class="health-custom-editor" open={proposals.length === 0}>
+            <summary>Enter another value</summary>
+            <form
+              class="health-custom-value"
+              preventdefault:submit
+              onSubmit$={() => {
+                if (customValue.value.trim())
+                  return apply$(customValue.value.trim(), "Proposed");
+              }}
+            >
+              <label>
+                <span>
+                  Enter {field.replace(/([A-Z])/g, " $1").toLowerCase()}
+                </span>
+                <input
+                  type={field === "year" ? "number" : "text"}
+                  min={field === "year" ? 1 : undefined}
+                  max={field === "year" ? 2100 : undefined}
+                  maxLength={
+                    field === "volumeNumber"
+                      ? 32
+                      : field === "language"
+                        ? 15
+                        : 500
+                  }
+                  value={customValue.value}
+                  onInput$={(_, input) => (customValue.value = input.value)}
+                />
+              </label>
+              <button
+                type="submit"
+                class="secondary-button"
+                disabled={props.applying || !customValue.value.trim()}
+              >
+                Apply
+              </button>
+            </form>
+          </details>
+        )}
+        {queuedValue.value && (
+          <p class="health-queued-value" role="status">
+            {queuedValue.value}
+          </p>
+        )}
+      </td>
+    </tr>
+  );
+});
+
+const HealthIssueReview = component$<{
+  group: HealthGroup;
+  grouped: GroupedIssue;
+  providers: ProviderDefinition[];
+  canEdit: boolean;
+  applying: boolean;
+  selectedOnline?: { value: unknown; source: string };
+  onApply$: ApplyHealthValue;
+  onLookup$: QRL<
+    (
+      issue: MetadataHealthIssue,
+      target: MetadataHealthResult,
+      primary: ProviderDefinition,
+    ) => void
+  >;
+}>((props) => {
+  const individually = useSignal(false);
+  const { issue, entries } = props.grouped;
+  const target = entries[0].target;
+  const field = issue.field ?? "";
+  const compares = Boolean(field) && "currentValue" in issue;
+  const albumField =
+    Boolean(props.group.album) &&
+    ALBUM_HEALTH_FIELDS.has(field) &&
+    ["audiobook", "music"].includes(target.mediaKind);
+  const album =
+    albumField && !individually.value
+      ? { rootId: props.group.rootId, path: props.group.album! }
+      : undefined;
+  const primary = compares
+    ? candidateSources(props.providers, target.mediaKind, field)[0]
+    : undefined;
+  const files = [
+    ...new Set(
+      entries.flatMap(({ issue: entryIssue, target: entryTarget }) =>
+        entryIssue.affectedFiles?.length
+          ? entryIssue.affectedFiles
+          : [entryTarget.relativePath.split("/").at(-1)!],
+      ),
+    ),
+  ];
+  const count = Math.max(
+    files.length,
+    ...entries.map(({ issue }) => issue.affectedFileCount ?? 0),
+  );
+  const provenance = [
+    ...new Set(entries.map(({ issue }) => proposedProvenance(issue))),
+  ];
+  return (
+    <section class="health-result-issue">
+      <div class="health-comparison">
+        <div class="health-reason">
+          <h4>{issue.title}</h4>
+          {!compares && <p>{issue.message}</p>}
+        </div>
+        {compares && (
+          <>
+            {albumField && (
+              <div class="health-album-scope">
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={individually.value}
+                    disabled={props.applying}
+                    onChange$={(_, input) =>
+                      (individually.value = input.checked)
+                    }
+                  />
+                  Edit files individually
+                </label>
+                <p>
+                  {album
+                    ? "One value for this folder and its files. Individual overrides take priority; embedded tags are retained."
+                    : "File choices override the album in Media Manager. Other apps continue to read the album sidecar."}
+                </p>
+              </div>
+            )}
+            <table class="health-issue-table">
+              <caption class="sr-only">{issue.title}</caption>
+              <thead>
+                <tr>
+                  {!album && entries.length > 1 && <th scope="col">File</th>}
+                  <th scope="col">Current</th>
+                  <th scope="col">Proposed</th>
+                </tr>
+              </thead>
+              <tbody>
+                {album ? (
+                  <HealthDecisionRow
+                    key="album"
+                    entries={entries}
+                    album={album}
+                    showFile={false}
+                    canEdit={props.canEdit}
+                    applying={props.applying}
+                    onApply$={props.onApply$}
+                  />
+                ) : (
+                  entries.map((entry) => (
+                    <HealthDecisionRow
+                      key={entry.target.itemId}
+                      entries={[entry]}
+                      showFile={entries.length > 1}
+                      canEdit={props.canEdit}
+                      applying={props.applying}
+                      onApply$={props.onApply$}
+                    />
+                  ))
+                )}
+              </tbody>
+            </table>
+            {!albumField &&
+              ["audiobook", "music"].includes(target.mediaKind) &&
+              props.canEdit && (
+                <p class="health-file-scope">
+                  File choices override the album in Media Manager. Other apps
+                  continue to read the album sidecar.
+                </p>
+              )}
+            {props.selectedOnline && (
+              <div class="health-online-selection" role="status">
+                <span class="health-value-label">Selected online value</span>
+                <p class="health-value-text">
+                  {renderValue(props.selectedOnline.value)}
+                </p>
+                <small>{props.selectedOnline.source}</small>
+              </div>
+            )}
+            <div class="health-provenance">
+              {provenance.map((reason) => (
+                <p key={reason}>{reason}</p>
+              ))}
+            </div>
+            {primary && (
+              <p class="health-source">
+                <button
+                  type="button"
+                  class="health-source-trigger"
+                  disabled={!props.canEdit}
+                  title={
+                    !props.canEdit
+                      ? "Metadata lookup requires editor access."
+                      : undefined
+                  }
+                  onClick$={() => props.onLookup$(issue, target, primary)}
+                >
+                  Find from External Providers
+                </button>
+              </p>
+            )}
+          </>
+        )}
+      </div>
+      {count === 1 ? (
+        <p class="health-file-details">Affects 1 file: {files[0]}</p>
+      ) : (
+        <details class="health-file-details">
+          <summary>Affects {count} files</summary>
+          <p>
+            {files.slice(0, MAX_GROUPED_FILES).join(", ")}
+            {count > MAX_GROUPED_FILES ? "…" : ""}
+          </p>
+        </details>
+      )}
+    </section>
+  );
+});
 
 const HealthArtwork = component$<{ itemId: string }>((props) => {
   const failed = useSignal(false);
@@ -710,42 +1003,66 @@ export const MetadataHealthView = component$<{
       value: unknown,
       origin: "Current" | "Proposed",
       issue: MetadataHealthIssue,
-      itemId: string,
+      target: MetadataHealthResult,
+      album?: AlbumTarget,
     ) => {
-      if (!props.canEdit || applyingValue.value) return;
+      if (!props.canEdit || applyingValue.value) return false;
       const field = issue.field ?? "";
-      if (!field || !isSettableField(field)) return;
+      if (!field || !isSettableField(field)) return false;
       if (isUnset(value)) {
         if (
           typeof window !== "undefined" &&
           !window.confirm(
-            `The ${origin.toLowerCase()} value is not set. Setting it will clear the “${field}” field for this item. Continue?`,
+            `The ${origin.toLowerCase()} value is not set. Setting it will clear the “${field}” field for ${album ? "this album" : "this file"}. Continue?`,
           )
         )
-          return;
+          return false;
       }
       applyingValue.value = true;
       feedback.error = "";
       feedback.notice = "";
       try {
-        const details = await api<Record<string, unknown>>(
-          `/items/${encodeURIComponent(itemId)}/metadata`,
-        );
+        const endpoint = album
+          ? `/folders/metadata?rootId=${encodeURIComponent(album.rootId)}&relativePath=${encodeURIComponent(album.path)}`
+          : `/items/${encodeURIComponent(target.itemId)}/metadata`;
+        const details = await api<Record<string, unknown>>(endpoint);
         const fields = sidecarFieldsFromMetadata(details, field, value);
+        if (["audiobook", "music"].includes(target.mediaKind))
+          fields.mediaType = target.mediaKind;
+        const fileOnly =
+          !album && ["audiobook", "music"].includes(target.mediaKind);
+        if (fileOnly) {
+          const existing = (
+            details.observations as MetadataObservation[] | undefined
+          )?.find((observation) => observation.label === "File sidecar");
+          fields.overrideFields = [
+            ...new Set([
+              ...Object.keys(existing?.fields ?? {}).filter(isSettableField),
+              field,
+            ]),
+          ];
+        }
         const preview = await api<MutationPreview>(
-          `/items/${encodeURIComponent(itemId)}/metadata/sidecar`,
+          album
+            ? `/folders/metadata/sidecar?rootId=${encodeURIComponent(album.rootId)}&relativePath=${encodeURIComponent(album.path)}`
+            : `/items/${encodeURIComponent(target.itemId)}/metadata/sidecar`,
           {
             method: "POST",
-            body: JSON.stringify(fields),
+            body: JSON.stringify({
+              ...fields,
+              fileOnly,
+            }),
           },
         );
         await api(`/plans/${encodeURIComponent(preview.id)}/confirm`, {
           method: "POST",
           headers: { "if-match": `"${preview.digest}"` },
         });
-        feedback.notice = `The ${origin.toLowerCase()} “${field}” value was queued for this item. See Activity to revisit the decision.`;
+        feedback.notice = `The ${origin.toLowerCase()} “${field}” value was queued for ${album ? "this album" : "this file"}. See Activity to revisit the decision.`;
+        return true;
       } catch (error) {
         feedback.error = readableError(error);
+        return false;
       } finally {
         applyingValue.value = false;
       }
@@ -862,160 +1179,32 @@ export const MetadataHealthView = component$<{
                 )}
               </header>
               <div class="health-result-issues">
-                {groupIssues(group.results).map(({ key, issue, target }) => {
-                  const field = issue.field ?? "";
-                  const compares = Boolean(field) && "currentValue" in issue;
-                  const sources = compares
-                    ? candidateSources(
-                        providerCatalog.providers,
-                        first.mediaKind,
-                        field,
-                      )
-                    : [];
-                  const primary = sources[0];
-                  const selectedOnline =
-                    onlineSelections[`${group.key}:${key}`];
-                  const renderValueButton = (
-                    value: unknown,
-                    origin: "Current" | "Proposed",
-                  ) => {
-                    if (!props.canEdit || !isSettableField(field)) {
-                      return (
-                        <p class="health-value-text">{renderValue(value)}</p>
-                      );
+                {groupIssues(group.results).map((grouped) => (
+                  <HealthIssueReview
+                    key={`${group.key}-${grouped.key}`}
+                    group={group}
+                    grouped={grouped}
+                    providers={providerCatalog.providers}
+                    canEdit={Boolean(props.canEdit)}
+                    applying={applyingValue.value}
+                    selectedOnline={
+                      onlineSelections[`${group.key}:${grouped.key}`]
                     }
-                    return (
-                      <button
-                        type="button"
-                        class="health-value-set"
-                        disabled={applyingValue.value}
-                        title={`Set this ${origin.toLowerCase()} value for “${field}”`}
-                        onClick$={() =>
-                          applyValue$(value, origin, issue, target.itemId)
-                        }
-                      >
-                        <span>{renderValue(value)}</span>
-                        <span class="health-value-action">
-                          Use {origin.toLowerCase()}
-                        </span>
-                      </button>
-                    );
-                  };
-                  return (
-                    <section
-                      class="health-result-issue"
-                      key={`${group.key}-${key}`}
-                    >
-                      <div
-                        class={{
-                          "health-comparison": true,
-                          "health-comparison-split": compares,
-                        }}
-                      >
-                        <div class="health-reason">
-                          <h4>{issue.title}</h4>
-                          {!compares && <p>{issue.message}</p>}
-                          {compares && (
-                            <div class="health-provenance">
-                              <p>{proposedProvenance(issue)}</p>
-                            </div>
-                          )}
-                          {compares && group.results.length > 1 && (
-                            <p>Changes apply to {target.relativePath}.</p>
-                          )}
-                        </div>
-                        {compares && (
-                          <div class="health-value">
-                            <span class="health-value-label">Current</span>
-                            {renderValueButton(issue.currentValue, "Current")}
-                            {!!issue.currentSources?.length && (
-                              <small>{issue.currentSources.join(" · ")}</small>
-                            )}
-                          </div>
-                        )}
-                        {compares && (
-                          <div class="health-value">
-                            <span class="health-value-label">Proposed</span>
-                            {issue.proposedValues?.length ? (
-                              issue.proposedValues.map((candidate, index) => (
-                                <div class="health-candidate" key={index}>
-                                  {renderValueButton(
-                                    candidate.value,
-                                    "Proposed",
-                                  )}
-                                </div>
-                              ))
-                            ) : (
-                              <p class="health-no-proposal">{issue.message}</p>
-                            )}
-                            {selectedOnline && (
-                              <div
-                                class="health-online-selection"
-                                role="status"
-                              >
-                                <span class="health-value-label">
-                                  Selected online value
-                                </span>
-                                <p class="health-value-text">
-                                  {renderValue(selectedOnline.value)}
-                                </p>
-                                <small>{selectedOnline.source}</small>
-                              </div>
-                            )}
-                            {primary && (
-                              <p class="health-source">
-                                <button
-                                  type="button"
-                                  class="health-source-trigger"
-                                  disabled={!props.canEdit}
-                                  title={
-                                    !props.canEdit
-                                      ? "Metadata lookup requires editor access."
-                                      : undefined
-                                  }
-                                  onClick$={() => {
-                                    if (!props.canEdit) return;
-                                    providersDialogFor.value = {
-                                      issue,
-                                      mediaKind: first.mediaKind,
-                                      primary,
-                                      itemId: target.itemId,
-                                      query: groupHeading(group).text,
-                                      selectionKey: `${group.key}:${key}`,
-                                    };
-                                  }}
-                                >
-                                  Find from External Providers
-                                </button>
-                              </p>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                      {(issue.affectedFiles?.length ?? 0) > 0 && (
-                        <details class="health-file-details">
-                          <summary>
-                            Affects{" "}
-                            {issue.affectedFileCount ??
-                              issue.affectedFiles!.length}{" "}
-                            {(issue.affectedFileCount ??
-                              issue.affectedFiles!.length) === 1
-                              ? "file"
-                              : "files"}
-                          </summary>
-                          <p>{issue.affectedFiles!.join(", ")}</p>
-                        </details>
-                      )}
-                    </section>
-                  );
-                })}
+                    onApply$={applyValue$}
+                    onLookup$={(issue, target, primary) => {
+                      providersDialogFor.value = {
+                        issue,
+                        mediaKind: target.mediaKind,
+                        primary,
+                        itemId: target.itemId,
+                        query: groupHeading(group).text,
+                        selectionKey: `${group.key}:${grouped.key}`,
+                      };
+                    }}
+                  />
+                ))}
               </div>
-              {group.results.length === 1 ? (
-                <details class="health-file-details">
-                  <summary>File details</summary>
-                  <p>{first.relativePath}</p>
-                </details>
-              ) : (
+              {group.results.length > 1 && (
                 <details class="health-file-details">
                   <summary>
                     Files in this album ({group.results.length})

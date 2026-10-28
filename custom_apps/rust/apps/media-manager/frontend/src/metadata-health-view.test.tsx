@@ -252,7 +252,7 @@ it("groups audio files of one album into a single warning", async () => {
   expect(screen.textContent).toContain("Lawson/02_lawson.mp3");
 });
 
-it("keeps distinct album issue values as separate entries", async () => {
+it("keeps distinct file values in one album issue table", async () => {
   vi.stubGlobal(
     "fetch",
     vi.fn(async () => {
@@ -291,7 +291,10 @@ it("keeps distinct album issue values as separate entries", async () => {
   );
   await vi.waitFor(async () => {
     await userEvent(screen, "click");
-    expect(screen.querySelectorAll(".health-result-issue")).toHaveLength(2);
+    expect(screen.querySelectorAll(".health-result-issue")).toHaveLength(1);
+    expect(
+      screen.querySelectorAll(".health-issue-table tbody tr"),
+    ).toHaveLength(2);
   });
   expect(screen.textContent).toContain("Current 01");
   expect(screen.textContent).toContain("Proposed 02");
@@ -343,7 +346,9 @@ it("names the recommended source for a missing field and lists the alternatives"
   });
 
   expect(screen.querySelector(".health-lookup-note")).toBeFalsy();
-  expect(screen.querySelector(".health-candidate small")).toBeFalsy();
+  expect(
+    screen.querySelector("td:last-child .health-candidate small"),
+  ).toBeFalsy();
   expect(screen.querySelector(".health-provenance")?.textContent).toBe(
     "The proposed value comes from “Embedded audio tags”.",
   );
@@ -537,9 +542,7 @@ it("applies an album issue to the file that produced it", async () => {
   const button = Array.from(screen.querySelectorAll(".health-value-set")).find(
     (element) => element.textContent?.includes("Proposed 02"),
   );
-  expect(button?.closest(".health-result-issue")?.textContent).toContain(
-    "Lawson/02.mp3",
-  );
+  expect(button?.closest("tr")?.textContent).toContain("02.mp3");
   const secondIssue = button?.closest(".health-result-issue");
   await userEvent(
     secondIssue?.querySelector(".health-source-trigger") ?? null,

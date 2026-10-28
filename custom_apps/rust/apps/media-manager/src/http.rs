@@ -214,6 +214,10 @@ struct BatchSubtitleSearchRequest {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct MetadataSidecarRequest {
+    #[serde(default)]
+    file_only: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    override_fields: Vec<String>,
     media_type: Option<String>,
     title: String,
     sort_title: Option<String>,

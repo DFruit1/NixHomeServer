@@ -948,6 +948,15 @@ paths:
                   description: Optional for backward compatibility; when omitted it is derived from the catalog kind (video defaults to movie).
                   type: string
                   enum: [movie, series, season, episode, music, audiobook, book]
+                fileOnly:
+                  description: For music and audiobooks, write an app-local file sidecar (including the media extension) instead of the shared album sidecar. It overrides album and embedded metadata in Media Manager; external consumers continue to use the album sidecar. Defaults to false. Not accepted for folder edits.
+                  type: boolean
+                  default: false
+                overrideFields:
+                  description: Required when fileOnly is true. Only these fields override the shared album; other fields keep inheriting album changes. Must be omitted or empty for ordinary album edits.
+                  type: array
+                  maxItems: 7
+                  items: { type: string, enum: [title, year, authors, narrators, series, volumeNumber, language] }
                 title: { type: string, minLength: 1, maxLength: 500 }
                 sortTitle: { type: string, maxLength: 500 }
                 year:

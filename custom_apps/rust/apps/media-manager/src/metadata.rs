@@ -1328,6 +1328,12 @@ fn parse_sidecar_fields(text: &str) -> Result<Value, String> {
     });
     if let Some(object) = fields.as_object_mut() {
         object.retain(|_, value| !value.is_null());
+        // An explicit file decision overrides only its selected fields. Other
+        // fields keep inheriting later changes to the shared album sidecar.
+        if let Some(selected) = meta_content(root, "media-manager:override-fields") {
+            let selected = selected.split(',').collect::<BTreeSet<_>>();
+            object.retain(|field, _| selected.contains(field.as_str()));
+        }
     }
     Ok(fields)
 }
@@ -1421,15 +1427,22 @@ fn is_managed_element(node: Node<'_, '_>, root: Node<'_, '_>) -> bool {
                 | "web"
         );
     }
+    if name == "meta"
+        && (root.tag_name().name().eq_ignore_ascii_case("package")
+            || (root.tag_name().name().eq_ignore_ascii_case("album")
+                && meta_content(root, "media-manager:override-fields").is_some()))
+    {
+        return node.attribute("name").is_some_and(|value| {
+            matches!(
+                value.to_ascii_lowercase().as_str(),
+                "calibre:series"
+                    | "calibre:series_index"
+                    | "narrator"
+                    | "media-manager:override-fields"
+            )
+        });
+    }
     if root.tag_name().name().eq_ignore_ascii_case("package") {
-        if name == "meta" {
-            return node.attribute("name").is_some_and(|value| {
-                matches!(
-                    value.to_ascii_lowercase().as_str(),
-                    "calibre:series" | "calibre:series_index" | "narrator"
-                )
-            });
-        }
         return matches!(
             name.as_str(),
             "title"

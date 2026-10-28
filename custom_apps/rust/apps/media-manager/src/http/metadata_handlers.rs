@@ -128,6 +128,22 @@ fn season_number_from_name(name: &str) -> Option<u32> {
 }
 
 fn validate_metadata_request(request: &MetadataSidecarRequest) -> Result<(), ApiError> {
+    let selects_override_fields = !request.override_fields.is_empty();
+    if request.override_fields.len() > 7
+        || request.file_only != selects_override_fields
+        || request.override_fields.iter().any(|field| {
+            !matches!(
+                field.as_str(),
+                "title" | "year" | "authors" | "narrators" | "series" | "volumeNumber" | "language"
+            )
+        })
+    {
+        return Err(ApiError::without_request_id(
+            StatusCode::BAD_REQUEST,
+            "metadata_override_fields_invalid",
+            "File overrides must select supported descriptive fields and use fileOnly.",
+        ));
+    }
     if request.media_type.as_deref().is_some_and(|media_type| {
         ![
             "movie",
@@ -345,6 +361,26 @@ fn metadata_sidecar(
         for writer in &request.writers {
             xml.push_str(&xml_element("writer", Some(writer)));
         }
+        if request.file_only {
+            for (name, value) in [
+                ("calibre:series", request.series.as_deref()),
+                ("calibre:series_index", request.volume_number.as_deref()),
+            ] {
+                if let Some(value) = value {
+                    xml.push_str(&format!(
+                        "  <meta name=\"{name}\" content=\"{}\"/>\n",
+                        xml_text(value)
+                    ));
+                }
+            }
+            for narrator in &request.narrators {
+                xml.push_str(&format!(
+                    "  <meta name=\"narrator\" content=\"{}\"/>\n",
+                    xml_text(narrator)
+                ));
+            }
+        }
+        xml.push_str(&file_override_marker(request));
         for (provider, id) in &request.provider_ids {
             xml.push_str(&format!(
                 "  <uniqueid type=\"{}\">{}</uniqueid>\n",
@@ -405,8 +441,20 @@ fn metadata_sidecar(
             xml_text(narrator)
         ));
     }
+    xml.push_str(&file_override_marker(request));
     xml.push_str(" </metadata>\n</package>\n");
     (destination, SidecarFormat::Opf, xml)
+}
+
+fn file_override_marker(request: &MetadataSidecarRequest) -> String {
+    if request.file_only && !request.override_fields.is_empty() {
+        format!(
+            "  <meta name=\"media-manager:override-fields\" content=\"{}\"/>\n",
+            xml_text(&request.override_fields.join(","))
+        )
+    } else {
+        String::new()
+    }
 }
 
 fn comicinfo_sidecar(request: &MetadataSidecarRequest) -> String {
@@ -850,7 +898,14 @@ fn create_metadata_plan(
         Some("movie" | "episode" | "series" | "season") => MediaKind::Video,
         _ => item.media_kind,
     };
-    let affected_consumers = consumer_effects(&state.config, consumer_kind);
+    let file_override =
+        request.file_only && matches!(item.media_kind, MediaKind::Music | MediaKind::Audiobook);
+    let affected_consumers = if file_override {
+        warnings.push("This file sidecar overrides the album only in Media Manager. External applications continue to read the shared album sidecar.");
+        Vec::new()
+    } else {
+        consumer_effects(&state.config, consumer_kind)
+    };
     Ok((
         StatusCode::CREATED,
         Json(json!({
@@ -909,6 +964,8 @@ pub(super) async fn preview_core_info(
         }
     };
     let sidecar_request = MetadataSidecarRequest {
+        file_only: false,
+        override_fields: Vec::new(),
         media_type: None,
         title: core.title,
         sort_title: None,
@@ -1019,6 +1076,15 @@ async fn preview_item_metadata_sidecar(
         )
         .into_response();
     }
+    if request.file_only && !matches!(item.media_kind, MediaKind::Music | MediaKind::Audiobook) {
+        return ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "file_override_unsupported",
+            "File overrides apply only to music and audiobook items.",
+            request_id.to_string(),
+        )
+        .into_response();
+    }
     if item.media_kind == MediaKind::Book {
         let extension = item
             .relative_path
@@ -1068,7 +1134,12 @@ async fn preview_item_metadata_sidecar(
             }
         };
     }
-    let (destination_relative_path, format, contents) = metadata_sidecar(&item, request);
+    let (mut destination_relative_path, format, contents) = metadata_sidecar(&item, request);
+    if request.file_only && matches!(item.media_kind, MediaKind::Music | MediaKind::Audiobook) {
+        // Keep the media extension so equal stems in different formats cannot
+        // share an override. This is an app-local override, not an album sidecar.
+        destination_relative_path = format!("{}.{}", item.relative_path, format.extension());
+    }
     let prepared = match prepare_metadata_action(
         &state.config,
         identity,
@@ -1232,14 +1303,36 @@ async fn item_metadata_value(
         }
         observations.push(observation);
     }
-    let sources = observations
+    response["sidecar"] = json!(sidecar);
+    // The shared album sidecar remains the default. An explicit file sidecar
+    // overrides it without rewriting embedded tags or affecting sibling files.
+    if matches!(item.media_kind, MediaKind::Music | MediaKind::Audiobook)
+        && let Some(root) = root.as_ref()
+    {
+        let path = format!("{}.{}", item.relative_path, sidecar_format.extension());
+        let (_, observation) = inspect_sidecar(
+            FilePath::new(&root.resolved_path),
+            path,
+            sidecar_format,
+            false,
+        );
+        if let Some(mut observation) = observation {
+            observation.label = "File sidecar".to_string();
+            merge_metadata(
+                &mut response,
+                &observation.fields,
+                "sidecar",
+                &mut field_sources,
+            );
+            observations.push(observation);
+        }
+    }
+    response["sources"] = json!(observations
         .iter()
-        .map(|observation| observation.source.clone())
-        .collect::<Vec<_>>();
-    response["sources"] = json!(sources);
+        .map(|observation| &observation.source)
+        .collect::<Vec<_>>());
     response["observations"] = json!(observations);
     response["fieldSources"] = json!(field_sources);
-    response["sidecar"] = json!(sidecar);
     let extension = item
         .relative_path
         .rsplit_once('.')
@@ -1584,6 +1677,15 @@ pub(super) async fn preview_folder_metadata_sidecar(
         Ok(identity) => identity,
         Err(error) => return error.into_response(),
     };
+    if request.file_only {
+        return ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "folder_file_override_invalid",
+            "File-only metadata requires a catalog item, not a folder.",
+            request_id,
+        )
+        .into_response();
+    }
     let folder = match visible_media_folder(&state.config, &identity, &query) {
         Ok(folder) => folder,
         Err(error) => return error.with_request_id(request_id).into_response(),
