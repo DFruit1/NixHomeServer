@@ -1,3 +1,4 @@
+pub mod book_files;
 pub mod browsertrix;
 pub mod calibre;
 pub mod document;
@@ -183,7 +184,8 @@ pub fn source_fingerprint(source: &SourceConfig) -> Option<String> {
     // Preserve unaffected sources' revisions so a book/mail/feed improvement
     // does not repeat a potentially multi-hour ZIM or WACZ extraction.
     let extraction_version = match source.source_type.as_str() {
-        "calibre" | "mail-archive" | "freshrss" => "3",
+        "mail-archive" | "freshrss" => "3",
+        "calibre" | "media-snapshot" => "4",
         _ => "2",
     };
     Some(crate::timeutil::sha256_hex(&[extraction_version, &inputs]))
@@ -290,7 +292,9 @@ pub fn run(
         "calibre" => Box::new(calibre::CalibreExtractor {
             pdftotext: settings.pdftotext.clone(),
         }),
-        "media-snapshot" => Box::new(media_snapshot::MediaSnapshotExtractor),
+        "media-snapshot" => Box::new(media_snapshot::MediaSnapshotExtractor {
+            pdftotext: settings.pdftotext.clone(),
+        }),
         other => return Err(format!("no extractor for source type '{other}'")),
     };
     extractor.extract(source, emit)

@@ -44,6 +44,10 @@ in
               # Kavita's snapshot omits a per-entry media type; index its
               # entries as books for the content-type facet.
               contentType = "book";
+              # The existing media-manager group already has read-only book
+              # access. Read content only below each snapshot's declared root.
+              sharedBooksRoot = config.repo.kavita.paths.sharedBooksRoot;
+              usersRoot = vars.usersRoot;
             };
           };
         })

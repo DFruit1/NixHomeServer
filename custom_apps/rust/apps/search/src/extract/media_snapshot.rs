@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
@@ -18,10 +18,13 @@ const BODY_LIMIT: usize = 2_000_000;
 /// authors, narrators, genres, tags, …). Reading those snapshots lets Search
 /// pick up catalogue metadata from every media application without needing
 /// per-application credentials, APIs, or direct database access.
+/// Kavita snapshots also locate book files beneath configured read-only roots.
 ///
 /// All three snapshots share the same envelope:
 /// `{ "schemaVersion": 1, "observedAt": <epoch>, "entries": [ … ] }`.
-pub struct MediaSnapshotExtractor;
+pub struct MediaSnapshotExtractor {
+    pub pdftotext: Option<PathBuf>,
+}
 
 /// Reads one scalar metadata field as a trimmed, non-empty string.
 fn string_field(entry: &Value, key: &str) -> Option<String> {
@@ -81,14 +84,29 @@ fn list_metadata(map: &mut Map<String, Value>, key: &str, values: Vec<String>) {
     }
 }
 
+fn series_name(entry: &Value) -> Option<String> {
+    string_field(entry, "series")
+        .or_else(|| string_field(entry, "seriesName"))
+        .or_else(|| string_list(entry, "series").into_iter().next())
+}
+
 /// Composes the human-readable title, folding Jellyfin episode coordinates
 /// into the title so search results read "Series S01E02 — Episode".
 fn display_title(entry: &Value) -> String {
     let media_type = string_field(entry, "mediaType");
     let title = string_field(entry, "title")
         .or_else(|| string_field(entry, "episodeTitle"))
+        .or_else(|| series_name(entry))
+        .or_else(|| string_field(entry, "name"))
+        .or_else(|| {
+            string_field(entry, "relativePath").and_then(|path| {
+                Path::new(&path)
+                    .file_stem()
+                    .map(|name| name.to_string_lossy().replace('_', " "))
+            })
+        })
         .unwrap_or_else(|| "(untitled)".to_string());
-    let series = string_field(entry, "series");
+    let series = series_name(entry);
     if media_type.as_deref() == Some("episode") {
         let coordinates = match (
             number_field(entry, "season"),
@@ -111,7 +129,7 @@ fn display_title(entry: &Value) -> String {
 /// when the description itself does not mention it.
 fn build_body(entry: &Value) -> String {
     let mut parts: Vec<String> = Vec::new();
-    if let Some(series) = string_field(entry, "series") {
+    if let Some(series) = series_name(entry) {
         parts.push(match string_field(entry, "volumeNumber") {
             Some(volume) => format!("{series} {volume}"),
             None => series,
@@ -208,17 +226,23 @@ impl MediaSnapshotExtractor {
     }
 }
 
-/// Fingerprints the exported `metadata.json` snapshot (path, size, mtime) plus
-/// the source settings. Media Manager rewrites the snapshot whenever a library
-/// changes, so an unchanged fingerprint means the parse pass can be skipped.
-/// Returns `None` when the snapshot is absent, so the indexer still runs
-/// extraction and reports the missing-snapshot error.
+/// Fingerprints the snapshot and referenced book files (path, size, mtime)
+/// plus the source settings. Book changes count even when the application has
+/// not refreshed its metadata snapshot. Missing or unreadable inputs return
+/// `None`, so extraction runs and reports the error rather than skipping it.
 pub(crate) fn source_fingerprint(source: &SourceConfig) -> Option<String> {
     let path = source.setting_str("snapshotPath").map(PathBuf::from)?;
     if !path.is_file() {
         return None;
     }
-    super::file_inventory_fingerprint(source, [path])
+    let mut files = std::collections::HashSet::from([path.clone()]);
+    let books = super::book_files::BookFiles::new(source, None);
+    if books.enabled() {
+        for entry in MediaSnapshotExtractor::load_entries(&path).ok()? {
+            files.extend(books.paths(&entry).ok()?);
+        }
+    }
+    super::file_inventory_fingerprint(source, files)
 }
 
 impl super::Extractor for MediaSnapshotExtractor {
@@ -234,6 +258,8 @@ impl super::Extractor for MediaSnapshotExtractor {
             .setting_str("contentType")
             .unwrap_or("application/octet-stream")
             .to_string();
+        let mut books = super::book_files::BookFiles::new(source, self.pdftotext.as_deref());
+        let mut book_failure = None;
 
         for entry in &entries {
             let title = display_title(entry);
@@ -243,7 +269,7 @@ impl super::Extractor for MediaSnapshotExtractor {
 
             let mut metadata = Map::new();
             metadata.insert("owner".to_string(), Value::String(owner));
-            scalar_metadata(&mut metadata, "series", string_field(entry, "series"));
+            scalar_metadata(&mut metadata, "series", series_name(entry));
             list_metadata(&mut metadata, "authors", string_list(entry, "authors"));
             list_metadata(&mut metadata, "narrators", string_list(entry, "narrators"));
             list_metadata(&mut metadata, "genres", string_list(entry, "genres"));
@@ -255,10 +281,21 @@ impl super::Extractor for MediaSnapshotExtractor {
             );
             scalar_metadata(&mut metadata, "publisher", string_field(entry, "publisher"));
             scalar_metadata(&mut metadata, "language", string_field(entry, "language"));
+            if let Err(err) = books.extract(entry, &title, &metadata, emit) {
+                eprintln!("search: book file extraction failed: {err}");
+                book_failure = Some(err);
+            }
 
             emit(ExtractedDocument {
                 external_id: external_id(entry, &title),
-                kind: media_type.clone().unwrap_or_else(|| "media".to_string()),
+                kind: media_type.clone().unwrap_or_else(|| {
+                    if fallback_type == "book" {
+                        "book"
+                    } else {
+                        "media"
+                    }
+                    .to_string()
+                }),
                 title,
                 body_text: build_body(entry),
                 content_type: media_type.unwrap_or_else(|| fallback_type.clone()),
@@ -271,7 +308,10 @@ impl super::Extractor for MediaSnapshotExtractor {
                 metadata: Value::Object(metadata),
             });
         }
-        Ok(())
+        match book_failure {
+            Some(err) => Err(format!("book extraction incomplete: {err}")),
+            None => Ok(()),
+        }
     }
 }
 
@@ -291,7 +331,7 @@ mod tests {
 
     fn run_with(source: &SourceConfig) -> Result<Vec<ExtractedDocument>, String> {
         let mut docs = Vec::new();
-        MediaSnapshotExtractor.extract(source, &mut |doc| docs.push(doc))?;
+        MediaSnapshotExtractor { pdftotext: None }.extract(source, &mut |doc| docs.push(doc))?;
         Ok(docs)
     }
 
@@ -373,7 +413,7 @@ mod tests {
         let docs = run_with(&source).expect("extract");
         assert_eq!(docs[0].content_type, "book");
         assert!(!docs[0].external_id.is_empty());
-        assert_eq!(docs[0].kind, "media");
+        assert_eq!(docs[0].kind, "book");
     }
 
     #[test]

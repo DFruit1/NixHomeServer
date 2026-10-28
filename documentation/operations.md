@@ -1992,10 +1992,11 @@ Notes:
   binary, without writing attachments to temporary files.
 * Book formats. Calibre extraction prefers EPUB, PDF, plain text and HTML,
   then tries DOCX/DOCM, XLSX/XLSM, PPTX/PPTM/PPSX, ODT/ODS/ODP, FB2,
-  Markdown and zipped HTML/text. Word extraction includes footnotes, endnotes
-  and running headers/footers; presentations include speaker notes. Spreadsheet
-  extraction resolves shared strings, inline text, sheet names and cached cell
-  values, without evaluating formulas or indexing unused shared-string entries.
+  Markdown, zipped HTML/text and CBZ ComicInfo metadata. Word extraction includes
+  footnotes, endnotes and running headers/footers; presentations include speaker
+  notes. Spreadsheet extraction resolves shared strings, inline text, sheet names
+  and cached cell values, without evaluating formulas or indexing unused
+  shared-string entries.
   UTF-8 and BOM-marked UTF-16 text/XML exports are decoded before extraction.
   Loose text/HTML files contribute a bounded 8 MB prefix. ZIP extraction
   reads members in memory, caps expanded input at 8 MB per member and 32 MB
@@ -2028,6 +2029,22 @@ Notes:
   missing or malformed is treated as an extraction error, so the existing
   document set is retained rather than pruned. Disabling a media application
   removes its source on the next `search-reconcile` pass.
+* Kavita book content. The Books source also reads supported book files beneath
+  each snapshot entry's shared or personal `_Books` root, using the existing
+  read-only `media-manager` ACLs. EPUB, PDF, FB2, text, HTML and the office
+  formats above contribute body text; CBZ contributes ComicInfo metadata.
+  EPUB package titles and ComicInfo titles name individual file results;
+  catalog titles and filenames provide fallbacks. Embedded authors, subjects,
+  publishers, languages, identifiers and summaries are searchable alongside
+  the catalog metadata. Paths must remain inside the configured book root;
+  recursive scans skip symlinks. Unreadable or missing book paths fail the
+  extraction pass and retain previously indexed documents. Book-file changes
+  invalidate the source fingerprint even before a new metadata snapshot arrives.
+  The extraction-version bump makes the next indexing pass pick up existing
+  books after deployment. Image-only PDFs and comics still need upstream OCR.
+* Result titles. Search accepts both scalar and array-shaped Solr titles, so
+  stored email subjects and book titles appear in results instead of falling
+  back to `Untitled`. This response-parsing fix needs no schema reset or reindex.
 * Runtime-federated sources. A source that already ships a queryable index is
   searched at request time instead of being copied into Solr. Two sources work
   this way:

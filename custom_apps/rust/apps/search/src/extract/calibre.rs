@@ -1,13 +1,12 @@
 use std::collections::HashMap;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OpenFlags};
 
-use super::paperless::extract_pdf_text;
+use super::document::{content_type_for_format, extract_format_text};
 use super::ExtractedDocument;
 use crate::config::SourceConfig;
-use crate::text::{decode_document_text, html_to_text, truncate_text};
+use crate::text::{html_to_text, truncate_text};
 use crate::timeutil::parse_date;
 
 /// Upper bound on the body text copied out of a single book. Technical books
@@ -158,36 +157,6 @@ fn format_priority(format: &str) -> u8 {
     }
 }
 
-fn content_type_for_format(format: &str) -> String {
-    match format.to_ascii_lowercase().as_str() {
-        "epub" => "application/epub+zip".to_string(),
-        "pdf" => "application/pdf".to_string(),
-        "txt" => "text/plain".to_string(),
-        "html" | "htm" => "text/html".to_string(),
-        "docx" => {
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document".to_string()
-        }
-        "odt" => "application/vnd.oasis.opendocument.text".to_string(),
-        "ods" => "application/vnd.oasis.opendocument.spreadsheet".to_string(),
-        "odp" => "application/vnd.oasis.opendocument.presentation".to_string(),
-        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet".to_string(),
-        "pptx" => {
-            "application/vnd.openxmlformats-officedocument.presentationml.presentation".to_string()
-        }
-        "ppsx" => {
-            "application/vnd.openxmlformats-officedocument.presentationml.slideshow".to_string()
-        }
-        "docm" => "application/vnd.ms-word.document.macroEnabled.12".to_string(),
-        "xlsm" => "application/vnd.ms-excel.sheet.macroEnabled.12".to_string(),
-        "pptm" => "application/vnd.ms-powerpoint.presentation.macroEnabled.12".to_string(),
-        "fb2" => "application/x-fictionbook+xml".to_string(),
-        "md" => "text/markdown".to_string(),
-        "mobi" => "application/x-mobipocket-ebook".to_string(),
-        "azw3" => "application/vnd.amazon.ebook".to_string(),
-        _ => "application/octet-stream".to_string(),
-    }
-}
-
 fn format_path(library_root: &Path, book: &BookRow, format: &FormatFile) -> PathBuf {
     library_root.join(&book.path).join(format!(
         "{}.{}",
@@ -215,41 +184,6 @@ pub(crate) fn source_fingerprint(source: &SourceConfig) -> Option<String> {
         return None;
     }
     super::file_inventory_fingerprint(source, files)
-}
-
-fn read_text_prefix(path: &Path) -> Option<String> {
-    let file = std::fs::File::open(path).ok()?;
-    let mut bytes = Vec::new();
-    file.take(super::document::XML_LIMIT)
-        .read_to_end(&mut bytes)
-        .ok()?;
-    Some(decode_document_text(&bytes))
-}
-
-fn extract_format_text(path: &Path, format: &str, pdftotext: Option<&Path>) -> Option<String> {
-    match format.to_ascii_lowercase().as_str() {
-        format @ ("epub" | "docx" | "docm" | "odt" | "ods" | "odp" | "xlsx" | "xlsm" | "pptx"
-        | "pptm" | "ppsx" | "htmlz" | "txtz") => {
-            let file = std::fs::File::open(path).ok()?;
-            super::document::zip_text(std::io::BufReader::new(file), format)
-        }
-        "fb2" => {
-            let file = std::fs::File::open(path).ok()?;
-            let mut bytes = Vec::new();
-            file.take(super::document::XML_LIMIT + 1)
-                .read_to_end(&mut bytes)
-                .ok()?;
-            super::document::xml_text(&decode_document_text(&bytes))
-        }
-        "pdf" => extract_pdf_text(path, pdftotext)
-            .ok()
-            .filter(|text| !text.trim().is_empty()),
-        "txt" | "md" => read_text_prefix(path).filter(|text| !text.trim().is_empty()),
-        "html" | "htm" => read_text_prefix(path)
-            .map(|raw| html_to_text(&raw))
-            .filter(|text| !text.trim().is_empty()),
-        _ => None,
-    }
 }
 
 impl super::Extractor for CalibreExtractor {
