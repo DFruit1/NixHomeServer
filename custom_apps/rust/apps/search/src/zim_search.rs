@@ -104,7 +104,7 @@ pub struct ZimSearchResult {
 /// the merged, bounded set of article hits. ZIMs without an embedded index are
 /// skipped: their articles are already indexed into Solr by the fallback
 /// extractor, so searching them here would only duplicate results. Archives
-/// are queried in bounded-concurrency batches; any single ZIM that fails
+/// are queried with bounded concurrency; any single ZIM that fails
 /// (missing tool, unreadable archive, timeout) is skipped rather than failing
 /// the whole query, and results keep their archive ordering.
 pub async fn search(
@@ -120,26 +120,26 @@ pub async fn search(
         return ZimSearchResult::default();
     }
 
-    let searchable: Vec<(usize, &ZimIndexEntry)> = entries
+    // Refill each slot as it finishes. Waiting for an entire batch left slots
+    // idle behind one slow archive and delayed archives later in the library.
+    let mut remaining = entries
         .iter()
         .enumerate()
-        .filter(|(_, entry)| entry.has_xapian)
-        .collect();
-
-    // Search archives in bounded batches so a large library is fully covered
-    // without spawning an unbounded number of `kiwix-search` subprocesses.
+        .filter(|(_, entry)| entry.has_xapian);
+    let mut tasks = tokio::task::JoinSet::new();
     let mut failed_archives = 0;
     let mut ordered: Vec<(usize, Vec<ZimHit>)> = Vec::new();
-    for chunk in searchable.chunks(MAX_ZIM_CONCURRENCY) {
-        let mut tasks = tokio::task::JoinSet::new();
-        for (index, entry) in chunk {
+    loop {
+        while tasks.len() < MAX_ZIM_CONCURRENCY {
+            let Some((index, entry)) = remaining.next() else {
+                break;
+            };
             let kiwix_search = kiwix_search.clone();
             let zimdump = zimdump.clone();
             let zim = entry.path.clone();
             let stem = entry.stem.clone();
             let app_base = config.app_base.clone();
             let query = query.to_string();
-            let index = *index;
             tasks.spawn(async move {
                 (
                     index,
@@ -147,17 +147,18 @@ pub async fn search(
                 )
             });
         }
-        while let Some(joined) = tasks.join_next().await {
-            match joined {
-                Ok((index, Ok(hits))) => ordered.push((index, hits)),
-                Ok((_, Err(err))) => {
-                    failed_archives += 1;
-                    eprintln!("search: ZIM query failed: {err}");
-                }
-                Err(err) => {
-                    failed_archives += 1;
-                    eprintln!("search: ZIM federation task failed: {err}");
-                }
+        let Some(joined) = tasks.join_next().await else {
+            break;
+        };
+        match joined {
+            Ok((index, Ok(hits))) => ordered.push((index, hits)),
+            Ok((_, Err(err))) => {
+                failed_archives += 1;
+                eprintln!("search: ZIM query failed: {err}");
+            }
+            Err(err) => {
+                failed_archives += 1;
+                eprintln!("search: ZIM federation task failed: {err}");
             }
         }
     }
@@ -338,6 +339,83 @@ fn make_snippet(html: &str, query: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn fixture_tool(root: &Path, name: &str, script: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = root.join(name);
+        std::fs::write(&path, script).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        path
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_slow_archive_does_not_block_later_archives_or_reorder_hits() {
+        let dir = tempfile::tempdir().unwrap();
+        let search_tool = fixture_tool(
+            dir.path(),
+            "search",
+            r#"#!/bin/sh
+root=${1%/*}
+name=${1##*/}
+printf 'start %s\n' "$name" >> "$root/events"
+if [ "$name" = '00.zim' ]; then
+    until [ -f "$root/last-started" ]; do sleep 0.01; done
+fi
+if [ "$name" = '24.zim' ]; then touch "$root/last-started"; fi
+printf 'end %s\n' "$name" >> "$root/events"
+printf 'A/Article\n'
+"#,
+        );
+        let zimdump = fixture_tool(
+            dir.path(),
+            "zimdump",
+            "#!/bin/sh\nprintf '<title>Article</title><p>test article</p>'\n",
+        );
+        let config = ZimSearchConfig {
+            kiwix_search: Some(search_tool),
+            zimdump: Some(zimdump),
+            library_root: dir.path().into(),
+            app_base: "https://wiki.example.test".into(),
+        };
+        let entries: Vec<_> = (0..25)
+            .map(|i| ZimIndexEntry {
+                path: dir.path().join(format!("{i:02}.zim")),
+                stem: format!("{i:02}"),
+                has_xapian: true,
+            })
+            .collect();
+        let result = timeout(Duration::from_secs(5), search(&config, &entries, "test"))
+            .await
+            .expect("the last archive must start while the first is still pending");
+        let events = std::fs::read_to_string(dir.path().join("events")).unwrap();
+        let mut running = 0usize;
+        let mut peak = 0;
+        for line in events.lines() {
+            if line.starts_with("start ") {
+                running += 1;
+                peak = peak.max(running);
+            } else {
+                running -= 1;
+            }
+        }
+        assert_eq!(running, 0);
+        assert!(peak > 1 && peak <= MAX_ZIM_CONCURRENCY, "peak {peak}");
+        assert_eq!(result.failed_archives, 0);
+        assert_eq!(result.hits.len(), MAX_TOTAL_ZIM_RESULTS);
+        let archives: Vec<_> = result
+            .hits
+            .iter()
+            .map(|hit| hit.metadata["archive"].as_str().unwrap())
+            .collect();
+        let expected: Vec<_> = (0..20).map(|i| format!("{i:02}")).collect();
+        assert_eq!(archives, expected);
+        assert!(
+            dir.path().join("last-started").exists(),
+            "all archives are searched despite the result cap"
+        );
+    }
 
     #[tokio::test]
     async fn failed_archive_is_reported_instead_of_becoming_zero_matches() {
