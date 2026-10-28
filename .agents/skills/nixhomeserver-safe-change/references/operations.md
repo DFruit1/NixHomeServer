@@ -38,6 +38,18 @@ sudo homepage-canary-assert
 Inspect the authenticated rendered result; a green deploy alone is not access
 proof. Preserve failure evidence and allow guarded rollback to complete.
 
+Compare the original failed access/operation with an observed successful attempt
+when authorized and practical. A published source revision, installed helper,
+loaded runtime, and verified live outcome are separate milestones. For periodic
+repair, inspect a later eligible run before claiming automatic recovery; report
+pending evidence if waiting or live execution is outside this task's authority.
+
+For an explicitly requested Android release, follow the Android Releases policy
+and the owning app's `pnpm release:android` workflow through signing, publication,
+and F-Droid/IPFS index verification. Existing authorization includes its declared
+publication; preserve the release operator boundary and separate device-launch
+evidence. Do not request approval again for an unchanged authorized step.
+
 For storage replacement, restores, deletion, bootstrap, and secret rotation,
 retain reserved authority for actual destructive/credential effects. Verify
 stable device identities independently before destructive work. Restore into

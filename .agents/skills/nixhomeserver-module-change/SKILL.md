@@ -33,4 +33,6 @@ Work under `AGENTS.md` and the role/card's existing authority.
 
 Finish with the catalog, services, secrets, optional dependencies, persistence,
 backups, and canary coverage consistent. Explain operator-visible changes and
-recovery implications. Live activation still follows the whole-set deploy gate.
+recovery implications. Distinguish source checks from observed enabled/disabled
+behavior and post-activation access; live activation still follows the whole-set
+deploy gate.

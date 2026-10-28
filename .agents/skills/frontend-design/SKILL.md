@@ -21,7 +21,9 @@ unless the requested change justifies altering them.
    widget to justify itself. Check existing service pages and command references
    before duplicating information.
 4. Give primary tasks priority and keep useful density. Avoid both cramped
-   layouts and oversized empty ones. Remove redundant labels and descriptions.
+   layouts and oversized empty ones. Use configured defaults where available;
+   keep advanced settings and explanations beside the decisions that need them.
+   Remove redundant labels and descriptions, not essential error/recovery help.
 5. Implement semantic controls, keyboard/focus behavior, relevant loading/error/
    empty states, contrast, responsive wrapping, and reduced-motion support.
    Use the matching [UI reference](references/ui.md) only when needed.
@@ -30,9 +32,14 @@ unless the requested change justifies altering them.
 
 ## Verify and stop
 
-Render the changed route and exercise the affected interaction. Check roughly
-1280px desktop and 390px mobile viewports. Inspect clipping, overlap, wrapping,
-viewport edges, focus, touch controls, and horizontal overflow.
+Exercise the affected task from its normal entry point through its visible
+result and navigation back. Keep the current target identifiable and the result
+visible where the action occurred. When a task has several entry points, reuse
+the same editor/actions and check relevant entry-point consistency.
+
+Check roughly 1280px desktop and 390px mobile viewports. Inspect clipping,
+overlap, wrapping, viewport edges, focus, touch controls, and horizontal overflow.
+Screenshots alone do not prove that a save, playback link, or sync action works.
 
 Check scroll reachability at both sizes: inspect page/container
 `scrollHeight` against `clientHeight`, scroll bounded regions to their end,

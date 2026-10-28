@@ -22,10 +22,12 @@ review. Loading this skill does not itself authorize subagents or publication.
 4. Implementers verify findings and make the smallest justified fix. Reviewers
    remain read-only. Explain disagreements with evidence; do not accept scope
    growth merely to satisfy a reviewer.
-5. Default to three rounds total. After the first round, review changed code,
-   unresolved findings, and affected regressions. Stop early when only optional
-   nits remain. Extend to at most five only for a concrete unresolved security,
-   data-preservation, or concurrency risk, or an explicit user budget. Preserve
+5. Use up to three rounds total; one adequate review can finish the work. Start
+   another only for changed behavior or an unresolved required finding. Review
+   changed code, open findings, and affected regressions rather than repeating
+   the whole inspection. Stop when only optional nits remain. Extend to at most
+   five only for a concrete unresolved security, data-preservation, or concurrency
+   risk, or an explicit user budget. Preserve
    stricter task/provider limits; do not create another agent chain.
 6. Approve only the current behavior diff with no required findings open and
    sufficient evidence. Changed behavior invalidates the affected approval.
@@ -37,9 +39,9 @@ For independent review, give the reviewer the pinned scope, original intent,
 checks, and a read-only brief. Freeze only the reviewed files while it runs.
 Do not claim independence for a self-review.
 
-Hermes uses its existing `native-review-v1` lifecycle and compatibility adapters:
-no extra reviewers around that lifecycle. For an explicitly requested Sol review
-in an interactive session, read [the Sol adapter](references/sol.md).
+Use the existing native review lifecycle when present; its dispatcher adapter
+owns transitions and role separation. Do not add parallel reviewers around it.
+For an explicitly requested Sol review, read [the Sol adapter](references/sol.md).
 
 Report candidate identity, checks and coverage limits, rounds, reviewer identity
 when verified, and fixed/declined/open findings. Commit, push, merge, and deploy

@@ -9,9 +9,10 @@ working case. State a falsifiable hypothesis, test it with a bounded probe, and
 change only what the evidence supports. Keep logs sanitized and scratch inside
 one task directory.
 
-Preserve a focused behavioral regression test when it adds durable coverage.
-Use the existing test if it already reaches the bug; low-impact mechanical
-changes do not need invented tests. For intermittent failures, set a finite
+Use existing tests or a direct reproduction to verify the fix. Create or expand
+an automated test only when repeated regressions are demonstrated or a concrete
+catastrophic risk meets the policy in AGENTS.md; usefulness alone is insufficient.
+Record that history/risk in the change. For intermittent failures, set a finite
 attempt/time budget rather than waiting for a convenient result.
 
 When reproduction is unavailable, distinguish code evidence from inference and
@@ -26,3 +27,7 @@ does not authorize an architecture replacement or a wider test suite.
 
 Verify the original symptom and one relevant ordinary/error path. Reviewers use
 this method read-only and request implementation changes through native review.
+An installed helper or a queued recovery is only an intermediate result:
+compare the original failure with an observed successful attempt before claiming
+repair. If that attempt is unavailable or outside authority, name the remaining
+gap rather than calling the outcome verified.

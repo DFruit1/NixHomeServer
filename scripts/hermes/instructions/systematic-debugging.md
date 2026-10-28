@@ -23,7 +23,9 @@ maintained capability-recovery procedure; never bypass a refusal or worker pins.
 
 Trace callers/configuration, compare a working case, and test a falsifiable
 hypothesis. Make the smallest evidenced fix and verify the original symptom
-plus one relevant control path. Keep a behavioral regression test when useful.
+plus one relevant control path. New or expanded automated tests require
+demonstrated repeated regressions or a concrete catastrophic risk under project
+policy; use existing checks and direct verification otherwise.
 After three failed speculative fixes, reassess and report the missing evidence
 rather than expanding scope.
 

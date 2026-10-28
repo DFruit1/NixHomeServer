@@ -181,6 +181,13 @@ measurement details live in [Compute Offload](documentation/operations.md#comput
   behavior: focused regression/unit tests, syntax/lint checks, relevant Nix
   evaluation, and affected UI render checks. Documentation-only edits need
   only diff, link and instruction-consistency checks.
+* Create or expand automated tests only for demonstrated repeated regressions
+  or a concrete risk of catastrophic outcomes, such as unrecoverable deletion,
+  hardware damage or leaked secrets. Record the supporting history or risk in
+  the change/card. Otherwise use existing checks and direct verification.
+  This creation rule is separate from execution scope; it does not authorize
+  removing existing coverage or bypassing CI and release safety checks. It
+  supersedes generic recipes that mandate a new test for every change.
 * Run full test suites or broad validation only when the user explicitly asks
   for that scope. This includes repository-wide runners (even the lean gate),
   workspace/all-app tests, full flake checks, broad builds, end-to-end/VM suites,

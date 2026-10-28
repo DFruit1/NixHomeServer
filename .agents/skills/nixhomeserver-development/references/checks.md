@@ -4,6 +4,11 @@ Run from the repository root unless a recipe changes directory. Read the
 actual manifest/script first: wrappers and lifecycle hooks can broaden a run.
 These are command shapes; replace angle-bracket arguments with real targets.
 
+Test creation and execution are separate decisions. Under AGENTS.md, new or
+expanded automated tests need demonstrated repeated regressions or a concrete
+catastrophic risk. Existing focused tests, syntax checks, direct reproductions,
+and rendered inspections remain available without inventing new suites.
+
 - Rust: `cargo test --manifest-path custom_apps/Cargo.toml -p <package> <test-filter>`.
   Use the existing development environment and package name from its manifest.
   This can compile dependencies; use the authorized offload workflow only when

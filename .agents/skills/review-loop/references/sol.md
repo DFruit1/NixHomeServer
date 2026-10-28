@@ -35,6 +35,7 @@ watch PRs from a reviewer child. A bounded status read is appropriate if needed
 during ongoing work. On failure, retain the task identity and findings; verify
 cancellation before replacement. Do not edit the reviewed files concurrently.
 
-Use review-loop's three-round default and current-diff acceptance rule. Report
+Use review-loop's ceiling of three ordinary rounds and current-diff acceptance
+rule; an adequate first approval needs no additional round. Report
 model/options and usage only when exposed. No model result authorizes deployment
 or replaces the qualified Hermes whole-set review and paired decision.

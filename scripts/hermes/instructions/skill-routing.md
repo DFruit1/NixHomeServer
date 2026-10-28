@@ -23,3 +23,9 @@ Focused local checks are the ordinary gate. Full suites, repository runners
 and remote validation require explicit scope. Retain integral checks of an
 authorized release and report coverage limits. Missing technical capability
 uses maintained agent recovery, never improvised commands or an owner gate.
+
+Test creation is separate: add or expand automated tests only for demonstrated
+repeated regressions or concrete catastrophic risks under project policy.
+Retain existing coverage and integral release/CI safety checks. An installed
+helper or queued remedy is an intermediate result; verify actual progress
+against the original failure when authorized before claiming recovery.

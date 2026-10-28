@@ -19,8 +19,10 @@ Stay read-only. Use stable finding IDs, concrete evidence, severity, and the
 minimum correction. Rare reachable auth/data-loss failures can be required;
 style preferences do not block. Never claim a skipped check passed.
 
-Default to three review rounds within existing native/provider limits; later
-rounds inspect changed code, open findings, and affected regressions.
+Use up to three review rounds within existing native/provider limits; one
+adequate approval can finish. Start another only for changed behavior or an
+unresolved required finding. Later rounds inspect changed code, open findings,
+and affected regressions.
 A budget ending is not acceptance. Prefer the checkout's review-loop protocol,
 but never add another agent chain or supersede a card's exact review contract.
 

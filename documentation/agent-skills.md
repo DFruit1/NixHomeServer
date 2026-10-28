@@ -16,6 +16,26 @@ Five discoverable entrypoints are maintained under .agents/skills:
 A task loads only the entrypoints and references relevant to its boundaries.
 Project policy remains in AGENTS.md; a skill does not widen authority.
 
+## Refinements from recurring requests
+
+Development distinguishes diagnosis/review, targeted fixes, authorized overhauls,
+and releases. Completion means the requested usable outcome: source delivery,
+published Android indexes, guarded deployment/access, or an actually registered
+monitor as applicable. Product questions are reserved for material choices not
+already resolved by current decisions or obtainable evidence.
+
+Test creation needs demonstrated repeated regressions or a concrete catastrophic
+risk, separately from the existing focused-execution policy. Use existing checks
+and direct verification otherwise. This does not remove established coverage or
+release safety checks.
+
+Frontend verification follows a real task through its visible result and back,
+with mobile feedback and shared entry-point consistency. Performance work
+measures the reported case, eliminates redundant work first, and preserves
+quality and allocation. Review permits up to three ordinary rounds, stopping
+after one adequate approval. Runtime/card-specific procedures stay in native
+adapters rather than expanding the everyday skill bodies.
+
 ## Consolidation decision
 
 The previous entrypoints overlapped, exposed generic vendor workflows, and

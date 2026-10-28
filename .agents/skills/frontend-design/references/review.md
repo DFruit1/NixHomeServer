@@ -3,6 +3,12 @@
 Inspect the rendered app as specified by frontend-design. Assess hierarchy,
 redundancy, accessibility, interaction states, and preservation of behavior.
 
+Choose a representative affected user task, not an arbitrary collection of
+screens. Open it as a user would, make the change/action, observe its actual
+result, and navigate back. On mobile, verify that feedback or a preview did not
+appear offscreen and that the active file/folder remains identifiable. Check
+alternate entry points only where they lead to the changed shared task.
+
 Prefer the harness's native collaborative browser. Use the app's existing
 development/preview command and a local HTTP URL for static HTML. Do not assume
 `pnpm dev` exists: inspect the owning manifest. Stop task-only servers after
@@ -44,5 +50,5 @@ fixtures. Do not load Impeccable's historical consultation workflow for an
 ordinary implementation review. Extra stylistic work requires the user's
 request; an independent code review uses review-loop within existing authority.
 
-Report which route, sizes, interactions, and objective checks were inspected,
+Report which task, route, sizes, visible outcomes, and objective checks were inspected,
 plus skipped/unavailable checks. Scores and "100%" claims are not evidence.
