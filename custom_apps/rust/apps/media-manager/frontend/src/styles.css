@@ -873,6 +873,14 @@ a:focus-visible {
   overflow-y: auto;
   overscroll-behavior: auto;
 }
+.library-back {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  align-self: flex-start;
+  padding: 8px 12px;
+  background: var(--paper);
+}
 .pane-heading {
   min-height: 50px;
   padding: 0 20px;
@@ -6107,7 +6115,7 @@ a:focus-visible {
   min-width: 0;
 }
 .health-comparison-split {
-  grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.25fr) minmax(0, 1.6fr);
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 0.95fr) minmax(0, 1.25fr);
   gap: 0;
   align-items: start;
 }
@@ -6139,6 +6147,15 @@ a:focus-visible {
   line-height: 1.4;
   text-align: start;
   cursor: pointer;
+}
+.health-value-action {
+  display: block;
+  margin-top: 4px;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 .health-value-set:hover:not(:disabled) {
   color: var(--accent);
@@ -6600,6 +6617,11 @@ a:focus-visible {
   font-size: 10px;
   text-transform: capitalize;
 }
+.provider-account-card-heading > div > .provider-state {
+  display: table;
+  margin-top: 8px;
+  font-size: 10px;
+}
 .provider-logo {
   width: 64px;
   height: 64px;
@@ -6977,6 +6999,22 @@ a:focus-visible {
   margin: 0;
   padding: 0;
   list-style: none;
+}
+.activity-items summary {
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.activity-items ul {
+  margin: 6px 0;
+  padding-left: 20px;
+  overflow-wrap: anywhere;
+}
+.activity-filters {
+  margin: 12px 20px 0;
+  flex-wrap: wrap;
+}
+.activity-filters .scope-button {
+  min-height: 44px;
 }
 .activity-row {
   display: grid;

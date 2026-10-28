@@ -33,6 +33,7 @@ export const PlayerView = component$<{
 }>((props) => {
   const audioRef = useSignal<HTMLAudioElement>();
   const settingsRef = useSignal<HTMLElement>();
+  const search = useSignal("");
   const lastSavedPosition = useSignal(0);
   const saveTimerRef = useSignal<number | undefined>();
   const initialTargetApplied = useSignal(false);
@@ -547,6 +548,12 @@ export const PlayerView = component$<{
           t.relativePath.startsWith(playerState.selectedAlbumDir + "/"),
         )
       : playerState.tracks;
+  const query = search.value.trim().toLocaleLowerCase();
+  const filteredTracks = query
+    ? playerState.tracks.filter((track) =>
+        track.relativePath.toLocaleLowerCase().includes(query),
+      )
+    : visibleTracks;
 
   const sleepLabel = (() => {
     if (playerState.sleepTimer === 0) return "";
@@ -624,6 +631,7 @@ export const PlayerView = component$<{
               <input
                 type="range"
                 class="seek-bar"
+                aria-label="Playback position"
                 min="0"
                 max={playerState.duration || 0}
                 step="0.1"
@@ -776,6 +784,7 @@ export const PlayerView = component$<{
               <input
                 type="range"
                 class="volume-bar"
+                aria-label="Volume"
                 min="0"
                 max="1"
                 step="0.01"
@@ -863,6 +872,16 @@ export const PlayerView = component$<{
             )}
           </div>
         </div>
+        <label class="video-library-filter">
+          <span class="sr-only">Search loaded albums and tracks</span>
+          <input
+            type="search"
+            aria-label="Search loaded albums and tracks"
+            placeholder="Search loaded albums and tracks"
+            value={search.value}
+            onInput$={(_, input) => (search.value = input.value)}
+          />
+        </label>
         {playerState.loading ? (
           <LoadingState />
         ) : playerState.error ? (
@@ -875,7 +894,9 @@ export const PlayerView = component$<{
             title="No music found"
             detail="Add music files to your personal or shared music folders to see them here."
           />
-        ) : playerState.albumView ? (
+        ) : query && filteredTracks.length === 0 ? (
+          <p class="video-library-empty">No matching albums or tracks.</p>
+        ) : playerState.albumView && !query ? (
           <ul class="album-grid">
             {albums.map((album) => {
               const isCurrentAlbum =
@@ -912,7 +933,7 @@ export const PlayerView = component$<{
           </ul>
         ) : (
           <ul class="track-list">
-            {visibleTracks.map((track) => {
+            {filteredTracks.map((track) => {
               const filename = track.relativePath.split("/").at(-1) ?? "";
               const stem = filename.replace(/\.[^.]+$/, "");
               const dirPath = track.relativePath
@@ -945,7 +966,10 @@ export const PlayerView = component$<{
                         {stem.split(" - ").at(-1) ?? stem}
                       </span>
                       <span class="track-album">
-                        {stem.split(" - ").slice(0, -1).join(" - ") || dirPath}
+                        {query
+                          ? dirPath
+                          : stem.split(" - ").slice(0, -1).join(" - ") ||
+                            dirPath}
                       </span>
                     </div>
                     {isActive && playerState.isPlaying && (

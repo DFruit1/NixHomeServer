@@ -274,7 +274,7 @@ describe("Media Manager navigation", () => {
     await render(<Root initialView="accounts" />);
 
     expect(screen.textContent).toContain("Provider accounts");
-    expect(screen.textContent).toContain("Vaultwarden");
+    expect(screen.textContent).not.toContain("Vaultwarden");
     expect(screen.textContent).toContain("The Movie Database (TMDB)");
     expect(screen.textContent).not.toContain("saved-value");
     expect(fetchMock).toHaveBeenCalledWith(
@@ -285,6 +285,9 @@ describe("Media Manager navigation", () => {
       (button) => button.textContent?.trim() === "Replace credentials",
     );
     await userEvent(replace ?? null, "click");
+    expect(
+      screen.querySelector(".provider-credential-editor")?.textContent,
+    ).toContain("Vaultwarden");
     expect(
       screen.querySelector(".provider-setup-steps")?.textContent,
     ).toContain("Get access");
