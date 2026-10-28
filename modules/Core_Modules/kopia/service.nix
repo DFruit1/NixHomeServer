@@ -37,6 +37,9 @@ let
       "var/lib/clamav"
       "var/lib/atticd/storage"
       "appdata/backup-metadata"
+      "home/*/.gradle"
+      "home/*/.cargo"
+      "home/*/.npm"
       "*.wacz"
       "*.iso"
       "*.qcow2"
@@ -94,6 +97,9 @@ let
       --add-ignore='backups/pool-migration' \
       --add-ignore='backups/restic' \
       --add-ignore='home/*/.cache' \
+      --add-ignore='home/*/.gradle' \
+      --add-ignore='home/*/.cargo' \
+      --add-ignore='home/*/.npm' \
       --add-ignore='var/cache' \
       --add-ignore='var/lib/immich-public-proxy' \
       --add-ignore='var/lib/jellyfin/log' \
