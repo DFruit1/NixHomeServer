@@ -13,6 +13,7 @@ import re
 import shlex
 import subprocess
 import sys
+import time
 
 import hermes_common
 
@@ -108,7 +109,7 @@ def steward_soul(current, instructions):
     # install-memory-policy.py strip each other's block on every run, so
     # `--check` reported drift forever on the steward SOUL.
     sections = []
-    for name in ('cron-policy', 'memory-policy'):
+    for name in ('cron-policy', 'memory-policy', 'card-dependencies'):
         start, end = f'<!-- hermes-{name} -->', f'<!-- /hermes-{name} -->'
         if start not in current and end not in current:
             continue
@@ -174,7 +175,9 @@ def profile_files(root, pending=None):
     changes[root / 'scripts/hermes-card-authoring.md'] = (SOURCE.parent.parent / 'documentation/hermes-card-authoring.md').read_text()
     changes[root / 'scripts/hermes-instructions.md'] = (SOURCE.parent.parent / 'documentation/hermes-instructions.md').read_text()
     changes[root / 'scripts/hermes-capability-recovery.md'] = (SOURCE / 'instructions/capability-recovery.md').read_text()
-    for name in ('capability_recovery.py', 'kanban-daily-steward.py', 'daily-steward-window.py', 'usage-pace.py', 'kanban-performance.py', 'agent_usage_report.py', 'kanban-blockers.py',
+    changes.update(policy_activation(root))
+    for name in ('card-dependency-guard.py', 'owner-blocker-authoring-guard.py', 'card_policy_audit.py',
+                 'capability_recovery.py', 'kanban-daily-steward.py', 'daily-steward-window.py', 'usage-pace.py', 'kanban-performance.py', 'agent_usage_report.py', 'kanban-blockers.py',
                  'steward-opportunity-scan.py', 'board_progress.py',
                  'steward-board-read.py', 'steward-readonly-guard.py', 'steward-coordinator-request.py'):
         changes[root / 'scripts' / name] = (SOURCE / name).read_text()
@@ -184,9 +187,43 @@ def profile_files(root, pending=None):
     return changes
 
 
-def install(root, repo, check=False):
+def policy_activation(root):
+    """Grandfather prior comment history without resetting the epoch on refresh."""
+    path = root / 'state/card-policy-monitor.json'
+    if path.exists():
+        record = json.loads(path.read_text())
+        if (not isinstance(record, dict) or record.get('version') != 1 or type(record.get('comment_since')) is not int
+                or record['comment_since'] <= 0):
+            raise ValueError('Invalid card-policy monitor activation record; preserve and reconcile it')
+        return {}
+    return {path: json.dumps(dict(version=1, comment_since=int(time.time())), sort_keys=True) + '\n'}
+
+
+def policy_monitor_files(root):
+    """Refresh only the authorized steward observation/reporting surface."""
     profile = root / 'profiles' / PROFILE
-    changes = profile_files(root)
+    if not (profile / 'SOUL.md').is_file():
+        raise ValueError('Create the board-steward profile before installing its monitor')
+    spec = importlib.util.spec_from_file_location('monitor_instructions', SOURCE / 'install-instruction-policy.py')
+    instructions = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(instructions)
+    result = {**policy_activation(root),
+              profile / 'SOUL.md': steward_soul((profile / 'SOUL.md').read_text(), instructions),
+              profile / 'skills/devops/board-steward/SKILL.md':
+                  (SOURCE / 'taskforce/board-steward-skill.md').read_text(),
+              root / 'scripts/hermes-daily-steward.md':
+                  (SOURCE.parents[1] / 'documentation/hermes-daily-steward.md').read_text()}
+    for name in ('card-dependency-guard.py', 'owner-blocker-authoring-guard.py', 'card_policy_audit.py',
+                 'steward-opportunity-scan.py', 'steward-coordinator-request.py'):
+        for home in (root, profile):
+            result[home / 'scripts' / name] = (SOURCE / name).read_text()
+    result[root / 'scripts/steward-readonly-guard.py'] = (SOURCE / 'steward-readonly-guard.py').read_text()
+    return {p: t for p, t in result.items() if not p.exists() or p.read_text() != t}
+
+
+def install(root, repo, check=False, policy_monitor_only=False):
+    profile = root / 'profiles' / PROFILE
+    changes = policy_monitor_files(root) if policy_monitor_only else profile_files(root)
     jobs_path = profile / 'cron/jobs.json'
     jobs = json.loads(jobs_path.read_text()).get('jobs', []) if jobs_path.exists() else []
     # The separately approved DM split uses profile-scoped scheduler delivery.
@@ -199,11 +236,19 @@ def install(root, repo, check=False):
                       ('steward stall follow-up', '0 */4 * * *', 'steward-stall-prompt.txt', '--script', 'kanban-daily-steward.py', 'bot-chat:head-coordinator', False)]
     commands = []
     for name, schedule, prompt_name, script_flag, script, deliver, continuity in specifications:
+        if policy_monitor_only and name != 'steward opportunity scan':
+            continue
         matching = [job for job in jobs if job.get('name') == name]
         if len(matching) > 1:
             raise ValueError(f'Duplicate steward job: {name}')
         prompt = (SOURCE / prompt_name).read_text()
         prefix = ['hermes', '--profile', PROFILE, 'cron']
+        if policy_monitor_only:
+            if len(matching) != 1 or matching[0].get('monitor_script') != script:
+                raise ValueError('Existing steward opportunity monitor is required; no schedule was created')
+            if (matching[0].get('prompt') or '').strip() != prompt.strip():
+                commands.append(prefix + ['edit', matching[0]['id'], '--prompt', prompt])
+            continue
         if matching:
             job = matching[0]
             schedule_changed = (name in {'hermes daily steward', 'steward stall follow-up'}
@@ -241,10 +286,12 @@ def install(root, repo, check=False):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--check', action='store_true')
+    parser.add_argument('--policy-monitor-only', action='store_true',
+                        help='Refresh persisted-policy monitoring/reporting without models, schedules or native adapters')
     args = parser.parse_args()
     try:
         root = Path(os.environ.get('HERMES_ROOT', str(Path.home() / '.hermes')))
-        sys.exit(install(root, default_repo(root), args.check))
+        sys.exit(install(root, default_repo(root), args.check, args.policy_monitor_only))
     except (ValueError, OSError, subprocess.SubprocessError) as exc:
         print(f'steward installer: {exc}', file=sys.stderr)
         sys.exit(2)

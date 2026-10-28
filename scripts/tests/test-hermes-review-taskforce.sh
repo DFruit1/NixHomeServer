@@ -650,8 +650,15 @@ class TaskforceTest(unittest.TestCase):
         self.assertIn('unchanged-model', (self.root / 'profiles/project-auditor/config.yaml').read_text())
         self.assertIn('kanban', (self.root / 'profiles/project-auditor/config.yaml').read_text())
         self.assertIn('desktop: [file, terminal, kanban]', (self.root / 'profiles/project-auditor/config.yaml').read_text())
+        from hermes_config import document
         for config in (extra, self.root / 'config.yaml'):
-            self.assertEqual(cap_config.replace('max_in_progress: 8', 'max_in_progress: 4'), config.read_text())
+            actual = document(config.read_text())
+            self.assertTrue(actual.pop('hooks_auto_accept'))
+            hooks = actual.pop('hooks')['pre_tool_call']
+            self.assertEqual(1, len(hooks))
+            self.assertEqual('^kanban_(create|amend|comment)$', hooks[0]['matcher'])
+            self.assertTrue(hooks[0]['fail_closed'])
+            self.assertEqual(document(cap_config.replace('max_in_progress: 8', 'max_in_progress: 4')), actual)
         self.assertNotIn('Send milestones.', skill.read_text())
         self.assertIn('runtime-assigned board/task', skill.read_text())
         self.assertIn('Hermes fleet rules', installed_head)

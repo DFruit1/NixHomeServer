@@ -29,6 +29,46 @@ def load_installer(name, filename):
 
 
 class InstructionPolicyTest(unittest.TestCase):
+    def test_comment_policy_install_is_scoped_reversible_and_idempotent(self):
+        unrelated = self.root / 'scripts/hermes-coordinator-reference.md'
+        unrelated.parent.mkdir()
+        unrelated.write_text('Keep unrelated reference drift.\n')
+        board = self.root / 'kanban/boards/fixture/kanban.db'
+        board.parent.mkdir(parents=True)
+        board.write_bytes(b'Existing comments must not change.')
+        original = {p: p.read_bytes() for p in (unrelated, board, self.jobs, self.metadata)}
+        guard = self.root / 'scripts/owner-blocker-authoring-guard.py'
+        self.assertEqual(1, policy.install(self.root, check=True, comments_only=True))
+        self.assertFalse(guard.exists())
+        self.assertEqual(0, policy.install(self.root, comments_only=True))
+        self.assertEqual(0, policy.install(self.root, check=True, comments_only=True))
+        self.assertEqual(original, {p: p.read_bytes() for p in original})
+        self.assertEqual((source / guard.name).read_bytes(), guard.read_bytes())
+        self.assertEqual((source.parents[1] / 'documentation/hermes-card-authoring.md').read_text(),
+                         (self.root / 'scripts/hermes-card-authoring.md').read_text())
+        for name in policy.REVIEW_SKILL_PROFILES:
+            home = self.root / 'profiles' / name
+            self.assertIn('400 characters', (home / 'SOUL.md').read_text())
+            self.assertIn('Maximum 5 comments/card', (home / 'SOUL.md').read_text())
+            self.assertIn('body="Update:', (home / 'skills/devops/sdlc-review/SKILL.md').read_text())
+            config = (home / 'config.yaml').read_text()
+            self.assertIn('^kanban_(create|block|comment)$', config)
+            self.assertIn('fail_closed: true', config)
+            self.assertIn('model: unchanged', config)
+            self.assertIn('approvals: unchanged', config)
+        self.assertTrue(any(p.read_bytes() == b'model: unchanged\napprovals: unchanged\n'
+                            for p in (self.root / 'backups/instruction-policy').rglob('*')
+                            if p.is_file()))
+
+    def test_comment_install_rejects_a_broken_hook_before_any_write(self):
+        config = self.root / 'profiles/project-auditor/config.yaml'
+        config.write_text('model: unchanged\n    # nixhomeserver-owner-blocker-author:start\n')
+        before = {p: p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
+        with self.assertRaises(ValueError):
+            policy.install(self.root, comments_only=True)
+        self.assertEqual(before, {p: p.read_bytes() for p in before})
+        self.assertFalse((self.root / 'scripts').exists())
+
     def test_installed_review_instructions_deliver_exact_completion_scope(self):
         policy.install(self.root)
         text = (self.root / 'scripts/hermes-review-evidence.md').read_text()
@@ -78,7 +118,18 @@ class InstructionPolicyTest(unittest.TestCase):
         self.assertEqual(0, policy.install(self.root, check=True))
         self.assertTrue(any(p.read_bytes() == before for p in
                             (self.root / 'backups/instruction-policy').rglob('*') if p.is_file()))
-        self.assertEqual(settings, {p: p.read_bytes() for p in settings})
+        hooks_spec = load_installer('hook_config', 'install-steward-readonly.py')
+        for path, before in settings.items():
+            if path.name == 'config.yaml':
+                config = hooks_spec.document(path.read_text())
+                self.assertTrue(config.pop('hooks_auto_accept'))
+                hooks = config.pop('hooks')['pre_tool_call']
+                self.assertEqual(1, len(hooks))
+                self.assertEqual('^kanban_(create|amend|comment)$', hooks[0]['matcher'])
+                self.assertTrue(hooks[0]['fail_closed'])
+                self.assertEqual(hooks_spec.document(before.decode()), config)
+            else:
+                self.assertEqual(before, path.read_bytes())
         for script in ('daily-steward-window.py','kanban-performance.py','kanban-blockers.py'):
             self.assertEqual((source / script).read_bytes(),
                 (self.root / 'profiles/board-steward/scripts' / script).read_bytes())

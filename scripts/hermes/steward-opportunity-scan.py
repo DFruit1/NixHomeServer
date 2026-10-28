@@ -149,6 +149,9 @@ def check_empty(repo: Path, tracked: list[str]) -> list[tuple[str, str]]:
 def main() -> None:
     # Board recovery must still be observed when a project checkout is absent.
     # No task writes or source inspection occurs in this collector.
+    from card_policy_audit import monitor_lines as policy_lines
+    for line in policy_lines(HERMES_ROOT):
+        print(line)
     from capability_recovery import report, monitor_lines
     recovery = report(HERMES_ROOT)
     recovery_lines = monitor_lines(recovery)

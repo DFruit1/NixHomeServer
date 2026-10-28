@@ -806,6 +806,7 @@ def install(root):
                scripts / 'simplex_decisions.py': Path(__file__).with_name('simplex_decisions.py').read_text(),
                scripts / 'simplex-decisions.sh': Path(__file__).with_name('simplex-decisions.sh').read_text(),
                scripts / 'hermes-coordinator-reference.md': (source / 'instructions/coordinator-reference.md').read_text(),
+               scripts / 'card-dependency-guard.py': (source / 'card-dependency-guard.py').read_text(),
                scripts / 'owner-blocker-authoring-guard.py': (source / 'owner-blocker-authoring-guard.py').read_text(),
                scripts / 'kanban-decision-reply.py': (source / 'kanban-decision-reply.py').read_text(),
                scripts / 'review-taskforce-approval.md': (source / 'taskforce/approval-policy.md').read_text(),

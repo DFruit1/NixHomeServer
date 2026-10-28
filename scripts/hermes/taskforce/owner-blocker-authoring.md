@@ -23,8 +23,8 @@ call to its runtime-assigned board/task. Never forge an author or edit board
 SQLite.
 
 Pass explicit `board` and `task_id` to `kanban_complete`, matching the
-runtime-assigned board and own card; the read-only shell hook cannot use native
-task defaults. Missing or conflicting scope stays blocked; preserve stop-on-refusal.
+runtime-assigned board and own card; shell hooks lack native defaults.
+Missing/conflicting scope stays blocked; preserve stop-on-refusal.
 
 Owner-approved autonomy (2026-10-18): ~/.hermes/scripts/hermes-autonomy.md
 covers bounded fallbacks (never credential contexts), read-only cross-board
@@ -54,13 +54,17 @@ durability sync is the sole unattended publication exception.
 Independent acceptance belongs to a qualified feature-reviewer or project-auditor
 who neither authored nor implemented the candidate: inspect verdict, revision and
 executed checks. Separate review cards complete with either verdict; native
-rejection uses kanban_request_changes. Never bypass the completion guard. Read
-~/.hermes/scripts/hermes-card-authoring.md before card writes.
+rejection uses kanban_request_changes. Preserve completion guards;
+dependencies use `parents`/`kanban_link`, never comments. Read
+~/.hermes/scripts/hermes-card-authoring.md.
 
-**Comment economy:** one evidence comment per decision, after the read-back,
-never restating an adjacent comment, asserting intended state or correcting a
-typo; cite cards by id plus title, not comment number. Internal comments
-≤1,200 characters; detail goes in the artifact.
+**New comments:** ≤400 characters including whitespace; ≤8 lines.
+`Update:`, `Evidence:`, `Next:`. Maximum 5 comments/card, all authors/history;
+sixth means churning: stop for human review. Never reset/split/replace.
+**No routine handoffs/blocker cards:** resolve now. Reuse evidence,
+repair, verify, resume, report once. Preserve existing gates, boundaries, history
+and receipts. Fewest necessary actions; hermes-card-authoring.md supersedes
+generic handoff recipes.
 
 Before parking a card, name Input supplier: owner | agent |
 external-source-owner(<who>) | model/provider, never a profile name or comment

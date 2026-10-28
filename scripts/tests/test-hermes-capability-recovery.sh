@@ -255,7 +255,8 @@ class RecoveryTest(unittest.TestCase):
         scripts = self.root / 'scripts'
         scripts.mkdir()
         source = Path(sys.argv[1]) / 'scripts/hermes'
-        for name in ('capability_recovery.py', 'board_progress.py', 'steward-opportunity-scan.py'):
+        for name in ('capability_recovery.py', 'board_progress.py', 'steward-opportunity-scan.py',
+                     'card_policy_audit.py', 'card-dependency-guard.py', 'owner-blocker-authoring-guard.py'):
             shutil.copyfile(source / name, scripts / name)
         for column in ("title TEXT DEFAULT 'Fixture request'", 'priority INTEGER DEFAULT 0',
                        'tenant TEXT', 'created_by TEXT'):
@@ -265,7 +266,7 @@ class RecoveryTest(unittest.TestCase):
                   for p in self.root.rglob('*') if p.is_file()}
         env = {**os.environ, 'HERMES_ROOT': str(self.root), 'STEWARD_REPO': str(self.root / 'missing'),
                'PYTHONDONTWRITEBYTECODE': ''}
-        for name in ('capability_recovery.py', 'steward-opportunity-scan.py'):
+        for name in ('capability_recovery.py', 'steward-opportunity-scan.py', 'card_policy_audit.py'):
             result = subprocess.run([sys.executable, str(scripts / name)], env=env,
                                     capture_output=True, text=True, timeout=10)
             self.assertEqual(0, result.returncode, result.stderr)

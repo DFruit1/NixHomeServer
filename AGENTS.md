@@ -294,6 +294,10 @@ installed instructions and refreshed runtime before claiming it operational.
 Memory never supplies permission. "Planner" means `head-coordinator`; retired
 lane names must be routed to a live profile, not recreated.
 
+Every card dependency belongs in the formal graph (`parents`/`kanban_link`),
+never in comments or body prose. Verify the graph with `kanban_show` before
+releasing dependent work; context references and tracker membership are not edges.
+
 Before creating or editing cards, read
 [documentation/hermes-card-authoring.md](documentation/hermes-card-authoring.md)
 (installed copy for other projects: `~/.hermes/scripts/hermes-card-authoring.md`;
@@ -451,9 +455,13 @@ when the ask changes, and deleted when answered, revised or closed. The general
 DM remains the conversation channel. Decisions still waiting on the coordinator,
 a reviewer, a worker or another agent stay internal and are never posted.
 
-The steward observes all boards read-only. It may send actionable requests only
-to head-coordinator through Bot Chat or the fixed-recipient coordinator helper;
-requests confer no approval or execution authority. It never edits cards/files,
+The steward observes all boards read-only. General actionable requests go to
+head-coordinator. Monitor only policy violations that escaped guards or cannot
+be fully guarded, never rejected writes or duplicate enforcement. Verified
+policy feedback may go directly to the persisted agent author through the
+scoped policy-report helper; unknown authors, budget and graph-block issues
+go to the coordinator. Requests confer no approval or execution authority.
+The steward never edits cards/files,
 implements, commits, restores configuration or authors owner gates. Follow the
 [steward runbook](documentation/hermes-daily-steward.md).
 
@@ -512,6 +520,56 @@ implementation, Impeccable review, desktop/mobile rendering and scroll checks,
 media-manager coverage and the stopping condition. Project anti-slop rules and
 `DESIGN_SYSTEM.md` take precedence over generic toolkit preferences. Impeccable
 stylistic enhancement commands still require an explicit user request.
+
+## UI Information Architecture and Restraint
+
+This section refines the project anti-slop rules for information architecture.
+It applies to every rendered surface, but is especially important for admin and
+operations UIs (including the homepage Admin Dashboard), where dashboard sprawl
+is the default failure mode.
+
+Design for information value, task efficiency, and clarity rather than visual
+fullness. A good interface does not need to fill every available space. The
+Admin Dashboard exists only because of an explicit owner request for operational
+visibility; that does not exempt its widgets from this rule.
+
+- Every visible element must justify its presence by helping the user
+  understand something important, make a decision, or perform an action.
+  Otherwise omit it.
+- Do not automatically introduce KPI cards, statistic counters, summary tiles,
+  decorative panels, or dashboard-style layouts. A widget that only restates
+  data already shown elsewhere is not justified.
+- Use cards only where meaningful grouping, interaction, or visual separation
+  is required. Do not use cards simply to make the UI look designed. Prefer
+  coherent sections, well-structured tables, lists, forms, restrained dividers,
+  and whitespace over grids of repetitive cards.
+- Avoid unnecessary subtitles, eyebrow labels, helper descriptions, motivational
+  copy, and one-line explanatory text below self-explanatory headings. Do not
+  repeat the same information in a heading, subtitle, card, badge, and
+  description.
+- Do not invent statistics, counts, trends, or other UI content simply to
+  occupy space or establish visual balance. If a real metric is unavailable,
+  show "unknown" rather than a placeholder.
+- Give primary user tasks visual priority. Secondary information should be
+  visually quieter or progressively disclosed.
+- Maintain useful information density. Minimalism means removing low-value
+  elements, not making everything oversized or sparse.
+- Do not add an overview, analytics, or status section unless a real user
+  requirement exists and is recorded (for example in `DESIGN_SYSTEM.md` or the
+  proposal). When modifying existing interfaces, preserve established
+  functionality and information hierarchy unless a change is justified.
+- Cross-check new widgets against the existing `/admins` command reference and
+  service pages to avoid duplicating information that already has a home.
+
+### Mandatory Design Review
+
+Before finalising a UI, inspect every card, metric, label, description, and
+decorative component. Ask: What concrete user need does this serve? Could the
+interface communicate the same information more directly with fewer elements?
+
+Remove or consolidate elements that fail this test. Prefer the simplest interface
+that fully supports the intended workflows. This review complements, and does not
+replace, the Impeccable `critique`/`audit` pass required by `frontend-design`.
 
 ---
 

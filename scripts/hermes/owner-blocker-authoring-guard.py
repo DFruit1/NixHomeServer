@@ -14,6 +14,67 @@ import sqlite3
 import sys
 
 PROFILE = 'head-coordinator'
+COMMENT_LIMIT = 400
+COMMENT_LINES = 8
+CARD_COMMENT_LIMIT = 5
+
+
+def comment_budget(args, root):
+    """Count all existing comments read-only; a sixth needs human review."""
+    try:
+        board, task_id = args.get('board'), args.get('task_id')
+        if (not isinstance(board, str) or not re.fullmatch(r'[A-Za-z0-9_-]+', board)
+                or not isinstance(task_id, str) or not re.fullmatch(r't_[A-Za-z0-9_]+', task_id)):
+            raise ValueError('Provide explicit board and task_id to check the five-comment limit')
+        path = root / 'kanban/boards' / board / 'kanban.db'
+        with closing(sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True)) as db:
+            db.execute('PRAGMA query_only=ON')
+            if not db.execute('SELECT 1 FROM tasks WHERE id=?', (task_id,)).fetchone():
+                raise ValueError('Unknown task; comment budget cannot be checked')
+            count = db.execute('SELECT COUNT(*) FROM task_comments WHERE task_id=?',
+                               (task_id,)).fetchone()[0]
+        if count >= CARD_COMMENT_LIMIT:
+            return {'action': 'block', 'message':
+                    f'Card {task_id} is churning: {count} comments already exist '
+                    '(limit 5). Human review is required. Stop work and have '
+                    'head-coordinator obtain human review. Do not add comments, '
+                    'reset the count or create replacement cards to evade this limit.'}
+        return {}
+    except (ValueError, OSError, sqlite3.Error) as exc:
+        return {'action': 'block', 'message': f'Comment budget check failed closed: {exc}'}
+
+
+def comment_policy(body, profile):
+    """Validate new agent prose without rewriting comments or native receipts."""
+    if profile == PROFILE:
+        # These contracts are consumed verbatim by their existing validators.
+        if re.match(r'^Owner reply (?:via SimpleX D\d+:|received:)\s*\S', body):
+            return {}
+        if body.lstrip().startswith('{') and len(body) <= 32768:
+            try:
+                receipt = json.loads(body)
+            except ValueError:
+                receipt = None
+            if (isinstance(receipt, dict) and len(receipt) == 1
+                    and next(iter(receipt)) in {'deployment_decision',
+                        'owner_execution_decision', 'delegated_execution_decision'}
+                    and isinstance(next(iter(receipt.values())), dict)):
+                return {}
+    lines = body.splitlines()
+    fields = [line.partition(':')[0] for line in lines
+              if re.match(r'^(Update|Evidence|Next):', line)]
+    nonempty = all(re.match(r'^(Update|Evidence|Next):[ \t]*\S', line)
+                   for line in lines if re.match(r'^(Update|Evidence|Next):', line))
+    if (len(body) <= COMMENT_LIMIT and 3 <= len(lines) <= COMMENT_LINES
+            and fields == ['Update', 'Evidence', 'Next'] and nonempty
+            and lines[0].startswith('Update:') and lines[-1].startswith('Next:')):
+        return {}
+    return {'action': 'block', 'message':
+            'Comment not written. Use at most 400 characters (including whitespace) '
+            'and 8 lines, in this order: Update: what changed; Evidence: the result '
+            'or one reference; Next: one action or "None". Each field must be '
+            'nonempty. Keep required receipt lines between Evidence and Next; '
+            'put detailed logs in an artifact. Do not split one update across comments.'}
 
 
 CAPABILITY_MISCLASS_PATTERNS = [
@@ -58,9 +119,20 @@ def check_capability_classification(args, root):
 
 
 def guard(payload, root, alerts):
+    spec = importlib.util.spec_from_file_location(
+        'card_dependencies', Path(__file__).with_name('card-dependency-guard.py'))
+    dependencies = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(dependencies)
+    decision = dependencies.guard(payload)
+    if decision:
+        return decision
     tool = payload.get('tool_name')
     args = payload.get('tool_input') or {}
     body = str(args.get('body') or '')
+    if tool == 'kanban_comment':
+        budget = comment_budget(args, root)
+        if budget:
+            return budget
 
     # Classification correctness check: catch capability blocks that are
     # actually dependencies before they reach the board.
@@ -106,6 +178,8 @@ def guard(payload, root, alerts):
     owner_create = tool == 'kanban_create' and (fields or bool(re.search(r'^\s*ASK:|^Hard Blocker\b', body, re.M | re.I)))
     owner_block = tool == 'kanban_block' and args.get('kind') == 'needs_input'
     owner_comment = tool == 'kanban_comment' and fields
+    if tool == 'kanban_comment' and not owner_comment:
+        return comment_policy(body, payload.get('profile'))
     if not (owner_create or owner_block or owner_comment):
         return {}
     if payload.get('profile') != PROFILE:

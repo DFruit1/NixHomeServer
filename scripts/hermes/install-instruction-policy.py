@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import sys
 
 import hermes_common
@@ -215,10 +216,11 @@ def changes(root, pending=None):
         SOURCE / 'instructions/capability-recovery.md').read_text()
     for filename in ('hermes-prerequisites.md','hermes-deployment-receipts.md','hermes-performance.md'):
         result[root / 'scripts' / filename] = (SOURCE.parent.parent / 'documentation' / filename).read_text()
-    for filename in ('hermes_common.py', 'kanban-owner-alerts.py', 'owner-blocker-authoring-guard.py',
+    for filename in ('hermes_common.py', 'kanban-owner-alerts.py', 'card-dependency-guard.py',
+                     'owner-blocker-authoring-guard.py',
                      'kanban-performance.py', 'agent_usage_report.py', 'kanban-blockers.py', 'deployment-receipt.py',
                      'review-verdict-guard.py', 'fleet_workflow.py', 'daily-steward-window.py', 'steward-readonly-guard.py',
-                     'repair-task-workspace.py', 'steward-board-read.py'):
+                     'repair-task-workspace.py', 'steward-board-read.py', 'card_policy_audit.py'):
         result[root / 'scripts' / filename] = (SOURCE / filename).read_text()
     if (root / 'profiles/board-steward/SOUL.md').exists():
         for filename in ('daily-steward-window.py','kanban-performance.py','agent_usage_report.py','kanban-blockers.py'):
@@ -278,6 +280,7 @@ def changes(root, pending=None):
     directory_claims = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(directory_claims)
     result.update(directory_claims.changes(root, result, runtime=False))
+    result.update(dependency_changes(root, result))
     return {p: t for p, t in result.items() if not p.exists() or p.read_text() != t}
 
 
@@ -303,9 +306,78 @@ def stale_review_skills(root):
     return stale
 
 
-def install(root, check=False, skills_only=False):
-    pending = skill_changes(root) if skills_only else changes(root)
-    stale = stale_review_skills(root)
+def comment_changes(root):
+    """Install only the new-comment policy and its existing fail-closed hook."""
+    spec = importlib.util.spec_from_file_location('comment_hook_installer',
+                                                 SOURCE / 'install-steward-readonly.py')
+    hooks = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hooks)
+    scripts = root / 'scripts'
+    result = {scripts / name: (SOURCE / name).read_text() for name in
+              ('card-dependency-guard.py', 'owner-blocker-authoring-guard.py', 'kanban-owner-alerts.py')}
+    result[scripts / 'hermes-fleet-policy.md'] = fleet_source('').read_text()
+    result[scripts / 'hermes-card-authoring.md'] = (
+        SOURCE.parents[1] / 'documentation/hermes-card-authoring.md').read_text()
+    command = shlex.join(['python3', str(scripts / 'owner-blocker-authoring-guard.py')])
+    for name in REVIEW_SKILL_PROFILES:
+        soul = root / 'profiles' / name / 'SOUL.md'
+        if not soul.exists():
+            continue
+        result[soul] = shared(soul.read_text(), name)
+        result[soul.parent / 'skills/devops/sdlc-review/SKILL.md'] = (
+            SOURCE / 'instructions/sdlc-review.md').read_text()
+        config = soul.with_name('config.yaml')
+        text = hooks.readonly_hook(config.read_text(), command, 'owner-blocker-author',
+                                   '^kanban_(create|block|comment)$')
+        result[config] = hooks.replace_setting(text, 'hooks_auto_accept', 'true')
+    return {p: t for p, t in result.items() if not p.exists() or p.read_text() != t}
+
+
+def dependency_changes(root, pending=None):
+    """Install graph policy/hooks without rewriting cards or other instructions."""
+    spec = importlib.util.spec_from_file_location('dependency_hook_installer',
+                                                 SOURCE / 'install-steward-readonly.py')
+    hooks = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hooks)
+    result = dict(pending or {})
+    script = root / 'scripts/card-dependency-guard.py'
+    result[script] = (SOURCE / script.name).read_text()
+    # Existing workers already invoke this hook. Its subprocess reads the new
+    # dependency check on their next comment without restarting active work.
+    result[root / 'scripts/owner-blocker-authoring-guard.py'] = (
+        SOURCE / 'owner-blocker-authoring-guard.py').read_text()
+    result[root / 'scripts/hermes-card-authoring.md'] = (
+        SOURCE.parents[1] / 'documentation/hermes-card-authoring.md').read_text()
+    policy = (SOURCE / 'instructions/card-dependencies.md').read_text()
+    command = shlex.join(['python3', str(script)])
+    # Include default and every installed named profile, not just this fleet.
+    homes = [root] + sorted((root / 'profiles').glob('*'))
+    for home in homes:
+        soul, config = home / 'SOUL.md', home / 'config.yaml'
+        if not config.exists():
+            continue
+        if soul.exists() or soul in result:
+            text = result.get(soul, soul.read_text() if soul.exists() else '')
+            if home.name in REVIEW_SKILL_PROFILES and FLEET_START in text:
+                # Reuse the compact fleet rule instead of growing worker prompts.
+                result[soul] = shared(text, home.name)
+            else:
+                result[soul] = block(text, '<!-- hermes-card-dependencies -->',
+                                     '<!-- /hermes-card-dependencies -->', policy)
+        text = hooks.readonly_hook(
+            result.get(config, config.read_text() if config.exists() else ''),
+            command, 'card-dependencies', '^kanban_(create|amend|comment)$')
+        result[config] = hooks.replace_setting(text, 'hooks_auto_accept', 'true')
+    return {p: t for p, t in result.items() if not p.exists() or p.read_text() != t}
+
+
+def install(root, check=False, skills_only=False, comments_only=False, dependencies_only=False):
+    if sum((skills_only, comments_only, dependencies_only)) > 1:
+        raise ValueError('Choose only one scoped instruction install')
+    pending = (dependency_changes(root) if dependencies_only else
+               comment_changes(root) if comments_only else
+               skill_changes(root) if skills_only else changes(root))
+    stale = [] if comments_only or dependencies_only else stale_review_skills(root)
     for path in stale:
         print(f'{"drift" if check else "remove"}: stale review skill {path}')
         if check:
@@ -325,12 +397,17 @@ def install(root, check=False, skills_only=False):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--check', action='store_true')
-    parser.add_argument('--skills-only', action='store_true',
+    scope = parser.add_mutually_exclusive_group()
+    scope.add_argument('--skills-only', action='store_true',
                         help='Install task skills and their routing only; leave other policy untouched')
+    scope.add_argument('--comments-only', action='store_true',
+                       help='Install new-comment policy and hooks without changing cards or other instructions')
+    scope.add_argument('--dependencies-only', action='store_true',
+                       help='Install formal graph policy and hooks without changing cards or other instructions')
     args = parser.parse_args()
     try:
         sys.exit(install(Path(os.environ.get('HERMES_ROOT', str(Path.home() / '.hermes'))),
-                         args.check, args.skills_only))
+                         args.check, args.skills_only, args.comments_only, args.dependencies_only))
     except (ValueError, OSError) as exc:
         print(f'instruction installer: {exc}', file=sys.stderr)
         sys.exit(2)

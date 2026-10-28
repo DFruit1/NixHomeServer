@@ -21,7 +21,7 @@ def instruction(text):
         raise ValueError('Ambiguous directory-claim instruction markers')
     before, rest = text.split(START)
     _, after = rest.split(END)
-    return before + content + after.lstrip('\n')
+    return before + content + after.removeprefix('\n')
 
 
 def changes(root, pending=None, *, runtime=True):
@@ -31,7 +31,7 @@ def changes(root, pending=None, *, runtime=True):
         return result.get(path, pending.get(path, path.read_text() if path.exists() else ''))
     for home in [root, *sorted((root / 'profiles').glob('*'))]:
         soul = home / 'SOUL.md'
-        if soul.exists() and home.name != 'board-steward':
+        if (soul.exists() or soul in pending) and home.name != 'board-steward':
             text = current(soul)
             if home.name == 'head-coordinator' and '<!-- hermes-coordinator-role -->' in text:
                 start, end = '<!-- hermes-coordinator-role -->', '<!-- /hermes-coordinator-role -->'

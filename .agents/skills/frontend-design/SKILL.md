@@ -92,6 +92,56 @@ Prioritise useful, coherent interfaces over visually busy ones.
 * Prefer removing low-value UI over rearranging it more attractively.
 * Do not spend time chasing subjective visual perfection after the important design and implementation problems have been resolved.
 
+### UI Information Architecture and Restraint
+
+This refines the project anti-slop rules for information architecture. It applies
+to every rendered surface, but is especially important for admin and operations
+UIs (including the homepage Admin Dashboard), where dashboard sprawl is the
+default failure mode.
+
+Design for information value, task efficiency, and clarity rather than visual
+fullness. A good interface does not need to fill every available space. The
+Admin Dashboard exists only because of an explicit owner request for operational
+visibility; that does not exempt its widgets from this rule.
+
+- Every visible element must justify its presence by helping the user
+  understand something important, make a decision, or perform an action.
+  Otherwise omit it.
+- Do not automatically introduce KPI cards, statistic counters, summary tiles,
+  decorative panels, or dashboard-style layouts. A widget that only restates
+  data already shown elsewhere is not justified.
+- Use cards only where meaningful grouping, interaction, or visual separation
+  is required. Do not use cards simply to make the UI look designed. Prefer
+  coherent sections, well-structured tables, lists, forms, restrained dividers,
+  and whitespace over grids of repetitive cards.
+- Avoid unnecessary subtitles, eyebrow labels, helper descriptions, motivational
+  copy, and one-line explanatory text below self-explanatory headings. Do not
+  repeat the same information in a heading, subtitle, card, badge, and
+  description.
+- Do not invent statistics, counts, trends, or other UI content simply to
+  occupy space or establish visual balance. If a real metric is unavailable,
+  show "unknown" rather than a placeholder.
+- Give primary user tasks visual priority. Secondary information should be
+  visually quieter or progressively disclosed.
+- Maintain useful information density. Minimalism means removing low-value
+  elements, not making everything oversized or sparse.
+- Do not add an overview, analytics, or status section unless a real user
+  requirement exists and is recorded (for example in `DESIGN_SYSTEM.md` or the
+  proposal). When modifying existing interfaces, preserve established
+  functionality and information hierarchy unless a change is justified.
+- Cross-check new widgets against the existing `/admins` command reference and
+  service pages to avoid duplicating information that already has a home.
+
+#### Mandatory Design Review
+
+Before finalising a UI, inspect every card, metric, label, description, and
+decorative component. Ask: What concrete user need does this serve? Could the
+interface communicate the same information more directly with fewer elements?
+
+Remove or consolidate elements that fail this test. Prefer the simplest interface
+that fully supports the intended workflows. This review complements, and does
+not replace, the Impeccable `critique`/`audit` pass required by this skill.
+
 ## Workflow for meaningful frontend changes
 
 Initial implementation:

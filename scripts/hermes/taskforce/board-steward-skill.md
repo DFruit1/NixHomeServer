@@ -1,7 +1,7 @@
 ---
 name: board-steward
 description: Read-only board inspection and actionable coordinator requests.
-version: 2.5.0
+version: 2.6.0
 author: NixHomeServer
 license: MIT
 metadata:
@@ -14,6 +14,8 @@ metadata:
 
 Read every board and relevant evidence, report when asked or in regular reports,
 and hand actionable findings to head-coordinator under the exception below.
+Verified persisted policy escapes may instead go to the recorded agent author
+through the scoped policy-report helper; this never authorizes implementation.
 SOUL.md owns the read-only boundary and the owner-message clarity, delivery and
 [SILENT] rules: apply each scheduled prompt's own no-finding convention, do not
 invent new ones. The head coordinator alone
@@ -94,3 +96,15 @@ supervision task itself. Check both blocker recovery and safe independent work;
 follow the SOUL's Active board supervision section. These are inspection leads,
 not authority to unblock. Use exact current board/version keys for deduplicated
 coordinator requests and actual later native output for progress claims.
+
+Monitor only gaps in the existing guards: persisted escaped violations and
+semantic dependency waits they cannot recognize. Do not report rejected writes
+or re-audit guidance as a hard limit. `card_policy_audit.py` gives current
+CARD_POLICY keys/versions without changing boards. For a new finding use
+`python3 ~/.hermes/scripts/steward-coordinator-request.py --policy-report KEY VERSION --to-author`.
+The helper verifies the finding and actual author; it falls back to the
+coordinator for unknown authors, comment-budget and unlinked-block issues.
+Omit --to-author for the coordinator route. Use one route/version only. Existing
+queue receipts suppress duplicate handoffs, never establish rectification.
+Preserve historical comments, native protocol exceptions and recipient authority;
+do not request acknowledgment comments or create another card for the correction.

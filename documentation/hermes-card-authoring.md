@@ -85,6 +85,44 @@ backfill the retry limit. Full retry/replacement mechanics live in
 `hermes-worker-budgets.md`; never repair assignments with direct database
 writes or guard removal.
 
+### Formal dependency graphs
+
+Every card on every Hermes board uses the formal directed graph for its actual
+prerequisites. Never encode card dependencies in comments or substitute body
+prose for an edge, including when an equivalent edge already exists.
+
+Create a consumer with `kanban_create(..., parents=[...])`, or link existing
+cards with `kanban_link(parent_id=..., child_id=..., board=...)`. The producer
+is the parent and its consumer is the child. Read back both cards with
+`kanban_show` and verify their parents/children before releasing the consumer.
+Use `kanban_block(kind="dependency")` only after linking an open prerequisite.
+Preserve native cycle checks, genuine gates and active workers. Remove an edge
+through `kanban_unlink` only when evidence proves it obsolete, then read back.
+
+Comments record results and evidence. Context references, accepted-output
+references and `Feature tracker:` membership do not create dependencies; do not
+link them merely because another card is mentioned. Keep routine repairs on the
+current card. Existing comments remain historical evidence: reconcile an old
+informal wait through native graph operations before resuming its consumer.
+Exact coordinator decision receipts and verbatim owner replies retain their
+schemas; they never create, remove or satisfy graph edges.
+
+The fail-closed agent tool hook rejects recognizable informal prerequisite
+declarations in new comments, card creation and body amendments across boards.
+It is a prose check, not a parser for arbitrary natural language or a database
+constraint. Direct CLI/system writes retain their native producers. Install
+the policy and hook for the default and all installed named profiles with:
+
+```bash
+python3 -B scripts/hermes/install-instruction-policy.py --dependencies-only
+python3 -B scripts/hermes/install-instruction-policy.py --dependencies-only --check
+```
+
+The scoped installer backs up changed files and preserves board history, jobs,
+model settings, unrelated instructions and active workers. Existing workers
+with the owner-authoring hook get the dependency check on their next comment.
+New processes also load the dedicated creation/amendment/comment hook.
+
 ### Task skills
 
 Feature execution and routing cards carry a standalone
@@ -285,6 +323,97 @@ Must not change: no plaintext secrets; no stamp wrapper; no live deploy
 
 The decision is answerable from line 1; the evidence sits below it. Nothing was
 dropped — only the prose was.
+
+### New comments
+
+Routine agent comments are limited to **400 characters including whitespace**
+and **8 lines**. The native `kanban_comment` hook rejects overlong comments and
+missing, empty, repeated or reordered fields. Use this order:
+
+```text
+Update: Fixed the retry loop.
+Evidence: Retry tests pass; details in the test report.
+Next: Feature reviewer checks the change.
+```
+
+Each card gets **at most 5 comments**, counting all authors and its existing
+history. The hook refuses a sixth comment as **churning: human review required**,
+including owner replies and protocol receipts. Stop work and have
+head-coordinator obtain human review; agents cannot reset the count, split the
+update or create replacement cards to bypass it. The hook reads the count
+without writing an escalation comment or editing the card. Pass explicit
+`board` and `task_id`; a missing card or unreadable count fails closed.
+
+Each field is one short, plain sentence. State what changed, one result or
+evidence reference, and one action with its owner. Use `Not checked` for
+unverified evidence and `None` when no action remains. Explain unfamiliar
+acronyms. Skip repeated history, logs, hash lists and chains of card IDs; put
+details in one referenced artifact. Post only after a meaningful change and
+readback. Never split an update across comments to evade the limit.
+
+Required machine-readable lines, such as `Recovery run:` or `Feature tracker:`,
+go between Evidence and Next and count toward the same limit. Exact coordinator
+JSON decision receipts (`deployment_decision`, `owner_execution_decision`,
+`delegated_execution_decision`), checked `Blocking:/Why owner:/Unblock:` summaries
+and verbatim owner replies keep their existing schemas and limits. These
+exceptions preserve protocol evidence; they are not formats for routine updates.
+Start a copied owner reply with `Owner reply via SimpleX D<n>:` or
+`Owner reply received:`, followed by the unchanged reply.
+The guard bounds JSON receipts to 32,768 characters; their owning validators
+still decide validity and authority. Automated CLI/system comments retain their
+existing producers; this hook guards agent tool calls.
+
+This replaces the old 1,200-character guidance for future routine comments.
+Existing comments are never rewritten. Install just this policy and its hook:
+
+```bash
+python3 -B scripts/hermes/install-instruction-policy.py --comments-only
+python3 -B scripts/hermes/install-instruction-policy.py --comments-only --check
+```
+
+The installer backs up replaced files and preserves cards, jobs, model settings,
+unrelated instruction drift and active workers. Existing workers using the
+installed hook receive the new checks on their next comment; newly launched
+workers also read the updated standing instructions.
+
+### Unblocking with the fewest necessary actions
+
+**Routine handoffs and new blocker-card chains are banned.** Resolve an
+agent-repairable technical blocker on the current card, in the current run,
+whenever the necessary authority and inputs are available. Reuse current
+evidence and approvals, repair the prerequisite, run the required checks,
+resume the actual work through the supported native transition and verify the
+result. Continue until the card's acceptance conditions are met; a status change,
+queued request or claimed resolution is not completion.
+
+Do not create another recovery, question, decision or handoff card merely to
+transfer a technical problem or uncertainty. Do not make the original card
+depend on such a card, or route it through another agent who has no necessary
+authority or independent role. This owner instruction supersedes generic older
+handoff and dependency-routing recipes for these routine technical blockers.
+It does not erase a specific existing acceptance contract.
+
+Exceptions are required independent review, a genuinely different execution
+authority, owner-only decisions or credentials, and unavailable external or
+provider inputs. Use the existing review or decision path with the fewest
+necessary actions. Keep the original card accountable for completion. If the
+exception prevents resolution now, retain a truthful hold on that card and
+identify the exact missing input, its supplier and the required action once.
+Never pretend a missing prerequisite is satisfied or bypass a tool refusal.
+
+For existing chains, the authorized coordinator resolves the actual condition
+and removes only dependency edges proven obsolete by evidence. Preserve genuine
+prerequisites, specific reviews, active workers and their work. Recheck changed
+inputs; do not repeat failed actions against unchanged conditions.
+
+When a comment is needed, post one consolidated result after readback, using
+the 400-character format and the card's five-comment budget. Skip a comment
+that only repeats a native event or required receipt. Put detailed evidence in
+one referenced artifact. If work cannot proceed, identify the exact remaining
+condition, its supplier and the next necessary action once. A sixth comment
+still requires human review; action economy never permits resetting the count,
+creating replacement cards or skipping validation, independent review, owner
+approval, tool restrictions or refusal boundaries.
 
 ### Answering a gate
 

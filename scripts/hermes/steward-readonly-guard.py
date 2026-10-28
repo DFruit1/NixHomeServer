@@ -34,6 +34,10 @@ def owner_alert_readonly(args):
 
 def coordinator_request_args(args):
     # No recipient, executable, output path or arbitrary native CLI arguments.
+    if args[:1] == ['--policy-report']:
+        return (len(args) in (3, 4) and re.fullmatch(r'[a-f0-9]{24}', args[1])
+                and re.fullmatch(r'[a-f0-9]{64}', args[2])
+                and (len(args) == 3 or args[3] == '--to-author'))
     if len(args) != 4 or set(args[::2]) != {'--request-id', '--message'}:
         return False
     values = dict(zip(args[::2], args[1::2]))
@@ -43,7 +47,7 @@ def coordinator_request_args(args):
 
 def terminal_command(command, root, repo):
     # Cron delivers the final report through the profile's configured channel.
-    # Only the fixed-recipient coordinator helper may queue an internal request.
+    # Only the scoped coordinator/policy helper may queue an internal request.
     try:
         argv = shlex.split(command)
     except ValueError:
@@ -59,7 +63,7 @@ def terminal_command(command, root, repo):
         if not script.is_absolute():
             script = repo / script
         scripts = {'kanban-daily-steward.py', 'usage-pace.py', 'kanban-performance.py', 'kanban-blockers.py',
-                   'steward-opportunity-scan.py', 'steward-board-read.py', 'board_progress.py'}
+                   'steward-opportunity-scan.py', 'steward-board-read.py', 'board_progress.py', 'card_policy_audit.py'}
         bases = (root / 'scripts', root / 'profiles/board-steward/scripts', repo / 'scripts/hermes')
         allowed_paths = {base / item for base in bases for item in scripts}
         allowed_paths.add(root / 'profiles/board-steward/skills/devops/board-steward/scripts/steward-sweep.py')

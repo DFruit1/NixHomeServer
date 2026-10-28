@@ -134,8 +134,9 @@ Use this for specific, correctable defects. First record actionable findings:
 
 ```text
 kanban_comment(
+    board="<runtime-board>",
     task_id="<current-task-id>",
-    body="Changes requested:\n1. <file or artifact + defect>\n2. <required correction>",
+    body="Update: Changes requested: <defect>.\nEvidence: <file:line or reproduction>.\nNext: Implementer must <minimum correction>.",
 )
 ```
 
@@ -147,7 +148,10 @@ kanban_request_changes(
 )
 ```
 
-State where the defect is, how it reproduces, why it violates the task, and what minimum outcome would resolve it. The transition does not use blocker recurrence accounting.
+Keep the comment within 400 characters and 8 lines. Put longer findings in one
+referenced artifact. State the defect, evidence and minimum correction. The
+transition does not use blocker recurrence accounting. A card gets at most five
+comments; a refused sixth requires human review, not another comment or card.
 
 #### Escalate
 

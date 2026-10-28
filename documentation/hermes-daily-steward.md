@@ -4,7 +4,8 @@ The board steward is an independent, read-only observer. It may inspect every
 board and relevant non-secret evidence, including cards, comments, runs,
 dependencies, logs, repository state and runtime configuration. It reports only
 when asked or as part of its existing regular reports, and may send actionable
-findings to head-coordinator through the scoped exception below.
+findings to head-coordinator, or verified policy feedback to the persisted agent
+author through the scoped exception below.
 
 The owner uses the external Codex agent as the independent unblocker and fixer.
 The steward identifies the problem and hands off a concrete action request;
@@ -17,8 +18,9 @@ critique those asks and recommend clearer wording without publishing a gate.
 
 The steward uses `deepseek-v4.1-flash` through the existing OpenCode Go provider
 with high reasoning, including the per-model override. It remains read-only and
-cannot unblock or dispatch. Its two-hour opportunity inspection and four-hour
-stall follow-up send actionable recommendations only to head-coordinator.
+cannot unblock or dispatch. Its two-hour opportunity inspection reports
+verified policy escapes to the coordinator or recorded agent author. Other
+recommendations and the four-hour stall follow-up go to head-coordinator.
 The daily phone report remains generated without an agent by the fleet release.
 
 Inspect LOW_ACTIVITY evidence from `python3 ~/.hermes/scripts/board_progress.py`:
@@ -39,6 +41,57 @@ when an unrelated recovery is parked or another board is busy.
 
 ## Reporting scope
 
+### Monitoring gaps in card-policy guards
+
+Keep the existing guards. The steward owns observation only where violations
+can escape them: persisted records from other write paths/older workers, and
+semantic dependency waits the prose guard cannot recognize. Rejected writes do
+not become findings; do not repeat checks that are already enforced. Body size
+guidance remains guidance. Native protocol/owner-reply exceptions remain valid.
+
+The existing two-hour opportunity monitor runs `card_policy_audit.py` read-only
+across boards. It checks current open-card dependency prose and unlinked
+dependency blocks, exceeded comment budgets, and persisted routine-comment
+format/length escapes after monitor activation, within the rolling last 24 hours.
+The installer records the first activation once; refreshes retain that cutoff,
+so historical comments do not become retrospective formatting work.
+It does not inspect rejection
+logs or rewrite old comments. Output has stable finding keys and content versions,
+bounded monitor packets, explicit incomplete-coverage warnings and no raw comment
+text. No new job or cadence is added.
+
+For a new/changed finding, the steward uses one route:
+
+```bash
+python3 ~/.hermes/scripts/steward-coordinator-request.py \
+  --policy-report KEY VERSION --to-author
+```
+
+The helper rechecks persisted evidence and creates fixed rectification feedback.
+It resolves the actual creator/comment author, never substitutes the assignee,
+and uses the existing durable Bot Chat queue. Unknown/human authors, exceeded
+comment budgets and unlinked-block issues route to head-coordinator. Omit
+`--to-author` to choose the coordinator directly. There is no free-form recipient
+or message option in this mode, and generic `message_agent` remains restricted
+to head-coordinator. This owner-authorized exception permits policy feedback;
+it does not permit dispatching implementation or changing a card.
+
+One finding/version uses one route. Queue receipts suppress repeat wakes and
+never imply delivery or correction. The existing stall follow-up checks actual
+outcomes and backoff. Ask for the smallest lawful correction on the original
+card, preserve historical comments and genuine graph gates, and avoid new
+acknowledgment comments or replacement cards. An exceeded comment budget retains
+its existing coordinator/human-review requirement. No policy finding goes to the
+owner's phone as a routine technical event.
+
+Install just this monitoring/reporting update, preserving guards, models, job
+cadence, active workers and native Hermes adapters:
+
+```bash
+python3 -B scripts/hermes/install-steward-readonly.py --policy-monitor-only
+python3 -B scripts/hermes/install-steward-readonly.py --policy-monitor-only --check
+```
+
 All previous grants to mutate boards, dispatch cleanup work, restore scripts,
 write notes, change bindings or commit work are revoked. The steward never
 writes files or memory, creates/comments/edits cards, changes status or
@@ -46,7 +99,8 @@ assignments, edits dependencies, unblocks work, changes cron/configuration,
 installs/restores scripts, commits, pushes, restarts, deploys or directly
 delegates implementation.
 A requested fix may be handed to head-coordinator for action under its own
-authority, even when performing it is outside the steward's permissions.
+authority, even when performing it is outside the steward's permissions. Only
+verified policy feedback has the bounded original-author route described above.
 
 Reports explain what landed, the precise cause of each blocker, existing owner
 decisions, stale premises, permission limitations and credible tooling defects.

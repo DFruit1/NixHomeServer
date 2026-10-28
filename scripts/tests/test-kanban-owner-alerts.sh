@@ -258,6 +258,105 @@ class AlertsTest(unittest.TestCase):
         request['tool_input']['body'] = 'Owner reply received: choose A. Scope remains unchanged.'
         self.assertEqual({}, writer.guard(request, self.root, alerts))
 
+    def test_new_agent_comments_require_a_short_readable_update(self):
+        request = {'profile': 'standard-implementer', 'tool_name': 'kanban_comment',
+                   'tool_input': {'board': 'one', 'task_id': 't_12345678'}}
+        valid = 'Update: Fixed the retry loop.\nEvidence: Retry tests pass.\nNext: Ready for review.'
+        before = self.board_bytes()
+        for body in (valid, valid.replace('Evidence:', 'Evidence: café —'),
+                     valid.replace('Next:', 'Recovery run: 43\nNext:')):
+            request['tool_input']['body'] = body
+            self.assertEqual({}, writer.guard(request, self.root, alerts), body)
+        for body in ('A long unstructured progress paragraph.',
+                     valid.replace('Evidence: Retry tests pass.\n', ''),
+                     valid.replace('Update:', 'Next:'),
+                     valid.replace('Next: Ready for review.', 'Next:   '),
+                     valid + '\nNext: Another action.',
+                     valid + '\n' + '\n'.join('Extra: line' for _ in range(6)),
+                     valid + 'x' * 400):
+            with self.subTest(body=body):
+                request['tool_input']['body'] = body
+                result = writer.guard(request, self.root, alerts)
+                self.assertEqual('block', result.get('action'))
+                self.assertIn('400', result['message'])
+                self.assertIn('Update:', result['message'])
+        self.assertEqual(before, self.board_bytes())
+
+    def test_comment_limit_counts_characters_and_includes_whitespace(self):
+        prefix = 'Update: Done.\nEvidence: Tests pass.\nNext: '
+        body = prefix + 'é' * (400 - len(prefix))
+        request = {'profile': 'head-coordinator', 'tool_name': 'kanban_comment',
+                   'tool_input': {'board': 'one', 'task_id': 't_12345678', 'body': body}}
+        self.assertEqual({}, writer.guard(request, self.root, alerts))
+        for suffix in ('x', ' ', '\n'):
+            request['tool_input']['body'] = body + suffix
+            self.assertEqual('block', writer.guard(request, self.root, alerts).get('action'))
+
+    def test_comment_policy_preserves_coordinator_receipt_schemas_and_owner_quotes(self):
+        request = {'profile': 'head-coordinator', 'tool_name': 'kanban_comment',
+                   'tool_input': {'board': 'one', 'task_id': 't_12345678'}}
+        for key in ('deployment_decision', 'owner_execution_decision', 'delegated_execution_decision'):
+            request['tool_input']['body'] = json.dumps({key: {'evidence': 'x' * 700}})
+            self.assertEqual({}, writer.guard(request, self.root, alerts))
+            request['profile'] = 'standard-implementer'
+            self.assertEqual('block', writer.guard(request, self.root, alerts).get('action'))
+            request['profile'] = 'head-coordinator'
+        for body in ('{"arbitrary": "not a receipt"}', '{"deployment_decision":',
+                     json.dumps({'deployment_decision': {}, 'extra': {}}),
+                     json.dumps({'deployment_decision': {'evidence': 'x' * 32768}})):
+            request['tool_input']['body'] = body
+            self.assertEqual('block', writer.guard(request, self.root, alerts).get('action'))
+        quote = 'Owner reply via SimpleX D1: ' + 'Keep this exact owner reply. ' * 30
+        request['tool_input']['body'] = quote
+        self.assertEqual({}, writer.guard(request, self.root, alerts))
+
+    def test_comment_hook_rejects_bad_input_without_writing_to_a_board(self):
+        before = self.board_bytes()
+        for body, expected in (('A wall of text.', 'block'),
+                               ('Update: Fixed retries.\nEvidence: Tests pass.\nNext: Review.', None)):
+            result = subprocess.run([sys.executable, '-B', writer.__file__],
+                input=json.dumps({'profile': 'standard-implementer', 'tool_name': 'kanban_comment',
+                                  'tool_input': {'board': 'one', 'task_id': 't_12345678', 'body': body}}),
+                env={**os.environ, 'HERMES_ROOT': str(self.root)},
+                text=True, capture_output=True, check=True)
+            self.assertEqual(expected, json.loads(result.stdout).get('action'))
+        self.assertEqual(before, self.board_bytes())
+
+    def test_fifth_comment_is_allowed_and_sixth_requires_human_review(self):
+        request = {'profile': 'standard-implementer', 'tool_name': 'kanban_comment',
+                   'tool_input': {'board': 'one', 'task_id': 't_12345678',
+                                  'body': 'Update: Fixed retries.\nEvidence: Tests pass.\nNext: Review.'}}
+        with closing(sqlite3.connect(self.boards['one'])) as db:
+            db.executemany('INSERT INTO task_comments (task_id,author,body,created_at) VALUES (?,?,?,?)',
+                [('t_12345678', author, 'Historical comment.', 1)
+                 for author in ('owner', 'head-coordinator', 'worker', 'automation')])
+            db.commit()
+        self.assertEqual({}, writer.guard(request, self.root, alerts))
+        with closing(sqlite3.connect(self.boards['one'])) as db:
+            db.execute('INSERT INTO task_comments (task_id,author,body,created_at) VALUES (?,?,?,?)',
+                       ('t_12345678', 'worker', request['tool_input']['body'], 2))
+            db.commit()
+        before = self.board_bytes()
+        for body in (request['tool_input']['body'], REPAIR_SUMMARY,
+                     'Owner reply received: proceed.', '{"deployment_decision": {}}'):
+            request['tool_input']['body'] = body
+            request['profile'] = 'head-coordinator'
+            result = writer.guard(request, self.root, alerts)
+            self.assertEqual('block', result.get('action'))
+            self.assertIn('churning', result['message'])
+            self.assertIn('human review', result['message'])
+            self.assertIn('5', result['message'])
+        self.assertEqual(before, self.board_bytes())
+
+    def test_comment_budget_cannot_be_bypassed_with_missing_or_unknown_scope(self):
+        request = {'profile': 'standard-implementer', 'tool_name': 'kanban_comment',
+                   'tool_input': {'body': 'Update: Fixed retries.\nEvidence: Tests pass.\nNext: Review.'}}
+        for scope in ({}, {'board': '../one', 'task_id': 't_12345678'},
+                      {'board': 'one', 'task_id': 't_missing'},
+                      {'board': 'missing', 'task_id': 't_12345678'}):
+            request['tool_input'] = {'body': request['tool_input']['body'], **scope}
+            self.assertEqual('block', writer.guard(request, self.root, alerts).get('action'))
+
     def test_generic_owner_reason_and_details_pointer_are_not_actionable(self):
         task = alerts.snapshot(self.root / 'kanban/boards/one/board.json')[0]
         task['body'] = 'Goal: Activate the accepted inbox.'
