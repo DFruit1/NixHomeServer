@@ -825,14 +825,6 @@ const ProviderAccountsView = component$(() => {
         </div>
       </section>
 
-      <aside class="credential-guidance" role="note">
-        <Icon name="shield" size={22} />
-        <div>
-          <strong>Keep the recovery copy in a password manager</strong>
-          <p>{accounts.recoveryAdvice}</p>
-        </div>
-      </aside>
-
       {accounts.error && (
         <div class="message error" role="alert">
           <Icon name="alert" size={18} />
@@ -889,6 +881,19 @@ const ProviderAccountsView = component$(() => {
                   <div>
                     <h3>{provider.name}</h3>
                     <span>{provider.mediaDomains.join(" · ")}</span>
+                    <span class="provider-state">
+                      {planned
+                        ? "Coming soon"
+                        : publicSource
+                          ? "Public, no setup"
+                          : configured
+                            ? connected
+                              ? "Connected"
+                              : provider.account.lastTestStatus
+                                ? "Connection needs attention"
+                                : "Configured"
+                            : "Not configured"}
+                    </span>
                   </div>
                   {provider.logoUrl && (
                     <img
@@ -907,12 +912,9 @@ const ProviderAccountsView = component$(() => {
                   </p>
                 )}
                 <div class="provider-account-actions">
-                  {publicSource ? (
-                    <span class="provider-state public-action">
-                      Public, no setup
-                    </span>
-                  ) : provider.canConfigure &&
-                    provider.credentialFields.length > 0 ? (
+                  {!publicSource &&
+                  provider.canConfigure &&
+                  provider.credentialFields.length > 0 ? (
                     <button
                       class="primary-button"
                       type="button"
@@ -988,6 +990,13 @@ const ProviderAccountsView = component$(() => {
               ×
             </button>
           </div>
+          <aside class="credential-guidance" role="note">
+            <Icon name="shield" size={22} />
+            <div>
+              <strong>Keep the recovery copy in a password manager</strong>
+              <p>{accounts.recoveryAdvice}</p>
+            </div>
+          </aside>
           <ol class="provider-setup-steps" aria-label="Provider setup steps">
             <li>
               <span>1</span>
@@ -1634,6 +1643,7 @@ const LibraryPane = component$<{
   };
   items: CatalogItem[];
   focusPath?: string;
+  hasMore?: boolean;
   selectedItemId: string;
   selectItem$: QRL<(item: CatalogItem) => void>;
   selectFolder$: QRL<(path: string) => void>;
@@ -1661,9 +1671,25 @@ const LibraryPane = component$<{
     >
       <div class="pane-heading">
         <h3>{props.title}</h3>
-        <span class="pane-count">{props.items.length}</span>
+        <span class="pane-count">
+          {props.items.length}
+          {props.hasMore ? " loaded" : ""}
+        </span>
       </div>
       <div class="catalog-scroll-region">
+        {props.focusPath && (
+          <button
+            type="button"
+            class="text-button"
+            onClick$={() =>
+              props.selectFolder$(
+                props.focusPath!.split("/").slice(0, -1).join("/"),
+              )
+            }
+          >
+            Up one level
+          </button>
+        )}
         {props.items.length === 0 ? (
           <EmptyState title={props.subtitle} detail={props.emptyDetail} />
         ) : (
@@ -1759,6 +1785,7 @@ const LibraryDetailPane = component$<{
   previewRename$: QRL<() => Promise<void>>;
   confirmRename$: QRL<() => Promise<void>>;
   closeFolderEditor$: QRL<() => void>;
+  closeSelection$: QRL<() => void>;
 }>((props) => {
   const editorCommand = useStore<{
     action: EditorCommandAction;
@@ -1804,6 +1831,15 @@ const LibraryDetailPane = component$<{
       }}
       aria-label={`Selected ${props.placement === "personal" ? "shared" : "personal"} library details`}
     >
+      {(props.selectedItem || props.activeFolder) && (
+        <button
+          type="button"
+          class="text-button library-back"
+          onClick$={props.closeSelection$}
+        >
+          Back to libraries
+        </button>
+      )}
       <div class="root-picker-image">
         <MediaImage
           imageId={imageId}
@@ -2320,6 +2356,7 @@ const LibraryView = component$<{
             previewRename$={props.previewRename$}
             confirmRename$={props.confirmRename$}
             closeFolderEditor$={closeFolderEditor$}
+            closeSelection$={() => selectSharedFolder$("")}
           />
         ) : (
           <LibraryPane
@@ -2336,6 +2373,9 @@ const LibraryView = component$<{
             }
             browser={personal}
             items={visiblePersonalItems}
+            hasMore={personalRoots.some((root) =>
+              Boolean(props.state.itemCursors?.[root.id]),
+            )}
             focusPath={activeScope === "personal" ? activeFocusPath : ""}
             selectedItemId={props.state.selectedItemId}
             selectItem$={selectPersonalItem$}
@@ -2353,6 +2393,7 @@ const LibraryView = component$<{
             previewRename$={props.previewRename$}
             confirmRename$={props.confirmRename$}
             closeFolderEditor$={closeFolderEditor$}
+            closeSelection$={() => selectPersonalFolder$("")}
           />
         ) : (
           <LibraryPane
@@ -2367,6 +2408,9 @@ const LibraryView = component$<{
             }
             browser={shared}
             items={visibleSharedItems}
+            hasMore={sharedRoots.some((root) =>
+              Boolean(props.state.itemCursors?.[root.id]),
+            )}
             focusPath={activeScope === "shared" ? activeFocusPath : ""}
             selectedItemId={props.state.selectedItemId}
             selectItem$={selectSharedItem$}

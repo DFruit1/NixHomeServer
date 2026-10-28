@@ -445,6 +445,131 @@ it("explains conflicting proposals in prose beside the compared values", async (
   );
 });
 
+it("applies an album issue to the file that produced it", async () => {
+  const fetchMock = vi.fn(
+    async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.includes("/provider-accounts"))
+        return new Response(wireJson(providerCatalog(OPEN_LIBRARY)));
+      if (path.includes("/provider-lookups/open-library/search"))
+        return new Response(
+          wireJson({
+            provider: "open-library",
+            query: "Lawson",
+            results: [
+              {
+                workId: "OL1W",
+                title: "Online title",
+                authors: [],
+                publishers: [],
+                languages: [],
+                subjects: [],
+              },
+            ],
+            requestId: "req",
+          }),
+        );
+      if (path.endsWith("/metadata"))
+        return new Response(
+          wireJson({
+            mediaType: "audiobook",
+            title: "Lawson",
+            authors: [],
+            narrators: [],
+            genres: [],
+            writers: [],
+            providerIds: {},
+            sources: ["sidecar"],
+          }),
+        );
+      if (path.endsWith("/metadata/sidecar"))
+        return new Response(
+          wireJson({
+            id: "health-plan",
+            digest: "digest-1",
+            expiresAt: 0,
+            actions: [],
+          }),
+          { status: 201 },
+        );
+      if (path.includes("/plans/health-plan/confirm"))
+        return new Response(wireJson({ id: "health-plan", state: "queued" }), {
+          status: 202,
+        });
+      const response = await healthResponse("lawson-01", "Title differs");
+      const payload = await response.json();
+      payload.results = ["01", "02"].map((track) => ({
+        itemId: `lawson-${track}`,
+        rootId: "audiobooks",
+        relativePath: `Lawson/${track}.mp3`,
+        mediaKind: "audiobook",
+        albumGroup: "Lawson",
+        health: [
+          {
+            code: "conflicting-title",
+            severity: "warning",
+            field: "title",
+            title: "Title differs",
+            message: "Compare",
+            sources: ["sidecar"],
+            currentValue: `Current ${track}`,
+            proposedValues: [
+              { value: `Proposed ${track}`, sources: ["sidecar"] },
+            ],
+          },
+        ],
+      }));
+      return new Response(wireJson(payload));
+    },
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  const { render, screen, userEvent } = await createDOM();
+  await render(
+    <MetadataHealthView
+      roots={[{ id: "audiobooks", label: "Audiobooks" }]}
+      canEdit
+    />,
+  );
+  await vi.waitFor(async () => {
+    await userEvent(screen, "click");
+    expect(screen.textContent).toContain("Proposed 02");
+  });
+  const button = Array.from(screen.querySelectorAll(".health-value-set")).find(
+    (element) => element.textContent?.includes("Proposed 02"),
+  );
+  expect(button?.closest(".health-result-issue")?.textContent).toContain(
+    "Lawson/02.mp3",
+  );
+  const secondIssue = button?.closest(".health-result-issue");
+  await userEvent(
+    secondIssue?.querySelector(".health-source-trigger") ?? null,
+    "click",
+  );
+  const form = screen.querySelector(".health-lookup-query");
+  await userEvent(form ?? null, "submit");
+  await vi.waitFor(() => expect(screen.textContent).toContain("Online title"));
+  await userEvent(screen.querySelector(".health-lookup-select"), "click");
+  expect(secondIssue?.textContent).toContain("Selected online value");
+  expect(secondIssue?.textContent).toContain("Online title");
+  await userEvent(button ?? null, "click");
+  await vi.waitFor(() =>
+    expect(
+      fetchMock.mock.calls.some(
+        ([path, init]) =>
+          String(path).endsWith("/items/lawson-02/metadata/sidecar") &&
+          init?.method === "POST",
+      ),
+    ).toBe(true),
+  );
+  expect(
+    fetchMock.mock.calls.some(
+      ([path, init]) =>
+        String(path).endsWith("/items/lawson-01/metadata/sidecar") &&
+        init?.method === "POST",
+    ),
+  ).toBe(false);
+});
+
 it("queues a metadata change when a proposed value is clicked", async () => {
   const fetchMock = vi.fn(
     async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -515,8 +640,13 @@ it("queues a metadata change when a proposed value is clicked", async () => {
 
   const proposedButton = Array.from(
     screen.querySelectorAll(".health-value-set"),
-  ).find((button) => button.textContent === "Grantlee Kieza");
+  ).find((button) => button.textContent?.includes("Grantlee Kieza"));
   expect(proposedButton).toBeTruthy();
+  expect(proposedButton?.textContent).toContain("Use proposed");
+  const comparison = screen.querySelector(".health-comparison");
+  expect(comparison?.firstElementChild?.textContent).toContain(
+    "Author or creator is missing",
+  );
   await userEvent(proposedButton!, "click");
   await vi.waitFor(() =>
     expect(screen.textContent).toContain(

@@ -1,10 +1,11 @@
 import { $, component$, useStore, useTask$ } from "@builder.io/qwik";
-import { api, readableError } from "./api";
+import { api, ApiError, readableError } from "./api";
 import { Icon } from "./icon";
 import type {
   PlanActionResponse,
   PlanListResponse,
   PlanSummary,
+  CatalogItem,
 } from "./root-types";
 import { EmptyState, LoadingState } from "./view-states";
 
@@ -64,6 +65,12 @@ export const ActivityView = component$<{ canEdit: boolean }>((props) => {
     error: string;
     notice: string;
     busyId: string;
+    itemPaths: Record<string, string | null>;
+    pendingItems: Record<string, boolean>;
+    itemErrors: Record<string, boolean>;
+    drainRunning: boolean;
+    generation: number;
+    filter: "all" | "failed" | "previewed";
   }>({
     plans: [],
     scope: props.canEdit ? "all" : "mine",
@@ -72,17 +79,71 @@ export const ActivityView = component$<{ canEdit: boolean }>((props) => {
     error: "",
     notice: "",
     busyId: "",
+    itemPaths: {},
+    pendingItems: {},
+    itemErrors: {},
+    drainRunning: false,
+    generation: 0,
+    filter: "all",
   });
 
   const load$ = $(async () => {
+    const generation = activity.generation;
     const query = activity.scope === "all" ? "?scope=all" : "";
     const response = await api<PlanListResponse>(`/plans${query}`);
+    if (generation !== activity.generation) return;
     activity.plans = response.plans;
     activity.mutationMode = response.mutationMode;
+    if (activity.drainRunning) return;
+    const missing = [
+      ...new Set(response.plans.flatMap((plan) => plan.itemIds)),
+    ].filter((id) => !(id in activity.itemPaths) && !activity.pendingItems[id]);
+    if (!missing.length) return;
+    activity.drainRunning = true;
+    void (async () => {
+      try {
+        for (
+          let offset = 0;
+          offset < missing.length && activity.generation === generation;
+          offset += 8
+        ) {
+          const batch = missing.slice(offset, offset + 8);
+          for (const id of batch) activity.pendingItems[id] = true;
+          await Promise.all(
+            batch.map(async (id) => {
+              try {
+                const item = await api<CatalogItem>(
+                  `/items/${encodeURIComponent(id)}`,
+                );
+                if (activity.generation !== generation) return;
+                activity.itemPaths[id] = item.relativePath || null;
+                delete activity.itemErrors[id];
+              } catch (error) {
+                if (activity.generation !== generation) return;
+                if (
+                  error instanceof ApiError &&
+                  (error.status === 403 || error.status === 404)
+                ) {
+                  activity.itemPaths[id] = null;
+                  delete activity.itemErrors[id];
+                } else {
+                  activity.itemErrors[id] = true;
+                }
+              } finally {
+                delete activity.pendingItems[id];
+              }
+            }),
+          );
+        }
+      } finally {
+        activity.drainRunning = false;
+      }
+    })();
   });
 
   useTask$(({ cleanup, track }) => {
     track(() => activity.scope);
+    const generation = ++activity.generation;
     let stopped = false;
     const tick = async () => {
       try {
@@ -97,6 +158,9 @@ export const ActivityView = component$<{ canEdit: boolean }>((props) => {
     void tick();
     // Polling is a browser lifecycle concern. Starting an interval during SSR
     // (or a DOM-less component test) leaves work alive after the render ends.
+    cleanup(() => {
+      if (activity.generation === generation) activity.generation++;
+    });
     if (typeof window === "undefined") return;
     const timer = setInterval(tick, 4000);
     cleanup(() => {
@@ -229,75 +293,139 @@ export const ActivityView = component$<{ canEdit: boolean }>((props) => {
               </div>
             )}
           </div>
+          <div
+            class="activity-scope activity-filters"
+            role="group"
+            aria-label="Filter activity"
+          >
+            {(
+              [
+                ["all", "All"],
+                ["failed", "Failed"],
+                ["previewed", "Awaiting confirmation"],
+              ] as const
+            ).map(([id, label]) => (
+              <button
+                type="button"
+                class={{ "scope-button": true, active: activity.filter === id }}
+                data-filter={id}
+                aria-pressed={activity.filter === id}
+                onClick$={() => (activity.filter = id)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {activity.filter !== "all" &&
+            !activity.plans.some((plan) => plan.state === activity.filter) && (
+              <p class="quiet-copy">No matching activity.</p>
+            )}
           <ul class="activity-list">
-            {activity.plans.map((plan) => {
-              const presentation = PLAN_STATES[plan.state];
-              const busy = activity.busyId === plan.id;
-              return (
-                <li class="activity-row" key={plan.id}>
-                  <div class="activity-row-main">
-                    <div class="activity-row-title">
-                      <strong>{operationLabel(plan.operationKind)}</strong>
-                      <span
-                        class={{
-                          "plan-state": true,
-                          [presentation.tone]: true,
-                        }}
-                      >
-                        {presentation.label}
-                      </span>
-                      {activity.scope === "all" && (
-                        <span class="plan-owner">{plan.ownerUsername}</span>
+            {activity.plans
+              .filter(
+                (plan) =>
+                  activity.filter === "all" || plan.state === activity.filter,
+              )
+              .map((plan) => {
+                const presentation = PLAN_STATES[plan.state];
+                const busy = activity.busyId === plan.id;
+                return (
+                  <li class="activity-row" key={plan.id}>
+                    <div class="activity-row-main">
+                      <div class="activity-row-title">
+                        <strong>{operationLabel(plan.operationKind)}</strong>
+                        <span
+                          class={{
+                            "plan-state": true,
+                            [presentation.tone]: true,
+                          }}
+                        >
+                          {presentation.label}
+                        </span>
+                        {activity.scope === "all" && (
+                          <span class="plan-owner">{plan.ownerUsername}</span>
+                        )}
+                      </div>
+                      {plan.itemIds.length > 0 && (
+                        <details class="activity-items">
+                          <summary>
+                            {activity.itemPaths[plan.itemIds[0]]
+                              ?.split("/")
+                              .at(-1) ??
+                              (plan.itemIds[0] in activity.itemPaths
+                                ? "Item unavailable"
+                                : activity.itemErrors[plan.itemIds[0]]
+                                  ? "Item lookup failed; retrying…"
+                                  : "Loading item…")}
+                            {plan.itemIds.length > 1
+                              ? ` and ${plan.itemIds.length - 1} more`
+                              : ""}
+                          </summary>
+                          <ul>
+                            {plan.itemIds.map((id) => (
+                              <li key={id}>
+                                {activity.itemPaths[id] ??
+                                  (id in activity.itemPaths
+                                    ? "Item unavailable"
+                                    : activity.itemErrors[id]
+                                      ? "Item lookup failed; retrying…"
+                                      : "Loading item…")}
+                              </li>
+                            ))}
+                          </ul>
+                          <p>Created: {plan.createdAt}</p>
+                        </details>
+                      )}
+                      <p class="activity-row-meta">
+                        <span>
+                          {plan.itemIds.length} item
+                          {plan.itemIds.length === 1 ? "" : "s"}
+                        </span>
+                        <span aria-hidden="true">·</span>
+                        <time dateTime={plan.createdAt} title={plan.createdAt}>
+                          {relativeTime(plan.createdAt)}
+                        </time>
+                        {plan.actionCount > 0 &&
+                          ["queued", "running"].includes(plan.state) && (
+                            <>
+                              <span aria-hidden="true">·</span>
+                              <span>
+                                {plan.completedActionCount}/{plan.actionCount}{" "}
+                                actions
+                              </span>
+                            </>
+                          )}
+                      </p>
+                      {plan.error && (
+                        <p class="activity-row-error">{plan.error}</p>
                       )}
                     </div>
-                    <p class="activity-row-meta">
-                      <span>
-                        {plan.itemIds.length} item
-                        {plan.itemIds.length === 1 ? "" : "s"}
-                      </span>
-                      <span aria-hidden="true">·</span>
-                      <span>{relativeTime(plan.createdAt)}</span>
-                      {plan.actionCount > 0 &&
-                        ["queued", "running"].includes(plan.state) && (
-                          <>
-                            <span aria-hidden="true">·</span>
-                            <span>
-                              {plan.completedActionCount}/{plan.actionCount}{" "}
-                              actions
-                            </span>
-                          </>
-                        )}
-                    </p>
-                    {plan.error && (
-                      <p class="activity-row-error">{plan.error}</p>
-                    )}
-                  </div>
-                  <div class="activity-row-actions">
-                    {plan.state === "failed" && (
-                      <button
-                        class="secondary-button"
-                        type="button"
-                        disabled={busy}
-                        onClick$={() => retry$(plan)}
-                      >
-                        {busy ? "Retrying…" : "Retry"}
-                      </button>
-                    )}
-                    {(plan.state === "previewed" ||
-                      plan.state === "queued") && (
-                      <button
-                        class="secondary-button danger"
-                        type="button"
-                        disabled={busy}
-                        onClick$={() => abandon$(plan)}
-                      >
-                        {busy ? "Cancelling…" : "Cancel"}
-                      </button>
-                    )}
-                  </div>
-                </li>
-              );
-            })}
+                    <div class="activity-row-actions">
+                      {plan.state === "failed" && (
+                        <button
+                          class="secondary-button"
+                          type="button"
+                          disabled={busy}
+                          onClick$={() => retry$(plan)}
+                        >
+                          {busy ? "Retrying…" : "Retry"}
+                        </button>
+                      )}
+                      {(plan.state === "previewed" ||
+                        plan.state === "queued") && (
+                        <button
+                          class="secondary-button danger"
+                          type="button"
+                          disabled={busy}
+                          onClick$={() => abandon$(plan)}
+                        >
+                          {busy ? "Cancelling…" : "Cancel"}
+                        </button>
+                      )}
+                    </div>
+                  </li>
+                );
+              })}
           </ul>
         </div>
       )}
