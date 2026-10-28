@@ -31,7 +31,7 @@ let
     (pattern: " \\\n      --add-ignore=${lib.escapeShellArg pattern}")
     [
       "var/lib/postgresql"
-      "var/lib/browsertrix-downloader"
+      "var/lib/browsertrix-downloader/worker"
       "var/lib/mkvmaker"
       "var/lib/solr"
       "var/lib/clamav"
