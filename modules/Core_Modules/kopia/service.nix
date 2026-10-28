@@ -36,6 +36,7 @@ let
       "var/lib/solr"
       "var/lib/clamav"
       "var/lib/atticd/storage"
+      "appdata/backup-metadata"
       "*.wacz"
       "*.iso"
       "*.qcow2"
