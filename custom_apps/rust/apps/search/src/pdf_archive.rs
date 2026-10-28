@@ -10,8 +10,8 @@
 //! This is deliberately a server-admin surface, not a user feature: it runs as
 //! a `search` CLI subcommand (optionally on a systemd timer) and never exposes
 //! a mass-download endpoint to normal gateway users. The manifest is the system
-//! of record; a later extractor can index the archived PDFs into Search using
-//! the existing `pdftotext` pipeline.
+//! of record; the FreshRSS extractor reads locally archived PDFs linked by
+//! current entries using the existing `pdftotext` pipeline.
 //!
 //! Trust boundary: the downloader runs as the `search` user, which is *not*
 //! covered by the `freshrss` nftables egress policy (that policy is keyed on
@@ -20,7 +20,7 @@
 //! the same egress restriction as FreshRSS if the source set is ever widened
 //! beyond trusted feeds.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -301,8 +301,55 @@ fn extract_hrefs(html: &str) -> Vec<String> {
     out
 }
 
-fn manifest_key(url: &str) -> String {
+pub(crate) fn manifest_key(url: &str) -> String {
     crate::timeutil::sha256_hex(&[url])
+}
+
+/// Inventory completed downloads only. The archive deduplicates URLs across
+/// users, so a file can live under an earlier discoverer's owner directory.
+/// Callers still restrict indexing to URLs in their configured feed entries.
+pub(crate) fn archived_files(root: &Path) -> Result<BTreeMap<String, PathBuf>, String> {
+    let owners = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+        Err(err) => {
+            return Err(format!(
+                "failed to read PDF archive {}: {err}",
+                root.display()
+            ))
+        }
+    };
+    let mut directories = Vec::new();
+    for entry in owners {
+        let entry = entry.map_err(|err| format!("failed to list PDF archive: {err}"))?;
+        if entry.file_type().map_err(|err| err.to_string())?.is_dir() {
+            directories.push(entry.path());
+        }
+    }
+    directories.sort();
+    let mut files = BTreeMap::new();
+    for directory in directories {
+        for entry in std::fs::read_dir(&directory)
+            .map_err(|err| format!("failed to read PDF archive owner directory: {err}"))?
+        {
+            let entry = entry.map_err(|err| err.to_string())?;
+            if !entry.file_type().map_err(|err| err.to_string())?.is_file() {
+                continue;
+            }
+            let path = entry.path();
+            let key = path
+                .file_stem()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default();
+            if path.extension().and_then(|name| name.to_str()) == Some("pdf")
+                && key.len() == 64
+                && key.bytes().all(|byte| byte.is_ascii_hexdigit())
+            {
+                files.entry(key.to_string()).or_insert(path);
+            }
+        }
+    }
+    Ok(files)
 }
 
 fn sha256_hex_bytes(bytes: &[u8]) -> String {

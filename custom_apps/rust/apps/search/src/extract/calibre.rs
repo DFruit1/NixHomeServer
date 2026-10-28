@@ -7,7 +7,7 @@ use rusqlite::{Connection, OpenFlags};
 use super::paperless::extract_pdf_text;
 use super::ExtractedDocument;
 use crate::config::SourceConfig;
-use crate::text::{html_to_text, truncate_text};
+use crate::text::{decode_document_text, html_to_text, truncate_text};
 use crate::timeutil::parse_date;
 
 /// Upper bound on the body text copied out of a single book. Technical books
@@ -152,7 +152,8 @@ fn format_priority(format: &str) -> u8 {
         "pdf" => 1,
         "txt" => 2,
         "html" | "htm" => 3,
-        "docx" | "odt" | "fb2" | "htmlz" | "txtz" | "md" => 4,
+        "docx" | "docm" | "odt" | "ods" | "odp" | "xlsx" | "xlsm" | "pptx" | "pptm" | "ppsx"
+        | "fb2" | "htmlz" | "txtz" | "md" => 4,
         _ => 5,
     }
 }
@@ -167,6 +168,18 @@ fn content_type_for_format(format: &str) -> String {
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document".to_string()
         }
         "odt" => "application/vnd.oasis.opendocument.text".to_string(),
+        "ods" => "application/vnd.oasis.opendocument.spreadsheet".to_string(),
+        "odp" => "application/vnd.oasis.opendocument.presentation".to_string(),
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet".to_string(),
+        "pptx" => {
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation".to_string()
+        }
+        "ppsx" => {
+            "application/vnd.openxmlformats-officedocument.presentationml.slideshow".to_string()
+        }
+        "docm" => "application/vnd.ms-word.document.macroEnabled.12".to_string(),
+        "xlsm" => "application/vnd.ms-excel.sheet.macroEnabled.12".to_string(),
+        "pptm" => "application/vnd.ms-powerpoint.presentation.macroEnabled.12".to_string(),
         "fb2" => "application/x-fictionbook+xml".to_string(),
         "md" => "text/markdown".to_string(),
         "mobi" => "application/x-mobipocket-ebook".to_string(),
@@ -204,9 +217,19 @@ pub(crate) fn source_fingerprint(source: &SourceConfig) -> Option<String> {
     super::file_inventory_fingerprint(source, files)
 }
 
+fn read_text_prefix(path: &Path) -> Option<String> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut bytes = Vec::new();
+    file.take(super::document::XML_LIMIT)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    Some(decode_document_text(&bytes))
+}
+
 fn extract_format_text(path: &Path, format: &str, pdftotext: Option<&Path>) -> Option<String> {
     match format.to_ascii_lowercase().as_str() {
-        format @ ("epub" | "docx" | "odt" | "htmlz" | "txtz") => {
+        format @ ("epub" | "docx" | "docm" | "odt" | "ods" | "odp" | "xlsx" | "xlsm" | "pptx"
+        | "pptm" | "ppsx" | "htmlz" | "txtz") => {
             let file = std::fs::File::open(path).ok()?;
             super::document::zip_text(std::io::BufReader::new(file), format)
         }
@@ -216,17 +239,14 @@ fn extract_format_text(path: &Path, format: &str, pdftotext: Option<&Path>) -> O
             file.take(super::document::XML_LIMIT + 1)
                 .read_to_end(&mut bytes)
                 .ok()?;
-            super::document::xml_text(std::str::from_utf8(&bytes).ok()?)
+            super::document::xml_text(&decode_document_text(&bytes))
         }
         "pdf" => extract_pdf_text(path, pdftotext)
             .ok()
             .filter(|text| !text.trim().is_empty()),
-        "txt" | "md" => std::fs::read_to_string(path)
-            .ok()
-            .filter(|text| !text.trim().is_empty()),
-        "html" | "htm" => std::fs::read_to_string(path)
-            .ok()
-            .map(|html| html_to_text(&html))
+        "txt" | "md" => read_text_prefix(path).filter(|text| !text.trim().is_empty()),
+        "html" | "htm" => read_text_prefix(path)
+            .map(|raw| html_to_text(&raw))
             .filter(|text| !text.trim().is_empty()),
         _ => None,
     }

@@ -3,6 +3,31 @@ pub fn truncate_text(text: &str, limit: usize) -> String {
     text[..text.floor_char_boundary(limit.min(text.len()))].to_string()
 }
 
+/// Reads UTF-8 or BOM-marked UTF-16 documents. Office text exports and XML
+/// members can use either byte order; treating them as UTF-8 loses words and
+/// leaves NUL bytes that PostgreSQL text fields cannot store.
+pub fn decode_document_text(bytes: &[u8]) -> String {
+    let mut text = if bytes.starts_with(&[0xff, 0xfe]) || bytes.starts_with(&[0xfe, 0xff]) {
+        let little_endian = bytes[0] == 0xff;
+        let units: Vec<u16> = bytes[2..]
+            .chunks_exact(2)
+            .map(|pair| {
+                if little_endian {
+                    u16::from_le_bytes([pair[0], pair[1]])
+                } else {
+                    u16::from_be_bytes([pair[0], pair[1]])
+                }
+            })
+            .collect();
+        String::from_utf16_lossy(&units)
+    } else {
+        String::from_utf8_lossy(bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(bytes))
+            .into_owned()
+    };
+    text.retain(|character| character != '\0');
+    text
+}
+
 /// Extracts the raw contents of the first `<title>` element in an HTML document.
 pub fn html_title(html: &str) -> Option<String> {
     let lower = html.to_ascii_lowercase();

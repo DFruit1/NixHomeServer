@@ -180,8 +180,13 @@ pub fn source_fingerprint(source: &SourceConfig) -> Option<String> {
     }?;
     // Extraction changes must reach unchanged source files too. A Solr-only
     // reindex cannot recover text an older extractor never put in Postgres.
-    const EXTRACTION_VERSION: &str = "2";
-    Some(crate::timeutil::sha256_hex(&[EXTRACTION_VERSION, &inputs]))
+    // Preserve unaffected sources' revisions so a book/mail/feed improvement
+    // does not repeat a potentially multi-hour ZIM or WACZ extraction.
+    let extraction_version = match source.source_type.as_str() {
+        "calibre" | "mail-archive" | "freshrss" => "3",
+        _ => "2",
+    };
+    Some(crate::timeutil::sha256_hex(&[extraction_version, &inputs]))
 }
 
 /// Fingerprints a set of input files together with the source's settings.
@@ -279,7 +284,9 @@ pub fn run(
         "mail-archive" => Box::new(mail::MailExtractor {
             pdftotext: settings.pdftotext.clone(),
         }),
-        "freshrss" => Box::new(freshrss::FreshRssExtractor),
+        "freshrss" => Box::new(freshrss::FreshRssExtractor {
+            pdftotext: settings.pdftotext.clone(),
+        }),
         "calibre" => Box::new(calibre::CalibreExtractor {
             pdftotext: settings.pdftotext.clone(),
         }),

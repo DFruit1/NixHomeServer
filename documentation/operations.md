@@ -1983,15 +1983,21 @@ Notes:
 * Email text. The mail extractor combines readable parts of mixed messages,
   selects the last readable representation of a multipart alternative, and
   handles messages without an explicit content type and forwarded `.eml`
-  attachments. It extracts PDF, EPUB, DOCX, ODT, FB2, text/Markdown/CSV and
-  zipped text/HTML attachments where supported. Unsupported or oversized binary
-  attachments still contribute their filenames. Text is capped at 2 MB per
+  attachments. It extracts PDF, EPUB, Word, Excel, PowerPoint, OpenDocument,
+  FB2, text/Markdown/CSV and zipped text/HTML attachments where supported.
+  Unsupported or oversized binary attachments still contribute their filenames.
+  Text is capped at 2 MB per
   message; binary MIME parts above 8 MB are skipped, and traversal is bounded
   to 256 parts and 16 nested levels. PDFs use the existing local `pdftotext`
   binary, without writing attachments to temporary files.
 * Book formats. Calibre extraction prefers EPUB, PDF, plain text and HTML,
-  then tries DOCX, ODT, FB2, Markdown and zipped HTML/text. Word extraction
-  includes footnotes, endnotes and running headers/footers. ZIP extraction
+  then tries DOCX/DOCM, XLSX/XLSM, PPTX/PPTM/PPSX, ODT/ODS/ODP, FB2,
+  Markdown and zipped HTML/text. Word extraction includes footnotes, endnotes
+  and running headers/footers; presentations include speaker notes. Spreadsheet
+  extraction resolves shared strings, inline text, sheet names and cached cell
+  values, without evaluating formulas or indexing unused shared-string entries.
+  UTF-8 and BOM-marked UTF-16 text/XML exports are decoded before extraction.
+  Loose text/HTML files contribute a bounded 8 MB prefix. ZIP extraction
   reads members in memory, caps expanded input at 8 MB per member and 32 MB
   per book, and retains up to 2 MB of text. UTF-8 truncation preserves complete
   characters. Scanned image-only documents still require upstream OCR.
@@ -2068,17 +2074,20 @@ Notes:
   indexing pass. Enabling more entries increases index size and first-sync
   time.
 * Incremental indexing. Every extractor derives a cheap fingerprint of its
-  inputs (ZIM inventory, `.eml` files, FreshRSS SQLite files, `metadata.db`,
+  inputs (ZIM inventory, `.eml` files, FreshRSS SQLite databases and their WAL/
+  journal files, completed archived PDFs, `metadata.db`,
   WACZ archives, the media snapshot, and the Paperless export manifest) plus
   its settings. When the fingerprint matches the last successful pass the
   indexer skips that source's extraction entirely; a changed fingerprint or a
   missing input falls back to a full extraction pass. Fingerprints are only a
   skip signal — the per-document checksum still governs whether a document is
-  re-pushed. Fingerprints also include an extraction revision. A new revision
+  re-pushed. Fingerprints also include a revision per extractor. A new revision
   causes one normal source extraction after deployment, even for unchanged
   files, so improved text extraction reaches existing documents automatically.
-  That pass may take longer than an ordinary hourly refresh. A Solr-only
-  `search-reindex.service` rebuild cannot recover text missing from Postgres.
+  Only affected extractors refresh; unchanged ZIM/WACZ revisions keep their
+  existing fingerprints. That pass may take longer than an ordinary hourly
+  refresh. A Solr-only `search-reindex.service` rebuild cannot recover text
+  missing from Postgres.
 * Kiwix federation. Every ZIM with an embedded Xapian index is searched live,
   not just the first few: archives are queried in bounded-concurrency batches
   (8 at a time) and each archive's article title/snippet fetches run
@@ -2153,9 +2162,20 @@ Behaviour and state:
   `application/pdf`, within the size limit, and actually starts with `%PDF-`.
   Landing pages that merely link to a PDF are not followed recursively; only
   the entry's own link and `href`s are considered.
-* **Not yet indexed.** Archived PDFs are not added to the Search corpus in this
-  scaffold. The manifest records enough metadata (owner, feed, title, origin
-  URL, path) to add a `pdftotext`-based extractor later.
+* **Searchable text.** The next normal FreshRSS indexing pass reads completed
+  local PDFs still linked by configured feed entries. Each PDF contributes a
+  document under **Feeds**, with its origin URL, entry title/date, feed/author
+  metadata and up to 2 MB of extracted text. Repeated links within one account
+  share a result; downloads stored under an earlier discoverer's directory can
+  be reused by other accounts linking the same URL. Partial files, symlinks and
+  PDFs with no current feed link are excluded. The archive inventory participates
+  in source fingerprints, so new downloads are picked up even when the feed
+  database is unchanged. Local extraction errors keep the source retryable and
+  prevent pruning its previous results. Scanned PDFs still need upstream OCR.
+* **Download and index are separate.** Indexing only reads existing files and
+  never fetches URLs. Turning off the archive timer retains downloads and lets
+  configured feeds continue searching their linked local PDFs. The existing
+  opt-in download limits and egress policy remain unchanged.
 
 Egress trust boundary:
 

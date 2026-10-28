@@ -253,7 +253,7 @@ pub(crate) fn extract_pdf_bytes(bytes: &[u8], pdftotext: Option<&Path>) -> Resul
         Ok::<_, String>(output)
     })?;
     if !output.status.success() {
-        return Ok(String::new());
+        return Err(format!("pdftotext failed ({})", output.status));
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }

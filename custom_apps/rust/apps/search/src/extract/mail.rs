@@ -4,7 +4,7 @@ use mailparse::MailHeaderMap;
 
 use super::ExtractedDocument;
 use crate::config::SourceConfig;
-use crate::text::{html_to_text, truncate_text};
+use crate::text::{decode_document_text, html_to_text, truncate_text};
 use crate::timeutil::{parse_date, sha256_hex};
 
 pub struct MailExtractor {
@@ -152,7 +152,13 @@ fn text_parts(
         mime.as_str(),
         "text/plain" | "text/html" | "text/markdown" | "text/csv" | "text/tab-separated-values"
     ) {
-        let raw = mail.get_body().unwrap_or_default();
+        let raw = if let Ok(bytes) = mail.get_body_raw()
+            && (bytes.starts_with(&[0xff, 0xfe]) || bytes.starts_with(&[0xfe, 0xff]))
+        {
+            decode_document_text(&bytes)
+        } else {
+            mail.get_body().unwrap_or_default()
+        };
         let bounded = truncate_text(&raw, super::document::TEXT_LIMIT);
         return if mime == "text/html" {
             truncate_text(&html_to_text(&bounded), super::document::TEXT_LIMIT)
@@ -170,6 +176,14 @@ fn text_parts(
         "application/epub+zip" => "epub",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => "docx",
         "application/vnd.oasis.opendocument.text" => "odt",
+        "application/vnd.oasis.opendocument.spreadsheet" => "ods",
+        "application/vnd.oasis.opendocument.presentation" => "odp",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => "xlsx",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation" => "pptx",
+        "application/vnd.openxmlformats-officedocument.presentationml.slideshow" => "ppsx",
+        "application/vnd.ms-word.document.macroenabled.12" => "docm",
+        "application/vnd.ms-excel.sheet.macroenabled.12" => "xlsm",
+        "application/vnd.ms-powerpoint.presentation.macroenabled.12" => "pptm",
         "application/x-fictionbook+xml" => "fb2",
         "message/rfc822" => "eml",
         "application/octet-stream" => name.rsplit('.').next().unwrap_or_default(),
@@ -180,7 +194,15 @@ fn text_parts(
         "pdf"
             | "epub"
             | "docx"
+            | "docm"
             | "odt"
+            | "ods"
+            | "odp"
+            | "xlsx"
+            | "xlsm"
+            | "pptx"
+            | "pptm"
+            | "ppsx"
             | "fb2"
             | "htmlz"
             | "txtz"
@@ -199,17 +221,16 @@ fn text_parts(
     };
     let text = match format {
         "pdf" => super::paperless::extract_pdf_bytes(&bytes, pdftotext).ok(),
-        "epub" | "docx" | "odt" | "htmlz" | "txtz" => {
+        "epub" | "docx" | "docm" | "odt" | "ods" | "odp" | "xlsx" | "xlsm" | "pptx" | "pptm"
+        | "ppsx" | "htmlz" | "txtz" => {
             super::document::zip_text(std::io::Cursor::new(&bytes), format)
         }
-        "fb2" => std::str::from_utf8(&bytes)
-            .ok()
-            .and_then(super::document::xml_text),
+        "fb2" => super::document::xml_text(&decode_document_text(&bytes)),
         "eml" => mailparse::parse_mail(&bytes)
             .ok()
             .map(|nested| text_parts(&nested, pdftotext, depth + 1, remaining)),
-        "html" | "htm" => Some(html_to_text(&String::from_utf8_lossy(&bytes))),
-        _ => Some(String::from_utf8_lossy(&bytes).into_owned()),
+        "html" | "htm" => Some(html_to_text(&decode_document_text(&bytes))),
+        _ => Some(decode_document_text(&bytes)),
     };
     truncate_text(&text.unwrap_or_default(), super::document::TEXT_LIMIT)
 }
