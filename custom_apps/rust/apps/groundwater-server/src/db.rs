@@ -1,7 +1,6 @@
 //! PostgreSQL storage.
 //!
-//! Plain PostgreSQL: no TimescaleDB, no extension, no migration of any
-//! existing database (`GWAPP-20261023-slice1` §1, §3). The schema separates
+//! Plain PostgreSQL with idempotent additive migrations. The schema separates
 //! four things that earlier drafts collapsed into one "readings" table:
 //!
 //! - **deliveries** — every message that arrived, attributed or not, with its
@@ -88,9 +87,8 @@ pub async fn connect(database_url: &str) -> Result<Client, String> {
 
 /// Creates the schema if absent.
 ///
-/// Idempotent and additive: an existing database from an earlier scaffold is
-/// left untouched rather than migrated (the slice has no deployed data), and
-/// re-running adds only what is missing.
+/// Idempotent and additive: existing enrollments, observations, clock evidence
+/// and delivery provenance survive the platform migration.
 pub async fn migrate(client: &Client) -> Result<(), String> {
     client
         .batch_execute(
@@ -195,6 +193,7 @@ pub async fn migrate(client: &Client) -> Result<(), String> {
         )
         .await
         .map_err(|err| db_context("schema creation failed", err))?;
+    crate::platform::migrate(client).await?;
     Ok(())
 }
 
@@ -473,8 +472,8 @@ pub struct DeviceSummary {
     pub profile: String,
     pub clock_policy: String,
     pub revoked: bool,
-    /// Derived availability. Slice 1 has no attributed device-status traffic,
-    /// so this is "are readings arriving", not "is the device awake".
+    /// Presence from an explicit status binding; reading-only availability
+    /// is retained when no status binding has supplied evidence.
     pub status: String,
     pub status_reason: String,
     pub last_received_at: Option<DateTime<Utc>>,
@@ -484,11 +483,21 @@ pub struct DeviceSummary {
     pub latest_received: Option<ObservationSummary>,
     /// Most recent observation whose event time is plausible.
     pub latest_plausible: Option<ObservationSummary>,
+    pub min_limit: Option<f64>,
+    pub max_limit: Option<f64>,
+    pub location_id: Option<String>,
+    pub sensor_id: Option<String>,
+    pub local_offset_min: Option<i32>,
+    pub last_ready_at: Option<DateTime<Utc>>,
+    pub desired_config: Option<serde_json::Value>,
+    pub applied_config: Option<serde_json::Value>,
+    pub open_alert_count: i64,
 }
 
 impl DeviceSummary {
     /// The observation a dashboard should headline: plausible event time when
     /// one exists, otherwise the latest receipt with its caveats attached.
+    #[cfg(test)]
     pub fn headline(&self) -> Option<&ObservationSummary> {
         self.latest_plausible
             .as_ref()
@@ -500,7 +509,9 @@ impl DeviceSummary {
 pub async fn list_devices(client: &Client) -> Result<Vec<DeviceSummary>, String> {
     let rows = client
         .query(
-            "SELECT device_id, display_name, source_profile, clock_policy, revoked_at IS NOT NULL
+            "SELECT device_id, display_name, source_profile, clock_policy, revoked_at IS NOT NULL,
+                min_limit,max_limit,location_id,sensor_id,local_offset_min,last_ready_at,desired_config,applied_config,
+                (SELECT count(*) FROM alerts a WHERE a.device_id=devices.device_id AND a.state='open' AND NOT a.superseded),presence_status,last_seen
              FROM devices
              ORDER BY device_id",
             &[],
@@ -532,7 +543,24 @@ pub async fn list_devices(client: &Client) -> Result<Vec<DeviceSummary>, String>
             latest_observation(client, &device_id, Latest::PlausibleEvent).await?;
         let last_received_at: Option<DateTime<Utc>> = counts.get(2);
 
-        let (status, status_reason) = availability(last_received_at, revoked);
+        let (mut status, mut status_reason) = availability(last_received_at, revoked);
+        let presence: Option<String> = row.get(14);
+        let ready: Option<DateTime<Utc>> = row.get(10);
+        if !revoked {
+            if crate::platform::awake(Utc::now(), ready, presence.as_deref().unwrap_or("")) {
+                status = "awake".into();
+                status_reason = "explicitly bound Ready; command window open".into();
+            } else if presence.is_some() {
+                status = "asleep".into();
+                status_reason = "sleep received or Ready window expired".into();
+            }
+            let seen: Option<DateTime<Utc>> = row.get(15);
+            if seen.is_some_and(|t| Utc::now() - t > chrono::Duration::minutes(STALE_AFTER_MINUTES))
+            {
+                status = "stale".into();
+                status_reason = "no attributed traffic within stale threshold".into();
+            }
+        }
         devices.push(DeviceSummary {
             device_id,
             display_name,
@@ -546,6 +574,15 @@ pub async fn list_devices(client: &Client) -> Result<Vec<DeviceSummary>, String>
             conflict_count: counts.get(1),
             latest_received,
             latest_plausible,
+            min_limit: row.get(5),
+            max_limit: row.get(6),
+            location_id: row.get(7),
+            sensor_id: row.get(8),
+            local_offset_min: row.get(9),
+            last_ready_at: ready,
+            desired_config: row.get(11),
+            applied_config: row.get(12),
+            open_alert_count: row.get(13),
         });
     }
     Ok(devices)
@@ -633,27 +670,39 @@ pub struct DeliveryRow {
     pub duplicate_outcome: Option<String>,
     pub source_profile: Option<String>,
     pub binding_key: Option<String>,
+    pub direction: String,
 }
 
 /// Reads the delivery log, newest first.
 ///
 /// `device_id` of `None` returns every delivery, including the quarantined
 /// ones that have no device — those are the ones an operator needs to see.
+#[cfg(test)]
 pub async fn list_deliveries(
     client: &Client,
     device_id: Option<&str>,
+    limit: i64,
+) -> Result<Vec<DeliveryRow>, String> {
+    filtered_deliveries(client, device_id, None, None, limit).await
+}
+
+pub async fn filtered_deliveries(
+    client: &Client,
+    device_id: Option<&str>,
+    topic: Option<&str>,
+    since: Option<DateTime<Utc>>,
     limit: i64,
 ) -> Result<Vec<DeliveryRow>, String> {
     let rows = client
         .query(
             "SELECT received_at, topic, kind, device_id, claimed_device_id, qos, payload,
                     state, reason, detail, time_quality, duplicate_outcome,
-                    source_profile, binding_key
+                    source_profile, binding_key, direction
              FROM deliveries
-             WHERE ($1::TEXT IS NULL OR device_id = $1)
+             WHERE ($1::TEXT IS NULL OR device_id = $1) AND ($3::text IS NULL OR topic=$3) AND ($4::timestamptz IS NULL OR received_at >= $4)
              ORDER BY received_at DESC, id DESC
              LIMIT $2",
-            &[&device_id, &limit],
+            &[&device_id, &limit, &topic, &since],
         )
         .await
         .map_err(|err| db_context("delivery listing failed", err))?;
@@ -675,6 +724,7 @@ pub async fn list_deliveries(
             duplicate_outcome: row.get(11),
             source_profile: row.get(12),
             binding_key: row.get(13),
+            direction: row.get(14),
         })
         .collect())
 }

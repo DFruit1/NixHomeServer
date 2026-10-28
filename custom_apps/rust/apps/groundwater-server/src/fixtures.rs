@@ -331,6 +331,7 @@ pub fn page_view() -> crate::ui::FleetView {
         .map(summary_of);
 
     let device_a = DeviceSummary {
+        min_limit:None,max_limit:None,location_id:None,sensor_id:None,local_offset_min:None,last_ready_at:None,desired_config:None,applied_config:None,open_alert_count:0,
         device_id: DEVICE_A.to_string(),
         display_name: "Test bore A".to_string(),
         profile: ProfileId::V21.as_str().to_string(),
@@ -349,6 +350,15 @@ pub fn page_view() -> crate::ui::FleetView {
 
     let other =
         |device_id: &str, name: &str, profile: ProfileId, clock_policy: &str| DeviceSummary {
+            min_limit: None,
+            max_limit: None,
+            location_id: None,
+            sensor_id: None,
+            local_offset_min: None,
+            last_ready_at: None,
+            desired_config: None,
+            applied_config: None,
+            open_alert_count: 0,
             device_id: device_id.to_string(),
             display_name: name.to_string(),
             profile: profile.as_str().to_string(),

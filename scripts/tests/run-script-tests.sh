@@ -169,6 +169,7 @@ test_scripts=(
   scripts/tests/test-file-access-identity-derivation.sh
   scripts/tests/test-failure-alert-delivery.sh
   scripts/tests/test-freshrss-module.sh
+  scripts/tests/test-groundwater-module.sh
   scripts/tests/test-freshness-marker.sh
   scripts/tests/test-rust-workspace-dependencies.sh
   scripts/tests/test-rust-source-isolation.sh

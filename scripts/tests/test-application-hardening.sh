@@ -14,9 +14,7 @@ for identity_file in \
   forbid_match "$identity_file" '(uid|gid)[[:space:]]*=[[:space:]]*[0-9]+' \
     "portable app identities in $identity_file must not reserve fixed numeric IDs"
 done
-for service_file in \
-  modules/immich/public-proxy.nix \
-  modules/groundwater-logger/services.nix; do
+for service_file in modules/immich/public-proxy.nix; do
   require_fixed "$service_file" 'chown -R' \
     "dynamic app identities in $service_file must migrate persistent state ownership"
 done
@@ -51,9 +49,11 @@ require_fixed "$youtube_db" 'claimNextQueuedJob' \
   "queue workers must atomically claim jobs"
 
 require_fixed "$groundwater_network" 'repo.authGateway.protectedApps.groundwater' \
-  "the MQTT command console must use the authentication gateway"
-require_fixed "$groundwater_network" 'allowedGroups = [ "app-admin" ];' \
-  "the MQTT command console must be limited to administrators"
+  "the groundwater platform must use the authentication gateway"
+require_fixed "$groundwater_network" 'allowedGroups = [ "app-admin" "groundwater-user" ];' \
+  "the groundwater gateway must admit operators and viewers for API role enforcement"
+forbid_match modules/groundwater-logger/services.nix 'chown -R|ExecStartPre' \
+  "the Rust groundwater service must not rewrite ownership of the retained SQLite archive"
 require_match modules/groundwater-logger/services.nix \
   'unitConfig = \{[^}]*StartLimitIntervalSec[^}]*StartLimitBurst' \
   "Groundwater restart throttling must use systemd unit settings"

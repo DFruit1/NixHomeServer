@@ -34,11 +34,11 @@ updates:
         patterns: ["*"]
 
   - package-ecosystem: npm
-    directory: /custom_apps/node/apps/groundwater-logger
+    directory: /custom_apps/rust/apps/groundwater-server/frontend
     schedule:
       interval: monthly
     groups:
-      groundwater-logger:
+      groundwater-frontend:
         patterns: ["*"]
 
   - package-ecosystem: npm

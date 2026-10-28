@@ -9,25 +9,25 @@ in
     stateRoot = lib.mkOption {
       type = lib.types.str;
       default = "/var/lib/groundwater-logger";
-      description = "Groundwater logger app persistent state root.";
+      description = "Retained historical groundwater logger state root.";
     };
 
     stateDir = lib.mkOption {
       type = lib.types.str;
       default = "${config.repo.groundwaterLogger.paths.stateRoot}/state";
-      description = "Groundwater logger SQLite state directory.";
+      description = "Retained historical groundwater logger SQLite directory; not used by the Rust service.";
     };
 
     database = lib.mkOption {
       type = lib.types.str;
       default = "${config.repo.groundwaterLogger.paths.stateDir}/messages.sqlite";
-      description = "Groundwater logger MQTT message SQLite database.";
+      description = "Retained historical MQTT message SQLite database; never migrated or deleted automatically.";
     };
 
     brokerStateDir = lib.mkOption {
       type = lib.types.str;
       default = "/var/lib/groundwater-mosquitto";
-      description = "Mosquitto persistent state for groundwater logger tests.";
+      description = "Mosquitto persistent state for the groundwater platform.";
     };
   };
 

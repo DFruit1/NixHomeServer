@@ -1,4 +1,4 @@
-{ appPackages, config, lib, pkgs, vars, ... }:
+{ appPackages, config, lib, vars, ... }:
 
 let
   cfg = config.repo.groundwaterLogger;
@@ -6,16 +6,10 @@ let
   listenAddress = vars.networking.loopbackIPv4;
   lanAddress = vars.networking.lan.ip;
   lanIface = vars.networking.interfaces.lan;
+  netbirdAddress = vars.networking.netbird.ip;
+  netbirdIface = vars.networking.interfaces.netbird;
   mqttPort = vars.networking.ports.groundwaterMqtt;
   appPort = vars.networking.ports.groundwaterLogger;
-  subscribeTopics = [
-    "azman1/feeds/#"
-    "testtopic/9"
-    "requesttesta"
-    "cmd/#"
-    "cfg/#"
-  ];
-  subscribeTopicsCsv = lib.concatStringsSep "," subscribeTopics;
   appAcl = [
     "readwrite azman1/feeds/#"
     "readwrite testtopic/9"
@@ -29,6 +23,8 @@ let
     "read requesttesta"
     "read cmd/#"
     "read cfg/#"
+    "write cfg/desired/applied"
+    "write cfg/danger_ack"
   ];
   listenerUsers = {
     groundwater-app = {
@@ -40,31 +36,31 @@ let
       acl = loggerAcl;
     };
   };
-  repairStateOwnership = pkgs.writeShellScript "groundwater-logger-repair-state-ownership" ''
-    ${pkgs.coreutils}/bin/chown -R groundwater-logger:groundwater-logger ${lib.escapeShellArg paths.stateRoot}
-  '';
 in
 {
   options.repo.groundwaterLogger.enable = lib.mkOption {
     type = lib.types.bool;
     default = true;
-    description = "Whether to enable the LAN MQTT groundwater logger test console.";
+    description = "Whether to enable the private groundwater platform and MQTT broker.";
   };
 
   options.repo.groundwaterLogger.retention = {
     days = lib.mkOption {
       type = lib.types.ints.positive;
       default = 90;
-      description = "Maximum age of retained MQTT messages.";
-    };
-    maximumMessages = lib.mkOption {
-      type = lib.types.ints.positive;
-      default = 500000;
-      description = "Maximum number of retained MQTT messages.";
+      description = "Maximum age of the raw MQTT delivery log; observations and audit records are retained.";
     };
   };
 
   config = lib.mkIf cfg.enable {
+    # Match the Unix service identity for passwordless local peer auth. This
+    # app owns only its role/database; shared cluster tuning stays central.
+    services.postgresql = {
+      enable = true;
+      ensureDatabases = [ "groundwater" ];
+      ensureUsers = [{ name = "groundwater"; ensureDBOwnership = true; }];
+    };
+
     services.mosquitto = {
       enable = true;
       persistence = true;
@@ -80,13 +76,26 @@ in
           port = mqttPort;
           users = listenerUsers;
         }
+        {
+          address = netbirdAddress;
+          port = mqttPort;
+          users = listenerUsers;
+        }
       ];
     };
 
     networking.firewall.interfaces.${lanIface}.allowedTCPPorts = [ mqttPort ];
+    networking.firewall.interfaces.${netbirdIface}.allowedTCPPorts = [ mqttPort ];
 
-    systemd.services.groundwater-logger = {
-      description = "Groundwater logger MQTT test console";
+    # The overlay address must exist before Mosquitto binds it. The NetBird
+    # client belongs to Core_Modules and remains present when this app is off.
+    systemd.services.mosquitto = {
+      wants = [ "netbird-address-verify.service" ];
+      after = [ "netbird-address-verify.service" ];
+    };
+
+    systemd.services.groundwater-server = {
+      description = "Groundwater telemetry, commands and private web platform";
       unitConfig = {
         StartLimitIntervalSec = "5min";
         StartLimitBurst = 5;
@@ -94,31 +103,31 @@ in
       wantedBy = [ "multi-user.target" ];
       wants = [
         "network-online.target"
-        "mosquitto.service"
       ];
+      requires = [ "postgresql.service" "mosquitto.service" ];
       after = [
         "network-online.target"
         "mosquitto.service"
+        "postgresql.service"
       ];
       environment = {
-        GROUNDWATER_LOGGER_HOST = listenAddress;
-        GROUNDWATER_LOGGER_PORT = toString appPort;
-        GROUNDWATER_LOGGER_STATE_DIR = paths.stateDir;
-        GROUNDWATER_LOGGER_DATABASE = paths.database;
+        GROUNDWATER_DATABASE_URL = "postgresql:///?host=/run/postgresql&user=groundwater&dbname=groundwater";
+        GROUNDWATER_ADDRESS = listenAddress;
+        GROUNDWATER_PORT = toString appPort;
         GROUNDWATER_MQTT_URL = "mqtt://${listenAddress}:${toString mqttPort}";
         GROUNDWATER_MQTT_USERNAME = "groundwater-app";
-        GROUNDWATER_MQTT_PASSWORD_FILE = config.age.secrets.groundwaterAppMqttPassword.path;
-        GROUNDWATER_MQTT_SUBSCRIBE_TOPICS = subscribeTopicsCsv;
-        GROUNDWATER_MQTT_DEFAULT_QOS = "1";
-        GROUNDWATER_LOGGER_RETENTION_DAYS = toString cfg.retention.days;
-        GROUNDWATER_LOGGER_MAXIMUM_MESSAGES = toString cfg.retention.maximumMessages;
+        GROUNDWATER_MQTT_PASSWORD_FILE = "%d/mqtt-password";
+        GROUNDWATER_RETENTION_DAYS = toString cfg.retention.days;
+        GROUNDWATER_FRONTEND_DIR = "${appPackages.groundwater-server}/share/groundwater-server/frontend";
       };
       serviceConfig = {
         Type = "simple";
-        User = "groundwater-logger";
-        Group = "groundwater-logger";
-        ExecStart = "${appPackages.groundwater-logger}/bin/groundwater-logger";
-        ExecStartPre = "+${repairStateOwnership}";
+        User = "groundwater";
+        Group = "groundwater";
+        ExecStart = "${appPackages.groundwater-server}/bin/groundwater-server";
+        # PID 1 reads the existing agenix file; the new Unix identity never
+        # needs access to the retained logger account or its historical files.
+        LoadCredential = [ "mqtt-password:${config.age.secrets.groundwaterAppMqttPassword.path}" ];
         Restart = "on-failure";
         RestartSec = "5s";
         TimeoutStartSec = "60s";
@@ -126,6 +135,9 @@ in
         MemoryHigh = "384M";
         MemoryMax = "768M";
         OOMPolicy = "stop";
+        UMask = "0077";
+        CPUWeight = 20;
+        Nice = 5;
         NoNewPrivileges = true;
         PrivateTmp = true;
         ProtectSystem = "strict";
@@ -145,9 +157,6 @@ in
           "AF_UNIX"
         ];
         SystemCallArchitectures = "native";
-        ReadWritePaths = [
-          paths.stateRoot
-        ];
       };
     };
   };

@@ -46,10 +46,10 @@ rec {
     fdroid = app ./fdroid "F-Droid Repository" "operations" [ ] [ ];
     forgejo = app ./forgejo "Git" "operations" [ "forgejoClientSecret" ] [ ];
     freshrss = app ./freshrss "FreshRSS" "knowledge" [ ] [ ];
-    groundwater-logger = app ./groundwater-logger "Groundwater Logger" "operations" [
+    groundwater-logger = app ./groundwater-logger "Groundwater Platform" "operations" [
       "groundwaterAppMqttPassword"
       "groundwaterLoggerMqttPassword"
-    ] [ ];
+    ] [ "groundwater-server" "mosquitto" ];
     immich = app ./immich "Immich" "media" [ "immichClientSecret" ] [
       "immich-storage-layout-v1"
       "immich-server"

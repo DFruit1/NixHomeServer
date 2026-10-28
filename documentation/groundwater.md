@@ -1,21 +1,20 @@
 # Groundwater Level Platform — Design
 
-**Status:** Design contract + resolved decisions. A synthetic server-side slice
-exists in `custom_apps/rust/apps/groundwater-server` (plain PostgreSQL, no
-TimescaleDB, server-rendered inspection page). The decisions in §13 are
-resolved and supersede the open questions there; implementation of the full
-platform proceeds against this document.
+**Status:** Platform implementation in `custom_apps/rust/apps/groundwater-server`
+(plain PostgreSQL, Qwik frontend, MQTT ingest, alerts, configuration and durable
+commands). The decisions in §13 supersede earlier proposals. See the
+[operator runbook](groundwater-operations.md) for enrollment and commissioning.
+Live deployment and hardware commissioning remain separate operations.
 
 **Firmware source:** private repo `MuhammadAli1132001/Ground-Water-Level`,
 commit `8278b61` ("ack and desired applied"), active tree
 `GWL_Firmware_V2.1/GWL_Firmware_V2.1/` (referred to below as *the firmware*).
 Cloned locally at `~/Projects/Ground-Water-Level`.
 
-**Related repo state:** `modules/groundwater-logger/` and
-`custom_apps/node/apps/groundwater-logger/` exist but are **inactive** (absent
-from `vars.nix` `applications.enabled`). That Node app is a "LAN MQTT test
-console" (Qwik UI + SQLite + MQTT bridge). This design replaces it with a
-production platform; §10 maps every touchpoint.
+**Related repo state:** `modules/groundwater-logger/` retains the application
+catalog key and broker. The Rust platform replaces the removed Node LAN MQTT
+test console, and is selected in `vars.nix`. Historical SQLite files remain
+retained state. Source enablement does not activate the deployed server.
 
 ---
 
@@ -68,8 +67,8 @@ with the private broker address is part of provisioning (§13.2).
                 ▼                              ▼
 ┌──────────────────────────────┐   ┌───────────────────────────────────┐
 │ PostgreSQL (shared cluster)  │   │ auth-gateway (Kanidm OIDC)        │
-│ ordinary tables (§6)         │   │ groundwater.<domain> → Caddy →   │
-│  readings,                   │   │ upstream, X-Auth-Request-* hdrs   │
+│ plain PostgreSQL (§6)        │   │ groundwater.<domain> → Caddy →   │
+│  observations,               │   │ upstream, X-Auth-Request-* hdrs   │
 │  devices, alerts, commands,  │   └───────────────────────────────────┘
 │  raw message log             │               ▲
 └──────────────┬───────────────┘               │ browser (multi-user)
@@ -257,7 +256,7 @@ Reuse the module's two-account model, unchanged semantics:
 
 | Account | Role | ACL |
 |---|---|---|
-| `groundwater-logger` (device) | devices | write `azman1/feeds/#`; read `requesttesta`, `cmd/#`, `cfg/#` |
+| `groundwater-logger` (device) | devices | write `azman1/feeds/#`, `cfg/desired/applied`, `cfg/danger_ack`; read `requesttesta`, `cmd/#`, `cfg/#` |
 | `groundwater-app` (service) | `groundwater-server` | read/write the same set (needs write for downlink, read for telemetry) |
 
 **Multi-device reality:** all devices share one account and one client ID
@@ -367,7 +366,7 @@ All downlink flows are DB-backed so they survive restarts and are auditable:
 
 ---
 
-## 6. Database — PostgreSQL
+## 6. Database — plain PostgreSQL
 
 ### 6.1 Cluster provisioning
 
@@ -383,13 +382,18 @@ Per AGENTS.md, optional modules must not set `services.postgresql.settings`.
 - Database/role provisioning follows the Search precedent: `ensureDatabases =
   [ "groundwater" ]`, `ensureUsers = [ { name = "groundwater";
   ensureDBOwnership = true; } ]` in the groundwater module's `services.nix`.
-- Schema migrations run through the application bootstrap; no TimescaleDB
-  extension or cluster preload setting is required.
+- No extension bootstrap or PostgreSQL preload change is required in v1.
 - **Backup:** follow the existing pattern — Kopia entry over the PostgreSQL
   `dataDir` plus a `pg_dump groundwater` app-state dump (replacing the
   current SQLite dump entry in `backups.nix`).
 
 ### 6.2 Schema (v1)
+
+The SQL below describes the original logical model. The implementation retains
+the synthetic slice's separate `observations`, `deliveries`, enrollment and
+trusted-binding tables, extending them additively for settings, permissions,
+presence, alerts and commands. See [operations](groundwater-operations.md) for
+the executable enrollment template; `src/db.rs` is the migration authority.
 
 ```sql
 -- Identity & config (one row per physical device, keyed by firmware DeviceID)
@@ -476,8 +480,8 @@ separately.
 ### 6.3 Downsampling
 
 Raw cadence ≈ one row / 3 min / device (~175 k rows/device/year — trivial).
-Charts query readings with manual `to_timestamp(floor(...))` bucketing for
-ranges > 90 days.
+Charts query PostgreSQL directly with
+`to_timestamp(floor(extract(epoch FROM recorded_at) / width) * width)` bucketing.
 No continuous aggregates in v1; add later only if fleet size demands it.
 
 ### 6.4 Retention
@@ -511,7 +515,7 @@ required role (§9).
 |---|---|
 | `GET /api/status` | service + broker connectivity, ingest rates |
 | `GET /api/devices` / `GET /api/devices/{id}` | fleet list / detail incl. presence, config, lag |
-| `GET /api/series?device&from&to&bucket` | chart data (PostgreSQL time bucketing) |
+| `GET /api/series?device&from&to&bucket` | chart data (plain PostgreSQL downsampling) |
 | `GET /api/alerts` | open/resolved alerts |
 | `GET /api/messages?device&topic&since` | raw log (role-gated) |
 | `POST /api/devices/{id}/config` | build + queue project-settings push (role-gated) |
@@ -592,7 +596,7 @@ and requires a permission store + enforcement in the API.
 
 ---
 
-## 10. Module impact map (implementation checklist — document only)
+## 10. Module impact map
 
 **Resolved (§13.21): Nix wiring is implemented as part of this work** (not
 deferred): `groundwater-server` gets a `default.nix`/module, service unit,
@@ -602,7 +606,7 @@ below is the implementation guide.
 | File | Planned change when implementing |
 |---|---|
 | `modules/groundwater-logger/services.nix` | replace Node unit with `groundwater-server` (Rust bin, new env: DB URL, MQTT creds/topics, listen addr); add `services.postgresql.ensureDatabases/ensureUsers`; Mosquitto stays; retention options reinterpreted (raw-log days) |
-| `system-resources.nix` | existing PostgreSQL tuning retained; no extension preload (§6.1) |
+| `system-resources.nix` | no TimescaleDB or preload change (§13.9) |
 | `.../networking.nix` | unchanged except `allowedGroups` may add `groundwater-user` (§13.4) |
 | `.../registration.nix` | unchanged ports; homepage card optional |
 | `.../identity.nix` | unchanged user/group |
@@ -615,7 +619,7 @@ below is the implementation guide.
 | `custom_apps/rust/apps/groundwater-server/` | new app (src, frontend, `default.nix`, checks) |
 | `custom_apps/node/apps/groundwater-logger/` | **remove** at cutover (with its dependabot entry, pnpm lock, tests) |
 | `DESIGN_SYSTEM.md` | update surface row + shared `node-common` precedent table |
-| `vars.nix` | enable `groundwater-logger` only on your go-ahead |
+| `vars.nix` | enable `groundwater-logger` as resolved in §13.21 |
 | tests | `module-disable-matrix.nix`, hardening tests, `flake/checks.nix` `hasApp` — update expectations |
 
 ---

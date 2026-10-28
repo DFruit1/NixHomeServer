@@ -11,7 +11,8 @@ let
     inherit name cargoLock workspaceManifests;
     workspaceRoot = workspaceSrcRoot;
     excludePrefixes = if checks then [ ] else [ "tests" ] ++ lib.optional (name == "mail-archive-ui") "src/tests.rs";
-    extraSourcePrefixes = lib.optional (name == "search") "src/ui.html";
+    extraSourcePrefixes = lib.optional (name == "search") "src/ui.html"
+      ++ lib.optional (name == "groundwater-server") "src/platform.sql";
   };
   # mkvmaker is the one workspace member outside rust/apps/, so it names its
   # member path explicitly.
@@ -68,6 +69,12 @@ in
     inherit workspaceVersion sharedCargoArtifacts cargoLock;
     workspaceSrc = workspaceSource "browsertrix-downloader" false;
     workspaceCheckSrc = workspaceSource "browsertrix-downloader" true;
+  };
+  groundwater-server = import ./groundwater-server/default.nix {
+    inherit rustLib;
+    inherit workspaceVersion sharedCargoArtifacts cargoLock;
+    workspaceSrc = workspaceSource "groundwater-server" false;
+    workspaceCheckSrc = workspaceSource "groundwater-server" true;
   };
   kanidm-canary-bootstrap = import ./kanidm-canary-bootstrap/default.nix {
     inherit rustLib;

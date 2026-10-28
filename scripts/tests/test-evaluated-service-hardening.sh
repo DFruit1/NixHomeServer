@@ -52,7 +52,7 @@ services_json="$(
           bonsai-gate = null;
           bonsai-llama = null;
           bonsai-model-prepare = null;
-          groundwater-logger = null;
+          groundwater-server = null;
           homepage = null;
           kanidm-canary-bootstrap = null;
           mail-archive-paperless-tasks = null;
@@ -84,7 +84,7 @@ for service in \
   bonsai-gate \
   bonsai-llama \
   bonsai-model-prepare \
-  groundwater-logger \
+  groundwater-server \
   kanidm-canary-bootstrap \
   mail-archive-paperless-tasks \
   mail-archive-ui \
@@ -101,7 +101,7 @@ for service in \
     "must hide home directories"
 done
 
-for service in bonsai-gate bonsai-llama groundwater-logger mail-archive-ui youtube-downloader; do
+for service in bonsai-gate bonsai-llama groundwater-server mail-archive-ui youtube-downloader; do
   service_present "$service" || continue
   require_service_setting "$service" '.ProtectKernelModules == true' \
     "long-running custom apps must not access kernel modules"
