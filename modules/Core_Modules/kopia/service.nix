@@ -67,9 +67,9 @@ let
       --clear-ignore \
       --keep-latest=7 \
       --keep-hourly=0 \
-      --keep-daily=14 \
-      --keep-weekly=4 \
-      --keep-monthly=2 \
+      --keep-daily=7 \
+      --keep-weekly=2 \
+      --keep-monthly=1 \
       --keep-annual=0 \
       --ignore-cache-dirs=true
 
