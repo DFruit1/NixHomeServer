@@ -68,7 +68,7 @@ for name in ('kanban_db.py','kanban_db_dispatch.py'):
     (overlay/name).write_text(adapt(name,(args.hermes_repo/'hermes_cli'/name).read_text()))
 (overlay/'nixhomeserver_worker_policy.py').write_text((Path(__file__).resolve().parents[1]/'hermes/worker-policy.py').read_text())
 (overlay/'nixhomeserver_create_board.py').write_text((Path(__file__).resolve().parents[1]/'hermes/create-board-policy.py').read_text())
-for name in ('fleet_contract', 'fleet_workflow', 'feature_contract', 'execution_preflight'):
+for name in ('fleet_contract', 'fleet_workflow', 'feature_contract', 'execution_preflight', 'board_progress'):
     (overlay/('nixhomeserver_'+name+'.py')).write_text(
         (Path(__file__).resolve().parents[1]/'hermes'/(name+'.py')).read_text())
 tools_overlay=args.scratch/'tools-overlay';tools_overlay.mkdir(exist_ok=True)

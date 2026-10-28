@@ -31,13 +31,13 @@ production platform; §10 maps every touchpoint.
    SSO via the shared auth-gateway, Postgres on the shared cluster, Kopia
    backups, canary coverage, clean module removability.
 
-**In scope (design only):** broker architecture, Rust ingestion/API service,
-Postgres + TimescaleDB schema, HTTP API, Qwik frontend, auth/roles, module
-impact map, validation strategy.
+**Implementation scope:** broker architecture, Rust ingestion/API service,
+PostgreSQL schema, HTTP API, Qwik frontend, auth/roles, Nix module wiring and
+validation, as resolved in §13.
 
-**Out of scope:** all code, Nix wiring, catalog/enablement changes, deploys,
-firmware modifications (§11 records recommended firmware changes for later —
-the design works with the firmware *as shipped*).
+**Out of scope:** deployment without its separate guarded approval and firmware
+feature changes (§11 records recommendations for later). Rebuilding firmware
+with the private broker address is part of provisioning (§13.2).
 
 ---
 
@@ -68,8 +68,8 @@ the design works with the firmware *as shipped*).
                 ▼                              ▼
 ┌──────────────────────────────┐   ┌───────────────────────────────────┐
 │ PostgreSQL (shared cluster)  │   │ auth-gateway (Kanidm OIDC)        │
-│ + TimescaleDB (§6)           │   │ groundwater.<domain> → Caddy →   │
-│  readings hypertable,        │   │ upstream, X-Auth-Request-* hdrs   │
+│ ordinary tables (§6)         │   │ groundwater.<domain> → Caddy →   │
+│  readings,                   │   │ upstream, X-Auth-Request-* hdrs   │
 │  devices, alerts, commands,  │   └───────────────────────────────────┘
 │  raw message log             │               ▲
 └──────────────┬───────────────┘               │ browser (multi-user)
@@ -345,7 +345,7 @@ on each accepted reading:
 All downlink flows are DB-backed so they survive restarts and are auditable:
 
 - `commands` row: `{id, device_id, kind: project-settings | cfg | danger |
-  test, payload_json, state: queued → sent → acked | timeout | failed,
+  test, payload_json, state: queued → sent → acked | cancelled,
   requested_by, created/sent/ack_at, ack_payload}`.
 - **Window-aware sending:** the publisher watches `device-status`. When the
   target device publishes `Ready`, send **one** queued command (QoS 1,
@@ -367,9 +367,9 @@ All downlink flows are DB-backed so they survive restarts and are auditable:
 
 ---
 
-## 6. Database — PostgreSQL + TimescaleDB
+## 6. Database — PostgreSQL
 
-### 6.1 Cluster and extension (central, not per-module)
+### 6.1 Cluster provisioning
 
 The host runs **one shared PostgreSQL cluster** (created by the Search module,
 also backing Immich), centrally tuned in `system-resources.nix:416-431`.
@@ -383,10 +383,8 @@ Per AGENTS.md, optional modules must not set `services.postgresql.settings`.
 - Database/role provisioning follows the Search precedent: `ensureDatabases =
   [ "groundwater" ]`, `ensureUsers = [ { name = "groundwater";
   ensureDBOwnership = true; } ]` in the groundwater module's `services.nix`.
-- `CREATE EXTENSION IF NOT EXISTS timescaledb` / `postgis`-style bootstrap
-  runs from a central one-shot (declarative `ensureExtensions` if available in
-  the pinned NixOS, else a root `ExecStartPre` on the groundwater service —
-  decided at implementation time, executed centrally either way).
+- Schema migrations run through the application bootstrap; no TimescaleDB
+  extension or cluster preload setting is required.
 - **Backup:** follow the existing pattern — Kopia entry over the PostgreSQL
   `dataDir` plus a `pg_dump groundwater` app-state dump (replacing the
   current SQLite dump entry in `backups.nix`).
@@ -426,7 +424,6 @@ CREATE TABLE readings (
   time_plausible boolean NOT NULL DEFAULT true,
   payload       jsonb NOT NULL         -- original parsed JSON (audit)
 );
-SELECT create_hypertable('readings', 'recorded_at');
 CREATE UNIQUE INDEX readings_dedupe ON readings (device_id, recorded_at);
 CREATE INDEX readings_device_recv ON readings (device_id, received_at DESC);
 
@@ -447,7 +444,7 @@ CREATE TABLE commands (
   device_id    char(24) NOT NULL,
   kind         text NOT NULL,          -- project-settings | cfg | danger | test
   payload      jsonb NOT NULL,
-  state        text NOT NULL,          -- queued | sent | acked | timeout | failed
+  state        text NOT NULL,          -- queued | sent | acked | cancelled
   requested_by text NOT NULL,
   created_at   timestamptz NOT NULL DEFAULT now(),
   sent_at      timestamptz,
@@ -479,7 +476,8 @@ separately.
 ### 6.3 Downsampling
 
 Raw cadence ≈ one row / 3 min / device (~175 k rows/device/year — trivial).
-Charts query the hypertable directly with time_bucket() for ranges > 90 days.
+Charts query readings with manual `to_timestamp(floor(...))` bucketing for
+ranges > 90 days.
 No continuous aggregates in v1; add later only if fleet size demands it.
 
 ### 6.4 Retention
@@ -487,7 +485,7 @@ No continuous aggregates in v1; add later only if fleet size demands it.
 - `readings`: keep indefinitely in v1 (volume is small); option to add a
   retention policy later.
 - `messages` raw log: 90 days (echoes the old console's 90-day default),
-  dropped by a periodic `DELETE` (or `drop_chunks`) with low
+  dropped by a periodic `DELETE` with low
   `CPUWeight`/`Nice` per repo performance conventions.
 - `commands`/`alerts`: kept for audit; prunable after a year.
 
@@ -513,7 +511,7 @@ required role (§9).
 |---|---|
 | `GET /api/status` | service + broker connectivity, ingest rates |
 | `GET /api/devices` / `GET /api/devices/{id}` | fleet list / detail incl. presence, config, lag |
-| `GET /api/series?device&from&to&bucket` | chart data (time_bucket downsampling) |
+| `GET /api/series?device&from&to&bucket` | chart data (PostgreSQL time bucketing) |
 | `GET /api/alerts` | open/resolved alerts |
 | `GET /api/messages?device&topic&since` | raw log (role-gated) |
 | `POST /api/devices/{id}/config` | build + queue project-settings push (role-gated) |
@@ -559,10 +557,11 @@ pattern like `mail-archive-ui`: Vite build copied to
    raw-JSON preview; sends via the API (server re-validates identically).
 4. **Commands** — run self-test, incremental `cfg` toggles, and a
    **DANGER console** (type `DANGER` to confirm, per repo precedent from the
-   old `presets.ts`); live command state (queued/sent/acked/timeout).
-5. **Alerts** — open/resolved list with acknowledge.
+   old `presets.ts`); live command state (queued/sent/acked/cancelled).
+5. **Alerts** — read-only open/resolved list; readings resolve alerts automatically.
 
-**Behavior:** SSE for live updates with polling fallback; data state via
+**Behavior:** SSE for live updates with EventSource reconnection and resync;
+data state via
 Qwik signals; routes under `/` on the single protected host. **Verification
 gate:** desktop (~1280 px) and mobile (~390 px) — no clipped/horizontal-
 overflow regions, every scroll container actually scrolls (AGENTS.md
@@ -603,7 +602,7 @@ below is the implementation guide.
 | File | Planned change when implementing |
 |---|---|
 | `modules/groundwater-logger/services.nix` | replace Node unit with `groundwater-server` (Rust bin, new env: DB URL, MQTT creds/topics, listen addr); add `services.postgresql.ensureDatabases/ensureUsers`; Mosquitto stays; retention options reinterpreted (raw-log days) |
-| `system-resources.nix` | central `shared_preload_libraries = "timescaledb"` gate (§6.1) |
+| `system-resources.nix` | existing PostgreSQL tuning retained; no extension preload (§6.1) |
 | `.../networking.nix` | unchanged except `allowedGroups` may add `groundwater-user` (§13.4) |
 | `.../registration.nix` | unchanged ports; homepage card optional |
 | `.../identity.nix` | unchanged user/group |

@@ -127,6 +127,13 @@ def adapt(name, text):
         original=(ast.get_source_segment(text,unblock[0])+'\n'
                   if len(unblock) == 1 else '')
         original=original.replace(_UNBLOCK_AFTER,_UNBLOCK_BEFORE)
+        # The reviewed parallel-dispatch guard belongs only to ordinary
+        # unblock. Qualify its one exact insertion without accepting any other
+        # native-body drift or changing guarded recovery's release policy.
+        release = '        worker_policy.require_release(conn, task_id)\n'
+        original = original.replace(release +
+            '        from hermes_cli.nixhomeserver_board_progress import require_resume\n'
+            '        require_resume(conn, task_id)\n', release)
         if hashlib.sha256(original.encode()).hexdigest() != 'fa1d9541f09631fa990c4222bc712ac305d0271a70ecc733f7b591e151e8cd81':
             raise ValueError('Native ordinary unblock source drift; reconcile before installation')
     text=migrate_legacy(text)

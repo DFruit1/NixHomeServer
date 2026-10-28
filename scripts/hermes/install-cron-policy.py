@@ -79,7 +79,10 @@ def changes(root):
         pending[root/'scripts'/name]=(SOURCE/name).read_text()
         for role in ('head-coordinator','board-steward'):
             target=root/'profiles'/role/'scripts'/name
-            if target.exists() or (name in {'capability_recovery.py','board_progress.py'} and role=='board-steward'):
+            scanner = target.with_name('steward-opportunity-scan.py')
+            policy_dependency = name in {'card_policy_audit.py', 'card-dependency-guard.py',
+                                        'owner-blocker-authoring-guard.py'} and scanner.exists()
+            if target.exists() or policy_dependency or (name in {'capability_recovery.py','board_progress.py'} and role=='board-steward'):
                 pending[target]=(SOURCE/name).read_text()
     return pending,commands
 

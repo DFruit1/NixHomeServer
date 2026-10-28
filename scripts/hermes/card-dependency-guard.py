@@ -11,9 +11,11 @@ import sys
 CARD = r'\bt_[A-Za-z0-9_]+\b'
 REFERENCE = rf'(?:{CARD}|\b(?:cards?|tasks?|parents?|upstream)\b)'
 WAIT = (r'\b(?:wait(?:s|ing)?\s+(?:on|for)|await(?:s|ing)?|blocked\s+(?:on|by)|'
-        r'depends?\s+(?:on|upon)|pending|gated\s+by)\b')
-CARD_RELATION = (rf'(?:{WAIT}|\b(?:dependenc(?:y|ies)|prerequisites?|parents?|'
-                 r'requires?|needs?|blocks?|blocking|after|until|once|when|before)\b)')
+        r'depends?\s+(?:on|upon)|gated\s+by)\b')
+TARGET = rf'(?:[A-Za-z0-9_-]+:)?{CARD}'
+PREREQUISITE = (rf'\b(?:pending|requires?|needs?|after|until|once|when|before|'
+                rf'dependenc(?:y|ies)|prerequisites?|parents?)\s*:?\s*'
+                rf'(?:\n\s*[-*]\s*)?{TARGET}')
 RECEIPTS = {'deployment_decision', 'owner_execution_decision', 'delegated_execution_decision'}
 
 
@@ -50,7 +52,11 @@ def guard(payload):
         rf'Feature tracker: [A-Za-z0-9_-]+:{CARD}', line))
     # Check sentences/fields, retaining newlines for a Dependencies: ID list.
     for sentence in re.split(r'[.!?;]|\n(?=(?:Goal|Change|Verify|Update|Evidence|Next):)', text):
-        if ((re.search(CARD, sentence, re.I) and re.search(CARD_RELATION, sentence, re.I))
+        if (re.search(PREREQUISITE, sentence, re.I)
+                or re.search(rf'{CARD}\s+(?:must\s+(?:finish|complete)|blocks?|blocking)\b',
+                             sentence, re.I)
+                or re.search(rf'{WAIT}\s+(?:(?:the|a|an|another|that|this|its)\s+)?{TARGET}',
+                             sentence, re.I)
                 or re.search(rf'{WAIT}\s+(?:(?:the|a|an|another|that|this|its)\s+)?{REFERENCE}',
                              sentence, re.I)
                 or re.search(rf'{CARD}\s*(?:->|<-|→|←|=>|<=)\s*{CARD}', sentence)):

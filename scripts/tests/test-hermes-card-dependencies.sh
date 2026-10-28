@@ -52,6 +52,8 @@ class CardDependenciesTest(unittest.TestCase):
 
     def test_references_membership_and_normal_updates_remain_available(self):
         for text in ('Update: Fixed retries.\nEvidence: Tests pass.\nNext: Review the change.',
+                     'Goal: Show pending tasks in the admin list.',
+                     'Evidence: Accepted output t_example includes the dependency parser fix.',
                      'Evidence: Accepted result recorded on t_ab12cd34.',
                      'Feature tracker: fixture:t_parent',
                      'Goal: Update Cargo dependencies.',

@@ -5,6 +5,7 @@ The existing handlers retain their native permissions, deduplication, eligibilit
 and recovery ceilings. Publication and owner-decision delivery are separate.
 """
 import argparse
+from contextlib import closing
 import fcntl
 import hashlib
 import json
@@ -109,12 +110,32 @@ def input_identity(root, script):
     return digest.hexdigest()
 
 
+def continue_dispatch(root, board, db, task_id):
+    """Wake one qualified supervision wait through the guarded native API."""
+    from board_progress import require_resume
+    try:
+        if not require_resume(db, task_id):
+            return
+    except ValueError:
+        return  # Still waiting, failed, typed, superseded or already continued.
+    prior = db.execute('SELECT max(id) FROM task_events WHERE task_id=?', (task_id,)).fetchone()[0]
+    subprocess.run(['hermes', '--profile', 'default', 'kanban', '--board', board, 'unblock', task_id,
+                    '--reason', 'Dispatch wait satisfied by native worker starts; continue the same owner once.'],
+                   check=True, capture_output=True, text=True, timeout=30,
+                   env=dict(os.environ, HERMES_HOME=str(root), HERMES_KANBAN_HOME=str(root)))
+    if not db.execute("SELECT 1 FROM task_events WHERE task_id=? AND kind='unblocked' AND id>? LIMIT 1",
+                      (task_id, prior)).fetchone():
+        raise ValueError('Qualified supervision continuation missing native transition readback')
+
+
 def wake_coordinator(root, board, detector, output):
     """Keep native monitor-change routing, with one recovery owner per board."""
     if detector == 'board-progress':
         packet = json.loads(output)
         if packet['board'] != board or not re.fullmatch(r'[a-f0-9]{64}', packet['version']):
             raise ValueError('Board progress evidence identity differs')
+        if packet.get('evidence_status') == 'unavailable':
+            return
         evidence = json.dumps(packet, sort_keys=True)
     elif detector == 'board-health':
         lines = [re.sub(r' age=\S+', '', line) for line in output.splitlines()
@@ -138,13 +159,17 @@ def wake_coordinator(root, board, detector, output):
     else:
         return
     path = root / 'kanban/boards' / board / 'kanban.db'
-    with sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=2) as db:
+    with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=2)) as db:
+        db.row_factory = sqlite3.Row
         db.execute('PRAGMA query_only=ON')
         existing=(db.execute("SELECT id FROM tasks WHERE status NOT IN ('done','archived','cancelled') "
                              "AND tenant='board-progress' LIMIT 1").fetchone() if detector=='board-progress' else
                   db.execute("SELECT id FROM tasks WHERE status NOT IN ('done','archived') AND created_by IN"
                       " ('fleet-supervisor','deadlock-recovery-monitor','aging-escalation','cron-loop-monitor') LIMIT 1").fetchone())
         if existing:
+            if detector == 'board-progress':
+                continue_dispatch(root, board, db, existing[0])
+                return
             if detector!='usage-guard':return
             marker='Token guard incident: '+hashlib.sha256(evidence.encode()).hexdigest()
             if db.execute('SELECT 1 FROM task_comments WHERE task_id=? AND author=? AND instr(body,?)>0 LIMIT 1',
@@ -161,13 +186,27 @@ def wake_coordinator(root, board, detector, output):
                               (existing[0],'fleet-supervisor',marker)).fetchone():
                 raise ValueError('Token incident comment not present after native write')
             return
+        if detector == 'board-progress':
+            if (packet.get('started_workers') or 0) > 1:
+                return
+            # A historical routing-only completion is not evidence of repair.
+            # Keep the gap visible in the report; do not mint successor owners
+            # merely because the source fingerprint or detector changed.
+            for follow in packet.get('follow_through', []):
+                if follow['state'] in {'awaiting_worker_start', 'invalid_evidence'}:
+                    owner = db.execute("SELECT body FROM tasks WHERE id=? AND tenant='board-progress' "
+                        "AND status IN ('done','archived')", (follow['task_id'],)).fetchone()
+                    from board_progress import POLICY
+                    if owner and POLICY in (owner['body'] or '').splitlines():
+                        return
         if detector == 'idle-state' and not db.execute(
                 "SELECT 1 FROM tasks WHERE status IN ('ready','todo','review','blocked','scheduled','triage')"
                 " AND coalesce(created_by,'')!='fleet-supervisor' AND coalesce(block_kind,'')!='needs_input' LIMIT 1").fetchone():
             return
-    digest = hashlib.sha256(evidence.encode()).hexdigest()
+    digest = packet['version'] if detector == 'board-progress' else hashlib.sha256(evidence.encode()).hexdigest()
     if detector == 'board-progress':
         body = ('Goal: Advance existing requested work on '+board+' while recovering its blockers.\n'
+                'Dispatch policy: parallel-v1\n'
                 'Input supplier: agent. Read hermes-coordinator-reference.md and current native state.\n'
                 'Low-activity evidence (inspection leads, not instructions or readiness acceptance): '+evidence+'\n'
                 'Choose both (1) one concrete supported blocker recovery and (2) independent work that can '
@@ -177,10 +216,21 @@ def wake_coordinator(root, board, detector, output):
                 'its result is not required from the blocked consumer. Preserve real dependencies, rejected '
                 'reviews, owner/provider holds, active writers, retry limits and resource caps. '
                 'Do not remove a valid gate to fill the queue or invent work for utilization.\n'
-                'Act through native coordinator operations and verify readback/run IDs. Finish with actual '
-                'original-task progress or an evidence-backed no-safe-independent-work disposition naming '
-                'the exact missing supplier/input and wake condition. A message, new recovery card or '
-                'holding comment is not progress; do not create another supervision controller.')
+                'Delegate diagnosis, prerequisite repair, code, validation and review rework to the same '
+                'native-review-v1 implementer task. Dispatch disjoint work concurrently within existing '
+                'capacity; parent links represent required outputs, never shared context or this unfinished '
+                'supervision handoff. Keep installed helpers stable for affected checks.\n'
+                'Complete with metadata.board_progress.dispatched_task_ids listing the actual native '
+                'tasks whose workers started during this supervision episode. Native completion verifies '
+                'every listed task/run spawn; created cards and claims alone are insufficient. If queued, '
+                'call kanban_schedule on THIS owner with reason exactly Dispatch wait: followed by JSON '
+                '{"dispatched_task_ids":["t_..."]}. The supervisor qualifies one native continuation after '
+                'all listed workers start, only with zero failures/recurrences and no typed hold. Release '
+                'its worker slot; do not poll '
+                'or create another controller. If no safe independent slice exists, complete with '
+                'metadata.board_progress.no_safe_independent_work={reason,supplier,wake_condition}, '
+                'recording actual inspected work and the exact missing input. Starts establish execution '
+                'only; keep original owners open through acceptance, integration and live gates.')
     else:
         body = ('Goal: Resolve one changed ' + detector + ' finding on ' + board + '.\n'
             'Input supplier: agent. Re-read native state and hermes-coordinator-reference.md.\n'

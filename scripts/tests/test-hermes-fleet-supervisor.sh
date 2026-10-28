@@ -23,14 +23,27 @@ class SupervisorTest(unittest.TestCase):
         path=self.root/'kanban/boards/test/kanban.db'
         with sqlite3.connect(path) as db:
             db.executescript('CREATE TABLE tasks(id TEXT,title TEXT,body TEXT,status TEXT,assignee TEXT,'
-                             'priority INTEGER,tenant TEXT,created_by TEXT,block_kind TEXT);'
-                             'CREATE TABLE task_links(parent_id TEXT,child_id TEXT);')
-            db.executemany('INSERT INTO tasks VALUES (?,?,?,?,?,?,?,?,?)',[
+                             'priority INTEGER,tenant TEXT,created_by TEXT,block_kind TEXT,current_run_id INTEGER);'
+                             'CREATE TABLE task_links(parent_id TEXT,child_id TEXT);'
+                             'CREATE TABLE task_runs(id INTEGER PRIMARY KEY,task_id TEXT,profile TEXT,status TEXT,started_at INTEGER,'
+                             'ended_at INTEGER,outcome TEXT,metadata TEXT);'
+                             'CREATE TABLE task_events(id INTEGER PRIMARY KEY,task_id TEXT,run_id INTEGER,'
+                             'kind TEXT,payload TEXT,created_at INTEGER);')
+            db.executemany('INSERT INTO tasks(id,title,body,status,assignee,priority,tenant,created_by,block_kind) '
+                           'VALUES (?,?,?,?,?,?,?,?,?)',[
                 ('t_hold','Blocked delivery','Input supplier: agent. Missing input.','blocked','head-coordinator',10,None,None,'capability'),
                 ('t_wait','Dependent delivery','Preserve its acceptance gate.','todo','standard-implementer',5,None,None,None),
                 ('t_free','Independent requested fix','Owns other/file.py.','todo','standard-implementer',4,None,None,None)])
             db.execute('INSERT INTO task_links VALUES (?,?)',('t_hold','t_wait'))
         return path
+
+    def progress_start(self,path,task_id,run_id):
+        import sqlite3
+        with sqlite3.connect(path) as db:
+            db.execute("INSERT INTO task_runs VALUES (?,?,'standard-implementer','running',100,NULL,NULL,'{}')",(run_id,task_id))
+            db.execute("UPDATE tasks SET status='running',current_run_id=? WHERE id=?",(run_id,task_id))
+            db.execute("INSERT INTO task_events(task_id,run_id,kind,payload,created_at) VALUES (?,?,'spawned',?,101)",
+                       (task_id,run_id,json.dumps({'pid':4000+run_id,'started_at':9000+run_id})))
 
     def test_low_activity_finds_independent_work_without_releasing_dependencies(self):
         import board_progress
@@ -43,12 +56,17 @@ class SupervisorTest(unittest.TestCase):
         self.assertEqual(before,path.read_bytes())
         self.assertEqual(packet,board_progress.collect(self.root)[0])
 
-    def test_one_active_card_triggers_but_two_and_empty_boards_do_not(self):
+    def test_one_started_worker_triggers_but_two_and_empty_boards_do_not(self):
         import board_progress,sqlite3
         path=self.progress_board()
-        with sqlite3.connect(path) as db:db.execute("UPDATE tasks SET status='running' WHERE id='t_free'")
+        self.progress_start(path,'t_free',1)
         self.assertEqual(1,board_progress.collect(self.root)[0]['ready_running'])
         with sqlite3.connect(path) as db:db.execute("UPDATE tasks SET status='ready' WHERE id='t_wait'")
+        self.assertEqual(1,board_progress.collect(self.root)[0]['ready_running'],'Queued work is not running work')
+        with sqlite3.connect(path) as db:
+            db.execute("INSERT INTO tasks(id,title,body,status,assignee,priority) "
+                       "VALUES ('t_other','Independent slice','','ready','standard-implementer',1)")
+        self.progress_start(path,'t_other',2)
         self.assertEqual([],board_progress.collect(self.root))
         with sqlite3.connect(path) as db:db.execute("UPDATE tasks SET status='done'")
         self.assertEqual([],board_progress.collect(self.root))
@@ -56,9 +74,11 @@ class SupervisorTest(unittest.TestCase):
     def test_supervision_task_does_not_masquerade_as_project_activity(self):
         import board_progress,sqlite3
         path=self.progress_board()
+        self.progress_start(path,'t_free',1)
         with sqlite3.connect(path) as db:
-            db.execute("UPDATE tasks SET status='running' WHERE id='t_free'")
-            db.execute("INSERT INTO tasks VALUES ('t_supervision','Assess progress','','running','head-coordinator',0,'board-progress','fleet-supervisor',NULL)")
+            db.execute("INSERT INTO tasks(id,title,body,status,assignee,priority,tenant,created_by,block_kind) "
+                       "VALUES ('t_supervision','Assess progress','','running','head-coordinator',0,'board-progress','fleet-supervisor',NULL)")
+        self.progress_start(path,'t_supervision',2)
         self.assertEqual(1,board_progress.collect(self.root)[0]['ready_running'])
 
     def test_two_recovery_controllers_do_not_hide_an_idle_project(self):
@@ -66,6 +86,8 @@ class SupervisorTest(unittest.TestCase):
         path=self.progress_board()
         with sqlite3.connect(path) as db:
             db.execute("UPDATE tasks SET status='running',tenant='technical-recovery',created_by='deadlock-recovery-monitor' WHERE id IN ('t_hold','t_free')")
+        self.progress_start(path,'t_hold',1)
+        self.progress_start(path,'t_free',2)
         self.assertEqual(0,board_progress.collect(self.root)[0]['ready_running'])
 
     def test_review_only_board_is_inspected_without_releasing_review_gates(self):

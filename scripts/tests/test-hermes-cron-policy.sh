@@ -243,12 +243,21 @@ class CronPolicyTest(unittest.TestCase):
             job=next(j for j in data['jobs'] if j['id']==command[5]);job['prompt']=command[7]
             job['context_from']=['self'] if '--continuity' in command else []
             path.write_text(json.dumps(data))
+        for role in ('head-coordinator', 'board-steward'):
+            scanner = self.root / 'profiles' / role / 'scripts/steward-opportunity-scan.py'
+            scanner.parent.mkdir(parents=True, exist_ok=True)
+            scanner.write_text('# existing scanner without policy dependencies\n')
         with patch.object(installer,'adapt',side_effect=lambda name,text:text.replace('# native','# adapted')),contextlib.redirect_stdout(io.StringIO()):
             before={p:p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
             self.assertEqual(1,installer.install(self.root,True))
             self.assertEqual(before,{p:p.read_bytes() for p in before})
             with patch.object(installer.subprocess,'run',side_effect=edit):self.assertEqual(0,installer.install(self.root))
             self.assertEqual(0,installer.install(self.root,True))
+        for role in ('head-coordinator', 'board-steward'):
+            scripts = self.root / 'profiles' / role / 'scripts'
+            for name in ('card_policy_audit.py', 'card-dependency-guard.py',
+                         'owner-blocker-authoring-guard.py'):
+                self.assertEqual((installer.SOURCE / name).read_bytes(), (scripts / name).read_bytes())
         dependency=(Path(sys.argv[1])/'scripts/hermes/capability_recovery.py').read_bytes()
         for relative in ('scripts/capability_recovery.py',
                          'profiles/board-steward/scripts/capability_recovery.py',

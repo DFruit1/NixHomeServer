@@ -149,14 +149,38 @@ handlers retain their own cadence: retry breaker, technical recovery, aging,
 cron-loop detection, proactive intake, evidence, health, board progress and
 idle-state monitoring.
 The board-progress handler runs every 15 minutes per board, independently of
-fleet-wide idle and optional new-improvement intake. At zero or one ready/running
-project card, it supplies bounded read-only graph/scope evidence to one native
+fleet-wide idle and optional new-improvement intake. At zero or one proven started
+project worker, it supplies bounded read-only graph/scope evidence to one native
 coordinator task per board. The task must pursue both concrete blocker recovery
 and independent existing work, or record why no safe independent slice exists.
-Supervision tasks do not count as productive ready/running work. Stable material
+Queued cards and claims without native spawn/worker-registration evidence do not
+count as started work. Supervision and recovery controllers do not count as
+productive workers. Stable material
 versions and native idempotency prevent unchanged ticks from creating another
 controller; an unrelated parked recovery does not suppress this check. Existing
 dependencies, rejection/owner/provider gates and retry/resource limits remain.
+
+New supervision carries `Dispatch policy: parallel-v1`; native completion checks
+`metadata.board_progress.dispatched_task_ids` against actual task/run starts
+during that supervision episode. Each named worker must have started; creating a
+card or starting another coordinator controller cannot satisfy the check. While
+queued, schedule the same owner with native reason
+`Dispatch wait: {"dispatched_task_ids":["t_..."]}`. Scheduling parks the owner;
+the 15-minute supervisor supplies the wake after matching native starts. Its
+one-shot ordinary continuation is requalified inside the existing native unblock
+transaction: ended schedule event/run, coordinator identity, no live lease,
+zero failures/recurrences, no typed hold and no previous continuation. Failed or
+typed owners keep their existing guarded recovery path. A concrete
+`metadata.board_progress.no_safe_independent_work` exception needs `reason`,
+`supplier` and `wake_condition`, based on inspected existing requested work.
+The report exposes `started_workers`, `worker_starts` and `follow_through`;
+unverified policy-era handoffs stay visible without equivalent successor tasks.
+Legacy exact contracts remain intact; a terminal legacy receipt does not prevent
+one new policy-era supervision owner under native material-version idempotency.
+It neither reopens legacy work nor replenishes original incident budgets.
+Starts prove execution, not accepted source,
+integration or live delivery. See the installed coordinator reference for the
+delegation and stable-input procedure. Existing dispatch capacity is unchanged.
 
 Technical recovery is independent of global idle. Idle recovery still requires
 the original fleet-wide idle state and preserves task-specific receipt waits.
